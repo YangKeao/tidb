@@ -15,6 +15,8 @@
 package variable
 
 import (
+	"context"
+	"github.com/pingcap/tidb/sessionctx"
 	"strconv"
 	"strings"
 	"sync"
@@ -119,7 +121,7 @@ type SysVar struct {
 	// and will be called on all variables in builtinGlobalVariable, regardless of their scope.
 	SetSession func(*SessionVars, string) error
 	// SetGlobal is called after validation
-	SetGlobal func(*SessionVars, string) error
+	SetGlobal func(context.Context, sessionctx.Context, string) error
 	// IsHintUpdatable indicate whether it's updatable via SET_VAR() hint (optional)
 	IsHintUpdatable bool
 	// Deprecated: Hidden previously meant that the variable still responds to SET but doesn't show up in SHOW VARIABLES
@@ -223,9 +225,9 @@ func (sv *SysVar) SetSessionFromHook(s *SessionVars, val string) error {
 }
 
 // SetGlobalFromHook calls the SetGlobal func if it exists.
-func (sv *SysVar) SetGlobalFromHook(s *SessionVars, val string, skipAliases bool) error {
+func (sv *SysVar) SetGlobalFromHook(ctx context.Context, sctx sessionctx.Context, val string, skipAliases bool) error {
 	if sv.SetGlobal != nil {
-		return sv.SetGlobal(s, val)
+		return sv.SetGlobal(ctx, sctx, val)
 	}
 
 	// Call the SetGlobalSysVarOnly function on all the aliases for this sysVar
@@ -235,7 +237,7 @@ func (sv *SysVar) SetGlobalFromHook(s *SessionVars, val string, skipAliases bool
 
 	if !skipAliases && sv.Aliases != nil {
 		for _, aliasName := range sv.Aliases {
-			if err := s.GlobalVarsAccessor.SetGlobalSysVarOnly(aliasName, val); err != nil {
+			if err := sctx.GetSessionVars().GlobalVarsAccessor.SetGlobalSysVarOnly(ctx, aliasName, val); err != nil {
 				return err
 			}
 		}
@@ -604,9 +606,9 @@ type GlobalVarAccessor interface {
 	// GetGlobalSysVar gets the global system variable value for name.
 	GetGlobalSysVar(name string) (string, error)
 	// SetGlobalSysVar sets the global system variable name to value.
-	SetGlobalSysVar(name string, value string) error
+	SetGlobalSysVar(ctx context.Context, name string, value string) error
 	// SetGlobalSysVarOnly sets the global system variable without calling the validation function or updating aliases.
-	SetGlobalSysVarOnly(name string, value string) error
+	SetGlobalSysVarOnly(ctx context.Context, name string, value string) error
 	// GetTiDBTableValue gets a value from mysql.tidb for the key 'name'
 	GetTiDBTableValue(name string) (string, error)
 	// SetTiDBTableValue sets a value+comment for the mysql.tidb key 'name'

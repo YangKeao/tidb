@@ -14,11 +14,17 @@
 
 package variable
 
+import (
+	"context"
+	"github.com/pingcap/tidb/sessionctx"
+	"github.com/pingcap/tidb/util/mock"
+)
+
 // MockGlobalAccessor implements GlobalVarAccessor interface. it's used in tests
 type MockGlobalAccessor struct {
-	SessionVars *SessionVars // can be overwritten if needed for correctness.
-	vals        map[string]string
-	testSuite   bool
+	SessionContext *sessionctx.Context // can be overwritten if needed for correctness.
+	vals           map[string]string
+	testSuite      bool
 }
 
 // NewMockGlobalAccessor implements GlobalVarAccessor interface.
@@ -69,7 +75,7 @@ func (m *MockGlobalAccessor) GetGlobalSysVar(name string) (string, error) {
 }
 
 // SetGlobalSysVar implements GlobalVarAccessor.SetGlobalSysVar interface.
-func (m *MockGlobalAccessor) SetGlobalSysVar(name string, value string) (err error) {
+func (m *MockGlobalAccessor) SetGlobalSysVar(ctx context.Context, name string, value string) (err error) {
 	sv := GetSysVar(name)
 	if sv == nil {
 		return ErrUnknownSystemVar.GenWithStackByArgs(name)
@@ -77,7 +83,8 @@ func (m *MockGlobalAccessor) SetGlobalSysVar(name string, value string) (err err
 	if value, err = sv.Validate(m.SessionVars, value, ScopeGlobal); err != nil {
 		return err
 	}
-	if err = sv.SetGlobalFromHook(m.SessionVars, value, false); err != nil {
+
+	if err = sv.SetGlobalFromHook(ctx, mock.Context{va}, value, false); err != nil {
 		return err
 	}
 	m.vals[name] = value
@@ -85,7 +92,7 @@ func (m *MockGlobalAccessor) SetGlobalSysVar(name string, value string) (err err
 }
 
 // SetGlobalSysVarOnly implements GlobalVarAccessor.SetGlobalSysVarOnly interface.
-func (m *MockGlobalAccessor) SetGlobalSysVarOnly(name string, value string) error {
+func (m *MockGlobalAccessor) SetGlobalSysVarOnly(ctx context.Context, name string, value string) error {
 	sv := GetSysVar(name)
 	if sv == nil {
 		return ErrUnknownSystemVar.GenWithStackByArgs(name)

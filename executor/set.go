@@ -130,7 +130,7 @@ func (e *SetExecutor) setSysVariable(ctx context.Context, name string, v *expres
 		if err != nil {
 			return err
 		}
-		err = sessionVars.GlobalVarsAccessor.SetGlobalSysVar(name, valStr)
+		err = sessionVars.GlobalVarsAccessor.SetGlobalSysVar(ctx, name, valStr)
 		if err != nil {
 			return err
 		}
