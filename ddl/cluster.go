@@ -118,11 +118,11 @@ func ValidateFlashbackTS(ctx context.Context, sctx sessionctx.Context, flashBack
 }
 
 func setTiDBSuperReadOnly(sess sessionctx.Context, value string) error {
-	return sess.GetSessionVars().GlobalVarsAccessor.SetGlobalSysVar(variable.TiDBSuperReadOnly, value)
+	return sess.GetSessionVars().GlobalVarsAccessor.SetGlobalSysVar(context.Background(), variable.TiDBSuperReadOnly, value)
 }
 
 func getTiDBSuperReadOnly(sess sessionctx.Context) (string, error) {
-	val, err := sess.GetSessionVars().GlobalVarsAccessor.GetGlobalSysVar(variable.TiDBSuperReadOnly)
+	val, err := sess.GetSessionVars().GlobalVarsAccessor.GetGlobalSysVar(context.Background(), variable.TiDBSuperReadOnly)
 	if err != nil {
 		return "", errors.Trace(err)
 	}

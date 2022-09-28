@@ -1755,7 +1755,8 @@ func (s *SessionVars) GetCharsetInfo() (charset, collation string) {
 // GetParseParams gets the parse parameters from session variables.
 func (s *SessionVars) GetParseParams() []parser.ParseParam {
 	chs, coll := s.GetCharsetInfo()
-	cli, err := s.GetSessionOrGlobalSystemVar(CharacterSetClient)
+	// get CharacterSetClient doesn't use the context, so it's fine to pass nil here
+	cli, err := s.GetSessionOrGlobalSystemVar(nil, CharacterSetClient)
 	if err != nil {
 		cli = ""
 	}
@@ -2003,7 +2004,7 @@ func (s *SessionVars) ClearStmtVars() {
 // GetSessionOrGlobalSystemVar gets a system variable.
 // If it is a session only variable, use the default value defined in code.
 // Returns error if there is no such variable.
-func (s *SessionVars) GetSessionOrGlobalSystemVar(name string) (string, error) {
+func (s *SessionVars) GetSessionOrGlobalSystemVar(hctx HookContext, name string) (string, error) {
 	sv := GetSysVar(name)
 	if sv == nil {
 		return "", ErrUnknownSystemVar.GenWithStackByArgs(name)
@@ -2016,7 +2017,7 @@ func (s *SessionVars) GetSessionOrGlobalSystemVar(name string) (string, error) {
 		// in future should be already loaded on session init
 		if sv.GetSession != nil {
 			// shortcut to the getter, we won't use the value
-			return sv.GetSessionFromHook(s)
+			return sv.GetSessionFromHook(hctx, s)
 		}
 		if _, ok := s.systems[sv.Name]; !ok {
 			if sv.HasGlobalScope() {
@@ -2027,15 +2028,15 @@ func (s *SessionVars) GetSessionOrGlobalSystemVar(name string) (string, error) {
 				s.systems[sv.Name] = sv.Value // no global scope, use default
 			}
 		}
-		return sv.GetSessionFromHook(s)
+		return sv.GetSessionFromHook(hctx, s)
 	}
-	return sv.GetGlobalFromHook(s)
+	return sv.GetGlobalFromHook(hctx, s)
 }
 
 // GetSessionStatesSystemVar gets the session variable value for session states.
 // It's only used for encoding session states when migrating a session.
 // The returned boolean indicates whether to keep this value in the session states.
-func (s *SessionVars) GetSessionStatesSystemVar(name string) (string, bool, error) {
+func (s *SessionVars) GetSessionStatesSystemVar(hctx HookContext, name string) (string, bool, error) {
 	sv := GetSysVar(name)
 	if sv == nil {
 		return "", false, ErrUnknownSystemVar.GenWithStackByArgs(name)
@@ -2045,7 +2046,7 @@ func (s *SessionVars) GetSessionStatesSystemVar(name string) (string, bool, erro
 		return sv.GetStateValue(s)
 	}
 	if sv.GetSession != nil {
-		val, err := sv.GetSessionFromHook(s)
+		val, err := sv.GetSessionFromHook(hctx, s)
 		return val, err == nil, err
 	}
 	// Only get the cached value. No need to check the global or default value.
@@ -2056,12 +2057,12 @@ func (s *SessionVars) GetSessionStatesSystemVar(name string) (string, bool, erro
 }
 
 // GetGlobalSystemVar gets a global system variable.
-func (s *SessionVars) GetGlobalSystemVar(name string) (string, error) {
+func (s *SessionVars) GetGlobalSystemVar(hctx HookContext, name string) (string, error) {
 	sv := GetSysVar(name)
 	if sv == nil {
 		return "", ErrUnknownSystemVar.GenWithStackByArgs(name)
 	}
-	return sv.GetGlobalFromHook(s)
+	return sv.GetGlobalFromHook(hctx, s)
 }
 
 // SetStmtVar sets system variable and updates SessionVars states.
@@ -2082,7 +2083,7 @@ func (s *SessionVars) SetStmtVar(name string, value string) error {
 // Values are automatically normalized (i.e. oN / on / 1 => ON)
 // and the validation function is run. To set with less validation, see
 // SetSystemVarWithRelaxedValidation.
-func (s *SessionVars) SetSystemVar(name string, val string) error {
+func (s *SessionVars) SetSystemVar(hctx HookContext, name string, val string) error {
 	sv := GetSysVar(name)
 	if sv == nil {
 		return ErrUnknownSystemVar.GenWithStackByArgs(name)
@@ -2091,29 +2092,29 @@ func (s *SessionVars) SetSystemVar(name string, val string) error {
 	if err != nil {
 		return err
 	}
-	return sv.SetSessionFromHook(s, val)
+	return sv.SetSessionFromHook(hctx, s, val)
 }
 
 // SetSystemVarWithoutValidation sets the value of a system variable for session scope.
 // Deprecated: Values are NOT normalized or Validated.
-func (s *SessionVars) SetSystemVarWithoutValidation(name string, val string) error {
+func (s *SessionVars) SetSystemVarWithoutValidation(hctx HookContext, name string, val string) error {
 	sv := GetSysVar(name)
 	if sv == nil {
 		return ErrUnknownSystemVar.GenWithStackByArgs(name)
 	}
-	return sv.SetSessionFromHook(s, val)
+	return sv.SetSessionFromHook(hctx, s, val)
 }
 
 // SetSystemVarWithRelaxedValidation sets the value of a system variable for session scope.
 // Validation functions are called, but scope validation is skipped.
 // Errors are not expected to be returned because this could cause upgrade issues.
-func (s *SessionVars) SetSystemVarWithRelaxedValidation(name string, val string) error {
+func (s *SessionVars) SetSystemVarWithRelaxedValidation(hctx HookContext, name string, val string) error {
 	sv := GetSysVar(name)
 	if sv == nil {
 		return ErrUnknownSystemVar.GenWithStackByArgs(name)
 	}
 	val = sv.ValidateWithRelaxedValidation(s, val, ScopeSession)
-	return sv.SetSessionFromHook(s, val)
+	return sv.SetSessionFromHook(hctx, s, val)
 }
 
 // GetReadableTxnMode returns the session variable TxnMode but rewrites it to "OPTIMISTIC" when it's empty.

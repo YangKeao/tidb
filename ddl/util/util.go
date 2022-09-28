@@ -206,7 +206,7 @@ func LoadGlobalVars(ctx context.Context, sctx sessionctx.Context, varNames []str
 		for _, row := range rows {
 			varName := row.GetString(0)
 			varValue := row.GetString(1)
-			if err = sctx.GetSessionVars().SetSystemVarWithoutValidation(varName, varValue); err != nil {
+			if err = sctx.GetSessionVars().SetSystemVarWithoutValidation(sctx, varName, varValue); err != nil {
 				return err
 			}
 		}

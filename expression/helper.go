@@ -164,7 +164,7 @@ func getStmtTimestamp(ctx sessionctx.Context) (time.Time, error) {
 	}
 
 	sessionVars := ctx.GetSessionVars()
-	timestampStr, err := sessionVars.GetSessionOrGlobalSystemVar("timestamp")
+	timestampStr, err := sessionVars.GetSessionOrGlobalSystemVar(ctx, "timestamp")
 	if err != nil {
 		return now, err
 	}

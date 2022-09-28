@@ -14,16 +14,25 @@
 
 package variable
 
+import "github.com/pingcap/tidb/kv"
+
 // MockGlobalAccessor implements GlobalVarAccessor interface. it's used in tests
 type MockGlobalAccessor struct {
+	getStore    func() kv.Storage
 	SessionVars *SessionVars // can be overwritten if needed for correctness.
 	vals        map[string]string
 	testSuite   bool
 }
 
 // NewMockGlobalAccessor implements GlobalVarAccessor interface.
-func NewMockGlobalAccessor() *MockGlobalAccessor {
-	return new(MockGlobalAccessor)
+func NewMockGlobalAccessor(getStore func() kv.Storage) *MockGlobalAccessor {
+	return &MockGlobalAccessor{
+		getStore: getStore,
+	}
+}
+
+func (m *MockGlobalAccessor) GetStore() kv.Storage {
+	return m.getStore()
 }
 
 // NewMockGlobalAccessor4Tests creates a new MockGlobalAccessor for use in the testsuite.
@@ -77,7 +86,7 @@ func (m *MockGlobalAccessor) SetGlobalSysVar(name string, value string) (err err
 	if value, err = sv.Validate(m.SessionVars, value, ScopeGlobal); err != nil {
 		return err
 	}
-	if err = sv.SetGlobalFromHook(m.SessionVars, value, false); err != nil {
+	if err = sv.SetGlobalFromHook(m, m.SessionVars, value, false); err != nil {
 		return err
 	}
 	m.vals[name] = value

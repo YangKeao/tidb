@@ -449,15 +449,15 @@ func NewContext() *Context {
 	sctx.sessionVars.StmtCtx.TimeZone = time.UTC
 	sctx.sessionVars.StmtCtx.MemTracker = memory.NewTracker(-1, -1)
 	sctx.sessionVars.StmtCtx.DiskTracker = disk.NewTracker(-1, -1)
-	sctx.sessionVars.GlobalVarsAccessor = variable.NewMockGlobalAccessor()
+	sctx.sessionVars.GlobalVarsAccessor = variable.NewMockGlobalAccessor(sctx.GetStore)
 	sctx.sessionVars.EnablePaging = variable.DefTiDBEnablePaging
 	sctx.sessionVars.MinPagingSize = variable.DefMinPagingSize
 	sctx.sessionVars.CostModelVersion = variable.DefTiDBCostModelVer
 	sctx.sessionVars.EnableChunkRPC = true
-	if err := sctx.GetSessionVars().SetSystemVar(variable.MaxAllowedPacket, "67108864"); err != nil {
+	if err := sctx.GetSessionVars().SetSystemVar(sctx, variable.MaxAllowedPacket, "67108864"); err != nil {
 		panic(err)
 	}
-	if err := sctx.GetSessionVars().SetSystemVar(variable.CharacterSetConnection, "utf8mb4"); err != nil {
+	if err := sctx.GetSessionVars().SetSystemVar(sctx, variable.CharacterSetConnection, "utf8mb4"); err != nil {
 		panic(err)
 	}
 	return sctx

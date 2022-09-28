@@ -15,6 +15,7 @@
 package variable
 
 import (
+	"github.com/pingcap/tidb/kv"
 	"strconv"
 	"strings"
 	"sync"
@@ -86,6 +87,11 @@ const (
 	GlobalConfigEnableTopSQL = "enable_resource_metering"
 )
 
+// HookContext provides the needed variables for get/set hook
+type HookContext interface {
+	GetStore() kv.Storage
+}
+
 // SysVar is for system variable.
 // All the fields of SysVar should be READ ONLY after created.
 type SysVar struct {
@@ -117,9 +123,9 @@ type SysVar struct {
 	Validation func(*SessionVars, string, string, ScopeFlag) (string, error)
 	// SetSession is called after validation but before updating systems[]. It also doubles as an Init function
 	// and will be called on all variables in builtinGlobalVariable, regardless of their scope.
-	SetSession func(*SessionVars, string) error
+	SetSession func(HookContext, *SessionVars, string) error
 	// SetGlobal is called after validation
-	SetGlobal func(*SessionVars, string) error
+	SetGlobal func(HookContext, *SessionVars, string) error
 	// IsHintUpdatable indicate whether it's updatable via SET_VAR() hint (optional)
 	IsHintUpdatable bool
 	// Deprecated: Hidden previously meant that the variable still responds to SET but doesn't show up in SHOW VARIABLES
@@ -130,9 +136,9 @@ type SysVar struct {
 	Aliases []string
 	// GetSession is a getter function for session scope.
 	// It can be used by instance-scoped variables to overwrite the previously expected value.
-	GetSession func(*SessionVars) (string, error)
+	GetSession func(HookContext, *SessionVars) (string, error)
 	// GetGlobal is a getter function for global scope.
-	GetGlobal func(*SessionVars) (string, error)
+	GetGlobal func(HookContext, *SessionVars) (string, error)
 	// GetStateValue gets the value for session states, which is used for migrating sessions.
 	// We need a function to override GetSession sometimes, because GetSession may not return the real value.
 	GetStateValue func(*SessionVars) (string, bool, error)
@@ -149,10 +155,10 @@ type SysVar struct {
 }
 
 // GetGlobalFromHook calls the GetSession func if it exists.
-func (sv *SysVar) GetGlobalFromHook(s *SessionVars) (string, error) {
+func (sv *SysVar) GetGlobalFromHook(hctx HookContext, s *SessionVars) (string, error) {
 	// Call the Getter if there is one defined.
 	if sv.GetGlobal != nil {
-		val, err := sv.GetGlobal(s)
+		val, err := sv.GetGlobal(hctx, s)
 		if err != nil {
 			return val, err
 		}
@@ -167,13 +173,13 @@ func (sv *SysVar) GetGlobalFromHook(s *SessionVars) (string, error) {
 }
 
 // GetSessionFromHook calls the GetSession func if it exists.
-func (sv *SysVar) GetSessionFromHook(s *SessionVars) (string, error) {
+func (sv *SysVar) GetSessionFromHook(hctx HookContext, s *SessionVars) (string, error) {
 	if sv.HasNoneScope() {
 		return sv.Value, nil
 	}
 	// Call the Getter if there is one defined.
 	if sv.GetSession != nil {
-		val, err := sv.GetSession(s)
+		val, err := sv.GetSession(hctx, s)
 		if err != nil {
 			return val, err
 		}
@@ -195,9 +201,9 @@ func (sv *SysVar) GetSessionFromHook(s *SessionVars) (string, error) {
 }
 
 // SetSessionFromHook calls the SetSession func if it exists.
-func (sv *SysVar) SetSessionFromHook(s *SessionVars, val string) error {
+func (sv *SysVar) SetSessionFromHook(hctx HookContext, s *SessionVars, val string) error {
 	if sv.SetSession != nil {
-		if err := sv.SetSession(s, val); err != nil {
+		if err := sv.SetSession(hctx, s, val); err != nil {
 			return err
 		}
 	}
@@ -212,7 +218,7 @@ func (sv *SysVar) SetSessionFromHook(s *SessionVars, val string) error {
 		for _, aliasName := range sv.Aliases {
 			aliasSv := GetSysVar(aliasName)
 			if aliasSv.SetSession != nil {
-				if err := aliasSv.SetSession(s, val); err != nil {
+				if err := aliasSv.SetSession(hctx, s, val); err != nil {
 					return err
 				}
 			}
@@ -223,9 +229,9 @@ func (sv *SysVar) SetSessionFromHook(s *SessionVars, val string) error {
 }
 
 // SetGlobalFromHook calls the SetGlobal func if it exists.
-func (sv *SysVar) SetGlobalFromHook(s *SessionVars, val string, skipAliases bool) error {
+func (sv *SysVar) SetGlobalFromHook(hctx HookContext, s *SessionVars, val string, skipAliases bool) error {
 	if sv.SetGlobal != nil {
-		return sv.SetGlobal(s, val)
+		return sv.SetGlobal(hctx, s, val)
 	}
 
 	// Call the SetGlobalSysVarOnly function on all the aliases for this sysVar
