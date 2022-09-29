@@ -17,6 +17,7 @@ package staleread_test
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
@@ -91,6 +92,14 @@ func astTableWithAsOf(t *testing.T, dt string) *ast.TableName {
 	require.NoError(t, err)
 	sel := stmt.(*ast.SelectStmt)
 	return sel.From.TableRefs.Left.(*ast.TableSource).Source.(*ast.TableName)
+}
+
+func getCurrentExternalTimestamp(t *testing.T, tk *testkit.TestKit) uint64 {
+	externalTimestampStr := tk.MustQuery("select @@tidb_external_ts").Rows()[0][0].(string)
+	externalTimestamp, err := strconv.ParseUint(externalTimestampStr, 10, 64)
+	require.NoError(t, err)
+
+	return externalTimestamp
 }
 
 func TestStaleReadProcessorWithSelectTable(t *testing.T) {
@@ -177,6 +186,46 @@ func TestStaleReadProcessorWithSelectTable(t *testing.T) {
 	require.NoError(t, err)
 	p1.checkMatchProcessor(t, processor, true)
 	tk.MustExec("set @@tidb_read_staleness=''")
+
+	// `@@tidb_external_ts`
+	tk.MustExec("start transaction;set global tidb_external_ts=@@tidb_current_ts;commit")
+	tk.MustExec("set tidb_enable_external_ts_read=ON")
+	processor = createProcessor(t, tk.Session())
+	err = processor.OnSelectTable(tn)
+	require.True(t, processor.IsStaleness())
+	expectedTS = getCurrentExternalTimestamp(t, tk)
+	require.Equal(t, expectedTS, processor.GetStalenessReadTS())
+	tk.MustExec("set tidb_enable_external_ts_read=OFF")
+
+	// `@@tidb_external_ts` will be ignored when `as of`, `@@tx_read_ts` or `@@tidb_read_staleness`
+	tk.MustExec("start transaction;set global tidb_external_ts=@@tidb_current_ts;commit")
+	tk.MustExec("set tidb_enable_external_ts_read=ON")
+	processor = createProcessor(t, tk.Session())
+	err = processor.OnSelectTable(p1.tn)
+	require.NoError(t, err)
+	p1.checkMatchProcessor(t, processor, true)
+
+	tk.MustExec(fmt.Sprintf("SET TRANSACTION READ ONLY AS OF TIMESTAMP '%s'", p1.dt))
+	processor = createProcessor(t, tk.Session())
+	err = processor.OnSelectTable(tn)
+	require.NoError(t, err)
+	p1.checkMatchProcessor(t, processor, true)
+
+	tk.MustExec("set @@tidb_read_staleness=-5")
+	processor = createProcessor(t, tk.Session())
+	err = processor.OnSelectTable(tn)
+	require.True(t, processor.IsStaleness())
+	require.Equal(t, int64(0), processor.GetStalenessInfoSchema().SchemaMetaVersion())
+	expectedTS, err = staleread.CalculateTsWithReadStaleness(tk.Session(), -5*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, expectedTS, processor.GetStalenessReadTS())
+	evaluator = processor.GetStalenessTSEvaluatorForPrepare()
+	evaluatorTS, err = evaluator(tk.Session())
+	require.NoError(t, err)
+	require.Equal(t, expectedTS, evaluatorTS)
+	tk.MustExec("set @@tidb_read_staleness=''")
+
+	tk.MustExec("set tidb_enable_external_ts_read=OFF")
 }
 
 func TestStaleReadProcessorWithExecutePreparedStmt(t *testing.T) {
@@ -190,7 +239,7 @@ func TestStaleReadProcessorWithExecutePreparedStmt(t *testing.T) {
 
 	// execute prepared stmt with ts evaluator
 	processor := createProcessor(t, tk.Session())
-	err := processor.OnExecutePreparedStmt(func(sctx sessionctx.Context) (uint64, error) {
+	err := processor.OnExecutePreparedStmt(nil, func(sctx sessionctx.Context) (uint64, error) {
 		return p1.ts, nil
 	})
 	require.NoError(t, err)
@@ -198,7 +247,7 @@ func TestStaleReadProcessorWithExecutePreparedStmt(t *testing.T) {
 
 	// will get an error when ts evaluator fails
 	processor = createProcessor(t, tk.Session())
-	err = processor.OnExecutePreparedStmt(func(sctx sessionctx.Context) (uint64, error) {
+	err = processor.OnExecutePreparedStmt(nil, func(sctx sessionctx.Context) (uint64, error) {
 		return 0, errors.New("mock error")
 	})
 	require.Error(t, err)
@@ -207,14 +256,14 @@ func TestStaleReadProcessorWithExecutePreparedStmt(t *testing.T) {
 
 	// execute prepared stmt without stale read
 	processor = createProcessor(t, tk.Session())
-	err = processor.OnExecutePreparedStmt(nil)
+	err = processor.OnExecutePreparedStmt(nil, nil)
 	require.NoError(t, err)
 	require.False(t, processor.IsStaleness())
 
 	// execute prepared stmt without ts evaluator will consume tx_read_ts
 	tk.MustExec(fmt.Sprintf("SET TRANSACTION READ ONLY AS OF TIMESTAMP '%s'", p1.dt))
 	processor = createProcessor(t, tk.Session())
-	err = processor.OnExecutePreparedStmt(nil)
+	err = processor.OnExecutePreparedStmt(nil, nil)
 	p1.checkMatchProcessor(t, processor, true)
 	tk.Session().GetSessionVars().CleanupTxnReadTSIfUsed()
 	require.Equal(t, uint64(0), tk.Session().GetSessionVars().TxnReadTS.PeakTxnReadTS())
@@ -223,7 +272,7 @@ func TestStaleReadProcessorWithExecutePreparedStmt(t *testing.T) {
 	// prepared ts is not allowed when @@txn_read_ts is set
 	tk.MustExec(fmt.Sprintf("SET TRANSACTION READ ONLY AS OF TIMESTAMP '%s'", p1.dt))
 	processor = createProcessor(t, tk.Session())
-	err = processor.OnExecutePreparedStmt(func(sctx sessionctx.Context) (uint64, error) {
+	err = processor.OnExecutePreparedStmt(nil, func(sctx sessionctx.Context) (uint64, error) {
 		return p1.ts, nil
 	})
 	require.Error(t, err)
@@ -233,7 +282,7 @@ func TestStaleReadProcessorWithExecutePreparedStmt(t *testing.T) {
 	// `@@tidb_read_staleness`
 	tk.MustExec("set @@tidb_read_staleness=-5")
 	processor = createProcessor(t, tk.Session())
-	err = processor.OnExecutePreparedStmt(nil)
+	err = processor.OnExecutePreparedStmt(nil, nil)
 	require.True(t, processor.IsStaleness())
 	require.Equal(t, int64(0), processor.GetStalenessInfoSchema().SchemaMetaVersion())
 	expectedTS, err := staleread.CalculateTsWithReadStaleness(tk.Session(), -5*time.Second)
@@ -244,7 +293,7 @@ func TestStaleReadProcessorWithExecutePreparedStmt(t *testing.T) {
 	// `@@tidb_read_staleness` will be ignored when `as of` or `@@tx_read_ts`
 	tk.MustExec("set @@tidb_read_staleness=-5")
 	processor = createProcessor(t, tk.Session())
-	err = processor.OnExecutePreparedStmt(func(sctx sessionctx.Context) (uint64, error) {
+	err = processor.OnExecutePreparedStmt(nil, func(sctx sessionctx.Context) (uint64, error) {
 		return p1.ts, nil
 	})
 	require.NoError(t, err)
@@ -252,10 +301,47 @@ func TestStaleReadProcessorWithExecutePreparedStmt(t *testing.T) {
 
 	tk.MustExec(fmt.Sprintf("SET TRANSACTION READ ONLY AS OF TIMESTAMP '%s'", p1.dt))
 	processor = createProcessor(t, tk.Session())
-	err = processor.OnExecutePreparedStmt(nil)
+	err = processor.OnExecutePreparedStmt(nil, nil)
 	require.NoError(t, err)
 	p1.checkMatchProcessor(t, processor, true)
 	tk.MustExec("set @@tidb_read_staleness=''")
+
+	// `@@tidb_external_ts`
+	tk.MustExec("start transaction;set global tidb_external_ts=@@tidb_current_ts;commit")
+	tk.MustExec("set tidb_enable_external_ts_read=ON")
+	processor = createProcessor(t, tk.Session())
+	err = processor.OnExecutePreparedStmt(nil, nil)
+	require.True(t, processor.IsStaleness())
+	expectedTS = getCurrentExternalTimestamp(t, tk)
+	require.Equal(t, expectedTS, processor.GetStalenessReadTS())
+	tk.MustExec("set tidb_enable_external_ts_read=OFF")
+
+	// `@@tidb_external_ts` will be ignored when `as of`, `@@tx_read_ts` or `@@tidb_read_staleness`
+	tk.MustExec("start transaction;set global tidb_external_ts=@@tidb_current_ts;commit")
+	tk.MustExec("set tidb_enable_external_ts_read=ON")
+
+	processor = createProcessor(t, tk.Session())
+	err = processor.OnSelectTable(p1.tn)
+	require.NoError(t, err)
+	p1.checkMatchProcessor(t, processor, true)
+
+	tk.MustExec(fmt.Sprintf("SET TRANSACTION READ ONLY AS OF TIMESTAMP '%s'", p1.dt))
+	processor = createProcessor(t, tk.Session())
+	err = processor.OnExecutePreparedStmt(nil, nil)
+	require.NoError(t, err)
+	p1.checkMatchProcessor(t, processor, true)
+
+	tk.MustExec("set @@tidb_read_staleness=-5")
+	processor = createProcessor(t, tk.Session())
+	err = processor.OnExecutePreparedStmt(nil, nil)
+	require.True(t, processor.IsStaleness())
+	require.Equal(t, int64(0), processor.GetStalenessInfoSchema().SchemaMetaVersion())
+	expectedTS, err = staleread.CalculateTsWithReadStaleness(tk.Session(), -5*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, expectedTS, processor.GetStalenessReadTS())
+	tk.MustExec("set @@tidb_read_staleness=''")
+
+	tk.MustExec("set tidb_enable_external_ts_read=OFF")
 }
 
 func TestStaleReadProcessorInTxn(t *testing.T) {
@@ -278,7 +364,7 @@ func TestStaleReadProcessorInTxn(t *testing.T) {
 
 	// no error when execute prepared stmt without ts evaluator
 	processor = createProcessor(t, tk.Session())
-	err = processor.OnExecutePreparedStmt(nil)
+	err = processor.OnExecutePreparedStmt(nil, nil)
 	require.NoError(t, err)
 	require.False(t, processor.IsStaleness())
 
@@ -288,9 +374,10 @@ func TestStaleReadProcessorInTxn(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, "[planner:8135]invalid as of timestamp: as of timestamp can't be set in transaction.", err.Error())
 
-	// return an error when execute prepared stmt with ts evaluator
+	// return an error when execute prepared stmt with as of
 	processor = createProcessor(t, tk.Session())
-	err = processor.OnExecutePreparedStmt(func(sctx sessionctx.Context) (uint64, error) {
+	selectWithNonEmptyAsOf := &ast.SelectStmt{From: &ast.TableRefsClause{TableRefs: &ast.Join{Left: &ast.TableName{AsOf: &ast.AsOfClause{}}}}}
+	err = processor.OnExecutePreparedStmt(selectWithNonEmptyAsOf, func(sctx sessionctx.Context) (uint64, error) {
 		return p1.ts, nil
 	})
 	require.Error(t, err)
@@ -310,7 +397,7 @@ func TestStaleReadProcessorInTxn(t *testing.T) {
 	p1.checkMatchProcessor(t, processor, false)
 
 	processor = createProcessor(t, tk.Session())
-	err = processor.OnExecutePreparedStmt(nil)
+	err = processor.OnExecutePreparedStmt(nil, nil)
 	require.NoError(t, err)
 	p1.checkMatchProcessor(t, processor, false)
 
@@ -325,7 +412,7 @@ func TestStaleReadProcessorInTxn(t *testing.T) {
 	p1.checkMatchProcessor(t, processor, false)
 
 	processor = createProcessor(t, tk.Session())
-	err = processor.OnExecutePreparedStmt(nil)
+	err = processor.OnExecutePreparedStmt(nil, nil)
 	require.NoError(t, err)
 	p1.checkMatchProcessor(t, processor, false)
 	tk.MustExec("set @@tidb_read_staleness=''")

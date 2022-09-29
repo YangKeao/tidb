@@ -6542,7 +6542,16 @@ func GetMinSafeTime(sessionCtx sessionctx.Context) time.Time {
 	return getMinSafeTime(sessionCtx, getTimeZone(sessionCtx))
 }
 
+// GetMinSafeTS get minSafeTS
+func GetMinSafeTS(sessionCtx sessionctx.Context) uint64 {
+	return getMinSafeTS(sessionCtx)
+}
+
 func getMinSafeTime(sessionCtx sessionctx.Context, timeZone *time.Location) time.Time {
+	return oracle.GetTimeFromTS(getMinSafeTS(sessionCtx)).In(timeZone)
+}
+
+func getMinSafeTS(sessionCtx sessionctx.Context) uint64 {
 	var minSafeTS uint64
 	txnScope := config.GetTxnScopeFromConfig()
 	if store := sessionCtx.GetStore(); store != nil {
@@ -6556,7 +6565,7 @@ func getMinSafeTime(sessionCtx sessionctx.Context, timeZone *time.Location) time
 	// Try to get from the stmt cache to make sure this function is deterministic.
 	stmtCtx := sessionCtx.GetSessionVars().StmtCtx
 	minSafeTS = stmtCtx.GetOrStoreStmtCache(stmtctx.StmtSafeTSCacheKey, minSafeTS).(uint64)
-	return oracle.GetTimeFromTS(minSafeTS).In(timeZone)
+	return minSafeTS
 }
 
 // CalAppropriateTime directly calls calAppropriateTime

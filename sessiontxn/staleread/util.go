@@ -15,6 +15,7 @@
 package staleread
 
 import (
+	"context"
 	"time"
 
 	"github.com/pingcap/tidb/expression"
@@ -64,4 +65,24 @@ func CalculateTsWithReadStaleness(sctx sessionctx.Context, readStaleness time.Du
 // IsStmtStaleness indicates whether the current statement is staleness or not
 func IsStmtStaleness(sctx sessionctx.Context) bool {
 	return sctx.GetSessionVars().StmtCtx.IsStaleness
+}
+
+// CalculateTsWithExternalTimestamp returns the minimum tso of `minSafeTs` and `externalTimestamp` variable
+func CalculateTsWithExternalTimestamp(ctx context.Context, sctx sessionctx.Context) (uint64, error) {
+	externalTimestamp, err := getExternalTimestamp(ctx, sctx)
+	if err != nil {
+		return 0, errAsOf.FastGenWithCause(err.Error())
+	}
+	return calculateTsWithExternalTimestamp(sctx, externalTimestamp), nil
+}
+
+// calculateTsWithExternalTimestamp returns the minimum tso of `minSafeTs` and `externalTimestamp`
+func calculateTsWithExternalTimestamp(sctx sessionctx.Context, externalTimestamp uint64) uint64 {
+	minSafeTs := expression.GetMinSafeTS(sctx)
+
+	if minSafeTs != 0 && minSafeTs < externalTimestamp {
+		return minSafeTs
+	}
+
+	return externalTimestamp
 }
