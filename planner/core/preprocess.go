@@ -1641,7 +1641,7 @@ func (p *preprocessor) resolveExecuteStmt(node *ast.ExecuteStmt) {
 		return
 	}
 
-	if p.err = p.staleReadProcessor.OnExecutePreparedStmt(prepared.SnapshotTSEvaluator); p.err == nil {
+	if p.err = p.staleReadProcessor.OnExecutePreparedStmt(prepared.PreparedAst.Stmt, prepared.SnapshotTSEvaluator); p.err == nil {
 		if p.err = p.updateStateFromStaleReadProcessor(); p.err != nil {
 			return
 		}

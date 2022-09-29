@@ -3667,10 +3667,12 @@ func (n *AsOfClause) Accept(v Visitor) (Node, bool) {
 		return v.Leave(newNode)
 	}
 	n = newNode.(*AsOfClause)
-	node, ok := n.TsExpr.Accept(v)
-	if !ok {
-		return n, false
+	if n.TsExpr != nil {
+		node, ok := n.TsExpr.Accept(v)
+		if !ok {
+			return n, false
+		}
+		n.TsExpr = node.(ExprNode)
 	}
-	n.TsExpr = node.(ExprNode)
 	return v.Leave(n)
 }

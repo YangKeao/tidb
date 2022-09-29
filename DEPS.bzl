@@ -2818,15 +2818,15 @@ def go_deps():
         name = "com_github_pingcap_kvproto",
         build_file_proto_mode = "disable_global",
         importpath = "github.com/pingcap/kvproto",
-        sum = "h1:ceg4xjEEXNgPsScTQ5dtidiltLF4h17Y/jUqfyLAy9E=",
-        version = "v0.0.0-20220929075948-06e08d5ed64c",
+        sum = "h1:FYgKV9znRQmzVrrJDZ0gUfMIvKLAMU1tu1UKJib8bEQ=",
+        version = "v0.0.0-20221026112947-f8d61344b172",
     )
     go_repository(
         name = "com_github_pingcap_log",
         build_file_proto_mode = "disable_global",
         importpath = "github.com/pingcap/log",
-        sum = "h1:ELiPxACz7vdo1qAvvaWJg1NrYFoY6gqAh/+Uo6aXdD8=",
-        version = "v1.1.0",
+        sum = "h1:URLoJ61DmmY++Sa/yyPEQHG2s/ZBeV1FbIswHEMrdoY=",
+        version = "v1.1.1-0.20221015072633-39906604fb81",
     )
     go_repository(
         name = "com_github_pingcap_sysutil",
@@ -3422,15 +3422,17 @@ def go_deps():
         name = "com_github_tikv_client_go_v2",
         build_file_proto_mode = "disable_global",
         importpath = "github.com/tikv/client-go/v2",
-        sum = "h1:/13jzD/AR7v3dCLweFQ2JG8bihh3HLVIci2tbOHHGW0=",
-        version = "v2.0.1-0.20221012074856-6def8d7b90c4",
+        replace = "github.com/YangKeao/client-go/v2",
+        sum = "h1:8BbfSJ4LkN8Ced4o4CzutryFRjddv8UiJU3LYi8Y3+s=",
+        version = "v2.0.1-0.20221026120923-91a6abdc1a09",
     )
     go_repository(
         name = "com_github_tikv_pd_client",
         build_file_proto_mode = "disable_global",
         importpath = "github.com/tikv/pd/client",
-        sum = "h1:REQOR1XraH1fT9BCoNBPZs1CAe+w7VPLU+d+si7DLYo=",
-        version = "v0.0.0-20221010134149-d50e5fe43f14",
+        replace = "github.com/lhy1024/pd/client",
+        sum = "h1:Fa9UKRpXYynrEZdb0Vzshj+L/x6f/qPq5Sq0wM7VFgc=",
+        version = "v0.0.0-20221026120600-7cf30bf5ce7d",
     )
     go_repository(
         name = "com_github_timakin_bodyclose",

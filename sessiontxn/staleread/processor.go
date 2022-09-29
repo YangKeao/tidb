@@ -46,7 +46,7 @@ type Processor interface {
 	// OnSelectTable will be called when process table in select statement
 	OnSelectTable(tn *ast.TableName) error
 	// OnExecutePreparedStmt when process execute
-	OnExecutePreparedStmt(preparedTSEvaluator StalenessTSEvaluator) error
+	OnExecutePreparedStmt(stmt ast.Node, preparedTSEvaluator StalenessTSEvaluator) error
 }
 
 type baseProcessor struct {
@@ -88,6 +88,21 @@ func (p *baseProcessor) OnSelectTable(_ *ast.TableName) error {
 
 func (p *baseProcessor) OnExecutePrepared(_ StalenessTSEvaluator) error {
 	return errors.New("not supported")
+}
+
+func (p *baseProcessor) evaluateFromExternalTS() error {
+	// if stale read is not used explicitly, check whether we should use external timestamp
+	if p.sctx.GetSessionVars().EnableExternalTSRead {
+		externalTimestamp, err := GetExternalTimestamp(p.ctx, p.sctx)
+		if err != nil {
+			return errAsOf.FastGenWithCause(err.Error())
+		}
+		if externalTimestamp > 0 {
+			return p.setEvaluatedValues(externalTimestamp, nil, nil)
+		}
+	}
+
+	return p.setAsNonStaleRead()
 }
 
 func (p *baseProcessor) setAsNonStaleRead() error {
@@ -172,14 +187,19 @@ func (p *staleReadProcessor) OnSelectTable(tn *ast.TableName) error {
 	return p.evaluateFromStmtTSOrSysVariable(stmtAsOfTS)
 }
 
-func (p *staleReadProcessor) OnExecutePreparedStmt(preparedTSEvaluator StalenessTSEvaluator) (err error) {
+func (p *staleReadProcessor) OnExecutePreparedStmt(node ast.Node, preparedTSEvaluator StalenessTSEvaluator) (err error) {
 	if p.evaluated {
 		return errors.New("already evaluated")
 	}
 
 	if p.sctx.GetSessionVars().InTxn() {
-		if preparedTSEvaluator != nil {
-			return errAsOf.FastGenWithCause("as of timestamp can't be set in transaction.")
+		// allow the stale-read evaluator inherit from the variables, just ignore them
+		if stmt, ok := node.(*ast.SelectStmt); ok {
+			checker := &asOfChecker{}
+			stmt.Accept(checker)
+			if checker.hasAsOf {
+				return errAsOf.FastGenWithCause("as of timestamp can't be set in transaction.")
+			}
 		}
 		return p.evaluateFromTxn()
 	}
@@ -206,6 +226,8 @@ func (p *staleReadProcessor) evaluateFromTxn() error {
 			nil,
 		)
 	}
+
+	// don't use the external timestamp
 	return p.setAsNonStaleRead()
 }
 
@@ -237,7 +259,7 @@ func (p *staleReadProcessor) evaluateFromStmtTSOrSysVariable(stmtTS uint64) erro
 	}
 
 	// Otherwise, it means we should not use stale read.
-	return p.setAsNonStaleRead()
+	return p.evaluateFromExternalTS()
 }
 
 func parseAndValidateAsOf(ctx context.Context, sctx sessionctx.Context, asOf *ast.AsOfClause) (uint64, error) {
@@ -275,4 +297,22 @@ func GetSessionSnapshotInfoSchema(sctx sessionctx.Context, snapshotTS uint64) (i
 		return nil, err
 	}
 	return temptable.AttachLocalTemporaryTableInfoSchema(sctx, is), nil
+}
+
+type asOfChecker struct {
+	hasAsOf bool
+}
+
+func (v *asOfChecker) Enter(in ast.Node) (ast.Node, bool) {
+	return in, false
+}
+
+func (v *asOfChecker) Leave(in ast.Node) (ast.Node, bool) {
+	if tn, ok := in.(*ast.TableName); ok {
+		if tn.AsOf != nil {
+			v.hasAsOf = true
+			return in, false
+		}
+	}
+	return in, true
 }
