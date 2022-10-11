@@ -607,10 +607,10 @@ func TestInstanceScope(t *testing.T) {
 
 	count := len(GetSysVars())
 	sv := SysVar{Scope: ScopeInstance, Name: "newinstancesysvar", Value: On, Type: TypeBool,
-		SetGlobal: func(_ context.Context, s *SessionVars, val string) error {
+		SetGlobal: func(s *SessionVars, val string) error {
 			return fmt.Errorf("set should fail")
 		},
-		GetGlobal: func(_ context.Context, s *SessionVars) (string, error) {
+		GetGlobal: func(s *SessionVars) (string, error) {
 			return "", fmt.Errorf("get should fail")
 		},
 	}

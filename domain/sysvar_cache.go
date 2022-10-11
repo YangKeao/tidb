@@ -142,9 +142,10 @@ func (do *Domain) rebuildSysVarCache(ctx sessionctx.Context) error {
 			// SET GLOBAL only calls the SetGlobal func on the calling instances.
 			// This ensures it is run on all tidb servers.
 			// This does not apply to INSTANCE scoped vars (HasGlobalScope() is false)
-			if sv.SetGlobal != nil && !sv.SkipSysvarCache() {
+			setHook := sv.GetGlobalSetHook(context.Background())
+			if setHook != nil && !sv.SkipSysvarCache() {
 				sVal = sv.ValidateWithRelaxedValidation(ctx.GetSessionVars(), sVal, variable.ScopeGlobal)
-				err = sv.SetGlobal(context.Background(), ctx.GetSessionVars(), sVal)
+				err = setHook(ctx.GetSessionVars(), sVal)
 				if err != nil {
 					logutil.BgLogger().Error(fmt.Sprintf("load global variable %s error", sv.Name), zap.Error(err))
 				}

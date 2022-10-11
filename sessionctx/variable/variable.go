@@ -137,7 +137,9 @@ type SysVar struct {
 	// and will be called on all variables in builtinGlobalVariable, regardless of their scope.
 	SetSession func(*SessionVars, string) error
 	// SetGlobal is called after validation
-	SetGlobal func(context.Context, *SessionVars, string) error
+	SetGlobal func(*SessionVars, string) error
+	// SetGlobalWithContext is the set hook, if the context.Context is needed
+	SetGlobalWithContext func(context.Context, *SessionVars, string) error
 	// IsHintUpdatable indicate whether it's updatable via SET_VAR() hint (optional)
 	IsHintUpdatable bool
 	// Deprecated: Hidden previously meant that the variable still responds to SET but doesn't show up in SHOW VARIABLES
@@ -150,7 +152,9 @@ type SysVar struct {
 	// It can be used by instance-scoped variables to overwrite the previously expected value.
 	GetSession func(*SessionVars) (string, error)
 	// GetGlobal is a getter function for global scope.
-	GetGlobal func(context.Context, *SessionVars) (string, error)
+	GetGlobal func(*SessionVars) (string, error)
+	// SetGlobalWithContext is the get hook, if the context.Context is needed
+	GetGlobalWithContext func(context.Context, *SessionVars) (string, error)
 	// GetStateValue gets the value for session states, which is used for migrating sessions.
 	// We need a function to override GetSession sometimes, because GetSession may not return the real value.
 	GetStateValue func(*SessionVars) (string, bool, error)
@@ -169,8 +173,9 @@ type SysVar struct {
 // GetGlobalFromHook calls the GetSession func if it exists.
 func (sv *SysVar) GetGlobalFromHook(ctx context.Context, s *SessionVars) (string, error) {
 	// Call the Getter if there is one defined.
-	if sv.GetGlobal != nil {
-		val, err := sv.GetGlobal(ctx, s)
+	getHook := sv.GetGlobalGetHook(ctx)
+	if getHook != nil {
+		val, err := getHook(s)
 		if err != nil {
 			return val, err
 		}
@@ -242,8 +247,9 @@ func (sv *SysVar) SetSessionFromHook(s *SessionVars, val string) error {
 
 // SetGlobalFromHook calls the SetGlobal func if it exists.
 func (sv *SysVar) SetGlobalFromHook(ctx context.Context, s *SessionVars, val string, skipAliases bool) error {
-	if sv.SetGlobal != nil {
-		return sv.SetGlobal(ctx, s, val)
+	setHook := sv.GetGlobalSetHook(ctx)
+	if setHook != nil {
+		return setHook(s, val)
 	}
 
 	// Call the SetGlobalSysVarOnly function on all the aliases for this sysVar
@@ -552,6 +558,32 @@ func (sv *SysVar) SkipSysvarCache() bool {
 		return true
 	}
 	return false
+}
+
+// GetGlobalGetHook returns the Global Get Hook with a context
+func (sv *SysVar) GetGlobalGetHook(ctx context.Context) func(*SessionVars) (string, error) {
+	if sv.GetGlobal != nil {
+		return sv.GetGlobal
+	}
+	if sv.GetGlobalWithContext != nil {
+		return func(vars *SessionVars) (string, error) {
+			return sv.GetGlobalWithContext(ctx, vars)
+		}
+	}
+	return nil
+}
+
+// GetGlobalSetHook returns the Global Set Hook with a context
+func (sv *SysVar) GetGlobalSetHook(ctx context.Context) func(*SessionVars, string) error {
+	if sv.SetGlobal != nil {
+		return sv.SetGlobal
+	}
+	if sv.SetGlobalWithContext != nil {
+		return func(vars *SessionVars, value string) error {
+			return sv.SetGlobalWithContext(ctx, vars, value)
+		}
+	}
+	return nil
 }
 
 var sysVars map[string]*SysVar
