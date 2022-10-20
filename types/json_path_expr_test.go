@@ -53,6 +53,12 @@ func TestValidatePathExpr(t *testing.T) {
 		{"   $ .   key1  [  3  ]**[*].*.key3", true, 6},
 		{`$."key1 string"[  3  ][*].*.key3`, true, 5},
 		{`$."hello \"escaped quotes\" world\\n"[3][*].*.key3`, true, 5},
+		{`$[1 to 5]`, true, 1},
+		{`$[2 to 1]`, false, 1},
+		{`$[last]`, true, 1},
+		{`$[1 to last]`, true, 1},
+		{`$[1to3]`, false, 1},
+		{`$[last - 5 to last - 10]`, false, 1},
 
 		{`$.\"escaped quotes\"[3][*].*.key3`, false, 0},
 		{`$.hello \"escaped quotes\" world[3][*].*.key3`, false, 0},
@@ -131,7 +137,7 @@ func TestPushBackOneIndexLeg(t *testing.T) {
 			pe, err := ParseJSONPathExpr(test.expression)
 			require.NoError(t, err)
 
-			pe = pe.pushBackOneIndexLeg(test.index)
+			pe = pe.pushBackOneArraySelectionLeg(jsonPathArraySelectionIndex{index: jsonPathArrayIndexFromStart(test.index)})
 			require.Equal(t, test.expected, pe.String())
 			require.Equal(t, test.containsAnyAsterisk, pe.ContainsAnyAsterisk())
 		})
