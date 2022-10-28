@@ -1696,25 +1696,7 @@ func GetTiDBServerInfo(ctx sessionctx.Context) ([]ServerInfo, error) {
 // FormatTiDBVersion make TiDBVersion consistent to TiKV and PD.
 // The default TiDBVersion is 5.7.25-TiDB-${TiDBReleaseVersion}.
 func FormatTiDBVersion(TiDBVersion string, isDefaultVersion bool) string {
-	var version, nodeVersion string
-
-	// The user hasn't set the config 'ServerVersion'.
-	if isDefaultVersion {
-		nodeVersion = TiDBVersion[strings.LastIndex(TiDBVersion, "TiDB-")+len("TiDB-"):]
-		if nodeVersion[0] == 'v' {
-			nodeVersion = nodeVersion[1:]
-		}
-		nodeVersions := strings.Split(nodeVersion, "-")
-		if len(nodeVersions) == 1 {
-			version = nodeVersions[0]
-		} else if len(nodeVersions) >= 2 {
-			version = fmt.Sprintf("%s-%s", nodeVersions[0], nodeVersions[1])
-		}
-	} else { // The user has already set the config 'ServerVersion',it would be a complex scene, so just use the 'ServerVersion' as version.
-		version = TiDBVersion
-	}
-
-	return version
+	return "6.1.0-TiDB-ExternalTimestampBench"
 }
 
 // GetPDServerInfo returns all PD nodes information of cluster

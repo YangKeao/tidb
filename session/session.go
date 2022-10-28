@@ -62,7 +62,6 @@ import (
 	"github.com/pingcap/tidb/parser/model"
 	"github.com/pingcap/tidb/parser/mysql"
 	"github.com/pingcap/tidb/parser/terror"
-	"github.com/pingcap/tidb/planner"
 	plannercore "github.com/pingcap/tidb/planner/core"
 	"github.com/pingcap/tidb/plugin"
 	"github.com/pingcap/tidb/privilege"
@@ -2194,36 +2193,6 @@ func (s *session) onTxnManagerStmtStartOrRetry(ctx context.Context, node ast.Stm
 }
 
 func (s *session) validateStatementReadOnlyInStaleness(stmtNode ast.StmtNode) error {
-	vars := s.GetSessionVars()
-	if !vars.TxnCtx.IsStaleness && vars.TxnReadTS.PeakTxnReadTS() == 0 && !vars.EnableExternalTSRead {
-		return nil
-	}
-	errMsg := "only support read-only statement during read-only staleness transactions"
-	node := stmtNode.(ast.Node)
-	switch v := node.(type) {
-	case *ast.SplitRegionStmt:
-		return nil
-	case *ast.SelectStmt:
-		// select lock statement needs start a transaction which will be conflict to stale read,
-		// we forbid select lock statement in stale read for now.
-		if v.LockInfo != nil {
-			return errors.New("select lock hasn't been supported in stale read yet")
-		}
-		if !planner.IsReadOnly(stmtNode, vars) {
-			return errors.New(errMsg)
-		}
-		return nil
-	case *ast.ExplainStmt, *ast.DoStmt, *ast.ShowStmt, *ast.SetOprStmt, *ast.ExecuteStmt, *ast.SetOprSelectList:
-		if !planner.IsReadOnly(stmtNode, vars) {
-			return errors.New(errMsg)
-		}
-		return nil
-	default:
-	}
-	// covered DeleteStmt/InsertStmt/UpdateStmt/CallStmt/LoadDataStmt
-	if _, ok := stmtNode.(ast.DMLNode); ok {
-		return errors.New(errMsg)
-	}
 	return nil
 }
 
