@@ -80,6 +80,7 @@ require (
 	github.com/prometheus/prometheus v0.0.0-20190525122359-d20e84d0fb64
 	github.com/shirou/gopsutil/v3 v3.22.7
 	github.com/shurcooL/httpgzip v0.0.0-20190720172056-320755c1c1b0
+	github.com/sirupsen/logrus v1.9.0
 	github.com/soheilhy/cmux v0.1.5
 	github.com/spf13/cobra v1.5.0
 	github.com/spf13/pflag v1.0.5
@@ -214,7 +215,6 @@ require (
 	github.com/rogpeppe/go-internal v1.6.1 // indirect
 	github.com/shurcooL/httpfs v0.0.0-20190707220628-8d4bc4ba7749 // indirect
 	github.com/shurcooL/vfsgen v0.0.0-20181202132449-6a9ea43bcacd // indirect
-	github.com/sirupsen/logrus v1.9.0 // indirect
 	github.com/stathat/consistent v1.0.0 // indirect
 	github.com/tklauser/go-sysconf v0.3.10 // indirect
 	github.com/tklauser/numcpus v0.4.0 // indirect
