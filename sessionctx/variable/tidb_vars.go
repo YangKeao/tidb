@@ -852,6 +852,28 @@ const (
 	TiDBGOGCTunerThreshold = "tidb_gogc_tuner_threshold"
 	// TiDBExternalTS is the ts to read through when the `TiDBEnableExternalTsRead` is on
 	TiDBExternalTS = "tidb_external_ts"
+
+	// TiDBTTLJobEnable indicates whether schedule TTL jobs
+	// When set to `OFF`, the cluster will stop to schedule TTL jobs, and all running jobs will be cancelled
+	TiDBTTLJobEnable = "tidb_ttl_job_enable"
+	// TiDBTTLJobRunInterval indicates the interval between two jobs for one TTL table
+	TiDBTTLJobRunInterval = "tidb_ttl_job_run_interval"
+	// TiDBTTLJobScheduleWindowStartTime indicates the start time of the window of scheduling TTL jobs
+	TiDBTTLJobScheduleWindowStartTime = "tidb_ttl_job_schedule_window_start_time"
+	// TiDBTTLJobScheduleWindowEndTime indicates the end time of the window of scheduling TTL jobs
+	TiDBTTLJobScheduleWindowEndTime = "tidb_ttl_job_schedule_window_end_time"
+	// TiDBTTLScanWorkerCount indicates the count of scan worker in each TiDB
+	TiDBTTLScanWorkerCount = "tidb_ttl_scan_worker_count"
+	// TiDBTTLScanBatchSize indicates the limit value of each SELECT query in scan task
+	TiDBTTLScanBatchSize = "tidb_ttl_scan_batch_size"
+	// TiDBTTLDeleteWorkerCount indicates the count of delete worker in each TiDB
+	TiDBTTLDeleteWorkerCount = "tidb_ttl_delete_worker_count"
+	// TiDBTTLDeleteBatchSize indicates the batch size in one delete query when deleting expired rows
+	TiDBTTLDeleteBatchSize = "tidb_ttl_delete_batch_size"
+	// TiDBTTLDeleteRateLimit indicates the rate limit of the delete operations in each TiDB node. 0 is for no limit
+	TiDBTTLDeleteRateLimit = "tidb_ttl_delete_rate_limit"
+	// TiDBTTLEnableInstanceWorker indicates whether to start TTL workers in the current instance or not
+	TiDBTTLEnableInstanceWorker = "tidb_ttl_enable_instance_worker"
 )
 
 // TiDB intentional limits
@@ -1085,13 +1107,23 @@ const (
 	DefTiDBServerMemoryLimitGCTrigger            = 0.7
 	DefTiDBEnableGOGCTuner                       = true
 	// DefTiDBGOGCTunerThreshold is to limit TiDBGOGCTunerThreshold.
-	DefTiDBGOGCTunerThreshold        float64 = 0.6
-	DefTiDBOptPrefixIndexSingleScan          = true
-	DefTiDBExternalTS                        = 0
-	DefTiDBEnableExternalTSRead              = false
-	DefTiDBEnableReusechunk                  = true
-	DefTiDBUseAlloc                          = false
-	DefTiDBEnablePlanReplayerCapture         = false
+	DefTiDBGOGCTunerThreshold            float64 = 0.6
+	DefTiDBOptPrefixIndexSingleScan              = true
+	DefTiDBExternalTS                            = 0
+	DefTiDBEnableExternalTSRead                  = false
+	DefTiDBEnableReusechunk                      = true
+	DefTiDBUseAlloc                              = false
+	DefTiDBEnablePlanReplayerCapture             = false
+	DefTiDBTTLJobEnable                          = true
+	DefTiDBTTLJobRunInterval                     = "1h"
+	DefTiDBTTLJobScheduleWindowStartTime         = "00:00 +0000"
+	DefTiDBTTLJobScheduleWindowEndTime           = "23:59 +0000"
+	DefTiDBTTLScanWorkerCount                    = 4
+	DefTiDBTTLScanBatchSize                      = 500
+	DefTiDBTTLDeleteWorkerCount                  = 4
+	DefTiDBTTLDeleteBatchSize                    = 100
+	DefTiDBTTLDeleteRateLimit                    = 0
+	DefTiDBTTLEnableInstanceWorker               = true
 )
 
 // Process global variables.
@@ -1178,6 +1210,8 @@ var (
 	SetExternalTimestamp func(ctx context.Context, ts uint64) error
 	// GetExternalTimestamp is the func registered by staleread to get externaltimestamp from pd
 	GetExternalTimestamp func(ctx context.Context) (uint64, error)
+	// CancelAllTTLJobs is the func registered by ttl to cancel all ttl jobs
+	CancelAllTTLJobs func(ctx context.Context) error
 )
 
 func serverMemoryLimitDefaultValue() string {

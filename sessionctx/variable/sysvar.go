@@ -2089,6 +2089,20 @@ var defaultSysVars = []*SysVar{
 			s.EnableReuseCheck = TiDBOptOn(val)
 			return nil
 		}},
+	{Scope: ScopeGlobal, Name: TiDBTTLJobEnable, Value: BoolToOnOff(DefTiDBTTLJobEnable), Type: TypeBool, SetGlobal: func(ctx context.Context, s *SessionVars, val string) error {
+		return CancelAllTTLJobs(ctx)
+	}},
+	{Scope: ScopeGlobal, Name: TiDBTTLJobRunInterval, Value: DefTiDBTTLJobRunInterval, Type: TypeDuration, MinValue: int64(time.Minute * 10), MaxValue: uint64(time.Hour * 24 * 365)},
+	{Scope: ScopeGlobal, Name: TiDBTTLJobScheduleWindowStartTime, Value: DefTiDBTTLJobScheduleWindowStartTime, Type: TypeTime},
+	{Scope: ScopeGlobal, Name: TiDBTTLJobScheduleWindowEndTime, Value: DefTiDBTTLJobScheduleWindowEndTime, Type: TypeTime},
+	{Scope: ScopeGlobal, Name: TiDBTTLScanWorkerCount, Value: strconv.FormatInt(DefTiDBTTLScanWorkerCount, 10), Type: TypeInt, MinValue: 1, MaxValue: 1024},
+	{Scope: ScopeGlobal, Name: TiDBTTLScanBatchSize, Value: strconv.FormatInt(DefTiDBTTLScanBatchSize, 10), Type: TypeInt, MinValue: 1, MaxValue: 10240},
+	{Scope: ScopeGlobal, Name: TiDBTTLDeleteWorkerCount, Value: strconv.FormatInt(DefTiDBTTLDeleteWorkerCount, 10), Type: TypeInt, MinValue: 1, MaxValue: 1024},
+	{Scope: ScopeGlobal, Name: TiDBTTLDeleteBatchSize, Value: strconv.FormatInt(DefTiDBTTLDeleteBatchSize, 10), Type: TypeInt, MinValue: 1, MaxValue: 10240},
+	{Scope: ScopeGlobal, Name: TiDBTTLDeleteRateLimit, Value: strconv.FormatInt(DefTiDBTTLDeleteRateLimit, 10), Type: TypeInt, MinValue: 0, MaxValue: math.MaxInt64},
+	{Scope: ScopeInstance, Name: TiDBTTLEnableInstanceWorker, Value: BoolToOnOff(DefTiDBTTLEnableInstanceWorker), Type: TypeBool, SetGlobal: func(ctx context.Context, s *SessionVars, val string) error {
+		config.GetGlobalConfig().Instance.TiDBTTLEnableInstanceWorker.Store(TiDBOptOn(val))
+	}},
 }
 
 // FeedbackProbability points to the FeedbackProbability in statistics package.
