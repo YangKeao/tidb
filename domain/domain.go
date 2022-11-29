@@ -59,6 +59,7 @@ import (
 	"github.com/pingcap/tidb/sessionctx/variable"
 	"github.com/pingcap/tidb/statistics/handle"
 	"github.com/pingcap/tidb/telemetry"
+	"github.com/pingcap/tidb/ttl/ttlworker"
 	"github.com/pingcap/tidb/types"
 	"github.com/pingcap/tidb/util"
 	"github.com/pingcap/tidb/util/dbterror"
@@ -119,6 +120,7 @@ type Domain struct {
 	planReplayerHandle      *planReplayerHandle
 	expiredTimeStamp4PC     types.Time
 	logBackupAdvancer       *daemon.OwnerDaemon
+	ttlworker               *ttlworker.JobManager
 
 	serverID             uint64
 	serverIDSession      *concurrency.Session
@@ -1056,6 +1058,8 @@ func (do *Domain) Init(
 	if err != nil {
 		return err
 	}
+
+	do.wg.Run(do.runTTLJobManager)
 
 	return nil
 }
@@ -2323,6 +2327,29 @@ func (do *Domain) serverIDKeeper() {
 			return
 		}
 	}
+}
+
+func (do *Domain) runTTLJobManager() {
+	ttlJobManager := ttlworker.NewJobManager(do.ddl.GetID(), do.sysSessionPool)
+	ttlJobManager.Start()
+	do.ttlworker = ttlJobManager
+
+	// TODO: read the worker count from `do.sysVarCache` and resize the workers
+	ttlworker.ResizeScanWorkers(4)
+	ttlworker.ResizeDelWorkers(4)
+
+	<-do.exit
+	ttlJobManager.Stop()
+	select {
+	case err := <-ttlJobManager.Stopped():
+		logutil.BgLogger().Warn("failed to stop the ttlJobManager", zap.Error(err))
+	default:
+	}
+}
+
+// InfoSchema gets the latest information schema from domain.
+func (do *Domain) TTLJobManager() *ttlworker.JobManager {
+	return do.ttlworker
 }
 
 func init() {
