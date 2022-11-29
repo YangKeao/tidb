@@ -17,10 +17,8 @@ package cache
 import (
 	"time"
 
-	"github.com/pingcap/errors"
-	"github.com/pingcap/tidb/infoschema"
 	"github.com/pingcap/tidb/parser/model"
-	"github.com/pingcap/tidb/sessionctx"
+	"github.com/pingcap/tidb/ttl/session"
 	"github.com/pingcap/tidb/util/logutil"
 	"go.uber.org/zap"
 )
@@ -41,18 +39,10 @@ func NewInfoSchemaCache(updateInterval time.Duration) *InfoSchemaCache {
 }
 
 // Update updates the info schema cache
-func (isc *InfoSchemaCache) Update(sctx sessionctx.Context) error {
-	is, ok := sctx.GetDomainInfoSchema().(infoschema.InfoSchema)
-	if !ok {
-		return errors.New("fail to get domain info schema from session")
-	}
+func (isc *InfoSchemaCache) Update(se session.Session) error {
+	is := se.SessionInfoSchema()
 
-	ext, ok := is.(*infoschema.SessionExtendedInfoSchema)
-	if !ok {
-		return errors.New("fail to get extended info schema")
-	}
-
-	if isc.schemaVer == ext.SchemaMetaVersion() {
+	if isc.schemaVer == is.SchemaMetaVersion() {
 		return nil
 	}
 
