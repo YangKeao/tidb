@@ -99,26 +99,26 @@ func TestReadyForNewJobTables(t *testing.T) {
 
 	tk.MustExec("insert into mysql.tidb_ttl_table_status(table_id, parent_table_id) values (1, 2)")
 	assert.NoError(t, m.UpdateTableStatusCache(ttlSession))
-	tables := m.ReadyForNewJobTables(ttlSession)
+	tables := m.ReadyForNewJobTables()
 	assert.Equal(t, 1, len(tables))
 	assert.Equal(t, int64(1), tables[0].TableID)
 	assert.Equal(t, int64(2), tables[0].ParentTableID)
 
 	tk.MustExec("update mysql.tidb_ttl_table_status set current_job_owner_id = 'just-random-id', current_job_owner_hb_time = NOW()")
 	assert.NoError(t, m.UpdateTableStatusCache(ttlSession))
-	tables = m.ReadyForNewJobTables(ttlSession)
+	tables = m.ReadyForNewJobTables()
 	assert.Equal(t, 0, len(tables))
 
 	tk.MustExec("update mysql.tidb_ttl_table_status set current_job_owner_id = NULL, last_job_finish_time = NOW()")
 	assert.NoError(t, m.UpdateTableStatusCache(ttlSession))
-	tables = m.ReadyForNewJobTables(ttlSession)
+	tables = m.ReadyForNewJobTables()
 	assert.Equal(t, 0, len(tables))
 
 	// set an owner_id, but the heart beat time to be expired
 	tk.MustExec("update mysql.tidb_ttl_table_status set current_job_owner_id = 'just-random-id', current_job_owner_hb_time = ?, last_job_finish_time = NULL",
 		time.Now().Add(-3*ttlworker.GetTiDBTTLJobRunInterval()).Format("2006-01-02 15:04:05"))
 	assert.NoError(t, m.UpdateTableStatusCache(ttlSession))
-	tables = m.ReadyForNewJobTables(ttlSession)
+	tables = m.ReadyForNewJobTables()
 	assert.Equal(t, 1, len(tables))
 	assert.Equal(t, int64(1), tables[0].TableID)
 	assert.Equal(t, int64(2), tables[0].ParentTableID)
@@ -244,7 +244,6 @@ func TestReportError(t *testing.T) {
 		task = t
 		defer func() {
 			sessionLock.Lock()
-			t.Tracker().Done(ttlSession, now, err)
 			sessionLock.Unlock()
 
 			scanWorker.RunningTask = nil
@@ -304,7 +303,6 @@ func TestCancelTask(t *testing.T) {
 	scanWorker.Scan = func(scanTask *ttlworker.ScanTask) (err error) {
 		defer func() {
 			sessionLock.Lock()
-			scanTask.Tracker().Done(ttlSession, now, err)
 			sessionLock.Unlock()
 
 			scanWorker.RunningTask = nil
@@ -316,7 +314,6 @@ func TestCancelTask(t *testing.T) {
 		case <-scanTask.Ctx().Done():
 			return errors.New("test error")
 		}
-		return nil
 	}
 	m.RescheduleJobs4Test(ttlSession)
 	// try to select id from status

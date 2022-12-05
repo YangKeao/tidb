@@ -17,14 +17,15 @@ package ttlworker
 import (
 	"context"
 	"fmt"
+	"go.uber.org/multierr"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/ttl/cache"
 	"github.com/pingcap/tidb/ttl/session"
 	"github.com/pingcap/tidb/util/logutil"
-	"go.uber.org/multierr"
 	"go.uber.org/zap"
 )
 
@@ -40,8 +41,6 @@ func finishJobSQL(tableID int64, finishTime time.Time, summary string) string {
 }
 
 type ttlJob struct {
-	sync.Mutex
-
 	id string
 
 	ctx    context.Context
@@ -52,15 +51,28 @@ type ttlJob struct {
 	allSpawned bool
 	status     cache.JobStatus
 
-	runningTaskCount int
-	err              error
+	scanTaskTracker *scanTaskTracker
+	statistics      *ttlStatistics
+}
+
+func newTTLJob(ctx context.Context, jobID string, tableInfo *cache.PhysicalTable) *ttlJob {
+	ctx, cancel := context.WithCancel(ctx)
+	return &ttlJob{
+		id: jobID,
+
+		ctx:    ctx,
+		cancel: cancel,
+		tbl:    tableInfo,
+
+		scanTaskTracker: &scanTaskTracker{},
+		statistics:      &ttlStatistics{},
+
+		status: cache.JobStatusWaiting,
+	}
 }
 
 // ChangeStatus updates the state of this job
 func (job *ttlJob) ChangeStatus(ctx context.Context, se session.Session, status cache.JobStatus) error {
-	job.Lock()
-	defer job.Unlock()
-
 	_, err := se.ExecuteSQL(ctx, updateJobCurrentStatusSQL(job.tbl.ID, job.status, status))
 	if err != nil {
 		return errors.Trace(err)
@@ -72,80 +84,89 @@ func (job *ttlJob) ChangeStatus(ctx context.Context, se session.Session, status 
 
 // PeekScanTask returns the next scan task, but doesn't promote the iterator
 func (job *ttlJob) PeekScanTask() *ScanTask {
-	job.Lock()
-	defer job.Unlock()
-
 	return newScanTask(job)
 }
 
 // NextScanTask promotes the iterator
 func (job *ttlJob) NextScanTask() {
-	job.Lock()
-	defer job.Unlock()
-
-	job.runningTaskCount += 1
+	job.scanTaskTracker.Add()
 	job.allSpawned = true
 }
 
-func (job *ttlJob) finish(se session.Session, now time.Time, err error) {
-	summary := ""
-	if err != nil {
-		summary = err.Error()
-	}
+func (job *ttlJob) finish(se session.Session, now time.Time, summary string) {
 	// at this time, the job.ctx may have been canceled (to cancel this job)
-	// even when it's canceled, we'll need to update the states, so use another context
-	_, err = se.ExecuteSQL(context.TODO(), finishJobSQL(job.tbl.ID, now, summary))
+	// even when it's canceled, we'll need to update the states, so use another context rather than job.ctx
+	_, err := se.ExecuteSQL(context.TODO(), finishJobSQL(job.tbl.ID, now, summary))
 	if err != nil {
 		logutil.Logger(job.ctx).Error("fail to finish a ttl job", zap.Error(err), zap.Int64("tableID", job.tbl.ID), zap.String("jobID", job.id))
 	}
+
+	job.cancel()
 }
 
 // AllSpawned returns whether all scan tasks have been dumped out
 // **This function will be called concurrently, in many workers' goroutine**
 func (job *ttlJob) AllSpawned() bool {
-	job.Lock()
-	defer job.Unlock()
-
 	return job.allSpawned
 }
 
-// Finished returned whether the job has been finished
-func (job *ttlJob) Finished() bool {
-	job.Lock()
-	defer job.Unlock()
-
-	return job.allSpawned && job.runningTaskCount == 0
-}
-
-// Done is the callback function called by the worker who just finished a task spawned by this job
-func (job *ttlJob) Done(se session.Session, now time.Time, err error) {
-	job.Lock()
-	defer job.Unlock()
-
-	job.runningTaskCount -= 1
-	job.err = multierr.Append(job.err, err)
-	if job.allSpawned && job.runningTaskCount == 0 {
-		job.finish(se, now, job.err)
+// Finished returned whether the job has been finished, and if finished, the summary of it
+func (job *ttlJob) Finished() (bool, string) {
+	if !job.AllSpawned() {
+		return false, ""
 	}
-}
 
-// Add adds up the running task count
-func (job *ttlJob) Add() {
-	job.Lock()
-	defer job.Unlock()
-
-	job.runningTaskCount += 1
+	scanFinished, err := job.scanTaskTracker.Finished()
+	if !scanFinished {
+		return false, ""
+	}
+	if err != nil {
+		// TODO: tolerate some errors
+		return true, err.Error()
+	}
+	if job.statistics.TotalRows.Load() != job.statistics.SuccessRows.Load()+job.statistics.ErrorRows.Load() {
+		// TODO: tolerate some minor difference
+		return false, ""
+	}
+	return true, fmt.Sprintf("Deleted %d rows, %d of them succeed", job.statistics.TotalRows.Load(), job.statistics.SuccessRows.Load())
 }
 
 func (job *ttlJob) Cancel() {
-	job.Lock()
-	defer job.Unlock()
-
 	job.cancel()
 }
 
-// JobResultTracker tracks the running task and the result of the job
-type JobResultTracker interface {
-	Add()
-	Done(se session.Session, now time.Time, err error)
+type ttlStatistics struct {
+	TotalRows   atomic.Uint64
+	SuccessRows atomic.Uint64
+	ErrorRows   atomic.Uint64
+}
+
+type scanTaskTracker struct {
+	sync.Mutex
+
+	counter uint64
+	errors  error
+}
+
+// Add increases the inside counter
+func (stt *scanTaskTracker) Add() {
+	stt.Lock()
+
+	stt.counter += 1
+}
+
+// Done decreases the counter and record the error
+func (stt *scanTaskTracker) Done(err error) {
+	stt.Lock()
+
+	stt.counter -= 1
+	stt.errors = multierr.Append(stt.errors, err)
+}
+
+// Finished returns whether it's finished, and the error inside it
+// notice: this error doesn't mean this function failed.
+func (stt *scanTaskTracker) Finished() (bool, error) {
+	stt.Lock()
+
+	return stt.counter == 0, stt.errors
 }

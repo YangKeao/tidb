@@ -96,12 +96,11 @@ func (w *scanWorkerImpl) scanLoop() error {
 }
 
 func (w *scanWorkerImpl) scan(task *ScanTask) (err error) {
-	se, err := session.GetSession(w.sessPool)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		task.tracker.Done(se, time.Now(), err)
+		task.scanTaskTracker.Done(err)
 		w.freeToSchedule()
 	}()
 
@@ -125,14 +124,26 @@ type ScanTask struct {
 	rangeStart []types.Datum
 	rangeEnd   []types.Datum
 
-	tracker JobResultTracker
+	statistics      *ttlStatistics
+	scanTaskTracker *scanTaskTracker
+}
+
+func (t *ScanTask) result(err error) *ttlScanTaskExecResult {
+	return &ttlScanTaskExecResult{task: t, err: err}
 }
 
 func newScanTask(job *ttlJob) *ScanTask {
 	// TODO: add more arguments to this function to implement the scan worker
 	return &ScanTask{
-		tbl:     job.tbl,
-		tracker: job,
-		ctx:     job.ctx,
+		tbl: job.tbl,
+		ctx: job.ctx,
+
+		statistics:      job.statistics,
+		scanTaskTracker: job.scanTaskTracker,
 	}
+}
+
+type ttlScanTaskExecResult struct {
+	task *ScanTask
+	err  error
 }

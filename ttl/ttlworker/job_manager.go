@@ -30,21 +30,15 @@ import (
 )
 
 const insertNewTableIntoStatusTemplate = "INSERT INTO mysql.tidb_ttl_table_status (table_id,parent_table_id) VALUES (%d, %d)"
-const removeTableFromStatusTemplate = "DELETE FROM mysql.tidb_ttl_table_status WHERE table_id = %d"
 const selectTableStatusWithoutOwnerTemplate = "SELECT * FROM mysql.tidb_ttl_table_status WHERE (current_job_owner_id IS NULL OR current_job_owner_hb_time < '%s') AND table_id = %d"
 const setTableStatusOwnerTemplate = "UPDATE mysql.tidb_ttl_table_status SET current_job_id = UUID(), current_job_owner_id = '%s',current_job_start_time = '%s',current_job_status = 'waiting',current_job_status_update_time = '%s' WHERE (current_job_owner_id IS NULL OR current_job_owner_hb_time < '%s') AND table_id = %d"
 
-// TODO: update heart beat one by one according to local jobs
 const updateHeartBeatTemplate = "UPDATE mysql.tidb_ttl_table_status SET current_job_owner_hb_time = '%s' WHERE table_id = %d AND current_job_owner_id = '%s'"
 
 const timeFormat = "2006-01-02 15:04:05"
 
 func insertNewTableIntoStatusSQL(tableID int64, parentTableID int64) string {
 	return fmt.Sprintf(insertNewTableIntoStatusTemplate, tableID, parentTableID)
-}
-
-func removeTableFromStatusSQL(tableID int64) string {
-	return fmt.Sprintf(removeTableFromStatusTemplate, tableID)
 }
 
 func selectTableStatusWithoutOwner(now time.Time, tableID int64) string {
@@ -152,6 +146,11 @@ func (m *JobManager) jobLoop() (err error) {
 			}
 			cancel()
 
+			err = m.finishJobs(se)
+			if err != nil {
+				logutil.Logger(m.ctx).Warn("fail to finish jobs", zap.Error(err))
+			}
+
 			m.rescheduleJobs(se)
 		}
 	}
@@ -219,7 +218,7 @@ func (m *JobManager) rescheduleJobs(se session.Session) {
 	}
 
 	localJobs := m.localJobs()
-	newJobTables := m.ReadyForNewJobTables(se)
+	newJobTables := m.ReadyForNewJobTables()
 	// TODO: also consider the resume tables
 	for len(idleScanWorkers) > 0 && (len(newJobTables) > 0 || len(localJobs) > 0) {
 		var job *ttlJob
@@ -241,10 +240,6 @@ func (m *JobManager) rescheduleJobs(se session.Session) {
 			logutil.Logger(m.ctx).Warn("fail to create new job", zap.Error(err))
 		}
 		if job == nil {
-			continue
-		}
-		if job.Finished() {
-			m.finishJob(job)
 			continue
 		}
 
@@ -295,6 +290,33 @@ func (m *JobManager) idleScanWorkers() []scanWorker {
 	return workers
 }
 
+// finishJobs detects whether running jobs are finished, and submit state into status table
+func (m *JobManager) finishJobs(se session.Session) error {
+	shouldUpdate := false
+
+	for _, job := range m.runningJobs {
+		finished, summary := job.Finished()
+		if finished {
+			m.finishJob(se, job, summary)
+			shouldUpdate = true
+		}
+	}
+
+	if shouldUpdate {
+		return m.updateAllCache(se)
+	}
+
+	return nil
+}
+
+func (m *JobManager) updateAllCache(se session.Session) error {
+	err := m.UpdateInfoSchemaCache(se)
+	if err != nil {
+		return err
+	}
+	return m.UpdateTableStatusCache(se)
+}
+
 // SyncInfoSchemaAndTTLStatus synchronizes new tables to the ttl status table
 // and removes the dropped table from the ttl status table
 func (m *JobManager) SyncInfoSchemaAndTTLStatus(ctx context.Context, se session.Session) error {
@@ -316,14 +338,11 @@ func (m *JobManager) SyncInfoSchemaAndTTLStatus(ctx context.Context, se session.
 
 	// the cache of info schema and ttl status is not consistent, we'll need to update the cache
 	// and try to synchronise them
-	err := m.UpdateInfoSchemaCache(se)
+	err := m.updateAllCache(se)
 	if err != nil {
 		return err
 	}
-	err = m.UpdateTableStatusCache(se)
-	if err != nil {
-		return err
-	}
+
 	shouldUpdate := false
 	for tableID, is := range m.infoSchemaCache.Tables {
 		if _, ok := m.tableStatusCache.Tables[tableID]; !ok {
@@ -335,26 +354,10 @@ func (m *JobManager) SyncInfoSchemaAndTTLStatus(ctx context.Context, se session.
 		}
 	}
 
-	for id := range m.tableStatusCache.Tables {
-		// found an entry exist in table status cache, but not in info schema cache
-		if _, ok := m.infoSchemaCache.Tables[id]; !ok {
-			_, err := se.ExecuteSQL(ctx, removeTableFromStatusSQL(id))
-			if err != nil {
-				return err
-			}
-			shouldUpdate = true
-		}
-	}
+	// TODO: recycle tables not exist in info schema
 
 	if shouldUpdate {
-		err := m.UpdateInfoSchemaCache(se)
-		if err != nil {
-			return err
-		}
-		err = m.UpdateTableStatusCache(se)
-		if err != nil {
-			return err
-		}
+		return m.updateAllCache(se)
 	}
 	return nil
 }
@@ -364,18 +367,23 @@ func (m *JobManager) localJobs() []*ttlJob {
 }
 
 // ReadyForNewJobTables returns all tables which should spawn a TTL job according to cache
-func (m *JobManager) ReadyForNewJobTables(se session.Session) []*cache.TableStatus {
+func (m *JobManager) ReadyForNewJobTables() []*cache.TableStatus {
 	now := time.Now()
 
-	tables := make([]*cache.TableStatus, 0, len(m.tableStatusCache.Tables))
-	for _, table := range m.tableStatusCache.Tables {
-		ok, err := m.CouldTrySchedule(se, table, now)
+	tables := make([]*cache.TableStatus, 0, len(m.infoSchemaCache.Tables))
+	for id, table := range m.infoSchemaCache.Tables {
+		tableStatus, ok := m.tableStatusCache.Tables[id]
+		if !ok {
+			logutil.Logger(m.ctx).Info("fail to find table status", zap.Int64("tableID", id), zap.String("tableName", table.Name.L))
+			continue
+		}
+		ok, err := m.CouldTrySchedule(tableStatus, now)
 		if err != nil {
-			logutil.Logger(m.ctx).Warn("fail to compare lastJobFinishTime with current time", zap.Error(err), zap.Int64("tableId", table.TableID))
+			logutil.Logger(m.ctx).Warn("fail to compare lastJobFinishTime with current time", zap.Error(err), zap.Int64("tableId", id))
 			continue
 		}
 		if ok {
-			tables = append(tables, table)
+			tables = append(tables, tableStatus)
 		}
 	}
 
@@ -383,15 +391,10 @@ func (m *JobManager) ReadyForNewJobTables(se session.Session) []*cache.TableStat
 }
 
 // CouldTrySchedule returns whether a table should be tried to run TTL
-func (m *JobManager) CouldTrySchedule(se session.Session, table *cache.TableStatus, now time.Time) (bool, error) {
+func (m *JobManager) CouldTrySchedule(table *cache.TableStatus, now time.Time) (bool, error) {
 	if table.CurrentJobOwnerID != "" {
-		// see whether it's heart beat time is expired
-		hbTime, err := table.CurrentJobOwnerHBTime.GoTime(se.GetSessionVars().TimeZone)
-		if err != nil {
-			return false, errors.Trace(err)
-		}
 		// if the time is not expired, just continue
-		if !hbTime.Add(2 * m.config.ttlJobRunInterval).Before(time.Now()) {
+		if !table.CurrentJobOwnerHBTime.Add(2 * m.config.ttlJobRunInterval).Before(time.Now()) {
 			return false, nil
 		}
 	}
@@ -400,12 +403,7 @@ func (m *JobManager) CouldTrySchedule(se session.Session, table *cache.TableStat
 		return true, nil
 	}
 
-	finishTime, err := table.LastJobFinishTime.GoTime(se.GetSessionVars().TimeZone)
-	if err != nil {
-		return false, err
-	}
-
-	if finishTime.Add(m.getTTLJobRunInterval()).Before(now) {
+	if table.LastJobFinishTime.Add(m.getTTLJobRunInterval()).Before(now) {
 		return true, nil
 	}
 
@@ -441,31 +439,25 @@ func (m *JobManager) lockNewJob(ctx context.Context, se session.Session, table *
 	}
 
 	// successfully update the table status, will need to refresh the cache.
-	err = m.UpdateInfoSchemaCache(se)
+	err = m.updateAllCache(se)
 	if err != nil {
 		return nil, err
 	}
-	err = m.UpdateTableStatusCache(se)
-	if err != nil {
-		return nil, err
-	}
-	return m.createNewJob(table.TableID), nil
+
+	return m.createNewJob(table.TableID)
 }
 
-func (m *JobManager) createNewJob(tableID int64) *ttlJob {
-	id := m.tableStatusCache.Tables[tableID].CurrentJobID
-	ctx, cancel := context.WithCancel(m.ctx)
-	return &ttlJob{
-		id: id,
-
-		ctx:    ctx,
-		cancel: cancel,
-		// at least, the info schema cache and table status cache are consistent in table id, so it's safe to get table
-		// information from schema cache directly
-		tbl: m.infoSchemaCache.Tables[tableID],
-
-		status: cache.JobStatusWaiting,
+func (m *JobManager) createNewJob(tableID int64) (*ttlJob, error) {
+	_, ok := m.infoSchemaCache.Tables[tableID]
+	if !ok {
+		return nil, errors.New("cannot find table in info schema cache")
 	}
+	_, ok = m.tableStatusCache.Tables[tableID]
+	if !ok {
+		return nil, errors.New("cannot find table in table status cache")
+	}
+
+	return newTTLJob(m.ctx, m.tableStatusCache.Tables[tableID].CurrentJobID, m.infoSchemaCache.Tables[tableID]), nil
 }
 
 // UpdateHeartBeat updates the heartbeat for all task with current instance as owner
@@ -492,7 +484,7 @@ func (m *JobManager) UpdateTableStatusCache(se session.Session) error {
 	return m.tableStatusCache.Update(cacheUpdateCtx, se)
 }
 
-func (m *JobManager) finishJob(finishedJob *ttlJob) {
+func (m *JobManager) finishJob(se session.Session, finishedJob *ttlJob, summary string) {
 	for idx, job := range m.runningJobs {
 		if job.id == finishedJob.id {
 			if idx+1 < len(m.runningJobs) {
@@ -500,6 +492,7 @@ func (m *JobManager) finishJob(finishedJob *ttlJob) {
 			} else {
 				m.runningJobs = m.runningJobs[0:idx]
 			}
+			job.finish(se, time.Now(), summary)
 			return
 		}
 	}
