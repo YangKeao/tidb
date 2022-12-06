@@ -17,7 +17,6 @@ package ttlworker
 import (
 	"context"
 	"fmt"
-	"golang.org/x/sync/errgroup"
 	"time"
 
 	"github.com/pingcap/errors"
@@ -108,16 +107,7 @@ func NewJobManager(id string, sessPool sessionPool) (manager *JobManager) {
 	return
 }
 
-func (m *JobManager) jobLoop() (err error) {
-	var g errgroup.Group
-
-	g.Go(m.stateLoop)
-	g.Go(m.scheduleLoop)
-
-	return g.Wait()
-}
-
-func (m *JobManager) stateLoop() error {
+func (m *JobManager) jobLoop() error {
 	se, err := getSession(m.sessPool)
 	if err != nil {
 		return err
@@ -128,97 +118,39 @@ func (m *JobManager) stateLoop() error {
 		se.Close()
 	}()
 
-	ticker := time.Tick(m.getJobManagerLoopTicker())
+	jobLoopTicker := time.Tick(m.getJobManagerLoopTicker())
+	updateHeartBeatTicker := time.Tick(m.getJobManagerLoopTicker())
+	infoSchemaCacheUpdateTicker := time.Tick(m.infoSchemaCache.GetInterval())
+	tableStatusCacheUpdateTicker := time.Tick(m.tableStatusCache.GetInterval())
+	removeFinishedJobTicker := time.Tick(m.getJobManagerLoopTicker())
 	for {
 		select {
 		case <-m.ctx.Done():
 			return nil
-		case state := <-m.notifyStateCh:
-			// now, it's the only state change notifier
-			scanState := state.(*scanTaskExecEndMsg)
-			m.submitScanState(scanState)
-		case <-ticker:
-			m.removeFinishedJobs(se, time.Now())
-		}
-	}
-}
-
-func (m *JobManager) submitScanState(state *scanTaskExecEndMsg) {
-	m.Lock()
-	defer m.Unlock()
-
-	for _, job := range m.runningJobs {
-		if job.tbl.ID == state.result.task.tbl.ID {
-			job.runningScanTask.Add(-1)
-			if state.result.err != nil {
-				// scanTaskError is not shared between goroutines, we don't need to add lock for it
-				job.scanTaskError = multierr.Append(job.scanTaskError, state.result.err)
-			}
-		}
-	}
-}
-
-func (m *JobManager) removeFinishedJobs(se session.Session, now time.Time) {
-	m.Lock()
-	defer m.Unlock()
-
-	for _, job := range m.runningJobs {
-		if job.createTime.Add(defTTLJobTimeout).Before(now) {
-			err := job.Cancel(context.TODO(), se)
+		case <-infoSchemaCacheUpdateTicker:
+			err := m.updateInfoSchemaCache(se)
 			if err != nil {
-				logutil.Logger(m.ctx).Warn("fail to cancel job", zap.String("jobID", job.id), zap.Error(err))
+				logutil.Logger(m.ctx).Warn("fail to update info schema cache", zap.Error(err))
 			}
-		}
-	}
-
-	for _, job := range m.runningJobs {
-		if job.Finished() {
-			job.finish(se, now)
-		}
-	}
-}
-
-func (m *JobManager) scheduleLoop() error {
-	se, err := getSession(m.sessPool)
-	if err != nil {
-		return err
-	}
-
-	defer func() {
-		err = multierr.Combine(err, multierr.Combine(m.resizeScanWorkers(m.ctx, 0), m.resizeDelWorkers(m.ctx, 0)))
-		se.Close()
-	}()
-
-	ticker := time.Tick(m.getJobManagerLoopTicker())
-	for {
-		select {
-		case <-m.ctx.Done():
-			return nil
-		case <-ticker:
-			if m.infoSchemaCache.ShouldUpdate() {
-				err := m.updateInfoSchemaCache(se)
-				if err != nil {
-					logutil.Logger(m.ctx).Warn("fail to update info schema cache", zap.Error(err))
-				}
-			}
-			if m.tableStatusCache.ShouldUpdate() {
-				err := m.updateTableStatusCache(se)
-				if err != nil {
-					logutil.Logger(m.ctx).Warn("fail to update table status cache", zap.Error(err))
-				}
-			}
-
-			syncSchemaCtx, cancel := context.WithTimeout(m.ctx, defSyncInfoSchemaWithTTLTableStatusTimeout)
-			err = m.syncInfoSchemaAndTTLStatus(syncSchemaCtx, se)
+		case <-tableStatusCacheUpdateTicker:
+			err := m.updateTableStatusCache(se)
 			if err != nil {
-				logutil.Logger(m.ctx).Warn("fail to synchronize info schema and ttl table", zap.Error(err))
+				logutil.Logger(m.ctx).Warn("fail to update table status cache", zap.Error(err))
 			}
-			cancel()
-
+		case <-updateHeartBeatTicker:
 			updateHeartBeatCtx, cancel := context.WithTimeout(m.ctx, defUpdateHeartBeatTimeout)
 			err = m.updateHeartBeat(updateHeartBeatCtx, se)
 			if err != nil {
 				logutil.Logger(m.ctx).Warn("fail to update heart beat", zap.Error(err))
+			}
+			cancel()
+		case <-removeFinishedJobTicker:
+			m.removeFinishedJobs(se)
+		case <-jobLoopTicker:
+			syncSchemaCtx, cancel := context.WithTimeout(m.ctx, defSyncInfoSchemaWithTTLTableStatusTimeout)
+			err = m.syncInfoSchemaAndTTLStatus(syncSchemaCtx, se)
+			if err != nil {
+				logutil.Logger(m.ctx).Warn("fail to synchronize info schema and ttl table", zap.Error(err))
 			}
 			cancel()
 
@@ -280,6 +212,24 @@ func (m *JobManager) resizeWorkers(ctx context.Context, workers []worker, count 
 	return workers, nil
 }
 
+func (m *JobManager) removeFinishedJobs(se session.Session) {
+	shouldUpdateCache := false
+	for _, job := range m.runningJobs {
+		if job.Finished() {
+			m.removeJob(job)
+			job.finish(se)
+			shouldUpdateCache = true
+		}
+	}
+
+	if shouldUpdateCache {
+		err := m.updateTableStatusCache(se)
+		if err != nil {
+			logutil.Logger(m.ctx).Warn("fail to update table status cache", zap.Error(err))
+		}
+	}
+}
+
 func (m *JobManager) rescheduleJobs(se session.Session) {
 	m.Lock()
 	defer m.Unlock()
@@ -303,13 +253,6 @@ func (m *JobManager) rescheduleJobs(se session.Session) {
 		case len(localJobs) > 0:
 			job = localJobs[0]
 			localJobs = localJobs[1:]
-			// for a local job, you have to verify the current owner of it is this node, because other nodes could
-			// have taken this job
-			status := m.tableStatusCache.Tables[job.tbl.ID]
-			if status == nil || status.CurrentJobOwnerID != m.id {
-				m.removeJob(job)
-				continue
-			}
 		case len(newJobTables) > 0:
 			table := newJobTables[0]
 			newJobTables = newJobTables[1:]
@@ -423,11 +366,18 @@ func (m *JobManager) syncInfoSchemaAndTTLStatus(ctx context.Context, se session.
 			}
 		}
 
-		// TODO: add time limit here to avoid too fast dead loop
+		// TODO: add time back-off here to avoid too fast dead loop
 	}
 }
 
 func (m *JobManager) localJobs() []*ttlJob {
+	for _, job := range m.runningJobs {
+		status := m.tableStatusCache.Tables[job.tbl.ID]
+		if status == nil || status.CurrentJobOwnerID != m.id {
+			m.removeJob(job)
+			continue
+		}
+	}
 	return m.runningJobs
 }
 
@@ -526,7 +476,9 @@ func (m *JobManager) createNewJob(now time.Time, tableID int64) *ttlJob {
 		// information from schema cache directly
 		tbl: m.infoSchemaCache.Tables[tableID],
 
-		status:     cache.JobStatusWaiting,
+		status: cache.JobStatusWaiting,
+
+		taskGroup:  newTaskGroup(),
 		statistics: &ttlStatistics{},
 	}
 }

@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"github.com/pingcap/tidb/types"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/pingcap/errors"
@@ -57,9 +56,8 @@ type ttlJob struct {
 	statusMutex sync.Mutex
 	status      cache.JobStatus
 
-	runningScanTask atomic.Int32
-	scanTaskError   error
-	statistics      *ttlStatistics
+	taskGroup  *taskGroup
+	statistics *ttlStatistics
 }
 
 // changeStatus updates the state of this job
@@ -94,15 +92,22 @@ func (job *ttlJob) peekScanTask(ctx context.Context, now time.Time, se session.S
 
 // nextScanTask promotes the iterator
 func (job *ttlJob) nextScanTask() {
-	job.runningScanTask.Add(1)
+	job.taskGroup.Add()
 	job.allSpawned = true
 }
 
-func (job *ttlJob) finish(se session.Session, now time.Time) {
+// finish will wait until all tasks have stopped, and update the state
+func (job *ttlJob) finish(se session.Session) {
 	summary := ""
-	if job.scanTaskError != nil {
-		summary = job.scanTaskError.Error()
+	err := job.taskGroup.Wait()
+	if err != nil {
+		logutil.Logger(job.ctx).Warn("ttl job failed with error", zap.String("jobID", job.id), zap.Error(err))
+		summary = err.Error()
 	}
+	job.updateFinishState(se, time.Now(), summary)
+}
+
+func (job *ttlJob) updateFinishState(se session.Session, now time.Time, summary string) {
 	// at this time, the job.ctx may have been canceled (to cancel this job)
 	// even when it's canceled, we'll need to update the states, so use another context
 	_, err := se.ExecuteSQL(context.TODO(), finishJobSQL(job.tbl.ID, now, summary))
@@ -119,16 +124,23 @@ func (job *ttlJob) AllSpawned() bool {
 
 // Finished returned whether the job has been finished
 func (job *ttlJob) Finished() bool {
-	// TODO: accept some minor data difference
 	return job.status == cache.JobStatusCancelled ||
-		(job.allSpawned && job.runningScanTask.Load() == 0 && job.statistics.TotalRows.Load() == job.statistics.SuccessRows.Load()+job.statistics.ErrorRows.Load())
+		(job.allSpawned && job.taskGroup.Finished())
 }
 
+// Cancel canceled the running jobs,
 func (job *ttlJob) Cancel(ctx context.Context, se session.Session) error {
+	err := job.changeStatus(ctx, se, cache.JobStatusCancelling)
+	if err != nil {
+		// don't cancel the job, to keep the consistency between the status and job execution
+		logutil.Logger(job.ctx).Warn("fail to change status while cancelling the ttl job", zap.String("jobID", job.id), zap.Error(err))
+		return err
+	}
+
 	job.cancel()
-	// this error is important, as we are using the cancelled status to tell whether the job is finished, for the cancel situation
-	// TODO: wait until all tasks have been finished
-	return job.changeStatus(ctx, se, cache.JobStatusCancelled)
+
+	job.finish(se)
+	return nil
 }
 
 // JobResultTracker tracks the running task and the result of the job

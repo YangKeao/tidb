@@ -82,6 +82,7 @@ type ttlDeleteTask struct {
 	expire     time.Time
 	rows       [][]types.Datum
 	statistics *ttlStatistics
+	taskGroup  *taskGroup
 }
 
 func (t *ttlDeleteTask) doDelete(ctx context.Context, rawSe session.Session) (retryRows [][]types.Datum) {

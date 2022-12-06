@@ -68,15 +68,7 @@ type ttlScanTask struct {
 	rangeStart []types.Datum
 	rangeEnd   []types.Datum
 	statistics *ttlStatistics
-}
-
-type ttlScanTaskExecResult struct {
-	task *ttlScanTask
-	err  error
-}
-
-func (t *ttlScanTask) result(err error) *ttlScanTaskExecResult {
-	return &ttlScanTaskExecResult{task: t, err: err}
+	taskGroup  *taskGroup
 }
 
 func (t *ttlScanTask) getDatumRows(rows []chunk.Row) [][]types.Datum {
@@ -87,16 +79,16 @@ func (t *ttlScanTask) getDatumRows(rows []chunk.Row) [][]types.Datum {
 	return datums
 }
 
-func (t *ttlScanTask) doScan(ctx context.Context, delCh chan<- *ttlDeleteTask, sessPool sessionPool) *ttlScanTaskExecResult {
+func (t *ttlScanTask) doScan(ctx context.Context, delCh chan<- *ttlDeleteTask, sessPool sessionPool) error {
 	rawSess, err := getSession(sessPool)
 	if err != nil {
-		return t.result(err)
+		return err
 	}
 	defer rawSess.Close()
 
 	origConcurrency := rawSess.GetSessionVars().DistSQLScanConcurrency()
 	if _, err = rawSess.ExecuteSQL(ctx, "set @@tidb_distsql_scan_concurrency=1"); err != nil {
-		return t.result(err)
+		return err
 	}
 
 	defer func() {
@@ -107,7 +99,7 @@ func (t *ttlScanTask) doScan(ctx context.Context, delCh chan<- *ttlDeleteTask, s
 	sess := newTableSession(rawSess, t.tbl, t.expire)
 	generator, err := sqlbuilder.NewScanQueryGenerator(t.tbl, t.expire, t.rangeStart, t.rangeEnd)
 	if err != nil {
-		return t.result(err)
+		return err
 	}
 
 	retrySQL := ""
@@ -115,12 +107,12 @@ func (t *ttlScanTask) doScan(ctx context.Context, delCh chan<- *ttlDeleteTask, s
 	var lastResult [][]types.Datum
 	for {
 		if err = ctx.Err(); err != nil {
-			return t.result(err)
+			return err
 		}
 
 		if total := t.statistics.TotalRows.Load(); total > uint64(taskStartCheckErrorRateCnt) {
 			if t.statistics.ErrorRows.Load() > uint64(float64(total)*taskMaxErrorRate) {
-				return t.result(errors.Errorf("error exceeds the limit"))
+				return errors.Errorf("error exceeds the limit")
 			}
 		}
 
@@ -128,12 +120,12 @@ func (t *ttlScanTask) doScan(ctx context.Context, delCh chan<- *ttlDeleteTask, s
 		if sql == "" {
 			limit := int(variable.TTLScanBatchSize.Load())
 			if sql, err = generator.NextSQL(lastResult, limit); err != nil {
-				return t.result(err)
+				return err
 			}
 		}
 
 		if sql == "" {
-			return t.result(nil)
+			return nil
 		}
 
 		rows, retryable, sqlErr := sess.ExecuteSQLWithCheck(ctx, sql)
@@ -147,13 +139,13 @@ func (t *ttlScanTask) doScan(ctx context.Context, delCh chan<- *ttlDeleteTask, s
 			)
 
 			if !needRetry {
-				return t.result(sqlErr)
+				return sqlErr
 			}
 			retrySQL = sql
 			retryTimes++
 			select {
 			case <-ctx.Done():
-				return t.result(ctx.Err())
+				return ctx.Err()
 			case <-time.After(scanTaskExecuteSQLRetryInterval):
 			}
 			continue
@@ -166,39 +158,36 @@ func (t *ttlScanTask) doScan(ctx context.Context, delCh chan<- *ttlDeleteTask, s
 			continue
 		}
 
+		// increase the count of task for the delete task
 		delTask := &ttlDeleteTask{
 			tbl:        t.tbl,
 			expire:     t.expire,
 			rows:       lastResult,
 			statistics: t.statistics,
+			taskGroup:  t.taskGroup,
 		}
+		t.taskGroup.Add()
 		select {
 		case <-ctx.Done():
-			return t.result(ctx.Err())
+			t.taskGroup.Done(nil)
+			return ctx.Err()
 		case delCh <- delTask:
 			t.statistics.IncTotalRows(len(lastResult))
 		}
 	}
 }
 
-type scanTaskExecEndMsg struct {
-	result *ttlScanTaskExecResult
-}
-
 type ttlScanWorker struct {
 	baseWorker
 	curTask       *ttlScanTask
-	curTaskResult *ttlScanTaskExecResult
 	delCh         chan<- *ttlDeleteTask
-	notifyStateCh chan<- interface{}
 	sessionPool   sessionPool
 }
 
-func newScanWorker(delCh chan<- *ttlDeleteTask, notifyStateCh chan<- interface{}, sessPool sessionPool) *ttlScanWorker {
+func newScanWorker(delCh chan<- *ttlDeleteTask, sessPool sessionPool) *ttlScanWorker {
 	w := &ttlScanWorker{
-		delCh:         delCh,
-		notifyStateCh: notifyStateCh,
-		sessionPool:   sessPool,
+		delCh:       delCh,
+		sessionPool: sessPool,
 	}
 	w.init(w.loop)
 	return w
@@ -217,16 +206,11 @@ func (w *ttlScanWorker) Schedule(task *ttlScanTask) error {
 		return errors.New("worker is not running")
 	}
 
-	if w.curTaskResult != nil {
-		return errors.New("the result of previous task has not been polled")
-	}
-
 	if w.curTask != nil {
 		return errors.New("a task is running")
 	}
 
 	w.curTask = task
-	w.curTaskResult = nil
 	w.baseWorker.ch <- task
 	return nil
 }
@@ -235,17 +219,6 @@ func (w *ttlScanWorker) CurrentTask() *ttlScanTask {
 	w.Lock()
 	defer w.Unlock()
 	return w.curTask
-}
-
-func (w *ttlScanWorker) PollTaskResult() (*ttlScanTaskExecResult, bool) {
-	w.Lock()
-	defer w.Unlock()
-	if r := w.curTaskResult; r != nil {
-		w.curTask = nil
-		w.curTaskResult = nil
-		return r, true
-	}
-	return nil, false
 }
 
 func (w *ttlScanWorker) loop() error {
@@ -270,19 +243,6 @@ func (w *ttlScanWorker) loop() error {
 }
 
 func (w *ttlScanWorker) handleScanTask(ctx context.Context, task *ttlScanTask) {
-	result := task.doScan(ctx, w.delCh, w.sessionPool)
-	if result == nil {
-		result = task.result(nil)
-	}
-
-	w.baseWorker.Lock()
-	w.curTaskResult = result
-	w.baseWorker.Unlock()
-
-	if w.notifyStateCh != nil {
-		select {
-		case w.notifyStateCh <- &scanTaskExecEndMsg{result: result}:
-		default:
-		}
-	}
+	err := task.doScan(ctx, w.delCh, w.sessionPool)
+	task.taskGroup.Done(err)
 }
