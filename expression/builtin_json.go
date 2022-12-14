@@ -790,11 +790,11 @@ func (b *builtinJSONMemberOfSig) evalInt(row chunk.Row) (res int64, isNull bool,
 		target = types.CreateBinaryJSON(eval.GetValue())
 	} else {
 		target, isNull, err = b.args[0].EvalJSON(b.ctx, row)
+		if isNull || err != nil {
+			return res, isNull, err
+		}
 	}
 
-	if isNull || err != nil {
-		return res, isNull, err
-	}
 	obj, isNull, err := b.args[1].EvalJSON(b.ctx, row)
 	if isNull || err != nil {
 		return res, isNull, err
