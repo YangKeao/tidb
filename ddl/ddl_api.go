@@ -6161,27 +6161,12 @@ func (d *ddl) CreatePrimaryKey(ctx sessionctx.Context, ti ast.Ident, indexName m
 	// After DDL job is put to the queue, and if the check fail, TiDB will run the DDL cancel logic.
 	// The recover step causes DDL wait a few seconds, makes the unit test painfully slow.
 	// For same reason, decide whether index is global here.
-	indexColumns, err := buildIndexColumns(ctx, tblInfo.Columns, indexPartSpecifications)
+	_, err = buildIndexColumns(ctx, tblInfo.Columns, indexPartSpecifications)
 	if err != nil {
 		return errors.Trace(err)
 	}
 	if _, err = CheckPKOnGeneratedColumn(tblInfo, indexPartSpecifications); err != nil {
 		return err
-	}
-
-	global := false
-	if tblInfo.GetPartitionInfo() != nil {
-		ck, err := checkPartitionKeysConstraint(tblInfo.GetPartitionInfo(), indexColumns, tblInfo)
-		if err != nil {
-			return err
-		}
-		if !ck {
-			if !config.GetGlobalConfig().EnableGlobalIndex {
-				return dbterror.ErrUniqueKeyNeedAllFieldsInPf.GenWithStackByArgs("PRIMARY")
-			}
-			// index columns does not contain all partition columns, must set global
-			global = true
-		}
 	}
 
 	// May be truncate comment here, when index comment too long and sql_mode is't strict.
@@ -6208,7 +6193,8 @@ func (d *ddl) CreatePrimaryKey(ctx sessionctx.Context, ti ast.Ident, indexName m
 			WarningsCount: make(map[errors.ErrorID]int64),
 			Location:      &model.TimeZoneLocation{Name: tzName, Offset: tzOffset},
 		},
-		Args:     []interface{}{unique, indexName, indexPartSpecifications, indexOption, sqlMode, nil, global},
+		// as the global index is not implemented yet, always pass `false` as global argument
+		Args:     []interface{}{unique, indexName, indexPartSpecifications, indexOption, sqlMode, nil, false},
 		Priority: ctx.GetSessionVars().DDLReorgPriority,
 	}
 
@@ -6385,26 +6371,11 @@ func (d *ddl) createIndex(ctx sessionctx.Context, ti ast.Ident, keyType ast.Inde
 	// to job queue, the fail path logic is super fast.
 	// After DDL job is put to the queue, and if the check fail, TiDB will run the DDL cancel logic.
 	// The recover step causes DDL wait a few seconds, makes the unit test painfully slow.
-	// For same reason, decide whether index is global here.
-	indexColumns, err := buildIndexColumns(ctx, finalColumns, indexPartSpecifications)
+	_, err = buildIndexColumns(ctx, finalColumns, indexPartSpecifications)
 	if err != nil {
 		return errors.Trace(err)
 	}
 
-	global := false
-	if unique && tblInfo.GetPartitionInfo() != nil {
-		ck, err := checkPartitionKeysConstraint(tblInfo.GetPartitionInfo(), indexColumns, tblInfo)
-		if err != nil {
-			return err
-		}
-		if !ck {
-			if !config.GetGlobalConfig().EnableGlobalIndex {
-				return dbterror.ErrUniqueKeyNeedAllFieldsInPf.GenWithStackByArgs("UNIQUE INDEX")
-			}
-			// index columns does not contain all partition columns, must set global
-			global = true
-		}
-	}
 	// May be truncate comment here, when index comment too long and sql_mode is't strict.
 	if indexOption != nil {
 		if _, err = validateCommentLength(ctx.GetSessionVars(), indexName.String(), &indexOption.Comment, dbterror.ErrTooLongIndexComment); err != nil {
@@ -6426,7 +6397,7 @@ func (d *ddl) createIndex(ctx sessionctx.Context, ti ast.Ident, keyType ast.Inde
 			WarningsCount: make(map[errors.ErrorID]int64),
 			Location:      &model.TimeZoneLocation{Name: tzName, Offset: tzOffset},
 		},
-		Args:     []interface{}{unique, indexName, indexPartSpecifications, indexOption, hiddenCols, global},
+		Args:     []interface{}{unique, indexName, indexPartSpecifications, indexOption, hiddenCols, false},
 		Priority: ctx.GetSessionVars().DDLReorgPriority,
 	}
 

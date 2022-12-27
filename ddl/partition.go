@@ -27,7 +27,6 @@ import (
 	"github.com/pingcap/errors"
 	"github.com/pingcap/failpoint"
 	"github.com/pingcap/kvproto/pkg/metapb"
-	"github.com/pingcap/tidb/config"
 	"github.com/pingcap/tidb/ddl/label"
 	"github.com/pingcap/tidb/ddl/placement"
 	"github.com/pingcap/tidb/ddl/util"
@@ -2413,77 +2412,16 @@ func checkPartitioningKeysConstraints(sctx sessionctx.Context, s *ast.CreateTabl
 		return nil
 	}
 
-	var partCols stringSlice
 	if s.Partition.Expr != nil {
 		extractCols := newPartitionExprChecker(sctx, tblInfo)
 		s.Partition.Expr.Accept(extractCols)
-		partColumns, err := extractCols.columns, extractCols.err
+		_, err := extractCols.columns, extractCols.err
 		if err != nil {
 			return err
 		}
-		partCols = columnInfoSlice(partColumns)
-	} else if len(s.Partition.ColumnNames) > 0 {
-		partCols = columnNameSlice(s.Partition.ColumnNames)
-	} else {
-		// TODO: Check keys constraints for list, key partition type and so on.
-		return nil
 	}
 
-	// Checks that the partitioning key is included in the constraint.
-	// Every unique key on the table must use every column in the table's partitioning expression.
-	// See https://dev.mysql.com/doc/refman/5.7/en/partitioning-limitations-partitioning-keys-unique-keys.html
-	for _, index := range tblInfo.Indices {
-		if index.Unique && !checkUniqueKeyIncludePartKey(partCols, index.Columns) {
-			if index.Primary {
-				return dbterror.ErrUniqueKeyNeedAllFieldsInPf.GenWithStackByArgs("PRIMARY KEY")
-			}
-			if !config.GetGlobalConfig().EnableGlobalIndex {
-				return dbterror.ErrUniqueKeyNeedAllFieldsInPf.GenWithStackByArgs("UNIQUE INDEX")
-			}
-		}
-	}
-	// when PKIsHandle, tblInfo.Indices will not contain the primary key.
-	if tblInfo.PKIsHandle {
-		indexCols := []*model.IndexColumn{{
-			Name:   tblInfo.GetPkName(),
-			Length: types.UnspecifiedLength,
-		}}
-		if !checkUniqueKeyIncludePartKey(partCols, indexCols) {
-			return dbterror.ErrUniqueKeyNeedAllFieldsInPf.GenWithStackByArgs("PRIMARY KEY")
-		}
-	}
 	return nil
-}
-
-func checkPartitionKeysConstraint(pi *model.PartitionInfo, indexColumns []*model.IndexColumn, tblInfo *model.TableInfo) (bool, error) {
-	var (
-		partCols []*model.ColumnInfo
-		err      error
-	)
-	// The expr will be an empty string if the partition is defined by:
-	// CREATE TABLE t (...) PARTITION BY RANGE COLUMNS(...)
-	if partExpr := pi.Expr; partExpr != "" {
-		// Parse partitioning key, extract the column names in the partitioning key to slice.
-		partCols, err = extractPartitionColumns(partExpr, tblInfo)
-		if err != nil {
-			return false, err
-		}
-	} else {
-		partCols = make([]*model.ColumnInfo, 0, len(pi.Columns))
-		for _, col := range pi.Columns {
-			colInfo := tblInfo.FindPublicColumnByName(col.L)
-			if colInfo == nil {
-				return false, infoschema.ErrColumnNotExists.GenWithStackByArgs(col, tblInfo.Name)
-			}
-			partCols = append(partCols, colInfo)
-		}
-	}
-
-	// In MySQL, every unique key on the table must use every column in the table's partitioning expression.(This
-	// also includes the table's primary key.)
-	// In TiDB, global index will be built when this constraint is not satisfied and EnableGlobalIndex is set.
-	// See https://dev.mysql.com/doc/refman/5.7/en/partitioning-limitations-partitioning-keys-unique-keys.html
-	return checkUniqueKeyIncludePartKey(columnInfoSlice(partCols), indexColumns), nil
 }
 
 type columnNameExtractor struct {

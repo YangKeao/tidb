@@ -19,6 +19,7 @@ import (
 	"context"
 	stderr "errors"
 	"fmt"
+	"golang.org/x/sync/errgroup"
 	"sort"
 	"strconv"
 	"strings"
@@ -1192,8 +1193,114 @@ func partitionedTableAddRecord(ctx sessionctx.Context, t *partitionedTable, r []
 			return nil, errors.WithStack(table.ErrRowDoesNotMatchGivenPartitionSet)
 		}
 	}
-	tbl := t.GetPartition(pid)
-	return tbl.AddRecord(ctx, r, opts...)
+	// the partitioned table must be a `TableCommon`
+	currentPartition := t.GetPartition(pid).(*partition)
+	err = partitionedTableCheckKeyConstraints(ctx, currentPartition, t, r, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	return currentPartition.AddRecord(ctx, r, opts...)
+}
+
+func partitionedTableCheckKeyConstraints(sctx sessionctx.Context, currentTable *partition, t *partitionedTable, r []types.Datum, opts []table.AddRecordOption) error {
+	txn, err := sctx.Txn(true)
+	if err != nil {
+		return err
+	}
+
+	var opt table.AddRecordOpt
+	for _, fn := range opts {
+		fn.ApplyOn(&opt)
+	}
+
+	var ctx context.Context
+	if opt.Ctx != nil {
+		ctx = opt.Ctx
+	} else {
+		ctx = context.Background()
+	}
+
+	// don't set `sctx.GetSessionVars().StmtCtx.BatchCheck` to true, as it will only check the non-selected partition
+	recordID, hasRecordID := currentTable.getRecordIDFromRow(sctx, txn, r, opt.IsUpdate)
+
+	type uniqueKeyCheck struct {
+		key kv.Key
+		err error
+	}
+	uniqueKeys := make([]uniqueKeyCheck, 0, len(t.meta.GetPartitionInfo().Definitions)-1+(len(t.meta.GetPartitionInfo().Definitions)-1)*len(t.Indices()))
+
+	// if this row has recordID, we should check whether it's unique
+	if hasRecordID {
+		for _, p := range t.meta.GetPartitionInfo().Definitions {
+			if p.ID == currentTable.tableID {
+				continue
+			}
+
+			tbl := t.GetPartition(p.ID).(*partition)
+			key := tbl.RecordKey(recordID)
+			uniqueKeys = append(uniqueKeys, uniqueKeyCheck{
+				key,
+				kv.ErrKeyExists.FastGenByArgs(getDuplicateErrorHandleString(t, recordID, r), t.Meta().Name.String()+".PRIMARY"),
+			})
+		}
+	}
+	// iterate every physical tables to check the secondary indeces
+	writeBufs := sctx.GetSessionVars().GetWriteStmtBufs()
+	indexVals := writeBufs.IndexValsBuf
+	for _, p := range t.meta.GetPartitionInfo().Definitions {
+		if p.ID == currentTable.tableID {
+			continue
+		}
+
+		tbl := t.GetPartition(p.ID).(*partition)
+
+		for _, v := range tbl.Indices() {
+			if !IsIndexWritable(v) {
+				continue
+			}
+			if t.meta.IsCommonHandle && v.Meta().Primary {
+				continue
+			}
+			indexVals, err := v.FetchValues(r, indexVals)
+			if err != nil {
+				return err
+			}
+
+			if v.Meta().Unique {
+				entryKey, err := genIndexKeyStr(indexVals)
+				if err != nil {
+					return err
+				}
+
+				key, distinct, err := v.GenIndexKey(sctx.GetSessionVars().StmtCtx, indexVals, recordID, nil)
+				if err != nil {
+					return err
+				}
+				if distinct {
+					uniqueKeys = append(uniqueKeys, uniqueKeyCheck{
+						key,
+						kv.ErrKeyExists.FastGenByArgs(entryKey, fmt.Sprintf("%s.%s", v.TableMeta().Name.String(), v.Meta().Name.String()))
+					})
+				}
+			}
+		}
+	}
+
+	g, ctx := errgroup.WithContext(ctx)
+	for _, check := range uniqueKeys {
+		check := check
+		g.Go(func() error {
+			_, err := txn.Get(ctx, check.key)
+			if err == nil {
+				return check.err
+			} else if kv.IsErrNotFound(err) {
+				return nil
+			}
+			return err
+		})
+	}
+	return g.Wait()
 }
 
 // partitionTableWithGivenSets is used for this kind of grammar: partition (p0,p1)

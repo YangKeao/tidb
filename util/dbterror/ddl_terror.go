@@ -247,8 +247,6 @@ var (
 	ErrPartitionFunctionIsNotAllowed = ClassDDL.NewStd(mysql.ErrPartitionFunctionIsNotAllowed)
 	// ErrPartitionFuncNotAllowed returns partition function returns the wrong type.
 	ErrPartitionFuncNotAllowed = ClassDDL.NewStd(mysql.ErrPartitionFuncNotAllowed)
-	// ErrUniqueKeyNeedAllFieldsInPf returns must include all columns in the table's partitioning function.
-	ErrUniqueKeyNeedAllFieldsInPf = ClassDDL.NewStd(mysql.ErrUniqueKeyNeedAllFieldsInPf)
 	// ErrWrongExprInPartitionFunc Constant, random or timezone-dependent expressions in (sub)partitioning function are not allowed.
 	ErrWrongExprInPartitionFunc = ClassDDL.NewStd(mysql.ErrWrongExprInPartitionFunc)
 	// ErrWarnDataTruncated returns data truncated error.

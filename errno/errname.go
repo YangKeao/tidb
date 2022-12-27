@@ -507,7 +507,6 @@ var MySQLErrName = map[uint16]*mysql.ErrMessage{
 	ErrSubpartition:                             mysql.Message("It is only possible to mix RANGE/LIST partitioning with HASH/KEY partitioning for subpartitioning", nil),
 	ErrCantCreateHandlerFile:                    mysql.Message("Failed to create specific handler file", nil),
 	ErrBlobFieldInPartFunc:                      mysql.Message("A BLOB field is not allowed in partition function", nil),
-	ErrUniqueKeyNeedAllFieldsInPf:               mysql.Message("A %-.192s must include all columns in the table's partitioning function", nil),
 	ErrNoParts:                                  mysql.Message("Number of %-.64s = 0 is not an allowed value", []int{0}),
 	ErrPartitionMgmtOnNonpartitioned:            mysql.Message("Partition management on a not partitioned table is not possible", nil),
 	ErrForeignKeyOnPartitioned:                  mysql.Message("Foreign key clause is not yet supported in conjunction with partitioning", nil),

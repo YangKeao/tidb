@@ -503,7 +503,6 @@ const (
 	ErrSubpartition                                          = 1500
 	ErrCantCreateHandlerFile                                 = 1501
 	ErrBlobFieldInPartFunc                                   = 1502
-	ErrUniqueKeyNeedAllFieldsInPf                            = 1503
 	ErrNoParts                                               = 1504
 	ErrPartitionMgmtOnNonpartitioned                         = 1505
 	ErrForeignKeyOnPartitioned                               = 1506

@@ -708,40 +708,8 @@ func (t *TableCommon) AddRecord(sctx sessionctx.Context, r []types.Datum, opts .
 	} else {
 		ctx = context.Background()
 	}
-	var hasRecordID bool
-	cols := t.Cols()
 	// opt.IsUpdate is a flag for update.
-	// If handle ID is changed when update, update will remove the old record first, and then call `AddRecord` to add a new record.
-	// Currently, only insert can set _tidb_rowid, update can not update _tidb_rowid.
-	if len(r) > len(cols) && !opt.IsUpdate {
-		// The last value is _tidb_rowid.
-		recordID = kv.IntHandle(r[len(r)-1].GetInt64())
-		hasRecordID = true
-	} else {
-		tblInfo := t.Meta()
-		txn.CacheTableInfo(t.physicalTableID, tblInfo)
-		if tblInfo.PKIsHandle {
-			recordID = kv.IntHandle(r[tblInfo.GetPkColInfo().Offset].GetInt64())
-			hasRecordID = true
-		} else if tblInfo.IsCommonHandle {
-			pkIdx := FindPrimaryIndex(tblInfo)
-			pkDts := make([]types.Datum, 0, len(pkIdx.Columns))
-			for _, idxCol := range pkIdx.Columns {
-				pkDts = append(pkDts, r[idxCol.Offset])
-			}
-			tablecodec.TruncateIndexValues(tblInfo, pkIdx, pkDts)
-			var handleBytes []byte
-			handleBytes, err = codec.EncodeKey(sctx.GetSessionVars().StmtCtx, nil, pkDts...)
-			if err != nil {
-				return
-			}
-			recordID, err = kv.NewCommonHandle(handleBytes)
-			if err != nil {
-				return
-			}
-			hasRecordID = true
-		}
-	}
+	recordID, hasRecordID := t.getRecordIDFromRow(sctx, txn, r, opt.IsUpdate)
 	if !hasRecordID {
 		if opt.ReserveAutoID > 0 {
 			// Reserve a batch of auto ID in the statement context.
@@ -939,6 +907,41 @@ func (t *TableCommon) AddRecord(sctx sessionctx.Context, r []types.Datum, opts .
 	}
 	sessVars.TxnCtx.UpdateDeltaForTable(t.physicalTableID, 1, 1, colSize)
 	return recordID, nil
+}
+
+func (t *TableCommon) getRecordIDFromRow(sctx sessionctx.Context, txn kv.Transaction, r []types.Datum, isUpdate bool) (recordID kv.Handle, hasRecordID bool) {
+	cols := t.Cols()
+	// If handle ID is changed when update, update will remove the old record first, and then call `AddRecord` to add a new record.
+	// Currently, only insert can set _tidb_rowid, update can not update _tidb_rowid.
+	if len(r) > len(cols) && !isUpdate {
+		// The last value is _tidb_rowid.
+		recordID = kv.IntHandle(r[len(r)-1].GetInt64())
+		hasRecordID = true
+	} else {
+		tblInfo := t.Meta()
+		txn.CacheTableInfo(t.physicalTableID, tblInfo)
+		if tblInfo.PKIsHandle {
+			recordID = kv.IntHandle(r[tblInfo.GetPkColInfo().Offset].GetInt64())
+			hasRecordID = true
+		} else if tblInfo.IsCommonHandle {
+			pkIdx := FindPrimaryIndex(tblInfo)
+			pkDts := make([]types.Datum, 0, len(pkIdx.Columns))
+			for _, idxCol := range pkIdx.Columns {
+				pkDts = append(pkDts, r[idxCol.Offset])
+			}
+			tablecodec.TruncateIndexValues(tblInfo, pkIdx, pkDts)
+			handleBytes, err := codec.EncodeKey(sctx.GetSessionVars().StmtCtx, nil, pkDts...)
+			if err != nil {
+				return
+			}
+			recordID, err = kv.NewCommonHandle(handleBytes)
+			if err != nil {
+				return
+			}
+			hasRecordID = true
+		}
+	}
+	return
 }
 
 // genIndexKeyStr generates index content string representation.
