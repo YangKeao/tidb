@@ -248,9 +248,17 @@ func (e *memtableRetriever) setDataForVariablesInfo(ctx sessionctx.Context) erro
 		if infoschema.SysVarHiddenForSem(ctx, sv.Name) {
 			continue
 		}
-		currentVal, err := ctx.GetSessionVars().GetSessionOrGlobalSystemVar(context.Background(), sv.Name)
-		if err != nil {
-			currentVal = ""
+		var (
+			currentVal string
+			err        error
+		)
+		if sv.ShowAsAsterisk {
+			currentVal = variable.AsterriskVariableValue
+		} else {
+			currentVal, err = ctx.GetSessionVars().GetSessionOrGlobalSystemVar(context.Background(), sv.Name)
+			if err != nil {
+				currentVal = ""
+			}
 		}
 		isNoop := "NO"
 		if sv.IsNoop {

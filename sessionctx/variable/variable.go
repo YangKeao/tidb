@@ -80,6 +80,9 @@ const (
 	OOMActionCancel = "CANCEL"
 	// OOMActionLog constants represents the valid action configurations for OOMAction "LOG".
 	OOMActionLog = "LOG"
+
+	// AsterriskVariableValue is the string to be shown when the `v.ShowAsAsterisk` is true
+	AsterriskVariableValue = "**********"
 )
 
 // Global config name list.
@@ -167,6 +170,8 @@ type SysVar struct {
 	GlobalConfigName string
 	// RequireDynamicPrivileges is a function to return a dynamic privilege list to check the set sysvar privilege
 	RequireDynamicPrivileges func(isGlobal bool, sem bool) []string
+	// ShowAsAsterisk defines whether this value should be '*' in `show variables` and in
+	ShowAsAsterisk bool
 }
 
 // GetGlobalFromHook calls the GetSession func if it exists.

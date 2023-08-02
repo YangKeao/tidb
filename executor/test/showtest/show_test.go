@@ -2082,3 +2082,15 @@ func TestShowBindingDigestField(t *testing.T) {
 	result = tk.MustQuery("show global bindings;")
 	require.Equal(t, len(result.Rows()), 0)
 }
+
+func TestShowVariablesReplaceSensitiveDataIntoAsterisk(t *testing.T) {
+	store := testkit.CreateMockStore(t)
+	tk := testkit.NewTestKit(t, store)
+
+	tk.MustExec("set global authentication_ldap_sasl_bind_root_pwd = '123456'")
+	tk.MustExec("set global authentication_ldap_simple_bind_root_pwd = '123456'")
+	tk.MustQuery("show variables where variable_name like 'authentication_ldap_%_bind_root_pwd'").Check(testkit.Rows(
+		variable.AsterriskVariableValue,
+		variable.AsterriskVariableValue,
+	))
+}

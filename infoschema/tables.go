@@ -1998,10 +1998,17 @@ func GetDataFromSessionVariables(ctx context.Context, sctx sessionctx.Context) (
 		if SysVarHiddenForSem(sctx, v.Name) {
 			continue
 		}
-		var value string
-		value, err := sessionVars.GetSessionOrGlobalSystemVar(ctx, v.Name)
-		if err != nil {
-			return nil, err
+		var (
+			value string
+			err   error
+		)
+		if v.ShowAsAsterisk {
+			value = variable.AsterriskVariableValue
+		} else {
+			value, err = sessionVars.GetSessionOrGlobalSystemVar(ctx, v.Name)
+			if err != nil {
+				return nil, err
+			}
 		}
 		row := types.MakeDatums(v.Name, value)
 		rows = append(rows, row)

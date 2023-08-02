@@ -2614,7 +2614,7 @@ var defaultSysVars = []*SysVar{
 		return nil
 	}, GetGlobal: func(ctx context.Context, vars *SessionVars) (string, error) {
 		return ldap.LDAPSASLAuthImpl.GetBindRootPW(), nil
-	}},
+	}, ShowAsAsterisk: true},
 	// TODO: allow setting init_pool_size to 0 to disable pooling
 	{Scope: ScopeGlobal, Name: AuthenticationLDAPSASLInitPoolSize, Value: strconv.Itoa(DefAuthenticationLDAPSASLInitPoolSize), Type: TypeInt, MinValue: 1, MaxValue: 32767, SetGlobal: func(ctx context.Context, vars *SessionVars, s string) error {
 		val, err := strconv.ParseInt(s, 10, 64)
@@ -2696,7 +2696,7 @@ var defaultSysVars = []*SysVar{
 		return nil
 	}, GetGlobal: func(ctx context.Context, vars *SessionVars) (string, error) {
 		return ldap.LDAPSimpleAuthImpl.GetBindRootPW(), nil
-	}},
+	}, ShowAsAsterisk: true},
 	// TODO: allow setting init_pool_size to 0 to disable pooling
 	{Scope: ScopeGlobal, Name: AuthenticationLDAPSimpleInitPoolSize, Value: strconv.Itoa(DefAuthenticationLDAPSimpleInitPoolSize), Type: TypeInt, MinValue: 1, MaxValue: 32767, SetGlobal: func(ctx context.Context, vars *SessionVars, s string) error {
 		val, err := strconv.ParseInt(s, 10, 64)

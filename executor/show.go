@@ -890,9 +890,14 @@ func (e *ShowExec) fetchShowVariables(ctx context.Context) (err error) {
 				if infoschema.SysVarHiddenForSem(e.Ctx(), v.Name) {
 					continue
 				}
-				value, err = sessionVars.GetGlobalSystemVar(ctx, v.Name)
-				if err != nil {
-					return errors.Trace(err)
+
+				if v.ShowAsAsterisk {
+					value = variable.AsterriskVariableValue
+				} else {
+					value, err = sessionVars.GetGlobalSystemVar(ctx, v.Name)
+					if err != nil {
+						return errors.Trace(err)
+					}
 				}
 				e.appendRow([]interface{}{v.Name, value})
 			}
@@ -915,9 +920,13 @@ func (e *ShowExec) fetchShowVariables(ctx context.Context) (err error) {
 		if infoschema.SysVarHiddenForSem(e.Ctx(), v.Name) {
 			continue
 		}
-		value, err = sessionVars.GetSessionOrGlobalSystemVar(context.Background(), v.Name)
-		if err != nil {
-			return errors.Trace(err)
+		if v.ShowAsAsterisk {
+			value = variable.AsterriskVariableValue
+		} else {
+			value, err = sessionVars.GetSessionOrGlobalSystemVar(context.Background(), v.Name)
+			if err != nil {
+				return errors.Trace(err)
+			}
 		}
 		e.appendRow([]interface{}{v.Name, value})
 	}
