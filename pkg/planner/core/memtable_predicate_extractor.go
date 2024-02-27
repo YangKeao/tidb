@@ -1733,3 +1733,54 @@ func (e *InfoSchemaTablesExtractor) Filter(colName string, val string) bool {
 	// No need to filter records since no predicate for the column exists.
 	return false
 }
+
+// InfoSchemaIndexUsageExtractor is used to extract infoSchema index usages related predicates.
+type InfoSchemaIndexUsageExtractor struct {
+	extractHelper
+	// SkipRequest means the where clause always false, we don't need to request any component
+	SkipRequest bool
+
+	TableSchema set.StringSet
+	TableName   set.StringSet
+	IndexName   set.StringSet
+}
+
+// Extract implements the InfoSchemaIndexUsageExtractor Extract interface
+func (e *InfoSchemaIndexUsageExtractor) Extract(_ PlanContext,
+	schema *expression.Schema,
+	names []*types.FieldName,
+	predicates []expression.Expression,
+) (remained []expression.Expression) {
+	remained, tableSchemaSkipRequest, tableSchema := e.extractCol(schema, names, predicates, "table_schema", true)
+	remained, tableNameSkipRequest, tableName := e.extractCol(schema, names, remained, "table_name", true)
+	remained, indexNameSkipRequest, indexName := e.extractCol(schema, names, remained, "index_name", true)
+
+	e.SkipRequest = tableSchemaSkipRequest || tableNameSkipRequest || indexNameSkipRequest
+	e.TableSchema = tableSchema
+	e.TableName = tableName
+	e.IndexName = indexName
+
+	return remained
+}
+
+func (e *InfoSchemaIndexUsageExtractor) explainInfo(_ *PhysicalMemTable) string {
+	if e.SkipRequest {
+		return "skip_request:true"
+	}
+	r := new(bytes.Buffer)
+	if len(e.TableSchema) > 0 {
+		fmt.Fprintf(r, "table_schemas:[%s], ", extractStringFromStringSet(e.TableSchema))
+	}
+	if len(e.TableName) > 0 {
+		fmt.Fprintf(r, "table_name:[%s], ", extractStringFromStringSet(e.TableName))
+	}
+	if len(e.IndexName) > 0 {
+		fmt.Fprintf(r, "index_name:[%s], ", extractStringFromStringSet(e.TableName))
+	}
+	// remove the last ", " in the message info
+	s := r.String()
+	if len(s) > 2 {
+		return s[:len(s)-2]
+	}
+	return s
+}

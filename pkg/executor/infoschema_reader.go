@@ -3527,7 +3527,12 @@ func (e *memtableRetriever) setDataFromIndexUsage(ctx sessionctx.Context, schema
 	rows := make([][]types.Datum, 0, 100)
 	checker := privilege.GetPrivilegeManager(ctx)
 
+	indexUsageExtractor, ok := e.extractor.(*plannercore.InfoSchemaIndexUsageExtractor)
 	for _, schema := range schemas {
+		if ok && !indexUsageExtractor.TableSchema.Exist(schema.Name.L) {
+			continue
+		}
+
 		for _, tbl := range schema.Tables {
 			allowed := checker == nil || checker.RequestVerification(
 				ctx.GetSessionVars().ActiveRoles,
@@ -3536,7 +3541,15 @@ func (e *memtableRetriever) setDataFromIndexUsage(ctx sessionctx.Context, schema
 				continue
 			}
 
+			if ok && !indexUsageExtractor.TableName.Exist(tbl.Name.L) {
+				continue
+			}
+
 			for _, idx := range tbl.Indices {
+				if ok && !indexUsageExtractor.IndexName.Exist(idx.Name.L) {
+					continue
+				}
+
 				row := make([]types.Datum, 0, 14)
 
 				usage := dom.StatsHandle().GetIndexUsage(tbl.ID, idx.ID)
