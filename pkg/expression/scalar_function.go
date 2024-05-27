@@ -118,20 +118,43 @@ func (sf *ScalarFunction) Vectorized() bool {
 	return sf.Function.vectorized() && sf.Function.isChildrenVectorized()
 }
 
-// String implements fmt.Stringer interface.
+// StringWithCtx implements Expression interface.
+func (sf *ScalarFunction) StringWithCtx(ctx EvalContext) string {
+	var buffer bytes.Buffer
+	fmt.Fprintf(&buffer, "%s(", sf.FuncName.L)
+	switch sf.FuncName.L {
+	case ast.Cast:
+		for _, arg := range sf.GetArgs() {
+			buffer.WriteString(arg.StringWithCtx(ctx))
+			buffer.WriteString(", ")
+			buffer.WriteString(sf.RetType.String())
+		}
+	default:
+		for i, arg := range sf.GetArgs() {
+			buffer.WriteString(arg.StringWithCtx(ctx))
+			if i+1 != len(sf.GetArgs()) {
+				buffer.WriteString(", ")
+			}
+		}
+	}
+	buffer.WriteString(")")
+	return buffer.String()
+}
+
+// String returns the string representation of the function
 func (sf *ScalarFunction) String() string {
 	var buffer bytes.Buffer
 	fmt.Fprintf(&buffer, "%s(", sf.FuncName.L)
 	switch sf.FuncName.L {
 	case ast.Cast:
 		for _, arg := range sf.GetArgs() {
-			buffer.WriteString(arg.String())
+			buffer.WriteString(arg.StringWithCtx(nil))
 			buffer.WriteString(", ")
 			buffer.WriteString(sf.RetType.String())
 		}
 	default:
 		for i, arg := range sf.GetArgs() {
-			buffer.WriteString(arg.String())
+			buffer.WriteString(arg.StringWithCtx(nil))
 			if i+1 != len(sf.GetArgs()) {
 				buffer.WriteString(", ")
 			}
@@ -143,7 +166,7 @@ func (sf *ScalarFunction) String() string {
 
 // MarshalJSON implements json.Marshaler interface.
 func (sf *ScalarFunction) MarshalJSON() ([]byte, error) {
-	return []byte(fmt.Sprintf("%q", sf)), nil
+	return []byte(fmt.Sprintf("%q", sf.String())), nil
 }
 
 // typeInferForNull infers the NULL constants field type and set the field type
