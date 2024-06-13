@@ -299,9 +299,6 @@ type StatementContext struct {
 	EnableOptimizerDebugTrace bool
 	OptimizerDebugTrace       any
 
-	// WaitLockLeaseTime is the duration of cached table read lease expiration time.
-	WaitLockLeaseTime time.Duration
-
 	// KvExecCounter is created from SessionVars.StmtStats to count the number of SQL
 	// executions of the kv layer during the current execution of the statement.
 	// Its life cycle is limited to this execution, and a new KvExecCounter is
@@ -381,6 +378,8 @@ type StatementContext struct {
 
 	// MDLRelatedTableIDs is used to store the table IDs that are related to the current MDL lock.
 	MDLRelatedTableIDs map[int64]struct{}
+
+	*contextutil.DurationTracker
 }
 
 // DefaultStmtErrLevels is the default error levels for statement
@@ -407,6 +406,7 @@ func NewStmtCtxWithTimeZone(tz *time.Location) *StatementContext {
 	sc.WarnHandler = contextutil.NewStaticWarnHandler(0)
 	sc.ExtraWarnHandler = contextutil.NewStaticWarnHandler(0)
 	sc.RowsTracker = contextutil.NewRowsTracker()
+	sc.DurationTracker = new(contextutil.DurationTracker)
 	return sc
 }
 
@@ -422,6 +422,7 @@ func (sc *StatementContext) Reset() {
 	sc.WarnHandler = contextutil.NewStaticWarnHandler(0)
 	sc.ExtraWarnHandler = contextutil.NewStaticWarnHandler(0)
 	sc.RowsTracker = contextutil.NewRowsTracker()
+	sc.DurationTracker = new(contextutil.DurationTracker)
 }
 
 // CtxID returns the context id of the statement

@@ -2062,7 +2062,6 @@ func ResetContextOfStmt(ctx sessionctx.Context, s ast.StmtNode) (err error) {
 	vars.FoundInPlanCache = false
 	vars.PrevFoundInBinding = vars.FoundInBinding
 	vars.FoundInBinding = false
-	vars.DurationWaitTS = 0
 	vars.CurrInsertBatchExtraCols = nil
 	vars.CurrInsertValues = chunk.Row{}
 
