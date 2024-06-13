@@ -180,30 +180,9 @@ type StatementContext struct {
 	mu struct {
 		sync.Mutex
 
-		affectedRows uint64
-		foundRows    uint64
-
-		/*
-			following variables are ported from 'COPY_INFO' struct of MySQL server source,
-			they are used to count rows for INSERT/REPLACE/UPDATE queries:
-			  If a row is inserted then the copied variable is incremented.
-			  If a row is updated by the INSERT ... ON DUPLICATE KEY UPDATE and the
-			     new data differs from the old one then the copied and the updated
-			     variables are incremented.
-			  The touched variable is incremented if a row was touched by the update part
-			     of the INSERT ... ON DUPLICATE KEY UPDATE no matter whether the row
-			     was actually changed or not.
-
-			see https://github.com/mysql/mysql-server/blob/d2029238d6d9f648077664e4cdd611e231a6dc14/sql/sql_data_change.h#L60 for more details
-		*/
-		records uint64
-		deleted uint64
-		updated uint64
-		copied  uint64
-		touched uint64
-
 		message string
 	}
+	*contextutil.RowsTracker
 	WarnHandler contextutil.WarnHandlerExt
 	// ExtraWarnHandler record the extra warnings and are only used by the slow log only now.
 	// If a warning is expected to be output only under some conditions (like in EXPLAIN or EXPLAIN VERBOSE) but it's
@@ -427,6 +406,7 @@ func NewStmtCtxWithTimeZone(tz *time.Location) *StatementContext {
 	sc.RangeFallbackHandler = contextutil.NewRangeFallbackHandler(&sc.PlanCacheTracker, sc)
 	sc.WarnHandler = contextutil.NewStaticWarnHandler(0)
 	sc.ExtraWarnHandler = contextutil.NewStaticWarnHandler(0)
+	sc.RowsTracker = contextutil.NewRowsTracker()
 	return sc
 }
 
@@ -441,6 +421,7 @@ func (sc *StatementContext) Reset() {
 	sc.RangeFallbackHandler = contextutil.NewRangeFallbackHandler(&sc.PlanCacheTracker, sc)
 	sc.WarnHandler = contextutil.NewStaticWarnHandler(0)
 	sc.ExtraWarnHandler = contextutil.NewStaticWarnHandler(0)
+	sc.RowsTracker = contextutil.NewRowsTracker()
 }
 
 // CtxID returns the context id of the statement
@@ -738,115 +719,6 @@ type TableEntry struct {
 	Table string
 }
 
-// AddAffectedRows adds affected rows.
-func (sc *StatementContext) AddAffectedRows(rows uint64) {
-	if sc.InHandleForeignKeyTrigger {
-		// For compatibility with MySQL, not add the affected row cause by the foreign key trigger.
-		return
-	}
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	sc.mu.affectedRows += rows
-}
-
-// SetAffectedRows sets affected rows.
-func (sc *StatementContext) SetAffectedRows(rows uint64) {
-	sc.mu.Lock()
-	sc.mu.affectedRows = rows
-	sc.mu.Unlock()
-}
-
-// AffectedRows gets affected rows.
-func (sc *StatementContext) AffectedRows() uint64 {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	return sc.mu.affectedRows
-}
-
-// FoundRows gets found rows.
-func (sc *StatementContext) FoundRows() uint64 {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	return sc.mu.foundRows
-}
-
-// AddFoundRows adds found rows.
-func (sc *StatementContext) AddFoundRows(rows uint64) {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	sc.mu.foundRows += rows
-}
-
-// RecordRows is used to generate info message
-func (sc *StatementContext) RecordRows() uint64 {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	return sc.mu.records
-}
-
-// AddRecordRows adds record rows.
-func (sc *StatementContext) AddRecordRows(rows uint64) {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	sc.mu.records += rows
-}
-
-// DeletedRows is used to generate info message
-func (sc *StatementContext) DeletedRows() uint64 {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	return sc.mu.deleted
-}
-
-// AddDeletedRows adds record rows.
-func (sc *StatementContext) AddDeletedRows(rows uint64) {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	sc.mu.deleted += rows
-}
-
-// UpdatedRows is used to generate info message
-func (sc *StatementContext) UpdatedRows() uint64 {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	return sc.mu.updated
-}
-
-// AddUpdatedRows adds updated rows.
-func (sc *StatementContext) AddUpdatedRows(rows uint64) {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	sc.mu.updated += rows
-}
-
-// CopiedRows is used to generate info message
-func (sc *StatementContext) CopiedRows() uint64 {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	return sc.mu.copied
-}
-
-// AddCopiedRows adds copied rows.
-func (sc *StatementContext) AddCopiedRows(rows uint64) {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	sc.mu.copied += rows
-}
-
-// TouchedRows is used to generate info message
-func (sc *StatementContext) TouchedRows() uint64 {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	return sc.mu.touched
-}
-
-// AddTouchedRows adds touched rows.
-func (sc *StatementContext) AddTouchedRows(rows uint64) {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	sc.mu.touched += rows
-}
-
 // GetMessage returns the extra message of the last executed command, if there is no message, it returns empty string
 func (sc *StatementContext) GetMessage() string {
 	sc.mu.Lock()
@@ -943,13 +815,6 @@ func (sc *StatementContext) AppendExtraError(warn error) {
 func (sc *StatementContext) resetMuForRetry() {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
-	sc.mu.affectedRows = 0
-	sc.mu.foundRows = 0
-	sc.mu.records = 0
-	sc.mu.deleted = 0
-	sc.mu.updated = 0
-	sc.mu.copied = 0
-	sc.mu.touched = 0
 	sc.mu.message = ""
 }
 
@@ -964,6 +829,7 @@ func (sc *StatementContext) ResetForRetry() {
 	sc.SyncExecDetails.Reset()
 	sc.WarnHandler.TruncateWarnings(0)
 	sc.ExtraWarnHandler.TruncateWarnings(0)
+	sc.RowsTracker.Reset()
 
 	// `TaskID` is reset, we'll need to reset distSQLCtx
 	sc.distSQLCtxCache.init = sync.Once{}

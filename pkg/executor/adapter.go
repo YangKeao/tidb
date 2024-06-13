@@ -696,10 +696,13 @@ func (a *ExecStmt) handleForeignKeyCascade(ctx context.Context, fkc *FKCascadeEx
 	if depth > maxForeignKeyCascadeDepth {
 		return exeerrors.ErrForeignKeyCascadeDepthExceeded.GenWithStackByArgs(maxForeignKeyCascadeDepth)
 	}
+	originalAffectedRows := a.Ctx.GetSessionVars().StmtCtx.AffectedRows()
 	a.Ctx.GetSessionVars().StmtCtx.InHandleForeignKeyTrigger = true
 	defer func() {
+		a.Ctx.GetSessionVars().StmtCtx.SetAffectedRows(originalAffectedRows)
 		a.Ctx.GetSessionVars().StmtCtx.InHandleForeignKeyTrigger = false
 	}()
+
 	if fkc.stats != nil {
 		start := time.Now()
 		defer func() {
