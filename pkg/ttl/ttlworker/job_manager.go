@@ -272,10 +272,7 @@ func (m *JobManager) jobLoop() error {
 			m.taskManager.resizeWorkersWithSysVar()
 		case <-updateTaskHeartBeatTicker:
 			updateHeartBeatCtx, cancel := context.WithTimeout(m.ctx, ttlInternalSQLTimeout)
-			err = m.taskManager.updateHeartBeat(updateHeartBeatCtx, se, now)
-			if err != nil {
-				logutil.Logger(m.ctx).Warn("fail to update task heart beat", zap.Error(err))
-			}
+			m.taskManager.updateHeartBeat(updateHeartBeatCtx, se, now)
 			cancel()
 		case <-checkScanTaskFinishedTicker:
 			if m.taskManager.handleScanFinishedTask() {
