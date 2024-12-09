@@ -111,6 +111,7 @@ func TestGetSession(t *testing.T) {
 func TestParallelLockNewJob(t *testing.T) {
 	store, dom := testkit.CreateMockStoreAndDomain(t)
 	waitAndStopTTLManager(t, dom)
+	tk := testkit.NewTestKit(t, store)
 
 	sessionFactory := sessionFactory(t, store)
 
@@ -125,14 +126,22 @@ func TestParallelLockNewJob(t *testing.T) {
 	job.Finish(se, se.Now(), &ttlworker.TTLSummary{})
 
 	// lock one table in parallel, only one of them should lock successfully
-	testTimes := 100
-	concurrency := 5
-	now := se.Now()
-	for i := 0; i < testTimes; i++ {
+	concurrency := 100
+	testDuration := time.Minute * 10
+	testStart := time.Now()
+	if !testkit.LongTest() {
+		concurrency = 10
+		testDuration = time.Second * 2
+	}
+	for time.Since(testStart) < testDuration {
+		logutil.BgLogger().Info("start new round of parallel lock test")
+
+		// reset the table status. We cannot just increase the `now` to re-assign the job, because for a long test, it'll face 2038-problem soon.
+		tk.MustExec("delete from mysql.tidb_ttl_table_status")
+		now := se.Now()
+
 		successCounter := atomic.NewUint64(0)
 		successJob := &ttlworker.TTLJob{}
-
-		now = now.Add(time.Hour * 48)
 
 		wg := sync.WaitGroup{}
 		for j := 0; j < concurrency; j++ {

@@ -69,17 +69,20 @@ func TestParallelLockNewTask(t *testing.T) {
 	tk.MustExec("DELETE FROM mysql.tidb_ttl_task")
 
 	// lock one table in parallel, only one of them should lock successfully
-	testTimes := 100
-	concurrency := 5
-	for i := 0; i < testTimes; i++ {
+	concurrency := 100
+	testDuration := time.Minute * 10
+	testStart := time.Now()
+	if !testkit.LongTest() {
+		concurrency = 10
+		testDuration = time.Second * 2
+	}
+	for time.Since(testStart) < testDuration {
 		sql, args, err := cache.InsertIntoTTLTask(tk.Session(), "test-job", testTable.Meta().ID, 1, nil, nil, now, now)
 		require.NoError(t, err)
 		_, err = tk.Session().ExecuteInternal(ctx, sql, args...)
 		require.NoError(t, err)
 
 		successCounter := atomic.NewUint64(0)
-
-		now = now.Add(time.Hour * 48)
 
 		wg := sync.WaitGroup{}
 		for j := 0; j < concurrency; j++ {

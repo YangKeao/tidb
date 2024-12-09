@@ -79,7 +79,10 @@ ut run --junitfile xxx
 ut run --race
 
 // test with test.short flag
-ut run --short`
+ut run --short
+
+// test with long flag
+ut run --long`
 
 	fmt.Println(msg)
 	return true
@@ -441,6 +444,7 @@ var coverprofile string
 var coverFileTempDir string
 var race bool
 var short bool
+var long bool
 
 var except string
 var only string
@@ -453,6 +457,7 @@ func main() {
 	only = handleFlags("--only")
 	race = handleFlag("--race")
 	short = handleFlag("--short")
+	long = handleFlag("--long")
 
 	if coverprofile != "" {
 		var err error
@@ -888,6 +893,9 @@ func buildTestBinary(pkg string) error {
 	if short {
 		cmd.Args = append(cmd.Args, "--test.short")
 	}
+	if long {
+		cmd.Args = append(cmd.Args, "--long")
+	}
 	cmd.Dir = filepath.Join(workDir, pkg)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -934,6 +942,9 @@ func buildTestBinaryMulti(pkgs []string) error {
 	}
 	if short {
 		cmd.Args = append(cmd.Args, "--test.short")
+	}
+	if long {
+		cmd.Args = append(cmd.Args, "--long")
 	}
 	cmd.Args = append(cmd.Args, packages...)
 	cmd.Dir = workDir
