@@ -386,11 +386,22 @@ func (cc *clientConn) Close() error {
 func closeConn(cc *clientConn) error {
 	var err error
 	cc.closeOnce.Do(func() {
+		logutil.BgLogger().Info("close connection", zap.Int("connID", int(cc.connectionID)))
 		if cc.connectionID > 0 {
 			cc.server.dom.ReleaseConnID(cc.connectionID)
 			cc.connectionID = 0
 		}
 		if cc.bufReadConn != nil {
+			// Close the read side of the connection will send a RST immediately to the client, which will cause the client'
+			// fail to write to the connection. Usually, when the client fails to write, it's safe to retry the command. Therefore,
+			// it'd be better to close the read side immediately.
+			if tcpConn, ok := cc.bufReadConn.Conn.(*net.TCPConn); ok {
+				err := tcpConn.CloseRead()
+				if err != nil {
+					logutil.Logger(context.Background()).Debug("could not close read-side connection", zap.Error(err))
+				}
+			}
+
 			err := cc.bufReadConn.Close()
 			if err != nil {
 				// We need to expect connection might have already disconnected.
@@ -1033,6 +1044,7 @@ func (cc *clientConn) initConnect(ctx context.Context) error {
 // it will be recovered and log the panic error.
 // This function returns and the connection is closed if there is an IO error or there is a panic.
 func (cc *clientConn) Run(ctx context.Context) {
+	logutil.Logger(ctx).Info("start serving connection", zap.Uint64("connID", cc.connectionID))
 	defer func() {
 		r := recover()
 		if r != nil {
@@ -1077,6 +1089,7 @@ func (cc *clientConn) Run(ctx context.Context) {
 		// consider provider a way to close the connection directly after sometime if we can not read any data.
 		if cc.server.inShutdownMode.Load() {
 			if !sessVars.InTxn() {
+				logutil.Logger(ctx).Info("close connection in shutdown mode before reading packet", zap.Uint64("connID", cc.connectionID))
 				return
 			}
 		}
@@ -1132,13 +1145,6 @@ func (cc *clientConn) Run(ctx context.Context) {
 		// 3. The connection changes its status to `connStatusDispatching` and starts to execute the command.
 		if !cc.CompareAndSwapStatus(connStatusReading, connStatusDispatching) {
 			return
-		}
-
-		// Should check InTxn() to avoid execute `begin` stmt and allow executing statements in the not committed txn.
-		if cc.server.inShutdownMode.Load() {
-			if !cc.ctx.GetSessionVars().InTxn() {
-				return
-			}
 		}
 
 		startTime := time.Now()

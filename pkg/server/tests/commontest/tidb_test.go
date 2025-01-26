@@ -22,9 +22,11 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -53,6 +55,7 @@ import (
 	"github.com/pingcap/tidb/pkg/store/mockstore/unistore"
 	"github.com/pingcap/tidb/pkg/testkit"
 	"github.com/pingcap/tidb/pkg/util"
+	"github.com/pingcap/tidb/pkg/util/logutil"
 	"github.com/pingcap/tidb/pkg/util/plancodec"
 	"github.com/pingcap/tidb/pkg/util/resourcegrouptag"
 	"github.com/pingcap/tidb/pkg/util/topsql"
@@ -63,6 +66,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tikv/client-go/v2/tikvrpc"
 	"go.opencensus.io/stats/view"
+	"go.uber.org/zap"
 	gorm_mysql "gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
@@ -3352,4 +3356,193 @@ func TestAuthSocket(t *testing.T) {
 		rows := dbt.MustQuery("select current_user();")
 		ts.CheckRows(t, rows, "u2@%")
 	})
+}
+
+type debugAssertLogger struct {
+	t *testing.T
+}
+
+func (l *debugAssertLogger) Print(v ...interface{}) {
+	stack := debug.Stack()
+	if strings.Contains(string(stack), "readPacket") {
+		logutil.BgLogger().Info("readPacket failed", zap.String("stack", string(stack)))
+	}
+	require.NotContains(l.t, string(stack), "readPacket")
+}
+
+func TestGracefulShutdownCloseConnection(t *testing.T) {
+	mysql.SetLogger(&debugAssertLogger{t: t})
+
+	cfg := config.NewConfig()
+	cfg.Host = "127.0.0.1"
+	cfg.Status.StatusHost = "127.0.0.1"
+	cfg.Security.AutoTLS = false
+	cfg.Socket = ""
+	cfg.Port = 4000
+	cfg.Status.ReportStatus = true
+	cfg.Status.StatusPort = 0
+	cfg.Status.RecordDBLabel = true
+	cfg.Performance.TCPKeepAlive = true
+
+	ts := servertestkit.CreateTidbTestSuiteWithCfg(t, cfg)
+
+	ts.RunTests(t, nil, func(dbt *testkit.DBTestKit) {
+		conn, err := dbt.GetDB().Conn(context.Background())
+		require.NoError(t, err)
+
+		wg := &sync.WaitGroup{}
+		wg.Add(1)
+		closeSignal := make(chan struct{})
+		afterCloseSignal := make(chan struct{})
+		go func() {
+			defer wg.Done()
+
+			<-closeSignal
+			ts.Server.Close()
+			afterCloseSignal <- struct{}{}
+			close(afterCloseSignal)
+
+			ts.Server.DrainClients(time.Second*5, time.Second*5)
+		}()
+
+		_, err = conn.ExecContext(context.Background(), "use test")
+		require.NoError(t, err)
+		_, err = conn.ExecContext(context.Background(), "create table t1 (id int);")
+		require.NoError(t, err)
+
+		// run a long transaction
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			tx, err := conn.BeginTx(context.Background(), nil)
+			require.NoError(t, err)
+
+			_, err = tx.Exec("insert into t1 values (1)")
+			require.NoError(t, err)
+
+			// notify to close the server after 2 seconds
+			time.Sleep(time.Second * 2)
+			closeSignal <- struct{}{}
+			close(closeSignal)
+			<-afterCloseSignal
+
+			// run a query after the server is notified to close
+			rows, err := tx.Query("select * from t1")
+			require.NoError(t, err)
+			ts.CheckRows(t, rows, "1")
+			require.NoError(t, tx.Commit())
+
+			// the connection should be closed after the server is closed
+			_, err = conn.QueryContext(context.Background(), "select * from t1")
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "invalid connection")
+		}()
+
+		// BEGIN -> COMMIT loop with another session
+		conn2, err := dbt.GetDB().Conn(context.Background())
+		require.NoError(t, err)
+		var txnErr error
+		for {
+			tx, err := conn2.BeginTx(context.Background(), nil)
+			if err != nil {
+				txnErr = err
+				break
+			}
+
+			err = tx.Commit()
+			if err != nil {
+				txnErr = err
+				break
+			}
+
+			time.Sleep(time.Millisecond * 1000)
+		}
+
+		require.Error(t, txnErr)
+		fmt.Println(txnErr)
+		require.NotContains(t, txnErr.Error(), "unexpected EOF")
+		wg.Wait()
+	})
+}
+
+func TestGracefulShutdownCloseConnectionInMySQL(t *testing.T) {
+	mysql.SetLogger(&debugAssertLogger{t: t})
+
+	db, err := sql.Open("mysql", "root:123456@tcp(127.0.0.1:3306)/test")
+	require.NoError(t, err)
+	conn, err := db.Conn(context.Background())
+	require.NoError(t, err)
+
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+	closeSignal := make(chan struct{})
+	afterCloseSignal := make(chan struct{})
+	go func() {
+		defer wg.Done()
+
+		<-closeSignal
+		output, err := exec.Command("docker", "stop", "mysql").CombinedOutput()
+		require.NoError(t, err)
+		logutil.BgLogger().Info("docker stop mysql", zap.String("output", string(output)))
+	}()
+
+	_, err = conn.ExecContext(context.Background(), "create database if not exists t1")
+	require.NoError(t, err)
+	_, err = conn.ExecContext(context.Background(), "use test")
+	require.NoError(t, err)
+	_, err = conn.ExecContext(context.Background(), "create table t1 (id int);")
+	require.NoError(t, err)
+
+	// run a long transaction
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		tx, err := conn.BeginTx(context.Background(), nil)
+		require.NoError(t, err)
+
+		_, err = tx.Exec("insert into t1 values (1)")
+		require.NoError(t, err)
+
+		// notify to close the server after 2 seconds
+		time.Sleep(time.Second * 2)
+		closeSignal <- struct{}{}
+		close(closeSignal)
+		<-afterCloseSignal
+
+		// run a query after the server is notified to close
+		rows, err := tx.Query("select * from t1")
+		require.NoError(t, err)
+		require.NoError(t, rows.Close())
+		require.NoError(t, tx.Commit())
+
+		// the connection should be closed after the server is closed
+		_, err = conn.QueryContext(context.Background(), "select * from t1")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "invalid connection")
+	}()
+
+	// BEGIN -> COMMIT loop with another session
+	conn2, err := db.Conn(context.Background())
+	require.NoError(t, err)
+	var txnErr error
+	for {
+		tx, err := conn2.BeginTx(context.Background(), nil)
+		if err != nil {
+			txnErr = err
+			break
+		}
+
+		err = tx.Commit()
+		if err != nil {
+			txnErr = err
+			break
+		}
+	}
+
+	require.Error(t, txnErr)
+	fmt.Println(txnErr)
+	require.NotContains(t, txnErr.Error(), "unexpected EOF")
+	wg.Wait()
 }
