@@ -361,6 +361,8 @@ func BuildIndexInfo(
 		return nil, errors.Trace(err)
 	}
 
+	idxInfo.NoNullIdxColOffsets = buildNoNullIdxColOffsets(idxInfo.Columns, allTableColumns)
+
 	if indexOption != nil {
 		idxInfo.Comment = indexOption.Comment
 		if indexOption.Visibility == ast.IndexVisibilityInvisible {
@@ -381,6 +383,16 @@ func BuildIndexInfo(
 	}
 
 	return idxInfo, nil
+}
+
+func buildNoNullIdxColOffsets(indexColumns []*model.IndexColumn, allTableColumns []*model.ColumnInfo) []int {
+	var noNullIdxColOffsets []int
+	for i, col := range indexColumns {
+		if allTableColumns[col.Offset].NoNullIndex {
+			noNullIdxColOffsets = append(noNullIdxColOffsets, i)
+		}
+	}
+	return noNullIdxColOffsets
 }
 
 func buildVectorInfoWithCheck(indexPartSpecifications []*ast.IndexPartSpecification,
