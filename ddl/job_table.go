@@ -21,6 +21,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/pingcap/errors"
@@ -39,6 +40,8 @@ import (
 
 var (
 	addingDDLJobConcurrent = "/tidb/ddl/add_ddl_job_general"
+	// TestGetJobBeforeFilterHook is used to coordinate tests that pause inside getJob.
+	TestGetJobBeforeFilterHook atomic.Pointer[func(*model.Job)]
 )
 
 type jobType int
@@ -58,7 +61,7 @@ const (
 	reorg
 )
 
-func (d *ddl) getJob(sess *session, tp jobType, filter func(*model.Job) (bool, error)) (*model.Job, error) {
+func (d *ddl) getJob(sess *session, tp jobType, runningJobSnapshot *runningJobs, filter func(*model.Job) (bool, error)) (*model.Job, error) {
 	not := "not"
 	label := "get_job_general"
 	if tp == reorg {
@@ -69,7 +72,7 @@ func (d *ddl) getJob(sess *session, tp jobType, filter func(*model.Job) (bool, e
 		(select min(job_id) from mysql.tidb_ddl_job group by schema_ids, table_ids, processing)
 		and %s reorg %s order by processing desc, job_id`
 	var excludedJobIDs string
-	if ids := d.runningJobs.allIDs(); len(ids) > 0 {
+	if ids := runningJobSnapshot.allIDs(); len(ids) > 0 {
 		excludedJobIDs = fmt.Sprintf("and job_id not in (%s)", ids)
 	}
 	sql := fmt.Sprintf(getJobSQL, not, excludedJobIDs)
@@ -103,8 +106,9 @@ func (d *ddl) getJob(sess *session, tp jobType, filter func(*model.Job) (bool, e
 }
 
 func (d *ddl) getGeneralJob(sess *session) (*model.Job, error) {
-	return d.getJob(sess, general, func(job *model.Job) (bool, error) {
-		if !d.runningJobs.checkRunnable(job) {
+	runningSnapshot := d.runningJobs.snapshot()
+	return d.getJob(sess, general, runningSnapshot, func(job *model.Job) (bool, error) {
+		if !runningSnapshot.checkRunnable(job) {
 			return false, nil
 		}
 		if job.Type == model.ActionDropSchema {
@@ -123,8 +127,9 @@ func (d *ddl) getGeneralJob(sess *session) (*model.Job, error) {
 }
 
 func (d *ddl) getReorgJob(sess *session) (*model.Job, error) {
-	return d.getJob(sess, reorg, func(job *model.Job) (bool, error) {
-		if !d.runningJobs.checkRunnable(job) {
+	runningSnapshot := d.runningJobs.snapshot()
+	return d.getJob(sess, reorg, runningSnapshot, func(job *model.Job) (bool, error) {
+		if !runningSnapshot.checkRunnable(job) {
 			return false, nil
 		}
 		// Check if there is any block ddl running, like drop schema and flashback cluster.

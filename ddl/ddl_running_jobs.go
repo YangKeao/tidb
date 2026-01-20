@@ -71,6 +71,7 @@ func (j *runningJobs) remove(job *model.Job) {
 func (j *runningJobs) checkRunnable(job *model.Job) bool {
 	j.RLock()
 	defer j.RUnlock()
+
 	for _, info := range job.GetInvolvingSchemaInfo() {
 		if _, ok := j.runningSchema[model.InvolvingAll]; ok {
 			return false
@@ -91,6 +92,25 @@ func (j *runningJobs) checkRunnable(job *model.Job) bool {
 		}
 	}
 	return true
+}
+
+func (j *runningJobs) snapshot() *runningJobs {
+	j.RLock()
+	defer j.RUnlock()
+
+	snapshot := newRunningJobs()
+	for id := range j.ids {
+		snapshot.ids[id] = struct{}{}
+	}
+
+	for db, tbls := range j.runningSchema {
+		tblsCopy := make(map[string]struct{}, len(tbls))
+		for tbl := range tbls {
+			tblsCopy[tbl] = struct{}{}
+		}
+		snapshot.runningSchema[db] = tblsCopy
+	}
+	return snapshot
 }
 
 func (j *runningJobs) allIDs() string {

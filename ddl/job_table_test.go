@@ -21,11 +21,15 @@ import (
 
 	"github.com/pingcap/failpoint"
 	"github.com/pingcap/tidb/ddl"
+	"github.com/pingcap/tidb/meta"
 	"github.com/pingcap/tidb/parser/model"
 	"github.com/pingcap/tidb/sessionctx/variable"
 	"github.com/pingcap/tidb/testkit"
 	"github.com/pingcap/tidb/util"
+	"github.com/pingcap/tidb/util/logutil"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 	"golang.org/x/exp/slices"
 )
 
@@ -241,4 +245,79 @@ func TestAlwaysChoiceProcessingJob(t *testing.T) {
 	wg.Wait()
 
 	check(t, record, idxb, idxa)
+}
+
+func TestConcurrentDDLCreateAndDrop(t *testing.T) {
+	store, dom := testkit.CreateMockStoreAndDomain(t)
+	tk := testkit.NewTestKit(t, store)
+	tk.MustExec("use test")
+	tk.MustExec("create table t_concurrent_ddl (id int)")
+
+	var wg sync.WaitGroup
+	tk1 := testkit.NewTestKit(t, store)
+	tk1.MustExec("use test")
+	tk2 := testkit.NewTestKit(t, store)
+	tk2.MustExec("use test")
+
+	d := dom.DDL()
+	callback := &ddl.TestDDLCallback{
+		OnJobRunBeforeExported: func(job *model.Job) {
+			switch job.Type {
+			case model.ActionDropTable:
+				if job.SchemaState == model.StateDeleteOnly {
+					go func() {
+						defer wg.Done()
+						tk1.MustExec("create table t_concurrent_ddl (id int)")
+					}()
+				}
+			case model.ActionCreateTable:
+				// Now, all drop table should have been finished
+				ret := tk.MustQuery(`select job_meta, processing from mysql.tidb_ddl_job where job_id in
+					(select min(job_id) from mysql.tidb_ddl_job group by schema_ids, table_ids, processing)
+					order by processing desc, job_id`).Rows()
+				logutil.BgLogger().Info("DDL job table", zap.Int("len", len(ret)), zap.Reflect("rows", ret))
+				if len(ret) > 0 {
+					assert.Len(t, ret, 1)
+					row := ret[0]
+					jobMeta := row[0].(string)
+					runJob := model.Job{}
+					err := runJob.Decode([]byte(jobMeta))
+					logutil.BgLogger().Info("DDL job table 1", zap.Error(err))
+					assert.NoError(t, err)
+
+					// The only job should be the create table.
+					processing := row[1].(string)
+					logutil.BgLogger().Info("DDL job table 2", zap.String("type", runJob.Type.String()), zap.String("processing", processing))
+					assert.NotEqual(t, runJob.Type, model.ActionDropTable)
+					assert.Equal(t, "1", processing)
+				}
+			}
+		},
+	}
+	d.SetHook(callback)
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		tk1.MustExec("drop table t_concurrent_ddl")
+		wg.Wait()
+	}
+
+	// Check the ddl job history, the ddl finish time of `create table` is before the `drop table`.
+	txn, err := store.Begin()
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, txn.Rollback())
+	}()
+
+	histories, err := ddl.GetAllHistoryDDLJobs(meta.NewMeta(txn))
+	require.NoError(t, err)
+	var dropFinishedTS, createFinishedTS int64
+	for _, job := range histories {
+		switch job.Type {
+		case model.ActionCreateTable:
+			createFinishedTS = int64(job.BinlogInfo.FinishedTS)
+		case model.ActionDropTable:
+			dropFinishedTS = int64(job.BinlogInfo.FinishedTS)
+		}
+	}
+	require.Less(t, dropFinishedTS, createFinishedTS)
 }
