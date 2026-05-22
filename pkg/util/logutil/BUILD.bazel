@@ -3,6 +3,7 @@ load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "logutil",
     srcs = [
+        "async_writer.go",
         "general_logger.go",
         "hex.go",
         "log.go",
@@ -30,6 +31,7 @@ go_test(
     name = "logutil_test",
     timeout = "short",
     srcs = [
+        "async_writer_test.go",
         "hex_test.go",
         "log_test.go",
         "main_test.go",
