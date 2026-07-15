@@ -1,0 +1,48 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "tidb-partial-index-rollback_lib",
+    srcs = [
+        "apply.go",
+        "check.go",
+        "main.go",
+        "rollback.go",
+        "types.go",
+    ],
+    importpath = "github.com/pingcap/tidb/cmd/tidb-partial-index-rollback",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/kv",
+        "//pkg/meta",
+        "//pkg/meta/model",
+        "//pkg/store/driver",
+        "//pkg/util",
+        "//pkg/util/logutil",
+        "@com_github_go_sql_driver_mysql//:mysql",
+        "@com_github_tikv_client_go_v2//config",
+    ],
+)
+
+go_binary(
+    name = "tidb-partial-index-rollback",
+    embed = [":tidb-partial-index-rollback_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "tidb-partial-index-rollback_test",
+    timeout = "short",
+    srcs = ["main_test.go"],
+    embed = [":tidb-partial-index-rollback_lib"],
+    flaky = True,
+    shard_count = 13,
+    deps = [
+        "//pkg/kv",
+        "//pkg/meta",
+        "//pkg/meta/model",
+        "//pkg/parser/model",
+        "//pkg/store/mockstore",
+        "@com_github_data_dog_go_sqlmock//:go-sqlmock",
+        "@com_github_stretchr_testify//require",
+    ],
+)
