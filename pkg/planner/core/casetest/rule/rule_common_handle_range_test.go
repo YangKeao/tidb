@@ -262,5 +262,20 @@ func TestCommonHandleIndexRanges(t *testing.T) {
 		tk.MustQuery(
 			"select * from t_chr_dec use index(ia) where a = 10 and pk = 2.50",
 		).Check(testkit.Rows("2.50 10"))
+
+		// ---------------------------------------------------------------
+		// Case 13: Tuple comparisons can reference an index column followed
+		// by the full common-handle suffix. Planning must not assume that
+		// the statistics index column list has the same length as IdxCols.
+		// ---------------------------------------------------------------
+		tk.MustExec("drop table if exists t_chr_tuple")
+		tk.MustExec(`CREATE TABLE t_chr_tuple (
+			a BIGINT NOT NULL,
+			b BIGINT NOT NULL,
+			c BIGINT NOT NULL,
+			PRIMARY KEY (b, c) CLUSTERED,
+			INDEX idx_a (a)
+		)`)
+		tk.MustQuery("EXPLAIN SELECT * FROM t_chr_tuple WHERE (a, b, c) > (1, 2, 3)")
 	})
 }

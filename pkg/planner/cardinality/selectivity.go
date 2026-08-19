@@ -186,9 +186,11 @@ func Selectivity(
 			for i := 0; i < len(idxCols) && i < len(idxStats.Info.Columns); i++ {
 				lengths = append(lengths, idxStats.Info.Columns[i].Length)
 			}
-			// If the found columns are more than the columns held by the index. We are appending the int pk to the tail of it.
+			// If the found columns are more than the columns held by the index, the tail
+			// columns are appended handle columns. This can be one int handle column or
+			// multiple common-handle columns.
 			// When storing index data to key-value store, we use (idx_col1, ...., idx_coln, handle_col) as its key.
-			if len(idxCols) > len(idxStats.Info.Columns) {
+			for len(lengths) < len(idxCols) {
 				lengths = append(lengths, types.UnspecifiedLength)
 			}
 			maskCovered, ranges, partCover, minAccessCondsForDNFCond, err :=
