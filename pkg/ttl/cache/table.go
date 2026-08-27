@@ -736,12 +736,21 @@ func ttlIndexScanPlanLess(lhs, rhs *TTLIndexScanPlan) bool {
 }
 
 // BuildTTLIndexScanPlan validates an index and derives its scan and pagination columns.
+//
+// TTL index scan must be able to page by a strict cursor in the same order as the
+// physical index scan. The generated ORDER BY has to be fully satisfied by the
+// index order; otherwise every page may need an extra TopN/Sort and repeatedly
+// re-scan rows that were already seen by previous pages.
 func (t *PhysicalTable) BuildTTLIndexScanPlan(idx *model.IndexInfo) (*TTLIndexScanPlan, error) {
 	if t.TimeColumn == nil || idx == nil {
 		return nil, errors.New("TTL time column and index are required")
 	}
 	if idx.Primary || idx.State != model.StatePublic || idx.Invisible || idx.Global || idx.MVIndex ||
 		idx.IsColumnarIndex() || idx.ConditionExprString != "" || len(idx.Columns) == 0 {
+		// TTL needs one local public secondary-index order that can be scanned
+		// directly. Primary/global/MV/columnar/conditional indexes either use a
+		// different access path, add extra predicate semantics, or do not provide
+		// that single local physical order.
 		return nil, errors.Errorf("index %s is not a supported TTL secondary index", idx.Name)
 	}
 	if idx.Columns[0].Name.L != t.TimeColumn.Name.L {
@@ -751,10 +760,14 @@ func (t *PhysicalTable) BuildTTLIndexScanPlan(idx *model.IndexInfo) (*TTLIndexSc
 	indexColumns := make([]*model.ColumnInfo, len(idx.Columns))
 	for i, idxCol := range idx.Columns {
 		if idxCol.Offset < 0 || idxCol.Offset >= len(t.Columns) || idxCol.Length != types.UnspecifiedLength {
+			// Prefix indexes are ordered by the stored prefix, while TTL cursor
+			// predicates compare full column values. Using such an index could
+			// skip or revisit rows whose full values share the same prefix.
 			return nil, errors.Errorf("index column %s cannot be used as a full TTL pagination column", idxCol.Name)
 		}
 		col := t.Columns[idxCol.Offset]
 		if col == nil || col.Hidden {
+			// Hidden columns cannot be referenced by the generated pagination SQL.
 			return nil, errors.Errorf("index column %s is not a visible table column", idxCol.Name)
 		}
 		indexColumns[i] = col
@@ -762,6 +775,10 @@ func (t *PhysicalTable) BuildTTLIndexScanPlan(idx *model.IndexInfo) (*TTLIndexSc
 	if idx.Unique {
 		for _, col := range indexColumns[1:] {
 			if !mysql.HasNotNullFlag(col.GetFlag()) {
+				// A unique index with nullable non-TTL columns is not unique for
+				// pagination: SQL allows multiple rows where those columns are
+				// NULL. The TTL column itself is safe because the expiration
+				// predicate excludes NULL TTL values.
 				return nil, errors.Errorf("unique index %s has nullable non-TTL column %s", idx.Name, col.Name)
 			}
 		}
@@ -785,6 +802,12 @@ func (t *PhysicalTable) BuildTTLIndexScanPlan(idx *model.IndexInfo) (*TTLIndexSc
 	orderColumns := append([]*model.ColumnInfo(nil), indexColumns...)
 	if !idx.Unique && !containsFullKey {
 		if containsPartialKey || !t.canUseHandleInTTLIndexOrder() {
+			// Non-unique secondary-index rows are ordered by declared index
+			// columns plus an implicit table-key suffix. TTL can page by that
+			// suffix only when it can append the full table key to ORDER BY and
+			// the planner can match it to the physical suffix. If the index has
+			// only part of the table key, the current cursor layout cannot
+			// express the remaining hidden suffix without changing the order.
 			return nil, errors.Errorf("index %s cannot seek by its physical table-key suffix", idx.Name)
 		}
 		orderColumns = append(orderColumns, t.KeyColumns...)
@@ -816,12 +839,19 @@ func (t *PhysicalTable) BuildTTLIndexScanPlan(idx *model.IndexInfo) (*TTLIndexSc
 
 func (t *PhysicalTable) canUseHandleInTTLIndexOrder() bool {
 	if t.PKIsHandle {
+		// For int-handle tables, the hidden suffix follows signed handle order.
+		// Unsigned integer primary-key values can have a different SQL order, so
+		// do not rely on the hidden suffix for pagination.
 		return len(t.KeyColumns) == 1 && !mysql.HasUnsignedFlag(t.KeyColumns[0].GetFlag())
 	}
 	if !t.IsCommonHandle {
+		// The hidden _tidb_rowid suffix is an internal signed integer, and the
+		// planner can use it to satisfy ORDER BY _tidb_rowid.
 		return true
 	}
 	if t.commonHandleHasPrefixColumn() {
+		// A prefix common-handle column stores only the indexed prefix in the key,
+		// but TTL would need the full handle value for a stable cursor.
 		return false
 	}
 	if t.CommonHandleVersion != 0 || !collate.NewCollationEnabled() {
@@ -829,6 +859,10 @@ func (t *PhysicalTable) canUseHandleInTTLIndexOrder() bool {
 	}
 	for _, col := range t.KeyColumns {
 		if col.FieldType.EvalType() == types.ETString && !mysql.HasBinaryFlag(col.GetFlag()) {
+			// This matches the planner restriction for v0 common handles with new
+			// collations: non-binary string handle values are stored as sort-key
+			// bytes in the index, not original values, so SQL collation order
+			// cannot be safely matched to the hidden suffix.
 			return false
 		}
 	}

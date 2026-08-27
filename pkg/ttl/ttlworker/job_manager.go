@@ -413,6 +413,11 @@ func (m *JobManager) handleSubmitJobRequest(se session.Session, jobReq *SubmitTT
 	jobReq.RespCh <- err
 }
 
+// canCreateTTLJobForCurrentVersion checks whether all known TiDB servers have
+// the same normalized TiDB semver as the current server. It compares only the
+// semantic version part after "TiDB-v" and ignores prerelease/build metadata,
+// including Git hashes. Lookup or parse failures are treated as allow-with-warning
+// so that a transient server-info problem does not permanently block TTL jobs.
 func (m *JobManager) canCreateTTLJobForCurrentVersion() bool {
 	now := time.Now()
 	if !m.lastServerVersionCheckTime.IsZero() {

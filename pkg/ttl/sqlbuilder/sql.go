@@ -192,9 +192,22 @@ func (b *SQLBuilder) WriteCommonCondition(cols []*model.ColumnInfo, op string, d
 	return b.writeDataPoint(cols, dp)
 }
 
-// writeLexicographicGreaterThan writes a strict ASC continuation condition.
-// It expands the comparison when a cursor value is NULL because SQL row
-// comparisons containing NULL evaluate to UNKNOWN.
+// writeLexicographicGreaterThan writes a strict ASC continuation condition for
+// the same columns used by ORDER BY. The caller must pass a stable pagination
+// key; otherwise a strict cursor cannot guarantee that every row is seen once.
+//
+// When all cursor values are non-NULL, SQL row comparison is compact and correct:
+//
+//	(a, b, c) > (1, 2, 3)
+//
+// If any cursor value is NULL, row comparison is not usable because comparison
+// against NULL evaluates to UNKNOWN. MySQL/TiDB sort NULL before non-NULL values
+// in ASC order, so the cursor has to be expanded column by column. For example,
+// for ORDER BY (a, b, c) ASC and cursor (1, NULL, 3), the next-page condition is:
+//
+//	a > 1
+//	OR (a = 1 AND b IS NOT NULL)
+//	OR (a = 1 AND b IS NULL AND c > 3)
 func (b *SQLBuilder) writeLexicographicGreaterThan(cols []*model.ColumnInfo, dp []types.Datum) error {
 	if len(cols) == 0 || len(cols) != len(dp) {
 		return errors.Errorf("col count not match %d != %d", len(cols), len(dp))
