@@ -34,11 +34,34 @@ When the optimizer uses a secondary index on the TTL column, this query structur
 
 ### Index Selection
 
-A usable index must be an ordinary public, visible, full-column secondary index whose first column is the TTL column. Pagination follows the selected index's declared column order rather than assuming the table key immediately follows the TTL column. For example, both `(expired_at)` and `(expired_at, status)` can be used.
+A usable index must be an ordinary public, visible, full-column secondary index whose first column is the TTL column. Pagination follows the selected index's physical order instead of always assuming that the table key immediately follows the TTL column. Here, the table key means the clustered primary key, or `_tidb_rowid` for a table without a clustered primary key.
 
-For a non-unique index, the table key is appended to the declared index columns when it is needed to make the cursor row-unique and the planner can use that physical handle suffix for an ordered range seek. For a unique index, non-`NULL` declared index tuples are already row-unique, so the normal cursor contains only the declared index columns. In particular, a unique single-column TTL index paginates only by the TTL column while still selecting the table key for deletion.
+The supported pagination layouts are:
 
-Prefix indexes, multi-valued indexes, global indexes, hidden expression columns, and handle layouts for which the planner cannot expose an ordered suffix are not selected. This includes hidden common-handle suffixes whose primary key contains prefix columns. They fall back to the existing PK scan.
+| Index shape | Pagination tuple | Additional requirement |
+|---|---|---|
+| Non-unique `(ttl)` | `(ttl, table_key...)` | The planner must be able to expose the implicit table-key suffix in index order. |
+| Unique `(ttl)` | `(ttl)` | None. The expiration predicate excludes `NULL` TTL values. |
+| Non-unique `(ttl, index_columns...)` containing the complete table key | The declared index columns | The table-key columns may appear in any declared order. |
+| Non-unique `(ttl, index_columns...)` containing no table-key column | The declared index columns followed by the complete table key | The planner must be able to expose the implicit table-key suffix in index order. Nullable declared columns are supported. |
+| Unique `(ttl, index_columns...)` | The declared index columns | Every non-TTL index column must be `NOT NULL`. The index may contain all, part, or none of the table key. |
+
+For a non-unique index, the cursor needs the complete table key unless the declared index tuple already contains it and is therefore row-unique. When the cursor relies on the implicit physical table-key suffix, the following handle layouts are supported:
+
+- `_tidb_rowid`;
+- a signed integer clustered primary key;
+- a common handle without prefix primary-key columns, except a version-0 common handle containing non-binary string columns when the new collation framework is enabled.
+
+An unsigned integer clustered primary key cannot be used as an implicit suffix because its physical suffix order cannot satisfy the SQL order currently exposed by the planner. This restriction does not apply when the full key is explicitly present among the declared index columns.
+
+The following cases are unsupported and fall back to the existing PK scan:
+
+- the TTL column is not the first index column;
+- primary, invisible, non-public, global, multi-valued, columnar, or conditional indexes;
+- prefix index columns or hidden expression columns;
+- a unique composite index with a nullable non-TTL column, because SQL permits multiple rows with the same tuple through `NULL` values;
+- a non-unique composite index containing only part of the table key, because the current cursor layout cannot represent the remaining implicit suffix in physical order;
+- a non-unique index that needs one of the unsupported implicit handle suffixes described above.
 
 The scheduler calls `PhysicalTable.FindTTLIndex()` at job creation time. If the selected index is dropped later, the worker reports an error for the affected task.
 
@@ -65,9 +88,13 @@ WHERE (`created_time`, `status`, `id`) > (?, ?, ?) AND `created_time` < ? AND `c
 ORDER BY `created_time` ASC, `status` ASC, `id` ASC LIMIT ?;
 ```
 
-The `FORCE INDEX` hint prevents the optimizer from choosing a different plan. Each index task scans one TTL-column range `[start, end)`. The first page applies the lower and upper bounds, and later pages continue from the last index-order tuple while keeping the upper bound. If a cursor contains `NULL`, the strict-greater comparison is expanded into a NULL-safe lexicographic predicate that matches TiDB's ascending, NULL-first index order. The scan result contains both cursor columns and the table key required by the delete phase.
+The `FORCE INDEX` hint prevents the optimizer from choosing a different access index. The supported pagination tuples above match the selected index's physical order, so the planner can use an ordered index range scan without a per-page `TopN`. Conversely, `USE INDEX ()` in the PK-scan SQL prevents the optimizer from unexpectedly selecting a secondary index and repeatedly sorting it by primary-key order.
+
+Each index task scans one TTL-column range `[start, end)`. The first page applies the lower and upper bounds, and later pages continue from the last index-order tuple while keeping the upper bound. If a cursor contains `NULL`, the strict-greater comparison is expanded into a NULL-safe lexicographic predicate that matches TiDB's ascending, NULL-first index order. The scan result contains both cursor columns and the table key required by the delete phase.
 
 For a unique index, pages order and seek only by the declared index columns. The TTL predicate excludes a `NULL` TTL value, so a unique single-column TTL index needs no extra cursor suffix even when the TTL column is nullable. A composite unique index is used only when every non-TTL index column is `NOT NULL`; otherwise, multiple rows could share the same tuple through `NULL` values and the table falls back to PK scan. Non-unique indexes remain usable with nullable columns because their pagination tuple includes the table key and the strict-greater predicate follows TiDB's NULL-first index order.
+
+Pages are separate SQL statements and do not share one snapshot. If an indexed value changes while a task is scanning, a row can move across the cursor and be skipped by the current job or observed again. The delete statement rechecks the expiration condition, so this cannot delete a row that is no longer expired; a skipped expired row remains eligible for a later TTL job. The scan therefore provides safe, eventually repeated processing rather than an exactly-once traversal under concurrent index-column updates.
 
 ### Task Splitting
 
@@ -84,5 +111,5 @@ For index scan splitting, the scheduler locates TiKV regions in the raw secondar
 
 - `tidb_ttl_enable_index_scan` defaults to `ON`. Tables with a suitable TTL-column secondary index will use index-ordered scans; tables without one keep the existing PK-ordered scan behavior.
 - `split_by` defaults to `NULL`, compatible with old tasks.
-- Before creating a TTL job, the TTL manager compares the normalized semantic versions of the current TiDB and all TiDB instances registered in server info. The current process's runtime version is always the comparison baseline, even if its etcd entry is temporarily absent. The manager skips creating the job when it detects mixed versions, preventing an old worker from interpreting index boundaries as PK boundaries during a rolling upgrade. Server-info lookup or version parsing failures are logged and allowed. Allowed results, including fail-open results, are cached for 10 seconds to coalesce bursts of job creation; a detected mismatch is cached for one minute to avoid frequent etcd reads while the timer retries the job.
+- Before creating a TTL job, the TTL manager compares the normalized semantic versions of the current TiDB and all TiDB instances registered in server info. Prerelease labels, build metadata, and Git hashes are ignored. The current process's runtime version is always the comparison baseline, even if its etcd entry is temporarily absent. When mixed versions are visible, the manager skips creating the job so an old worker cannot interpret index boundaries as PK boundaries during a rolling upgrade. This is a best-effort compatibility gate: server-info lookup, an empty result, or version parsing failures are logged and allowed. Allowed results, including fail-open results, are cached for 10 seconds to coalesce bursts of job creation; a detected mismatch is cached for one minute to avoid frequent etcd reads while the timer retries the job.
 - No TiKV or protocol changes.
