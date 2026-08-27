@@ -84,15 +84,18 @@ ORDER BY `created_time` ASC, `status` ASC, `id` ASC LIMIT ?;
 **Pagination within the same task:**
 ```sql
 SELECT LOW_PRIORITY SQL_NO_CACHE `created_time`, `status`, `id` FROM `test`.`t` FORCE INDEX(`idx_created`)
-WHERE (`created_time`, `status`, `id`) > (?, ?, ?) AND `created_time` < ? AND `created_time` < FROM_UNIXTIME(?)
+WHERE `created_time` = ? AND `status` = ? AND `id` > ?
+  AND `created_time` < ? AND `created_time` < FROM_UNIXTIME(?)
 ORDER BY `created_time` ASC, `status` ASC, `id` ASC LIMIT ?;
 ```
 
-The `FORCE INDEX` hint prevents the optimizer from choosing a different access index. The supported pagination tuples above match the selected index's physical order, so the planner can use an ordered index range scan without a per-page `TopN`. Conversely, `USE INDEX ()` in the PK-scan SQL prevents the optimizer from unexpectedly selecting a secondary index and repeatedly sorting it by primary-key order.
+The `FORCE INDEX` hint prevents the optimizer from choosing a different access index. Pagination uses a stack of cursor prefixes. For a cursor `(created_time, status, id)`, it first scans `created_time = ? AND status = ? AND id > ?`. When that query returns fewer rows than its limit, the current prefix is exhausted and the generator pops one stack level to scan `created_time = ? AND status > ?`, then finally `created_time > ?`. Each query therefore contains an equality prefix followed by at most one range condition. The supported pagination tuples above match the selected index's physical order, so the planner can use one ordered index range scan without a per-page `TopN`.
 
-Each index task scans one TTL-column range `[start, end)`. The first page applies the lower and upper bounds, and later pages continue from the last index-order tuple while keeping the upper bound. If a cursor contains `NULL`, the strict-greater comparison is expanded into a NULL-safe lexicographic predicate that matches TiDB's ascending, NULL-first index order. The scan result contains both cursor columns and the table key required by the delete phase.
+Conversely, `USE INDEX ()` in the PK-scan SQL prevents the optimizer from unexpectedly selecting a secondary index and repeatedly sorting it by primary-key order.
 
-For a unique index, pages order and seek only by the declared index columns. The TTL predicate excludes a `NULL` TTL value, so a unique single-column TTL index needs no extra cursor suffix even when the TTL column is nullable. A composite unique index is used only when every non-TTL index column is `NOT NULL`; otherwise, multiple rows could share the same tuple through `NULL` values and the table falls back to PK scan. Non-unique indexes remain usable with nullable columns because their pagination tuple includes the table key and the strict-greater predicate follows TiDB's NULL-first index order.
+Each index task scans one TTL-column range `[start, end)`. The first page applies the lower and upper bounds, and later pages continue from the last index-order tuple while keeping the upper bound. If a fixed cursor prefix contains `NULL`, it uses `IS NULL`; advancing past a `NULL` frontier uses `IS NOT NULL`, matching TiDB's ascending, NULL-first index order. The scan result contains both cursor columns and the table key required by the delete phase.
+
+For a unique index, pages order and seek only by the declared index columns. The TTL predicate excludes a `NULL` TTL value, so a unique single-column TTL index needs no extra cursor suffix even when the TTL column is nullable. A composite unique index is used only when every non-TTL index column is `NOT NULL`; otherwise, multiple rows could share the same tuple through `NULL` values and the table falls back to PK scan. Non-unique indexes remain usable with nullable columns because their pagination tuple includes the table key and the stack conditions follow TiDB's NULL-first index order.
 
 Pages are separate SQL statements and do not share one snapshot. If an indexed value changes while a task is scanning, a row can move across the cursor and be skipped by the current job or observed again. The delete statement rechecks the expiration condition, so this cannot delete a row that is no longer expired; a skipped expired row remains eligible for a later TTL job. The scan therefore provides safe, eventually repeated processing rather than an exactly-once traversal under concurrent index-column updates.
 

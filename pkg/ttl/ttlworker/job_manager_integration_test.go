@@ -722,6 +722,27 @@ func TestIndexScanForAnonymizedLargeTableShape(t *testing.T) {
 	compositePlan.MultiCheckContain([]string{"IndexRangeScan", "idx_expired_status"})
 	compositePlan.CheckNotContain("TopN")
 	compositePlan.CheckNotContain("Sort")
+
+	// Stack pagination keeps every query to an equality prefix followed by at
+	// most one range condition. Check every stack level, including NULL
+	// transitions, against the implicit common-handle suffix.
+	paginationSQLs := []string{
+		"select expired_at, status, tenant_id, event_id from ttl_composite_index force index(idx_expired_status) " +
+			"where expired_at = '2024-12-01 00:00:00' and status is null and tenant_id = 1 and event_id > 2 " +
+			"and expired_at < from_unixtime(1735689600) order by expired_at, status, tenant_id, event_id limit 32",
+		"select expired_at, status, tenant_id, event_id from ttl_composite_index force index(idx_expired_status) " +
+			"where expired_at = '2024-12-01 00:00:00' and status is not null " +
+			"and expired_at < from_unixtime(1735689600) order by expired_at, status, tenant_id, event_id limit 32",
+		"select expired_at, status, tenant_id, event_id from ttl_composite_index force index(idx_expired_status) " +
+			"where expired_at > '2024-12-01 00:00:00' and expired_at < from_unixtime(1735689600) " +
+			"order by expired_at, status, tenant_id, event_id limit 32",
+	}
+	for _, paginationSQL := range paginationSQLs {
+		paginationPlan := tk.MustQuery("explain format='brief' " + paginationSQL)
+		paginationPlan.MultiCheckContain([]string{"IndexRangeScan", "idx_expired_status"})
+		paginationPlan.CheckNotContain("TopN")
+		paginationPlan.CheckNotContain("Sort")
+	}
 }
 
 func TestRescheduleJobs(t *testing.T) {

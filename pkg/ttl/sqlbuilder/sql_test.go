@@ -985,9 +985,14 @@ func TestIndexScanQueryGenerator(t *testing.T) {
 	}
 	sql, err = g.NextSQL(continueResult, 5)
 	require.NoError(t, err)
-	require.Equal(t, "SELECT LOW_PRIORITY SQL_NO_CACHE `created_time`, `id` FROM `test`.`t1` FORCE INDEX(`idx_created`) WHERE (`created_time`, `id`) > ('1970-01-01 00:00:00', 15) AND `created_time` < FROM_UNIXTIME(0) ORDER BY `created_time`, `id` ASC LIMIT 5", sql)
+	require.Equal(t, "SELECT LOW_PRIORITY SQL_NO_CACHE `created_time`, `id` FROM `test`.`t1` FORCE INDEX(`idx_created`) WHERE `created_time` = '1970-01-01 00:00:00' AND `id` > 15 AND `created_time` < FROM_UNIXTIME(0) ORDER BY `created_time`, `id` ASC LIMIT 5", sql)
 
-	// Test exhaustion: fewer rows than limit
+	// A short page exhausts the current prefix and pops to the preceding column.
+	sql, err = g.NextSQL(continueResult[0:1], 5)
+	require.NoError(t, err)
+	require.Equal(t, "SELECT LOW_PRIORITY SQL_NO_CACHE `created_time`, `id` FROM `test`.`t1` FORCE INDEX(`idx_created`) WHERE `created_time` > '1970-01-01 00:00:00' AND `created_time` < FROM_UNIXTIME(0) ORDER BY `created_time`, `id` ASC LIMIT 5", sql)
+
+	// A short page at the first column exhausts the scan.
 	sql, err = g.NextSQL(continueResult[0:1], 5)
 	require.NoError(t, err)
 	require.Equal(t, "", sql)
@@ -1039,7 +1044,7 @@ func TestIndexScanQueryGenerator(t *testing.T) {
 	}
 	sql, err = g.NextSQL(uniqueBoundaryRows, 3)
 	require.NoError(t, err)
-	require.Equal(t, "SELECT LOW_PRIORITY SQL_NO_CACHE `created_time`, `status`, `id` FROM `test`.`t1` FORCE INDEX(`uidx_created_status`) WHERE (`created_time`, `status`) > ('1970-01-01 00:00:00', 1) AND `created_time` < FROM_UNIXTIME(0) ORDER BY `created_time`, `status` ASC LIMIT 3", sql)
+	require.Equal(t, "SELECT LOW_PRIORITY SQL_NO_CACHE `created_time`, `status`, `id` FROM `test`.`t1` FORCE INDEX(`uidx_created_status`) WHERE `created_time` = '1970-01-01 00:00:00' AND `status` > 1 AND `created_time` < FROM_UNIXTIME(0) ORDER BY `created_time`, `status` ASC LIMIT 3", sql)
 
 	statusCol.SetFlag(0)
 	nullDatum := types.Datum{}
@@ -1058,5 +1063,20 @@ func TestIndexScanQueryGenerator(t *testing.T) {
 	require.NoError(t, err)
 	sql, err = g.NextSQL(boundaryRows[:1], 1)
 	require.NoError(t, err)
-	require.Equal(t, "SELECT LOW_PRIORITY SQL_NO_CACHE `created_time`, `status`, `id` FROM `test`.`t1` FORCE INDEX(`idx_created_status`) WHERE ((`created_time` > '1970-01-01 00:00:00') OR (`created_time` = '1970-01-01 00:00:00' AND `status` IS NOT NULL) OR (`created_time` = '1970-01-01 00:00:00' AND `status` IS NULL AND `id` > 1)) AND `created_time` < FROM_UNIXTIME(0) ORDER BY `created_time`, `status`, `id` ASC LIMIT 1", sql)
+	require.Equal(t, "SELECT LOW_PRIORITY SQL_NO_CACHE `created_time`, `status`, `id` FROM `test`.`t1` FORCE INDEX(`idx_created_status`) WHERE `created_time` = '1970-01-01 00:00:00' AND `status` IS NULL AND `id` > 1 AND `created_time` < FROM_UNIXTIME(0) ORDER BY `created_time`, `status`, `id` ASC LIMIT 1", sql)
+
+	// Exhaust the NULL status prefix and advance to the first non-NULL status.
+	sql, err = g.NextSQL(nil, 1)
+	require.NoError(t, err)
+	require.Equal(t, "SELECT LOW_PRIORITY SQL_NO_CACHE `created_time`, `status`, `id` FROM `test`.`t1` FORCE INDEX(`idx_created_status`) WHERE `created_time` = '1970-01-01 00:00:00' AND `status` IS NOT NULL AND `created_time` < FROM_UNIXTIME(0) ORDER BY `created_time`, `status`, `id` ASC LIMIT 1", sql)
+
+	// Exhaust the timestamp prefix and advance to the next timestamp.
+	sql, err = g.NextSQL(nil, 1)
+	require.NoError(t, err)
+	require.Equal(t, "SELECT LOW_PRIORITY SQL_NO_CACHE `created_time`, `status`, `id` FROM `test`.`t1` FORCE INDEX(`idx_created_status`) WHERE `created_time` > '1970-01-01 00:00:00' AND `created_time` < FROM_UNIXTIME(0) ORDER BY `created_time`, `status`, `id` ASC LIMIT 1", sql)
+
+	sql, err = g.NextSQL(nil, 1)
+	require.NoError(t, err)
+	require.Empty(t, sql)
+	require.True(t, g.IsExhausted())
 }

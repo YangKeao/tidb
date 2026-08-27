@@ -192,90 +192,6 @@ func (b *SQLBuilder) WriteCommonCondition(cols []*model.ColumnInfo, op string, d
 	return b.writeDataPoint(cols, dp)
 }
 
-// writeLexicographicGreaterThan writes a strict ASC continuation condition for
-// the same columns used by ORDER BY. The caller must pass a stable pagination
-// key; otherwise a strict cursor cannot guarantee that every row is seen once.
-//
-// When all cursor values are non-NULL, SQL row comparison is compact and correct:
-//
-//	(a, b, c) > (1, 2, 3)
-//
-// If any cursor value is NULL, row comparison is not usable because comparison
-// against NULL evaluates to UNKNOWN. MySQL/TiDB sort NULL before non-NULL values
-// in ASC order, so the cursor has to be expanded column by column. For example,
-// for ORDER BY (a, b, c) ASC and cursor (1, NULL, 3), the next-page condition is:
-//
-//	a > 1
-//	OR (a = 1 AND b IS NOT NULL)
-//	OR (a = 1 AND b IS NULL AND c > 3)
-func (b *SQLBuilder) writeLexicographicGreaterThan(cols []*model.ColumnInfo, dp []types.Datum) error {
-	if len(cols) == 0 || len(cols) != len(dp) {
-		return errors.Errorf("col count not match %d != %d", len(cols), len(dp))
-	}
-	hasNull := false
-	for _, d := range dp {
-		if d.IsNull() {
-			hasNull = true
-			break
-		}
-	}
-	if !hasNull {
-		return b.WriteCommonCondition(cols, ">", dp)
-	}
-	if err := b.beginCondition(); err != nil {
-		return err
-	}
-	b.restoreCtx.WritePlain("(")
-	for i, col := range cols {
-		if i > 0 {
-			b.restoreCtx.WritePlain(" OR ")
-		}
-		b.restoreCtx.WritePlain("(")
-		for j := range i {
-			if j > 0 {
-				b.restoreCtx.WritePlain(" AND ")
-			}
-			b.writeColName(cols[j])
-			if dp[j].IsNull() {
-				b.restoreCtx.WritePlain(" IS NULL")
-			} else {
-				b.restoreCtx.WritePlain(" = ")
-				if err := writeDatum(b.restoreCtx, dp[j], &cols[j].FieldType); err != nil {
-					return err
-				}
-			}
-		}
-		if i > 0 {
-			b.restoreCtx.WritePlain(" AND ")
-		}
-		b.writeColName(col)
-		if dp[i].IsNull() {
-			b.restoreCtx.WritePlain(" IS NOT NULL")
-		} else {
-			b.restoreCtx.WritePlain(" > ")
-			if err := writeDatum(b.restoreCtx, dp[i], &col.FieldType); err != nil {
-				return err
-			}
-		}
-		b.restoreCtx.WritePlain(")")
-	}
-	b.restoreCtx.WritePlain(")")
-	return nil
-}
-
-func (b *SQLBuilder) beginCondition() error {
-	switch b.state {
-	case writeSelOrDel:
-		b.restoreCtx.WritePlain(" WHERE ")
-		b.state = writeWhere
-	case writeWhere:
-		b.restoreCtx.WritePlain(" AND ")
-	default:
-		return errors.Errorf("invalid state: %v", b.state)
-	}
-	return nil
-}
-
 // WriteExpireCondition writes a condition with the time column
 func (b *SQLBuilder) WriteExpireCondition(expire time.Time) error {
 	switch b.state {
@@ -425,7 +341,6 @@ type ScanQueryGenerator struct {
 
 	// Index scan mode
 	indexPlan *cache.TTLIndexScanPlan
-	lastKey   []types.Datum
 }
 
 // NewScanQueryGenerator creates a primary-key scan query generator.
@@ -492,21 +407,14 @@ func (g *ScanQueryGenerator) NextSQL(continueFromResult [][]types.Datum, nextLim
 		g.firstBuild = false
 	}()
 
-	if g.indexPlan != nil {
-		return g.nextSQLForIndex(continueFromResult, nextLimit)
-	}
-	return g.nextSQLForPK(continueFromResult, nextLimit)
-}
-
-func (g *ScanQueryGenerator) nextSQLForPK(continueFromResult [][]types.Datum, nextLimit int) (string, error) {
 	if g.stack == nil {
-		g.stack = make([][]types.Datum, 0, len(g.tbl.KeyColumns))
+		g.stack = make([][]types.Datum, 0, len(g.orderColumns()))
 	}
 
 	if len(continueFromResult) >= g.limit {
 		var continueFromKey []types.Datum
 		if cnt := len(continueFromResult); cnt > 0 {
-			continueFromKey = continueFromResult[cnt-1]
+			continueFromKey = g.orderKey(continueFromResult[cnt-1])
 		}
 		if err := g.setStack(continueFromKey); err != nil {
 			return "", err
@@ -523,16 +431,18 @@ func (g *ScanQueryGenerator) nextSQLForPK(continueFromResult [][]types.Datum, ne
 	return g.buildSQL()
 }
 
-func (g *ScanQueryGenerator) nextSQLForIndex(continueFromResult [][]types.Datum, nextLimit int) (string, error) {
-	if len(continueFromResult) >= g.limit {
-		if cnt := len(continueFromResult); cnt > 0 {
-			g.lastKey = g.indexPlan.OrderKey(continueFromResult[cnt-1])
-		}
-	} else if !g.firstBuild {
-		g.exhausted = true
+func (g *ScanQueryGenerator) orderColumns() []*model.ColumnInfo {
+	if g.indexPlan != nil {
+		return g.indexPlan.OrderColumns
 	}
-	g.limit = nextLimit
-	return g.buildSQL()
+	return g.tbl.KeyColumns
+}
+
+func (g *ScanQueryGenerator) orderKey(row []types.Datum) []types.Datum {
+	if g.indexPlan != nil {
+		return g.indexPlan.OrderKey(row)
+	}
+	return row
 }
 
 // IsExhausted returns whether the generator is exhausted
@@ -550,8 +460,8 @@ func (g *ScanQueryGenerator) setStack(key []types.Datum) error {
 		return nil
 	}
 
-	if err := g.tbl.ValidateKeyPrefix(key); err != nil {
-		return err
+	if maxLen := len(g.orderColumns()); len(key) > maxLen {
+		return errors.Errorf("invalid pagination key length: %d, expected at most %d", len(key), maxLen)
 	}
 
 	g.stack = g.stack[:len(key)]
@@ -577,6 +487,58 @@ func (g *ScanQueryGenerator) buildSQL() (string, error) {
 	return g.buildSQLForPK(b)
 }
 
+// writeStackConditions writes one ordered index range for the top cursor prefix.
+// For cursor (a, b, c), successive stack levels produce:
+//
+//	a = ? AND b = ? AND c > ?
+//	a = ? AND b > ?
+//	a > ?
+//
+// NULL is first in TiDB's ascending index order. A NULL in the fixed prefix uses
+// IS NULL, while advancing past a NULL frontier uses IS NOT NULL.
+func (g *ScanQueryGenerator) writeStackConditions(b *SQLBuilder, cols []*model.ColumnInfo) error {
+	if len(g.stack) == 0 {
+		return nil
+	}
+
+	key := g.stack[len(g.stack)-1]
+	for i, d := range key {
+		col := cols[i : i+1]
+		val := []types.Datum{d}
+		if i < len(key)-1 {
+			op := "="
+			if d.IsNull() {
+				op = "IS"
+			}
+			if err := b.WriteCommonCondition(col, op, val); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if d.IsNull() {
+			// An inclusive lower bound at NULL includes every value at this
+			// prefix, so it needs no condition on the frontier column.
+			if g.firstBuild {
+				continue
+			}
+			if err := b.WriteCommonCondition(col, "IS NOT", val); err != nil {
+				return err
+			}
+			continue
+		}
+
+		op := ">"
+		if g.firstBuild {
+			op = ">="
+		}
+		if err := b.WriteCommonCondition(col, op, val); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (g *ScanQueryGenerator) buildSQLForPK(b *SQLBuilder) (string, error) {
 	if err := b.WriteSelect(); err != nil {
 		return "", err
@@ -584,26 +546,8 @@ func (g *ScanQueryGenerator) buildSQLForPK(b *SQLBuilder) (string, error) {
 	if err := b.writeUseNoIndex(); err != nil {
 		return "", err
 	}
-	if len(g.stack) > 0 {
-		for i, d := range g.stack[len(g.stack)-1] {
-			col := []*model.ColumnInfo{g.tbl.KeyColumns[i]}
-			val := []types.Datum{d}
-			var err error
-			if i < len(g.stack)-1 {
-				err = b.WriteCommonCondition(col, "=", val)
-			} else if g.firstBuild {
-				// When `g.firstBuild == true`, that means we are querying rows after range start, because range is defined
-				// as [start, end), we should use ">=" to find the rows including start key.
-				err = b.WriteCommonCondition(col, ">=", val)
-			} else {
-				// Otherwise when `g.firstBuild != true`, that means we are continuing with the previous result, we should use
-				// ">" to exclude the previous row.
-				err = b.WriteCommonCondition(col, ">", val)
-			}
-			if err != nil {
-				return "", err
-			}
-		}
+	if err := g.writeStackConditions(b, g.tbl.KeyColumns); err != nil {
+		return "", err
 	}
 
 	if len(g.keyRangeEnd) > 0 {
@@ -635,15 +579,8 @@ func (g *ScanQueryGenerator) buildSQLForIndex(b *SQLBuilder) (string, error) {
 		return "", err
 	}
 
-	if g.lastKey != nil {
-		if err := b.writeLexicographicGreaterThan(g.indexPlan.OrderColumns, g.lastKey); err != nil {
-			return "", err
-		}
-	} else if g.firstBuild && len(g.keyRangeStart) > 0 {
-		// First build: time_col >= range_start
-		if err := b.WriteCommonCondition([]*model.ColumnInfo{g.tbl.TimeColumn}, ">=", g.keyRangeStart); err != nil {
-			return "", err
-		}
+	if err := g.writeStackConditions(b, g.indexPlan.OrderColumns); err != nil {
+		return "", err
 	}
 
 	if len(g.keyRangeEnd) > 0 {
