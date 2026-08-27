@@ -49,6 +49,7 @@ import (
 	"github.com/pingcap/tidb/pkg/ttl/session"
 	"github.com/pingcap/tidb/pkg/ttl/sqlbuilder"
 	"github.com/pingcap/tidb/pkg/ttl/ttlworker"
+	"github.com/pingcap/tidb/pkg/types"
 	"github.com/pingcap/tidb/pkg/util/logutil"
 	"github.com/pingcap/tidb/pkg/util/skip"
 	"github.com/pingcap/tidb/pkg/util/sqlexec"
@@ -703,10 +704,18 @@ func TestIndexScanForAnonymizedLargeTableShape(t *testing.T) {
 		tenant_id bigint not null,
 		event_id bigint not null,
 		expired_at datetime not null,
-		status tinyint,
+		status varchar(64),
 		primary key (tenant_id, event_id),
 		index idx_expired_status(expired_at, status)
 	) TTL=expired_at + interval 1 hour`)
+	tk.MustExec(`insert into ttl_composite_index values
+		(1, 1, '2024-12-01 00:00:00', null),
+		(1, 2, '2024-12-01 00:00:00', null),
+		(1, 3, '2024-12-01 00:00:00', null),
+		(2, 1, '2024-12-01 00:00:00', null),
+		(1, 4, '2024-12-01 00:00:00', ''),
+		(1, 5, '2024-12-01 00:00:00', 'active'),
+		(1, 6, '2024-12-02 00:00:00', null)`)
 	compositeTable, err := dom.InfoSchema().TableByName(context.Background(), ast.NewCIStr("test"), ast.NewCIStr("ttl_composite_index"))
 	require.NoError(t, err)
 	compositeTTLTable, err := cache.NewPhysicalTable(ast.NewCIStr("test"), compositeTable.Meta(), ast.NewCIStr(""))
@@ -723,22 +732,52 @@ func TestIndexScanForAnonymizedLargeTableShape(t *testing.T) {
 	compositePlan.CheckNotContain("TopN")
 	compositePlan.CheckNotContain("Sort")
 
-	// Stack pagination keeps every query to an equality prefix followed by at
-	// most one range condition. Check every stack level, including NULL
-	// transitions, against the implicit common-handle suffix.
-	paginationSQLs := []string{
-		"select expired_at, status, tenant_id, event_id from ttl_composite_index force index(idx_expired_status) " +
-			"where expired_at = '2024-12-01 00:00:00' and status is null and tenant_id = 1 and event_id > 2 " +
-			"and expired_at < from_unixtime(1735689600) order by expired_at, status, tenant_id, event_id limit 32",
-		"select expired_at, status, tenant_id, event_id from ttl_composite_index force index(idx_expired_status) " +
-			"where expired_at = '2024-12-01 00:00:00' and status is not null " +
-			"and expired_at < from_unixtime(1735689600) order by expired_at, status, tenant_id, event_id limit 32",
-		"select expired_at, status, tenant_id, event_id from ttl_composite_index force index(idx_expired_status) " +
-			"where expired_at > '2024-12-01 00:00:00' and expired_at < from_unixtime(1735689600) " +
-			"order by expired_at, status, tenant_id, event_id limit 32",
+	// Build and execute every stack level, including NULL transitions, against
+	// the implicit common-handle suffix. This verifies the complete path from
+	// cursor datums through SQL generation, parsing, planning, and execution.
+	paginationGenerator, err := sqlbuilder.NewIndexScanQueryGenerator(compositeTTLTable, expireTime, nil, nil, compositeIndex)
+	require.NoError(t, err)
+	_, err = paginationGenerator.NextSQL(nil, 1)
+	require.NoError(t, err)
+	boundaryRows := [][]types.Datum{{
+		types.NewStringDatum("2024-12-01 00:00:00"),
+		{},
+		types.NewIntDatum(1),
+		types.NewIntDatum(2),
+	}}
+	deepestSQL, err := paginationGenerator.NextSQL(boundaryRows, 32)
+	require.NoError(t, err)
+	nextTenantSQL, err := paginationGenerator.NextSQL(nil, 32)
+	require.NoError(t, err)
+	nonNullStatusSQL, err := paginationGenerator.NextSQL(nil, 32)
+	require.NoError(t, err)
+	nextTimeSQL, err := paginationGenerator.NextSQL(nil, 32)
+	require.NoError(t, err)
+
+	paginationSQLs := []struct {
+		sql      string
+		rowCount int
+	}{
+		{
+			sql:      deepestSQL,
+			rowCount: 1,
+		},
+		{
+			sql:      nextTenantSQL,
+			rowCount: 1,
+		},
+		{
+			sql:      nonNullStatusSQL,
+			rowCount: 2,
+		},
+		{
+			sql:      nextTimeSQL,
+			rowCount: 1,
+		},
 	}
-	for _, paginationSQL := range paginationSQLs {
-		paginationPlan := tk.MustQuery("explain format='brief' " + paginationSQL)
+	for _, tc := range paginationSQLs {
+		require.Len(t, tk.MustQuery(tc.sql).Rows(), tc.rowCount)
+		paginationPlan := tk.MustQuery("explain format='brief' " + tc.sql)
 		paginationPlan.MultiCheckContain([]string{"IndexRangeScan", "idx_expired_status"})
 		paginationPlan.CheckNotContain("TopN")
 		paginationPlan.CheckNotContain("Sort")

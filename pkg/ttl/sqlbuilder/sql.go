@@ -38,6 +38,10 @@ func writeHex(in io.Writer, d types.Datum) error {
 }
 
 func writeDatum(restoreCtx *format.RestoreCtx, d types.Datum, ft *types.FieldType) error {
+	if d.IsNull() {
+		restoreCtx.WriteKeyWord("NULL")
+		return nil
+	}
 	switch ft.GetType() {
 	case mysql.TypeBit, mysql.TypeBlob, mysql.TypeLongBlob, mysql.TypeTinyBlob:
 		return writeHex(restoreCtx.In, d)
