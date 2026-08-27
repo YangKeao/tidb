@@ -296,7 +296,7 @@ func (m *JobManager) LockJob(ctx context.Context, se session.Session, table *cac
 	if createJobID == "" {
 		return m.lockHBTimeoutJob(ctx, se, table.ID, table.TableInfo.ID, now)
 	}
-	return m.lockNewJob(ctx, se, table, now, createJobID, checkInterval)
+	return m.lockNewJob(ctx, se, table, now, createJobID, checkInterval, true)
 }
 
 // RunningJobs returns the running jobs inside ttl job manager
@@ -521,6 +521,14 @@ func TestTiDBServerVersionsConsistent(t *testing.T) {
 		}
 		return infos
 	}
+	setServerInfoGetters := func(
+		manager *JobManager,
+		getServerInfo func() (*serverinfo.ServerInfo, error),
+		getAllServerInfo func(context.Context) (map[string]*serverinfo.ServerInfo, error),
+	) {
+		ctx := context.WithValue(context.Background(), getServerInfoForTestContextKey{}, getServerInfo)
+		manager.ctx = context.WithValue(ctx, getAllServerInfoForTestContextKey{}, getAllServerInfo)
+	}
 
 	tests := []struct {
 		name           string
@@ -564,64 +572,94 @@ func TestTiDBServerVersionsConsistent(t *testing.T) {
 		calls := 0
 		version := localVersion
 		manager := &JobManager{}
-		manager.ctx = context.Background()
-		manager.getServerInfo = func() (*serverinfo.ServerInfo, error) {
-			return serverInfo("local", localVersion), nil
-		}
-		manager.getAllServerInfo = func(context.Context) (map[string]*serverinfo.ServerInfo, error) {
-			calls++
-			return serverInfos(version), nil
-		}
+		setServerInfoGetters(manager,
+			func() (*serverinfo.ServerInfo, error) {
+				return serverInfo("local", localVersion), nil
+			},
+			func(context.Context) (map[string]*serverinfo.ServerInfo, error) {
+				calls++
+				return serverInfos(version), nil
+			},
+		)
 
-		require.True(t, manager.canCreateTTLJobForCurrentVersion())
-		require.True(t, manager.canCreateTTLJobForCurrentVersion())
+		require.Equal(t, ttlJobVersionAllowIndexScan, manager.checkTTLJobVersion())
+		require.Equal(t, ttlJobVersionAllowIndexScan, manager.checkTTLJobVersion())
 		require.Equal(t, 1, calls)
 
 		manager.lastServerVersionCheckTime = time.Now().Add(-serverVersionAllowCacheInterval)
-		require.True(t, manager.canCreateTTLJobForCurrentVersion())
+		require.Equal(t, ttlJobVersionAllowIndexScan, manager.checkTTLJobVersion())
 		require.Equal(t, 2, calls)
 
 		version = differentVersion
 		manager.lastServerVersionCheckTime = time.Now().Add(-serverVersionAllowCacheInterval)
-		require.False(t, manager.canCreateTTLJobForCurrentVersion())
-		require.False(t, manager.canCreateTTLJobForCurrentVersion())
+		require.Equal(t, ttlJobVersionBlockJob, manager.checkTTLJobVersion())
+		require.Equal(t, ttlJobVersionBlockJob, manager.checkTTLJobVersion())
 		require.Equal(t, 3, calls)
 
 		manager.lastServerVersionCheckTime = time.Now().Add(-serverVersionMismatchCacheInterval)
-		require.False(t, manager.canCreateTTLJobForCurrentVersion())
+		require.Equal(t, ttlJobVersionBlockJob, manager.checkTTLJobVersion())
 		require.Equal(t, 4, calls)
 	})
 
-	t.Run("allow when current server info lookup fails", func(t *testing.T) {
+	t.Run("fallback to PK when current server info lookup fails", func(t *testing.T) {
 		calls := 0
 		manager := &JobManager{}
-		manager.ctx = context.Background()
-		manager.getServerInfo = func() (*serverinfo.ServerInfo, error) {
-			return nil, errors.New("mock current server info error")
-		}
-		manager.getAllServerInfo = func(context.Context) (map[string]*serverinfo.ServerInfo, error) {
-			calls++
-			return serverInfos("8.0.11" + mysql.VersionSeparator + "v10.0.0"), nil
-		}
-		require.True(t, manager.canCreateTTLJobForCurrentVersion())
-		require.True(t, manager.canCreateTTLJobForCurrentVersion())
+		setServerInfoGetters(manager,
+			func() (*serverinfo.ServerInfo, error) {
+				return nil, errors.New("mock current server info error")
+			},
+			func(context.Context) (map[string]*serverinfo.ServerInfo, error) {
+				calls++
+				return serverInfos("8.0.11" + mysql.VersionSeparator + "v10.0.0"), nil
+			},
+		)
+		require.Equal(t, ttlJobVersionFallbackToPK, manager.checkTTLJobVersion())
+		require.Equal(t, ttlJobVersionFallbackToPK, manager.checkTTLJobVersion())
 		require.Equal(t, 0, calls)
 	})
 
-	t.Run("allow when server info lookup fails", func(t *testing.T) {
+	t.Run("fallback to PK when server info lookup fails", func(t *testing.T) {
 		calls := 0
 		manager := &JobManager{}
-		manager.ctx = context.Background()
-		manager.getServerInfo = func() (*serverinfo.ServerInfo, error) {
-			return serverInfo("local", "8.0.11"+mysql.VersionSeparator+"v9.0.0"), nil
-		}
-		manager.getAllServerInfo = func(context.Context) (map[string]*serverinfo.ServerInfo, error) {
-			calls++
-			return nil, errors.New("mock server info error")
-		}
-		require.True(t, manager.canCreateTTLJobForCurrentVersion())
-		require.True(t, manager.canCreateTTLJobForCurrentVersion())
+		setServerInfoGetters(manager,
+			func() (*serverinfo.ServerInfo, error) {
+				return serverInfo("local", "8.0.11"+mysql.VersionSeparator+"v9.0.0"), nil
+			},
+			func(context.Context) (map[string]*serverinfo.ServerInfo, error) {
+				calls++
+				return nil, errors.New("mock server info error")
+			},
+		)
+		require.Equal(t, ttlJobVersionFallbackToPK, manager.checkTTLJobVersion())
+		require.Equal(t, ttlJobVersionFallbackToPK, manager.checkTTLJobVersion())
 		require.Equal(t, 1, calls)
+	})
+
+	t.Run("fallback to PK when versions cannot be compared", func(t *testing.T) {
+		validVersion := "8.0.11" + mysql.VersionSeparator + "v9.0.0"
+		for _, tt := range []struct {
+			name           string
+			currentVersion string
+			serverInfos    map[string]*serverinfo.ServerInfo
+		}{
+			{name: "server info list is empty", currentVersion: validVersion, serverInfos: map[string]*serverinfo.ServerInfo{}},
+			{name: "current version is invalid", currentVersion: "invalid", serverInfos: serverInfos(validVersion)},
+			{name: "remote version is invalid", currentVersion: validVersion, serverInfos: serverInfos("invalid")},
+			{name: "remote server info is nil", currentVersion: validVersion, serverInfos: map[string]*serverinfo.ServerInfo{"remote": nil}},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				manager := &JobManager{}
+				setServerInfoGetters(manager,
+					func() (*serverinfo.ServerInfo, error) {
+						return serverInfo("local", tt.currentVersion), nil
+					},
+					func(context.Context) (map[string]*serverinfo.ServerInfo, error) {
+						return tt.serverInfos, nil
+					},
+				)
+				require.Equal(t, ttlJobVersionFallbackToPK, manager.checkTTLJobVersion())
+			})
+		}
 	})
 }
 
@@ -1023,7 +1061,7 @@ func TestLockTable(t *testing.T) {
 			m.ctx = cache.SetMockExpireTime(context.Background(), newJobExpireTime)
 			var job *ttlJob
 			if c.isCreate {
-				job, err = m.lockNewJob(context.Background(), se, c.table, now, "new-job-id", c.checkInterval)
+				job, err = m.lockNewJob(context.Background(), se, c.table, now, "new-job-id", c.checkInterval, true)
 			} else {
 				job, err = m.lockHBTimeoutJob(context.Background(), se, c.table.ID, c.table.TableInfo.ID, now)
 			}
@@ -1098,13 +1136,19 @@ func TestLockNewJobFallsBackWithoutTiKVStoreForIndexSplitRanges(t *testing.T) {
 		return nil, nil
 	}
 
-	job, err := m.lockNewJob(context.Background(), se, ttlTbl, now, "new-job-id", false)
-	require.NoError(t, err)
-	require.NotNil(t, job)
-	require.Len(t, taskArgs, 1)
-	require.Empty(t, taskArgs[0][3])
-	require.Empty(t, taskArgs[0][4])
-	require.Equal(t, int64(10), taskArgs[0][7])
+	lockJob := func(allowIndexScan bool) []any {
+		taskArgs = nil
+		job, err := m.lockNewJob(context.Background(), se, ttlTbl, now, "new-job-id", false, allowIndexScan)
+		require.NoError(t, err)
+		require.NotNil(t, job)
+		require.Len(t, taskArgs, 1)
+		require.Empty(t, taskArgs[0][3])
+		require.Empty(t, taskArgs[0][4])
+		return taskArgs[0]
+	}
+
+	require.Equal(t, int64(10), lockJob(true)[7])
+	require.Nil(t, lockJob(false)[7])
 }
 
 func TestLocalJobs(t *testing.T) {
