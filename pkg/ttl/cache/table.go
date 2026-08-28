@@ -670,7 +670,6 @@ func GetNextBytesHandleDatum(key kv.Key, recordPrefix []byte) (d types.Datum) {
 // TTLIndexScanPlan describes the SQL result and pagination order for a TTL index scan.
 type TTLIndexScanPlan struct {
 	Index            *model.IndexInfo
-	IndexColumns     []*model.ColumnInfo
 	ScanColumns      []*model.ColumnInfo
 	ScanColumnTypes  []*types.FieldType
 	OrderColumns     []*model.ColumnInfo
@@ -693,7 +692,7 @@ func (p *TTLIndexScanPlan) TableKey(row []types.Datum) []types.Datum {
 
 func (p *TTLIndexScanPlan) containsFullTableKey() bool {
 	for _, offset := range p.KeyColumnOffsets {
-		if offset >= len(p.IndexColumns) {
+		if offset >= len(p.Index.Columns) {
 			return false
 		}
 	}
@@ -721,7 +720,7 @@ func (t *PhysicalTable) FindTTLIndex() *model.IndexInfo {
 
 func ttlIndexScanPlanLess(lhs, rhs *TTLIndexScanPlan) bool {
 	priority := func(plan *TTLIndexScanPlan) int {
-		if len(plan.IndexColumns) == 1 {
+		if len(plan.Index.Columns) == 1 {
 			return 0
 		}
 		if plan.containsFullTableKey() {
@@ -844,7 +843,6 @@ func (t *PhysicalTable) BuildTTLIndexScanPlan(idx *model.IndexInfo) (*TTLIndexSc
 	}
 	return &TTLIndexScanPlan{
 		Index:            idx,
-		IndexColumns:     indexColumns,
 		ScanColumns:      scanColumns,
 		ScanColumnTypes:  scanColumnTypes,
 		OrderColumns:     orderColumns,

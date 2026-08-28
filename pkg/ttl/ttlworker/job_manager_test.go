@@ -17,7 +17,6 @@ package ttlworker
 import (
 	"context"
 	"encoding/json"
-	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,7 +24,6 @@ import (
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/keyspacepb"
 	"github.com/pingcap/tidb/pkg/config"
-	"github.com/pingcap/tidb/pkg/domain/serverinfo"
 	"github.com/pingcap/tidb/pkg/meta/model"
 	"github.com/pingcap/tidb/pkg/parser/ast"
 	"github.com/pingcap/tidb/pkg/parser/mysql"
@@ -502,165 +500,6 @@ func TestCheckFinishedJobDoesNotRecycleExternalTTLTaskFromMaster(t *testing.T) {
 	m.CheckFinishedJob(se)
 	require.Empty(t, m.runningJobs)
 	require.Zero(t, externalMgr.recycledCreateTS)
-}
-
-func TestTiDBServerVersionsConsistent(t *testing.T) {
-	serverInfo := func(id, version string) *serverinfo.ServerInfo {
-		return &serverinfo.ServerInfo{
-			StaticInfo: serverinfo.StaticInfo{
-				ID:          id,
-				VersionInfo: serverinfo.VersionInfo{Version: version},
-			},
-		}
-	}
-	serverInfos := func(versions ...string) map[string]*serverinfo.ServerInfo {
-		infos := make(map[string]*serverinfo.ServerInfo, len(versions))
-		for i, version := range versions {
-			id := strconv.Itoa(i)
-			infos[id] = serverInfo(id, version)
-		}
-		return infos
-	}
-	setServerInfoGetters := func(
-		manager *JobManager,
-		getServerInfo func() (*serverinfo.ServerInfo, error),
-		getAllServerInfo func(context.Context) (map[string]*serverinfo.ServerInfo, error),
-	) {
-		ctx := context.WithValue(context.Background(), getServerInfoForTestContextKey{}, getServerInfo)
-		manager.ctx = context.WithValue(ctx, getAllServerInfoForTestContextKey{}, getAllServerInfo)
-	}
-
-	tests := []struct {
-		name           string
-		currentVersion string
-		serverVersions []string
-		consistent     bool
-		err            bool
-	}{
-		{
-			"same release with different prerelease",
-			"8.0.11-TiDB-v9.0.0-alpha-123-g1111111",
-			[]string{
-				"8.0.11-TiDB-v9.0.0-alpha-456-g2222222-dirty",
-				"8.0.11-TiDB-v9.0.0-beta",
-			}, true, false,
-		},
-		{"different release", "8.0.11-TiDB-v9.0.0", []string{"8.0.11-TiDB-v8.5.0"}, false, false},
-		{"current server omitted from server info", "8.0.11-TiDB-v9.0.0", []string{"8.0.11-TiDB-v8.5.0", "8.0.11-TiDB-v8.5.0"}, false, false},
-		{"empty server info", "8.0.11-TiDB-v9.0.0", nil, false, true},
-		{"invalid current version", "invalid", []string{"8.0.11-TiDB-v9.0.0"}, false, true},
-		{"invalid remote version", "8.0.11-TiDB-v9.0.0", []string{"invalid"}, false, true},
-		{"different release with invalid remote version", "8.0.11-TiDB-v9.0.0", []string{"8.0.11-TiDB-v8.5.0", "invalid"}, false, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			consistent, err := tiDBServerVersionsConsistent(tt.currentVersion, serverInfos(tt.serverVersions...))
-			if tt.err {
-				require.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			require.Equal(t, tt.consistent, consistent)
-		})
-	}
-
-	t.Run("cache version check", func(t *testing.T) {
-		localVersion := "8.0.11" + mysql.VersionSeparator + "v9.0.0"
-		differentVersion := "8.0.11" + mysql.VersionSeparator + "v10.0.0"
-
-		calls := 0
-		version := localVersion
-		manager := &JobManager{}
-		setServerInfoGetters(manager,
-			func() (*serverinfo.ServerInfo, error) {
-				return serverInfo("local", localVersion), nil
-			},
-			func(context.Context) (map[string]*serverinfo.ServerInfo, error) {
-				calls++
-				return serverInfos(version), nil
-			},
-		)
-
-		require.Equal(t, ttlJobVersionAllowIndexScan, manager.checkTTLJobVersion())
-		require.Equal(t, ttlJobVersionAllowIndexScan, manager.checkTTLJobVersion())
-		require.Equal(t, 1, calls)
-
-		manager.lastServerVersionCheckTime = time.Now().Add(-serverVersionAllowCacheInterval)
-		require.Equal(t, ttlJobVersionAllowIndexScan, manager.checkTTLJobVersion())
-		require.Equal(t, 2, calls)
-
-		version = differentVersion
-		manager.lastServerVersionCheckTime = time.Now().Add(-serverVersionAllowCacheInterval)
-		require.Equal(t, ttlJobVersionBlockJob, manager.checkTTLJobVersion())
-		require.Equal(t, ttlJobVersionBlockJob, manager.checkTTLJobVersion())
-		require.Equal(t, 3, calls)
-
-		manager.lastServerVersionCheckTime = time.Now().Add(-serverVersionMismatchCacheInterval)
-		require.Equal(t, ttlJobVersionBlockJob, manager.checkTTLJobVersion())
-		require.Equal(t, 4, calls)
-	})
-
-	t.Run("fallback to PK when current server info lookup fails", func(t *testing.T) {
-		calls := 0
-		manager := &JobManager{}
-		setServerInfoGetters(manager,
-			func() (*serverinfo.ServerInfo, error) {
-				return nil, errors.New("mock current server info error")
-			},
-			func(context.Context) (map[string]*serverinfo.ServerInfo, error) {
-				calls++
-				return serverInfos("8.0.11" + mysql.VersionSeparator + "v10.0.0"), nil
-			},
-		)
-		require.Equal(t, ttlJobVersionFallbackToPK, manager.checkTTLJobVersion())
-		require.Equal(t, ttlJobVersionFallbackToPK, manager.checkTTLJobVersion())
-		require.Equal(t, 0, calls)
-	})
-
-	t.Run("fallback to PK when server info lookup fails", func(t *testing.T) {
-		calls := 0
-		manager := &JobManager{}
-		setServerInfoGetters(manager,
-			func() (*serverinfo.ServerInfo, error) {
-				return serverInfo("local", "8.0.11"+mysql.VersionSeparator+"v9.0.0"), nil
-			},
-			func(context.Context) (map[string]*serverinfo.ServerInfo, error) {
-				calls++
-				return nil, errors.New("mock server info error")
-			},
-		)
-		require.Equal(t, ttlJobVersionFallbackToPK, manager.checkTTLJobVersion())
-		require.Equal(t, ttlJobVersionFallbackToPK, manager.checkTTLJobVersion())
-		require.Equal(t, 1, calls)
-	})
-
-	t.Run("fallback to PK when versions cannot be compared", func(t *testing.T) {
-		validVersion := "8.0.11" + mysql.VersionSeparator + "v9.0.0"
-		for _, tt := range []struct {
-			name           string
-			currentVersion string
-			serverInfos    map[string]*serverinfo.ServerInfo
-		}{
-			{name: "server info list is empty", currentVersion: validVersion, serverInfos: map[string]*serverinfo.ServerInfo{}},
-			{name: "current version is invalid", currentVersion: "invalid", serverInfos: serverInfos(validVersion)},
-			{name: "remote version is invalid", currentVersion: validVersion, serverInfos: serverInfos("invalid")},
-			{name: "remote server info is nil", currentVersion: validVersion, serverInfos: map[string]*serverinfo.ServerInfo{"remote": nil}},
-		} {
-			t.Run(tt.name, func(t *testing.T) {
-				manager := &JobManager{}
-				setServerInfoGetters(manager,
-					func() (*serverinfo.ServerInfo, error) {
-						return serverInfo("local", tt.currentVersion), nil
-					},
-					func(context.Context) (map[string]*serverinfo.ServerInfo, error) {
-						return tt.serverInfos, nil
-					},
-				)
-				require.Equal(t, ttlJobVersionFallbackToPK, manager.checkTTLJobVersion())
-			})
-		}
-	})
 }
 
 func TestReadyForLockHBTimeoutJobTables(t *testing.T) {

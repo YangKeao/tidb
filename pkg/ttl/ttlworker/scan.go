@@ -236,6 +236,15 @@ func (t *ttlScanTask) doScanWithSession(ctx context.Context, delCh chan<- *ttlDe
 	} else {
 		rangeStart, rangeEnd := t.ScanRangeStart, t.ScanRangeEnd
 		if len(rangeStart) > 0 || len(rangeEnd) > 0 {
+			// Persisting a scan range with codec.EncodeKey flattens temporal datums,
+			// so codec.Decode restores them as packed uint64 values. Convert them
+			// back to the TTL column type before writing them as SQL literals.
+			//
+			// A TIMESTAMP is stored in UTC, while its SQL literal is interpreted in
+			// the session time zone. ExecuteSQLWithCheck resets the scan session to
+			// @@global.time_zone before executing the SQL, so unflatten it with that
+			// same time zone. The task creator may use a different time zone because
+			// the persisted TIMESTAMP representation is normalized to UTC.
 			loc, err := sess.GlobalTimeZone(scanCtx)
 			if err != nil {
 				return errors.Wrap(err, "get global time zone for TTL index scan range")

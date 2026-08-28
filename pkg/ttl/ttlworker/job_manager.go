@@ -22,16 +22,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/coreos/go-semver/semver"
 	"github.com/pingcap/errors"
-	"github.com/pingcap/tidb/pkg/domain/infosync"
-	"github.com/pingcap/tidb/pkg/domain/serverinfo"
 	"github.com/pingcap/tidb/pkg/extworkload"
 	"github.com/pingcap/tidb/pkg/infoschema"
 	infoschemacontext "github.com/pingcap/tidb/pkg/infoschema/context"
 	"github.com/pingcap/tidb/pkg/kv"
 	"github.com/pingcap/tidb/pkg/owner"
-	"github.com/pingcap/tidb/pkg/parser/mysql"
 	"github.com/pingcap/tidb/pkg/parser/terror"
 	"github.com/pingcap/tidb/pkg/session/syssession"
 	"github.com/pingcap/tidb/pkg/sessionctx/vardef"
@@ -78,43 +74,6 @@ const ttlJobHistoryGCTemplate = `DELETE FROM mysql.tidb_ttl_job_history WHERE cr
 
 // don't need to consider heartbeat timeout now, because the job will only be GCed when there is no owner and no job running
 const ttlTableStatusGCWithoutIDTemplate = `DELETE FROM mysql.tidb_ttl_table_status WHERE current_job_status IS NULL`
-
-const (
-	serverVersionAllowCacheInterval    = 10 * time.Second
-	serverVersionMismatchCacheInterval = time.Minute
-)
-
-type ttlJobVersionCheckResult int
-
-const (
-	// Unknown versions fall back to the old primary-key scan path. This keeps
-	// TTL available without creating index scan tasks that an older TiDB may
-	// not understand during a rolling upgrade.
-	ttlJobVersionFallbackToPK ttlJobVersionCheckResult = iota
-	ttlJobVersionAllowIndexScan
-	ttlJobVersionBlockJob
-)
-
-type getServerInfoForTestContextKey struct{}
-type getAllServerInfoForTestContextKey struct{}
-
-func getServerInfoForTTLJob(ctx context.Context) (*serverinfo.ServerInfo, error) {
-	if intest.InTest && ctx != nil {
-		if getter, ok := ctx.Value(getServerInfoForTestContextKey{}).(func() (*serverinfo.ServerInfo, error)); ok {
-			return getter()
-		}
-	}
-	return infosync.GetServerInfo()
-}
-
-func getAllServerInfoForTTLJob(ctx context.Context) (map[string]*serverinfo.ServerInfo, error) {
-	if intest.InTest && ctx != nil {
-		if getter, ok := ctx.Value(getAllServerInfoForTestContextKey{}).(func(context.Context) (map[string]*serverinfo.ServerInfo, error)); ok {
-			return getter(ctx)
-		}
-	}
-	return infosync.GetAllServerInfo(ctx)
-}
 
 var timeFormat = time.DateTime
 
@@ -177,9 +136,8 @@ type JobManager struct {
 	ownerManager               owner.Manager
 	extWorkload                extworkload.Manager
 
-	// These fields are only accessed by the job loop goroutine.
-	lastServerVersionCheckTime   time.Time
-	lastServerVersionCheckResult ttlJobVersionCheckResult
+	// jobVersionChecker is only accessed by the job loop goroutine.
+	jobVersionChecker ttlJobVersionChecker
 }
 
 // JobManagerOption configures a JobManager.
@@ -431,7 +389,7 @@ func (m *JobManager) handleSubmitJobRequest(se session.Session, jobReq *SubmitTT
 		return
 	}
 
-	versionCheckResult := m.checkTTLJobVersion()
+	versionCheckResult := m.jobVersionChecker.check(m.ctx)
 	if versionCheckResult == ttlJobVersionBlockJob {
 		jobReq.RespCh <- errors.New("cannot create TTL job while TiDB server versions are inconsistent")
 		return
@@ -440,99 +398,6 @@ func (m *JobManager) handleSubmitJobRequest(se session.Session, jobReq *SubmitTT
 	_, err := m.lockNewJob(m.ctx, se, tbl, se.Now(), jobReq.RequestID, false,
 		versionCheckResult == ttlJobVersionAllowIndexScan)
 	jobReq.RespCh <- err
-}
-
-// checkTTLJobVersion compares every known TiDB server's normalized semver with
-// the current server. It compares only the semantic version part after
-// "TiDB-v" and ignores prerelease/build metadata, including Git hashes. Equal
-// versions may use the new index scan path; unequal versions block new TTL
-// jobs. Lookup or parse failures allow a job but make it use the old PK scan.
-func (m *JobManager) checkTTLJobVersion() ttlJobVersionCheckResult {
-	now := time.Now()
-	if !m.lastServerVersionCheckTime.IsZero() {
-		cacheInterval := serverVersionMismatchCacheInterval
-		if m.lastServerVersionCheckResult != ttlJobVersionBlockJob {
-			cacheInterval = serverVersionAllowCacheInterval
-		}
-		if now.Sub(m.lastServerVersionCheckTime) < cacheInterval {
-			return m.lastServerVersionCheckResult
-		}
-	}
-	cacheResult := func(result ttlJobVersionCheckResult) ttlJobVersionCheckResult {
-		m.lastServerVersionCheckTime = now
-		m.lastServerVersionCheckResult = result
-		return result
-	}
-
-	localInfo, err := getServerInfoForTTLJob(m.ctx)
-	if err != nil {
-		logutil.Logger(m.ctx).Warn("failed to get current TiDB server version, create TTL job with PK scan", zap.Error(err))
-		return cacheResult(ttlJobVersionFallbackToPK)
-	}
-	if localInfo == nil {
-		logutil.Logger(m.ctx).Warn("current TiDB server info is nil, create TTL job with PK scan")
-		return cacheResult(ttlJobVersionFallbackToPK)
-	}
-
-	serverInfos, err := getAllServerInfoForTTLJob(m.ctx)
-	if err != nil {
-		logutil.Logger(m.ctx).Warn("failed to get TiDB server versions, create TTL job with PK scan", zap.Error(err))
-		return cacheResult(ttlJobVersionFallbackToPK)
-	}
-
-	consistent, err := tiDBServerVersionsConsistent(localInfo.Version, serverInfos)
-	if err != nil {
-		logutil.Logger(m.ctx).Warn("failed to check TiDB server versions, create TTL job with PK scan", zap.Error(err))
-		return cacheResult(ttlJobVersionFallbackToPK)
-	}
-	if consistent {
-		return cacheResult(ttlJobVersionAllowIndexScan)
-	}
-
-	logutil.Logger(m.ctx).Warn("skip creating TTL job because TiDB server versions are inconsistent",
-		zap.String("currentVersion", localInfo.Version))
-	return cacheResult(ttlJobVersionBlockJob)
-}
-
-func tiDBServerVersionsConsistent(currentVersion string, serverInfos map[string]*serverinfo.ServerInfo) (bool, error) {
-	if len(serverInfos) == 0 {
-		return false, errors.New("TiDB server info list is empty")
-	}
-
-	current, err := normalizedTiDBVersion(currentVersion)
-	if err != nil {
-		return false, errors.Wrap(err, "parse current TiDB server version")
-	}
-	consistent := true
-	for id, info := range serverInfos {
-		if info == nil {
-			return false, errors.Errorf("TiDB server info is nil, server ID: %s", id)
-		}
-		version, err := normalizedTiDBVersion(info.Version)
-		if err != nil {
-			return false, errors.Wrapf(err, "parse TiDB server version, server ID: %s", id)
-		}
-		if !current.Equal(*version) {
-			consistent = false
-		}
-	}
-	return consistent, nil
-}
-
-func normalizedTiDBVersion(serverVersion string) (*semver.Version, error) {
-	idx := strings.Index(serverVersion, mysql.VersionSeparator)
-	if idx < 0 {
-		return nil, errors.Errorf("unknown server version: %s", serverVersion)
-	}
-	tidbVersion := strings.TrimPrefix(serverVersion[idx+len(mysql.VersionSeparator):], "v")
-	version, err := semver.NewVersion(tidbVersion)
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	// Keep this normalization consistent with DDL job version detection. Build
-	// metadata does not affect semver equality, and prerelease labels are ignored.
-	version.PreRelease = ""
-	return version, nil
 }
 
 func (m *JobManager) triggerTTLJob(requestID string, cmd *client.TriggerNewTTLJobRequest, se session.Session, store *timerapi.TimerStore) {
