@@ -1,4 +1,4 @@
-# TTL Secondary Index Scan Optimization
+# TTL Index Scan Optimization
 
 ## Background
 
@@ -14,7 +14,7 @@ When the optimizer uses a secondary index on the TTL column, this query structur
 
 ## Goals
 
-- Use the TTL column (with its secondary index) as the scan ordering and split boundary.
+- Use a physical index whose first column is the TTL column as the scan ordering and split boundary.
 - Provide a global variable to enable/disable the optimization.
 - Fall back to PK-based scan when no suitable index exists.
 
@@ -34,7 +34,7 @@ When the optimizer uses a secondary index on the TTL column, this query structur
 
 ### Index Selection
 
-A usable index must be an ordinary public, visible, full-column secondary index whose first column is the TTL column. Pagination follows the selected index's physical order instead of always assuming that the table key immediately follows the TTL column. Here, the table key means the clustered primary key, or `_tidb_rowid` for a table without a clustered primary key.
+A usable index must be an ordinary public, visible, full-column physical index whose first column is the TTL column. This includes secondary indexes and nonclustered primary indexes. A clustered primary key remains on the existing PK scan path because it is the table path itself; that path already splits and paginates by clustered-key order. Pagination follows the selected index's physical order instead of always assuming that the table key immediately follows the TTL column. Here, the table key means the clustered primary key, or `_tidb_rowid` for a table without a clustered primary key.
 
 The supported pagination layouts are:
 
@@ -54,10 +54,12 @@ For a non-unique index, the cursor needs the complete table key unless the decla
 
 An unsigned integer clustered primary key cannot be used as an implicit suffix because its physical suffix order cannot satisfy the SQL order currently exposed by the planner. This restriction does not apply when the full key is explicitly present among the declared index columns.
 
+For an integer `PKIsHandle` table, the primary key is encoded directly in the table record key and normally has no `IndexInfo` entry. It therefore remains on the existing signed/unsigned integer PK scan path. A secondary TTL index on such a table is selected independently according to the implicit-handle-suffix restrictions above. In contrast, a nonclustered primary key has its own physical index KV and is handled as a unique, all-`NOT NULL` index.
+
 The following cases are unsupported and fall back to the existing PK scan:
 
 - the TTL column is not the first index column;
-- primary, invisible, non-public, global, multi-valued, columnar, or conditional indexes;
+- clustered primary, invisible, non-public, global, multi-valued, columnar, or conditional indexes;
 - prefix index columns or hidden expression columns;
 - a unique composite index with a nullable non-TTL column, because SQL permits multiple rows with the same tuple through `NULL` values;
 - a non-unique composite index containing only part of the table key, because the current cursor layout cannot represent the remaining implicit suffix in physical order;
@@ -91,7 +93,7 @@ ORDER BY `created_time` ASC, `status` ASC, `id` ASC LIMIT ?;
 
 The `FORCE INDEX` hint prevents the optimizer from choosing a different access index. Pagination uses a stack of cursor prefixes. For a cursor `(created_time, status, id)`, it first scans `created_time = ? AND status = ? AND id > ?`. When that query returns fewer rows than its limit, the current prefix is exhausted and the generator pops one stack level to scan `created_time = ? AND status > ?`, then finally `created_time > ?`. Each query therefore contains an equality prefix followed by at most one range condition. The supported pagination tuples above match the selected index's physical order, so the planner can use one ordered index range scan without a per-page `TopN`.
 
-Conversely, `USE INDEX ()` in the PK-scan SQL prevents the optimizer from unexpectedly selecting a secondary index and repeatedly sorting it by primary-key order.
+Conversely, `USE INDEX ()` in the PK-scan SQL prevents the optimizer from unexpectedly selecting a separate index path and repeatedly sorting it by primary-key order.
 
 Each index task scans one TTL-column range `[start, end)`. The first page applies the lower and upper bounds, and later pages continue from the last index-order tuple while keeping the upper bound. If a fixed cursor prefix contains `NULL`, it uses `IS NULL`; advancing past a `NULL` frontier uses `IS NOT NULL`, matching TiDB's ascending, NULL-first index order. The scan result contains both cursor columns and the table key required by the delete phase.
 
@@ -102,17 +104,17 @@ Pages are separate SQL statements and do not share one snapshot. If an indexed v
 ### Task Splitting
 
 - **PK scan:** tasks are split by PK ranges; `split_by` is `NULL`.
-- **Index scan:** tasks are split by the selected secondary index's TiKV region distribution; `split_by` stores the selected **index ID** (`bigint`).
+- **Index scan:** tasks are split by the selected physical index's TiKV region distribution; `split_by` stores the selected **index ID** (`bigint`).
 
 The `split_by` column in `mysql.tidb_ttl_task` is added as `bigint DEFAULT NULL`. Workers read it to decide which ordering to use. A non-`NULL` value is interpreted as the index ID; if the index no longer exists when the task runs, the worker returns an error for that task.
 
-In PK scan mode, `scan_range_start` and `scan_range_end` encode primary-key boundaries. In index scan mode, they encode TTL-column time boundaries decoded from secondary-index region boundaries, so task deserialization uses table metadata from the information schema cache to decode them back as the TTL column's time type.
+In PK scan mode, `scan_range_start` and `scan_range_end` encode primary-key boundaries. In index scan mode, they encode TTL-column time boundaries decoded from the selected index's region boundaries, so task deserialization uses table metadata from the information schema cache to decode them back as the TTL column's time type.
 
-For index scan splitting, the scheduler locates TiKV regions in the raw secondary-index key range from `MinNotNull` to the encoded expire time. The lower bound excludes `NULL` TTL-column entries, which cannot satisfy `ttl_col < expire`; the upper bound is exclusive, so entries with `ttl_col == expire` are not included. Region end keys are decoded back to TTL-column datums and used as task boundaries. If the store is not TiKV, the selected index is missing, or the region split cannot produce useful boundaries, the scheduler falls back to a single full TTL-column range while still using index-ordered scan for that task.
+For index scan splitting, the scheduler locates TiKV regions in the selected index's raw key range from `MinNotNull` to the encoded expire time. The lower bound excludes `NULL` TTL-column entries, which cannot satisfy `ttl_col < expire`; the upper bound is exclusive, so entries with `ttl_col == expire` are not included. Region end keys are decoded back to TTL-column datums and used as task boundaries. If the store is not TiKV, the selected index is missing, or the region split cannot produce useful boundaries, the scheduler falls back to a single full TTL-column range while still using index-ordered scan for that task.
 
 ## Compatibility
 
-- `tidb_ttl_enable_index_scan` defaults to `ON`. Tables with a suitable TTL-column secondary index will use index-ordered scans; tables without one keep the existing PK-ordered scan behavior.
+- `tidb_ttl_enable_index_scan` defaults to `ON`. Tables with a suitable TTL-column secondary or nonclustered primary index will use index-ordered scans; tables without one keep the existing PK-ordered scan behavior.
 - `split_by` defaults to `NULL`, compatible with old tasks.
 - Before creating a TTL job, the TTL manager compares the normalized semantic versions of the current TiDB and all TiDB instances registered in server info. Prerelease labels, build metadata, and Git hashes are ignored. The current process's runtime version is always the comparison baseline, even if its etcd entry is temporarily absent. When mixed versions are visible, the manager skips creating the job so an old worker cannot interpret index boundaries as PK boundaries during a rolling upgrade. This is a best-effort compatibility gate: server-info lookup, an empty result, or version parsing failures are logged, and the job is allowed to use only the old PK scan path (`split_by` remains `NULL`). Only a successful, consistent version check enables index scan tasks. Non-blocking results are cached for 10 seconds to coalesce bursts of job creation; a detected mismatch is cached for one minute to avoid frequent etcd reads while the timer retries the job.
 - No TiKV or protocol changes.

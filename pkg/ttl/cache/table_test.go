@@ -309,6 +309,17 @@ func TestFindTTLIndex(t *testing.T) {
 			hasTTLIndex: false,
 		},
 		{
+			// A nonclustered primary key has its own index KV and can be scanned like a unique secondary index.
+			def:         "(t datetime not null, id bigint not null, primary key(t, id) nonclustered) ttl = `t` + interval 1 day",
+			hasTTLIndex: true,
+			indexName:   "PRIMARY",
+		},
+		{
+			// A clustered common handle is the table path itself, so it should keep using the existing PK scan path.
+			def:         "(t datetime not null, id bigint not null, primary key(t, id) clustered) ttl = `t` + interval 1 day",
+			hasTTLIndex: false,
+		},
+		{
 			def:         "(id int primary key, t datetime, index idx_t(t)) ttl = `t` + interval 1 day",
 			hasTTLIndex: true,
 			indexName:   "idx_t",

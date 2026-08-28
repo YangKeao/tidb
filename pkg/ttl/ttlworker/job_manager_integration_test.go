@@ -784,6 +784,182 @@ func TestIndexScanForAnonymizedLargeTableShape(t *testing.T) {
 	}
 }
 
+func TestTTLIndexScanPrimaryKeyLayouts(t *testing.T) {
+	store, dom := testkit.CreateMockStoreAndDomain(t)
+	waitAndStopTTLManager(t, dom)
+
+	getTTLTable := func(t *testing.T, name string) *cache.PhysicalTable {
+		tbl, err := dom.InfoSchema().TableByName(context.Background(), ast.NewCIStr("test"), ast.NewCIStr(name))
+		require.NoError(t, err)
+		ttlTbl, err := cache.NewPhysicalTable(ast.NewCIStr("test"), tbl.Meta(), ast.NewCIStr(""))
+		require.NoError(t, err)
+		return ttlTbl
+	}
+	columnNames := func(columns []*model.ColumnInfo) []string {
+		names := make([]string, len(columns))
+		for i, col := range columns {
+			names[i] = col.Name.L
+		}
+		return names
+	}
+	expireTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	t.Run("nonclustered primary key", func(t *testing.T) {
+		tk := testkit.NewTestKit(t, store)
+		tk.MustExec("use test")
+		tk.MustExec(`create table ttl_nonclustered_primary(
+			expired_at datetime not null,
+			id bigint not null,
+			payload varchar(32),
+			primary key(expired_at, id) nonclustered
+		) TTL=expired_at + interval 1 hour`)
+		tk.MustExec(`insert into ttl_nonclustered_primary values
+			('2024-01-01 00:00:00', 1, 'a'),
+			('2024-01-01 00:00:00', 2, 'b'),
+			('2024-01-02 00:00:00', 1, 'c')`)
+
+		ttlTbl := getTTLTable(t, "ttl_nonclustered_primary")
+		require.False(t, ttlTbl.HasClusteredIndex())
+		require.Equal(t, []string{"_tidb_rowid"}, columnNames(ttlTbl.KeyColumns))
+		idx := ttlTbl.FindTTLIndex()
+		require.NotNil(t, idx)
+		require.True(t, idx.Primary)
+		require.True(t, idx.Unique)
+
+		plan, err := ttlTbl.BuildTTLIndexScanPlan(idx)
+		require.NoError(t, err)
+		require.Equal(t, []string{"expired_at", "id"}, columnNames(plan.OrderColumns))
+		require.Equal(t, []string{"expired_at", "id", "_tidb_rowid"}, columnNames(plan.ScanColumns))
+
+		generator, err := sqlbuilder.NewIndexScanQueryGenerator(ttlTbl, expireTime, nil, nil, idx)
+		require.NoError(t, err)
+		scanSQL, err := generator.NextSQL(nil, 32)
+		require.NoError(t, err)
+		require.Contains(t, scanSQL, "FORCE INDEX(`PRIMARY`)")
+		require.Contains(t, scanSQL, "ORDER BY `expired_at`, `id` ASC")
+		require.Len(t, tk.MustQuery(scanSQL).Rows(), 3)
+		planRows := tk.MustQuery("explain format='brief' " + scanSQL)
+		planRows.MultiCheckContain([]string{"IndexRangeScan", "PRIMARY"})
+		planRows.CheckNotContain("TopN")
+		planRows.CheckNotContain("Sort")
+	})
+
+	t.Run("clustered common handle", func(t *testing.T) {
+		tk := testkit.NewTestKit(t, store)
+		tk.MustExec("use test")
+		tk.MustExec(`create table ttl_clustered_common_handle(
+			expired_at datetime not null,
+			id bigint not null,
+			primary key(expired_at, id) clustered
+		) TTL=expired_at + interval 1 hour`)
+
+		ttlTbl := getTTLTable(t, "ttl_clustered_common_handle")
+		require.True(t, ttlTbl.IsCommonHandle)
+		require.Equal(t, []string{"expired_at", "id"}, columnNames(ttlTbl.KeyColumns))
+		require.Nil(t, ttlTbl.FindTTLIndex())
+		var primaryIdx *model.IndexInfo
+		for _, idx := range ttlTbl.Indices {
+			if idx.Primary {
+				primaryIdx = idx
+				break
+			}
+		}
+		require.NotNil(t, primaryIdx)
+		_, err := ttlTbl.BuildTTLIndexScanPlan(primaryIdx)
+		require.ErrorContains(t, err, "clustered primary index")
+
+		generator, err := sqlbuilder.NewScanQueryGenerator(ttlTbl, expireTime, nil, nil)
+		require.NoError(t, err)
+		scanSQL, err := generator.NextSQL(nil, 32)
+		require.NoError(t, err)
+		require.Contains(t, scanSQL, "USE INDEX ()")
+		require.Contains(t, scanSQL, "ORDER BY `expired_at`, `id` ASC")
+		planRows := tk.MustQuery("explain format='brief' " + scanSQL)
+		planRows.CheckContain("TableRangeScan")
+		planRows.CheckNotContain("IndexLookUp")
+		planRows.CheckNotContain("TopN")
+		planRows.CheckNotContain("Sort")
+	})
+
+	t.Run("integer primary key as handle", func(t *testing.T) {
+		tk := testkit.NewTestKit(t, store)
+		tk.MustExec("use test")
+		tk.MustExec(`create table ttl_pk_is_handle_only(
+			id bigint primary key clustered,
+			expired_at datetime not null
+		) TTL=expired_at + interval 1 hour`)
+		tk.MustExec(`create table ttl_signed_pk_is_handle(
+			id bigint primary key clustered,
+			expired_at datetime not null,
+			index idx_expired(expired_at)
+		) TTL=expired_at + interval 1 hour`)
+		tk.MustExec(`create table ttl_unsigned_pk_is_handle(
+			id bigint unsigned primary key clustered,
+			expired_at datetime not null,
+			index idx_expired(expired_at)
+		) TTL=expired_at + interval 1 hour`)
+
+		// PKIsHandle stores the integer primary key in the table record key and
+		// normally has no separate PRIMARY IndexInfo. Without an eligible
+		// secondary TTL index, it must therefore stay on the existing PK scan.
+		pkOnlyTable := getTTLTable(t, "ttl_pk_is_handle_only")
+		require.True(t, pkOnlyTable.PKIsHandle)
+		require.Equal(t, []string{"id"}, columnNames(pkOnlyTable.KeyColumns))
+		require.Nil(t, pkOnlyTable.FindTTLIndex())
+		pkGenerator, err := sqlbuilder.NewScanQueryGenerator(pkOnlyTable, expireTime, nil, nil)
+		require.NoError(t, err)
+		pkScanSQL, err := pkGenerator.NextSQL(nil, 32)
+		require.NoError(t, err)
+		require.Contains(t, pkScanSQL, "USE INDEX ()")
+		require.Contains(t, pkScanSQL, "ORDER BY `id` ASC")
+		pkPlan := tk.MustQuery("explain format='brief' " + pkScanSQL)
+		pkPlan.CheckContain("TableFullScan")
+		pkPlan.CheckNotContain("IndexLookUp")
+		pkPlan.CheckNotContain("TopN")
+		pkPlan.CheckNotContain("Sort")
+
+		signedTable := getTTLTable(t, "ttl_signed_pk_is_handle")
+		require.True(t, signedTable.PKIsHandle)
+		for _, idx := range signedTable.Indices {
+			require.False(t, idx.Primary, "a PKIsHandle primary key should not have a separate IndexInfo")
+		}
+		signedIdx := signedTable.FindTTLIndex()
+		require.NotNil(t, signedIdx)
+		signedPlan, err := signedTable.BuildTTLIndexScanPlan(signedIdx)
+		require.NoError(t, err)
+		require.Equal(t, []string{"expired_at", "id"}, columnNames(signedPlan.OrderColumns))
+		signedGenerator, err := sqlbuilder.NewIndexScanQueryGenerator(signedTable, expireTime, nil, nil, signedIdx)
+		require.NoError(t, err)
+		signedSQL, err := signedGenerator.NextSQL(nil, 32)
+		require.NoError(t, err)
+		require.Contains(t, signedSQL, "ORDER BY `expired_at`, `id` ASC")
+		signedSQLPlan := tk.MustQuery("explain format='brief' " + signedSQL)
+		signedSQLPlan.MultiCheckContain([]string{"IndexRangeScan", "idx_expired"})
+		signedSQLPlan.CheckNotContain("TopN")
+		signedSQLPlan.CheckNotContain("Sort")
+
+		unsignedTable := getTTLTable(t, "ttl_unsigned_pk_is_handle")
+		require.True(t, unsignedTable.PKIsHandle)
+		for _, idx := range unsignedTable.Indices {
+			require.False(t, idx.Primary, "a PKIsHandle primary key should not have a separate IndexInfo")
+		}
+		// The unsigned handle's hidden physical order cannot currently satisfy
+		// ORDER BY expired_at, id, so the non-unique TTL index remains ineligible.
+		require.Nil(t, unsignedTable.FindTTLIndex())
+		unsignedGenerator, err := sqlbuilder.NewScanQueryGenerator(unsignedTable, expireTime, nil, nil)
+		require.NoError(t, err)
+		unsignedSQL, err := unsignedGenerator.NextSQL(nil, 32)
+		require.NoError(t, err)
+		require.Contains(t, unsignedSQL, "USE INDEX ()")
+		require.Contains(t, unsignedSQL, "ORDER BY `id` ASC")
+		unsignedPlan := tk.MustQuery("explain format='brief' " + unsignedSQL)
+		unsignedPlan.CheckContain("TableFullScan")
+		unsignedPlan.CheckNotContain("IndexLookUp")
+		unsignedPlan.CheckNotContain("TopN")
+		unsignedPlan.CheckNotContain("Sort")
+	})
+}
+
 func TestRescheduleJobs(t *testing.T) {
 	store, dom := testkit.CreateMockStoreAndDomain(t)
 	tk := testkit.NewTestKit(t, store)

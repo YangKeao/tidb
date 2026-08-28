@@ -46,6 +46,9 @@ import (
 
 func getTableKeyColumns(tbl *model.TableInfo) ([]*model.ColumnInfo, []*types.FieldType, error) {
 	if tbl.PKIsHandle {
+		// An integer clustered primary key is encoded directly in the record key.
+		// It normally has no independent primary IndexInfo, so TTL's existing PK
+		// scan path splits and paginates the table by this handle column.
 		for i, col := range tbl.Columns {
 			if mysql.HasPriKeyFlag(col.GetFlag()) {
 				return []*model.ColumnInfo{tbl.Columns[i]}, []*types.FieldType{&tbl.Columns[i].FieldType}, nil
@@ -697,7 +700,7 @@ func (p *TTLIndexScanPlan) containsFullTableKey() bool {
 	return true
 }
 
-// FindTTLIndex finds a secondary index that can scan in its physical index order.
+// FindTTLIndex finds an index that can scan in its physical index order.
 // Returns nil if no suitable index exists.
 func (t *PhysicalTable) FindTTLIndex() *model.IndexInfo {
 	if t.TimeColumn == nil {
@@ -745,13 +748,25 @@ func (t *PhysicalTable) BuildTTLIndexScanPlan(idx *model.IndexInfo) (*TTLIndexSc
 	if t.TimeColumn == nil || idx == nil {
 		return nil, errors.New("TTL time column and index are required")
 	}
-	if idx.Primary || idx.State != model.StatePublic || idx.Invisible || idx.Global || idx.MVIndex ||
+	if idx.Primary && t.HasClusteredIndex() {
+		// A clustered primary key is the table path itself, not a separate index
+		// keyspace that SplitIndexScanRanges can split. Keep it on the existing PK
+		// scan path, which already splits and paginates by the clustered key order.
+		//
+		// For PKIsHandle tables the integer primary key normally does not appear in
+		// TableInfo.Indices at all. A common-handle primary key does appear there,
+		// so this check explicitly rejects it. A nonclustered primary key has its
+		// own index KV and HasClusteredIndex returns false, allowing it to use the
+		// same index-scan path as an ordinary unique secondary index.
+		return nil, errors.Errorf("clustered primary index %s uses the table scan path", idx.Name)
+	}
+	if idx.State != model.StatePublic || idx.Invisible || idx.Global || idx.MVIndex ||
 		idx.IsColumnarIndex() || idx.ConditionExprString != "" || len(idx.Columns) == 0 {
-		// TTL needs one local public secondary-index order that can be scanned
-		// directly. Primary/global/MV/columnar/conditional indexes either use a
-		// different access path, add extra predicate semantics, or do not provide
-		// that single local physical order.
-		return nil, errors.Errorf("index %s is not a supported TTL secondary index", idx.Name)
+		// TTL needs one local public physical-index order that can be scanned
+		// directly. Global/MV/columnar/conditional indexes either use a different
+		// access path, add extra predicate semantics, or do not provide that single
+		// local physical order.
+		return nil, errors.Errorf("index %s is not a supported TTL scan index", idx.Name)
 	}
 	if idx.Columns[0].Name.L != t.TimeColumn.Name.L {
 		return nil, errors.Errorf("TTL column %s is not the first index column", t.TimeColumn.Name)
