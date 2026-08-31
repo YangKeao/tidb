@@ -286,8 +286,14 @@ func (t *PhysicalTable) EvalExpireTime(ctx context.Context, se session.Session,
 	return expire.In(now.Location()), nil
 }
 
-// SplitScanRanges split ranges for TTL scan
-func (t *PhysicalTable) SplitScanRanges(ctx context.Context, store kv.Storage, splitCnt int) ([]ScanRange, error) {
+// SplitScanRanges split ranges for TTL scan.
+func (t *PhysicalTable) SplitScanRanges(
+	ctx context.Context,
+	store kv.Storage,
+	expireTime time.Time,
+	loc *time.Location,
+	splitCnt int,
+) ([]ScanRange, error) {
 	if len(t.KeyColumns) < 1 || splitCnt <= 1 {
 		return []ScanRange{newFullRange()}, nil
 	}
@@ -326,8 +332,48 @@ func (t *PhysicalTable) SplitScanRanges(ctx context.Context, store kv.Storage, s
 			}
 		}
 		return t.splitCommonHandleRanges(ctx, tikvStore, splitCnt, false, false, decode)
+	case mysql.TypeDate, mysql.TypeDatetime, mysql.TypeTimestamp:
+		// A temporal common handle uses the same datum encoding as the leading
+		// column of a secondary index. Only use expireTime as the physical upper
+		// bound when that leading handle column is the TTL column; otherwise the
+		// expired rows are not a contiguous raw-key prefix.
+		if !t.IsCommonHandle || t.TimeColumn == nil ||
+			t.KeyColumns[0].ID != t.TimeColumn.ID {
+			return []ScanRange{newFullRange()}, nil
+		}
+
+		recordPrefix := tablecodec.GenTableRecordPrefix(t.ID)
+		expireDatum := types.NewTimeDatum(types.NewTime(
+			types.FromGoTime(expireTime), ft.GetType(), ft.GetDecimal()))
+		encodedExpire, err := codec.EncodeKey(loc, nil, expireDatum)
+		if err != nil {
+			return nil, err
+		}
+		endKey := append(recordPrefix.Clone(), encodedExpire...)
+		ranges, err := t.splitTemporalRanges(
+			ctx, tikvStore, recordPrefix, recordPrefix, endKey, &ft, loc, splitCnt)
+		if err != nil {
+			return nil, err
+		}
+		// Keep clustered-PK tasks compatible with existing workers. Temporal
+		// datums become packed uint64 values after the task's EncodeKey/Decode
+		// round trip, but old PK workers do not unflatten them with table schema.
+		// A textual temporal literal is already accepted by the existing PK SQL
+		// builder and preserves the same logical boundary.
+		for i := range ranges {
+			ranges[i].Start = temporalRangeAsBytes(ranges[i].Start)
+			ranges[i].End = temporalRangeAsBytes(ranges[i].End)
+		}
+		return ranges, nil
 	}
 	return []ScanRange{newFullRange()}, nil
+}
+
+func temporalRangeAsBytes(r []types.Datum) []types.Datum {
+	if len(r) != 1 || r[0].Kind() != types.KindMysqlTime {
+		return r
+	}
+	return []types.Datum{types.NewBytesDatum([]byte(r[0].GetMysqlTime().String()))}
 }
 
 func unsignedEdge(d types.Datum) types.Datum {
@@ -421,6 +467,44 @@ func (t *PhysicalTable) splitCommonHandleRanges(
 		// "" is the smallest value for string/[]byte, skip to add it to ranges.
 		return d, len(d.GetBytes()) == 0, nil
 	})
+}
+
+// splitTemporalRanges uses [startKey, endKey) only to choose and group TiKV
+// Regions. The final SQL range intentionally stays open-ended, as before; the
+// TTL expiration predicate supplies the exact logical upper bound. Therefore a
+// Region crossing endKey is retained, while Regions starting at or after it are
+// excluded from subtask creation.
+func (t *PhysicalTable) splitTemporalRanges(
+	ctx context.Context,
+	store tikv.Storage,
+	keyPrefix, startKey, endKey kv.Key,
+	ft *types.FieldType,
+	loc *time.Location,
+	splitCnt int,
+) ([]ScanRange, error) {
+	if endKey.Cmp(startKey) <= 0 {
+		return []ScanRange{newFullRange()}, nil
+	}
+
+	keyRanges, err := t.splitRawKeyRanges(ctx, store, startKey, endKey, splitCnt)
+	if err != nil {
+		return nil, err
+	}
+	if len(keyRanges) <= 1 {
+		return []ScanRange{newFullRange()}, nil
+	}
+
+	scanRanges, err := scanRangesFromRawKeyRanges(keyRanges, func(endKey kv.Key) (types.Datum, bool, error) {
+		d, err := timeDatumAtOrBeforeKeyBoundary(endKey, keyPrefix, ft, loc)
+		return d, false, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(scanRanges) == 0 {
+		return []ScanRange{newFullRange()}, nil
+	}
+	return scanRanges, nil
 }
 
 func (t *PhysicalTable) splitRawKeyRanges(ctx context.Context, store tikv.Storage,
@@ -935,31 +1019,11 @@ func (t *PhysicalTable) SplitIndexScanRanges(ctx context.Context, store kv.Stora
 		return nil, err
 	}
 	endKey := tablecodec.EncodeIndexSeekKey(t.ID, idx.ID, encodedExpire)
-	if endKey.Cmp(startKey) <= 0 {
-		return []ScanRange{newFullRange()}, nil
-	}
-	keyRanges, err := t.splitRawKeyRanges(ctx, tikvStore, startKey, endKey, splitCnt)
-	if err != nil {
-		return nil, err
-	}
-	if len(keyRanges) <= 1 {
-		return []ScanRange{newFullRange()}, nil
-	}
-
-	scanRanges, err := scanRangesFromRawKeyRanges(keyRanges, func(endKey kv.Key) (types.Datum, bool, error) {
-		d, err := timeDatumAtOrBeforeIndexBoundary(endKey, indexPrefix, &t.TimeColumn.FieldType, loc)
-		return d, false, err
-	})
-	if err != nil {
-		return nil, err
-	}
-	if len(scanRanges) == 0 {
-		return []ScanRange{newFullRange()}, nil
-	}
-	return scanRanges, nil
+	return t.splitTemporalRanges(
+		ctx, tikvStore, indexPrefix, startKey, endKey, &t.TimeColumn.FieldType, loc, splitCnt)
 }
 
-// timeDatumAtOrBeforeIndexBoundary maps an arbitrary Region boundary to a
+// timeDatumAtOrBeforeKeyBoundary maps an arbitrary Region boundary to a
 // temporal datum that can be used as a SQL scan boundary.
 //
 // A Region boundary is an arbitrary byte string. It may end in the middle of
@@ -975,8 +1039,8 @@ func (t *PhysicalTable) SplitIndexScanRanges(ctx context.Context, store kv.Stora
 // Using an approximate datum is safe because it is only used to divide the
 // complete SQL scan into adjacent [start, end) ranges. It does not need to be an
 // existing row value or exactly match the physical Region boundary.
-func timeDatumAtOrBeforeIndexBoundary(
-	boundary, indexPrefix kv.Key,
+func timeDatumAtOrBeforeKeyBoundary(
+	boundary, keyPrefix kv.Key,
 	ft *types.FieldType,
 	loc *time.Location,
 ) (types.Datum, error) {
@@ -1023,8 +1087,8 @@ func timeDatumAtOrBeforeIndexBoundary(
 		if err != nil {
 			return nil, err
 		}
-		key := make(kv.Key, 0, len(indexPrefix)+len(encoded))
-		key = append(key, indexPrefix...)
+		key := make(kv.Key, 0, len(keyPrefix)+len(encoded))
+		key = append(key, keyPrefix...)
 		return append(key, encoded...), nil
 	}
 

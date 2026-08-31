@@ -34,6 +34,7 @@ import (
 	"github.com/pingcap/tidb/pkg/meta/model"
 	metrics2 "github.com/pingcap/tidb/pkg/metrics"
 	"github.com/pingcap/tidb/pkg/parser/ast"
+	"github.com/pingcap/tidb/pkg/parser/mysql"
 	"github.com/pingcap/tidb/pkg/session/syssession"
 	"github.com/pingcap/tidb/pkg/sessionctx/vardef"
 	"github.com/pingcap/tidb/pkg/statistics"
@@ -852,6 +853,10 @@ func TestTTLIndexScanPrimaryKeyLayouts(t *testing.T) {
 			id bigint not null,
 			primary key(expired_at, id) clustered
 		) TTL=expired_at + interval 1 hour`)
+		tk.MustExec(`insert into ttl_clustered_common_handle values
+			('2024-01-01 00:00:00', 1),
+			('2024-01-02 00:00:00', 1),
+			('2024-01-02 00:00:00', 2)`)
 
 		ttlTbl := getTTLTable(t, "ttl_clustered_common_handle")
 		require.True(t, ttlTbl.IsCommonHandle)
@@ -879,6 +884,23 @@ func TestTTLIndexScanPrimaryKeyLayouts(t *testing.T) {
 		planRows.CheckNotContain("IndexLookUp")
 		planRows.CheckNotContain("TopN")
 		planRows.CheckNotContain("Sort")
+
+		startTime := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
+		startDatum := types.NewTimeDatum(types.NewTime(
+			types.FromGoTime(startTime), mysql.TypeDatetime, 0))
+		rangeGenerator, err := sqlbuilder.NewScanQueryGenerator(
+			ttlTbl, expireTime, []types.Datum{startDatum}, nil)
+		require.NoError(t, err)
+		rangeSQL, err := rangeGenerator.NextSQL(nil, 32)
+		require.NoError(t, err)
+		require.Contains(t, rangeSQL, "`expired_at` >= '2024-01-02 00:00:00'")
+		require.Contains(t, rangeSQL, "ORDER BY `expired_at`, `id` ASC")
+		require.Len(t, tk.MustQuery(rangeSQL).Rows(), 2)
+		rangePlan := tk.MustQuery("explain format='brief' " + rangeSQL)
+		rangePlan.CheckContain("TableRangeScan")
+		rangePlan.CheckNotContain("IndexLookUp")
+		rangePlan.CheckNotContain("TopN")
+		rangePlan.CheckNotContain("Sort")
 	})
 
 	t.Run("integer primary key as handle", func(t *testing.T) {

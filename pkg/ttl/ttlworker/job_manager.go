@@ -932,7 +932,9 @@ func (m *JobManager) lockNewJob(ctx context.Context, se session.Session, table *
 		}
 		if ranges == nil {
 			splitBy = nil
-			ranges, err = table.SplitScanRanges(ctx, m.store, getScanSplitCnt(se.GetStore()))
+			ranges, err = table.SplitScanRanges(
+				ctx, m.store, expireTime, se.GetSessionVars().Location(),
+				getScanSplitCnt(se.GetStore()))
 			if err != nil {
 				return errors.Wrap(err, "split scan ranges")
 			}

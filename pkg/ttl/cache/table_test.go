@@ -23,6 +23,7 @@ import (
 
 	"github.com/pingcap/tidb/pkg/meta/model"
 	"github.com/pingcap/tidb/pkg/parser/ast"
+	"github.com/pingcap/tidb/pkg/parser/mysql"
 	"github.com/pingcap/tidb/pkg/tablecodec"
 	"github.com/pingcap/tidb/pkg/testkit"
 	"github.com/pingcap/tidb/pkg/ttl/cache"
@@ -510,6 +511,10 @@ func TestSplitIndexScanRanges(t *testing.T) {
 	tikvStore.addRegion(indexKey("2020-01-01 00:00:00"), indexKey("2021-01-01 00:00:00"))
 	tikvStore.addRegion(indexKey("2021-01-01 00:00:00"), indexKey("2022-01-01 00:00:00"))
 	tikvStore.addRegion(indexKey("2022-01-01 00:00:00"), endKey)
+	// The previous Region crosses the expire key because endKey also contains
+	// a handle suffix. It must be retained, while this wholly unexpired Region
+	// must not participate in subtask grouping.
+	tikvStore.addRegion(endKey, indexKey("2030-01-01 00:00:00"))
 
 	ranges, err = ttlTbl.SplitIndexScanRanges(context.TODO(), tikvStore, idx, expireTime, time.UTC, 4)
 	require.NoError(t, err)
@@ -653,6 +658,217 @@ func TestSplitIndexScanRanges(t *testing.T) {
 			} {
 				encoded := append([]byte{encodedBoundary[0]}, codec.EncodeUint(nil, packed)...)
 				assertBoundaryFloor(encoded)
+			}
+		})
+	}
+}
+
+func TestSplitTemporalClusteredPKScanRanges(t *testing.T) {
+	store, do := testkit.CreateMockStoreAndDomain(t)
+	tk := testkit.NewTestKit(t, store)
+	tk.MustExec("use test")
+
+	utcPlus8 := time.FixedZone("UTC+8", 8*60*60)
+	testCases := []struct {
+		name       string
+		columnType string
+		primaryKey string
+		loc        *time.Location
+		boundary   time.Time
+	}{
+		{
+			name:       "date_single",
+			columnType: "date",
+			primaryKey: "primary key(t) clustered",
+			loc:        time.UTC,
+			boundary:   time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name:       "datetime_single",
+			columnType: "datetime",
+			primaryKey: "primary key(t) clustered",
+			loc:        time.UTC,
+			boundary:   time.Date(2020, 1, 1, 1, 2, 3, 0, time.UTC),
+		},
+		{
+			name:       "datetime6_composite",
+			columnType: "datetime(6)",
+			primaryKey: "primary key(t, id) clustered",
+			loc:        time.UTC,
+			boundary:   time.Date(2020, 1, 1, 1, 2, 3, 123456000, time.UTC),
+		},
+		{
+			name:       "timestamp_composite",
+			columnType: "timestamp",
+			primaryKey: "primary key(t, id) clustered",
+			loc:        utcPlus8,
+			boundary:   time.Date(2020, 1, 1, 1, 2, 3, 0, utcPlus8),
+		},
+		{
+			name:       "timestamp3_composite",
+			columnType: "timestamp(3)",
+			primaryKey: "primary key(t, id) clustered",
+			loc:        utcPlus8,
+			boundary:   time.Date(2020, 1, 1, 1, 2, 3, 123000000, utcPlus8),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tableName := "ttl_clustered_split_" + tc.name
+			tk.MustExec(fmt.Sprintf(`create table test.%s(
+				t %s not null,
+				id bigint not null default 0,
+				%s
+			) TTL = t + interval 1 day`, tableName, tc.columnType, tc.primaryKey))
+
+			tb, err := do.InfoSchema().TableByName(
+				context.Background(), ast.NewCIStr("test"), ast.NewCIStr(tableName))
+			require.NoError(t, err)
+			tbl, err := cache.NewPhysicalTable(ast.NewCIStr("test"), tb.Meta(), ast.NewCIStr(""))
+			require.NoError(t, err)
+			require.True(t, tbl.IsCommonHandle)
+			require.Equal(t, tbl.TimeColumn.ID, tbl.KeyColumns[0].ID)
+
+			encodeTime := func(tm time.Time) []byte {
+				ft := tbl.TimeColumn.FieldType
+				datum := types.NewTimeDatum(types.NewTime(
+					types.FromGoTime(tm), ft.GetType(), ft.GetDecimal()))
+				encoded, err := codec.EncodeKey(tc.loc, nil, datum)
+				require.NoError(t, err)
+				return encoded
+			}
+			encodeTaskBoundary := func(d types.Datum) []byte {
+				require.Equal(t, types.KindBytes, d.Kind())
+				ft := tbl.TimeColumn.FieldType
+				tm, err := types.ParseTime(
+					types.DefaultStmtNoWarningContext, d.GetString(), ft.GetType(), ft.GetDecimal())
+				require.NoError(t, err)
+				encoded, err := codec.EncodeKey(tc.loc, nil, types.NewTimeDatum(tm))
+				require.NoError(t, err)
+				return encoded
+			}
+			recordKey := func(encoded []byte) []byte {
+				return append(tablecodec.GenTableRecordPrefix(tbl.ID), encoded...)
+			}
+			requireScanBoundary := func(ranges []cache.ScanRange) {
+				require.Len(t, ranges, 2)
+				require.Empty(t, ranges[0].Start)
+				require.Len(t, ranges[0].End, 1)
+				require.Equal(t, ranges[0].End, ranges[1].Start)
+				require.Empty(t, ranges[1].End)
+			}
+
+			recordPrefix := tablecodec.GenTableRecordPrefix(tbl.ID)
+			expireTime := time.Date(2025, 1, 1, 0, 0, 0, 0, tc.loc)
+			expireKey := recordKey(encodeTime(expireTime))
+			afterExpireKey := recordKey(encodeTime(expireTime.AddDate(1, 0, 0)))
+			tableEnd := recordPrefix.PrefixNext()
+
+			tikvStore := newMockTiKVStore(t)
+			// A complete leading temporal datum followed by another common-handle
+			// column still maps to the temporal value itself.
+			encodedID, err := codec.EncodeKey(tc.loc, nil, types.NewIntDatum(42))
+			require.NoError(t, err)
+			exactBoundaryEncoded := append(encodeTime(tc.boundary), encodedID...)
+			exactBoundary := recordKey(exactBoundaryEncoded)
+			expireCrossingEnd := recordKey(append(encodeTime(expireTime), encodedID...))
+			tikvStore.clearRegions()
+			tikvStore.addRegion(recordPrefix, exactBoundary)
+			// This Region crosses the raw expire key and must be retained because
+			// its prefix can still contain expired rows.
+			tikvStore.addRegion(exactBoundary, expireCrossingEnd)
+			// These Regions start after the exclusive raw expire key, so they must
+			// not affect the generated task ranges.
+			tikvStore.addRegion(expireCrossingEnd, afterExpireKey)
+			tikvStore.addRegion(afterExpireKey, tableEnd)
+			ranges, err := tbl.SplitScanRanges(
+				context.TODO(), tikvStore, expireTime, tc.loc, 4)
+			require.NoError(t, err)
+			requireScanBoundary(ranges)
+			encodedFloor := encodeTaskBoundary(ranges[0].End[0])
+			require.Equal(t, encodeTime(tc.boundary), encodedFloor)
+			// The boundary keeps its textual type across task persistence, so a
+			// pre-upgrade PK worker can use it without schema-aware unflattening.
+			persisted, err := codec.EncodeKey(tc.loc, nil, ranges[0].End...)
+			require.NoError(t, err)
+			decoded, err := codec.Decode(persisted, len(persisted))
+			require.NoError(t, err)
+			require.Equal(t, types.KindBytes, decoded[0].Kind())
+
+			// Region boundaries may stop at every position inside the fixed-width
+			// packed temporal value. Each one must still produce a legal floor key
+			// and two adjacent SQL ranges.
+			encodedBoundary := encodeTime(tc.boundary)
+			require.Len(t, encodedBoundary, 9)
+			for cut := 2; cut < len(encodedBoundary); cut++ {
+				partialBoundary := recordKey(encodedBoundary[:cut])
+				tikvStore.clearRegions()
+				tikvStore.addRegion(recordPrefix, partialBoundary)
+				tikvStore.addRegion(partialBoundary, expireKey)
+				tikvStore.addRegion(expireKey, afterExpireKey)
+				tikvStore.addRegion(afterExpireKey, tableEnd)
+
+				ranges, err = tbl.SplitScanRanges(
+					context.TODO(), tikvStore, expireTime, tc.loc, 4)
+				require.NoError(t, err)
+				requireScanBoundary(ranges)
+
+				floor := encodeTaskBoundary(ranges[0].End[0])
+				require.LessOrEqual(t, bytes.Compare(recordKey(floor), partialBoundary), 0)
+			}
+
+			// A complete packed payload can still be an invalid calendar value.
+			// It must be rounded down instead of collapsing to a full-range task.
+			packTime := func(year, month, day, hour, minute, second, microsecond int) uint64 {
+				ymd := ((uint64(year)*13+uint64(month))<<5 | uint64(day))
+				hms := uint64(hour)<<12 | uint64(minute)<<6 | uint64(second)
+				return ((ymd<<17 | hms) << 24) | uint64(microsecond)
+			}
+			illegalEncoded := append([]byte{encodedBoundary[0]},
+				codec.EncodeUint(nil, packTime(2020, 2, 31, 0, 0, 0, 0))...)
+			illegalBoundary := recordKey(illegalEncoded)
+			tikvStore.clearRegions()
+			tikvStore.addRegion(recordPrefix, illegalBoundary)
+			tikvStore.addRegion(illegalBoundary, expireKey)
+			tikvStore.addRegion(expireKey, afterExpireKey)
+			ranges, err = tbl.SplitScanRanges(
+				context.TODO(), tikvStore, expireTime, tc.loc, 3)
+			require.NoError(t, err)
+			requireScanBoundary(ranges)
+			floor := encodeTaskBoundary(ranges[0].End[0])
+			require.LessOrEqual(t, bytes.Compare(recordKey(floor), illegalBoundary), 0)
+
+			if len(tbl.KeyColumns) > 1 {
+				// Two physical Region boundaries that differ only in later common-
+				// handle columns map to the same one-column SQL boundary. The
+				// duplicate is removed while the surrounding ranges stay adjacent.
+				encodedID1, err := codec.EncodeKey(tc.loc, nil, types.NewIntDatum(1))
+				require.NoError(t, err)
+				encodedID2, err := codec.EncodeKey(tc.loc, nil, types.NewIntDatum(2))
+				require.NoError(t, err)
+				sameTimeBoundary1 := recordKey(append(encodeTime(tc.boundary), encodedID1...))
+				sameTimeBoundary2 := recordKey(append(encodeTime(tc.boundary), encodedID2...))
+				nextTime := tc.boundary.Add(time.Second)
+				if tbl.TimeColumn.FieldType.GetType() == mysql.TypeDate {
+					nextTime = tc.boundary.AddDate(0, 0, 1)
+				}
+				nextTimeBoundary := recordKey(encodeTime(nextTime))
+
+				tikvStore.clearRegions()
+				tikvStore.addRegion(recordPrefix, sameTimeBoundary1)
+				tikvStore.addRegion(sameTimeBoundary1, sameTimeBoundary2)
+				tikvStore.addRegion(sameTimeBoundary2, nextTimeBoundary)
+				tikvStore.addRegion(nextTimeBoundary, expireKey)
+				tikvStore.addRegion(expireKey, afterExpireKey)
+				ranges, err = tbl.SplitScanRanges(
+					context.TODO(), tikvStore, expireTime, tc.loc, 5)
+				require.NoError(t, err)
+				require.Len(t, ranges, 3)
+				require.Empty(t, ranges[0].Start)
+				require.Equal(t, ranges[0].End, ranges[1].Start)
+				require.Equal(t, ranges[1].End, ranges[2].Start)
+				require.Empty(t, ranges[2].End)
 			}
 		})
 	}
