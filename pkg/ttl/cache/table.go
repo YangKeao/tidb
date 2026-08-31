@@ -947,19 +947,8 @@ func (t *PhysicalTable) SplitIndexScanRanges(ctx context.Context, store kv.Stora
 	}
 
 	scanRanges, err := scanRangesFromRawKeyRanges(keyRanges, func(endKey kv.Key) (types.Datum, bool, error) {
-		if endKey.Cmp(indexPrefix) <= 0 || !endKey.HasPrefix(indexPrefix) {
-			return nullDatum(), false, nil
-		}
-
-		data, _, err := codec.CutOne(endKey[len(indexPrefix):])
-		if err != nil {
-			return nullDatum(), false, nil
-		}
-		_, d, err := codec.DecodeAsDateTime(data, t.TimeColumn.FieldType.GetType(), loc)
-		if err != nil {
-			return nullDatum(), false, nil
-		}
-		return d, false, nil
+		d, err := timeDatumAtOrBeforeIndexBoundary(endKey, indexPrefix, &t.TimeColumn.FieldType, loc)
+		return d, false, err
 	})
 	if err != nil {
 		return nil, err
@@ -968,6 +957,120 @@ func (t *PhysicalTable) SplitIndexScanRanges(ctx context.Context, store kv.Stora
 		return []ScanRange{newFullRange()}, nil
 	}
 	return scanRanges, nil
+}
+
+// timeDatumAtOrBeforeIndexBoundary maps an arbitrary Region boundary to a
+// temporal datum that can be used as a SQL scan boundary.
+//
+// A Region boundary is an arbitrary byte string. It may end in the middle of
+// the leading temporal datum and therefore cannot be decoded with codec.CutOne.
+// Like the primary-key split helpers above, this function maps such bytes to a
+// nearby representable SQL value instead of dropping the split. It uses the
+// greatest temporal value whose complete encoding is no greater than the Region
+// boundary. For example, if a DATETIME(0) boundary is a truncated prefix of the
+// encoding of 2025-01-01 00:00:00, the result is the last valid second whose
+// complete encoding sorts before that prefix. If the boundary precedes every
+// temporal encoding, zero is used as the smallest SQL boundary instead.
+//
+// Using an approximate datum is safe because it is only used to divide the
+// complete SQL scan into adjacent [start, end) ranges. It does not need to be an
+// existing row value or exactly match the physical Region boundary.
+func timeDatumAtOrBeforeIndexBoundary(
+	boundary, indexPrefix kv.Key,
+	ft *types.FieldType,
+	loc *time.Location,
+) (types.Datum, error) {
+	tp := ft.GetType()
+	fsp := ft.GetDecimal()
+	if fsp == types.UnspecifiedFsp {
+		fsp = types.DefaultFsp
+	}
+	if fsp < types.MinFsp || fsp > types.MaxFsp {
+		return nullDatum(), errors.Errorf("invalid temporal FSP: %d", fsp)
+	}
+	if tp != mysql.TypeDate && tp != mysql.TypeDatetime && tp != mysql.TypeTimestamp {
+		return nullDatum(), errors.Errorf("unsupported temporal type: %d", tp)
+	}
+
+	stepMicros := int64(1)
+	for i := fsp; i < types.MaxFsp; i++ {
+		stepMicros *= 10
+	}
+	minTime := time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC)
+	maxTime := time.Date(9999, 12, 31, 23, 59, 59, int(1_000_000-stepMicros)*1000, time.UTC)
+	if tp == mysql.TypeDate {
+		stepMicros = int64(24 * time.Hour / time.Microsecond)
+		maxTime = time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
+	} else if tp == mysql.TypeTimestamp {
+		minTime = time.Date(1970, 1, 1, 0, 0, 1, 0, time.UTC)
+		maxTime = time.Date(2038, 1, 19, 3, 14, 7, int(1_000_000-stepMicros)*1000, time.UTC)
+	}
+	minMicros, maxMicros := minTime.UnixMicro(), maxTime.UnixMicro()
+
+	makeDatum := func(micros int64) types.Datum {
+		goTime := time.UnixMicro(micros).UTC()
+		return types.NewTimeDatum(types.NewTime(types.FromGoTime(goTime), tp, fsp))
+	}
+	encodeDatum := func(d types.Datum) (kv.Key, error) {
+		// makeDatum constructs TIMESTAMP candidates in UTC. Encode them in UTC
+		// as well so the binary search follows the physical index order and is
+		// independent of daylight-saving transitions in loc.
+		encodeLoc := loc
+		if tp == mysql.TypeTimestamp {
+			encodeLoc = time.UTC
+		}
+		encoded, err := codec.EncodeKey(encodeLoc, nil, d)
+		if err != nil {
+			return nil, err
+		}
+		key := make(kv.Key, 0, len(indexPrefix)+len(encoded))
+		key = append(key, indexPrefix...)
+		return append(key, encoded...), nil
+	}
+
+	zeroDatum := types.NewTimeDatum(types.NewTime(types.ZeroCoreTime, tp, fsp))
+	zeroKey, err := encodeDatum(zeroDatum)
+	if err != nil {
+		return nullDatum(), err
+	}
+	if boundary.Cmp(zeroKey) < 0 {
+		// There is no temporal value at or before this key. Zero is still a safe
+		// SQL split point because it is the smallest representable value.
+		return zeroDatum, nil
+	}
+
+	// Binary-search all valid values at the column's FSP. Even DATETIME(6)
+	// needs fewer than 60 iterations, and this runs only while creating TTL
+	// subtasks after the Region lookup.
+	low, high := int64(0), (maxMicros-minMicros)/stepMicros
+	best := int64(-1)
+	for low <= high {
+		mid := low + (high-low)/2
+		candidate := makeDatum(minMicros + mid*stepMicros)
+		key, err := encodeDatum(candidate)
+		if err != nil {
+			return nullDatum(), err
+		}
+		if key.Cmp(boundary) <= 0 {
+			best = mid
+			low = mid + 1
+		} else {
+			high = mid - 1
+		}
+	}
+	if best < 0 {
+		return zeroDatum, nil
+	}
+
+	result := makeDatum(minMicros + best*stepMicros)
+	if tp == mysql.TypeTimestamp && loc != nil && loc != time.UTC {
+		tm := result.GetMysqlTime()
+		if err := tm.ConvertTimeZone(time.UTC, loc); err != nil {
+			return nullDatum(), err
+		}
+		result.SetMysqlTime(tm)
+	}
+	return result, nil
 }
 
 func scanRangesFromRawKeyRanges(

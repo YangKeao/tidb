@@ -15,6 +15,7 @@
 package cache_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"testing"
@@ -459,6 +460,18 @@ func TestSplitIndexScanRanges(t *testing.T) {
 		encoded = codec.EncodeInt(encoded, 1)
 		return tablecodec.EncodeIndexSeekKey(ttlTbl.ID, idx.ID, encoded)
 	}
+	partialIndexKey := func(s string) []byte {
+		tm, err := time.ParseInLocation(time.DateTime, s, time.UTC)
+		require.NoError(t, err)
+		ft := ttlTbl.TimeColumn.FieldType
+		datum := types.NewTimeDatum(types.NewTime(types.FromGoTime(tm), ft.GetType(), ft.GetDecimal()))
+		encoded, err := codec.EncodeKey(time.UTC, nil, datum)
+		require.NoError(t, err)
+		require.Len(t, encoded, 9)
+		// A Region boundary is not required to be a complete row key. Truncate
+		// the packed temporal value itself to exercise arbitrary binary splits.
+		return tablecodec.EncodeIndexSeekKey(ttlTbl.ID, idx.ID, encoded[:len(encoded)-1])
+	}
 	minNotNullIndexKey := func() []byte {
 		encoded, err := codec.EncodeKey(time.UTC, nil, types.MinNotNullDatum())
 		require.NoError(t, err)
@@ -506,10 +519,141 @@ func TestSplitIndexScanRanges(t *testing.T) {
 	requireScanRange(ranges[2], "2021-01-01 00:00:00", "2022-01-01 00:00:00")
 	requireScanRange(ranges[3], "2022-01-01 00:00:00", "")
 
+	// Every intermediate Region boundary is truncated inside the first index
+	// datum. They still map to monotonic SQL boundaries instead of collapsing
+	// the whole scan into one full range.
+	tikvStore.clearRegions()
+	tikvStore.addRegion(indexPrefix, startKey)
+	tikvStore.addRegion(startKey, partialIndexKey("2020-01-01 00:00:00"))
+	tikvStore.addRegion(partialIndexKey("2020-01-01 00:00:00"), partialIndexKey("2021-01-01 00:00:00"))
+	tikvStore.addRegion(partialIndexKey("2021-01-01 00:00:00"), partialIndexKey("2022-01-01 00:00:00"))
+	tikvStore.addRegion(partialIndexKey("2022-01-01 00:00:00"), endKey)
+
+	ranges, err = ttlTbl.SplitIndexScanRanges(context.TODO(), tikvStore, idx, expireTime, time.UTC, 4)
+	require.NoError(t, err)
+	require.Len(t, ranges, 4)
+	requireScanRange(ranges[0], "", "2019-12-31 23:59:59")
+	requireScanRange(ranges[1], "2019-12-31 23:59:59", "2020-12-31 23:59:59")
+	requireScanRange(ranges[2], "2020-12-31 23:59:59", "2021-12-31 23:59:59")
+	requireScanRange(ranges[3], "2021-12-31 23:59:59", "")
+
 	ttlTbl.TimeColumn = nil
 	ranges, err = ttlTbl.SplitIndexScanRanges(context.TODO(), tikvStore, idx, expireTime, time.UTC, 4)
 	require.NoError(t, err)
 	require.Len(t, ranges, 1)
 	require.Empty(t, ranges[0].Start)
 	require.Empty(t, ranges[0].End)
+
+	for i, tc := range []struct {
+		columnType string
+		loc        *time.Location
+		boundary   time.Time
+		expected   string
+	}{
+		{
+			columnType: "date",
+			loc:        time.UTC,
+			boundary:   time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+			expected:   "2019-12-31",
+		},
+		{
+			columnType: "datetime(6)",
+			loc:        time.UTC,
+			boundary:   time.Date(2020, 1, 1, 0, 0, 0, 123392000, time.UTC),
+			expected:   "2020-01-01 00:00:00.123391",
+		},
+		{
+			columnType: "timestamp(3)",
+			loc:        time.FixedZone("UTC+8", 8*60*60),
+			boundary:   time.Date(2020, 1, 1, 0, 0, 0, 123000000, time.FixedZone("UTC+8", 8*60*60)),
+			expected:   "2020-01-01 00:00:00.122",
+		},
+	} {
+		t.Run(tc.columnType, func(t *testing.T) {
+			tableName := fmt.Sprintf("ttl_split_temporal_%d", i)
+			tk.MustExec(fmt.Sprintf("create table test.%s(id int primary key, t %s, index idx_t(t)) ttl = `t` + interval 1 day", tableName, tc.columnType))
+
+			tb, err := do.InfoSchema().TableByName(context.Background(), ast.NewCIStr("test"), ast.NewCIStr(tableName))
+			require.NoError(t, err)
+			tbl, err := cache.NewPhysicalTable(ast.NewCIStr("test"), tb.Meta(), ast.NewCIStr(""))
+			require.NoError(t, err)
+			idx := tbl.FindTTLIndex()
+			require.NotNil(t, idx)
+
+			encodeTime := func(tm time.Time) []byte {
+				ft := tbl.TimeColumn.FieldType
+				datum := types.NewTimeDatum(types.NewTime(types.FromGoTime(tm), ft.GetType(), ft.GetDecimal()))
+				encoded, err := codec.EncodeKey(tc.loc, nil, datum)
+				require.NoError(t, err)
+				return encoded
+			}
+			indexPrefix := tablecodec.EncodeIndexSeekKey(tbl.ID, idx.ID, nil)
+			encodedBoundary := encodeTime(tc.boundary)
+			require.Len(t, encodedBoundary, 9)
+			partialBoundary := tablecodec.EncodeIndexSeekKey(tbl.ID, idx.ID, encodedBoundary[:len(encodedBoundary)-1])
+			encodedMinNotNull, err := codec.EncodeKey(tc.loc, nil, types.MinNotNullDatum())
+			require.NoError(t, err)
+			startKey := tablecodec.EncodeIndexSeekKey(tbl.ID, idx.ID, encodedMinNotNull)
+			expireTime := time.Date(2025, 5, 14, 0, 0, 0, 0, tc.loc)
+			endKey := tablecodec.EncodeIndexSeekKey(tbl.ID, idx.ID, encodeTime(expireTime))
+
+			tikvStore := newMockTiKVStore(t)
+			tikvStore.addRegion(indexPrefix, startKey)
+			tikvStore.addRegion(startKey, partialBoundary)
+			tikvStore.addRegion(partialBoundary, endKey)
+
+			ranges, err := tbl.SplitIndexScanRanges(context.TODO(), tikvStore, idx, expireTime, tc.loc, 2)
+			require.NoError(t, err)
+			require.Len(t, ranges, 2)
+			require.Len(t, ranges[0].End, 1)
+			require.Equal(t, tc.expected, ranges[0].End[0].GetMysqlTime().String())
+			require.Len(t, ranges[1].Start, 1)
+			require.Equal(t, tc.expected, ranges[1].Start[0].GetMysqlTime().String())
+
+			assertBoundaryFloor := func(encoded []byte) {
+				boundary := tablecodec.EncodeIndexSeekKey(tbl.ID, idx.ID, encoded)
+				require.Positive(t, bytes.Compare(boundary, startKey))
+				require.Negative(t, bytes.Compare(boundary, endKey))
+
+				tikvStore.clearRegions()
+				tikvStore.addRegion(indexPrefix, startKey)
+				tikvStore.addRegion(startKey, boundary)
+				tikvStore.addRegion(boundary, endKey)
+				ranges, err := tbl.SplitIndexScanRanges(context.TODO(), tikvStore, idx, expireTime, tc.loc, 2)
+				require.NoError(t, err)
+				require.Len(t, ranges, 2)
+				require.Len(t, ranges[0].End, 1)
+
+				floor, err := codec.EncodeKey(tc.loc, nil, ranges[0].End[0])
+				require.NoError(t, err)
+				floorKey := tablecodec.EncodeIndexSeekKey(tbl.ID, idx.ID, floor)
+				require.LessOrEqual(t, bytes.Compare(floorKey, boundary), 0)
+			}
+
+			// Check every non-empty truncation inside the fixed-width temporal
+			// payload, not only a boundary missing its final byte.
+			for cut := 2; cut < len(encodedBoundary); cut++ {
+				assertBoundaryFloor(encodedBoundary[:cut])
+			}
+
+			// Region boundaries may also contain a complete 8-byte payload that
+			// does not describe a legal calendar/clock value. Verify that those
+			// boundaries are rounded down instead of being discarded.
+			packTime := func(year, month, day, hour, minute, second, microsecond int) uint64 {
+				ymd := ((uint64(year)*13+uint64(month))<<5 | uint64(day))
+				hms := uint64(hour)<<12 | uint64(minute)<<6 | uint64(second)
+				return ((ymd<<17 | hms) << 24) | uint64(microsecond)
+			}
+			for _, packed := range []uint64{
+				packTime(2020, 2, 31, 0, 0, 0, 0),
+				packTime(2020, 3, 1, 31, 0, 0, 0),
+				packTime(2020, 3, 1, 12, 63, 0, 0),
+				packTime(2020, 3, 1, 12, 30, 63, 0),
+				packTime(2020, 3, 1, 12, 30, 30, 1_500_000),
+			} {
+				encoded := append([]byte{encodedBoundary[0]}, codec.EncodeUint(nil, packed)...)
+				assertBoundaryFloor(encoded)
+			}
+		})
+	}
 }
