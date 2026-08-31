@@ -407,8 +407,15 @@ func TestNewScanSession(t *testing.T) {
 				return nil
 			}))
 			require.True(t, called)
-			// internal should not close
-			require.False(t, sysSe.IsInternalClosed())
+			if errSQL == "" {
+				// A successfully prepared and restored session can return to the pool.
+				require.False(t, sysSe.IsInternalClosed())
+			} else {
+				// A failed SET may have taken effect before returning its error. Even
+				// after best-effort restoration, the partially prepared session must
+				// not be reused.
+				require.True(t, sysSe.IsInternalClosed())
+			}
 		})
 	}
 

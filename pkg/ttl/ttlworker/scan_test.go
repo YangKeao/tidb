@@ -111,7 +111,8 @@ func (w *mockScanWorker) pollDelTask() *ttlDeleteTask {
 		require.NotNil(w.t, del)
 		require.NotNil(w.t, del.statistics)
 		require.Same(w.t, w.curTask.tbl, del.tbl)
-		require.Equal(w.t, w.curTask.ExpireTime, del.expire)
+		require.True(w.t, w.curTask.ExpireTime.Equal(del.expire))
+		require.Equal(w.t, time.UTC, del.expire.Location())
 		require.NotEqual(w.t, 0, len(del.rows))
 		return del
 	case <-time.After(10 * time.Second):
@@ -333,7 +334,6 @@ func (t *mockScanTask) runDoScanForTest(delTaskCnt int, errString string) *ttlSc
 	r := t.doScan(context.TODO(), t.delCh, t.sessPool)
 	require.NotNil(t.t, t.sessPool.lastSession)
 	require.True(t.t, t.sessPool.lastSession.inPool)
-	require.Greater(t.t, t.sessPool.lastSession.resetTimeZoneCalls, 0)
 	require.NotNil(t.t, r)
 	require.Same(t.t, t.ttlScanTask, r.task)
 	if errString == "" {
@@ -377,7 +377,8 @@ loop:
 		require.NotNil(t.t, del.statistics)
 		require.Same(t.t, t.statistics, del.statistics)
 		require.Same(t.t, t.tbl, del.tbl)
-		require.Equal(t.t, t.ExpireTime, del.expire)
+		require.True(t.t, t.ExpireTime.Equal(del.expire))
+		require.Equal(t.t, time.UTC, del.expire.Location())
 		if i < len(t.sqlRetry)-1 {
 			require.Equal(t.t, 3, len(del.rows))
 			require.Equal(t.t, 1, len(del.rows[2]))
@@ -510,11 +511,11 @@ func TestScanTaskDoScan(t *testing.T) {
 		}
 		pool := newMockSessionPool(t, tbl)
 		defer pool.AssertNoSessionInUse()
-		pool.se.sessionVars.TimeZone = loc
+		pool.se.globalTimeZone = loc
 		executeCalls := 0
 		pool.se.executeSQL = func(_ context.Context, sql string, _ ...any) ([]chunk.Row, error) {
 			executeCalls++
-			require.Equal(t, fmt.Sprintf("SELECT LOW_PRIORITY SQL_NO_CACHE `time`, `_tidb_rowid` FROM `test`.`index_range` FORCE INDEX(`idx_time`) WHERE `time` >= '%s' AND `time` < FROM_UNIXTIME(%d) ORDER BY `time`, `_tidb_rowid` ASC LIMIT 3", boundary.Format(time.DateTime), expire.Unix()), sql)
+			require.Equal(t, fmt.Sprintf("SELECT LOW_PRIORITY SQL_NO_CACHE `time`, `_tidb_rowid` FROM `test`.`index_range` FORCE INDEX(`idx_time`) WHERE `time` >= '%s' AND `time` < FROM_UNIXTIME(%d) ORDER BY `time`, `_tidb_rowid` ASC LIMIT 3", boundary.UTC().Format(time.DateTime), expire.Unix()), sql)
 			return newMockRows(t, &tbl.TimeColumn.FieldType, tbl.KeyColumnTypes[0]).Append(boundary, 1).Rows(), nil
 		}
 
@@ -548,8 +549,8 @@ func TestScanTaskDoScan(t *testing.T) {
 		// Temporal clustered-PK boundaries deliberately use the pre-existing
 		// textual PK task format, rather than a packed time datum that would need
 		// schema-aware decoding in the worker.
-		encodedRange, err := codec.EncodeKey(loc, nil,
-			types.NewBytesDatum([]byte(boundary.Format(time.DateTime))))
+		encodedRange, err := codec.EncodeKey(time.UTC, nil,
+			types.NewBytesDatum([]byte(boundary.UTC().Format(time.DateTime))))
 		require.NoError(t, err)
 		scanRange, err := codec.Decode(encodedRange, len(encodedRange))
 		require.NoError(t, err)
@@ -567,12 +568,12 @@ func TestScanTaskDoScan(t *testing.T) {
 		}
 		pool := newMockSessionPool(t, tbl)
 		defer pool.AssertNoSessionInUse()
-		pool.se.sessionVars.TimeZone = loc
+		pool.se.globalTimeZone = loc
 		executeCalls := 0
 		pool.se.executeSQL = func(_ context.Context, sql string, _ ...any) ([]chunk.Row, error) {
 			executeCalls++
 			require.Contains(t, sql, "FROM `test`.`clustered_pk_range` USE INDEX ()")
-			require.Contains(t, sql, fmt.Sprintf("`time` >= '%s'", boundary.Format(time.DateTime)))
+			require.Contains(t, sql, fmt.Sprintf("`time` >= '%s'", boundary.UTC().Format(time.DateTime)))
 			require.Contains(t, sql, fmt.Sprintf("`time` < FROM_UNIXTIME(%d)", expire.Unix()))
 			require.Contains(t, sql, "ORDER BY `time`, `id` ASC LIMIT 3")
 			return newMockRows(t, &tbl.TimeColumn.FieldType, &idColumn.FieldType).

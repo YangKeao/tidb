@@ -54,6 +54,8 @@ For a non-unique index, the cursor needs the complete table key unless the decla
 
 An unsigned integer clustered primary key cannot be used as an implicit suffix because its physical suffix order cannot satisfy the SQL order currently exposed by the planner. This restriction does not apply when the full key is explicitly present among the declared index columns.
 
+Cursor literals must also preserve the selected path's physical order. `ENUM` is supported by writing its ordinal in range and cursor predicates. If the final pagination tuple contains `SET`, `FLOAT`, or `DOUBLE`, the secondary index is rejected: TiDB cannot currently derive the required ordered range from a `SET` bitmask comparison, while a decimal SQL literal cannot reliably reproduce every scanned floating-point value as a strict cursor frontier. This restriction is based on the final pagination tuple, so it also covers table-key columns appended as an implicit index suffix. A clustered common handle containing `SET` remains correct on the PK path by using its bitmask as the cursor, although the planner may not provide ideal range pushdown.
+
 For an integer `PKIsHandle` table, the primary key is encoded directly in the table record key and normally has no `IndexInfo` entry. It therefore remains on the existing signed/unsigned integer PK scan path. A secondary TTL index on such a table is selected independently according to the implicit-handle-suffix restrictions above. In contrast, a nonclustered primary key has its own physical index KV and is handled as a unique, all-`NOT NULL` index.
 
 For a common-handle clustered primary key whose first column is the TTL column, both a single-column key `(ttl)` and a composite key `(ttl, remaining_pk_columns...)` use temporal PK task boundaries. A Region boundary inside a later common-handle column maps to its leading TTL value. Multiple Regions within the same TTL value may therefore collapse into one SQL range; this can reduce split balance but does not create gaps or overlap.
@@ -66,6 +68,7 @@ The following cases are unsupported and fall back to the existing PK scan:
 - a unique composite index with a nullable non-TTL column, because SQL permits multiple rows with the same tuple through `NULL` values;
 - a non-unique composite index containing only part of the table key, because the current cursor layout cannot represent the remaining implicit suffix in physical order;
 - a non-unique index that needs one of the unsupported implicit handle suffixes described above.
+- an index whose final pagination tuple contains `SET`, `FLOAT`, or `DOUBLE`.
 
 The scheduler calls `PhysicalTable.FindTTLIndex()` at job creation time. If the selected index is dropped later, the worker reports an error for the affected task.
 
@@ -99,6 +102,8 @@ Conversely, `USE INDEX ()` in the PK-scan SQL prevents the optimizer from unexpe
 
 Each index task scans one TTL-column range `[start, end)`. The first page applies the lower and upper bounds, and later pages continue from the last index-order tuple while keeping the upper bound. If a fixed cursor prefix contains `NULL`, it uses `IS NULL`; advancing past a `NULL` frontier uses `IS NOT NULL`, matching TiDB's ascending, NULL-first index order. The scan result contains both cursor columns and the table key required by the delete phase.
 
+`ENUM` and `SET` are ordered physically by numeric representation rather than display text. Cursor and task-range predicates therefore write an `ENUM` ordinal or a `SET` bitmask. Delete key equality predicates continue to use the exact SQL value returned by the scan. Secondary indexes requiring a `SET` cursor are not selected for the planner reason described above, but the numeric cursor keeps clustered common-handle PK pagination logically correct.
+
 For a unique index, pages order and seek only by the declared index columns. The TTL predicate excludes a `NULL` TTL value, so a unique single-column TTL index needs no extra cursor suffix even when the TTL column is nullable. A composite unique index is used only when every non-TTL index column is `NOT NULL`; otherwise, multiple rows could share the same tuple through `NULL` values and the table falls back to PK scan. Non-unique indexes remain usable with nullable columns because their pagination tuple includes the table key and the stack conditions follow TiDB's NULL-first index order.
 
 Pages are separate SQL statements and do not share one snapshot. If an indexed value changes while a task is scanning, a row can move across the cursor and be skipped by the current job or observed again. The delete statement rechecks the expiration condition, so this cannot delete a row that is no longer expired; a skipped expired row remains eligible for a later TTL job. The scan therefore provides safe, eventually repeated processing rather than an exactly-once traversal under concurrent index-column updates.
@@ -116,9 +121,18 @@ For index scan splitting, the scheduler locates TiKV regions in the selected ind
 
 Region boundaries are arbitrary byte strings and may truncate a temporal datum or encode an invalid calendar value. Both physical paths map each boundary to the greatest legal temporal value whose complete encoded key is no greater than the Region boundary. The resulting SQL ranges stay adjacent even when the physical and SQL split points are not identical. If the store is not TiKV or the Region split cannot produce useful boundaries, the scheduler falls back to one full range on the selected scan path.
 
+### Time Zone Protocol
+
+TTL scan and delete statements execute in a pooled session whose session time zone is UTC for the entire borrowed lifetime. In particular, a `TIMESTAMP` range boundary and pagination cursor is interpreted as one UTC instant; it therefore remains unambiguous when a named global time zone repeats a wall-clock value during a daylight-saving-time fold. Temporal cursor predicates continue to compare the bare column with an ordinary constant, so the planner can retain range seek and index order without a conversion function on the indexed column.
+
+The TTL expiration frontier still follows the global time zone captured for the scan task. `TIMESTAMP` stores an instant, so its predicate uses the corresponding Unix instant in the UTC session. `DATE` and `DATETIME` use wall-clock semantics, so their predicate writes the captured global-time-zone wall clock as a `DATETIME` constant instead of converting that epoch to a UTC wall clock. Scan and delete use the same captured frontier, and both retain the strict `ttl_column < cutoff` predicate; the delete therefore rechecks expiration if a row changes after it was scanned.
+
+The borrowed session's original time zone and other TTL-specific variables are restored exactly before returning it to the shared pool. Setup failure performs best-effort restoration and makes the session non-reusable. Restoration attempts all variables even after one failure, and any failure also makes the session non-reusable, preventing TTL's UTC protocol or execution settings from leaking to another pool user.
+
 ## Compatibility
 
 - `tidb_ttl_enable_index_scan` defaults to `ON`. Tables with a suitable TTL-column secondary or nonclustered primary index will use index-ordered scans. Turning it off does not disable temporal splitting on a clustered primary key because that optimization remains on the table's PK path.
 - `split_by` defaults to `NULL`, compatible with old tasks.
 - Before creating a TTL job, the TTL manager compares the normalized semantic versions of the current TiDB and all TiDB instances registered in server info. Prerelease labels, build metadata, and Git hashes are ignored. The current process's runtime version is always the comparison baseline, even if its etcd entry is temporarily absent. When mixed versions are visible, the manager skips creating the job so an old worker cannot interpret index boundaries as PK boundaries during a rolling upgrade. This is a best-effort compatibility gate: server-info lookup, an empty result, or version parsing failures are logged, and the job is allowed to use only the PK scan path (`split_by` remains `NULL`). Only a successful, consistent version check enables index scan tasks. Temporal clustered-PK splitting does not depend on this gate because it keeps the existing PK task shape and stores old-worker-compatible textual range boundaries. Non-blocking results are cached for 10 seconds to coalesce bursts of job creation; a detected mismatch is cached for one minute to avoid frequent etcd reads while the timer retries the job.
+- The UTC worker-session protocol does not add a task field, encoding version, server-info call, or feature gate. During an undetected mixed-version interval, an old worker may leave part of a new task unprocessed, but every delete still checks the expiration predicate and a later TTL job can process the omitted expired rows.
 - No TiKV or protocol changes.

@@ -910,6 +910,20 @@ func (t *PhysicalTable) BuildTTLIndexScanPlan(idx *model.IndexInfo) (*TTLIndexSc
 		}
 		orderColumns = append(orderColumns, t.KeyColumns...)
 	}
+	for _, col := range orderColumns {
+		switch col.GetType() {
+		case mysql.TypeSet:
+			// SET is physically ordered by its bitmask, but the planner cannot
+			// currently turn SET cursor comparisons into index ranges. Selecting
+			// such an index would repeatedly scan the preceding index prefix.
+			return nil, errors.Errorf("index %s requires unsupported SET pagination column %s", idx.Name, col.Name)
+		case mysql.TypeFloat, mysql.TypeDouble:
+			// Floating-point SQL literals cannot always reproduce the exact
+			// physical value returned by a scan. They are therefore unsafe as a
+			// strict pagination frontier.
+			return nil, errors.Errorf("index %s requires unsupported floating-point pagination column %s", idx.Name, col.Name)
+		}
+	}
 
 	// Keep both the declared index key and the pagination key as prefixes of
 	// every result row. Append only table-key columns missing from the index.

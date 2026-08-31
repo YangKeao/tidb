@@ -261,7 +261,10 @@ func TestTTLDeleteTaskDoDelete(t *testing.T) {
 	}
 
 	delTask := func(batchCnt int) *ttlDeleteTask {
-		return newMockDeleteTask(t1, nRows(batchCnt*delBatch), time.UnixMilli(0))
+		// Keep this test independent of the process time zone. It intentionally
+		// exercises the DATE/DATETIME wall-clock cutoff used by UTC TTL sessions.
+		expire := time.UnixMilli(0).In(time.FixedZone("UTC+8", 8*60*60))
+		return newMockDeleteTask(t1, nRows(batchCnt*delBatch), expire)
 	}
 
 	cases := []struct {
@@ -364,7 +367,7 @@ func TestTTLDeleteTaskDoDelete(t *testing.T) {
 				idList = append(idList, strconv.FormatInt(row[0].GetInt64(), 10))
 			}
 			sql := fmt.Sprintf("DELETE LOW_PRIORITY FROM `test`.`t1` "+
-				"WHERE `_tidb_rowid` IN (%s) AND `time` < FROM_UNIXTIME(0) LIMIT %d",
+				"WHERE `_tidb_rowid` IN (%s) AND `time` < CAST('1970-01-01 08:00:00' AS DATETIME) LIMIT %d",
 				strings.Join(idList, ", "),
 				delBatch,
 			)

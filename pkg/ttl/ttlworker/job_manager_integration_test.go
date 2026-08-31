@@ -785,6 +785,306 @@ func TestIndexScanForAnonymizedLargeTableShape(t *testing.T) {
 	}
 }
 
+func TestTimestampPaginationAcrossDSTFold(t *testing.T) {
+	store, dom := testkit.CreateMockStoreAndDomain(t)
+	waitAndStopTTLManager(t, dom)
+	tk := testkit.NewTestKit(t, store)
+	tk.MustExec("use test")
+	tk.MustExec("set @@global.time_zone='America/New_York'")
+	t.Cleanup(func() { tk.MustExec("set @@global.time_zone='UTC'") })
+	// Insert and execute TTL data SQL in UTC. The first two values are distinct
+	// instants that both display as 01:30 during the New York DST fold.
+	tk.MustExec("set @@time_zone='UTC'")
+	tk.MustExec(`create table ttl_dst_index(
+		id bigint primary key clustered,
+		expired_at timestamp(6) not null,
+		index idx_expired(expired_at)
+	) TTL=expired_at + interval 1 hour`)
+	tk.MustExec(`insert into ttl_dst_index values
+		(1, '2024-11-03 05:30:00.123456'),
+		(2, '2024-11-03 06:30:00.123456'),
+		(3, '2024-11-03 07:30:00.123456')`)
+	tk.MustExec(`create table ttl_dst_clustered(
+		expired_at timestamp(6) not null,
+		id bigint not null,
+		primary key(expired_at, id) clustered
+	) TTL=expired_at + interval 1 hour`)
+	tk.MustExec(`insert into ttl_dst_clustered values
+		('2024-11-03 05:30:00.123456', 1),
+		('2024-11-03 06:30:00.123456', 2),
+		('2024-11-03 07:30:00.123456', 3)`)
+
+	newTTLTable := func(name string) *cache.PhysicalTable {
+		tbl, err := dom.InfoSchema().TableByName(context.Background(), ast.NewCIStr("test"), ast.NewCIStr(name))
+		require.NoError(t, err)
+		ttlTbl, err := cache.NewPhysicalTable(ast.NewCIStr("test"), tbl.Meta(), ast.NewCIStr(""))
+		require.NoError(t, err)
+		return ttlTbl
+	}
+	ny, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+	expire := time.Date(2024, 11, 4, 0, 0, 0, 0, time.UTC).In(ny)
+	se := session.NewSession(tk.Session(), func() {})
+	runPagination := func(
+		generator *sqlbuilder.ScanQueryGenerator,
+		planOperator string,
+	) []int64 {
+		var previous [][]types.Datum
+		var ids []int64
+		for range 16 {
+			sql, err := generator.NextSQL(previous, 1)
+			require.NoError(t, err)
+			if sql == "" {
+				break
+			}
+			plan := tk.MustQuery("explain format='brief' " + sql)
+			plan.CheckContain(planOperator)
+			plan.CheckNotContain("TopN")
+			plan.CheckNotContain("Sort")
+			rows, err := se.ExecuteSQL(context.Background(), sql)
+			require.NoError(t, err)
+			previous = make([][]types.Datum, len(rows))
+			for i, row := range rows {
+				previous[i] = row.GetDatumRow(generator.ScanColumnTypes())
+				key := generator.TableKey(previous[i])
+				ids = append(ids, key[len(key)-1].GetInt64())
+			}
+		}
+		require.True(t, generator.IsExhausted())
+		return ids
+	}
+
+	indexTable := newTTLTable("ttl_dst_index")
+	idx := indexTable.FindTTLIndex()
+	require.NotNil(t, idx)
+	indexGenerator, err := sqlbuilder.NewIndexScanQueryGenerator(indexTable, expire, nil, nil, idx)
+	require.NoError(t, err)
+	require.Equal(t, []int64{1, 2, 3}, runPagination(indexGenerator, "IndexRangeScan"))
+
+	clusteredTable := newTTLTable("ttl_dst_clustered")
+	require.Nil(t, clusteredTable.FindTTLIndex())
+	clusteredGenerator, err := sqlbuilder.NewScanQueryGenerator(clusteredTable, expire, nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, []int64{1, 2, 3}, runPagination(clusteredGenerator, "TableRangeScan"))
+}
+
+func TestTTLExpirationPredicatesInUTCSession(t *testing.T) {
+	store, dom := testkit.CreateMockStoreAndDomain(t)
+	waitAndStopTTLManager(t, dom)
+	tk := testkit.NewTestKit(t, store)
+	tk.MustExec("use test")
+	tk.MustExec("set @@global.time_zone='America/New_York'")
+	t.Cleanup(func() { tk.MustExec("set @@global.time_zone='UTC'") })
+	// This is the protocol used by TTL's shared session pool. The expiration
+	// time below is still expressed in the captured global location.
+	tk.MustExec("set @@time_zone='UTC'")
+
+	newTTLTable := func(name string) *cache.PhysicalTable {
+		tbl, err := dom.InfoSchema().TableByName(context.Background(), ast.NewCIStr("test"), ast.NewCIStr(name))
+		require.NoError(t, err)
+		ttlTbl, err := cache.NewPhysicalTable(ast.NewCIStr("test"), tbl.Meta(), ast.NewCIStr(""))
+		require.NoError(t, err)
+		return ttlTbl
+	}
+	deleteKeys := [][]types.Datum{
+		{types.NewIntDatum(1)},
+		{types.NewIntDatum(2)},
+		{types.NewIntDatum(3)},
+		{types.NewIntDatum(4)},
+	}
+	ny, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+	// 06:30 UTC is the second occurrence of 01:30 in the New York DST fold.
+	foldCutoff := time.Date(2024, 11, 3, 6, 30, 0, 0, time.UTC).In(ny)
+
+	tk.MustExec(`create table ttl_timestamp_delete(
+		id bigint primary key clustered,
+		expired_at timestamp(6) not null
+	) TTL=expired_at + interval 1 hour`)
+	tk.MustExec(`insert into ttl_timestamp_delete values
+		(1, '2024-11-03 05:30:00'),
+		(2, '2024-11-03 06:30:00'),
+		(3, '2024-11-03 07:30:00'),
+		(4, '2024-11-03 05:45:00')`)
+	// Simulate a TTL value updated after scan but before delete. The DELETE
+	// must recheck expiration and preserve this row.
+	tk.MustExec("update ttl_timestamp_delete set expired_at='2024-11-03 07:45:00' where id=4")
+	deleteSQL, err := sqlbuilder.BuildDeleteSQL(newTTLTable("ttl_timestamp_delete"), deleteKeys, foldCutoff)
+	require.NoError(t, err)
+	tk.MustExec(deleteSQL)
+	tk.MustQuery("select id from ttl_timestamp_delete order by id").Check(testkit.Rows("2", "3", "4"))
+
+	// DATETIME retains the global-zone wall clock even though the statement is
+	// executed in UTC. Equality is not expired because TTL uses a strict bound.
+	tk.MustExec(`create table ttl_datetime_delete(
+		id bigint primary key clustered,
+		expired_at datetime(6) not null
+	) TTL=expired_at + interval 1 hour`)
+	tk.MustExec(`insert into ttl_datetime_delete values
+		(1, '2024-11-03 01:29:59'),
+		(2, '2024-11-03 01:30:00'),
+		(3, '2024-11-03 01:30:01'),
+		(4, '2024-11-03 01:00:00')`)
+	tk.MustExec("update ttl_datetime_delete set expired_at='2024-11-03 02:00:00' where id=4")
+	deleteSQL, err = sqlbuilder.BuildDeleteSQL(newTTLTable("ttl_datetime_delete"), deleteKeys, foldCutoff)
+	require.NoError(t, err)
+	tk.MustExec(deleteSQL)
+	tk.MustQuery("select id from ttl_datetime_delete order by id").Check(testkit.Rows("2", "3", "4"))
+
+	// DATE uses the same wall-clock rule. A midnight cutoff gives an exact DATE
+	// equality case without involving a time-of-day conversion.
+	tk.MustExec(`create table ttl_date_delete(
+		id bigint primary key clustered,
+		expired_at date not null
+	) TTL=expired_at + interval 1 day`)
+	tk.MustExec(`insert into ttl_date_delete values
+		(1, '2024-11-02'),
+		(2, '2024-11-03'),
+		(3, '2024-11-04'),
+		(4, '2024-11-01')`)
+	tk.MustExec("update ttl_date_delete set expired_at='2024-11-05' where id=4")
+	dateCutoff := time.Date(2024, 11, 3, 0, 0, 0, 0, ny)
+	deleteSQL, err = sqlbuilder.BuildDeleteSQL(newTTLTable("ttl_date_delete"), deleteKeys, dateCutoff)
+	require.NoError(t, err)
+	tk.MustExec(deleteSQL)
+	tk.MustQuery("select id from ttl_date_delete order by id").Check(testkit.Rows("2", "3", "4"))
+}
+
+func TestTTLIndexCursorTypePlans(t *testing.T) {
+	store, dom := testkit.CreateMockStoreAndDomain(t)
+	waitAndStopTTLManager(t, dom)
+	tk := testkit.NewTestKit(t, store)
+	tk.MustExec("use test")
+	tk.MustExec(`create table ttl_cursor_types(
+		id bigint primary key clustered,
+		expired_at datetime not null,
+		e enum('z','a','b'),
+		s set('z','a','b'),
+		f float,
+		d double,
+		index idx_enum(expired_at, e),
+		index idx_set(expired_at, s),
+		index idx_float(expired_at, f),
+		index idx_double(expired_at, d)
+	) TTL=expired_at + interval 1 hour`)
+	tk.MustExec("set @@sql_mode=''")
+	tk.MustExec(`insert into ttl_cursor_types values
+		(0, '2024-01-01 00:00:00', NULL, NULL, NULL, NULL),
+		(1, '2024-01-01 00:00:00', 'z', 'z', 1.5, 1.5),
+		(2, '2024-01-01 00:00:00', 'a', 'a', 2.5, 2.5),
+		(3, '2024-01-01 00:00:00', 'b', 'b', 3.5, 3.5),
+		(4, '2024-01-01 00:00:00', 0, 0, 4.5, 4.5)`)
+
+	tbl, err := dom.InfoSchema().TableByName(context.Background(), ast.NewCIStr("test"), ast.NewCIStr("ttl_cursor_types"))
+	require.NoError(t, err)
+	ttlTbl, err := cache.NewPhysicalTable(ast.NewCIStr("test"), tbl.Meta(), ast.NewCIStr(""))
+	require.NoError(t, err)
+	indices := make(map[string]*model.IndexInfo)
+	for _, idx := range ttlTbl.Indices {
+		indices[idx.Name.L] = idx
+	}
+	require.Same(t, indices["idx_enum"], ttlTbl.FindTTLIndex())
+	_, err = ttlTbl.BuildTTLIndexScanPlan(indices["idx_enum"])
+	require.NoError(t, err)
+	for _, name := range []string{"idx_set", "idx_float", "idx_double"} {
+		_, err = ttlTbl.BuildTTLIndexScanPlan(indices[name])
+		require.Error(t, err, name)
+	}
+
+	generator, err := sqlbuilder.NewIndexScanQueryGenerator(
+		ttlTbl, time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), nil, nil, indices["idx_enum"])
+	require.NoError(t, err)
+	se := session.NewSession(tk.Session(), func() {})
+	var previous [][]types.Datum
+	var ids []int64
+	sqls := make([]string, 0, 16)
+	for range 16 {
+		sql, err := generator.NextSQL(previous, 1)
+		require.NoError(t, err)
+		if sql == "" {
+			break
+		}
+		sqls = append(sqls, sql)
+		plan := tk.MustQuery("explain format='brief' " + sql)
+		plan.MultiCheckContain([]string{"IndexRangeScan", "idx_enum"})
+		plan.CheckNotContain("TopN")
+		plan.CheckNotContain("Sort")
+		rows, err := se.ExecuteSQL(context.Background(), sql)
+		require.NoError(t, err)
+		previous = make([][]types.Datum, len(rows))
+		for i, row := range rows {
+			previous[i] = row.GetDatumRow(generator.ScanColumnTypes())
+			ids = append(ids, generator.TableKey(previous[i])[0].GetInt64())
+		}
+	}
+	require.Equal(t, []int64{0, 4, 1, 2, 3}, ids)
+	joinedSQL := strings.Join(sqls, "\n")
+	require.Contains(t, joinedSQL, "`e` IS NOT NULL")
+	require.Contains(t, joinedSQL, "`e` > 0")
+	require.Contains(t, joinedSQL, "`e` > 1")
+}
+
+func TestEnumSetClusteredPKPagination(t *testing.T) {
+	store, dom := testkit.CreateMockStoreAndDomain(t)
+	waitAndStopTTLManager(t, dom)
+	tk := testkit.NewTestKit(t, store)
+	tk.MustExec("use test")
+	tk.MustExec(`create table ttl_enum_set_clustered(
+		expired_at datetime not null,
+		e enum('z','a','b') not null,
+		s set('z','a','b') not null,
+		id bigint not null,
+		primary key(expired_at, e, s, id) clustered
+	) TTL=expired_at + interval 1 hour`)
+	// ENUM 0 is its special empty error value. SET 0 is the empty set. Neither
+	// has the display-string order used by its physical common-handle key.
+	tk.MustExec("set @@sql_mode=''")
+	tk.MustExec(`insert into ttl_enum_set_clustered values
+		('2024-01-01 00:00:00', 0, 0, 1),
+		('2024-01-01 00:00:00', 'z', 0, 2),
+		('2024-01-01 00:00:00', 'z', 'z', 3),
+		('2024-01-01 00:00:00', 'z', 'a', 4),
+		('2024-01-01 00:00:00', 'z', 'z,a', 5),
+		('2024-01-01 00:00:00', 'a', 0, 6)`)
+
+	tbl, err := dom.InfoSchema().TableByName(context.Background(), ast.NewCIStr("test"), ast.NewCIStr("ttl_enum_set_clustered"))
+	require.NoError(t, err)
+	ttlTbl, err := cache.NewPhysicalTable(ast.NewCIStr("test"), tbl.Meta(), ast.NewCIStr(""))
+	require.NoError(t, err)
+	generator, err := sqlbuilder.NewScanQueryGenerator(
+		ttlTbl, time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), nil, nil)
+	require.NoError(t, err)
+	se := session.NewSession(tk.Session(), func() {})
+	var previous [][]types.Datum
+	var cursors []string
+	sqls := make([]string, 0, 32)
+	for range 32 {
+		sql, err := generator.NextSQL(previous, 1)
+		require.NoError(t, err)
+		if sql == "" {
+			break
+		}
+		sqls = append(sqls, sql)
+		plan := tk.MustQuery("explain format='brief' " + sql)
+		plan.CheckNotContain("TopN")
+		plan.CheckNotContain("Sort")
+		rows, err := se.ExecuteSQL(context.Background(), sql)
+		require.NoError(t, err)
+		previous = make([][]types.Datum, len(rows))
+		for i, row := range rows {
+			previous[i] = row.GetDatumRow(generator.ScanColumnTypes())
+			key := generator.TableKey(previous[i])
+			cursors = append(cursors, fmt.Sprintf("%d/%d/%d",
+				key[1].GetMysqlEnum().Value, key[2].GetMysqlSet().Value, key[3].GetInt64()))
+		}
+	}
+	require.True(t, generator.IsExhausted())
+	require.Equal(t, []string{"0/0/1", "1/0/2", "1/1/3", "1/2/4", "1/3/5", "2/0/6"}, cursors)
+	joinedSQL := strings.Join(sqls, "\n")
+	require.Contains(t, joinedSQL, "`e` = 1")
+	require.Contains(t, joinedSQL, "`s` > 0")
+}
+
 func TestTTLIndexScanPrimaryKeyLayouts(t *testing.T) {
 	store, dom := testkit.CreateMockStoreAndDomain(t)
 	waitAndStopTTLManager(t, dom)
