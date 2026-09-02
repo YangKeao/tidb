@@ -396,6 +396,23 @@ func TestFindTTLIndex(t *testing.T) {
 			indexName:   "idx_t",
 		},
 		{
+			def:         "(id int primary key, t datetime, e enum('z', 'a'), index idx_t(t, e)) ttl = `t` + interval 1 day",
+			hasTTLIndex: true,
+			indexName:   "idx_t",
+		},
+		{
+			def:         "(id int primary key, t datetime, s set('a', 'b'), index idx_t(t, s)) ttl = `t` + interval 1 day",
+			hasTTLIndex: false,
+		},
+		{
+			def:         "(id int primary key, t datetime, f float, index idx_t(t, f)) ttl = `t` + interval 1 day",
+			hasTTLIndex: false,
+		},
+		{
+			def:         "(id int primary key, t datetime, d double, index idx_t(t, d)) ttl = `t` + interval 1 day",
+			hasTTLIndex: false,
+		},
+		{
 			def:         "(a int, b int, t datetime, primary key(a, b) clustered, unique index idx_t(t, a, b)) ttl = `t` + interval 1 day",
 			hasTTLIndex: true,
 			indexName:   "idx_t",

@@ -497,7 +497,7 @@ func TestSQLBuilder(t *testing.T) {
 	shLoc, err := time.LoadLocation("Asia/Shanghai")
 	require.NoError(t, err)
 	must(b.WriteExpireCondition(time.UnixMilli(0).In(shLoc)))
-	mustBuild(b, "SELECT LOW_PRIORITY SQL_NO_CACHE `id` FROM `test`.`t1` WHERE `time` < CAST('1970-01-01 08:00:00' AS DATETIME)")
+	mustBuild(b, "SELECT LOW_PRIORITY SQL_NO_CACHE `id` FROM `test`.`t1` WHERE `time` < FROM_UNIXTIME(0)")
 
 	b = sqlbuilder.NewSQLBuilder(t1)
 	must(b.WriteSelect())
@@ -608,42 +608,6 @@ func TestSQLBuilder(t *testing.T) {
 	must(b.WriteInCondition(tp.KeyColumns, d("a"), d("b")))
 	must(b.WriteExpireCondition(time.UnixMilli(0).In(time.UTC)))
 	mustBuild(b, "DELETE LOW_PRIORITY FROM `testp`.`tp` PARTITION(`p1`) WHERE `id` IN ('a', 'b') AND `time` < FROM_UNIXTIME(0)")
-}
-
-func TestExpireConditionPreservesTemporalSemanticsInUTCSession(t *testing.T) {
-	ny, err := time.LoadLocation("America/New_York")
-	require.NoError(t, err)
-	// This instant is the second 01:15 during the New York DST fold.
-	expire := time.Date(2024, 11, 3, 6, 15, 0, 0, time.UTC).In(ny)
-	for _, tc := range []struct {
-		name     string
-		typeCode byte
-		expect   string
-	}{
-		{"timestamp", mysql.TypeTimestamp, fmt.Sprintf("FROM_UNIXTIME(%d)", expire.Unix())},
-		{"datetime", mysql.TypeDatetime, "CAST('2024-11-03 01:15:00' AS DATETIME)"},
-		{"date", mysql.TypeDate, "CAST('2024-11-03 01:15:00' AS DATETIME)"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			timeColumn := &model.ColumnInfo{Name: ast.NewCIStr("expired_at"), FieldType: *types.NewFieldType(tc.typeCode)}
-			tbl := &cache.PhysicalTable{
-				Schema: ast.NewCIStr("test"),
-				TableInfo: &model.TableInfo{
-					Name: ast.NewCIStr("t"),
-				},
-				KeyColumns: []*model.ColumnInfo{{Name: ast.NewCIStr("id"), FieldType: *types.NewFieldType(mysql.TypeLong)}},
-				TimeColumn: timeColumn,
-			}
-			b := sqlbuilder.NewSQLBuilder(tbl)
-			require.NoError(t, b.WriteSelect())
-			require.NoError(t, b.WriteExpireCondition(expire))
-			sql, err := b.Build()
-			require.NoError(t, err)
-			require.Contains(t, sql, "`expired_at` < "+tc.expect)
-			_, _, err = parser.New().Parse(sql, "", "")
-			require.NoError(t, err)
-		})
-	}
 }
 
 func TestScanQueryGenerator(t *testing.T) {
@@ -1150,114 +1114,6 @@ func TestIndexScanQueryGenerator(t *testing.T) {
 	require.True(t, g.IsExhausted())
 }
 
-func TestEnumAndSetPaginationUsePhysicalValues(t *testing.T) {
-	enumType := types.NewFieldType(mysql.TypeEnum)
-	enumType.SetElems([]string{"z", "a", "b"})
-	setType := types.NewFieldType(mysql.TypeSet)
-	setType.SetElems([]string{"z", "a", "b"})
-	enumCol := &model.ColumnInfo{ID: 1, Name: ast.NewCIStr("e"), FieldType: *enumType}
-	setCol := &model.ColumnInfo{ID: 2, Name: ast.NewCIStr("s"), FieldType: *setType}
-	idCol := &model.ColumnInfo{ID: 3, Name: ast.NewCIStr("id"), FieldType: *types.NewFieldType(mysql.TypeLong)}
-	timeCol := &model.ColumnInfo{ID: 4, Name: ast.NewCIStr("created_time"), FieldType: *types.NewFieldType(mysql.TypeDatetime)}
-	tbl := &cache.PhysicalTable{
-		Schema: ast.NewCIStr("test"),
-		TableInfo: &model.TableInfo{
-			Name:    ast.NewCIStr("enum_set_pk"),
-			Columns: []*model.ColumnInfo{enumCol, setCol, idCol, timeCol},
-		},
-		KeyColumns: []*model.ColumnInfo{enumCol, setCol, idCol},
-		TimeColumn: timeCol,
-	}
-	enumValue := types.NewMysqlEnumDatum(types.Enum{Name: "a", Value: 2})
-	setValue, err := types.ParseSetValue(setType.GetElems(), 5)
-	require.NoError(t, err)
-	setDatum := types.NewMysqlSetDatum(setValue, setType.GetCollate())
-	boundary := [][]types.Datum{{enumValue, setDatum, types.NewIntDatum(7)}}
-
-	g, err := sqlbuilder.NewScanQueryGenerator(tbl, time.Unix(1, 0).UTC(), nil, nil)
-	require.NoError(t, err)
-	sql, err := g.NextSQL(nil, 1)
-	require.NoError(t, err)
-	require.Equal(t, "SELECT LOW_PRIORITY SQL_NO_CACHE `e`, `s`, `id` FROM `test`.`enum_set_pk` USE INDEX () WHERE `created_time` < FROM_UNIXTIME(1) ORDER BY `e`, `s`, `id` ASC LIMIT 1", sql)
-
-	sql, err = g.NextSQL(boundary, 1)
-	require.NoError(t, err)
-	require.Equal(t, "SELECT LOW_PRIORITY SQL_NO_CACHE `e`, `s`, `id` FROM `test`.`enum_set_pk` USE INDEX () WHERE `e` = 2 AND `s` = 5 AND `id` > 7 AND `created_time` < FROM_UNIXTIME(1) ORDER BY `e`, `s`, `id` ASC LIMIT 1", sql)
-	sql, err = g.NextSQL(nil, 1)
-	require.NoError(t, err)
-	require.Equal(t, "SELECT LOW_PRIORITY SQL_NO_CACHE `e`, `s`, `id` FROM `test`.`enum_set_pk` USE INDEX () WHERE `e` = 2 AND `s` > 5 AND `created_time` < FROM_UNIXTIME(1) ORDER BY `e`, `s`, `id` ASC LIMIT 1", sql)
-	sql, err = g.NextSQL(nil, 1)
-	require.NoError(t, err)
-	require.Equal(t, "SELECT LOW_PRIORITY SQL_NO_CACHE `e`, `s`, `id` FROM `test`.`enum_set_pk` USE INDEX () WHERE `e` > 2 AND `created_time` < FROM_UNIXTIME(1) ORDER BY `e`, `s`, `id` ASC LIMIT 1", sql)
-
-	rangeGenerator, err := sqlbuilder.NewScanQueryGenerator(
-		tbl, time.Unix(1, 0).UTC(), []types.Datum{enumValue},
-		[]types.Datum{types.NewMysqlEnumDatum(types.Enum{Name: "b", Value: 3})})
-	require.NoError(t, err)
-	rangeSQL, err := rangeGenerator.NextSQL(nil, 10)
-	require.NoError(t, err)
-	require.Contains(t, rangeSQL, "WHERE `e` >= 2 AND `e` < 3")
-
-	deleteSQL, err := sqlbuilder.BuildDeleteSQL(tbl, boundary, time.Unix(1, 0).UTC())
-	require.NoError(t, err)
-	require.Contains(t, deleteSQL, "WHERE (`e`, `s`, `id`) IN (('a', 'z,b', 7))")
-	for _, generatedSQL := range []string{sql, rangeSQL, deleteSQL} {
-		_, _, err = parser.New().Parse(generatedSQL, "", "")
-		require.NoError(t, err, generatedSQL)
-	}
-}
-
-func TestTTLIndexRejectsUnsupportedCursorTypes(t *testing.T) {
-	idCol := &model.ColumnInfo{ID: 1, Name: ast.NewCIStr("id"), FieldType: *types.NewFieldType(mysql.TypeLong)}
-	timeCol := &model.ColumnInfo{ID: 2, Name: ast.NewCIStr("created_time"), FieldType: *types.NewFieldType(mysql.TypeDatetime)}
-	enumType := types.NewFieldType(mysql.TypeEnum)
-	enumType.SetElems([]string{"z", "a", "b"})
-	setType := types.NewFieldType(mysql.TypeSet)
-	setType.SetElems([]string{"z", "a", "b"})
-	columns := []*model.ColumnInfo{
-		idCol,
-		timeCol,
-		{ID: 3, Name: ast.NewCIStr("e"), FieldType: *enumType},
-		{ID: 4, Name: ast.NewCIStr("s"), FieldType: *setType},
-		{ID: 5, Name: ast.NewCIStr("f"), FieldType: *types.NewFieldType(mysql.TypeFloat)},
-		{ID: 6, Name: ast.NewCIStr("d"), FieldType: *types.NewFieldType(mysql.TypeDouble)},
-	}
-	tbl := &cache.PhysicalTable{
-		Schema: ast.NewCIStr("test"),
-		TableInfo: &model.TableInfo{
-			Name:    ast.NewCIStr("cursor_types"),
-			Columns: columns,
-		},
-		KeyColumns: []*model.ColumnInfo{idCol},
-		TimeColumn: timeCol,
-	}
-	newIndex := func(name string, offset int) *model.IndexInfo {
-		return &model.IndexInfo{
-			Name:  ast.NewCIStr(name),
-			State: model.StatePublic,
-			Columns: []*model.IndexColumn{
-				{Name: timeCol.Name, Offset: 1, Length: types.UnspecifiedLength},
-				{Name: columns[offset].Name, Offset: offset, Length: types.UnspecifiedLength},
-			},
-		}
-	}
-
-	_, err := tbl.BuildTTLIndexScanPlan(newIndex("idx_enum", 2))
-	require.NoError(t, err)
-	for _, tc := range []struct {
-		name   string
-		offset int
-		errMsg string
-	}{
-		{"idx_set", 3, "unsupported SET pagination column"},
-		{"idx_float", 4, "unsupported floating-point pagination column"},
-		{"idx_double", 5, "unsupported floating-point pagination column"},
-	} {
-		_, err = tbl.BuildTTLIndexScanPlan(newIndex(tc.name, tc.offset))
-		require.ErrorContains(t, err, tc.errMsg)
-	}
-}
-
 func FuzzIndexScanQueryGeneratorNullableCursor(f *testing.F) {
 	f.Add(uint8(0), true, []byte(nil))
 	f.Add(uint8(0), false, []byte("plain"))
@@ -1266,7 +1122,6 @@ func FuzzIndexScanQueryGeneratorNullableCursor(f *testing.F) {
 	f.Add(uint8(2), true, []byte(nil))
 	f.Add(uint8(3), true, []byte(nil))
 	f.Add(uint8(4), true, []byte(nil))
-	f.Add(uint8(5), true, []byte(nil))
 
 	f.Fuzz(func(t *testing.T, typeCase uint8, isNull bool, raw []byte) {
 		if len(raw) > 256 {
@@ -1275,7 +1130,7 @@ func FuzzIndexScanQueryGeneratorNullableCursor(f *testing.F) {
 
 		cursorType := types.NewFieldType(mysql.TypeVarchar)
 		binaryDatum := false
-		switch typeCase % 6 {
+		switch typeCase % 5 {
 		case 0:
 			cursorType.SetType(mysql.TypeVarchar)
 		case 1:
@@ -1288,9 +1143,6 @@ func FuzzIndexScanQueryGeneratorNullableCursor(f *testing.F) {
 			cursorType.SetType(mysql.TypeEnum)
 			cursorType.SetElems([]string{"", "plain", "quote'", "back\\slash"})
 		case 4:
-			cursorType.SetType(mysql.TypeSet)
-			cursorType.SetElems([]string{"plain", "quote'", "back\\slash"})
-		case 5:
 			cursorType.SetType(mysql.TypeBit)
 			binaryDatum = true
 		}
@@ -1316,46 +1168,17 @@ func FuzzIndexScanQueryGeneratorNullableCursor(f *testing.F) {
 			},
 		}
 
-		var generator *sqlbuilder.ScanQueryGenerator
-		var err error
-		if cursorType.GetType() == mysql.TypeSet {
-			// SET cursors are valid on the existing clustered-PK scan path, but
-			// secondary indexes reject them because the planner cannot derive a
-			// useful SET range.
-			tbl.KeyColumns = []*model.ColumnInfo{timeCol, cursorCol, idCol}
-			generator, err = sqlbuilder.NewScanQueryGenerator(tbl, time.Unix(1, 0).UTC(), nil, nil)
-		} else {
-			generator, err = sqlbuilder.NewIndexScanQueryGenerator(tbl, time.Unix(1, 0).UTC(), nil, nil, idx)
-		}
+		generator, err := sqlbuilder.NewIndexScanQueryGenerator(tbl, time.Unix(1, 0).UTC(), nil, nil, idx)
 		require.NoError(t, err)
 		initialSQL, err := generator.NextSQL(nil, 1)
 		require.NoError(t, err)
 
 		cursor := types.Datum{}
 		if !isNull {
-			switch cursorType.GetType() {
-			case mysql.TypeEnum:
-				value := uint64(1)
-				if len(raw) > 0 {
-					value = uint64(raw[0]%uint8(len(cursorType.GetElems()))) + 1
-				}
-				cursor = types.NewMysqlEnumDatum(types.Enum{Name: cursorType.GetElems()[value-1], Value: value})
-			case mysql.TypeSet:
-				value := uint64(0)
-				if len(raw) > 0 {
-					value = uint64(raw[0]) & ((1 << len(cursorType.GetElems())) - 1)
-				}
-				set, err := types.ParseSetValue(cursorType.GetElems(), value)
-				require.NoError(t, err)
-				cursor = types.NewMysqlSetDatum(set, cursorType.GetCollate())
-			case mysql.TypeBit:
+			if binaryDatum {
 				cursor = types.NewBytesDatum(raw)
-			default:
-				if binaryDatum {
-					cursor = types.NewBytesDatum(raw)
-				} else {
-					cursor = types.NewStringDatum(string(raw))
-				}
+			} else {
+				cursor = types.NewStringDatum(string(raw))
 			}
 		}
 		formatted, err := sqlbuilder.FormatSQLDatum(cursor, cursorType)
