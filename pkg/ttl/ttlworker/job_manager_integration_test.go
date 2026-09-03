@@ -34,7 +34,7 @@ import (
 	"github.com/pingcap/tidb/pkg/meta/model"
 	metrics2 "github.com/pingcap/tidb/pkg/metrics"
 	"github.com/pingcap/tidb/pkg/parser/ast"
-	"github.com/pingcap/tidb/pkg/parser/mysql"
+	"github.com/pingcap/tidb/pkg/parser/format"
 	"github.com/pingcap/tidb/pkg/session/syssession"
 	"github.com/pingcap/tidb/pkg/sessionctx/vardef"
 	"github.com/pingcap/tidb/pkg/statistics"
@@ -412,11 +412,6 @@ func TestTriggerTTLJob(t *testing.T) {
 }
 
 func TestTriggerTTLJobWithIndexScan(t *testing.T) {
-	require.NoError(t, failpoint.Enable("github.com/pingcap/tidb/pkg/ttl/ttlworker/scan-split-cnt", "return(4)"))
-	defer func() {
-		require.NoError(t, failpoint.Disable("github.com/pingcap/tidb/pkg/ttl/ttlworker/scan-split-cnt"))
-	}()
-
 	defer boostJobScheduleForTest(t)()
 
 	ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Minute)
@@ -430,6 +425,8 @@ func TestTriggerTTLJobWithIndexScan(t *testing.T) {
 	tbl, err := do.InfoSchema().TableByName(context.Background(), ast.NewCIStr("test"), ast.NewCIStr("t"))
 	require.NoError(t, err)
 	tblID := tbl.Meta().ID
+	require.Len(t, tbl.Meta().Indices, 1)
+	idxID := tbl.Meta().Indices[0].ID
 
 	timerStore := timertable.NewTableTimerStore(0, do.AdvancedSysSessionPool(), "mysql", "tidb_timers", nil)
 	defer timerStore.Close()
@@ -447,6 +444,20 @@ func TestTriggerTTLJobWithIndexScan(t *testing.T) {
 	tk.MustExec("insert into t values(3, ?)", expireDateStr)
 	tk.MustExec("insert into t values(4, ?)", nowDateStr)
 
+	scanStarted := make(chan ast.StmtNode, 1)
+	releaseScan := make(chan struct{})
+	var scanOnce, releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(releaseScan) })
+	testfailpoint.EnableCall(t, "github.com/pingcap/tidb/pkg/executor/beforeResetSQLKillerForTTLScan", func(stmt ast.StmtNode) {
+		if _, ok := stmt.(*ast.SelectStmt); !ok {
+			return
+		}
+		scanOnce.Do(func() {
+			scanStarted <- stmt
+			<-releaseScan
+		})
+	})
+
 	cli := do.TTLJobManager().GetCommandCli()
 	res, err := client.TriggerNewTTLJob(ctx, cli, "test", "t")
 	require.NoError(t, err)
@@ -458,6 +469,20 @@ func TestTriggerTTLJobWithIndexScan(t *testing.T) {
 	require.Equal(t, "t", tableResult.TableName)
 	require.Equal(t, "", tableResult.ErrorMessage)
 	require.Equal(t, "", tableResult.PartitionName)
+
+	var scanStmt ast.StmtNode
+	select {
+	case scanStmt = <-scanStarted:
+	case <-ctx.Done():
+		require.FailNow(t, "TTL index scan did not start")
+	}
+	tk.MustQuery("select split_by from mysql.tidb_ttl_task where job_id = ?", tableResult.JobID).
+		Check(testkit.Rows(strconv.FormatInt(idxID, 10)))
+	var scanSQL strings.Builder
+	require.NoError(t, scanStmt.Restore(format.NewRestoreCtx(format.DefaultRestoreFlags, &scanSQL)))
+	require.Contains(t, strings.ToUpper(scanSQL.String()), "FORCE INDEX")
+	require.Contains(t, scanSQL.String(), "`idx_t`")
+	releaseOnce.Do(func() { close(releaseScan) })
 
 	waitTTLJobFinished(t, tk, tblID, timerCli)
 	tk.MustQuery("select id from t order by id asc").Check(testkit.Rows("2", "4"))
@@ -884,23 +909,6 @@ func TestTTLIndexScanPrimaryKeyLayouts(t *testing.T) {
 		planRows.CheckNotContain("IndexLookUp")
 		planRows.CheckNotContain("TopN")
 		planRows.CheckNotContain("Sort")
-
-		startTime := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
-		startDatum := types.NewTimeDatum(types.NewTime(
-			types.FromGoTime(startTime), mysql.TypeDatetime, 0))
-		rangeGenerator, err := sqlbuilder.NewScanQueryGenerator(
-			ttlTbl, expireTime, []types.Datum{startDatum}, nil)
-		require.NoError(t, err)
-		rangeSQL, err := rangeGenerator.NextSQL(nil, 32)
-		require.NoError(t, err)
-		require.Contains(t, rangeSQL, "`expired_at` >= '2024-01-02 00:00:00'")
-		require.Contains(t, rangeSQL, "ORDER BY `expired_at`, `id` ASC")
-		require.Len(t, tk.MustQuery(rangeSQL).Rows(), 2)
-		rangePlan := tk.MustQuery("explain format='brief' " + rangeSQL)
-		rangePlan.CheckContain("TableRangeScan")
-		rangePlan.CheckNotContain("IndexLookUp")
-		rangePlan.CheckNotContain("TopN")
-		rangePlan.CheckNotContain("Sort")
 	})
 
 	t.Run("integer primary key as handle", func(t *testing.T) {

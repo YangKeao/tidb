@@ -1228,21 +1228,18 @@ func TestUpgradeVersion285MaterializedViewBootstrap(t *testing.T) {
 	}
 
 	se := session.CreateSessionAndSetID(t, store)
-	// Start before version285 so that this test still exercises the materialized
-	// view upgrade after a later bootstrap version is added.
-	const upgradeFromVersion = int64(284)
 	txn, err := store.Begin()
 	require.NoError(t, err)
 	m := meta.NewMutator(txn)
-	err = m.FinishBootstrap(upgradeFromVersion)
+	err = m.FinishBootstrap(285 - 1)
 	require.NoError(t, err)
 	err = txn.Commit(context.Background())
 	require.NoError(t, err)
-	revertVersionAndVariables(t, se, int(upgradeFromVersion))
+	revertVersionAndVariables(t, se, 285-1)
 	store.SetOption(session.StoreBootstrappedKey, nil)
 	ver, err := session.GetBootstrapVersion(se)
 	require.NoError(t, err)
-	require.Equal(t, upgradeFromVersion, ver)
+	require.Equal(t, int64(285-1), ver)
 
 	dom.Close()
 	newDom, err := session.BootstrapSession(store)

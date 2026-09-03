@@ -527,69 +527,6 @@ func TestScanTaskDoScan(t *testing.T) {
 		require.Equal(t, 1, executeCalls)
 		require.Equal(t, [][]types.Datum{{types.NewIntDatum(1)}}, (<-delCh).rows)
 	})
-
-	t.Run("clustered PK scan accepts persisted textual time range", func(t *testing.T) {
-		tbl := newMockTTLTbl(t, "clustered_pk_range")
-		tbl.TimeColumn.FieldType = *types.NewFieldType(mysql.TypeTimestamp)
-		idColumn := &model.ColumnInfo{
-			ID:        2,
-			Name:      ast.NewCIStr("id"),
-			Offset:    1,
-			FieldType: *types.NewFieldType(mysql.TypeLonglong),
-			State:     model.StatePublic,
-		}
-		tbl.Columns = append(tbl.Columns, idColumn)
-		tbl.IsCommonHandle = true
-		tbl.KeyColumns = []*model.ColumnInfo{tbl.TimeColumn, idColumn}
-		tbl.KeyColumnTypes = []*types.FieldType{&tbl.TimeColumn.FieldType, &idColumn.FieldType}
-
-		loc := time.FixedZone("UTC+8", 8*60*60)
-		boundary := time.Date(2024, 1, 2, 3, 4, 5, 0, loc)
-		// Temporal clustered-PK boundaries deliberately use the pre-existing
-		// textual PK task format, rather than a packed time datum that would need
-		// schema-aware decoding in the worker.
-		encodedRange, err := codec.EncodeKey(loc, nil,
-			types.NewBytesDatum([]byte(boundary.Format(time.DateTime))))
-		require.NoError(t, err)
-		scanRange, err := codec.Decode(encodedRange, len(encodedRange))
-		require.NoError(t, err)
-		require.Equal(t, types.KindBytes, scanRange[0].Kind())
-
-		expire := boundary.Add(time.Hour)
-		scanTask := &ttlScanTask{
-			ctx: cache.SetMockExpireTime(context.Background(), expire),
-			TTLTask: &cache.TTLTask{
-				ExpireTime:     expire,
-				ScanRangeStart: scanRange,
-			},
-			tbl:        tbl,
-			statistics: &ttlStatistics{},
-		}
-		pool := newMockSessionPool(t, tbl)
-		defer pool.AssertNoSessionInUse()
-		pool.se.sessionVars.TimeZone = loc
-		executeCalls := 0
-		pool.se.executeSQL = func(_ context.Context, sql string, _ ...any) ([]chunk.Row, error) {
-			executeCalls++
-			require.Contains(t, sql, "FROM `test`.`clustered_pk_range` USE INDEX ()")
-			require.Contains(t, sql, fmt.Sprintf("`time` >= '%s'", boundary.Format(time.DateTime)))
-			require.Contains(t, sql, fmt.Sprintf("`time` < FROM_UNIXTIME(%d)", expire.Unix()))
-			require.Contains(t, sql, "ORDER BY `time`, `id` ASC LIMIT 3")
-			return newMockRows(t, &tbl.TimeColumn.FieldType, &idColumn.FieldType).
-				Append(boundary, 1).Rows(), nil
-		}
-
-		origLimit := vardef.TTLScanBatchSize.Load()
-		vardef.TTLScanBatchSize.Store(3)
-		defer vardef.TTLScanBatchSize.Store(origLimit)
-		delCh := make(chan *ttlDeleteTask, 1)
-		result := scanTask.doScan(context.Background(), delCh, pool)
-		require.NoError(t, result.err)
-		require.Equal(t, 1, executeCalls)
-		deleteTask := <-delCh
-		require.Len(t, deleteTask.rows, 1)
-		require.Equal(t, types.NewIntDatum(1), deleteTask.rows[0][1])
-	})
 }
 
 func TestScanTaskCheck(t *testing.T) {

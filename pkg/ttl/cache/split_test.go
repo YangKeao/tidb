@@ -420,7 +420,7 @@ func TestSplitTTLScanRangesWithSignedInt(t *testing.T) {
 	for _, tbl := range tbls {
 		// test only one region
 		tikvStore.clearRegions()
-		ranges, err := tbl.SplitScanRanges(context.TODO(), tikvStore, time.Time{}, time.UTC, 4)
+		ranges, err := tbl.SplitScanRanges(context.TODO(), tikvStore, 4)
 		require.NoError(t, err)
 		require.Equal(t, 1, len(ranges))
 		checkRange(t, ranges[0], types.Datum{}, types.Datum{})
@@ -431,7 +431,7 @@ func TestSplitTTLScanRangesWithSignedInt(t *testing.T) {
 			tablecodec.GenTablePrefix(tbl.ID-1),
 			tablecodec.GenTablePrefix(tbl.ID+1),
 		)
-		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, time.Time{}, time.UTC, 4)
+		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, 4)
 		require.NoError(t, err)
 		require.Equal(t, 1, len(ranges))
 		checkRange(t, ranges[0], types.Datum{}, types.Datum{})
@@ -441,7 +441,7 @@ func TestSplitTTLScanRangesWithSignedInt(t *testing.T) {
 		tikvStore.addRegionBeginWithTablePrefix(tbl.ID, kv.IntHandle(0))
 		end := tikvStore.batchAddIntHandleRegions(tbl.ID, 8, 100, 0)
 		tikvStore.addRegionEndWithTablePrefix(end, tbl.ID)
-		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, time.Time{}, time.UTC, 4)
+		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, 4)
 		require.NoError(t, err)
 		require.Equal(t, 4, len(ranges))
 		checkRange(t, ranges[0], types.Datum{}, types.NewIntDatum(200))
@@ -454,7 +454,7 @@ func TestSplitTTLScanRangesWithSignedInt(t *testing.T) {
 		tikvStore.addRegionBeginWithTablePrefix(tbl.ID, kv.IntHandle(-350))
 		end = tikvStore.batchAddIntHandleRegions(tbl.ID, 8, 100, -350)
 		tikvStore.addRegionEndWithTablePrefix(end, tbl.ID)
-		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, time.Time{}, time.UTC, 5)
+		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, 5)
 		require.NoError(t, err)
 		require.Equal(t, 5, len(ranges))
 		checkRange(t, ranges[0], types.Datum{}, types.NewIntDatum(-250))
@@ -481,7 +481,7 @@ func TestSplitTTLScanRangesWithUnsignedInt(t *testing.T) {
 	for _, tbl := range tbls {
 		// test only one region
 		tikvStore.clearRegions()
-		ranges, err := tbl.SplitScanRanges(context.TODO(), tikvStore, time.Time{}, time.UTC, 4)
+		ranges, err := tbl.SplitScanRanges(context.TODO(), tikvStore, 4)
 		require.NoError(t, err)
 		require.Equal(t, 1, len(ranges))
 		checkRange(t, ranges[0], types.Datum{}, types.Datum{})
@@ -492,7 +492,7 @@ func TestSplitTTLScanRangesWithUnsignedInt(t *testing.T) {
 			tablecodec.GenTablePrefix(tbl.ID-1),
 			tablecodec.GenTablePrefix(tbl.ID+1),
 		)
-		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, time.Time{}, time.UTC, 4)
+		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, 4)
 		require.NoError(t, err)
 		require.Equal(t, 1, len(ranges))
 		checkRange(t, ranges[0], types.Datum{}, types.Datum{})
@@ -502,7 +502,7 @@ func TestSplitTTLScanRangesWithUnsignedInt(t *testing.T) {
 		tikvStore.addRegionBeginWithTablePrefix(tbl.ID, kv.IntHandle(-200))
 		end := tikvStore.batchAddIntHandleRegions(tbl.ID, 4, 100, -200)
 		tikvStore.addRegionEndWithTablePrefix(end, tbl.ID)
-		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, time.Time{}, time.UTC, 6)
+		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, 6)
 		require.NoError(t, err)
 		require.Equal(t, 6, len(ranges))
 		checkRange(t, ranges[0],
@@ -523,7 +523,7 @@ func TestSplitTTLScanRangesWithUnsignedInt(t *testing.T) {
 		tikvStore.addRegionBeginWithTablePrefix(tbl.ID, kv.IntHandle(-150))
 		end = tikvStore.batchAddIntHandleRegions(tbl.ID, 3, 100, -150)
 		tikvStore.addRegionEndWithTablePrefix(end, tbl.ID)
-		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, time.Time{}, time.UTC, 5)
+		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, 5)
 		require.NoError(t, err)
 		require.Equal(t, 6, len(ranges))
 		checkRange(t, ranges[0],
@@ -553,7 +553,7 @@ func TestSplitTTLScanRangesCommonHandleSignedInt(t *testing.T) {
 	for _, tbl := range tbls {
 		// test only one region
 		tikvStore.clearRegions()
-		ranges, err := tbl.SplitScanRanges(context.TODO(), tikvStore, time.Time{}, time.UTC, 4)
+		ranges, err := tbl.SplitScanRanges(context.TODO(), tikvStore, 4)
 		require.NoError(t, err)
 		require.Equal(t, 1, len(ranges))
 		checkRange(t, ranges[0], types.Datum{}, types.Datum{})
@@ -564,7 +564,7 @@ func TestSplitTTLScanRangesCommonHandleSignedInt(t *testing.T) {
 			tablecodec.GenTablePrefix(tbl.ID-1),
 			tablecodec.GenTablePrefix(tbl.ID+1),
 		)
-		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, time.Time{}, time.UTC, 4)
+		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, 4)
 		require.NoError(t, err)
 		require.Equal(t, 1, len(ranges))
 		checkRange(t, ranges[0], types.Datum{}, types.Datum{})
@@ -581,7 +581,7 @@ func TestSplitTTLScanRangesCommonHandleSignedInt(t *testing.T) {
 			commonHandle(t, types.NewIntDatum(2)),
 		)
 		tikvStore.addRegionEndWithTablePrefix(commonHandle(t, types.NewIntDatum(2)), tbl.ID)
-		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, time.Time{}, time.UTC, 4)
+		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, 4)
 		require.NoError(t, err)
 		require.Equal(t, 4, len(ranges))
 		checkRange(t, ranges[0], types.Datum{}, types.NewIntDatum(-21))
@@ -603,7 +603,7 @@ func TestSplitTTLScanRangesCommonHandleUnsignedInt(t *testing.T) {
 	for _, tbl := range tbls {
 		// test only one region
 		tikvStore.clearRegions()
-		ranges, err := tbl.SplitScanRanges(context.TODO(), tikvStore, time.Time{}, time.UTC, 4)
+		ranges, err := tbl.SplitScanRanges(context.TODO(), tikvStore, 4)
 		require.NoError(t, err)
 		require.Equal(t, 1, len(ranges))
 		checkRange(t, ranges[0], types.Datum{}, types.Datum{})
@@ -614,7 +614,7 @@ func TestSplitTTLScanRangesCommonHandleUnsignedInt(t *testing.T) {
 			tablecodec.GenTablePrefix(tbl.ID-1),
 			tablecodec.GenTablePrefix(tbl.ID+1),
 		)
-		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, time.Time{}, time.UTC, 4)
+		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, 4)
 		require.NoError(t, err)
 		require.Equal(t, 1, len(ranges))
 		checkRange(t, ranges[0], types.Datum{}, types.Datum{})
@@ -631,7 +631,7 @@ func TestSplitTTLScanRangesCommonHandleUnsignedInt(t *testing.T) {
 			commonHandle(t, types.NewUintDatum(math.MaxInt64+9)),
 		)
 		tikvStore.addRegionEndWithTablePrefix(commonHandle(t, types.NewUintDatum(math.MaxInt64+9)), tbl.ID)
-		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, time.Time{}, time.UTC, 4)
+		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, 4)
 		require.NoError(t, err)
 		require.Equal(t, 4, len(ranges))
 		checkRange(t, ranges[0], types.Datum{}, types.NewUintDatum(9))
@@ -763,7 +763,7 @@ func TestSplitTTLScanRangesWithBytes(t *testing.T) {
 				}
 			}
 			tikvStore.addRegionEndWithTablePrefix(c.regionEdges[len(c.regionEdges)-1], tbl.ID)
-			ranges, err := tbl.SplitScanRanges(context.TODO(), tikvStore, time.Time{}, time.UTC, c.splitCnt)
+			ranges, err := tbl.SplitScanRanges(context.TODO(), tikvStore, c.splitCnt)
 			require.NoError(t, err)
 
 			keyTp := tbl.KeyColumnTypes[0]
@@ -800,7 +800,7 @@ func TestNoTTLSplitSupportTables(t *testing.T) {
 	for _, tbl := range tbls {
 		// test only one region
 		tikvStore.clearRegions()
-		ranges, err := tbl.SplitScanRanges(context.TODO(), tikvStore, time.Time{}, time.UTC, 4)
+		ranges, err := tbl.SplitScanRanges(context.TODO(), tikvStore, 4)
 		require.NoError(t, err)
 		require.Equal(t, 1, len(ranges))
 		checkRange(t, ranges[0], types.Datum{}, types.Datum{})
@@ -811,7 +811,7 @@ func TestNoTTLSplitSupportTables(t *testing.T) {
 			tablecodec.GenTablePrefix(tbl.ID-1),
 			tablecodec.GenTablePrefix(tbl.ID+1),
 		)
-		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, time.Time{}, time.UTC, 4)
+		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, 4)
 		require.NoError(t, err)
 		require.Equal(t, 1, len(ranges))
 		checkRange(t, ranges[0], types.Datum{}, types.Datum{})
@@ -821,7 +821,7 @@ func TestNoTTLSplitSupportTables(t *testing.T) {
 		tikvStore.addRegionBeginWithTablePrefix(tbl.ID, bytesHandle(t, []byte{1, 2, 3}))
 		tikvStore.addRegionWithTablePrefix(tbl.ID, bytesHandle(t, []byte{1, 2, 3}), bytesHandle(t, []byte{1, 2, 3, 4}))
 		tikvStore.addRegionEndWithTablePrefix(bytesHandle(t, []byte{1, 2, 3, 4}), tbl.ID)
-		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, time.Time{}, time.UTC, 3)
+		ranges, err = tbl.SplitScanRanges(context.TODO(), tikvStore, 3)
 		require.NoError(t, err)
 		require.Equal(t, 1, len(ranges))
 		checkRange(t, ranges[0], types.Datum{}, types.Datum{})
@@ -1457,7 +1457,7 @@ func TestRegionDisappearDuringSplitRange(t *testing.T) {
 				// merging finished
 				break loop
 			default:
-				_, err := tbl.SplitScanRanges(context.TODO(), tikvStore, time.Time{}, time.UTC, 16)
+				_, err := tbl.SplitScanRanges(context.TODO(), tikvStore, 16)
 				require.NoError(t, err)
 			}
 		}
