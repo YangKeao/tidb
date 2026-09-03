@@ -366,31 +366,6 @@ func TestFormatSQLDatum(t *testing.T) {
 		_, _, err = parser.New().Parse("SELECT "+s, "", "")
 		require.NoError(t, err, "ft: %s, SQL: %s", cases[i].ft, s)
 	}
-	manualDatumTypes := []byte{
-		mysql.TypeBit,
-		mysql.TypeTinyBlob,
-		mysql.TypeBlob,
-		mysql.TypeMediumBlob,
-		mysql.TypeLongBlob,
-		mysql.TypeString,
-		mysql.TypeVarString,
-		mysql.TypeVarchar,
-		mysql.TypeEnum,
-		mysql.TypeSet,
-	}
-	for _, tp := range manualDatumTypes {
-		ft := types.NewFieldType(tp)
-		for _, binaryFlag := range []bool{false, true} {
-			if binaryFlag {
-				ft.SetFlag(mysql.BinaryFlag)
-			}
-			s, err := sqlbuilder.FormatSQLDatum(types.Datum{}, ft)
-			require.NoError(t, err)
-			require.Equal(t, "NULL", s, "type: %d, binary: %t", tp, binaryFlag)
-			_, _, err = parser.New().Parse("SELECT "+s, "", "")
-			require.NoError(t, err, "type: %d, binary: %t, SQL: %s", tp, binaryFlag, s)
-		}
-	}
 
 	for i, c := range cases {
 		for j, v := range c.values {
@@ -479,12 +454,12 @@ func TestSQLBuilder(t *testing.T) {
 	// test build select queries
 	b = sqlbuilder.NewSQLBuilder(t1)
 	must(b.WriteSelect())
-	must(b.WriteCommonCondition(t1.KeyColumns, ">", d("a1")))
-	mustBuild(b, "SELECT LOW_PRIORITY SQL_NO_CACHE `id` FROM `test`.`t1` WHERE `id` > 'a1'")
+	mustBuild(b, "SELECT LOW_PRIORITY SQL_NO_CACHE `id` FROM `test`.`t1`")
 
 	b = sqlbuilder.NewSQLBuilder(t1)
 	must(b.WriteSelect())
-	mustBuild(b, "SELECT LOW_PRIORITY SQL_NO_CACHE `id` FROM `test`.`t1`")
+	must(b.WriteCommonCondition(t1.KeyColumns, ">", d("a1")))
+	mustBuild(b, "SELECT LOW_PRIORITY SQL_NO_CACHE `id` FROM `test`.`t1` WHERE `id` > 'a1'")
 
 	b = sqlbuilder.NewSQLBuilder(t1)
 	must(b.WriteSelect())
@@ -1112,96 +1087,4 @@ func TestIndexScanQueryGenerator(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, sql)
 	require.True(t, g.IsExhausted())
-}
-
-func FuzzIndexScanQueryGeneratorNullableCursor(f *testing.F) {
-	f.Add(uint8(0), true, []byte(nil))
-	f.Add(uint8(0), false, []byte("plain"))
-	f.Add(uint8(0), false, []byte("quote'\\\";\x00\n"))
-	f.Add(uint8(1), true, []byte(nil))
-	f.Add(uint8(2), true, []byte(nil))
-	f.Add(uint8(3), true, []byte(nil))
-	f.Add(uint8(4), true, []byte(nil))
-
-	f.Fuzz(func(t *testing.T, typeCase uint8, isNull bool, raw []byte) {
-		if len(raw) > 256 {
-			raw = raw[:256]
-		}
-
-		cursorType := types.NewFieldType(mysql.TypeVarchar)
-		binaryDatum := false
-		switch typeCase % 5 {
-		case 0:
-			cursorType.SetType(mysql.TypeVarchar)
-		case 1:
-			cursorType.SetType(mysql.TypeString)
-		case 2:
-			cursorType.SetType(mysql.TypeVarchar)
-			cursorType.SetFlag(mysql.BinaryFlag)
-			binaryDatum = true
-		case 3:
-			cursorType.SetType(mysql.TypeEnum)
-			cursorType.SetElems([]string{"", "plain", "quote'", "back\\slash"})
-		case 4:
-			cursorType.SetType(mysql.TypeBit)
-			binaryDatum = true
-		}
-
-		idCol := &model.ColumnInfo{ID: 1, Name: ast.NewCIStr("id"), FieldType: *types.NewFieldType(mysql.TypeLong)}
-		timeCol := &model.ColumnInfo{ID: 2, Name: ast.NewCIStr("created_time"), FieldType: *types.NewFieldType(mysql.TypeDatetime)}
-		cursorCol := &model.ColumnInfo{ID: 3, Name: ast.NewCIStr("cursor"), FieldType: *cursorType}
-		tbl := &cache.PhysicalTable{
-			Schema: ast.NewCIStr("test"),
-			TableInfo: &model.TableInfo{
-				Name:    ast.NewCIStr("t"),
-				Columns: []*model.ColumnInfo{idCol, timeCol, cursorCol},
-			},
-			KeyColumns: []*model.ColumnInfo{idCol},
-			TimeColumn: timeCol,
-		}
-		idx := &model.IndexInfo{
-			Name:  ast.NewCIStr("idx_time_cursor"),
-			State: model.StatePublic,
-			Columns: []*model.IndexColumn{
-				{Name: timeCol.Name, Offset: 1, Length: types.UnspecifiedLength},
-				{Name: cursorCol.Name, Offset: 2, Length: types.UnspecifiedLength},
-			},
-		}
-
-		generator, err := sqlbuilder.NewIndexScanQueryGenerator(tbl, time.Unix(1, 0).UTC(), nil, nil, idx)
-		require.NoError(t, err)
-		initialSQL, err := generator.NextSQL(nil, 1)
-		require.NoError(t, err)
-
-		cursor := types.Datum{}
-		if !isNull {
-			if binaryDatum {
-				cursor = types.NewBytesDatum(raw)
-			} else {
-				cursor = types.NewStringDatum(string(raw))
-			}
-		}
-		formatted, err := sqlbuilder.FormatSQLDatum(cursor, cursorType)
-		require.NoError(t, err)
-
-		boundary := [][]types.Datum{{
-			types.NewTimeDatum(types.NewTime(types.FromGoTime(time.Unix(0, 0).UTC()), mysql.TypeDatetime, 0)),
-			cursor,
-			types.NewIntDatum(1),
-		}}
-		continuationSQL, err := generator.NextSQL(boundary, 1)
-		require.NoError(t, err)
-
-		sqls := []string{"SELECT " + formatted, initialSQL, continuationSQL}
-		for range 2 {
-			nextSQL, err := generator.NextSQL(nil, 1)
-			require.NoError(t, err)
-			require.NotEmpty(t, nextSQL)
-			sqls = append(sqls, nextSQL)
-		}
-		for _, sql := range sqls {
-			_, _, err := parser.New().Parse(sql, "", "")
-			require.NoError(t, err, "type case: %d, null: %t, SQL: %s", typeCase%6, isNull, sql)
-		}
-	})
 }

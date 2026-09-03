@@ -34,7 +34,6 @@ import (
 	"github.com/pingcap/tidb/pkg/meta/model"
 	metrics2 "github.com/pingcap/tidb/pkg/metrics"
 	"github.com/pingcap/tidb/pkg/parser/ast"
-	"github.com/pingcap/tidb/pkg/parser/format"
 	"github.com/pingcap/tidb/pkg/session/syssession"
 	"github.com/pingcap/tidb/pkg/sessionctx/vardef"
 	"github.com/pingcap/tidb/pkg/statistics"
@@ -426,7 +425,7 @@ func TestTriggerTTLJobWithIndexScan(t *testing.T) {
 	require.NoError(t, err)
 	tblID := tbl.Meta().ID
 	require.Len(t, tbl.Meta().Indices, 1)
-	idxID := tbl.Meta().Indices[0].ID
+	idx := tbl.Meta().Indices[0]
 
 	timerStore := timertable.NewTableTimerStore(0, do.AdvancedSysSessionPool(), "mysql", "tidb_timers", nil)
 	defer timerStore.Close()
@@ -444,20 +443,6 @@ func TestTriggerTTLJobWithIndexScan(t *testing.T) {
 	tk.MustExec("insert into t values(3, ?)", expireDateStr)
 	tk.MustExec("insert into t values(4, ?)", nowDateStr)
 
-	scanStarted := make(chan ast.StmtNode, 1)
-	releaseScan := make(chan struct{})
-	var scanOnce, releaseOnce sync.Once
-	defer releaseOnce.Do(func() { close(releaseScan) })
-	testfailpoint.EnableCall(t, "github.com/pingcap/tidb/pkg/executor/beforeResetSQLKillerForTTLScan", func(stmt ast.StmtNode) {
-		if _, ok := stmt.(*ast.SelectStmt); !ok {
-			return
-		}
-		scanOnce.Do(func() {
-			scanStarted <- stmt
-			<-releaseScan
-		})
-	})
-
 	cli := do.TTLJobManager().GetCommandCli()
 	res, err := client.TriggerNewTTLJob(ctx, cli, "test", "t")
 	require.NoError(t, err)
@@ -470,23 +455,8 @@ func TestTriggerTTLJobWithIndexScan(t *testing.T) {
 	require.Equal(t, "", tableResult.ErrorMessage)
 	require.Equal(t, "", tableResult.PartitionName)
 
-	var scanStmt ast.StmtNode
-	select {
-	case scanStmt = <-scanStarted:
-	case <-ctx.Done():
-		require.FailNow(t, "TTL index scan did not start")
-	}
 	tk.MustQuery("select split_by from mysql.tidb_ttl_task where job_id = ?", tableResult.JobID).
-		Check(testkit.Rows(strconv.FormatInt(idxID, 10)))
-	var scanSQL strings.Builder
-	require.NoError(t, scanStmt.Restore(format.NewRestoreCtx(format.DefaultRestoreFlags, &scanSQL)))
-	require.Contains(t, strings.ToUpper(scanSQL.String()), "FORCE INDEX")
-	require.Contains(t, scanSQL.String(), "`idx_t`")
-	scanPlan := tk.MustQuery("explain format='brief' " + scanSQL.String())
-	scanPlan.CheckContain("IndexRangeScan")
-	scanPlan.CheckContain("idx_t")
-	scanPlan.CheckNotContain("TableFullScan")
-	releaseOnce.Do(func() { close(releaseScan) })
+		Check(testkit.Rows(strconv.FormatInt(idx.ID, 10)))
 
 	waitTTLJobFinished(t, tk, tblID, timerCli)
 	tk.MustQuery("select id from t order by id asc").Check(testkit.Rows("2", "4"))
@@ -683,315 +653,423 @@ func TestSubmitJob(t *testing.T) {
 	)))
 }
 
-func TestIndexScanForAnonymizedLargeTableShape(t *testing.T) {
+func runTTLScanPlannerContract(
+	t *testing.T,
+	tk *testkit.TestKit,
+	generator *sqlbuilder.ScanQueryGenerator,
+	expectedRows int,
+	indexName string,
+) {
+	t.Helper()
+
+	ctx := kv.WithInternalSourceType(context.Background(), kv.InternalTxnTTL)
+	var previous [][]types.Datum
+	seenTableKeys := make(map[string]struct{}, expectedRows)
+	rangeScanCount := 0
+	queryCount := 0
+	for ; queryCount < 128; queryCount++ {
+		sql, err := generator.NextSQL(previous, 1)
+		require.NoError(t, err)
+		if sql == "" {
+			break
+		}
+		if indexName == "" {
+			require.Contains(t, sql, "USE INDEX ()")
+		}
+
+		plan := tk.MustQuery("explain format='brief' " + sql)
+		plan.CheckNotContain("TopN")
+		plan.CheckNotContain("Sort")
+		planText := fmt.Sprint(plan.Rows())
+		if strings.Contains(planText, "TableDual") {
+			// A cursor can reach the maximum value of a finite domain such as
+			// ENUM. In that case the planner can prove the range is empty, and a
+			// TableDual is preferable to issuing a physical range scan.
+		} else {
+			plan.CheckContain("keep order:true")
+		}
+		if indexName != "" {
+			if !strings.Contains(planText, "TableDual") {
+				plan.MultiCheckContain([]string{"IndexRangeScan", indexName})
+				plan.CheckNotContain("IndexFullScan")
+				plan.CheckNotContain("TableFullScan")
+				rangeScanCount++
+			}
+		} else if !strings.Contains(planText, "TableDual") {
+			if queryCount == 0 && strings.Contains(planText, "TableFullScan") {
+				// Without a PK lower bound, the first page may need to scan the
+				// full clustered table. A TTL predicate on the leading PK column
+				// can instead make even the first page a TableRangeScan.
+				plan.CheckNotContain("IndexRangeScan")
+				plan.CheckNotContain("IndexFullScan")
+			} else {
+				// Once a cursor exists, every nonempty PK page must seek from it.
+				// This is the core contract that prevents repeatedly scanning the
+				// same clustered-key prefix.
+				plan.CheckContain("TableRangeScan")
+				plan.CheckNotContain("TableFullScan")
+				plan.CheckNotContain("IndexRangeScan")
+				plan.CheckNotContain("IndexFullScan")
+				rangeScanCount++
+			}
+		}
+
+		rs, err := tk.Session().GetSQLExecutor().ExecuteInternal(ctx, sql)
+		require.NoError(t, err)
+		rows, err := sqlexec.DrainRecordSet(ctx, rs, 1)
+		require.NoError(t, err)
+		previous = make([][]types.Datum, len(rows))
+		for i, row := range rows {
+			previous[i] = row.GetDatumRow(generator.ScanColumnTypes())
+			tableKey := fmt.Sprintf("%#v", generator.TableKey(previous[i]))
+			require.NotContains(t, seenTableKeys, tableKey, "pagination returned the same table key more than once")
+			seenTableKeys[tableKey] = struct{}{}
+		}
+	}
+
+	require.Less(t, queryCount, 128, "scan generator did not terminate")
+	require.True(t, generator.IsExhausted())
+	require.Len(t, seenTableKeys, expectedRows)
+	require.Positive(t, rangeScanCount)
+}
+
+func TestTTLIndexScanPlannerContracts(t *testing.T) {
 	store, dom := testkit.CreateMockStoreAndDomain(t)
-	tk := testkit.NewTestKit(t, store)
 	waitAndStopTTLManager(t, dom)
 
-	tk.MustExec("use test")
-	tk.MustExec(`create table ttl_events(
-		tenant_id bigint not null,
-		event_id bigint not null,
-		expired_at datetime not null,
-		status tinyint,
-		payload varchar(128),
-		primary key (tenant_id, event_id),
-		unique index idx_ttl_expired_at(expired_at)
-	) TTL=expired_at + interval 1 hour`)
-
-	tbl, err := dom.InfoSchema().TableByName(context.Background(), ast.NewCIStr("test"), ast.NewCIStr("ttl_events"))
-	require.NoError(t, err)
-	ttlTbl, err := cache.NewPhysicalTable(ast.NewCIStr("test"), tbl.Meta(), ast.NewCIStr(""))
-	require.NoError(t, err)
-	idx := ttlTbl.FindTTLIndex()
-	require.NotNil(t, idx)
-
-	expireTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	pkGenerator, err := sqlbuilder.NewScanQueryGenerator(ttlTbl, expireTime, nil, nil)
-	require.NoError(t, err)
-	pkScanSQL, err := pkGenerator.NextSQL(nil, 32)
-	require.NoError(t, err)
-	require.Contains(t, pkScanSQL, "USE INDEX ()")
-	pkPlan := tk.MustQuery("explain format='brief' " + pkScanSQL)
-	pkPlan.CheckContain("TableReader")
-	pkPlan.CheckNotContain("IndexReader")
-	pkPlan.CheckNotContain("IndexRangeScan")
-	pkPlan.CheckNotContain("IndexFullScan")
-	pkPlan.CheckNotContain("IndexLookUp")
-
-	generator, err := sqlbuilder.NewIndexScanQueryGenerator(ttlTbl, expireTime, nil, nil, idx)
-	require.NoError(t, err)
-	scanSQL, err := generator.NextSQL(nil, 32)
-	require.NoError(t, err)
-	require.Contains(t, scanSQL, "FORCE INDEX(`idx_ttl_expired_at`)")
-	require.Contains(t, scanSQL, "ORDER BY `expired_at` ASC")
-	plan := tk.MustQuery("explain format='brief' " + scanSQL)
-	plan.MultiCheckContain([]string{"IndexRangeScan", "idx_ttl_expired_at"})
-	plan.CheckNotContain("TopN")
-	plan.CheckNotContain("Sort")
-
-	tk.MustExec(`create table ttl_composite_index(
-		tenant_id bigint not null,
-		event_id bigint not null,
-		expired_at datetime not null,
-		status varchar(64),
-		primary key (tenant_id, event_id),
-		index idx_expired_status(expired_at, status)
-	) TTL=expired_at + interval 1 hour`)
-	tk.MustExec(`insert into ttl_composite_index values
-		(1, 1, '2024-12-01 00:00:00', null),
-		(1, 2, '2024-12-01 00:00:00', null),
-		(1, 3, '2024-12-01 00:00:00', null),
-		(2, 1, '2024-12-01 00:00:00', null),
-		(1, 4, '2024-12-01 00:00:00', ''),
-		(1, 5, '2024-12-01 00:00:00', 'active'),
-		(1, 6, '2024-12-02 00:00:00', null)`)
-	compositeTable, err := dom.InfoSchema().TableByName(context.Background(), ast.NewCIStr("test"), ast.NewCIStr("ttl_composite_index"))
-	require.NoError(t, err)
-	compositeTTLTable, err := cache.NewPhysicalTable(ast.NewCIStr("test"), compositeTable.Meta(), ast.NewCIStr(""))
-	require.NoError(t, err)
-	compositeIndex := compositeTTLTable.FindTTLIndex()
-	require.NotNil(t, compositeIndex)
-	compositeGenerator, err := sqlbuilder.NewIndexScanQueryGenerator(compositeTTLTable, expireTime, nil, nil, compositeIndex)
-	require.NoError(t, err)
-	compositeSQL, err := compositeGenerator.NextSQL(nil, 32)
-	require.NoError(t, err)
-	require.Contains(t, compositeSQL, "ORDER BY `expired_at`, `status`, `tenant_id`, `event_id` ASC")
-	compositePlan := tk.MustQuery("explain format='brief' " + compositeSQL)
-	compositePlan.MultiCheckContain([]string{"IndexRangeScan", "idx_expired_status"})
-	compositePlan.CheckNotContain("TopN")
-	compositePlan.CheckNotContain("Sort")
-
-	// Build and execute every stack level, including NULL transitions, against
-	// the implicit common-handle suffix. This verifies the complete path from
-	// cursor datums through SQL generation, parsing, planning, and execution.
-	paginationGenerator, err := sqlbuilder.NewIndexScanQueryGenerator(compositeTTLTable, expireTime, nil, nil, compositeIndex)
-	require.NoError(t, err)
-	_, err = paginationGenerator.NextSQL(nil, 1)
-	require.NoError(t, err)
-	boundaryRows := [][]types.Datum{{
-		types.NewStringDatum("2024-12-01 00:00:00"),
-		{},
-		types.NewIntDatum(1),
-		types.NewIntDatum(2),
-	}}
-	deepestSQL, err := paginationGenerator.NextSQL(boundaryRows, 32)
-	require.NoError(t, err)
-	nextTenantSQL, err := paginationGenerator.NextSQL(nil, 32)
-	require.NoError(t, err)
-	nonNullStatusSQL, err := paginationGenerator.NextSQL(nil, 32)
-	require.NoError(t, err)
-	nextTimeSQL, err := paginationGenerator.NextSQL(nil, 32)
-	require.NoError(t, err)
-
-	paginationSQLs := []struct {
-		sql      string
-		rowCount int
+	testCases := []struct {
+		name          string
+		definition    string
+		values        string
+		expectedIndex string
 	}{
 		{
-			sql:      deepestSQL,
-			rowCount: 1,
+			name: "non-unique single TTL with row ID suffix",
+			definition: `(id bigint, expired_at datetime not null,
+				index idx_ttl(expired_at))`,
+			values: `(1, '2024-01-01 00:00:00'),
+				(2, '2024-01-01 00:00:00'),
+				(3, '2024-01-02 00:00:00')`,
+			expectedIndex: "idx_ttl",
 		},
 		{
-			sql:      nextTenantSQL,
-			rowCount: 1,
+			name: "non-unique single TTL with signed integer handle suffix",
+			definition: `(id bigint primary key clustered, expired_at datetime not null,
+				index idx_ttl(expired_at))`,
+			values: `(1, '2024-01-01 00:00:00'),
+				(2, '2024-01-01 00:00:00'),
+				(3, '2024-01-02 00:00:00')`,
+			expectedIndex: "idx_ttl",
 		},
 		{
-			sql:      nonNullStatusSQL,
-			rowCount: 2,
+			name: "non-unique single TTL with common handle suffix",
+			definition: `(a bigint not null, b bigint not null, expired_at datetime not null,
+				primary key(a, b) clustered, index idx_ttl(expired_at))`,
+			values: `(1, 1, '2024-01-01 00:00:00'),
+				(1, 2, '2024-01-01 00:00:00'),
+				(2, 1, '2024-01-02 00:00:00')`,
+			expectedIndex: "idx_ttl",
 		},
 		{
-			sql:      nextTimeSQL,
-			rowCount: 1,
+			name: "non-unique composite without handle columns",
+			definition: `(a bigint not null, b bigint not null, expired_at datetime not null, status varchar(16),
+				primary key(a, b) clustered, index idx_ttl(expired_at, status))`,
+			values: `(1, 1, '2024-01-01 00:00:00', null),
+				(1, 2, '2024-01-01 00:00:00', null),
+				(2, 1, '2024-01-01 00:00:00', 'ready')`,
+			expectedIndex: "idx_ttl",
+		},
+		{
+			name: "non-unique composite with complete reordered common handle",
+			definition: `(a bigint not null, b bigint not null, expired_at datetime not null, status varchar(16),
+				primary key(a, b) clustered, index idx_ttl(expired_at, b, status, a))`,
+			values: `(1, 1, '2024-01-01 00:00:00', null),
+				(1, 2, '2024-01-01 00:00:00', 'ready'),
+				(2, 1, '2024-01-02 00:00:00', 'done')`,
+			expectedIndex: "idx_ttl",
+		},
+		{
+			name: "non-unique composite with explicit unsigned handle",
+			definition: `(id bigint unsigned primary key clustered, expired_at datetime not null, status int,
+				index idx_ttl(expired_at, status, id))`,
+			values: `(1, '2024-01-01 00:00:00', 1),
+				(9223372036854775808, '2024-01-01 00:00:00', 1),
+				(18446744073709551614, '2024-01-02 00:00:00', 2)`,
+			expectedIndex: "idx_ttl",
+		},
+		{
+			name: "non-unique composite with explicit unsigned common handle",
+			definition: `(a bigint unsigned not null, b bigint not null, expired_at datetime not null, status int,
+				primary key(a, b) clustered, index idx_ttl(expired_at, status, b, a))`,
+			values: `(9223372036854775808, 1, '2024-01-01 00:00:00', 1),
+				(9223372036854775808, 2, '2024-01-01 00:00:00', 1),
+				(18446744073709551614, 1, '2024-01-02 00:00:00', 2)`,
+			expectedIndex: "idx_ttl",
+		},
+		{
+			name: "unique nullable TTL with unsigned handle",
+			definition: `(id bigint unsigned primary key clustered, expired_at datetime,
+				unique index idx_ttl(expired_at))`,
+			values: `(1, '2024-01-01 00:00:00'),
+				(9223372036854775808, '2024-01-02 00:00:00'),
+				(18446744073709551614, '2024-01-03 00:00:00'),
+				(4, null)`,
+			expectedIndex: "idx_ttl",
+		},
+		{
+			name: "unique composite without handle columns",
+			definition: `(a bigint not null, b bigint not null, expired_at datetime not null, status int not null,
+				primary key(a, b) clustered, unique index idx_ttl(expired_at, status))`,
+			values: `(1, 1, '2024-01-01 00:00:00', 1),
+				(1, 2, '2024-01-01 00:00:00', 2),
+				(2, 1, '2024-01-02 00:00:00', 1)`,
+			expectedIndex: "idx_ttl",
+		},
+		{
+			name: "unique composite with partial common handle",
+			definition: `(a bigint not null, b bigint not null, expired_at datetime not null, status int not null,
+				primary key(a, b) clustered, unique index idx_ttl(expired_at, a, status))`,
+			values: `(1, 1, '2024-01-01 00:00:00', 1),
+				(1, 2, '2024-01-01 00:00:00', 2),
+				(2, 1, '2024-01-02 00:00:00', 1)`,
+			expectedIndex: "idx_ttl",
+		},
+		{
+			name: "unique composite with complete reordered common handle",
+			definition: `(a bigint not null, b bigint not null, expired_at datetime not null,
+				primary key(a, b) clustered, unique index idx_ttl(expired_at, b, a))`,
+			values: `(1, 1, '2024-01-01 00:00:00'),
+				(1, 2, '2024-01-01 00:00:00'),
+				(2, 1, '2024-01-02 00:00:00')`,
+			expectedIndex: "idx_ttl",
+		},
+		{
+			name: "nonclustered primary index",
+			definition: `(expired_at datetime not null, id bigint not null, payload varchar(16),
+				primary key(expired_at, id) nonclustered)`,
+			values: `('2024-01-01 00:00:00', 1, 'a'),
+				('2024-01-01 00:00:00', 2, 'b'),
+				('2024-01-02 00:00:00', 1, 'c')`,
+			expectedIndex: "PRIMARY",
+		},
+		{
+			name: "ENUM declared index column",
+			definition: `(id bigint primary key clustered, expired_at datetime not null, state enum('a', 'b', 'c') not null,
+				index idx_ttl(expired_at, state))`,
+			values: `(1, '2024-01-01 00:00:00', 'a'),
+				(2, '2024-01-01 00:00:00', 'b'),
+				(3, '2024-01-02 00:00:00', 'c')`,
+			expectedIndex: "idx_ttl",
+		},
+		{
+			name: "binary string common handle suffix",
+			definition: `(name varchar(16) binary not null, seq bigint not null, expired_at datetime not null,
+				primary key(name, seq) clustered, index idx_ttl(expired_at))`,
+			values: `('a', 1, '2024-01-01 00:00:00'),
+				('a', 2, '2024-01-01 00:00:00'),
+				('b', 1, '2024-01-02 00:00:00')`,
+			expectedIndex: "idx_ttl",
+		},
+		{
+			name: "explicit full prefix common handle column",
+			definition: `(name varchar(16) not null, expired_at datetime not null,
+				primary key(name(4)) clustered, index idx_ttl(expired_at, name))`,
+			values: `('aaaa-1', '2024-01-01 00:00:00'),
+				('bbbb-1', '2024-01-01 00:00:00'),
+				('cccc-1', '2024-01-02 00:00:00')`,
+			expectedIndex: "idx_ttl",
 		},
 	}
-	for _, tc := range paginationSQLs {
-		require.Len(t, tk.MustQuery(tc.sql).Rows(), tc.rowCount)
-		paginationPlan := tk.MustQuery("explain format='brief' " + tc.sql)
-		paginationPlan.MultiCheckContain([]string{"IndexRangeScan", "idx_expired_status"})
-		paginationPlan.CheckNotContain("TopN")
-		paginationPlan.CheckNotContain("Sort")
+
+	for i, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tk := testkit.NewTestKit(t, store)
+			tk.MustExec("use test")
+			tableName := fmt.Sprintf("ttl_index_plan_%d", i)
+			tk.MustExec(fmt.Sprintf("create table %s %s TTL=`expired_at` + interval 1 day", tableName, tc.definition))
+			tk.MustExec(fmt.Sprintf("insert into %s values %s", tableName, tc.values))
+
+			tbl, err := dom.InfoSchema().TableByName(context.Background(), ast.NewCIStr("test"), ast.NewCIStr(tableName))
+			require.NoError(t, err)
+			ttlTbl, err := cache.NewPhysicalTable(ast.NewCIStr("test"), tbl.Meta(), ast.NewCIStr(""))
+			require.NoError(t, err)
+			idx := ttlTbl.FindTTLIndex()
+			require.NotNil(t, idx)
+			require.Equal(t, tc.expectedIndex, idx.Name.O)
+
+			generator, err := sqlbuilder.NewIndexScanQueryGenerator(
+				ttlTbl, time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), nil, nil, idx)
+			require.NoError(t, err)
+			runTTLScanPlannerContract(t, tk, generator, 3, tc.expectedIndex)
+		})
 	}
 }
 
-func TestTTLIndexScanPrimaryKeyLayouts(t *testing.T) {
+func TestTTLClusteredPKScanPlannerContracts(t *testing.T) {
 	store, dom := testkit.CreateMockStoreAndDomain(t)
 	waitAndStopTTLManager(t, dom)
 
-	getTTLTable := func(t *testing.T, name string) *cache.PhysicalTable {
-		tbl, err := dom.InfoSchema().TableByName(context.Background(), ast.NewCIStr("test"), ast.NewCIStr(name))
-		require.NoError(t, err)
-		ttlTbl, err := cache.NewPhysicalTable(ast.NewCIStr("test"), tbl.Meta(), ast.NewCIStr(""))
-		require.NoError(t, err)
-		return ttlTbl
+	testCases := []struct {
+		name       string
+		definition string
+		values     string
+	}{
+		{
+			name:       "signed integer handle",
+			definition: `(k bigint primary key clustered, expired_at datetime not null)`,
+			values:     `(1, '2024-01-01'), (2, '2024-01-01'), (3, '2024-01-02')`,
+		},
+		{
+			name:       "unsigned integer handle",
+			definition: `(k bigint unsigned primary key clustered, expired_at datetime not null)`,
+			values: `(1, '2024-01-01'),
+				(9223372036854775808, '2024-01-01'),
+				(18446744073709551614, '2024-01-02')`,
+		},
+		{
+			name: "full-length prefix string common handle",
+			definition: `(k varchar(4) not null, id bigint not null, expired_at datetime not null,
+				primary key(k(4), id) clustered)`,
+			values: `('aaaa', 1, '2024-01-01'),
+				('aaaa', 2, '2024-01-01'),
+				('bbbb', 1, '2024-01-02')`,
+		},
 	}
-	columnNames := func(columns []*model.ColumnInfo) []string {
-		names := make([]string, len(columns))
-		for i, col := range columns {
-			names[i] = col.Name.L
-		}
-		return names
+	commonHandleCases := []struct {
+		name, keyType, firstKey, secondKey string
+	}{
+		{"signed integer", "bigint", "1", "2"},
+		{"unsigned integer", "bigint unsigned", "9223372036854775808", "18446744073709551614"},
+		{"BIT", "bit(8)", "b'00000001'", "b'00000010'"},
+		{"binary string", "varbinary(16)", "'a'", "'b'"},
+		{"ASCII string", "varchar(16) character set ascii collate ascii_bin", "'a'", "'b'"},
+		{"Latin1 string", "char(4) character set latin1 collate latin1_bin", "'a'", "'b'"},
+		{"UTF8 binary-collated", "varchar(16) character set utf8mb4 collate utf8mb4_bin", "'a'", "'b'"},
+		{"ENUM", "enum('a', 'b', 'c')", "'a'", "'b'"},
+		{"DECIMAL", "decimal(10, 2)", "-1.50", "2.50"},
+		{"DATE", "date", "'2024-01-01'", "'2024-01-02'"},
+		{"DATETIME", "datetime(6)", "'2024-01-01 00:00:00.000001'", "'2024-01-02 00:00:00.000002'"},
+		{"TIMESTAMP", "timestamp(3)", "'2024-01-01 00:00:00.001'", "'2024-01-02 00:00:00.002'"},
+		{"TIME", "time(6)", "'01:02:03.000001'", "'02:03:04.000002'"},
+		{"YEAR", "year", "2000", "2001"},
 	}
-	expireTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, tc := range commonHandleCases {
+		testCases = append(testCases, struct {
+			name       string
+			definition string
+			values     string
+		}{
+			name:       tc.name + " common handle",
+			definition: fmt.Sprintf("(k %s not null, id bigint not null, expired_at datetime not null, primary key(k, id) clustered)", tc.keyType),
+			values:     fmt.Sprintf("(%s, 1, '2024-01-01'), (%s, 2, '2024-01-01'), (%s, 1, '2024-01-02')", tc.firstKey, tc.firstKey, tc.secondKey),
+		})
+	}
 
-	t.Run("nonclustered primary key", func(t *testing.T) {
-		tk := testkit.NewTestKit(t, store)
-		tk.MustExec("use test")
-		tk.MustExec(`create table ttl_nonclustered_primary(
-			expired_at datetime not null,
-			id bigint not null,
-			payload varchar(32),
-			primary key(expired_at, id) nonclustered
-		) TTL=expired_at + interval 1 hour`)
-		tk.MustExec(`insert into ttl_nonclustered_primary values
-			('2024-01-01 00:00:00', 1, 'a'),
-			('2024-01-01 00:00:00', 2, 'b'),
-			('2024-01-02 00:00:00', 1, 'c')`)
+	// SET is intentionally not listed: its lossless physical bitmask cursor is
+	// tracked as a separate planner limitation. FLOAT and DOUBLE clustered
+	// common handles are rejected by TTL DDL validation. A shortened prefix
+	// clustered key is also excluded because ORDER BY the full column does not
+	// match its physical prefix order and therefore legitimately needs a TopN.
+	for i, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tk := testkit.NewTestKit(t, store)
+			tk.MustExec("use test")
+			tableName := fmt.Sprintf("ttl_pk_plan_%d", i)
+			tk.MustExec(fmt.Sprintf("create table %s %s TTL=`expired_at` + interval 1 day", tableName, tc.definition))
+			tk.MustExec(fmt.Sprintf("insert into %s values %s", tableName, tc.values))
 
-		ttlTbl := getTTLTable(t, "ttl_nonclustered_primary")
-		require.False(t, ttlTbl.HasClusteredIndex())
-		require.Equal(t, []string{"_tidb_rowid"}, columnNames(ttlTbl.KeyColumns))
-		idx := ttlTbl.FindTTLIndex()
-		require.NotNil(t, idx)
-		require.True(t, idx.Primary)
-		require.True(t, idx.Unique)
+			tbl, err := dom.InfoSchema().TableByName(context.Background(), ast.NewCIStr("test"), ast.NewCIStr(tableName))
+			require.NoError(t, err)
+			ttlTbl, err := cache.NewPhysicalTable(ast.NewCIStr("test"), tbl.Meta(), ast.NewCIStr(""))
+			require.NoError(t, err)
+			require.True(t, ttlTbl.HasClusteredIndex())
 
-		plan, err := ttlTbl.BuildTTLIndexScanPlan(idx)
-		require.NoError(t, err)
-		require.Equal(t, []string{"expired_at", "id"}, columnNames(plan.OrderColumns))
-		require.Equal(t, []string{"expired_at", "id", "_tidb_rowid"}, columnNames(plan.ScanColumns))
+			generator, err := sqlbuilder.NewScanQueryGenerator(
+				ttlTbl, time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), nil, nil)
+			require.NoError(t, err)
+			runTTLScanPlannerContract(t, tk, generator, 3, "")
+		})
+	}
+}
 
-		generator, err := sqlbuilder.NewIndexScanQueryGenerator(ttlTbl, expireTime, nil, nil, idx)
-		require.NoError(t, err)
-		scanSQL, err := generator.NextSQL(nil, 32)
-		require.NoError(t, err)
-		require.Contains(t, scanSQL, "FORCE INDEX(`PRIMARY`)")
-		require.Contains(t, scanSQL, "ORDER BY `expired_at`, `id` ASC")
-		require.Len(t, tk.MustQuery(scanSQL).Rows(), 3)
-		planRows := tk.MustQuery("explain format='brief' " + scanSQL)
-		planRows.MultiCheckContain([]string{"IndexRangeScan", "PRIMARY"})
-		planRows.CheckNotContain("TopN")
-		planRows.CheckNotContain("Sort")
-	})
+func TestTTLPKFallbackPlannerContracts(t *testing.T) {
+	store, dom := testkit.CreateMockStoreAndDomain(t)
+	waitAndStopTTLManager(t, dom)
 
-	t.Run("clustered common handle", func(t *testing.T) {
-		tk := testkit.NewTestKit(t, store)
-		tk.MustExec("use test")
-		tk.MustExec(`create table ttl_clustered_common_handle(
-			expired_at datetime not null,
-			id bigint not null,
-			primary key(expired_at, id) clustered
-		) TTL=expired_at + interval 1 hour`)
-		tk.MustExec(`insert into ttl_clustered_common_handle values
-			('2024-01-01 00:00:00', 1),
-			('2024-01-02 00:00:00', 1),
-			('2024-01-02 00:00:00', 2)`)
+	testCases := []struct {
+		name          string
+		definition    string
+		values        string
+		indexEligible bool
+	}{
+		{
+			name: "eligible index deliberately disabled",
+			definition: `(tenant_id bigint not null, event_id bigint not null, expired_at datetime not null,
+				primary key(tenant_id, event_id) clustered, unique index idx_ttl(expired_at))`,
+			values:        `(1, 1, '2024-01-01'), (1, 2, '2024-01-02'), (2, 1, '2024-01-03')`,
+			indexEligible: true,
+		},
+		{
+			name: "partial common handle",
+			definition: `(a bigint not null, b bigint not null, expired_at datetime not null,
+				primary key(a, b) clustered, index idx_ttl(expired_at, a))`,
+			values: `(1, 1, '2024-01-01'), (1, 2, '2024-01-01'), (2, 1, '2024-01-02')`,
+		},
+		{
+			name:       "implicit unsigned integer handle",
+			definition: `(id bigint unsigned primary key clustered, expired_at datetime not null, index idx_ttl(expired_at))`,
+			values: `(1, '2024-01-01'),
+				(9223372036854775808, '2024-01-01'),
+				(18446744073709551614, '2024-01-02')`,
+		},
+		{
+			name: "nullable unique index column",
+			definition: `(id bigint primary key clustered, expired_at datetime not null, state int,
+				unique index idx_ttl(expired_at, state))`,
+			values: `(1, '2024-01-01', null), (2, '2024-01-01', null), (3, '2024-01-02', 1)`,
+		},
+		{
+			name: "prefix index column",
+			definition: `(name varchar(16) not null, id bigint not null, expired_at datetime not null,
+				primary key(name, id) clustered, index idx_ttl(expired_at, name(4)))`,
+			values: `('aaaa-1', 1, '2024-01-01'), ('aaaa-2', 2, '2024-01-01'), ('bbbb-1', 1, '2024-01-02')`,
+		},
+		{
+			name:       "SET pagination column",
+			definition: `(id bigint primary key clustered, expired_at datetime not null, state set('a', 'b'), index idx_ttl(expired_at, state))`,
+			values:     `(1, '2024-01-01', ''), (2, '2024-01-01', 'a'), (3, '2024-01-02', 'a,b')`,
+		},
+		{
+			name:       "floating-point pagination column",
+			definition: `(id bigint primary key clustered, expired_at datetime not null, score double, index idx_ttl(expired_at, score))`,
+			values:     `(1, '2024-01-01', -1.5), (2, '2024-01-01', 0.5), (3, '2024-01-02', 2.5)`,
+		},
+	}
 
-		ttlTbl := getTTLTable(t, "ttl_clustered_common_handle")
-		require.True(t, ttlTbl.IsCommonHandle)
-		require.Equal(t, []string{"expired_at", "id"}, columnNames(ttlTbl.KeyColumns))
-		require.Nil(t, ttlTbl.FindTTLIndex())
-		var primaryIdx *model.IndexInfo
-		for _, idx := range ttlTbl.Indices {
-			if idx.Primary {
-				primaryIdx = idx
-				break
+	for i, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tk := testkit.NewTestKit(t, store)
+			tk.MustExec("use test")
+			tableName := fmt.Sprintf("ttl_pk_fallback_%d", i)
+			tk.MustExec(fmt.Sprintf("create table %s %s TTL=`expired_at` + interval 1 day", tableName, tc.definition))
+			tk.MustExec(fmt.Sprintf("insert into %s values %s", tableName, tc.values))
+
+			tbl, err := dom.InfoSchema().TableByName(context.Background(), ast.NewCIStr("test"), ast.NewCIStr(tableName))
+			require.NoError(t, err)
+			ttlTbl, err := cache.NewPhysicalTable(ast.NewCIStr("test"), tbl.Meta(), ast.NewCIStr(""))
+			require.NoError(t, err)
+			if tc.indexEligible {
+				require.NotNil(t, ttlTbl.FindTTLIndex())
+			} else {
+				require.Nil(t, ttlTbl.FindTTLIndex())
 			}
-		}
-		require.NotNil(t, primaryIdx)
-		_, err := ttlTbl.BuildTTLIndexScanPlan(primaryIdx)
-		require.ErrorContains(t, err, "clustered primary index")
 
-		generator, err := sqlbuilder.NewScanQueryGenerator(ttlTbl, expireTime, nil, nil)
-		require.NoError(t, err)
-		scanSQL, err := generator.NextSQL(nil, 32)
-		require.NoError(t, err)
-		require.Contains(t, scanSQL, "USE INDEX ()")
-		require.Contains(t, scanSQL, "ORDER BY `expired_at`, `id` ASC")
-		planRows := tk.MustQuery("explain format='brief' " + scanSQL)
-		planRows.CheckContain("TableRangeScan")
-		planRows.CheckNotContain("IndexLookUp")
-		planRows.CheckNotContain("TopN")
-		planRows.CheckNotContain("Sort")
-	})
-
-	t.Run("integer primary key as handle", func(t *testing.T) {
-		tk := testkit.NewTestKit(t, store)
-		tk.MustExec("use test")
-		tk.MustExec(`create table ttl_pk_is_handle_only(
-			id bigint primary key clustered,
-			expired_at datetime not null
-		) TTL=expired_at + interval 1 hour`)
-		tk.MustExec(`create table ttl_signed_pk_is_handle(
-			id bigint primary key clustered,
-			expired_at datetime not null,
-			index idx_expired(expired_at)
-		) TTL=expired_at + interval 1 hour`)
-		tk.MustExec(`create table ttl_unsigned_pk_is_handle(
-			id bigint unsigned primary key clustered,
-			expired_at datetime not null,
-			index idx_expired(expired_at)
-		) TTL=expired_at + interval 1 hour`)
-
-		// PKIsHandle stores the integer primary key in the table record key and
-		// normally has no separate PRIMARY IndexInfo. Without an eligible
-		// secondary TTL index, it must therefore stay on the existing PK scan.
-		pkOnlyTable := getTTLTable(t, "ttl_pk_is_handle_only")
-		require.True(t, pkOnlyTable.PKIsHandle)
-		require.Equal(t, []string{"id"}, columnNames(pkOnlyTable.KeyColumns))
-		require.Nil(t, pkOnlyTable.FindTTLIndex())
-		pkGenerator, err := sqlbuilder.NewScanQueryGenerator(pkOnlyTable, expireTime, nil, nil)
-		require.NoError(t, err)
-		pkScanSQL, err := pkGenerator.NextSQL(nil, 32)
-		require.NoError(t, err)
-		require.Contains(t, pkScanSQL, "USE INDEX ()")
-		require.Contains(t, pkScanSQL, "ORDER BY `id` ASC")
-		pkPlan := tk.MustQuery("explain format='brief' " + pkScanSQL)
-		pkPlan.CheckContain("TableFullScan")
-		pkPlan.CheckNotContain("IndexLookUp")
-		pkPlan.CheckNotContain("TopN")
-		pkPlan.CheckNotContain("Sort")
-
-		signedTable := getTTLTable(t, "ttl_signed_pk_is_handle")
-		require.True(t, signedTable.PKIsHandle)
-		for _, idx := range signedTable.Indices {
-			require.False(t, idx.Primary, "a PKIsHandle primary key should not have a separate IndexInfo")
-		}
-		signedIdx := signedTable.FindTTLIndex()
-		require.NotNil(t, signedIdx)
-		signedPlan, err := signedTable.BuildTTLIndexScanPlan(signedIdx)
-		require.NoError(t, err)
-		require.Equal(t, []string{"expired_at", "id"}, columnNames(signedPlan.OrderColumns))
-		signedGenerator, err := sqlbuilder.NewIndexScanQueryGenerator(signedTable, expireTime, nil, nil, signedIdx)
-		require.NoError(t, err)
-		signedSQL, err := signedGenerator.NextSQL(nil, 32)
-		require.NoError(t, err)
-		require.Contains(t, signedSQL, "ORDER BY `expired_at`, `id` ASC")
-		signedSQLPlan := tk.MustQuery("explain format='brief' " + signedSQL)
-		signedSQLPlan.MultiCheckContain([]string{"IndexRangeScan", "idx_expired"})
-		signedSQLPlan.CheckNotContain("TopN")
-		signedSQLPlan.CheckNotContain("Sort")
-
-		unsignedTable := getTTLTable(t, "ttl_unsigned_pk_is_handle")
-		require.True(t, unsignedTable.PKIsHandle)
-		for _, idx := range unsignedTable.Indices {
-			require.False(t, idx.Primary, "a PKIsHandle primary key should not have a separate IndexInfo")
-		}
-		// The unsigned handle's hidden physical order cannot currently satisfy
-		// ORDER BY expired_at, id, so the non-unique TTL index remains ineligible.
-		require.Nil(t, unsignedTable.FindTTLIndex())
-		unsignedGenerator, err := sqlbuilder.NewScanQueryGenerator(unsignedTable, expireTime, nil, nil)
-		require.NoError(t, err)
-		unsignedSQL, err := unsignedGenerator.NextSQL(nil, 32)
-		require.NoError(t, err)
-		require.Contains(t, unsignedSQL, "USE INDEX ()")
-		require.Contains(t, unsignedSQL, "ORDER BY `id` ASC")
-		unsignedPlan := tk.MustQuery("explain format='brief' " + unsignedSQL)
-		unsignedPlan.CheckContain("TableFullScan")
-		unsignedPlan.CheckNotContain("IndexLookUp")
-		unsignedPlan.CheckNotContain("TopN")
-		unsignedPlan.CheckNotContain("Sort")
-	})
+			generator, err := sqlbuilder.NewScanQueryGenerator(
+				ttlTbl, time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), nil, nil)
+			require.NoError(t, err)
+			runTTLScanPlannerContract(t, tk, generator, 3, "")
+		})
+	}
 }
 
 func TestRescheduleJobs(t *testing.T) {

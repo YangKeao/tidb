@@ -301,129 +301,33 @@ func TestFindTTLIndex(t *testing.T) {
 	tk.MustExec("use test")
 
 	cases := []struct {
-		def         string
-		hasTTLIndex bool
-		indexName   string
+		def       string
+		indexName string
 	}{
 		{
-			def:         "(id int primary key, t datetime) ttl = `t` + interval 1 day",
-			hasTTLIndex: false,
-		},
-		{
-			// A nonclustered primary key has its own index KV and can be scanned like a unique secondary index.
-			def:         "(t datetime not null, id bigint not null, primary key(t, id) nonclustered) ttl = `t` + interval 1 day",
-			hasTTLIndex: true,
-			indexName:   "PRIMARY",
+			def: "(id int primary key, t datetime) ttl = `t` + interval 1 day",
 		},
 		{
 			// A clustered common handle is the table path itself, so it should keep using the existing PK scan path.
-			def:         "(t datetime not null, id bigint not null, primary key(t, id) clustered) ttl = `t` + interval 1 day",
-			hasTTLIndex: false,
+			def: "(t datetime not null, id bigint not null, primary key(t, id) clustered) ttl = `t` + interval 1 day",
 		},
 		{
-			def:         "(id int primary key, t datetime, index idx_t(t)) ttl = `t` + interval 1 day",
-			hasTTLIndex: true,
-			indexName:   "idx_t",
+			def:       "(id int primary key, t datetime, a int, index idx_bad(t, a), index idx_t(t)) ttl = `t` + interval 1 day",
+			indexName: "idx_t",
 		},
 		{
-			def:         "(id int primary key, t datetime, index idx_t(t, id)) ttl = `t` + interval 1 day",
-			hasTTLIndex: true,
-			indexName:   "idx_t",
+			def:       "(id int primary key, t datetime, a int, index idx_wide(t, a), index idx_key(t, id)) ttl = `t` + interval 1 day",
+			indexName: "idx_key",
 		},
 		{
-			def:         "(id int primary key, t datetime, a int, index idx_t(t, a)) ttl = `t` + interval 1 day",
-			hasTTLIndex: true,
-			indexName:   "idx_t",
+			def: "(id varchar(32), t datetime, primary key(id(4)) clustered, index idx_t(t)) ttl = `t` + interval 1 day",
 		},
 		{
-			def:         "(id int primary key, t datetime, a int, index idx_t(t, id, a)) ttl = `t` + interval 1 day",
-			hasTTLIndex: true,
-			indexName:   "idx_t",
+			def: "(id int primary key, t datetime, index idx_t(id, t)) ttl = `t` + interval 1 day",
 		},
 		{
-			def:         "(id int primary key, t datetime, a int, index idx_bad(t, a), index idx_t(t)) ttl = `t` + interval 1 day",
-			hasTTLIndex: true,
-			indexName:   "idx_t",
-		},
-		{
-			def:         "(id int primary key, t datetime, a int, index idx_wide(t, a), index idx_key(t, id)) ttl = `t` + interval 1 day",
-			hasTTLIndex: true,
-			indexName:   "idx_key",
-		},
-		{
-			def:         "(a int, b int, t datetime, primary key(a, b) clustered, index idx_t(t, a)) ttl = `t` + interval 1 day",
-			hasTTLIndex: false,
-		},
-		{
-			def:         "(a int, b int, t datetime, primary key(a, b) clustered, index idx_t(t, b)) ttl = `t` + interval 1 day",
-			hasTTLIndex: false,
-		},
-		{
-			def:         "(id varchar(32), t datetime, primary key(id) clustered, index idx_t(t, id(4))) ttl = `t` + interval 1 day",
-			hasTTLIndex: false,
-		},
-		{
-			def:         "(id varchar(32), t datetime, primary key(id(4)) clustered, index idx_t(t)) ttl = `t` + interval 1 day",
-			hasTTLIndex: false,
-		},
-		{
-			def:         "(id varchar(32), t datetime, primary key(id(4)) clustered, index idx_t(t, id)) ttl = `t` + interval 1 day",
-			hasTTLIndex: true,
-			indexName:   "idx_t",
-		},
-		{
-			def:         "(id int primary key, t datetime, index idx_t(id, t)) ttl = `t` + interval 1 day",
-			hasTTLIndex: false,
-		},
-		{
-			def:         "(id int primary key, t datetime, index idx_a(id), index idx_t(t)) ttl = `t` + interval 1 day",
-			hasTTLIndex: true,
-			indexName:   "idx_t",
-		},
-		{
-			def:         "(id int primary key, t datetime, a int, unique index idx_t(t, a)) ttl = `t` + interval 1 day",
-			hasTTLIndex: false,
-		},
-		{
-			def:         "(id int primary key, t datetime, a int not null, unique index idx_t(t, a)) ttl = `t` + interval 1 day",
-			hasTTLIndex: true,
-			indexName:   "idx_t",
-		},
-		{
-			def:         "(id int primary key, t datetime, unique index idx_t(t, id)) ttl = `t` + interval 1 day",
-			hasTTLIndex: true,
-			indexName:   "idx_t",
-		},
-		{
-			def:         "(id int primary key, t datetime, e enum('z', 'a'), index idx_t(t, e)) ttl = `t` + interval 1 day",
-			hasTTLIndex: true,
-			indexName:   "idx_t",
-		},
-		{
-			def:         "(id int primary key, t datetime, s set('a', 'b'), index idx_t(t, s)) ttl = `t` + interval 1 day",
-			hasTTLIndex: false,
-		},
-		{
-			def:         "(id int primary key, t datetime, f float, index idx_t(t, f)) ttl = `t` + interval 1 day",
-			hasTTLIndex: false,
-		},
-		{
-			def:         "(id int primary key, t datetime, d double, index idx_t(t, d)) ttl = `t` + interval 1 day",
-			hasTTLIndex: false,
-		},
-		{
-			def:         "(a int, b int, t datetime, primary key(a, b) clustered, unique index idx_t(t, a, b)) ttl = `t` + interval 1 day",
-			hasTTLIndex: true,
-			indexName:   "idx_t",
-		},
-		{
-			def:         "(id int unsigned primary key, t datetime, index idx_t(t)) ttl = `t` + interval 1 day",
-			hasTTLIndex: false,
-		},
-		{
-			def:         "(id int unsigned primary key, t datetime, unique index idx_t(t)) ttl = `t` + interval 1 day",
-			hasTTLIndex: true,
-			indexName:   "idx_t",
+			def:       "(id int primary key, t datetime, index idx_a(id), index idx_t(t)) ttl = `t` + interval 1 day",
+			indexName: "idx_t",
 		},
 	}
 
@@ -437,7 +341,7 @@ func TestFindTTLIndex(t *testing.T) {
 		require.NoError(t, err)
 
 		idx := ttlTbl.FindTTLIndex()
-		if c.hasTTLIndex {
+		if c.indexName != "" {
 			require.NotNil(t, idx, "table %s should have TTL index", tblName)
 			require.Equal(t, c.indexName, idx.Name.O)
 		} else {

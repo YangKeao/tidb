@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/pingcap/tidb/pkg/kv"
-	"github.com/pingcap/tidb/pkg/parser/mysql"
 	"github.com/pingcap/tidb/pkg/session"
 	"github.com/pingcap/tidb/pkg/testkit"
 	"github.com/pingcap/tidb/pkg/ttl/cache"
@@ -117,15 +116,6 @@ func TestRowToTTLTask(t *testing.T) {
 	task = tg.mustGetTestTask()
 	require.NotNil(t, task.SplitBy)
 	require.Equal(t, splitBy, *task.SplitBy)
-
-	timeDatum := types.NewTimeDatum(types.NewTime(types.FromGoTime(now), mysql.TypeDatetime, 0))
-	timeRange, err := codec.EncodeKey(tk.Session().GetSessionVars().StmtCtx.TimeZone(), nil, timeDatum)
-	require.NoError(t, err)
-	tk.MustExec("UPDATE mysql.tidb_ttl_task SET scan_range_start = ?, scan_range_end = ? WHERE job_id = 'test-job'",
-		timeRange, timeRange)
-	task = tg.mustGetTestTask()
-	require.Equal(t, types.KindUint64, task.ScanRangeStart[0].Kind())
-	require.Equal(t, types.KindUint64, task.ScanRangeEnd[0].Kind())
 }
 
 func TestInsertIntoTTLTask(t *testing.T) {

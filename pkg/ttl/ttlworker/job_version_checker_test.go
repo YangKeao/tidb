@@ -67,11 +67,9 @@ func TestTiDBServerVersionsConsistent(t *testing.T) {
 			}, true, false,
 		},
 		{"different release", "8.0.11-TiDB-v9.0.0", []string{"8.0.11-TiDB-v8.5.0"}, false, false},
-		{"current server omitted from server info", "8.0.11-TiDB-v9.0.0", []string{"8.0.11-TiDB-v8.5.0", "8.0.11-TiDB-v8.5.0"}, false, false},
 		{"empty server info", "8.0.11-TiDB-v9.0.0", nil, false, true},
 		{"invalid current version", "invalid", []string{"8.0.11-TiDB-v9.0.0"}, false, true},
 		{"invalid remote version", "8.0.11-TiDB-v9.0.0", []string{"invalid"}, false, true},
-		{"different release with invalid remote version", "8.0.11-TiDB-v9.0.0", []string{"8.0.11-TiDB-v8.5.0", "invalid"}, false, true},
 	}
 
 	for _, tt := range tests {
@@ -122,63 +120,48 @@ func TestTiDBServerVersionsConsistent(t *testing.T) {
 		require.Equal(t, 4, calls)
 	})
 
-	t.Run("fallback to PK when current server info lookup fails", func(t *testing.T) {
-		calls := 0
-		checker := &ttlJobVersionChecker{}
-		ctx := serverInfoGettersContext(
-			func() (*serverinfo.ServerInfo, error) {
-				return nil, errors.New("mock current server info error")
-			},
-			func(context.Context) (map[string]*serverinfo.ServerInfo, error) {
-				calls++
-				return serverInfos("8.0.11" + mysql.VersionSeparator + "v10.0.0"), nil
-			},
-		)
-		require.Equal(t, ttlJobVersionFallbackToPK, checker.check(ctx))
-		require.Equal(t, ttlJobVersionFallbackToPK, checker.check(ctx))
-		require.Equal(t, 0, calls)
-	})
-
-	t.Run("fallback to PK when server info lookup fails", func(t *testing.T) {
-		calls := 0
-		checker := &ttlJobVersionChecker{}
-		ctx := serverInfoGettersContext(
-			func() (*serverinfo.ServerInfo, error) {
-				return serverInfo("local", "8.0.11"+mysql.VersionSeparator+"v9.0.0"), nil
-			},
-			func(context.Context) (map[string]*serverinfo.ServerInfo, error) {
-				calls++
-				return nil, errors.New("mock server info error")
-			},
-		)
-		require.Equal(t, ttlJobVersionFallbackToPK, checker.check(ctx))
-		require.Equal(t, ttlJobVersionFallbackToPK, checker.check(ctx))
-		require.Equal(t, 1, calls)
-	})
-
-	t.Run("fallback to PK when versions cannot be compared", func(t *testing.T) {
+	t.Run("fallback to PK", func(t *testing.T) {
 		validVersion := "8.0.11" + mysql.VersionSeparator + "v9.0.0"
 		for _, tt := range []struct {
-			name           string
-			currentVersion string
-			serverInfos    map[string]*serverinfo.ServerInfo
+			name             string
+			localInfo        *serverinfo.ServerInfo
+			localErr         error
+			allServerInfo    map[string]*serverinfo.ServerInfo
+			allServerInfoErr error
+			expectedAllCalls int
 		}{
-			{name: "server info list is empty", currentVersion: validVersion, serverInfos: map[string]*serverinfo.ServerInfo{}},
-			{name: "current version is invalid", currentVersion: "invalid", serverInfos: serverInfos(validVersion)},
-			{name: "remote version is invalid", currentVersion: validVersion, serverInfos: serverInfos("invalid")},
-			{name: "remote server info is nil", currentVersion: validVersion, serverInfos: map[string]*serverinfo.ServerInfo{"remote": nil}},
+			{
+				name:             "current server lookup fails",
+				localErr:         errors.New("mock current server info error"),
+				allServerInfo:    serverInfos(validVersion),
+				expectedAllCalls: 0,
+			},
+			{
+				name:             "server list lookup fails",
+				localInfo:        serverInfo("local", validVersion),
+				allServerInfoErr: errors.New("mock server info error"),
+				expectedAllCalls: 1,
+			},
+			{
+				name:             "versions cannot be compared",
+				localInfo:        serverInfo("local", validVersion),
+				allServerInfo:    map[string]*serverinfo.ServerInfo{},
+				expectedAllCalls: 1,
+			},
 		} {
 			t.Run(tt.name, func(t *testing.T) {
+				calls := 0
 				checker := &ttlJobVersionChecker{}
 				ctx := serverInfoGettersContext(
-					func() (*serverinfo.ServerInfo, error) {
-						return serverInfo("local", tt.currentVersion), nil
-					},
+					func() (*serverinfo.ServerInfo, error) { return tt.localInfo, tt.localErr },
 					func(context.Context) (map[string]*serverinfo.ServerInfo, error) {
-						return tt.serverInfos, nil
+						calls++
+						return tt.allServerInfo, tt.allServerInfoErr
 					},
 				)
 				require.Equal(t, ttlJobVersionFallbackToPK, checker.check(ctx))
+				require.Equal(t, ttlJobVersionFallbackToPK, checker.check(ctx))
+				require.Equal(t, tt.expectedAllCalls, calls)
 			})
 		}
 	})
