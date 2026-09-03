@@ -482,6 +482,10 @@ func TestTriggerTTLJobWithIndexScan(t *testing.T) {
 	require.NoError(t, scanStmt.Restore(format.NewRestoreCtx(format.DefaultRestoreFlags, &scanSQL)))
 	require.Contains(t, strings.ToUpper(scanSQL.String()), "FORCE INDEX")
 	require.Contains(t, scanSQL.String(), "`idx_t`")
+	scanPlan := tk.MustQuery("explain format='brief' " + scanSQL.String())
+	scanPlan.CheckContain("IndexRangeScan")
+	scanPlan.CheckContain("idx_t")
+	scanPlan.CheckNotContain("TableFullScan")
 	releaseOnce.Do(func() { close(releaseScan) })
 
 	waitTTLJobFinished(t, tk, tblID, timerCli)
