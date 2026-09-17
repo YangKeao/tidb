@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Experimental, copying adapter to TiKV's existing in-process RPN evaluator.
+//! Experimental copying and borrowed-input adapters to TiKV's existing kernels.
 //!
 //! Admission is intentionally narrower than coprocessor pushdown: only static,
 //! side-effect-free, homogeneous numeric arithmetic/comparisons and byte length
@@ -26,7 +26,9 @@ use prost::Message;
 use tidb_chunk::chunk::Chunk;
 use tidb_datatype::{Datum, EvalType, FieldType, FieldTypeCode};
 use tidb_proto::tipb::{Expr as PbExpr, ExprType, ScalarFuncSig};
-use tidb_query_expr::standalone::{Column as EngineColumn, PreparedExpression};
+use tidb_query_expr::standalone::{
+    Column as EngineColumn, ColumnRef as EngineColumnRef, PreparedExpression, ScalarRef,
+};
 
 use crate::expression::Expression;
 use crate::pushdown_catalog::{self, ColumnDescriptor};
@@ -34,6 +36,16 @@ use crate::{Columns, EvalError};
 
 /// Statement settings understood by the embedded TiKV expression engine.
 pub use tidb_query_expr::standalone::Context;
+
+/// Explicit adapter choice for the experimental TiKV expression backend.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Backend {
+    /// Original owned-column adapter, retained as the regression/benchmark control.
+    #[default]
+    Copying,
+    /// Borrow input payloads and write engine results directly to an output column.
+    Borrowed,
+}
 
 /// One admitted expression, with a compact, copying input-column map.
 ///
@@ -163,6 +175,153 @@ impl TikvExpression {
         };
         context.record_tikv_expression_rows(input.num_rows());
         Ok(result)
+    }
+
+    /// Borrow input payloads and append to one initially empty, correctly typed
+    /// output column. Unsupported loaders or aliased output use the copying
+    /// adapter before any input guards are held. Errors reset partial borrowed
+    /// output; they never cause replay. Only successful borrowed calls increment
+    /// the borrowed-row counter. No input reference survives this method.
+    pub fn evaluate_into<C: Columns>(
+        &mut self,
+        context: &C,
+        input: &Chunk,
+        output: &mut Chunk,
+        output_index: usize,
+    ) -> Result<(), EvalError> {
+        if output_index >= output.num_cols()
+            || self.inputs.iter().any(|(i, _)| *i >= input.num_cols())
+        {
+            return Err(invalid("TiKV expression column index is out of bounds"));
+        }
+        let output_shared = {
+            let destination = output.column(output_index);
+            if destination.rows() != 0 {
+                return Err(invalid(
+                    "borrowed expression output must be initially empty",
+                ));
+            }
+            let layout_matches = match self.result_type.eval_type() {
+                EvalType::Int | EvalType::Real => {
+                    destination.is_fixed() && destination.type_size() == 8
+                }
+                EvalType::String => !destination.is_fixed(),
+                _ => false,
+            };
+            if !layout_matches {
+                return Err(invalid(
+                    "borrowed expression output layout does not match its type",
+                ));
+            }
+            destination.has_shared_mutable_storage()
+        };
+        let aliases_input = self
+            .inputs
+            .iter()
+            .any(|(index, _)| input.columns_share_identity(*index, output, output_index));
+        // Shared backing writes can detach, but that hides a payload copy. More
+        // importantly, an identical Column owner cannot be write-locked while
+        // its input read guard is alive. Decide fallback before taking guards.
+        if !self.prepared.supports_borrowed() || aliases_input || output_shared {
+            for value in self.evaluate(context, input)? {
+                output.append_datum(output_index, &value);
+            }
+            return Ok(());
+        }
+        let row_count = input.physical_rows();
+        let logical_rows = input.num_rows();
+        // Distinct indexes can alias one Column owner. Lock that owner only
+        // once; repeated read-lock acquisition can block behind a writer.
+        let mut unique_indexes = Vec::new();
+        let mut slots = Vec::with_capacity(self.inputs.len());
+        for (index, _) in &self.inputs {
+            let slot = unique_indexes
+                .iter()
+                .position(|other| input.columns_share_identity(*index, input, *other))
+                .unwrap_or_else(|| {
+                    unique_indexes.push(*index);
+                    unique_indexes.len() - 1
+                });
+            slots.push(slot);
+        }
+        let columns: Vec<_> = unique_indexes
+            .iter()
+            .map(|index| input.column(*index))
+            .collect();
+        let views: Vec<_> = columns.iter().map(|column| column.read_view()).collect();
+        let borrowed: Vec<_> = self
+            .inputs
+            .iter()
+            .zip(slots)
+            .map(|((_, ty), slot)| {
+                let view = &views[slot];
+                if view.rows() != row_count {
+                    return Err(invalid("borrowed expression input row counts differ"));
+                }
+                let values = view.data();
+                let validity = view.null_bitmap();
+                match ty.eval_type() {
+                    EvalType::Int if view.fixed_len() == Some(8) => {
+                        Ok(EngineColumnRef::Int { values, validity })
+                    }
+                    EvalType::Real if view.fixed_len() == Some(8) => {
+                        Ok(EngineColumnRef::Real { values, validity })
+                    }
+                    EvalType::String if view.fixed_len().is_none() => Ok(EngineColumnRef::Bytes {
+                        values,
+                        validity,
+                        offsets: view.offsets(),
+                    }),
+                    _ => Err(invalid(
+                        "borrowed expression input layout does not match its type",
+                    )),
+                }
+            })
+            .collect::<Result<_, _>>()?;
+        let mut destination = output.column_mut(output_index);
+        let expected = self.result_type.eval_type();
+        let result = self
+            .prepared
+            .eval_borrowed(&borrowed, row_count, input.sel(), |value| {
+                match value {
+                    ScalarRef::Null => destination.append_null(),
+                    ScalarRef::Int(value) if expected == EvalType::Int => {
+                        destination.append_int64(value)
+                    }
+                    ScalarRef::Real(value) if expected == EvalType::Real => {
+                        destination.append_float64(value)
+                    }
+                    ScalarRef::Bytes(value) if expected == EvalType::String => {
+                        destination.append_bytes(value)
+                    }
+                    _ => {
+                        return Err(tidb_query_expr::standalone::Error {
+                            code: 1105,
+                            message: "borrowed expression result type does not match output"
+                                .to_owned(),
+                        })
+                    }
+                }
+                Ok(())
+            });
+        let diagnostics = match result {
+            Ok(diagnostics) => diagnostics,
+            Err(error) => {
+                destination.reset();
+                return Err(engine_error(error));
+            }
+        };
+        drop(destination);
+        // Release payload/owner guards before invoking arbitrary context hooks.
+        drop(borrowed);
+        drop(views);
+        drop(columns);
+        for warning in diagnostics.warnings {
+            context.append_warning(mysql_code(warning.code), &warning.message);
+        }
+        context.record_tikv_expression_rows(logical_rows);
+        context.record_tikv_borrowed_expression_rows(logical_rows);
+        Ok(())
     }
 }
 
@@ -414,20 +573,34 @@ impl ProjectionCache {
         Ok(())
     }
 
-    pub(crate) fn evaluate<C: Columns>(
+    pub(crate) fn evaluate_into<C: Columns>(
         &mut self,
         index: usize,
         context: &C,
         input: &Chunk,
-    ) -> Result<Option<Vec<Datum>>, EvalError> {
+        output: &mut Chunk,
+        output_index: usize,
+    ) -> Result<bool, EvalError> {
         let Some(program) = self.programs[index].as_mut() else {
-            return Ok(None);
+            return Ok(false);
         };
-        // The TiKV Real carrier rejects NaN. Leave nonfinite values native
-        // before evaluation rather than retrying an engine error afterwards.
+        // Both adapters leave nonfinite values native BEFORE executing kernels.
         if program.has_nonfinite_input(input) {
-            return Ok(None);
+            return Ok(false);
         }
-        program.evaluate(context, input).map(Some)
+        match context.tikv_expression_backend() {
+            Backend::Borrowed if output.column(output_index).rows() == 0 => {
+                program.evaluate_into(context, input, output, output_index)?;
+            }
+            Backend::Copying | Backend::Borrowed => {
+                // The existing suite can append calculated expressions after a
+                // prefix. Preserve it, including on errors, via owned staging;
+                // the public direct borrowed API intentionally requires empty output.
+                for value in &program.evaluate(context, input)? {
+                    output.append_datum(output_index, value);
+                }
+            }
+        }
+        Ok(true)
     }
 }

@@ -55,7 +55,7 @@ use tidb_datatype::{
 };
 
 use crate::column_view::{ColumnBytes, ColumnBytesStorage};
-use crate::shared_bytes::SharedBytes;
+use crate::shared_bytes::{SharedBytes, SharedBytesRead};
 
 /// Go `VarElemLen` (`= -1`): the sentinel element length of a variable-length
 /// column.
@@ -114,7 +114,111 @@ pub struct Column {
     pub avoid_reusing: bool,
 }
 
+/// A borrow-scoped view of a column's existing packed buffers.
+///
+/// Reading a view does not copy, align, compact, or normalize any buffer. Numeric
+/// payloads use the column's native-endian representation and may be unaligned;
+/// decode individual values with `from_ne_bytes`, not a cast to a typed slice.
+/// The validity bitmap uses low-bit-first indexing with 1 meaning not NULL.
+/// Offsets retain their signed `i64` representation and any existing base offset.
+///
+/// Shared mutable data is held under a read guard until this view is dropped.
+/// Returned slices borrow the view itself, so none can outlive its lock. Callers
+/// must ensure output storage does not alias input column owners before holding
+/// read guards and acquiring a mutable output guard. Otherwise owner locking can
+/// deadlock, or a shallow byte alias can detach and introduce a hidden copy.
+///
+/// A mutable borrow of the original column cannot overlap a live view:
+///
+/// ```compile_fail
+/// use tidb_chunk::column::Column;
+/// let mut column = Column::new_fixed_len(8, 1);
+/// column.append_int64(42);
+/// let view = column.read_view();
+/// column.append_int64(7);
+/// assert_eq!(view.rows(), 1);
+/// ```
+///
+/// A data slice cannot escape the guard even while the column remains alive:
+///
+/// ```compile_fail
+/// use tidb_chunk::column::Column;
+/// let mut column = Column::new_fixed_len(8, 1);
+/// column.append_int64(42);
+/// let data;
+/// {
+///     let view = column.read_view();
+///     data = view.data();
+/// }
+/// assert_eq!(data.len(), 8);
+/// ```
+pub struct ColumnReadView<'a> {
+    data: SharedBytesRead<'a>,
+    null_bitmap: &'a [u8],
+    offsets: &'a [i64],
+    rows: usize,
+    fixed_len: Option<usize>,
+}
+
+impl ColumnReadView<'_> {
+    /// Existing visible payload bytes, without a copy or alignment guarantee.
+    #[must_use]
+    pub fn data(&self) -> &[u8] {
+        self.data.as_ref()
+    }
+
+    /// Existing validity bytes: bit `row & 7` in byte `row >> 3` is 1 if valid.
+    #[must_use]
+    pub fn null_bitmap(&self) -> &[u8] {
+        self.null_bitmap
+    }
+
+    /// Existing variable-width offsets, without rebasing or integer conversion.
+    /// Fixed-width columns do not use these entries; reset may retain old ones.
+    #[must_use]
+    pub fn offsets(&self) -> &[i64] {
+        self.offsets
+    }
+
+    /// Physical row count; this view does not apply a chunk selection vector.
+    #[must_use]
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    /// Fixed-width byte size, or `None` for a variable-width column.
+    /// The valid zero-width fixed edge case is represented as `Some(0)`.
+    #[must_use]
+    pub fn fixed_len(&self) -> Option<usize> {
+        self.fixed_len
+    }
+}
+
 impl Column {
+    /// Borrow existing payload, validity and offset buffers without materializing
+    /// them. The view owns any read guard required by shared mutable storage.
+    #[must_use]
+    pub fn read_view(&self) -> ColumnReadView<'_> {
+        ColumnReadView {
+            data: self.data.read(),
+            null_bitmap: &self.null_bitmap,
+            offsets: &self.offsets,
+            rows: self.length,
+            fixed_len: self.elem_buf.as_ref().map(Vec::len),
+        }
+    }
+
+    /// Whether the payload uses mutable shared backing rather than owned bytes
+    /// or immutable frozen bytes. This query does not lock, copy, or promote it.
+    ///
+    /// A direct-output borrower can use this conservative check before holding
+    /// any input guards to avoid shallow-alias detach copies. This does not
+    /// detect shared column owners; check those separately at the chunk level.
+    #[must_use]
+    pub fn has_shared_mutable_storage(&self) -> bool {
+        self.data.is_shared()
+    }
+
     /// Go `Chunk.MemoryUsage`'s per-column term:
     /// `unsafe.Sizeof(*col) + cap(nullBitmap) + cap(offsets)*8 + cap(data) +
     /// cap(elemBuf)`.
@@ -1851,3 +1955,7 @@ pub fn append_cell_from_raw_data(
 #[cfg(test)]
 #[path = "column_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "column_read_view_tests.rs"]
+mod read_view_tests;

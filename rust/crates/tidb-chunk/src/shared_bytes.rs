@@ -380,7 +380,8 @@ impl SharedBytes {
         }
     }
 
-    #[cfg(test)]
+    /// Whether this header refers to synchronized, mutable aliased storage.
+    /// Owned and immutable frozen storage require no read lock.
     pub(crate) fn is_shared(&self) -> bool {
         matches!(&self.backing, Backing::Shared(_))
     }

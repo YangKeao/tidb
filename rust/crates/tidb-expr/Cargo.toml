@@ -18,8 +18,8 @@ workspace = true
 tikv-expr = ["dep:tidb_query_expr", "dep:prost"]
 
 [dependencies]
-# This is the existing TiKV engine with a small copying embedding facade.
-tidb_query_expr = { git = "https://github.com/YangKeao/tikv.git", rev = "ff315c7d001573166595702af6a36b6f69d2f93e", optional = true }
+# Original TiKV kernels with copying and borrowed-input embedding adapters.
+tidb_query_expr = { git = "https://github.com/YangKeao/tikv.git", rev = "521ac7330208b7f74f2b182bc373882687967280", optional = true }
 prost = { workspace = true, optional = true }
 stacker = { workspace = true }
 tidb-hack = { path = "../tidb-hack" }
@@ -59,5 +59,10 @@ path = "tests/all.rs"
 
 [[bench]]
 name = "tikv_expression"
+harness = false
+required-features = ["tikv-expr"]
+
+[[bench]]
+name = "tikv_expression_borrowed"
 harness = false
 required-features = ["tikv-expr"]

@@ -380,6 +380,10 @@ pub struct StmtContextData {
     /// Local expression-engine choice is statement-owned, never process-global.
     #[cfg(feature = "tikv-expr")]
     tikv_expression_enabled: bool,
+    #[cfg(feature = "tikv-expr")]
+    tikv_expression_backend: tidb_expr::tikv::Backend,
+    #[cfg(feature = "tikv-expr")]
+    tikv_borrowed_expression_rows: Arc<AtomicU64>,
     /// Shared only by clones of this statement, including projection workers.
     #[cfg(feature = "tikv-expr")]
     tikv_expression_rows: Arc<AtomicU64>,
@@ -937,6 +941,18 @@ context_configuration! {
     #[must_use]
     pub fn with_tikv_expression(mut self, enabled: bool) -> Self {
         self.tikv_expression_enabled = enabled;
+        self
+    }
+
+    /// Enables local TiKV evaluation with an explicit copying or borrowed adapter.
+    /// Unsupported/aliased borrowed inputs can use copying; the borrowed-row
+    /// counter distinguishes that fallback from actual borrowed execution.
+    /// `with_tikv_expression(false)` subsequently disables either adapter.
+    #[cfg(feature = "tikv-expr")]
+    #[must_use]
+    pub fn with_tikv_expression_backend(mut self, backend: tidb_expr::tikv::Backend) -> Self {
+        self.tikv_expression_enabled = true;
+        self.tikv_expression_backend = backend;
         self
     }
 
@@ -1693,6 +1709,13 @@ impl StmtContext {
         self.tikv_expression_rows.load(Ordering::Relaxed)
     }
 
+    /// Successful rows using borrowed payloads/direct output, excluding copying fallback.
+    #[cfg(feature = "tikv-expr")]
+    #[must_use]
+    pub fn tikv_borrowed_expression_rows(&self) -> u64 {
+        self.tikv_borrowed_expression_rows.load(Ordering::Relaxed)
+    }
+
     /// Applies one setup batch, detaching shared configuration at most once.
     /// Statement effects keep their existing shared owners, as for with_* calls.
     #[must_use]
@@ -1714,6 +1737,10 @@ impl StmtContext {
         Self(Arc::new(StmtContextData {
             #[cfg(feature = "tikv-expr")]
             tikv_expression_enabled: false,
+            #[cfg(feature = "tikv-expr")]
+            tikv_expression_backend: tidb_expr::tikv::Backend::Copying,
+            #[cfg(feature = "tikv-expr")]
+            tikv_borrowed_expression_rows: Arc::default(),
             #[cfg(feature = "tikv-expr")]
             tikv_expression_rows: Arc::default(),
             warnings: Arc::default(),
@@ -3648,6 +3675,17 @@ impl Columns for StmtContext {
     #[cfg(feature = "tikv-expr")]
     fn record_tikv_expression_rows(&self, rows: usize) {
         self.tikv_expression_rows
+            .fetch_add(rows as u64, Ordering::Relaxed);
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    fn tikv_expression_backend(&self) -> tidb_expr::tikv::Backend {
+        self.tikv_expression_backend
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    fn record_tikv_borrowed_expression_rows(&self, rows: usize) {
+        self.tikv_borrowed_expression_rows
             .fetch_add(rows as u64, Ordering::Relaxed);
     }
 

@@ -510,6 +510,16 @@ pub trait Columns {
     #[cfg(feature = "tikv-expr")]
     fn record_tikv_expression_rows(&self, _rows: usize) {}
 
+    /// Chooses the optional input/output adapter; copying remains the default.
+    #[cfg(feature = "tikv-expr")]
+    fn tikv_expression_backend(&self) -> crate::tikv::Backend {
+        crate::tikv::Backend::Copying
+    }
+
+    /// Counts only successful borrowed executions, excluding copying fallback.
+    #[cfg(feature = "tikv-expr")]
+    fn record_tikv_borrowed_expression_rows(&self, _rows: usize) {}
+
     /// Returns the referenced column, matched by its final name segment.
     fn get(&self, path: &[String]) -> Option<Datum>;
 

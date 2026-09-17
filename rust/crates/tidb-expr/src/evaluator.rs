@@ -423,10 +423,7 @@ impl EvaluatorSuite {
             {
                 #[cfg(feature = "tikv-expr")]
                 if let Some(cache) = &mut tikv {
-                    if let Some(values) = cache.evaluate(_expression_index, ctx, input)? {
-                        for value in &values {
-                            output.append_datum(*output_index, value);
-                        }
+                    if cache.evaluate_into(_expression_index, ctx, input, output, *output_index)? {
                         continue;
                     }
                 }
