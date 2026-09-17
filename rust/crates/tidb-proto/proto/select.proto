@@ -124,6 +124,13 @@ enum ExprType {
 // from Go's tipb expression contract.
 enum ScalarFuncSig {
   Unspecified = 0;
+  // Local TiKV expression embedding also uses these existing upstream wire
+  // signatures (tipb 5f9928e91afe). This does not enable distributed pushdown.
+  NullEQInt = 160;
+  NullEQReal = 161;
+  AbsInt = 2101;
+  AbsReal = 2103;
+  Length = 7029;
   LTInt = 100;
   LEInt = 110;
   GTInt = 120;

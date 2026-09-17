@@ -353,6 +353,10 @@ impl EvaluatorProgram {
 pub struct EvaluatorSuite {
     program: Arc<EvaluatorProgram>,
     column_swap_helper: Option<ColumnSwapHelper>,
+    // RPN metadata is execution-local. The immutable plan remains Send + Sync
+    // and projection workers never share mutable TiKV evaluation state.
+    #[cfg(feature = "tikv-expr")]
+    tikv: std::sync::Mutex<crate::tikv::ProjectionCache>,
 }
 
 impl EvaluatorSuite {
@@ -374,6 +378,8 @@ impl EvaluatorSuite {
         Self {
             program,
             column_swap_helper,
+            #[cfg(feature = "tikv-expr")]
+            tikv: std::sync::Mutex::new(crate::tikv::ProjectionCache::default()),
         }
     }
 
@@ -398,11 +404,32 @@ impl EvaluatorSuite {
         let rows = input.num_rows();
         let program = &self.program;
         if program.vectorizable {
-            for (output_index, expression) in program
+            #[cfg(feature = "tikv-expr")]
+            let mut tikv = if let Some(context) = ctx.tikv_expression_context() {
+                let mut cache = self.tikv.lock().map_err(|_| EvalError::ExternalEngine {
+                    code: 1105,
+                    message: "TiKV expression execution cache was poisoned".to_owned(),
+                })?;
+                cache.prepare(&program.calculated, &context)?;
+                Some(cache)
+            } else {
+                None
+            };
+            for (_expression_index, (output_index, expression)) in program
                 .calculated_output_indexes
                 .iter()
                 .zip(&program.calculated)
+                .enumerate()
             {
+                #[cfg(feature = "tikv-expr")]
+                if let Some(cache) = &mut tikv {
+                    if let Some(values) = cache.evaluate(_expression_index, ctx, input)? {
+                        for value in &values {
+                            output.append_datum(*output_index, value);
+                        }
+                        continue;
+                    }
+                }
                 if let Expression::Constant(constant) = expression {
                     // Go Constant.VecEval* broadcasts only non-deferred
                     // constants. Deferred expressions still consume rows;

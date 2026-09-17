@@ -377,6 +377,12 @@ impl Default for StmtContextSessionState {
 #[doc(hidden)]
 #[derive(Clone, Default)]
 pub struct StmtContextData {
+    /// Local expression-engine choice is statement-owned, never process-global.
+    #[cfg(feature = "tikv-expr")]
+    tikv_expression_enabled: bool,
+    /// Shared only by clones of this statement, including projection workers.
+    #[cfg(feature = "tikv-expr")]
+    tikv_expression_rows: Arc<AtomicU64>,
     /// Go's `StaticWarnHandler` entries: a LEVEL, a code and a message.
     ///
     /// The level is not decoration. Go reaches this one buffer through three
@@ -913,6 +919,27 @@ macro_rules! context_configuration {
 }
 
 context_configuration! {
+    /// Opts this statement into the local TiKV copying expression backend.
+    /// Unsupported expressions stay native; execution errors never trigger replay.
+    /// Both the Cargo feature and this per-statement switch are required.
+    ///
+    /// ```
+    /// use tidb_executor::{Catalog, StmtContext, run_create_table_on, run_insert_on, run_select_on};
+    /// let mut catalog = Catalog::default();
+    /// run_create_table_on("CREATE TABLE t (a BIGINT)", &mut catalog).unwrap();
+    /// let ctx = StmtContext::for_query().with_tikv_expression(true);
+    /// run_insert_on("INSERT INTO t VALUES (41)", &mut catalog, &ctx).unwrap();
+    /// let rows = run_select_on("SELECT a + 1 FROM t", &catalog, &ctx).unwrap();
+    /// assert_eq!(rows[0][0], tidb_datatype::Datum::Int(42));
+    /// assert!(ctx.tikv_expression_rows() > 0);
+    /// ```
+    #[cfg(feature = "tikv-expr")]
+    #[must_use]
+    pub fn with_tikv_expression(mut self, enabled: bool) -> Self {
+        self.tikv_expression_enabled = enabled;
+        self
+    }
+
     /// Binds the transaction owner's selected-row channel for this attempt.
     #[must_use]
     pub fn with_selected_lock_keys(
@@ -1658,6 +1685,14 @@ impl Default for ExecutorChunkSizes {
 pub use crate::driver::SequenceSnapshot;
 
 impl StmtContext {
+    /// Successful TiKV expression-row evaluations across clones of this context.
+    /// One row evaluated by two expressions counts twice; native fallback is excluded.
+    #[cfg(feature = "tikv-expr")]
+    #[must_use]
+    pub fn tikv_expression_rows(&self) -> u64 {
+        self.tikv_expression_rows.load(Ordering::Relaxed)
+    }
+
     /// Applies one setup batch, detaching shared configuration at most once.
     /// Statement effects keep their existing shared owners, as for with_* calls.
     #[must_use]
@@ -1677,6 +1712,10 @@ impl StmtContext {
         session: StmtContextSessionState,
     ) -> Self {
         Self(Arc::new(StmtContextData {
+            #[cfg(feature = "tikv-expr")]
+            tikv_expression_enabled: false,
+            #[cfg(feature = "tikv-expr")]
+            tikv_expression_rows: Arc::default(),
             warnings: Arc::default(),
             message: Arc::default(),
             cop_batch_warnings: Arc::default(),
@@ -3589,6 +3628,29 @@ fn resolve_statement_clock(
 }
 
 impl Columns for StmtContext {
+    #[cfg(feature = "tikv-expr")]
+    fn tikv_expression_context(&self) -> Option<tidb_expr::tikv::Context> {
+        if !self.tikv_expression_enabled {
+            return None;
+        }
+        let (name, offset) = Columns::time_zone(self).dag_zone();
+        Some(tidb_expr::tikv::Context {
+            flags: self.push_down_flags(),
+            // sql_mode() is only the parser's scanner flags, not MySQL's mode bits.
+            sql_mode: self.ddl_sql_mode() as u64,
+            time_zone_name: (!name.is_empty()).then_some(name),
+            time_zone_offset: offset,
+            div_precision_increment: u8::try_from(self.div_precision_increment()).ok()?,
+            max_warning_count: MAX_WARNING_COUNT,
+        })
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    fn record_tikv_expression_rows(&self, rows: usize) {
+        self.tikv_expression_rows
+            .fetch_add(rows as u64, Ordering::Relaxed);
+    }
+
     fn get(&self, _: &[String]) -> Option<Datum> {
         None
     }

@@ -380,6 +380,8 @@ pub mod simple_expr;
 mod string_fn;
 mod string_packet;
 mod string_signature;
+#[cfg(feature = "tikv-expr")]
+pub mod tikv;
 mod time_fn;
 mod time_literal;
 pub mod user_vars;

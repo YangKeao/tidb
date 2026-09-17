@@ -280,3 +280,12 @@ lto = "thin"
 inherits = "release"
 lto = false
 codegen-units = 16
+
+# TiKV's embedding dependency uses its existing protobuf/raft APIs. Cargo does
+# not inherit dependency workspaces' patches, so pin the same implementations
+# here rather than silently substituting incompatible crates.io releases.
+[patch.crates-io]
+protobuf = { git = "https://github.com/pingcap/rust-protobuf", rev = "de31a47f395c2f46dbfea2545517ea1b27ad0096" }
+protobuf-codegen = { git = "https://github.com/pingcap/rust-protobuf", rev = "de31a47f395c2f46dbfea2545517ea1b27ad0096" }
+raft = { git = "https://github.com/tikv/raft-rs", rev = "ad13f3d90780f53aea2488c6a4b76c0d334bf136" }
+raft-proto = { git = "https://github.com/tikv/raft-rs", rev = "ad13f3d90780f53aea2488c6a4b76c0d334bf136" }

@@ -184,7 +184,9 @@ fn eval_to_mysql_error(error: EvalError) -> MysqlError {
             1426,
             format!("Too-big precision {fsp} specified for '{function}'. Maximum is 6."),
         ),
-        EvalError::AdvisoryLock { code, message } => MysqlError::coded(code, message),
+        EvalError::AdvisoryLock { code, message } | EvalError::ExternalEngine { code, message } => {
+            MysqlError::coded(code, message)
+        }
         EvalError::DataOutOfRange { value, expression } => MysqlError::new(
             ER_DATA_OUT_OF_RANGE,
             format!("{value} value is out of range in '{expression}'"),
@@ -376,6 +378,17 @@ mod tests {
             .message,
             "vectors have different dimensions: 1 and 2"
         );
+    }
+
+    #[test]
+    fn external_expression_error_preserves_code_state_and_message() {
+        let mysql = rendered(ExecError::Eval(EvalError::ExternalEngine {
+            code: 1690,
+            message: "BIGINT value is out of range in 'plus'".to_owned(),
+        }));
+        assert_eq!(mysql.code, 1690);
+        assert_eq!(mysql.state, *b"22003");
+        assert_eq!(mysql.message, "BIGINT value is out of range in 'plus'");
     }
 
     #[test]

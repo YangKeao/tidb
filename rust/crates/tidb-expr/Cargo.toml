@@ -13,7 +13,14 @@ build = "../../scripts/aggregate-tests.rs"
 [lints]
 workspace = true
 
+[features]
+# Experimental in-process reuse; native evaluation remains the runtime default.
+tikv-expr = ["dep:tidb_query_expr", "dep:prost"]
+
 [dependencies]
+# This is the existing TiKV engine with a small copying embedding facade.
+tidb_query_expr = { git = "https://github.com/YangKeao/tikv.git", rev = "ff315c7d001573166595702af6a36b6f69d2f93e", optional = true }
+prost = { workspace = true, optional = true }
 stacker = { workspace = true }
 tidb-hack = { path = "../tidb-hack" }
 tidb-ast = { path = "../tidb-ast" }
@@ -49,3 +56,8 @@ tempfile = { workspace = true }
 [[test]]
 name = "all"
 path = "tests/all.rs"
+
+[[bench]]
+name = "tikv_expression"
+harness = false
+required-features = ["tikv-expr"]

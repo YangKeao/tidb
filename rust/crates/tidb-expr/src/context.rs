@@ -93,6 +93,13 @@ pub enum EvalError {
         /// The clock function's own name (`now`, `curtime`, ...).
         function: &'static str,
     },
+    /// An external expression engine's original MySQL error identity.
+    ExternalEngine {
+        /// MySQL error number, preserved rather than wrapped as an internal error.
+        code: u16,
+        /// Client-visible message from the expression engine.
+        message: String,
+    },
     /// A source-owned advisory-lock error with its exact MySQL code/message.
     AdvisoryLock {
         /// MySQL error number (3057, 3058, or a backend error code).
@@ -492,6 +499,17 @@ impl BlockEncryptionMode {
 
 /// Resolves column and session state during evaluation.
 pub trait Columns {
+    /// Explicit opt-in and statement settings for local TiKV expression evaluation.
+    /// A missing context always keeps the native evaluator, even in feature builds.
+    #[cfg(feature = "tikv-expr")]
+    fn tikv_expression_context(&self) -> Option<crate::tikv::Context> {
+        None
+    }
+
+    /// Records successfully evaluated expression rows, not merely admission attempts.
+    #[cfg(feature = "tikv-expr")]
+    fn record_tikv_expression_rows(&self, _rows: usize) {}
+
     /// Returns the referenced column, matched by its final name segment.
     fn get(&self, path: &[String]) -> Option<Datum>;
 
