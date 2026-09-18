@@ -120,6 +120,11 @@ pub(super) fn chunk_e(expr: &str) -> String {
                 )
             }
         }
+    } else if std::env::var_os("TIKV_EXPR_ENGINE_ONLY").is_some() {
+        // Milestone E switch: with this set, a case the adapter declines is a
+        // failure, so the corpus reports exactly which cases the engine does
+        // not yet cover instead of silently answering natively.
+        panic!("engine declined the expression: {expr}");
     }
     match native {
         Ok(value) => value.label(),

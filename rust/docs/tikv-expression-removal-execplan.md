@@ -69,7 +69,12 @@ remain in the workspace.
       fixed at the boundary or recorded.
 - [ ] Milestone E: flip the default, delete the native evaluator and the
       `tikv-expr` feature, and re-point the corpora from "dual-run" to
-      "engine only". Remaining known divergences are listed in the TiKV
+      "engine only". The engine-only measurement exists and is the E work
+      list: `TIKV_EXPR_ENGINE_ONLY=1` makes a declined expression a failure,
+      and at `47ce598` the lib corpus reports 1142 passed / 66 failed /
+      99 ignored, i.e. 64 distinct constant expressions still have no engine
+      path (grouped in `tikv-expression-corpus-plan.md` section 7). Remaining
+      known divergences are listed in the TiKV
       `EXPRESSION_SEMANTIC_GAPS.md` (27 entries; the CRC32 one was an
       embedder declaration bug and is fixed).
 
@@ -102,6 +107,22 @@ node. Milestone C therefore implements laziness with the wire format
 unchanged, by making the evaluator consult a lazy-signature set instead of
 emitting new node kinds. That keeps `tipb` untouched, which matters because
 the wire schema lives in a different repository.
+
+The engine-on build stopped working because the host toolchain moved under it,
+not because of a code change: CMake 4 (4.3.4) rejects the `cmake_minimum_required`
+of the `c-ares` copy bundled in `grpcio-sys 0.10.3`, and GCC 16 no longer lets
+that copy of abseil get `uint8_t` from a transitive include. `grpcio-sys`
+reaches the TiDB Rust test link through `tikv_util`, so both must be worked
+around before any engine-on suite runs:
+
+    CMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    CXXFLAGS="-w -std=gnu++14 -include cstdint" CFLAGS="-w" \
+    cargo test -p tidb-expr --features tikv-expr ...
+
+`cargo`'s `rerun-if-env-changed` turns those into a one-time rebuild of the two
+`grpcio-sys` variants. Do not scope the target selection with `--lib` while
+doing this: a narrower target set changes feature unification, which mints a
+new unit hash and re-runs the C build for nothing.
 
 The lazy design (`components/tidb_query_expr/SHORT_CIRCUIT_DESIGN.md`) found
 that materializing a lazy child at a subset boundary must produce an owned

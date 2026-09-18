@@ -1303,3 +1303,108 @@ label; they are converted with the warnings-aware variant of the helper.
 - Counts are static and name-based. They were not validated by building or
   running the crate (parent owns the build slot).
 
+---
+
+## 7. Engine-only mode: the measured Milestone E corpus gap
+
+Section 1-6 count *static* subjects. They cannot say how many corpus cases the
+engine actually answers, because the dual-run harness in
+`rust/crates/tidb-expr/src/tests/mod.rs` deliberately skips an expression the
+adapter declines. To turn that silence into a number, `chunk_e` gained one
+switch:
+
+    TIKV_EXPR_ENGINE_ONLY=1 cargo test -p tidb-expr --features tikv-expr --offline -j1 \
+      -- --test-threads=1
+
+With the variable set, `engine_case` returning `None` (the adapter declined)
+panics with `engine declined the expression: <expr>` instead of falling through
+to the native answer. This is the exact behaviour Milestone E needs after the
+native evaluator is deleted, so the run doubles as the E readiness measurement.
+
+Measured at branch `feat/tikv-expression-coverage`, HEAD `47ce598` plus the
+harness switch, feature on, no native deletion:
+
+| Result | Count |
+| --- | --- |
+| lib tests passed | 1142 |
+| lib tests failed (engine declined) | 66 |
+| lib tests ignored | 99 |
+| distinct declined expressions | 64 |
+
+So **64 distinct constant expressions of the current corpus have no engine
+path**; 1142 of 1208 runnable cases already agree through the engine. This is
+the concrete E blocker set, and it is much smaller than the 140-test excluded
+surface in section 6, because most excluded names never reach a constant
+expression in these tests (they are exercised on columns, where the adapter
+declines by name but the harness never materialises the engine).
+
+The 64, verbatim:
+
+    NULLIF(1, 1.0)                       cast(1 as signed) < cast(1 as signed)
+    (1, 2) = (1, 2, 3)                   0 or null
+    0xff like 0xff                       b'1111...1111' + 0   (64-bit bit literal)
+    addtime('01:00:00.999999','02:00:00.999998')
+    addtime('2020-01-01 10:00:00','01:00:00')
+    benchmark(-3, 1)                     case when false then 1.5 else 0 end
+    case when null then 1 when true then 2 else 3 end
+    cast(0e0 as datetime)                cast('1' as json)
+    cast('2019-11-02 22:00:05' as datetime) in (...)
+    char(65, 16740, 67.5 using utf8)     coalesce(1, 'x' regexp '[')
+    coalesce(cast('12:59:59' as time), cast('12:59:59.555' as time(3)))
+    coalesce(cast(1 as json), cast(2 as json))     coalesce(null, 1)
+    convert(0x1e240 using utf8)          convert('haha' using cp866)
+    cot(1)                               date('20111213')
+    elt(0, 2, 3, 11, 1)                  elt(1, 65)
+    extract(year from 20240315)          field(1.10, 0, 11e-1)
+    field(NULL, 2, 3, 11, 1)             find_in_set('a', 'b,a,c,a')
+    find_in_set(' ', '  , , ,') collate utf8mb4_general_ci
+    find_in_set(' ' collate utf8mb4_general_ci, '  , , ,' collate utf8mb4_general_ci)
+    format(12345.67, 2, 'en_us')         format(1234567.89, 2, 'en_US')
+    greatest('2020-01-01','99-1-1')
+    greatest(-9223372036854775808, cast('9223372036854775809' as unsigned))
+    greatest("a", "b", "c")              greatest('a' collate utf8mb4_general_ci, 'B')
+    hex(weight_string('a'))              hex(weight_string('aAÁàãăâ' collate ...))
+    if(cast('2020-10-10 12:59:59' as datetime), 1, 2)
+    ifnull(1, 'x' regexp '[')            ifnull(null, cast('[1]' as json))
+    interval("9007199254740991", "9007199254740992")   interval(null, 1, 2)
+    json_schema_valid('{"required":["a"]}', '{"a":1}')  load_file('')
+    make_set(1, 'a', 'b', 'c')           month(20240315123045)
+    oct(1.0)                             regexp_like('abc', 'abc', 'p')
+    round(1.2345,'2')                    round(3.14,'abc')
+    round(5, -100)                       subtime('01:00:00.999999','02:00:00.999998')
+    time('10:10:10.123456')              time('2003-12-31 01:02:03')
+    timestamp('2020-01-01')              to_base64('')
+    translate('ABC', 'A', 'B')           translate('abcabc', 'ab', 'xy')
+    truncate(1234.5678,'-2')             upper(elt(1,'a',x'61'))
+    weight_string(NULL)                  7 in (7, -9, 9)
+
+They fall into five groups, in descending order of how much E work each needs:
+
+1. **Lazy / conditional shapes** (`coalesce`, `ifnull`, `if`, `case when`,
+   `nullif`, `elt`, `field`, `interval`, `in`, `or`, `benchmark`): these need
+   the Tier-1 lazy execution and the `LazyTail`/`IfThree` shapes to be admitted
+   for constant children, not just for column children. 25 of the 64.
+2. **Declined constant types** (bit/binary literals in numeric context, `x'61'`
+   under `upper`, `0e0` cast to datetime, `20240315123045` cast to temporal,
+   `0x1e240` string conversion): the `coerce()` constant-refusal and the
+   binary-literal leaf encoding listed in the TiKV semantic-gap doc.
+3. **Collation-sensitive string kernels** (`greatest`, `find_in_set`,
+   `weight_string`): engine compares bytes; a non-binary collation needs
+   collator support or an explicit refusal.
+4. **Native-only features** (`json`, `json_schema_valid`, `load_file`,
+   `convert ... using cp866`, `regexp_like` with match type `p`): out of the
+   parity target, since the native surface is the target and these exist only
+   natively; after deletion they must produce the *classified* error rather
+   than a wrong value.
+5. **Genuine gaps with a known divergence** (`cot(1)` one ULP is a native bug
+   the engine matches Go on; `oct(1.0)`; `format(...)` locale; `round`/`truncate`
+   with a non-integer or hugely negative digit argument).
+
+Groups 3-5 are removal blockers only in the sense that they must become
+*explicit, classified refusals*; groups 1-2 are the ones that need more engine
+capability before the native code can go. Section 6's 140-test excluded surface
+therefore over-states the work: the engine-constant subset is 64 expressions.
+
+The switch is inert unless `TIKV_EXPR_ENGINE_ONLY` is set, so dual-run remains
+the default during the coexistence period.
+
