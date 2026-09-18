@@ -202,19 +202,13 @@ fn tikv_adapter_refuses_unverified_types_and_execution_time_values() {
                 FieldType::new(FieldTypeCode::VarString),
             ))],
         ),
-        // A lazy node whose possibly-skipped children are not leaves: TiKV RPN
-        // evaluates every child eagerly, so a dead division must stay native.
+        // Families the engine still evaluates eagerly keep their leaf rule.
         call(
-            "case",
+            "greatest",
             &int,
             vec![
-                call("eq", &int, vec![input_column(0, &int), constant(0, &int)]),
-                constant(1, &int),
-                call(
-                    "intdiv",
-                    &int,
-                    vec![input_column(0, &int), constant(0, &int)],
-                ),
+                input_column(0, &int),
+                call("plus", &int, vec![constant(1, &int), constant(1, &int)]),
             ],
         ),
     ];
@@ -240,6 +234,21 @@ fn tikv_adapter_refuses_unverified_types_and_execution_time_values() {
             "plus",
             &decimal,
             vec![input_column(0, &decimal), input_column(1, &decimal)],
+        ),
+        // A control node with a non-leaf child in a possibly-skipped position:
+        // admitted now that every control signature has a lazy kernel.
+        call(
+            "case",
+            &int,
+            vec![
+                call("eq", &int, vec![input_column(0, &int), constant(0, &int)]),
+                constant(1, &int),
+                call(
+                    "intdiv",
+                    &int,
+                    vec![input_column(0, &int), constant(0, &int)],
+                ),
+            ],
         ),
     ];
     for expression in admitted {

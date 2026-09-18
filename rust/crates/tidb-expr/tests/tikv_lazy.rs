@@ -240,6 +240,17 @@ fn tikv_lazy_control_flow_never_enters_a_dead_branch() {
             "{label}: a dead branch warned: {:?}",
             outcome.warnings
         );
+        // Every control/logical signature has a lazy kernel in the pinned
+        // engine, so these non-leaf shapes must execute in the engine rather
+        // than fall back. If a kernel regresses to eager evaluation the dead
+        // branch's `BIGINT_MAX + 1` raises, and the value assertion above
+        // fails first.
+        assert!(
+            outcome.engine_ran,
+            "{label}: the engine now covers this shape, but it fell back: {:?}",
+            outcome.fallbacks
+        );
+        assert!(outcome.fallbacks.is_empty(), "{label}");
         eprintln!(
             "lazy {label}: engine_ran={} fallbacks={:?}",
             outcome.engine_ran, outcome.fallbacks

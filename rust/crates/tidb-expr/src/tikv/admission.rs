@@ -280,7 +280,12 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("addtime", Decision::Admitted, Signature::Family(Family::Temporal), &[], Shape::Any, ""),
     row("aes_decrypt", Decision::Excluded, Signature::None, &[], Shape::Any, "no local engine lowering: not selected by local_call, the temporal/JSON/vector families, or the reused pushdown catalog"),
     row("aes_encrypt", Decision::Excluded, Signature::None, &[], Shape::Any, "no local engine lowering: not selected by local_call, the temporal/JSON/vector families, or the reused pushdown catalog"),
-    row("and", Decision::Admitted, Signature::Family(Family::Control), &[], Shape::LazyTail, ""),
+    // Short-circuit families: every dispatched `If*`/`IfNull*`/`Coalesce*`/
+    // `CaseWhen*`/`LogicalAnd`/`LogicalOr`/`LogicalXor` signature has a lazy
+    // kernel in the pinned engine, so a non-leaf child in a skipped position is
+    // never entered. `Shape::Any` is only sound for such families; the others
+    // keep their leaf rule.
+    row("and", Decision::Admitted, Signature::Family(Family::Control), &[], Shape::Any, ""),
     row("any_value", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
     row("ascii", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("asin", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
@@ -295,8 +300,8 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("bitneg", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
     row("bitor", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
     row("bitxor", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
-    row("case", Decision::Admitted, Signature::Family(Family::Control), &[], Shape::AllLeaves, ""),
-    row("casewhen", Decision::Admitted, Signature::Family(Family::Control), &[], Shape::AllLeaves, ""),
+    row("case", Decision::Admitted, Signature::Family(Family::Control), &[], Shape::Any, ""),
+    row("casewhen", Decision::Admitted, Signature::Family(Family::Control), &[], Shape::Any, ""),
     row("cast", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
     row("cast_binary", Decision::Excluded, Signature::None, &[], Shape::Any, "no local engine lowering: not selected by local_call, the temporal/JSON/vector families, or the reused pushdown catalog"),
     row("cast_char", Decision::Excluded, Signature::None, &[], Shape::Any, "no local engine lowering: not selected by local_call, the temporal/JSON/vector families, or the reused pushdown catalog"),
@@ -322,7 +327,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("char_length", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("character_length", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("charset", Decision::Excluded, Signature::None, &[], Shape::Any, "no local engine lowering: not selected by local_call, the temporal/JSON/vector families, or the reused pushdown catalog"),
-    row("coalesce", Decision::Admitted, Signature::Family(Family::Control), &[], Shape::LazyTail, ""),
+    row("coalesce", Decision::Admitted, Signature::Family(Family::Control), &[], Shape::Any, ""),
     row("coercibility", Decision::Excluded, Signature::None, &[], Shape::Any, "no local engine lowering: not selected by local_call, the temporal/JSON/vector families, or the reused pushdown catalog"),
     row("collation", Decision::Excluded, Signature::None, &[], Shape::Any, "no local engine lowering: not selected by local_call, the temporal/JSON/vector families, or the reused pushdown catalog"),
     row("compress", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
@@ -433,8 +438,8 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("gt", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::Any, ""),
     row("hex", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("hour", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Duration], Shape::Any, ""),
-    row("if", Decision::Admitted, Signature::Family(Family::Control), &[], Shape::IfThree, ""),
-    row("ifnull", Decision::Admitted, Signature::Family(Family::Control), &[], Shape::LazyTail, ""),
+    row("if", Decision::Admitted, Signature::Family(Family::Control), &[], Shape::Any, ""),
+    row("ifnull", Decision::Admitted, Signature::Family(Family::Control), &[], Shape::Any, ""),
     row("ilike", Decision::Excluded, Signature::None, &[], Shape::Any, "no local engine lowering: not selected by local_call, the temporal/JSON/vector families, or the reused pushdown catalog"),
     row("in", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::LazyTail, ""),
     row("inet6_aton", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
@@ -530,7 +535,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("nullif", Decision::Excluded, Signature::None, &[], Shape::Any, "no local engine lowering: not selected by local_call, the temporal/JSON/vector families, or the reused pushdown catalog"),
     row("oct", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("octet_length", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
-    row("or", Decision::Admitted, Signature::Family(Family::Control), &[], Shape::LazyTail, ""),
+    row("or", Decision::Admitted, Signature::Family(Family::Control), &[], Shape::Any, ""),
     row("ord", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("password", Decision::Excluded, Signature::None, &[], Shape::Any, "no local engine lowering: not selected by local_call, the temporal/JSON/vector families, or the reused pushdown catalog"),
     row("period_add", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Int, EvalType::Int], Shape::Any, ""),

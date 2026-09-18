@@ -806,6 +806,10 @@ fn tikv_coverage_control_leaves_and_unsafe_branches() {
             literal(Datum::Int(1), &ty),
         ],
     );
+    // Every `If*` signature has a lazy kernel, so a non-leaf dead branch is
+    // admitted and the branch is never entered. The same expression is also
+    // covered by `tikv_lazy.rs`; here the point is that admission no longer
+    // refuses the shape and the engine still does not raise 1690.
     let expression = call(
         "if",
         &ty,
@@ -815,9 +819,7 @@ fn tikv_coverage_control_leaves_and_unsafe_branches() {
             literal(Datum::Int(7), &ty),
         ],
     );
-    assert!(TikvExpression::compile(&expression, Context::default())
-        .unwrap()
-        .is_none());
+    check("if_dead_overflow", expression.clone(), &mut input, &ty).unwrap();
     let context = TestContext {
         backend: Some(Backend::Borrowed),
         ..TestContext::default()
@@ -825,12 +827,11 @@ fn tikv_coverage_control_leaves_and_unsafe_branches() {
     let suite = EvaluatorSuite::new(vec![expression], true);
     let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), 3);
     suite.run(&context, &mut input, &mut output).unwrap();
-    assert_eq!(context.rows.get(), 0);
-    // The removal gate reads this reason: a declined tree is a listed
-    // exclusion, not a silent fallback.
-    assert_eq!(
-        context.fallbacks.borrow().as_slice(),
-        &[FallbackReason::NotAdmitted]
+    assert!(context.rows.get() > 0, "the engine must run this shape");
+    assert!(
+        context.fallbacks.borrow().is_empty(),
+        "{:?}",
+        context.fallbacks.borrow()
     );
     for row in 0..3 {
         assert_eq!(output.get_row(row).get_int64(0), 7);

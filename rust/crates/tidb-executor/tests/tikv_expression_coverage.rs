@@ -273,7 +273,7 @@ fn tikv_expression_coverage_sql_vector_columns_reuse_owned_carriers() {
 }
 
 #[test]
-fn tikv_expression_coverage_sql_safe_if_leaves_execute_but_dead_overflow_stays_native() {
+fn tikv_expression_coverage_sql_lazy_control_executes_without_the_dead_branch() {
     let catalog = table(
         "CREATE TABLE control_values (id BIGINT, flag BIGINT, a BIGINT, b BIGINT)",
         "INSERT INTO control_values VALUES (1,0,9223372036854775807,7),(2,1,9223372036854775807,8),(3,NULL,9223372036854775807,9)",
@@ -285,13 +285,15 @@ fn tikv_expression_coverage_sql_safe_if_leaves_execute_but_dead_overflow_stays_n
         true,
     );
     // The overflowing child contains a column, so it cannot disappear through
-    // constant folding. Its unchecked eager evaluation would raise MySQL 1690.
+    // constant folding. Every control signature has a lazy kernel, so these
+    // now execute in the engine and the dead branch is never entered; an eager
+    // regression would raise MySQL 1690 instead of returning the branch.
     for sql in [
         "SELECT IF(FALSE,a+1,b) FROM control_values ORDER BY id",
         "SELECT IF(flag=2,a+1,b) FROM control_values ORDER BY id",
         "SELECT CASE WHEN flag=2 THEN a+1 ELSE b END FROM control_values ORDER BY id",
     ] {
-        compare_sql(&catalog, sql, StmtContext::for_query, false);
+        compare_sql(&catalog, sql, StmtContext::for_query, true);
         for backend in [Backend::Copying, Backend::Borrowed] {
             let context = StmtContext::for_query().with_tikv_expression_backend(backend);
             assert_eq!(
@@ -307,7 +309,10 @@ fn tikv_expression_coverage_sql_safe_if_leaves_execute_but_dead_overflow_stays_n
                 context.take_warnings().is_empty(),
                 "dead branch emitted diagnostics: {sql}"
             );
-            assert_eq!(context.tikv_expression_rows(), 0, "{sql}");
+            assert!(
+                context.tikv_expression_rows() > 0,
+                "lazy control must execute in the engine: {sql}"
+            );
         }
     }
 }

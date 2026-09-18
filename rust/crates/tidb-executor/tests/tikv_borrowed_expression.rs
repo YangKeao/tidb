@@ -149,8 +149,9 @@ fn tikv_borrowed_expression_decimal_reuses_engine_and_scalar_case_stays_lazy() {
         );
         assert_eq!(context.tikv_borrowed_expression_rows(), 0);
     }
-    // A CASE whose branches are not leaves stays native: TiKV RPN evaluates
-    // every child eagerly, so the dead DIV must not execute or warn.
+    // A CASE whose branches are not leaves is now admitted, because every
+    // CASE signature has a lazy kernel: the dead DIV must not execute or warn.
+    // A requested Borrowed backend may still fall back to copying here.
     let sql = "SELECT CASE WHEN b=0 THEN 7 ELSE a DIV b END FROM t ORDER BY id";
     let expected = run_select_meta_on(sql, &catalog, &native).unwrap();
     for backend in [Backend::Copying, Backend::Borrowed] {
@@ -159,12 +160,10 @@ fn tikv_borrowed_expression_decimal_reuses_engine_and_scalar_case_stays_lazy() {
             run_select_meta_on(sql, &catalog, &context).unwrap(),
             expected
         );
-        assert_eq!(
-            context.tikv_expression_rows(),
-            0,
-            "unsupported SQL must remain native: {sql}"
+        assert!(
+            context.tikv_expression_rows() > 0,
+            "lazy CASE must execute in TiKV: {sql}"
         );
-        assert_eq!(context.tikv_borrowed_expression_rows(), 0);
         assert!(
             context.take_warnings().is_empty(),
             "dead division branch must not warn"

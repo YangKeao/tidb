@@ -214,7 +214,7 @@ fn tikv_expression_sql_large_projection_crosses_chunk_boundaries() {
 }
 
 #[test]
-fn tikv_expression_unsupported_case_preserves_lazy_native_evaluation() {
+fn tikv_expression_lazy_case_runs_in_engine_without_the_dead_branch() {
     let catalog = fixture();
     let native = StmtContext::for_query();
     let tikv = StmtContext::for_query().with_tikv_expression(true);
@@ -227,7 +227,10 @@ fn tikv_expression_unsupported_case_preserves_lazy_native_evaluation() {
         tikv.take_warnings().is_empty(),
         "the dead division branch must not run"
     );
-    assert_eq!(tikv.tikv_expression_rows(), 0, "CASE is outside admission");
+    assert!(
+        tikv.tikv_expression_rows() > 0,
+        "CASE now has lazy kernels and must execute in the engine"
+    );
 }
 
 #[test]
