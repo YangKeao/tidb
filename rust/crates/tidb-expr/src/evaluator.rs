@@ -405,6 +405,19 @@ impl EvaluatorSuite {
     ) -> Result<(), EvaluatorError> {
         let rows = input.num_rows();
         let program = &self.program;
+        // A resolver with no engine context can only use the native evaluator.
+        // While both implementations coexist that is the default; a resolver
+        // that declares the native evaluator unavailable gets a structured
+        // error instead of a silent choice between implementations.
+        #[cfg(feature = "tikv-expr")]
+        if ctx.tikv_expression_context().is_none() && ctx.tikv_expression_required() {
+            return Err(EvalError::ExternalEngine {
+                code: 1105,
+                message: "this resolver requires the TiKV expression engine but has no context"
+                    .to_owned(),
+            }
+            .into());
+        }
         if program.vectorizable {
             // Compile once per statement policy on the shared program, then
             // drop the lock: the compiled programs are immutable and `Sync`, so

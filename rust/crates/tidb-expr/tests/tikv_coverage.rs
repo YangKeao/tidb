@@ -32,6 +32,8 @@ use tidb_expr::Columns;
 #[derive(Default)]
 struct TestContext {
     backend: Option<Backend>,
+    /// Simulates a resolver built after the native evaluator is deleted.
+    engine_required: bool,
     rows: Cell<usize>,
     borrowed: Cell<usize>,
     warnings: RefCell<Vec<u16>>,
@@ -46,6 +48,9 @@ impl Columns for TestContext {
             flags: 482,
             ..Context::default()
         })
+    }
+    fn tikv_expression_required(&self) -> bool {
+        self.engine_required
     }
     fn tikv_expression_backend(&self) -> Backend {
         self.backend.unwrap_or_default()
@@ -784,4 +789,43 @@ fn tikv_coverage_control_leaves_and_unsafe_branches() {
     for row in 0..3 {
         assert_eq!(output.get_row(row).get_int64(0), 7);
     }
+}
+
+/// After the native evaluator is deleted, a resolver with no engine context
+/// must fail with a structured error rather than silently picking the other
+/// implementation. While both implementations coexist the same resolver keeps
+/// working, so this documents the switch that milestone E flips.
+#[test]
+fn tikv_coverage_missing_engine_context_is_a_structured_error_when_required() {
+    use tidb_expr::evaluator::EvaluatorError;
+    use tidb_expr::EvalError;
+
+    let ty = int();
+    let expression = call(
+        "plus",
+        &ty,
+        vec![column(0, &ty), literal(Datum::Int(1), &ty)],
+    );
+    let mut input = fixture(std::slice::from_ref(&ty), &[vec![Datum::Int(41)]]);
+
+    let context = TestContext {
+        engine_required: true,
+        ..TestContext::default()
+    };
+    let suite = EvaluatorSuite::new(vec![expression.clone()], true);
+    let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), 1);
+    match suite.run(&context, &mut input, &mut output) {
+        Err(EvaluatorError::Eval(EvalError::ExternalEngine { code, .. })) => {
+            assert_eq!(code, 1105)
+        }
+        other => panic!("expected a structured missing-engine error, got {other:?}"),
+    }
+
+    // The default resolver still has the native evaluator available.
+    let context = TestContext::default();
+    let suite = EvaluatorSuite::new(vec![expression], true);
+    let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), 1);
+    suite.run(&context, &mut input, &mut output).unwrap();
+    assert_eq!(output.get_row(0).get_int64(0), 42);
+    assert_eq!(context.rows.get(), 0);
 }

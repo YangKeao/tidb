@@ -530,6 +530,19 @@ pub trait Columns {
     #[cfg(feature = "tikv-expr")]
     fn record_tikv_expression_fallback(&self, _reason: crate::tikv::FallbackReason) {}
 
+    /// Whether this resolver has no native evaluator available and therefore
+    /// *requires* an engine context.
+    ///
+    /// Once the native evaluator is deleted this is how a planning-time or
+    /// test call site reports a missing engine: evaluation fails with a
+    /// structured error instead of silently choosing the other implementation.
+    /// It stays `false` while both implementations coexist, so the default
+    /// native path is unchanged.
+    #[cfg(feature = "tikv-expr")]
+    fn tikv_expression_required(&self) -> bool {
+        false
+    }
+
     /// Returns the referenced column, matched by its final name segment.
     fn get(&self, path: &[String]) -> Option<Datum>;
 
