@@ -36,14 +36,26 @@ remain in the workspace.
 
 - [x] Confirm the direction and record the semantic gap list in TiKV
       (`components/tidb_query_expr/EXPRESSION_SEMANTIC_GAPS.md`).
-- [ ] Milestone A (point 6): engine shareable and thread-safe.
+- [x] Milestone A (point 6): engine shareable and thread-safe. TiKV metadata
+      is `Send + Sync` (`Box<dyn Any + Send + Sync>`, 24 codegen references),
+      `PreparedExpression` is asserted `Send + Sync`, and a compiled program is
+      split from caller-owned `ExecutionState` (`eval_shared`,
+      `eval_with_state`, `eval_borrowed_shared`). A two-thread test evaluates
+      one `Arc<PreparedExpression>` against a repeated, reversed selection and
+      matches the single-threaded run; TiKV is at 443 passing tests. On the
+      TiDB side the compiled programs are cached on the shared
+      `EvaluatorProgram` behind a lock held only for the compile-on-context-
+      change step, so every projection worker of one plan reuses one
+      compilation and evaluation is lock-free.
 - [ ] Milestone B (point 2): explicit admission table and silent-fallback gate.
       Partial: the gate mechanism landed — `FallbackReason` (`not-admitted`,
       `unrepresentable-input`) is reported through
       `Columns::record_tikv_expression_fallback`, `StmtContext` keeps two
       reason counters, and the SQL differential helper fails when an admitted
       projection records a decline or a native one records no reason. The
-      admission table itself is in progress.
+      admission table (`rust/crates/tidb-expr/src/tikv/admission.rs`, one row
+      per SQL name derived from the 309-entry builtin registry plus the
+      synthesized spellings) is in progress.
 - [ ] Milestone C (point 1): lazy/short-circuit evaluation in TiKV, switch and
       vectorized short-circuit in TiDB.
 - [ ] Milestone D (point 4): the type support the removal actually needs.
@@ -79,6 +91,22 @@ node. Milestone C therefore implements laziness with the wire format
 unchanged, by making the evaluator consult a lazy-signature set instead of
 emitting new node kinds. That keeps `tipb` untouched, which matters because
 the wire schema lives in a different repository.
+
+The lazy design (`components/tidb_query_expr/SHORT_CIRCUIT_DESIGN.md`) found
+that materializing a lazy child at a subset boundary must produce an owned
+`VectorValue`, because an `RpnStackNode` borrows one lifetime; that the
+thread-local varg buffers must not be held across a nested evaluation; that a
+lazy kernel must keep `borrowed_fn_ptr: None` or the borrowed facade panics;
+and that `logical_rows()` has a latent panic at exactly `BATCH_MAX_SIZE`
+generated rows, so the lazy path must use the indexed accessors. The first
+implementation step registers no lazy kernel, so the existing suite proves the
+refactor is behavior-preserving before any semantics change.
+
+The type inventory (`tikv-expression-type-gaps.md`) finds that `Set` is the
+only missing value type; `Geometry` and arrays have no native datum or builtin
+and need only explicit refusal. TiKV already contains unreachable `Set`
+scaffolding, and extending the existing `Int`/`Bytes` hybrid carriers makes
+every string/int kernel accept `Set` without a new ordinary signature.
 
 
 ## Decision Log
@@ -224,13 +252,22 @@ based) is part of this milestone because the two must agree.
 
 ### Milestone D — types the removal needs
 
-Start from the native surface inventory produced in milestone B. Add to
-`tidb_query_datatype` only what that inventory requires, with round-trip
-fixtures captured from the Rust native encoding: `Set` (bytes plus `elems`
-metadata) and the array element form if the native surface exposes one.
-`Geometry` is included only if the native evaluator implements any geometry
-expression. Wire encoding must be byte-identical to the TiDB side or the
-adapter must refuse the type.
+Start from the native surface inventory produced in milestone B. The completed
+inventory (`tikv-expression-type-gaps.md`) finds that **`Set` is the only value
+type that must be added**; `Geometry` and arrays are not needed because the
+native evaluator has no datum kind and no builtin for them. `Set` is an
+input-only value: no builtin returns one and there is no wire `SetLiteral`, but
+every implemented `ETString`/`ETInt` builtin accepts one, so all `Set`
+expressions fall back today. TiKV already owns most of the scaffolding
+(`EvalType::Set`, `ScalarValue::Set`, `VectorValue::Set`, `SetRef`, the
+`*ForSet` aggregators, `cast_set_as_int`) but it is unreachable; the additions
+are the `FieldTypeTp::Set` mapping, chunk/raw codecs whose name is the
+comma-joined selected `elems`, the `ChunkedVecSet` element-name storage, the
+`Int`/`Bytes` hybrid borrow arms, the standalone `Column::Set`, and registering
+the existing cast. No new ordinary kernel signature is needed, because
+extending the two hybrid carriers makes the existing string/int kernels accept
+`Set` exactly as they accept `Enum` today. A latent `get_enum` var-length
+indexing bug in the TiKV chunk codec is flagged while adding `get_set`.
 
 ### Milestone E — remove
 
