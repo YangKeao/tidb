@@ -34,86 +34,44 @@ remain in the workspace.
 ## Progress
 
 
-- [x] Confirm the direction and record the semantic gap list in TiKV
-      (`components/tidb_query_expr/EXPRESSION_SEMANTIC_GAPS.md`).
-- [x] Milestone A (point 6): engine shareable and thread-safe. TiKV metadata
-      is `Send + Sync` (`Box<dyn Any + Send + Sync>`, 24 codegen references),
-      `PreparedExpression` is asserted `Send + Sync`, and a compiled program is
-      split from caller-owned `ExecutionState` (`eval_shared`,
-      `eval_with_state`, `eval_borrowed_shared`). A two-thread test evaluates
-      one `Arc<PreparedExpression>` against a repeated, reversed selection and
-      matches the single-threaded run; TiKV is at 443 passing tests. On the
-      TiDB side the compiled programs are cached on the shared
-      `EvaluatorProgram` behind a lock held only for the compile-on-context-
-      change step, so every projection worker of one plan reuses one
-      compilation and evaluation is lock-free.
-- [x] Milestone B (point 2): explicit admission table and silent-fallback gate.
-      `tikv/admission.rs` holds one sorted row per SQL name (384 rows = 309
-      Go-derived registry names + 75 synthesized spellings; 232 admitted, 152
-      excluded with a reason); `lowering.rs` takes its name-level gate and its
-      family routing from the table, and tests fail if a registered or
-      synthesized name has no row. The gate half is also in: `FallbackReason`
-      is reported through `Columns::record_tikv_expression_fallback`,
-      `StmtContext` counts the two reasons, and the differential tests fail
-      when an admitted projection records a decline or a native one records no
-      reason. The inventory reports per-signature
-      admitted/excluded/untested status (385/129/126).
-- [ ] Milestone C (point 1): lazy/short-circuit evaluation in TiKV, switch and
-      vectorized short-circuit in TiDB.
-      Partial: engine-side steps 1-4 are done and pushed (TiKV `d663e88`).
-      `RpnFnMeta` gained `lazy_fn_ptr` and the evaluator became `eval_subtree`
-      with `child_roots` (with `lazy_fn_ptr: None` everywhere the crate suite
-      stayed at 443, proving the refactor behavior-preserving). All 31 control
-      and logical dispatches are now lazy — IF, IFNULL, COALESCE, CASE WHEN and
-      three-valued AND/OR/XOR across Int/Real/Decimal/Time/Duration/String/Json
-      — at 466 passing tests, with `with_lazy` clearing `borrowed_fn_ptr` so the
-      borrowed facade refuses a lazy program. The enrolled mysql replay is
-      unchanged by the lazy kernels: 142 of 10,251 compared statements diverge
-      in both copying and borrowed mode, with the same divergence set as before
-      the change (`md5 7b6445a8493f445641a9d07d787f0cba`) and the same
-      12,447 engine expression-row evaluations over 1,555 statements
-      (10,670 of them borrowed).
-      The adapter's shape relaxation is DONE: the admission table drops its leaf
-      rule for exactly the names whose every dispatched signature is lazy
-      (`if`, `ifnull`, `coalesce`, `case`, `casewhen`, `and`, `or`) and keeps it
-      for the families the engine still evaluates eagerly (`elt`, `field`,
-      `interval`, `greatest`, `least`, `in`). A control node with a nested child
-      now executes in the engine; `tikv_lazy.rs` asserts the engine ran, with no
-      recorded fallback, for every short-circuit case. With the relaxation the
-      replay executes MORE in the engine with the SAME results: 12,493
-      expression-row evaluations over 1,560 statements, 142 of 10,251
-      divergences, divergence set md5 `7b6445a8493f445641a9d07d787f0cba`.
-      DONE through the engine-enforced gate: TiKV `01780f8` exposes
-      `has_lazy_nodes()` and `eager_lazy_risk()` with a dispatcher-integrity
-      test over `ScalarFuncSig::values()`, and the adapter refuses exactly the
-      dangerous mix of a lazy node and an eager lazy-sensitive node
-      (`IF(1, ELT(1,'a'), 'b')` is refused; `IF(1,'a','b')` and `ELT(1,'a')`
-      are admitted, so standalone Tier-2 coverage is preserved). Remaining: the
-      TiDB-side switch and the Tier-2 signatures. The design is
-      `components/tidb_query_expr/SHORT_CIRCUIT_DESIGN.md`; the adapter-side
+- [x] Milestone A (point 6): engine shareable and thread-safe.
+      TiKV metadata is `Send + Sync`, `PreparedExpression` is asserted
+      `Send + Sync`, and a compiled program is split from caller-owned
+      `ExecutionState`. The TiDB adapter caches the compiled programs on the
+      shared `EvaluatorProgram`, and a test proves one plan compiles ONCE for
+      three suites while a real statement-policy change recompiles and the
+      copying/borrowed backend does not.
+- [x] Milestone B (point 2): explicit admission table and fallback gate.
+      384 rows (228 admitted, 156 excluded with a reason) covering the
+      309-name Go-derived registry plus the synthesized spellings; a test fails
+      if a name has no row. Falls back are reported as `NotAdmitted`,
+      `LazyRisk` or `UnrepresentableInput` and the SQL differential helper
+      fails on a silent fallback.
+- [x] Milestone C (point 1): short-circuit evaluation.
+      Every lazy-sensitive family the engine dispatches is lazy: Tier 1
+      (IF/IFNULL/COALESCE/CASE/AND/OR/XOR), Tier 2 (ELT/FIELD/GREATEST/LEAST/
+      INTERVAL) and Tier 3 (`AddTime*Null`). `LAZY_SENSITIVE_KERNELS` holds
+      only the all-lazy Tier-1 names, so `eager_lazy_risk()` can no longer
+      report anything and the adapter's mixed-shape gate is inert. The wire
+      format is unchanged; laziness is a signature-driven marker. TiDB's
       acceptance test is `crates/tidb-expr/tests/tikv_lazy.rs`.
-- [ ] Milestone D (point 4): the type support the removal actually needs.
-      Partial: the datatype half is done and pushed (TiKV `35fd80a`).
-      `FieldTypeTp::Set` maps to `EvalType::Set` and `Set`/`SetRef`/
-      `ChunkedVecSet`, the chunk and raw-datum codecs, the `Int`/`Bytes` hybrid
-      borrows and the scalar/vector/datum encode arms now mirror `Enum`
-      (318 datatype tests, +18). A latent `Column::get_enum` bug was found and
-      fixed: it indexed `idx * fixed_len` on a var-length column and therefore
-      failed for every row, not just `idx > 0`. The engine facade half is also
-      done (TiKV `01780f8`): `Column::Set`, the owned round-trip through
-      `VectorValue::Set`, and the reachable `cast_set_as_int` kernel, with the
-      temporary `EvalType::Set` refusal removed and the old rejection test
-      turned into a positive one. The TiDB bridge is done too (TiKV `866c575`):
-      `Family::Set` reads the ENUM-shaped chunk cell and returns `Datum::Set`,
-      the borrowed path excludes SET (its SQL eval family is String, so the
-      Bytes loader would have fed `[bitmask][name]` to a string kernel), and the
-      local wire helper builds a SET leaf itself because the shared catalog
-      keeps Go's refusal of SET for distributed pushdown. Fixtures round-trip a
-      SET column through the engine and read its name with `LENGTH`, which also
-      exercises the engine's hybrid Int/Bytes carrier. Remaining for `Set`:
-      cast targets other than `AS SIGNED` if the native surface needs them.
+- [x] Milestone D (point 4): the type support the removal needs.
+      `Set` only: `FieldTypeTp::Set -> EvalType::Set`, the `Set`/`SetRef`/
+      `ChunkedVecSet` carriers, chunk and raw-datum codecs, the hybrid
+      Int/Bytes borrows, the standalone `Column::Set`, the cast registration
+      and the adapter bridge, with round-trip fixtures. A latent
+      `Column::get_enum` bug (wrong indexing for every row) was fixed on the
+      way. Geometry and arrays were shown not to be needed.
+- [x] Every constant case in the 33 Go source-port files dual-runs through the
+      engine: `tests/mod.rs::chunk_e` evaluates the same rewritten expression
+      both ways, skips only what the adapter declines, and compares errors by
+      classification. Its first run found seven real divergences, all now
+      fixed at the boundary or recorded.
 - [ ] Milestone E: flip the default, delete the native evaluator and the
-      feature gate, prove parity.
+      `tikv-expr` feature, and re-point the corpora from "dual-run" to
+      "engine only". Remaining known divergences are listed in the TiKV
+      `EXPRESSION_SEMANTIC_GAPS.md` (27 entries; the CRC32 one was an
+      embedder declaration bug and is fixed).
 
 
 ## Surprises & Discoveries
@@ -188,14 +146,24 @@ every string/int kernel accept `Set` without a new ordinary signature.
 ## Outcomes & Retrospective
 
 
-In progress. Nothing is removed yet; the native evaluator is still the default
-and the engine remains opt-in behind `tikv-expr`.
+The engine can now serve every expression the adapter admits, with the native
+evaluator still the default and still the fallback, and with a corpus-wide
+dual-run proving the two agree wherever the engine runs.
 
-Re-verified against the current pin after the lazy, capability and `Set`
-changes: `catalog_diff` 31 passed, `query_diff` 1 passed, and `expr_diff`
-still shows exactly its two pre-existing `EXPORT_SET` divergences (also red
-with the engine feature disabled). The enrolled replay and the feature-on and
-feature-off Rust suites are unchanged from the values recorded above.
+Current receipts: TiKV `tidb_query_expr` 477 passed and `tidb_query_datatype`
+318; TiDB `tidb-expr` 1208 + 50 with the engine feature and 1180 + 18 without,
+`tidb-executor` 353; the enrolled mysql replay unchanged at 142 of 10,251
+divergences with the same divergence set
+(`md5 7b6445a8493f445641a9d07d787f0cba`) and 12,480 expression-row evaluations
+over 1,552 statements. `catalog_diff` 31 and `query_diff` 1 pass; `expr_diff`
+keeps its two pre-existing `EXPORT_SET` divergences, which are red with the
+feature disabled too.
+
+What remains is not adapter plumbing but the removal itself: the 361 native
+`eval` call sites outside projection, the 33 corpora's conversion from
+dual-run to engine-only, and the deletion of the feature gate and kernels.
+Known engine divergences are tracked rather than hidden, and the dual-run makes
+any new one fail the suite.
 
 
 ## Context and Orientation
