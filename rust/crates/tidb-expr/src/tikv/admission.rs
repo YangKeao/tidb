@@ -323,8 +323,8 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("cast", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
     row("cast_binary", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
     row("cast_char", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
-    row("cast_date", Decision::Excluded, Signature::None, &[], Shape::Any, EXPLICIT_CAST_SPELLING),
-    row("cast_datetime", Decision::Excluded, Signature::None, &[], Shape::Any, EXPLICIT_CAST_SPELLING),
+    row("cast_date", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
+    row("cast_datetime", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
     row("cast_decimal", Decision::Admitted, Signature::Family(Family::Catalog), &[], Shape::Any, ""),
     row("cast_decimal_in_union", Decision::Excluded, Signature::None, &[], Shape::Any, EXPLICIT_CAST_SPELLING),
     row("cast_double", Decision::Admitted, Signature::Family(Family::Catalog), &[], Shape::Any, ""),
@@ -334,7 +334,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("cast_real_to_decimal_in_union", Decision::Excluded, Signature::None, &[], Shape::Any, EXPLICIT_CAST_SPELLING),
     row("cast_signed", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
     row("cast_string_to_decimal_in_union", Decision::Excluded, Signature::None, &[], Shape::Any, EXPLICIT_CAST_SPELLING),
-    row("cast_time", Decision::Excluded, Signature::None, &[], Shape::Any, EXPLICIT_CAST_SPELLING),
+    row("cast_time", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
     row("cast_unsigned", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
     row("cast_unsigned_in_union", Decision::Excluded, Signature::None, &[], Shape::Any, EXPLICIT_CAST_SPELLING),
     row("cast_vector", Decision::Excluded, Signature::None, &[], Shape::Any, NO_ENGINE_KERNEL),
@@ -849,13 +849,7 @@ mod tests {
                 "{name}"
             );
         }
-        for name in [
-            "cast_datetime",
-            "cast_date",
-            "cast_time",
-            "cast_json",
-            "cast_year",
-        ] {
+        for name in ["cast_json", "cast_year"] {
             assert_eq!(
                 admission(name).expect("row").exclusion_reason,
                 EXPLICIT_CAST_SPELLING,
@@ -864,7 +858,15 @@ mod tests {
         }
         // The integer spellings are the subset that needs no metadata of its
         // own, so they are admitted against the local cast arm.
-        for name in ["cast_signed", "cast_unsigned", "cast_char", "cast_binary"] {
+        for name in [
+            "cast_signed",
+            "cast_unsigned",
+            "cast_char",
+            "cast_binary",
+            "cast_datetime",
+            "cast_date",
+            "cast_time",
+        ] {
             let row = admission(name).expect("row");
             assert_eq!(row.decision, Decision::Admitted, "{name}");
             assert_eq!(

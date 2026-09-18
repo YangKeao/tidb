@@ -422,7 +422,14 @@ fn arithmetic(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr
     // spellings are not interchangeable this way (corpus plan 7.4).
     if matches!(
         name,
-        "cast" | "cast_signed" | "cast_unsigned" | "cast_char" | "cast_binary"
+        "cast"
+            | "cast_signed"
+            | "cast_unsigned"
+            | "cast_char"
+            | "cast_binary"
+            | "cast_datetime"
+            | "cast_date"
+            | "cast_time"
     ) && children.len() == 1
     {
         let source = child_type(&children[0])?;

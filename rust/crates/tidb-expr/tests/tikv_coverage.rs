@@ -1472,6 +1472,37 @@ fn tikv_coverage_temporal_extended_differential() {
         ),
         &mut failures,
     );
+    // The temporal spellings of an explicit CAST land on `CastTimeAsTime` and
+    // friends; the declared fractional precision is carried onto the value by
+    // the bridge, so both a DATE and a DATETIME target have to run in the
+    // engine over a DATETIME column.
+    record(
+        check(
+            "cast_date_datetime",
+            call("cast_date", &date_ty, vec![column(0, &dt6)]),
+            &mut dt6_input,
+            &date_ty,
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "cast_datetime_datetime",
+            call("cast_datetime", &dt6, vec![column(0, &dt6)]),
+            &mut dt6_input,
+            &dt6,
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "cast_time_datetime",
+            call("cast_time", &dur6, vec![column(0, &dt6)]),
+            &mut dt6_input,
+            &dur6,
+        ),
+        &mut failures,
+    );
     // `EXTRACT(unit FROM x)` and `TIMESTAMP(x)` are lowered as the unit
     // function and the temporal cast respectively, so both must run in the
     // engine over a column rather than only over a constant.

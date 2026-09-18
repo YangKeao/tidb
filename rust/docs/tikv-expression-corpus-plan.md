@@ -1326,13 +1326,13 @@ harness switch, feature on, no native deletion:
 
 | Result | Count |
 | --- | --- |
-| lib tests passed | 1145 |
+| lib tests passed | 1148 |
 | lib tests failed (engine declined) | 65 |
 | lib tests ignored | 99 |
 | distinct declined expressions | 63 |
 
-So **61 distinct constant expressions of the current corpus have no engine
-path**; 1145 of 1208 runnable cases already agree through the engine. This is
+So **59 distinct constant expressions of the current corpus have no engine
+path**; 1148 of 1208 runnable cases already agree through the engine. This is
 the concrete E blocker set, and it is much smaller than the 140-test excluded
 surface in section 6, because most excluded names never reach a constant
 expression in these tests (they are exercised on columns, where the adapter
@@ -1402,7 +1402,7 @@ others that the same tests used to stop before (`1.50 or 0e0`,
 `coalesce(1, 1.1e0)`, `case when cast('0' as json) then 1 end`) took their
 place in the list, so the count stayed at 63.
 
-The 61, verbatim:
+The 59, verbatim:
 
     0xff like 0xff
     (1, 2) = (1, 2, 3)
@@ -1414,14 +1414,12 @@ The 61, verbatim:
     benchmark(-3, 1)
     case when cast('0' as json) then 1 end
     case when false then 1.5 else 0 end
-    cast(0e0 as datetime)
-    cast('12:59:59' as time) < cast('12:59:59' as time)
+    cast('"123"' as json) < cast('"123"' as json)
     cast('1' as json)
     cast('2019-11-02 22:00:05' as datetime) in (cast('2019-11-02 22:00:04' as datetime), cast('2019-11-02 22:00:05' as datetime))
     char(65, 16740, 67.5 using utf8)
     coalesce(1, 1.1e0)
     coalesce(1, 'x' regexp '[')
-    coalesce(cast('12:59:59' as time), cast('12:59:59.555' as time(3)))
     coalesce(cast(1 as json), cast(2 as json))
     convert(0x1e240 using utf8)
     convert('haha' using cp866)
@@ -1692,4 +1690,24 @@ What is left of the minted spellings is the temporal group (`cast_datetime`,
 carry result metadata (FSP, promoted scale, JSON document policy) that the
 local arm does not reproduce. `cast('12:59:59' as time) < ...` took the place
 of the `char` expression in the gap list.
+
+### 7.9 The temporal cast spellings close the group, via the declared FSP
+
+Section 7.4 kept `cast_datetime`/`cast_date`/`cast_time` native because routing
+them through the local arm produced `STR:2020-10-10 12:59:59` where native said
+`STR:2020-10-10 12:59:59.000` for
+`coalesce(cast(... as datetime), cast(... as datetime(3)))`. The gap was never
+in the arm: it is that TiKV's `CastTimeAsTime` passes the source value through,
+while Go's promoted `COALESCE` result is declared `DATETIME(3)` and TiDB
+*renders a declared precision as part of the value*. `bridge::check_time` now
+carries the declared fractional precision onto the returned value, the same way
+it already rebuilt a declared DATE, and the three spellings are admitted.
+
+That also retires the other round-25 disagreement by a different route:
+`test_interval_func`'s `INT:0` vs `INT:1` was never a cast problem -- it was the
+`IntervalInt` unsigned hazard section 7.7 fixed once `cast_unsigned` let the
+expression reach the engine.
+
+The minted spellings are now down to `cast_json` and `cast_year`. Engine-only
+corpus: 1148 passed / 61 failed / 59 declined, 0 divergences.
 

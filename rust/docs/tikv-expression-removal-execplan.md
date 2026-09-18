@@ -72,9 +72,8 @@ remain in the workspace.
       "engine only". The engine-only measurement exists and is the E work
       list: `TIKV_EXPR_ENGINE_ONLY=1` makes a declined expression a failure,
       and at `47ce598` plus the temporal-bridge fix the lib corpus reports
-      1145 passed / 63 failed / 99 ignored, i.e. 61 distinct constant
-      expressions still have no engine path (32 admission, 20 lowering,
-      7 engine-compile, 2 evaluation; grouped in
+      1148 passed / 61 failed / 99 ignored, i.e. 59 distinct constant
+      expressions still have no engine path (grouped in
       `tikv-expression-corpus-plan.md` section 7). Remaining
       known divergences are listed in the TiKV
       `EXPRESSION_SEMANTIC_GAPS.md` (26 open entries; the CRC32 declaration
@@ -205,8 +204,13 @@ against the dual-run rather than assumed.
 result type, and the local arm already derives that. Only a *fixed-width*
 binary target still declines, because its padding is bounded by
 `max_allowed_packet`. What is left of the minted spellings is the temporal group
-(`cast_datetime`, `cast_date`, `cast_time`) plus `cast_json`/`cast_year`, which
-carry result metadata the arm does not reproduce.
+(`cast_datetime`, `cast_date`, `cast_time`) plus `cast_json`/`cast_year`. The
+temporal three then came in as well, once the missing piece turned out to be on
+the bridge rather than in the arm: TiKV's `CastTimeAsTime` passes the source
+value through, while TiDB renders a *declared* precision as part of the value,
+so `bridge::check_time` now carries the declared FSP onto the result the way it
+already rebuilt a declared DATE. That closed the last known divergence of the
+minted-cast group; only `cast_json` and `cast_year` remain.
 
 The lazy design (`components/tidb_query_expr/SHORT_CIRCUIT_DESIGN.md`) found
 that materializing a lazy child at a subset boundary must produce an owned

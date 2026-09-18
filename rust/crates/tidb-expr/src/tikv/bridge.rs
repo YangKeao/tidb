@@ -358,6 +358,16 @@ fn check_time(time: Time, ty: &FieldType) -> Result<Time, EvalError> {
             time.kind(),
         )));
     }
+    // The declared fractional precision is part of the value, not just of the
+    // column: TiDB renders a `DATETIME(3)` result as `...:59.000` while the
+    // engine's `CastTimeAsTime` passes the source value through unchanged, so a
+    // promoted `COALESCE(DATETIME(0), DATETIME(3))` came back as `...:59`. The
+    // declaration is the contract on both paths, so carry it onto the value.
+    if expected != TimeType::Date && ty.decimal() >= 0 {
+        let mut time = time;
+        time.set_fsp(ty.decimal()).map_err(shape_error)?;
+        return Ok(time);
+    }
     Ok(time)
 }
 
