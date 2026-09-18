@@ -450,14 +450,8 @@ impl EvaluatorSuite {
             {
                 #[cfg(feature = "tikv-expr")]
                 if let Some(programs) = &tikv {
-                    match programs
-                        .get(_expression_index)
-                        .and_then(|compiled| compiled.as_ref())
-                    {
-                        None => ctx.record_tikv_expression_fallback(
-                            crate::tikv::FallbackReason::NotAdmitted,
-                        ),
-                        Some(compiled) => {
+                    match programs.get(_expression_index) {
+                        Some(Ok(compiled)) => {
                             if let Some(reason) = crate::tikv::evaluate_shared(
                                 compiled,
                                 ctx,
@@ -470,6 +464,10 @@ impl EvaluatorSuite {
                                 continue;
                             }
                         }
+                        Some(Err(reason)) => ctx.record_tikv_expression_fallback(*reason),
+                        None => ctx.record_tikv_expression_fallback(
+                            crate::tikv::FallbackReason::NotAdmitted,
+                        ),
                     }
                 }
                 if let Expression::Constant(constant) = expression {

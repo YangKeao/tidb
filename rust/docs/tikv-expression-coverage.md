@@ -34,7 +34,7 @@ separates four different questions that are easy to conflate:
 | Baseline local adapter (before this work) | 23 signatures / 13 names |
 | Baseline engine facade whitelist | 52 signatures |
 | Dispatched signatures with adapter source or generated-name evidence now | 461 |
-| Admission table rows (Milestone B) | 384 = 232 admitted + 152 excluded |
+| Admission table rows (Milestone B) | 384 = 230 admitted + 154 excluded |
 | Per-signature admission status | 385 admitted, 129 excluded, 126 untested |
 
 The last source-evidence number is deliberately an over-approximation from
@@ -247,7 +247,7 @@ Landed and verified:
   the shared `EvaluatorProgram`, so every projection worker of one plan reuses
   one compilation and evaluates without holding the cache lock.
 * **Explicit admission.** `tikv/admission.rs` holds one sorted row per SQL
-  name (384 rows; 232 admitted, 152 excluded with a reason) and the pipeline
+  name (384 rows; 230 admitted, 154 excluded with a reason) and the pipeline
   reports `FallbackReason::{NotAdmitted, UnrepresentableInput}` for anything
   that stays native. The differential tests fail on a silent fallback.
 * **Lazy evaluation, steps 1-2.** `RpnFnMeta.lazy_fn_ptr`, the `LazyChildren`

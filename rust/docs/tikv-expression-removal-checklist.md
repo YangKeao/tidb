@@ -156,7 +156,7 @@ Ordered by risk, not by size:
 * Whether planning-time constant folding should compile through the engine per
   constant or keep a narrow literal-only fast path. The removal goal argues for
   the engine, but the compilation cost for tiny constants is unmeasured.
-* Whether the differential surface can be extended to all 232 admitted names
+* Whether the differential surface can be extended to all 230 admitted names
   before deletion, or whether some families are deleted with a smaller fixture
   set and a recorded gap.
 * Whether the pinned fork dependency is acceptable for the final state or must

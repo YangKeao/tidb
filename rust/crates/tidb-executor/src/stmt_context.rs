@@ -3742,7 +3742,8 @@ impl Columns for StmtContext {
     #[cfg(feature = "tikv-expr")]
     fn record_tikv_expression_fallback(&self, reason: tidb_expr::tikv::FallbackReason) {
         let counter = match reason {
-            tidb_expr::tikv::FallbackReason::NotAdmitted => &self.tikv_not_admitted_fallbacks,
+            tidb_expr::tikv::FallbackReason::NotAdmitted
+            | tidb_expr::tikv::FallbackReason::LazyRisk => &self.tikv_not_admitted_fallbacks,
             tidb_expr::tikv::FallbackReason::UnrepresentableInput => {
                 &self.tikv_unrepresentable_input_fallbacks
             }

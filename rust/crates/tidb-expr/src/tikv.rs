@@ -67,17 +67,29 @@ impl TikvExpression {
     /// Compile an expression once. `None` means admission/lowering declined it,
     /// before evaluating any row or changing the caller's diagnostics.
     pub fn compile(expression: &Expression, context: Context) -> Result<Option<Self>, EvalError> {
+        Ok(Self::compile_detailed(expression, context)?.ok())
+    }
+
+    /// Compile, reporting why the engine will not run this expression.
+    ///
+    /// `Ok(Ok(program))` means the engine owns it. `Ok(Err(reason))` is the
+    /// adapter's decision, before any row is read, and the reason is what the
+    /// fallback gate records.
+    pub fn compile_detailed(
+        expression: &Expression,
+        context: Context,
+    ) -> Result<Result<Self, FallbackReason>, EvalError> {
         if !admitted(expression) {
-            return Ok(None);
+            return Ok(Err(FallbackReason::NotAdmitted));
         }
         let Some(result_type) = expression.static_type().cloned() else {
-            return Ok(None);
+            return Ok(Err(FallbackReason::NotAdmitted));
         };
         let mut remapped = expression.clone();
         let mut inputs = Vec::new();
         let mut positions = BTreeMap::new();
         if !remap_columns(&mut remapped, &mut inputs, &mut positions) {
-            return Ok(None);
+            return Ok(Err(FallbackReason::NotAdmitted));
         }
         let descriptor = |offset: u32| {
             let (_, field_type) = inputs.get(offset as usize)?;
@@ -98,14 +110,14 @@ impl TikvExpression {
             })
         };
         let Some(encoded) = lower(&remapped, &descriptor) else {
-            return Ok(None);
+            return Ok(Err(FallbackReason::NotAdmitted));
         };
         let Some(schema): Option<Vec<_>> = inputs
             .iter()
             .map(|(_, ty)| lowering::field_type_to_pb(ty).map(|pb| pb.encode_to_vec()))
             .collect()
         else {
-            return Ok(None);
+            return Ok(Err(FallbackReason::NotAdmitted));
         };
         fn collect_signatures(expression: &tidb_proto::tipb::Expr, out: &mut Vec<i32>) {
             if expression.tp == Some(tidb_proto::tipb::ExprType::ScalarFunc as i32) {
@@ -126,7 +138,7 @@ impl TikvExpression {
         // has no caller-visible warnings, session state, or input mutation.
         let Ok(prepared) = PreparedExpression::compile(&encoded.encode_to_vec(), &schema, context)
         else {
-            return Ok(None);
+            return Ok(Err(FallbackReason::NotAdmitted));
         };
         // A successful compile says nothing about laziness: an eager kernel and
         // a lazy kernel for the same signature compile identically, and running
@@ -138,9 +150,9 @@ impl TikvExpression {
         // per-node shape rules remain the first gate; this is the
         // engine-enforced one.
         if prepared.has_lazy_nodes() && !prepared.eager_lazy_risk().is_empty() {
-            return Ok(None);
+            return Ok(Err(FallbackReason::LazyRisk));
         }
-        Ok(Some(Self {
+        Ok(Ok(Self {
             prepared,
             inputs,
             result_type,
@@ -414,9 +426,13 @@ fn remap_columns(
 /// These are stable identifiers used by the removal gate, not diagnostics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FallbackReason {
-    /// Local lowering declined the expression tree, or the engine builder
-    /// refused the shape. This is the existing, intentional exclusion path.
+    /// The admission table excludes this name, or this particular shape did
+    /// not lower. Either way the decision was made before any kernel ran.
     NotAdmitted,
+    /// The program compiled, but it mixes a lazy node with an eager
+    /// lazy-sensitive node, so a branch MySQL never enters could run. Clearing
+    /// this reason means making the remaining family lazy, not relaxing a gate.
+    LazyRisk,
     /// The expression lowered, but this batch holds a payload the exact bridge
     /// cannot represent (non-finite real/vector, temporal JSON, ...).
     UnrepresentableInput,
@@ -428,6 +444,7 @@ impl FallbackReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::NotAdmitted => "not-admitted",
+            Self::LazyRisk => "lazy-risk",
             Self::UnrepresentableInput => "unrepresentable-input",
         }
     }
@@ -439,7 +456,7 @@ impl FallbackReason {
 #[derive(Default)]
 pub(crate) struct ProjectionCache {
     context: Option<Context>,
-    programs: Arc<Vec<Option<Arc<TikvExpression>>>>,
+    programs: Arc<Vec<Result<Arc<TikvExpression>, FallbackReason>>>,
     /// How many times this cache has actually compiled. Stays at one for a
     /// fixed statement policy no matter how many suites or workers share it.
     compilations: u64,
@@ -453,13 +470,13 @@ impl ProjectionCache {
         &mut self,
         expressions: &[Expression],
         context: &Context,
-    ) -> Result<Arc<Vec<Option<Arc<TikvExpression>>>>, EvalError> {
+    ) -> Result<Arc<Vec<Result<Arc<TikvExpression>, FallbackReason>>>, EvalError> {
         if self.context.as_ref() != Some(context) {
             let programs = expressions
                 .iter()
                 .map(|expression| {
-                    TikvExpression::compile(expression, context.clone())
-                        .map(|program| program.map(Arc::new))
+                    TikvExpression::compile_detailed(expression, context.clone())
+                        .map(|outcome| outcome.map(Arc::new))
                 })
                 .collect::<Result<_, _>>()?;
             self.programs = Arc::new(programs);
