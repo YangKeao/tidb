@@ -831,6 +831,32 @@ fn miscellaneous(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbE
         }
         _ => return None,
     };
+    // TiKV's `IsIPv4`/`IsIPv6`/compat/mapped kernels return 0 for NULL input,
+    // while Go returns NULL. A leaf-only NULL mask restores the value without
+    // duplicating a fallible child: the kernel itself cannot error or warn, so
+    // the mask is correct whether the engine evaluates `IfInt` eagerly or
+    // lazily.
+    if matches!(
+        function.func_name.lowercase(),
+        "is_ipv4" | "is_ipv6" | "is_ipv4_compat" | "is_ipv4_mapped"
+    ) {
+        if children.len() != 1 || !leaf(&function.args[0]) {
+            return None;
+        }
+        let source = children.into_iter().next()?;
+        let predicate = node(
+            "StringIsNull",
+            vec![source.clone()],
+            &FieldType::new(FieldTypeCode::LongLong),
+        )?;
+        let null = PbExpr {
+            tp: Some(ExprType::Null as i32),
+            field_type: Some(field_type_to_pb(ty)?),
+            ..PbExpr::default()
+        };
+        let value = node(signature, vec![source], ty)?;
+        return node("IfInt", vec![predicate, null, value], ty);
+    }
     node(signature, cast_args(children, targets)?, ty)
 }
 

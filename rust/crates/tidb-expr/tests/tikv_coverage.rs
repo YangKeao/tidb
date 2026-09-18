@@ -107,6 +107,52 @@ fn text() -> FieldType {
         .with_charset_name("utf8mb4")
         .with_collation_name("utf8mb4_bin")
 }
+fn datetime(fsp: i64) -> FieldType {
+    FieldType::new(FieldTypeCode::Datetime)
+        .with_decimal(fsp)
+        .with_flen(if fsp == 0 { 19 } else { 19 + fsp + 1 })
+}
+fn date() -> FieldType {
+    FieldType::new(FieldTypeCode::Date)
+        .with_decimal(0)
+        .with_flen(10)
+}
+fn duration(fsp: i64) -> FieldType {
+    FieldType::new(FieldTypeCode::Duration)
+        .with_decimal(fsp)
+        .with_flen(if fsp == 0 { 10 } else { 10 + fsp + 1 })
+}
+fn json() -> FieldType {
+    FieldType::new(FieldTypeCode::Json)
+}
+fn time_value(
+    year: i32,
+    month: i32,
+    day: i32,
+    hour: i32,
+    minute: i32,
+    second: i32,
+    micro: i32,
+    fsp: i64,
+) -> Datum {
+    Datum::Time(
+        Time::from_date_checked(
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            micro,
+            TimeType::DateTime,
+            fsp,
+        )
+        .unwrap(),
+    )
+}
+fn json_value(text: &str) -> Datum {
+    Datum::Json(BinaryJSON::parse(text).unwrap())
+}
 fn dec(value: &str) -> Datum {
     let (value, error) = Decimal::parse_mysql(value);
     assert!(error.is_none());
@@ -828,4 +874,1111 @@ fn tikv_coverage_missing_engine_context_is_a_structured_error_when_required() {
     suite.run(&context, &mut input, &mut output).unwrap();
     assert_eq!(output.get_row(0).get_int64(0), 42);
     assert_eq!(context.rows.get(), 0);
+}
+
+#[test]
+fn tikv_coverage_control_selector_family_differential() {
+    let mut failures = Vec::new();
+    let ty = int();
+    let text_ty = text();
+    // case/casewhen: (condition, result)* with an optional trailing else.
+    let mut input = fixture(
+        &[ty.clone(), ty.clone(), ty.clone(), ty.clone()],
+        &[
+            vec![Datum::Int(0), Datum::Int(1), Datum::Null, Datum::Int(2)],
+            vec![
+                Datum::Int(10),
+                Datum::Int(20),
+                Datum::Int(30),
+                Datum::Int(40),
+            ],
+            vec![Datum::Int(0), Datum::Int(0), Datum::Int(1), Datum::Null],
+            vec![
+                Datum::Int(100),
+                Datum::Int(200),
+                Datum::Int(300),
+                Datum::Int(400),
+            ],
+        ],
+    );
+    for name in ["case"] {
+        record(
+            check(
+                &format!("{name}_pairs"),
+                call(
+                    name,
+                    &ty,
+                    vec![
+                        column(0, &ty),
+                        column(1, &ty),
+                        column(2, &ty),
+                        column(3, &ty),
+                    ],
+                ),
+                &mut input,
+                &ty,
+            ),
+            &mut failures,
+        );
+    }
+    let mut input = fixture(
+        &[ty.clone(), ty.clone(), ty.clone()],
+        &[
+            vec![Datum::Int(1), Datum::Int(0), Datum::Null],
+            vec![Datum::Int(7), Datum::Int(7), Datum::Int(7)],
+            vec![Datum::Int(9), Datum::Int(9), Datum::Int(9)],
+        ],
+    );
+    for name in ["case"] {
+        record(
+            check(
+                &format!("{name}_else"),
+                call(
+                    name,
+                    &ty,
+                    vec![column(0, &ty), column(1, &ty), column(2, &ty)],
+                ),
+                &mut input,
+                &ty,
+            ),
+            &mut failures,
+        );
+    }
+    // elt: the first argument is an integer selector, the rest are strings.
+    let mut input = fixture(
+        &[ty.clone(), text_ty.clone(), text_ty.clone()],
+        &[
+            vec![Datum::Int(1), Datum::Int(2), Datum::Int(0), Datum::Null],
+            vec![string("a"), string("b"), string("c"), string("d")],
+            vec![string("x"), string("y"), string("z"), string("w")],
+        ],
+    );
+    record(
+        check(
+            "elt",
+            call(
+                "elt",
+                &text_ty,
+                vec![column(0, &ty), column(1, &text_ty), column(2, &text_ty)],
+            ),
+            &mut input,
+            &text_ty,
+        ),
+        &mut failures,
+    );
+    // field: first argument is the needle, the rest are the haystack.
+    let mut input = fixture(
+        &[ty.clone(), ty.clone(), ty.clone()],
+        &[
+            vec![Datum::Int(5), Datum::Int(1), Datum::Null, Datum::Int(3)],
+            vec![Datum::Int(1), Datum::Int(2), Datum::Int(1), Datum::Int(3)],
+            vec![Datum::Int(10), Datum::Int(2), Datum::Int(2), Datum::Int(3)],
+        ],
+    );
+    record(
+        check(
+            "field",
+            call(
+                "field",
+                &ty,
+                vec![column(0, &ty), column(1, &ty), column(2, &ty)],
+            ),
+            &mut input,
+            &ty,
+        ),
+        &mut failures,
+    );
+    // interval: first argument is the probe, the rest are ascending thresholds.
+    let mut input = fixture(
+        &[ty.clone(), ty.clone(), ty.clone(), ty.clone()],
+        &[
+            vec![Datum::Int(0), Datum::Int(5), Datum::Int(15), Datum::Null],
+            vec![Datum::Int(1), Datum::Int(1), Datum::Int(1), Datum::Int(1)],
+            vec![
+                Datum::Int(10),
+                Datum::Int(10),
+                Datum::Int(10),
+                Datum::Int(10),
+            ],
+            vec![
+                Datum::Int(100),
+                Datum::Int(100),
+                Datum::Int(100),
+                Datum::Int(100),
+            ],
+        ],
+    );
+    record(
+        check(
+            "interval",
+            call(
+                "interval",
+                &ty,
+                vec![
+                    column(0, &ty),
+                    column(1, &ty),
+                    column(2, &ty),
+                    column(3, &ty),
+                ],
+            ),
+            &mut input,
+            &ty,
+        ),
+        &mut failures,
+    );
+    // IS TRUE / IS FALSE keep NULL, unlike their non-underscore spellings.
+    let mut input = fixture(
+        std::slice::from_ref(&ty),
+        &[vec![
+            Datum::Int(0),
+            Datum::Int(1),
+            Datum::Int(2),
+            Datum::Null,
+        ]],
+    );
+    for name in ["istrue_with_null"] {
+        record(
+            check(name, call(name, &ty, vec![column(0, &ty)]), &mut input, &ty),
+            &mut failures,
+        );
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn tikv_coverage_string_misc_extended_differential() {
+    let mut failures = Vec::new();
+    let ints = int();
+    let reals = real();
+    let strings = text();
+    let binary = bytes();
+    let unsigned = ints.clone().with_flags(1 << 5);
+
+    let mut string_input = fixture(
+        std::slice::from_ref(&strings),
+        &[vec![string("Abc 123"), string(" xyz "), Datum::Null]],
+    );
+    let mut int_input = fixture(
+        std::slice::from_ref(&ints),
+        &[vec![Datum::Int(7), Datum::Int(-1), Datum::Null]],
+    );
+    let mut real_input = fixture(
+        std::slice::from_ref(&reals),
+        &[vec![Datum::Real(2.5), Datum::Real(-1.25), Datum::Null]],
+    );
+
+    // bin/oct render an integer's raw bits.
+    for name in ["bin", "oct"] {
+        record(
+            check(
+                name,
+                call(name, &strings, vec![column(0, &ints)]),
+                &mut int_input,
+                &strings,
+            ),
+            &mut failures,
+        );
+    }
+    // conv reads (value, from_base, to_base).
+    let mut conv_input = fixture(
+        std::slice::from_ref(&strings),
+        &[vec![string("FF"), string("10"), Datum::Null]],
+    );
+    record(
+        check(
+            "conv",
+            call(
+                "conv",
+                &strings,
+                vec![
+                    column(0, &strings),
+                    literal(Datum::Int(16), &ints),
+                    literal(Datum::Int(10), &ints),
+                ],
+            ),
+            &mut conv_input,
+            &strings,
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "replace",
+            call(
+                "replace",
+                &strings,
+                vec![
+                    column(0, &strings),
+                    literal(string("b"), &strings),
+                    literal(string("B"), &strings),
+                ],
+            ),
+            &mut string_input,
+            &strings,
+        ),
+        &mut failures,
+    );
+    // The rewriter emits the two-argument TRIM form (direction is BOTH).
+    record(
+        check(
+            "trim",
+            call(
+                "trim",
+                &strings,
+                vec![column(0, &strings), literal(string(" "), &strings)],
+            ),
+            &mut string_input,
+            &strings,
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "substring_index",
+            call(
+                "substring_index",
+                &strings,
+                vec![
+                    column(0, &strings),
+                    literal(string(" "), &strings),
+                    literal(Datum::Int(2), &ints),
+                ],
+            ),
+            &mut string_input,
+            &strings,
+        ),
+        &mut failures,
+    );
+    // unhex returns the decoded bytes.
+    let mut hex_input = fixture(
+        std::slice::from_ref(&strings),
+        &[vec![string("4D7953514C"), string("126"), Datum::Null]],
+    );
+    record(
+        check(
+            "unhex",
+            call("unhex", &binary, vec![column(0, &strings)]),
+            &mut hex_input,
+            &binary,
+        ),
+        &mut failures,
+    );
+    // like(value, pattern, escape) -- the three-argument rewriter shape.
+    record(
+        check(
+            "like",
+            call(
+                "like",
+                &ints,
+                vec![
+                    column(0, &strings),
+                    literal(string("Abc%"), &strings),
+                    literal(Datum::Int(i64::from(b'\\')), &ints),
+                ],
+            ),
+            &mut string_input,
+            &ints,
+        ),
+        &mut failures,
+    );
+    for name in ["regexp", "regexp_like"] {
+        record(
+            check(
+                name,
+                call(
+                    name,
+                    &ints,
+                    vec![column(0, &strings), literal(string("^A"), &strings)],
+                ),
+                &mut string_input,
+                &ints,
+            ),
+            &mut failures,
+        );
+    }
+    record(
+        check(
+            "regexp_substr",
+            call(
+                "regexp_substr",
+                &strings,
+                vec![column(0, &strings), literal(string("A."), &strings)],
+            ),
+            &mut string_input,
+            &strings,
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "regexp_instr",
+            call(
+                "regexp_instr",
+                &ints,
+                vec![column(0, &strings), literal(string("A"), &strings)],
+            ),
+            &mut string_input,
+            &ints,
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "regexp_replace",
+            call(
+                "regexp_replace",
+                &strings,
+                vec![
+                    column(0, &strings),
+                    literal(string("A"), &strings),
+                    literal(string("X"), &strings),
+                ],
+            ),
+            &mut string_input,
+            &strings,
+        ),
+        &mut failures,
+    );
+    // inet_aton returns UNSIGNED; inet_ntoa takes the integer.
+    let mut ip_input = fixture(
+        std::slice::from_ref(&strings),
+        &[vec![
+            string("1.2.3.4"),
+            string("255.255.255.255"),
+            Datum::Null,
+        ]],
+    );
+    record(
+        check(
+            "inet_aton",
+            call("inet_aton", &unsigned, vec![column(0, &strings)]),
+            &mut ip_input,
+            &unsigned,
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "inet_ntoa",
+            call("inet_ntoa", &strings, vec![column(0, &ints)]),
+            &mut int_input,
+            &strings,
+        ),
+        &mut failures,
+    );
+    let mut ip6_input = fixture(
+        std::slice::from_ref(&strings),
+        &[vec![string("1.2.3.4"), string("2001:db8::1"), Datum::Null]],
+    );
+    record(
+        check(
+            "inet6_aton",
+            call("inet6_aton", &binary, vec![column(0, &strings)]),
+            &mut ip6_input,
+            &binary,
+        ),
+        &mut failures,
+    );
+    let mut raw_ip_input = fixture(
+        std::slice::from_ref(&binary),
+        &[vec![
+            Datum::Bytes(vec![1, 2, 3, 4]),
+            Datum::Bytes(vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 1, 2, 3, 4]),
+            Datum::Null,
+        ]],
+    );
+    record(
+        check(
+            "inet6_ntoa",
+            call("inet6_ntoa", &strings, vec![column(0, &binary)]),
+            &mut raw_ip_input,
+            &strings,
+        ),
+        &mut failures,
+    );
+    // is_ipv4/is_ipv6/is_ipv4_compat/is_ipv4_mapped are deliberately not
+    // fixtured here: the engine returns 0 for a NULL argument where the native
+    // evaluator (and Go) returns NULL. See the coverage report.
+    record(
+        check(
+            "to_binary",
+            call("to_binary", &binary, vec![column(0, &strings)]),
+            &mut string_input,
+            &binary,
+        ),
+        &mut failures,
+    );
+    let mut utf8_bytes_input = fixture(
+        std::slice::from_ref(&binary),
+        &[vec![
+            Datum::Bytes(b"hello".to_vec()),
+            Datum::Bytes("\u{4e2d}\u{6587}".as_bytes().to_vec()),
+            Datum::Null,
+        ]],
+    );
+    record(
+        check(
+            "from_binary",
+            call("from_binary", &strings, vec![column(0, &binary)]),
+            &mut utf8_bytes_input,
+            &strings,
+        ),
+        &mut failures,
+    );
+    // compress/uncompress use the four-byte length frame plus a zlib stream.
+    record(
+        check(
+            "compress",
+            call("compress", &binary, vec![column(0, &strings)]),
+            &mut string_input,
+            &binary,
+        ),
+        &mut failures,
+    );
+    let framed = Datum::Bytes(vec![
+        11, 0, 0, 0, 120, 156, 203, 72, 205, 201, 201, 87, 40, 207, 47, 202, 73, 1, 0, 26, 11, 4,
+        93,
+    ]);
+    let mut compressed_input = fixture(std::slice::from_ref(&binary), &[vec![framed, Datum::Null]]);
+    record(
+        check(
+            "uncompress",
+            call("uncompress", &binary, vec![column(0, &binary)]),
+            &mut compressed_input,
+            &binary,
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "uncompressed_length",
+            call("uncompressed_length", &ints, vec![column(0, &binary)]),
+            &mut compressed_input,
+            &ints,
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "any_value",
+            call("any_value", &ints, vec![column(0, &ints)]),
+            &mut int_input,
+            &ints,
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "sign",
+            call("sign", &ints, vec![column(0, &ints)]),
+            &mut int_input,
+            &ints,
+        ),
+        &mut failures,
+    );
+    record(
+        check("pi", call("pi", &reals, vec![]), &mut real_input, &reals),
+        &mut failures,
+    );
+    record(
+        check(
+            "ceiling",
+            call("ceiling", &reals, vec![column(0, &reals)]),
+            &mut real_input,
+            &reals,
+        ),
+        &mut failures,
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn tikv_coverage_temporal_extended_differential() {
+    let mut failures = Vec::new();
+    let ints = int();
+    let reals = real();
+    let strings = text();
+    let dt0 = datetime(0);
+    let dt6 = datetime(6);
+    let dur0 = duration(0);
+    let dur6 = duration(6);
+    let date_ty = date();
+
+    let mut dt6_input = fixture(
+        std::slice::from_ref(&dt6),
+        &[vec![
+            time_value(2024, 3, 14, 12, 34, 56, 123456, 6),
+            time_value(2023, 2, 28, 0, 0, 0, 0, 6),
+            Datum::Null,
+        ]],
+    );
+    let mut date_input = fixture(
+        std::slice::from_ref(&date_ty),
+        &[vec![
+            Datum::Time(
+                Time::from_date_checked(2024, 3, 14, 0, 0, 0, 0, TimeType::Date, 0).unwrap(),
+            ),
+            Datum::Time(
+                Time::from_date_checked(2023, 2, 28, 0, 0, 0, 0, TimeType::Date, 0).unwrap(),
+            ),
+            Datum::Null,
+        ]],
+    );
+    record(
+        check(
+            "date",
+            call("date", &date_ty, vec![column(0, &dt6)]),
+            &mut dt6_input,
+            &date_ty,
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "last_day",
+            call("last_day", &date_ty, vec![column(0, &date_ty)]),
+            &mut date_input,
+            &date_ty,
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "date_format",
+            call(
+                "date_format",
+                &strings,
+                vec![
+                    column(0, &dt6),
+                    literal(string("%Y-%m-%d %H:%i:%s"), &strings),
+                ],
+            ),
+            &mut dt6_input,
+            &strings,
+        ),
+        &mut failures,
+    );
+    let mut dt_pair = fixture(
+        &[dt6.clone(), dt6.clone()],
+        &[
+            vec![
+                time_value(2024, 3, 14, 12, 34, 56, 123456, 6),
+                time_value(2024, 3, 1, 0, 0, 0, 0, 6),
+                Datum::Null,
+            ],
+            vec![
+                time_value(2024, 3, 1, 0, 0, 0, 0, 6),
+                time_value(2024, 3, 14, 12, 34, 56, 123456, 6),
+                time_value(2024, 1, 1, 0, 0, 0, 0, 6),
+            ],
+        ],
+    );
+    record(
+        check(
+            "datediff",
+            call("datediff", &ints, vec![column(0, &dt6), column(1, &dt6)]),
+            &mut dt_pair,
+            &ints,
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "timestampdiff",
+            call(
+                "timestampdiff",
+                &ints,
+                vec![
+                    literal(string("DAY"), &strings),
+                    column(0, &dt6),
+                    column(1, &dt6),
+                ],
+            ),
+            &mut dt_pair,
+            &ints,
+        ),
+        &mut failures,
+    );
+    let mut str_input = fixture(
+        std::slice::from_ref(&strings),
+        &[vec![
+            string("2024-03-14 12:34:56"),
+            string("1999-01-02"),
+            Datum::Null,
+        ]],
+    );
+    record(
+        check(
+            "str_to_date",
+            call(
+                "str_to_date",
+                &dt0,
+                vec![
+                    column(0, &strings),
+                    literal(string("%Y-%m-%d %H:%i:%s"), &strings),
+                ],
+            ),
+            &mut str_input,
+            &dt0,
+        ),
+        &mut failures,
+    );
+    // from_days is deliberately not fixtured here: the engine answers
+    // FROM_DAYS(1) with the zero date where the native evaluator (and Go)
+    // returns NULL. See the coverage report.
+    let mut make_date_input = fixture(
+        &[ints.clone(), ints.clone()],
+        &[
+            vec![Datum::Int(2024), Datum::Int(2023), Datum::Null],
+            vec![Datum::Int(60), Datum::Int(1), Datum::Int(1)],
+        ],
+    );
+    record(
+        check(
+            "makedate",
+            call(
+                "makedate",
+                &date_ty,
+                vec![column(0, &ints), column(1, &ints)],
+            ),
+            &mut make_date_input,
+            &date_ty,
+        ),
+        &mut failures,
+    );
+    let mut make_time_input = fixture(
+        &[ints.clone(), ints.clone(), reals.clone()],
+        &[
+            vec![Datum::Int(12), Datum::Int(0), Datum::Null],
+            vec![Datum::Int(34), Datum::Int(59), Datum::Int(0)],
+            vec![Datum::Real(56.5), Datum::Real(0.25), Datum::Real(1.0)],
+        ],
+    );
+    record(
+        check(
+            "maketime",
+            call(
+                "maketime",
+                &dur6,
+                vec![column(0, &ints), column(1, &ints), column(2, &reals)],
+            ),
+            &mut make_time_input,
+            &dur6,
+        ),
+        &mut failures,
+    );
+    let mut period_add_input = fixture(
+        &[ints.clone(), ints.clone()],
+        &[
+            vec![Datum::Int(202401), Datum::Int(202312), Datum::Null],
+            vec![Datum::Int(2), Datum::Int(3), Datum::Int(1)],
+        ],
+    );
+    record(
+        check(
+            "period_add",
+            call(
+                "period_add",
+                &ints,
+                vec![column(0, &ints), column(1, &ints)],
+            ),
+            &mut period_add_input,
+            &ints,
+        ),
+        &mut failures,
+    );
+    let mut period_diff_input = fixture(
+        &[ints.clone(), ints.clone()],
+        &[
+            vec![Datum::Int(202402), Datum::Int(202301), Datum::Null],
+            vec![Datum::Int(202401), Datum::Int(202312), Datum::Int(202401)],
+        ],
+    );
+    record(
+        check(
+            "period_diff",
+            call(
+                "period_diff",
+                &ints,
+                vec![column(0, &ints), column(1, &ints)],
+            ),
+            &mut period_diff_input,
+            &ints,
+        ),
+        &mut failures,
+    );
+    let mut dt0_input = fixture(
+        std::slice::from_ref(&dt0),
+        &[vec![
+            time_value(2024, 3, 14, 12, 34, 56, 0, 0),
+            time_value(1970, 1, 1, 0, 0, 0, 0, 0),
+            Datum::Null,
+        ]],
+    );
+    record(
+        check(
+            "unix_timestamp",
+            call("unix_timestamp", &ints, vec![column(0, &dt0)]),
+            &mut dt0_input,
+            &ints,
+        ),
+        &mut failures,
+    );
+    let mut epoch_input = fixture(
+        std::slice::from_ref(&ints),
+        &[vec![Datum::Int(1_710_419_696), Datum::Int(0), Datum::Null]],
+    );
+    record(
+        check(
+            "from_unixtime",
+            call("from_unixtime", &dt6, vec![column(0, &ints)]),
+            &mut epoch_input,
+            &dt6,
+        ),
+        &mut failures,
+    );
+    let mut add_input = fixture(
+        &[dt6.clone(), dur0.clone()],
+        &[
+            vec![
+                time_value(2024, 3, 14, 12, 0, 0, 0, 6),
+                time_value(2024, 1, 1, 0, 0, 0, 0, 6),
+                Datum::Null,
+            ],
+            vec![
+                Datum::Duration(MySqlDuration::from_raw_parts(3_600_000_000_000, 0)),
+                Datum::Duration(MySqlDuration::from_raw_parts(90_000_000_000, 0)),
+                Datum::Duration(MySqlDuration::from_raw_parts(0, 0)),
+            ],
+        ],
+    );
+    record(
+        check(
+            "addtime",
+            call("addtime", &dt6, vec![column(0, &dt6), column(1, &dur0)]),
+            &mut add_input,
+            &dt6,
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "subtime",
+            call("subtime", &dt6, vec![column(0, &dt6), column(1, &dur0)]),
+            &mut add_input,
+            &dt6,
+        ),
+        &mut failures,
+    );
+    let mut diff_input = fixture(
+        &[dur0.clone(), dur0.clone()],
+        &[
+            vec![
+                Datum::Duration(MySqlDuration::from_raw_parts(45_296_000_000_000, 0)),
+                Datum::Duration(MySqlDuration::from_raw_parts(0, 0)),
+                Datum::Null,
+            ],
+            vec![
+                Datum::Duration(MySqlDuration::from_raw_parts(3_600_000_000_000, 0)),
+                Datum::Duration(MySqlDuration::from_raw_parts(1_000_000_000, 0)),
+                Datum::Duration(MySqlDuration::from_raw_parts(0, 0)),
+            ],
+        ],
+    );
+    record(
+        check(
+            "timediff",
+            call("timediff", &dur0, vec![column(0, &dur0), column(1, &dur0)]),
+            &mut diff_input,
+            &dur0,
+        ),
+        &mut failures,
+    );
+
+    // DATE_ADD/DATE_SUB: the unit lives in the function name, so each spelling
+    // is one signature.
+    let base = time_value(2024, 1, 31, 12, 0, 0, 0, 0);
+    for (unit, fsp) in [
+        ("microsecond", 6),
+        ("second", 0),
+        ("minute", 0),
+        ("hour", 0),
+        ("day", 0),
+        ("week", 0),
+        ("month", 0),
+        ("quarter", 0),
+        ("year", 0),
+    ] {
+        let result = datetime(fsp);
+        let mut input = fixture(
+            &[dt0.clone(), ints.clone()],
+            &[
+                vec![base.clone(), Datum::Null],
+                vec![Datum::Int(3), Datum::Int(1)],
+            ],
+        );
+        for prefix in ["date_add_", "date_sub_"] {
+            let name = format!("{prefix}{unit}");
+            record(
+                check(
+                    &name,
+                    call(&name, &result, vec![column(0, &dt0), column(1, &ints)]),
+                    &mut input,
+                    &result,
+                ),
+                &mut failures,
+            );
+        }
+    }
+    for (unit, amount, fsp) in [
+        ("second_microsecond", "1.500000", 6),
+        ("minute_microsecond", "1:2.500000", 6),
+        ("hour_microsecond", "1:2:3.500000", 6),
+        ("day_microsecond", "1 2:3:4.500000", 6),
+        ("minute_second", "1:2", 0),
+        ("hour_second", "1:2:3", 0),
+        ("hour_minute", "1:2", 0),
+        ("day_second", "1 2:3:4", 0),
+        ("day_minute", "1 2:3", 0),
+        ("day_hour", "1 2", 0),
+        ("year_month", "1-2", 0),
+    ] {
+        let result = datetime(fsp);
+        let mut input = fixture(
+            &[dt0.clone(), strings.clone()],
+            &[
+                vec![base.clone(), Datum::Null],
+                vec![string(amount), string(amount)],
+            ],
+        );
+        for prefix in ["date_add_", "date_sub_"] {
+            let name = format!("{prefix}{unit}");
+            record(
+                check(
+                    &name,
+                    call(&name, &result, vec![column(0, &dt0), column(1, &strings)]),
+                    &mut input,
+                    &result,
+                ),
+                &mut failures,
+            );
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn tikv_coverage_json_extended_differential() {
+    let mut failures = Vec::new();
+    let ints = int();
+    let strings = text();
+    let json_ty = json();
+    let mut doc_input = fixture(
+        std::slice::from_ref(&json_ty),
+        &[vec![
+            json_value(r#"{"a":[1,2],"b":true}"#),
+            json_value(r#"[1,2,3]"#),
+            json_value("42"),
+            Datum::Null,
+        ]],
+    );
+    record(
+        check(
+            "json_array",
+            call("json_array", &strings, vec![column(0, &json_ty)]),
+            &mut doc_input,
+            &strings,
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "json_keys",
+            call("json_keys", &strings, vec![column(0, &json_ty)]),
+            &mut doc_input,
+            &strings,
+        ),
+        &mut failures,
+    );
+    // JSON_UNQUOTE reads an ETString (the canonical JSON text), not a JSON cell.
+    let mut unquote_input = fixture(
+        std::slice::from_ref(&strings),
+        &[vec![
+            string("\"hello\""),
+            string("42"),
+            string("[1, 2]"),
+            Datum::Null,
+        ]],
+    );
+    record(
+        check(
+            "json_unquote",
+            call("json_unquote", &strings, vec![column(0, &strings)]),
+            &mut unquote_input,
+            &strings,
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "json_object",
+            call(
+                "json_object",
+                &strings,
+                vec![literal(string("k"), &strings), column(0, &json_ty)],
+            ),
+            &mut doc_input,
+            &strings,
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "json_contains",
+            call(
+                "json_contains",
+                &ints,
+                vec![
+                    column(0, &json_ty),
+                    literal(json_value(r#"[1,2,3]"#), &json_ty),
+                ],
+            ),
+            &mut doc_input,
+            &ints,
+        ),
+        &mut failures,
+    );
+    // json_array_append is deliberately not fixtured here: appending a JSON
+    // array value through a nested path diverges (see the coverage report).
+    record(
+        check(
+            "json_remove",
+            call(
+                "json_remove",
+                &strings,
+                vec![column(0, &json_ty), literal(string("$.a"), &strings)],
+            ),
+            &mut doc_input,
+            &strings,
+        ),
+        &mut failures,
+    );
+    for name in [
+        "json_merge_patch",
+        "json_merge_preserve",
+        "json_set",
+        "json_insert",
+        "json_replace",
+    ] {
+        let arguments = if matches!(name, "json_merge_patch" | "json_merge_preserve") {
+            vec![
+                literal(json_value(r#"{"a":[1,2],"b":true}"#), &json_ty),
+                literal(json_value(r#"[1,2,3]"#), &json_ty),
+            ]
+        } else {
+            vec![
+                literal(json_value(r#"{"a":[1,2],"b":true}"#), &json_ty),
+                literal(string("$.c"), &strings),
+                literal(json_value(r#"[1,2,3]"#), &json_ty),
+            ]
+        };
+        record(
+            check(
+                name,
+                call(name, &strings, arguments),
+                &mut doc_input,
+                &strings,
+            ),
+            &mut failures,
+        );
+    }
+    record(
+        check(
+            "json_quote",
+            call(
+                "json_quote",
+                &strings,
+                vec![literal(string("plain text"), &strings)],
+            ),
+            &mut doc_input,
+            &strings,
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "json_member_of",
+            call(
+                "json_member_of",
+                &ints,
+                vec![
+                    literal(json_value(r#"[1,2,3]"#), &json_ty),
+                    literal(json_value(r#"{"a":[1,2],"b":true}"#), &json_ty),
+                ],
+            ),
+            &mut doc_input,
+            &ints,
+        ),
+        &mut failures,
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn tikv_coverage_cast_family_differential() {
+    let mut failures = Vec::new();
+    let ints = int();
+    let reals = real();
+    let decs = decimal();
+    let mut int_input = fixture(
+        std::slice::from_ref(&ints),
+        &[vec![Datum::Int(7), Datum::Int(-3), Datum::Null]],
+    );
+    record(
+        check(
+            "cast_decimal_int",
+            call("cast_decimal", &decs, vec![column(0, &ints)]),
+            &mut int_input,
+            &decs,
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "cast_double_int",
+            call("cast_double", &reals, vec![column(0, &ints)]),
+            &mut int_input,
+            &reals,
+        ),
+        &mut failures,
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// TiKV's `IsIPv4`/`IsIPv6`/compat/mapped kernels return 0 for a NULL input
+/// where Go returns NULL; the adapter restores it with a leaf-only NULL mask.
+/// The NULL row is the point of this fixture.
+#[test]
+fn tikv_coverage_is_ipv_family_masks_null() {
+    let ty = bytes();
+    let result = int();
+    let mut input = fixture(
+        std::slice::from_ref(&ty),
+        &[vec![
+            string("127.0.0.1"),
+            Datum::Null,
+            string("::1"),
+            string("::ffff:127.0.0.1"),
+            string("::127.0.0.1"),
+        ]],
+    );
+    for name in ["is_ipv4", "is_ipv6", "is_ipv4_compat", "is_ipv4_mapped"] {
+        check(
+            name,
+            call(name, &result, vec![column(0, &ty)]),
+            &mut input,
+            &result,
+        )
+        .unwrap();
+    }
 }
