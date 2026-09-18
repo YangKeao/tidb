@@ -226,3 +226,44 @@ fallback, and the differential fixtures assert the distinction.
 The default remains native. Enabling `tikv-expr` alone changes nothing; a
 statement context must explicitly opt in, and the new per-session opt-in used
 by the replay harness is test-only.
+
+
+## 5. Engine-only migration status
+
+The longer-term goal is to delete the native evaluator so the engine is the
+only implementation. The plan is
+`rust/docs/tikv-expression-removal-execplan.md`; the deletion inventory and
+per-family acceptance gates are in
+`rust/docs/tikv-expression-removal-checklist.md`; the semantic gap list lives
+with the engine in
+`components/tidb_query_expr/EXPRESSION_SEMANTIC_GAPS.md` (TiKV checkout).
+
+Landed and verified:
+
+* **Shareable engine.** TiKV metadata is `Send + Sync`, `PreparedExpression` is
+  asserted `Send + Sync`, and evaluation is split into a compiled program plus
+  caller-owned `ExecutionState` (`eval_shared`, `eval_with_state`,
+  `eval_borrowed_shared`). On the TiDB side the compiled programs are cached on
+  the shared `EvaluatorProgram`, so every projection worker of one plan reuses
+  one compilation and evaluates without holding the cache lock.
+* **Explicit admission.** `tikv/admission.rs` holds one sorted row per SQL
+  name (384 rows; 232 admitted, 152 excluded with a reason) and the pipeline
+  reports `FallbackReason::{NotAdmitted, UnrepresentableInput}` for anything
+  that stays native. The differential tests fail on a silent fallback.
+* **Lazy evaluation, steps 1-2.** `RpnFnMeta.lazy_fn_ptr`, the `LazyChildren`
+  pull interface and the `eval_subtree` evaluator refactor; `IfNullInt` is the
+  first lazy kernel. `with_lazy` clears `borrowed_fn_ptr` so the borrowed
+  facade refuses a lazy program structurally.
+* **Short-circuit acceptance tests.** `tidb-expr/tests/tikv_lazy.rs` pins that
+  a dead branch is never entered and that staying native always carries a
+  reason. It passes today (the constructs stay native) and is the gate for
+  relaxing the adapter's lazy-shape rule once the engine's lazy family is
+  complete; `SHORT_CIRCUIT_DESIGN.md` §11 specifies the capability signal
+  (`eager_lazy_risk`) that relaxation will use.
+* **Structured missing-engine error.** `Columns::tikv_expression_required`
+  turns "this resolver has no engine context" into an `ExternalEngine` error
+  instead of a silent choice between implementations.
+
+Still open: the rest of the lazy control family and the three-valued boolean
+merge, the engine capability query and the adapter's shape relaxation, `Set`
+support, the host capability trait, and then the deletion itself.
