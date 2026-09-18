@@ -105,7 +105,12 @@ and asserts `tikv_expression_rows() > 0`. All 21 pruning tests stay green, and
 the executor's 1333/1334 lib tests too.
 
 `ddl/table_partition_range.rs` has a third constant-row site of the same shape
-and is converted too, verified by the same 11 partition-DDL tests.
+and is converted too, verified by the same 11 partition-DDL tests **and** by
+`tikv_expression_range_partition_values_run_in_the_engine`, which asserts
+`tikv_expression_rows() > 0` for a `PARTITION BY RANGE` table. Both DDL
+conversions now carry the same strength of evidence: a green suite is not
+enough, because the DDL tests run without an engine context and would pass
+through the fallback.
 
 So **7 of the 75** are converted -- three constant-row sites in `ddl/` and four
 pruning sites in `partition_pruning.rs`. The remaining 68 are still textually

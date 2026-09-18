@@ -397,3 +397,28 @@ fn tikv_expression_partition_list_values_run_in_the_engine() {
     );
 }
 
+/// The second DDL call site: a `PARTITION BY RANGE` bound is a constant
+/// expression too, and it now goes through the same
+/// `eval_constant_row`. The row counter is again the evidence that the engine
+/// -- not the native fallback -- evaluated the bound.
+#[test]
+fn tikv_expression_range_partition_values_run_in_the_engine() {
+    let mut catalog = Catalog::default();
+    let tikv = StmtContext::default()
+        .with_strict(true)
+        .with_tikv_expression(true);
+    tidb_executor::run_create_table_in(
+        "CREATE TABLE t (id BIGINT) PARTITION BY RANGE (id) \
+         (PARTITION p0 VALUES LESS THAN (10), PARTITION p1 VALUES LESS THAN (MAXVALUE))",
+        &mut catalog,
+        "test",
+        tidb_executor::CreateTableSettings::default(),
+        &tikv,
+    )
+    .unwrap();
+    assert!(
+        tikv.tikv_expression_rows() > 0,
+        "the RANGE bound must be evaluated by the engine, not by the native fallback"
+    );
+}
+
