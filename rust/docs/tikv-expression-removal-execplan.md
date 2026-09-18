@@ -72,8 +72,9 @@ remain in the workspace.
       "engine only". The engine-only measurement exists and is the E work
       list: `TIKV_EXPR_ENGINE_ONLY=1` makes a declined expression a failure,
       and at `47ce598` plus the temporal-bridge fix the lib corpus reports
-      1143 passed / 65 failed / 99 ignored, i.e. 63 distinct constant
-      expressions still have no engine path (grouped in
+      1145 passed / 63 failed / 99 ignored, i.e. 61 distinct constant
+      expressions still have no engine path (32 admission, 20 lowering,
+      7 engine-compile, 2 evaluation; grouped in
       `tikv-expression-corpus-plan.md` section 7). Remaining
       known divergences are listed in the TiKV
       `EXPRESSION_SEMANTIC_GAPS.md` (26 open entries; the CRC32 declaration

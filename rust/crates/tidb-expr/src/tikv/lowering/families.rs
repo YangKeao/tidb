@@ -68,6 +68,9 @@ pub(super) fn owns(name: &str) -> bool {
                 | "timediff"
                 | "addtime"
                 | "subtime"
+                | "extract"
+                | "time"
+                | "timestamp"
         )
 }
 
@@ -205,11 +208,81 @@ fn temporal(
         }
         "timediff" => return time_diff(children, types, ty),
         "addtime" | "subtime" => return add_sub_time(function, children, types, ty),
+        // `TIMESTAMP(x)` and `TIME(x)` are casts with a declared result FSP:
+        // TiKV has `CastStringAsTime`/`CastStringAsDuration` and the rest of the
+        // temporal cast matrix, so lower them as the cast they are and then
+        // declare the function's own type (the generic cast declares FSP 6,
+        // which would round a `TIME(0)` result differently).
+        "timestamp" => return as_temporal_cast(children, T, ty),
+        "time" => return as_temporal_cast(children, H, ty),
+        // `EXTRACT(unit FROM value)` keeps Go's two-argument shape, with the
+        // unit as a VARCHAR constant. TiKV has no `Extract` signature, but the
+        // simple units are exactly the per-unit signatures `temporal` already
+        // maps (`Year`, `Month`, `DayOfMonth`, `Hour`, ...), so lower the call
+        // as that unit's function. Compound units (`YEAR_MONTH`, `DAY_SECOND`)
+        // and `WEEK` (session `default_week_format`) stay native.
+        "extract" => return extract(function, children, ty),
         // Current clocks, mode-less WEEK, unsupported enum-only functions and
         // current-date duration conversions intentionally remain native.
         _ => return None,
     };
     node(sig, temporal_args(children, types, targets)?, ty)
+}
+
+/// Lowers a one-argument function that *is* a temporal cast.
+fn as_temporal_cast(children: Vec<PbExpr>, target: EvalType, ty: &FieldType) -> Option<PbExpr> {
+    if children.len() != 1 {
+        return None;
+    }
+    let mut casted = super::coerce(children.into_iter().next()?, target)?;
+    casted.field_type = Some(super::field_type_to_pb(ty)?);
+    Some(casted)
+}
+
+/// Lowers `EXTRACT(unit FROM value)` as the unit's own function.
+fn extract(function: &ScalarFunction, children: Vec<PbExpr>, ty: &FieldType) -> Option<PbExpr> {
+    if children.len() != 2 {
+        return None;
+    }
+    // The unit leaf is a string constant, which the catalog encodes as
+    // `String` for a `Datum::String` and as `Bytes` for a `Datum::Bytes`; both
+    // spell the same ASCII unit name.
+    let unit = match &children[0].val {
+        Some(bytes)
+            if matches!(
+                children[0].tp,
+                Some(tp) if tp == ExprType::String as i32 || tp == ExprType::Bytes as i32
+            ) =>
+        {
+            String::from_utf8(bytes.clone()).ok()?
+        }
+        _ => return None,
+    };
+    let unit = match unit.to_ascii_uppercase().as_str() {
+        // The duration units are deliberately absent. TiKV's `Hour`/`Minute`/
+        // `Second`/`MicroSecond` read the duration's ABSOLUTE components
+        // (`Duration::hours` is `to_secs().abs() / 3600`), which is what Go's
+        // `HOUR()` builtin wants and what the native port pins for
+        // `hour('-10:30:45')` (10). Go's `EXTRACT(HOUR FROM d)` keeps the sign
+        // (`extract(hour from '-25:03:04')` is -25 natively), so mapping
+        // EXTRACT onto those kernels would answer 25. Those units stay native.
+        "DAY" => "day",
+        "MONTH" => "month",
+        "QUARTER" => "quarter",
+        "YEAR" => "year",
+        // A WEEK unit needs the session `default_week_format`, and the compound
+        // units (YEAR_MONTH, DAY_SECOND, ...) have no TiKV signature.
+        _ => return None,
+    };
+    let measurement = children.into_iter().nth(1)?;
+    let measurement_type = domain(super::child_type(&measurement)?.eval_type());
+    // Reuse the unit function's own arm, including its argument target and its
+    // Duration-versus-Datetime choice, by re-entering `temporal` under that name
+    // with the measurement as the only child.
+    let mut inner = function.clone();
+    inner.func_name = tidb_ast::CiString::new(unit);
+    inner.args = vec![function.args.get(1)?.clone()];
+    temporal(&inner, vec![measurement], &[measurement_type], ty)
 }
 
 fn time_diff(children: Vec<PbExpr>, types: &[EvalType], ty: &FieldType) -> Option<PbExpr> {

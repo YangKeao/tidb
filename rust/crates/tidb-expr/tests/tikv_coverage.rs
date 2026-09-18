@@ -1472,6 +1472,31 @@ fn tikv_coverage_temporal_extended_differential() {
         ),
         &mut failures,
     );
+    // `EXTRACT(unit FROM x)` and `TIMESTAMP(x)` are lowered as the unit
+    // function and the temporal cast respectively, so both must run in the
+    // engine over a column rather than only over a constant.
+    record(
+        check(
+            "extract_year",
+            call(
+                "extract",
+                &int(),
+                vec![literal(string("YEAR"), &strings), column(0, &dt6)],
+            ),
+            &mut dt6_input,
+            &int(),
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "timestamp_of_datetime",
+            call("timestamp", &dt6, vec![column(0, &dt6)]),
+            &mut dt6_input,
+            &dt6,
+        ),
+        &mut failures,
+    );
     record(
         check(
             "date_format",

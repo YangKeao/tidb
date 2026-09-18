@@ -1326,13 +1326,13 @@ harness switch, feature on, no native deletion:
 
 | Result | Count |
 | --- | --- |
-| lib tests passed | 1143 |
+| lib tests passed | 1145 |
 | lib tests failed (engine declined) | 65 |
 | lib tests ignored | 99 |
 | distinct declined expressions | 63 |
 
-So **63 distinct constant expressions of the current corpus have no engine
-path**; 1143 of 1208 runnable cases already agree through the engine. This is
+So **61 distinct constant expressions of the current corpus have no engine
+path**; 1145 of 1208 runnable cases already agree through the engine. This is
 the concrete E blocker set, and it is much smaller than the 140-test excluded
 surface in section 6, because most excluded names never reach a constant
 expression in these tests (they are exercised on columns, where the adapter
@@ -1348,19 +1348,20 @@ midnight `DateTime` where the declared type is `DATE`, so the bridge now
 rebuilds the declared `DATE` the way Go's DATE decoder drops the time part
 (`bridge::check_time`). `convert_tz(20240315123045, ...)` appears in the list
 in their place: it was declined all along, but the test that contains it used
-to stop earlier.
+to stop earlier. Four more moved out of the admission group when `extract`,
+`time` and `timestamp` gained local lowerings (section 7.3).
 
 ### 7.1 Where each refusal happens
 
 `FallbackReason::NotAdmitted` covers five different stages, so a silent
 fallback hides which one a given expression is stuck at. `TIKV_EXPR_DEBUG_COMPILE=1`
 prints the stage and, for the engine stage, the engine's own error. Recompiling
-the current 63 with it:
+the current set with it:
 
 | Stage | Count | What it means |
 | --- | --- | --- |
-| admission table | 36 | the name is not admitted, or the expression's result type is outside `supported_type` |
-| local lowering | 18 | `local_call`/`families`/catalog lowering returned `None` |
+| admission table | 32 | the name is not admitted, or the expression's result type is outside `supported_type` |
+| local lowering | 20 | `local_call`/`families`/catalog lowering returned `None` |
 | engine compile | 7 | the wire program was built and the engine refused it |
 | evaluation | 2 | compiles, then the engine declines per batch |
 
@@ -1381,34 +1382,34 @@ others that the same tests used to stop before (`1.50 or 0e0`,
 `coalesce(1, 1.1e0)`, `case when cast('0' as json) then 1 end`) took their
 place in the list, so the count stayed at 63.
 
-The 63, verbatim:
+The 61, verbatim:
 
-    0 or null
     0xff like 0xff
     (1, 2) = (1, 2, 3)
+    1.50 or 0e0
     7 in (7, -9, 9)
     addtime('01:00:00.999999','02:00:00.999998')
     addtime('2020-01-01 10:00:00','01:00:00')
     b'1111111111111111111111111111111111111111111111111111111111111111' + 0
     benchmark(-3, 1)
+    case when cast('0' as json) then 1 end
     case when false then 1.5 else 0 end
-    case when null then 1 when true then 2 else 3 end
     cast(0e0 as datetime)
     cast('1' as json)
     cast(1 as signed) < cast(1 as signed)
     cast('2019-11-02 22:00:05' as datetime) in (cast('2019-11-02 22:00:04' as datetime), cast('2019-11-02 22:00:05' as datetime))
     char(65, 16740, 67.5 using utf8)
+    coalesce(1, 1.1e0)
     coalesce(1, 'x' regexp '[')
     coalesce(cast('12:59:59' as time), cast('12:59:59.555' as time(3)))
     coalesce(cast(1 as json), cast(2 as json))
-    coalesce(null, 1)
     convert(0x1e240 using utf8)
     convert('haha' using cp866)
     convert_tz(20240315123045,'+00:00','+08:00')
     cot(1)
     elt(0, 2, 3, 11, 1)
     elt(1, 65)
-    extract(year from 20240315)
+    extract(hour from '-25:03:04')
     field(1.10, 0, 11e-1)
     field(NULL, 2, 3, 11, 1)
     find_in_set('a', 'b,a,c,a')
@@ -1437,9 +1438,7 @@ The 63, verbatim:
     round(3.14,'abc')
     round(5, -100)
     subtime('01:00:00.999999','02:00:00.999998')
-    time('10:10:10.123456')
-    time('2003-12-31 01:02:03')
-    timestamp('2020-01-01')
+    timestamp('2020-01-01','01:00:00')
     to_base64('')
     translate('ABC', 'A', 'B')
     translate('abcabc', 'ab', 'xy')
@@ -1518,4 +1517,33 @@ result's decimal scale from 3 to 0. So the rule is not about warnings or eager
 evaluation -- inserting an implicit cast changes the answer. The experiment
 was reverted; a future change that wants `coalesce(1, 1.1e0)` in the engine
 must reproduce Go's argument coercion for that signature, not reuse `coerce`.
+
+### 7.3 `EXTRACT`, `TIME` and `TIMESTAMP` gain local lowerings
+
+Four expressions left the admission group without any TiKV change:
+
+- `TIME(x)` and `TIMESTAMP(x)` are casts. TiKV already dispatches the whole
+  temporal cast matrix (`CastStringAsDuration`, `CastIntAsTime`, ...), so
+  `families::temporal` lowers them through `coerce` and then *re-declares* the
+  function's own result type, because the generic cast declares FSP 6 and a
+  `TIME(0)` result would round differently. A `Duration` argument still
+  declines: a duration-to-datetime cast needs "today", which the facade's
+  context does not carry.
+- `EXTRACT(unit FROM value)` keeps Go's two-argument shape with the unit as a
+  string constant. TiKV has no `Extract` signature, but the simple units are
+  exactly the per-unit signatures `temporal` already maps, so the call is
+  lowered by re-entering that table under the unit's own function name
+  (`YEAR` -> `Year`, `DAY` -> `DayOfMonth`, ...).
+
+The duration units are deliberately **not** among them, and the dual-run found
+out why on the first attempt. `extract(hour from '-25:03:04')` is `-25`
+natively, but TiKV's `Hour`/`Minute`/`Second`/`MicroSecond` read the duration's
+absolute components (`Duration::hours` is `to_secs().abs() / 3600`), so the
+engine answered `25`. That kernel is right for Go's `HOUR()` builtin -- the
+native port pins `hour('-10:30:45')` as `10` -- and wrong for Go's `EXTRACT`,
+which keeps the sign. The two Go paths differ, so mapping EXTRACT onto those
+kernels is an adapter error rather than an engine gap; `HOUR`/`MINUTE`/
+`SECOND`/`MICROSECOND` stay native, and `EXTRACT` over a duration stays native
+with them. `extract(year from 20240315)`, both `time(...)` cases and
+`timestamp('2020-01-01')` are engine-covered and agree.
 
