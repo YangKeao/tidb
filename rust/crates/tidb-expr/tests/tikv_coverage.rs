@@ -26,7 +26,7 @@ use tidb_expr::column::Column;
 use tidb_expr::constant::Constant;
 use tidb_expr::evaluator::EvaluatorSuite;
 use tidb_expr::expression::{Expression, ScalarFunction};
-use tidb_expr::tikv::{Backend, Context, TikvExpression};
+use tidb_expr::tikv::{Backend, Context, FallbackReason, TikvExpression};
 use tidb_expr::Columns;
 
 #[derive(Default)]
@@ -35,6 +35,7 @@ struct TestContext {
     rows: Cell<usize>,
     borrowed: Cell<usize>,
     warnings: RefCell<Vec<u16>>,
+    fallbacks: RefCell<Vec<FallbackReason>>,
 }
 impl Columns for TestContext {
     fn get(&self, _: &[String]) -> Option<Datum> {
@@ -54,6 +55,9 @@ impl Columns for TestContext {
     }
     fn record_tikv_borrowed_expression_rows(&self, rows: usize) {
         self.borrowed.set(self.borrowed.get() + rows);
+    }
+    fn record_tikv_expression_fallback(&self, reason: FallbackReason) {
+        self.fallbacks.borrow_mut().push(reason);
     }
     fn append_warning(&self, code: u16, _: &str) {
         self.warnings.borrow_mut().push(code);
@@ -164,6 +168,12 @@ fn check(
             return Err(format!(
                 "{label} {backend:?}: native fallback, rows={}",
                 context.rows.get()
+            ));
+        }
+        if backend.is_some() && !context.fallbacks.borrow().is_empty() {
+            return Err(format!(
+                "{label} {backend:?}: engine context still fell back: {:?}",
+                context.fallbacks.borrow()
             ));
         }
         if backend != Some(Backend::Borrowed) && context.borrowed.get() != 0 {
@@ -765,6 +775,12 @@ fn tikv_coverage_control_leaves_and_unsafe_branches() {
     let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), 3);
     suite.run(&context, &mut input, &mut output).unwrap();
     assert_eq!(context.rows.get(), 0);
+    // The removal gate reads this reason: a declined tree is a listed
+    // exclusion, not a silent fallback.
+    assert_eq!(
+        context.fallbacks.borrow().as_slice(),
+        &[FallbackReason::NotAdmitted]
+    );
     for row in 0..3 {
         assert_eq!(output.get_row(row).get_int64(0), 7);
     }

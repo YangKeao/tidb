@@ -38,6 +38,12 @@ remain in the workspace.
       (`components/tidb_query_expr/EXPRESSION_SEMANTIC_GAPS.md`).
 - [ ] Milestone A (point 6): engine shareable and thread-safe.
 - [ ] Milestone B (point 2): explicit admission table and silent-fallback gate.
+      Partial: the gate mechanism landed — `FallbackReason` (`not-admitted`,
+      `unrepresentable-input`) is reported through
+      `Columns::record_tikv_expression_fallback`, `StmtContext` keeps two
+      reason counters, and the SQL differential helper fails when an admitted
+      projection records a decline or a native one records no reason. The
+      admission table itself is in progress.
 - [ ] Milestone C (point 1): lazy/short-circuit evaluation in TiKV, switch and
       vectorized short-circuit in TiDB.
 - [ ] Milestone D (point 4): the type support the removal actually needs.

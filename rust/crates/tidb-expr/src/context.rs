@@ -520,6 +520,16 @@ pub trait Columns {
     #[cfg(feature = "tikv-expr")]
     fn record_tikv_borrowed_expression_rows(&self, _rows: usize) {}
 
+    /// Reports that an expression which had an engine context still ran
+    /// natively, with the reason the adapter declined it.
+    ///
+    /// Production resolvers ignore this. Tests and the removal gate implement
+    /// it to fail on a reason that is not an explicitly listed exclusion, so an
+    /// expression cannot silently stop using the engine. Reasons are stable
+    /// identifiers, not user-facing text.
+    #[cfg(feature = "tikv-expr")]
+    fn record_tikv_expression_fallback(&self, _reason: crate::tikv::FallbackReason) {}
+
     /// Returns the referenced column, matched by its final name segment.
     fn get(&self, path: &[String]) -> Option<Datum>;
 

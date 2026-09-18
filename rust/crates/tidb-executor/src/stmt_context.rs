@@ -387,6 +387,16 @@ pub struct StmtContextData {
     /// Shared only by clones of this statement, including projection workers.
     #[cfg(feature = "tikv-expr")]
     tikv_expression_rows: Arc<AtomicU64>,
+    /// Engine-context expressions that still ran natively because local
+    /// lowering or the engine builder refused the shape. A listed exclusion,
+    /// not an error: the removal gate compares these counts against its
+    /// exclusion table so an expression cannot silently stop using the engine.
+    #[cfg(feature = "tikv-expr")]
+    tikv_not_admitted_fallbacks: Arc<AtomicU64>,
+    /// Engine-context expressions declined by the exact type bridge for this
+    /// batch (non-finite real/vector, temporal JSON, ...).
+    #[cfg(feature = "tikv-expr")]
+    tikv_unrepresentable_input_fallbacks: Arc<AtomicU64>,
     /// Go's `StaticWarnHandler` entries: a LEVEL, a code and a message.
     ///
     /// The level is not decoration. Go reaches this one buffer through three
@@ -1733,6 +1743,25 @@ impl StmtContext {
         self.tikv_borrowed_expression_rows.load(Ordering::Relaxed)
     }
 
+    /// Expressions that had an engine context but were declined by local
+    /// lowering or the engine builder. Each is a listed exclusion, not a
+    /// silent fallback; the removal gate fails on an unlisted one.
+    #[cfg(feature = "tikv-expr")]
+    #[must_use]
+    pub fn tikv_not_admitted_fallbacks(&self) -> u64 {
+        self.tikv_not_admitted_fallbacks.load(Ordering::Relaxed)
+    }
+
+    /// Expressions declined because this batch held a payload the exact type
+    /// bridge cannot represent. Value-dependent, so it can legitimately differ
+    /// between otherwise identical batches.
+    #[cfg(feature = "tikv-expr")]
+    #[must_use]
+    pub fn tikv_unrepresentable_input_fallbacks(&self) -> u64 {
+        self.tikv_unrepresentable_input_fallbacks
+            .load(Ordering::Relaxed)
+    }
+
     /// Applies one setup batch, detaching shared configuration at most once.
     /// Statement effects keep their existing shared owners, as for with_* calls.
     #[must_use]
@@ -1760,6 +1789,10 @@ impl StmtContext {
             tikv_borrowed_expression_rows: Arc::default(),
             #[cfg(feature = "tikv-expr")]
             tikv_expression_rows: Arc::default(),
+            #[cfg(feature = "tikv-expr")]
+            tikv_not_admitted_fallbacks: Arc::default(),
+            #[cfg(feature = "tikv-expr")]
+            tikv_unrepresentable_input_fallbacks: Arc::default(),
             warnings: Arc::default(),
             message: Arc::default(),
             cop_batch_warnings: Arc::default(),
@@ -3704,6 +3737,17 @@ impl Columns for StmtContext {
     fn record_tikv_borrowed_expression_rows(&self, rows: usize) {
         self.tikv_borrowed_expression_rows
             .fetch_add(rows as u64, Ordering::Relaxed);
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    fn record_tikv_expression_fallback(&self, reason: tidb_expr::tikv::FallbackReason) {
+        let counter = match reason {
+            tidb_expr::tikv::FallbackReason::NotAdmitted => &self.tikv_not_admitted_fallbacks,
+            tidb_expr::tikv::FallbackReason::UnrepresentableInput => {
+                &self.tikv_unrepresentable_input_fallbacks
+            }
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
     }
 
     fn get(&self, _: &[String]) -> Option<Datum> {

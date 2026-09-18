@@ -423,8 +423,15 @@ impl EvaluatorSuite {
             {
                 #[cfg(feature = "tikv-expr")]
                 if let Some(cache) = &mut tikv {
-                    if cache.evaluate_into(_expression_index, ctx, input, output, *output_index)? {
-                        continue;
+                    match cache.evaluate_into(
+                        _expression_index,
+                        ctx,
+                        input,
+                        output,
+                        *output_index,
+                    )? {
+                        None => continue,
+                        Some(reason) => ctx.record_tikv_expression_fallback(reason),
                     }
                 }
                 if let Expression::Constant(constant) = expression {

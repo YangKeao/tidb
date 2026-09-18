@@ -59,6 +59,18 @@ fn compare_sql(
                 statement.tikv_expression_rows() >= expected.1.len() as u64,
                 "{backend:?} unexpectedly stayed native: {sql}"
             );
+            // The removal gate: an engine-context projection that executed in
+            // the engine must not also report a declined expression.
+            assert_eq!(
+                statement.tikv_not_admitted_fallbacks(),
+                0,
+                "{backend:?} admitted projection reported a declined expression: {sql}"
+            );
+            assert_eq!(
+                statement.tikv_unrepresentable_input_fallbacks(),
+                0,
+                "{backend:?} admitted projection declined an input: {sql}"
+            );
         } else {
             assert_eq!(
                 statement.tikv_expression_rows(),
@@ -66,6 +78,14 @@ fn compare_sql(
                 "{backend:?} must stay native: {sql}"
             );
             assert_eq!(statement.tikv_borrowed_expression_rows(), 0, "{sql}");
+            // Staying native is only allowed with a recorded reason, so a
+            // silent fallback cannot pass as an intentional exclusion.
+            assert!(
+                statement.tikv_not_admitted_fallbacks()
+                    + statement.tikv_unrepresentable_input_fallbacks()
+                    > 0,
+                "{backend:?} stayed native without recording a reason: {sql}"
+            );
         }
         if backend == Backend::Copying {
             assert_eq!(statement.tikv_borrowed_expression_rows(), 0, "{sql}");

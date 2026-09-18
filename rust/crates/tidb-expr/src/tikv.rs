@@ -389,6 +389,30 @@ fn remap_columns(
     }
 }
 
+/// Why an expression with an engine context still ran natively.
+///
+/// These are stable identifiers used by the removal gate, not diagnostics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FallbackReason {
+    /// Local lowering declined the expression tree, or the engine builder
+    /// refused the shape. This is the existing, intentional exclusion path.
+    NotAdmitted,
+    /// The expression lowered, but this batch holds a payload the exact bridge
+    /// cannot represent (non-finite real/vector, temporal JSON, ...).
+    UnrepresentableInput,
+}
+
+impl FallbackReason {
+    /// The stable identifier a gate compares against its exclusion list.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotAdmitted => "not-admitted",
+            Self::UnrepresentableInput => "unrepresentable-input",
+        }
+    }
+}
+
 /// Execution-local compiled programs. Recompile when statement policy changes.
 #[derive(Default)]
 pub(crate) struct ProjectionCache {
@@ -414,6 +438,9 @@ impl ProjectionCache {
         Ok(())
     }
 
+    /// `Ok(None)` means the engine produced this expression's column.
+    /// `Ok(Some(reason))` means the caller must use the native evaluator, and
+    /// reports that decision so a gate can reject unlisted reasons.
     pub(crate) fn evaluate_into<C: Columns>(
         &mut self,
         index: usize,
@@ -421,14 +448,14 @@ impl ProjectionCache {
         input: &Chunk,
         output: &mut Chunk,
         output_index: usize,
-    ) -> Result<bool, EvalError> {
+    ) -> Result<Option<FallbackReason>, EvalError> {
         let Some(program) = self.programs[index].as_mut() else {
-            return Ok(false);
+            return Ok(Some(FallbackReason::NotAdmitted));
         };
         // Both adapters decline unrepresentable payloads BEFORE executing kernels
         // (nonfinite reals/vectors, temporal JSON and other exact-bridge limits).
         if program.requires_native_input(input) {
-            return Ok(false);
+            return Ok(Some(FallbackReason::UnrepresentableInput));
         }
         match context.tikv_expression_backend() {
             Backend::Borrowed if output.column(output_index).rows() == 0 => {
@@ -443,6 +470,6 @@ impl ProjectionCache {
                 }
             }
         }
-        Ok(true)
+        Ok(None)
     }
 }
