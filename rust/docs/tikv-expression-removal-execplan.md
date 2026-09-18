@@ -238,6 +238,16 @@ first, then evaluate only the children still required for the rows that still
 need a value, and merge while preserving SQL three-valued logic. In the
 row-oriented path this is an interpreter change; do not change `tipb`.
 
+The TiDB side must not have to guess which signatures are lazy, because
+compiling an eager kernel and a lazy kernel succeeds identically and an eager
+one would silently produce the wrong semantics for a skipped branch. TiKV
+therefore exposes a capability query (`is_lazy_signature(signature)`), and the
+admission table's lazy shape rule consults it: a lazy shape is admitted only
+when the engine reports that signature lazy. A test asserts the table's lazy
+set and the engine's reported set agree, so adding or removing a lazy kernel
+cannot drift silently. Until a signature is lazy, its non-leaf shapes stay
+native exactly as today.
+
 Provide the host capability trait at the same time, because laziness without
 it still cannot express `IF(cond, getvar(...), 0)`:
 
