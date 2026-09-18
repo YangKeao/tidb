@@ -78,54 +78,87 @@ pub(super) fn field_type_to_pb(ty: &FieldType) -> Option<tidb_proto::tipb::Field
 }
 
 pub(super) fn admitted(expression: &Expression) -> bool {
-    let Some(ty) = expression.static_type() else {
-        return false;
-    };
+    match admission_rejection(expression) {
+        None => true,
+        Some(reason) => {
+            // The admission gate is a full third of the corpus gap and its
+            // `NotAdmitted` is otherwise indistinguishable from a lowering or
+            // engine refusal. `TIKV_EXPR_DEBUG_COMPILE` names the sub-rule.
+            if super::debug_declines() {
+                eprintln!("TIKV-EXPR-ADMIT-REJECT [{reason}] {expression:?}");
+            }
+            false
+        }
+    }
+}
+
+/// Why `admitted` refuses `expression`, for the debug channel only.
+fn admission_rejection(expression: &Expression) -> Option<&'static str> {
+    let ty = expression.static_type()?;
     if !super::bridge::supported_type(ty) {
-        return false;
+        return Some("unsupported-result-type");
     }
     match expression {
-        Expression::Column(_) => true,
-        Expression::CorrelatedColumn(_) => false,
+        Expression::Column(_) => None,
+        Expression::CorrelatedColumn(_) => Some("correlated-column"),
         Expression::Constant(value) => {
-            value.deferred_expr.is_none()
-                && value.param_marker.is_none()
-                // A temporal constant is sent as a packed protobuf payload
-                // whose encoding depends on session settings the constant does
-                // not carry. No corpus case reaches this arm -- the rewriter
-                // leaves `date('...')`-style calls alone and they go through
-                // `coerce()` -- so the shape is unverified; keep it native
-                // rather than risk a native value becoming an engine ERROR.
-                && !matches!(
-                    ty.code(),
-                    FieldTypeCode::Date | FieldTypeCode::Datetime | FieldTypeCode::Timestamp
-                )
-                && !matches!(value.value, Datum::Real(v) | Datum::Float32(v) if !v.is_finite())
-                // A binary/bit literal is NUMERIC in the native evaluator's
-                // coercion (`b'1' + 0` is 1) but reaches the engine as bytes,
-                // where the same expression is 0. Decline the literal.
-                && !matches!(
-                    value.value,
-                    Datum::Raw(_)
-                        | Datum::MinNotNull
-                        | Datum::MaxValue
-                        | Datum::BinaryLiteral(_)
-                        | Datum::Bit(_)
-                )
+            if value.deferred_expr.is_some() {
+                return Some("constant-deferred");
+            }
+            if value.param_marker.is_some() {
+                return Some("constant-param-marker");
+            }
+            // A temporal constant is sent as a packed protobuf payload whose
+            // encoding depends on session settings the constant does not carry,
+            // and the shape is unverified here, so keep it native rather than
+            // risk a native value becoming an engine ERROR. This arm *is*
+            // reachable: the rewriter folds `cast(<literal> as datetime)` into
+            // a temporal constant even though it leaves `date('...')` calls
+            // alone.
+            if matches!(
+                ty.code(),
+                FieldTypeCode::Date | FieldTypeCode::Datetime | FieldTypeCode::Timestamp
+            ) {
+                return Some("constant-temporal");
+            }
+            if matches!(value.value, Datum::Real(v) | Datum::Float32(v) if !v.is_finite()) {
+                return Some("constant-nonfinite-real");
+            }
+            // A binary/bit literal is NUMERIC in the native evaluator's
+            // coercion (`b'1' + 0` is 1) but reaches the engine as bytes, where
+            // the same expression is 0. Decline the literal.
+            if matches!(
+                value.value,
+                Datum::Raw(_)
+                    | Datum::MinNotNull
+                    | Datum::MaxValue
+                    | Datum::BinaryLiteral(_)
+                    | Datum::Bit(_)
+            ) {
+                return Some("constant-binary-or-literal");
+            }
+            None
         }
         Expression::ScalarFunction(function) => {
             // The admission table is the only name-level gate. A name with no
             // row, or a row explicitly excluded, stays native. `Shape` carries
             // the lazy-child rules.
-            let Some(row) = super::admission::admission(function.func_name.lowercase()) else {
-                return false;
+            let name = function.func_name.lowercase();
+            let Some(row) = super::admission::admission(name) else {
+                return Some("no-admission-row");
             };
+            if row.decision != super::admission::Decision::Admitted {
+                return Some(row.exclusion_reason);
+            }
             // A FLOAT result needs an explicit rounding contract; numeric
             // kernels themselves return f64. FLOAT input columns remain usable.
-            row.decision == super::admission::Decision::Admitted
-                && ty.code() != FieldTypeCode::Float
-                && row.shape.permits(function)
-                && function.args.iter().all(admitted)
+            if ty.code() == FieldTypeCode::Float {
+                return Some("float-result");
+            }
+            if !row.shape.permits(function) {
+                return Some("lazy-shape");
+            }
+            function.args.iter().find_map(admission_rejection)
         }
     }
 }
@@ -375,6 +408,12 @@ fn arithmetic(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr
     use EvalType::{Decimal, Int, Real};
     let ty = function.get_static_type()?;
     let name = function.func_name.lowercase();
+    // `cast` is the internal spelling. The rewriter mints `cast_signed`,
+    // `cast_datetime`, ... for explicit `CAST(x AS <type>)`, and routing those
+    // here looks interchangeable, but the dual-run corpus says otherwise: two
+    // shapes diverge (a DATETIME result keeps scale 0 where native keeps the
+    // promoted scale, and an INTERVAL argument rounds differently), so the
+    // minted spellings stay native until that coercion is reproduced exactly.
     if name == "cast" && children.len() == 1 {
         let source = child_type(&children[0])?;
         if source.eval_type() == EvalType::Duration

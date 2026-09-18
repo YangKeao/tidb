@@ -155,6 +155,18 @@ value rule and stays; the experiment is recorded in
 land: a `NULL` leaf is retagged to the arm's family rather than cast, because
 `NULL` is family-less and the engine's validator reads the declared `FieldType`.
 
+The same "it is the same operation" trap sits in the explicit-cast spellings.
+`CAST(x AS SIGNED)` arrives as `cast_signed` and `CAST(x AS DATETIME)` as
+`cast_datetime`, minted by the rewriter; admitting them against the local
+arithmetic arm (which already derives `Cast{source}As{target}` from the
+function's static type) took the corpus gap from 61 to 59 and immediately broke
+two shapes: a `COALESCE` over `DATETIME(0)` and `DATETIME(3)` lost the promoted
+scale (`.000`), and an `INTERVAL` argument through a minted cast rounded the
+other way. Reverted; the minted spellings stay native, and the experiment is in
+`tikv-expression-corpus-plan.md` section 7.4. The lesson repeats: the dual-run
+corpus is cheap and it decides these questions faster than reasoning about the
+code does.
+
 The lazy design (`components/tidb_query_expr/SHORT_CIRCUIT_DESIGN.md`) found
 that materializing a lazy child at a subset boundary must produce an owned
 `VectorValue`, because an `RpnStackNode` borrows one lifetime; that the

@@ -1365,6 +1365,26 @@ the current set with it:
 | engine compile | 7 | the wire program was built and the engine refused it |
 | evaluation | 2 | compiles, then the engine declines per batch |
 
+The admission stage is a third of the whole gap, so it reports its own
+sub-reason too (`TIKV-EXPR-ADMIT-REJECT [<reason>]`). For the 32:
+
+| Admission sub-reason | Count |
+| --- | --- |
+| row excluded: no local lowering | 22 |
+| constant is a binary/bit/literal datum | 3 |
+| lazy-shape rule (a skipped arm is not a leaf) | 2 |
+| row excluded: `max_allowed_packet` | 2 |
+| row excluded: session state / clock / RNG | 1 |
+| row excluded: native `COT` bug | 1 |
+| row excluded: `OCT` over a bit literal | 1 |
+
+That reframes the group: only **five** of the 32 are policy exclusions the
+adapter chose deliberately (`COT`, `OCT`, `max_allowed_packet`, session state),
+two are the lazy-arm value rule, three are the binary-literal representation
+gap, and the 22 "row excluded: no local lowering" are names whose exclusion
+reason is a placeholder -- they are not missing *rows*, they are rows that say
+"nothing lowers this yet".
+
 The split matters because the three engine-side groups need engine or
 embedder work, while the admission group needs either a new lowering (the
 `extract`/`time`/`timestamp`/`convert_tz` family) or is a deliberate exclusion
@@ -1546,4 +1566,29 @@ kernels is an adapter error rather than an engine gap; `HOUR`/`MINUTE`/
 `SECOND`/`MICROSECOND` stay native, and `EXTRACT` over a duration stays native
 with them. `extract(year from 20240315)`, both `time(...)` cases and
 `timestamp('2020-01-01')` are engine-covered and agree.
+
+### 7.4 The minted `cast_*` spellings are NOT the internal `cast` arm
+
+Most of the 22 "row excluded: no local lowering" names are the rewriter's
+explicit-cast spellings: `CAST(x AS SIGNED)` becomes `cast_signed`,
+`CAST(x AS DATETIME)` becomes `cast_datetime`, and so on. `cast_decimal` and
+`cast_double` are already admitted through the reused pushdown catalog, so it
+looks like the rest only need the same treatment -- and the local arithmetic arm
+already derives `Cast{source}As{target}` from the source and the function's own
+static type, which is exactly what these need.
+
+Admitting them and routing them to that arm produced a *smaller* gap
+(61 -> 59) and two immediate dual-run disagreements:
+
+| Expression | Native | Engine |
+| --- | --- | --- |
+| `coalesce(cast('2020-10-10 12:59:59' as datetime), ...)` | `STR:2020-10-10 12:59:59.000` | `STR:2020-10-10 12:59:59` |
+| an `INTERVAL` argument through a minted cast | `INT:0` | `INT:1` |
+
+The first is the promoted-scale re-declaration a `COALESCE` of `DATETIME(0)`
+and `DATETIME(3)` needs; the second is a rounding difference on an integer
+target. Both are the same class as 7.2 -- "it is the same operation" is a
+hypothesis, and the corpus refutes it -- so the experiment was reverted and the
+minted spellings stay native. A future attempt has to reproduce Go's explicit
+`CAST` coercion (result metadata included) rather than reuse the internal arm.
 

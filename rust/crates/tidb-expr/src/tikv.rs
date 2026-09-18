@@ -69,7 +69,7 @@ pub struct TikvExpression {
 /// engine compile refusal, so a silent fallback hides which of them the
 /// remaining removal work is in. `TIKV_EXPR_DEBUG_COMPILE` is a diagnostic
 /// only: the decision, and therefore SQL behaviour, is unchanged.
-fn debug_declines() -> bool {
+pub(super) fn debug_declines() -> bool {
     std::env::var_os("TIKV_EXPR_DEBUG_COMPILE").is_some()
 }
 
