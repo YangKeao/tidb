@@ -63,6 +63,28 @@ reproducible grep; the kinds are:
   during DML with a statement context, so they can be moved with projection,
   but they are separate call sites.
 
+### Conversion receipt
+
+Seven sites are converted (three constant-row in `ddl/`,
+four row-with-columns in `partition_pruning.rs`). Every further site must
+arrive with the same three receipts, because the first one alone is not enough:
+
+1. **the context's static type** -- the helpers take `C: Columns` by value
+   reference, so a `&dyn tidb_expr::Columns` cannot use them (`run` needs
+   `C: Sized`; `C: ?Sized` compiles the bound but not its body). Two sites are
+   in that position and keep their row evaluation deliberately.
+2. **a green suite in both feature modes** -- necessary, not sufficient: the DDL
+   and pruning suites run without an engine context and would pass through the
+   fallback.
+3. **an engine-execution assertion** -- `tikv_expression_rows() > 0` under
+   `with_tikv_expression(true)`, plus the value agreeing with the native run.
+   `tidb-executor/tests/tikv_expression.rs` has that shape for both DDL sites
+   and `range_pruning_evaluates_through_the_engine` for one pruning site.
+
+The per-row kinds (36 sites in a loop or comparator) are excluded from this
+receipt because they must not be wrapped: they need the evaluation moved out of
+the loop so the engine sees a batch, and no helper makes that safe.
+
 Six sites now have evidence of conversion, in both input shapes. The two
 `ddl/table_partition_list.rs` sites go through
 `tidb_expr::evaluator::eval_constant_row` (no input columns), proven by
