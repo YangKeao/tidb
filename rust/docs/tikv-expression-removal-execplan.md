@@ -139,6 +139,21 @@ wall fields) untouched -- that is the shape the chunk round trip is defined on.
 A blanket rule that costs one line of bridge code should be preferred to
 refusing a whole family.
 
+The same lesson then applied in reverse. The `Shape` policy that allows only
+leaves in a possibly-skipped lazy arm looks removable, because the engine's
+lazy boundary evaluates each child on demand (`ChildHandle::eval` calls
+`eval_subtree`), so a skipped arm is never entered. Replacing the leaf rule with
+`coerce` and rerunning the dual-run corpus produced three disagreements in one
+run: `case when 0.1 then 1 else 2 end` and
+`if(cast('0.1' as decimal(2,1)), 1, 2)` answer `2` instead of `1` because Go's
+truthiness on a non-zero DECIMAL is not Go's integer cast, and
+`coalesce(1, 123.456)` comes back with decimal scale 0 instead of 3. Inserting
+an implicit cast changes the *value*, not just the plan, so the leaf rule is a
+value rule and stays; the experiment is recorded in
+`tikv-expression-corpus-plan.md` section 7.2. The narrow half that is safe did
+land: a `NULL` leaf is retagged to the arm's family rather than cast, because
+`NULL` is family-less and the engine's validator reads the declared `FieldType`.
+
 The lazy design (`components/tidb_query_expr/SHORT_CIRCUIT_DESIGN.md`) found
 that materializing a lazy child at a subset boundary must produce an owned
 `VectorValue`, because an `RpnStackNode` borrows one lifetime; that the

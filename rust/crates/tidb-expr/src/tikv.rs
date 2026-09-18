@@ -63,6 +63,28 @@ pub struct TikvExpression {
     wire_signatures: Vec<i32>,
 }
 
+/// Whether to print the stage at which an expression was declined.
+///
+/// `FallbackReason::NotAdmitted` covers four different adapter stages plus an
+/// engine compile refusal, so a silent fallback hides which of them the
+/// remaining removal work is in. `TIKV_EXPR_DEBUG_COMPILE` is a diagnostic
+/// only: the decision, and therefore SQL behaviour, is unchanged.
+fn debug_declines() -> bool {
+    std::env::var_os("TIKV_EXPR_DEBUG_COMPILE").is_some()
+}
+
+/// Reports `stage` under `TIKV_EXPR_DEBUG_COMPILE` and returns the same
+/// `NotAdmitted` the caller would have returned without the diagnostic.
+fn declined(
+    stage: &str,
+    expression: &Expression,
+) -> Result<Result<TikvExpression, FallbackReason>, EvalError> {
+    if debug_declines() {
+        eprintln!("TIKV-EXPR-DECLINE [{stage}] {expression:?}");
+    }
+    Ok(Err(FallbackReason::NotAdmitted))
+}
+
 impl TikvExpression {
     /// Compile an expression once. `None` means admission/lowering declined it,
     /// before evaluating any row or changing the caller's diagnostics.
@@ -80,16 +102,16 @@ impl TikvExpression {
         context: Context,
     ) -> Result<Result<Self, FallbackReason>, EvalError> {
         if !admitted(expression) {
-            return Ok(Err(FallbackReason::NotAdmitted));
+            return declined("admission", expression);
         }
         let Some(result_type) = expression.static_type().cloned() else {
-            return Ok(Err(FallbackReason::NotAdmitted));
+            return declined("static-type", expression);
         };
         let mut remapped = expression.clone();
         let mut inputs = Vec::new();
         let mut positions = BTreeMap::new();
         if !remap_columns(&mut remapped, &mut inputs, &mut positions) {
-            return Ok(Err(FallbackReason::NotAdmitted));
+            return declined("column-remap", expression);
         }
         let descriptor = |offset: u32| {
             let (_, field_type) = inputs.get(offset as usize)?;
@@ -110,14 +132,14 @@ impl TikvExpression {
             })
         };
         let Some(encoded) = lower(&remapped, &descriptor) else {
-            return Ok(Err(FallbackReason::NotAdmitted));
+            return declined("lowering", expression);
         };
         let Some(schema): Option<Vec<_>> = inputs
             .iter()
             .map(|(_, ty)| lowering::field_type_to_pb(ty).map(|pb| pb.encode_to_vec()))
             .collect()
         else {
-            return Ok(Err(FallbackReason::NotAdmitted));
+            return declined("schema", expression);
         };
         fn collect_signatures(expression: &tidb_proto::tipb::Expr, out: &mut Vec<i32>) {
             if expression.tp == Some(tidb_proto::tipb::ExprType::ScalarFunc as i32) {
@@ -140,11 +162,8 @@ impl TikvExpression {
         {
             Ok(prepared) => prepared,
             Err(error) => {
-                // Set TIKV_EXPR_DEBUG_COMPILE to see which wire program the
-                // engine refuses; the refusal itself is a silent native
-                // fallback by design.
-                if std::env::var_os("TIKV_EXPR_DEBUG_COMPILE").is_some() {
-                    eprintln!("ENGINE-COMPILE-REJECT {expression:?} -> {error:?}");
+                if debug_declines() {
+                    eprintln!("TIKV-EXPR-DECLINE [engine-compile: {error:?}] {expression:?}");
                 }
                 return Ok(Err(FallbackReason::NotAdmitted));
             }

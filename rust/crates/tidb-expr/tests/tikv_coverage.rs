@@ -783,6 +783,33 @@ fn tikv_coverage_control_leaves_and_unsafe_branches() {
         )
         .unwrap();
     }
+    // A NULL constant carries the SQL `Null` type, whose eval family is
+    // String, while the kernel is `CoalesceInt`. The adapter retags the leaf
+    // to the arm's family instead of inserting a cast, so the engine's
+    // argument validator sees `Int` and the arm stays a leaf.
+    let null_ty = FieldType::new(FieldTypeCode::Null);
+    check(
+        "coalesce_null_arm",
+        call(
+            "coalesce",
+            &ty,
+            vec![literal(Datum::Null, &null_ty), column(0, &ty)],
+        ),
+        &mut input,
+        &ty,
+    )
+    .unwrap();
+    check(
+        "ifnull_null_arm",
+        call(
+            "ifnull",
+            &ty,
+            vec![column(0, &ty), literal(Datum::Null, &null_ty)],
+        ),
+        &mut input,
+        &ty,
+    )
+    .unwrap();
     check(
         "if_leaf",
         call(

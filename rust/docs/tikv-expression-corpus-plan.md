@@ -1350,6 +1350,37 @@ rebuilds the declared `DATE` the way Go's DATE decoder drops the time part
 in their place: it was declined all along, but the test that contains it used
 to stop earlier.
 
+### 7.1 Where each refusal happens
+
+`FallbackReason::NotAdmitted` covers five different stages, so a silent
+fallback hides which one a given expression is stuck at. `TIKV_EXPR_DEBUG_COMPILE=1`
+prints the stage and, for the engine stage, the engine's own error. Recompiling
+the current 63 with it:
+
+| Stage | Count | What it means |
+| --- | --- | --- |
+| admission table | 36 | the name is not admitted, or the expression's result type is outside `supported_type` |
+| local lowering | 18 | `local_call`/`families`/catalog lowering returned `None` |
+| engine compile | 7 | the wire program was built and the engine refused it |
+| evaluation | 2 | compiles, then the engine declines per batch |
+
+The split matters because the three engine-side groups need engine or
+embedder work, while the admission group needs either a new lowering (the
+`extract`/`time`/`timestamp`/`convert_tz` family) or is a deliberate exclusion
+(`cot`, `oct`, `json`, `load_file`, `format`, `make_set`, `to_base64`, the
+collation-sensitive shapes).
+
+Lazy shapes with a `NULL` arm were the first to fall out of the lowering group
+(`coalesce(NULL, 1)`, `NULLIF`, `CASE WHEN NULL THEN ...`, `0 OR NULL`): the
+engine's argument validator reads each child's declared `FieldType`, and a
+`NULL` constant was labelled `Bytes` (its SQL eval family), so `CoalesceInt`
+rejected it with `Expect Int, received Bytes`. `lazy_args` now retags a `NULL`
+leaf to the target family instead of inserting a cast, which keeps the arm a
+leaf and adds no node. Three expressions moved to engine-covered; three
+others that the same tests used to stop before (`1.50 or 0e0`,
+`coalesce(1, 1.1e0)`, `case when cast('0' as json) then 1 end`) took their
+place in the list, so the count stayed at 63.
+
 The 63, verbatim:
 
     0 or null
@@ -1459,4 +1490,32 @@ check inside the kernel; both are engine work, not admission work.
 
 The switch is inert unless `TIKV_EXPR_ENGINE_ONLY` is set, so dual-run remains
 the default during the coexistence period.
+
+### 7.2 The lazy arms' leaf rule is a VALUE rule, measured
+
+The remaining lowering refusals in the control family (`coalesce(1, 1.1e0)`,
+`1.50 or 0e0`, `case when false then 1.5 else 0 end`, `elt(1, 65)`) are family
+mismatches: the adapter's `Shape` policy allows only leaves in a
+possibly-skipped arm, and a mismatched leaf has to stay native rather than
+receive a cast. The engine's lazy boundary can evaluate an arbitrary child on
+demand (`ChildHandle::eval` calls `eval_subtree`), so the restriction looks
+like it could be relaxed to "coerce every arm".
+
+It cannot. Replacing the leaf rule with `coerce` and rerunning the dual-run
+corpus produced three immediate disagreements (native vs engine):
+
+| Expression | Native | Engine after the cast |
+| --- | --- | --- |
+| `case when 0.1 then 1 else 2 end` | `INT:1` | `INT:2` |
+| `coalesce(1, 123.456)` | `DEC:1.000` | `DEC:1` |
+| `if(cast('0.1' as decimal(2,1)), 1, 2)` | `INT:1` | `INT:2` |
+
+The first and third are the same trap: Go's truthiness (`EvalInt` on a
+non-zero DECIMAL is true) is not Go's integer cast, which rounds `0.1` to 0,
+so an inserted `CastDecimalAsInt` flips the branch. The second is not a value
+change but a *declared-shape* change: coercing the first arm rewrote the
+result's decimal scale from 3 to 0. So the rule is not about warnings or eager
+evaluation -- inserting an implicit cast changes the answer. The experiment
+was reverted; a future change that wants `coalesce(1, 1.1e0)` in the engine
+must reproduce Go's argument coercion for that signature, not reuse `coerce`.
 

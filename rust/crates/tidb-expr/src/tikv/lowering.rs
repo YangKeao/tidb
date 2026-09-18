@@ -215,13 +215,9 @@ fn same_family(children: &[PbExpr], target: EvalType) -> bool {
     })
 }
 
-pub(super) fn coerce(child: PbExpr, target: EvalType) -> Option<PbExpr> {
-    let source = child_type(&child)?;
-    if normalized(source.eval_type()) == normalized(target) && source.code() != FieldTypeCode::Enum
-    {
-        return Some(child);
-    }
-    let code = match target {
+/// The wire field type a cast to `target` declares.
+fn target_code(target: EvalType) -> Option<FieldTypeCode> {
+    Some(match target {
         EvalType::Int => FieldTypeCode::LongLong,
         EvalType::Real => FieldTypeCode::Double,
         EvalType::Decimal => FieldTypeCode::NewDecimal,
@@ -231,7 +227,47 @@ pub(super) fn coerce(child: PbExpr, target: EvalType) -> Option<PbExpr> {
         EvalType::Duration => FieldTypeCode::Duration,
         EvalType::Json => FieldTypeCode::Json,
         EvalType::VectorFloat32 => return None,
-    };
+    })
+}
+
+fn is_null_leaf(child: &PbExpr) -> bool {
+    child.tp == Some(ExprType::Null as i32)
+}
+
+/// Prepares the children of a lazy arm, one target family per child.
+///
+/// A child already in `target`'s family passes through unchanged. A `NULL` leaf
+/// is accepted and *retagged* to `target`: SQL's NULL has no type, but the
+/// engine's argument validator reads the declared `FieldType`, so a NULL that
+/// arrives labelled `Bytes` is rejected by a kernel that expects `Int`
+/// (`coalesce(NULL, 1)`). Retagging adds no node, so the arm stays a leaf.
+/// Everything else is refused, because the engine node may evaluate a child the
+/// SQL answer never reaches and only a leaf that cannot warn or fail is safe
+/// there -- `coerce` would insert a real cast node.
+fn lazy_args(children: Vec<PbExpr>, targets: &[EvalType]) -> Option<Vec<PbExpr>> {
+    if children.len() != targets.len() {
+        return None;
+    }
+    children
+        .into_iter()
+        .zip(targets)
+        .map(|(mut child, &target)| {
+            if is_null_leaf(&child) {
+                child.field_type = Some(field_type_to_pb(&FieldType::new(target_code(target)?))?);
+                return Some(child);
+            }
+            same_family(std::slice::from_ref(&child), target).then_some(child)
+        })
+        .collect()
+}
+
+pub(super) fn coerce(child: PbExpr, target: EvalType) -> Option<PbExpr> {
+    let source = child_type(&child)?;
+    if normalized(source.eval_type()) == normalized(target) && source.code() != FieldTypeCode::Enum
+    {
+        return Some(child);
+    }
+    let code = target_code(target)?;
     // Duration -> date/time uses today's date, not represented by Context.
     if source.eval_type() == EvalType::Duration
         && matches!(target, EvalType::Datetime | EvalType::Timestamp)
@@ -542,45 +578,50 @@ fn control(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr> {
     use EvalType::Int;
     let ty = function.get_static_type()?;
     let name = function.func_name.lowercase();
+    let result = ty.eval_type();
     let signature = match name {
-        "if" if children.len() == 3
-            && same_family(&children[..1], Int)
-            && same_family(&children[1..], ty.eval_type()) =>
-        {
-            format!("If{}", family(ty.eval_type()))
-        }
-        "ifnull" if children.len() == 2 && same_family(&children, ty.eval_type()) => {
-            format!("IfNull{}", family(ty.eval_type()))
-        }
-        "coalesce" if !children.is_empty() && same_family(&children, ty.eval_type()) => {
-            format!("Coalesce{}", family(ty.eval_type()))
-        }
-        "case" | "casewhen" if children.len() >= 2 => {
-            for (index, child) in children.iter().enumerate() {
-                let is_condition = index % 2 == 0 && index + 1 < children.len();
-                let target = if is_condition { Int } else { ty.eval_type() };
-                if !same_family(std::slice::from_ref(child), target) {
-                    return None;
-                }
-            }
-            format!("CaseWhen{}", family(ty.eval_type()))
-        }
-        "and" | "or" | "xor" if children.len() == 2 && same_family(&children, Int) => match name {
+        "if" if children.len() == 3 => format!("If{}", family(result)),
+        "ifnull" if children.len() == 2 => format!("IfNull{}", family(result)),
+        "coalesce" if !children.is_empty() => format!("Coalesce{}", family(result)),
+        "case" | "casewhen" if children.len() >= 2 => format!("CaseWhen{}", family(result)),
+        "and" | "or" | "xor" if children.len() == 2 => match name {
             "and" => "LogicalAnd",
             "or" => "LogicalOr",
             _ => "LogicalXor",
         }
         .to_owned(),
-        "elt"
-            if children.len() >= 2
-                && same_family(&children[..1], Int)
-                && same_family(&children[1..], EvalType::String) =>
-        {
-            "Elt".to_owned()
-        }
+        "elt" if children.len() >= 2 => "Elt".to_owned(),
         _ => return None,
     };
-    node(&signature, children, ty)
+    let targets = match name {
+        // `if(cond, a, b)`: only the condition is Int.
+        "if" => vec![Int, result, result],
+        // `case`: condition, value, condition, value, ... with the last child a
+        // bare `else` value.
+        "case" | "casewhen" => (0..children.len())
+            .map(|index| {
+                if index % 2 == 0 && index + 1 < children.len() {
+                    Int
+                } else {
+                    result
+                }
+            })
+            .collect(),
+        // `elt(index, a, b, ...)`: index Int, values String.
+        "elt" => std::iter::once(Int)
+            .chain(std::iter::repeat(EvalType::String).take(children.len() - 1))
+            .collect(),
+        // `ifnull`/`coalesce`/`and`/`or`/`xor` are uniform.
+        _ => vec![
+            if matches!(name, "and" | "or" | "xor") {
+                Int
+            } else {
+                result
+            };
+            children.len()
+        ],
+    };
+    node(&signature, lazy_args(children, &targets)?, ty)
 }
 
 fn math(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr> {
