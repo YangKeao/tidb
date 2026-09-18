@@ -250,6 +250,10 @@ struct TopicReport {
     matched: BTreeMap<String, usize>,
     skipped: BTreeMap<String, usize>,
     divergences: Vec<String>,
+    /// Successful engine expression-row evaluations, not physical SQL rows.
+    engine_rows: u64,
+    borrowed_engine_rows: u64,
+    engine_statements: usize,
 }
 
 impl TopicReport {
@@ -830,7 +834,11 @@ fn run_topic_on_this_stack(topic: &str) -> Result<TopicReport, String> {
             }
             Item::Echo(_) => continue,
         };
+        let before_rows = connections.expression_rows().0;
         let outcome = compare(connections.current(), stmt, &block, &mut report);
+        if connections.expression_rows().0 > before_rows {
+            report.engine_statements += 1;
+        }
         if matches!(outcome, Err(None)) && !stmt.expect_error {
             connections.recover_account_row_from_unsupported_create_user(&stmt.sql);
         }
@@ -842,6 +850,14 @@ fn run_topic_on_this_stack(topic: &str) -> Result<TopicReport, String> {
                 .push(format!("\n--- [{topic}] {}\n{detail}", stmt.sql)),
         }
     }
+    (report.engine_rows, report.borrowed_engine_rows) = connections.expression_rows();
+    eprintln!(
+        "backend={:?} topic={topic} engine_expression_rows={} borrowed_expression_rows={} engine_statements={}",
+        connections.expression_backend(),
+        report.engine_rows,
+        report.borrowed_engine_rows,
+        report.engine_statements,
+    );
     Ok(report)
 }
 
@@ -861,6 +877,9 @@ fn integrationtest_replay_matches_recorded_tidb_output() {
             report.skipped.values().sum::<usize>(),
             report.total()
         ));
+        total.engine_rows += report.engine_rows;
+        total.borrowed_engine_rows += report.borrowed_engine_rows;
+        total.engine_statements += report.engine_statements;
         total.divergences.extend(report.divergences);
         for (kind, count) in report.matched {
             *total.matched.entry(kind).or_default() += count;
@@ -879,6 +898,25 @@ fn integrationtest_replay_matches_recorded_tidb_output() {
         total.matched,
         total.skipped
     );
+
+    let backend = mysqltest_connections::ExpressionBackend::from_environment()
+        .expect("valid replay backend selection");
+    eprintln!(
+        "backend={backend:?} total_engine_expression_rows={} total_borrowed_expression_rows={} total_engine_statements={}",
+        total.engine_rows, total.borrowed_engine_rows, total.engine_statements,
+    );
+    if backend != mysqltest_connections::ExpressionBackend::Native {
+        assert!(
+            total.engine_rows > 0,
+            "requested {backend:?}, but every fixture stayed native"
+        );
+    } else {
+        assert_eq!(
+            total.engine_rows, 0,
+            "default/native replay unexpectedly used TiKV"
+        );
+    }
+    assert!(total.borrowed_engine_rows <= total.engine_rows);
 
     // The carried divergences are printed on demand, not only when the ratchet
     // breaks: they are the work list, and a work list that is only visible on

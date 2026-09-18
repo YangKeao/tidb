@@ -173,24 +173,76 @@ fn tikv_adapter_compacts_only_referenced_columns_and_splits_large_batches() {
 #[test]
 fn tikv_adapter_refuses_unverified_types_and_execution_time_values() {
     let int = FieldType::new(FieldTypeCode::LongLong);
-    let decimal = FieldType::new(FieldTypeCode::NewDecimal);
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal).with_decimal(4);
     let unsigned = int.clone().with_flags(1 << 5);
     let mut parameter = Constant::new(Datum::Int(1), int.clone());
     parameter.param_marker = Some(ParamMarker { order: 0 });
-    for expression in [
+    let nonfinite = Expression::Constant(Constant::new(Datum::Real(f64::INFINITY), int.clone()));
+    let refused = [
+        // A marker's value is only known at execution time.
+        Expression::Constant(parameter),
+        // Nonfinite REAL literals would panic TiKV arithmetic.
+        nonfinite,
+        // Session clock / effects / RNG names have no local session binding.
+        call("sleep", &int, vec![constant(1, &int)]),
+        call("get_lock", &int, vec![constant(1, &int), constant(1, &int)]),
+        call("rand", &int, vec![]),
+        // TiKV's UUID parsers accept malformed strings; Go raises 1411.
+        call(
+            "uuid_version",
+            &int,
+            vec![Expression::Constant(Constant::new(
+                Datum::Bytes(b"abc".to_vec()),
+                FieldType::new(FieldTypeCode::VarString),
+            ))],
+        ),
+        // A lazy node whose possibly-skipped children are not leaves: TiKV RPN
+        // evaluates every child eagerly, so a dead division must stay native.
+        call(
+            "case",
+            &int,
+            vec![
+                call("eq", &int, vec![input_column(0, &int), constant(0, &int)]),
+                constant(1, &int),
+                call(
+                    "intdiv",
+                    &int,
+                    vec![input_column(0, &int), constant(0, &int)],
+                ),
+            ],
+        ),
+    ];
+    for expression in refused {
+        assert!(
+            TikvExpression::compile(&expression, Context::default())
+                .unwrap()
+                .is_none(),
+            "{expression:?}"
+        );
+    }
+    // The broadened surface admits these shapes; the coverage fixtures pin
+    // their values, and this list guards against silent re-narrowing.
+    let admitted = [
         input_column(0, &decimal),
         input_column(0, &unsigned),
-        Expression::Constant(parameter),
         call(
             "if",
             &int,
             vec![constant(1, &int), constant(2, &int), constant(3, &int)],
         ),
-        call("div", &int, vec![input_column(0, &int), constant(0, &int)]),
-    ] {
-        assert!(TikvExpression::compile(&expression, Context::default())
-            .unwrap()
-            .is_none());
+        call(
+            "plus",
+            &decimal,
+            vec![input_column(0, &decimal), input_column(1, &decimal)],
+        ),
+    ];
+    for expression in admitted {
+        assert!(
+            TikvExpression::compile(&expression, Context::default())
+                .unwrap()
+                .is_some(),
+            "{expression:?}"
+        );
     }
 }
 

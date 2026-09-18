@@ -10,7 +10,13 @@ description = "Session lifecycle and state authority for the TiDB Rust rewrite."
 autotests = false
 build = "../../scripts/aggregate-tests.rs"
 
+[features]
+default = []
+# Explicit per-Session opt-in; enabling the feature does not change defaults.
+tikv-expr = ["dep:tidb-expr", "tidb-expr/tikv-expr", "tidb-executor/tikv-expr"]
+
 [dependencies]
+tidb-expr = { path = "../tidb-expr", optional = true }
 tidb-config = { path = "../tidb-config" }
 # `information_schema.TIDB_SERVERS_INFO` reads the server-info syncer, the
 # same source Go's `setDataForServersInfo` reads through `GetAllServerInfo`.

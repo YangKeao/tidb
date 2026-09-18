@@ -149,7 +149,7 @@ fn tikv_expression_sql_varchar_length_counts_bytes_and_preserves_null() {
 }
 
 #[test]
-fn tikv_expression_sql_decimal_stays_native_with_backend_enabled() {
+fn tikv_expression_sql_decimal_reuses_engine_with_backend_enabled() {
     let mut catalog = Catalog::default();
     run_create_table_on(
         "CREATE TABLE decimals (id BIGINT, a DECIMAL(20,6), b DECIMAL(20,6))",
@@ -175,10 +175,9 @@ fn tikv_expression_sql_decimal_stays_native_with_backend_enabled() {
     assert_eq!(expected.1[2], vec![Datum::Null, Datum::Null, Datum::Null]);
     assert_eq!(actual, expected);
     assert_eq!(native.tikv_expression_rows(), 0);
-    assert_eq!(
-        tikv.tikv_expression_rows(),
-        0,
-        "decimal inputs are outside automatic admission"
+    assert!(
+        tikv.tikv_expression_rows() >= 4,
+        "exact Decimal arithmetic must execute in TiKV"
     );
     assert_eq!(tikv.take_warnings(), native.take_warnings());
 }

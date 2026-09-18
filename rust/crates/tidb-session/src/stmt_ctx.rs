@@ -918,6 +918,17 @@ impl Session {
         is_dml: bool,
         ignore_err: bool,
     ) -> tidb_executor::StmtContext {
+        let context = self.native_statement_context_ignoring(is_dml, ignore_err);
+        #[cfg(feature = "tikv-expr")]
+        let context = self.configure_tikv_expression(context);
+        context
+    }
+
+    fn native_statement_context_ignoring(
+        &self,
+        is_dml: bool,
+        ignore_err: bool,
+    ) -> tidb_executor::StmtContext {
         // Go hands the same `SessionVars` to every expression, which is where
         // `DATABASE()` and `VERSION()` read from.
         let current_db = if self.current_db.is_empty() {

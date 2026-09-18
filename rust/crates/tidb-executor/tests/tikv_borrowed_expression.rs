@@ -128,31 +128,47 @@ fn tikv_borrowed_expression_sql_crosses_executor_and_engine_batch_boundaries() {
 }
 
 #[test]
-fn tikv_borrowed_expression_unsupported_sql_stays_native_and_case_stays_lazy() {
+fn tikv_borrowed_expression_decimal_reuses_engine_and_scalar_case_stays_lazy() {
     let catalog = fixture();
-    for sql in [
-        "SELECT d+d, d*d FROM t ORDER BY id",
-        "SELECT CASE WHEN b=0 THEN 7 ELSE a DIV b END FROM t ORDER BY id",
-    ] {
-        let native = StmtContext::for_query();
-        let expected = run_select_meta_on(sql, &catalog, &native).unwrap();
-        for backend in [Backend::Copying, Backend::Borrowed] {
-            let context = StmtContext::for_query().with_tikv_expression_backend(backend);
-            assert_eq!(
-                run_select_meta_on(sql, &catalog, &context).unwrap(),
-                expected
-            );
-            assert_eq!(
-                context.tikv_expression_rows(),
-                0,
-                "unsupported SQL must remain native: {sql}"
-            );
-            assert_eq!(context.tikv_borrowed_expression_rows(), 0);
-            assert!(
-                context.take_warnings().is_empty(),
-                "dead division branch must not warn"
-            );
-        }
+    // Exact DECIMAL arithmetic is part of the broadened surface, but the
+    // borrowed loaders still cover only Int/Real/Bytes: the requested Borrowed
+    // backend falls back to the copying adapter before any kernel runs, and
+    // the counters must report that honestly.
+    let sql = "SELECT d+d, d*d FROM t ORDER BY id";
+    let native = StmtContext::for_query();
+    let expected = run_select_meta_on(sql, &catalog, &native).unwrap();
+    for backend in [Backend::Copying, Backend::Borrowed] {
+        let context = StmtContext::for_query().with_tikv_expression_backend(backend);
+        assert_eq!(
+            run_select_meta_on(sql, &catalog, &context).unwrap(),
+            expected
+        );
+        assert!(
+            context.tikv_expression_rows() > 0,
+            "supported SQL must execute in TiKV: {sql}"
+        );
+        assert_eq!(context.tikv_borrowed_expression_rows(), 0);
+    }
+    // A CASE whose branches are not leaves stays native: TiKV RPN evaluates
+    // every child eagerly, so the dead DIV must not execute or warn.
+    let sql = "SELECT CASE WHEN b=0 THEN 7 ELSE a DIV b END FROM t ORDER BY id";
+    let expected = run_select_meta_on(sql, &catalog, &native).unwrap();
+    for backend in [Backend::Copying, Backend::Borrowed] {
+        let context = StmtContext::for_query().with_tikv_expression_backend(backend);
+        assert_eq!(
+            run_select_meta_on(sql, &catalog, &context).unwrap(),
+            expected
+        );
+        assert_eq!(
+            context.tikv_expression_rows(),
+            0,
+            "unsupported SQL must remain native: {sql}"
+        );
+        assert_eq!(context.tikv_borrowed_expression_rows(), 0);
+        assert!(
+            context.take_warnings().is_empty(),
+            "dead division branch must not warn"
+        );
     }
 }
 

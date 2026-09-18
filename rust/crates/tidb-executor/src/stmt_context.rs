@@ -956,6 +956,23 @@ context_configuration! {
         self
     }
 
+    /// Shares an explicit owner's cumulative local-engine counters.
+    ///
+    /// Counts successful expression-row evaluations, not physical SQL rows or
+    /// attempted executions. Multiple projections can count the same input row.
+    /// Ordinary statement construction retains independent default counters.
+    #[cfg(feature = "tikv-expr")]
+    #[must_use]
+    pub fn with_tikv_expression_counters(
+        mut self,
+        rows: Arc<AtomicU64>,
+        borrowed_rows: Arc<AtomicU64>,
+    ) -> Self {
+        self.tikv_expression_rows = rows;
+        self.tikv_borrowed_expression_rows = borrowed_rows;
+        self
+    }
+
     /// Binds the transaction owner's selected-row channel for this attempt.
     #[must_use]
     pub fn with_selected_lock_keys(

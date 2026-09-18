@@ -85,6 +85,64 @@ const DEFAULT_CONNECTION: &str = "default";
 /// [`PrivilegeRegistry::default`] bootstraps `root` for.
 const ANY_HOST: &str = "%";
 
+/// Test-harness selection only; no production environment switch is installed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ExpressionBackend {
+    #[default]
+    Native,
+    Copying,
+    Borrowed,
+}
+
+impl ExpressionBackend {
+    pub fn from_environment() -> Result<Self, String> {
+        match std::env::var("INTEGRATION_TIKV_BACKEND") {
+            Err(std::env::VarError::NotPresent) => Ok(Self::Native),
+            Ok(value) if value == "native" => Ok(Self::Native),
+            Ok(value) if value == "copying" => Ok(Self::Copying),
+            Ok(value) if value == "borrowed" => Ok(Self::Borrowed),
+            _ => Err("INTEGRATION_TIKV_BACKEND must be native, copying, or borrowed".to_owned()),
+        }
+    }
+
+    fn configure(self, session: &mut Session) -> Result<(), String> {
+        #[cfg(feature = "tikv-expr")]
+        {
+            use tidb_session::TikvExpressionBackend;
+            session.set_tikv_expression_backend(match self {
+                Self::Native => None,
+                Self::Copying => Some(TikvExpressionBackend::Copying),
+                Self::Borrowed => Some(TikvExpressionBackend::Borrowed),
+            });
+            Ok(())
+        }
+        #[cfg(not(feature = "tikv-expr"))]
+        {
+            let _ = session;
+            if self == Self::Native {
+                Ok(())
+            } else {
+                Err("INTEGRATION_TIKV_BACKEND requires --features tikv-expr; refusing native-only replay".to_owned())
+            }
+        }
+    }
+}
+
+fn expression_rows(session: &Session) -> (u64, u64) {
+    #[cfg(feature = "tikv-expr")]
+    {
+        (
+            session.tikv_expression_rows(),
+            session.tikv_borrowed_expression_rows(),
+        )
+    }
+    #[cfg(not(feature = "tikv-expr"))]
+    {
+        let _ = session;
+        (0, 0)
+    }
+}
+
 /// The sessions one topic's replay drives, and the server state behind them.
 pub struct Connections {
     sessions: BTreeMap<String, Session>,
@@ -98,12 +156,22 @@ pub struct Connections {
     /// Go's two package-level push-down blacklists, shared by every session
     /// this pool opens because they are one server's.
     pushdown_blacklists: tidb_session::blacklist::PushdownBlacklists,
+    expression_backend: ExpressionBackend,
+    /// Closed/replaced sessions must not disappear from the replay receipt.
+    retired_expression_rows: (u64, u64),
 }
 
 impl Connections {
     /// Opens the default connection for `topic`: `root` on the topic
     /// database, which is the connection mysql-tester starts every script on.
     pub fn open(topic: &str) -> Result<Self, String> {
+        Self::open_with_backend(topic, ExpressionBackend::from_environment()?)
+    }
+
+    pub fn open_with_backend(
+        topic: &str,
+        expression_backend: ExpressionBackend,
+    ) -> Result<Self, String> {
         let catalog = SharedCatalog::default();
         let mut pool = Connections {
             sessions: BTreeMap::new(),
@@ -113,6 +181,8 @@ impl Connections {
             privileges: PrivilegeRegistry::default(),
             next_connection_id: 1,
             pushdown_blacklists: tidb_session::blacklist::PushdownBlacklists::default(),
+            expression_backend,
+            retired_expression_rows: (0, 0),
         };
         let database = topic_database(topic);
         let mut session = pool.new_session("root", ANY_HOST, None)?;
@@ -131,6 +201,27 @@ impl Connections {
             .map_err(|e| format!("use topic database `{database}`: {e:?}"))?;
         pool.sessions.insert(DEFAULT_CONNECTION.to_owned(), session);
         Ok(pool)
+    }
+
+    pub fn expression_backend(&self) -> ExpressionBackend {
+        self.expression_backend
+    }
+
+    /// Successful expression-row evaluations across all connections, including
+    /// sessions already disconnected. Borrowed rows exclude copying fallback.
+    pub fn expression_rows(&self) -> (u64, u64) {
+        self.sessions
+            .values()
+            .map(expression_rows)
+            .fold(self.retired_expression_rows, |sum, rows| {
+                (sum.0.saturating_add(rows.0), sum.1.saturating_add(rows.1))
+            })
+    }
+
+    fn retire_expression_rows(&mut self, session: &Session) {
+        let rows = expression_rows(session);
+        self.retired_expression_rows.0 = self.retired_expression_rows.0.saturating_add(rows.0);
+        self.retired_expression_rows.1 = self.retired_expression_rows.1.saturating_add(rows.1);
     }
 
     /// The session statements currently run on.
@@ -168,7 +259,9 @@ impl Connections {
                 // after `connect (conn1, localhost, u_version29,, ...)` in
                 // `session/privileges` records `u_version29@%` from
                 // `current_user()`.
-                self.sessions.insert(name.clone(), session);
+                if let Some(previous) = self.sessions.insert(name.clone(), session) {
+                    self.retire_expression_rows(&previous);
+                }
                 self.current = name.clone();
                 Ok(())
             }
@@ -180,9 +273,10 @@ impl Connections {
                 Ok(())
             }
             ConnectionCmd::Close(name) => {
-                if self.sessions.remove(name).is_none() {
+                let Some(previous) = self.sessions.remove(name) else {
                     return Err(format!("`disconnect {name}` names no open connection"));
-                }
+                };
+                self.retire_expression_rows(&previous);
                 // Closing the current connection falls back to the default
                 // one: `session/privileges` runs a root-only
                 // `drop database` immediately after `disconnect conn1` with no
@@ -308,6 +402,7 @@ impl Connections {
                 .run(setup)
                 .expect("mysql-tester's per-connection setup is accepted");
         }
+        self.expression_backend.configure(&mut session)?;
         Ok(session)
     }
 
@@ -371,6 +466,54 @@ mod tests {
             tidb_session::StmtOutput::Rows { rows, .. } => format!("{rows:?}"),
             other => panic!("{sql} answered {other:?}"),
         }
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn backend_follows_connections_and_retains_retired_counters() {
+        use tidb_session::TikvExpressionBackend;
+        for (selected, expected) in [
+            (ExpressionBackend::Copying, TikvExpressionBackend::Copying),
+            (ExpressionBackend::Borrowed, TikvExpressionBackend::Borrowed),
+        ] {
+            let mut pool = Connections::open_with_backend("driver/isolation", selected).unwrap();
+            pool.current().run("create table t (a bigint)").unwrap();
+            pool.current().run("insert into t values (41)").unwrap();
+            assert_eq!(pool.current().tikv_expression_backend(), Some(expected));
+            assert_eq!(one_cell(&mut pool, "select a+1 from t"), "[[Int(42)]]");
+            let first = pool.expression_rows();
+            assert!(first.0 > 0);
+            pool.apply(&open_root("conn1")).unwrap();
+            assert_eq!(pool.current().tikv_expression_backend(), Some(expected));
+            assert_eq!(one_cell(&mut pool, "select a+1 from t"), "[[Int(42)]]");
+            let before_close = pool.expression_rows();
+            assert!(before_close.0 > first.0);
+            pool.apply(&ConnectionCmd::Close("conn1".to_owned()))
+                .unwrap();
+            assert_eq!(pool.expression_rows(), before_close);
+            pool.apply(&open_root("conn1")).unwrap();
+            assert_eq!(one_cell(&mut pool, "select a+1 from t"), "[[Int(42)]]");
+            let before_replace = pool.expression_rows();
+            pool.apply(&open_root("conn1")).unwrap();
+            assert_eq!(pool.expression_rows(), before_replace);
+            if selected == ExpressionBackend::Borrowed {
+                assert!(before_replace.1 > 0, "borrowed replay only copied");
+            } else {
+                assert_eq!(before_replace.1, 0);
+            }
+        }
+    }
+
+    #[cfg(not(feature = "tikv-expr"))]
+    #[test]
+    fn feature_disabled_replay_refuses_engine_requests() {
+        assert!(
+            Connections::open_with_backend("driver/isolation", ExpressionBackend::Copying).is_err()
+        );
+        assert!(
+            Connections::open_with_backend("driver/isolation", ExpressionBackend::Borrowed)
+                .is_err()
+        );
     }
 
     /// Every connection the replay opens carries mysql-tester's DSN session

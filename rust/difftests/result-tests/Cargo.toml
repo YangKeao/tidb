@@ -9,6 +9,11 @@ description = "Expression result differential tests."
 publish = false
 autotests = false
 
+[features]
+default = []
+# Test harness opt-in only; production Session defaults remain native.
+tikv-expr = ["tidb-session/tikv-expr", "tidb-executor/tikv-expr", "tidb-expr/tikv-expr"]
+
 [lints]
 workspace = true
 

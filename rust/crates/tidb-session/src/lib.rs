@@ -605,6 +605,9 @@ pub struct Session {
     /// lazily opened cluster snapshot becomes visible inside the statement
     /// that opened it.
     current_tso: tidb_executor::CurrentTso,
+    /// Explicit local-expression opt-in and cumulative counters; native by default.
+    #[cfg(feature = "tikv-expr")]
+    tikv_expression: tikv_expression::State,
     /// The node's server-info syncer, when the deployment has one.
     ///
     /// Go reads `information_schema.TIDB_SERVERS_INFO` through
@@ -846,6 +849,8 @@ impl Session {
             last_found_rows: 0,
             statement_kind: StatementKind::Other,
             current_tso: tidb_executor::CurrentTso::default(),
+            #[cfg(feature = "tikv-expr")]
+            tikv_expression: tikv_expression::State::default(),
             server_info_syncer: None,
             cluster_schema_version: None,
             workload_repository: None,
@@ -1026,6 +1031,10 @@ use record_set::StatementCompletion;
 pub use record_set::{OpenedStatement, SessionRecordSet, StatementExecution, StatementRecordSet};
 pub mod session_vars;
 mod stmt_ctx;
+#[cfg(feature = "tikv-expr")]
+mod tikv_expression;
+#[cfg(feature = "tikv-expr")]
+pub use tikv_expression::Backend as TikvExpressionBackend;
 mod table_privilege;
 mod txn;
 mod user_table;
@@ -2291,9 +2300,9 @@ mod tests_global_vars;
 #[cfg(test)]
 mod tests_grants;
 #[cfg(test)]
-mod tests_hash_join_fetcher_eof;
-#[cfg(test)]
 mod tests_harvested_relation_engine;
+#[cfg(test)]
+mod tests_hash_join_fetcher_eof;
 #[cfg(test)]
 mod tests_in_list_full_evaluation;
 #[cfg(test)]

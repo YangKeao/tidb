@@ -90,7 +90,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 [[package]]
 name = "api_version"
 version = "0.1.0"
-source = "git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280#521ac7330208b7f74f2b182bc373882687967280"
+source = "git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774#6806dc4d2537be3df63c220ba6ff977bd0ffd774"
 dependencies = [
  "bitflags 1.3.2",
  "codec",
@@ -618,7 +618,7 @@ dependencies = [
 [[package]]
 name = "cloud"
 version = "0.0.1"
-source = "git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280#521ac7330208b7f74f2b182bc373882687967280"
+source = "git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774#6806dc4d2537be3df63c220ba6ff977bd0ffd774"
 dependencies = [
  "async-trait",
  "derive_more",
@@ -647,7 +647,7 @@ dependencies = [
 [[package]]
 name = "codec"
 version = "0.0.1"
-source = "git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280#521ac7330208b7f74f2b182bc373882687967280"
+source = "git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774#6806dc4d2537be3df63c220ba6ff977bd0ffd774"
 dependencies = [
  "byteorder",
  "error_code",
@@ -660,7 +660,7 @@ dependencies = [
 [[package]]
 name = "collections"
 version = "0.1.0"
-source = "git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280#521ac7330208b7f74f2b182bc373882687967280"
+source = "git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774#6806dc4d2537be3df63c220ba6ff977bd0ffd774"
 dependencies = [
  "fxhash",
  "tikv_alloc",
@@ -820,7 +820,7 @@ dependencies = [
 [[package]]
 name = "crossbeam-skiplist"
 version = "0.1.3"
-source = "git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280#521ac7330208b7f74f2b182bc373882687967280"
+source = "git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774#6806dc4d2537be3df63c220ba6ff977bd0ffd774"
 dependencies = [
  "crossbeam-epoch",
  "crossbeam-skiplist 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -836,7 +836,7 @@ checksum = "61803da095bee82a81bb1a452ecc25d3b2f1416d1897eb86430c6159ef717c17"
 [[package]]
 name = "crypto"
 version = "0.0.1"
-source = "git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280#521ac7330208b7f74f2b182bc373882687967280"
+source = "git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774#6806dc4d2537be3df63c220ba6ff977bd0ffd774"
 dependencies = [
  "openssl",
  "openssl-sys",
@@ -1117,7 +1117,7 @@ dependencies = [
 [[package]]
 name = "encryption"
 version = "0.0.1"
-source = "git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280#521ac7330208b7f74f2b182bc373882687967280"
+source = "git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774#6806dc4d2537be3df63c220ba6ff977bd0ffd774"
 dependencies = [
  "async-trait",
  "byteorder",
@@ -1152,7 +1152,7 @@ dependencies = [
 [[package]]
 name = "engine_traits"
 version = "0.0.1"
-source = "git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280#521ac7330208b7f74f2b182bc373882687967280"
+source = "git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774#6806dc4d2537be3df63c220ba6ff977bd0ffd774"
 dependencies = [
  "collections",
  "encryption",
@@ -1214,7 +1214,7 @@ dependencies = [
 [[package]]
 name = "error_code"
 version = "0.0.1"
-source = "git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280#521ac7330208b7f74f2b182bc373882687967280"
+source = "git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774#6806dc4d2537be3df63c220ba6ff977bd0ffd774"
 dependencies = [
  "kvproto",
  "lazy_static",
@@ -1300,7 +1300,7 @@ checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 [[package]]
 name = "file_system"
 version = "0.1.0"
-source = "git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280#521ac7330208b7f74f2b182bc373882687967280"
+source = "git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774#6806dc4d2537be3df63c220ba6ff977bd0ffd774"
 dependencies = [
  "collections",
  "crc32fast",
@@ -2001,7 +2001,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "system-configuration 0.7.0",
  "tokio",
  "tower-service",
@@ -2312,7 +2312,7 @@ dependencies = [
 [[package]]
 name = "keys"
 version = "0.1.0"
-source = "git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280#521ac7330208b7f74f2b182bc373882687967280"
+source = "git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774#6806dc4d2537be3df63c220ba6ff977bd0ffd774"
 dependencies = [
  "byteorder",
  "kvproto",
@@ -2422,7 +2422,7 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 [[package]]
 name = "log_wrappers"
 version = "0.0.1"
-source = "git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280#521ac7330208b7f74f2b182bc373882687967280"
+source = "git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774#6806dc4d2537be3df63c220ba6ff977bd0ffd774"
 dependencies = [
  "atomic 0.5.3",
  "hex 0.4.3",
@@ -2811,7 +2811,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 [[package]]
 name = "online_config"
 version = "0.1.0"
-source = "git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280#521ac7330208b7f74f2b182bc373882687967280"
+source = "git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774#6806dc4d2537be3df63c220ba6ff977bd0ffd774"
 dependencies = [
  "chrono",
  "online_config_derive",
@@ -2821,7 +2821,7 @@ dependencies = [
 [[package]]
 name = "online_config_derive"
 version = "0.1.0"
-source = "git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280#521ac7330208b7f74f2b182bc373882687967280"
+source = "git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774#6806dc4d2537be3df63c220ba6ff977bd0ffd774"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3388,7 +3388,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.3",
  "rustls",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
@@ -3427,7 +3427,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -5480,6 +5480,7 @@ dependencies = [
  "tidb-error",
  "tidb-exec",
  "tidb-executor",
+ "tidb-expr",
  "tidb-gcutil",
  "tidb-hint",
  "tidb-log",
@@ -5928,7 +5929,7 @@ dependencies = [
 [[package]]
 name = "tidb_query_codegen"
 version = "0.0.1"
-source = "git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280#521ac7330208b7f74f2b182bc373882687967280"
+source = "git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774#6806dc4d2537be3df63c220ba6ff977bd0ffd774"
 dependencies = [
  "darling",
  "heck 0.3.3",
@@ -5940,7 +5941,7 @@ dependencies = [
 [[package]]
 name = "tidb_query_common"
 version = "0.0.1"
-source = "git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280#521ac7330208b7f74f2b182bc373882687967280"
+source = "git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774#6806dc4d2537be3df63c220ba6ff977bd0ffd774"
 dependencies = [
  "anyhow",
  "api_version",
@@ -5965,7 +5966,7 @@ dependencies = [
 [[package]]
 name = "tidb_query_datatype"
 version = "0.0.1"
-source = "git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280#521ac7330208b7f74f2b182bc373882687967280"
+source = "git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774#6806dc4d2537be3df63c220ba6ff977bd0ffd774"
 dependencies = [
  "api_version",
  "base64 0.13.1",
@@ -6008,7 +6009,7 @@ dependencies = [
 [[package]]
 name = "tidb_query_expr"
 version = "0.0.1"
-source = "git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280#521ac7330208b7f74f2b182bc373882687967280"
+source = "git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774#6806dc4d2537be3df63c220ba6ff977bd0ffd774"
 dependencies = [
  "base64 0.13.1",
  "bstr",
@@ -6114,7 +6115,7 @@ dependencies = [
 [[package]]
 name = "tikv_alloc"
 version = "0.1.0"
-source = "git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280#521ac7330208b7f74f2b182bc373882687967280"
+source = "git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774#6806dc4d2537be3df63c220ba6ff977bd0ffd774"
 dependencies = [
  "fxhash",
  "lazy_static",
@@ -6124,7 +6125,7 @@ dependencies = [
 [[package]]
 name = "tikv_util"
 version = "0.1.0"
-source = "git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280#521ac7330208b7f74f2b182bc373882687967280"
+source = "git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774#6806dc4d2537be3df63c220ba6ff977bd0ffd774"
 dependencies = [
  "async-speed-limit",
  "backtrace",
@@ -6135,7 +6136,7 @@ dependencies = [
  "collections",
  "cpu-time",
  "crossbeam",
- "crossbeam-skiplist 0.1.3 (git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280)",
+ "crossbeam-skiplist 0.1.3 (git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774)",
  "derive_more",
  "error_code",
  "fail 0.5.1",
@@ -6584,7 +6585,7 @@ dependencies = [
 [[package]]
 name = "tracker"
 version = "0.0.1"
-source = "git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280#521ac7330208b7f74f2b182bc373882687967280"
+source = "git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774#6806dc4d2537be3df63c220ba6ff977bd0ffd774"
 dependencies = [
  "crossbeam-utils",
  "kvproto",
@@ -6615,7 +6616,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 [[package]]
 name = "txn_types"
 version = "0.1.0"
-source = "git+https://github.com/YangKeao/tikv.git?rev=521ac7330208b7f74f2b182bc373882687967280#521ac7330208b7f74f2b182bc373882687967280"
+source = "git+https://github.com/YangKeao/tikv.git?rev=6806dc4d2537be3df63c220ba6ff977bd0ffd774#6806dc4d2537be3df63c220ba6ff977bd0ffd774"
 dependencies = [
  "bitflags 1.3.2",
  "byteorder",
@@ -6932,7 +6933,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

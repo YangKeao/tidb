@@ -14,24 +14,27 @@
 
 //! Experimental copying and borrowed-input adapters to TiKV's existing kernels.
 //!
-//! Admission is intentionally narrower than coprocessor pushdown: only static,
-//! side-effect-free, homogeneous numeric arithmetic/comparisons and byte length
-//! are admitted. In particular, no lazy control flow, parameters, correlated
-//! values, string comparisons, temporal functions, or implicit cross-domain
-//! casts enter this path. A runtime error is never retried natively.
+//! Local admission is independent of distributed pushdown authorization. The
+//! adapter reuses typed kernels across numeric, string, temporal, JSON and vector
+//! families, but declines unrepresented session settings/effects and speculative
+//! lazy branches. Owned input transport covers more types than borrowed loaders.
+//! A runtime error is never retried natively.
 
 use std::collections::BTreeMap;
 
 use prost::Message;
 use tidb_chunk::chunk::Chunk;
 use tidb_datatype::{Datum, EvalType, FieldType, FieldTypeCode};
-use tidb_proto::tipb::{Expr as PbExpr, ExprType, ScalarFuncSig};
-use tidb_query_expr::standalone::{
-    Column as EngineColumn, ColumnRef as EngineColumnRef, PreparedExpression, ScalarRef,
-};
+use tidb_query_expr::standalone::{ColumnRef as EngineColumnRef, PreparedExpression, ScalarRef};
+
+mod bridge;
+mod lowering;
+
+use bridge::copy_column;
+use lowering::{admitted, lower};
 
 use crate::expression::Expression;
-use crate::pushdown_catalog::{self, ColumnDescriptor};
+use crate::pushdown_catalog::ColumnDescriptor;
 use crate::{Columns, EvalError};
 
 /// Statement settings understood by the embedded TiKV expression engine.
@@ -55,6 +58,7 @@ pub struct TikvExpression {
     prepared: PreparedExpression,
     inputs: Vec<(usize, FieldType)>,
     result_type: FieldType,
+    wire_signatures: Vec<i32>,
 }
 
 impl TikvExpression {
@@ -75,15 +79,20 @@ impl TikvExpression {
         }
         let descriptor = |offset: u32| {
             let (_, field_type) = inputs.get(offset as usize)?;
+            let wire_type = lowering::field_type_to_pb(field_type)?;
             Some(ColumnDescriptor {
                 tp: i32::from(field_type.code().mysql_type()),
                 flag: field_type.flags(),
-                flen: i32::try_from(field_type.flen()).ok()?,
-                decimal: i32::try_from(field_type.decimal()).ok()?,
+                flen: wire_type.flen?,
+                decimal: wire_type.decimal?,
                 charset: field_type.charset_name().to_owned(),
                 collation: field_type.collation_name().to_owned(),
-                elems: Vec::new(),
-                array: false,
+                elems: field_type
+                    .elems_snapshot()
+                    .into_iter()
+                    .map(|elem| elem.to_string())
+                    .collect(),
+                array: field_type.is_array(),
             })
         };
         let Some(encoded) = lower(&remapped, &descriptor) else {
@@ -91,11 +100,25 @@ impl TikvExpression {
         };
         let Some(schema): Option<Vec<_>> = inputs
             .iter()
-            .map(|(_, ty)| pushdown_catalog::field_type_to_pb(ty).map(|pb| pb.encode_to_vec()))
+            .map(|(_, ty)| lowering::field_type_to_pb(ty).map(|pb| pb.encode_to_vec()))
             .collect()
         else {
             return Ok(None);
         };
+        fn collect_signatures(expression: &tidb_proto::tipb::Expr, out: &mut Vec<i32>) {
+            if expression.tp == Some(tidb_proto::tipb::ExprType::ScalarFunc as i32) {
+                if let Some(signature) = expression.sig {
+                    out.push(signature);
+                }
+            }
+            for child in &expression.children {
+                collect_signatures(child, out);
+            }
+        }
+        let mut wire_signatures = Vec::new();
+        collect_signatures(&encoded, &mut wire_signatures);
+        wire_signatures.sort_unstable();
+        wire_signatures.dedup();
         // Lowering and the engine have independent capability sets. A compile
         // refusal is safe to keep native; unlike evaluation, compilation here
         // has no caller-visible warnings, session state, or input mutation.
@@ -107,20 +130,34 @@ impl TikvExpression {
             prepared,
             inputs,
             result_type,
+            wire_signatures,
         }))
     }
 
-    fn has_nonfinite_input(&self, input: &Chunk) -> bool {
-        self.inputs.iter().any(|(index, ty)| {
-            if ty.eval_type() != EvalType::Real || *index >= input.num_cols() {
-                return false;
-            }
-            let column = input.column(*index);
-            (0..input.num_rows()).any(|row| {
-                let row = input.sel().map_or(row, |selection| selection[row]);
-                row < column.rows() && !column.is_null(row) && !column.get_float64(row).is_finite()
-            })
-        })
+    /// Distinct protobuf function IDs submitted to the engine's builder.
+    ///
+    /// This is observability for coverage tests, not proof that every signature
+    /// shape works or that every submitted node runs once per row (metadata
+    /// constructors may precompute constants). Aliases can share an ID.
+    #[must_use]
+    pub fn wire_signatures(&self) -> &[i32] {
+        &self.wire_signatures
+    }
+
+    fn requires_native_input(&self, input: &Chunk) -> bool {
+        self.inputs
+            .iter()
+            .any(|(index, ty)| bridge::requires_native(input, *index, ty))
+    }
+
+    fn borrowed_layout(ty: &FieldType) -> bool {
+        !matches!(
+            ty.code(),
+            FieldTypeCode::Float | FieldTypeCode::Bit | FieldTypeCode::Enum
+        ) && matches!(
+            ty.eval_type(),
+            EvalType::Int | EvalType::Real | EvalType::String
+        )
     }
 
     /// Evaluate selected logical rows, including both directions of conversion.
@@ -145,34 +182,7 @@ impl TikvExpression {
         for warning in output.warnings {
             context.append_warning(mysql_code(warning.code), &warning.message);
         }
-        let result = match output.column {
-            EngineColumn::Int(values) => values
-                .into_iter()
-                .map(|value| match value {
-                    Some(value) if self.result_type.is_unsigned() => Datum::UInt(value as u64),
-                    Some(value) => Datum::Int(value),
-                    None => Datum::Null,
-                })
-                .collect(),
-            EngineColumn::Real(values) => values
-                .into_iter()
-                .map(|value| value.map_or(Datum::Null, Datum::Real))
-                .collect(),
-            EngineColumn::Decimal(_) => {
-                return Err(invalid("unadmitted decimal returned by TiKV expression"));
-            }
-            EngineColumn::Bytes(values) => values
-                .into_iter()
-                .map(|value| match value {
-                    None => Datum::Null,
-                    Some(value) => {
-                        let mut datum = Datum::Null;
-                        datum.set_string(value, self.result_type.collation());
-                        datum
-                    }
-                })
-                .collect(),
-        };
+        let result = bridge::into_datums(output.column, &self.result_type)?;
         context.record_tikv_expression_rows(input.num_rows());
         Ok(result)
     }
@@ -201,13 +211,8 @@ impl TikvExpression {
                     "borrowed expression output must be initially empty",
                 ));
             }
-            let layout_matches = match self.result_type.eval_type() {
-                EvalType::Int | EvalType::Real => {
-                    destination.is_fixed() && destination.type_size() == 8
-                }
-                EvalType::String => !destination.is_fixed(),
-                _ => false,
-            };
+            let layout_matches =
+                destination.type_size() == tidb_chunk::column::get_fixed_len(&self.result_type);
             if !layout_matches {
                 return Err(invalid(
                     "borrowed expression output layout does not match its type",
@@ -222,7 +227,12 @@ impl TikvExpression {
         // Shared backing writes can detach, but that hides a payload copy. More
         // importantly, an identical Column owner cannot be write-locked while
         // its input read guard is alive. Decide fallback before taking guards.
-        if !self.prepared.supports_borrowed() || aliases_input || output_shared {
+        if !self.prepared.supports_borrowed()
+            || !Self::borrowed_layout(&self.result_type)
+            || self.inputs.iter().any(|(_, ty)| !Self::borrowed_layout(ty))
+            || aliases_input
+            || output_shared
+        {
             for value in self.evaluate(context, input)? {
                 output.append_datum(output_index, &value);
             }
@@ -343,139 +353,6 @@ fn invalid(message: &str) -> EvalError {
     }
 }
 
-fn admitted_type(ty: &FieldType) -> bool {
-    if ty.is_unsigned() || ty.is_array() {
-        return false;
-    }
-    matches!(
-        ty.code(),
-        FieldTypeCode::Tiny
-            | FieldTypeCode::Short
-            | FieldTypeCode::Int24
-            | FieldTypeCode::Long
-            | FieldTypeCode::LongLong
-            | FieldTypeCode::Double
-            // Decimal is supported by the embedding API, but not automatically
-            // admitted here: a text bridge cannot preserve hidden fractional
-            // digits independently of resultFrac for arbitrary intermediates.
-            | FieldTypeCode::Varchar
-            | FieldTypeCode::VarString
-            | FieldTypeCode::String
-            | FieldTypeCode::Blob
-            | FieldTypeCode::TinyBlob
-            | FieldTypeCode::MediumBlob
-            | FieldTypeCode::LongBlob
-    )
-}
-
-fn admitted(expression: &Expression) -> bool {
-    let Some(ty) = expression.static_type() else {
-        return false;
-    };
-    if !admitted_type(ty) {
-        return false;
-    }
-    match expression {
-        Expression::Column(_) => true,
-        Expression::Constant(value) => {
-            value.deferred_expr.is_none()
-                && value.param_marker.is_none()
-                && matches!(
-                    value.value,
-                    Datum::Null
-                        | Datum::Int(_)
-                        | Datum::Real(_)
-                        | Datum::String(_)
-                        | Datum::Bytes(_)
-                )
-                && !matches!(value.value, Datum::Real(number) if !number.is_finite())
-        }
-        Expression::CorrelatedColumn(_) => false,
-        Expression::ScalarFunction(function) => {
-            if !function.args.iter().all(admitted) {
-                return false;
-            }
-            let argument_type = function.args.first().and_then(Expression::static_type);
-            let Some(argument_type) = argument_type else {
-                return false;
-            };
-            match function.func_name.lowercase() {
-                "length" | "octet_length" => {
-                    function.args.len() == 1 && argument_type.eval_type() == EvalType::String
-                }
-                "abs" => {
-                    function.args.len() == 1
-                        && matches!(argument_type.eval_type(), EvalType::Int | EvalType::Real)
-                        && ty.eval_type() == argument_type.eval_type()
-                }
-                "plus" | "minus" | "mul" | "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "nulleq" => {
-                    function.args.len() == 2
-                        && matches!(argument_type.eval_type(), EvalType::Int | EvalType::Real)
-                        && function.args[1]
-                            .static_type()
-                            .is_some_and(|right| right.eval_type() == argument_type.eval_type())
-                }
-                _ => false,
-            }
-        }
-    }
-}
-
-// A local signature adapter, not an expansion of distributed pushdown policy.
-// Go's typed arithmetic/comparison signatures distinguish the argument eval
-// type; admission above excludes mixed domains and unsigned operands. Preserve
-// every node's inferred FieldType, not just the root type.
-fn lower(
-    expression: &Expression,
-    columns: &impl Fn(u32) -> Option<ColumnDescriptor>,
-) -> Option<PbExpr> {
-    let Expression::ScalarFunction(function) = expression else {
-        return pushdown_catalog::expression_to_pb(expression, columns);
-    };
-    use EvalType::{Int as I, Real as R, String as S};
-    use ScalarFuncSig::*;
-    let input_type = function.args.first()?.static_type()?.eval_type();
-    let sig = match (function.func_name.lowercase(), input_type) {
-        ("plus", I) => PlusInt,
-        ("minus", I) => MinusInt,
-        ("mul", I) => MultiplyInt,
-        ("plus", R) => PlusReal,
-        ("minus", R) => MinusReal,
-        ("mul", R) => MultiplyReal,
-        ("eq", I) => EqInt,
-        ("ne", I) => NeInt,
-        ("lt", I) => LtInt,
-        ("le", I) => LeInt,
-        ("gt", I) => GtInt,
-        ("ge", I) => GeInt,
-        ("nulleq", I) => NullEqInt,
-        ("eq", R) => EqReal,
-        ("ne", R) => NeReal,
-        ("lt", R) => LtReal,
-        ("le", R) => LeReal,
-        ("gt", R) => GtReal,
-        ("ge", R) => GeReal,
-        ("nulleq", R) => NullEqReal,
-        ("abs", I) => AbsInt,
-        ("abs", R) => AbsReal,
-        ("length" | "octet_length", S) => Length,
-        _ => return None,
-    };
-    Some(PbExpr {
-        tp: Some(ExprType::ScalarFunc as i32),
-        sig: Some(sig as i32),
-        field_type: Some(pushdown_catalog::field_type_to_pb(
-            expression.static_type()?,
-        )?),
-        children: function
-            .args
-            .iter()
-            .map(|argument| lower(argument, columns))
-            .collect::<Option<_>>()?,
-        ..PbExpr::default()
-    })
-}
-
 fn remap_columns(
     expression: &mut Expression,
     inputs: &mut Vec<(usize, FieldType)>,
@@ -510,42 +387,6 @@ fn remap_columns(
         Expression::Constant(_) => true,
         Expression::CorrelatedColumn(_) => false,
     }
-}
-
-fn copy_column(input: &Chunk, index: usize, ty: &FieldType) -> Result<EngineColumn, EvalError> {
-    let column = input.column(index);
-    let physical = |row| input.sel().map_or(row, |selection| selection[row]);
-    let rows = input.num_rows();
-    if (0..rows).any(|row| physical(row) >= column.rows()) {
-        return Err(invalid("TiKV expression selection is out of bounds"));
-    }
-    Ok(match ty.eval_type() {
-        EvalType::Int => EngineColumn::Int(
-            (0..rows)
-                .map(|row| {
-                    let row = physical(row);
-                    (!column.is_null(row)).then(|| column.get_int64(row))
-                })
-                .collect(),
-        ),
-        EvalType::Real => EngineColumn::Real(
-            (0..rows)
-                .map(|row| {
-                    let row = physical(row);
-                    (!column.is_null(row)).then(|| column.get_float64(row))
-                })
-                .collect(),
-        ),
-        EvalType::String => EngineColumn::Bytes(
-            (0..rows)
-                .map(|row| {
-                    let row = physical(row);
-                    (!column.is_null(row)).then(|| column.get_bytes(row).to_vec())
-                })
-                .collect(),
-        ),
-        _ => return Err(invalid("unadmitted TiKV expression input type")),
-    })
 }
 
 /// Execution-local compiled programs. Recompile when statement policy changes.
@@ -584,8 +425,9 @@ impl ProjectionCache {
         let Some(program) = self.programs[index].as_mut() else {
             return Ok(false);
         };
-        // Both adapters leave nonfinite values native BEFORE executing kernels.
-        if program.has_nonfinite_input(input) {
+        // Both adapters decline unrepresentable payloads BEFORE executing kernels
+        // (nonfinite reals/vectors, temporal JSON and other exact-bridge limits).
+        if program.requires_native_input(input) {
             return Ok(false);
         }
         match context.tikv_expression_backend() {
