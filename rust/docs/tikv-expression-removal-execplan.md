@@ -72,10 +72,19 @@ remain in the workspace.
       in both copying and borrowed mode, with the same divergence set as before
       the change (`md5 7b6445a8493f445641a9d07d787f0cba`) and the same
       12,447 engine expression-row evaluations over 1,555 statements
-      (10,670 of them borrowed). Remaining: the engine capability query and the
-      adapter's shape relaxation (so a non-leaf lazy shape can be admitted only
-      when the engine is lazy for it), the three-valued TiDB-side switch, and
-      the Tier-2 signatures. The design is
+      (10,670 of them borrowed).
+      The adapter's shape relaxation is DONE: the admission table drops its leaf
+      rule for exactly the names whose every dispatched signature is lazy
+      (`if`, `ifnull`, `coalesce`, `case`, `casewhen`, `and`, `or`) and keeps it
+      for the families the engine still evaluates eagerly (`elt`, `field`,
+      `interval`, `greatest`, `least`, `in`). A control node with a nested child
+      now executes in the engine; `tikv_lazy.rs` asserts the engine ran, with no
+      recorded fallback, for every short-circuit case. With the relaxation the
+      replay executes MORE in the engine with the SAME results: 12,493
+      expression-row evaluations over 1,560 statements, 142 of 10,251
+      divergences, divergence set md5 `7b6445a8493f445641a9d07d787f0cba`.
+      Remaining: the engine's per-program eager-lazy-risk query (in progress),
+      the TiDB-side switch, and the Tier-2 signatures. The design is
       `components/tidb_query_expr/SHORT_CIRCUIT_DESIGN.md`; the adapter-side
       acceptance test is `crates/tidb-expr/tests/tikv_lazy.rs`.
 - [ ] Milestone D (point 4): the type support the removal actually needs.
