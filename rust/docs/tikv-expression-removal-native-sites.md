@@ -120,3 +120,22 @@ wrapped.
   per-row value they replace; the engine's row-vs-vector equivalence is what the
   dual-run corpus tests for constants, and what `tikv_coverage.rs` tests for
   columns, but neither covers these aggregate/window call sites.
+
+## The scalar bridge cannot take a `&dyn Columns` context
+
+Converting the two `access_cost.rs` sites was attempted and reverted, and the
+reason is worth knowing before converting more sites: their context is a
+`&dyn tidb_expr::Columns` (`resolver.comparison_context()`), and
+`EvaluatorSuite::run` needs `C: Sized`. Its native path calls
+`Constant::eval_in(ctx)` and `Expression::eval(ctx, row)`, which take
+`&dyn Columns`, so the coercion `&C -> &dyn Columns` is only provable when `C`
+is sized. Writing `C: Columns + ?Sized` compiles the bound but not the body
+(three `CoerceUnsized` errors at those two native calls).
+
+So the two helpers work from a **sized** context -- a concrete `StmtContext`,
+which is what the six converted sites use -- and not from a trait object. A
+context stored as `&dyn Columns` keeps its row evaluation until either the
+helpers grow a `&dyn`-shaped seam or the native entry points stop requiring
+`Sized`. The check to do first at any remaining site is therefore: what is the
+static type of this context?
+

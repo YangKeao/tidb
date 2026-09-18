@@ -2228,3 +2228,49 @@ fn tikv_coverage_set_column_round_trip_and_string_use() {
     )
     .unwrap();
 }
+
+/// `eval_row_values` is the entry point a row-at-a-time call site uses when it
+/// has one row with columns. It must answer the same value the native row
+/// evaluator would, must actually run the engine when the resolver has one, and
+/// must refuse a sparse column set instead of guessing a chunk layout.
+#[test]
+fn eval_row_values_is_dense_only_and_matches_native() {
+    let ty = int();
+    let dense = call(
+        "plus",
+        &ty,
+        vec![column(0, &ty), literal(Datum::Int(1), &ty)],
+    );
+    // No engine context: the suite answers natively, which is the coexistence
+    // contract for a resolver that has not opted in.
+    assert_eq!(
+        tidb_expr::evaluator::eval_row_values(&dense, &TestContext::default(), &[Datum::Int(41)])
+            .unwrap(),
+        Some(Datum::Int(42))
+    );
+    // With the engine: same value, and the engine really ran.
+    let engine = TestContext {
+        backend: Some(Backend::Copying),
+        ..TestContext::default()
+    };
+    assert_eq!(
+        tidb_expr::evaluator::eval_row_values(&dense, &engine, &[Datum::Int(41)]).unwrap(),
+        Some(Datum::Int(42))
+    );
+    assert_eq!(engine.rows.get(), 1);
+
+    // Column 3 with one value is not a layout, so the helper refuses and the
+    // caller keeps its own row evaluation.
+    let mut third = Column::new(4, ty.clone());
+    third.index = 3;
+    let sparse = call(
+        "plus",
+        &ty,
+        vec![Expression::Column(third), literal(Datum::Int(1), &ty)],
+    );
+    assert_eq!(
+        tidb_expr::evaluator::eval_row_values(&sparse, &engine, &[Datum::Int(41)]).unwrap(),
+        None
+    );
+}
+
