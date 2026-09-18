@@ -176,6 +176,18 @@ DECIMAL value child is what the engine refused with `Expect Int, received
 Decimal`. The same-type shape needs no cast at all, which is the common
 `NULLIF(col, 0)`.
 
+That cluster is now triaged rather than renamed. Its single placeholder reason
+("no local engine lowering") read as "write a lowering", but 100 rows shared
+it and only some are adapter work: 4 names have no signature in the pinned
+`tipb` at all, so no lowering can ever reach the engine and they are permanent
+native exceptions; 5 have a signature the engine does not dispatch, so they are
+TiKV work; 15 are the explicit-cast spellings section 7.4 rules out; 18 need
+session state the facade's `Context` does not carry. The admission table now
+says which, a test pins the triaged names, and the method is in
+`tikv-expression-corpus-plan.md` section 7.6. For the removal that distinction
+is the difference between "a lowering to write" and "a function that can never
+be pushed".
+
 The lazy design (`components/tidb_query_expr/SHORT_CIRCUIT_DESIGN.md`) found
 that materializing a lazy child at a subset boundary must produce an owned
 `VectorValue`, because an `RpnStackNode` borrows one lifetime; that the

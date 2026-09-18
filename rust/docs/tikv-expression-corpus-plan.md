@@ -1615,3 +1615,36 @@ unequal bytewise). `NULLIF(1, 1.0)` is engine-covered now, which moved
 engine-run checks for both the same-type and the promoted-condition shape over
 a column.
 
+### 7.6 Every excluded row now says which work it needs
+
+Section 7.1 showed that the admission stage was reporting one placeholder
+reason for almost every excluded name: *"no local engine lowering: not selected
+by local_call, the temporal/JSON/vector families, or the reused pushdown
+catalog"*. Read literally, that says "write a lowering", which is wrong for a
+function the pinned engine cannot express at all -- and a wrong work list is
+worse than none for the removal decision.
+
+The 100 rows that used it are now split by a check anyone can repeat:
+
+* **`NO_WIRE_SIGNATURE`** (4 names: `translate`, `weight_string`, `load_file`,
+  `json_schema_valid`) -- `grep -E '^\s*<Name> = '` finds nothing in the pinned
+  `tipb/proto/expression.proto`. No lowering can ever push these; after native
+  deletion they must raise a classified error.
+* **`NO_ENGINE_KERNEL`** (5: `format`, `char_func`, `convert_using`,
+  `convert_tz`, `cast_vector`) -- the signature is in the proto, but
+  `components/tidb_query_expr/src/lib.rs` has no `ScalarFuncSig::<Name>` arm.
+  These need TiKV work, not adapter work.
+* **`EXPLICIT_CAST_SPELLING`** (15: `cast_signed`, `cast_datetime`, ...) -- the
+  kernel exists; section 7.4 is why the adapter cannot use it yet.
+* **`NATIVE_SESSION_STATE`** (18: `current_user`, `connection_id`, `version`,
+  `tidb_*`, ...) -- needs session state the facade's `Context` deliberately does
+  not carry.
+* **`NOT_TRIAGED`** (58) -- no lowering site selects the name and the
+  engine-only corpus never reaches it. This is a to-do marker, not a finding.
+
+The lesson generalises: an exclusion reason is load-bearing data for the
+removal, and a boolean "excluded" was hiding four different kinds of work. A
+name that the wire protocol cannot express is not a lower-priority lowering; it
+is a permanent native exception, which changes what "delete the native
+evaluator" can even mean for it.
+
