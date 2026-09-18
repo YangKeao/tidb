@@ -117,7 +117,7 @@ pub(super) fn admitted(expression: &Expression) -> bool {
         Expression::ScalarFunction(function) => {
             // The admission table is the only name-level gate. A name with no
             // row, or a row explicitly excluded, stays native. `Shape` carries
-            // the lazy-child rules the old `lazy_children_are_safe` applied.
+            // the lazy-child rules.
             let Some(row) = super::admission::admission(function.func_name.lowercase()) else {
                 return false;
             };
@@ -236,6 +236,18 @@ pub(super) fn coerce(child: PbExpr, target: EvalType) -> Option<PbExpr> {
     // Duration -> date/time uses today's date, not represented by Context.
     if source.eval_type() == EvalType::Duration
         && matches!(target, EvalType::Datetime | EvalType::Timestamp)
+    {
+        return None;
+    }
+    // A temporal cast over a CONSTANT builds a packed payload whose encoding
+    // depends on settings the constant does not carry, and the exact bridge can
+    // refuse it at evaluation time. That would turn a native value into an
+    // engine ERROR, which the removal scope does not tolerate, so decline the
+    // cast before evaluation. Column children use the chunk bridge.
+    if matches!(
+        target,
+        EvalType::Datetime | EvalType::Timestamp | EvalType::Duration
+    ) && child.tp != Some(ExprType::ColumnRef as i32)
     {
         return None;
     }

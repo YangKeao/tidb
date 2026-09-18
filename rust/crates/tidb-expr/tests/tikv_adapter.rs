@@ -202,15 +202,6 @@ fn tikv_adapter_refuses_unverified_types_and_execution_time_values() {
                 FieldType::new(FieldTypeCode::VarString),
             ))],
         ),
-        // Families the engine still evaluates eagerly keep their leaf rule.
-        call(
-            "greatest",
-            &int,
-            vec![
-                input_column(0, &int),
-                call("plus", &int, vec![constant(1, &int), constant(1, &int)]),
-            ],
-        ),
     ];
     for expression in refused {
         assert!(
@@ -235,8 +226,16 @@ fn tikv_adapter_refuses_unverified_types_and_execution_time_values() {
             &decimal,
             vec![input_column(0, &decimal), input_column(1, &decimal)],
         ),
-        // A control node with a non-leaf child in a possibly-skipped position:
-        // admitted now that every control signature has a lazy kernel.
+        // A node with a non-leaf child in a possibly-skipped position:
+        // admitted now that the Tier-2 selector families are lazy too.
+        call(
+            "greatest",
+            &int,
+            vec![
+                input_column(0, &int),
+                call("plus", &int, vec![constant(1, &int), constant(1, &int)]),
+            ],
+        ),
         call(
             "case",
             &int,

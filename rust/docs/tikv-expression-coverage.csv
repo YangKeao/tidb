@@ -495,7 +495,7 @@ signature_id,proto_name,rust_name,engine_dispatch,engine_family,engine_target,ba
 6081,Timestamp1Arg,,False,,,False,False,False,False,False,,False,,False,timestamp,,no_dispatch,,not_dispatched_by_engine,excluded,timestamp
 6082,Timestamp2Args,,False,,,False,False,False,False,False,,False,,False,timestamp,,no_dispatch,,not_dispatched_by_engine,excluded,timestamp
 6083,TimestampLiteral,,False,,,False,False,False,False,False,,False,,False,,,no_dispatch,,not_dispatched_by_engine,untested,
-6084,LastDay,LastDay,True,impl_time,last_day_fn_meta(),True,False,False,False,True,,False,,False,last_day,,no_annotated_direct_loader,,engine_dispatch_adapter_gap_or_new_mapping_evidence,excluded,last_day
+6084,LastDay,LastDay,True,impl_time,last_day_fn_meta(),True,False,False,False,True,,False,,False,last_day,,no_annotated_direct_loader,,engine_dispatch_adapter_gap_or_new_mapping_evidence,admitted,last_day
 6085,StrToDateDate,StrToDateDate,True,impl_time,str_to_date_date_fn_meta(),True,False,False,False,True,,False,,False,str_to_date,,no_annotated_direct_loader,,engine_dispatch_adapter_gap_or_new_mapping_evidence,admitted,str_to_date
 6086,StrToDateDatetime,StrToDateDatetime,True,impl_time,str_to_date_datetime_fn_meta(),True,False,False,False,True,,False,,False,str_to_date,,no_annotated_direct_loader,,engine_dispatch_adapter_gap_or_new_mapping_evidence,admitted,str_to_date
 6087,StrToDateDuration,StrToDateDuration,True,impl_time,str_to_date_duration_fn_meta(),True,False,False,False,True,,False,,False,str_to_date,,no_annotated_direct_loader,,engine_dispatch_adapter_gap_or_new_mapping_evidence,admitted,str_to_date

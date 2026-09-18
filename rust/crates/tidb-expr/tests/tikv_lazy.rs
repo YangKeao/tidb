@@ -269,19 +269,21 @@ fn tikv_lazy_control_flow_never_enters_a_dead_branch() {
 /// The engine-enforced gate: a program that mixes a lazy construct with an
 /// eager lazy-sensitive kernel is refused, because the eager kernel would
 /// enter a branch MySQL never enters. `IF` alone is admitted; the same `IF`
-/// wrapping an eager `ELT` is not.
+/// wrapping an eager Tier-3 `ADDTIME` is not.
 #[test]
 fn tikv_lazy_mixed_eager_risk_stays_native() {
     use tidb_expr::tikv::TikvExpression;
 
     let int = int();
     let text = FieldType::new(FieldTypeCode::VarString);
-    let elt = call(
-        "elt",
+    // `ADDTIME` still has eager `AddTime*Null` kernels, so it is the remaining
+    // lazy-sensitive family after Tier 1 and Tier 2 became lazy.
+    let addtime = call(
+        "addtime",
         &text,
         vec![
-            literal(Datum::Int(1), &int),
-            literal(Datum::Bytes(b"a".to_vec()), &text),
+            literal(Datum::Bytes(b"2024-01-01".to_vec()), &text),
+            literal(Datum::Bytes(b"1 0:0:0".to_vec()), &text),
         ],
     );
     let mixed = call(
@@ -289,7 +291,7 @@ fn tikv_lazy_mixed_eager_risk_stays_native() {
         &text,
         vec![
             literal(Datum::Int(1), &int),
-            elt,
+            addtime,
             literal(Datum::Bytes(b"b".to_vec()), &text),
         ],
     );
@@ -297,7 +299,7 @@ fn tikv_lazy_mixed_eager_risk_stays_native() {
         TikvExpression::compile(&mixed, Context::default())
             .unwrap()
             .is_none(),
-        "lazy IF plus eager ELT must stay native"
+        "lazy IF plus eager ADDTIME must stay native"
     );
 
     let lazy_only = call(
