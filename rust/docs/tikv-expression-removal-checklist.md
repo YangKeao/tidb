@@ -85,8 +85,9 @@ The per-row kinds (36 sites in a loop or comparator) are excluded from this
 receipt because they must not be wrapped: they need the evaluation moved out of
 the loop so the engine sees a batch, and no helper makes that safe.
 
-Six sites now have evidence of conversion, in both input shapes. The two
-`ddl/table_partition_list.rs` sites go through
+Seven sites now have evidence of conversion, in both input shapes. The two
+`ddl/table_partition_list.rs` sites plus the one `ddl/table_partition_range.rs`
+site go through
 `tidb_expr::evaluator::eval_constant_row` (no input columns), proven by
 `tidb-executor/tests/tikv_expression.rs` asserting `tikv_expression_rows() > 0`
 for a `PARTITION BY LIST COLUMNS` table. The four
@@ -98,7 +99,7 @@ chunk's column types from the expression and refuses a sparse column set
 layout can disagree with the declared type the engine reads cells by. Both
 helpers compile per call, so they are for once-per-statement sites; the per-row
 kinds still need the evaluation moved out of their loop.
-`tikv-expression-removal-native-sites.md` records all of it, including that 69
+`tikv-expression-removal-native-sites.md` records all of it, including that 68
 sites remain unconverted.
 
 Each conversion needs the same guarantee the adapter already enforces: a
