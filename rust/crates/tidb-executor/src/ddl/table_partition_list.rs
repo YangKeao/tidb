@@ -192,10 +192,7 @@ fn eval_column_value(expr: &Expr, ctx: &crate::StmtContext) -> Result<Datum, Dri
         ),
     )
     .map_err(|_| DriverError::PartitionColumnValueWrongType)?;
-    let mut dual = tidb_chunk::chunk::Chunk::new_empty(&[]);
-    dual.set_num_virtual_rows(1);
-    rewritten
-        .eval(ctx, dual.get_row(0))
+    tidb_expr::evaluator::eval_constant_row(&rewritten, ctx)
         .map_err(|_| DriverError::PartitionColumnValueWrongType)
 }
 
@@ -380,10 +377,7 @@ fn fold_list_value(
         ),
     )
     .map_err(|_| DriverError::PartitionValuesNotInt(partition.to_owned()))?;
-    let mut dual = tidb_chunk::chunk::Chunk::new_empty(&[]);
-    dual.set_num_virtual_rows(1);
-    match rewritten
-        .eval(ctx, dual.get_row(0))
+    match tidb_expr::evaluator::eval_constant_row(&rewritten, ctx)
         .map_err(|_| DriverError::PartitionValuesNotInt(partition.to_owned()))?
     {
         Datum::Int(value) => {

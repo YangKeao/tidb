@@ -370,3 +370,30 @@ fn tikv_expression_selection_preserves_order_nulls_and_duplicate_rows() {
         assert_eq!(input.sel(), Some([3, 1, 2, 1].as_slice()));
     }
 }
+
+/// A DDL call site converted to the engine: the partition value of a
+/// `PARTITION BY LIST` table used to be evaluated with `Expression::eval` over
+/// an empty one-row chunk, and now goes through
+/// `tidb_expr::evaluator::eval_constant_row`. The row counter is the evidence
+/// that the engine -- not the native fallback -- did the work.
+#[test]
+fn tikv_expression_partition_list_values_run_in_the_engine() {
+    let mut catalog = Catalog::default();
+    let tikv = StmtContext::default()
+        .with_strict(true)
+        .with_tikv_expression(true);
+    tidb_executor::run_create_table_in(
+        "CREATE TABLE t (id BIGINT, v VARCHAR(16)) PARTITION BY LIST COLUMNS (v) \
+         (PARTITION p0 VALUES IN ('a', 'b'), PARTITION p1 VALUES IN ('c'))",
+        &mut catalog,
+        "test",
+        tidb_executor::CreateTableSettings::default(),
+        &tikv,
+    )
+    .unwrap();
+    assert!(
+        tikv.tikv_expression_rows() > 0,
+        "the partition value must be evaluated by the engine, not by the native fallback"
+    );
+}
+

@@ -63,6 +63,16 @@ reproducible grep; the kinds are:
   during DML with a statement context, so they can be moved with projection,
   but they are separate call sites.
 
+The first conversion is done and has evidence: the two
+`ddl/table_partition_list.rs` sites now go through
+`tidb_expr::evaluator::eval_constant_row`, and
+`tidb-executor/tests/tikv_expression.rs` proves the engine answered
+(`tikv_expression_rows() > 0`) for a `PARTITION BY LIST COLUMNS` table. That
+helper is for the once-per-statement kind only; it compiles per call, so the
+per-row kinds must move the evaluation out of their loop instead.
+`tikv-expression-removal-native-sites.md` records which site was converted and
+that the other 73 are not.
+
 Each conversion needs the same guarantee the adapter already enforces: a
 compilation refusal is decided before evaluation, and a runtime error is never
 retried through another implementation.

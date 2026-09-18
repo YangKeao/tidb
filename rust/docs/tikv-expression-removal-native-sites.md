@@ -56,6 +56,28 @@ one of them is row-at-a-time: `Expression::eval` against a single `Row`.
 
 None of the 75 needs a new kernel; they need the call to move.
 
+## The first conversion, with evidence
+
+`tidb-executor/src/ddl/table_partition_list.rs` had two of the "one chunk row"
+sites, both of the shape `expression.eval(ctx, dual.get_row(0))` over an
+*empty* one-row chunk. They now call
+`tidb_expr::evaluator::eval_constant_row(&rewritten, ctx)`, which builds exactly
+that chunk and runs the suite, so the engine/fallback choice and the
+post-removal structured error come from the same path a projection uses.
+
+The helper deliberately does **not** cache the compiled program: it compiles per
+call, which is right for a once-per-statement site and wrong for a per-row loop.
+The per-row kinds above need the evaluation moved out of the loop instead.
+
+Evidence that the engine -- not the fallback -- did the work:
+`tidb-executor/tests/tikv_expression.rs::tikv_expression_partition_list_values_run_in_the_engine`
+runs `CREATE TABLE ... PARTITION BY LIST COLUMNS (v) (...)` with a context built
+by `with_tikv_expression(true)` and asserts `tikv_expression_rows() > 0`. The
+11 partition-DDL unit tests and both feature modes stay green.
+
+That is one of the 75, and the shape it proves is the smallest one. The other 73
+are still unconverted.
+
 ## What this does not establish
 
 * No site has been converted. This is an inventory with a reproducible method,

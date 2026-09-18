@@ -302,6 +302,38 @@ impl From<EvalError> for EvaluatorError {
 
 /// Immutable projection expressions and logical column mapping. Actual input
 /// column ownership is discovered separately by each execution's suite.
+/// Evaluates a **constant** expression through the suite, with no input
+/// columns.
+///
+/// A row-at-a-time call site that has no input chunk -- the shape
+/// `expression.eval(ctx, dual.get_row(0))` over an empty one-row chunk -- can be
+/// re-pointed at the engine by calling this instead. The suite chooses the
+/// engine when the adapter admits the expression and the native evaluator
+/// otherwise, exactly as a projection does, so both the coexistence fallback
+/// and the post-removal structured error come from the same path the corpus
+/// exercises (`crates/tidb-expr/src/tests/mod.rs::engine_case`).
+///
+/// The compiled program is not cached: every call compiles the expression for
+/// the caller's engine context. That is what makes this suitable for the
+/// once-per-statement call sites (DDL partition values, defaults, pruning
+/// bounds) and unsuitable for a per-row loop, which should move the evaluation
+/// out of the loop instead.
+pub fn eval_constant_row<C: Columns>(
+    expression: &Expression,
+    ctx: &C,
+) -> Result<Datum, EvaluatorError> {
+    let ty = expression.static_type().cloned().ok_or_else(|| {
+        EvaluatorError::Eval(EvalError::Unsupported(
+            "an expression without a static type cannot be evaluated",
+        ))
+    })?;
+    let mut input = Chunk::new_empty(&[]);
+    input.set_num_virtual_rows(1);
+    let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), 1);
+    EvaluatorSuite::new(vec![expression.clone()], true).run(ctx, &mut input, &mut output)?;
+    Ok(output.get_row(0).get_datum(0, &ty))
+}
+
 pub struct EvaluatorProgram {
     calculated_output_indexes: Vec<usize>,
     calculated: Vec<Expression>,
