@@ -103,9 +103,15 @@ remain in the workspace.
       done (TiKV `01780f8`): `Column::Set`, the owned round-trip through
       `VectorValue::Set`, and the reachable `cast_set_as_int` kernel, with the
       temporary `EvalType::Set` refusal removed and the old rejection test
-      turned into a positive one. Remaining: the TiDB-side bridge
-      (`supported_type`, `copy_column`, `into_datums`, `family()` and a Set
-      fixture), so Set columns still stay native in the adapter.
+      turned into a positive one. The TiDB bridge is done too (TiKV `866c575`):
+      `Family::Set` reads the ENUM-shaped chunk cell and returns `Datum::Set`,
+      the borrowed path excludes SET (its SQL eval family is String, so the
+      Bytes loader would have fed `[bitmask][name]` to a string kernel), and the
+      local wire helper builds a SET leaf itself because the shared catalog
+      keeps Go's refusal of SET for distributed pushdown. Fixtures round-trip a
+      SET column through the engine and read its name with `LENGTH`, which also
+      exercises the engine's hybrid Int/Bytes carrier. Remaining for `Set`:
+      cast targets other than `AS SIGNED` if the native surface needs them.
 - [ ] Milestone E: flip the default, delete the native evaluator and the
       feature gate, prove parity.
 
