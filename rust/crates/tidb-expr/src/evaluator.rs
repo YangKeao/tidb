@@ -353,6 +353,16 @@ impl EvaluatorProgram {
             tikv: std::sync::Mutex::new(crate::tikv::ProjectionCache::default()),
         }
     }
+
+    /// How many times this plan has actually compiled an engine program.
+    ///
+    /// A shared plan compiles once per statement policy, not once per worker or
+    /// per chunk; tests use this to prove the cache rather than assume it.
+    #[cfg(feature = "tikv-expr")]
+    #[must_use]
+    pub fn tikv_compilations(&self) -> u64 {
+        self.tikv.lock().map_or(0, |cache| cache.compilations())
+    }
 }
 
 /// Go `EvaluatorSuite`: executes a projection program with an execution-local

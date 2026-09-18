@@ -37,6 +37,9 @@ use tidb_expr::Columns;
 #[derive(Default)]
 struct LazyContext {
     backend: Option<Backend>,
+    /// Part of the compiled policy, unlike the backend: changing it must
+    /// recompile.
+    div_precision_increment: u8,
     rows: Cell<usize>,
     fallbacks: RefCell<Vec<FallbackReason>>,
     warnings: RefCell<Vec<u16>>,
@@ -48,6 +51,11 @@ impl Columns for LazyContext {
     fn tikv_expression_context(&self) -> Option<Context> {
         self.backend.map(|_| Context {
             flags: 482,
+            div_precision_increment: if self.div_precision_increment == 0 {
+                Context::default().div_precision_increment
+            } else {
+                self.div_precision_increment
+            },
             ..Context::default()
         })
     }
@@ -307,4 +315,59 @@ fn tikv_lazy_mixed_eager_risk_stays_native() {
             .is_some(),
         "lazy IF alone is admitted"
     );
+}
+
+/// The compiled programs live on the shared plan, so every projection worker
+/// reuses one compilation instead of compiling its own copy. This proves the
+/// cache rather than assuming it.
+#[test]
+fn tikv_shared_program_compiles_once_for_three_suites() {
+    use std::sync::Arc;
+    use tidb_expr::evaluator::EvaluatorProgram;
+
+    let ty = int();
+    let expression = call(
+        "plus",
+        &ty,
+        vec![literal(Datum::Int(1), &ty), literal(Datum::Int(2), &ty)],
+    );
+    let program = Arc::new(EvaluatorProgram::new(vec![expression], true));
+    assert_eq!(program.tikv_compilations(), 0);
+
+    let context = LazyContext {
+        backend: Some(Backend::Copying),
+        ..LazyContext::default()
+    };
+    for _ in 0..3 {
+        let suite = EvaluatorSuite::from_program(Arc::clone(&program));
+        let mut input = row_input(&ty, &[Some(1)]);
+        let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), 1);
+        suite.run(&context, &mut input, &mut output).unwrap();
+        assert_eq!(output.get_row(0).get_int64(0), 3);
+    }
+    assert_eq!(program.tikv_compilations(), 1, "one plan compiles once");
+
+    // The backend is an evaluation choice, not part of the compiled program,
+    // so switching it must NOT recompile.
+    let other = LazyContext {
+        backend: Some(Backend::Borrowed),
+        ..LazyContext::default()
+    };
+    let suite = EvaluatorSuite::from_program(Arc::clone(&program));
+    let mut input = row_input(&ty, &[Some(1)]);
+    let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), 1);
+    suite.run(&other, &mut input, &mut output).unwrap();
+    assert_eq!(program.tikv_compilations(), 1, "backend is not policy");
+
+    // A policy that is baked into the compiled program does recompile.
+    let stricter = LazyContext {
+        backend: Some(Backend::Copying),
+        div_precision_increment: 7,
+        ..LazyContext::default()
+    };
+    let suite = EvaluatorSuite::from_program(Arc::clone(&program));
+    let mut input = row_input(&ty, &[Some(1)]);
+    let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), 1);
+    suite.run(&stricter, &mut input, &mut output).unwrap();
+    assert_eq!(program.tikv_compilations(), 2, "policy change recompiles");
 }

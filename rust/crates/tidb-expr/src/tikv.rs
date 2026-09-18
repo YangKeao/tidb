@@ -440,6 +440,9 @@ impl FallbackReason {
 pub(crate) struct ProjectionCache {
     context: Option<Context>,
     programs: Arc<Vec<Option<Arc<TikvExpression>>>>,
+    /// How many times this cache has actually compiled. Stays at one for a
+    /// fixed statement policy no matter how many suites or workers share it.
+    compilations: u64,
 }
 
 impl ProjectionCache {
@@ -461,8 +464,13 @@ impl ProjectionCache {
                 .collect::<Result<_, _>>()?;
             self.programs = Arc::new(programs);
             self.context = Some(context.clone());
+            self.compilations += 1;
         }
         Ok(Arc::clone(&self.programs))
+    }
+
+    pub(crate) fn compilations(&self) -> u64 {
+        self.compilations
     }
 }
 
