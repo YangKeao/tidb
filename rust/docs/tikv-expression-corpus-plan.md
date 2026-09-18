@@ -1326,13 +1326,13 @@ harness switch, feature on, no native deletion:
 
 | Result | Count |
 | --- | --- |
-| lib tests passed | 1148 |
+| lib tests passed | 1149 |
 | lib tests failed (engine declined) | 65 |
 | lib tests ignored | 99 |
 | distinct declined expressions | 63 |
 
 So **59 distinct constant expressions of the current corpus have no engine
-path**; 1148 of 1208 runnable cases already agree through the engine. This is
+path**; 1149 of 1208 runnable cases already agree through the engine. This is
 the concrete E blocker set, and it is much smaller than the 140-test excluded
 surface in section 6, because most excluded names never reach a constant
 expression in these tests (they are exercised on columns, where the adapter
@@ -1450,7 +1450,7 @@ The 59, verbatim:
     load_file('')
     make_set(1, 'a', 'b', 'c')
     NULLIF(1, "1.0")
-    oct(1.0)
+    oct(b'11111111')
     regexp_like('abc', 'abc', 'p')
     round(1.2345,'2')
     round(3.14,'abc')
@@ -1829,13 +1829,13 @@ outcome in both directions:
 
 | Outcome | Count |
 | --- | --- |
-| the engine runs it | 24 |
+| the engine runs it | 26 |
 | the adapter declines it | 20 |
 
 The whole core surface is in the first row: arithmetic, comparison,
 `is null`, `in`, `abs`, `upper`, `length`, `coalesce`/`ifnull`/`nullif`/`if`,
 `case when`, `least`, `interval`, `elt`, `year`, `extract`, the explicit casts,
-and `round(c, 2)` with a literal digit.
+`oct`, and `round(c, 2)` with a literal digit.
 
 The 20 declines are all deliberate, and grouping them says what E still owes:
 
@@ -1851,7 +1851,7 @@ The 20 declines are all deliberate, and grouping them says what E still owes:
 
 So the three numbers now agree and each has a purpose: **59** is the adapter's
 surface on unfolded constants, **17** is what survives the planner's fold on
-constants, and **24 of 44 sampled column shapes** is the production shape
+constants, and **26 of 46 sampled column shapes** is the production shape
 surface. The first is the corpus's own bookkeeping, the second is what the
 fold leaves, and the third is what a query actually carries.
 
@@ -1880,4 +1880,31 @@ Go's `Tan` into the engine, not changing anything on the adapter side.
 The general lesson is the one 7.4 and 7.10 already taught, applied to a *number*
 instead of a shape: "the engine matches Go" is a hypothesis until an oracle says
 so, and here the oracle was three lines of Go.
+
+### 7.16 `oct` never needed a name-level exclusion
+
+`oct` was excluded with the reason "OCT over a binary literal reads the bit
+value natively but takes the string path in the engine". That describes a
+*shape*, and the adapter already refuses that shape one level down: a
+`Datum::Bit` or `Datum::BinaryLiteral` constant is declined by the
+`constant-binary-or-literal` rule, so `oct(b'11111111')` stays native whether or
+not the name is admitted.
+
+Admitting the name therefore costs nothing and gains the rest of the function:
+the corpus's whole `oct` table now dual-runs through the engine --
+`oct('10')`-style strings, `oct(1.0)`, `oct(9.5)`, `oct(13)`, `oct(1025)`,
+`oct(NULL)` -- and agrees, with zero divergences. `oct(9.5)` is the interesting
+one: the lowering picks `OctString(CastRealAsString(9.5))`, whose leading-integer
+run gives 9 and therefore `11`, which is what the Go-derived corpus pins for
+the Real path.
+
+`oct(b'11111111')` moved into the declined list in its place, so the count is
+unchanged, and the fixture gained `oct(i0)` and `oct(c0)` column shapes (both
+engine). The lesson is the one the triage in 7.6 set up: an exclusion reason
+that names a *shape* is a reason to narrow the refusal, not to exclude the name.
+
+The ratchet earned its keep here: admitting `oct` made two of its tests fail
+with "oct(1.0) now runs in the engine; move it to COVERED" and "oct(1.0)
+produced a value with no native evaluator", which is exactly the list move this
+change needed.
 

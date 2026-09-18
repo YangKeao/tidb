@@ -112,6 +112,8 @@ const SHAPES: &[(&str, bool)] = &[
     ("i0 is null", true),
     ("abs(i0)", true),
     ("upper(s0)", true),
+    ("oct(i0)", true),
+    ("oct(c0)", true),
     ("length(s0)", true),
     // `max_allowed_packet` policy: the facade has no such setting.
     ("concat(s0, s0)", false),
@@ -177,6 +179,6 @@ fn column_bearing_shapes_have_the_pinned_outcome() {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-    assert_eq!(covered, 24, "the covered count changed");
-    assert_eq!(SHAPES.len(), 44, "the shape list changed size");
+    assert_eq!(covered, 26, "the covered count changed");
+    assert_eq!(SHAPES.len(), 46, "the shape list changed size");
 }

@@ -72,7 +72,7 @@ remain in the workspace.
       "engine only". The engine-only measurement exists and is the E work
       list: `TIKV_EXPR_ENGINE_ONLY=1` makes a declined expression a failure,
       and at `47ce598` plus the temporal-bridge fix the lib corpus reports
-      1148 passed / 61 failed / 99 ignored, i.e. 59 distinct constant
+      1149 passed / 61 failed / 99 ignored, i.e. 59 distinct constant
       expressions still have no engine path (grouped in
       `tikv-expression-corpus-plan.md` section 7). The rate is measured on the
       adapter's unfolded input, though, and production folds constants first

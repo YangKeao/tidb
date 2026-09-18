@@ -88,7 +88,8 @@ const COVERED: &[&str] = &[
     "cast(1 as signed) < cast(1 as signed)",
     "cast('123' as char) < cast('123' as char)",
     "cast('12:59:59' as time) < cast('12:59:59' as time)",
-    "coalesce(cast('12:59:59' as time), cast('12:59:59.555' as time(3)))"
+    "coalesce(cast('12:59:59' as time), cast('12:59:59.555' as time(3)))",
+    "oct(1.0)"
 ];
 
 /// Expressions that still fall back to native. Gaining one is progress; the
@@ -140,7 +141,7 @@ const DECLINED: &[&str] = &[
     "load_file('')",
     "make_set(1, 'a', 'b', 'c')",
     "NULLIF(1, \"1.0\")",
-    "oct(1.0)",
+    "oct(b'11111111')",
     "regexp_like('abc', 'abc', 'p')",
     "round(1.2345,'2')",
     "round(3.14,'abc')",
@@ -179,7 +180,7 @@ fn declined_expressions_stay_declined() {
 
 #[test]
 fn the_gap_count_is_pinned() {
-    assert_eq!(COVERED.len(), 15, "the covered list changed size");
+    assert_eq!(COVERED.len(), 16, "the covered list changed size");
     assert_eq!(DECLINED.len(), 59, "the declined list changed size");
 }
 

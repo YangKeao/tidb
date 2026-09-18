@@ -551,7 +551,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("now", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
     row("nulleq", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::Any, ""),
     row("nullif", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::Any, ""),
-    row("oct", Decision::Excluded, Signature::None, &[], Shape::Any, "OCT over a binary literal reads the bit value natively but takes the string path in the engine"),
+    row("oct", Decision::Admitted, Signature::Family(Family::String), &[EvalType::Int], Shape::Any, ""),
     row("octet_length", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("or", Decision::Admitted, Signature::Family(Family::Control), &[], Shape::Any, ""),
     row("ord", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
