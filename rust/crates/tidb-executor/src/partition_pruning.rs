@@ -2486,5 +2486,19 @@ mod tests {
             tikv.tikv_expression_rows() > 0,
             "the partition expression must be evaluated by the engine"
         );
+
+        // A non-point interval takes the endpoint path
+        // (`evaluate_range_partition_endpoint`), which is the fourth converted
+        // call site rather than the point path above.
+        let rows_before = tikv.tikv_expression_rows();
+        let wide = [interval(Datum::Int(8), false, Datum::Int(9), false)];
+        let native = pruned_ids(&spec, &wide);
+        let engine = pruned_ids_with(&spec, &wide, &tikv);
+        assert_eq!(engine, native);
+        assert_eq!(engine, Some(vec![101, 102]));
+        assert!(
+            tikv.tikv_expression_rows() > rows_before,
+            "the endpoint path must also be evaluated by the engine"
+        );
     }
 }

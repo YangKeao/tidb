@@ -103,11 +103,11 @@ Evidence, per call site: `range_pruning_evaluates_through_the_engine` and
 their Go-derived sibling under `with_tikv_expression(true)`, assert the same
 pruned ids (`Some(vec![102])` for the range spec, `Some(vec![201])` for the list
 spec) and assert `tikv_expression_rows() > 0`. `hash_point_pruning_evaluates_through_the_engine` does the same for the HASH
-point path (`Some(vec![103])`). That covers three of the four call sites; the
-range point path (`range_partition_integer`, reached from the
-`prune_range_ids` helper) has no engine assertion of its own yet, because its
-two callers build their range differently. All 23 pruning tests stay green, and
-the executor's 1335 lib tests too.
+point path (`Some(vec![103])`). and the endpoint path is covered by the same
+test: a non-point interval (`8..9`) takes `evaluate_range_partition_endpoint`
+rather than the point path, so the test asserts the row counter *grows* across
+that second run. All four pruning call sites now carry the receipt, and the 23
+pruning tests stay green.
 
 `ddl/table_partition_range.rs` has a third constant-row site of the same shape
 and is converted too, verified by the same 11 partition-DDL tests **and** by
