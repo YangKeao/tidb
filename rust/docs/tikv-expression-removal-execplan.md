@@ -191,6 +191,12 @@ every string/int kernel accept `Set` without a new ordinary signature.
 In progress. Nothing is removed yet; the native evaluator is still the default
 and the engine remains opt-in behind `tikv-expr`.
 
+Re-verified against the current pin after the lazy, capability and `Set`
+changes: `catalog_diff` 31 passed, `query_diff` 1 passed, and `expr_diff`
+still shows exactly its two pre-existing `EXPORT_SET` divergences (also red
+with the engine feature disabled). The enrolled replay and the feature-on and
+feature-off Rust suites are unchanged from the values recorded above.
+
 
 ## Context and Orientation
 
