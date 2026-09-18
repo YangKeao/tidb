@@ -413,7 +413,7 @@ fn invalid(message: &str) -> EvalError {
     }
 }
 
-fn remap_columns(
+pub(crate) fn remap_columns(
     expression: &mut Expression,
     inputs: &mut Vec<(usize, FieldType)>,
     positions: &mut BTreeMap<usize, usize>,

@@ -665,8 +665,7 @@ fn prune_list_ids(
             return Ok(full());
         }
         if range.is_point(true) {
-            let row = tidb_chunk::mutrow::MutRow::from_datums(&range.high);
-            let value = spec.expr.eval(ctx, row.to_row())?;
+            let value = eval_partition_expression(&spec.expr, ctx, &range.high)?;
             let (value, is_null) = list_pruning_integer(&value)?;
             let ordinal = if is_null {
                 null_partition.or(default_partition)
@@ -707,6 +706,33 @@ fn prune_list_ids(
         .zip(used)
         .filter_map(|(definition, used)| used.then_some(definition.id))
         .collect())
+}
+
+/// Evaluates a partition expression for one row of its dependencies, through
+/// the engine when the adapter admits it.
+///
+/// The four call sites in this file used to build a `MutRow` and call
+/// `Expression::eval` directly. They now go through the engine, which is the
+/// same choice a projection makes; `None` means the expression's columns are
+/// sparse, so this keeps the row evaluation rather than guess a chunk layout
+/// (after the native evaluator is deleted that branch becomes the structured
+/// engine error).
+fn eval_partition_expression(
+    expr: &tidb_expr::expression::Expression,
+    ctx: &impl tidb_expr::Columns,
+    values: &[Datum],
+) -> Result<Datum, tidb_expr::EvalError> {
+    match tidb_expr::evaluator::eval_row_values(expr, ctx, values) {
+        Ok(Some(value)) => Ok(value),
+        Ok(None) => Ok(expr.eval(
+            ctx,
+            tidb_chunk::mutrow::MutRow::from_datums(values).to_row(),
+        )?),
+        Err(tidb_expr::evaluator::EvaluatorError::Eval(error)) => Err(error),
+        Err(tidb_expr::evaluator::EvaluatorError::Chunk(message)) => {
+            Err(tidb_expr::EvalError::Unsupported(message))
+        }
+    }
 }
 
 fn list_pruning_integer(value: &Datum) -> Result<(i64, bool), tidb_expr::EvalError> {
@@ -991,8 +1017,7 @@ fn evaluate_range_partition_point(
     if range.high.len() != spec.dependencies.len() {
         return None;
     }
-    let row = tidb_chunk::mutrow::MutRow::from_datums(&range.high);
-    let value = spec.expr.eval(ctx, row.to_row()).ok()?;
+    let value = eval_partition_expression(&spec.expr, ctx, &range.high).ok()?;
     range_partition_integer(value).map(|value| IndexRange {
         low: vec![value.clone()],
         high: vec![value],
@@ -1028,8 +1053,8 @@ fn evaluate_range_partition_endpoint(
     if matches!(value, Datum::Null | Datum::MinNotNull | Datum::MaxValue) {
         return Some(value.clone());
     }
-    let row = tidb_chunk::mutrow::MutRow::from_datums(std::slice::from_ref(value));
-    range_partition_integer(spec.expr.eval(ctx, row.to_row()).ok()?)
+    let values = std::slice::from_ref(value);
+    range_partition_integer(eval_partition_expression(&spec.expr, ctx, values).ok()?)
 }
 
 fn range_partition_integer(value: Datum) -> Option<Datum> {
@@ -1058,8 +1083,7 @@ fn prune_hash_ids(
             if range.high.len() != spec.dependencies.len() {
                 return None;
             }
-            let row = tidb_chunk::mutrow::MutRow::from_datums(&range.high);
-            let Ok(value) = spec.expr.eval(ctx, row.to_row()) else {
+            let Ok(value) = eval_partition_expression(&spec.expr, ctx, &range.high) else {
                 // Pinned Go skips a point whose partition expression cannot
                 // be evaluated; another ranger point may still be usable.
                 continue;
@@ -1248,6 +1272,14 @@ mod tests {
     use crate::partition_routing::PartitionDef;
 
     fn pruned_ids(spec: &PartitionSpec, ranges: &[IndexRange]) -> Option<Vec<i64>> {
+        pruned_ids_with(spec, ranges, &tidb_expr::NoColumns)
+    }
+
+    fn pruned_ids_with(
+        spec: &PartitionSpec,
+        ranges: &[IndexRange],
+        ctx: &impl tidb_expr::Columns,
+    ) -> Option<Vec<i64>> {
         let field_types = match &spec.kind {
             PartitionKind::RangeColumns { field_types, .. } => Some(field_types.as_slice()),
             _ => None,
@@ -1274,8 +1306,7 @@ mod tests {
                 }
             })
             .collect::<Vec<_>>();
-        super::pruned_ids_from_ranger(spec, &ranger_ranges, &tidb_expr::NoColumns)
-            .expect("partition pruning")
+        super::pruned_ids_from_ranger(spec, &ranger_ranges, ctx).expect("partition pruning")
     }
 
     fn range_table() -> PartitionSpec {
@@ -2339,5 +2370,44 @@ mod tests {
         let collapsed = 10_i64.cmp(&-1_i64);
         assert_eq!(collapsed, Ordering::Greater);
         assert_ne!(bound_below_constant, collapsed);
+    }
+
+    /// The pruning call sites converted to `eval_partition_expression` must be
+    /// answered by the *engine*, not by the native fallback they used to call:
+    /// the row counter is the evidence, and the pruned ids still have to match
+    /// the native run.
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn range_pruning_evaluates_through_the_engine() {
+        use tidb_ast::CiString;
+        use tidb_datatype::{FieldType, FieldTypeCode};
+        use tidb_expr::{
+            column::Column, constant::Constant, expression::Expression,
+            scalar_function::ScalarFunction,
+        };
+
+        let mut spec = range_table();
+        let field_type = FieldType::new(FieldTypeCode::LongLong);
+        let mut column = Column::new(1, field_type.clone());
+        column.index = 0;
+        spec.expr = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("plus"),
+            field_type.clone(),
+            vec![
+                Expression::Column(column),
+                Expression::Constant(Constant::new(Datum::Int(1), field_type)),
+            ],
+        ));
+        let ranges = [interval(Datum::Int(9), false, Datum::Int(9), false)];
+
+        let native = pruned_ids(&spec, &ranges);
+        let tikv = crate::StmtContext::for_query().with_tikv_expression(true);
+        let engine = pruned_ids_with(&spec, &ranges, &tikv);
+        assert_eq!(engine, native);
+        assert_eq!(engine, Some(vec![102]));
+        assert!(
+            tikv.tikv_expression_rows() > 0,
+            "the partition expression must be evaluated by the engine"
+        );
     }
 }

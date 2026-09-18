@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use tidb_chunk::chunk::Chunk;
 use tidb_chunk::chunk_util::ColumnSwapHelper;
-use tidb_datatype::Datum;
+use tidb_datatype::{Datum, FieldType};
 
 use crate::context::{Columns, EvalError};
 use crate::expression::Expression;
@@ -332,6 +332,68 @@ pub fn eval_constant_row<C: Columns>(
     let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), 1);
     EvaluatorSuite::new(vec![expression.clone()], true).run(ctx, &mut input, &mut output)?;
     Ok(output.get_row(0).get_datum(0, &ty))
+}
+
+/// Evaluates `expression` for **one row** whose column values are indexed by the
+/// expression's own `Column::index`.
+///
+/// This is the row-at-a-time shape that has an input chunk
+/// (`expression.eval(ctx, row)` where the row carries the expression's
+/// dependencies). The suite runs the engine when the adapter admits the
+/// expression and the native evaluator otherwise, so the coexistence fallback
+/// is the suite's, not the caller's.
+///
+/// `Ok(None)` means the caller must evaluate natively itself: the expression
+/// references a sparse set of column indexes (something other than
+/// `0..values.len()`), which this helper refuses rather than guess a chunk
+/// layout for. Every real caller so far passes the expression's dependencies in
+/// order. After the native evaluator is deleted that branch becomes the
+/// structured `ExternalEngine` error instead of a native call.
+///
+/// Like [`eval_constant_row`], the compiled program is not cached.
+pub fn eval_row_values<C: Columns>(
+    expression: &Expression,
+    ctx: &C,
+    values: &[Datum],
+) -> Result<Option<Datum>, EvaluatorError> {
+    // Without the engine there is nothing to choose: the caller keeps its own
+    // native evaluation, which is what builds this configuration anyway.
+    #[cfg(not(feature = "tikv-expr"))]
+    {
+        let _ = (expression, ctx, values);
+        return Ok(None);
+    }
+    #[cfg(feature = "tikv-expr")]
+    {
+        let mut remapped = expression.clone();
+        let mut inputs = Vec::new();
+        let mut positions = std::collections::BTreeMap::new();
+        if !crate::tikv::remap_columns(&mut remapped, &mut inputs, &mut positions) {
+            return Ok(None);
+        }
+        let mut types: Vec<Option<FieldType>> = vec![None; values.len()];
+        for (original, ty) in &inputs {
+            let Some(slot) = types.get_mut(*original) else {
+                return Ok(None);
+            };
+            *slot = Some(ty.clone());
+        }
+        let Some(types) = types.into_iter().collect::<Option<Vec<FieldType>>>() else {
+            return Ok(None);
+        };
+        let ty = expression.static_type().cloned().ok_or_else(|| {
+            EvaluatorError::Eval(EvalError::Unsupported(
+                "an expression without a static type cannot be evaluated",
+            ))
+        })?;
+        let mut input = Chunk::new_with_capacity(&types, 1);
+        for (index, value) in values.iter().enumerate() {
+            input.append_datum(index, value);
+        }
+        let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), 1);
+        EvaluatorSuite::new(vec![remapped], true).run(ctx, &mut input, &mut output)?;
+        Ok(Some(output.get_row(0).get_datum(0, &ty)))
+    }
 }
 
 pub struct EvaluatorProgram {

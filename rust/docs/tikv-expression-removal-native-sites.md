@@ -75,8 +75,40 @@ runs `CREATE TABLE ... PARTITION BY LIST COLUMNS (v) (...)` with a context built
 by `with_tikv_expression(true)` and asserts `tikv_expression_rows() > 0`. The
 11 partition-DDL unit tests and both feature modes stay green.
 
-That is one of the 75, and the shape it proves is the smallest one. The other 73
-are still unconverted.
+That is one of the 75, and the shape it proves is the smallest one.
+
+## The second conversion: one row *with* columns
+
+`tidb-executor/src/partition_pruning.rs` had four of the "one chunk row" sites,
+all evaluating `spec.expr` against a row built from the ranger's bounds. They now
+go through `tidb_expr::evaluator::eval_row_values(&expr, ctx, &values)`, which
+takes the column values **indexed by the expression's own `Column::index`** and
+builds the one-row chunk itself.
+
+Two details are the point of this shape:
+
+* the chunk's column **types** come from the expression
+  (`Column::get_static_type`), not from the datums: a datum-derived layout can
+  disagree with the declared type a partition expression was typed against, and
+  the bridge reads cells by the declared type. The helper collects them with the
+  adapter's own `remap_columns`, so the chunk and the wire schema agree by
+  construction;
+* a **sparse** column set (anything other than `0..values.len()`) returns
+  `Ok(None)` rather than guessing a chunk layout, and the caller keeps its row
+  evaluation. After the native evaluator is deleted that branch becomes the
+  structured engine error.
+
+Evidence: `range_pruning_evaluates_through_the_engine` runs the same pruning as
+`range_pruning_evaluates_go_supported_partition_functions` under
+`with_tikv_expression(true)`, asserts the same pruned ids (`Some(vec![102])`)
+and asserts `tikv_expression_rows() > 0`. All 21 pruning tests stay green, and
+the executor's 1333/1334 lib tests too.
+
+So **6 of the 75** are converted -- two constant-row sites in
+`ddl/table_partition_list.rs` and four pruning sites in
+`partition_pruning.rs`. The remaining 69 are still textually unconverted, and
+the per-row kinds still need the evaluation moved out of their loop rather than
+wrapped.
 
 ## What this does not establish
 

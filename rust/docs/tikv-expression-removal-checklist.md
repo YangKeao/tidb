@@ -63,15 +63,21 @@ reproducible grep; the kinds are:
   during DML with a statement context, so they can be moved with projection,
   but they are separate call sites.
 
-The first conversion is done and has evidence: the two
-`ddl/table_partition_list.rs` sites now go through
-`tidb_expr::evaluator::eval_constant_row`, and
-`tidb-executor/tests/tikv_expression.rs` proves the engine answered
-(`tikv_expression_rows() > 0`) for a `PARTITION BY LIST COLUMNS` table. That
-helper is for the once-per-statement kind only; it compiles per call, so the
-per-row kinds must move the evaluation out of their loop instead.
-`tikv-expression-removal-native-sites.md` records which site was converted and
-that the other 73 are not.
+Six sites now have evidence of conversion, in both input shapes. The two
+`ddl/table_partition_list.rs` sites go through
+`tidb_expr::evaluator::eval_constant_row` (no input columns), proven by
+`tidb-executor/tests/tikv_expression.rs` asserting `tikv_expression_rows() > 0`
+for a `PARTITION BY LIST COLUMNS` table. The four
+`partition_pruning.rs` sites go through `eval_row_values` (one row with
+columns), proven by `range_pruning_evaluates_through_the_engine` asserting the
+same pruned ids *and* `tikv_expression_rows() > 0`. `eval_row_values` takes the
+chunk's column types from the expression and refuses a sparse column set
+(`Ok(None)`, caller keeps its row evaluation), because a datum-derived chunk
+layout can disagree with the declared type the engine reads cells by. Both
+helpers compile per call, so they are for once-per-statement sites; the per-row
+kinds still need the evaluation moved out of their loop.
+`tikv-expression-removal-native-sites.md` records all of it, including that 69
+sites remain unconverted.
 
 Each conversion needs the same guarantee the adapter already enforces: a
 compilation refusal is decided before evaluation, and a runtime error is never
