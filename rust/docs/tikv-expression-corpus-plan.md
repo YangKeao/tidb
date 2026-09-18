@@ -1756,3 +1756,25 @@ resolver is on the declined side.
 This is objective item 2's counting gate: no change can add or remove an engine
 fallback without saying so.
 
+### 7.12 What deleting the native evaluator does to the 59, measured
+
+The ratchet's fourth test,
+`every_declined_expression_fails_cleanly_without_the_native_evaluator`, drives
+each declined expression through `EvaluatorSuite` with a resolver whose
+`tikv_expression_required()` is `true` -- the resolver milestone E ends up with
+-- and asserts the outcome is never a value:
+
+| Outcome | Count |
+| --- | --- |
+| structured `ExternalEngine` (code 1105) naming the refusal | 57 |
+| planning-time refusal, never reaching evaluation | 2 |
+
+The two planning-time refusals are pinned by name. `(1, 2) = (1, 2, 3)` is a
+row-value comparison the rewriter cannot build without a column resolver, and
+`convert('haha' using cp866)` names a charset the port does not support; both
+fail before evaluation, which is a different and already-correct contract.
+
+So the removal's error contract is asserted for the whole remaining set rather
+than discovered during the cutover: no declined expression can silently produce
+a value once native is gone, and each one carries its reason.
+

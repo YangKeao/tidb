@@ -166,6 +166,14 @@ other way. Reverted; the minted spellings stay native, and the experiment is in
 corpus is cheap and it decides these questions faster than reasoning about the
 code does.
 
+The removal's error contract is now measured for the whole remaining set: the
+ratchet drives each of the 59 declined expressions through a resolver with
+`tikv_expression_required() == true` and asserts the outcome is never a value.
+57 return the structured refusal error naming the reason; 2 fail at planning
+time (`(1, 2) = (1, 2, 3)` needs a column resolver, `convert(... using cp866)`
+names an unsupported charset), which is a different and already-correct
+contract. That is corpus plan section 7.12.
+
 The "no session" path was only half-built. `tikv_expression_required()`
 reported a *missing engine context* as a structured error, but a resolver that
 requires the engine and gets a context that **declines** the expression still

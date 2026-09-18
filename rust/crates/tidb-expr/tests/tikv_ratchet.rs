@@ -33,8 +33,12 @@
 //! tikv-expr` and the diff will show exactly what moved.
 
 use tidb_ast::{QueryStmt, SelectField, Stmt};
+use tidb_chunk::chunk::Chunk;
+use tidb_datatype::Datum;
+use tidb_expr::evaluator::{EvaluatorError, EvaluatorSuite};
 use tidb_expr::rewriter::rewrite_expr;
 use tidb_expr::tikv::{Context, TikvExpression};
+use tidb_expr::{Columns, EvalError};
 
 /// Whether the adapter hands this expression to the engine.
 ///
@@ -178,3 +182,81 @@ fn the_gap_count_is_pinned() {
     assert_eq!(COVERED.len(), 15, "the covered list changed size");
     assert_eq!(DECLINED.len(), 59, "the declined list changed size");
 }
+
+/// The resolver that milestone E ends up with: an engine context and no native
+/// evaluator behind it.
+struct EngineOnly;
+
+impl Columns for EngineOnly {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        None
+    }
+    fn tikv_expression_context(&self) -> Option<Context> {
+        Some(Context {
+            flags: 482,
+            ..Context::default()
+        })
+    }
+    fn tikv_expression_required(&self) -> bool {
+        true
+    }
+}
+
+/// Every expression that still falls back to native must fail *cleanly* once
+/// there is no native evaluator: a structured engine error, never a value.
+///
+/// This is what deleting the native evaluator will actually do to the 59, so
+/// the removal's error contract is asserted here rather than discovered during
+/// the cutover. An expression the rewriter cannot build without a column
+/// resolver is skipped for the same reason it is on the declined side: the
+/// adapter never sees it.
+#[test]
+fn every_declined_expression_fails_cleanly_without_the_native_evaluator() {
+    let mut skipped: Vec<&str> = Vec::new();
+    for expression in DECLINED {
+        let stmt = tidb_parser::parse(&format!("select {expression}")).expect("parse");
+        let Stmt::Query(query) = stmt else {
+            panic!("not a query")
+        };
+        let QueryStmt::Select(select) = query.into_inner() else {
+            panic!("not a select")
+        };
+        let SelectField::Expr { expr, .. } = &select.fields[0] else {
+            panic!("no expression")
+        };
+        let Ok(rewritten) = rewrite_expr(expr) else {
+            skipped.push(expression);
+            continue;
+        };
+        let Some(ty) = rewritten.static_type().cloned() else {
+            skipped.push(expression);
+            continue;
+        };
+        let suite = EvaluatorSuite::new(vec![rewritten], true);
+        let mut input = Chunk::new_empty(&[]);
+        input.set_num_virtual_rows(1);
+        let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), 1);
+        match suite.run(&EngineOnly, &mut input, &mut output) {
+            Err(EvaluatorError::Eval(EvalError::ExternalEngine { code, message })) => {
+                assert_eq!(code, 1105, "{expression}");
+                assert!(
+                    message.contains("declined"),
+                    "{expression}: the error must name the refusal: {message}"
+                );
+            }
+            Ok(()) => panic!(
+                "{expression} produced a value with no native evaluator; the removal must refuse it"
+            ),
+            Err(other) => panic!("{expression} failed with {other:?} instead of a refusal"),
+        }
+    }
+    // Both skips are planning-time refusals, not engine declines: the
+    // row-value comparison needs a column resolver the rewriter does not have
+    // here, and `convert(... using cp866)` names a charset the port does not
+    // support, so neither expression ever reaches evaluation.
+    assert_eq!(
+        skipped,
+        ["(1, 2) = (1, 2, 3)", "convert('haha' using cp866)"]
+    );
+}
+
