@@ -90,12 +90,29 @@ pub(super) fn admitted(expression: &Expression) -> bool {
         Expression::Constant(value) => {
             value.deferred_expr.is_none()
                 && value.param_marker.is_none()
-                // Packed protobuf timestamps are UTC, whereas the local Time
-                // datum carries session wall fields. Columns use the exact
-                // chunk bridge; decline constants until context-aware encoding.
-                && ty.code() != FieldTypeCode::Timestamp
+                // Temporal constants are sent as packed protobuf payloads
+                // whose encoding depends on session settings the constant does
+                // not carry, so the bridge refuses some shapes at evaluation
+                // time. That would turn a native success into an engine ERROR,
+                // which is the one difference the removal scope does not
+                // tolerate, so decline every temporal constant before
+                // evaluation instead. Columns use the exact chunk bridge.
+                && !matches!(
+                    ty.code(),
+                    FieldTypeCode::Date | FieldTypeCode::Datetime | FieldTypeCode::Timestamp
+                )
                 && !matches!(value.value, Datum::Real(v) | Datum::Float32(v) if !v.is_finite())
-                && !matches!(value.value, Datum::Raw(_) | Datum::MinNotNull | Datum::MaxValue)
+                // A binary/bit literal is NUMERIC in the native evaluator's
+                // coercion (`b'1' + 0` is 1) but reaches the engine as bytes,
+                // where the same expression is 0. Decline the literal.
+                && !matches!(
+                    value.value,
+                    Datum::Raw(_)
+                        | Datum::MinNotNull
+                        | Datum::MaxValue
+                        | Datum::BinaryLiteral(_)
+                        | Datum::Bit(_)
+                )
         }
         Expression::ScalarFunction(function) => {
             // The admission table is the only name-level gate. A name with no
@@ -472,6 +489,17 @@ fn comparison(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr
     {
         return None;
     }
+    // The engine compares string arguments bytewise, so a non-binary collation
+    // would answer differently from the native evaluator (case/accent folding).
+    if matches!(name, "greatest" | "least")
+        && domain == EvalType::String
+        && !function
+            .args
+            .iter()
+            .all(|arg| arg.static_type().is_some_and(|ty| ty.is_binary_string()))
+    {
+        return None;
+    }
     if matches!(name, "greatest" | "least")
         && domain == EvalType::Int
         && children
@@ -803,6 +831,16 @@ fn strings(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr> {
         "regexp_like" if children.len() == 3 => ("RegexpLikeSig", &[Bytes, Bytes, Bytes]),
         _ => return regexp_extended(function, children),
     };
+    // FIND_IN_SET compares with the argument's collation; the engine compares
+    // bytes, so a non-binary collation would answer differently.
+    if name == "find_in_set"
+        && !function
+            .args
+            .iter()
+            .all(|arg| arg.static_type().is_some_and(|ty| ty.is_binary_string()))
+    {
+        return None;
+    }
     node(signature, cast_args(children, targets)?, ty)
 }
 

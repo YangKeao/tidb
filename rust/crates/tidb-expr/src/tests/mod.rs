@@ -94,10 +94,48 @@ fn e_with(expr: &str, cols: &dyn Columns) -> String {
 /// `FieldType` and the derived result collation, so it is the only one that
 /// can see a temporal argument or a `COLLATE` clause.
 pub(super) fn chunk_e(expr: &str) -> String {
-    chunk_e_with(expr, &NoColumns)
+    let native = chunk_case(expr, &NoColumns);
+    // Dual-run: with the engine available, the same rewritten expression must
+    // also run through TiKV and agree. An expression the adapter declines is
+    // skipped, so an excluded name is not a failure here; an expression the
+    // engine runs and answers differently is. Errors are compared by
+    // classification, not wording, per the removal scope.
+    #[cfg(feature = "tikv-expr")]
+    if let Some(engine) = engine_case(expr) {
+        match (&native, engine) {
+            (Ok(native), Ok(engine)) => {
+                assert_eq!(native.label(), engine.label(), "engine vs native: {expr}")
+            }
+            (Err(_), Err(_)) => {}
+            (Ok(native), Err(engine)) => {
+                panic!(
+                    "native {} but engine errored {engine}: {expr}",
+                    native.label()
+                )
+            }
+            (Err(native), Ok(engine)) => {
+                panic!(
+                    "native errored {native} but engine {}: {expr}",
+                    engine.label()
+                )
+            }
+        }
+    }
+    match native {
+        Ok(value) => value.label(),
+        Err(err) => err,
+    }
 }
 
 fn chunk_e_with(expr: &str, ctx: &impl Columns) -> String {
+    match chunk_case(expr, ctx) {
+        Ok(value) => value.label(),
+        Err(err) => err,
+    }
+}
+
+/// The rewritten expression's own evaluation, as a value or a formatted error.
+fn chunk_case(expr: &str, ctx: &impl Columns) -> Result<Datum, String> {
     let stmt = tidb_parser::parse(&format!("select {expr}")).expect("parse");
     let Stmt::Query(query) = stmt else {
         panic!("not query")
@@ -108,16 +146,62 @@ fn chunk_e_with(expr: &str, ctx: &impl Columns) -> String {
     let SelectField::Expr { expr, .. } = &s.fields[0] else {
         panic!("no expr")
     };
-    let rewritten = match crate::rewriter::rewrite_expr(expr) {
-        Ok(rewritten) => rewritten,
-        Err(err) => return format!("{err:?}"),
-    };
+    let rewritten = crate::rewriter::rewrite_expr(expr).map_err(|err| format!("{err:?}"))?;
     let mut chunk = tidb_chunk::chunk::Chunk::new_empty(&[]);
     chunk.set_num_virtual_rows(1);
-    match rewritten.eval(ctx, chunk.get_row(0)) {
-        Ok(value) => value.label(),
-        Err(err) => format!("{err:?}"),
+    rewritten
+        .eval(ctx, chunk.get_row(0))
+        .map_err(|err| format!("{err:?}"))
+}
+
+/// Runs one constant expression through the engine. `None` means the adapter
+/// declined it (a listed exclusion), so the native answer stands alone.
+#[cfg(feature = "tikv-expr")]
+fn engine_case(expr: &str) -> Option<Result<Datum, String>> {
+    use std::cell::Cell;
+
+    struct EngineColumns(Cell<bool>);
+    impl Columns for EngineColumns {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn tikv_expression_context(&self) -> Option<crate::tikv::Context> {
+            Some(crate::tikv::Context {
+                flags: 482,
+                ..Default::default()
+            })
+        }
+        fn record_tikv_expression_fallback(&self, _: crate::tikv::FallbackReason) {
+            self.0.set(true)
+        }
     }
+
+    let stmt = tidb_parser::parse(&format!("select {expr}")).ok()?;
+    let Stmt::Query(query) = stmt else {
+        return None;
+    };
+    let QueryStmt::Select(s) = query.into_inner() else {
+        return None;
+    };
+    let SelectField::Expr { expr, .. } = &s.fields[0] else {
+        return None;
+    };
+    let rewritten = crate::rewriter::rewrite_expr(expr).ok()?;
+    let ty = rewritten.static_type()?.clone();
+
+    let columns = EngineColumns(Cell::new(false));
+    let suite = crate::evaluator::EvaluatorSuite::new(vec![rewritten], true);
+    let mut input = tidb_chunk::chunk::Chunk::new_empty(&[]);
+    input.set_num_virtual_rows(1);
+    let mut output = tidb_chunk::chunk::Chunk::new_with_capacity(std::slice::from_ref(&ty), 1);
+    let outcome = suite.run(&columns, &mut input, &mut output);
+    if columns.0.get() {
+        return None;
+    }
+    Some(match outcome {
+        Ok(()) => Ok(output.get_row(0).get_datum(0, &ty)),
+        Err(err) => Err(format!("{err:?}")),
+    })
 }
 
 /// Parses and evaluates a constant expression to its raw `Datum`.
