@@ -2372,6 +2372,44 @@ mod tests {
         assert_ne!(bound_below_constant, collapsed);
     }
 
+    /// The HASH point path is a third call site; it evaluates the expression
+    /// through the same helper, so it gets the same receipt.
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn hash_point_pruning_evaluates_through_the_engine() {
+        use tidb_ast::CiString;
+        use tidb_datatype::{FieldType, FieldTypeCode};
+        use tidb_expr::{
+            column::Column, constant::Constant, expression::Expression,
+            scalar_function::ScalarFunction,
+        };
+
+        let mut spec = range_table();
+        spec.kind = PartitionKind::Hash;
+        let field_type = FieldType::new(FieldTypeCode::LongLong);
+        let mut column = Column::new(1, field_type.clone());
+        column.index = 0;
+        spec.expr = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("plus"),
+            field_type.clone(),
+            vec![
+                Expression::Column(column),
+                Expression::Constant(Constant::new(Datum::Int(1), field_type)),
+            ],
+        ));
+        let ranges = [interval(Datum::Int(1), false, Datum::Int(1), false)];
+
+        let native = pruned_ids(&spec, &ranges);
+        let tikv = crate::StmtContext::for_query().with_tikv_expression(true);
+        let engine = pruned_ids_with(&spec, &ranges, &tikv);
+        assert_eq!(engine, native);
+        assert_eq!(engine, Some(vec![103]));
+        assert!(
+            tikv.tikv_expression_rows() > 0,
+            "the HASH partition expression must be evaluated by the engine"
+        );
+    }
+
     /// The LIST-pruning call site (`list_pruning_integer`) is a different one
     /// from the range path above, so it needs its own engine-execution
     /// assertion: the engine must answer, and the owner must still be the one
