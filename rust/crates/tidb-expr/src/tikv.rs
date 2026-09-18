@@ -170,10 +170,7 @@ impl TikvExpression {
         // to a string kernel. ENUM and BIT have the same shape of problem.
         !matches!(
             ty.code(),
-            FieldTypeCode::Float
-                | FieldTypeCode::Bit
-                | FieldTypeCode::Enum
-                | FieldTypeCode::Set
+            FieldTypeCode::Float | FieldTypeCode::Bit | FieldTypeCode::Enum | FieldTypeCode::Set
         ) && matches!(
             ty.eval_type(),
             EvalType::Int | EvalType::Real | EvalType::String
