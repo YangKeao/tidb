@@ -28,8 +28,9 @@ that.
 | Native kernel modules | 11,353 lines in 5 files | `scalar_function.rs` 4,297; `ops.rs` 2,452; `string_fn.rs` 2,308; `builtin_compare.rs` 1,617; `arg_eval_type.rs` 679 |
 | Temporal family | 8 files | `crates/tidb-expr/src/time_fn/` |
 | JSON / extended builtins | 20 files | `crates/tidb-expr/src/builtin_ext/` |
-| `.eval(` call sites in the workspace | 361 | 271 inside `tidb-expr/src` (the evaluator's own recursion, which dies with it) and 90 outside |
-| `.eval(` sites outside the adapter that must be rerouted | **75** | 36 in a row loop or comparator, 31 against a single chunk row, 8 against `Row::empty()`; 13 of the 90 are not the evaluator and 2 are a planner test helper. Per-file breakdown in `tikv-expression-removal-native-sites.md` |
+| `.eval(` call sites in the workspace | 355 | 273 inside `tidb-expr/src` (the evaluator's own recursion, which dies with it) and 82 outside |
+| `.eval(` sites outside the adapter | **67** | 39 in a row loop or comparator, 20 against a single chunk row, 8 against `Row::empty()`; 15 of the 82 raw hits are not the evaluator (no-argument folding helpers, the planner's `metadata.eval`, the statement predicate's four-argument `eval`) |
+| of those, that must actually be rerouted | **45 production** (22 test-only) | Test-only hits are re-pointed with the corpora instead. 9 documented sites are already converted, one of which keeps a documented sparse-column fallback. Classified by `rust/scripts/classify-native-eval-sites.py`; per-file breakdown in `tikv-expression-removal-native-sites.md` |
 | Go-test source ports | 33 files, 413 `#[test]` | `crates/tidb-expr/src/tests/*_source.rs` |
 | `tikv-expr` feature mentions in the workspace | 75 | `grep -rn tikv-expr --include=*.rs --include=*.toml --include=*.sh --include=*.py .` from `rust/`: crates, difftests, scripts, manifests |
 | `cfg(not(feature = "tikv-expr"))` arms | 0 | — |
@@ -65,9 +66,14 @@ reproducible grep; the kinds are:
 
 ### Conversion receipt
 
-Seven sites are converted (three constant-row in `ddl/`,
-four row-with-columns in `partition_pruning.rs`). Every further site must
-arrive with the same three receipts, because the first one alone is not enough:
+Nine sites no longer call the native evaluator: three constant-row in `ddl/` and
+four row-with-columns in `partition_pruning.rs` go through the engine helpers
+(one of those four keeps its native call for the sparse-column shape, which the
+helper refuses rather than guess), and two in `sort.rs` (`compare_rows`'s
+out-of-range branch) were removed as provably error-only -- that branch's
+`Expression::eval` could only return `column index is outside the input row`.
+Every further site that *returns a value* must arrive with the same three
+receipts, because the first one alone is not enough:
 
 1. **the context's static type** -- the helpers take `C: Columns` by value
    reference, so a `&dyn tidb_expr::Columns` cannot use them (`run` needs
@@ -85,7 +91,8 @@ The per-row kinds (36 sites in a loop or comparator) are excluded from this
 receipt because they must not be wrapped: they need the evaluation moved out of
 the loop so the engine sees a batch, and no helper makes that safe.
 
-Seven sites now have evidence of conversion, in both input shapes. The two
+The seven engine-helper sites now have evidence of conversion, in both input
+shapes. The two
 `ddl/table_partition_list.rs` sites plus the one `ddl/table_partition_range.rs`
 site go through
 `tidb_expr::evaluator::eval_constant_row` (no input columns), proven by
@@ -99,8 +106,8 @@ chunk's column types from the expression and refuses a sparse column set
 layout can disagree with the declared type the engine reads cells by. Both
 helpers compile per call, so they are for once-per-statement sites; the per-row
 kinds still need the evaluation moved out of their loop.
-`tikv-expression-removal-native-sites.md` records all of it, including that 68
-sites remain unconverted.
+`tikv-expression-removal-native-sites.md` records all of it, including that 45
+production sites remain unconverted (67 textual hits, 22 of them test-only).
 
 Each conversion needs the same guarantee the adapter already enforces: a
 compilation refusal is decided before evaluation, and a runtime error is never

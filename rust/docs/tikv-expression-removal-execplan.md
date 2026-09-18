@@ -301,20 +301,37 @@ The engine can now serve every expression the adapter admits, with the native
 evaluator still the default and still the fallback, and with a corpus-wide
 dual-run proving the two agree wherever the engine runs.
 
-Current receipts: TiKV `tidb_query_expr` 477 passed and `tidb_query_datatype`
-318; TiDB `tidb-expr` 1208 + 50 with the engine feature and 1180 + 18 without,
-`tidb-executor` 353; the enrolled mysql replay unchanged at 142 of 10,251
-divergences with the same divergence set
-(`md5 7b6445a8493f445641a9d07d787f0cba`) and 12,480 expression-row evaluations
-over 1,552 statements. `catalog_diff` 31 and `query_diff` 1 pass; `expr_diff`
-keeps its two pre-existing `EXPORT_SET` divergences, which are red with the
-feature disabled too.
+Current suites (TiDB numbers from the last full runs,
+`expression-reuse/round52-final.log` and `expression-reuse/r45.log`): TiDB
+`tidb-executor` 1337 + 355 + 6 + 2 with the engine feature and 1334 + 329 + 6
+without -- one test more per mode than `r50c.log`, which is the new `sort.rs`
+classification test -- and `tidb-expr` 1210 + 58 with the feature, 1181 + 18
+without (round 45, unchanged because later rounds do not touch that crate);
+TiKV `tidb_query_expr` 477 passed and `tidb_query_datatype` 318. `catalog_diff`
+31 and `query_diff` 1 pass; `expr_diff` keeps its two pre-existing
+`EXPORT_SET` divergences, which are red with the feature disabled too.
 
-What remains is not adapter plumbing but the removal itself: the 361 native
-`eval` call sites outside projection, the 33 corpora's conversion from
-dual-run to engine-only, and the deletion of the feature gate and kernels.
-Known engine divergences are tracked rather than hidden, and the dual-run makes
-any new one fail the suite.
+The enrolled mysql replay was renewed on the current branch state
+(`expression-reuse/replay-r52.log`, TiDB `1d9fd6f`): 142 of 10,251 compared
+statements diverge -- the same count and the same divergence set (md5
+`7b6445a8493f445641a9d07d787f0cba`, the id of the sorted `--- [topic]` header
+list) as the engine-off baseline
+(`expression-reuse/tidb-coverage-integration-native.log`, `backend=Native`, 0
+engine rows) -- while the engine evaluated 217,539 expression rows over 1,831
+statements, up from 12,480 over 1,552 in the previous receipt. That run links
+the pinned fork rev `9fd4f94`, which is code-equal to the TiKV branch head:
+`git diff --name-only 9fd4f94..HEAD` in the TiKV checkout lists exactly one
+documentation file (`components/tidb_query_expr/EXPRESSION_SEMANTIC_GAPS.md`).
+The widened admission surface therefore added no replay divergence.
+
+What remains is not adapter plumbing but the removal itself: 45 production sites
+of the 67 textual native `eval` hits outside projection, the other 22 being
+test-only and re-pointed with the corpora (the check is
+`rust/scripts/classify-native-eval-sites.py`; 9 documented sites no longer call
+the native evaluator: 7 through the engine helpers, 2 removed as provably
+error-only), the 33 corpora's conversion from dual-run to engine-only, and the
+deletion of the feature gate and kernels. Known engine divergences are tracked
+rather than hidden, and the dual-run makes any new one fail the suite.
 
 
 ## Context and Orientation
@@ -516,11 +533,12 @@ The replay is the semantic gate:
     INTEGRATION_TIKV_BACKEND=copying python3 .../limited-run.py -- \
       cargo test -p difftest-result-tests --features tikv-expr --test integration_diff -j1 -- --test-threads=1
 
-Its current state is 142 divergences out of 10,252 compared statements,
-identical to the native baseline and pre-existing; `expr_diff` (2 cases),
-`table_diff` (7 of 1,942) and `join_shape` (stale ratchet) are red with the
-feature disabled too. Milestone E requires those to be resolved or explicitly
-ratcheted with a reason.
+Its current state is 142 divergences out of 10,251 compared statements with a
+divergence set identical to the native baseline (`md5
+7b6445a8493f445641a9d07d787f0cba`) and therefore pre-existing; `expr_diff` (2
+cases), `table_diff` (7 of 1,942) and `join_shape` (stale ratchet) are red with
+the feature disabled too. Milestone E requires those to be resolved or
+explicitly ratcheted with a reason.
 
 
 ## Validation and Acceptance

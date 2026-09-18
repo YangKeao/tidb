@@ -8,19 +8,33 @@ kind needs. This is the measurement, and the method is repeatable:
     cd rust/crates
     grep -rn "\.eval(" --include=*.rs . | grep -v '/tidb-expr/src/'
 
-## What the 90 raw hits are
+## What the raw hits are
+
+The raw grep above returns 82 hits at the current branch state. They are
+classified mechanically by `rust/scripts/classify-native-eval-sites.py` (its rule is its
+docstring), which reads a hit plus the following eight lines so a call whose
+arguments span lines is still classified by its argument list:
 
 | Kind | Count |
 | --- | --- |
-| one row of a chunk (`eval(ctx, chunk.get_row(n))`) | 31 |
-| a row-loop variable or comparator (`eval(ctx, row)`) | 36 |
+| one row of a chunk (`get_row(0)`) | 20 |
+| a row-loop variable or comparator | 39 |
 | a constant with no input row (`Row::empty()`) | 8 |
-| not the evaluator: `constant.eval()` (folding helper) | 11 |
-| not the evaluator: the statement predicate's own `eval(row, catalog, db, ctx)` | 2 |
-| not the evaluator: the planner's test-only `metadata.eval(k)` | 2 |
+| not the evaluator: no-argument `constant.eval()`/`column.eval()`, the planner's `metadata.eval(k)`, the statement predicate's own four-argument `eval(row, catalog, db, ctx)` | 15 |
 
-So the native evaluator surface outside projections is **75 sites**, and every
-one of them is row-at-a-time: `Expression::eval` against a single `Row`.
+So the native evaluator surface outside projections is **67 sites**, and every
+one of them is row-at-a-time: `Expression::eval` against a single `Row`. Of
+those, **45 are production** and **22 only run under `cargo test`** (a file
+under a `tests/` directory, a `src/*tests.rs` module, or any line below its
+file's first `#[cfg(test)]`); the classifier reports both because test-only
+calls are re-pointed with the corpora rather than converted, so 45 -- not 67 --
+is the pre-deletion routing work. The earlier hand count in this file said 90
+raw and 75 sites; the difference is the 8 raw hits the conversions removed (see
+the conversion sections) and a classification that is now a script rather than
+a reading. The driver's six-argument `UpdateExpression::eval` is deliberately
+counted: it is a wrapper whose branches call `Expression::eval`
+(`driver/dml/correlated.rs:134,137`), so it is a real dispatch site even though
+the callee is the same evaluator.
 
 ## By file
 
@@ -117,17 +131,21 @@ conversions now carry the same strength of evidence: a green suite is not
 enough, because the DDL tests run without an engine context and would pass
 through the fallback.
 
-So **7 of the 75** are converted -- three constant-row sites in `ddl/` and four
-pruning sites in `partition_pruning.rs`. The remaining 68 are still textually
-unconverted, and the per-row kinds still need the evaluation moved out of their
-loop rather than wrapped.
+So **9 of the 75** documented sites no longer call the native evaluator -- three
+constant-row sites in `ddl/` and four pruning sites in `partition_pruning.rs`
+through the engine helpers, plus the two error-only sites in `sort.rs` (see the
+last section) -- which is what takes the raw grep from 90 hits to 82 and the
+site count to 67. One converted pruning site still contains a native call by
+design: the helper's `Ok(None)` arm keeps its row evaluation for a sparse column
+set, which is why the pruning file went from four hits to one rather than to
+zero. The remaining 67 are still textually unconverted, and the per-row kinds
+still need the evaluation moved out of their loop rather than wrapped.
 
 ## What this does not establish
 
-* No site has been converted. This is an inventory with a reproducible method,
-  not evidence that a conversion works.
-* The counts are textual: a call site that is dead code, or one that a later
-  change adds, moves the number. The grep is the source of truth.
+* The inventory is not evidence that a conversion works; the per-site sections
+  below are. The counts are textual: a call site that is dead code, or one that
+  a later change adds, moves the number. The grep is the source of truth.
 * The *aggregate* and *window* cases need the vectorized value to agree with the
   per-row value they replace; the engine's row-vs-vector equivalence is what the
   dual-run corpus tests for constants, and what `tikv_coverage.rs` tests for
@@ -164,26 +182,64 @@ fallback's answers, which is the one thing the coexistence period must not do.
 Those two sites keep their row evaluation, and the check to do first at any
 remaining site is the context's static type.
 
-## The next site, with the pointers this round gathered
+## The `sort.rs` comparator, converted for a reason the plan had wrong
 
-The smallest of the 36 per-row sites is in `tidb-executor/src/sort.rs`, and it
-is **not** wrappable by either helper, because it is a *comparator*: two calls
-in one branch of the sort comparison --
+The smallest of the 36 per-row sites is in `tidb-executor/src/sort.rs`: two
+calls in one branch of the sort comparison --
 
     // sort.rs, in the fallback branch of the comparison
     let left = item.expr.eval(ctx, left)?;
     let right = item.expr.eval(ctx, right)?;
 
--- evaluate the same expression against two different rows to decide an order.
-The surrounding comment already says the in-memory sort compares chunk cells
-directly and only the merge-of-run-heads path evaluates an expression, so a
-conversion means giving that path the key values for a batch instead of per
-comparison: `eval_sort_key` (same file) already builds exactly those keys for
-the merge path, which is the shape to extend. Its natural receipt is one of the
-sort tests (`a_sort_accounts_its_materialized_rows_against_the_statement` or the
-spill pair around it) run under `with_tikv_expression(true)` with
-`tikv_expression_rows() > 0`, plus the rows coming back in the same order.
+The plan was to batch those into `eval_sort_key`, which builds the same keys for
+the merge path. Reading the branch instead of the shape shows that plan was
+wrong, and the reason matters for the remaining 36: the branch is reached only
+when the by-item names a column the row does not carry
+(`!(column < left.len() && column < right.len())`), and in that state native
+`Column::eval` cannot return a datum at all:
 
-No site was converted this round; this section exists so the next one starts
-from the location instead of the grep.
+* a negative index is already excluded by the match guard
+  (`if column.index >= 0`);
+* a missing result type is already excluded, because the arm only matches when
+  `compile_compare_funcs` handed back a `Some`, and that function requires
+  `get_static_type()`;
+* what is left is the third precondition of `Column::eval`
+  (`crates/tidb-expr/src/column.rs:224`), which returns
+  `EvalError::Unsupported("column index is outside the input row")`.
+
+So both evaluations could only ever turn into that one error, and wrapping them
+in the engine would compute nothing. They are replaced by the error itself
+(`ExecError::Eval(EvalError::Unsupported("column index is outside the input
+row"))`), which is the shape the post-removal code must have anyway; `ctx`
+stays in the signature as `_ctx` so no caller changes, and `compare_rows`'s doc
+comment records that it no longer reads a context at all.
+`an_out_of_range_sort_key_column_is_the_error_the_native_eval_returned` pins
+the classification. The equivalence is by precondition analysis, not by a
+differential run: writing one would have added a native `.eval(` call to the
+tree and inflated the count this file exists to measure. Receipts
+(`expression-reuse/round52-final.log`): `cargo test -p tidb-executor` is
+1337 + 355 + 6 + 2 with the feature and 1334 + 329 + 6 without -- one more test
+per mode than before, the new one -- and `--test all -- tikv_expression`
+(the engine-execution receipts for the DDL and pruning sites) is 21 passed.
+
+Two lessons for the rest of the 36: a "per-row site" can be a *defensive* site
+whose only outcome is an error, in which case deletion is not a conversion but a
+simplification; and the shape of the expression (`Column` only, enforced by
+`validate_by_items`) bounds what any wrapping could ever do. `eval_sort_key`'s
+own site (one call, `Expression::Column` against a real row) is the remaining
+`sort.rs` hit and is *not* of this kind: it returns a value, and `Expression::eval`
+also applies the `ENUM_SET_AS_INT` rewrite to a column of that type, so a direct
+cell read is not equivalent and the conversion has to go through a compiled
+program.
+
+The next candidate is therefore a *production* site that returns a value.
+`column_default.rs::evaluate` (one site, line 847) is the best fit: a computed
+`DEFAULT` evaluated once per inserted row, with a sized `&impl Columns` context
+and a row that comes from the insert's own chunk, which is exactly the shape
+`eval_row_values` was built for. The virtual-row probes are the other family:
+`driver/agg_build.rs:158` and `driver/dml.rs:1503,1778` evaluate over a
+one-row chunk the same way `eval_constant_row` does. The `stmt_context.rs`
+probes (`SPACE(2000)`) are *not* candidates -- they are inside `#[cfg(test)]`,
+which is why the classifier's test-only split matters here.
+
 
