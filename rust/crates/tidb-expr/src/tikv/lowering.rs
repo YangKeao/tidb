@@ -536,6 +536,10 @@ fn comparison(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr
             ty,
         );
     }
+    // `NULLIF(a, b)` is `IF(a <=> b, NULL, a)`, and Go rewrites it that way.
+    if name == "nullif" {
+        return nullif(function, children);
+    }
     let prefix = match name {
         "eq" => "Eq",
         "ne" => "Ne",
@@ -609,6 +613,69 @@ fn comparison(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr
     node(
         &format!("{prefix}{}", family(domain)),
         all_as(children, domain)?,
+        ty,
+    )
+}
+
+/// Lowers `NULLIF(a, b)` as `IF(a <=> b, NULL, a)`.
+///
+/// The comparison promotes the pair the way the other comparisons do, and the
+/// value arm then carries `a` coerced to that promoted type -- which is what
+/// Go's `buildNullif` returns. A pair the comparison cannot promote stays
+/// native.
+fn nullif(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr> {
+    if children.len() != 2 {
+        return None;
+    }
+    let ty = function.get_static_type()?;
+    let input = child_type(&children[0])?.eval_type();
+    let domain = if same_family(&children, input) {
+        input
+    } else {
+        common_numeric(&children)?
+    };
+    // The engine compares strings bytewise, so a non-binary collation would
+    // make `NULLIF('a', 'A')` unequal where SQL says equal.
+    if domain == EvalType::String
+        && !function
+            .args
+            .iter()
+            .all(|arg| arg.static_type().is_some_and(|ty| ty.is_binary_string()))
+    {
+        return None;
+    }
+    // `NullEqInt` compares the raw `i64` and ignores the unsigned flag, so a
+    // mixed signedness pair would compare bit patterns where SQL compares
+    // values.
+    if domain == EvalType::Int {
+        let unsigned = children
+            .iter()
+            .map(|child| child_type(child).is_some_and(|ty| ty.is_unsigned()))
+            .collect::<Vec<_>>();
+        if unsigned.iter().any(|flag| *flag) && !unsigned.iter().all(|flag| *flag) {
+            return None;
+        }
+    }
+    // The condition runs in the comparison's promoted type, but the value comes
+    // back as the FIRST argument's type -- MySQL's NULLIF returns expr1, and
+    // Go wraps it with `WrapWithCastAs<expr1's type>`. An `If` node whose
+    // declared type disagreed with its value child is what the engine rejects
+    // (`NULLIF(1, 1.0)` promotes to DECIMAL for the comparison and returns
+    // BIGINT), so the two sides are built separately.
+    let predicate = node(
+        &format!("NullEq{}", family(domain)),
+        all_as(children.clone(), domain)?,
+        &FieldType::new(FieldTypeCode::LongLong),
+    )?;
+    let null = PbExpr {
+        tp: Some(ExprType::Null as i32),
+        field_type: Some(field_type_to_pb(ty)?),
+        ..PbExpr::default()
+    };
+    let value = coerce(children.into_iter().next()?, ty.eval_type())?;
+    node(
+        &format!("If{}", family(ty.eval_type())),
+        vec![predicate, null, value],
         ty,
     )
 }

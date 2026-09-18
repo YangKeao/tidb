@@ -167,6 +167,15 @@ other way. Reverted; the minted spellings stay native, and the experiment is in
 corpus is cheap and it decides these questions faster than reasoning about the
 code does.
 
+`NULLIF` is the first name to leave the "row excluded: no local lowering"
+cluster. Go rewrites it to `IF(a <=> b, NULL, a)`, so the lowering is that
+tree -- but with the two sides built separately, because MySQL returns
+*expr1's* type while the comparison promotes: `NULLIF(1, 1.0)` compares as
+DECIMAL and returns BIGINT, and an `If` node that declared BIGINT over a
+DECIMAL value child is what the engine refused with `Expect Int, received
+Decimal`. The same-type shape needs no cast at all, which is the common
+`NULLIF(col, 0)`.
+
 The lazy design (`components/tidb_query_expr/SHORT_CIRCUIT_DESIGN.md`) found
 that materializing a lazy child at a subset boundary must produce an owned
 `VectorValue`, because an `RpnStackNode` borrows one lifetime; that the

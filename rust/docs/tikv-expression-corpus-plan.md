@@ -1451,7 +1451,7 @@ The 61, verbatim:
     json_schema_valid('{"required":["a"]}', '{"a":1}')
     load_file('')
     make_set(1, 'a', 'b', 'c')
-    NULLIF(1, 1.0)
+    NULLIF(1, "1.0")
     oct(1.0)
     regexp_like('abc', 'abc', 'p')
     round(1.2345,'2')
@@ -1591,4 +1591,27 @@ target. Both are the same class as 7.2 -- "it is the same operation" is a
 hypothesis, and the corpus refutes it -- so the experiment was reverted and the
 minted spellings stay native. A future attempt has to reproduce Go's explicit
 `CAST` coercion (result metadata included) rather than reuse the internal arm.
+
+### 7.5 `NULLIF` is lowered, and the two sides build separately
+
+`NULLIF(a, b)` is `IF(a <=> b, NULL, a)`, which is how Go rewrites it, so
+`comparison()` now lowers it for any pair the comparison can promote. The first
+attempt reused one promoted type for the whole node and the engine refused it:
+
+    Expect `Int`, received `Decimal`
+
+MySQL's `NULLIF` returns **expr1's** type, not the comparison's promoted type:
+`NULLIF(1, 1.0)` compares as DECIMAL and returns BIGINT. So the condition is
+built in the promoted type (`NullEqDecimal(CastIntAsDecimal(1), 1.0)`) while the
+value arm stays expr1's type, and an `If` node never declares a type its value
+child does not have. The same-type shape needs no cast at all, which is the
+common `NULLIF(col, 0)`.
+
+Two shapes stay native on purpose: a pair the comparison cannot promote
+(`NULLIF(1, '1.0')`, where Go compares numerically) and a string pair with a
+non-binary collation (`NULLIF('a', 'A')` is equal under `utf8mb4_general_ci`,
+unequal bytewise). `NULLIF(1, 1.0)` is engine-covered now, which moved
+`NULLIF(1, '1.0')` into the list in its place, and the fixture gained
+engine-run checks for both the same-type and the promoted-condition shape over
+a column.
 

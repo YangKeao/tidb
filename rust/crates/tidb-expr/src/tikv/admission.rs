@@ -532,7 +532,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("not", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
     row("now", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
     row("nulleq", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::Any, ""),
-    row("nullif", Decision::Excluded, Signature::None, &[], Shape::Any, "no local engine lowering: not selected by local_call, the temporal/JSON/vector families, or the reused pushdown catalog"),
+    row("nullif", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::Any, ""),
     row("oct", Decision::Excluded, Signature::None, &[], Shape::Any, "OCT over a binary literal reads the bit value natively but takes the string path in the engine"),
     row("octet_length", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("or", Decision::Admitted, Signature::Family(Family::Control), &[], Shape::Any, ""),

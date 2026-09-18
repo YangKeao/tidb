@@ -2007,6 +2007,36 @@ fn tikv_coverage_cast_family_differential() {
         ),
         &mut failures,
     );
+    // `NULLIF(a, b)` is lowered as `IF(a <=> b, NULL, a)`. The condition runs
+    // in the comparison's promoted type while the value comes back as `a`'s
+    // type, so both the same-type shape and a promoted condition have to run in
+    // the engine over a column.
+    record(
+        check(
+            "nullif_same_type",
+            call(
+                "nullif",
+                &ints,
+                vec![column(0, &ints), literal(Datum::Int(-3), &ints)],
+            ),
+            &mut int_input,
+            &ints,
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "nullif_promoted_condition",
+            call(
+                "nullif",
+                &ints,
+                vec![column(0, &ints), literal(dec("2.0000"), &decs)],
+            ),
+            &mut int_input,
+            &ints,
+        ),
+        &mut failures,
+    );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
