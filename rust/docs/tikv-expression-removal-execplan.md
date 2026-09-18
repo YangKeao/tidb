@@ -47,15 +47,17 @@ remain in the workspace.
       `EvaluatorProgram` behind a lock held only for the compile-on-context-
       change step, so every projection worker of one plan reuses one
       compilation and evaluation is lock-free.
-- [ ] Milestone B (point 2): explicit admission table and silent-fallback gate.
-      Partial: the gate mechanism landed — `FallbackReason` (`not-admitted`,
-      `unrepresentable-input`) is reported through
-      `Columns::record_tikv_expression_fallback`, `StmtContext` keeps two
-      reason counters, and the SQL differential helper fails when an admitted
-      projection records a decline or a native one records no reason. The
-      admission table (`rust/crates/tidb-expr/src/tikv/admission.rs`, one row
-      per SQL name derived from the 309-entry builtin registry plus the
-      synthesized spellings) is in progress.
+- [x] Milestone B (point 2): explicit admission table and silent-fallback gate.
+      `tikv/admission.rs` holds one sorted row per SQL name (384 rows = 309
+      Go-derived registry names + 75 synthesized spellings; 232 admitted, 152
+      excluded with a reason); `lowering.rs` takes its name-level gate and its
+      family routing from the table, and tests fail if a registered or
+      synthesized name has no row. The gate half is also in: `FallbackReason`
+      is reported through `Columns::record_tikv_expression_fallback`,
+      `StmtContext` counts the two reasons, and the differential tests fail
+      when an admitted projection records a decline or a native one records no
+      reason. The inventory reports per-signature
+      admitted/excluded/untested status (385/129/126).
 - [ ] Milestone C (point 1): lazy/short-circuit evaluation in TiKV, switch and
       vectorized short-circuit in TiDB.
 - [ ] Milestone D (point 4): the type support the removal actually needs.
