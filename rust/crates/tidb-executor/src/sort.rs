@@ -361,10 +361,15 @@ fn compile_compare_funcs(by_items: &[SortByItem]) -> Vec<Option<ColumnCompareFun
 }
 
 /// Go `lessRow`: compares two retained chunk rows without allocating keys.
+///
+/// The context is no longer read: the only branch that used it evaluated a key
+/// expression for an out-of-range column, which native `Expression::eval` can
+/// only answer with an error, and that error is now returned directly. Every
+/// other by-item is a direct column compared cell by cell.
 pub(crate) fn compare_rows<C: Columns>(
     by_items: &[SortByItem],
     compare_funcs: &[Option<ColumnCompareFunc>],
-    ctx: &C,
+    _ctx: &C,
     left: Row<'_>,
     right: Row<'_>,
 ) -> Result<Ordering, ExecError> {
@@ -383,13 +388,18 @@ pub(crate) fn compare_rows<C: Columns>(
                         .column(column);
                     compare(&left_column, left.idx(), &right_column, right.idx())
                 } else {
-                    let left = item.expr.eval(ctx, left)?;
-                    let right = item.expr.eval(ctx, right)?;
-                    tidb_expr::compare_datums_with_collation(
-                        &left,
-                        &right,
-                        tidb_expr::collation_derive::collation_of_node(&item.expr),
-                    )?
+                    // An out-of-range key column is the only way to reach this
+                    // arm, and native `Column::eval` fails on exactly that
+                    // precondition: the arm guard already excludes a negative
+                    // index, `compile_compare_funcs` proves a result type
+                    // exists before it hands back a `Some`, so the eval this
+                    // branch used to make could only ever return this error.
+                    // The two native calls are therefore replaced by the error
+                    // they produced rather than wrapped in the engine: there is
+                    // no value left to compute.
+                    return Err(ExecError::Eval(tidb_expr::EvalError::Unsupported(
+                        "column index is outside the input row",
+                    )));
                 }
             }
             // A constant has the same value for every input row and cannot
@@ -1521,6 +1531,46 @@ mod tests {
         assert_eq!(
             less_by_items(&by, &[Datum::Null], &[Datum::Int(9)]).unwrap(),
             Ordering::Equal
+        );
+    }
+
+    /// The out-of-range branch of `compare_rows` used to evaluate the key
+    /// expression natively against both rows. That evaluation could only ever
+    /// return `column index is outside the input row` -- the arm guard already
+    /// excludes a negative index and `compile_compare_funcs` proves a result
+    /// type exists before it hands back a `Some` -- so the removal returns the
+    /// error itself. This pins the classification a caller sees when a by-item
+    /// names a column the retained row does not carry.
+    #[test]
+    fn an_out_of_range_sort_key_column_is_the_error_the_native_eval_returned() {
+        let by = [SortByItem {
+            expr: col_expr(3),
+            desc: false,
+        }];
+        let compare_funcs = compile_compare_funcs(&by);
+        assert!(
+            compare_funcs[0].is_some(),
+            "the fixture needs a comparable column type; otherwise the arm is the generic refusal"
+        );
+        let fields = vec![long()];
+        let mut chunk = Chunk::new_with_capacity(&fields, 1);
+        chunk.append_int64(0, 1);
+
+        let error = compare_rows(
+            &by,
+            &compare_funcs,
+            &NoColumns,
+            chunk.get_row(0),
+            chunk.get_row(0),
+        )
+        .expect_err("a key column the row does not carry cannot be ordered");
+        assert!(
+            matches!(
+                error,
+                ExecError::Eval(tidb_expr::EvalError::Unsupported(message))
+                    if message == "column index is outside the input row"
+            ),
+            "unexpected error: {error:?}"
         );
     }
 
