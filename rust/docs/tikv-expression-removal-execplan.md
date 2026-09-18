@@ -212,6 +212,14 @@ so `bridge::check_time` now carries the declared FSP onto the result the way it
 already rebuilt a declared DATE. That closed the last known divergence of the
 minted-cast group; only `cast_json` and `cast_year` remain.
 
+The lazy-arm rule has now been tested three times (7.2, 7.4, 7.10) and the
+generalisation is narrower than "no coercion in an arm": a coercion is safe
+exactly when it is the coercion Go applies at that position. `WrapWithCastAsString`
+on a lazy value is (verified: `elt(1, 65)` agrees); a numeric-to-int cast on a
+`case` condition or on an `elt` index is not (both measured divergences). Each
+test costs one dual-run, so the practical rule is to try the narrowest
+relaxation, run the corpus, and keep only what stays at zero divergences.
+
 The lazy design (`components/tidb_query_expr/SHORT_CIRCUIT_DESIGN.md`) found
 that materializing a lazy child at a subset boundary must produce an owned
 `VectorValue`, because an `RpnStackNode` borrows one lifetime; that the

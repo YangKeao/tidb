@@ -274,9 +274,12 @@ fn is_null_leaf(child: &PbExpr) -> bool {
 /// engine's argument validator reads the declared `FieldType`, so a NULL that
 /// arrives labelled `Bytes` is rejected by a kernel that expects `Int`
 /// (`coalesce(NULL, 1)`). Retagging adds no node, so the arm stays a leaf.
-/// Everything else is refused, because the engine node may evaluate a child the
-/// SQL answer never reaches and only a leaf that cannot warn or fail is safe
-/// there -- `coerce` would insert a real cast node.
+///
+/// A numeric *constant* leaf may also be rendered as a string: Go wraps a lazy
+/// arm's value with `WrapWithCastAsString`, that rendering is exact, and the
+/// engine's `Cast{Int,Decimal}AsString` mirrors it, so `elt(1, 65)` answers
+/// `65` on both paths. Every other coercion is refused, because section 7.2 of
+/// the corpus plan shows a numeric coercion in an arm can change the value.
 fn lazy_args(children: Vec<PbExpr>, targets: &[EvalType]) -> Option<Vec<PbExpr>> {
     if children.len() != targets.len() {
         return None;
@@ -289,9 +292,34 @@ fn lazy_args(children: Vec<PbExpr>, targets: &[EvalType]) -> Option<Vec<PbExpr>>
                 child.field_type = Some(field_type_to_pb(&FieldType::new(target_code(target)?))?);
                 return Some(child);
             }
-            same_family(std::slice::from_ref(&child), target).then_some(child)
+            if same_family(std::slice::from_ref(&child), target) {
+                return Some(child);
+            }
+            if target == EvalType::String && is_numeric_constant_leaf(&child) {
+                return coerce(child, target);
+            }
+            None
         })
         .collect()
+}
+
+/// Whether `child` is a constant leaf whose family is numeric.
+fn is_numeric_constant_leaf(child: &PbExpr) -> bool {
+    is_constant_leaf(child)
+        && child_type(child).is_some_and(|ty| {
+            matches!(
+                ty.eval_type(),
+                EvalType::Int | EvalType::Real | EvalType::Decimal
+            )
+        })
+}
+
+/// A leaf the adapter built from a literal rather than from a column or a call.
+fn is_constant_leaf(child: &PbExpr) -> bool {
+    !matches!(
+        child.tp,
+        Some(tp) if tp == ExprType::ScalarFunc as i32 || tp == ExprType::ColumnRef as i32
+    )
 }
 
 pub(super) fn coerce(child: PbExpr, target: EvalType) -> Option<PbExpr> {
@@ -717,6 +745,12 @@ fn control(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr> {
     let ty = function.get_static_type()?;
     let name = function.func_name.lowercase();
     let result = ty.eval_type();
+    // A numeric *constant* index is deliberately NOT coerced here. Go's
+    // `elt(1.1, '2.1', ...)` answers the FIRST element while the engine's
+    // `CastDecimalAsInt(1.1)` index answered the second, so the index does not
+    // follow the same coercion the value arms do; the corpus caught it in one
+    // run. The value arms' numeric-to-string rendering is exact and is handled
+    // in `lazy_args`.
     let signature = match name {
         "if" if children.len() == 3 => format!("If{}", family(result)),
         "ifnull" if children.len() == 2 => format!("IfNull{}", family(result)),

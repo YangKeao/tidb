@@ -1425,8 +1425,8 @@ The 59, verbatim:
     convert('haha' using cp866)
     convert_tz(20240315123045,'+00:00','+08:00')
     cot(1)
-    elt(0, 2, 3, 11, 1)
-    elt(1, 65)
+    elt(1.1, '2.1', '3.1', '11.1', '1.1')
+    elt('2abc','x','y','z')
     extract(hour from '-25:03:04')
     field(1.10, 0, 11e-1)
     field(NULL, 2, 3, 11, 1)
@@ -1710,4 +1710,26 @@ expression reach the engine.
 
 The minted spellings are now down to `cast_json` and `cast_year`. Engine-only
 corpus: 1148 passed / 61 failed / 59 declined, 0 divergences.
+
+### 7.10 One more lazy-arm coercion is exact, and one is not
+
+Section 7.2's rule is that a lazy arm may not acquire a coercion, because the
+coercion can change the value. Two shapes were tested against that rule:
+
+* **A numeric constant rendered as a string is safe.** Go wraps a lazy arm's
+  value with `WrapWithCastAsString`, that rendering is exact, and the engine's
+  `Cast{Int,Decimal}AsString` mirrors it. `lazy_args` now applies it, so
+  `elt(0, 2, 3, 11, 1)` and `elt(1, 65)` run in the engine with zero
+  divergences.
+* **A numeric constant used as an `elt` index is not.** `elt(1.1, '2.1', ...)`
+  answers the FIRST element natively while the engine's `CastDecimalAsInt(1.1)`
+  index answered the second -- so the index does not follow the same coercion
+  the value arms do. The one-run corpus caught it (`STR:2.1` vs `STR:3.1`) and
+  the change was reverted.
+
+That is the third time the same pattern has decided a question (7.2, 7.4, and
+here), and the useful generalisation is narrower than "coercions in lazy arms
+are unsafe": a coercion is safe exactly when it is the coercion Go itself
+applies at that position. `WrapWithCastAsString` on a value is; `WrapWithCastAsInt`
+on an `elt` index is not, because Go's `elt` index is not an ordinary int cast.
 
