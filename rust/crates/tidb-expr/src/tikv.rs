@@ -128,6 +128,18 @@ impl TikvExpression {
         else {
             return Ok(None);
         };
+        // A successful compile says nothing about laziness: an eager kernel and
+        // a lazy kernel for the same signature compile identically, and running
+        // the eager one would enter a branch MySQL never enters. Only a *mixed*
+        // program is at risk, though: a program with no lazy node has nothing
+        // that could skip a subtree, and an eager lazy-sensitive kernel there is
+        // covered by its own leaf-only shape rule. So refuse exactly the mix of
+        // a lazy node and an eager lazy-sensitive node. The admission table's
+        // per-node shape rules remain the first gate; this is the
+        // engine-enforced one.
+        if prepared.has_lazy_nodes() && !prepared.eager_lazy_risk().is_empty() {
+            return Ok(None);
+        }
         Ok(Some(Self {
             prepared,
             inputs,

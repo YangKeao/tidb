@@ -257,3 +257,54 @@ fn tikv_lazy_control_flow_never_enters_a_dead_branch() {
         );
     }
 }
+
+/// The engine-enforced gate: a program that mixes a lazy construct with an
+/// eager lazy-sensitive kernel is refused, because the eager kernel would
+/// enter a branch MySQL never enters. `IF` alone is admitted; the same `IF`
+/// wrapping an eager `ELT` is not.
+#[test]
+fn tikv_lazy_mixed_eager_risk_stays_native() {
+    use tidb_expr::tikv::TikvExpression;
+
+    let int = int();
+    let text = FieldType::new(FieldTypeCode::VarString);
+    let elt = call(
+        "elt",
+        &text,
+        vec![
+            literal(Datum::Int(1), &int),
+            literal(Datum::Bytes(b"a".to_vec()), &text),
+        ],
+    );
+    let mixed = call(
+        "if",
+        &text,
+        vec![
+            literal(Datum::Int(1), &int),
+            elt,
+            literal(Datum::Bytes(b"b".to_vec()), &text),
+        ],
+    );
+    assert!(
+        TikvExpression::compile(&mixed, Context::default())
+            .unwrap()
+            .is_none(),
+        "lazy IF plus eager ELT must stay native"
+    );
+
+    let lazy_only = call(
+        "if",
+        &text,
+        vec![
+            literal(Datum::Int(1), &int),
+            literal(Datum::Bytes(b"a".to_vec()), &text),
+            literal(Datum::Bytes(b"b".to_vec()), &text),
+        ],
+    );
+    assert!(
+        TikvExpression::compile(&lazy_only, Context::default())
+            .unwrap()
+            .is_some(),
+        "lazy IF alone is admitted"
+    );
+}
