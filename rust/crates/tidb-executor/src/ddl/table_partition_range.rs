@@ -342,10 +342,7 @@ pub(super) fn fold_range_bound(
         ),
     )
     .map_err(|_| DriverError::PartitionValuesNotInt(partition.to_owned()))?;
-    let mut dual = tidb_chunk::chunk::Chunk::new_empty(&[]);
-    dual.set_num_virtual_rows(1);
-    let value = rewritten
-        .eval(ctx, dual.get_row(0))
+    let value = tidb_expr::evaluator::eval_constant_row(&rewritten, ctx)
         .map_err(|_| DriverError::PartitionValuesNotInt(partition.to_owned()))?;
     match value {
         Datum::Int(value) => {

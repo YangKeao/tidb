@@ -104,11 +104,13 @@ Evidence: `range_pruning_evaluates_through_the_engine` runs the same pruning as
 and asserts `tikv_expression_rows() > 0`. All 21 pruning tests stay green, and
 the executor's 1333/1334 lib tests too.
 
-So **6 of the 75** are converted -- two constant-row sites in
-`ddl/table_partition_list.rs` and four pruning sites in
-`partition_pruning.rs`. The remaining 69 are still textually unconverted, and
-the per-row kinds still need the evaluation moved out of their loop rather than
-wrapped.
+`ddl/table_partition_range.rs` has a third constant-row site of the same shape
+and is converted too, verified by the same 11 partition-DDL tests.
+
+So **7 of the 75** are converted -- three constant-row sites in `ddl/` and four
+pruning sites in `partition_pruning.rs`. The remaining 68 are still textually
+unconverted, and the per-row kinds still need the evaluation moved out of their
+loop rather than wrapped.
 
 ## What this does not establish
 
@@ -138,4 +140,17 @@ context stored as `&dyn Columns` keeps its row evaluation until either the
 helpers grow a `&dyn`-shaped seam or the native entry points stop requiring
 `Sized`. The check to do first at any remaining site is therefore: what is the
 static type of this context?
+
+### How big is the trait-object obstacle?
+
+Small, which is why it is not worth a wrapper. Of the 90 `.eval(` hits outside
+the adapter, exactly two pass a `&dyn tidb_expr::Columns` (the `access_cost.rs`
+pair, whose context comes from `resolver.comparison_context()`); every other
+site names a concrete type (`ctx`, `&self.ctx`, `context`). Delegating the
+`Columns` trait's ~40 methods into a sized wrapper would buy two sites and
+would risk silent behaviour changes wherever a delegation was missed -- a
+missed `strict_sql_mode` or `handle_truncate` would change the *native*
+fallback's answers, which is the one thing the coexistence period must not do.
+Those two sites keep their row evaluation, and the check to do first at any
+remaining site is the context's static type.
 
