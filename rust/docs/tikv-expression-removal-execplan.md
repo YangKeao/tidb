@@ -60,6 +60,14 @@ remain in the workspace.
       admitted/excluded/untested status (385/129/126).
 - [ ] Milestone C (point 1): lazy/short-circuit evaluation in TiKV, switch and
       vectorized short-circuit in TiDB.
+      Partial: steps 1-2 are done and pushed (TiKV `9ab3943`). `RpnFnMeta`
+      gained `lazy_fn_ptr`, the evaluator is now `eval_subtree` with
+      `child_roots` (with `lazy_fn_ptr: None` everywhere the crate suite stayed
+      at 443, proving the refactor behavior-preserving), and `IfNullInt` is the
+      first lazy registration at 448 passing tests. The next step is the rest
+      of the control family (`If*`, `Coalesce*`, `CaseWhen*`) and the
+      three-valued `AND`/`OR`/`XOR` merge; the design is
+      `components/tidb_query_expr/SHORT_CIRCUIT_DESIGN.md` in the TiKV checkout.
 - [ ] Milestone D (point 4): the type support the removal actually needs.
 - [ ] Milestone E: flip the default, delete the native evaluator and the
       feature gate, prove parity.
