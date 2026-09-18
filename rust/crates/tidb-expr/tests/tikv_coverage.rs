@@ -1983,3 +1983,33 @@ fn tikv_coverage_is_ipv_family_masks_null() {
         .unwrap();
     }
 }
+
+/// SET is the one input-only eval type the native evaluator has. A SET column
+/// must survive the exact bridge in both directions (identity projection) and
+/// be readable as its comma-joined name by a string kernel.
+#[test]
+fn tikv_coverage_set_column_round_trip_and_string_use() {
+    use tidb_datatype::MysqlSet;
+
+    let set_type = FieldType::new(FieldTypeCode::Set).with_elems(["a", "b", "c"]);
+    let mut input = Chunk::new_with_capacity(std::slice::from_ref(&set_type), 5);
+    input.append_set(0, &MysqlSet::new("a,c", 0b101));
+    input.append_set(0, &MysqlSet::new("b", 0b010));
+    input.append_set(0, &MysqlSet::new("", 0));
+    input.append_set(0, &MysqlSet::new("a,b,c", 0b111));
+    input.append_null(0);
+    input.set_sel(Some(vec![3, 0, 2, 1, 4, 0]));
+
+    // Identity: the engine carries the SET value in and out again.
+    check("set_identity", column(0, &set_type), &mut input, &set_type).unwrap();
+
+    // A SET reads as its name in a string context, the way the native
+    // evaluator reads `Datum::Set`.
+    check(
+        "set_length",
+        call("length", &int(), vec![column(0, &set_type)]),
+        &mut input,
+        &int(),
+    )
+    .unwrap();
+}

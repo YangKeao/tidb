@@ -165,9 +165,15 @@ impl TikvExpression {
     }
 
     fn borrowed_layout(ty: &FieldType) -> bool {
+        // A SET column's SQL eval family is String but its chunk cell is
+        // `[bitmask][name]`, so the borrowed Bytes loader would feed those bytes
+        // to a string kernel. ENUM and BIT have the same shape of problem.
         !matches!(
             ty.code(),
-            FieldTypeCode::Float | FieldTypeCode::Bit | FieldTypeCode::Enum
+            FieldTypeCode::Float
+                | FieldTypeCode::Bit
+                | FieldTypeCode::Enum
+                | FieldTypeCode::Set
         ) && matches!(
             ty.eval_type(),
             EvalType::Int | EvalType::Real | EvalType::String

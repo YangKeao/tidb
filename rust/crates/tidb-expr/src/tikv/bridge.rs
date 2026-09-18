@@ -19,12 +19,12 @@
 use tidb_chunk::{chunk::Chunk, column::ColumnReadView};
 use tidb_datatype::{
     BinaryJSON, BinaryLiteral, Datum, Decimal, FieldType, FieldTypeCode, MyDecimal, MySqlDuration,
-    MysqlEnum, Time, TimeType, VectorFloat32,
+    MysqlEnum, MysqlSet, Time, TimeType, VectorFloat32,
 };
 use tidb_query_expr::standalone::{
     date_time_from_chunk, date_time_to_chunk, decimal_from_chunk, decimal_to_chunk,
     json_from_binary, json_to_binary, Column as EngineColumn, Duration as EngineDuration,
-    Enum as EngineEnum, Json as EngineJson, VectorFloat32 as EngineVector,
+    Enum as EngineEnum, Json as EngineJson, Set as EngineSet, VectorFloat32 as EngineVector,
 };
 
 use super::{engine_error, invalid};
@@ -40,6 +40,7 @@ enum Family {
     Duration,
     Json,
     Enum,
+    Set,
     Vector,
 }
 
@@ -60,9 +61,12 @@ fn family(ty: &FieldType) -> Option<Family> {
         Duration if (-1..=6).contains(&ty.decimal()) => Family::Duration,
         Json => Family::Json,
         Enum => Family::Enum,
+        // SET's SQL eval family is String, but the engine carries it as its own
+        // input-only type, so the CODEC family is what selects the carrier.
+        Set => Family::Set,
         // TiKV's vector payload is native-endian, unlike TiDB's LE chunk image.
         VectorFloat32 if cfg!(target_endian = "little") => Family::Vector,
-        // SET, legacy NEWDATE, GEOMETRY and unspecified/unknown codes have no
+        // Legacy NEWDATE, GEOMETRY and unspecified/unknown codes have no
         // implemented native engine EvalType/owned carrier.
         _ => return None,
     })
@@ -238,6 +242,22 @@ pub(super) fn copy_column(
             check_enum(name, value, ty)?;
             Ok(EngineEnum::new(name.to_vec(), value))
         })?),
+        // Same chunk cell as ENUM: `[8-byte native-endian bitmask][name bytes]`.
+        // The name is not re-derived from `elems`; the engine treats the cell's
+        // own bytes as authoritative and only the bit mask is compared.
+        Family::Set => EngineColumn::Set(cells(input, logical_rows, &view, |bytes| {
+            let (value, name) = if bytes.is_empty() {
+                (0, &[][..])
+            } else {
+                let value = u64::from_ne_bytes(array(
+                    bytes
+                        .get(..8)
+                        .ok_or_else(|| invalid("truncated TiKV set cell"))?,
+                )?);
+                (value, &bytes[8..])
+            };
+            Ok(EngineSet::new(name.to_vec(), value))
+        })?),
         Family::Vector => {
             EngineColumn::VectorFloat32(cells(input, logical_rows, &view, |bytes| {
                 let count = u32::from_le_bytes(array(
@@ -398,6 +418,12 @@ pub(super) fn into_datums(column: EngineColumn, ty: &FieldType) -> Result<Vec<Da
                 ty.collation(),
             ))
         }),
+        EngineColumn::Set(values) if expected == Family::Set => datums(values, |value| {
+            Ok(Datum::Set(
+                MysqlSet::new(value.name(), value.value()),
+                ty.collation(),
+            ))
+        }),
         EngineColumn::VectorFloat32(values) if expected == Family::Vector => {
             datums(values, |value| {
                 if !value.value.len().is_multiple_of(4) {
@@ -549,7 +575,7 @@ mod tests {
         use FieldTypeCode::*;
         for code in [
             Tiny, Short, Int24, Long, LongLong, Year, Float, Double, NewDecimal, Date, Datetime,
-            Timestamp, Duration, Json, Enum, Varchar, VarString, String, TinyBlob, MediumBlob,
+            Timestamp, Duration, Json, Enum, Set, Varchar, VarString, String, TinyBlob, MediumBlob,
             LongBlob, Blob, Null,
         ] {
             assert!(supported_type(&FieldType::new(code)), "{code:?}");
@@ -558,7 +584,7 @@ mod tests {
                 "{code:?}"
             );
         }
-        for code in [Set, NewDate, Geometry, Unspecified, Unknown(42)] {
+        for code in [NewDate, Geometry, Unspecified, Unknown(42)] {
             assert!(!supported_type(&FieldType::new(code)), "{code:?}");
         }
         assert!(supported_type(&FieldType::new(Bit).with_flen(64)));

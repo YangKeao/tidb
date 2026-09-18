@@ -52,7 +52,29 @@ fn wire_type(ty: &FieldType) -> Option<FieldType> {
 }
 
 pub(super) fn field_type_to_pb(ty: &FieldType) -> Option<tidb_proto::tipb::FieldType> {
-    pushdown_catalog::field_type_to_pb(&wire_type(ty)?)
+    let wire = wire_type(ty)?;
+    if wire.code() == FieldTypeCode::Set {
+        // Go's `columnToPBExpr` refuses SET and GEOMETRY leaves for DISTRIBUTED
+        // pushdown, and the shared catalog helper mirrors that on purpose. The
+        // local embedding is not pushdown: the engine carries a SET column now
+        // and the descriptor is ours, so build this one leaf here and leave the
+        // shared refusal untouched.
+        return Some(tidb_proto::tipb::FieldType {
+            tp: Some(i32::from(wire.code().mysql_type())),
+            flag: Some(wire.flags()),
+            flen: Some(i32::try_from(wire.flen()).ok()?),
+            decimal: Some(i32::try_from(wire.decimal()).ok()?),
+            collate: Some(tidb_datatype::collation_to_proto(wire.collation_name())),
+            charset: Some(wire.charset_name().to_owned()),
+            elems: wire
+                .elems_snapshot()
+                .into_iter()
+                .map(|elem| elem.to_string())
+                .collect(),
+            array: Some(wire.is_array()),
+        });
+    }
+    pushdown_catalog::field_type_to_pb(&wire)
 }
 
 pub(super) fn admitted(expression: &Expression) -> bool {
