@@ -1733,3 +1733,26 @@ are unsafe": a coercion is safe exactly when it is the coercion Go itself
 applies at that position. `WrapWithCastAsString` on a value is; `WrapWithCastAsInt`
 on an `elt` index is not, because Go's `elt` index is not an ordinary int cast.
 
+### 7.11 The engine-only outcome is now a CI gate
+
+`TIKV_EXPR_ENGINE_ONLY=1` measures the gap, but it is an environment-gated run:
+nothing in a normal `cargo test` stops a change from adding a native fallback.
+`crates/tidb-expr/tests/tikv_ratchet.rs` turns the measurement into a gate. It
+holds two pinned lists -- the 15 expressions that moved from native to engine
+during this work, and the 59 that still decline -- and three tests:
+
+* `covered_expressions_stay_in_the_engine` -- losing one is a regression;
+* `declined_expressions_stay_declined` -- gaining one fails the test so the
+  expression and the documented count move together;
+* `the_gap_count_is_pinned` -- both list lengths are asserted.
+
+The gate was mutation-tested: adding `date('20111213')` to the declined list
+fails with *"date('20111213') now runs in the engine; move it to COVERED and
+update the count in tikv-expression-corpus-plan.md"*, and the count test fails
+with it. A rewrite or compile error counts as "not owned", which is what the
+corpus harness does, so an expression the rewriter cannot build without a column
+resolver is on the declined side.
+
+This is objective item 2's counting gate: no change can add or remove an engine
+fallback without saying so.
+
