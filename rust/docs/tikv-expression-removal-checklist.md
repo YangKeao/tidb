@@ -28,9 +28,10 @@ that.
 | Native kernel modules | 11,353 lines in 5 files | `scalar_function.rs` 4,297; `ops.rs` 2,452; `string_fn.rs` 2,308; `builtin_compare.rs` 1,617; `arg_eval_type.rs` 679 |
 | Temporal family | 8 files | `crates/tidb-expr/src/time_fn/` |
 | JSON / extended builtins | 20 files | `crates/tidb-expr/src/builtin_ext/` |
-| Native `eval` call sites outside the adapter | 361 | `tidb-expr` 274, `tidb-executor` 72, `tidb-planner` 15 |
+| `.eval(` call sites in the workspace | 361 | 271 inside `tidb-expr/src` (the evaluator's own recursion, which dies with it) and 90 outside |
+| `.eval(` sites outside the adapter that must be rerouted | **75** | 36 in a row loop or comparator, 31 against a single chunk row, 8 against `Row::empty()`; 13 of the 90 are not the evaluator and 2 are a planner test helper. Per-file breakdown in `tikv-expression-removal-native-sites.md` |
 | Go-test source ports | 33 files, 413 `#[test]` | `crates/tidb-expr/src/tests/*_source.rs` |
-| `tikv-expr` feature mentions in the workspace | 65 | crates, difftests, scripts, manifests |
+| `tikv-expr` feature mentions in the workspace | 75 | `grep -rn tikv-expr --include=*.rs --include=*.toml --include=*.sh --include=*.py .` from `rust/`: crates, difftests, scripts, manifests |
 | `cfg(not(feature = "tikv-expr"))` arms | 0 | — |
 
 The last row matters: there is no "engine off" code to remove. The feature
@@ -40,7 +41,9 @@ engine context mandatory rather than of deleting conditionals.
 
 ## 2. Consumers that must be rerouted
 
-Every one of the 361 call sites either moves to the engine or disappears:
+Every one of the 75 reroutable sites either moves to the engine or disappears.
+`tikv-expression-removal-native-sites.md` has the by-file inventory and the
+reproducible grep; the kinds are:
 
 * **Projection** (`tidb-executor`): already goes through the engine when a
   statement context opts in. This is the only fully migrated path.
@@ -94,10 +97,29 @@ Disposition:
 the earlier milestones, because the corpora are also the oracle that proves the
 engine is right.
 
+Three gates now hold that re-pointing in place, all in
+`crates/tidb-expr/tests/`:
+
+* `tikv_ratchet.rs` pins the engine-only outcome in both directions: 17
+  expressions that moved from native to engine, 59 that still decline, and both
+  list lengths. A change that silently adds or removes a fallback fails.
+* the same file measures what deletion does to the 59: 57 return the structured
+  `ExternalEngine` error naming the refusal, and 2 are planning-time refusals
+  (`(1, 2) = (1, 2, 3)`, `convert(... using cp866)`), pinned by name.
+* it also measures which of the 59 the planner's construction-time fold removes
+  before the adapter sees them: 40 fold to a `Constant`, so the observed
+  production surface is 17. `tikv_column_shapes.rs` measures the other
+  direction -- 28 of 48 column-bearing shapes run in the engine -- because
+  folding cannot remove a shape that carries a column.
+
+The three numbers answer three different questions (adapter surface on unfolded
+constants 59, planner-reachable 17, column shapes 28/48), and
+`tikv-expression-corpus-plan.md` sections 7.11-7.17 are the record.
+
 
 ## 4. Feature and flag removal
 
-* 65 `tikv-expr` mentions: manifests (`crates/tidb-expr/Cargo.toml`,
+* 75 `tikv-expr` mentions: manifests (`crates/tidb-expr/Cargo.toml`,
   `tidb-executor`, `tidb-session`, `difftests/result-tests`), `#[cfg(feature =
   "tikv-expr")]` gates in production code and tests, and the bench
   targets. They become unconditional in dependency order: `tidb-expr` first,
@@ -148,19 +170,24 @@ Ordered by risk, not by size:
    `AddTime*Null`/`Duration`-to-date shapes can move.
 5. JSON — several excluded shapes need the NULL/deprecation/quote fixes from
    `EXPRESSION_SEMANTIC_GAPS.md`.
-6. Control flow (`IF`/`CASE`/`COALESCE`/`AND`/`OR`) — needs Milestone C
-   finished and the capability query wired.
+6. Control flow (`IF`/`CASE`/`COALESCE`/`AND`/`OR`) — Milestone C is done (the
+   Tier-1/2/3 kernels are lazy), so what remains is the shapes: a skipped arm
+   may only be a leaf, and a *condition* may take Go's own cast (7.17).
 7. Session-dependent and effectful functions — need the `HostEval` trait; until
    then they are explicit refusals, which is acceptable, because the goal is
    one evaluator, not one evaluator that does everything.
-8. `Set` input — needs Milestone D.
+8. `Set` input — Milestone D is done (the `Set` carriers, codecs, bridge and
+   cast registration are in).
 
 
 ## 7. Open questions
 
-* Whether planning-time constant folding should compile through the engine per
-  constant or keep a narrow literal-only fast path. The removal goal argues for
-  the engine, but the compilation cost for tiny constants is unmeasured.
+* ~~Whether planning-time constant folding should compile through the engine
+  per constant or keep a narrow literal-only fast path.~~ Measured in
+  `tikv-expression-corpus-plan.md` 7.13: the planner folds with the live
+  statement context before a plan exists, so 40 of the 59 corpus declines never
+  reach the adapter at all. What is still unmeasured is the *compilation* cost
+  of that fold, not whether it happens.
 * Whether the differential surface can be extended to all 230 admitted names
   before deletion, or whether some families are deleted with a smaller fixture
   set and a recorded gap.
