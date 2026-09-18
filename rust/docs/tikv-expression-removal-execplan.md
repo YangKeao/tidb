@@ -83,8 +83,13 @@ remain in the workspace.
       replay executes MORE in the engine with the SAME results: 12,493
       expression-row evaluations over 1,560 statements, 142 of 10,251
       divergences, divergence set md5 `7b6445a8493f445641a9d07d787f0cba`.
-      Remaining: the engine's per-program eager-lazy-risk query (in progress),
-      the TiDB-side switch, and the Tier-2 signatures. The design is
+      DONE through the engine-enforced gate: TiKV `01780f8` exposes
+      `has_lazy_nodes()` and `eager_lazy_risk()` with a dispatcher-integrity
+      test over `ScalarFuncSig::values()`, and the adapter refuses exactly the
+      dangerous mix of a lazy node and an eager lazy-sensitive node
+      (`IF(1, ELT(1,'a'), 'b')` is refused; `IF(1,'a','b')` and `ELT(1,'a')`
+      are admitted, so standalone Tier-2 coverage is preserved). Remaining: the
+      TiDB-side switch and the Tier-2 signatures. The design is
       `components/tidb_query_expr/SHORT_CIRCUIT_DESIGN.md`; the adapter-side
       acceptance test is `crates/tidb-expr/tests/tikv_lazy.rs`.
 - [ ] Milestone D (point 4): the type support the removal actually needs.
@@ -94,9 +99,13 @@ remain in the workspace.
       borrows and the scalar/vector/datum encode arms now mirror `Enum`
       (318 datatype tests, +18). A latent `Column::get_enum` bug was found and
       fixed: it indexed `idx * fixed_len` on a var-length column and therefore
-      failed for every row, not just `idx > 0`. Remaining: the standalone facade
-      carrier (`Column::Set`), the `types/function.rs` validation, the cast
-      registration and removing the temporary `EvalType::Set` refusal.
+      failed for every row, not just `idx > 0`. The engine facade half is also
+      done (TiKV `01780f8`): `Column::Set`, the owned round-trip through
+      `VectorValue::Set`, and the reachable `cast_set_as_int` kernel, with the
+      temporary `EvalType::Set` refusal removed and the old rejection test
+      turned into a positive one. Remaining: the TiDB-side bridge
+      (`supported_type`, `copy_column`, `into_datums`, `family()` and a Set
+      fixture), so Set columns still stay native in the adapter.
 - [ ] Milestone E: flip the default, delete the native evaluator and the
       feature gate, prove parity.
 
