@@ -1441,7 +1441,7 @@ The 59, verbatim:
     greatest('a' collate utf8mb4_general_ci, 'B')
     hex(weight_string('a'))
     hex(weight_string('aAÁàãăâ' collate utf8mb4_general_ci))
-    if(cast('2020-10-10 12:59:59' as datetime), 1, 2)
+    if(cast('3' as json), 1, 2)
     ifnull(1, 'x' regexp '[')
     ifnull(null, cast('[1]' as json))
     interval("9007199254740991", "9007199254740992")
@@ -1829,7 +1829,7 @@ outcome in both directions:
 
 | Outcome | Count |
 | --- | --- |
-| the engine runs it | 26 |
+| the engine runs it | 28 |
 | the adapter declines it | 20 |
 
 The whole core surface is in the first row: arithmetic, comparison,
@@ -1851,7 +1851,7 @@ The 20 declines are all deliberate, and grouping them says what E still owes:
 
 So the three numbers now agree and each has a purpose: **59** is the adapter's
 surface on unfolded constants, **17** is what survives the planner's fold on
-constants, and **26 of 46 sampled column shapes** is the production shape
+constants, and **28 of 48 sampled column shapes** is the production shape
 surface. The first is the corpus's own bookkeeping, the second is what the
 fold leaves, and the third is what a query actually carries.
 
@@ -1907,4 +1907,31 @@ The ratchet earned its keep here: admitting `oct` made two of its tests fail
 with "oct(1.0) now runs in the engine; move it to COVERED" and "oct(1.0)
 produced a value with no native evaluator", which is exactly the list move this
 change needed.
+
+### 7.17 A temporal condition may take Go's cast; a numeric one may not
+
+`if(cast('2020-10-10 12:59:59' as datetime), 1, 2)` was the last refusal whose
+reason was a *rule* rather than a missing capability. Three gates were in the
+way and only the third was real:
+
+1. the `constant-temporal` admission rule -- disabling it changed nothing for
+   this expression (the condition is a `cast_datetime` *node*, not a folded
+   constant) and only moved three other refusals from admission to lowering, so
+   the rule stays;
+2. `lazy_args`' leaf-only rule -- which is what actually refused it, because the
+   condition is a non-leaf temporal node that needs a Datetime-to-Int coercion;
+3. and that rule is the wrong rule for a *condition*: a condition is the first
+   child of `if`/`case`, always evaluated, never a skipped arm, so Go's own ETInt
+   coercion applies there and no laziness is involved.
+
+`control()` now coerces a condition child to Int when its family is temporal,
+before the arms are prepared. Only temporal, deliberately: 7.2 and 7.10 measured
+that coercing a *numeric* condition changes the branch (`case when 0.1` answers
+2 instead of 1), so that case keeps the strict rule.
+
+Evidence: the dual-run stays at zero divergences, the expression is
+engine-covered, and `if(cast('3' as json), 1, 2)` took its place in the list
+(a JSON condition, still excluded). The column-shape fixture gained
+`if(d0, 1, 2)` and `case when d0 then 1 else 2 end`, both engine, so 28 of 48
+sampled column shapes now run in the engine.
 

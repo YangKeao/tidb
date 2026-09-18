@@ -81,12 +81,16 @@ remain in the workspace.
       the *observed* production surface is 17 (corpus plan 7.13). Column-bearing
       shapes are not in the corpus at all, which is the one direction the
       correction could not bound -- until now: `tests/tikv_column_shapes.rs`
-      rewrites 44 shapes through a column resolver and pins 24 engine / 20
+      rewrites 48 shapes through a column resolver and pins 28 engine / 20
       native, so the production shape surface is measured too (corpus plan
       7.14). The 20 are all deliberate: collation/padding (6), missing kernel
       or policy (6), a constant regex the engine compiles at build time (1),
       `max_allowed_packet` (1), the statement clock (1), computed digits (2),
-      and three named exclusions. Remaining
+      and three named exclusions. Two of the audited reasons turned out to name
+      a *shape* rather than a capability or a policy: `oct` was excluded for its
+      binary-literal argument, which the constant rule already refuses (7.16),
+      and `if(<datetime>, a, b)` was refused by the lazy-arm leaf rule even
+      though a condition is never a skipped arm (7.17). Remaining
       known divergences are listed in the TiKV
       `EXPRESSION_SEMANTIC_GAPS.md` (26 open entries; the CRC32 declaration
       bug and the `LAST_DAY` DATE-shape mismatch are fixed).

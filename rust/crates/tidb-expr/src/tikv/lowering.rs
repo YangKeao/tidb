@@ -740,11 +740,43 @@ fn nullif(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr> {
     )
 }
 
+/// The child indexes of `name` that hold a condition.
+fn condition_indexes(name: &str, len: usize) -> Vec<usize> {
+    match name {
+        "if" => vec![0],
+        "case" | "casewhen" => (0..len)
+            .filter(|index| index % 2 == 0 && index + 1 < len)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Whether `child`'s declared family is temporal.
+fn is_temporal_typed(child: &PbExpr) -> bool {
+    child_type(child).is_some_and(|ty| {
+        matches!(
+            ty.eval_type(),
+            EvalType::Datetime | EvalType::Timestamp | EvalType::Duration
+        )
+    })
+}
+
 fn control(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr> {
     use EvalType::Int;
     let ty = function.get_static_type()?;
     let name = function.func_name.lowercase();
     let result = ty.eval_type();
+    let mut children = children;
+    // The condition of `if`/`case` is always evaluated, never a skipped arm, so
+    // Go's own ETInt coercion applies there and the leaf-only rule does not.
+    // Only a *temporal* condition is coerced: 7.2 and 7.10 measured that a
+    // numeric condition must not be, because Go's truthiness and Go's integer
+    // cast disagree for it. `case` conditions sit at even indexes.
+    for index in condition_indexes(&name, children.len()) {
+        if is_temporal_typed(&children[index]) {
+            children[index] = coerce(children[index].clone(), Int)?;
+        }
+    }
     // A numeric *constant* index is deliberately NOT coerced here. Go's
     // `elt(1.1, '2.1', ...)` answers the FIRST element while the engine's
     // `CastDecimalAsInt(1.1)` index answered the second, so the index does not

@@ -89,7 +89,8 @@ const COVERED: &[&str] = &[
     "cast('123' as char) < cast('123' as char)",
     "cast('12:59:59' as time) < cast('12:59:59' as time)",
     "coalesce(cast('12:59:59' as time), cast('12:59:59.555' as time(3)))",
-    "oct(1.0)"
+    "oct(1.0)",
+    "if(cast('2020-10-10 12:59:59' as datetime), 1, 2)"
 ];
 
 /// Expressions that still fall back to native. Gaining one is progress; the
@@ -132,7 +133,7 @@ const DECLINED: &[&str] = &[
     "greatest('a' collate utf8mb4_general_ci, 'B')",
     "hex(weight_string('a'))",
     "hex(weight_string('aAÁàãăâ' collate utf8mb4_general_ci))",
-    "if(cast('2020-10-10 12:59:59' as datetime), 1, 2)",
+    "if(cast('3' as json), 1, 2)",
     "ifnull(1, 'x' regexp '[')",
     "ifnull(null, cast('[1]' as json))",
     "interval(\"9007199254740991\", \"9007199254740992\")",
@@ -180,7 +181,7 @@ fn declined_expressions_stay_declined() {
 
 #[test]
 fn the_gap_count_is_pinned() {
-    assert_eq!(COVERED.len(), 16, "the covered list changed size");
+    assert_eq!(COVERED.len(), 17, "the covered list changed size");
     assert_eq!(DECLINED.len(), 59, "the declined list changed size");
 }
 
@@ -288,7 +289,7 @@ const SURVIVES_FOLD: &[&str] = &[
     "greatest(-9223372036854775808, cast('9223372036854775809' as unsigned))",
     "hex(weight_string('a'))",
     "hex(weight_string('aAÁàãăâ' collate utf8mb4_general_ci))",
-    "if(cast('2020-10-10 12:59:59' as datetime), 1, 2)",
+    "if(cast('3' as json), 1, 2)",
     "ifnull(1, 'x' regexp '[')",
     "ifnull(null, cast('[1]' as json))",
     "regexp_like('abc', 'abc', 'p')",

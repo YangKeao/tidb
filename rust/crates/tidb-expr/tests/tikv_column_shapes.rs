@@ -122,6 +122,8 @@ const SHAPES: &[(&str, bool)] = &[
     ("ifnull(i0, 1)", true),
     ("nullif(i0, 1)", true),
     ("if(i0, s0, s0)", true),
+    ("if(d0, 1, 2)", true),
+    ("case when d0 then 1 else 2 end", true),
     ("case when i0 then s0 else s0 end", true),
     ("least(i0, 1)", true),
     ("interval(i0, 1, 2)", true),
@@ -179,6 +181,6 @@ fn column_bearing_shapes_have_the_pinned_outcome() {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-    assert_eq!(covered, 26, "the covered count changed");
-    assert_eq!(SHAPES.len(), 46, "the shape list changed size");
+    assert_eq!(covered, 28, "the covered count changed");
+    assert_eq!(SHAPES.len(), 48, "the shape list changed size");
 }
