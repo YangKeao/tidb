@@ -6,8 +6,8 @@
     "tikv": "521ac7330208b7f74f2b182bc373882687967280"
   },
   "current_revisions": {
-    "tidb": "00f67e3a9ee35895d64008e6e4bb65ba37d8455e",
-    "tikv": "13a5b18e0b8bb7f48669446231f38e34694f82a0"
+    "tidb": "3662571246d916d88567d1135e7f723c02b059f2",
+    "tikv": "9fd4f94fbba0e881c88a1fcf461a3ca0cf3e3a53"
   },
   "source_sha256": {
     "tidb/pkg/expression/builtin.go": "496f0b345019f0af073dab6cf7b6608087135728ca96ffe1323708d4cba13b4e",
@@ -61,7 +61,7 @@
     "tidb/rust/crates/tidb-expr/src/builtin_registry.rs": "0138401ebdc33b31f5bbe7c9da032d8b89bd57099d0e8fe73dc4ac5e6f0a0ae7",
     "tidb/rust/crates/tidb-expr/src/pushdown_catalog.rs": "0799664d5779a8632efa6b3a7f77b5d84ad59ccaa9a97468364b4c02dd5515d8",
     "tidb/rust/crates/tidb-expr/src/tikv.rs": "113776074619762c8f7b2a2ef89a395527426f118202980598043634f7a846a6",
-    "tidb/rust/crates/tidb-expr/src/tikv/admission.rs": "bf6bffa23229639e04221f704733c2359c54464e82639287eebe8a0f0f66eee6",
+    "tidb/rust/crates/tidb-expr/src/tikv/admission.rs": "3eb5afa87f1ea8ea775e641766c3fc64b8759e3252ded4045e7f3a877cfbf0b0",
     "tidb/rust/crates/tidb-expr/src/tikv/lowering.rs": "46e6c4c5432d103a24dbb2516dc73f3aa034e6c96e56ce9f3d6bf6995e4b8f54",
     "tidb/rust/crates/tidb-expr/src/tikv/lowering/families.rs": "2a351a1f7e69c0a0604429ad829d86981b1cc0e18cdd54e9a740feec666acd94",
     "tidb/rust/crates/tidb-proto/proto/select.proto": "2fc136f4c341c1e3d6617ff3c5e7641ebab35188feebaff632ff8235e360f5c5",
@@ -79,9 +79,9 @@
     "tikv/components/tidb_query_expr/src/impl_other.rs": "71523a13565a906f52df86c9af4215d99260b6189ee72912d759e67dd98751a4",
     "tikv/components/tidb_query_expr/src/impl_regexp.rs": "39929bd7e119122462ae94ee8b0bec37383321e67425fa373bca971f7eba8b97",
     "tikv/components/tidb_query_expr/src/impl_string.rs": "74d2efdd0064adb8ccc1d44b45e71ce929387a4bb84144fae04f80267f11a22a",
-    "tikv/components/tidb_query_expr/src/impl_time.rs": "c318948390180d754c193271b8a0723d8be92be68b3c6b1997b27a41b1675393",
+    "tikv/components/tidb_query_expr/src/impl_time.rs": "935fac0c1ddc425ef95bcb5152de43fd926ac46d404089b43f3dd9eb521c4901",
     "tikv/components/tidb_query_expr/src/impl_vec.rs": "92cf1a58dfd728f05d4393b98bceff559ef870f212466ed8747504bf7fa142af",
-    "tikv/components/tidb_query_expr/src/lib.rs": "82b3b914143d8580c8c03d22274b10c684a4ee2fb75fc3d9553ccd59b87c73de",
+    "tikv/components/tidb_query_expr/src/lib.rs": "21deee5fe13fdf4a80bae468d31f66b44a7d28b7960febb8d418e680846c4ba2",
     "tikv/components/tidb_query_expr/src/standalone.rs": "a3b282bf1073b6a0c3f8d6d3e2e3e9e69fdb1278b547370c4ce9259009d0cc01",
     "tipb/expression.proto": "b522aa5650c2796773dffd3766e21e94ef46f4c153c308a4617a60110368cb1d"
   },
@@ -104,14 +104,14 @@
     "engine_with_go_internal_cast_evidence": 51,
     "engine_lazy_risk": 34,
     "admission_rows": 384,
-    "admission_admitted": 227,
-    "admission_excluded": 157,
+    "admission_admitted": 228,
+    "admission_excluded": 156,
     "admission_registry_names": 309,
     "admission_synthesized_names": 75,
     "admission_missing_registry_names": 0,
     "admission_missing_synthesized_names": 0,
-    "signatures_admitted_by_table": 379,
-    "signatures_excluded_by_table": 135,
+    "signatures_admitted_by_table": 380,
+    "signatures_excluded_by_table": 134,
     "signatures_untested_by_table": 126
   },
   "current_facade_policy": "engine_builder_with_safety_preflight",
@@ -4101,11 +4101,11 @@
     },
     {
       "name": "crc32",
-      "decision": "excluded",
-      "signature": "None",
+      "decision": "admitted",
+      "signature": "Family:Family::Math",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": "the engine returns Datum::Int where native returns Datum::UInt, a result-kind difference"
+      "reason": ""
     },
     {
       "name": "curdate",
@@ -12232,7 +12232,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "excluded",
+      "admission_status": "admitted",
       "admission_names": [
         "crc32"
       ]

@@ -162,7 +162,7 @@ signature_id,proto_name,rust_name,engine_dispatch,engine_family,engine_target,ba
 2136,RandWithSeedFirstGen,RandWithSeedFirstGen,True,impl_math,rand_with_seed_first_gen_fn_meta(),True,False,False,False,False,,False,,False,rand,,no_annotated_direct_loader,first_generation_not_session_seeded_sequence,engine_dispatch_semantic_exclusion_or_review,excluded,rand
 2137,Pow,Pow,True,impl_math,pow_fn_meta(),True,True,True,False,True,,False,,True,pow;power,,no_annotated_direct_loader,,engine_dispatch_adapter_gap_or_new_mapping_evidence,admitted,pow;power
 2138,Conv,Conv,True,impl_math,conv_fn_meta(),True,True,True,False,True,,False,,True,conv,,no_annotated_direct_loader,,engine_dispatch_adapter_gap_or_new_mapping_evidence,admitted,conv
-2139,CRC32,Crc32,True,impl_math,crc32_fn_meta(),True,False,False,False,True,,False,,False,crc32,,no_annotated_direct_loader,,engine_dispatch_adapter_gap_or_new_mapping_evidence,excluded,crc32
+2139,CRC32,Crc32,True,impl_math,crc32_fn_meta(),True,False,False,False,True,,False,,False,crc32,,no_annotated_direct_loader,,engine_dispatch_adapter_gap_or_new_mapping_evidence,admitted,crc32
 2140,Sign,Sign,True,impl_math,sign_fn_meta(),True,False,False,False,True,,False,,False,sign,,no_annotated_direct_loader,,engine_dispatch_adapter_gap_or_new_mapping_evidence,admitted,sign
 2141,Sqrt,Sqrt,True,impl_math,sqrt_fn_meta(),True,False,False,False,True,,False,,False,sqrt,,no_annotated_direct_loader,,engine_dispatch_adapter_gap_or_new_mapping_evidence,admitted,sqrt
 2142,Acos,Acos,True,impl_math,acos_fn_meta(),True,True,True,False,True,,False,,True,acos,,no_annotated_direct_loader,,engine_dispatch_adapter_gap_or_new_mapping_evidence,admitted,acos

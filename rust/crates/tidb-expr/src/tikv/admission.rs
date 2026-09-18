@@ -340,7 +340,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("convert_using", Decision::Excluded, Signature::None, &[], Shape::Any, "no local engine lowering: not selected by local_call, the temporal/JSON/vector families, or the reused pushdown catalog"),
     row("cos", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
     row("cot", Decision::Excluded, Signature::None, &[], Shape::Any, "native COT is one ULP from Go while the engine matches Go; keep native until the port is fixed (dual-run harness)"),
-    row("crc32", Decision::Excluded, Signature::None, &[], Shape::Any, "the engine returns Datum::Int where native returns Datum::UInt, a result-kind difference"),
+    row("crc32", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
     row("curdate", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
     row("current_date", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
     row("current_resource_group", Decision::Excluded, Signature::None, &[], Shape::Any, "no local engine lowering: not selected by local_call, the temporal/JSON/vector families, or the reused pushdown catalog"),
