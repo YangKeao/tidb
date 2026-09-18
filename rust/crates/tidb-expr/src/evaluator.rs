@@ -450,24 +450,43 @@ impl EvaluatorSuite {
             {
                 #[cfg(feature = "tikv-expr")]
                 if let Some(programs) = &tikv {
-                    match programs.get(_expression_index) {
-                        Some(Ok(compiled)) => {
-                            if let Some(reason) = crate::tikv::evaluate_shared(
-                                compiled,
-                                ctx,
-                                input,
-                                output,
-                                *output_index,
-                            )? {
-                                ctx.record_tikv_expression_fallback(reason);
-                            } else {
-                                continue;
-                            }
+                    // A resolver with no native evaluator cannot fall back, so
+                    // every refusal below is a structured error for it. While
+                    // both implementations coexist the resolver says so with
+                    // `tikv_expression_required() == false` and the native path
+                    // runs, which is the default.
+                    let declined = match programs.get(_expression_index) {
+                        Some(Ok(compiled)) => crate::tikv::evaluate_shared(
+                            compiled,
+                            ctx,
+                            input,
+                            output,
+                            *output_index,
+                        )?
+                        .inspect(|reason| ctx.record_tikv_expression_fallback(*reason)),
+                        Some(Err(reason)) => {
+                            ctx.record_tikv_expression_fallback(*reason);
+                            Some(*reason)
                         }
-                        Some(Err(reason)) => ctx.record_tikv_expression_fallback(*reason),
-                        None => ctx.record_tikv_expression_fallback(
-                            crate::tikv::FallbackReason::NotAdmitted,
-                        ),
+                        None => {
+                            let reason = crate::tikv::FallbackReason::NotAdmitted;
+                            ctx.record_tikv_expression_fallback(reason);
+                            Some(reason)
+                        }
+                    };
+                    if let Some(reason) = declined {
+                        if ctx.tikv_expression_required() {
+                            return Err(EvalError::ExternalEngine {
+                                code: 1105,
+                                message: format!(
+                                    "this resolver requires the TiKV expression engine, which \
+                                     declined the expression: {reason:?}"
+                                ),
+                            }
+                            .into());
+                        }
+                    } else {
+                        continue;
                     }
                 }
                 if let Expression::Constant(constant) = expression {

@@ -166,6 +166,16 @@ other way. Reverted; the minted spellings stay native, and the experiment is in
 corpus is cheap and it decides these questions faster than reasoning about the
 code does.
 
+The "no session" path was only half-built. `tikv_expression_required()`
+reported a *missing engine context* as a structured error, but a resolver that
+requires the engine and gets a context that **declines** the expression still
+fell through to the native evaluator -- a silent fallback with nothing behind
+it once native is gone. Evaluation now returns the same structured
+`ExternalEngine` error (code 1105) naming the refusal reason, and the reason is
+still recorded first, so a gate can see it. The test uses `translate`, which is
+a permanent native exception (no signature in the pinned tipb), so it exercises
+the exact shape the removal has to answer for.
+
 `NULLIF` is the first name to leave the "row excluded: no local lowering"
 cluster. Go rewrites it to `IF(a <=> b, NULL, a)`, so the lowering is that
 tree -- but with the two sides built separately, because MySQL returns

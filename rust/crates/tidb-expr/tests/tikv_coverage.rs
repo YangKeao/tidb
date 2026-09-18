@@ -900,6 +900,62 @@ fn tikv_coverage_missing_engine_context_is_a_structured_error_when_required() {
     assert_eq!(context.rows.get(), 0);
 }
 
+/// The same resolver must also refuse to *silently* fall back when the adapter
+/// declines the expression: with no native evaluator there is nothing to fall
+/// back to, and the fallback reason is what the error has to carry.
+#[test]
+fn tikv_coverage_declined_expression_is_a_structured_error_when_required() {
+    use tidb_expr::evaluator::EvaluatorError;
+    use tidb_expr::EvalError;
+
+    let ty = text();
+    // `translate` is a permanent native exception: the pinned tipb has no
+    // signature for it, so no lowering can ever reach the engine.
+    let expression = call(
+        "translate",
+        &ty,
+        vec![
+            literal(string("abc"), &ty),
+            literal(string("a"), &ty),
+            literal(string("b"), &ty),
+        ],
+    );
+    let mut input = fixture(std::slice::from_ref(&ty), &[vec![string("abc")]]);
+
+    let context = TestContext {
+        engine_required: true,
+        backend: Some(Backend::Copying),
+        ..TestContext::default()
+    };
+    let suite = EvaluatorSuite::new(vec![expression.clone()], true);
+    let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), 1);
+    match suite.run(&context, &mut input, &mut output) {
+        Err(EvaluatorError::Eval(EvalError::ExternalEngine { code, message })) => {
+            assert_eq!(code, 1105);
+            assert!(
+                message.contains("declined"),
+                "the error must name the refusal: {message}"
+            );
+        }
+        other => panic!("expected a structured refusal error, got {other:?}"),
+    }
+    assert_eq!(
+        context.fallbacks.borrow().len(),
+        1,
+        "the refusal reason must still be recorded"
+    );
+
+    // A resolver that still has the native evaluator keeps answering.
+    let context = TestContext {
+        backend: Some(Backend::Copying),
+        ..TestContext::default()
+    };
+    let suite = EvaluatorSuite::new(vec![expression], true);
+    let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), 1);
+    suite.run(&context, &mut input, &mut output).unwrap();
+    assert_eq!(context.rows.get(), 0);
+}
+
 #[test]
 fn tikv_coverage_control_selector_family_differential() {
     let mut failures = Vec::new();
