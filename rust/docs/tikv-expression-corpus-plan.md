@@ -1415,8 +1415,8 @@ The 61, verbatim:
     case when cast('0' as json) then 1 end
     case when false then 1.5 else 0 end
     cast(0e0 as datetime)
+    cast('123' as char) < cast('123' as char)
     cast('1' as json)
-    cast(1 as signed) < cast(1 as signed)
     cast('2019-11-02 22:00:05' as datetime) in (cast('2019-11-02 22:00:04' as datetime), cast('2019-11-02 22:00:05' as datetime))
     char(65, 16740, 67.5 using utf8)
     coalesce(1, 1.1e0)
@@ -1647,4 +1647,29 @@ removal, and a boolean "excluded" was hiding four different kinds of work. A
 name that the wire protocol cannot express is not a lower-priority lowering; it
 is a permanent native exception, which changes what "delete the native
 evaluator" can even mean for it.
+
+### 7.7 The integer cast spellings are admitted, and they exposed an unsigned hazard
+
+Section 7.4's rule covers the minted cast spellings as a group, but
+`cast_signed` and `cast_unsigned` are the subset with no metadata of their own:
+`CAST(x AS SIGNED|UNSIGNED)` is exactly `Cast{source}AsInt`, every source family
+has that kernel, and the local cast arm already derives it from the function's
+own static type. Admitting those two and matching them in the arm is
+therefore safe where the temporal and string spellings are not.
+
+Doing it exposed a second bug, in a different place. `test_interval_func` broke
+with `INT:0` vs `INT:1` -- not because of the cast, but because the expression
+`interval(9223372036854775807, cast('9223372036854775808' as unsigned))` had
+been *declined* while `cast_unsigned` was excluded, and admitting it let the
+unsigned pair reach the engine's `IntervalInt`, which compares the raw `i64` and
+ignores the unsigned flag. `interval` is an ordering comparison, so an UINT64
+above `i64::MAX` sorts wrong; `in`/`field` are equality, which survives unsigned
+values only while every argument is unsigned (mixed signedness compares bit
+patterns). `comparison()` now refuses those shapes instead of answering them
+wrongly, which is why the corpus stays at zero divergences.
+
+`cast(1 as signed) < cast(1 as signed)` is engine-covered, `cast_char` and the
+rest still are not (they are the `EXPLICIT_CAST_SPELLING` rows of 7.6), and the
+fixture gained engine-run checks for `cast_signed` over an integer and a decimal
+column.
 

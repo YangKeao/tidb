@@ -2037,6 +2037,28 @@ fn tikv_coverage_cast_family_differential() {
         ),
         &mut failures,
     );
+    // `cast_signed`/`cast_unsigned` are the rewriter's spellings for an
+    // explicit `CAST(x AS SIGNED|UNSIGNED)`; the local arm derives
+    // `Cast{source}AsInt` from the function's own type, so both an integer and
+    // a decimal source have to run in the engine over a column.
+    record(
+        check(
+            "cast_signed_int",
+            call("cast_signed", &ints, vec![column(0, &ints)]),
+            &mut int_input,
+            &ints,
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "cast_signed_decimal",
+            call("cast_signed", &ints, vec![literal(dec("2.5000"), &decs)]),
+            &mut int_input,
+            &ints,
+        ),
+        &mut failures,
+    );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 

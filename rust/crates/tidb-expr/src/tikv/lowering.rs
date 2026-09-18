@@ -414,7 +414,13 @@ fn arithmetic(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr
     // shapes diverge (a DATETIME result keeps scale 0 where native keeps the
     // promoted scale, and an INTERVAL argument rounds differently), so the
     // minted spellings stay native until that coercion is reproduced exactly.
-    if name == "cast" && children.len() == 1 {
+    // `cast_signed`/`cast_unsigned` are the rewriter's spellings for an
+    // explicit `CAST(x AS SIGNED|UNSIGNED)`. Every source family has a
+    // `Cast{source}AsInt` kernel and the local arm derives it from the
+    // function's own static type, so these two are the subset of the minted
+    // spellings that needs no metadata of its own. The temporal/string
+    // spellings are not interchangeable this way (corpus plan 7.4).
+    if matches!(name, "cast" | "cast_signed" | "cast_unsigned") && children.len() == 1 {
         let source = child_type(&children[0])?;
         if source.eval_type() == EvalType::Duration
             && matches!(ty.eval_type(), EvalType::Datetime | EvalType::Timestamp)
@@ -583,6 +589,21 @@ fn comparison(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr
             .all(|arg| arg.static_type().is_some_and(|ty| ty.is_binary_string()))
     {
         return None;
+    }
+    // The engine's legacy Int kernels compare the raw `i64` and ignore the
+    // unsigned flag. For `interval` that is an ordering comparison, so an
+    // UINT64 above `i64::MAX` sorts wrong; for `in`/`field` it is equality,
+    // which survives unsigned values only while every argument is unsigned.
+    if matches!(name, "interval" | "in" | "field") && domain == EvalType::Int {
+        let unsigned = children
+            .iter()
+            .map(|child| child_type(child).is_some_and(|ty| ty.is_unsigned()))
+            .collect::<Vec<_>>();
+        if unsigned.iter().any(|flag| *flag)
+            && (name == "interval" || !unsigned.iter().all(|flag| *flag))
+        {
+            return None;
+        }
     }
     if matches!(name, "greatest" | "least")
         && domain == EvalType::Int

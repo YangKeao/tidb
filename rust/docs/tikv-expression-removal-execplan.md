@@ -188,6 +188,18 @@ says which, a test pins the triaged names, and the method is in
 is the difference between "a lowering to write" and "a function that can never
 be pushed".
 
+`cast_signed` and `cast_unsigned` came out of that triage as the one safe
+subset of the explicit-cast spellings: `CAST(x AS SIGNED|UNSIGNED)` is exactly
+`Cast{source}AsInt`, so the local arm derives it with no metadata of its own.
+Admitting them immediately exposed a hazard in a *different* place: the corpus
+test `test_interval_func` had been passing only because the whole expression was
+declined while `cast_unsigned` was excluded, and once it ran, the engine's
+`IntervalInt` compared an UINT64 above `i64::MAX` as a raw `i64`.
+`comparison()` now refuses unsigned ordering shapes rather than answering them
+wrongly. The wider lesson: widening admission can surface a pre-existing engine
+difference that the refusal was hiding, which is why every widening is measured
+against the dual-run rather than assumed.
+
 The lazy design (`components/tidb_query_expr/SHORT_CIRCUIT_DESIGN.md`) found
 that materializing a lazy child at a subset boundary must produce an owned
 `VectorValue`, because an `RpnStackNode` borrows one lifetime; that the

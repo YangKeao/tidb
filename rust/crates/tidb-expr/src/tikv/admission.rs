@@ -332,10 +332,10 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("cast_json", Decision::Excluded, Signature::None, &[], Shape::Any, EXPLICIT_CAST_SPELLING),
     row("cast_real_in_union", Decision::Excluded, Signature::None, &[], Shape::Any, EXPLICIT_CAST_SPELLING),
     row("cast_real_to_decimal_in_union", Decision::Excluded, Signature::None, &[], Shape::Any, EXPLICIT_CAST_SPELLING),
-    row("cast_signed", Decision::Excluded, Signature::None, &[], Shape::Any, EXPLICIT_CAST_SPELLING),
+    row("cast_signed", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
     row("cast_string_to_decimal_in_union", Decision::Excluded, Signature::None, &[], Shape::Any, EXPLICIT_CAST_SPELLING),
     row("cast_time", Decision::Excluded, Signature::None, &[], Shape::Any, EXPLICIT_CAST_SPELLING),
-    row("cast_unsigned", Decision::Excluded, Signature::None, &[], Shape::Any, EXPLICIT_CAST_SPELLING),
+    row("cast_unsigned", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
     row("cast_unsigned_in_union", Decision::Excluded, Signature::None, &[], Shape::Any, EXPLICIT_CAST_SPELLING),
     row("cast_vector", Decision::Excluded, Signature::None, &[], Shape::Any, NO_ENGINE_KERNEL),
     row("cast_year", Decision::Excluded, Signature::None, &[], Shape::Any, EXPLICIT_CAST_SPELLING),
@@ -850,8 +850,6 @@ mod tests {
             );
         }
         for name in [
-            "cast_signed",
-            "cast_unsigned",
             "cast_datetime",
             "cast_date",
             "cast_time",
@@ -863,6 +861,17 @@ mod tests {
             assert_eq!(
                 admission(name).expect("row").exclusion_reason,
                 EXPLICIT_CAST_SPELLING,
+                "{name}"
+            );
+        }
+        // The integer spellings are the subset that needs no metadata of its
+        // own, so they are admitted against the local cast arm.
+        for name in ["cast_signed", "cast_unsigned"] {
+            let row = admission(name).expect("row");
+            assert_eq!(row.decision, Decision::Admitted, "{name}");
+            assert_eq!(
+                row.signature,
+                Signature::Family(Family::Arithmetic),
                 "{name}"
             );
         }
