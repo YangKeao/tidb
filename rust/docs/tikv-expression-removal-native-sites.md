@@ -98,11 +98,14 @@ Two details are the point of this shape:
   evaluation. After the native evaluator is deleted that branch becomes the
   structured engine error.
 
-Evidence: `range_pruning_evaluates_through_the_engine` runs the same pruning as
-`range_pruning_evaluates_go_supported_partition_functions` under
-`with_tikv_expression(true)`, asserts the same pruned ids (`Some(vec![102])`)
-and asserts `tikv_expression_rows() > 0`. All 21 pruning tests stay green, and
-the executor's 1333/1334 lib tests too.
+Evidence, per call site: `range_pruning_evaluates_through_the_engine` and
+`list_point_pruning_evaluates_through_the_engine` each run the same pruning as
+their Go-derived sibling under `with_tikv_expression(true)`, assert the same
+pruned ids (`Some(vec![102])` for the range spec, `Some(vec![201])` for the list
+spec) and assert `tikv_expression_rows() > 0`. That covers two of the four
+call sites; the range point path and the hash point path have no engine
+assertion of their own yet. All 22 pruning tests stay green, and the executor's
+1333/1335 lib tests too.
 
 `ddl/table_partition_range.rs` has a third constant-row site of the same shape
 and is converted too, verified by the same 11 partition-DDL tests **and** by

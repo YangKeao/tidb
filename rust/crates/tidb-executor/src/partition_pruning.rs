@@ -2372,6 +2372,45 @@ mod tests {
         assert_ne!(bound_below_constant, collapsed);
     }
 
+    /// The LIST-pruning call site (`list_pruning_integer`) is a different one
+    /// from the range path above, so it needs its own engine-execution
+    /// assertion: the engine must answer, and the owner must still be the one
+    /// the Go-derived test pins.
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn list_point_pruning_evaluates_through_the_engine() {
+        use tidb_ast::CiString;
+        use tidb_datatype::{FieldType, FieldTypeCode};
+        use tidb_expr::{
+            column::Column, constant::Constant, expression::Expression,
+            scalar_function::ScalarFunction,
+        };
+
+        let mut spec = list_table();
+        let field_type = FieldType::new(FieldTypeCode::LongLong);
+        let mut column = Column::new(1, field_type.clone());
+        column.index = 0;
+        spec.expr = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("plus"),
+            field_type.clone(),
+            vec![
+                Expression::Column(column),
+                Expression::Constant(Constant::new(Datum::Int(1), field_type)),
+            ],
+        ));
+        let ranges = [interval(Datum::Int(0), false, Datum::Int(0), false)];
+
+        let native = pruned_ids(&spec, &ranges);
+        let tikv = crate::StmtContext::for_query().with_tikv_expression(true);
+        let engine = pruned_ids_with(&spec, &ranges, &tikv);
+        assert_eq!(engine, native);
+        assert_eq!(engine, Some(vec![201]));
+        assert!(
+            tikv.tikv_expression_rows() > 0,
+            "the LIST partition expression must be evaluated by the engine"
+        );
+    }
+
     /// The pruning call sites converted to `eval_partition_expression` must be
     /// answered by the *engine*, not by the native fallback they used to call:
     /// the row counter is the evidence, and the pruned ids still have to match
