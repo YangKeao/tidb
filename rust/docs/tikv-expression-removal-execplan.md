@@ -308,10 +308,16 @@ The standalone `Context` gains an optional implementation of this trait;
 `None` means "capability absent" and the call returns a structured
 `Unsupported` error rather than 0 or a panic.
 
-On the TiDB side add the session variable and DAG flag from the issue, and let
-the local adapter admit non-leaf lazy shapes only when the engine reports the
-lazy path. TiDB's own vectorized short-circuit for `AND`/`OR` (selection
-based) is part of this milestone because the two must agree.
+On the TiDB side, the local adapter admits non-leaf lazy shapes and the engine
+itself refuses a program that mixes lazy and eager lazy-sensitive nodes, so
+the adapter never has to guess. It deliberately does NOT add the issue's
+eager/lazy kill switch for the local path: laziness here is a correctness
+property the adapter depends on (a skipped branch must not run), not an
+optimization that can be turned off, and a program whose nodes are eager is
+already refused. The issue's `tidb_enable_short_circuit_expression` variable
+and DAG flag remain the right shape for *remote* pushdown rollout, which is a
+different code path. TiDB's own vectorized short-circuit for `AND`/`OR`
+(selection based) only matters while the native evaluator still exists.
 
 ### Milestone D — types the removal needs
 
