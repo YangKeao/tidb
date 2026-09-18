@@ -210,7 +210,7 @@ pub(super) fn copy_column(
         })?),
         Family::DateTime => EngineColumn::DateTime(cells(input, logical_rows, &view, |bytes| {
             let time = Time::from_go_raw(u64::from_ne_bytes(array(bytes)?)).map_err(shape_error)?;
-            check_time(time, ty)?;
+            let time = check_time(time, ty)?;
             // Both engines' chunk Time layouts store local SQL wall fields.
             // Packed datum/epoch codecs would incorrectly apply a timezone to
             // TIMESTAMP again. Chunk transport never consults the session TZ.
@@ -300,7 +300,7 @@ fn check_enum(name: &[u8], value: u64, ty: &FieldType) -> Result<(), EvalError> 
     Ok(())
 }
 
-fn check_time(time: Time, ty: &FieldType) -> Result<(), EvalError> {
+fn check_time(time: Time, ty: &FieldType) -> Result<Time, EvalError> {
     let expected = match ty.code() {
         FieldTypeCode::Date => TimeType::Date,
         FieldTypeCode::Datetime => TimeType::DateTime,
@@ -308,8 +308,7 @@ fn check_time(time: Time, ty: &FieldType) -> Result<(), EvalError> {
         _ => return Err(invalid("TiKV temporal result does not match FieldType")),
     };
     let core = time.core_time();
-    if time.kind() != expected
-        || core.year() > 9999
+    if core.year() > 9999
         || core.month() > 12
         || core.day() > 31
         || core.hour() > 23
@@ -317,11 +316,49 @@ fn check_time(time: Time, ty: &FieldType) -> Result<(), EvalError> {
         || core.second() > 59
         || core.microsecond() > 999_999
     {
-        return Err(invalid("unsupported TiKV temporal value shape"));
+        return Err(invalid(&format!(
+            "unsupported TiKV temporal value shape: expected {expected:?}, got kind {:?} \
+             y{} m{} d{} h{} mi{} s{} us{}",
+            time.kind(),
+            core.year(),
+            core.month(),
+            core.day(),
+            core.hour(),
+            core.minute(),
+            core.second(),
+            core.microsecond(),
+        )));
     }
+    // A DATE-valued kernel may be typed `DateTime` inside TiKV and keep a
+    // midnight time part -- `last_day` is one, and it is in the native surface.
+    // Go decodes the response into the declared DATE type, which drops the time
+    // part, so rebuild the date-only value here: the same declared `FieldType`
+    // must mean the same value on the engine and native paths. A value already
+    // typed DATE is left exactly as the engine produced it, including its wall
+    // fields, because that is the shape the chunk round trip is defined on.
     // Zero and invalid-calendar dates remain SQL values; do not normalize them
     // through chrono or force a second SQL-mode validation during transport.
-    Ok(())
+    if expected == TimeType::Date && time.kind() != TimeType::Date {
+        return Time::from_date_checked(
+            core.year() as i32,
+            core.month() as i32,
+            core.day() as i32,
+            0,
+            0,
+            0,
+            0,
+            TimeType::Date,
+            0,
+        )
+        .map_err(shape_error);
+    }
+    if time.kind() != expected {
+        return Err(invalid(&format!(
+            "unsupported TiKV temporal value shape: expected {expected:?}, got kind {:?}",
+            time.kind(),
+        )));
+    }
+    Ok(time)
 }
 
 fn datums<T>(
@@ -385,8 +422,7 @@ pub(super) fn into_datums(column: EngineColumn, ty: &FieldType) -> Result<Vec<Da
             let bytes = date_time_to_chunk(&value).map_err(engine_error)?;
             let time =
                 Time::from_go_raw(u64::from_le_bytes(array(&bytes)?)).map_err(shape_error)?;
-            check_time(time, ty)?;
-            Ok(Datum::Time(time))
+            Ok(Datum::Time(check_time(time, ty)?))
         }),
         EngineColumn::Duration(values) if expected == Family::Duration => datums(values, |value| {
             // TiDB's chunk reader retains the unspecified-FSP sentinel whereas

@@ -90,13 +90,12 @@ pub(super) fn admitted(expression: &Expression) -> bool {
         Expression::Constant(value) => {
             value.deferred_expr.is_none()
                 && value.param_marker.is_none()
-                // Temporal constants are sent as packed protobuf payloads
+                // A temporal constant is sent as a packed protobuf payload
                 // whose encoding depends on session settings the constant does
-                // not carry, so the bridge refuses some shapes at evaluation
-                // time. That would turn a native success into an engine ERROR,
-                // which is the one difference the removal scope does not
-                // tolerate, so decline every temporal constant before
-                // evaluation instead. Columns use the exact chunk bridge.
+                // not carry. No corpus case reaches this arm -- the rewriter
+                // leaves `date('...')`-style calls alone and they go through
+                // `coerce()` -- so the shape is unverified; keep it native
+                // rather than risk a native value becoming an engine ERROR.
                 && !matches!(
                     ty.code(),
                     FieldTypeCode::Date | FieldTypeCode::Datetime | FieldTypeCode::Timestamp
@@ -239,18 +238,12 @@ pub(super) fn coerce(child: PbExpr, target: EvalType) -> Option<PbExpr> {
     {
         return None;
     }
-    // A temporal cast over a CONSTANT builds a packed payload whose encoding
-    // depends on settings the constant does not carry, and the exact bridge can
-    // refuse it at evaluation time. That would turn a native value into an
-    // engine ERROR, which the removal scope does not tolerate, so decline the
-    // cast before evaluation. Column children use the chunk bridge.
-    if matches!(
-        target,
-        EvalType::Datetime | EvalType::Timestamp | EvalType::Duration
-    ) && child.tp != Some(ExprType::ColumnRef as i32)
-    {
-        return None;
-    }
+    // A temporal cast over a constant used to be declined here because a
+    // DATE-valued engine kernel can be typed `DateTime` internally (see
+    // `bridge::check_time`, which now normalizes it the way Go's DATE decoder
+    // does). The corpus dual-run covers the constant shapes: `date`, `time`,
+    // `timestamp`, `extract`, `month`, `cast(<int|real> as datetime)` and
+    // `last_day(<int literal>)` all agree with native.
     // JSON VALUE versus DOCUMENT coercion needs the caller's explicit policy.
     if target == EvalType::Json {
         return None;

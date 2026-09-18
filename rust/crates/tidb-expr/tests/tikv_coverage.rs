@@ -1432,8 +1432,19 @@ fn tikv_coverage_temporal_extended_differential() {
         ),
         &mut failures,
     );
-    // `last_day` is excluded: over an implicit temporal cast the engine
-    // returns a shape the exact bridge refuses, so native must answer.
+    // `last_day` returns a DATE, but the engine kernel is typed `DateTime`
+    // internally and keeps a midnight time part. The bridge rebuilds the
+    // declared DATE, the way Go's DATE decoder drops the time part, so this
+    // runs in the engine instead of falling back to native.
+    record(
+        check(
+            "last_day",
+            call("last_day", &date_ty, vec![column(0, &dt6)]),
+            &mut dt6_input,
+            &date_ty,
+        ),
+        &mut failures,
+    );
     record(
         check(
             "date_format",

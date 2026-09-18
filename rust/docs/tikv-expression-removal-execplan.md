@@ -71,12 +71,13 @@ remain in the workspace.
       `tikv-expr` feature, and re-point the corpora from "dual-run" to
       "engine only". The engine-only measurement exists and is the E work
       list: `TIKV_EXPR_ENGINE_ONLY=1` makes a declined expression a failure,
-      and at `47ce598` the lib corpus reports 1142 passed / 66 failed /
-      99 ignored, i.e. 64 distinct constant expressions still have no engine
-      path (grouped in `tikv-expression-corpus-plan.md` section 7). Remaining
+      and at `47ce598` plus the temporal-bridge fix the lib corpus reports
+      1143 passed / 65 failed / 99 ignored, i.e. 63 distinct constant
+      expressions still have no engine path (grouped in
+      `tikv-expression-corpus-plan.md` section 7). Remaining
       known divergences are listed in the TiKV
-      `EXPRESSION_SEMANTIC_GAPS.md` (27 entries; the CRC32 one was an
-      embedder declaration bug and is fixed).
+      `EXPRESSION_SEMANTIC_GAPS.md` (26 open entries; the CRC32 declaration
+      bug and the `LAST_DAY` DATE-shape mismatch are fixed).
 
 
 ## Surprises & Discoveries
@@ -123,6 +124,20 @@ around before any engine-on suite runs:
 `grpcio-sys` variants. Do not scope the target selection with `--lib` while
 doing this: a narrower target set changes feature unification, which mints a
 new unit hash and re-runs the C build for nothing.
+
+The adapter's blanket "no temporal cast over a constant" rule in
+`tikv::lowering::coerce` was covering exactly one real divergence. Deleting it
+and re-running the corpus brought `date('20111213')` and
+`month(20240315123045)` in line, and exposed
+`last_day(20240315123045)` -- TiKV's `last_day` is typed `DateTime` internally
+and returns a midnight `DateTime` for a `DATE`-declared result, which the exact
+bridge rejected as "unsupported TiKV temporal value shape" while native
+answered `2024-03-31`. Go's DATE decoder drops the time part, so
+`bridge::check_time` now rebuilds the declared `DATE` from the calendar fields
+when the engine kind differs, and leaves an already-`DATE` value (including its
+wall fields) untouched -- that is the shape the chunk round trip is defined on.
+A blanket rule that costs one line of bridge code should be preferred to
+refusing a whole family.
 
 The lazy design (`components/tidb_query_expr/SHORT_CIRCUIT_DESIGN.md`) found
 that materializing a lazy child at a subset boundary must produce an owned
