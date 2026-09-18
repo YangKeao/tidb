@@ -80,7 +80,13 @@ remain in the workspace.
       a `Constant` and never reach a lowering, 2 are planning-time refusals, so
       the *observed* production surface is 17 (corpus plan 7.13). Column-bearing
       shapes are not in the corpus at all, which is the one direction the
-      correction cannot bound. Remaining
+      correction could not bound -- until now: `tests/tikv_column_shapes.rs`
+      rewrites 44 shapes through a column resolver and pins 24 engine / 20
+      native, so the production shape surface is measured too (corpus plan
+      7.14). The 20 are all deliberate: collation/padding (6), missing kernel
+      or policy (6), a constant regex the engine compiles at build time (1),
+      `max_allowed_packet` (1), the statement clock (1), computed digits (2),
+      and three named exclusions. Remaining
       known divergences are listed in the TiKV
       `EXPRESSION_SEMANTIC_GAPS.md` (26 open entries; the CRC32 declaration
       bug and the `LAST_DAY` DATE-shape mismatch are fixed).

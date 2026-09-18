@@ -1816,3 +1816,42 @@ column-bearing shape such as `round(col, '2')` is never generated, and folding
 cannot remove a shape that carries a column. The 17 are the *observed*
 production surface, not a bound on it.
 
+### 7.14 The column-bearing surface, which 7.13 could not measure
+
+7.13 ends on a blind spot: the corpus is constant-only, and folding cannot
+remove a shape that carries a column, so `round(col, '2')` stays a real
+fallback while `round(5, -100)` does not. That direction is now measured.
+`crates/tidb-expr/tests/tikv_column_shapes.rs` rewrites each shape through a
+`ColumnResolver` -- the same entry point the planner uses -- with column names
+selecting the type (`i*` BIGINT, `b*` BINARY charset, `s*` `utf8mb4_bin`,
+`g*` `utf8mb4_general_ci`, `d*` DATETIME, `c*` NEWDECIMAL), and pins the
+outcome in both directions:
+
+| Outcome | Count |
+| --- | --- |
+| the engine runs it | 24 |
+| the adapter declines it | 20 |
+
+The whole core surface is in the first row: arithmetic, comparison,
+`is null`, `in`, `abs`, `upper`, `length`, `coalesce`/`ifnull`/`nullif`/`if`,
+`case when`, `least`, `interval`, `elt`, `year`, `extract`, the explicit casts,
+and `round(c, 2)` with a literal digit.
+
+The 20 declines are all deliberate, and grouping them says what E still owes:
+
+| Reason | Count | Shapes |
+| --- | --- | --- |
+| collation/padding | 6 | `find_in_set`/`greatest` over `utf8mb4_bin` or `general_ci` -- `utf8mb4_bin` PADS trailing spaces, which a bytewise kernel does not, so only the BINARY charset is admitted (`find_in_set(b0, b1)` and `greatest(b0, b1)` do run) |
+| no kernel or policy | 6 | `weight_string`, `cast(... as json)`, `json_schema_valid`, `load_file`, `translate`, `regexp_like(..., 'p')` |
+| constant regex | 1 | `i0 regexp '['` -- the engine compiles the pattern at build time |
+| `max_allowed_packet` | 1 | `concat` |
+| statement clock | 1 | `now()` |
+| computed digit | 2 | `round(c0, '2')`, `truncate(c0, -2)` |
+| deliberate exclusion | 3 | `benchmark`, `cot`, and the JSON-adjacent policy rows above |
+
+So the three numbers now agree and each has a purpose: **59** is the adapter's
+surface on unfolded constants, **17** is what survives the planner's fold on
+constants, and **24 of 44 sampled column shapes** is the production shape
+surface. The first is the corpus's own bookkeeping, the second is what the
+fold leaves, and the third is what a query actually carries.
+
