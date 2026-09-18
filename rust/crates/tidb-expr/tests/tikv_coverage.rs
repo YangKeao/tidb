@@ -2007,6 +2007,28 @@ fn tikv_coverage_cast_family_differential() {
         ),
         &mut failures,
     );
+    // `cast_char`/`cast_binary` are the string spellings of an explicit CAST;
+    // both land on `Cast{source}AsString` with the target charset in the
+    // result type, so an integer source has to run in the engine over a column.
+    let strings = text();
+    record(
+        check(
+            "cast_char_int",
+            call("cast_char", &strings, vec![column(0, &ints)]),
+            &mut int_input,
+            &strings,
+        ),
+        &mut failures,
+    );
+    record(
+        check(
+            "cast_binary_int",
+            call("cast_binary", &strings, vec![column(0, &ints)]),
+            &mut int_input,
+            &strings,
+        ),
+        &mut failures,
+    );
     // `NULLIF(a, b)` is lowered as `IF(a <=> b, NULL, a)`. The condition runs
     // in the comparison's promoted type while the value comes back as `a`'s
     // type, so both the same-type shape and a promoted condition have to run in

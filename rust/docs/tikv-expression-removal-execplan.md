@@ -200,6 +200,14 @@ wrongly. The wider lesson: widening admission can surface a pre-existing engine
 difference that the refusal was hiding, which is why every widening is measured
 against the dual-run rather than assumed.
 
+`cast_char` and `cast_binary` came out of the same triage for the same reason:
+`CAST(x AS CHAR|BINARY)` is `Cast{source}AsString` with the charset in the
+result type, and the local arm already derives that. Only a *fixed-width*
+binary target still declines, because its padding is bounded by
+`max_allowed_packet`. What is left of the minted spellings is the temporal group
+(`cast_datetime`, `cast_date`, `cast_time`) plus `cast_json`/`cast_year`, which
+carry result metadata the arm does not reproduce.
+
 The lazy design (`components/tidb_query_expr/SHORT_CIRCUIT_DESIGN.md`) found
 that materializing a lazy child at a subset boundary must produce an owned
 `VectorValue`, because an `RpnStackNode` borrows one lifetime; that the

@@ -1415,7 +1415,7 @@ The 61, verbatim:
     case when cast('0' as json) then 1 end
     case when false then 1.5 else 0 end
     cast(0e0 as datetime)
-    cast('123' as char) < cast('123' as char)
+    cast('12:59:59' as time) < cast('12:59:59' as time)
     cast('1' as json)
     cast('2019-11-02 22:00:05' as datetime) in (cast('2019-11-02 22:00:04' as datetime), cast('2019-11-02 22:00:05' as datetime))
     char(65, 16740, 67.5 using utf8)
@@ -1672,4 +1672,24 @@ wrongly, which is why the corpus stays at zero divergences.
 rest still are not (they are the `EXPLICIT_CAST_SPELLING` rows of 7.6), and the
 fixture gained engine-run checks for `cast_signed` over an integer and a decimal
 column.
+
+### 7.8 The string cast spellings are admitted too, and the guard keeps the fixed ones out
+
+`cast_char` and `cast_binary` are the same shape of exception as 7.7: an
+explicit `CAST(x AS CHAR|BINARY)` is `Cast{source}AsString`, every source family
+has that kernel, and the target charset lives in the result `FieldType` rather
+than in the signature. Both are admitted now, `cast('123' as char) < cast('123'
+as char)` is engine-covered, and the fixture checks `cast_char`/`cast_binary`
+over an integer column.
+
+The local arm still refuses a *fixed-width* binary target
+(`is_binary_string() && flen >= 0`), because padding and truncation there are
+bounded by `max_allowed_packet`, which the facade's `Context` does not carry.
+So `CAST(x AS BINARY(10))` stays native while `CAST(x AS BINARY)` runs.
+
+What is left of the minted spellings is the temporal group (`cast_datetime`,
+`cast_date`, `cast_time`) plus `cast_json`/`cast_year`, and 7.4 is why: they
+carry result metadata (FSP, promoted scale, JSON document policy) that the
+local arm does not reproduce. `cast('12:59:59' as time) < ...` took the place
+of the `char` expression in the gap list.
 

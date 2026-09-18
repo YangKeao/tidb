@@ -321,8 +321,8 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("case", Decision::Admitted, Signature::Family(Family::Control), &[], Shape::Any, ""),
     row("casewhen", Decision::Admitted, Signature::Family(Family::Control), &[], Shape::Any, ""),
     row("cast", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
-    row("cast_binary", Decision::Excluded, Signature::None, &[], Shape::Any, EXPLICIT_CAST_SPELLING),
-    row("cast_char", Decision::Excluded, Signature::None, &[], Shape::Any, EXPLICIT_CAST_SPELLING),
+    row("cast_binary", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
+    row("cast_char", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
     row("cast_date", Decision::Excluded, Signature::None, &[], Shape::Any, EXPLICIT_CAST_SPELLING),
     row("cast_datetime", Decision::Excluded, Signature::None, &[], Shape::Any, EXPLICIT_CAST_SPELLING),
     row("cast_decimal", Decision::Admitted, Signature::Family(Family::Catalog), &[], Shape::Any, ""),
@@ -853,8 +853,6 @@ mod tests {
             "cast_datetime",
             "cast_date",
             "cast_time",
-            "cast_char",
-            "cast_binary",
             "cast_json",
             "cast_year",
         ] {
@@ -866,7 +864,7 @@ mod tests {
         }
         // The integer spellings are the subset that needs no metadata of its
         // own, so they are admitted against the local cast arm.
-        for name in ["cast_signed", "cast_unsigned"] {
+        for name in ["cast_signed", "cast_unsigned", "cast_char", "cast_binary"] {
             let row = admission(name).expect("row");
             assert_eq!(row.decision, Decision::Admitted, "{name}");
             assert_eq!(

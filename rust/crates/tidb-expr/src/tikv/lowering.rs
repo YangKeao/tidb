@@ -420,7 +420,11 @@ fn arithmetic(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr
     // function's own static type, so these two are the subset of the minted
     // spellings that needs no metadata of its own. The temporal/string
     // spellings are not interchangeable this way (corpus plan 7.4).
-    if matches!(name, "cast" | "cast_signed" | "cast_unsigned") && children.len() == 1 {
+    if matches!(
+        name,
+        "cast" | "cast_signed" | "cast_unsigned" | "cast_char" | "cast_binary"
+    ) && children.len() == 1
+    {
         let source = child_type(&children[0])?;
         if source.eval_type() == EvalType::Duration
             && matches!(ty.eval_type(), EvalType::Datetime | EvalType::Timestamp)
