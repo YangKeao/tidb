@@ -164,3 +164,26 @@ fallback's answers, which is the one thing the coexistence period must not do.
 Those two sites keep their row evaluation, and the check to do first at any
 remaining site is the context's static type.
 
+## The next site, with the pointers this round gathered
+
+The smallest of the 36 per-row sites is in `tidb-executor/src/sort.rs`, and it
+is **not** wrappable by either helper, because it is a *comparator*: two calls
+in one branch of the sort comparison --
+
+    // sort.rs, in the fallback branch of the comparison
+    let left = item.expr.eval(ctx, left)?;
+    let right = item.expr.eval(ctx, right)?;
+
+-- evaluate the same expression against two different rows to decide an order.
+The surrounding comment already says the in-memory sort compares chunk cells
+directly and only the merge-of-run-heads path evaluates an expression, so a
+conversion means giving that path the key values for a batch instead of per
+comparison: `eval_sort_key` (same file) already builds exactly those keys for
+the merge path, which is the shape to extend. Its natural receipt is one of the
+sort tests (`a_sort_accounts_its_materialized_rows_against_the_statement` or the
+spill pair around it) run under `with_tikv_expression(true)` with
+`tikv_expression_rows() > 0`, plus the rows coming back in the same order.
+
+No site was converted this round; this section exists so the next one starts
+from the location instead of the grep.
+
