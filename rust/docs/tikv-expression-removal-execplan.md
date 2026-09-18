@@ -465,6 +465,17 @@ indexing bug in the TiKV chunk codec is flagged while adding `get_set`.
 
 ### Milestone E — remove
 
+The native evaluator's surface *outside* projections is inventoried in
+`tikv-expression-removal-native-sites.md`: 90 textual `.eval(` hits outside
+`crates/tidb-expr/src`, of which 13 are not the evaluator (`constant.eval()`,
+the statement predicate, a planner test helper) and 2 more are a planner
+metadata helper. The remaining **75 are all row-at-a-time** -- 36 inside a row
+loop or comparator, 31 against a single chunk row, 8 against `Row::empty()` --
+and none needs a new kernel: the first kind moves the evaluation out of the loop
+(vectorized, what `EvaluatorSuite` already does), the second is a one-row engine
+call, and the third is a virtual one-row chunk. No site has been converted yet.
+
+
 Flip the default to the engine, delete the `tikv-expr` feature, delete the
 fallback branches, then delete the native kernels and their source-port tests
 whose subject is now the engine, keeping the Go-oracle corpora that still
