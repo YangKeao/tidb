@@ -197,6 +197,27 @@ pub(crate) const EXPLICIT_CAST_SPELLING: &str =
 pub(crate) const NATIVE_SESSION_STATE: &str =
     "session state, statement clock, RNG, user variables, sequences, or effects are absent from the \
      embedded engine Context";
+/// The statement clock (`NOW()`, `CURRENT_TIMESTAMP`, `CURDATE()`,
+/// `CURRENT_TIME`, `UTC_TIMESTAMP()`, `SYSDATE()`).
+///
+/// These are not one more "the facade has no session state" row. The pinned
+/// `tipb` *can* name them -- `NowWithArg`/`NowWithoutArg`, `CurrentDate`,
+/// `CurrentTime0Arg`/`CurrentTime1Arg`, `UtcDate`, `UtcTimestamp*`, `UtcTime*`
+/// and `SysDate*` all exist -- but the engine dispatches only `SysDateWithoutFsp`
+/// (`components/tidb_query_expr/src/lib.rs`), and that one reads the *host's own*
+/// clock. Every row of one statement must read the same instant, Go's
+/// `NOW()`/`CURRENT_TIMESTAMP` are the statement's start time, and TiDB derives
+/// the UTC forms from the session time zone, so admitting one needs both a TiKV
+/// kernel and a clock the facade's `Context` carries. It is family 4 of
+/// `tikv-expression-removal-checklist.md`, not a lowering to write.
+///
+/// `localtime`/`localtimestamp` are the exception inside the exception: the
+/// pinned `tipb` has no variant whose name contains `LocalTime` at all, so they
+/// are [`NO_WIRE_SIGNATURE`] and can never move, with or without a host clock.
+pub(crate) const SESSION_CLOCK_NEEDS_HOST_CLOCK: &str =
+    "statement clock: tipb can name it, but the engine has no kernel (only SYSDATE does, and that \
+     one reads the host's own clock), and every row of a statement must read the statement's start \
+     time under the session time zone, so the clock has to come from the host";
 pub(crate) const NOT_TRIAGED: &str =
     "not triaged: no lowering site selects this name and the engine-only corpus never reaches it";
 
@@ -309,7 +330,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("asin", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
     row("atan", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
     row("atan2", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
-    row("benchmark", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
+    row("benchmark", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("bin", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("bin_to_uuid", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
     row("bit_count", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
@@ -359,14 +380,14 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("cos", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
     row("cot", Decision::Excluded, Signature::None, &[], Shape::Any, "the port's COT is Go-exact (1/go_tan, a port of Go's math.Tan) while the engine's libm tan is one ULP above Go's, so its COT is one ULP below; native keeps the Go-exact answer (math_fn::tests::cot_matches_go_and_libm_tan_does_not)"),
     row("crc32", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
-    row("curdate", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
-    row("current_date", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
+    row("curdate", Decision::Excluded, Signature::None, &[], Shape::Any, SESSION_CLOCK_NEEDS_HOST_CLOCK),
+    row("current_date", Decision::Excluded, Signature::None, &[], Shape::Any, SESSION_CLOCK_NEEDS_HOST_CLOCK),
     row("current_resource_group", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("current_role", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
-    row("current_time", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
-    row("current_timestamp", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
+    row("current_time", Decision::Excluded, Signature::None, &[], Shape::Any, SESSION_CLOCK_NEEDS_HOST_CLOCK),
+    row("current_timestamp", Decision::Excluded, Signature::None, &[], Shape::Any, SESSION_CLOCK_NEEDS_HOST_CLOCK),
     row("current_user", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
-    row("curtime", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
+    row("curtime", Decision::Excluded, Signature::None, &[], Shape::Any, SESSION_CLOCK_NEEDS_HOST_CLOCK),
     row("database", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("date", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Datetime], Shape::Any, ""),
     row("date_add", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
@@ -442,15 +463,15 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("fts_match_word", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
     row("ge", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::Any, ""),
     row("get_format", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
-    row("get_lock", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
-    row("getparam", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
-    row("getvar", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
-    row("getvar_decimal", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
-    row("getvar_int", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
-    row("getvar_real", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
-    row("getvar_string", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
-    row("getvar_time", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
-    row("getvar_uint", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
+    row("get_lock", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
+    row("getparam", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
+    row("getvar", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
+    row("getvar_decimal", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
+    row("getvar_int", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
+    row("getvar_real", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
+    row("getvar_string", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
+    row("getvar_time", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
+    row("getvar_uint", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("greatest", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::Any, ""),
     row("grouping", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
     row("gt", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::Any, ""),
@@ -468,12 +489,12 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("instr", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("intdiv", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
     row("interval", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::Any, ""),
-    row("is_free_lock", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
+    row("is_free_lock", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("is_ipv4", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
     row("is_ipv4_compat", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
     row("is_ipv4_mapped", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
     row("is_ipv6", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
-    row("is_used_lock", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
+    row("is_used_lock", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("is_uuid", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
     row("isfalse", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::Any, ""),
     row("isfalse_with_null", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::Any, ""),
@@ -510,8 +531,8 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("json_unquote", Decision::Admitted, Signature::Family(Family::Json), &[], Shape::Any, ""),
     row("json_valid", Decision::Admitted, Signature::Family(Family::Json), &[], Shape::Any, ""),
     row("last_day", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Datetime], Shape::Any, ""),
-    row("last_insert_id", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
-    row("lastval", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
+    row("last_insert_id", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
+    row("lastval", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("lcase", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("le", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::Any, ""),
     row("least", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::Any, ""),
@@ -521,8 +542,8 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("like", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("ln", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
     row("load_file", Decision::Excluded, Signature::None, &[], Shape::Any, NO_WIRE_SIGNATURE),
-    row("localtime", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
-    row("localtimestamp", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
+    row("localtime", Decision::Excluded, Signature::None, &[], Shape::Any, NO_WIRE_SIGNATURE),
+    row("localtimestamp", Decision::Excluded, Signature::None, &[], Shape::Any, NO_WIRE_SIGNATURE),
     row("locate", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("log", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
     row("log10", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
@@ -546,9 +567,9 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("mul", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
     row("name_const", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
     row("ne", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::Any, ""),
-    row("nextval", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
+    row("nextval", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("not", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
-    row("now", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
+    row("now", Decision::Excluded, Signature::None, &[], Shape::Any, SESSION_CLOCK_NEEDS_HOST_CLOCK),
     row("nulleq", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::Any, ""),
     row("nullif", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::Any, ""),
     row("oct", Decision::Admitted, Signature::Family(Family::String), &[EvalType::Int], Shape::Any, ""),
@@ -566,15 +587,15 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("quarter", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Datetime], Shape::Any, ""),
     row("quote", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("radians", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
-    row("rand", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
-    row("random_bytes", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
+    row("rand", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
+    row("random_bytes", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("regexp", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("regexp_instr", Decision::Admitted, Signature::Family(Family::Regexp), &[], Shape::Any, ""),
     row("regexp_like", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("regexp_replace", Decision::Admitted, Signature::Family(Family::Regexp), &[], Shape::Any, ""),
     row("regexp_substr", Decision::Admitted, Signature::Family(Family::Regexp), &[], Shape::Any, ""),
-    row("release_all_locks", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
-    row("release_lock", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
+    row("release_all_locks", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
+    row("release_lock", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("repeat", Decision::Excluded, Signature::None, &[], Shape::Any, "native enforces max_allowed_packet before allocating; the pinned engine facade has no equivalent context setting"),
     row("replace", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("reverse", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
@@ -590,14 +611,14 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("sec_to_time", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
     row("second", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Duration], Shape::Any, ""),
     row("session_user", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
-    row("setval", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
-    row("setvar", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
+    row("setval", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
+    row("setvar", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("sha", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
     row("sha1", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
     row("sha2", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
     row("sign", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
     row("sin", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
-    row("sleep", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
+    row("sleep", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("sm3", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
     row("space", Decision::Excluded, Signature::None, &[], Shape::Any, "native enforces max_allowed_packet before allocating; the pinned engine facade has no equivalent context setting"),
     row("sqrt", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
@@ -608,7 +629,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("substring", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("substring_index", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("subtime", Decision::Admitted, Signature::Family(Family::Temporal), &[], Shape::Any, ""),
-    row("sysdate", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
+    row("sysdate", Decision::Excluded, Signature::None, &[], Shape::Any, SESSION_CLOCK_NEEDS_HOST_CLOCK),
     row("system_user", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("tan", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
     row("tidb_bounded_staleness", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
@@ -649,18 +670,18 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("unix_timestamp", Decision::Admitted, Signature::Family(Family::Temporal), &[], Shape::Any, ""),
     row("upper", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("user", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
-    row("utc_date", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
-    row("utc_time", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
-    row("utc_timestamp", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
-    row("uuid", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
+    row("utc_date", Decision::Excluded, Signature::None, &[], Shape::Any, SESSION_CLOCK_NEEDS_HOST_CLOCK),
+    row("utc_time", Decision::Excluded, Signature::None, &[], Shape::Any, SESSION_CLOCK_NEEDS_HOST_CLOCK),
+    row("utc_timestamp", Decision::Excluded, Signature::None, &[], Shape::Any, SESSION_CLOCK_NEEDS_HOST_CLOCK),
+    row("uuid", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("uuid_short", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
     row("uuid_timestamp", Decision::Excluded, Signature::None, &[], Shape::Any, "TiKV UUID_VERSION/UUID_TIMESTAMP parse malformed input leniently where Go raises error 1411"),
     row("uuid_to_bin", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
-    row("uuid_v4", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
-    row("uuid_v7", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
+    row("uuid_v4", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
+    row("uuid_v7", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("uuid_version", Decision::Excluded, Signature::None, &[], Shape::Any, "TiKV UUID_VERSION/UUID_TIMESTAMP parse malformed input leniently where Go raises error 1411"),
     row("validate_password_strength", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
-    row("values", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
+    row("values", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("vec_as_text", Decision::Admitted, Signature::Family(Family::Vector), &[EvalType::VectorFloat32], Shape::Any, ""),
     row("vec_cosine_distance", Decision::Admitted, Signature::Family(Family::Vector), &[EvalType::VectorFloat32, EvalType::VectorFloat32], Shape::Any, ""),
     row("vec_dims", Decision::Admitted, Signature::Family(Family::Vector), &[EvalType::VectorFloat32], Shape::Any, ""),
@@ -873,6 +894,93 @@ mod tests {
                 row.signature,
                 Signature::Family(Family::Arithmetic),
                 "{name}"
+            );
+        }
+    }
+
+    /// The clock rows cannot be triaged by reading the admission table alone:
+    /// their blocker is split between the wire enum, the engine's dispatch
+    /// table, and the host's clock, and each part is checkable.
+    ///
+    /// `scalar_function_signature` is the engine's own name -> id map, which is
+    /// the only map lowering can name a function through, so a `Some` here is
+    /// the "tipb can name it" half of the reason and the engine's kernel table
+    /// (`components/tidb_query_expr/src/lib.rs`) is the other half. Existence is
+    /// checked by name for every clock signature the proto defines;
+    /// `localtime`/`localtimestamp` are checked by spelling, because the engine
+    /// does not re-export its enum, and the proto has no variant whose name
+    /// contains `LocalTime`. The `PlusInt` probe is the control that proves the
+    /// map is live and that a `None` below means absence rather than a typo.
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn clock_names_state_the_wire_and_host_clock_facts() {
+        use tidb_query_expr::standalone::scalar_function_signature;
+
+        for name in [
+            "now",
+            "current_timestamp",
+            "curdate",
+            "current_date",
+            "curtime",
+            "current_time",
+            "sysdate",
+            "utc_date",
+            "utc_time",
+            "utc_timestamp",
+        ] {
+            assert_eq!(
+                admission(name).expect("row").exclusion_reason,
+                SESSION_CLOCK_NEEDS_HOST_CLOCK,
+                "{name}"
+            );
+        }
+        for name in ["localtime", "localtimestamp"] {
+            assert_eq!(
+                admission(name).expect("row").exclusion_reason,
+                NO_WIRE_SIGNATURE,
+                "{name}"
+            );
+        }
+
+        assert!(
+            scalar_function_signature("PlusInt").is_some(),
+            "control: the probe must find a signature the engine really has"
+        );
+        // The wire can name every clock except the two LOCAL spellings. The
+        // spellings are rust-protobuf's generated variant names, which is what
+        // `scalar_function_signature` indexes; the proto spells the UTC ones
+        // `UTCDate`/`UTCTimestamp*`/`UTCTime*`.
+        for signature in [
+            "NowWithArg",
+            "NowWithoutArg",
+            "SysDateWithFsp",
+            "SysDateWithoutFsp",
+            "CurrentDate",
+            "CurrentTime0Arg",
+            "CurrentTime1Arg",
+            "UtcDate",
+            "UtcTimestampWithArg",
+            "UtcTimestampWithoutArg",
+            "UtcTimeWithArg",
+            "UtcTimeWithoutArg",
+        ] {
+            assert!(
+                scalar_function_signature(signature).is_some(),
+                "{signature} must exist in the pinned tipb enum"
+            );
+        }
+        for spelling in [
+            "LocalTime",
+            "LocalTimestamp",
+            "Localtime",
+            "Localtimestamp",
+            "LocalTime0Arg",
+            "LocalTimeWithArg",
+            "LocalTimestampWithArg",
+        ] {
+            assert!(
+                scalar_function_signature(spelling).is_none(),
+                "{spelling} is not a tipb signature, so LOCALTIME can never be pushed"
             );
         }
     }

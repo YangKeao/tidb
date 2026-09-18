@@ -221,6 +221,18 @@ says which, a test pins the triaged names, and the method is in
 is the difference between "a lowering to write" and "a function that can never
 be pushed".
 
+The "18 need session state" bucket has since been split further, because
+"session state" was hiding two different futures: the ten clock names (`now`,
+`current_timestamp`, `curdate`, `current_date`, `curtime`, `current_time`,
+`utc_date`, `utc_time`, `utc_timestamp`, `sysdate`) have a wire signature the
+engine's dispatch table does not implement -- except `SysDateWithoutFsp`, which
+reads the host's own clock -- so they need a host clock *and* kernels, while
+`localtime`/`localtimestamp` have no `tipb` variant whose name contains
+`LocalTime` at all and are permanent exceptions next to `translate`. That is
+`SESSION_CLOCK_NEEDS_HOST_CLOCK` versus `NO_WIRE_SIGNATURE` in the table, and
+`admission::tests::clock_names_state_the_wire_and_host_clock_facts` pins both
+halves rather than asserting them in prose.
+
 `cast_signed` and `cast_unsigned` came out of that triage as the one safe
 subset of the explicit-cast spellings: `CAST(x AS SIGNED|UNSIGNED)` is exactly
 `Cast{source}AsInt`, so the local arm derives it with no metadata of its own.
@@ -302,14 +314,15 @@ evaluator still the default and still the fallback, and with a corpus-wide
 dual-run proving the two agree wherever the engine runs.
 
 Current suites (TiDB numbers from the last full runs,
-`expression-reuse/round52-final.log` and `expression-reuse/r45.log`): TiDB
-`tidb-executor` 1337 + 355 + 6 + 2 with the engine feature and 1334 + 329 + 6
-without -- one test more per mode than `r50c.log`, which is the new `sort.rs`
-classification test -- and `tidb-expr` 1210 + 58 with the feature, 1181 + 18
-without (round 45, unchanged because later rounds do not touch that crate);
-TiKV `tidb_query_expr` 477 passed and `tidb_query_datatype` 318. `catalog_diff`
-31 and `query_diff` 1 pass; `expr_diff` keeps its two pre-existing
-`EXPORT_SET` divergences, which are red with the feature disabled too.
+`expression-reuse/round52-final.log`, `expression-reuse/round53-final.log` and
+`expression-reuse/round53-tests.log`): TiDB `tidb-executor` 1337 + 355 + 6 + 2
+with the engine feature and 1334 + 329 + 6 without -- one test more per mode
+than `r50c.log`, which is the `sort.rs` classification test -- and `tidb-expr`
+1211 + 58 with the feature (round 53; the +1 over round 45's 1210 is the clock
+gate) and 1181 + 18 without; TiKV `tidb_query_expr` 477 passed and
+`tidb_query_datatype` 318. `catalog_diff` 31 and `query_diff` 1 pass;
+`expr_diff` keeps its two pre-existing `EXPORT_SET` divergences, which are red
+with the feature disabled too.
 
 The enrolled mysql replay was renewed on the current branch state
 (`expression-reuse/replay-r52.log`, TiDB `1d9fd6f`): 142 of 10,251 compared
@@ -563,7 +576,12 @@ native evaluator on the same fixture; a type whose encoding cannot be matched
 is refused with an explicit error.
 
 Milestone E: `rg 'tikv-expr' rust/` returns no feature gate, the native
-evaluator modules are deleted, and the full suites plus the replay pass.
+evaluator modules are deleted, and the full suites plus the replay pass. The six
+names the pinned `tipb` cannot address (`translate`, `weight_string`,
+`load_file`, `json_schema_valid`, `localtime`, `localtimestamp`) return the
+classified "no engine" error instead of running natively; the checklist's
+permanent-exception table is the list, and nothing else may join it without
+evidence.
 
 
 ## Idempotence and Recovery

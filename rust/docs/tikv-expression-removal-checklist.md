@@ -20,6 +20,24 @@ Therefore "the native implementation is gone" is a statement about
 `ScalarFunction::eval`-style code only, and the checklist below is scoped to
 that.
 
+### The permanent exceptions
+
+Some names cannot move into the engine at any point, because the pinned `tipb`
+cannot name them. They are not "work to schedule": after the native evaluator
+is deleted they must raise the classified "no engine" error rather than execute
+natively. As of this round they are six, and the reason column says so:
+
+| Name | Why it can never move |
+| --- | --- |
+| `translate`, `weight_string`, `load_file`, `json_schema_valid` | no `ScalarFuncSig` for the function in the pinned `tipb` |
+| `localtime`, `localtimestamp` | no `ScalarFuncSig` whose name contains `LocalTime`, although the other clock spellings all have one |
+
+Everything else that is excluded today is either a TiKV kernel to write
+(`NO_ENGINE_KERNEL`), a cast spelling the local cast arm must not serve
+(`EXPLICIT_CAST_SPELLING`), a host capability to add (the other clock names),
+or untriaged (`NOT_TRIAGED`), and the table's reason column distinguishes
+them.
+
 
 ## 1. Measured inventory
 
@@ -212,8 +230,26 @@ Ordered by risk, not by size:
 2. String and `LENGTH` — covered; the packet-limit family stays excluded.
 3. Math — covered by the matrix; the extreme-digit guards are in the engine
    facade.
-4. Temporal — needs the host capability for "current date" before the
-   `AddTime*Null`/`Duration`-to-date shapes can move.
+4. Temporal — the non-clock shapes (`AddTime*Null`, `DATE`/`TIME` casts,
+   `EXTRACT`) are in. The *clock* is two different problems, and the admission
+   table now says which (`SESSION_CLOCK_NEEDS_HOST_CLOCK` vs
+   `NO_WIRE_SIGNATURE`):
+   * `now`, `current_timestamp`, `curdate`, `current_date`, `curtime`,
+     `current_time`, `utc_date`, `utc_time`, `utc_timestamp`, `sysdate` — the
+     pinned `tipb` *can* name all ten (`NowWithArg`/`NowWithoutArg`,
+     `CurrentDate`, `CurrentTime0Arg`/`CurrentTime1Arg`, `UtcDate`,
+     `UtcTimestamp*`, `UtcTime*`, `SysDate*`; the proto spells the UTC ones
+     `UTCDate`/`UTCTimestamp*`/`UTCTime*`), but the engine dispatches only
+     `SysDateWithoutFsp` and that kernel reads the host's own clock. One
+     statement's rows must all read the statement's start time, under the
+     session time zone for the UTC forms, so admitting any of them needs a
+     TiKV kernel **and** a clock the facade's `Context` carries. This is the
+     one family whose blocker really is a host capability.
+   * `localtime`, `localtimestamp` — the pinned `tipb` has no variant whose
+     name contains `LocalTime` at all, so no host clock could help: they are
+     permanent native exceptions, in the same class as `translate`.
+   The split is pinned by
+   `admission::tests::clock_names_state_the_wire_and_host_clock_facts`.
 5. JSON — several excluded shapes need the NULL/deprecation/quote fixes from
    `EXPRESSION_SEMANTIC_GAPS.md`.
 6. Control flow (`IF`/`CASE`/`COALESCE`/`AND`/`OR`) — Milestone C is done (the
