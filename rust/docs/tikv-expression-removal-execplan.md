@@ -60,15 +60,29 @@ remain in the workspace.
       admitted/excluded/untested status (385/129/126).
 - [ ] Milestone C (point 1): lazy/short-circuit evaluation in TiKV, switch and
       vectorized short-circuit in TiDB.
-      Partial: steps 1-2 are done and pushed (TiKV `9ab3943`). `RpnFnMeta`
-      gained `lazy_fn_ptr`, the evaluator is now `eval_subtree` with
-      `child_roots` (with `lazy_fn_ptr: None` everywhere the crate suite stayed
-      at 443, proving the refactor behavior-preserving), and `IfNullInt` is the
-      first lazy registration at 448 passing tests. The next step is the rest
-      of the control family (`If*`, `Coalesce*`, `CaseWhen*`) and the
-      three-valued `AND`/`OR`/`XOR` merge; the design is
-      `components/tidb_query_expr/SHORT_CIRCUIT_DESIGN.md` in the TiKV checkout.
+      Partial: engine-side steps 1-4 are done and pushed (TiKV `d663e88`).
+      `RpnFnMeta` gained `lazy_fn_ptr` and the evaluator became `eval_subtree`
+      with `child_roots` (with `lazy_fn_ptr: None` everywhere the crate suite
+      stayed at 443, proving the refactor behavior-preserving). All 31 control
+      and logical dispatches are now lazy — IF, IFNULL, COALESCE, CASE WHEN and
+      three-valued AND/OR/XOR across Int/Real/Decimal/Time/Duration/String/Json
+      — at 466 passing tests, with `with_lazy` clearing `borrowed_fn_ptr` so the
+      borrowed facade refuses a lazy program. Remaining: the engine capability
+      query and the adapter's shape relaxation (so a non-leaf lazy shape can be
+      admitted only when the engine is lazy for it), the three-valued TiDB-side
+      switch, and the Tier-2 signatures. The design is
+      `components/tidb_query_expr/SHORT_CIRCUIT_DESIGN.md`; the adapter-side
+      acceptance test is `crates/tidb-expr/tests/tikv_lazy.rs`.
 - [ ] Milestone D (point 4): the type support the removal actually needs.
+      Partial: the datatype half is done and pushed (TiKV `35fd80a`).
+      `FieldTypeTp::Set` maps to `EvalType::Set` and `Set`/`SetRef`/
+      `ChunkedVecSet`, the chunk and raw-datum codecs, the `Int`/`Bytes` hybrid
+      borrows and the scalar/vector/datum encode arms now mirror `Enum`
+      (318 datatype tests, +18). A latent `Column::get_enum` bug was found and
+      fixed: it indexed `idx * fixed_len` on a var-length column and therefore
+      failed for every row, not just `idx > 0`. Remaining: the standalone facade
+      carrier (`Column::Set`), the `types/function.rs` validation, the cast
+      registration and removing the temporary `EvalType::Set` refusal.
 - [ ] Milestone E: flip the default, delete the native evaluator and the
       feature gate, prove parity.
 
