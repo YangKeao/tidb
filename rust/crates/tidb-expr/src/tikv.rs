@@ -136,9 +136,18 @@ impl TikvExpression {
         // Lowering and the engine have independent capability sets. A compile
         // refusal is safe to keep native; unlike evaluation, compilation here
         // has no caller-visible warnings, session state, or input mutation.
-        let Ok(prepared) = PreparedExpression::compile(&encoded.encode_to_vec(), &schema, context)
-        else {
-            return Ok(Err(FallbackReason::NotAdmitted));
+        let prepared = match PreparedExpression::compile(&encoded.encode_to_vec(), &schema, context)
+        {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                // Set TIKV_EXPR_DEBUG_COMPILE to see which wire program the
+                // engine refuses; the refusal itself is a silent native
+                // fallback by design.
+                if std::env::var_os("TIKV_EXPR_DEBUG_COMPILE").is_some() {
+                    eprintln!("ENGINE-COMPILE-REJECT {expression:?} -> {error:?}");
+                }
+                return Ok(Err(FallbackReason::NotAdmitted));
+            }
         };
         // A successful compile says nothing about laziness: an eager kernel and
         // a lazy kernel for the same signature compile identically, and running

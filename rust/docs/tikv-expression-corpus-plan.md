@@ -1438,12 +1438,24 @@ They fall into five groups, in descending order of how much E work each needs:
    they must produce the *classified* error rather than a wrong value.
 5. **Genuine gaps with a known divergence** (`cot(1)` one ULP is a native bug
    the engine matches Go on; `oct(1.0)`; `format(...)` locale; `round`/`truncate`
-   with a non-integer or hugely negative digit argument).
+   with a digit argument that is not a literal or a column).
 
 Groups 3-5 are removal blockers only in the sense that they must become
 *explicit, classified refusals*; groups 1-2 are the ones that need more engine
 capability before the native code can go. Section 6's 140-test excluded surface
 therefore over-states the work: the engine-constant subset is 63 expressions.
+
+The `round`/`truncate` entries are worth naming because the refusal is not
+where it looks. `round(1.2345,'2')`, `truncate(1234.5678,'-2')` and
+`round(5,-100)` all pass the admission table and lower successfully; the
+*engine* refuses the encoded program, for one reason shared with the
+`ROUND(1.0, -400)` panic guard: the fractional digit must reach the kernel as
+an `Int64`/`Uint64` literal or an input column, and here it is
+`CastStringAsInt('2')` or `unaryminus(Int(100))` because the rewriter does not
+constant-fold. `TIKV_EXPR_DEBUG_COMPILE=1` prints exactly which program the
+engine refused and why, so a silent `NotAdmitted` no longer hides the gate.
+The way in is an embedder-side constant fold of the digit or a runtime digit
+check inside the kernel; both are engine work, not admission work.
 
 The switch is inert unless `TIKV_EXPR_ENGINE_ONLY` is set, so dual-run remains
 the default during the coexistence period.
