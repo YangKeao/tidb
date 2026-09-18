@@ -61,8 +61,9 @@ impl FunctionArity {
 ///
 /// This table is the single source of registered-builtin names for the crate:
 /// [`is_registered_builtin`] is a lookup into it, so a name and its arity can
-/// never drift apart.
-static FUNCTION_CLASSES: &[(&str, usize, Option<usize>)] = &[
+/// never drift apart. [`crate::tikv::admission`] also reads it as the
+/// authoritative SQL-name universe its completeness test must cover.
+pub(crate) static FUNCTION_CLASSES: &[(&str, usize, Option<usize>)] = &[
     ("'tidb`.(dateliteral", 1, Some(1)),
     ("'tidb`.(timeliteral", 1, Some(1)),
     ("'tidb`.(timestampliteral", 1, Some(2)),

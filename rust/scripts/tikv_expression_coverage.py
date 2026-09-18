@@ -28,6 +28,10 @@ import sys
 BASE_TIDB = "7a5c468"
 BASE_TIKV = "521ac733"
 ADAPTER = "rust/crates/tidb-expr/src/tikv.rs"
+LOWERING = "rust/crates/tidb-expr/src/tikv/lowering.rs"
+FAMILIES = "rust/crates/tidb-expr/src/tikv/lowering/families.rs"
+ADMISSION = "rust/crates/tidb-expr/src/tikv/admission.rs"
+REGISTRY = "rust/crates/tidb-expr/src/builtin_registry.rs"
 CATALOG = "rust/crates/tidb-expr/src/pushdown_catalog.rs"
 PROTO = "rust/crates/tidb-proto/proto/select.proto"
 ENGINE = "components/tidb_query_expr/src/lib.rs"
@@ -106,6 +110,53 @@ def adapter_refs(text: str, upstream: dict[str, int]) -> set[str]:
         if int(number) in by_id:
             result.add(by_id[int(number)])
     return result
+
+
+# One `row(...)` of `tikv/admission.rs`, as generated. The pattern is anchored
+# to the declaration, not to the module doc that also names the table.
+ADMISSION_ROW = re.compile(
+    r'^\s*row\("(?P<name>[^"]+)"\s*,\s*Decision::(?P<decision>Admitted|Excluded)\s*,'
+    r'\s*Signature::(?P<sig>\w+)(?:\((?P<sig_arg>[^)]*)\))?\s*,'
+    r'\s*&\[(?P<required>[^\]]*)\]\s*,\s*Shape::(?P<shape>\w+)\s*,'
+    r'\s*"(?P<reason>[^"]*)"\s*\)\s*,\s*$',
+    re.M,
+)
+
+
+def admission_table(text: str) -> dict[str, dict]:
+    """The explicit admission decisions, keyed by lower-cased SQL name.
+
+    This is the report's authority for admitted/excluded status; source-text
+    signature evidence is no longer used to decide support.
+    """
+    section = text.split("pub(crate) const ADMISSION_ROWS", 1)[1]
+    result = {}
+    for match in ADMISSION_ROW.finditer(section):
+        group = match.groupdict()
+        name = group["name"]
+        if name in result:
+            raise ValueError("duplicate admission row: " + name)
+        result[name] = {
+            "decision": group["decision"].lower(),
+            "signature": group["sig"] + (":" + group["sig_arg"] if group["sig_arg"] else ""),
+            "required_eval_types": [item.strip() for item in group["required"].split(",") if item.strip()],
+            "shape": group["shape"],
+            "reason": group["reason"],
+        }
+    if not result:
+        raise ValueError("admission table parsed no rows")
+    return result
+
+
+def admission_synthesized(text: str) -> list[str]:
+    section = text.split("pub(crate) const SYNTHESIZED_NAMES", 1)[1]
+    return re.findall(r'"([^"]+)"', section.split("];", 1)[0])
+
+
+def rust_registry_names(text: str) -> list[str]:
+    """The crate's transcription of Go's `builtin.go` `funcs` map keys."""
+    section = text.split("pub(crate) static FUNCTION_CLASSES", 1)[1]
+    return re.findall(r'\("([^"]+)",\s*\d+,\s*(?:Some\(\d+\)|None)\)', section.split("\n];", 1)[0])
 
 
 def generated_adapter_candidates(text: str, upstream: dict[str, int]) -> dict[str, set[str]]:
@@ -282,10 +333,8 @@ def make_inventory(args: argparse.Namespace) -> dict:
     generated_candidates = generated_adapter_candidates(adapter_text, upstream)
     # Additional local adapter modules may be supplied explicitly. They are
     # evidence sources, not automatically trusted as an executable whitelist.
-    extras = {path for path in (
-        "rust/crates/tidb-expr/src/tikv/lowering.rs",
-        "rust/crates/tidb-expr/src/tikv/lowering/families.rs",
-    ) if (root / path).exists()} | set(args.adapter_source)
+    extras = {path for path in (LOWERING, FAMILIES)
+              if (root / path).exists()} | set(args.adapter_source)
     for extra in sorted(extras):
         text = source(root, extra, "tidb")
         adapter_evidence.update(adapter_refs(text, upstream))
@@ -300,6 +349,28 @@ def make_inventory(args: argparse.Namespace) -> dict:
     base_facade = facade_whitelist(git(tikv, "show", BASE_TIKV + ":" + FACADE), normalized)
     catalog, catalog_names = catalog_evidence(source(root, CATALOG, "tidb"), normalized)
     go_sigs, go_entries, internal_casts = go_constructor_evidence(root, normalized)
+    # The admission table is the report's support authority. Read it first so a
+    # missing row fails the run instead of quietly becoming "untested".
+    admission_text = source(root, ADMISSION, "tidb")
+    admission = admission_table(admission_text)
+    synthesized = admission_synthesized(admission_text)
+    registry = rust_registry_names(source(root, REGISTRY, "tidb"))
+    if len(registry) != len(go_entries):
+        raise ValueError(
+            f"Rust registry ({len(registry)}) and Go funcs map ({len(go_entries)}) disagree")
+    orphans = sorted(set(admission) - set(registry) - set(synthesized))
+    if orphans:
+        raise ValueError("admission rows neither registered nor synthesized: " + ",".join(orphans))
+    missing_registry = sorted(name for name in registry if name not in admission)
+    if missing_registry:
+        raise ValueError("admission table missing registered builtins: " + ",".join(missing_registry))
+    missing_synthesized = sorted(name for name in synthesized if name not in admission)
+    if missing_synthesized:
+        raise ValueError("admission table missing synthesized names: " + ",".join(missing_synthesized))
+    catalog_by_signature = collections.defaultdict(set)
+    for name, signatures in catalog_names.items():
+        for signature in signatures:
+            catalog_by_signature[signature].add(name)
     borrowed = borrowed_metadata(tikv)
     # Hash all source inputs used for helper/annotation inventories too.
     for repo, label, patterns in ((root, "tidb", ("pkg/expression/builtin*.go", "pkg/parser/ast/functions.go")),
@@ -334,6 +405,19 @@ def make_inventory(args: argparse.Namespace) -> dict:
             classification = "baseline_adapter_signature_with_shape_restrictions"
         else:
             classification = "engine_dispatch_adapter_gap_or_new_mapping_evidence"
+        # Per-signature status now comes from the admission table: the SQL
+        # names the signature's constructors reference are looked up there, and
+        # the strongest decision wins. No source-string evidence decides it.
+        candidates = set(go_sigs.get(proto_name, ())) | catalog_by_signature.get(proto_name, set())
+        decided = sorted(name for name in candidates if name in admission)
+        admitted_names = [name for name in decided if admission[name]["decision"] == "admitted"]
+        excluded_names = [name for name in decided if admission[name]["decision"] == "excluded"]
+        if admitted_names:
+            admission_status, admission_names = "admitted", admitted_names
+        elif excluded_names:
+            admission_status, admission_names = "excluded", excluded_names
+        else:
+            admission_status, admission_names = "untested", []
         rows.append({
             "signature_id": number, "proto_name": proto_name, "rust_name": rust_name,
             "engine_dispatch": bool(entry), "engine_family": entry.get("family", ""),
@@ -350,6 +434,7 @@ def make_inventory(args: argparse.Namespace) -> dict:
             "go_internal_cast_constructor_evidence": sorted(internal_casts.get(proto_name, ())),
             "borrowed_classification": borrowed_state, "risk_flags": flagged,
             "classification": classification,
+            "admission_status": admission_status, "admission_names": admission_names,
         })
     counts = {
         "upstream_enum_variants_including_unspecified": len(rows),
@@ -368,15 +453,27 @@ def make_inventory(args: argparse.Namespace) -> dict:
         "engine_with_go_constructor_candidate": sum(row["engine_dispatch"] and bool(row["go_constructor_candidate_names"]) for row in rows),
         "engine_with_go_internal_cast_evidence": sum(row["engine_dispatch"] and bool(row["go_internal_cast_constructor_evidence"]) for row in rows),
         "engine_lazy_risk": sum(row["engine_dispatch"] and "lazy_children_eager_rpn" in row["risk_flags"] for row in rows),
+        "admission_rows": len(admission),
+        "admission_admitted": sum(row["decision"] == "admitted" for row in admission.values()),
+        "admission_excluded": sum(row["decision"] == "excluded" for row in admission.values()),
+        "admission_registry_names": len(registry),
+        "admission_synthesized_names": len(synthesized),
+        "admission_missing_registry_names": len(missing_registry),
+        "admission_missing_synthesized_names": len(missing_synthesized),
+        "signatures_admitted_by_table": sum(row["admission_status"] == "admitted" for row in rows),
+        "signatures_excluded_by_table": sum(row["admission_status"] == "excluded" for row in rows),
+        "signatures_untested_by_table": sum(row["admission_status"] == "untested" for row in rows),
     }
     return {
         "schema_version": 1,
-        "scope": "Static signature/dispatch inventory, not SQL overload or execution coverage",
+        "scope": "Static signature/dispatch inventory and explicit admission table, not SQL overload or execution coverage",
         "baseline_revisions": {"tidb": git(root, "rev-parse", BASE_TIDB).strip(), "tikv": git(tikv, "rev-parse", BASE_TIKV).strip()},
         "current_revisions": {"tidb": git(root, "rev-parse", "HEAD").strip(), "tikv": git(tikv, "rev-parse", "HEAD").strip()},
         "source_sha256": dict(sorted(source_hashes.items())), "counts": counts,
         "current_facade_policy": facade_policy,
         "current_adapter_evidence_sources": [ADAPTER, *sorted(extras)],
+        "admission_source": ADMISSION,
+        "admission_registry_source": REGISTRY,
         "engine_family_counts": dict(sorted(collections.Counter(row["engine_family"] for row in rows if row["engine_dispatch"]).items())),
         "limitations": [
             "Only actual map_expr_node_to_rpn_func match arms count as engine dispatch; enum membership alone is not support.",
@@ -384,6 +481,7 @@ def make_inventory(args: argparse.Namespace) -> dict:
             "Local proto omission is informational: PbExpr.sig accepts raw i32 IDs; do not widen distributed pushdown policy.",
             "Adapter source evidence is lexical, NOT proof that a SQL name/type shape reaches or passes compile; generated runtime probes are a separate validation task.",
             "Generated-name candidates expand Rust format! templates using same-function literal prefixes/suffixes and known family spellings; they overapproximate guards and include enum-only candidates, never tested coverage.",
+            "Per-signature admission_status is decided by rust/crates/tidb-expr/src/tikv/admission.rs (row decision for the signature's constructor SQL names); source-text evidence no longer decides support.",
             "Go constructor/helper signature references are candidate relationships, NOT an overload resolver; branches, implicit casts, signedness and dynamic callbacks need review.",
             "Borrowed annotations indicate potential loaders, NOT full-tree admission. Actual PreparedExpression::supports_borrowed remains authoritative; copying fallback is separate.",
             "Baseline TiDB supports signed integer, Double and byte-string storage only, strict constants/columns, 23 signatures/13 names; no parameters/correlation/arrays/hybrid/Decimal/time/JSON/vector bridge.",
@@ -414,6 +512,7 @@ def make_inventory(args: argparse.Namespace) -> dict:
         ],
         "pushdown_catalog_name_candidates": catalog_names,
         "go_function_constructor_candidates": go_entries,
+        "admission_table": [{"name": name, **value} for name, value in sorted(admission.items())],
         "signatures": rows,
     }
 
@@ -435,6 +534,27 @@ def self_check(inventory: dict) -> None:
     assert len(enum('enum ScalarFuncSig {\n A = 1; // B = 2;\n}')) == 1
     assert adapter_refs('PbExpr { sig: Some(2101) }', {"AbsInt": 2101}) == {"AbsInt"}
     assert set(generated_adapter_candidates('fn cast() { format!("Cast{}As{}", from, to) }', {"CastIntAsReal": 2, "Pi": 2100})) == {"CastIntAsReal"}
+    # Admission-table invariants. These make the report's support authority
+    # fail loudly rather than drifting into an implicit "untested".
+    table = {row["name"]: row for row in inventory["admission_table"]}
+    counts = inventory["counts"]
+    assert len(table) == counts["admission_rows"]
+    assert all(row["decision"] in ("admitted", "excluded") for row in table.values())
+    assert all(
+        bool(row["reason"]) == (row["decision"] == "excluded") for row in table.values())
+    assert counts["admission_admitted"] + counts["admission_excluded"] == counts["admission_rows"]
+    assert counts["admission_missing_registry_names"] == 0
+    assert counts["admission_missing_synthesized_names"] == 0
+    assert counts["admission_registry_names"] == counts["go_registry_names"]
+    assert all(row["admission_status"] in ("admitted", "excluded", "untested") for row in rows)
+    parsed = admission_table(
+        'pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[\n'
+        '    row("plus", Decision::Admitted, Signature::Family(Family::Arithmetic),'
+        ' &[], Shape::Any, ""),\n'
+        '    row("sid", Decision::Excluded, Signature::None, &[], Shape::Any, "why"),\n'
+        '];\n')
+    assert parsed["plus"]["decision"] == "admitted" and parsed["plus"]["signature"] == "Family:Family::Arithmetic"
+    assert parsed["sid"]["decision"] == "excluded" and parsed["sid"]["reason"] == "why"
 
 
 def main() -> int:

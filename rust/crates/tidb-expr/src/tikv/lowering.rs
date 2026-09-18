@@ -76,57 +76,24 @@ pub(super) fn admitted(expression: &Expression) -> bool {
                 && !matches!(value.value, Datum::Raw(_) | Datum::MinNotNull | Datum::MaxValue)
         }
         Expression::ScalarFunction(function) => {
+            // The admission table is the only name-level gate. A name with no
+            // row, or a row explicitly excluded, stays native. `Shape` carries
+            // the lazy-child rules the old `lazy_children_are_safe` applied.
+            let Some(row) = super::admission::admission(function.func_name.lowercase()) else {
+                return false;
+            };
             // A FLOAT result needs an explicit rounding contract; numeric
             // kernels themselves return f64. FLOAT input columns remain usable.
-            ty.code() != FieldTypeCode::Float
-                && !blocked_name(function.func_name.lowercase())
+            row.decision == super::admission::Decision::Admitted
+                && ty.code() != FieldTypeCode::Float
+                && row.shape.permits(function)
                 && function.args.iter().all(admitted)
-                && lazy_children_are_safe(function)
         }
     }
-}
-
-fn blocked_name(name: &str) -> bool {
-    matches!(
-        name,
-        // These need session state, a statement clock, RNG state, or effects.
-        "rand" | "random_bytes" | "uuid" | "uuid_v4" | "uuid_v7" | "sysdate"
-            | "now" | "current_timestamp" | "curdate" | "current_date"
-            | "curtime" | "current_time" | "get_lock" | "release_lock"
-            | "release_all_locks" | "is_used_lock" | "is_free_lock"
-            | "sleep" | "benchmark" | "getvar" | "setvar" | "getparam"
-            | "nextval" | "lastval" | "setval" | "values" | "last_insert_id"
-            // TiKV's UUID_VERSION/UUID_TIMESTAMP parse malformed UUID strings
-            // leniently; Go raises error 1411. The replay proves the
-            // divergence, so these stay native until a faithful validator
-            // exists at this boundary.
-            | "uuid_version" | "uuid_timestamp"
-            // Native TiDB enforces max_allowed_packet before allocating. The
-            // pinned TiKV kernels have no equivalent context setting.
-            | "concat" | "concat_ws" | "repeat" | "space" | "lpad" | "rpad"
-            | "insert" | "to_base64" | "from_base64" | "make_set"
-    )
 }
 
 fn leaf(expression: &Expression) -> bool {
     matches!(expression, Expression::Column(_) | Expression::Constant(_))
-}
-
-fn lazy_children_are_safe(function: &ScalarFunction) -> bool {
-    let args = &function.args;
-    match function.func_name.lowercase() {
-        // The first expression is unconditionally evaluated. Every possibly
-        // skipped child must be a leaf; lowering below also forbids implicit
-        // conversions in these branches, since casts can warn or fail.
-        "if" => args.len() == 3 && args[1..].iter().all(leaf),
-        "ifnull" | "coalesce" | "in" | "and" | "or" => {
-            !args.is_empty() && args[1..].iter().all(leaf)
-        }
-        "case" | "casewhen" | "elt" | "field" | "interval" | "greatest" | "least" => {
-            args.iter().all(leaf)
-        }
-        _ => true,
-    }
 }
 
 pub(super) fn lower(
@@ -297,12 +264,31 @@ fn common_numeric(children: &[PbExpr]) -> Option<EvalType> {
 }
 
 fn local_call(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr> {
-    arithmetic(function, children.clone())
-        .or_else(|| comparison(function, children.clone()))
-        .or_else(|| control(function, children.clone()))
-        .or_else(|| math(function, children.clone()))
-        .or_else(|| strings(function, children.clone()))
-        .or_else(|| miscellaneous(function, children))
+    // The admission table, not an ad-hoc chain, decides which local family a
+    // name belongs to. A name the table routes to the temporal/JSON/vector
+    // families or to the reused pushdown catalog returns `None` here so
+    // `lower` reaches the next lowering site, exactly as the old chain did
+    // when none of these functions matched.
+    use super::admission::{Family, Signature};
+    let family = match super::admission::admission(function.func_name.lowercase())?.signature {
+        Signature::Family(family) => family,
+        Signature::Resolved(_) | Signature::None => return None,
+    };
+    match family {
+        Family::Arithmetic => arithmetic(function, children),
+        Family::Comparison => comparison(function, children),
+        Family::Control => control(function, children),
+        Family::Math => math(function, children),
+        // `regexp_extended` is reached through `strings`' final fallback.
+        Family::String | Family::Regexp => strings(function, children),
+        Family::Miscellaneous => miscellaneous(function, children),
+        Family::Temporal
+        | Family::DateArithmetic
+        | Family::Json
+        | Family::Vector
+        | Family::Catalog
+        | Family::None => None,
+    }
 }
 
 fn arithmetic(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr> {

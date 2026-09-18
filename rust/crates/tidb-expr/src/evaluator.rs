@@ -307,6 +307,12 @@ pub struct EvaluatorProgram {
     calculated: Vec<Expression>,
     vectorizable: bool,
     column_mapping: HashMap<usize, Vec<usize>>,
+    /// Compiled engine programs for this plan, shared by every worker that
+    /// runs it. The compiled programs themselves are immutable and `Sync`; the
+    /// lock covers only the compile-on-context-change step, so evaluation does
+    /// not serialize the workers.
+    #[cfg(feature = "tikv-expr")]
+    tikv: std::sync::Mutex<crate::tikv::ProjectionCache>,
 }
 
 impl EvaluatorProgram {
@@ -343,6 +349,8 @@ impl EvaluatorProgram {
             calculated,
             vectorizable,
             column_mapping,
+            #[cfg(feature = "tikv-expr")]
+            tikv: std::sync::Mutex::new(crate::tikv::ProjectionCache::default()),
         }
     }
 }
@@ -353,10 +361,6 @@ impl EvaluatorProgram {
 pub struct EvaluatorSuite {
     program: Arc<EvaluatorProgram>,
     column_swap_helper: Option<ColumnSwapHelper>,
-    // RPN metadata is execution-local. The immutable plan remains Send + Sync
-    // and projection workers never share mutable TiKV evaluation state.
-    #[cfg(feature = "tikv-expr")]
-    tikv: std::sync::Mutex<crate::tikv::ProjectionCache>,
 }
 
 impl EvaluatorSuite {
@@ -378,8 +382,6 @@ impl EvaluatorSuite {
         Self {
             program,
             column_swap_helper,
-            #[cfg(feature = "tikv-expr")]
-            tikv: std::sync::Mutex::new(crate::tikv::ProjectionCache::default()),
         }
     }
 
@@ -404,14 +406,16 @@ impl EvaluatorSuite {
         let rows = input.num_rows();
         let program = &self.program;
         if program.vectorizable {
+            // Compile once per statement policy on the shared program, then
+            // drop the lock: the compiled programs are immutable and `Sync`, so
+            // projection workers evaluate without serializing on this cache.
             #[cfg(feature = "tikv-expr")]
-            let mut tikv = if let Some(context) = ctx.tikv_expression_context() {
-                let mut cache = self.tikv.lock().map_err(|_| EvalError::ExternalEngine {
+            let tikv = if let Some(context) = ctx.tikv_expression_context() {
+                let mut cache = program.tikv.lock().map_err(|_| EvalError::ExternalEngine {
                     code: 1105,
                     message: "TiKV expression execution cache was poisoned".to_owned(),
                 })?;
-                cache.prepare(&program.calculated, &context)?;
-                Some(cache)
+                Some(cache.prepare(&program.calculated, &context)?)
             } else {
                 None
             };
@@ -422,16 +426,27 @@ impl EvaluatorSuite {
                 .enumerate()
             {
                 #[cfg(feature = "tikv-expr")]
-                if let Some(cache) = &mut tikv {
-                    match cache.evaluate_into(
-                        _expression_index,
-                        ctx,
-                        input,
-                        output,
-                        *output_index,
-                    )? {
-                        None => continue,
-                        Some(reason) => ctx.record_tikv_expression_fallback(reason),
+                if let Some(programs) = &tikv {
+                    match programs
+                        .get(_expression_index)
+                        .and_then(|compiled| compiled.as_ref())
+                    {
+                        None => ctx.record_tikv_expression_fallback(
+                            crate::tikv::FallbackReason::NotAdmitted,
+                        ),
+                        Some(compiled) => {
+                            if let Some(reason) = crate::tikv::evaluate_shared(
+                                compiled,
+                                ctx,
+                                input,
+                                output,
+                                *output_index,
+                            )? {
+                                ctx.record_tikv_expression_fallback(reason);
+                            } else {
+                                continue;
+                            }
+                        }
                     }
                 }
                 if let Expression::Constant(constant) = expression {

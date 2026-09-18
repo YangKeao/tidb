@@ -21,12 +21,14 @@
 //! A runtime error is never retried natively.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use prost::Message;
 use tidb_chunk::chunk::Chunk;
 use tidb_datatype::{Datum, EvalType, FieldType, FieldTypeCode};
 use tidb_query_expr::standalone::{ColumnRef as EngineColumnRef, PreparedExpression, ScalarRef};
 
+mod admission;
 mod bridge;
 mod lowering;
 
@@ -52,8 +54,8 @@ pub enum Backend {
 
 /// One admitted expression, with a compact, copying input-column map.
 ///
-/// Keep this state in an execution instance, not the shared optimizer plan:
-/// TiKV RPN metadata is Send but is not required to be Sync.
+/// The compiled program is immutable and `Send + Sync`, so it is shared through
+/// [`ProjectionCache`] rather than owned per execution.
 pub struct TikvExpression {
     prepared: PreparedExpression,
     inputs: Vec<(usize, FieldType)>,
@@ -162,8 +164,11 @@ impl TikvExpression {
 
     /// Evaluate selected logical rows, including both directions of conversion.
     /// Output is dense in logical-row order; the input is not mutated.
+    ///
+    /// Takes `&self`: the compiled program is immutable and shareable, and the
+    /// engine allocates its per-call execution state internally.
     pub fn evaluate<C: Columns>(
-        &mut self,
+        &self,
         context: &C,
         input: &Chunk,
     ) -> Result<Vec<Datum>, EvalError> {
@@ -177,7 +182,7 @@ impl TikvExpression {
         // copy_column already gathers Chunk.sel in order, including duplicates.
         let output = self
             .prepared
-            .eval(&columns, input.num_rows(), None)
+            .eval_shared(&columns, input.num_rows(), None)
             .map_err(engine_error)?;
         for warning in output.warnings {
             context.append_warning(mysql_code(warning.code), &warning.message);
@@ -193,7 +198,7 @@ impl TikvExpression {
     /// output; they never cause replay. Only successful borrowed calls increment
     /// the borrowed-row counter. No input reference survives this method.
     pub fn evaluate_into<C: Columns>(
-        &mut self,
+        &self,
         context: &C,
         input: &Chunk,
         output: &mut Chunk,
@@ -290,30 +295,30 @@ impl TikvExpression {
             .collect::<Result<_, _>>()?;
         let mut destination = output.column_mut(output_index);
         let expected = self.result_type.eval_type();
-        let result = self
-            .prepared
-            .eval_borrowed(&borrowed, row_count, input.sel(), |value| {
-                match value {
-                    ScalarRef::Null => destination.append_null(),
-                    ScalarRef::Int(value) if expected == EvalType::Int => {
-                        destination.append_int64(value)
+        let result =
+            self.prepared
+                .eval_borrowed_shared(&borrowed, row_count, input.sel(), |value| {
+                    match value {
+                        ScalarRef::Null => destination.append_null(),
+                        ScalarRef::Int(value) if expected == EvalType::Int => {
+                            destination.append_int64(value)
+                        }
+                        ScalarRef::Real(value) if expected == EvalType::Real => {
+                            destination.append_float64(value)
+                        }
+                        ScalarRef::Bytes(value) if expected == EvalType::String => {
+                            destination.append_bytes(value)
+                        }
+                        _ => {
+                            return Err(tidb_query_expr::standalone::Error {
+                                code: 1105,
+                                message: "borrowed expression result type does not match output"
+                                    .to_owned(),
+                            })
+                        }
                     }
-                    ScalarRef::Real(value) if expected == EvalType::Real => {
-                        destination.append_float64(value)
-                    }
-                    ScalarRef::Bytes(value) if expected == EvalType::String => {
-                        destination.append_bytes(value)
-                    }
-                    _ => {
-                        return Err(tidb_query_expr::standalone::Error {
-                            code: 1105,
-                            message: "borrowed expression result type does not match output"
-                                .to_owned(),
-                        })
-                    }
-                }
-                Ok(())
-            });
+                    Ok(())
+                });
         let diagnostics = match result {
             Ok(diagnostics) => diagnostics,
             Err(error) => {
@@ -413,63 +418,68 @@ impl FallbackReason {
     }
 }
 
-/// Execution-local compiled programs. Recompile when statement policy changes.
+/// Execution-local compiled programs, cached on the shared program so every
+/// projection worker of one plan reuses a single compilation instead of
+/// compiling its own copy. Recompile when statement policy changes.
 #[derive(Default)]
 pub(crate) struct ProjectionCache {
     context: Option<Context>,
-    programs: Vec<Option<TikvExpression>>,
+    programs: Arc<Vec<Option<Arc<TikvExpression>>>>,
 }
 
 impl ProjectionCache {
+    /// Returns the compiled programs for `context`, compiling them once if the
+    /// statement policy changed. The returned handle is shared and immutable,
+    /// so callers evaluate outside this cache's lock.
     pub(crate) fn prepare(
         &mut self,
         expressions: &[Expression],
         context: &Context,
-    ) -> Result<(), EvalError> {
-        if self.context.as_ref() == Some(context) {
-            return Ok(());
+    ) -> Result<Arc<Vec<Option<Arc<TikvExpression>>>>, EvalError> {
+        if self.context.as_ref() != Some(context) {
+            let programs = expressions
+                .iter()
+                .map(|expression| {
+                    TikvExpression::compile(expression, context.clone())
+                        .map(|program| program.map(Arc::new))
+                })
+                .collect::<Result<_, _>>()?;
+            self.programs = Arc::new(programs);
+            self.context = Some(context.clone());
         }
-        let programs = expressions
-            .iter()
-            .map(|expression| TikvExpression::compile(expression, context.clone()))
-            .collect::<Result<_, _>>()?;
-        self.programs = programs;
-        self.context = Some(context.clone());
-        Ok(())
+        Ok(Arc::clone(&self.programs))
     }
+}
 
-    /// `Ok(None)` means the engine produced this expression's column.
-    /// `Ok(Some(reason))` means the caller must use the native evaluator, and
-    /// reports that decision so a gate can reject unlisted reasons.
-    pub(crate) fn evaluate_into<C: Columns>(
-        &mut self,
-        index: usize,
-        context: &C,
-        input: &Chunk,
-        output: &mut Chunk,
-        output_index: usize,
-    ) -> Result<Option<FallbackReason>, EvalError> {
-        let Some(program) = self.programs[index].as_mut() else {
-            return Ok(Some(FallbackReason::NotAdmitted));
-        };
-        // Both adapters decline unrepresentable payloads BEFORE executing kernels
-        // (nonfinite reals/vectors, temporal JSON and other exact-bridge limits).
-        if program.requires_native_input(input) {
-            return Ok(Some(FallbackReason::UnrepresentableInput));
-        }
-        match context.tikv_expression_backend() {
-            Backend::Borrowed if output.column(output_index).rows() == 0 => {
-                program.evaluate_into(context, input, output, output_index)?;
-            }
-            Backend::Copying | Backend::Borrowed => {
-                // The existing suite can append calculated expressions after a
-                // prefix. Preserve it, including on errors, via owned staging;
-                // the public direct borrowed API intentionally requires empty output.
-                for value in &program.evaluate(context, input)? {
-                    output.append_datum(output_index, value);
-                }
-            }
-        }
-        Ok(None)
+/// Run one already-compiled expression against a batch.
+///
+/// `Ok(None)` means the engine produced this expression's column.
+/// `Ok(Some(reason))` means the caller must use the native evaluator, and
+/// reports that decision so a gate can reject unlisted reasons.
+pub(crate) fn evaluate_shared<C: Columns>(
+    program: &TikvExpression,
+    context: &C,
+    input: &Chunk,
+    output: &mut Chunk,
+    output_index: usize,
+) -> Result<Option<FallbackReason>, EvalError> {
+    // Both adapters decline unrepresentable payloads BEFORE executing kernels
+    // (nonfinite reals/vectors, temporal JSON and other exact-bridge limits).
+    if program.requires_native_input(input) {
+        return Ok(Some(FallbackReason::UnrepresentableInput));
     }
+    match context.tikv_expression_backend() {
+        Backend::Borrowed if output.column(output_index).rows() == 0 => {
+            program.evaluate_into(context, input, output, output_index)?;
+        }
+        Backend::Copying | Backend::Borrowed => {
+            // The existing suite can append calculated expressions after a
+            // prefix. Preserve it, including on errors, via owned staging;
+            // the public direct borrowed API intentionally requires empty output.
+            for value in &program.evaluate(context, input)? {
+                output.append_datum(output_index, value);
+            }
+        }
+    }
+    Ok(None)
 }

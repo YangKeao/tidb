@@ -33,12 +33,23 @@ separates four different questions that are easy to conflate:
 | Dispatched variants missing from the local Rust protobuf enum | 290 |
 | Baseline local adapter (before this work) | 23 signatures / 13 names |
 | Baseline engine facade whitelist | 52 signatures |
-| Dispatched signatures with adapter source or generated-name evidence now | 459 |
+| Dispatched signatures with adapter source or generated-name evidence now | 461 |
+| Admission table rows (Milestone B) | 384 = 232 admitted + 152 excluded |
+| Per-signature admission status | 385 admitted, 129 excluded, 126 untested |
 
-The last number is deliberately an over-approximation from static source
-evidence; it is not a count of admitted or executed shapes. The generator's
-`--self-check` validates uniqueness, source hashes and cross-counts, not SQL
-behavior.
+The last source-evidence number is deliberately an over-approximation from
+static source evidence; it is no longer what decides support. Since Milestone B
+the report's authority is the explicit table in
+`rust/crates/tidb-expr/src/tikv/admission.rs`: one row per SQL function name
+with an `admitted` or `excluded` decision, a signature family, required
+argument eval types, a lazy-shape constraint and an exclusion reason. Each CSV
+and JSON signature row now carries `admission_status` (`admitted`, `excluded`
+or `untested`) and the `admission_names` that decided it, and the full table is
+exported as `admission_table`. The row universe is the crate's 309-name
+transcription of Go's `funcs` map plus 75 rewriter/internal spellings; the
+generator and the Rust test both fail if a name lacks a row. The generator's
+`--self-check` validates uniqueness, source hashes, table consistency and
+cross-counts, not SQL behavior.
 
 Because `tidb_proto::tipb::Expr.sig` is an optional raw `i32`, signatures absent
 from the local enum can still be emitted. The engine exposes
