@@ -14,7 +14,7 @@
 
 #![cfg(feature = "tikv-expr")]
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use tidb_ast::CiString;
 use tidb_chunk::chunk::Chunk;
 use tidb_datatype::{Datum, FieldType, FieldTypeCode};
@@ -22,16 +22,21 @@ use tidb_expr::column::Column;
 use tidb_expr::constant::{Constant, ParamMarker};
 use tidb_expr::evaluator::EvaluatorSuite;
 use tidb_expr::expression::{Expression, ScalarFunction};
-use tidb_expr::tikv::{Context, TikvExpression};
+use tidb_expr::tikv::{Context, FallbackReason, TikvExpression};
 use tidb_expr::Columns;
 
+#[derive(Default)]
 struct TestContext {
     enabled: bool,
     rows: Cell<usize>,
+    fallbacks: RefCell<Vec<FallbackReason>>,
 }
 impl Columns for TestContext {
     fn get(&self, _: &[String]) -> Option<Datum> {
         None
+    }
+    fn record_tikv_expression_fallback(&self, reason: FallbackReason) {
+        self.fallbacks.borrow_mut().push(reason);
     }
     fn tikv_expression_context(&self) -> Option<Context> {
         self.enabled.then(|| Context {
@@ -60,6 +65,7 @@ fn compare(expression: Expression, input: &mut Chunk, output_type: &FieldType) {
         let context = TestContext {
             enabled,
             rows: Cell::new(0),
+            ..TestContext::default()
         };
         let suite = EvaluatorSuite::new(vec![expression.clone()], true);
         let mut output =
@@ -256,10 +262,18 @@ fn tikv_adapter_nonfinite_input_stays_native_before_evaluation() {
     let context = TestContext {
         enabled: true,
         rows: Cell::new(0),
+        ..TestContext::default()
     };
     suite.run(&context, &mut input, &mut output).unwrap();
     assert!(output.get_row(0).get_float64(0).is_nan());
     assert_eq!(context.rows.get(), 0);
+    // The gate must see a reason, and this is the value-dependent one: the
+    // expression was admitted, but this batch holds a payload the exact type
+    // bridge cannot represent.
+    assert_eq!(
+        context.fallbacks.borrow().as_slice(),
+        &[FallbackReason::UnrepresentableInput]
+    );
 }
 
 #[test]
@@ -279,6 +293,7 @@ fn tikv_adapter_public_evaluate_rejects_nonfinite_without_panicking() {
     let context = TestContext {
         enabled: true,
         rows: Cell::new(0),
+        ..TestContext::default()
     };
     for value in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
         let mut input = Chunk::new_with_capacity(std::slice::from_ref(&ty), 1);
@@ -301,6 +316,7 @@ fn tikv_adapter_nested_null_arithmetic_keeps_eager_error_behavior() {
             let context = TestContext {
                 enabled,
                 rows: Cell::new(0),
+                ..TestContext::default()
             };
             let suite = EvaluatorSuite::new(vec![expression.clone()], true);
             let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), 1);
