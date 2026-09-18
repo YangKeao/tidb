@@ -1097,7 +1097,7 @@ fn go_truncate_uint(val: u64, dec: i64) -> u64 {
 mod tests {
     use std::cell::Cell;
 
-    use super::{cot, dispatch, log2, sin, sqrt};
+    use super::{cot, dispatch, go_trig, log2, sin, sqrt};
     use crate::{Columns, Datum, EvalError};
     use tidb_ast::Expr;
 
@@ -1197,5 +1197,31 @@ mod tests {
             cot(&[Datum::new_string("tidb".to_owned())], &crate::NoColumns),
             Err(EvalError::FloatOverflow)
         );
+    }
+
+    /// Why `cot` is one of the deliberate exclusions.
+    ///
+    /// The Go oracle is `1/math.Tan(1)` (`builtin_math.go`, `builtinCotSig.evalReal`),
+    /// and Go's pure-Go `math.Tan(1)` is `0x1.5574077246549021p+0`, whose
+    /// reciprocal is `0x1.48c05d04e1cfep-1`. That is exactly what this port
+    /// answers, because `go_trig::go_tan` is a transcreation of Go's `Tan`.
+    /// The engine asks the system libm instead: `1.0f64.tan()` is
+    /// `0x1.5574077246549023p+0`, one ULP above Go, so its reciprocal is
+    /// `0x1.48c05d04e1cfdp-1`, one ULP below the Go answer.
+    ///
+    /// The exclusion therefore keeps the *Go-exact* answer native; it is not a
+    /// native bug waiting to be fixed. The pinned bits are the evidence, so the
+    /// claim is checkable without a Go toolchain.
+    #[test]
+    fn cot_matches_go_and_libm_tan_does_not() {
+        let go_exact = f64::from_bits(0x3FE4_8C05_D04E_1CFE);
+        assert_eq!(f64::to_bits(1.0 / go_trig::go_tan(1.0)), go_exact.to_bits());
+        assert_eq!(
+            cot(&[Datum::Real(1.0)], &crate::NoColumns),
+            Ok(Datum::Real(go_exact))
+        );
+        let libm = 1.0 / 1.0_f64.tan();
+        assert_ne!(libm.to_bits(), go_exact.to_bits());
+        assert_eq!(f64::to_bits(libm), 0x3FE4_8C05_D04E_1CFD);
     }
 }

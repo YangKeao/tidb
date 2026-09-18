@@ -357,7 +357,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("convert_tz", Decision::Excluded, Signature::None, &[], Shape::Any, NO_ENGINE_KERNEL),
     row("convert_using", Decision::Excluded, Signature::None, &[], Shape::Any, NO_ENGINE_KERNEL),
     row("cos", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
-    row("cot", Decision::Excluded, Signature::None, &[], Shape::Any, "native COT is one ULP from Go while the engine matches Go; keep native until the port is fixed (dual-run harness)"),
+    row("cot", Decision::Excluded, Signature::None, &[], Shape::Any, "the port's COT is Go-exact (1/go_tan, a port of Go's math.Tan) while the engine's libm tan is one ULP above Go's, so its COT is one ULP below; native keeps the Go-exact answer (math_fn::tests::cot_matches_go_and_libm_tan_does_not)"),
     row("crc32", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
     row("curdate", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),
     row("current_date", Decision::Excluded, Signature::None, &[], Shape::Any, "session state, statement clock, RNG, user variables, sequences, or effects are absent from the embedded engine Context"),

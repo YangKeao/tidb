@@ -1855,3 +1855,29 @@ constants, and **24 of 44 sampled column shapes** is the production shape
 surface. The first is the corpus's own bookkeeping, the second is what the
 fold leaves, and the third is what a query actually carries.
 
+### 7.15 The `COT` entry was attributed to the wrong side, and the Go oracle says so
+
+Section 7.1's table copied the semantic-gap doc's claim that native `COT` is one
+ULP from Go "while the engine matches Go". Asking Go directly says the
+opposite. Go's `COT` is not `math.Cot` -- the standard library has no `Cot` --
+it is `1/math.Tan(x)` (`pkg/expression/builtin_math.go`, `builtinCotSig.evalReal`),
+and Go's *pure-Go* `math.Tan` is not libm's:
+
+| Value | Bits | How it was obtained |
+| --- | --- | --- |
+| Go `math.Tan(1)` | `0x1.5574077246549021p+0` | `go run` with `math.Tan(1)`, printed at 17 digits |
+| libm `tan(1)` | `0x1.5574077246549023p+0` | Python `math.tan(1.0)`, i.e. the same libm the engine links |
+| Go `COT(1)` | `0x1.48c05d04e1cfep-1` | `1/math.Tan(1)`, and this port's answer |
+| engine `COT(1)` | `0x1.48c05d04e1cfdp-1` | `1/libm tan(1)` |
+
+So the exclusion keeps the **Go-exact** answer native: this port's
+`go_trig::go_tan` is a transcreation of Go's `Tan`, and libm is one ULP above it.
+The exclusions reason string and the TiKV gap row are corrected, and the bits are
+pinned by `math_fn::tests::cot_matches_go_and_libm_tan_does_not`, so the claim is
+checkable without a Go toolchain. Matching Go in the engine would mean porting
+Go's `Tan` into the engine, not changing anything on the adapter side.
+
+The general lesson is the one 7.4 and 7.10 already taught, applied to a *number*
+instead of a shape: "the engine matches Go" is a hypothesis until an oracle says
+so, and here the oracle was three lines of Go.
+
