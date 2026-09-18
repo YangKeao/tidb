@@ -74,7 +74,13 @@ remain in the workspace.
       and at `47ce598` plus the temporal-bridge fix the lib corpus reports
       1148 passed / 61 failed / 99 ignored, i.e. 59 distinct constant
       expressions still have no engine path (grouped in
-      `tikv-expression-corpus-plan.md` section 7). Remaining
+      `tikv-expression-corpus-plan.md` section 7). The rate is measured on the
+      adapter's unfolded input, though, and production folds constants first
+      (`plan_builder.rs` folds right after rewriting): 40 of the 59 collapse to
+      a `Constant` and never reach a lowering, 2 are planning-time refusals, so
+      the *observed* production surface is 17 (corpus plan 7.13). Column-bearing
+      shapes are not in the corpus at all, which is the one direction the
+      correction cannot bound. Remaining
       known divergences are listed in the TiKV
       `EXPRESSION_SEMANTIC_GAPS.md` (26 open entries; the CRC32 declaration
       bug and the `LAST_DAY` DATE-shape mismatch are fixed).

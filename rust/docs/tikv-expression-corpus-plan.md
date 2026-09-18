@@ -1778,3 +1778,41 @@ So the removal's error contract is asserted for the whole remaining set rather
 than discovered during the cutover: no declined expression can silently produce
 a value once native is gone, and each one carries its reason.
 
+### 7.13 40 of the 59 are folded away before the adapter sees them
+
+The corpus measures the adapter on a *rewritten* expression, but production
+folds constants first: `plan_builder.rs` calls
+`fold_constant_in_mode(&mut rewritten, ctx, ConstantFoldMode::Normal)`
+immediately after `rewrite_expr_resolved`, before a plan exists. A
+constant-only expression therefore becomes a single `Constant` and never
+reaches a lowering at all.
+
+Measuring that on the 59 (with `NoColumns`, whose outcome for these constants
+does not depend on session state):
+
+| Outcome | Count |
+| --- | --- |
+| folds to a `Constant` -- the engine never sees a function shape | 40 |
+| survives the fold -- the adapter really is asked | 17 |
+| never reaches either (planning-time refusal) | 2 |
+
+The 17 survivors are pinned by name in the ratchet, and they are exactly the
+clusters the rest of section 7 documents:
+
+| Cluster | Count | Why it survives |
+| --- | --- | --- |
+| JSON document/NULL policy | 5 | `cast(... as json)`, `case when cast('0' as json)`, `ifnull(null, cast('[1]' as json))`, `coalesce(cast(1 as json), ...)`, `cast('"123"' as json) < ...` |
+| constant regex | 3 | the engine compiles a constant pattern at build time, so an invalid one is refused even in a skipped arm, and match type `p` is unsupported |
+| collation / `weight_string` / unsigned | 4 | `weight_string` has no kernel; `greatest` and `IN` refuse mixed-unsigned and temporal shapes |
+| lazy-arm value rules | 3 | 7.2 and 7.10 |
+| session state | 1 | `benchmark(-3, 1)` |
+| `ROUND` digit preflight | 1 | `round(5, -100)` |
+
+**The correction this forces on the headline number.** "59 declined
+expressions" is the adapter's surface on unfolded constants, not the
+production fallback surface; the observed production surface is 17. The caveat
+that the corpus cannot close is the other direction: it is constant-only, so a
+column-bearing shape such as `round(col, '2')` is never generated, and folding
+cannot remove a shape that carries a column. The 17 are the *observed*
+production surface, not a bound on it.
+

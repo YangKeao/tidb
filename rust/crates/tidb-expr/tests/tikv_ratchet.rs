@@ -260,3 +260,79 @@ fn every_declined_expression_fails_cleanly_without_the_native_evaluator() {
     );
 }
 
+/// The declined expressions that survive the planner's construction-time fold.
+///
+/// A **constant-only** expression does not necessarily reach the adapter at
+/// all. `plan_builder.rs` folds the rewritten tree with the live statement
+/// context (`fold_constant_in_mode`) before the plan exists, so 40 of the 59
+/// declined expressions become a single `Constant` and the engine never sees a
+/// function shape. The 17 pinned here are the ones whose constant form *does*
+/// reach the adapter, which is the surface the removal actually has to answer
+/// for.
+///
+/// The caveat the corpus cannot close: it is constant-only, so a
+/// column-bearing shape (`round(col, '2')`) is never generated. The same
+/// refusal that keeps `round(5, -100)` here would also keep `round(col, '2')`
+/// native -- folding cannot remove a shape that carries a column. The 17 are
+/// therefore the *observed* production surface, not a bound on it.
+const SURVIVES_FOLD: &[&str] = &[
+    "7 in (7, -9, 9)",
+    "benchmark(-3, 1)",
+    "case when cast('0' as json) then 1 end",
+    "case when false then 1.5 else 0 end",
+    "cast('\"123\"' as json) < cast('\"123\"' as json)",
+    "cast('2019-11-02 22:00:05' as datetime) in (cast('2019-11-02 22:00:04' as datetime), cast('2019-11-02 22:00:05' as datetime))",
+    "coalesce(1, 'x' regexp '[')",
+    "coalesce(cast(1 as json), cast(2 as json))",
+    "greatest(-9223372036854775808, cast('9223372036854775809' as unsigned))",
+    "hex(weight_string('a'))",
+    "hex(weight_string('aAÁàãăâ' collate utf8mb4_general_ci))",
+    "if(cast('2020-10-10 12:59:59' as datetime), 1, 2)",
+    "ifnull(1, 'x' regexp '[')",
+    "ifnull(null, cast('[1]' as json))",
+    "regexp_like('abc', 'abc', 'p')",
+    "round(5, -100)",
+    "upper(elt(1,'a',x'61'))",
+];
+
+/// Which declined expressions the planner folds away, measured with
+/// `NoColumns` (the fold's outcome for these constants does not depend on
+/// session state).
+#[test]
+fn folded_away_expressions_never_reach_the_adapter() {
+    let mut survived = Vec::new();
+    let mut folded = Vec::new();
+    let mut skipped = Vec::new();
+    for expression in DECLINED {
+        let stmt = tidb_parser::parse(&format!("select {expression}")).expect("parse");
+        let Stmt::Query(query) = stmt else {
+            panic!("not a query")
+        };
+        let QueryStmt::Select(select) = query.into_inner() else {
+            panic!("not a select")
+        };
+        let SelectField::Expr { expr, .. } = &select.fields[0] else {
+            panic!("no expression")
+        };
+        let Ok(mut rewritten) = rewrite_expr(expr) else {
+            skipped.push(*expression);
+            continue;
+        };
+        tidb_expr::fold_constant_in_mode(
+            &mut rewritten,
+            &tidb_expr::NoColumns,
+            tidb_expr::ConstantFoldMode::Normal,
+        );
+        if matches!(rewritten, tidb_expr::expression::Expression::Constant(_)) {
+            folded.push(*expression);
+        } else {
+            survived.push(*expression);
+        }
+    }
+    assert_eq!(survived, SURVIVES_FOLD);
+    // The same two planning-time refusals the post-deletion test pins never
+    // reach the fold either.
+    assert_eq!(skipped, ["(1, 2) = (1, 2, 3)", "convert('haha' using cp866)"]);
+    assert_eq!(folded.len() + survived.len() + skipped.len(), DECLINED.len());
+    assert_eq!(folded.len(), 40, "the folded count changed");
+}
