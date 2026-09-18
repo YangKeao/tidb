@@ -75,8 +75,13 @@ during the coexistence period, and through the engine only afterwards.
 Disposition:
 
 * Cases whose subject is a kernel the engine admits: run both ways and require
-  equal values, metadata and warnings (the differential helper in
-  `tests/tikv_coverage.rs` is the pattern).
+  equal values, metadata and warnings. This is now automatic for constant
+  cases: `tests/mod.rs::chunk_e` -- the helper nearly every port uses --
+  evaluates the same rewritten expression through the engine as well and
+  requires agreement, skipping only expressions the adapter declines, and
+  comparing errors by classification rather than wording. Its first run found
+  seven real divergences (`tikv-expression-corpus-plan.md` and the TiKV gap
+  list), all now either fixed at the admission boundary or recorded.
 * Cases whose subject is a kernel the engine excludes on purpose
   (session-dependent, effectful, UUID parsing, temporal JSON): these become
   explicit "engine refuses, native answers" tests, and after deletion they
