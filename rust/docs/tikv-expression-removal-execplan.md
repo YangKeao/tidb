@@ -314,7 +314,7 @@ evaluator still the default and still the fallback, and with a corpus-wide
 dual-run proving the two agree wherever the engine runs.
 
 Current suites (TiDB numbers from `expression-reuse/round57-tests.log`):
-`tidb-executor` 1339 + 355 + 6 + 2 with the engine feature and
+`tidb-executor` 1340 + 355 + 6 + 2 with the engine feature and
 1334 + 329 + 6 + 0 without; the added engine-on tests are the `VecGroupChecker`
 and hash-splitter engine receipts. `tidb-expr` is 1212 + 60 with the feature (the three additions
 are the shared-chunk result/error receipt, the retained-suite cache receipt, and
