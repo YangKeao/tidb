@@ -11,9 +11,9 @@ kind needs. This is the measurement, and the method is repeatable:
 
 ## What the raw hits are
 
-After generated-column/default routing, the raw grep returns 39 hits.
+After pushed-scan/statistics routing, the raw grep returns 36 hits.
 `rust/scripts/classify-native-eval-sites.py` classifies call arguments from an
-eight-line window. Its bounded test-scope scanner reports **11 production /
+eight-line window. Its bounded test-scope scanner reports **8 production /
 13 test-only** after the Join/lookup, aggregate, filter and schema-expression migrations. It
 previously reproduced the manual 26 / 13 audit (rather than the old 19 / 20).
 Helper/field attributes no longer taint siblings, and inner attributes apply
@@ -32,17 +32,17 @@ the fix; the final suite passes 18 tests, including additional test-attribute
 and conservative unsupported-generic controls. That tooling-only validation
 recorded 54 raw / 39 evaluator sites without running Rust/SQL/performance/lint.
 The newer executor migrations below reran executor tests; current counts
-are 39 raw / 24 evaluator sites.
+are 36 raw / 21 evaluator sites.
 
 | Kind | All sites | Production only |
 | --- | --- | --- |
-| one row of a chunk (`get_row(0)`) | 10 | 3 |
-| a row-loop variable or comparator | 9 | 8 |
+| one row of a chunk (`get_row(0)`) | 8 | 1 |
+| a row-loop variable or comparator | 8 | 7 |
 | a constant with no input row (`Row::empty()`) | 5 | 0 |
 | not the evaluator: no-argument `constant.eval()`/`column.eval()`, the planner's `metadata.eval(k)`, the statement predicate's own four-argument `eval(row, catalog, db, ctx)` | 15 | -- |
 
-The textual native evaluator surface outside projections is **24 sites**:
-**11 production-scope** and **13 test-only**. Test-only
+The textual native evaluator surface outside projections is **21 sites**:
+**8 production-scope** and **13 test-only**. Test-only
 calls are re-pointed with the corpora rather than converted. This is a textual
 inventory, not a proof of reachability. The driver's six-argument
 `UpdateExpression::eval` is deliberately
@@ -55,7 +55,7 @@ One classifier caveat is now confirmed rather than hypothetical:
 unlinked duplicate. `lib.rs` exports the actual `StreamAggExec` and
 `GroupedStreamAggExec` from `hash_agg.rs`, and `driver/physical_builder.rs`
 imports those types; `cargo test --lib -- --list` contains none of
-`stream_agg.rs`'s tests. Excluding these two known dead calls leaves **9**
+`stream_agg.rs`'s tests. Excluding these two known dead calls leaves **6**
 production-scope sites requiring routing/reachability review (not the earlier
 heuristic's 17).
 Do not convert the dead duplicate; migrate `hash_agg.rs`'s real aggregate paths
@@ -173,15 +173,14 @@ The remaining 13 actual test-only sites are not listed below.
 | Sites | File |
 | --- | --- |
 | 3 | `tidb-executor/src/driver/dml.rs` |
-| 2 | `tidb-executor/src/access_cost.rs` |
 | 2 | `tidb-executor/src/driver/dml/correlated.rs` |
 | 2 | `tidb-executor/src/stream_agg.rs` (unlinked duplicate) |
-| 1 each | `partition_pruning.rs`, `predicate_pushdown.rs` |
+| 1 | `partition_pruning.rs` |
 
 
 ## What each kind needs for the removal
 
-* **A row loop or comparator (8 production-scope).** Where eager
+* **A row loop or comparator (7 production-scope).** Where eager
   evaluation preserves observable order, evaluate the expression for the whole
   chunk before the loop and index the result vector. Otherwise use selected
   rows at the original demand points, as the Window key path does. That is now
@@ -189,11 +188,12 @@ The remaining 13 actual test-only sites are not listed below.
   runs the suite over the caller's chunk and returns one datum per row, so the
   loop does not pick an implementation cell by cell. See the
   `VecGroupChecker` and hash-shuffle conversions below.
-* **One chunk row (3 production-scope).** These are probes: partition pruning,
-  access-cost estimates, column defaults, generated columns, `dual`, correlated
-  subquery inputs. The input is a one-row chunk already, so a one-row engine call
-  is sufficient; `eval_chunk` covers it (a chunk with one row), and
-  `eval_row_values` covers the variant whose row is a `&[Datum]` instead.
+* **One chunk row (1 production-scope).** The remaining site is a DML probe.
+  Statistics samples now retain a program across TopN, bounds and NULL probes;
+  erased statement contexts pass directly through the facade. One-row helpers
+  cover the shape, but scalar values needed for subsequent casts/truth conversion
+  must retain their Datum kinds (`eval_selected_for_cast`), not round-trip
+  through a typed projection carrier.
 * **A constant with no row (0 production-scope, 5 test-only).** This bucket
   includes the `ranger/go_cases.rs` calls previously mislabelled production.
   Re-point these with the test corpora; `eval_constant_row` supplies the virtual
@@ -414,6 +414,29 @@ simplification; and the shape of the expression (`Column` only, enforced by
 honor `ENUM_SET_AS_INT`: plain cell transfer returned ENUM label/carrier data
 where the old evaluator returned UInt ordinal/bitmask values. A failing ENUM/SET
 regression now pins that metadata adapter. This is not scalar-function execution.
+
+## Retained pushed filters and statistics samples
+
+`PushedScanFilter` now owns `ConditionEvaluator` and no longer evaluates local
+IN/LIKE shortcuts. Clone and conjoin share unchanged programs, while column
+remapping rebuilds them. Tests pin actual engine rows, cache reuse, source row
+selection, and FALSE/ordinary or IN-origin NULL rejection before later errors.
+Removing prehashed local IN/direct LIKE paths carries unmeasured performance
+risk, especially for optional native fallback; this is not a speedup claim.
+
+Statistics signed-literal probes use the same scalar facade; TopN/bounds/NULL
+samples retain one `StatisticsPredicate` program per estimate. An evaluation
+error means unknown selectivity, never native replay, and the existing special
+NULL-probe error rule stays intact. Tests pin seven sample engine rows and
+compilation reuse after overflow. `eval_selected_for_cast` accepts erased
+`&dyn Columns` contexts directly, preserving the complete statement interface.
+
+Routing exposed that truth conversion also needs raw Datum semantics: binary
+literal 0x10 became false through the typed output carrier. Red/green tests cover
+pushed matching and row/vector FilterProgram paths. Both shared condition and
+filter facades now use the scalar-preserving entry; binary literals still use
+explicitly declined/native fallback, not engine-only support. The textual counts
+above do not inventory every forwarding helper or prove native deletion.
 
 ## Schema expressions and late casts
 

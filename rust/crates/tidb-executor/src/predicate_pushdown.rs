@@ -23,9 +23,10 @@ use std::collections::HashSet;
 use tidb_chunk::chunk::Chunk;
 use tidb_datatype::{Datum, FieldType};
 use tidb_expr::expression::Expression;
-use tidb_expr::{truthy_of, Columns};
+use tidb_expr::Columns;
 
 use crate::executor::ExecError;
+use crate::joiner::ConditionEvaluator;
 
 /// The comparison operators a scan filter accepts, which are exactly the ones
 /// the bounded TiKV Selection lowering speaks.
@@ -221,35 +222,21 @@ pub struct ScanColumnComparison {
 
 /// The conjuncts a scan agreed to apply itself, with both the description a
 /// lowering reads and the expressions an in-process source evaluates.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PushedScanFilter {
     predicates: Vec<ScanPredicate>,
     filters: Vec<Expression>,
-    fast_paths: Vec<Option<FastScanFilter>>,
+    evaluator: ConditionEvaluator,
 }
 
-/// A pushed predicate whose per-row work can be reduced without changing the
-/// expression evaluator's SQL semantics. The key is built once when the scan
-/// is accepted, rather than once for every row and every `IN` literal.
-#[derive(Clone, Debug)]
-enum FastScanFilter {
-    StringIn {
-        column_offset: usize,
-        collator: tidb_datatype::Collator,
-        /// Go's `builtinInStringSig` builds a `set.StringSet` once and does
-        /// hash membership per row. Keep the same O(1)-average lookup shape;
-        /// sorting the keys and binary-searching them makes large `IN` lists
-        /// (such as hbx-web3's maker list) needlessly O(log n) per row.
-        keys: HashSet<Vec<u8>>,
-        negated: bool,
-    },
-    Like {
-        column_offset: usize,
-        pattern: Vec<u8>,
-        escape: u8,
-        collation: tidb_datatype::Collation,
-        negated: bool,
-    },
+impl std::fmt::Debug for PushedScanFilter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PushedScanFilter")
+            .field("predicates", &self.predicates)
+            .field("filters", &self.filters)
+            .finish_non_exhaustive()
+    }
 }
 
 impl PushedScanFilter {
@@ -267,14 +254,11 @@ impl PushedScanFilter {
             .iter()
             .filter_map(|filter| describe_execution_condition(filter, ctx).ok())
             .collect();
-        let fast_paths = filters
-            .iter()
-            .map(FastScanFilter::from_expression)
-            .collect();
+        let evaluator = ConditionEvaluator::new(&filters);
         Self {
             predicates,
             filters,
-            fast_paths,
+            evaluator,
         }
     }
 
@@ -320,15 +304,16 @@ impl PushedScanFilter {
             .iter_mut()
             .map(|filter| filter.hash_code().to_vec())
             .collect();
-        for filter in &additional.filters {
+        for (position, filter) in additional.filters.iter().enumerate() {
             let mut filter = filter.clone();
             if !existing.insert(filter.hash_code().to_vec())
                 && !tidb_expr::expr_util::is_mutable_effects_expr(&filter)
             {
                 continue;
             }
-            self.fast_paths
-                .push(FastScanFilter::from_expression(&filter));
+            // The retained expression is unchanged, so share its program and
+            // preserve both this filter's and the additional offer's caches.
+            self.evaluator.append_from(&additional.evaluator, position);
             if let Some(predicate) = scan_predicate_from_expression(&filter) {
                 self.predicates.push(predicate);
             }
@@ -352,18 +337,9 @@ impl PushedScanFilter {
         ctx: &C,
         row: tidb_chunk::row::Row<'_>,
     ) -> Result<bool, ExecError> {
-        for (filter, fast_path) in self.filters.iter().zip(&self.fast_paths) {
-            if let Some(fast_path) = fast_path {
-                if !fast_path.matches(row) {
-                    return Ok(false);
-                }
-                continue;
-            }
-            if truthy_of(&filter.eval(ctx, row)?)? != Some(true) {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        // A scan rejects NULL immediately, including an IN-rewritten equality;
+        // the joiner's anti-semi NULL-continuation policy does not apply here.
+        self.evaluator.matches(ctx, row)
     }
 
     fn remapped_columns(&self, keep: &[usize]) -> Option<Self> {
@@ -376,10 +352,9 @@ impl PushedScanFilter {
             remap_expression(filter, keep)?;
         }
         Some(Self {
-            fast_paths: filters
-                .iter()
-                .map(FastScanFilter::from_expression)
-                .collect(),
+            // Column indexes changed: old programs still bind the original row
+            // space and must not be reused, even if already compiled.
+            evaluator: ConditionEvaluator::new(&filters),
             predicates,
             filters,
         })
@@ -592,119 +567,6 @@ fn describe_condition(
     }
 }
 
-impl FastScanFilter {
-    fn from_expression(expression: &Expression) -> Option<Self> {
-        let Expression::ScalarFunction(function) = expression else {
-            return None;
-        };
-        let (function, negated) = if function.func_name.lowercase() == "not" {
-            let [Expression::ScalarFunction(inner)] = function.args.as_slice() else {
-                return None;
-            };
-            (inner, true)
-        } else {
-            (function, false)
-        };
-        let name = function.func_name.lowercase();
-        if !matches!(name, "in" | "like") {
-            return None;
-        }
-        let column = function.args.first()?.as_column()?;
-        if !column.get_static_type()?.is_string() {
-            return None;
-        }
-        let column_offset = usize::try_from(column.index).ok()?;
-        let collation = function.derived_collation();
-        // Go's IN hash set retains ConstStrict arguments only. LIKE's cache
-        // for context-dependent arguments belongs to the execution context,
-        // not this retained filter. Derive immutable specializations from
-        // the compiled expression, never the description's saved values.
-        if name == "like" {
-            let [_, Expression::Constant(pattern), Expression::Constant(escape)] =
-                function.args.as_slice()
-            else {
-                return None;
-            };
-            let Datum::Int(escape) = escape.literal_value()? else {
-                return None;
-            };
-            return Some(Self::Like {
-                column_offset,
-                pattern: pattern.literal_value()?.as_raw_bytes()?.to_vec(),
-                escape: *escape as u8,
-                collation,
-                negated,
-            });
-        }
-        if function.args.len() < 2 {
-            return None;
-        }
-        let collator = tidb_datatype::get_collator(collation.name());
-        let keys = function.args[1..]
-            .iter()
-            .map(|argument| match argument {
-                Expression::Constant(constant) => constant
-                    .literal_value()?
-                    .as_raw_bytes()
-                    .map(|bytes| collator.key(bytes)),
-                _ => None,
-            })
-            .collect::<Option<HashSet<_>>>()?;
-        Some(Self::StringIn {
-            column_offset,
-            collator,
-            keys,
-            negated,
-        })
-    }
-
-    fn matches(&self, row: tidb_chunk::row::Row<'_>) -> bool {
-        match self {
-            Self::StringIn {
-                column_offset,
-                collator,
-                keys,
-                negated,
-            } => {
-                if row.is_null(*column_offset) {
-                    // `NULL IN (...)` and `NULL NOT IN (...)` are both NULL,
-                    // which a scan filter must reject just like `truthy_of`.
-                    return false;
-                }
-                let key = collator.key(row.get_string(*column_offset).as_bytes());
-                let found = keys.contains(&key);
-                if *negated {
-                    !found
-                } else {
-                    found
-                }
-            }
-            Self::Like {
-                column_offset,
-                pattern,
-                escape,
-                collation,
-                negated,
-            } => {
-                if row.is_null(*column_offset) {
-                    return false;
-                }
-                let matched = tidb_expr::like_match_with_collation(
-                    row.get_string(*column_offset).as_bytes(),
-                    pattern,
-                    Some(*escape),
-                    *collation,
-                );
-                if *negated {
-                    !matched
-                } else {
-                    matched
-                }
-            }
-        }
-    }
-}
-
 fn remapped_offset(offset: u32, keep: &[usize]) -> Option<u32> {
     keep.iter()
         .position(|kept| *kept == offset as usize)
@@ -798,7 +660,7 @@ pub struct ScanFilterProbe {
 
 impl ScanFilterProbe {
     /// Refresh wire literals without cloning executable expressions or
-    /// replacing their immutable fast paths and row scratch allocation.
+    /// replacing their retained programs and row scratch allocation.
     pub(crate) fn replace_predicates(&mut self, predicates: Vec<ScanPredicate>) {
         assert_eq!(predicates.len(), self.filter.filters.len());
         self.filter.predicates = predicates;
@@ -876,6 +738,233 @@ mod tests {
     use crate::driver::{run_select_on, Catalog};
     use crate::kv_table::{KvColumn, KvTable};
     use crate::storage::StorageError;
+
+    #[cfg(feature = "tikv-expr")]
+    mod retained_engine {
+        use super::super::PushedScanFilter;
+        use super::*;
+        use tidb_chunk::{chunk::Chunk, row::Row};
+        use tidb_expr::{column::Column, constant::Constant, expression::Expression};
+
+        fn constant(value: Datum, field_type: FieldType) -> Expression {
+            Expression::Constant(Constant::new(value, field_type))
+        }
+
+        fn input_column(index: i64, field_type: FieldType) -> Expression {
+            let mut column = Column::new(index + 1, field_type);
+            column.index = index;
+            Expression::Column(column)
+        }
+
+        fn call(name: &str, args: Vec<Expression>) -> Expression {
+            tidb_expr::new_function::new_function(&tidb_expr::NoColumns, name, long(), args)
+                .unwrap()
+        }
+
+        fn equal(index: i64, value: i64) -> Expression {
+            call(
+                "eq",
+                vec![
+                    input_column(index, long()),
+                    constant(Datum::Int(value), long()),
+                ],
+            )
+        }
+
+        #[test]
+        fn admitted_comparison_counts_physical_rows_and_clone_execution() {
+            for engine in [false, true] {
+                let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+                let filter = PushedScanFilter::from_physical_conditions(vec![equal(0, 1)], &ctx);
+                let cloned = filter.clone();
+                assert_eq!(filter.evaluator.compilations(), 0);
+                assert_eq!(cloned.evaluator.compilations(), 0);
+                assert!(filter.fully_described());
+                assert_eq!(filter.predicates(), cloned.predicates());
+                let mut input = Chunk::new_with_capacity(&[long()], 3);
+                for value in [1, 0, 1] {
+                    input.append_int64(0, value);
+                }
+                input.set_sel(Some(vec![2, 0]));
+                assert!(filter.matches(&ctx, input.get_row(0)).unwrap());
+                assert_eq!(
+                    cloned.evaluator.compilations(),
+                    u64::from(engine),
+                    "clone sees original compilation before its first use"
+                );
+                assert!(!cloned.matches(&ctx, input.physical_row(1)).unwrap());
+                assert!(cloned.matches(&ctx, input.get_row(1)).unwrap());
+                assert_eq!(input.sel(), Some(&[2, 0][..]));
+                assert_eq!(filter.evaluator.compilations(), u64::from(engine));
+                assert_eq!(cloned.evaluator.compilations(), u64::from(engine));
+                assert_eq!(ctx.tikv_expression_rows(), if engine { 3 } else { 0 });
+            }
+        }
+
+        #[test]
+        fn like_and_in_do_not_bypass_the_engine() {
+            let string = FieldType::new(FieldTypeCode::VarString);
+            let literal = || constant(Datum::new_string("a"), string.clone());
+            let tested = || input_column(0, string.clone());
+            let predicates = [
+                call("in", vec![tested(), literal()]),
+                call(
+                    "like",
+                    vec![tested(), literal(), constant(Datum::Int(92), long())],
+                ),
+            ];
+            for predicate in predicates {
+                for negated in [false, true] {
+                    let expression = if negated {
+                        call("not", vec![predicate.clone()])
+                    } else {
+                        predicate.clone()
+                    };
+                    for engine in [false, true] {
+                        let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+                        let filter = PushedScanFilter::from_physical_conditions(
+                            vec![expression.clone()],
+                            &ctx,
+                        );
+                        assert!(filter.fully_described());
+                        let mut input = Chunk::new_with_capacity(&[string.clone()], 3);
+                        input.append_string(0, "a");
+                        input.append_string(0, "b");
+                        input.append_null(0);
+                        for (index, expected) in [!negated, negated, false].into_iter().enumerate()
+                        {
+                            assert_eq!(
+                                filter.matches(&ctx, input.get_row(index)).unwrap(),
+                                expected
+                            );
+                        }
+                        assert_eq!(ctx.tikv_expression_rows(), if engine { 3 } else { 0 });
+                        assert_eq!(ctx.tikv_not_admitted_fallbacks(), 0);
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn conjoin_and_remap_use_the_current_expression_binding() {
+            for engine in [false, true] {
+                let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+                let mut filter =
+                    PushedScanFilter::from_physical_conditions(vec![equal(0, 1)], &ctx);
+                let additional =
+                    PushedScanFilter::from_physical_conditions(vec![equal(1, 2)], &ctx);
+                let mut input = Chunk::new_with_capacity(&[long(), long()], 2);
+                for (left, right) in [(1, 2), (1, 0)] {
+                    input.append_int64(0, left);
+                    input.append_int64(1, right);
+                }
+                assert!(filter.matches(&ctx, input.get_row(1)).unwrap());
+                assert!(additional.matches(&ctx, input.get_row(0)).unwrap());
+                let original = filter.clone();
+                filter.conjoin(&additional);
+                filter.conjoin(&additional);
+                assert_eq!(filter.filters().len(), 2, "immutable duplicate is removed");
+                assert_eq!(filter.predicates().len(), 2);
+                assert_eq!(
+                    filter.evaluator.compilations(),
+                    if engine { 2 } else { 0 },
+                    "conjoin retains both warmed programs"
+                );
+                assert!(filter.matches(&ctx, input.get_row(0)).unwrap());
+                assert!(!filter.matches(&ctx, input.get_row(1)).unwrap());
+                assert!(original.matches(&ctx, input.get_row(1)).unwrap());
+                let remapped = filter.remapped_columns(&[1, 0]).unwrap();
+                assert_eq!(
+                    remapped.evaluator.compilations(),
+                    0,
+                    "remap must rebuild programs with new column bindings"
+                );
+                let mut projected = Chunk::new_with_capacity(&[long(), long()], 2);
+                for (left, right) in [(2, 1), (0, 1)] {
+                    projected.append_int64(0, left);
+                    projected.append_int64(1, right);
+                }
+                assert!(remapped.matches(&ctx, projected.get_row(0)).unwrap());
+                assert!(!remapped.matches(&ctx, projected.get_row(1)).unwrap());
+                assert!(filter.matches(&ctx, input.get_row(0)).unwrap());
+                assert!(filter.remapped_columns(&[0]).is_none());
+                assert_eq!(filter.evaluator.compilations(), if engine { 2 } else { 0 });
+                assert_eq!(
+                    remapped.evaluator.compilations(),
+                    if engine { 2 } else { 0 }
+                );
+                assert_eq!(original.evaluator.compilations(), u64::from(engine));
+                assert_eq!(additional.evaluator.compilations(), u64::from(engine));
+                assert_eq!(ctx.tikv_expression_rows(), if engine { 13 } else { 0 });
+            }
+        }
+
+        #[test]
+        fn false_and_null_including_in_equality_skip_later_errors() {
+            use tidb_ast::CiString;
+            use tidb_expr::scalar_function::ScalarFunction;
+
+            let mut in_column = Column::new(1, long());
+            in_column.index = 0;
+            in_column.in_operand = true;
+            let in_equal = call(
+                "eq",
+                vec![
+                    Expression::Column(in_column),
+                    constant(Datum::Int(1), long()),
+                ],
+            );
+            let fail = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("plus"),
+                long(),
+                vec![
+                    constant(Datum::Int(i64::MAX), long()),
+                    constant(Datum::Int(1), long()),
+                ],
+            ));
+            for engine in [false, true] {
+                let mut input = Chunk::new_with_capacity(&[long()], 1);
+                input.append_null(0);
+                for first in [
+                    constant(Datum::Int(0), long()),
+                    input_column(0, long()),
+                    in_equal.clone(),
+                ] {
+                    let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+                    let filter =
+                        PushedScanFilter::from_physical_conditions(vec![first, fail.clone()], &ctx);
+                    assert!(!filter.matches(&ctx, input.get_row(0)).unwrap());
+                    assert_eq!(
+                        filter.evaluator.compilations(),
+                        u64::from(engine),
+                        "skipped error condition is not compiled"
+                    );
+                    assert_eq!(ctx.tikv_expression_rows(), u64::from(engine));
+                }
+                let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+                let filter = PushedScanFilter::from_physical_conditions(vec![fail.clone()], &ctx);
+                assert!(
+                    filter.matches(&ctx, input.get_row(0)).is_err(),
+                    "error fixture is reachable alone"
+                );
+            }
+        }
+
+        #[test]
+        fn raw_binary_literal_keeps_native_datum_truth() {
+            for engine in [false, true] {
+                let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+                for (bytes, expected) in [(vec![0x10], true), (vec![0], false)] {
+                    let expression = constant(
+                        Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(bytes)),
+                        FieldType::new(FieldTypeCode::VarString),
+                    );
+                    let filter = PushedScanFilter::from_physical_conditions(vec![expression], &ctx);
+                    assert_eq!(filter.matches(&ctx, Row::empty()).unwrap(), expected);
+                }
+            }
+        }
+    }
 
     /// A snapshot over a fixed map: the committed half of a cluster read.
     #[derive(Debug, Default)]

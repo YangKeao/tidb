@@ -1925,7 +1925,10 @@ fn condition_kind(
                     let ctx = resolver.comparison_context().unwrap_or(&fallback);
                     let mut chunk = tidb_chunk::chunk::Chunk::new_empty(&[]);
                     chunk.set_num_virtual_rows(1);
-                    expression.eval(ctx, chunk.get_row(0)).ok()
+                    tidb_expr::evaluator::EvaluatorSuite::new(vec![expression.clone()], true)
+                        .eval_selected_for_cast(ctx, &chunk, &[0])
+                        .ok()
+                        .and_then(|values| values.into_iter().next())
                 }
                 _ => None,
             };
@@ -2202,20 +2205,8 @@ fn string_match_selectivity(
 
     let fallback = tidb_expr::ZonedNoColumns(resolver.time_zone());
     let ctx = resolver.comparison_context().unwrap_or(&fallback);
-    let mut sample = tidb_chunk::chunk::Chunk::new_with_capacity(&[column.field_type.clone()], 1);
-    let mut datum_matches = |datum: &Datum| -> Option<bool> {
-        sample.reset();
-        sample.append_datum(0, datum);
-        let value = filter.eval(ctx, sample.get_row(0)).ok()?;
-        if value == Datum::Null {
-            return Some(false);
-        }
-        let converted = value.to_bool().ok()?;
-        if converted.event.is_some() {
-            return None;
-        }
-        Some(converted.value != 0)
-    };
+    let mut evaluator = StatisticsPredicate::new(filter, &column.field_type);
+    let mut datum_matches = |datum: &Datum| evaluator.matches(datum, ctx);
 
     let topn_total = column_stats
         .topn
@@ -2278,6 +2269,44 @@ fn string_match_selectivity(
         0.0
     };
     Some(topn_selected as f64 / total + histogram_selectivity + null_selectivity)
+}
+
+/// One compiled predicate for all TopN/bound/NULL samples of an estimate.
+/// A failed evaluation means unknown selectivity, never native error replay.
+struct StatisticsPredicate {
+    sample: tidb_chunk::chunk::Chunk,
+    program: std::sync::Arc<tidb_expr::evaluator::EvaluatorProgram>,
+}
+
+impl StatisticsPredicate {
+    fn new(expression: tidb_expr::expression::Expression, ty: &tidb_datatype::FieldType) -> Self {
+        Self {
+            sample: tidb_chunk::chunk::Chunk::new_with_capacity(std::slice::from_ref(ty), 1),
+            program: std::sync::Arc::new(tidb_expr::evaluator::EvaluatorProgram::new(
+                vec![expression],
+                true,
+            )),
+        }
+    }
+
+    fn matches(&mut self, datum: &Datum, ctx: &dyn tidb_expr::Columns) -> Option<bool> {
+        self.sample.reset();
+        self.sample.append_datum(0, datum);
+        let value = tidb_expr::evaluator::EvaluatorSuite::from_program(std::sync::Arc::clone(
+            &self.program,
+        ))
+        .eval_selected_for_cast(ctx, &self.sample, &[0])
+        .ok()?
+        .pop()?;
+        if value == Datum::Null {
+            return Some(false);
+        }
+        let converted = value.to_bool().ok()?;
+        if converted.event.is_some() {
+            return None;
+        }
+        Some(converted.value != 0)
+    }
 }
 
 /// One condition as `pseudoSelectivity` reads it (`pseudo.go:44-67`).
@@ -3409,6 +3438,87 @@ mod tests {
             BTreeMap::new(),
         );
         (table, stats)
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn statistics_program_reuses_compilation_and_declines_errors() {
+        use tidb_expr::{
+            column::Column, constant::Constant, expression::Expression,
+            scalar_function::ScalarFunction,
+        };
+        let ty = FieldType::new(FieldTypeCode::LongLong);
+        let mut column = Column::new(1, ty.clone());
+        column.index = 0;
+        let expression = Expression::ScalarFunction(ScalarFunction::new(
+            tidb_ast::CiString::new("plus"),
+            ty.clone(),
+            vec![
+                Expression::Column(column),
+                Expression::Constant(Constant::new(Datum::Int(1), ty.clone())),
+            ],
+        ));
+        for engine in [false, true] {
+            let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+            let erased: &dyn tidb_expr::Columns = &ctx;
+            let mut evaluator = StatisticsPredicate::new(expression.clone(), &ty);
+            assert_eq!(evaluator.matches(&Datum::Int(i64::MAX), erased), None);
+            assert_eq!(evaluator.matches(&Datum::Null, erased), Some(false));
+            assert_eq!(evaluator.matches(&Datum::Int(1), erased), Some(true));
+            assert_eq!(evaluator.program.tikv_compilations(), u64::from(engine));
+            assert_eq!(ctx.tikv_expression_rows(), if engine { 2 } else { 0 });
+            struct Required;
+            impl tidb_expr::Columns for Required {
+                fn get(&self, _: &[String]) -> Option<Datum> {
+                    None
+                }
+                fn tikv_expression_required(&self) -> bool {
+                    true
+                }
+            }
+            assert_eq!(evaluator.matches(&Datum::Int(1), &Required), None);
+        }
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn statistics_samples_use_engine_through_erased_statement_context() {
+        struct Resolver<'a> {
+            base: NamedColumnResolver<'a>,
+            ctx: &'a crate::StmtContext,
+        }
+        impl ColumnResolver for Resolver<'_> {
+            fn resolve(&self, path: &[String]) -> Option<(usize, FieldType, i64)> {
+                self.base.resolve(path)
+            }
+            fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+                self.base.time_zone()
+            }
+            fn comparison_context(&self) -> Option<&dyn tidb_expr::Columns> {
+                Some(self.ctx)
+            }
+        }
+        let (table, stats) = stats_v2_name_column_fixture();
+        let predicate = tidb_ast::Expr::Like {
+            expr: Box::new(tidb_ast::Expr::Column(vec!["name".to_owned()])),
+            pattern: Box::new(tidb_ast::Expr::String("%needle%".to_owned())),
+            not: false,
+            ilike: false,
+            escape: None,
+        };
+        for engine in [false, true] {
+            let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+            let resolver = Resolver {
+                base: NamedColumnResolver { table: &table },
+                ctx: &ctx,
+            };
+            assert_eq!(
+                string_match_selectivity(&predicate, &table, &resolver, Some(&stats), false),
+                Some(0.525)
+            );
+            // Two TopN entries, four bounds, and the NULL probe.
+            assert_eq!(ctx.tikv_expression_rows(), if engine { 7 } else { 0 });
+        }
     }
 
     #[test]

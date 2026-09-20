@@ -236,6 +236,12 @@ impl ConditionEvaluator {
         }
     }
 
+    /// Append one unchanged condition while sharing its compilation metadata.
+    /// The caller supplies an index from the corresponding expression list.
+    pub(crate) fn append_from(&mut self, other: &Self, position: usize) {
+        self.programs.push(other.programs[position].clone());
+    }
+
     pub(crate) fn evaluate<C: Columns>(
         &self,
         ctx: &C,
@@ -289,8 +295,10 @@ impl ConditionEvaluator {
         let mut has_null = false;
         for (from_in, program) in &self.programs {
             let suite = EvaluatorSuite::from_program(Arc::clone(program));
+            // Truth conversion needs scalar Datum kinds, not a typed output
+            // carrier: e.g. a binary literal is numeric rather than text.
             let data = suite
-                .eval_selected(ctx, input, &[physical])
+                .eval_selected_for_cast(ctx, input, &[physical])
                 .map_err(into_eval_error)?
                 .pop()
                 .ok_or_else(|| ExecError::internal("join condition returned no row"))?;

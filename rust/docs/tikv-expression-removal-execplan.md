@@ -161,8 +161,17 @@ remain in the workspace.
       BinaryLiteral tag loss (16 became 0 or an error) with a separate
       `eval_selected_for_cast` path; ordinary typed projection APIs stay intact.
       Reproduced and fixed missing ENUM/SET numeric metadata adaptation in Sort
-      and late-cast scalar results. Current inventory: 24 sites, 11 production /
+      and late-cast scalar results. That step's inventory: 24 sites, 11 production /
       13 test, or 9 production excluding the unlinked duplicate.
+- [x] Retain pushed-scan conditions, sharing caches across clone/conjoin and
+      rebuilding after column remapping. Remove local IN/LIKE expression
+      shortcuts; preserve FALSE/NULL demand. Route both access-cost evaluator
+      sites; share one program across each estimate's TopN/bounds/NULL samples.
+      Scalar facade accepts erased contexts without dropping statement methods.
+      Reproduce/fix binary-literal truth loss in ConditionEvaluator/FilterProgram
+      using the existing scalar-preserving entry. Current textual inventory:
+      21 evaluator sites, 8 production / 13 test, or 6 production excluding the
+      unlinked duplicate. This does not inventory every forwarding helper.
 - [ ] Retain generated/default compatibility programs in statement-owned plans
       with schema/zone/LIKE rewrite invalidation. The public mutable descriptors
       are not safe cache owners; temporary compilation and gather copies remain.
@@ -753,6 +762,46 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+Pushed-scan/statistics validation (TiDB `rust/`, same serial guarded environment,
+no local Cargo patch):
+
+    cargo test -q -p tidb-executor --features tikv-expr --lib predicate_pushdown::tests::retained_engine --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --lib statistics_samples_use_engine --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --lib access_cost::tests --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --lib filter_scalar_truth_keeps_binary_literal_kind --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --lib evaluator::tests --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --lib predicate_pushdown::tests --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --locked --offline -j1 -- --test-threads=1
+
+`pushed-filter-before.log` has four engine-receipt failures (zero rows);
+`statistics-engine-before.log` has zero instead of seven sample rows. Routing
+then exposed `pushed-filter-typed.log`'s binary literal truth failure, independently
+reproduced in the shared filter by `filter-truth-before.log`. Switching Boolean
+coercion to the scalar-preserving entry fixes both without widening binary
+literal admission. Cache tests pin clone/conjoin reuse, fresh remap programs,
+uncompiled skipped conditions, and statistics recovery after overflow. Unknown
+selectivity/error handling (including the special NULL sample) is preserved;
+errors do not replay natively. The erased-context path forwards the complete
+trait object rather than approximating a statement context.
+
+Final scoped results: 29 access-cost / 23 evaluator / 10 pushed-filter tests.
+Final `scan-stats-expr-on/off.log`: 1220/63 and 1186/18 (99 ignored unit tests
+each). Final `scan-stats-executor-on/off.log`: 1388/355/6/2 and 1340/329/6/0
+(184 ignored integration tests each). Serial single Cargo/test workers used the
+8192-MiB RSS / 16384-MiB AS guard. Sampled round peak 3243.7 MiB; final full-suite
+samples 1678.3 / 2385.6 / 1406.8 / 3065.6 MiB. Very short cached tests can miss
+runtime peaks. Classifier: 36 raw / 21 evaluator / 8 production / 13 test, or
+6 production excluding the dead duplicate (DML, correlated DML, pruning).
+
+Removing prehashed local IN/direct LIKE shortcuts can regress scan performance,
+particularly optional native fallback; caching is not proof of a speedup. No
+full mysql replay, new Go oracle, performance comparison or make lint/PR-readiness
+validation was run. Native casts/fallback/kernels, forwarding-helper audit and
+generated/default statement-owned caching remain incomplete.
 
 Schema-expression/late-cast validation (TiDB `rust/`, same serial guarded
 environment, no local Cargo patch):

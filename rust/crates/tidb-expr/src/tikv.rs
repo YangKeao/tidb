@@ -224,7 +224,7 @@ impl TikvExpression {
     ///
     /// Takes `&self`: the compiled program is immutable and shareable, and the
     /// engine allocates its per-call execution state internally.
-    pub fn evaluate<C: Columns>(
+    pub fn evaluate<C: Columns + ?Sized>(
         &self,
         context: &C,
         input: &Chunk,
@@ -235,7 +235,7 @@ impl TikvExpression {
     /// Evaluate explicit physical rows without changing `input.sel()`. `None`
     /// means dense physical order, not the chunk's existing logical selection.
     /// Repeated and reordered indices are allowed; invalid indices are errors.
-    pub fn evaluate_selected<C: Columns>(
+    pub fn evaluate_selected<C: Columns + ?Sized>(
         &self,
         context: &C,
         input: &Chunk,
@@ -268,7 +268,7 @@ impl TikvExpression {
     /// adapter before any input guards are held. Errors reset partial borrowed
     /// output; they never cause replay. Only successful borrowed calls increment
     /// the borrowed-row counter. No input reference survives this method.
-    pub fn evaluate_into<C: Columns>(
+    pub fn evaluate_into<C: Columns + ?Sized>(
         &self,
         context: &C,
         input: &Chunk,
@@ -280,7 +280,7 @@ impl TikvExpression {
 
     /// Borrow explicit physical rows, retaining the no-replay/error contract of
     /// `evaluate_into`. This does not mutate or clone the input chunk/selection.
-    pub fn evaluate_into_selected<C: Columns>(
+    pub fn evaluate_into_selected<C: Columns + ?Sized>(
         &self,
         context: &C,
         input: &Chunk,
@@ -571,7 +571,7 @@ fn validate_selection(input: &Chunk, selection: Option<&[usize]>) -> Result<(), 
 /// `Ok(None)` means the engine produced this expression's column.
 /// `Ok(Some(reason))` means the caller must use the native evaluator, and
 /// reports that decision so a gate can reject unlisted reasons.
-pub(crate) fn evaluate_shared<C: Columns>(
+pub(crate) fn evaluate_shared<C: Columns + ?Sized>(
     program: &TikvExpression,
     context: &C,
     input: &Chunk,
@@ -583,7 +583,7 @@ pub(crate) fn evaluate_shared<C: Columns>(
 
 /// The same dispatch with an explicit physical selection. Representability
 /// checks must use this selection too, not the source chunk's logical rows.
-pub(crate) fn evaluate_shared_selected<C: Columns>(
+pub(crate) fn evaluate_shared_selected<C: Columns + ?Sized>(
     program: &TikvExpression,
     context: &C,
     input: &Chunk,

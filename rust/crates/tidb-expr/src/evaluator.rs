@@ -160,7 +160,7 @@ fn eval_filter_row<C: Columns>(
     physical: usize,
 ) -> Result<Datum, EvalError> {
     suite
-        .eval_selected(ctx, input, &[physical])
+        .eval_selected_for_cast(ctx, input, &[physical])
         .map_err(into_eval_error)?
         .pop()
         .ok_or_else(|| EvalError::Unsupported("filter returned no value"))
@@ -326,7 +326,7 @@ fn filter_physical_rows<C: Columns>(
                 }
             } else {
                 for value in programs[position]
-                    .eval_selected(ctx, input, &sel)
+                    .eval_selected_for_cast(ctx, input, &sel)
                     .map_err(into_eval_error)?
                 {
                     is_zero.push(truth_code(&value)?);
@@ -761,18 +761,18 @@ impl EvaluatorSuite {
     /// output column (which erases e.g. BinaryLiteral's numeric semantics).
     /// Engine admission, required-engine errors and no-error-replay rules are
     /// identical to eval_selected; this is not new engine type support.
-    pub fn eval_selected_for_cast<C: Columns>(
+    pub fn eval_selected_for_cast(
         &self,
-        ctx: &C,
+        ctx: &dyn Columns,
         input: &Chunk,
         physical_rows: &[usize],
     ) -> Result<Vec<Datum>, EvaluatorError> {
         self.eval_single_input(ctx, input, Some(physical_rows), true)
     }
 
-    fn eval_single_input<C: Columns>(
+    fn eval_single_input(
         &self,
-        ctx: &C,
+        ctx: &dyn Columns,
         input: &Chunk,
         selection: Option<&[usize]>,
         preserve_native_datums: bool,
@@ -851,9 +851,9 @@ impl EvaluatorSuite {
         self.evaluate_rows_selected_with_datums(ctx, input, output, selection, None)
     }
 
-    fn evaluate_rows_selected_with_datums<C: Columns>(
+    fn evaluate_rows_selected_with_datums(
         &self,
-        ctx: &C,
+        ctx: &dyn Columns,
         input: &Chunk,
         output: &mut Chunk,
         selection: Option<&[usize]>,
@@ -1628,6 +1628,37 @@ mod tests {
             vectorized_filter_consider_null(&ctx, true, &both, &input, Vec::new(), Vec::new())
                 .unwrap();
         assert_eq!(selected, vec![false, true, false, false]);
+    }
+
+    #[test]
+    fn filter_scalar_truth_keeps_binary_literal_kind() {
+        struct Context(bool);
+        impl Columns for Context {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            #[cfg(feature = "tikv-expr")]
+            fn tikv_expression_context(&self) -> Option<crate::tikv::Context> {
+                self.0.then(crate::tikv::Context::default)
+            }
+        }
+        let mut input = Chunk::new_with_capacity(&[], 2);
+        input.set_num_virtual_rows(2);
+        input.set_sel(Some(vec![1]));
+        let filter = FilterProgram::new(vec![Expression::Constant(Constant::new(
+            Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(vec![16])),
+            string(),
+        ))]);
+        for engine in [false, true] {
+            let ctx = Context(engine);
+            assert!(filter.matches_row(&ctx, input.physical_row(0)).unwrap());
+            for vectorized in [false, true] {
+                let (selected, _) = filter
+                    .consider_null(&ctx, vectorized, &input, vec![], vec![])
+                    .unwrap();
+                assert_eq!(selected, vec![false, true]);
+            }
+        }
     }
 
     #[test]
