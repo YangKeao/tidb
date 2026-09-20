@@ -195,8 +195,12 @@ remain in the workspace.
       free. Test permissive execution, restrictive-mode compile decline, required
       rejection, optional native fallback and mode changes on the same program.
       Decoder warnings never reach the host, including with warning capacity 0.
-- [ ] Unify packed-zero decoding under restrictive modes and TIMESTAMP timezone
-      semantics; these still prevent engine-only coverage/default switching.
+- [x] Admit matching TIMESTAMP constants when the effective compile timezone is
+      proven UTC (offset zero with no name, or exact named UTC). Recursively pass
+      context into admission and test retained programs across timezone switches,
+      both transports, typed NULL, nested YEAR, zero and mismatched values.
+- [ ] Unify packed-zero decoding under restrictive modes and non-UTC TIMESTAMP
+      transport; these still prevent engine-only coverage/default switching.
 - [ ] Audit expression-internal and other forwarding entrypoints before native
       removal; retain partition programs at a safe owner. Zero direct live hits
       in the narrow outside-core `.eval` inventory is not deletion readiness.
@@ -790,6 +794,36 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+UTC TIMESTAMP literal admission (TiDB `rust/`, same guarded environment):
+
+    cargo test -q -p tidb-expr --features tikv-expr --test all timestamp_literals_require_utc --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+
+`timestamp-utc-red.log` reproduces the blanket refusal (0 versus 1 engine row).
+Admission now receives the compile context recursively: TIMESTAMP payload fields
+can be preserved by the existing context-free encoder only when UTC decode is an
+identity. Exact name `UTC` has priority over offset, matching Context::config;
+otherwise only absent/empty name with offset zero is permitted. Non-UTC names,
+offsets and unverified aliases remain declined, not normalized or guessed.
+
+`timestamp-utc-green.log` passes the initial matrix; the full suite includes the
+expanded copying/borrowed matrix. The final targeted `timestamp-utc-final.log`
+also pins TIMESTAMP(3) retaining sub-precision raw micros. Final cases:
+TIMESTAMP(0/3/6), typed NULL and nested YEAR,
+UTC / named UTC with conflicting offset / non-UTC / invalid name / UTC recovery,
+optional native fallback versus required 1105 refusal. Same retained programs
+are exercised across context changes; 60 engine rows prove admission. The zero
+SQL-mode matrix now also covers TIMESTAMP(6), and the wire test pins Timestamp
+metadata/bytes. Mismatched kind and invalid-calendar TIMESTAMP still decline.
+
+Full logs `timestamp-expr-on.log` and `timestamp-executor-on.log`: expression
+1222/68 passed (99 unit ignored), executor 1399/355/6/2 (184 integration ignored).
+Serial single-worker guarded peak sample 2389.6 MiB; RSS/AS limits 8192/16384 MiB.
+No TiKV code/wire changes. Feature-off/TiKV suites, performance, new Go oracle,
+full mysql replay and make lint were not rerun. Non-UTC/DST transport, restricted
+zero modes and native deletion remain incomplete.
 
 Context-dependent zero temporal admission (TiDB `rust/`, same guarded environment):
 

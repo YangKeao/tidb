@@ -103,7 +103,7 @@ impl TikvExpression {
         expression: &Expression,
         context: Context,
     ) -> Result<Result<Self, FallbackReason>, EvalError> {
-        if !admitted(expression) {
+        if !admitted(expression, &context) {
             return declined("admission", expression);
         }
         let Some(result_type) = expression.static_type().cloned() else {

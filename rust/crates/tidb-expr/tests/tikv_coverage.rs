@@ -715,6 +715,11 @@ fn zero_temporal_constants_require_warning_free_compilation() {
         (date(), TimeType::Date, 0),
         (datetime(0), TimeType::DateTime, 0),
         (datetime(6), TimeType::DateTime, 6),
+        (
+            FieldType::new(FieldTypeCode::Timestamp).with_decimal(6),
+            TimeType::Timestamp,
+            6,
+        ),
     ] {
         let value = Datum::Time(Time::from_date_checked(0, 0, 0, 0, 0, 0, 0, kind, fsp).unwrap());
         let program = Arc::new(EvaluatorProgram::new(
@@ -765,6 +770,107 @@ fn zero_temporal_constants_require_warning_free_compilation() {
 }
 
 #[test]
+fn timestamp_literals_require_utc_compilation_context() {
+    struct TimestampContext {
+        config: Context,
+        required: bool,
+        backend: Backend,
+        rows: Cell<usize>,
+    }
+    impl Columns for TimestampContext {
+        fn tikv_expression_backend(&self) -> Backend {
+            self.backend
+        }
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn tikv_expression_context(&self) -> Option<Context> {
+            Some(self.config.clone())
+        }
+        fn tikv_expression_required(&self) -> bool {
+            self.required
+        }
+        fn record_tikv_expression_rows(&self, rows: usize) {
+            self.rows.set(self.rows.get() + rows);
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            panic!("unexpected warning {code}: {message}");
+        }
+    }
+    let timestamp = |fsp| FieldType::new(FieldTypeCode::Timestamp).with_decimal(fsp);
+    let value = |fsp| {
+        Datum::Time(
+            Time::from_date_checked(
+                2024,
+                3,
+                14,
+                12,
+                34,
+                56,
+                if fsp == 0 { 0 } else { 123456 },
+                TimeType::Timestamp,
+                fsp,
+            )
+            .unwrap(),
+        )
+    };
+    let mut input = Chunk::new_empty(&[]);
+    input.set_num_virtual_rows(1);
+    let cases = vec![
+        (literal(value(0), &timestamp(0)), value(0)),
+        (literal(value(3), &timestamp(3)), value(3)),
+        (literal(value(6), &timestamp(6)), value(6)),
+        (literal(Datum::Null, &timestamp(0)), Datum::Null),
+        (
+            call("year", &int(), vec![literal(value(0), &timestamp(0))]),
+            Datum::Int(2024),
+        ),
+    ];
+    for (expression, expected) in cases {
+        let program = Arc::new(EvaluatorProgram::new(vec![expression], true));
+        for (name, offset, admitted) in [
+            (None, 0, true),
+            (Some("UTC"), 28800, true),
+            (None, 28800, false),
+            (Some("Asia/Shanghai"), 0, false),
+            (Some("invalid/timezone"), 0, false),
+            (None, 0, true),
+        ] {
+            for (required, backend) in [
+                (false, Backend::Copying),
+                (true, Backend::Copying),
+                (false, Backend::Borrowed),
+                (true, Backend::Borrowed),
+            ] {
+                let ctx = TimestampContext {
+                    config: Context {
+                        time_zone_name: name.map(str::to_owned),
+                        time_zone_offset: offset,
+                        ..Context::default()
+                    },
+                    required,
+                    backend,
+                    rows: Cell::new(0),
+                };
+                let result = EvaluatorSuite::from_program(Arc::clone(&program))
+                    .eval_selected_for_cast(&ctx, &input, &[0]);
+                if admitted || !required {
+                    assert_eq!(result.unwrap(), vec![expected.clone()]);
+                } else {
+                    assert!(matches!(
+                        result,
+                        Err(tidb_expr::evaluator::EvaluatorError::Eval(
+                            tidb_expr::EvalError::ExternalEngine { code: 1105, .. }
+                        ))
+                    ));
+                }
+                assert_eq!(ctx.rows.get(), usize::from(admitted));
+            }
+        }
+    }
+}
+
+#[test]
 fn temporal_constant_unsafe_shapes_remain_declined() {
     let dt = Time::from_date_checked(2024, 3, 14, 12, 0, 0, 123456, TimeType::DateTime, 6).unwrap();
     let timestamp =
@@ -776,10 +882,16 @@ fn temporal_constant_unsafe_shapes_remain_declined() {
         (Datum::Time(dt), date()),
         (Datum::Time(timestamp), datetime(0)),
         (
-            Datum::Time(timestamp),
-            FieldType::new(FieldTypeCode::Timestamp).with_decimal(0),
+            Datum::Time(dt),
+            FieldType::new(FieldTypeCode::Timestamp).with_decimal(6),
         ),
         (Datum::Time(malformed), datetime(0)),
+        (
+            Datum::Time(
+                Time::from_date_checked(2024, 2, 31, 0, 0, 0, 0, TimeType::Timestamp, 0).unwrap(),
+            ),
+            FieldType::new(FieldTypeCode::Timestamp).with_decimal(0),
+        ),
         (Datum::Int(20240314), date()),
     ] {
         assert!(

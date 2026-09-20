@@ -77,8 +77,8 @@ pub(super) fn field_type_to_pb(ty: &FieldType) -> Option<tidb_proto::tipb::Field
     pushdown_catalog::field_type_to_pb(&wire)
 }
 
-pub(super) fn admitted(expression: &Expression) -> bool {
-    match admission_rejection(expression) {
+pub(super) fn admitted(expression: &Expression, context: &super::Context) -> bool {
+    match admission_rejection(expression, context) {
         None => true,
         Some(reason) => {
             // The admission gate is a full third of the corpus gap and its
@@ -93,7 +93,7 @@ pub(super) fn admitted(expression: &Expression) -> bool {
 }
 
 /// Why `admitted` refuses `expression`, for the debug channel only.
-fn admission_rejection(expression: &Expression) -> Option<&'static str> {
+fn admission_rejection(expression: &Expression, context: &super::Context) -> Option<&'static str> {
     let ty = expression.static_type()?;
     if !super::bridge::supported_type(ty) {
         return Some("unsupported-result-type");
@@ -108,13 +108,26 @@ fn admission_rejection(expression: &Expression) -> Option<&'static str> {
             if value.param_marker.is_some() {
                 return Some("constant-param-marker");
             }
-            // Packed TIMESTAMP decoding applies a session timezone; the
-            // context-free catalog encoder cannot establish that contract yet.
-            if ty.code() == FieldTypeCode::Timestamp {
-                return Some("constant-timestamp");
+            // Packed TIMESTAMP decoding treats payload fields as UTC. The
+            // context-free encoder preserves a native constant only when that
+            // conversion is an identity. Follow Context::config's name priority.
+            if ty.code() == FieldTypeCode::Timestamp
+                && !match context
+                    .time_zone_name
+                    .as_deref()
+                    .filter(|name| !name.is_empty())
+                {
+                    Some("UTC") => true,
+                    None => context.time_zone_offset == 0,
+                    Some(_) => false,
+                }
+            {
+                return Some("constant-timestamp-timezone");
             }
-            if matches!(ty.code(), FieldTypeCode::Date | FieldTypeCode::Datetime)
-                && !temporal_constant_supported(&value.value, ty)
+            if matches!(
+                ty.code(),
+                FieldTypeCode::Date | FieldTypeCode::Datetime | FieldTypeCode::Timestamp
+            ) && !temporal_constant_supported(&value.value, ty)
             {
                 return Some("constant-temporal-shape");
             }
@@ -155,7 +168,10 @@ fn admission_rejection(expression: &Expression) -> Option<&'static str> {
             if !row.shape.permits(function) {
                 return Some("lazy-shape");
             }
-            function.args.iter().find_map(admission_rejection)
+            function
+                .args
+                .iter()
+                .find_map(|arg| admission_rejection(arg, context))
         }
     }
 }
@@ -175,6 +191,7 @@ fn temporal_constant_supported(value: &Datum, ty: &FieldType) -> bool {
     let kind = match ty.code() {
         FieldTypeCode::Date => tidb_datatype::TimeType::Date,
         FieldTypeCode::Datetime => tidb_datatype::TimeType::DateTime,
+        FieldTypeCode::Timestamp => tidb_datatype::TimeType::Timestamp,
         _ => return false,
     };
     let fsp = if ty.code() == FieldTypeCode::Date {
@@ -200,13 +217,20 @@ mod temporal_literal_tests {
                 12,
                 123456,
             ),
+            (
+                FieldTypeCode::Timestamp,
+                tidb_datatype::TimeType::Timestamp,
+                6,
+                12,
+                123456,
+            ),
         ] {
             let ty = FieldType::new(code).with_decimal(fsp);
             let value =
                 tidb_datatype::Time::from_date_checked(2024, 3, 14, hour, 34, 56, micro, kind, fsp)
                     .unwrap();
             let expr = Expression::Constant(crate::constant::Constant::new(Datum::Time(value), ty));
-            assert!(admitted(&expr));
+            assert!(admitted(&expr, &super::super::Context::default()));
             let pb = lower(&expr, &|_| None).unwrap();
             let ymd = ((2024_u64 * 13 + 3) << 5) | 14;
             let hms = ((hour as u64) << 12) | (34 << 6) | 56;
