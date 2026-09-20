@@ -116,6 +116,7 @@ pub(super) struct IndexHashOutput {
     pub vectorized: bool,
     pub output: JoinOutput,
     pub conditions: Vec<Expression>,
+    pub condition_evaluator: crate::joiner::ConditionEvaluator,
     pub condition_types: Vec<FieldType>,
     pub left_types: Vec<FieldType>,
     pub right_types: Vec<FieldType>,
@@ -207,8 +208,9 @@ impl IndexHashOutput {
         };
         state.scratch.append_partial_row(0, left);
         state.scratch.append_partial_row(left.len(), right);
-        let (matched, has_null) =
-            crate::joiner::eval_bool(ctx, &self.conditions, state.scratch.get_row(0))?;
+        let (matched, has_null) = self
+            .condition_evaluator
+            .evaluate(ctx, state.scratch.get_row(0))?;
         // Preserve the existing anti-semi NOT-IN/NULL residual contract.
         Ok(matched || self.kind == JoinKind::AntiSemi && has_null)
     }
@@ -767,6 +769,59 @@ pub(super) fn send_prepared_with_hash<C: Columns>(
 mod tests {
     use super::*;
 
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn scalar_index_hash_tasks_share_the_join_condition_cache() {
+        let ty = FieldType::new(tidb_datatype::FieldTypeCode::LongLong);
+        let mut column = tidb_expr::column::Column::new(1, ty.clone());
+        column.index = 0;
+        let ctx = crate::StmtContext::for_query().with_tikv_expression(true);
+        let memory = StatementMemory::default();
+        let mut join = JoinExec::new_with_children(
+            ExecutorMeta::new(Schema::default(), 1, 4, 4),
+            JoinKind::Inner,
+            vec![Expression::Column(column)],
+            None,
+            None,
+            vec![ty.clone()],
+            vec![ty.clone()],
+            ctx.clone(),
+            memory.clone(),
+        );
+        join.index_hash = Some(false);
+        let output = join.index_hash_output().unwrap();
+        let second_task = join.index_hash_output().unwrap();
+        let cloned = output.clone();
+        let mut chunk = Chunk::new_with_capacity(&[ty.clone()], 1);
+        chunk.append_int64(0, 1);
+        let mut outer = OuterBatch::new(&[ty.clone()], 1, 4);
+        outer.push(chunk.get_row(0));
+        let mut inner = List::new(&[ty], 1, 4);
+        inner.add(chunk.copy_construct());
+        let tracker = memory.operator_tracker(1);
+        let keys = [EquiKey {
+            left: 0,
+            right: 0,
+            class: KeyClass::Int,
+            null_safe: false,
+        }];
+        let mut state =
+            IndexHashState::new(&output, &keys, &outer, &inner, &tracker, &memory).unwrap();
+        assert!(output
+            .matches(&ctx, chunk.get_row(0), chunk.get_row(0), &mut state)
+            .unwrap());
+        // Both another task descriptor and a cloned worker see the compilation
+        // before they evaluate anything themselves.
+        assert_eq!(second_task.condition_evaluator.compilations(), 1);
+        assert_eq!(cloned.condition_evaluator.compilations(), 1);
+        assert!(second_task
+            .matches(&ctx, chunk.get_row(0), chunk.get_row(0), &mut state)
+            .unwrap());
+        assert_eq!(join.condition_evaluator.compilations(), 1);
+        assert_eq!(ctx.tikv_expression_rows(), 2);
+        assert_eq!(state.evaluations, 2);
+    }
+
     /// Go Constant.VecEval reads a prepared value once per candidate chunk.
     #[test]
     fn index_hash_conditions_evaluate_a_candidate_batch() {
@@ -790,6 +845,9 @@ mod tests {
                 ordered,
                 vectorized,
                 output: JoinOutput::all(JoinKind::Left, 1, 1),
+                condition_evaluator: crate::joiner::ConditionEvaluator::new(&[
+                    Expression::Constant(parameter.clone()),
+                ]),
                 conditions: vec![Expression::Constant(parameter)],
                 condition_types: vec![ty.clone(), ty.clone()],
                 left_types: vec![ty.clone()],
@@ -928,6 +986,7 @@ mod tests {
                     vectorized: true,
                     output: JoinOutput::all(JoinKind::LeftOuterSemi, 1, 1),
                     conditions: Vec::new(),
+                    condition_evaluator: crate::joiner::ConditionEvaluator::new(&[]),
                     condition_types: vec![ty.clone(), ty.clone()],
                     left_types: types.clone(),
                     right_types: types.clone(),

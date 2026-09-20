@@ -26,6 +26,106 @@ fn long() -> FieldType {
     FieldType::new(FieldTypeCode::Long)
 }
 
+#[cfg(feature = "tikv-expr")]
+#[test]
+fn cached_join_conditions_preserve_ordinary_and_anti_null_demand() {
+    let mut column = Column::new(1, long());
+    column.index = 0;
+    column.in_operand = true;
+    let one = Expression::Constant(Constant::new(Datum::Int(1), long()));
+    let eq = Expression::ScalarFunction(ScalarFunction::new(
+        CiString::new("eq"),
+        long(),
+        vec![Expression::Column(column), one.clone()],
+    ));
+    let fail = Expression::ScalarFunction(ScalarFunction::new(
+        CiString::new("plus"),
+        long(),
+        vec![
+            Expression::Constant(Constant::new(Datum::Int(i64::MAX), long())),
+            one,
+        ],
+    ));
+    for engine in [false, true] {
+        for kind in [JoinKind::Inner, JoinKind::AntiSemi] {
+            let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+            let join = JoinExec::new_with_children(
+                ExecutorMeta::new(schema_of(2), 1, 4, 4),
+                kind,
+                vec![eq.clone(), fail.clone()],
+                None,
+                None,
+                vec![long()],
+                vec![long()],
+                ctx.clone(),
+                StatementMemory::default(),
+            );
+            let mut left = Chunk::new_with_capacity(&[long()], 1);
+            left.append_null(0);
+            let mut right = Chunk::new_with_capacity(&[long()], 1);
+            right.append_int64(0, 1);
+            let mut scratch = Chunk::new_with_capacity(&[long(), long()], 1);
+            for result in [
+                join.matches(&[Datum::Null, Datum::Int(1)]),
+                join.matches_index_pair(&mut scratch, left.get_row(0), right.get_row(0)),
+            ] {
+                if kind == JoinKind::AntiSemi {
+                    assert!(result.is_err());
+                } else {
+                    assert!(
+                        !result.unwrap(),
+                        "ordinary NULL must skip the later overflow"
+                    );
+                }
+            }
+            assert_eq!(ctx.tikv_expression_rows(), if engine { 2 } else { 0 });
+            assert_eq!(
+                join.condition_evaluator.compilations(),
+                if !engine {
+                    0
+                } else if kind == JoinKind::AntiSemi {
+                    2
+                } else {
+                    1
+                }
+            );
+        }
+    }
+}
+
+#[cfg(feature = "tikv-expr")]
+#[test]
+fn merge_key_reselection_refreshes_cached_residual_conditions() {
+    use crate::merge_join_plan::{MergeJoinKey, MergeJoinPlan};
+    let ctx = crate::StmtContext::for_query().with_tikv_expression(true);
+    let mut join = JoinExec::new_with_children(
+        ExecutorMeta::new(schema_of(4), 1, 4, 4),
+        JoinKind::Inner,
+        vec![eq_on(0, 0, 2), eq_on(1, 1, 2)],
+        None,
+        None,
+        vec![long(), long()],
+        vec![long(), long()],
+        ctx.clone(),
+        StatementMemory::default(),
+    );
+    assert!(join.residual_conditions.is_empty());
+    join.set_merge_plan(MergeJoinPlan {
+        keys: vec![MergeJoinKey { left: 0, right: 0 }],
+        desc: false,
+    });
+    assert_eq!(join.residual_conditions.len(), 1);
+    assert!(!join
+        .matches(&[Datum::Int(1), Datum::Int(2), Datum::Int(1), Datum::Int(3)])
+        .unwrap());
+    assert_eq!(ctx.tikv_expression_rows(), 1);
+    assert_eq!(join.residual_evaluator.compilations(), 1);
+    assert!(join
+        .matches(&[Datum::Int(1), Datum::Int(2), Datum::Int(1), Datum::Int(2)])
+        .unwrap());
+    assert_eq!(join.residual_evaluator.compilations(), 1);
+}
+
 /// Go Selection evaluates NULL predicates over chunk rows before the index
 /// join retains its inner chunks. Existing selections are logical row order.
 #[test]

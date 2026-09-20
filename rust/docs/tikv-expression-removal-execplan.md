@@ -86,6 +86,20 @@ remain in the workspace.
       continuation. Semi-family joiners retain the programs; clones share them
       through `Arc`. Tests assert engine execution, physical row semantics,
       skipped later compilations/errors and shared compilation counts.
+- [x] Retain full/residual programs on `JoinExec` for datum-row and index-pair
+      matching, and share them with scalar index-hash task/worker descriptors.
+      Keep ordinary NULL-immediate-rejection separate from the anti-semi CNF
+      NULL-from-IN continuation policy. Refresh residual programs whenever
+      merge-key selection rewrites the residual expression list.
+- [x] Audit native-site classification scopes: the old first-`#[cfg(test)]`
+      heuristic hides ten production calls and misses three file-wide test-only
+      calls. Current 39 evaluator sites split into 26 production-scope / 13
+      test-only after manual correction, or 24 excluding the known unlinked
+      duplicate. Earlier production/test splits are historical heuristic output,
+      not an accurate deletion-work count; source evidence is in the inventory.
+- [ ] Repair the classifier with failing-then-passing scope regressions before
+      treating its output as a deletion gate (helper/field attributes, closed
+      test modules, and file-wide inner attributes must be handled).
 - [ ] Retain condition programs in remaining `eval_bool` hot callers (the public
       convenience wrapper currently builds temporary programs) and migrate
       other Join expression sites. Existing joined scratch-row copies remain;
@@ -673,6 +687,20 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+JoinExec/index-hash cache validation (TiDB `rust/`, same serial guarded
+environment, no local Cargo patch):
+
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --locked --offline -j1 -- --test-threads=1
+
+Feature-on groups passed 1355 / 355 / 6 / 2; feature-off passed 1335 / 329 /
+6 / 0; both integration groups ignored 184 tests. Peaks: 2690.2 / 2130.4 MiB.
+New tests exercise both NULL demand policies through the real datum/index-pair
+methods, merge-key changes refreshing residual predicates, and scalar
+index-hash task/worker descriptors seeing the same compilation before their
+own first evaluation. Existing scratch copies and other native chunk/parallel
+paths remain. No performance, full mysql replay or repository-wide lint claim.
 
 Join CNF routing validation (TiDB `rust/`, same serial guarded environment,
 no local Cargo patch):

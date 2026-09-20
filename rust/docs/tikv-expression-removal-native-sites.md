@@ -1,7 +1,8 @@
 # The native evaluator's call sites outside projections
 
-Milestone E deletes the native evaluator. Projections are already served by the
-engine (`EvaluatorSuite` + `EvaluatorProgram`), so the remaining question is how
+Milestone E deletes the native evaluator. Projections are routed through
+`EvaluatorSuite` + `EvaluatorProgram` (admission/native coexistence remains),
+so the remaining question is how
 many call sites evaluate an expression *without* a projection, and what each
 kind needs. This is the measurement, and the method is repeatable:
 
@@ -10,23 +11,26 @@ kind needs. This is the measurement, and the method is repeatable:
 
 ## What the raw hits are
 
-After the Join CNF routing, the raw grep above returns 56 hits. They are
-classified mechanically by `rust/scripts/classify-native-eval-sites.py` (its rule is its
-docstring), which reads a hit plus the following eight lines so a call whose
-arguments span lines is still classified by its argument list:
+After JoinExec/index-hash caching, the raw grep above returns 54 hits.
+`rust/scripts/classify-native-eval-sites.py` classifies call arguments from an
+eight-line window, but its **test-scope heuristic is currently wrong**: a
+method-local `#[cfg(test)]` marks all later production items test-only, while a
+file-wide `#![cfg(test)]` is missed. The production column below is manually
+scope-corrected; the script still prints 19 production / 20 test-only and must
+not be used as a deletion gate until repaired with regression tests.
 
 | Kind | All sites | Production only |
 | --- | --- | --- |
-| one row of a chunk (`get_row(0)`) | 11 | 2 |
-| a row-loop variable or comparator | 25 | 14 |
-| a constant with no input row (`Row::empty()`) | 5 | 3 |
+| one row of a chunk (`get_row(0)`) | 11 | 4 |
+| a row-loop variable or comparator | 23 | 22 |
+| a constant with no input row (`Row::empty()`) | 5 | 0 |
 | not the evaluator: no-argument `constant.eval()`/`column.eval()`, the planner's `metadata.eval(k)`, the statement predicate's own four-argument `eval(row, catalog, db, ctx)` | 15 | -- |
 
-The mechanical native evaluator surface outside projections is **41 sites**:
-**19 production-labelled** and **22 test-only** (a file under a `tests/`
-directory, a `src/*tests.rs` module, or any line below its file's first
-`#[cfg(test)]`). Test-only calls are re-pointed with the corpora rather than
-converted. This is a textual inventory, not a proof of reachability. The driver's six-argument `UpdateExpression::eval` is deliberately
+The textual native evaluator surface outside projections is **39 sites**:
+**26 production-scope** and **13 test-only** after the scope audit. Test-only
+calls are re-pointed with the corpora rather than converted. This is a textual
+inventory, not a proof of reachability. The driver's six-argument
+`UpdateExpression::eval` is deliberately
 counted: it is a wrapper whose branches call `Expression::eval`
 (`driver/dml/correlated.rs:134,137`), so it is a real dispatch site even though
 the callee is the same evaluator.
@@ -36,8 +40,9 @@ One classifier caveat is now confirmed rather than hypothetical:
 unlinked duplicate. `lib.rs` exports the actual `StreamAggExec` and
 `GroupedStreamAggExec` from `hash_agg.rs`, and `driver/physical_builder.rs`
 imports those types; `cargo test --lib -- --list` contains none of
-`stream_agg.rs`'s tests. Excluding these two known dead calls leaves **17**
-production-labelled sites requiring routing/reachability review.
+`stream_agg.rs`'s tests. Excluding these two known dead calls leaves **24**
+production-scope sites requiring routing/reachability review (not the earlier
+heuristic's 17).
 Do not convert the dead duplicate; migrate `hash_agg.rs`'s real aggregate paths
 instead.
 
@@ -70,6 +75,13 @@ public convenience `eval_bool` wrapper constructs temporary programs: other
 hot callers still need retained caches. Existing join scratch-row copies were
 not removed; no new copied row is introduced by the evaluator routing.
 
+`JoinExec::matches` and `matches_index_pair` now retain full/residual programs.
+Their ordinary matching path rejects NULL immediately rather than adopting
+anti-semi's special continuation policy. Scalar index-hash task/worker output
+clones share the corresponding program cache. Changing merge keys refreshes
+the residual cache; tests cover the changed predicate result, not just cache
+identity. `matches_chunk_rows` and other chunk/parallel paths are still native.
+
 Remaining ordering-sensitive calls are not candidates for an eager whole-chunk
 cache. For example, `union_scan.rs` evaluates generated columns into a `MutRow`,
 where each write can feed the next expression. It needs an order-preserving
@@ -79,21 +91,30 @@ invariants and remaining input-copy limitations are also recorded in TiKV's
 
 ## Production sites by file
 
-Generated from the classifier; the remaining 22 test-only sites are not listed
-because they are re-pointed with the corpora, not converted.
+Manually scope-corrected after running the classifier with `--list`. Its ten
+false test labels were: `access_cost.rs:1928,2209` (`condition_kind`,
+`string_match_selectivity`); `access_path.rs:5532`
+(`IndexJoinLookupExec::row_passes_filters`); `hash_agg.rs:3617,3626,3630,3647,3675,3694`
+(`eval_agg_input`, reached from `hash_agg/input.rs:585`); and `join.rs:1826`
+(`matches_chunk_rows`). Test helper/field attributes and a closed test module
+had incorrectly tainted those later production scopes. Conversely,
+`tidb-planner/src/ranger/go_cases.rs:155,174,208` are test-only under that file's
+`#![cfg(test)]`. Line numbers describe the JoinExec-cache audit snapshot.
+The remaining 13 actual test-only sites are not listed below.
 
 | Sites | File |
 | --- | --- |
 | 3 | `tidb-executor/src/driver/dml.rs` |
-| 3 | `tidb-planner/src/ranger/go_cases.rs` |
+| 6 | `tidb-executor/src/hash_agg.rs` |
+| 2 each | `tidb-executor/src/access_cost.rs`, `tidb-executor/src/join.rs` |
 | 2 | `tidb-executor/src/driver/dml/correlated.rs` |
 | 2 | `tidb-executor/src/stream_agg.rs` (unlinked duplicate) |
-| 1 each | `column_default.rs`, `generated_column.rs`, `hash_agg/input.rs`, `join.rs`, `partition_pruning.rs`, `predicate_pushdown.rs`, `selection.rs`, `union_scan.rs`, `sort.rs` |
+| 1 each | `column_default.rs`, `generated_column.rs`, `hash_agg/input.rs`, `access_path.rs`, `partition_pruning.rs`, `predicate_pushdown.rs`, `selection.rs`, `union_scan.rs`, `sort.rs` |
 
 
 ## What each kind needs for the removal
 
-* **A row loop or comparator (14 production-labelled).** Where eager
+* **A row loop or comparator (22 production-scope).** Where eager
   evaluation preserves observable order, evaluate the expression for the whole
   chunk before the loop and index the result vector. Otherwise use selected
   rows at the original demand points, as the Window key path does. That is now
@@ -101,15 +122,15 @@ because they are re-pointed with the corpora, not converted.
   runs the suite over the caller's chunk and returns one datum per row, so the
   loop does not pick an implementation cell by cell. See the
   `VecGroupChecker` and hash-shuffle conversions below.
-* **One chunk row (2 production-labelled).** These are probes: partition pruning,
+* **One chunk row (4 production-scope).** These are probes: partition pruning,
   access-cost estimates, column defaults, generated columns, `dual`, correlated
   subquery inputs. The input is a one-row chunk already, so a one-row engine call
   is sufficient; `eval_chunk` covers it (a chunk with one row), and
   `eval_row_values` covers the variant whose row is a `&[Datum]` instead.
-* **A constant with no row (3 production-labelled).** These remaining
-  `ranger/go_cases.rs` calls use `Row::empty()`. The engine handles this
-  with a virtual one-row chunk (the corpus does it with
-  `set_num_virtual_rows(1)`), which is `eval_constant_row`.
+* **A constant with no row (0 production-scope, 5 test-only).** This bucket
+  includes the `ranger/go_cases.rs` calls previously mislabelled production.
+  Re-point these with the test corpora; `eval_constant_row` supplies the virtual
+  one-row input when an engine comparison is needed.
 
 This inventory measures dispatch sites, not kernel coverage. Each migration
 must establish admission, representation and ordering compatibility with tests;

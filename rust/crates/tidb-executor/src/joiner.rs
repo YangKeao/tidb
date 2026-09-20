@@ -237,6 +237,31 @@ impl ConditionEvaluator {
         ctx: &C,
         row: Row<'_>,
     ) -> Result<(bool, bool), ExecError> {
+        self.evaluate_with_null_policy(ctx, row, true)
+    }
+
+    /// Ordinary residual matching rejects any NULL immediately, even an
+    /// IN-rewritten equality. Do not evaluate a later error/side effect merely
+    /// because the anti-semi CNF protocol would continue at that same NULL.
+    pub(crate) fn matches<C: Columns>(&self, ctx: &C, row: Row<'_>) -> Result<bool, ExecError> {
+        self.evaluate_with_null_policy(ctx, row, false)
+            .map(|result| result.0)
+    }
+
+    #[cfg(all(test, feature = "tikv-expr"))]
+    pub(crate) fn compilations(&self) -> u64 {
+        self.programs
+            .iter()
+            .map(|(_, program)| program.tikv_compilations())
+            .sum()
+    }
+
+    fn evaluate_with_null_policy<C: Columns>(
+        &self,
+        ctx: &C,
+        row: Row<'_>,
+        continue_in_null: bool,
+    ) -> Result<(bool, bool), ExecError> {
         if self.programs.is_empty() {
             return Ok((true, false));
         }
@@ -266,7 +291,7 @@ impl ConditionEvaluator {
                 .pop()
                 .ok_or_else(|| ExecError::internal("join condition returned no row"))?;
             if matches!(data, Datum::Null) {
-                if !from_in {
+                if !continue_in_null || !from_in {
                     return Ok((false, false));
                 }
                 has_null = true;

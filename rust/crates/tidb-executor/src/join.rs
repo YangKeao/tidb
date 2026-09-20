@@ -1337,6 +1337,8 @@ pub struct JoinExec<C: Columns> {
     /// The complete logical `ON` clause. The nested-loop reference path must
     /// retain every condition, including equality keys.
     conditions: Vec<Expression>,
+    condition_evaluator: crate::joiner::ConditionEvaluator,
+    residual_evaluator: crate::joiner::ConditionEvaluator,
     /// The non-equality `otherCond` expressions that still need evaluation
     /// after the hash/merge/index key has matched. Go's hash join removes
     /// equal conditions from this list before probing; retaining them here
@@ -1497,6 +1499,8 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
             concurrency: 1,
             outer_filter: Vec::new(),
             filter_is_left: true,
+            condition_evaluator: crate::joiner::ConditionEvaluator::new(&conditions),
+            residual_evaluator: crate::joiner::ConditionEvaluator::new(&residual_conditions),
             conditions,
             residual_conditions,
             cross_side_equality,
@@ -1777,10 +1781,10 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
 
     /// Whether the `ON` conditions all hold for one joined row.
     fn matches(&self, joined: &[Datum]) -> Result<bool, ExecError> {
-        let conditions = if !self.is_hash_join() && !self.is_merge_join() {
-            &self.conditions
+        let (conditions, evaluator) = if !self.is_hash_join() && !self.is_merge_join() {
+            (&self.conditions, &self.condition_evaluator)
         } else {
-            &self.residual_conditions
+            (&self.residual_conditions, &self.residual_evaluator)
         };
         if conditions.is_empty() {
             return Ok(true);
@@ -1792,18 +1796,12 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
         }
         let row = chunk.get_row(0);
         if self.kind == JoinKind::AntiSemi {
-            let (matched, has_null) = crate::joiner::eval_bool(&self.ctx, conditions, row)?;
+            let (matched, has_null) = evaluator.evaluate(&self.ctx, row)?;
             // Anti-semi emits neither TRUE nor UNKNOWN pairs. The build-side
             // matched bitmap therefore also records UNKNOWN as non-emittable.
             return Ok(matched || has_null);
         }
-        for condition in conditions {
-            let value = condition.eval(&self.ctx, row)?;
-            if !truthy(&value)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        evaluator.matches(&self.ctx, row)
     }
 
     fn matches_chunk_rows(
@@ -1939,16 +1937,10 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
         scratch.append_partial_row(left.len(), right);
         let row = scratch.get_row(0);
         if self.kind == JoinKind::AntiSemi {
-            let (matched, has_null) = crate::joiner::eval_bool(&self.ctx, &self.conditions, row)?;
+            let (matched, has_null) = self.condition_evaluator.evaluate(&self.ctx, row)?;
             return Ok(matched || has_null);
         }
-        for condition in &self.conditions {
-            let value = condition.eval(&self.ctx, row)?;
-            if !truthy(&value)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        self.condition_evaluator.matches(&self.ctx, row)
     }
 
     /// Emits every output row one outer row produces, given the inner rows
@@ -2031,6 +2023,11 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
                 self.conditions.clone()
             } else {
                 self.residual_conditions.clone()
+            },
+            condition_evaluator: if self.keys.is_empty() {
+                self.condition_evaluator.clone()
+            } else {
+                self.residual_evaluator.clone()
             },
             condition_types: self.condition_types.clone(),
             left_types: self.left_types.clone(),
@@ -2753,6 +2750,8 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
                         })
                         .cloned()
                         .collect();
+                self.residual_evaluator =
+                    crate::joiner::ConditionEvaluator::new(&self.residual_conditions);
             }
             self.hash_build_is_left = Some(self.kind == JoinKind::Right);
             self.merge = Some(plan);
