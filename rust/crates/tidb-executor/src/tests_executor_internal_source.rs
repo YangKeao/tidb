@@ -243,3 +243,56 @@ fn issue_53867_reset_discards_unconsumed_groups() {
     checker.reset();
     assert!(checker.is_exhausted());
 }
+
+/// The grouping expression is a batch job -- Go's `SplitIntoGroups` evaluates
+/// each item once per chunk (`vecgroupchecker.go:350-520`) -- so it is the
+/// shape `EvaluatorSuite::eval_chunk` exists for. The engine run must
+/// split the chunk into the same groups as the native run, and the engine's
+/// row counter is the evidence that the engine evaluated the key instead of
+/// the native evaluator behind the same call.
+#[cfg(feature = "tikv-expr")]
+#[test]
+fn vec_group_checker_evaluates_the_grouping_key_in_the_engine() {
+    use tidb_ast::CiString;
+    use tidb_expr::{constant::Constant, scalar_function::ScalarFunction};
+
+    let field = FieldType::new(FieldTypeCode::LongLong);
+    let mut column = Column::new(1, field.clone());
+    column.index = 0;
+    let key = Expression::ScalarFunction(ScalarFunction::new(
+        CiString::new("plus"),
+        field.clone(),
+        vec![
+            Expression::Column(column),
+            Expression::Constant(Constant::new(Datum::Int(1), field.clone())),
+        ],
+    ));
+
+    let mut chunk = Chunk::new_with_capacity(std::slice::from_ref(&field), 4);
+    for value in [1i64, 2, 2, 3] {
+        chunk.append_int64(0, value);
+    }
+
+    let native_ctx = crate::StmtContext::for_query();
+    let mut native = VecGroupChecker::new(vec![key.clone()]);
+    let native_continues = native
+        .split_into_groups(&native_ctx, &chunk)
+        .expect("native grouping");
+    let native_ranges = (native_continues, ranges(&mut native));
+
+    let engine_ctx = crate::StmtContext::for_query().with_tikv_expression(true);
+    let mut engine = VecGroupChecker::new(vec![key]);
+    let engine_continues = engine
+        .split_into_groups(&engine_ctx, &chunk)
+        .expect("engine grouping");
+    let engine_ranges = (engine_continues, ranges(&mut engine));
+
+    assert_eq!(engine_ranges, native_ranges);
+    assert_eq!(native_continues, false);
+    assert_eq!(engine_ranges, (false, vec![(0, 1), (1, 3), (3, 4)]));
+    assert_eq!(native_ctx.tikv_expression_rows(), 0);
+    assert!(
+        engine_ctx.tikv_expression_rows() > 0,
+        "the grouping key must be evaluated by the engine"
+    );
+}

@@ -15,6 +15,7 @@
 #![cfg(feature = "tikv-expr")]
 
 use std::cell::{Cell, RefCell};
+use std::sync::Arc;
 
 use tidb_ast::CiString;
 use tidb_chunk::chunk::Chunk;
@@ -24,7 +25,7 @@ use tidb_datatype::{
 };
 use tidb_expr::column::Column;
 use tidb_expr::constant::Constant;
-use tidb_expr::evaluator::EvaluatorSuite;
+use tidb_expr::evaluator::{EvaluatorProgram, EvaluatorSuite};
 use tidb_expr::expression::{Expression, ScalarFunction};
 use tidb_expr::tikv::{Backend, Context, FallbackReason, TikvExpression};
 use tidb_expr::Columns;
@@ -2274,3 +2275,100 @@ fn eval_row_values_is_dense_only_and_matches_native() {
     );
 }
 
+
+/// `eval_chunk` is the seam a row loop uses: one expression, every row of a
+/// chunk the caller already built. It must answer the same values the native
+/// row evaluator would, must run the engine when the resolver has one (one
+/// engine row per evaluated row, not one per expression), must leave the input
+/// chunk untouched, and must hand a resolver that requires the engine the
+/// structured error when the adapter declines.
+#[test]
+fn eval_chunk_matches_native_row_by_row_and_leaves_the_input_alone() {
+    let ty = int();
+    let expression = call(
+        "plus",
+        &ty,
+        vec![column(0, &ty), literal(Datum::Int(1), &ty)],
+    );
+    let mut input = Chunk::new_with_capacity(std::slice::from_ref(&ty), 3);
+    for value in [1i64, 2, 3] {
+        input.append_datum(0, &Datum::Int(value));
+    }
+    let before_rows = input.num_rows();
+
+    // No engine context: the suite answers natively, row by row.
+    assert_eq!(
+        tidb_expr::evaluator::eval_chunk(&expression, &TestContext::default(), &input).unwrap(),
+        vec![Datum::Int(2), Datum::Int(3), Datum::Int(4)]
+    );
+
+    // With the engine: the same values, and the engine counted every row.
+    let engine = TestContext {
+        backend: Some(Backend::Copying),
+        ..TestContext::default()
+    };
+    assert_eq!(
+        tidb_expr::evaluator::eval_chunk(&expression, &engine, &input).unwrap(),
+        vec![Datum::Int(2), Datum::Int(3), Datum::Int(4)]
+    );
+    assert_eq!(engine.rows.get(), 3);
+    assert!(
+        engine.fallbacks.borrow().is_empty(),
+        "an admitted expression must not record a fallback: {:?}",
+        engine.fallbacks.borrow()
+    );
+    assert_eq!(input.num_rows(), before_rows);
+
+    // A required-engine resolver gets the structured error, not a native
+    // answer, when the adapter declines: `now` has no engine path.
+    let required = TestContext {
+        backend: Some(Backend::Copying),
+        engine_required: true,
+        ..TestContext::default()
+    };
+    let declined = call("now", &ty, Vec::new());
+    let error = tidb_expr::evaluator::eval_chunk(&declined, &required, &input)
+        .expect_err("a required-engine resolver must not evaluate natively");
+    assert!(
+        matches!(
+            error,
+            tidb_expr::evaluator::EvaluatorError::Eval(tidb_expr::EvalError::ExternalEngine {
+                code: 1105,
+                ..
+            })
+        ),
+        "unexpected error: {error:?}"
+    );
+}
+
+/// A retained chunk suite must compile its admitted engine expression once, not
+/// once per chunk. This is the program/execution split used by row-loop
+/// operators such as `VecGroupChecker`.
+#[test]
+fn retained_chunk_suite_reuses_its_engine_program() {
+    let ty = int();
+    let expression = call(
+        "plus",
+        &ty,
+        vec![column(0, &ty), literal(Datum::Int(1), &ty)],
+    );
+    let program = Arc::new(EvaluatorProgram::new(vec![expression], true));
+    let suite = EvaluatorSuite::from_program(Arc::clone(&program));
+    let mut input = Chunk::new_with_capacity(std::slice::from_ref(&ty), 2);
+    input.append_datum(0, &Datum::Int(4));
+    input.append_datum(0, &Datum::Int(8));
+    let engine = TestContext {
+        backend: Some(Backend::Copying),
+        ..TestContext::default()
+    };
+
+    for _ in 0..2 {
+        assert_eq!(
+            suite.eval_chunk(&engine, &input).unwrap(),
+            vec![Datum::Int(5), Datum::Int(9)]
+        );
+    }
+
+    assert_eq!(engine.rows.get(), 4);
+    assert_eq!(program.tikv_compilations(), 1);
+}

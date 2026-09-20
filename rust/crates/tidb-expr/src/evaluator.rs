@@ -300,6 +300,45 @@ impl From<EvalError> for EvaluatorError {
     }
 }
 
+/// Unpacks [`EvaluatorError`] into the `EvalError` a caller-facing signature
+/// wants, without an `impl From<EvaluatorError> for EvalError`.
+///
+/// That impl would look natural and is deliberately absent: it makes
+/// `EvaluatorError: Into<EvalError>`, and there are call sites whose error type
+/// is only pinned by `Into`-based inference. `builtin_ext/compare2.rs:500`
+/// stops compiling the moment a second `Into<EvalError>` candidate exists
+/// (E0282), so the conversion stays an explicit call.
+pub fn into_eval_error(error: EvaluatorError) -> EvalError {
+    match error {
+        EvaluatorError::Eval(error) => error,
+        EvaluatorError::Chunk(message) => EvalError::Unsupported(message),
+    }
+}
+
+/// Evaluates one expression for **every row** of `input`, through the suite.
+///
+/// This is the seam for the per-row call sites outside projections: a row loop
+/// that already holds its chunk should evaluate the expression once for the
+/// whole chunk and index the result, which is what a projection does and what
+/// the loop cannot do for itself. The suite chooses the engine when the adapter
+/// admits the expression and the native evaluator otherwise, so the
+/// coexistence fallback and the post-removal structured error both come from
+/// the same path; the returned vector has one datum per input row.
+///
+/// Unlike [`eval_constant_row`] and [`eval_row_values`], this reads a chunk the
+/// caller already built, so it costs no per-call chunk construction and works
+/// for an expression that references only some of the chunk's columns. The
+/// compiled program is still not cached: a loop that evaluates the same
+/// expression for many chunks should retain an [`EvaluatorSuite`] and call its
+/// [`EvaluatorSuite::eval_chunk`] method instead.
+pub fn eval_chunk<C: Columns>(
+    expression: &Expression,
+    ctx: &C,
+    input: &Chunk,
+) -> Result<Vec<Datum>, EvaluatorError> {
+    EvaluatorSuite::new(vec![expression.clone()], true).eval_chunk(ctx, input)
+}
+
 /// Immutable projection expressions and logical column mapping. Actual input
 /// column ownership is discovered separately by each execution's suite.
 /// Evaluates a **constant** expression through the suite, with no input
@@ -507,6 +546,81 @@ impl EvaluatorSuite {
         input: &mut Chunk,
         output: &mut Chunk,
     ) -> Result<(), EvaluatorError> {
+        self.evaluate_rows(ctx, input, output)?;
+        if let Some(helper) = &self.column_swap_helper {
+            helper
+                .swap_columns(input, output)
+                .map_err(EvaluatorError::Chunk)?;
+        }
+        Ok(())
+    }
+
+    /// [`run`](Self::run) for a caller that cannot hand over the input chunk.
+    ///
+    /// Only the direct-column *move* needs `&mut` input, and that move exists
+    /// only for a program built with `avoid_column_evaluator = false`. This
+    /// entry point is for the other kind -- one expression evaluated for its
+    /// values, which is what [`eval_chunk`] needs -- and it never takes
+    /// ownership of an input column, so the chunk is left exactly as it was.
+    pub fn run_with_shared_input<C: Columns>(
+        &self,
+        ctx: &C,
+        input: &Chunk,
+        output: &mut Chunk,
+    ) -> Result<(), EvaluatorError> {
+        if self.column_swap_helper.is_some() {
+            return Err(EvaluatorError::Chunk(
+                "a suite that moves direct columns needs a mutable input chunk",
+            ));
+        }
+        self.evaluate_rows(ctx, input, output)
+    }
+
+    /// Evaluates this suite's single calculated expression for every input row.
+    ///
+    /// Unlike [`run`](Self::run), this keeps `input` shared: it is for a caller
+    /// that needs values rather than a projection that may transfer a direct
+    /// column owner. Reusing the suite reuses its immutable
+    /// [`EvaluatorProgram`] and its compiled-engine cache across chunks.
+    /// Suites with a direct-column ownership transfer, or with any output shape
+    /// other than one calculated expression, are rejected rather than silently
+    /// omitting an output.
+    pub fn eval_chunk<C: Columns>(
+        &self,
+        ctx: &C,
+        input: &Chunk,
+    ) -> Result<Vec<Datum>, EvaluatorError> {
+        if self.program.calculated.len() != 1
+            || self.program.calculated_output_indexes.as_slice() != [0]
+        {
+            return Err(EvaluatorError::Eval(EvalError::Unsupported(
+                "eval_chunk needs exactly one calculated expression",
+            )));
+        }
+        let ty = self.program.calculated[0]
+            .static_type()
+            .cloned()
+            .ok_or_else(|| {
+                EvaluatorError::Eval(EvalError::Unsupported(
+                    "an expression without a static type cannot be evaluated",
+                ))
+            })?;
+        let rows = input.num_rows();
+        let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), rows);
+        self.run_with_shared_input(ctx, input, &mut output)?;
+        Ok((0..rows)
+            .map(|row| output.get_row(row).get_datum(0, &ty))
+            .collect())
+    }
+
+    /// The evaluation half of [`run`](Self::run): everything except the
+    /// direct-column ownership transfer.
+    fn evaluate_rows<C: Columns>(
+        &self,
+        ctx: &C,
+        input: &Chunk,
+        output: &mut Chunk,
+    ) -> Result<(), EvaluatorError> {
         let rows = input.num_rows();
         let program = &self.program;
         // A resolver with no engine context can only use the native evaluator.
@@ -619,12 +733,6 @@ impl EvaluatorSuite {
                     output.append_datum(*output_index, &value);
                 }
             }
-        }
-
-        if let Some(helper) = &self.column_swap_helper {
-            helper
-                .swap_columns(input, output)
-                .map_err(EvaluatorError::Chunk)?;
         }
         Ok(())
     }
@@ -837,6 +945,25 @@ mod tests {
             }
             assert_eq!(output.num_rows(), 0);
         }
+    }
+
+    #[test]
+    fn shared_input_rejects_a_suite_that_moves_direct_columns() {
+        let suite = EvaluatorSuite::new(vec![input_column(0)], false);
+        let mut input = Chunk::new_with_capacity(&[long()], 1);
+        input.append_int64(0, 7);
+        let input_owner = input.column_handle(0);
+        let mut output = Chunk::new_with_capacity(&[long()], 1);
+
+        assert_eq!(
+            suite.run_with_shared_input(&NoColumns, &input, &mut output),
+            Err(EvaluatorError::Chunk(
+                "a suite that moves direct columns needs a mutable input chunk"
+            ))
+        );
+        assert!(input_owner.same_identity(&input.column_handle(0)));
+        assert_eq!(input.num_rows(), 1);
+        assert_eq!(output.num_rows(), 0);
     }
 
     #[derive(Default)]

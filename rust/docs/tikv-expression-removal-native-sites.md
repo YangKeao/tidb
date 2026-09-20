@@ -10,65 +10,70 @@ kind needs. This is the measurement, and the method is repeatable:
 
 ## What the raw hits are
 
-The raw grep above returns 82 hits at the current branch state. They are
+The raw grep above returns 81 hits at the current branch state. They are
 classified mechanically by `rust/scripts/classify-native-eval-sites.py` (its rule is its
 docstring), which reads a hit plus the following eight lines so a call whose
 arguments span lines is still classified by its argument list:
 
-| Kind | Count |
-| --- | --- |
-| one row of a chunk (`get_row(0)`) | 20 |
-| a row-loop variable or comparator | 39 |
-| a constant with no input row (`Row::empty()`) | 8 |
-| not the evaluator: no-argument `constant.eval()`/`column.eval()`, the planner's `metadata.eval(k)`, the statement predicate's own four-argument `eval(row, catalog, db, ctx)` | 15 |
+| Kind | All sites | Production only |
+| --- | --- | --- |
+| one row of a chunk (`get_row(0)`) | 20 | 11 |
+| a row-loop variable or comparator | 38 | 27 |
+| a constant with no input row (`Row::empty()`) | 8 | 6 |
+| not the evaluator: no-argument `constant.eval()`/`column.eval()`, the planner's `metadata.eval(k)`, the statement predicate's own four-argument `eval(row, catalog, db, ctx)` | 15 | -- |
 
-So the native evaluator surface outside projections is **67 sites**, and every
+So the native evaluator surface outside projections is **66 sites**, and every
 one of them is row-at-a-time: `Expression::eval` against a single `Row`. Of
-those, **45 are production** and **22 only run under `cargo test`** (a file
+those, **44 are production** and **22 only run under `cargo test`** (a file
 under a `tests/` directory, a `src/*tests.rs` module, or any line below its
 file's first `#[cfg(test)]`); the classifier reports both because test-only
-calls are re-pointed with the corpora rather than converted, so 45 -- not 67 --
+calls are re-pointed with the corpora rather than converted, so 44 -- not 66 --
 is the pre-deletion routing work. The earlier hand count in this file said 90
-raw and 75 sites; the difference is the 8 raw hits the conversions removed (see
+raw and 75 sites; the difference is the 9 raw hits the conversions removed (see
 the conversion sections) and a classification that is now a script rather than
 a reading. The driver's six-argument `UpdateExpression::eval` is deliberately
 counted: it is a wrapper whose branches call `Expression::eval`
 (`driver/dml/correlated.rs:134,137`), so it is a real dispatch site even though
 the callee is the same evaluator.
 
-## By file
+## Production sites by file
+
+Generated from the classifier; the remaining 22 test-only sites are not listed
+because they are re-pointed with the corpora, not converted.
 
 | Sites | File |
 | --- | --- |
-| 10 | `tidb-executor/src/hash_agg.rs` |
 | 7 | `tidb-executor/src/window.rs` |
 | 6 | `tidb-executor/src/driver/dml.rs` |
-| 4 | `tidb-executor/src/join.rs` |
-| 4 | `tidb-executor/src/partition_pruning.rs` |
+| 4 | `tidb-executor/src/hash_agg.rs` |
 | 3 | `tidb-executor/src/driver/dml/correlated.rs` |
-| 3 | `tidb-executor/src/sort.rs` |
 | 3 | `tidb-planner/src/ranger/go_cases.rs` |
-| 3 | `tidb-planner/src/ranger/points.rs` |
-| 2 each | `access_cost.rs`, `ddl/table_partition_list.rs`, `driver/multi_dml.rs`, `stream_agg.rs`, `stmt_context.rs`, `logical/rule_predicate_simplification.rs`, `tidb-expr/tests/info_metadata_source.rs` |
-| 1 each | `access_path.rs`, `column_default.rs`, and the remaining files |
+| 2 | `driver/multi_dml.rs`, `stream_agg.rs` |
+| 1 each | `column_default.rs`, `driver/agg_build.rs`, `driver/physical_builder.rs`, `driver/subquery.rs`, `generated_column.rs`, `hash_agg/group_key.rs`, `hash_agg/input.rs`, `join.rs`, `joiner.rs`, `partition_pruning.rs` (the sparse fallback), `predicate_pushdown.rs`, `selection.rs`, `shuffle.rs`, `union_scan.rs`, `sort.rs`, `tidb-planner/src/physical/scan_ranges.rs`, `tidb-planner/src/ranger/points.rs` |
+
 
 ## What each kind needs for the removal
 
-* **A row loop or comparator (36).** The surrounding loop already holds a chunk,
-  so the engine's own strength applies: evaluate the expression for the whole
-  chunk *before* the loop and index the result vector. This is the same shape
-  `EvaluatorSuite` already implements for projections, so the work is moving the
-  call out of the loop, not new engine capability.
-* **One chunk row (31).** These are probes: partition pruning, access-cost
-  estimates, column defaults, generated columns, `dual`, correlated subquery
-  inputs. The input is a one-row chunk already, so a one-row engine call is
-  sufficient; the corpus harness (`tests/mod.rs::engine_case`) is a working
-  example of exactly that shape, including the empty-input case.
-* **A constant with no row (8).** `physical_builder` and `agg_build` evaluate a
-  constant expression with `Row::empty()`. The engine handles this with a
-  virtual one-row chunk (the corpus does it with `set_num_virtual_rows(1)`).
+* **A row loop or comparator (27 production).** The surrounding loop already
+  holds a chunk, so the engine's own strength applies: evaluate the expression
+  for the whole chunk *before* the loop and index the result vector. That is now
+  one call -- `tidb_expr::evaluator::eval_chunk(expression, ctx, chunk)` -- which
+  runs the suite over the caller's chunk and returns one datum per row, so the
+  loop does not pick an implementation cell by cell. See the
+  `VecGroupChecker` conversion below.
+* **One chunk row (11 production).** These are probes: partition pruning,
+  access-cost estimates, column defaults, generated columns, `dual`, correlated
+  subquery inputs. The input is a one-row chunk already, so a one-row engine call
+  is sufficient; `eval_chunk` covers it (a chunk with one row), and
+  `eval_row_values` covers the variant whose row is a `&[Datum]` instead.
+* **A constant with no row (6 production).** `physical_builder` and `agg_build`
+  evaluate a constant expression with `Row::empty()`. The engine handles this
+  with a virtual one-row chunk (the corpus does it with
+  `set_num_virtual_rows(1)`), which is `eval_constant_row`.
 
-None of the 75 needs a new kernel; they need the call to move.
+None of the 44 needs a new kernel; they need the call to move. What still needs
+a *new* engine capability is a different list: the clock family's host clock
+(checklist section 6), and the two wire-permanent names.
 
 ## The first conversion, with evidence
 
@@ -131,15 +136,63 @@ conversions now carry the same strength of evidence: a green suite is not
 enough, because the DDL tests run without an engine context and would pass
 through the fallback.
 
-So **9 of the 75** documented sites no longer call the native evaluator -- three
+So **10 of the 75** documented sites no longer call the native evaluator -- three
 constant-row sites in `ddl/` and four pruning sites in `partition_pruning.rs`
-through the engine helpers, plus the two error-only sites in `sort.rs` (see the
-last section) -- which is what takes the raw grep from 90 hits to 82 and the
-site count to 67. One converted pruning site still contains a native call by
-design: the helper's `Ok(None)` arm keeps its row evaluation for a sparse column
-set, which is why the pruning file went from four hits to one rather than to
-zero. The remaining 67 are still textually unconverted, and the per-row kinds
-still need the evaluation moved out of their loop rather than wrapped.
+through the engine helpers, the two error-only sites in `sort.rs`, and one
+grouping-key site in `vec_group_checker.rs` -- which is what takes the raw grep
+from 90 hits to 81, the site count to 66 and the production count to 44. One
+converted pruning site still contains a native call by design: the helper's
+`Ok(None)` arm keeps its row evaluation for a sparse column set, which is why
+the pruning file went from four hits to one rather than to zero. The remaining
+44 production sites still need the evaluation moved out of their loop rather
+than wrapped.
+
+## The first row-loop conversion: `VecGroupChecker`
+
+`tidb-executor/src/vec_group_checker.rs` evaluated its grouping items cell by
+cell (`for row { for item { item.eval(ctx, row) } }`). Go does not:
+`VecGroupChecker.SplitIntoGroups` calls `VecEval` once per item and indexes the
+resulting temporary column per row, which is exactly the shape a projection has
+and exactly what the engine is for. `new` retains one single-expression suite
+per grouping item, so the loop is now
+
+    let mut columns = Vec::with_capacity(self.group_by_suites.len());
+    for suite in &self.group_by_suites {
+        columns.push(suite.eval_chunk(ctx, chunk)?);
+    }
+
+and the keys are assembled from the columns.
+
+`EvaluatorSuite::eval_chunk` is the seam this needed and the one the other 26
+row-loop sites need: it runs one retained suite over the caller's own chunk,
+using `run_with_shared_input` (the evaluation half of `run`, without the
+direct-column ownership transfer, which is why the input can stay behind `&`),
+then returns one datum per row. It reads a chunk the caller already built, so it
+costs no per-call chunk construction and works for an expression that references
+only some of the chunk's columns -- unlike `eval_row_values`, whose dense-layout
+rule refuses that case. Retaining the suite also retains its immutable
+`EvaluatorProgram` and its compiled engine cache across chunks. The free
+`evaluator::eval_chunk(expression, ctx, chunk)` is the one-off variant; it
+constructs a fresh suite and is only for call sites that do not retain state.
+
+One thing that helper is not allowed to be: an `impl From<EvaluatorError> for
+EvalError`. That impl makes `EvaluatorError: Into<EvalError>`, and
+`builtin_ext/compare2.rs:500` pins its closure's error type by exactly that
+inference, so adding the impl breaks the crate with E0282 (the conversion is
+`evaluator::into_eval_error` instead, with the reason in its doc comment).
+
+Evidence that the engine -- not the fallback -- did the work:
+`tidb-executor/src/tests_executor_internal_source.rs::vec_group_checker_evaluates_the_grouping_key_in_the_engine`
+splits the same four-row chunk (keys `plus(col, 1)`) with a native context and
+with `with_tikv_expression(true)`, asserts the same groups and ranges, asserts
+the native context recorded zero engine rows, and asserts the engine context
+recorded more than zero. `tikv_coverage.rs::eval_chunk_matches_native_row_by_row_and_leaves_the_input_alone`
+covers the helper itself: three rows agree with the native answer, the engine
+counts three rows, the input chunk is untouched, and a required-engine resolver
+gets the structured `ExternalEngine` error for a declined expression.
+`retained_chunk_suite_reuses_its_engine_program` runs the same retained suite on
+two chunks and asserts four engine rows but exactly one engine compilation.
+
 
 ## What this does not establish
 

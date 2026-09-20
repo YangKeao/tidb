@@ -23,13 +23,17 @@
 
 use tidb_chunk::chunk::Chunk;
 use tidb_datatype::{Collation, Datum, StringDatum};
-use tidb_expr::{collation_derive::collation_of_node, expression::Expression};
+use tidb_expr::{
+    collation_derive::collation_of_node, evaluator::EvaluatorSuite, expression::Expression,
+};
 use tidb_expr::{Columns, EvalError};
 
 /// Splits sorted chunks into adjacent equal-key groups.
-#[derive(Clone, Debug)]
 pub(crate) struct VecGroupChecker {
-    group_by_items: Vec<Expression>,
+    /// One single-expression suite per grouping item. The suite owns an
+    /// immutable program and its compiled-engine cache, while the checker owns
+    /// only grouping state; reusing it across chunks avoids recompilation.
+    group_by_suites: Vec<EvaluatorSuite>,
     collations: Vec<Collation>,
     previous_last_key: Option<Vec<u8>>,
     group_offsets: Vec<usize>,
@@ -41,8 +45,12 @@ impl VecGroupChecker {
     #[must_use]
     pub(crate) fn new(group_by_items: Vec<Expression>) -> Self {
         let collations = group_by_items.iter().map(collation_of_node).collect();
+        let group_by_suites = group_by_items
+            .into_iter()
+            .map(|item| EvaluatorSuite::new(vec![item], true))
+            .collect();
         Self {
-            group_by_items,
+            group_by_suites,
             collations,
             previous_last_key: None,
             group_offsets: Vec::new(),
@@ -65,19 +73,34 @@ impl VecGroupChecker {
 
         // No grouping expressions means the entire input is the single global
         // group, continuing every preceding chunk including the first one.
-        if self.group_by_items.is_empty() {
+        if self.group_by_suites.is_empty() {
             self.group_offsets.push(rows);
             return Ok(true);
         }
 
         let mut keys = Vec::with_capacity(rows);
+        // Go evaluates each grouping expression once for the whole chunk
+        // (`VecGroupChecker.SplitIntoGroups` calls `VecEval` per item and
+        // indexes the temporary column per row). The row loop is what the
+        // engine exists to replace: `eval_chunk` runs the item through the
+        // suite, so an admitted item is evaluated by the engine and a declined
+        // one by the native evaluator, instead of this loop choosing an
+        // implementation cell by cell.
+        let mut columns = Vec::with_capacity(self.group_by_suites.len());
+        for suite in &self.group_by_suites {
+            columns.push(
+                suite
+                    .eval_chunk(ctx, chunk)
+                    .map_err(tidb_expr::evaluator::into_eval_error)?,
+            );
+        }
         for row_index in 0..rows {
-            let row = chunk.get_row(row_index);
-            let mut key = Vec::with_capacity(self.group_by_items.len());
-            for item in &self.group_by_items {
-                key.push(item.eval(ctx, row)?);
-            }
-            keys.push(key);
+            keys.push(
+                columns
+                    .iter()
+                    .map(|column| column[row_index].clone())
+                    .collect(),
+            );
         }
         self.split_evaluated(&keys, &self.collations.clone())
     }
