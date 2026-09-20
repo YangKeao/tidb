@@ -3980,9 +3980,12 @@ pub(crate) fn row_is_selected(
         return Ok(true);
     };
     let chunk = row_chunk(row, field_types)?;
-    let selected = predicate
-        .eval(ctx, chunk.get_row(0))
-        .map_err(|e| DriverError::Exec(ExecError::Eval(e)))?;
+    let selected = tidb_expr::evaluator::eval_chunk(predicate, ctx, &chunk)
+        .map_err(tidb_expr::evaluator::into_eval_error)
+        .map_err(|e| DriverError::Exec(ExecError::Eval(e)))?
+        .into_iter()
+        .next()
+        .ok_or_else(|| DriverError::Exec(ExecError::internal("predicate row chunk is empty")))?;
     Ok(datum_is_true(&selected))
 }
 
