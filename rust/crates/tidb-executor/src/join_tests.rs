@@ -540,6 +540,95 @@ fn index_lookup_probe_collection_batches_sort_and_dedup() {
     );
 }
 
+#[cfg(feature = "tikv-expr")]
+#[test]
+fn index_probe_bounds_preserve_demand_and_reuse_compilation() {
+    use crate::access_path::LookupProbeBound;
+    for engine in [false, true] {
+        let types = [long(), long(), long()];
+        let mut source = Chunk::new_with_capacity(&types, 6);
+        for row in [
+            [Datum::Null, Datum::Int(5), Datum::Int(i64::MAX)],
+            [Datum::Int(2), Datum::Null, Datum::Int(i64::MAX)],
+            [Datum::Int(999), Datum::Int(5), Datum::Int(i64::MAX)],
+            [Datum::Int(2), Datum::Int(5), Datum::Int(9)],
+            [Datum::Int(2), Datum::Int(5), Datum::Int(9)],
+            [Datum::Int(2), Datum::Int(5), Datum::Int(i64::MAX)],
+        ] {
+            for (column, datum) in row.iter().enumerate() {
+                source.append_datum(column, datum);
+            }
+        }
+        let mut outer = OuterBatch::new(&types, 2, 2);
+        for index in 0..source.num_rows() {
+            outer.push(source.get_row(index));
+        }
+        let ptrs = outer.ptrs.clone();
+        // Reorder the demand cursor, retaining the unselected overflowing row
+        // in the same backing chunk as a selected successful row.
+        outer.ptrs = [3, 1, 4, 0, 2].map(|index| ptrs[index]).to_vec();
+        let keys = [EquiKey {
+            left: 0,
+            right: 0,
+            class: KeyClass::Int,
+            null_safe: false,
+        }];
+        let column = |index| {
+            let mut column = Column::new(index + 1, long());
+            column.index = index;
+            Expression::Column(column)
+        };
+        let plus = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("plus"),
+            long(),
+            vec![
+                column(2),
+                Expression::Constant(Constant::new(Datum::Int(1), long())),
+            ],
+        ));
+        let plan = IndexProbePlan::new(
+            &keys,
+            vec![0],
+            vec![IndexProbeKeyDomain {
+                field_type: FieldType::new(FieldTypeCode::Tiny),
+                prefix_length: -1,
+            }],
+            vec![
+                LookupProbeBound { arg: column(1) },
+                LookupProbeBound { arg: plus },
+            ],
+        )
+        .unwrap();
+        let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+        for batch in 1..=2 {
+            let probes = index_task_probes(&ctx, &keys, &plan, &outer, &types, true).unwrap();
+            assert_eq!(probes.len(), 1);
+            assert_eq!(probes[0].key, vec![Datum::Int(2)]);
+            assert_eq!(probes[0].bounds, vec![Datum::Int(5), Datum::Int(10)]);
+            // NULL/domain-invalid keys skip both bounds. NULL bound skips the
+            // later overflow. Duplicates are evaluated before deduplication.
+            assert_eq!(
+                ctx.tikv_expression_rows(),
+                if engine { batch * 5 } else { 0 }
+            );
+            for program in &plan.bound_programs {
+                assert_eq!(program.tikv_compilations(), if engine { 1 } else { 0 });
+            }
+        }
+        outer.ptrs = vec![ptrs[5]];
+        assert!(index_task_probes(&ctx, &keys, &plan, &outer, &types, true).is_err());
+        assert_eq!(ctx.tikv_expression_rows(), if engine { 11 } else { 0 });
+        // A failed execution must not poison the shared compiled metadata.
+        outer.ptrs = vec![ptrs[4]];
+        let probes = index_task_probes(&ctx, &keys, &plan, &outer, &types, true).unwrap();
+        assert_eq!(probes[0].bounds, vec![Datum::Int(5), Datum::Int(10)]);
+        assert_eq!(ctx.tikv_expression_rows(), if engine { 13 } else { 0 });
+        for program in &plan.bound_programs {
+            assert_eq!(program.tikv_compilations(), if engine { 1 } else { 0 });
+        }
+    }
+}
+
 /// Go fetchInnerResults retains the reader and outer match status across windows.
 #[test]
 fn index_hash_fetches_inner_windows_before_final_unmatched_rows() {

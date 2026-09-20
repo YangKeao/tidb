@@ -114,11 +114,18 @@ remain in the workspace.
       refreshes the source program set without mutating old templates. Three
       tests verify local Next/engine rows/cache reuse and NULL/FALSE/error
       ordering. Template construction, not remote cursor opening, is tested.
-      Current inventory: 37 sites, 24 production-scope / 13 test-only, or 22
+      That step's inventory: 37 sites, 24 production-scope / 13 test-only, or 22
       production-scope after excluding the known unlinked duplicate.
+- [x] Route index-probe bounds through shared per-bound programs and selected
+      physical rows, without a new scratch copy. Regression coverage pins key
+      rejection, NULL short-circuit, pre-dedup demand, unselected overflowing
+      rows, cross-batch compilation reuse and recovery after a demanded error.
+      The first run caught an incorrect column-swap setting for direct bounds;
+      calculated-value mode fixed it. No direct native call remains in `join.rs`.
+      Current inventory: 36 sites, 23 production-scope / 13 test-only, or 21
+      production-scope excluding the unlinked duplicate. Fallback still exists.
 - [ ] Retain condition programs in remaining `eval_bool` hot callers (the public
-      convenience wrapper currently builds temporary programs) and migrate
-      other Join expression sites. Existing joined scratch-row copies remain;
+      convenience wrapper currently builds temporary programs). Existing joined scratch-row copies remain;
       eliminating them requires the independent-column facade, not more row
       copies. TiDB is pinned to engine `5c1fb99`; borrowed lazy remains unsupported.
 
@@ -703,6 +710,27 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+Index-probe bound validation (TiDB `rust/`, same serial guarded environment,
+no local Cargo patch):
+
+    cargo test -q -p tidb-executor --features tikv-expr --lib join::tests:: --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --locked --offline -j1 -- --test-threads=1
+
+The first targeted run passed 42 and failed the new bound regression with
+`eval_chunk needs exactly one calculated expression`: column-swap mode had
+removed a direct-column bound from the calculation list. Setting
+`avoid_column_evaluator=true` fixed the integration mistake. The corrected run
+passed all 43. Full feature-on groups passed 1360 / 355 / 6 / 2, feature-off
+passed 1335 / 329 / 6 / 0 (both with 184 ignored integration tests). Sampled RSS
+peaks: 2824.4 MiB for the initial failure, then 2503.4 / 1874.3 / 2195.8 MiB;
+all ran under the 8192-MiB RSS / 16384-MiB AS guard with one Cargo/test worker.
+The classifier reports 51 raw / 36 evaluator sites (23 production / 13 test).
+The now-unused local `truthy` wrapper was removed. Tests exercise the real
+probe-construction function across batches, not a remote database. Full mysql
+replay, performance, repository-wide lint and engine-only execution remain
+unverified.
 
 Local lookup-filter validation (TiDB `rust/`, same serial guarded environment,
 no local Cargo patch):

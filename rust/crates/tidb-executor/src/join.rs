@@ -177,6 +177,7 @@ use tidb_chunk::list::RowPtr;
 use tidb_chunk::row::Row;
 use tidb_chunk::row_container::RowContainer;
 use tidb_datatype::{Datum, FieldType};
+use tidb_expr::evaluator::{into_eval_error, EvaluatorProgram, EvaluatorSuite};
 use tidb_expr::expression::Expression;
 use tidb_expr::schema::Schema;
 use tidb_expr::Columns;
@@ -827,7 +828,7 @@ enum PendingIndexLookupSource {
 struct IndexProbePlan {
     probe_keys: Vec<usize>,
     probe_key_domains: Vec<IndexProbeKeyDomain>,
-    probe_bounds: Vec<crate::access_path::LookupProbeBound>,
+    bound_programs: Vec<Arc<EvaluatorProgram>>,
     /// Immutable encodings used to sort and deduplicate every outer batch.
     /// Go constructs these from the worker's lookup shape once and reuses the
     /// shape for each task; keeping them in the shared plan avoids rebuilding
@@ -877,7 +878,11 @@ impl IndexProbePlan {
         Ok(Self {
             probe_keys,
             probe_key_domains,
-            probe_bounds,
+            bound_programs: probe_bounds
+                .into_iter()
+                // eval_selected returns calculated values, not column-swap outputs.
+                .map(|bound| Arc::new(EvaluatorProgram::new(vec![bound.arg], true)))
+                .collect(),
             probe_encoding,
             bound_encoding,
         })
@@ -1027,6 +1032,13 @@ fn index_task_probes<C: Columns>(
     // walk; keeping the encoded key beside its probe lets the native slice
     // sort do the same work with contiguous storage and no per-row tree node.
     let mut probes_by_key = Vec::with_capacity(outer.len());
+    // Execution wrappers belong to this task; compiled metadata belongs to the
+    // shared plan. Do not evaluate a whole chunk before key/NULL rejection.
+    let bounds_suites: Vec<_> = plan
+        .bound_programs
+        .iter()
+        .map(|program| EvaluatorSuite::from_program(Arc::clone(program)))
+        .collect();
     for index in 0..outer.len() {
         let row = outer.row(index);
         let probe: Option<Vec<Datum>> = plan
@@ -1080,12 +1092,20 @@ fn index_task_probes<C: Columns>(
         }
         // Evaluate this row's bounds. A NULL result is Go's empty range:
         // the content reads nothing and contributes no probe.
-        let bounds = if plan.probe_bounds.is_empty() {
+        let bounds = if bounds_suites.is_empty() {
             Vec::new()
         } else {
-            let mut evaluated = Vec::with_capacity(plan.probe_bounds.len());
-            for bound in &plan.probe_bounds {
-                match bound.arg.eval(ctx, row).map_err(ExecError::Eval)? {
+            let mut evaluated = Vec::with_capacity(bounds_suites.len());
+            let input = row
+                .chunk()
+                .ok_or_else(|| ExecError::internal("index probe row has no input chunk"))?;
+            for suite in &bounds_suites {
+                let value = suite
+                    .eval_selected(ctx, input, &[row.idx()])
+                    .map_err(into_eval_error)?
+                    .pop()
+                    .ok_or_else(|| ExecError::internal("index probe bound returned no value"))?;
+                match value {
                     Datum::Null => {
                         evaluated.clear();
                         break;
@@ -1093,7 +1113,7 @@ fn index_task_probes<C: Columns>(
                     value => evaluated.push(value),
                 }
             }
-            if evaluated.is_empty() && !plan.probe_bounds.is_empty() {
+            if evaluated.is_empty() {
                 continue;
             }
             evaluated
@@ -5457,11 +5477,6 @@ fn merge_row_key_cmp(
         }
     }
     Ok(Ordering::Equal)
-}
-
-/// NULL and zero are false, and a string takes its numeric prefix.
-fn truthy(value: &Datum) -> Result<bool, ExecError> {
-    Ok(tidb_expr::truthy_of(value)? == Some(true))
 }
 
 impl<C: Columns + Clone + Send + Sync + 'static> Executor for JoinExec<C> {
