@@ -59,9 +59,9 @@ use tidb_chunk::chunk::Chunk;
 use tidb_datatype::{Datum, Decimal, FieldType, SessionTimeZone};
 use tidb_expr::expression::Expression;
 use tidb_expr::schema::Schema;
-use tidb_expr::truthy_of;
 
 use crate::executor::{ExecError, Executor, ExecutorMeta};
+use crate::joiner::ConditionEvaluator;
 
 /// Lookups over at most this many handles are fetched inline by the calling
 /// worker instead of crossing the persistent `idx-lookup` pool channel. Go's
@@ -4354,6 +4354,7 @@ pub(crate) struct LookupForkTemplate {
     decode_context: crate::kv_table::RowDecodeContext,
     statement: PushdownStatementContext,
     filters: Vec<Expression>,
+    filter_evaluator: ConditionEvaluator,
     filter_context: Option<crate::StmtContext>,
     filter_types: Vec<FieldType>,
     decode_offsets: Option<Vec<usize>>,
@@ -4369,6 +4370,20 @@ impl LookupForkTemplate {
         &self,
         probes: IndexJoinProbes,
     ) -> Result<Result<IndexJoinLookupExec, IndexJoinProbes>, ExecError> {
+        let mut task = self.rebuild(probes);
+        if task.open_prefetched_common_handle_cursor()? {
+            Ok(Ok(task))
+        } else {
+            Ok(Err(IndexJoinProbes {
+                keys: std::mem::take(&mut task.probes),
+                bound_values: std::mem::take(&mut task.probe_bound_values),
+            }))
+        }
+    }
+
+    /// Fresh cursor/scratch state, but the same immutable filter programs as
+    /// the source and other tasks. Opening storage is a separate step.
+    fn rebuild(&self, probes: IndexJoinProbes) -> IndexJoinLookupExec {
         let mut task = IndexJoinLookupExec {
             meta: self.meta.clone(),
             table: self.table.clone(),
@@ -4392,6 +4407,7 @@ impl LookupForkTemplate {
             decode_context: self.decode_context.clone(),
             statement: self.statement.clone(),
             filters: self.filters.clone(),
+            filter_evaluator: self.filter_evaluator.clone(),
             filter_context: self.filter_context.clone(),
             filter_chunk: Chunk::new(
                 &self.filter_types,
@@ -4406,14 +4422,7 @@ impl LookupForkTemplate {
             probe_bound_values: Vec::new(),
         };
         task.set_probes(probes);
-        if task.open_prefetched_common_handle_cursor()? {
-            Ok(Ok(task))
-        } else {
-            Ok(Err(IndexJoinProbes {
-                keys: std::mem::take(&mut task.probes),
-                bound_values: std::mem::take(&mut task.probe_bound_values),
-            }))
-        }
+        task
     }
 }
 
@@ -4483,6 +4492,7 @@ pub struct IndexJoinLookupExec {
     /// reader. They are evaluated over the same full table row this source
     /// returns, so replacing the originally-built leaf cannot drop them.
     filters: Vec<Expression>,
+    filter_evaluator: ConditionEvaluator,
     filter_context: Option<crate::StmtContext>,
     filter_chunk: Chunk,
     /// Physical table offsets decoded from storage, sorted and unique.
@@ -4554,6 +4564,7 @@ impl IndexJoinLookupExec {
             decode_context,
             statement,
             filters: Vec::new(),
+            filter_evaluator: ConditionEvaluator::new(&[]),
             filter_context: None,
             filter_chunk,
             decode_offsets: None,
@@ -4696,6 +4707,7 @@ impl IndexJoinLookupExec {
             decode_context: self.decode_context.clone(),
             statement: self.statement.clone(),
             filters: self.filters.clone(),
+            filter_evaluator: self.filter_evaluator.clone(),
             filter_context: self.filter_context.clone(),
             filter_types: self
                 .table
@@ -4761,6 +4773,7 @@ impl IndexJoinLookupExec {
 
     /// Installs every predicate local to the looked-up leaf.
     pub(crate) fn set_filters(&mut self, filters: Vec<Expression>, context: crate::StmtContext) {
+        self.filter_evaluator = ConditionEvaluator::new(&filters);
         self.filters = filters;
         self.filter_context = Some(context);
     }
@@ -5527,13 +5540,8 @@ impl IndexJoinLookupExec {
         for (offset, value) in row.iter().enumerate() {
             self.filter_chunk.append_datum(offset, value);
         }
-        let chunk_row = self.filter_chunk.get_row(0);
-        for filter in &self.filters {
-            if truthy_of(&filter.eval(context, chunk_row)?)? != Some(true) {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        self.filter_evaluator
+            .matches(context, self.filter_chunk.get_row(0))
     }
 
     fn physical_row(&self, decoded: &[Datum]) -> Result<Vec<Datum>, ExecError> {
@@ -5708,6 +5716,161 @@ mod tests {
     use crate::explain::ExplainFormat;
     use crate::kv_table::{KvColumn, KvTable};
     use crate::storage::{MemTableStorage, StorageError, StorageIterator, TableStorage};
+
+    #[cfg(feature = "tikv-expr")]
+    mod lookup_filter_engine {
+        use super::*;
+        use tidb_ast::CiString;
+        use tidb_expr::{column::Column, constant::Constant, scalar_function::ScalarFunction};
+
+        fn value(index: i64) -> Expression {
+            let mut column = Column::new(index + 1, long());
+            column.index = index;
+            Expression::Column(column)
+        }
+
+        fn integer(value: i64) -> Expression {
+            Expression::Constant(Constant::new(Datum::Int(value), long()))
+        }
+
+        fn source(common_handle: bool) -> IndexJoinLookupExec {
+            let mut table = KvTable::new(91, vec![column("a", 1), column("b", 2)]);
+            if common_handle {
+                table.set_common_handle_offsets(vec![0, 1]);
+            }
+            let columns = (0..2)
+                .map(|index| {
+                    let mut column = Column::new(index + 1, long());
+                    column.index = index;
+                    column
+                })
+                .collect();
+            let mut source = IndexJoinLookupExec::new_with_context(
+                ExecutorMeta::new(Schema::new(columns), 0, 1, 4),
+                table,
+                if common_handle {
+                    LookupObject::CommonHandle
+                } else {
+                    LookupObject::Handle
+                },
+                crate::RowDecodeContext::for_test_query_utc(),
+            );
+            if common_handle {
+                source.set_probe_parts(vec![LookupProbePart::Dynamic(0)]);
+            }
+            source
+        }
+
+        #[test]
+        fn local_lookup_next_filters_use_one_compilation() {
+            for engine in [false, true] {
+                let mut source = source(false);
+                for index in 0..3 {
+                    source
+                        .table
+                        .insert_row_with_row_id(
+                            &[Datum::Int(1), Datum::Int(index)],
+                            Some(index + 7),
+                            0,
+                            &crate::StmtContext::for_query(),
+                        )
+                        .unwrap();
+                }
+                let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+                source.set_filters(vec![value(1)], ctx.clone());
+                source.set_probes(IndexJoinProbes {
+                    keys: (7..10).map(|key| vec![Datum::Int(key)]).collect(),
+                    bound_values: Vec::new(),
+                });
+                source.open().unwrap();
+                let mut output = source.new_chunk();
+                let mut values = Vec::new();
+                loop {
+                    source.next(&mut output).unwrap();
+                    if output.num_rows() == 0 {
+                        break;
+                    }
+                    values
+                        .extend((0..output.num_rows()).map(|row| output.get_row(row).get_int64(1)));
+                }
+                assert_eq!(values, vec![1, 2]);
+                assert_eq!(ctx.tikv_expression_rows(), if engine { 3 } else { 0 });
+                assert_eq!(
+                    source.filter_evaluator.compilations(),
+                    if engine { 1 } else { 0 }
+                );
+                source.close().unwrap();
+            }
+        }
+
+        #[test]
+        fn lookup_template_rebuild_shares_cache_and_filter_updates_are_isolated() {
+            let ctx = crate::StmtContext::for_query().with_tikv_expression(true);
+            let mut source = source(true);
+            source.set_filters(vec![value(1)], ctx.clone());
+            let template = source.fork_template().unwrap();
+            assert!(source
+                .row_passes_filters(&[Datum::Int(1), Datum::Int(1)])
+                .unwrap());
+            let mut rebuilt = template.rebuild(IndexJoinProbes::default());
+            assert_eq!(
+                rebuilt.filter_evaluator.compilations(),
+                1,
+                "rebuild must see the source compilation before evaluating"
+            );
+            assert!(!rebuilt
+                .row_passes_filters(&[Datum::Int(1), Datum::Int(0)])
+                .unwrap());
+            source.set_filters(vec![integer(0)], ctx.clone());
+            assert_eq!(source.filter_evaluator.compilations(), 0);
+            assert!(!source
+                .row_passes_filters(&[Datum::Int(1), Datum::Int(1)])
+                .unwrap());
+            let mut old_task = template.rebuild(IndexJoinProbes::default());
+            assert!(old_task
+                .row_passes_filters(&[Datum::Int(1), Datum::Int(1)])
+                .unwrap());
+            assert_eq!(old_task.filter_evaluator.compilations(), 1);
+            assert_eq!(source.filter_evaluator.compilations(), 1);
+            assert_eq!(ctx.tikv_expression_rows(), 4);
+        }
+
+        #[test]
+        fn local_lookup_null_and_false_skip_later_errors() {
+            for engine in [false, true] {
+                let mut source = source(false);
+                let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+                let mut column = Column::new(2, long());
+                column.index = 1;
+                column.in_operand = true;
+                let eq = Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new("eq"),
+                    long(),
+                    vec![Expression::Column(column), integer(1)],
+                ));
+                let fail = Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new("plus"),
+                    long(),
+                    vec![integer(i64::MAX), integer(1)],
+                ));
+                source.set_filters(vec![eq, fail], ctx.clone());
+                assert!(!source
+                    .row_passes_filters(&[Datum::Int(1), Datum::Null])
+                    .unwrap());
+                assert!(!source
+                    .row_passes_filters(&[Datum::Int(1), Datum::Int(0)])
+                    .unwrap());
+                assert_eq!(
+                    source.filter_evaluator.compilations(),
+                    if engine { 1 } else { 0 }
+                );
+                assert!(source
+                    .row_passes_filters(&[Datum::Int(1), Datum::Int(1)])
+                    .is_err());
+                assert_eq!(ctx.tikv_expression_rows(), if engine { 3 } else { 0 });
+            }
+        }
+    }
 
     /// A backend that counts the work a scan actually does: every entry an
     /// iterator advances past, and every point read.

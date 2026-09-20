@@ -99,7 +99,7 @@ remain in the workspace.
       not an accurate deletion-work count; source evidence is in the inventory.
 - [x] Repair the classifier with bounded attribute/item scopes and conservative
       cfg evaluation. The initial 16-test suite failed before the fix; all 18
-      final tests pass. The script now reproduces the manual 26 production /
+      final tests pass. The script reproduced that manual 26 production /
       13 test-only split. Unknown scopes remain production-labelled; this
       textual inventory still is not a reachability or deletion-readiness proof.
 - [x] Route `matches_chunk_rows` through retained ordinary-match programs.
@@ -107,8 +107,15 @@ remain in the workspace.
       the same residual compilation cache rather than owning another expression
       vector. Next-loop tests assert results, exact engine rows, multiple task
       windows and one compilation; NULL still skips an overflowing later term.
-      Current inventory: 38 evaluator sites, 25 production-scope / 13 test-only,
+      That step's inventory: 38 sites, 25 production-scope / 13 test-only,
       or 23 production-scope after excluding the known unlinked duplicate.
+- [x] Route local `IndexJoinLookupExec` filters through ordinary-match programs,
+      shared by the source, fork template and rebuilt tasks. `set_filters`
+      refreshes the source program set without mutating old templates. Three
+      tests verify local Next/engine rows/cache reuse and NULL/FALSE/error
+      ordering. Template construction, not remote cursor opening, is tested.
+      Current inventory: 37 sites, 24 production-scope / 13 test-only, or 22
+      production-scope after excluding the known unlinked duplicate.
 - [ ] Retain condition programs in remaining `eval_bool` hot callers (the public
       convenience wrapper currently builds temporary programs) and migrate
       other Join expression sites. Existing joined scratch-row copies remain;
@@ -696,6 +703,25 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+Local lookup-filter validation (TiDB `rust/`, same serial guarded environment,
+no local Cargo patch):
+
+    cargo test -q -p tidb-executor --features tikv-expr --lib lookup_filter_engine --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --locked --offline -j1 -- --test-threads=1
+
+All three targeted tests passed. Full feature-on groups passed 1359 / 355 / 6 /
+2, feature-off passed 1335 / 329 / 6 / 0 (both with 184 ignored integration
+tests). Sampled peak group RSS: 2673.2 / 2670.6 / 2088.3 MiB respectively under
+the 8192-MiB RSS / 16384-MiB AS guard. Cargo and test-harness workers stayed at
+one. The interrupted prior round had saved implementation edits but not its
+tests; source inspection confirmed this before adding/running the tests.
+The classifier reports 52 raw / 37 evaluator sites (24 production / 13 test).
+New tests exercise local storage Next and the production template constructor;
+they do not open a remote cursor. Existing scratch copies and remote-predicate
+handling are unchanged. Full mysql replay, performance, repository-wide lint
+and engine-only behavior remain unverified for this change.
 
 Chunk-backed/parallel residual validation (TiDB `rust/`, same serial guarded
 environment, no local Cargo patch):
