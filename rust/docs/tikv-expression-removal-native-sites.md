@@ -13,11 +13,24 @@ kind needs. This is the measurement, and the method is repeatable:
 
 After JoinExec/index-hash caching, the raw grep above returns 54 hits.
 `rust/scripts/classify-native-eval-sites.py` classifies call arguments from an
-eight-line window, but its **test-scope heuristic is currently wrong**: a
-method-local `#[cfg(test)]` marks all later production items test-only, while a
-file-wide `#![cfg(test)]` is missed. The production column below is manually
-scope-corrected; the script still prints 19 production / 20 test-only and must
-not be used as a deletion gate until repaired with regression tests.
+eight-line window. Its bounded test-scope scanner now reproduces the manual
+scope audit below: **26 production / 13 test-only**, not the old 19 / 20 split.
+Helper/field attributes no longer taint siblings, and inner attributes apply
+only to their enclosing file/module. Delimiters inside comments and literals
+are masked; uncertain cfg/item syntax stays production-labelled. This is still
+a textual, per-line inventory using test-file naming conventions, not macro
+expansion or a proof of reachability/deletion readiness.
+
+From the repository root:
+
+    PYTHONDONTWRITEBYTECODE=1 python3 rust/scripts/test_classify_native_eval_sites.py
+    PYTHONDONTWRITEBYTECODE=1 python3 rust/scripts/classify-native-eval-sites.py --list
+
+The initial 16-test regression suite failed with 16 subtest failures before
+the fix; the final suite passes 18 tests, including additional test-attribute
+and conservative unsupported-generic controls. The source inventory remains
+54 raw hits / 39 evaluator sites. This tooling-only validation did not rerun
+Rust, SQL, performance or repository-wide lint checks.
 
 | Kind | All sites | Production only |
 | --- | --- | --- |
@@ -32,7 +45,7 @@ calls are re-pointed with the corpora rather than converted. This is a textual
 inventory, not a proof of reachability. The driver's six-argument
 `UpdateExpression::eval` is deliberately
 counted: it is a wrapper whose branches call `Expression::eval`
-(`driver/dml/correlated.rs:134,137`), so it is a real dispatch site even though
+(`driver/dml/correlated.rs:137,140`), so it is a real dispatch site even though
 the callee is the same evaluator.
 
 One classifier caveat is now confirmed rather than hypothetical:
@@ -91,8 +104,8 @@ invariants and remaining input-copy limitations are also recorded in TiKV's
 
 ## Production sites by file
 
-Manually scope-corrected after running the classifier with `--list`. Its ten
-false test labels were: `access_cost.rs:1928,2209` (`condition_kind`,
+Manually audited and now reproduced by the classifier with `--list`. The old
+heuristic's ten false test labels were: `access_cost.rs:1928,2209` (`condition_kind`,
 `string_match_selectivity`); `access_path.rs:5532`
 (`IndexJoinLookupExec::row_passes_filters`); `hash_agg.rs:3617,3626,3630,3647,3675,3694`
 (`eval_agg_input`, reached from `hash_agg/input.rs:585`); and `join.rs:1826`

@@ -97,9 +97,11 @@ remain in the workspace.
       test-only after manual correction, or 24 excluding the known unlinked
       duplicate. Earlier production/test splits are historical heuristic output,
       not an accurate deletion-work count; source evidence is in the inventory.
-- [ ] Repair the classifier with failing-then-passing scope regressions before
-      treating its output as a deletion gate (helper/field attributes, closed
-      test modules, and file-wide inner attributes must be handled).
+- [x] Repair the classifier with bounded attribute/item scopes and conservative
+      cfg evaluation. The initial 16-test suite failed before the fix; all 18
+      final tests pass. The script now reproduces the manual 26 production /
+      13 test-only split. Unknown scopes remain production-labelled; this
+      textual inventory still is not a reachability or deletion-readiness proof.
 - [ ] Retain condition programs in remaining `eval_bool` hot callers (the public
       convenience wrapper currently builds temporary programs) and migrate
       other Join expression sites. Existing joined scratch-row copies remain;
@@ -687,6 +689,21 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+Native-site scope classifier validation (TiDB repository root; tooling-only,
+no heavy build jobs):
+
+    PYTHONDONTWRITEBYTECODE=1 python3 rust/scripts/test_classify_native_eval_sites.py
+    PYTHONDONTWRITEBYTECODE=1 python3 rust/scripts/classify-native-eval-sites.py --list
+
+Before the fix, 16 fixture tests produced 16 failing subtest assertions. After
+the fix and two additional controls, 18 tests pass. The audited source output
+is 54 raw / 39 evaluator hits, split 26 production-scope / 13 test-only, exactly
+matching the prior manual audit (24 production-scope after the known unlinked
+duplicate). Unsupported generic syntax may conservatively retain test calls;
+the scanner is not a Rust AST/macro/reachability analysis. No Rust execution
+behavior changed; cargo, full mysql replay, performance and repository-wide
+lint were not rerun for this tooling change.
 
 JoinExec/index-hash cache validation (TiDB `rust/`, same serial guarded
 environment, no local Cargo patch):
