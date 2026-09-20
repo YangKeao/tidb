@@ -13,11 +13,13 @@
 // limitations under the License.
 
 use super::*;
+use std::sync::Arc;
+use tidb_expr::evaluator::{into_eval_error, EvaluatorProgram, EvaluatorSuite};
 
 /// One row expression after Go's expression rewriter has inserted the Apply
 /// operators required by correlated subqueries.
 pub(super) struct DmlExpression {
-    expression: Expression,
+    program: Arc<EvaluatorProgram>,
     field_types: Vec<FieldType>,
     applies: Vec<(CorrelatedSubquery, FromScope)>,
 }
@@ -74,7 +76,7 @@ impl DmlExpression {
             .map(|(_, field_type)| field_type)
             .collect();
         Ok(Self {
-            expression,
+            program: Arc::new(EvaluatorProgram::new(vec![expression], true)),
             field_types,
             applies,
         })
@@ -94,25 +96,23 @@ impl DmlExpression {
                 correlated, &values, scope, catalog, current_db, ctx,
             )?);
         }
-        let chunk = row_chunk(&values, &self.field_types)?;
-        tidb_expr::evaluator::eval_chunk(&self.expression, ctx, &chunk)
-            .map_err(tidb_expr::evaluator::into_eval_error)
-            .map_err(|error| DriverError::Exec(ExecError::Eval(error)))?
-            .into_iter()
-            .next()
-            .ok_or_else(|| DriverError::Exec(ExecError::internal("correlated row chunk is empty")))
+        let mut chunk = row_chunk(&values, &self.field_types)?;
+        if self.field_types.is_empty() {
+            chunk.set_num_virtual_rows(1);
+        }
+        eval_program(&self.program, ctx, chunk.get_row(0))
     }
 }
 
 pub(super) enum UpdateExpression {
-    Scalar(Expression),
-    Physical(Expression),
+    Scalar(Arc<EvaluatorProgram>),
+    Physical(Arc<EvaluatorProgram>),
     Applied(DmlExpression),
 }
 
 impl UpdateExpression {
     pub(super) fn scalar(expression: Expression) -> Self {
-        Self::Scalar(expression)
+        Self::Scalar(Arc::new(EvaluatorProgram::new(vec![expression], true)))
     }
 
     pub(super) fn applied(expression: DmlExpression) -> Self {
@@ -120,7 +120,7 @@ impl UpdateExpression {
     }
 
     pub(super) fn physical(expression: Expression) -> Self {
-        Self::Physical(expression)
+        Self::Physical(Arc::new(EvaluatorProgram::new(vec![expression], true)))
     }
 
     pub(super) fn eval(
@@ -133,20 +133,201 @@ impl UpdateExpression {
         ctx: &crate::StmtContext,
     ) -> Result<Datum, DriverError> {
         match self {
-            Self::Scalar(expression) => expression
-                .eval(ctx, scalar_row)
-                .map_err(|error| DriverError::Exec(ExecError::Eval(error))),
-            Self::Physical(expression) => expression
-                .eval(
-                    ctx,
-                    physical_row.ok_or_else(|| {
-                        DriverError::unsupported(
-                            "a planned UPDATE expression has no physical input row",
-                        )
-                    })?,
-                )
-                .map_err(|error| DriverError::Exec(ExecError::Eval(error))),
+            Self::Scalar(program) => eval_program(program, ctx, scalar_row),
+            Self::Physical(program) => eval_program(
+                program,
+                ctx,
+                physical_row.ok_or_else(|| {
+                    DriverError::unsupported(
+                        "a planned UPDATE expression has no physical input row",
+                    )
+                })?,
+            ),
             Self::Applied(expression) => expression.eval(row, catalog, current_db, ctx),
+        }
+    }
+}
+
+/// Retain only compilation metadata. Each execution borrows the current row;
+/// assignment casts must receive scalar Datum kinds rather than typed carriers.
+fn eval_program(
+    program: &Arc<EvaluatorProgram>,
+    ctx: &crate::StmtContext,
+    row: tidb_chunk::row::Row<'_>,
+) -> Result<Datum, DriverError> {
+    let virtual_input = row
+        .chunk()
+        .is_none_or(|input| row.len() == 0 && input.physical_rows() == 0)
+        .then(|| {
+            let mut input = tidb_chunk::chunk::Chunk::new_with_capacity(&[], 1);
+            input.set_num_virtual_rows(1);
+            input
+        });
+    let input = virtual_input
+        .as_ref()
+        .or(row.chunk())
+        .expect("DML expression input");
+    let physical = if virtual_input.is_some() {
+        0
+    } else {
+        row.idx()
+    };
+    EvaluatorSuite::from_program(Arc::clone(program))
+        .eval_selected_for_cast(ctx, input, &[physical])
+        .map_err(into_eval_error)
+        .map_err(|error| DriverError::Exec(ExecError::Eval(error)))?
+        .pop()
+        .ok_or_else(|| DriverError::Exec(ExecError::internal("DML expression returned no value")))
+}
+
+#[cfg(test)]
+mod engine_tests {
+    use super::*;
+    use tidb_expr::{column::Column, constant::Constant, scalar_function::ScalarFunction};
+
+    fn wide() -> FieldType {
+        FieldType::new(FieldTypeCode::LongLong)
+    }
+    fn plus() -> Expression {
+        let mut column = Column::new(1, wide());
+        column.index = 0;
+        Expression::ScalarFunction(ScalarFunction::new(
+            tidb_ast::CiString::new("plus"),
+            wide(),
+            vec![
+                Expression::Column(column),
+                Expression::Constant(Constant::new(Datum::Int(1), wide())),
+            ],
+        ))
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn update_uses_live_scalar_or_physical_row_without_reapplying_selection() {
+        let catalog = Catalog::default();
+        for engine in [false, true] {
+            let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+            let scalar = UpdateExpression::scalar(plus());
+            let physical = UpdateExpression::physical(plus());
+            let mut input = tidb_chunk::chunk::Chunk::new_with_capacity(&[wide()], 2);
+            input.append_datum(0, &Datum::Int(1));
+            input.append_datum(0, &Datum::Int(3));
+            input.set_sel(Some(vec![1, 0]));
+            let mut row = tidb_chunk::mutrow::MutRow::from_datums(&[Datum::Int(9)]);
+            for value in [9, 19] {
+                row.set_datum(0, &Datum::Int(value));
+                for (expr, expected) in [(&scalar, value + 1), (&physical, 4)] {
+                    assert_eq!(
+                        expr.eval(
+                            &[Datum::Int(999)],
+                            row.to_row(),
+                            Some(input.get_row(0)),
+                            &catalog,
+                            "test",
+                            &ctx
+                        )
+                        .unwrap(),
+                        Datum::Int(expected)
+                    );
+                }
+            }
+            assert!(physical
+                .eval(&[], row.to_row(), None, &catalog, "test", &ctx)
+                .is_err());
+            assert_eq!(ctx.tikv_expression_rows(), if engine { 4 } else { 0 });
+            for expression in [&scalar, &physical] {
+                let (UpdateExpression::Scalar(program) | UpdateExpression::Physical(program)) =
+                    expression
+                else {
+                    unreachable!()
+                };
+                assert_eq!(program.tikv_compilations(), u64::from(engine));
+            }
+        }
+    }
+
+    #[test]
+    fn assignment_scalar_kinds_and_error_recovery() {
+        let catalog = Catalog::default();
+        let row = tidb_chunk::mutrow::MutRow::from_datums(&[Datum::Int(9)]);
+        let bad = tidb_chunk::mutrow::MutRow::from_datums(&[Datum::Int(i64::MAX)]);
+        let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+        for _engine in [false, true] {
+            let ctx = crate::StmtContext::for_query();
+            #[cfg(feature = "tikv-expr")]
+            let ctx = ctx.with_tikv_expression(_engine);
+            let literal = Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(vec![16]));
+            let expression = Expression::Constant(Constant::new(
+                literal.clone(),
+                FieldType::new(FieldTypeCode::VarString),
+            ));
+            let applied = DmlExpression {
+                program: Arc::new(EvaluatorProgram::new(vec![expression.clone()], true)),
+                field_types: vec![wide()],
+                applies: vec![],
+            };
+            for expression in [
+                UpdateExpression::scalar(expression.clone()),
+                UpdateExpression::physical(expression),
+                UpdateExpression::applied(applied),
+            ] {
+                assert_eq!(
+                    expression
+                        .eval(
+                            &[Datum::Int(9)],
+                            empty.to_row(),
+                            Some(tidb_chunk::row::Row::empty()),
+                            &catalog,
+                            "test",
+                            &ctx
+                        )
+                        .unwrap(),
+                    literal
+                );
+            }
+            let expression = UpdateExpression::scalar(plus());
+            assert!(expression
+                .eval(&[], bad.to_row(), None, &catalog, "test", &ctx)
+                .is_err());
+            assert_eq!(
+                expression
+                    .eval(&[], row.to_row(), None, &catalog, "test", &ctx)
+                    .unwrap(),
+                Datum::Int(10)
+            );
+            #[cfg(feature = "tikv-expr")]
+            {
+                let UpdateExpression::Scalar(program) = expression else {
+                    unreachable!()
+                };
+                assert_eq!(program.tikv_compilations(), u64::from(_engine));
+                assert_eq!(ctx.tikv_expression_rows(), u64::from(_engine));
+            }
+        }
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn applied_constant_has_one_virtual_row_and_evaluates_on_each_call() {
+        let catalog = Catalog::default();
+        for engine in [false, true] {
+            let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+            let expression = DmlExpression::build(
+                &tidb_ast::Expr::Int("7".to_owned()),
+                FromScope::for_statement(&ctx),
+                &catalog,
+                "test",
+                &ctx,
+            )
+            .unwrap();
+            for _ in 0..2 {
+                assert_eq!(
+                    expression.eval(&[], &catalog, "test", &ctx).unwrap(),
+                    Datum::Int(7)
+                );
+            }
+            assert_eq!(ctx.tikv_expression_rows(), if engine { 2 } else { 0 });
+            assert_eq!(expression.program.tikv_compilations(), u64::from(engine));
         }
     }
 }

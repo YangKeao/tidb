@@ -711,28 +711,38 @@ fn prune_list_ids(
 /// Evaluates a partition expression for one row of its dependencies, through
 /// the engine when the adapter admits it.
 ///
-/// The four call sites in this file used to build a `MutRow` and call
-/// `Expression::eval` directly. They now go through the engine, which is the
-/// same choice a projection makes; `None` means the expression's columns are
-/// sparse, so this keeps the row evaluation rather than guess a chunk layout
-/// (after the native evaluator is deleted that branch becomes the structured
-/// engine error).
+/// The suite owns engine admission and native fallback, including sparse
+/// column references. Preserve native scalar Datum kinds for the subsequent
+/// partition conversion (notably a binary literal's numeric value).
+/// This temporary suite does not retain its program across bounds or statements.
 fn eval_partition_expression(
     expr: &tidb_expr::expression::Expression,
     ctx: &impl tidb_expr::Columns,
     values: &[Datum],
 ) -> Result<Datum, tidb_expr::EvalError> {
-    match tidb_expr::evaluator::eval_row_values(expr, ctx, values) {
-        Ok(Some(value)) => Ok(value),
-        Ok(None) => Ok(expr.eval(
+    let suite = tidb_expr::evaluator::EvaluatorSuite::new(vec![expr.clone()], true);
+    let result = if values.is_empty() {
+        // An empty MutRow has zero physical rows. Constants still need one
+        // evaluation, so supply a virtual row rather than select beyond it.
+        let mut input = tidb_chunk::chunk::Chunk::new_with_capacity(&[], 1);
+        input.set_num_virtual_rows(1);
+        suite.eval_selected_for_cast(ctx, &input, &[0])
+    } else {
+        // Keep original column indexes and borrow the existing backing chunk;
+        // sparse references do not require another dense row materialization.
+        let input = tidb_chunk::mutrow::MutRow::from_datums(values);
+        suite.eval_selected_for_cast(
             ctx,
-            tidb_chunk::mutrow::MutRow::from_datums(values).to_row(),
-        )?),
-        Err(tidb_expr::evaluator::EvaluatorError::Eval(error)) => Err(error),
-        Err(tidb_expr::evaluator::EvaluatorError::Chunk(message)) => {
-            Err(tidb_expr::EvalError::Unsupported(message))
-        }
-    }
+            input.to_row().chunk().expect("MutRow has a backing chunk"),
+            &[0],
+        )
+    };
+    result
+        .map_err(tidb_expr::evaluator::into_eval_error)?
+        .pop()
+        .ok_or(tidb_expr::EvalError::Unsupported(
+            "partition expression returned no value",
+        ))
 }
 
 fn list_pruning_integer(value: &Datum) -> Result<(i64, bool), tidb_expr::EvalError> {
@@ -2370,6 +2380,165 @@ mod tests {
         let collapsed = 10_i64.cmp(&-1_i64);
         assert_eq!(collapsed, Ordering::Greater);
         assert_ne!(bound_below_constant, collapsed);
+    }
+
+    fn pruning_test_expression(index: i64) -> tidb_expr::expression::Expression {
+        use tidb_datatype::{FieldType, FieldTypeCode};
+        use tidb_expr::{column::Column, constant::Constant, expression::Expression};
+
+        let ty = FieldType::new(FieldTypeCode::LongLong);
+        let mut column = Column::new(1, ty.clone());
+        column.index = index;
+        Expression::ScalarFunction(tidb_expr::scalar_function::ScalarFunction::new(
+            tidb_ast::CiString::new("plus"),
+            ty.clone(),
+            vec![
+                Expression::Column(column),
+                Expression::Constant(Constant::new(Datum::Int(1), ty)),
+            ],
+        ))
+    }
+
+    #[test]
+    fn partition_expression_sparse_references_use_original_indexes() {
+        let expr = pruning_test_expression(2);
+        // The unrelated, differently typed slots must not be compacted or read.
+        let values = [Datum::Bytes(vec![255]), Datum::Null, Datum::Int(16)];
+        assert_eq!(
+            eval_partition_expression(&expr, &tidb_expr::NoColumns, &values).unwrap(),
+            Datum::Int(17)
+        );
+        #[cfg(feature = "tikv-expr")]
+        {
+            let ctx = crate::StmtContext::for_query().with_tikv_expression(true);
+            assert_eq!(
+                eval_partition_expression(&expr, &ctx, &values).unwrap(),
+                Datum::Int(17)
+            );
+            assert_eq!(ctx.tikv_expression_rows(), 1);
+        }
+    }
+
+    #[test]
+    fn partition_expression_root_binary_literal_keeps_numeric_value() {
+        let literal = Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(vec![0, 16]));
+        let expr = tidb_expr::expression::Expression::Constant(tidb_expr::constant::Constant::new(
+            literal.clone(),
+            tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString),
+        ));
+        // Both an empty dependency row and an unused slot retain the scalar
+        // kind; a typed output round-trip turns this into a nonnumeric string.
+        for values in [vec![], vec![Datum::Int(99)]] {
+            let check = |ctx: &crate::StmtContext| {
+                let value = eval_partition_expression(&expr, ctx, &values).unwrap();
+                assert_eq!(value, literal);
+                assert_eq!(list_pruning_integer(&value).unwrap(), (16, false));
+                assert_eq!(
+                    range_partition_integer(value.clone()),
+                    Some(Datum::UInt(16))
+                );
+                assert_eq!(
+                    crate::partition_routing::hash_partition_index(&value, 3).unwrap(),
+                    1
+                );
+            };
+            check(&crate::StmtContext::for_query());
+            #[cfg(feature = "tikv-expr")]
+            check(&crate::StmtContext::for_query().with_tikv_expression(true));
+        }
+    }
+
+    #[test]
+    fn partition_expression_empty_input_evaluates_one_constant_row() {
+        let expr = tidb_expr::expression::Expression::Constant(tidb_expr::constant::Constant::new(
+            Datum::Int(17),
+            tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::LongLong),
+        ));
+        assert_eq!(
+            eval_partition_expression(&expr, &tidb_expr::NoColumns, &[]).unwrap(),
+            Datum::Int(17)
+        );
+        #[cfg(feature = "tikv-expr")]
+        {
+            let ctx = crate::StmtContext::for_query().with_tikv_expression(true);
+            assert_eq!(
+                eval_partition_expression(&expr, &ctx, &[]).unwrap(),
+                Datum::Int(17)
+            );
+            assert_eq!(ctx.tikv_expression_rows(), 1);
+        }
+    }
+
+    #[test]
+    fn partition_expression_invalid_columns_keep_error_classification() {
+        for (index, values, message) in [
+            (0, vec![], "column index is outside the input row"),
+            (
+                2,
+                vec![Datum::Int(1)],
+                "column index is outside the input row",
+            ),
+            (-1, vec![Datum::Int(1)], "column index is negative"),
+        ] {
+            let expr = pruning_test_expression(index);
+            let check = |ctx: &crate::StmtContext| {
+                assert!(matches!(
+                    eval_partition_expression(&expr, ctx, &values),
+                    Err(tidb_expr::EvalError::Unsupported(actual)) if actual == message
+                ));
+            };
+            check(&crate::StmtContext::for_query());
+            #[cfg(feature = "tikv-expr")]
+            assert!(eval_partition_expression(
+                &expr,
+                &crate::StmtContext::for_query().with_tikv_expression(true),
+                &values,
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn partition_expression_sparse_evaluation_error_is_not_swallowed() {
+        let expr = pruning_test_expression(2);
+        let values = [Datum::Null, Datum::Null, Datum::Int(i64::MAX)];
+        assert!(matches!(
+            eval_partition_expression(&expr, &tidb_expr::NoColumns, &values),
+            Err(tidb_expr::EvalError::IntOverflow)
+        ));
+        #[cfg(feature = "tikv-expr")]
+        {
+            let ctx = crate::StmtContext::for_query().with_tikv_expression(true);
+            // Engine errors must propagate, not replay through the native path.
+            assert!(matches!(
+                eval_partition_expression(&expr, &ctx, &values),
+                Err(tidb_expr::EvalError::ExternalEngine { code: 1690, .. })
+            ));
+        }
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn partition_expression_sparse_missing_required_engine_is_an_error() {
+        struct MissingEngine;
+        impl tidb_expr::Columns for MissingEngine {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                unreachable!("resolved columns read the input chunk")
+            }
+            fn tikv_expression_required(&self) -> bool {
+                true
+            }
+        }
+        let expr = pruning_test_expression(2);
+        assert!(matches!(
+            eval_partition_expression(
+                &expr,
+                &MissingEngine,
+                &[Datum::Null, Datum::Null, Datum::Int(16)],
+            ),
+            Err(tidb_expr::EvalError::ExternalEngine { code: 1105, message })
+                if message.contains("has no context")
+        ));
     }
 
     /// The HASH point path is a third call site; it evaluates the expression

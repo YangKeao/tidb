@@ -9,7 +9,33 @@ kind needs. This is the measurement, and the method is repeatable:
     cd rust/crates
     grep -rn "\.eval(" --include=*.rs . | grep -v '/tidb-expr/src/'
 
-## What the raw hits are
+## Current snapshot after DML/pruning routing
+
+The classifier now reports **39 raw / 23 evaluator candidates / 5 production /
+18 test-only**. New DML tests add textual `.eval` wrapper calls; these are not
+new native dispatch. Of the five production candidates, two are the unlinked
+`stream_agg.rs` duplicate and two (`driver/dml.rs:3450,4026`) call the now-routed
+`UpdateExpression` / `DmlExpression` facades. Manual type inspection leaves
+**one direct live native call in this inventory**, INSERT VALUES at
+`driver/dml.rs:763`. This corrects the earlier use of candidate counts as direct
+call counts; forwarding-helper and expression-internal audits are still needed.
+
+UPDATE scalar/physical programs and the post-Apply DML expression now retain
+`Arc<EvaluatorProgram>` metadata, while every call binds fresh scalar/physical
+rows. Physical selection is not applied twice. Apply ordering is unchanged.
+Empty inputs use one virtual row and scalar Datum kinds survive assignment
+casts. Tests pin execution receipts, one compilation per program, rebinding,
+missing physical input, overflow recovery and binary literal preservation.
+
+Partition evaluation no longer falls back directly to `Expression::eval` for
+sparse references. It borrows a MutRow's backing chunk, or supplies a virtual
+row for no dependencies, and uses the scalar-preserving facade. Tests reproduce
+and fix missing-engine bypass and empty-input panics. Pruning programs remain
+helper-local, not retained across bounds/statements; extra allocations and
+compilation costs are not benchmarked. The old `eval_row_values` helper itself
+has not been repaired here and needs a separate caller/empty-input audit.
+
+## Historical raw snapshot before DML/pruning routing
 
 After pushed-scan/statistics routing, the raw grep returns 36 hits.
 `rust/scripts/classify-native-eval-sites.py` classifies call arguments from an

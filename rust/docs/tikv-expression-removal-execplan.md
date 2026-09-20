@@ -169,9 +169,19 @@ remain in the workspace.
       sites; share one program across each estimate's TopN/bounds/NULL samples.
       Scalar facade accepts erased contexts without dropping statement methods.
       Reproduce/fix binary-literal truth loss in ConditionEvaluator/FilterProgram
-      using the existing scalar-preserving entry. Current textual inventory:
+      using the existing scalar-preserving entry. That step's textual inventory:
       21 evaluator sites, 8 production / 13 test, or 6 production excluding the
       unlinked duplicate. This does not inventory every forwarding helper.
+- [x] Retain UPDATE scalar/physical and post-Apply DML programs; preserve fresh
+      row binding, physical indexes, Apply order and scalar assignment values.
+      Fix zero-column virtual input. Remove sparse partition native bypass via
+      the scalar-preserving facade (temporary program, not cross-bound caching).
+      Current classifier: 39 raw / 23 candidates / 5 production / 18 test;
+      manual inspection subtracts two dead duplicate calls and two routed DML
+      wrappers, leaving one direct live candidate (INSERT VALUES). Earlier
+      counts included wrappers and were not direct-native-call counts.
+- [ ] Audit remaining forwarding helpers and `eval_row_values` empty inputs;
+      migrate INSERT VALUES and retain partition programs at a safe owner.
 - [ ] Retain generated/default compatibility programs in statement-owned plans
       with schema/zone/LIKE rewrite invalidation. The public mutable descriptors
       are not safe cache owners; temporary compilation and gather copies remain.
@@ -762,6 +772,40 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+DML/pruning validation (TiDB `rust/`, same serial guarded environment):
+
+    cargo test -q -p tidb-executor --features tikv-expr --lib driver::dml::correlated::engine_tests --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --lib partition_pruning::tests::partition_expression_ --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --lib partition_pruning::tests --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --locked --offline -j1 -- --test-threads=1
+
+`dml-program-red.log`: zero engine rows instead of four, and zero-column DML
+returned an empty-result error. `pruning-sparse-red.log`: five failures including
+empty-input panics, zero engine receipt and mandatory-engine native bypass.
+Initial `*-before.log` attempts had an AST fixture compile error (Int requires
+String); `dml-program-green.log` caught an incorrect Chunk import path. Neither
+is behavioral RED evidence. `dml-program-fixed.log` additionally caught virtual
+input being shadowed by the original empty chunk; preferring the virtual input
+fixed it. Final `dml-program-final.log` passes 3 tests and
+`pruning-sparse-final.log` passes 28. Cache assertions cover scalar/physical and
+post-Apply execution, current-row rebinding, binary assignment values and
+recovery after overflow. All selected-row evaluation remains at original demand
+points; subquery/assignment ordering was not rewritten.
+
+Full `dml-pruning-on.log`: 1397/355/6/2 passed; off: 1346/329/6/0, with 184
+integration tests ignored each. Commands were serial with single Cargo/test
+workers and the 8192-MiB RSS / 16384-MiB AS guard. Behavioral-red sampled peak
+3126.7 MiB; final scoped compile sample 2398.6 MiB, full on/off samples
+2080.6/2062.1 MiB. The 0.8-MiB cached pruning sample is not a runtime bound.
+No expression-core or TiKV code changed; their full suites were not rerun this
+round. Full mysql replay, new Go oracle, performance and make lint were not run.
+Sparse pruning still allocates a temporary suite/program and may compile on each
+probe. The textual audit now counts 39 raw / 23 candidates / 5 production / 18
+test: two production entries are dead duplicate code and two are routed DML
+wrappers, leaving INSERT VALUES as the sole direct live call in this inventory.
+This is not proof of native removal; forwarding helpers/internal kernels remain.
 
 Pushed-scan/statistics validation (TiDB `rust/`, same serial guarded environment,
 no local Cargo patch):
