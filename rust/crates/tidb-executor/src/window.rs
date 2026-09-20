@@ -32,7 +32,7 @@ use tidb_expr::expression::Expression;
 use tidb_expr::Columns;
 
 use crate::executor::{ExecError, Executor, ExecutorMeta};
-use crate::hash_agg::AggFunc;
+use crate::hash_agg::{AggFunc, WindowAggregateEvaluator};
 
 /// One window function's runtime form.
 pub struct WindowFuncSpec {
@@ -106,6 +106,7 @@ pub struct WindowFrameSpec {
 struct WindowValueEvaluators {
     arg: Option<EvaluatorSuite>,
     default: Option<EvaluatorSuite>,
+    aggregate: Option<WindowAggregateEvaluator>,
 }
 
 struct WindowRangeEvaluators {
@@ -124,6 +125,10 @@ impl WindowValueEvaluators {
         Self {
             arg: arg.map(suite),
             default: default.map(suite),
+            aggregate: match func {
+                WindowFunction::Aggregate(func) => Some(WindowAggregateEvaluator::new(func)),
+                _ => None,
+            },
         }
     }
 }
@@ -495,13 +500,18 @@ impl<C: Columns + Send> Executor for WindowExec<C> {
                 let (peer_start, peer_end, dense_rank) = self.peers[index];
                 let count = partition_end - partition_start;
                 let value = match &spec.func {
-                    WindowFunction::Aggregate(func) => func.window_frame_value(
-                        &self.ctx,
-                        &self.rows,
-                        frame_start,
-                        frame_end,
-                        &spec.output_type,
-                    )?,
+                    WindowFunction::Aggregate(func) => self.value_suites[position]
+                        .aggregate
+                        .as_ref()
+                        .expect("aggregate input program")
+                        .window_frame_value(
+                            func,
+                            &self.ctx,
+                            &self.rows,
+                            frame_start,
+                            frame_end,
+                            &spec.output_type,
+                        )?,
                     WindowFunction::RowNumber => Datum::Int((index - partition_start + 1) as i64),
                     WindowFunction::Rank { dense } => Datum::Int(if *dense {
                         dense_rank
@@ -704,6 +714,105 @@ mod selected_key_tests {
         exec.peers = vec![(0, values.len(), 1); values.len()];
         exec.fetched = true;
         exec
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn aggregate_frames_reuse_program_but_not_accumulator_or_future_rows() {
+        for engine in [false, true] {
+            let mut exec = seeded_value_exec(
+                WindowFunction::Aggregate(AggFunc::new(
+                    crate::hash_agg::AggKind::Max,
+                    Some(key(0)),
+                )),
+                &[8, 4, 6, i64::MAX],
+                engine,
+            );
+            exec.frame.start = WindowBound::Offset {
+                num: 1,
+                preceding: true,
+            };
+            exec.frame.end = WindowBound::CurrentRow;
+            let mut output = exec.new_chunk();
+            output.set_required_rows(1, 2);
+            for (index, expected) in [9, 9, 7].into_iter().enumerate() {
+                exec.next(&mut output).unwrap();
+                assert_eq!(output.num_rows(), 1);
+                assert_eq!(output.get_row(0).get_int64(1), expected);
+                assert_eq!(
+                    exec.ctx.tikv_expression_rows(),
+                    if engine { (index * 2 + 1) as u64 } else { 0 }
+                );
+                assert_eq!(
+                    exec.value_suites[0]
+                        .aggregate
+                        .as_ref()
+                        .unwrap()
+                        .compilations(),
+                    if engine { 1 } else { 0 }
+                );
+            }
+            // The bad row is demanded only by this fourth frame. Prior frames
+            // succeeded despite sharing the same physical backing chunk.
+            assert!(exec.next(&mut output).is_err());
+            assert_eq!(exec.ctx.tikv_expression_rows(), if engine { 6 } else { 0 });
+        }
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn aggregate_empty_and_first_row_frames_skip_unused_errors() {
+        for engine in [false, true] {
+            let mut empty = seeded_value_exec(
+                WindowFunction::Aggregate(AggFunc::new(
+                    crate::hash_agg::AggKind::Max,
+                    Some(key(0)),
+                )),
+                &[i64::MAX],
+                engine,
+            );
+            empty.frame.start = WindowBound::Offset {
+                num: 1,
+                preceding: false,
+            };
+            empty.frame.end = empty.frame.start;
+            let mut output = empty.new_chunk();
+            empty.next(&mut output).unwrap();
+            assert_eq!(output.num_rows(), 1);
+            assert!(output.get_row(0).is_null(1));
+            assert_eq!(empty.ctx.tikv_expression_rows(), 0);
+            assert_eq!(
+                empty.value_suites[0]
+                    .aggregate
+                    .as_ref()
+                    .unwrap()
+                    .compilations(),
+                0
+            );
+
+            let mut first = seeded_value_exec(
+                WindowFunction::Aggregate(AggFunc::new(
+                    crate::hash_agg::AggKind::FirstRow,
+                    Some(key(0)),
+                )),
+                &[2, i64::MAX],
+                engine,
+            );
+            first.next(&mut output).unwrap();
+            assert_eq!(output.num_rows(), 2);
+            for row in 0..2 {
+                assert_eq!(output.get_row(row).get_int64(1), 3);
+            }
+            assert_eq!(first.ctx.tikv_expression_rows(), if engine { 2 } else { 0 });
+            assert_eq!(
+                first.value_suites[0]
+                    .aggregate
+                    .as_ref()
+                    .unwrap()
+                    .compilations(),
+                if engine { 1 } else { 0 }
+            );
+        }
     }
 
     #[cfg(feature = "tikv-expr")]

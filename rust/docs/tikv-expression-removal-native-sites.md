@@ -128,8 +128,10 @@ results and pin multi-argument NULL short-circuit, extras-before-primary order
 for AVG/JSON_OBJECTAGG, sort keys after a NULL GROUP_CONCAT argument (current
 native order, not a Go-oracle claim), physical row selection, and FIRST_ROW
 skipping later errors. Direct typed aggregate kernels remain unchanged and
-are not counted as expression-engine executions. Window-frame recomputation
-still creates a fresh input plan per frame; cross-frame caching is pending.
+are not counted as expression-engine executions. Window frame evaluators now
+retain these input plans across frames while allocating fresh accumulator
+state per frame. Real emission tests pin one compilation, overlapping/empty/
+FIRST_ROW frames and delayed overflow demand; recomputation itself is unchanged.
 
 Remaining ordering-sensitive calls are not candidates for an eager whole-chunk
 cache. For example, `union_scan.rs` evaluates generated columns into a `MutRow`,

@@ -263,30 +263,47 @@ struct AggInput {
     distinct_key: Option<Vec<u8>>,
 }
 
-impl AggFunc {
-    /// Go's window executor recomputes one frame per output row
-    /// (`pkg/executor/windows/window.go`'s `process`): fold `chunk`'s rows
-    /// `[start, end)` into a fresh state and finish it. `row_number` is NOT
-    /// routed here -- Go's `row_number` aggfunc ignores the frame and counts
-    /// output rows.
+/// Window frames share expression programs, never accumulator state.
+pub(crate) struct WindowAggregateEvaluator {
+    input: AggInputMode,
+}
+
+impl WindowAggregateEvaluator {
+    pub(crate) fn new(func: &AggFunc) -> Self {
+        Self {
+            input: AggInputMode::new(func),
+        }
+    }
+
+    #[cfg(all(test, feature = "tikv-expr"))]
+    pub(crate) fn compilations(&self) -> u64 {
+        self.input.compilations()
+    }
+
+    /// Fold this frame's rows `[start, end)` into a fresh accumulator while
+    /// retaining input programs across frames. This preserves the adapter's
+    /// recomputation strategy; it does not introduce a sliding accumulator.
+    /// `row_number` is handled separately by the window executor.
     pub(crate) fn window_frame_value<C: Columns>(
         &self,
+        func: &AggFunc,
         ctx: &C,
         chunk: &Chunk,
         start: usize,
         end: usize,
         output_type: &tidb_datatype::FieldType,
     ) -> Result<Datum, ExecError> {
-        let mut state = AggState::new(self);
-        let mode = AggInputMode::new(self);
-        let bound = mode.bind(chunk);
+        let mut state = AggState::new(func);
+        let bound = self.input.bind(chunk);
         for index in start..end {
-            bound.update(self, ctx, &mut state, chunk.get_row(index))?;
+            bound.update(func, ctx, &mut state, chunk.get_row(index))?;
         }
         let mut truncated = false;
-        finish_agg_value(&mut state, self, output_type, ctx, &mut truncated)
+        finish_agg_value(&mut state, func, output_type, ctx, &mut truncated)
     }
+}
 
+impl AggFunc {
     /// An aggregate without the `DISTINCT` modifier.
     #[must_use]
     pub fn new(kind: AggKind, arg: Option<Expression>) -> Self {

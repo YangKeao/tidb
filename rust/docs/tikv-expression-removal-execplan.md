@@ -132,9 +132,13 @@ remain in the workspace.
       engine row counts and one compilation per used argument across clones.
       Current inventory: 29 sites, 16 production-scope / 13 test-only, or 14
       production-scope excluding the unlinked duplicate.
-- [ ] Retain window aggregate input programs across frame recomputation:
-      `window_frame_value` currently constructs a fresh input plan each frame.
-      Typed aggregate kernels remain outside expression-engine row receipts.
+- [x] Retain window aggregate input programs across frame recomputation in
+      `WindowAggregateEvaluator`. Every frame still starts a fresh accumulator.
+      Emission tests pin overlapping-frame results, empty/FIRST_ROW frames,
+      delayed overflow demand and one compilation across frames. Reproducing
+      per-frame reconstruction made both new cache assertions fail first.
+      Typed aggregate kernels remain outside expression-engine row receipts;
+      this does not replace recomputation with a sliding-window algorithm.
 - [ ] Retain condition programs in remaining `eval_bool` hot callers (the public
       convenience wrapper currently builds temporary programs). Existing joined scratch-row copies remain;
       eliminating them requires the independent-column facade, not more row
@@ -722,6 +726,28 @@ milestones before it.
 ## Artifacts and Notes
 
 
+Window aggregate-cache validation (TiDB `rust/`, same serial guarded environment,
+no local Cargo patch):
+
+    cargo test -q -p tidb-executor --features tikv-expr --lib window::selected_key_tests::aggregate_ --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --lib window:: --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --locked --offline -j1 -- --test-threads=1
+
+The red control retained the diagnostic fields but temporarily constructed a
+fresh `WindowAggregateEvaluator` at each emission (the previous ownership
+behavior). Both new tests failed on retained compilation count 0 versus 1.
+Restoring the retained evaluator made all 10 window tests pass. Full feature-on
+groups passed 1365 / 355 / 6 / 2; feature-off passed 1335 / 329 / 6 / 0, both
+with 184 ignored integration tests. Sampled peak RSS: 3294.3 / 2727.5 / 2200.0 /
+2887.3 MiB in command order, under the 8192-MiB RSS / 16384-MiB AS guard with one
+Cargo/test worker. Tests seed the already-fetched window buffer and exercise
+real Next emission; they do not validate remote fetching or a Go window oracle.
+Frame accumulator state stays fresh, and the recomputation algorithm is
+unchanged. No direct native dispatch count changes in this step. Full mysql
+replay, performance, repository-wide lint and engine-only execution remain
+unverified.
+
 Aggregate argument-program validation (TiDB `rust/`, same serial guarded
 environment, no local Cargo patch):
 
@@ -740,7 +766,8 @@ guard with one Cargo/test-harness worker. Classifier: 44 raw / 29 evaluator
 sites, 16 production / 13 test (14 production after excluding the dead copy).
 Typed aggregate kernels and encoding/rendering remain unchanged. GROUP_CONCAT
 sort-after-NULL is pinned as current native behavior, not a Go-oracle result.
-Window-frame input plans still need cross-frame retention. No new input-row
+At that step, window-frame plans still needed cross-frame retention (resolved
+by the window-cache validation above). No new input-row
 scratch copy was added; additional per-plan metadata and runtime allocation
 costs were not benchmarked. Full mysql replay, performance, repository-wide
 lint and engine-only execution remain unverified.

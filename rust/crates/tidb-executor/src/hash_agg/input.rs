@@ -75,6 +75,15 @@ impl AggInputPrograms {
 }
 
 impl AggInputMode {
+    #[cfg(all(test, feature = "tikv-expr"))]
+    pub(super) fn compilations(&self) -> u64 {
+        self.programs
+            .arguments()
+            .chain(self.programs.order.iter())
+            .map(|program| program.tikv_compilations())
+            .sum()
+    }
+
     pub(super) fn new(func: &AggFunc) -> Self {
         Self {
             kind: AggInputKind::new(func),
