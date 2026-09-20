@@ -16,6 +16,7 @@
 
 use super::*;
 use tidb_codec::JoinKeyColumn;
+use tidb_expr::evaluator::EvaluatorSuite;
 
 /// Walk logical rows in the same order as Go's `Chunk.GetRow`, resolving the
 /// selection vector once for the whole column batch.  HashGroupKey receives a
@@ -44,6 +45,9 @@ pub(super) struct GroupKeyBuffer {
     pub(super) encoded: Vec<Vec<u8>>,
     active_rows: usize,
     values: Vec<Datum>,
+    // Bound on first use: callers keep a buffer per immutable group-by plan.
+    // The suite program cache consequently spans child chunks and worker epochs.
+    group_by_suites: Vec<EvaluatorSuite>,
     // Only cop partial output needs evaluated grouping datums. Retain them
     // column-wise so a new group never evaluates its expressions twice.
     output_values: Vec<Vec<Datum>>,
@@ -58,6 +62,16 @@ impl GroupKeyBuffer {
         retain_values: bool,
     ) -> Result<(), ExecError> {
         let rows = chunk.num_rows();
+        if self.group_by_suites.is_empty() {
+            self.group_by_suites = group_by
+                .iter()
+                .cloned()
+                .map(|expr| EvaluatorSuite::new(vec![expr], true))
+                .collect();
+        }
+        if self.group_by_suites.len() != group_by.len() {
+            return Err(ExecError::internal("HashAgg group-by suite shape changed"));
+        }
         // Keep the backing Vec sized for reuse, but expose only this chunk's
         // logical length for accounting. Go's GetGroupKey returns
         // groupKey[:numRows] while retaining the backing capacity.
@@ -158,10 +172,9 @@ impl GroupKeyBuffer {
                 }
                 // Go's scalar EvalExpr fallback still completes one column
                 // before encoding it or evaluating another expression.
-                self.values.clear();
-                for row in 0..rows {
-                    self.values.push(expr.eval(ctx, chunk.get_row(row))?);
-                }
+                self.values = self.group_by_suites[group_index]
+                    .eval_chunk(ctx, chunk)
+                    .map_err(tidb_expr::evaluator::into_eval_error)?;
                 for (value, key) in self.values.iter().zip(&mut self.encoded[..rows]) {
                     append_hash_agg_group_key_part(&timezone, expr, value, key)?;
                 }

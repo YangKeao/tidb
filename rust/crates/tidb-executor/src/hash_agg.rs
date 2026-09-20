@@ -3872,6 +3872,41 @@ mod tests {
         ExecutorMeta::new(Schema::new(cols), 1, 4, 1024)
     }
 
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn scalar_group_key_fallback_evaluates_in_the_engine() {
+        use tidb_ast::CiString;
+        use tidb_expr::{constant::Constant, scalar_function::ScalarFunction};
+
+        let mut chunk = Chunk::new_with_capacity(&[long()], 3);
+        for value in [1, 2, 3] {
+            chunk.append_int64(0, value);
+        }
+        let mut column = Column::new(0, long());
+        column.index = 0;
+        let group = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("plus"),
+            long(),
+            vec![
+                Expression::Column(column),
+                Expression::Constant(Constant::new(Datum::Int(1), long())),
+            ],
+        ));
+        let native_ctx = crate::StmtContext::for_query();
+        let engine_ctx = crate::StmtContext::for_query().with_tikv_expression(true);
+        let mut native = GroupKeyBuffer::default();
+        let mut engine = GroupKeyBuffer::default();
+        native
+            .prepare(&native_ctx, &chunk, &[group.clone()], false)
+            .unwrap();
+        engine
+            .prepare(&engine_ctx, &chunk, &[group], false)
+            .unwrap();
+        assert_eq!(native.encoded, engine.encoded);
+        assert_eq!(native_ctx.tikv_expression_rows(), 0);
+        assert_eq!(engine_ctx.tikv_expression_rows(), 3);
+    }
+
     #[test]
     fn integer_group_key_fast_path_matches_go_hash_group_key_encoding() {
         let types = [long(), long().with_unsigned(true)];
