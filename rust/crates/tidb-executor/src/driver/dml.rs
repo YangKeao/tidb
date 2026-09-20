@@ -1500,8 +1500,14 @@ pub(crate) fn order_rows_for_dml<H>(
         let mut key = Vec::with_capacity(items.len());
         for (expr, _) in &items {
             key.push(
-                expr.eval(ctx, chunk.get_row(0))
-                    .map_err(|e| DriverError::Exec(ExecError::Eval(e)))?,
+                tidb_expr::evaluator::eval_chunk(expr, ctx, &chunk)
+                    .map_err(tidb_expr::evaluator::into_eval_error)
+                    .map_err(|e| DriverError::Exec(ExecError::Eval(e)))?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| {
+                        DriverError::Exec(ExecError::internal("sort row chunk is empty"))
+                    })?,
             );
         }
         keyed.push((index, key));
@@ -1774,9 +1780,14 @@ fn apply_on_duplicate(
             }
         };
         let chunk = row_chunk(&updated, &field_types)?;
-        let value = expr
-            .eval(ctx, chunk.get_row(0))
-            .map_err(|e| DriverError::Exec(ExecError::Eval(e)))?;
+        let value = tidb_expr::evaluator::eval_chunk(&expr, ctx, &chunk)
+            .map_err(tidb_expr::evaluator::into_eval_error)
+            .map_err(|e| DriverError::Exec(ExecError::Eval(e)))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                DriverError::Exec(ExecError::internal("duplicate row chunk is empty"))
+            })?;
         updated[assignment.offset] = cast_value_for_assignment(
             value,
             &field_types[assignment.offset],
