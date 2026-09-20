@@ -95,9 +95,12 @@ impl DmlExpression {
             )?);
         }
         let chunk = row_chunk(&values, &self.field_types)?;
-        self.expression
-            .eval(ctx, chunk.get_row(0))
-            .map_err(|error| DriverError::Exec(ExecError::Eval(error)))
+        tidb_expr::evaluator::eval_chunk(&self.expression, ctx, &chunk)
+            .map_err(tidb_expr::evaluator::into_eval_error)
+            .map_err(|error| DriverError::Exec(ExecError::Eval(error)))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| DriverError::Exec(ExecError::internal("correlated row chunk is empty")))
     }
 }
 
