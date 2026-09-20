@@ -143,8 +143,9 @@
 //! * **`table.GetZeroValue`** (:173) is [`crate::bad_null::zero_value`].
 //! * **`Column.EvalVirtualColumn`** (:161) is `col.VirtualExpr.Eval(ctx, row)`
 //!   in Go (`pkg/expression/column.go`); here it is
-//!   [`tidb_expr::expression::Expression::eval`] over
-//!   [`tidb_expr::column::Column::virtual_expr`], which is the same call.
+//!   a retained evaluator program over [`tidb_expr::column::Column::virtual_expr`].
+//!   Programs borrow the existing mutable-row chunk at each demand point, so
+//!   every cast and writeback is visible to the next generating expression.
 //! * **`us.table.RecordPrefix()`** (:270) is a `table.Table`; this tier takes
 //!   the physical table id instead and encodes with
 //!   `tablecodec::encode_row_key_with_handle`, which produces the same bytes
@@ -172,11 +173,13 @@
 
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use tidb_chunk::chunk::Chunk;
 use tidb_chunk::mutrow::MutRow;
 use tidb_chunk::row::Row;
 use tidb_datatype::{Collation, Datum, FieldType, FieldTypeFlags};
+use tidb_expr::evaluator::{into_eval_error, EvaluatorProgram, EvaluatorSuite};
 use tidb_expr::expression::Expression;
 use tidb_expr::schema::Schema;
 use tidb_expr::Columns;
@@ -186,7 +189,7 @@ use tidb_txnkv::Key;
 use crate::bad_null::zero_value;
 use crate::driver::write_cast::cast_table_value;
 use crate::executor::{ExecError, Executor, ExecutorMeta};
-use crate::joiner::eval_bool;
+use crate::joiner::ConditionEvaluator;
 use crate::kv_table::TableHandle;
 use crate::mem_reader::{MemReaderError, MemRowsIter, RowComparator};
 use crate::StmtContext;
@@ -351,7 +354,7 @@ pub struct UnionScanExec<C: Columns> {
     ///
     /// Go `conditions` (:44) is handed to the mem readers instead and is never
     /// read by this file; it belongs to the cursor above.
-    conditions_with_vir_col: Vec<Expression>,
+    conditions_with_vir_col: ConditionEvaluator,
     /// Go `columns` (:46).
     columns: Vec<UnionScanColumn>,
     /// Go `table` (:47), narrowed to the physical id its `RecordPrefix()`
@@ -361,6 +364,9 @@ pub struct UnionScanExec<C: Columns> {
     /// [...] sorted in definition to make sure we can compute the virtual
     /// column in right order."
     virtual_column_index: Vec<usize>,
+    /// Programs follow definition order; absent schema expressions stay deferred
+    /// planning errors until a row actually demands them.
+    virtual_programs: Vec<Option<Arc<EvaluatorProgram>>>,
     /// Go `cacheTable != nil` (:60): the read has no storage half.
     cache_table: bool,
     /// Go `physTblIDIdx` (:65), `-1` when unused.
@@ -426,12 +432,25 @@ impl<C: Columns> UnionScanExec<C> {
     /// `open` (:101-107), and so does [`Executor::open`] below.
     #[must_use]
     pub fn new(spec: UnionScanSpec<C>) -> Self {
+        let virtual_programs = spec
+            .virtual_column_index
+            .iter()
+            .map(|&index| {
+                spec.meta
+                    .schema()
+                    .columns
+                    .get(index)
+                    .and_then(|column| column.virtual_expr.as_deref())
+                    .map(|expr| Arc::new(EvaluatorProgram::new(vec![expr.clone()], true)))
+            })
+            .collect();
         UnionScanExec {
+            virtual_programs,
             meta: spec.meta,
             child: spec.child,
             mem_buf_snap: spec.mem_buf_snap,
             added_rows_iter: spec.added_rows_iter,
-            conditions_with_vir_col: spec.conditions_with_vir_col,
+            conditions_with_vir_col: ConditionEvaluator::new(&spec.conditions_with_vir_col),
             columns: spec.columns,
             table_record_id: spec.table_record_id,
             virtual_column_index: spec.virtual_column_index,
@@ -599,17 +618,35 @@ impl<C: Columns> UnionScanExec<C> {
 
     /// Go's virtual-column block inside `Next` (:160-176).
     fn fill_virtual_columns(&self, mutable_row: &mut MutRow) -> Result<(), ExecError> {
-        for &index in &self.virtual_column_index {
+        for (position, &index) in self.virtual_column_index.iter().enumerate() {
             let column = self.meta.schema().columns.get(index).ok_or_else(|| {
                 ExecError::internal("union scan: virtual column index outside schema")
             })?;
             // :161. Go's `EvalVirtualColumn` is `VirtualExpr.Eval(ctx, row)`;
             // a nil `VirtualExpr` would panic there, so an absent one is a
             // planning bug and is reported rather than skipped.
-            let virtual_expr = column.virtual_expr.as_ref().ok_or_else(|| {
+            column.virtual_expr.as_ref().ok_or_else(|| {
                 ExecError::internal("union scan: virtual column has no generating expression")
             })?;
-            let datum = virtual_expr.eval(&self.ctx, mutable_row.to_row())?;
+            let program = self.virtual_programs[position]
+                .as_ref()
+                .expect("validated virtual expression");
+            // Borrow the existing mutable-row backing chunk only for this
+            // expression. Cast/NULL replacement and writeback must finish
+            // before binding the next dependent expression; do not batch them.
+            let datum = {
+                let row = mutable_row.to_row();
+                let input = row
+                    .chunk()
+                    .ok_or_else(|| ExecError::internal("union scan: mutable row has no chunk"))?;
+                EvaluatorSuite::from_program(Arc::clone(program))
+                    .eval_selected(&self.ctx, input, &[row.idx()])
+                    .map_err(into_eval_error)?
+                    .pop()
+                    .ok_or_else(|| {
+                        ExecError::internal("union scan: virtual expression returned no value")
+                    })?
+            };
             let info = self.columns.get(index).ok_or_else(|| {
                 ExecError::internal("union scan: virtual column index outside column list")
             })?;
@@ -680,11 +717,9 @@ impl<C: Columns + Send> Executor for UnionScanExec<C> {
             mutable_row.set_datums(&row);
             self.fill_virtual_columns(&mut mutable_row)?;
             // :178-184. A row failing the conditions is skipped, not emitted.
-            let (matched, _) = eval_bool(
-                &self.ctx,
-                &self.conditions_with_vir_col,
-                mutable_row.to_row(),
-            )?;
+            let (matched, _) = self
+                .conditions_with_vir_col
+                .evaluate(&self.ctx, mutable_row.to_row())?;
             if matched {
                 req.append_row(mutable_row.to_row());
             }
@@ -868,6 +903,166 @@ mod tests {
             desc,
             need_extra_sorting: false,
             handle_cols: Box::new(FirstColumnHandle),
+        }
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    mod generated_engine {
+        use super::*;
+        use tidb_ast::CiString;
+        use tidb_expr::{constant::Constant, scalar_function::ScalarFunction};
+
+        fn wide() -> FieldType {
+            FieldType::new(FieldTypeCode::LongLong)
+        }
+        pub(super) fn column(index: i64) -> Expression {
+            let mut column = Column::new(index + 1, wide());
+            column.index = index;
+            Expression::Column(column)
+        }
+        pub(super) fn scalar(name: &str, left: Expression, value: i64) -> Expression {
+            Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new(name),
+                wide(),
+                vec![
+                    left,
+                    Expression::Constant(Constant::new(Datum::Int(value), wide())),
+                ],
+            ))
+        }
+        pub(super) fn exec(
+            expressions: Vec<Expression>,
+            rows: Vec<Vec<Datum>>,
+            engine: bool,
+        ) -> UnionScanExec<StmtContext> {
+            let width = expressions.len() + 1;
+            let mut schema = Schema::default();
+            let mut columns = Vec::new();
+            for index in 0..width {
+                let mut ty = wide();
+                if index == 1 {
+                    ty.add_flags(FieldTypeFlags::NOT_NULL);
+                }
+                let mut column = Column::new(index as i64 + 1, ty.clone());
+                column.index = index as i64;
+                if index > 0 {
+                    column.virtual_expr = Some(Box::new(expressions[index - 1].clone()));
+                }
+                schema.columns.push(column);
+                columns.push(UnionScanColumn {
+                    id: index as i64 + 1,
+                    name: format!("c{index}"),
+                    field_type: ty,
+                });
+            }
+            let ctx = StmtContext::for_query().with_tikv_expression(engine);
+            UnionScanExec::new(UnionScanSpec {
+                meta: ExecutorMeta::new(schema, 1, 1, 1),
+                child: Box::new(BatchSource::new(vec![])),
+                mem_buf_snap: Box::new(DirtyKeys::of(77, &[])),
+                added_rows_iter: Box::new(DefaultRowsIter::new(rows)),
+                conditions_with_vir_col: vec![scalar("gt", column(width as i64 - 1), 0)],
+                columns,
+                table_record_id: 77,
+                virtual_column_index: (1..width).collect(),
+                cache_table: true,
+                partition_id_map: BTreeSet::new(),
+                keep_order: false,
+                compare_exec: compare_exec(false),
+                stmt: ctx.clone(),
+                ctx,
+            })
+        }
+
+        #[test]
+        fn generated_columns_observe_each_cast_and_write_before_next_expression() {
+            for engine in [false, true] {
+                let mut exec = exec(
+                    vec![scalar("plus", column(0), 1), scalar("plus", column(1), 1)],
+                    vec![
+                        vec![Datum::Null; 3],
+                        vec![Datum::Int(2), Datum::Null, Datum::Null],
+                    ],
+                    engine,
+                );
+                exec.open().unwrap();
+                let mut output = exec.new_chunk();
+                for (index, expected) in [
+                    vec![Datum::Null, Datum::Int(0), Datum::Int(1)],
+                    vec![Datum::Int(2), Datum::Int(3), Datum::Int(4)],
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    exec.next(&mut output).unwrap();
+                    assert_eq!(output.num_rows(), 1);
+                    assert_eq!(
+                        output.get_row(0).get_datum_row(exec.ret_field_types()),
+                        expected
+                    );
+                    assert_eq!(
+                        exec.ctx.tikv_expression_rows(),
+                        if engine { ((index + 1) * 3) as u64 } else { 0 }
+                    );
+                    for program in exec.virtual_programs.iter().flatten() {
+                        assert_eq!(program.tikv_compilations(), u64::from(engine));
+                    }
+                    assert_eq!(
+                        exec.conditions_with_vir_col.compilations(),
+                        u64::from(engine)
+                    );
+                }
+                exec.next(&mut output).unwrap();
+                assert_eq!(output.num_rows(), 0);
+                exec.close().unwrap();
+            }
+        }
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn generated_error_stops_later_columns_and_cached_programs_can_recover() {
+        for engine in [false, true] {
+            let mut exec = generated_engine::exec(
+                vec![
+                    generated_engine::scalar("plus", generated_engine::column(0), 1),
+                    generated_engine::scalar("plus", generated_engine::column(0), i64::MAX - 3),
+                    generated_engine::scalar("plus", generated_engine::column(1), 1),
+                ],
+                vec![vec![Datum::Int(4), Datum::Null, Datum::Null, Datum::Null]],
+                engine,
+            );
+            exec.open().unwrap();
+            let mut output = exec.new_chunk();
+            assert!(exec.next(&mut output).is_err());
+            assert_eq!(output.num_rows(), 0);
+            assert_eq!(exec.ctx.tikv_expression_rows(), u64::from(engine));
+            assert_eq!(
+                exec.virtual_programs[2]
+                    .as_ref()
+                    .unwrap()
+                    .tikv_compilations(),
+                0
+            );
+            assert_eq!(exec.conditions_with_vir_col.compilations(), 0);
+            // Rebind the same metadata to a new scratch row, after an error.
+            let mut row = MutRow::from_types(exec.ret_field_types());
+            row.set_datums(&[Datum::Int(1), Datum::Null, Datum::Null, Datum::Null]);
+            exec.fill_virtual_columns(&mut row).unwrap();
+            assert_eq!(
+                row.to_row().get_datum_row(exec.ret_field_types()),
+                vec![
+                    Datum::Int(1),
+                    Datum::Int(2),
+                    Datum::Int(i64::MAX - 2),
+                    Datum::Int(3)
+                ]
+            );
+            assert_eq!(exec.ctx.tikv_expression_rows(), if engine { 4 } else { 0 });
+            for program in exec.virtual_programs.iter().flatten() {
+                assert_eq!(program.tikv_compilations(), u64::from(engine));
+            }
+            exec.close().unwrap();
         }
     }
 

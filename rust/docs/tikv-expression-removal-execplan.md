@@ -144,9 +144,17 @@ remain in the workspace.
       admission rather than silently using native kernels. The required-engine
       getvar regression failed before the fix and now rejects before effects.
       Pin physical masks, NULL policy, cross-chunk cache reuse and row-mode
-      side-effect demand. Current inventory: 28 sites, 15 production / 13 test,
+      side-effect demand. That step's inventory: 28 sites, 15 production / 13 test,
       or 13 production excluding the unlinked duplicate. Convenience filter
       APIs outside Selection still need caller-retained programs.
+- [x] Retain UnionScan generating programs and CNF conditions. Borrow the
+      existing mutable-row chunk per expression; finish cast/zero substitution/
+      writeback before the next dependency. Tests pin real Next receipts/cache
+      reuse and stopping/recovery after overflow. Replace Sort's column-only
+      AST dispatch with validated materialized-cell transfer (not engine work),
+      preserving deferred-constant skipping and unsupported-shape rejection.
+      Current inventory: 26 sites, 13 production / 13 test, or 11 production
+      excluding the dead duplicate.
 - [ ] Retain condition programs in remaining `eval_bool` hot callers (the public
       convenience wrapper currently builds temporary programs). Existing joined scratch-row copies remain;
       eliminating them requires the independent-column facade, not more row
@@ -733,6 +741,32 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+UnionScan/Sort validation (TiDB `rust/`, same serial guarded environment,
+no local Cargo patch):
+
+    cargo test -q -p tidb-executor --features tikv-expr --lib union_scan::tests::generated_engine --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --lib union_scan::tests --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --lib sort::tests --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --locked --offline -j1 -- --test-threads=1
+
+The red control failed with one engine row versus three: only the old condition
+facade ran in the engine, not the two generating expressions. After routing,
+all 10 UnionScan / 30 Sort tests passed. Executor feature-on passed
+1373 / 355 / 6 / 2; off passed 1338 / 329 / 6 / 0 (184 ignored integration
+tests each). Single Cargo/test workers ran serially under the 8192-MiB RSS /
+16384-MiB AS guard. Sampled peak RSS: 2601.2 MiB red control; 2754.8 / 0.8 /
+2565.8 / 2096.2 MiB successful commands (the fast Sort run's 0.8-MiB sample is
+not a measured runtime-memory bound). Generated-column tests verify NOT NULL
+zero substitution is seen by the next column, reuse across fresh Next scratch
+rows, and error-stopping/rebinding without recompilation. Sort tests cover
+exact keys, NULLs, missing/negative/out-of-range column metadata, ignored deferred
+constants and unmaterialized-shape rejection. Sort's transfer is not expression
+engine execution. Current classifier: 41 raw / 26 evaluator / 13 production /
+13 test, or 11 production excluding the unlinked duplicate. No new scratch copy
+was added. Native casts/fallback remain; full mysql replay, expanded Go oracle,
+performance and make lint/PR readiness remain unverified.
 
 Retained filter/admission validation (TiDB `rust/`, same serial guarded environment,
 no local Cargo patch):

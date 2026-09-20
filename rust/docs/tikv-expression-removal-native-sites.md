@@ -11,10 +11,10 @@ kind needs. This is the measurement, and the method is repeatable:
 
 ## What the raw hits are
 
-After Selection filter routing, the raw grep returns 43 hits.
+After UnionScan routing and materialized Sort key transfer, the raw grep returns 41 hits.
 `rust/scripts/classify-native-eval-sites.py` classifies call arguments from an
-eight-line window. Its bounded test-scope scanner reports **15 production /
-13 test-only** after the Join/lookup, aggregate and Selection migrations. It
+eight-line window. Its bounded test-scope scanner reports **13 production /
+13 test-only** after the Join/lookup, aggregate, Selection and UnionScan migrations. It
 previously reproduced the manual 26 / 13 audit (rather than the old 19 / 20).
 Helper/field attributes no longer taint siblings, and inner attributes apply
 only to their enclosing file/module. Delimiters inside comments and literals
@@ -32,17 +32,17 @@ the fix; the final suite passes 18 tests, including additional test-attribute
 and conservative unsupported-generic controls. That tooling-only validation
 recorded 54 raw / 39 evaluator sites without running Rust/SQL/performance/lint.
 The newer executor migrations below reran executor tests; current counts
-are 43 raw / 28 evaluator sites.
+are 41 raw / 26 evaluator sites.
 
 | Kind | All sites | Production only |
 | --- | --- | --- |
 | one row of a chunk (`get_row(0)`) | 11 | 4 |
-| a row-loop variable or comparator | 12 | 11 |
+| a row-loop variable or comparator | 10 | 9 |
 | a constant with no input row (`Row::empty()`) | 5 | 0 |
 | not the evaluator: no-argument `constant.eval()`/`column.eval()`, the planner's `metadata.eval(k)`, the statement predicate's own four-argument `eval(row, catalog, db, ctx)` | 15 | -- |
 
-The textual native evaluator surface outside projections is **28 sites**:
-**15 production-scope** and **13 test-only**. Test-only
+The textual native evaluator surface outside projections is **26 sites**:
+**13 production-scope** and **13 test-only**. Test-only
 calls are re-pointed with the corpora rather than converted. This is a textual
 inventory, not a proof of reachability. The driver's six-argument
 `UpdateExpression::eval` is deliberately
@@ -55,7 +55,7 @@ One classifier caveat is now confirmed rather than hypothetical:
 unlinked duplicate. `lib.rs` exports the actual `StreamAggExec` and
 `GroupedStreamAggExec` from `hash_agg.rs`, and `driver/physical_builder.rs`
 imports those types; `cargo test --lib -- --list` contains none of
-`stream_agg.rs`'s tests. Excluding these two known dead calls leaves **13**
+`stream_agg.rs`'s tests. Excluding these two known dead calls leaves **11**
 production-scope sites requiring routing/reachability review (not the earlier
 heuristic's 17).
 Do not convert the dead duplicate; migrate `hash_agg.rs`'s real aggregate paths
@@ -144,11 +144,17 @@ filtering, NULL-from-IN continuation versus ordinary NULL, and side-effect/error
 demand. Convenience filter APIs still construct temporary programs; callers
 must retain `FilterProgram` for cross-call compilation reuse.
 
-Remaining ordering-sensitive calls are not candidates for an eager whole-chunk
-cache. For example, `union_scan.rs` evaluates generated columns into a `MutRow`,
-where each write can feed the next expression. It needs an order-preserving
-engine interface, not a new copied dense-row workaround. Window/Join demand
-invariants and remaining input-copy limitations are also recorded in TiKV's
+UnionScan now retains one program per generating expression and borrows the
+existing `MutRow` chunk at each demand point. Cast, NOT NULL zero substitution
+and writeback precede the next expression; tests pin dependency visibility,
+error stopping/recovery and reuse across Next calls. Its post-generation CNF
+conditions retain `ConditionEvaluator` without changing their NULL policy.
+No extra scratch-chunk copy was added. Sort's merge keys are already-materialized
+column cells: their native AST dispatch is replaced with validated direct
+`get_datum` transfer, not engine execution. Deferred constants stay unevaluated
+and other expression shapes remain rejected. Ordering-sensitive remaining calls
+must likewise preserve demand rather than eagerly evaluating a whole chunk.
+Window/Join invariants and remaining copy limits are recorded in TiKV's
 `EXPRESSION_SEMANTIC_GAPS.md`.
 
 ## Production sites by file
@@ -170,12 +176,12 @@ The remaining 13 actual test-only sites are not listed below.
 | 2 | `tidb-executor/src/access_cost.rs` |
 | 2 | `tidb-executor/src/driver/dml/correlated.rs` |
 | 2 | `tidb-executor/src/stream_agg.rs` (unlinked duplicate) |
-| 1 each | `column_default.rs`, `generated_column.rs`, `partition_pruning.rs`, `predicate_pushdown.rs`, `union_scan.rs`, `sort.rs` |
+| 1 each | `column_default.rs`, `generated_column.rs`, `partition_pruning.rs`, `predicate_pushdown.rs` |
 
 
 ## What each kind needs for the removal
 
-* **A row loop or comparator (11 production-scope).** Where eager
+* **A row loop or comparator (9 production-scope).** Where eager
   evaluation preserves observable order, evaluate the expression for the whole
   chunk before the loop and index the result vector. Otherwise use selected
   rows at the original demand points, as the Window key path does. That is now

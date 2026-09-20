@@ -46,7 +46,7 @@ use tidb_chunk::row::{OwnedRow, Row};
 use tidb_datatype::{Datum, FieldType};
 use tidb_expr::expression::Expression;
 use tidb_expr::schema::Schema;
-use tidb_expr::Columns;
+use tidb_expr::{Columns, EvalError};
 use tidb_util::memory::{ActionOnExceed, ArcAction, BaseOomAction, Tracker, DEF_SPILL_PRIORITY};
 
 use crate::mem_quota::StatementMemory;
@@ -271,22 +271,35 @@ impl ActionOnExceed for ParallelSortSpillAction {
     }
 }
 
-/// Evaluates every supported by-item against `row`, producing an owned
-/// merge-head key.
+/// Copies already-materialized by-item columns from `row` into an owned
+/// merge-head key; constants contribute only positional placeholders.
 ///
 /// The in-memory sort does not call this: like Go, it compares cells in the
 /// retained chunks directly. Owned keys are needed only while merging run
 /// heads, including spilled rows whose source chunk can be reloaded.
 pub fn eval_sort_key<C: Columns>(
     by_items: &[SortByItem],
-    ctx: &C,
+    _ctx: &C,
     row: Row<'_>,
 ) -> Result<Vec<Datum>, ExecError> {
     let mut key = Vec::with_capacity(by_items.len());
     for item in by_items {
         match &item.expr {
-            Expression::Column(_) => {
-                key.push(item.expr.eval(ctx, row)?);
+            Expression::Column(column) => {
+                // Preserve Column::eval's validation and error order without
+                // invoking an expression evaluator for materialized cells.
+                let ret_type = column
+                    .ret_type
+                    .as_ref()
+                    .ok_or(EvalError::Unsupported("column has no result type"))?;
+                let index = usize::try_from(column.index)
+                    .map_err(|_| EvalError::Unsupported("column index is negative"))?;
+                if index >= row.len() {
+                    return Err(ExecError::Eval(EvalError::Unsupported(
+                        "column index is outside the input row",
+                    )));
+                }
+                key.push(row.get_datum(index, ret_type));
             }
             // Go's `buildKeyColumns` omits constants, so even a deferred
             // constant is never evaluated while sorting or merging rows.
@@ -1532,6 +1545,124 @@ mod tests {
             less_by_items(&by, &[Datum::Null], &[Datum::Int(9)]).unwrap(),
             Ordering::Equal
         );
+    }
+
+    #[test]
+    fn sort_key_copies_exact_materialized_columns_and_nulls() {
+        let mut constant = Constant::new(Datum::Int(7), long());
+        // Evaluating this deferred expression would fail, not yield a key.
+        constant.deferred_expr = Some(Box::new(col_expr(99)));
+        let mut by = [
+            SortByItem {
+                expr: col_expr(1),
+                desc: false,
+            },
+            SortByItem {
+                expr: Expression::Constant(constant),
+                desc: false,
+            },
+            SortByItem {
+                expr: col_expr(0),
+                desc: true,
+            },
+        ];
+        let mut chunk = Chunk::new_with_capacity(&[long(), long()], 3);
+        for (first, second) in [(2, None), (1, Some(7)), (-4, Some(7))] {
+            chunk.append_int64(0, first);
+            match second {
+                Some(value) => chunk.append_int64(1, value),
+                None => chunk.append_null(1),
+            }
+        }
+        let expected = vec![
+            vec![Datum::Null, Datum::Null, Datum::Int(2)],
+            vec![Datum::Int(7), Datum::Null, Datum::Int(1)],
+            vec![Datum::Int(7), Datum::Null, Datum::Int(-4)],
+        ];
+        for desc in [false, true] {
+            by[0].desc = desc;
+            let keys: Vec<_> = (0..chunk.num_rows())
+                .map(|index| eval_sort_key(&by, &NoColumns, chunk.get_row(index)).unwrap())
+                .collect();
+            assert_eq!(keys, expected);
+            // Match the existing NULL ordering and descending tie-break tests.
+            assert_eq!(
+                less_by_items(&by, &keys[0], &keys[1]).unwrap(),
+                if desc {
+                    Ordering::Greater
+                } else {
+                    Ordering::Less
+                }
+            );
+            assert_eq!(
+                less_by_items(&by, &keys[1], &keys[2]).unwrap(),
+                Ordering::Less
+            );
+            let compare_funcs = compile_compare_funcs(&by);
+            for left in 0..chunk.num_rows() {
+                for right in 0..chunk.num_rows() {
+                    assert_eq!(
+                        less_by_items(&by, &keys[left], &keys[right]).unwrap(),
+                        compare_rows(
+                            &by,
+                            &compare_funcs,
+                            &NoColumns,
+                            chunk.get_row(left),
+                            chunk.get_row(right),
+                        )
+                        .unwrap()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sort_key_rejects_invalid_column_type_and_index() {
+        let chunk = int_chunk(&[42]);
+        for (ret_type, index, expected) in [
+            (None, 0, "column has no result type"),
+            (None, -1, "column has no result type"),
+            (None, 1, "column has no result type"),
+            (Some(long()), -1, "column index is negative"),
+            (Some(long()), i64::MIN, "column index is negative"),
+            (Some(long()), 1, "column index is outside the input row"),
+            (Some(long()), 3, "column index is outside the input row"),
+        ] {
+            let mut column = Column::new(1, long());
+            column.ret_type = ret_type;
+            column.index = index;
+            let by = [SortByItem {
+                expr: Expression::Column(column),
+                desc: false,
+            }];
+            let error = eval_sort_key(&by, &NoColumns, chunk.get_row(0)).unwrap_err();
+            assert!(
+                matches!(error, ExecError::Eval(tidb_expr::EvalError::Unsupported(message))
+                    if message == expected),
+                "index {index}: expected {expected}, got {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sort_key_rejects_unmaterialized_expression_shapes() {
+        let chunk = int_chunk(&[42]);
+        for expr in [
+            scalar_plus_col_expr(0),
+            Expression::CorrelatedColumn(tidb_expr::column::CorrelatedColumn::with_value(
+                Column::new(1, long()),
+                Datum::Int(7),
+            )),
+        ] {
+            let by = [SortByItem { expr, desc: false }];
+            let error = eval_sort_key(&by, &NoColumns, chunk.get_row(0)).unwrap_err();
+            assert!(
+                matches!(error, ExecError::Unsupported(ref message)
+                    if message == "Get unexpected expression"),
+                "unexpected error: {error:?}"
+            );
+        }
     }
 
     /// The out-of-range branch of `compare_rows` used to evaluate the key
