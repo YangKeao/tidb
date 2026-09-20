@@ -770,7 +770,7 @@ fn zero_temporal_constants_require_warning_free_compilation() {
 }
 
 #[test]
-fn timestamp_literals_require_utc_compilation_context() {
+fn timestamp_literals_preserve_fixed_offset_wall_fields() {
     struct TimestampContext {
         config: Context,
         required: bool,
@@ -816,7 +816,15 @@ fn timestamp_literals_require_utc_compilation_context() {
     };
     let mut input = Chunk::new_empty(&[]);
     input.set_num_virtual_rows(1);
+    let boundary = Datum::Time(
+        Time::from_date_checked(2024, 12, 31, 23, 59, 59, 999999, TimeType::Timestamp, 6).unwrap(),
+    );
     let cases = vec![
+        (literal(boundary.clone(), &timestamp(6)), boundary.clone()),
+        (
+            call("year", &int(), vec![literal(boundary, &timestamp(6))]),
+            Datum::Int(2024),
+        ),
         (literal(value(0), &timestamp(0)), value(0)),
         (literal(value(3), &timestamp(3)), value(3)),
         (literal(value(6), &timestamp(6)), value(6)),
@@ -831,7 +839,11 @@ fn timestamp_literals_require_utc_compilation_context() {
         for (name, offset, admitted) in [
             (None, 0, true),
             (Some("UTC"), 28800, true),
-            (None, 28800, false),
+            (None, 28800, true),
+            (None, -43200, true),
+            (Some(""), 50400, true),
+            (None, 86400, false),
+            (None, i64::MAX, false),
             (Some("Asia/Shanghai"), 0, false),
             (Some("invalid/timezone"), 0, false),
             (None, 0, true),
@@ -868,6 +880,38 @@ fn timestamp_literals_require_utc_compilation_context() {
             }
         }
     }
+}
+
+#[test]
+fn timestamp_london_fold_remains_declined_due_to_instant_mismatch() {
+    let value = Time::from_date_checked(2021, 10, 31, 1, 30, 0, 0, TimeType::Timestamp, 0).unwrap();
+    let zone = SessionTimeZone::Named("Europe/London".parse().unwrap());
+    let mut native_utc = value;
+    native_utc
+        .convert_time_zone(&zone, &SessionTimeZone::utc())
+        .unwrap();
+    assert_eq!(native_utc.clock(), (1, 30, 0));
+    let context = Context {
+        time_zone_name: Some("Europe/London".into()),
+        ..Context::default()
+    };
+    let engine_value =
+        tidb_query_expr::standalone::date_time_from_chunk(&value.go_raw().to_le_bytes()).unwrap();
+    let packed = context.pack_time_literal(&engine_value).unwrap();
+    let engine_utc = Time::from_packed_uint(packed, TimeType::Timestamp, 0).unwrap();
+    assert_eq!(engine_utc.clock(), (0, 30, 0));
+    assert_ne!(packed, native_utc.to_packed_uint().unwrap());
+    // A wall-field round trip cannot detect which occurrence was selected.
+    // Keep the adapter closed to named zones until this dialect gap is fixed.
+    assert!(TikvExpression::compile(
+        &literal(
+            Datum::Time(value),
+            &FieldType::new(FieldTypeCode::Timestamp).with_decimal(0)
+        ),
+        context
+    )
+    .unwrap()
+    .is_none());
 }
 
 #[test]

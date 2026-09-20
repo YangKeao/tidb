@@ -133,7 +133,7 @@ impl TikvExpression {
                 array: field_type.is_array(),
             })
         };
-        let Some(encoded) = lower(&remapped, &descriptor) else {
+        let Some(encoded) = lower(&remapped, &descriptor, &context) else {
             return declined("lowering", expression);
         };
         let Some(schema): Option<Vec<_>> = inputs

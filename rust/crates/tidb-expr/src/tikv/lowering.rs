@@ -108,17 +108,16 @@ fn admission_rejection(expression: &Expression, context: &super::Context) -> Opt
             if value.param_marker.is_some() {
                 return Some("constant-param-marker");
             }
-            // Packed TIMESTAMP decoding treats payload fields as UTC. The
-            // context-free encoder preserves a native constant only when that
-            // conversion is an identity. Follow Context::config's name priority.
+            // The engine normalizes fixed-offset TIMESTAMP literals to UTC.
+            // Named zones remain excluded: TiKV's earliest-fold rule differs
+            // from Go time.Date in some zones. Follow Context::config priority.
             if ty.code() == FieldTypeCode::Timestamp
                 && !match context
                     .time_zone_name
                     .as_deref()
                     .filter(|name| !name.is_empty())
                 {
-                    Some("UTC") => true,
-                    None => context.time_zone_offset == 0,
+                    Some("UTC") | None => true,
                     Some(_) => false,
                 }
             {
@@ -231,7 +230,7 @@ mod temporal_literal_tests {
                     .unwrap();
             let expr = Expression::Constant(crate::constant::Constant::new(Datum::Time(value), ty));
             assert!(admitted(&expr, &super::super::Context::default()));
-            let pb = lower(&expr, &|_| None).unwrap();
+            let pb = lower(&expr, &|_| None, &super::super::Context::default()).unwrap();
             let ymd = ((2024_u64 * 13 + 3) << 5) | 14;
             let hms = ((hour as u64) << 12) | (34 << 6) | 56;
             let packed = (((ymd << 17) | hms) << 24) | micro as u64;
@@ -251,6 +250,7 @@ fn leaf(expression: &Expression) -> bool {
 pub(super) fn lower(
     expression: &Expression,
     columns: &impl Fn(u32) -> Option<ColumnDescriptor>,
+    context: &super::Context,
 ) -> Option<PbExpr> {
     let Expression::ScalarFunction(function) = expression else {
         return match expression {
@@ -263,7 +263,25 @@ pub(super) fn lower(
             Expression::Constant(constant) => {
                 let mut constant = constant.clone();
                 constant.ret_type = Some(wire_type(constant.ret_type.as_ref()?)?);
-                pushdown_catalog::expression_to_pb(&Expression::Constant(constant), columns)
+                let timestamp = match &constant.value {
+                    Datum::Time(value) if value.kind() == tidb_datatype::TimeType::Timestamp => {
+                        Some(*value)
+                    }
+                    _ => None,
+                };
+                let mut encoded =
+                    pushdown_catalog::expression_to_pb(&Expression::Constant(constant), columns)?;
+                if let Some(value) = timestamp {
+                    // Reuse TiKV's codec and exact round-trip checks. The
+                    // distributed catalog and output bridge stay unchanged.
+                    let engine_value = tidb_query_expr::standalone::date_time_from_chunk(
+                        &value.go_raw().to_le_bytes(),
+                    )
+                    .ok()?;
+                    let packed = context.pack_time_literal(&engine_value).ok()?;
+                    encoded.val = Some(packed.to_be_bytes().to_vec());
+                }
+                Some(encoded)
             }
             _ => None,
         };
@@ -271,7 +289,7 @@ pub(super) fn lower(
     let children = function
         .args
         .iter()
-        .map(|arg| lower(arg, columns))
+        .map(|arg| lower(arg, columns, context))
         .collect::<Option<Vec<_>>>()?;
     local_call(function, children.clone())
         .or_else(|| families::lower(function, children.clone()))

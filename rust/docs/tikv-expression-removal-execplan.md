@@ -199,8 +199,13 @@ remain in the workspace.
       proven UTC (offset zero with no name, or exact named UTC). Recursively pass
       context into admission and test retained programs across timezone switches,
       both transports, typed NULL, nested YEAR, zero and mismatched values.
-- [ ] Unify packed-zero decoding under restrictive modes and non-UTC TIMESTAMP
-      transport; these still prevent engine-only coverage/default switching.
+- [x] Reuse TiKV's codec for fixed-offset TIMESTAMP literal packing, with exact
+      warning-free round-trip validation. Local lowering supplies Context; shared
+      distributed catalog/output bridge remain unchanged. Test +/- offsets, day/
+      year boundaries, hidden fractional micros, NULL, cache/profile switches.
+- [ ] Unify packed-zero decoding under restrictive modes and named-zone/DST
+      TIMESTAMP transport. London fold has a reproduced native/engine instant
+      mismatch; named non-UTC zones remain declined. No default switch yet.
 - [ ] Audit expression-internal and other forwarding entrypoints before native
       removal; retain partition programs at a safe owner. Zero direct live hits
       in the narrow outside-core `.eval` inventory is not deletion readiness.
@@ -211,7 +216,7 @@ remain in the workspace.
 - [ ] Retain condition programs in remaining `eval_bool` hot callers (the public
       convenience wrapper currently builds temporary programs). Existing joined scratch-row copies remain;
       eliminating them requires the independent-column facade, not more row
-      copies. TiDB is pinned to engine `5c1fb99`; borrowed lazy remains unsupported.
+      copies. TiDB is pinned to engine `c93c2bb`; borrowed lazy remains unsupported.
 
 - [x] Milestone A (point 6): engine shareable and thread-safe.
       TiKV metadata is `Send + Sync`, `PreparedExpression` is asserted
@@ -794,6 +799,60 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+Fixed-offset TIMESTAMP literal packing (same serial guarded environment):
+
+TiKV root:
+
+    cargo test -q -p tidb_query_expr --lib temporal_literal_packing --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb_query_expr --lib standalone:: --locked --offline -j1 -- --test-threads=1
+
+TiDB `rust/`:
+
+    cargo test -q -p tidb-expr --features tikv-expr --test all timestamp_literals_ --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+
+`timestamp-fixed-red.log`: positive offset still records 0 instead of 1 engine
+row. New TiKV Context::pack_time_literal reuses Time::to_packed_u64 and decodes
+back under the same context, checking total warning count and exact chunk bytes.
+It preserves kind/FSP and raw micros; no parsing, manual offset arithmetic,
+normalization in the output bridge, or wire change. TiDB local lowering supplies
+Context and uses this only for TIMESTAMP. Named zones other than exact UTC remain
+excluded; offset validation/name priority remain in TiKV's existing config.
+
+`timestamp-fixed-green.log` passes the expanded matrix. Final full runs include
+168 engine rows across TIMESTAMP(0/3/6), NULL, YEAR, a year-boundary fixture,
+UTC/+8/-12/+14, empty name, name priority, invalid/oversized offsets, retained
+program profile switches and copying/borrowed modes. Optional native results and
+required structured refusal are tested for declined profiles. The existing zero
+matrix checks decoder-warning isolation for TIMESTAMP too.
+
+New paired reproduction: London 2021-10-31 01:30 resolves to 01:30 UTC in native
+Rust's Go-style resolver but 00:30 UTC in TiKV's earliest-fold resolver. A round
+trip alone preserves wall fields despite that one-hour instant difference.
+`timestamp_london_fold_remains_declined_due_to_instant_mismatch` verifies both
+packed instants and the named-zone admission refusal. No new Go-runtime oracle
+was run; neither named-zone nor DST semantics are declared unified.
+
+TiKV `c93c2bb` adds only the facade API/test relative to the old pinned engine
+(code diff audited); 44 standalone tests pass (`timestamp-engine-standalone.log`),
+with exact packed-byte assertions in `timestamp-engine-pack.log`. TiDB Cargo.toml
+and lock pin that personal-fork commit. Initial `cargo update -p tidb_query_expr
+--precise c93c2bbf6c04f4b86710b7fc8df921da166a0540` introduced unrelated compatible
+socket/platform dependency-edge churn. Exact-version/recursive resolver attempts
+did not fully preserve the graph; the original lock graph was retained with only
+engine source identities migrated. A diff assertion verifies the final 46 changed
+lock lines are only old/new engine revisions; final --locked --offline tests
+accept it. No dependency package versions or unrelated bindings changed.
+
+Final `timestamp-fixed-expr-final.log`: 1222/69 passed (99 unit ignored);
+`timestamp-fixed-executor-final.log`: 1399/355/6/2 (184 integration ignored).
+Initial full logs are `timestamp-fixed-expr.log` / `timestamp-fixed-executor.log`.
+Guarded peaks: 3344.1 MiB initial executor, 3306.9 MiB final executor; guard
+8192 RSS / 16384 AS MiB, one worker. Cached standalone 0.6 MiB is an undersample,
+not a runtime bound. No feature-off rerun, full TiKV suite, performance, mysql
+replay, make lint or PR-readiness claim. Native fallback remains.
 
 UTC TIMESTAMP literal admission (TiDB `rust/`, same guarded environment):
 
