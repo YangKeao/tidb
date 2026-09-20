@@ -99,6 +99,7 @@ use tidb_datatype::{
     TimeType, MAX_DECIMAL_SCALE, UNSPECIFIED_LENGTH,
 };
 use tidb_expr::compare_datums;
+use tidb_expr::evaluator::EvaluatorSuite;
 use tidb_expr::expression::Expression;
 use tidb_expr::schema::Schema;
 use tidb_expr::{Columns, SessionTimeZone};
@@ -2749,6 +2750,8 @@ impl<C: Columns + Send> Executor for StreamAggExec<C> {
 pub struct GroupedStreamAggExec<C: Columns> {
     meta: ExecutorMeta,
     group_by: Vec<Expression>,
+    group_by_suites: Vec<EvaluatorSuite>,
+    group_by_values: Vec<Vec<Datum>>,
     agg_funcs: Vec<AggFunc>,
     input_modes: Vec<AggInputMode>,
     /// Output column for each aggregate state. This separates TiKV's
@@ -2800,6 +2803,11 @@ impl<C: Columns> GroupedStreamAggExec<C> {
             .all(|position| position < agg_funcs.len()));
         debug_assert!((0..agg_funcs.len()).all(|position| output_positions.contains(&position)));
         let child_chunk = child.new_chunk();
+        let group_by_suites = group_by
+            .iter()
+            .cloned()
+            .map(|item| EvaluatorSuite::new(vec![item], true))
+            .collect();
         let states = agg_funcs.iter().map(AggState::new).collect();
         let truncated = vec![false; agg_funcs.len()];
         let input_modes = agg_funcs.iter().map(AggInputMode::new).collect();
@@ -2807,6 +2815,8 @@ impl<C: Columns> GroupedStreamAggExec<C> {
         Self {
             meta,
             group_by,
+            group_by_suites,
+            group_by_values: Vec::new(),
             agg_funcs,
             input_modes,
             output_positions,
@@ -2829,30 +2839,38 @@ impl<C: Columns> GroupedStreamAggExec<C> {
         }
     }
 
-    /// Go `getFirstAndLastRowDatum` + `codec.EncodeKey`: one row's encoded
-    /// group key, under the group-by collations the hash aggregate uses.
-    fn encode_group_key(
-        &self,
-        row: tidb_chunk::row::Row<'_>,
-        key: &mut Vec<u8>,
-    ) -> Result<(), ExecError> {
-        key.clear();
-        let timezone = self.ctx.time_zone();
-        for expr in &self.group_by {
-            let datum = expr.eval(&self.ctx, row)?;
-            append_hash_agg_group_key_part(&timezone, expr, &datum, key)?;
+    fn evaluate_group_by_chunk(&mut self) -> Result<(), ExecError> {
+        self.group_by_values.clear();
+        for suite in &self.group_by_suites {
+            self.group_by_values.push(
+                suite
+                    .eval_chunk(&self.ctx, &self.child_chunk)
+                    .map_err(tidb_expr::evaluator::into_eval_error)?,
+            );
         }
         Ok(())
     }
 
-    fn group_values(&self, row: tidb_chunk::row::Row<'_>) -> Result<Vec<Datum>, ExecError> {
-        if !self.output_group_keys {
-            return Ok(Vec::new());
+    /// Go `getFirstAndLastRowDatum` + `codec.EncodeKey`: one row's cached
+    /// group key, under the group-by collations the hash aggregate uses.
+    fn encode_group_key(&self, row: usize, key: &mut Vec<u8>) -> Result<(), ExecError> {
+        key.clear();
+        let timezone = self.ctx.time_zone();
+        for (expr, values) in self.group_by.iter().zip(&self.group_by_values) {
+            append_hash_agg_group_key_part(&timezone, expr, &values[row], key)?;
         }
-        self.group_by
-            .iter()
-            .map(|expr| expr.eval(&self.ctx, row).map_err(ExecError::from))
-            .collect()
+        Ok(())
+    }
+
+    fn group_values(&self, row: usize) -> Vec<Datum> {
+        self.output_group_keys
+            .then(|| {
+                self.group_by_values
+                    .iter()
+                    .map(|values| values[row].clone())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Go `VecGroupChecker.SplitIntoGroups`: resolves the group boundaries of
@@ -2863,13 +2881,14 @@ impl<C: Columns> GroupedStreamAggExec<C> {
         debug_assert!(rows > 0);
         self.group_ends.clear();
         self.group_index = 0;
+        self.evaluate_group_by_chunk()?;
         let [mut first_key, mut last_key, _] = std::mem::take(&mut self.key_scratch);
-        self.encode_group_key(self.child_chunk.get_row(0), &mut first_key)?;
+        self.encode_group_key(0, &mut first_key)?;
         let same_as_prev = self
             .last_key_of_prev_chunk
             .as_ref()
             .is_some_and(|last| *last == first_key);
-        self.encode_group_key(self.child_chunk.get_row(rows - 1), &mut last_key)?;
+        self.encode_group_key(rows - 1, &mut last_key)?;
         let one_group = first_key == last_key;
         let previous = self.last_key_of_prev_chunk.replace(last_key);
         self.key_scratch = [first_key, previous.unwrap_or_default(), Vec::new()];
@@ -2947,12 +2966,11 @@ impl<C: Columns> GroupedStreamAggExec<C> {
         let [_, previous, current] = scratch;
         previous.clear();
         let timezone = self.ctx.time_zone();
-        let datum = expr.eval(&self.ctx, self.child_chunk.get_row(0))?;
-        append_hash_agg_group_key_part(&timezone, expr, &datum, previous)?;
+        let values = &self.group_by_values[item];
+        append_hash_agg_group_key_part(&timezone, expr, &values[0], previous)?;
         for (row, same) in same_group.iter_mut().enumerate().skip(1) {
             current.clear();
-            let datum = expr.eval(&self.ctx, self.child_chunk.get_row(row))?;
-            append_hash_agg_group_key_part(&timezone, expr, &datum, current)?;
+            append_hash_agg_group_key_part(&timezone, expr, &values[row], current)?;
             if *same && current != previous {
                 *same = false;
             }
@@ -3039,7 +3057,7 @@ impl<C: Columns + Send> Executor for GroupedStreamAggExec<C> {
                     self.finish_group(req)?;
                 }
                 if !self.group_open {
-                    self.current_group_values = self.group_values(self.child_chunk.get_row(0))?;
+                    self.current_group_values = self.group_values(0);
                     self.group_open = true;
                 }
             }
@@ -3055,7 +3073,7 @@ impl<C: Columns + Send> Executor for GroupedStreamAggExec<C> {
                 // The group ends inside this chunk; the next starts at `end`.
                 self.finish_group(req)?;
                 self.group_index += 1;
-                self.current_group_values = self.group_values(self.child_chunk.get_row(end))?;
+                self.current_group_values = self.group_values(end);
                 self.group_open = true;
             }
         }
@@ -4441,8 +4459,8 @@ mod tests {
         )
     }
 
-    fn drain_grouped(
-        exec: &mut GroupedStreamAggExec<NoColumns>,
+    fn drain_grouped<C: Columns + Send>(
+        exec: &mut GroupedStreamAggExec<C>,
         required_rows: usize,
     ) -> Vec<Vec<Option<i64>>> {
         exec.open().unwrap();
@@ -4466,6 +4484,38 @@ mod tests {
         }
         exec.close().unwrap();
         output
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn grouped_stream_agg_evaluates_group_keys_in_the_engine() {
+        use tidb_ast::CiString;
+        use tidb_expr::{constant::Constant, scalar_function::ScalarFunction};
+
+        let group = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("plus"),
+            long(),
+            vec![
+                col(0),
+                Expression::Constant(Constant::new(Datum::Int(1), long())),
+            ],
+        ));
+        let build = |ctx| {
+            GroupedStreamAggExec::new(
+                out_meta(1),
+                vec![group.clone()],
+                vec![AggFunc::new(AggKind::Count, Some(col(1)))],
+                vec![0],
+                source(&[(1, Some(10)), (1, Some(20)), (2, Some(30))]),
+                ctx,
+            )
+        };
+        let mut native = build(crate::StmtContext::for_query());
+        let mut engine = build(crate::StmtContext::for_query().with_tikv_expression(true));
+
+        assert_eq!(drain_grouped(&mut engine, 8), drain_grouped(&mut native, 8));
+        assert_eq!(native.ctx.tikv_expression_rows(), 0);
+        assert_eq!(engine.ctx.tikv_expression_rows(), 3);
     }
 
     /// Go `StreamAggExec`: a group whose rows straddle chunk boundaries is

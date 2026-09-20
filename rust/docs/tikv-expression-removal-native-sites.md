@@ -10,26 +10,26 @@ kind needs. This is the measurement, and the method is repeatable:
 
 ## What the raw hits are
 
-The raw grep above returns 80 hits at the current branch state. They are
+The raw grep above returns 76 hits at the current branch state. They are
 classified mechanically by `rust/scripts/classify-native-eval-sites.py` (its rule is its
 docstring), which reads a hit plus the following eight lines so a call whose
 arguments span lines is still classified by its argument list:
 
 | Kind | All sites | Production only |
 | --- | --- | --- |
-| one row of a chunk (`get_row(0)`) | 20 | 11 |
-| a row-loop variable or comparator | 37 | 26 |
+| one row of a chunk (`get_row(0)`) | 19 | 10 |
+| a row-loop variable or comparator | 34 | 23 |
 | a constant with no input row (`Row::empty()`) | 8 | 6 |
 | not the evaluator: no-argument `constant.eval()`/`column.eval()`, the planner's `metadata.eval(k)`, the statement predicate's own four-argument `eval(row, catalog, db, ctx)` | 15 | -- |
 
-So the native evaluator surface outside projections is **65 sites**, and every
+So the native evaluator surface outside projections is **61 sites**, and every
 one of them is row-at-a-time: `Expression::eval` against a single `Row`. Of
-those, **43 are production** and **22 only run under `cargo test`** (a file
+those, **39 are production** and **22 only run under `cargo test`** (a file
 under a `tests/` directory, a `src/*tests.rs` module, or any line below its
 file's first `#[cfg(test)]`); the classifier reports both because test-only
-calls are re-pointed with the corpora rather than converted, so 43 -- not 65 --
+calls are re-pointed with the corpora rather than converted, so 39 -- not 61 --
 is the pre-deletion routing work. The earlier hand count in this file said 90
-raw and 75 sites; the difference is the 10 raw hits the conversions removed (see
+raw and 75 sites; the difference is the 14 raw hits the conversions removed (see
 the conversion sections) and a classification that is now a script rather than
 a reading. The driver's six-argument `UpdateExpression::eval` is deliberately
 counted: it is a wrapper whose branches call `Expression::eval`
@@ -146,16 +146,16 @@ conversions now carry the same strength of evidence: a green suite is not
 enough, because the DDL tests run without an engine context and would pass
 through the fallback.
 
-So **11 of the 75** documented sites no longer call the native evaluator -- three
+So **12 of the 75** documented sites no longer call the native evaluator -- three
 constant-row sites in `ddl/`, four pruning sites in `partition_pruning.rs`, two
-error-only sites in `sort.rs`, and two retained-suite grouping loops
-(`vec_group_checker.rs` and `shuffle.rs`) -- which is what takes the raw grep
-from 90 hits to 80, the site count to 65 and the production count to 43. One
-converted pruning site still contains a native call by design: the helper's
-`Ok(None)` arm keeps its row evaluation for a sparse column set, which is why
-the pruning file went from four hits to one rather than to zero. The remaining
-43 production sites still need the evaluation moved out of their loop rather
-than wrapped.
+error-only sites in `sort.rs`, and three retained-suite grouping routes
+(`vec_group_checker.rs`, `shuffle.rs`, and `hash_agg.rs::GroupedStreamAggExec`)
+-- which is what takes the raw grep from 90 hits to 76, the site count to 61 and
+the production count to 39. One converted pruning site still contains a native
+call by design: the helper's `Ok(None)` arm keeps its row evaluation for a sparse
+column set, which is why the pruning file went from four hits to one rather than
+to zero. The remaining 39 production-path textual sites (37 reachable) still
+need the evaluation moved out of their loop rather than wrapped.
 
 ## The first row-loop conversion: `VecGroupChecker`
 

@@ -46,9 +46,9 @@ them.
 | Native kernel modules | 11,353 lines in 5 files | `scalar_function.rs` 4,297; `ops.rs` 2,452; `string_fn.rs` 2,308; `builtin_compare.rs` 1,617; `arg_eval_type.rs` 679 |
 | Temporal family | 8 files | `crates/tidb-expr/src/time_fn/` |
 | JSON / extended builtins | 20 files | `crates/tidb-expr/src/builtin_ext/` |
-| `.eval(` call sites in the workspace | 353 | 273 inside `tidb-expr/src` (the evaluator's own recursion, which dies with it) and 80 outside |
-| `.eval(` sites outside the adapter | **65** | 37 in a row loop or comparator, 20 against a single chunk row, 8 against `Row::empty()`; 15 of the 80 raw hits are not the evaluator (no-argument folding helpers, the planner's `metadata.eval`, the statement predicate's four-argument `eval`) |
-| of those, that must actually be rerouted | **43 production** (22 test-only) | Test-only hits are re-pointed with the corpora instead. 11 documented sites are already converted, one of which keeps a documented sparse-column fallback. The seams are `evaluator::{eval_constant_row, eval_row_values, eval_chunk}` and `EvaluatorSuite::eval_chunk`. Classified by `rust/scripts/classify-native-eval-sites.py`; per-file breakdown in `tikv-expression-removal-native-sites.md` |
+| `.eval(` call sites in the workspace | 349 | 273 inside `tidb-expr/src` (the evaluator's own recursion, which dies with it) and 76 outside |
+| `.eval(` sites outside the adapter | **61** | 34 in a row loop or comparator, 19 against a single chunk row, 8 against `Row::empty()`; 15 of the 76 raw hits are not the evaluator (no-argument folding helpers, the planner's `metadata.eval`, the statement predicate's four-argument `eval`) |
+| of those, that must actually be rerouted | **39 production-labelled text** (22 test-only) | Two production-labelled calls are the unlinked `stream_agg.rs` duplicate, leaving 37 reachable sites. 12 documented sites are already converted, one of which keeps a documented sparse-column fallback. The seams are `evaluator::{eval_constant_row, eval_row_values, eval_chunk}` and `EvaluatorSuite::eval_chunk`. Classified by `rust/scripts/classify-native-eval-sites.py`; per-file breakdown in `tikv-expression-removal-native-sites.md` |
 | Go-test source ports | 33 files, 413 `#[test]` | `crates/tidb-expr/src/tests/*_source.rs` |
 | `tikv-expr` feature mentions in the workspace | 75 | `grep -rn tikv-expr --include=*.rs --include=*.toml --include=*.sh --include=*.py .` from `rust/`: crates, difftests, scripts, manifests |
 | `cfg(not(feature = "tikv-expr"))` arms | 0 | — |
@@ -89,12 +89,13 @@ reproducible classifier; the kinds are:
 
 ### Conversion receipt
 
-Eleven sites no longer call the native evaluator: three constant-row in `ddl/`
+Twelve sites no longer call the native evaluator: three constant-row in `ddl/`
 and four row-with-columns in `partition_pruning.rs` go through the engine
 helpers (one of those four keeps its native call for the sparse-column shape,
-which the helper refuses rather than guess), two row loops
-(`vec_group_checker.rs` and `shuffle.rs`) now evaluate each grouping item for
-the whole chunk with retained suites, and two in `sort.rs` (`compare_rows`'s
+which the helper refuses rather than guess), three grouping routes
+(`vec_group_checker.rs`, `shuffle.rs`, and `hash_agg.rs::GroupedStreamAggExec`)
+now evaluate each item for the whole chunk with retained suites, and two in
+`sort.rs` (`compare_rows`'s
 out-of-range branch) were removed as provably error-only -- that branch's
 `Expression::eval` could only return `column index is outside the input row`.
 Every further site that *returns a value* must arrive with the same three
