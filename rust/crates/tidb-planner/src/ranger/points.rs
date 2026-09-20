@@ -500,7 +500,8 @@ pub type ExpressionEvaluator<'a> = dyn Fn(&Expression) -> Result<Datum, tidb_exp
 
 /// Evaluate an expression without execution bindings.
 pub fn evaluate_static(expression: &Expression) -> Result<Datum, tidb_expr::EvalError> {
-    expression.eval(&tidb_expr::NoColumns, tidb_chunk::row::Row::empty())
+    tidb_expr::evaluator::eval_constant_row(expression, &tidb_expr::NoColumns)
+        .map_err(tidb_expr::evaluator::into_eval_error)
 }
 
 impl Default for PointBuilder<'_> {
