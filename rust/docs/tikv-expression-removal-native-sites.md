@@ -46,6 +46,19 @@ but only **41** of its 43 production-labelled sites are reachable routing work.
 Do not convert the dead duplicate; migrate `hash_agg.rs`'s real aggregate paths
 instead.
 
+## Ordering-blocked native calls
+
+These are still counted by the mechanical inventory; they are not candidates for
+an eager whole-chunk cache. `window.rs` demands partition/RANGE/LAG/LEAD
+expressions only when the current frame reaches a row, so a later-row error
+cannot pre-empt an earlier key/frame short-circuit. `joiner::eval_bool` has the
+same condition-by-condition rule, including Go's special NULL continuation for
+an `IN`-rewritten equality. `union_scan.rs` evaluates generated columns into a
+`MutRow`, where each write can be an input to the next generating expression.
+They need a selected-row, order-preserving engine interface (or an adapter that
+uses one), not a copied dense-row workaround. The corresponding window gap is
+also recorded in TiKV's `EXPRESSION_SEMANTIC_GAPS.md`.
+
 ## Production sites by file
 
 Generated from the classifier; the remaining 22 test-only sites are not listed
