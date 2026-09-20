@@ -85,6 +85,61 @@ fn values(chunk: &Chunk, ty: &FieldType) -> Vec<Datum> {
 }
 
 #[test]
+fn selected_suite_preserves_physical_order_and_shared_program_cache() {
+    use std::sync::Arc;
+    use tidb_expr::evaluator::EvaluatorProgram;
+    let ty = FieldType::new(FieldTypeCode::LongLong);
+    let expr = call("plus", &ty, vec![col(0, &ty), integer(1, &ty)]);
+    let mut input = Chunk::new_with_capacity(std::slice::from_ref(&ty), 3);
+    for value in [1, i64::MAX, 3] {
+        input.append_int64(0, value);
+    }
+    input.set_sel(Some(vec![1]));
+    for backend in [None, Some(Backend::Copying), Some(Backend::Borrowed)] {
+        let context = TestContext::new(backend);
+        let program = Arc::new(EvaluatorProgram::new(vec![expr.clone()], true));
+        let suite = EvaluatorSuite::from_program(program.clone());
+        assert_eq!(
+            suite.eval_selected(&context, &input, &[2, 0, 2]).unwrap(),
+            vec![Datum::Int(4), Datum::Int(2), Datum::Int(4)]
+        );
+        let other = EvaluatorSuite::from_program(program.clone());
+        assert_eq!(
+            other.eval_selected(&context, &input, &[0]).unwrap(),
+            vec![Datum::Int(2)]
+        );
+        assert_eq!(
+            program.tikv_compilations(),
+            if backend.is_some() { 1 } else { 0 }
+        );
+        assert_eq!(
+            context.total_rows.get(),
+            if backend.is_some() { 4 } else { 0 }
+        );
+        assert_eq!(
+            context.borrowed_rows.get(),
+            if backend == Some(Backend::Borrowed) {
+                4
+            } else {
+                0
+            }
+        );
+        assert!(suite.eval_selected(&context, &input, &[1]).is_err());
+        assert!(suite.eval_selected(&context, &input, &[3]).is_err());
+        assert!(suite
+            .eval_selected(&context, &input, &[])
+            .unwrap()
+            .is_empty());
+        assert_eq!(input.sel(), Some(&[1][..]));
+        assert_eq!(input.get_row(0).get_int64(0), i64::MAX);
+        assert_eq!(
+            program.tikv_compilations(),
+            if backend.is_some() { 1 } else { 0 }
+        );
+    }
+}
+
+#[test]
 fn explicit_physical_selection_preserves_input_and_skips_other_rows() {
     let ty = FieldType::new(FieldTypeCode::LongLong);
     let expr = call("plus", &ty, vec![col(0, &ty), integer(1, &ty)]);

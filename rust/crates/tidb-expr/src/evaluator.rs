@@ -590,6 +590,28 @@ impl EvaluatorSuite {
         ctx: &C,
         input: &Chunk,
     ) -> Result<Vec<Datum>, EvaluatorError> {
+        self.eval_single_input(ctx, input, None)
+    }
+
+    /// Evaluate one calculated expression for explicit physical row indices.
+    /// Ignores `input.sel()` without mutating/copying the input chunk. Repeats
+    /// and reordering are preserved; the shared program retains its engine
+    /// cache. Invalid indices are rejected before any expression is evaluated.
+    pub fn eval_selected<C: Columns>(
+        &self,
+        ctx: &C,
+        input: &Chunk,
+        physical_rows: &[usize],
+    ) -> Result<Vec<Datum>, EvaluatorError> {
+        self.eval_single_input(ctx, input, Some(physical_rows))
+    }
+
+    fn eval_single_input<C: Columns>(
+        &self,
+        ctx: &C,
+        input: &Chunk,
+        selection: Option<&[usize]>,
+    ) -> Result<Vec<Datum>, EvaluatorError> {
         if self.program.calculated.len() != 1
             || self.program.calculated_output_indexes.as_slice() != [0]
         {
@@ -605,9 +627,14 @@ impl EvaluatorSuite {
                     "an expression without a static type cannot be evaluated",
                 ))
             })?;
-        let rows = input.num_rows();
+        if self.column_swap_helper.is_some() {
+            return Err(EvaluatorError::Chunk(
+                "a suite that moves direct columns needs a mutable input chunk",
+            ));
+        }
+        let rows = selection.map_or_else(|| input.num_rows(), <[usize]>::len);
         let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), rows);
-        self.run_with_shared_input(ctx, input, &mut output)?;
+        self.evaluate_rows_selected(ctx, input, &mut output, selection)?;
         Ok((0..rows)
             .map(|row| output.get_row(row).get_datum(0, &ty))
             .collect())
@@ -621,7 +648,27 @@ impl EvaluatorSuite {
         input: &Chunk,
         output: &mut Chunk,
     ) -> Result<(), EvaluatorError> {
-        let rows = input.num_rows();
+        self.evaluate_rows_selected(ctx, input, output, None)
+    }
+
+    fn evaluate_rows_selected<C: Columns>(
+        &self,
+        ctx: &C,
+        input: &Chunk,
+        output: &mut Chunk,
+        selection: Option<&[usize]>,
+    ) -> Result<(), EvaluatorError> {
+        if let Some(selection) = selection {
+            let physical_rows = input.physical_rows();
+            if selection.iter().any(|&row| row >= physical_rows) {
+                return Err(EvaluatorError::Chunk("physical selection is out of bounds"));
+            }
+        }
+        let rows = selection.map_or_else(|| input.num_rows(), <[usize]>::len);
+        let row_at = |index| match selection {
+            Some(selected) => input.physical_row(selected[index]),
+            None => input.get_row(index),
+        };
         let program = &self.program;
         // A resolver with no engine context can only use the native evaluator.
         // While both implementations coexist that is the default; a resolver
@@ -635,6 +682,20 @@ impl EvaluatorSuite {
                     .to_owned(),
             }
             .into());
+        }
+        // The row-major path below has no engine dispatch yet. Make that
+        // refusal observable and honor mandatory-engine contexts BEFORE any
+        // user-variable/sequence side effect can run natively.
+        #[cfg(feature = "tikv-expr")]
+        if !program.vectorizable && ctx.tikv_expression_context().is_some() {
+            ctx.record_tikv_expression_fallback(crate::tikv::FallbackReason::NotAdmitted);
+            if ctx.tikv_expression_required() {
+                return Err(EvalError::ExternalEngine {
+                    code: 1105,
+                    message: "TiKV expression engine does not admit row-major programs".to_owned(),
+                }
+                .into());
+            }
         }
         if program.vectorizable {
             // Compile once per statement policy on the shared program, then
@@ -664,14 +725,26 @@ impl EvaluatorSuite {
                     // `tikv_expression_required() == false` and the native path
                     // runs, which is the default.
                     let declined = match programs.get(_expression_index) {
-                        Some(Ok(compiled)) => crate::tikv::evaluate_shared(
-                            compiled,
-                            ctx,
-                            input,
-                            output,
-                            *output_index,
-                        )?
-                        .inspect(|reason| ctx.record_tikv_expression_fallback(*reason)),
+                        Some(Ok(compiled)) => {
+                            let result = match selection {
+                                Some(selected) => crate::tikv::evaluate_shared_selected(
+                                    compiled,
+                                    ctx,
+                                    input,
+                                    Some(selected),
+                                    output,
+                                    *output_index,
+                                ),
+                                None => crate::tikv::evaluate_shared(
+                                    compiled,
+                                    ctx,
+                                    input,
+                                    output,
+                                    *output_index,
+                                ),
+                            };
+                            result?.inspect(|reason| ctx.record_tikv_expression_fallback(*reason))
+                        }
                         Some(Err(reason)) => {
                             ctx.record_tikv_expression_fallback(*reason);
                             Some(*reason)
@@ -713,12 +786,16 @@ impl EvaluatorSuite {
                 }
                 if let Expression::ScalarFunction(function) = expression {
                     // Go's typed `VecEvalDecimal` for decimal arithmetic.
-                    if function.vec_eval_decimal_arithmetic(input, output, *output_index)? {
+                    // This native vector kernel reads input.sel(); explicit
+                    // physical selections instead use the scalar loop below.
+                    if selection.is_none()
+                        && function.vec_eval_decimal_arithmetic(input, output, *output_index)?
+                    {
                         continue;
                     }
                 }
                 for row_index in 0..rows {
-                    let value = expression.eval(ctx, input.get_row(row_index))?;
+                    let value = expression.eval(ctx, row_at(row_index))?;
                     output.append_datum(*output_index, &value);
                 }
             }
@@ -729,7 +806,7 @@ impl EvaluatorSuite {
                     .iter()
                     .zip(&program.calculated)
                 {
-                    let value = expression.eval(ctx, input.get_row(row_index))?;
+                    let value = expression.eval(ctx, row_at(row_index))?;
                     output.append_datum(*output_index, &value);
                 }
             }
@@ -1336,6 +1413,94 @@ mod tests {
             vectorized_filter_consider_null(&ctx, true, &both, &input, Vec::new(), Vec::new())
                 .unwrap();
         assert_eq!(selected, vec![false, true, false, false]);
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn required_engine_rejects_row_major_native_dispatch() {
+        struct RequiredContext {
+            reads: Cell<usize>,
+            fallbacks: Cell<usize>,
+        }
+        impl Columns for RequiredContext {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn tikv_expression_context(&self) -> Option<crate::tikv::Context> {
+                Some(crate::tikv::Context::default())
+            }
+            fn tikv_expression_required(&self) -> bool {
+                true
+            }
+            fn record_tikv_expression_fallback(&self, reason: crate::tikv::FallbackReason) {
+                assert_eq!(reason, crate::tikv::FallbackReason::NotAdmitted);
+                self.fallbacks.set(self.fallbacks.get() + 1);
+            }
+            fn get_uservar(&self, _: &str) -> Option<Datum> {
+                self.reads.set(self.reads.get() + 1);
+                Some(Datum::Bytes(b"value".to_vec()))
+            }
+        }
+        let expression = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("getvar"),
+            string(),
+            vec![string_const("x")],
+        ));
+        let suite = EvaluatorSuite::new(vec![expression], true);
+        assert!(!suite.vectorizable());
+        let mut input = Chunk::new_with_capacity(&[], 1);
+        input.set_num_virtual_rows(1);
+        for selected in [false, true] {
+            let ctx = RequiredContext {
+                reads: Cell::new(0),
+                fallbacks: Cell::new(0),
+            };
+            let result = if selected {
+                suite.eval_selected(&ctx, &input, &[0])
+            } else {
+                suite.eval_chunk(&ctx, &input)
+            };
+            assert!(matches!(
+                result,
+                Err(EvaluatorError::Eval(EvalError::ExternalEngine { .. }))
+            ));
+            assert_eq!(
+                ctx.reads.get(),
+                0,
+                "required engine must never invoke native side effects"
+            );
+            assert_eq!(ctx.fallbacks.get(), 1);
+        }
+    }
+
+    #[test]
+    fn selected_decimal_suite_does_not_reapply_chunk_selection() {
+        let mut ty = FieldType::new(FieldTypeCode::NewDecimal);
+        ty.set_flen(20);
+        ty.set_decimal(2);
+        let expr = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("plus"),
+            ty.clone(),
+            vec![decimal_column(0, &ty), decimal_column(0, &ty)],
+        ));
+        let mut input = Chunk::new_with_capacity(std::slice::from_ref(&ty), 3);
+        for value in ["1.25", "7.50"] {
+            input.append_my_decimal(0, &Decimal::from_literal(value).to_my_decimal().unwrap());
+        }
+        input.append_null(0);
+        input.set_sel(Some(vec![1]));
+        let selected = [2, 0, 2];
+        let expected: Vec<_> = selected
+            .iter()
+            .map(|&row| expr.eval(&NoColumns, input.physical_row(row)).unwrap())
+            .collect();
+        let suite = EvaluatorSuite::new(vec![expr], true);
+        assert_eq!(
+            suite.eval_selected(&NoColumns, &input, &selected).unwrap(),
+            expected
+        );
+        assert_eq!(input.sel(), Some(&[1][..]));
+        assert!(suite.eval_selected(&NoColumns, &input, &[3]).is_err());
     }
 
     /// Go `builtinArithmetic*DecimalSig.vecEvalDecimal`: the projection's

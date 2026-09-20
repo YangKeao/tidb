@@ -71,13 +71,22 @@ remain in the workspace.
       supplied selection. Existing APIs delegate using `input.sel()`. Tests
       cover reordered/repeated rows, unselected overflow/nonfinite input,
       input-selection preservation, dense/empty selection and selected errors.
+- [x] `EvaluatorSuite::eval_selected` evaluates explicit physical rows through
+      the existing shared program/cache and uses `Chunk::physical_row` for the
+      native coexistence path. Tests prove reordered/repeated selection across
+      two suites compiles once, preserves the input selection, and matches both
+      engine backends and native results; a decimal test guards against applying
+      the original chunk selection a second time.
+- [x] Fix the mandatory-engine row-major dispatch hole. A `getvar` regression
+      failed before the fix; row-major programs now emit a `NotAdmitted` receipt
+      and mandatory-engine contexts receive an `ExternalEngine` error before
+      any native side effect. Optional-engine behavior stays native but visible.
 - [ ] Route Join evaluations at their original demand points. TiDB is pinned to
       engine `5c1fb99bc8f006791136d9f922394866111cecbb`, but its Join adapter has
       not yet consumed the independent-length interface. Borrowed evaluation
-      still rejects lazy programs. Next, thread explicit physical selection
-      through `EvaluatorSuite` so Join's borrowed row cursors can reuse the
-      existing compiled cache without cloning/mutating their source chunks;
-      then replace CNF evaluation while preserving NULL-from-IN continuation.
+      still rejects lazy programs. Next, route Join's borrowed row cursors via
+      `EvaluatorSuite::eval_selected` and retained condition programs, preserving
+      NULL-from-IN continuation and condition-by-condition short-circuit.
 
 - [x] Milestone A (point 6): engine shareable and thread-safe.
       TiKV metadata is `Send + Sync`, `PreparedExpression` is asserted
@@ -660,6 +669,22 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+Selected-suite/cache and mandatory-engine validation (TiDB `rust/`, same
+serial guarded environment, no local Cargo patch):
+
+    cargo test -q -p tidb-expr --features tikv-expr --lib required_engine_rejects_row_major_native_dispatch --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+
+The first command failed before the row-major guard (expected `ExternalEngine`
+but native evaluation ran). After the fix, expression feature-on passed
+1215 lib / 63 integration tests; feature-off passed 1183 / 18, both with 99
+ignored lib tests. Executor feature-on passed 1349 / 355 / 6 / 2, with 184
+ignored integration tests. Peak RSS: 1798.6 / 2123.6 / 2564.1 MiB for those
+three full runs. Join callers are still unconverted. Full mysql replay,
+performance and repository-wide lint remain unverified for this change.
 
 Explicit physical selection adapter validation (TiDB `rust/`, same serial
 memory-guarded environment, no local Cargo patch):
