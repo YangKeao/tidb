@@ -210,6 +210,11 @@ remain in the workspace.
       existing TiKV kernel, retaining numeric output kinds and compiled programs.
       Refuse ordinary binary-collated non-null constants in integer CAST after
       reproducing native 1 versus engine 49; keep signed high-bit casts excluded.
+- [x] Admit canonical BIT roots only, preserving exact width/padding and Datum
+      kind through existing MysqlBit/bridge paths. Keep nested consumers closed.
+- [x] Reproduce unsafe implicit binary-string casts and enforce a common
+      signature+operand-shape guard for local nodes and catalog substitution,
+      preserving only source-authorized literal CAST subtrees.
 - [ ] Add a literal-kind carrier/provenance contract for root/lazy forwarding and
       remaining binary/BIT coercions. Direct numeric CAST is only a narrow subset.
 - [ ] Audit expression-internal and other forwarding entrypoints before native
@@ -805,6 +810,53 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+Canonical BIT roots and implicit-coercion provenance (TiDB `rust/`, same guard):
+
+    cargo test -q -p tidb-expr --features tikv-expr --test all canonical_bit_roots --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --test all bit_ --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --test all implicit_binary_string_numeric --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+
+`bit-root-red.log` reproduces required-engine NotAdmitted. `bit-root-green.log`
+passes 2 tests after a root-position-aware shape gate: BIT type, width 1..64,
+exactly ceil(width/8) bytes, no unused high bits, no deferred/parameter marker.
+Existing MysqlBit decoding plus the existing bridge preserves the native Bit
+kind and padding, so no codec/kernel/protocol changes are needed. Eighteen
+value/flag shapes cover widths 1/8/9/16/25/64, zero padding, top bit and full u64;
+108 selected engine rows across both transports, exact native-kind parity,
+empty/repeated selections, one compilation per retained program, projection and
+NULL controls. Noncanonical/mismatched roots and nested CAST/math/HEX/COALESCE
+literal consumers remain declined; root support is not general BIT coercion.
+
+An independent audit found the previous direct-CAST provenance guard insufficient.
+`binary-implicit-red.log` reproduces ordinary binary bytes b"1": sqrt native 1 /
+engine 7, plus 1 / 49, leftshift 2 / 562949953421312, LEFT one character / four.
+Generic Real `cast` also showed native Unsupported versus engine success in this
+hand-built shape (no Go-runtime correctness claim). ROUND already declined in
+this test. `binary-implicit-green.log` passes after centralized
+CastStringAsInt/Real + direct String/Bytes-constant + binary-collation guarding.
+The shared node builder covers synthesized local/family casts; catalog
+substitution checks newly created nodes after children are substituted, preventing
+fallback from bypassing the rule. Validated child subtrees are not scanned again
+or authorized by protobuf equality: ordinary String and BinaryLiteral can have
+identical wire leaves. Only the checked source-level direct integer-literal cast
+uses the raw node constructor. Tests keep that nested subset working, reject
+ordinary String/Bytes siblings, and retain ordinary text catalog cast_double.
+A unit test covers both wire kinds and both signs of the binary collation ID;
+the guard deliberately does not depend on mutable global collation mode.
+
+This is safe compile refusal, not repaired engine provenance or runtime error
+replay. An engine-owned literal-provenance contract is still needed to regain
+these numeric string shapes; no consumer-name blacklist or wire change was added.
+
+Final logs: `bit-provenance-expr-final.log`: 1223/75 passed (99 unit ignored);
+`bit-provenance-executor-final.log`: 1399/355/6/2 (184 integration ignored).
+Earlier full logs: `bit-provenance-expr.log` / `bit-provenance-executor.log`.
+All heavy commands serial, one worker; sampled peak 2498.1 MiB with 8192 RSS /
+16384 AS MiB limits. No feature-off/TiKV-code rerun, performance, Go oracle, full
+mysql replay, make lint or PR-readiness claim. Native fallback/default remains.
 
 Bounded BinaryLiteral integer CAST (TiDB `rust/`, same guarded environment):
 

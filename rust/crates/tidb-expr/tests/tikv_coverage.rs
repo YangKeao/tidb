@@ -590,6 +590,213 @@ fn tikv_coverage_string_and_misc_families_differential() {
 }
 
 #[test]
+fn implicit_binary_string_numeric_casts_require_literal_provenance() {
+    let s = || literal(Datum::Bytes(vec![b'1'].into()), &bytes());
+    let uint = int().with_flags(1 << 5);
+    let expressions = vec![
+        call("sqrt", &real(), vec![s()]),
+        call(
+            "plus",
+            &real(),
+            vec![s(), literal(Datum::Real(0.0), &real())],
+        ),
+        call(
+            "leftshift",
+            &uint,
+            vec![literal(Datum::Int(1), &int()), s()],
+        ),
+        call(
+            "round",
+            &real(),
+            vec![literal(Datum::Real(1.25), &real()), s()],
+        ),
+        call(
+            "left",
+            &text(),
+            vec![literal(Datum::Bytes(b"abcd".to_vec().into()), &text()), s()],
+        ),
+        call("cast", &real(), vec![s()]),
+        call("cast_double", &real(), vec![s()]),
+    ];
+    let mut input = Chunk::new_empty(&[]);
+    input.set_num_virtual_rows(1);
+    let mut mismatches = Vec::new();
+    for expression in expressions {
+        if let Some(engine) = TikvExpression::compile(&expression, Context::default()).unwrap() {
+            let native = EvaluatorSuite::new(vec![expression.clone()], true)
+                .eval_selected_for_cast(&TestContext::default(), &input, &[0]);
+            mismatches.push(format!(
+                "{expression:?}: native={native:?}, engine={:?}",
+                engine.evaluate(&TestContext::default(), &input)
+            ));
+        }
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+    check(
+        "catalog text cast remains admitted",
+        call(
+            "cast_double",
+            &real(),
+            vec![literal(Datum::Bytes(vec![b'1'].into()), &text())],
+        ),
+        &mut input,
+        &real(),
+    )
+    .unwrap();
+    // Validated literal CAST subtrees must not be rejected again by a parent.
+    let authorized = call(
+        "cast_signed",
+        &int(),
+        vec![literal(Datum::BinaryLiteral(vec![b'1'].into()), &bytes())],
+    );
+    check(
+        "authorized nested literal CAST",
+        call(
+            "plus",
+            &int(),
+            vec![authorized.clone(), literal(Datum::Int(1), &int())],
+        ),
+        &mut input,
+        &int(),
+    )
+    .unwrap();
+    let mut string = Datum::Null;
+    string.set_string(vec![b'1'], bytes().collation());
+    let ordinary_string = literal(string, &bytes());
+    assert!(TikvExpression::compile(
+        &call("sqrt", &real(), vec![ordinary_string.clone()]),
+        Context::default()
+    )
+    .unwrap()
+    .is_none());
+    // The ordinary String has the same wire leaf as the authorized literal.
+    // Structural protobuf equality must not authorize a new sibling cast.
+    assert!(TikvExpression::compile(
+        &call("plus", &int(), vec![authorized.clone(), ordinary_string]),
+        Context::default()
+    )
+    .unwrap()
+    .is_none());
+    assert!(TikvExpression::compile(
+        &call("plus", &real(), vec![authorized, s()]),
+        Context::default()
+    )
+    .unwrap()
+    .is_none());
+}
+
+#[test]
+fn canonical_bit_roots_preserve_width_and_datum_kind() {
+    for (bits, raw) in [
+        (1, vec![0]),
+        (1, vec![1]),
+        (8, vec![0xff]),
+        (9, vec![0, 1]),
+        (9, vec![1, 0xff]),
+        (16, vec![0, 1]),
+        (25, vec![1, 0xff, 0xff, 0xff]),
+        (64, (1_u64 << 63).to_be_bytes().to_vec()),
+        (64, vec![0xff; 8]),
+    ] {
+        for flags in [0, 1 << 5] {
+            let ty = FieldType::new(FieldTypeCode::Bit)
+                .with_flen(bits)
+                .with_flags(flags);
+            let value = Datum::Bit(raw.clone().into());
+            let program = Arc::new(EvaluatorProgram::new(
+                vec![literal(value.clone(), &ty)],
+                true,
+            ));
+            let mut input = Chunk::new_empty(&[]);
+            input.set_num_virtual_rows(2);
+            for backend in [None, Some(Backend::Copying), Some(Backend::Borrowed)] {
+                let ctx = TestContext {
+                    backend,
+                    engine_required: backend.is_some(),
+                    ..TestContext::default()
+                };
+                let suite = EvaluatorSuite::from_program(Arc::clone(&program));
+                assert_eq!(
+                    suite
+                        .eval_selected_for_cast(&ctx, &input, &[1, 0, 1])
+                        .unwrap(),
+                    vec![value.clone(); 3]
+                );
+                assert!(suite
+                    .eval_selected_for_cast(&ctx, &input, &[])
+                    .unwrap()
+                    .is_empty());
+                assert_eq!(ctx.rows.get(), if backend.is_some() { 3 } else { 0 });
+                assert!(ctx.warnings.borrow().is_empty());
+            }
+            assert_eq!(program.tikv_compilations(), 1);
+            check(
+                "canonical BIT projection",
+                literal(value, &ty),
+                &mut input,
+                &ty,
+            )
+            .unwrap();
+        }
+    }
+}
+
+#[test]
+fn bit_noncanonical_roots_and_nested_consumers_remain_declined() {
+    let bit = |width| FieldType::new(FieldTypeCode::Bit).with_flen(width);
+    let root = |width, raw: Vec<u8>| literal(Datum::Bit(raw.into()), &bit(width));
+    let mut expressions = vec![
+        root(1, vec![]),
+        root(1, vec![2]),
+        root(0, vec![0]),
+        root(65, vec![0; 9]),
+        root(9, vec![1]),
+        root(9, vec![0, 0, 1]),
+        root(9, vec![2, 0]),
+        root(64, vec![0; 9]),
+        literal(Datum::Bit(vec![1].into()), &int()),
+        literal(Datum::BinaryLiteral(vec![1].into()), &bit(1)),
+        call("cast_signed", &int(), vec![root(1, vec![1])]),
+        call(
+            "plus",
+            &int(),
+            vec![root(1, vec![1]), literal(Datum::Int(1), &int())],
+        ),
+        call("hex", &bytes(), vec![root(8, vec![1])]),
+        call(
+            "coalesce",
+            &bit(1),
+            vec![root(1, vec![1]), literal(Datum::Null, &bit(1))],
+        ),
+    ];
+    let mut deferred = Constant::new(Datum::Bit(vec![1].into()), bit(1));
+    deferred.deferred_expr = Some(Box::new(root(1, vec![0])));
+    let mut parameter = Constant::new(Datum::Bit(vec![1].into()), bit(1));
+    parameter.param_marker = Some(Default::default());
+    expressions.extend([
+        Expression::Constant(deferred),
+        Expression::Constant(parameter),
+    ]);
+    for expression in expressions {
+        assert!(
+            TikvExpression::compile(&expression, Context::default())
+                .unwrap()
+                .is_none(),
+            "unexpected BIT admission: {expression:?}"
+        );
+    }
+    let mut input = Chunk::new_empty(&[]);
+    input.set_num_virtual_rows(1);
+    check(
+        "typed BIT NULL",
+        literal(Datum::Null, &bit(9)),
+        &mut input,
+        &bit(9),
+    )
+    .unwrap();
+}
+
+#[test]
 fn binary_literal_integer_casts_use_engine_with_exact_numeric_kind() {
     let mut input = Chunk::new_empty(&[]);
     input.set_num_virtual_rows(2);

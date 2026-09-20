@@ -78,7 +78,7 @@ pub(super) fn field_type_to_pb(ty: &FieldType) -> Option<tidb_proto::tipb::Field
 }
 
 pub(super) fn admitted(expression: &Expression, context: &super::Context) -> bool {
-    match admission_rejection(expression, context) {
+    match admission_rejection(expression, context, true) {
         None => true,
         Some(reason) => {
             // The admission gate is a full third of the corpus gap and its
@@ -93,7 +93,11 @@ pub(super) fn admitted(expression: &Expression, context: &super::Context) -> boo
 }
 
 /// Why `admitted` refuses `expression`, for the debug channel only.
-fn admission_rejection(expression: &Expression, context: &super::Context) -> Option<&'static str> {
+fn admission_rejection(
+    expression: &Expression,
+    context: &super::Context,
+    at_root: bool,
+) -> Option<&'static str> {
     let ty = expression.static_type()?;
     if !super::bridge::supported_type(ty) {
         return Some("unsupported-result-type");
@@ -133,16 +137,24 @@ fn admission_rejection(expression: &Expression, context: &super::Context) -> Opt
             if matches!(value.value, Datum::Real(v) | Datum::Float32(v) if !v.is_finite()) {
                 return Some("constant-nonfinite-real");
             }
-            // A binary/bit literal is NUMERIC in the native evaluator's
-            // coercion (`b'1' + 0` is 1) but reaches the engine as bytes, where
-            // the same expression is 0. Decline the literal.
+            if let Datum::Bit(bits) = &value.value {
+                // MysqlBit decodes as Int; the output bridge restores the
+                // declared byte width. Only a canonical root can round-trip
+                // its Datum kind without exposing unaudited BIT coercions.
+                let bytes = bits.as_bytes();
+                let width = ty.flen();
+                let canonical = at_root
+                    && ty.code() == FieldTypeCode::Bit
+                    && (1..=64).contains(&width)
+                    && bytes.len() == ((width + 7) / 8) as usize
+                    && (width % 8 == 0 || bytes[0] >> (width % 8) == 0);
+                return (!canonical).then_some("constant-bit-shape-or-position");
+            }
+            // BinaryLiteral needs provenance beyond string metadata. Only
+            // the checked direct integer CAST below can consume it so far.
             if matches!(
                 value.value,
-                Datum::Raw(_)
-                    | Datum::MinNotNull
-                    | Datum::MaxValue
-                    | Datum::BinaryLiteral(_)
-                    | Datum::Bit(_)
+                Datum::Raw(_) | Datum::MinNotNull | Datum::MaxValue | Datum::BinaryLiteral(_)
             ) {
                 return Some("constant-binary-or-literal");
             }
@@ -173,7 +185,7 @@ fn admission_rejection(expression: &Expression, context: &super::Context) -> Opt
             function
                 .args
                 .iter()
-                .find_map(|arg| admission_rejection(arg, context))
+                .find_map(|arg| admission_rejection(arg, context, false))
         }
     }
 }
@@ -336,12 +348,61 @@ pub(super) fn lower(
         .iter()
         .map(|arg| lower(arg, columns, context))
         .collect::<Option<Vec<_>>>()?;
+    if binary_constant_integer_cast(function) == Some(true) {
+        // Only source-AST provenance may authorize this constant binary kernel.
+        return raw_node("CastStringAsInt", children, function.get_static_type()?);
+    }
     local_call(function, children.clone())
         .or_else(|| families::lower(function, children.clone()))
         .or_else(|| catalog_call(function, children))
 }
 
 pub(super) fn node(signature: &str, children: Vec<PbExpr>, ty: &FieldType) -> Option<PbExpr> {
+    raw_node(signature, children, ty).filter(|expr| !unproven_binary_numeric_cast(expr))
+}
+
+// A signature+operand-shape gate for synthesized casts, not a consumer-name
+// blacklist. String/Bytes wire kinds alone cannot establish literal provenance.
+fn unproven_binary_numeric_cast(expr: &PbExpr) -> bool {
+    if expr.tp != Some(ExprType::ScalarFunc as i32)
+        || !["CastStringAsInt", "CastStringAsReal"]
+            .iter()
+            .any(|name| expr.sig == scalar_function_signature(name))
+    {
+        return false;
+    }
+    expr.children.first().is_some_and(|child| {
+        matches!(child.tp, Some(tp) if tp == ExprType::String as i32 || tp == ExprType::Bytes as i32)
+            && child.field_type.as_ref().and_then(|ty| ty.collate)
+                .is_some_and(|id| id.checked_abs() == Some(tidb_datatype::collation_name_to_id("binary")))
+    })
+}
+
+#[test]
+fn numeric_cast_guard_covers_both_wire_kinds_and_collation_signs() {
+    let binary_id = tidb_datatype::collation_name_to_id("binary");
+    for tp in [ExprType::String, ExprType::Bytes] {
+        for id in [binary_id, -binary_id] {
+            let child = PbExpr {
+                tp: Some(tp as i32),
+                val: Some(vec![b'1']),
+                field_type: Some(tidb_proto::tipb::FieldType {
+                    collate: Some(id),
+                    ..Default::default()
+                }),
+                ..PbExpr::default()
+            };
+            for (signature, code) in [
+                ("CastStringAsInt", FieldTypeCode::LongLong),
+                ("CastStringAsReal", FieldTypeCode::Double),
+            ] {
+                assert!(node(signature, vec![child.clone()], &FieldType::new(code)).is_none());
+            }
+        }
+    }
+}
+
+fn raw_node(signature: &str, children: Vec<PbExpr>, ty: &FieldType) -> Option<PbExpr> {
     Some(PbExpr {
         tp: Some(ExprType::ScalarFunc as i32),
         sig: Some(scalar_function_signature(signature)?),
@@ -1388,6 +1449,13 @@ fn catalog_call(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbEx
         } else {
             for child in &mut expr.children {
                 substitute(child, children)?;
+            }
+            // Check catalog-generated nodes after substitution too: a failed
+            // local coercion must not fall through into the same unsafe cast.
+            // Replaced child subtrees were validated by their own source AST;
+            // do not reclassify an authorized literal CAST by wire bytes.
+            if unproven_binary_numeric_cast(expr) {
+                return None;
             }
         }
         Some(())
