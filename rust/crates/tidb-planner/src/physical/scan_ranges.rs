@@ -44,8 +44,10 @@ fn substitute(access: &[Expression], context: &impl Columns) -> Result<Vec<Expre
 impl PhysicalTableScan {
     /// Go PhysicalTableScan.ResolveCorrelatedColumns, with execution-owned output.
     pub fn rebuild_access_ranges(&self, context: &impl Columns) -> Result<Ranges, PlanError> {
-        let evaluate =
-            |expression: &Expression| expression.eval(context, tidb_chunk::row::Row::empty());
+        let evaluate = |expression: &Expression| {
+            tidb_expr::evaluator::eval_constant_row(expression, context)
+                .map_err(tidb_expr::evaluator::into_eval_error)
+        };
         if !self.common_handle_cols.is_empty() {
             // Go appends substituted predicates to the original access slice.
             let mut access = self.access_conditions.clone();

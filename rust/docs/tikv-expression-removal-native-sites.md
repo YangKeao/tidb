@@ -10,7 +10,7 @@ kind needs. This is the measurement, and the method is repeatable:
 
 ## What the raw hits are
 
-The raw grep above returns 75 hits at the current branch state. They are
+The raw grep above returns 74 hits at the current branch state. They are
 classified mechanically by `rust/scripts/classify-native-eval-sites.py` (its rule is its
 docstring), which reads a hit plus the following eight lines so a call whose
 arguments span lines is still classified by its argument list:
@@ -19,7 +19,7 @@ arguments span lines is still classified by its argument list:
 | --- | --- | --- |
 | one row of a chunk (`get_row(0)`) | 19 | 10 |
 | a row-loop variable or comparator | 34 | 23 |
-| a constant with no input row (`Row::empty()`) | 7 | 5 |
+| a constant with no input row (`Row::empty()`) | 6 | 4 |
 | not the evaluator: no-argument `constant.eval()`/`column.eval()`, the planner's `metadata.eval(k)`, the statement predicate's own four-argument `eval(row, catalog, db, ctx)` | 15 | -- |
 
 So the native evaluator surface outside projections is **61 sites**, and every
