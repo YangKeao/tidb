@@ -34,6 +34,21 @@ remain in the workspace.
 ## Progress
 
 
+- [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
+      in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected
+      borrowed facade was used by the adapter while the manifest still pinned
+      an older engine without that API; local Cargo patches had hidden this.
+      Unpatched fork validation: 1212 lib tests passed (99 ignored) and 60
+      integration tests passed. Commands and limitations are recorded below.
+- [x] Fix selected borrowed dense bounds in TiKV: a `None` selection with
+      `output_rows > row_count` now returns an error before any sink callback.
+      The new regression failed before the fix; the engine package now passes
+      481 tests. Added cross-batch independent selection, empty-selection and
+      invalid-length/index/nonfinite preflight coverage.
+- [ ] Route Window/Join at their original demand points. Borrowed selected
+      evaluation still rejects lazy programs and requires equal physical input
+      lengths; independent selections alone do not remove these limitations.
+
 - [x] Milestone A (point 6): engine shareable and thread-safe.
       TiKV metadata is `Send + Sync`, `PreparedExpression` is asserted
       `Send + Sync`, and a compiled program is split from caller-owned
@@ -616,6 +631,26 @@ milestones before it.
 ## Artifacts and Notes
 
 
+Recovery-audit commands (TiDB repository `rust/`, no Cargo patch):
+
+    cargo test -q -p tidb-expr --features tikv-expr --lib -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --test all --locked --offline -j1 -- --test-threads=1
+
+Both ran serially under `limited-run.py --rss-mib 8192 --as-mib 16384` using
+nightly-2026-08-22, `CARGO_BUILD_JOBS=1`, `RUSTFLAGS=-Awarnings`,
+`MALLOC_ARENA_MAX=2`, `RUST_MIN_STACK=4194304`,
+`CMAKE_POLICY_VERSION_MINIMUM=3.5`, `CXXFLAGS='-w -std=gnu++14 -include cstdint'`
+and `CFLAGS=-w`. Peak group RSS: 2473.3 MiB (lib), 1109.1 MiB (integration).
+TiKV repository validation used the same environment and guard:
+
+    cargo test -q -p tidb_query_expr -j1 --offline -- --test-threads=1
+
+Result: 481 passed, four documentation tests ignored; peak RSS 1051.3 MiB.
+This audit did not rerun executor/mysql replay or repository-wide lint and does
+not claim native removal or PR readiness. An optional whole-workspace offline
+`cargo metadata` inspection failed because `adler32 v1.2.0` was not cached;
+this did not affect the above package tests or the generated git-source lock.
+
 `components/tidb_query_expr/EXPRESSION_SEMANTIC_GAPS.md` (TiKV) is the running
 list of kernel divergences. This plan, the coverage report and the inventory
 generator under `rust/docs` and `rust/scripts` are updated as milestones land.
@@ -635,3 +670,8 @@ TiDB's `tikv.rs` keeps `TikvExpression::compile` and `evaluate`/`evaluate_into`
 signatures, gains a per-`EvaluatorProgram` cache, and consumes the admission
 table instead of name matching. The `Backend` enum and counters stay until
 milestone E. No new dependency on a second fork is introduced.
+
+Revision note: the recovery audit pins the actually used selected-input engine,
+records the dense-selection regression and unpatched tests, and corrects the
+remaining borrowed-lazy and unequal-input-length limitations. It does not mark
+Window/Join migration or native deletion complete.
