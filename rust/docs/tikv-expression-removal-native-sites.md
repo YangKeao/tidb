@@ -10,7 +10,7 @@ kind needs. This is the measurement, and the method is repeatable:
 
 ## What the raw hits are
 
-After the Window key migration, the raw grep above returns 62 hits. They are
+After the Window key/value migration, the raw grep above returns 59 hits. They are
 classified mechanically by `rust/scripts/classify-native-eval-sites.py` (its rule is its
 docstring), which reads a hit plus the following eight lines so a call whose
 arguments span lines is still classified by its argument list:
@@ -18,12 +18,12 @@ arguments span lines is still classified by its argument list:
 | Kind | All sites | Production only |
 | --- | --- | --- |
 | one row of a chunk (`get_row(0)`) | 11 | 2 |
-| a row-loop variable or comparator | 31 | 20 |
+| a row-loop variable or comparator | 28 | 17 |
 | a constant with no input row (`Row::empty()`) | 5 | 3 |
 | not the evaluator: no-argument `constant.eval()`/`column.eval()`, the planner's `metadata.eval(k)`, the statement predicate's own four-argument `eval(row, catalog, db, ctx)` | 15 | -- |
 
-The mechanical native evaluator surface outside projections is **47 sites**:
-**25 production-labelled** and **22 test-only** (a file under a `tests/`
+The mechanical native evaluator surface outside projections is **44 sites**:
+**22 production-labelled** and **22 test-only** (a file under a `tests/`
 directory, a `src/*tests.rs` module, or any line below its file's first
 `#[cfg(test)]`). Test-only calls are re-pointed with the corpora rather than
 converted. This is a textual inventory, not a proof of reachability. The driver's six-argument `UpdateExpression::eval` is deliberately
@@ -36,7 +36,7 @@ One classifier caveat is now confirmed rather than hypothetical:
 unlinked duplicate. `lib.rs` exports the actual `StreamAggExec` and
 `GroupedStreamAggExec` from `hash_agg.rs`, and `driver/physical_builder.rs`
 imports those types; `cargo test --lib -- --list` contains none of
-`stream_agg.rs`'s tests. Excluding these two known dead calls leaves **23**
+`stream_agg.rs`'s tests. Excluding these two known dead calls leaves **20**
 production-labelled sites requiring routing/reachability review.
 Do not convert the dead duplicate; migrate `hash_agg.rs`'s real aggregate paths
 instead.
@@ -47,9 +47,12 @@ Window partition/order key comparisons now retain one `EvaluatorSuite` per key
 and evaluate a single-row selection at the original left/right demand points.
 A mismatch skips later keys; errors restore the dense buffer before propagation.
 Tests assert engine row receipts, one compilation across repeated calls, and
-that unselected overflowing rows and skipped keys do not execute. This removes
-two native sites, not all Window evaluation: RANGE bounds and value/default
-reads remain native (five sites).
+that unselected overflowing rows and skipped keys do not execute. Value
+(FIRST/LAST/NTH) and Relative (LEAD/LAG) arguments/defaults now also retain suites
+and use single-row selections. Emission-path tests compare native and engine
+results, assert engine receipts, and verify absent targets skip arguments,
+in-range targets skip defaults, and out-of-partition defaults use the current
+row. This removes five native sites in total; RANGE bounds still have two.
 
 The remaining ordering-sensitive calls are still counted by the mechanical inventory; they are not candidates for
 an eager whole-chunk cache. `window.rs` demands partition/RANGE/LAG/LEAD
@@ -69,7 +72,7 @@ because they are re-pointed with the corpora, not converted.
 
 | Sites | File |
 | --- | --- |
-| 5 | `tidb-executor/src/window.rs` |
+| 2 | `tidb-executor/src/window.rs` |
 | 3 | `tidb-executor/src/driver/dml.rs` |
 | 3 | `tidb-planner/src/ranger/go_cases.rs` |
 | 2 | `tidb-executor/src/driver/dml/correlated.rs` |
@@ -79,7 +82,7 @@ because they are re-pointed with the corpora, not converted.
 
 ## What each kind needs for the removal
 
-* **A row loop or comparator (20 production-labelled).** Where eager
+* **A row loop or comparator (17 production-labelled).** Where eager
   evaluation preserves observable order, evaluate the expression for the whole
   chunk before the loop and index the result vector. Otherwise use selected
   rows at the original demand points, as the Window key path does. That is now

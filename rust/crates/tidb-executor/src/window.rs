@@ -101,10 +101,33 @@ pub struct WindowFrameSpec {
     pub range_desc: bool,
 }
 
+/// Expression programs are retained independently of mutable window state.
+/// Only value functions have an argument; only LEAD/LAG may have a default.
+struct WindowValueEvaluators {
+    arg: Option<EvaluatorSuite>,
+    default: Option<EvaluatorSuite>,
+}
+
+impl WindowValueEvaluators {
+    fn new(func: &WindowFunction) -> Self {
+        let (arg, default) = match func {
+            WindowFunction::Value { arg, .. } => (Some(arg), None),
+            WindowFunction::Relative { arg, default, .. } => (Some(arg), default.as_ref()),
+            _ => (None, None),
+        };
+        let suite = |expr: &Expression| EvaluatorSuite::new(vec![expr.clone()], true);
+        Self {
+            arg: arg.map(suite),
+            default: default.map(suite),
+        }
+    }
+}
+
 /// Go `pkg/executor/windows/window.go::WindowExec` (ROWS slice).
 pub struct WindowExec<C: Columns> {
     meta: ExecutorMeta,
     funcs: Vec<WindowFuncSpec>,
+    value_suites: Vec<WindowValueEvaluators>,
     partition_by: Vec<Expression>,
     order_by: Vec<Expression>,
     partition_suites: Vec<EvaluatorSuite>,
@@ -144,9 +167,14 @@ impl<C: Columns> WindowExec<C> {
     ) -> Self {
         let types = child.ret_field_types().to_vec();
         let capacity = child.init_cap();
+        let value_suites = funcs
+            .iter()
+            .map(|spec| WindowValueEvaluators::new(&spec.func))
+            .collect();
         let partition_suites = Self::key_suites(&partition_by);
         let order_suites = Self::key_suites(&order_by);
         Self {
+            value_suites,
             partition_suites,
             order_suites,
             meta,
@@ -250,7 +278,7 @@ impl<C: Columns> WindowExec<C> {
     /// demanded row without copying its columns, and restore the buffer before
     /// propagating a normal evaluation error. Suites retain compiled programs,
     /// not result values (which could become stale for effectful expressions).
-    fn eval_key_row(
+    fn eval_selected_row(
         ctx: &C,
         rows: &mut Chunk,
         suite: &EvaluatorSuite,
@@ -264,7 +292,7 @@ impl<C: Columns> WindowExec<C> {
             .map_err(into_eval_error)?
             .into_iter()
             .next()
-            .ok_or_else(|| ExecError::internal("window key evaluation returned no row"))
+            .ok_or_else(|| ExecError::internal("window expression evaluation returned no row"))
     }
 
     fn same_keys(
@@ -279,8 +307,8 @@ impl<C: Columns> WindowExec<C> {
         for (expression, suite) in keys.iter().zip(suites) {
             // Preserve left/right and key order: a mismatch must not demand
             // later keys, and later rows must not be evaluated eagerly.
-            let left_value = Self::eval_key_row(ctx, rows, suite, left)?;
-            let right_value = Self::eval_key_row(ctx, rows, suite, right)?;
+            let left_value = Self::eval_selected_row(ctx, rows, suite, left)?;
+            let right_value = Self::eval_selected_row(ctx, rows, suite, right)?;
             if tidb_expr::compare_datums_with_collation(
                 &left_value,
                 &right_value,
@@ -458,7 +486,7 @@ impl<C: Columns + Send> Executor for WindowExec<C> {
                     WindowFunction::CumeDist => {
                         Datum::Real((peer_end - partition_start) as f64 / count as f64)
                     }
-                    WindowFunction::Value { arg, nth, last } => {
+                    WindowFunction::Value { nth, last, .. } => {
                         let target = if *last {
                             frame_end.checked_sub(1)
                         } else {
@@ -468,16 +496,19 @@ impl<C: Columns + Send> Executor for WindowExec<C> {
                         };
                         match target.filter(|target| *target >= frame_start && *target < frame_end)
                         {
-                            Some(target) => arg.eval(&self.ctx, self.rows.get_row(target))?,
+                            Some(target) => Self::eval_selected_row(
+                                &self.ctx,
+                                &mut self.rows,
+                                self.value_suites[position]
+                                    .arg
+                                    .as_ref()
+                                    .expect("value argument suite"),
+                                target,
+                            )?,
                             None => Datum::Null,
                         }
                     }
-                    WindowFunction::Relative {
-                        arg,
-                        offset,
-                        default,
-                        lead,
-                    } => {
+                    WindowFunction::Relative { offset, lead, .. } => {
                         let target = usize::try_from(*offset).ok().and_then(|offset| {
                             if *lead {
                                 index.checked_add(offset)
@@ -488,11 +519,22 @@ impl<C: Columns + Send> Executor for WindowExec<C> {
                         match target
                             .filter(|target| *target >= partition_start && *target < partition_end)
                         {
-                            Some(target) => arg.eval(&self.ctx, self.rows.get_row(target))?,
-                            None => match default {
-                                Some(default) => {
-                                    default.eval(&self.ctx, self.rows.get_row(index))?
-                                }
+                            Some(target) => Self::eval_selected_row(
+                                &self.ctx,
+                                &mut self.rows,
+                                self.value_suites[position]
+                                    .arg
+                                    .as_ref()
+                                    .expect("value argument suite"),
+                                target,
+                            )?,
+                            None => match &self.value_suites[position].default {
+                                Some(default) => Self::eval_selected_row(
+                                    &self.ctx,
+                                    &mut self.rows,
+                                    default,
+                                    index,
+                                )?,
                                 None => Datum::Null,
                             },
                         }
@@ -592,6 +634,164 @@ mod selected_key_tests {
         rows
     }
 
+    #[cfg(feature = "tikv-expr")]
+    fn seeded_value_exec(
+        func: WindowFunction,
+        values: &[i64],
+        engine: bool,
+    ) -> WindowExec<crate::StmtContext> {
+        use tidb_expr::schema::Schema;
+        let ty = FieldType::new(FieldTypeCode::LongLong);
+        let child_meta = ExecutorMeta::new(Schema::new(vec![Column::new(1, ty.clone())]), 0, 2, 2);
+        let output_meta = ExecutorMeta::new(
+            Schema::new(vec![Column::new(1, ty.clone()), Column::new(2, ty.clone())]),
+            1,
+            2,
+            2,
+        );
+        let mut exec = WindowExec::new(
+            output_meta,
+            vec![WindowFuncSpec {
+                func,
+                output_type: ty,
+            }],
+            vec![],
+            vec![],
+            WindowFrameSpec {
+                start: WindowBound::Unbounded,
+                end: WindowBound::Unbounded,
+                range: None,
+                range_desc: false,
+            },
+            Box::new(crate::table_dual::TableDualExec::new(child_meta, 0)),
+            crate::StmtContext::for_query().with_tikv_expression(engine),
+            1,
+        );
+        // Seed the already-drained private buffer so these tests exercise the
+        // real emission path independently of child fetching/key comparison.
+        exec.rows = rows(values);
+        exec.partition_of = vec![(0, values.len()); values.len()];
+        exec.peers = vec![(0, values.len(), 1); values.len()];
+        exec.fetched = true;
+        exec
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn window_value_targets_are_demanded_only_when_present() {
+        for engine in [false, true] {
+            for (nth, last, expected) in [
+                (Some(2), false, Datum::Int(3)),
+                (Some(1), true, Datum::Int(3)),
+                (Some(0), false, Datum::Null),
+                (None, false, Datum::Null),
+                (Some(3), false, Datum::Null),
+            ] {
+                let mut exec = seeded_value_exec(
+                    WindowFunction::Value {
+                        arg: key(0),
+                        nth,
+                        last,
+                    },
+                    &[i64::MAX, 2],
+                    engine,
+                );
+                let mut output = exec.new_chunk();
+                exec.next(&mut output).unwrap();
+                assert_eq!(output.num_rows(), 2);
+                for row in 0..2 {
+                    assert_eq!(
+                        output.get_row(row).get_datum(1, &exec.funcs[0].output_type),
+                        expected
+                    );
+                }
+                assert!(exec.rows.sel().is_none());
+                assert_eq!(
+                    exec.ctx.tikv_expression_rows(),
+                    if engine && !expected.is_null() { 2 } else { 0 }
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn window_relative_skips_default_until_out_of_partition() {
+        for engine in [false, true] {
+            for lead in [false, true] {
+                let ty = FieldType::new(FieldTypeCode::LongLong);
+                let fail = Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new("plus"),
+                    ty.clone(),
+                    vec![
+                        Expression::Constant(Constant::new(Datum::Int(i64::MAX), ty.clone())),
+                        Expression::Constant(Constant::new(Datum::Int(1), ty)),
+                    ],
+                ));
+                // An offset of zero always selects the current argument, so an
+                // overflowing default must not run (for both LEAD and LAG).
+                let mut exec = seeded_value_exec(
+                    WindowFunction::Relative {
+                        arg: key(0),
+                        offset: 0,
+                        default: Some(fail.clone()),
+                        lead,
+                    },
+                    &[1, 2],
+                    engine,
+                );
+                let mut output = exec.new_chunk();
+                exec.next(&mut output).unwrap();
+                assert_eq!(output.get_row(0).get_int64(1), 2);
+                assert_eq!(output.get_row(1).get_int64(1), 3);
+                assert_eq!(exec.ctx.tikv_expression_rows(), if engine { 2 } else { 0 });
+
+                let values = if lead { [i64::MAX, 2] } else { [2, i64::MAX] };
+                let mut exec = seeded_value_exec(
+                    WindowFunction::Relative {
+                        arg: key(0),
+                        offset: 1,
+                        default: Some(fail.clone()),
+                        lead,
+                    },
+                    &values,
+                    engine,
+                );
+                // Choose the row whose target is in-range. Its own argument
+                // would overflow: only the target row may be evaluated.
+                exec.emitted = if lead { 0 } else { 1 };
+                let mut output = exec.new_chunk();
+                output.set_required_rows(1, 2);
+                exec.next(&mut output).unwrap();
+                assert_eq!(output.get_row(0).get_int64(1), 3);
+                assert_eq!(exec.ctx.tikv_expression_rows(), if engine { 1 } else { 0 });
+                // Now demand the default at the partition boundary.
+                exec.emitted = if lead { 1 } else { 0 };
+                assert!(exec.next(&mut output).is_err());
+                assert!(exec.rows.sel().is_none());
+                assert_eq!(exec.rows.num_rows(), 2);
+
+                // With no possible target, evaluate the default on each
+                // current row, never the overflowing argument.
+                let mut exec = seeded_value_exec(
+                    WindowFunction::Relative {
+                        arg: fail,
+                        offset: u64::MAX,
+                        default: Some(key(0)),
+                        lead,
+                    },
+                    &[1, 2],
+                    engine,
+                );
+                let mut output = exec.new_chunk();
+                exec.next(&mut output).unwrap();
+                assert_eq!(output.get_row(0).get_int64(1), 2);
+                assert_eq!(output.get_row(1).get_int64(1), 3);
+                assert_eq!(exec.ctx.tikv_expression_rows(), if engine { 2 } else { 0 });
+            }
+        }
+    }
+
     #[test]
     fn window_key_selection_restores_dense_buffer_without_engine() {
         let ctx = crate::StmtContext::for_query();
@@ -600,7 +800,7 @@ mod selected_key_tests {
         let suites = WindowExec::<crate::StmtContext>::key_suites(&keys);
         assert!(WindowExec::same_keys(&ctx, &mut rows, &keys, &suites, 0, 1).unwrap());
         assert!(!WindowExec::same_keys(&ctx, &mut rows, &keys, &suites, 1, 2).unwrap());
-        assert!(WindowExec::eval_key_row(&ctx, &mut rows, &suites[0], 3).is_err());
+        assert!(WindowExec::eval_selected_row(&ctx, &mut rows, &suites[0], 3).is_err());
         assert!(rows.sel().is_none());
         assert_eq!(rows.num_rows(), 4);
     }
@@ -620,11 +820,11 @@ mod selected_key_tests {
         assert_eq!(ctx.tikv_expression_rows(), 4);
         assert_eq!(program.tikv_compilations(), 1);
         // The overflowing row was not demanded above. It errors only now.
-        assert!(WindowExec::eval_key_row(&ctx, &mut rows, &suites[0], 3).is_err());
+        assert!(WindowExec::eval_selected_row(&ctx, &mut rows, &suites[0], 3).is_err());
         assert!(rows.sel().is_none());
         assert_eq!(rows.num_rows(), 4);
         assert_eq!(
-            WindowExec::eval_key_row(&ctx, &mut rows, &suites[0], 0).unwrap(),
+            WindowExec::eval_selected_row(&ctx, &mut rows, &suites[0], 0).unwrap(),
             Datum::Int(2)
         );
         assert_eq!(program.tikv_compilations(), 1);
@@ -645,7 +845,7 @@ mod selected_key_tests {
         assert!(!WindowExec::same_keys(&ctx, &mut rows, &keys, &suites, 0, 1).unwrap());
         assert_eq!(ctx.tikv_expression_rows(), 2);
         assert!(rows.sel().is_none());
-        assert!(WindowExec::eval_key_row(&ctx, &mut rows, &suites[1], 0).is_err());
+        assert!(WindowExec::eval_selected_row(&ctx, &mut rows, &suites[1], 0).is_err());
         assert!(rows.sel().is_none());
     }
 }

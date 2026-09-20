@@ -50,8 +50,13 @@ remain in the workspace.
       tests cover engine receipts, one compilation across repeated calls,
       skipped overflowing rows/keys and selection restoration after errors.
       Full executor regressions passed with engine on/off (see artifacts).
-- [ ] Route remaining Window RANGE/value/default and Join evaluations at their
-      original demand points. Borrowed selected evaluation still rejects lazy
+- [x] Route Window FIRST/LAST/NTH_VALUE and LEAD/LAG argument/default reads
+      through retained suites, only on the demanded target/current row. New
+      emission-path tests seed a drained buffer and exercise `WindowExec::next`
+      with native and engine contexts, including skipped overflowing arguments
+      and defaults, missing NTH targets, and selected default error restoration.
+- [ ] Route remaining Window RANGE and Join evaluations at their original demand
+      points. Borrowed selected evaluation still rejects lazy
       programs and requires equal physical input lengths; independent selections
       alone do not remove these limitations.
 
@@ -637,6 +642,15 @@ milestones before it.
 ## Artifacts and Notes
 
 
+Window value/default follow-up reran the three commands below unchanged.
+Targeted tests: 5 passed. Feature-on suite groups: 1346 / 355 / 6 / 2 passed;
+feature-off: 1335 / 329 / 6 / 0 passed; both integration suites still had 184
+ignored tests. Peak RSS was 3696.2 MiB for the targeted build, 2198.1 MiB for the
+full feature-on run and 2898.0 MiB for feature-off. The classifier now reports
+59 raw hits, 44 evaluator sites (22 production-labelled, 22 test-only), with
+only two direct native sites remaining in Window (RANGE). The same full-mysql,
+performance and repository-wide-lint limitations apply.
+
 Window key migration validation (TiDB repository `rust/`, same memory-guarded
 serial environment as below, no Cargo patch):
 
@@ -696,4 +710,6 @@ milestone E. No new dependency on a second fork is introduced.
 Revision note: the recovery audit pins the actually used selected-input engine,
 records the dense-selection regression and unpatched tests, and corrects the
 remaining borrowed-lazy and unequal-input-length limitations. It does not mark
-Window/Join migration or native deletion complete.
+Window/Join migration or native deletion complete. Subsequent Window key and
+value/default entries record incremental routing and test evidence; RANGE and
+Join remain outstanding.
