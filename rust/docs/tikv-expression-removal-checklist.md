@@ -46,9 +46,9 @@ them.
 | Native kernel modules | 11,353 lines in 5 files | `scalar_function.rs` 4,297; `ops.rs` 2,452; `string_fn.rs` 2,308; `builtin_compare.rs` 1,617; `arg_eval_type.rs` 679 |
 | Temporal family | 8 files | `crates/tidb-expr/src/time_fn/` |
 | JSON / extended builtins | 20 files | `crates/tidb-expr/src/builtin_ext/` |
-| `.eval(` call sites in the workspace | 354 | 273 inside `tidb-expr/src` (the evaluator's own recursion, which dies with it) and 81 outside |
-| `.eval(` sites outside the adapter | **66** | 38 in a row loop or comparator, 20 against a single chunk row, 8 against `Row::empty()`; 15 of the 81 raw hits are not the evaluator (no-argument folding helpers, the planner's `metadata.eval`, the statement predicate's four-argument `eval`) |
-| of those, that must actually be rerouted | **44 production** (22 test-only) | Test-only hits are re-pointed with the corpora instead. 10 documented sites are already converted, one of which keeps a documented sparse-column fallback. The seams are `evaluator::{eval_constant_row, eval_row_values, eval_chunk}`. Classified by `rust/scripts/classify-native-eval-sites.py`; per-file breakdown in `tikv-expression-removal-native-sites.md` |
+| `.eval(` call sites in the workspace | 353 | 273 inside `tidb-expr/src` (the evaluator's own recursion, which dies with it) and 80 outside |
+| `.eval(` sites outside the adapter | **65** | 37 in a row loop or comparator, 20 against a single chunk row, 8 against `Row::empty()`; 15 of the 80 raw hits are not the evaluator (no-argument folding helpers, the planner's `metadata.eval`, the statement predicate's four-argument `eval`) |
+| of those, that must actually be rerouted | **43 production** (22 test-only) | Test-only hits are re-pointed with the corpora instead. 11 documented sites are already converted, one of which keeps a documented sparse-column fallback. The seams are `evaluator::{eval_constant_row, eval_row_values, eval_chunk}` and `EvaluatorSuite::eval_chunk`. Classified by `rust/scripts/classify-native-eval-sites.py`; per-file breakdown in `tikv-expression-removal-native-sites.md` |
 | Go-test source ports | 33 files, 413 `#[test]` | `crates/tidb-expr/src/tests/*_source.rs` |
 | `tikv-expr` feature mentions in the workspace | 75 | `grep -rn tikv-expr --include=*.rs --include=*.toml --include=*.sh --include=*.py .` from `rust/`: crates, difftests, scripts, manifests |
 | `cfg(not(feature = "tikv-expr"))` arms | 0 | — |
@@ -60,7 +60,7 @@ engine context mandatory rather than of deleting conditionals.
 
 ## 2. Consumers that must be rerouted
 
-Every one of the 44 production reroutable sites either moves to the engine or
+Every one of the 43 production reroutable sites either moves to the engine or
 disappears; the 22 test-only sites are re-pointed with their corpora.
 `tikv-expression-removal-native-sites.md` has the by-file inventory and the
 reproducible classifier; the kinds are:
@@ -78,23 +78,25 @@ reproducible classifier; the kinds are:
   still evaluates a filter natively. A projection can make an engine-row receipt
   for the same SQL statement, but that is not evidence that the predicate moved.
 * **Aggregation and sorting helpers** (`tidb-executor`, `tidb-expr`):
-  `VecGroupChecker` now batch-evaluates grouping keys with retained suites;
-  the hash/stream aggregate and sort-key routes remain native.
+  `VecGroupChecker` and the hash-shuffle partition-key splitter now
+  batch-evaluate retained suites; the hash/stream aggregate and sort-key routes
+  remain native.
 * **Generated columns, defaults and CHECK constraints**: these evaluate
   during DML with a statement context, so they can be moved with projection,
   but they are separate call sites.
 
 ### Conversion receipt
 
-Ten sites no longer call the native evaluator: three constant-row in `ddl/` and
-four row-with-columns in `partition_pruning.rs` go through the engine helpers
-(one of those four keeps its native call for the sparse-column shape, which the
-helper refuses rather than guess), one row loop in `vec_group_checker.rs` now
-evaluates each grouping item for the whole chunk, and two in `sort.rs`
-(`compare_rows`'s out-of-range branch) were removed as provably error-only --
-that branch's `Expression::eval` could only return `column index is outside the
-input row`. Every further site that *returns a value* must arrive with the same
-three receipts, because the first one alone is not enough:
+Eleven sites no longer call the native evaluator: three constant-row in `ddl/`
+and four row-with-columns in `partition_pruning.rs` go through the engine
+helpers (one of those four keeps its native call for the sparse-column shape,
+which the helper refuses rather than guess), two row loops
+(`vec_group_checker.rs` and `shuffle.rs`) now evaluate each grouping item for
+the whole chunk with retained suites, and two in `sort.rs` (`compare_rows`'s
+out-of-range branch) were removed as provably error-only -- that branch's
+`Expression::eval` could only return `column index is outside the input row`.
+Every further site that *returns a value* must arrive with the same three
+receipts, because the first one alone is not enough:
 
 1. **the context's static type** -- the helpers take `C: Columns` by value
    reference, so a `&dyn tidb_expr::Columns` cannot use them (`run` needs

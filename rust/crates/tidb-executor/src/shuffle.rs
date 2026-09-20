@@ -70,6 +70,7 @@ use std::sync::{Arc, Mutex};
 
 use tidb_chunk::chunk::Chunk;
 use tidb_datatype::FieldType;
+use tidb_expr::evaluator::EvaluatorSuite;
 use tidb_expr::expression::Expression;
 use tidb_expr::schema::Schema;
 use tidb_expr::Columns;
@@ -364,6 +365,9 @@ pub trait PartitionSplitter<C: Columns>: Send {
 /// takes the hash modulo the worker count.
 pub struct PartitionHashSplitter {
     by_items: Vec<Expression>,
+    /// Retained one-expression programs keep the engine compilation cache over
+    /// the splitter's many input chunks.
+    by_item_suites: Vec<EvaluatorSuite>,
     num_workers: usize,
     /// Go's reused `hashKeys [][]byte`, kept for the same reason.
     hash_keys: Vec<Vec<u8>>,
@@ -373,8 +377,14 @@ impl PartitionHashSplitter {
     /// Go `buildPartitionHashSplitter` (`shuffle.go:464`).
     #[must_use]
     pub fn new(concurrency: usize, by_items: Vec<Expression>) -> Self {
+        let by_item_suites = by_items
+            .iter()
+            .cloned()
+            .map(|item| EvaluatorSuite::new(vec![item], true))
+            .collect();
         PartitionHashSplitter {
             by_items,
+            by_item_suites,
             num_workers: concurrency,
             hash_keys: Vec::new(),
         }
@@ -402,18 +412,21 @@ impl<C: Columns> PartitionSplitter<C> for PartitionHashSplitter {
             self.hash_keys
                 .push(Vec::with_capacity(10 * self.by_items.len()));
         }
-        for item in &self.by_items {
+        for (item, suite) in self.by_items.iter().zip(&self.by_item_suites) {
             // Same derivation `hash_agg`'s private `expr_collation` performs,
             // so a shuffle partition key and a hash-aggregation group key are
-            // encoded identically.
+            // encoded identically. Go evaluates one BY item for the whole chunk;
+            // the retained suite makes the same batch shape reach the engine.
             let collation = tidb_expr::collation_derive::collation_of_node(item);
-            for row_index in 0..num_rows {
-                let datum = item.eval(ctx, input.get_row(row_index))?;
+            let values = suite
+                .eval_chunk(ctx, input)
+                .map_err(tidb_expr::evaluator::into_eval_error)?;
+            for (row_index, datum) in values.iter().enumerate() {
                 // `group_key_part` is this crate's port of Go's
                 // `codec.HashGroupKey` element encoding, shared with
                 // `hash_agg`/`stream_agg` so a shuffle partition and a hash
                 // aggregation group agree on what "same key" means.
-                let part = group_key_part(&collation, &datum);
+                let part = group_key_part(&collation, datum);
                 self.hash_keys[row_index].extend_from_slice(&part);
             }
         }
@@ -1442,5 +1455,28 @@ mod tests {
         exec.open().unwrap();
         let second = drain(&mut exec).unwrap();
         assert_eq!(first, second);
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn hash_splitter_evaluates_partition_keys_in_the_engine() {
+        let input = chunk_of(&[1, 2, 3]);
+        let native_ctx = crate::StmtContext::for_query();
+        let engine_ctx = crate::StmtContext::for_query().with_tikv_expression(true);
+        let mut native = PartitionHashSplitter::new(3, vec![column_expr(0)]);
+        let mut engine = PartitionHashSplitter::new(3, vec![column_expr(0)]);
+        let mut native_workers = Vec::new();
+        let mut engine_workers = Vec::new();
+
+        native
+            .split(&native_ctx, &input, &mut native_workers)
+            .unwrap();
+        engine
+            .split(&engine_ctx, &input, &mut engine_workers)
+            .unwrap();
+
+        assert_eq!(engine_workers, native_workers);
+        assert_eq!(native_ctx.tikv_expression_rows(), 0);
+        assert_eq!(engine_ctx.tikv_expression_rows(), 3);
     }
 }

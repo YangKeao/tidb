@@ -313,10 +313,10 @@ The engine can now serve every expression the adapter admits, with the native
 evaluator still the default and still the fallback, and with a corpus-wide
 dual-run proving the two agree wherever the engine runs.
 
-Current suites (TiDB numbers from `expression-reuse/round55-tests.log`):
-`tidb-executor` 1338 + 355 + 6 + 2 with the engine feature and
-1334 + 329 + 6 + 0 without; the added engine-on test is the `VecGroupChecker`
-engine receipt. `tidb-expr` is 1212 + 60 with the feature (the three additions
+Current suites (TiDB numbers from `expression-reuse/round57-tests.log`):
+`tidb-executor` 1339 + 355 + 6 + 2 with the engine feature and
+1334 + 329 + 6 + 0 without; the added engine-on tests are the `VecGroupChecker`
+and hash-splitter engine receipts. `tidb-expr` is 1212 + 60 with the feature (the three additions
 are the shared-chunk result/error receipt, the retained-suite cache receipt, and
 the shared-input ownership guard) and 1182 + 18 without. The most recently recorded TiKV suites remain
 `tidb_query_expr` 477 passed and `tidb_query_datatype` 318. `catalog_diff` 31
@@ -336,12 +336,13 @@ the pinned fork rev `9fd4f94`, which is code-equal to the TiKV branch head:
 documentation file (`components/tidb_query_expr/EXPRESSION_SEMANTIC_GAPS.md`).
 The widened admission surface therefore added no replay divergence.
 
-What remains is not adapter plumbing but the removal itself: 44 production sites
-of the 66 textual native `eval` hits outside projection, the other 22 being
+What remains is not adapter plumbing but the removal itself: 43 production sites
+of the 65 textual native `eval` hits outside projection, the other 22 being
 test-only and re-pointed with the corpora (the check is
-`rust/scripts/classify-native-eval-sites.py`; 10 documented sites no longer call
-the native evaluator: 7 through the once-per-statement engine helpers, 1 row
-loop moved onto `eval_chunk`, 2 removed as provably error-only), the 33
+`rust/scripts/classify-native-eval-sites.py`; 11 documented sites no longer call
+the native evaluator: 7 through the once-per-statement engine helpers, 2 row
+loops moved onto retained `EvaluatorSuite::eval_chunk`, 2 removed as provably
+error-only), the 33
 corpora's conversion from dual-run to engine-only, and the deletion of the
 feature gate and kernels. Known engine divergences are tracked rather than
 hidden, and the dual-run makes any new one fail the suite.
@@ -360,10 +361,10 @@ The native evaluator lives in `rust/crates/tidb-expr/src/`:
 `scalar_function.rs` (`ScalarFunction::eval`, `eval_by_signature`),
 `ops.rs`, `compare`/`control` handling inside `scalar_function.rs`,
 `time_fn/`, `string_fn.rs`, `builtin_ext/` (JSON), `arg_eval_type.rs` and the
-`tests/` source-port corpora. The workspace currently has 354 raw `.eval(`
-hits: 273 inside `tidb-expr/src` (the evaluator's own recursion) and 81
-outside. The scripted outside inventory identifies 66 actual
-`Expression::eval` sites (44 production, 22 test-only); the other 15 raw hits
+`tests/` source-port corpora. The workspace currently has 353 raw `.eval(`
+hits: 273 inside `tidb-expr/src` (the evaluator's own recursion) and 80
+outside. The scripted outside inventory identifies 65 actual
+`Expression::eval` sites (43 production, 22 test-only); the other 15 raw hits
 are different `eval` APIs. Projection work reaches the engine through
 `EvaluatorSuite`.
 
@@ -501,18 +502,19 @@ indexing bug in the TiKV chunk codec is flagged while adding `get_set`.
 
 The native evaluator's surface *outside* projections is inventoried by
 `rust/scripts/classify-native-eval-sites.py` and recorded in
-`tikv-expression-removal-native-sites.md`: 81 raw `.eval(` hits outside
-`crates/tidb-expr/src`, 15 of them another API, leaving **66**
-`Expression::eval` sites. **44 are production** (27 row loops/comparators, 11
+`tikv-expression-removal-native-sites.md`: 80 raw `.eval(` hits outside
+`crates/tidb-expr/src`, 15 of them another API, leaving **65**
+`Expression::eval` sites. **43 are production** (26 row loops/comparators, 11
 one-chunk-row probes, 6 `Row::empty()` constants); the other 22 are test-only.
 None needs a new kernel: a row loop evaluates each item over its chunk, a probe
 uses a one-row chunk, and a constant uses a virtual one-row chunk.
 
-Ten documented sites no longer call the native evaluator: 3 DDL constant rows,
-4 pruning rows (one retains its explicit sparse-input native fallback), 2
-error-only sort branches, and 1 `VecGroupChecker` grouping loop. The latter
-retains one `EvaluatorSuite` per grouping item and calls
-`EvaluatorSuite::eval_chunk` per chunk; its immutable `EvaluatorProgram` holds
+Eleven documented sites no longer call the native evaluator: 3 DDL constant
+rows, 4 pruning rows (one retains its explicit sparse-input native fallback), 2
+error-only sort branches, and 2 retained-suite grouping loops
+(`VecGroupChecker` and the hash-shuffle splitter). Each retains one
+`EvaluatorSuite` per grouping item and calls `EvaluatorSuite::eval_chunk` per
+chunk; its immutable `EvaluatorProgram` holds
 the compiled engine cache across chunks. The free `evaluator::eval_chunk` is the
 one-off shared-chunk seam, while a retaining operator must use the suite method.
 Each conversion has a native-vs-engine result receipt and an engine-row counter
