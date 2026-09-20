@@ -16,25 +16,25 @@
 //! evaluates to true -- the `WHERE`/`HAVING` operator.
 //!
 //! A row passes when every filter is truthy; a filter that is false OR NULL
-//! rejects the row (MySQL's three-valued logic, via [`truthy_of`]).
+//! rejects the row (MySQL's three-valued logic).
 //!
 //! The executor retains its position in the current child chunk across calls,
 //! stops when the output chunk is full, and returns one row at a time when a
 //! filter has order-sensitive side effects. Its cached child chunk is charged
 //! to the statement memory budget for its whole open lifetime. Pure filters
-//! are evaluated once into a reusable selection mask (with direct null and
-//! string-IN kernels); expression kinds without a Rust vector kernel retain
-//! the scalar evaluator as a correctness-preserving fallback.
+//! are evaluated once into a reusable selection mask. A retained filter program
+//! routes demanded expressions through evaluator admission and reuses compiled
+//! engine plans, with native evaluation as a correctness-preserving fallback.
 
 use std::sync::Arc;
 
 use crate::executor::{ExecError, Executor, ExecutorMeta};
 use tidb_chunk::chunk::Chunk;
-use tidb_datatype::{Datum, FieldType};
-use tidb_expr::evaluator::{vectorizable, vectorized_filter_consider_null};
+use tidb_datatype::FieldType;
+use tidb_expr::evaluator::{vectorizable, FilterProgram};
 use tidb_expr::expression::Expression;
 use tidb_expr::schema::Schema;
-use tidb_expr::{truthy_of, Columns};
+use tidb_expr::Columns;
 use tidb_util::memory::Tracker;
 
 use crate::StatementMemory;
@@ -42,8 +42,7 @@ use crate::StatementMemory;
 /// Go `SelectionExec`: filters its child's rows by a conjunction of predicates.
 pub struct SelectionExec<C: Columns> {
     meta: ExecutorMeta,
-    filters: Vec<Expression>,
-    fast_filters: Vec<Option<FastSelectionFilter>>,
+    filters: FilterProgram,
     batched: bool,
     child: Box<dyn Executor>,
     ctx: C,
@@ -53,23 +52,6 @@ pub struct SelectionExec<C: Columns> {
     input_row: usize,
     selected: Vec<bool>,
     done: bool,
-}
-
-/// Context-independent row predicates: null tests, string-column `IN` with
-/// strict non-NULL literals, and complete conjunctions of those predicates.
-/// Casts, diagnostics and execution-dependent values use the expression evaluator.
-#[derive(Clone, Debug)]
-enum FastSelectionFilter {
-    NullTest {
-        column_offset: usize,
-        negated: bool,
-    },
-    StringIn {
-        column_offset: usize,
-        collator: tidb_datatype::Collator,
-        keys: Vec<Vec<u8>>,
-    },
-    And(Vec<Self>),
 }
 
 impl<C: Columns> SelectionExec<C> {
@@ -85,14 +67,9 @@ impl<C: Columns> SelectionExec<C> {
     ) -> Self {
         let tracker = memory.operator_tracker(meta.id());
         let batched = vectorizable(&filters);
-        let fast_filters = filters
-            .iter()
-            .map(FastSelectionFilter::from_expression)
-            .collect();
         SelectionExec {
             meta,
-            filters,
-            fast_filters,
+            filters: FilterProgram::new(filters),
             batched,
             child,
             ctx,
@@ -108,41 +85,22 @@ impl<C: Columns> SelectionExec<C> {
     /// Whether a row satisfies every filter (all truthy). A false or NULL filter
     /// rejects the row.
     fn row_passes(&self, row: tidb_chunk::row::Row<'_>) -> Result<bool, ExecError> {
-        for (filter, fast_filter) in self.filters.iter().zip(&self.fast_filters) {
-            if let Some(fast_filter) = fast_filter {
-                if !fast_filter.matches(row) {
-                    return Ok(false);
-                }
-                continue;
-            }
-            let value = filter.eval(&self.ctx, row)?;
-            if truthy_of(&value)? != Some(true) {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        Ok(self.filters.matches_row(&self.ctx, row)?)
     }
 
     /// Evaluates all pure filters into the physical-row mask used by the
     /// batched path. This mirrors Go's `VectorizedFilter` contract: filters
     /// are applied filter-major, already rejected rows are skipped, and a
-    /// false or NULL result clears the row. The expression evaluator currently
-    /// has no typed `VecEval*` interface, so non-specialized expressions use
-    /// the same row evaluator while still avoiding interleaving evaluation
-    /// with output production.
+    /// false or NULL result clears the row. The retained filter program owns
+    /// evaluator admission and compiled-plan reuse across child chunks.
     fn evaluate_selection_mask(&mut self) -> Result<(), ExecError> {
         let child_chunk = self
             .child_chunk
             .as_ref()
             .expect("selection child chunk exists while open");
-        let (selected, _) = vectorized_filter_consider_null(
-            &self.ctx,
-            true,
-            &self.filters,
-            child_chunk,
-            Vec::new(),
-            Vec::new(),
-        )?;
+        let (selected, _) =
+            self.filters
+                .consider_null(&self.ctx, true, child_chunk, Vec::new(), Vec::new())?;
         self.selected = selected;
         Ok(())
     }
@@ -151,107 +109,6 @@ impl<C: Columns> SelectionExec<C> {
         self.child_chunk = None;
         self.selected.clear();
         self.tracker.replace_bytes_used(0);
-    }
-}
-
-impl FastSelectionFilter {
-    fn from_expression(expression: &Expression) -> Option<Self> {
-        let Expression::ScalarFunction(function) = expression else {
-            return None;
-        };
-        if function.func_name.lowercase() == "and" && function.args.len() == 2 {
-            // A later fast predicate must not skip an earlier assignment,
-            // warning or error. Replace only a fully supported conjunction.
-            return function
-                .args
-                .iter()
-                .map(Self::from_expression)
-                .collect::<Option<Vec<_>>>()
-                .map(Self::And);
-        }
-        let function_name = function.func_name.lowercase();
-        if function.args.len() == 1 && (function_name == "isnull" || function_name == "not") {
-            let (argument, negated) = if function_name == "isnull" {
-                (&function.args[0], false)
-            } else {
-                let Expression::ScalarFunction(inner) = &function.args[0] else {
-                    return None;
-                };
-                if inner.func_name.lowercase() != "isnull" || inner.args.len() != 1 {
-                    return None;
-                }
-                (&inner.args[0], true)
-            };
-            let column = argument.as_column()?;
-            let column_offset = usize::try_from(column.index).ok()?;
-            return Some(Self::NullTest {
-                column_offset,
-                negated,
-            });
-        }
-        if function.func_name.lowercase() != "in" || function.args.len() < 2 {
-            return None;
-        }
-        let column = function.args.first()?.as_column()?;
-        let field_type = column.get_static_type()?;
-        if !field_type.is_string() {
-            return None;
-        }
-        let column_offset = usize::try_from(column.index).ok()?;
-        // The comparison's own derived collation, not the column's. Go's
-        // `deriveCollation` for `ast.In` (`expression/collation.go:290`) runs
-        // over ALL the arguments, so an explicit `COLLATE` on any one of them
-        // decides it -- and the evaluator this fast path stands in for
-        // already keys its hash set that way
-        // (`ScalarFunction::prepare_in_string_hash_set`). Re-deriving from the
-        // column makes the two disagree on exactly the rows the explicit
-        // collation was written to catch.
-        let collator = tidb_datatype::get_collator(function.derived_collation().name());
-        let mut keys = function
-            .args
-            .iter()
-            .skip(1)
-            .map(|argument| match argument {
-                Expression::Constant(constant) => match constant.literal_value()? {
-                    value @ (Datum::String(_) | Datum::Bytes(_)) => {
-                        Some(value.as_raw_bytes()?.to_vec())
-                    }
-                    _ => None,
-                },
-                _ => None,
-            })
-            .collect::<Option<Vec<_>>>()?
-            .into_iter()
-            .map(|bytes| collator.key(&bytes))
-            .collect::<Vec<_>>();
-        keys.sort_unstable();
-        keys.dedup();
-        Some(Self::StringIn {
-            column_offset,
-            collator,
-            keys,
-        })
-    }
-
-    fn matches(&self, row: tidb_chunk::row::Row<'_>) -> bool {
-        match self {
-            Self::NullTest {
-                column_offset,
-                negated,
-            } => row.is_null(*column_offset) != *negated,
-            Self::StringIn {
-                column_offset,
-                collator,
-                keys,
-            } => {
-                if row.is_null(*column_offset) {
-                    return false;
-                }
-                let key = collator.key(row.get_string(*column_offset).as_bytes());
-                keys.binary_search(&key).is_ok()
-            }
-            Self::And(filters) => filters.iter().all(|filter| filter.matches(row)),
-        }
     }
 }
 
@@ -645,6 +502,204 @@ mod tests {
                 selection.close().unwrap();
                 assert_eq!(ctx.statement_memory().bytes_consumed(), 0);
             }
+        }
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn selection_engine_reuses_compilation_across_child_chunks() {
+        for engine in [false, true] {
+            let children = [[2, 3, 0], [4, 5, 1]]
+                .into_iter()
+                .map(|values| {
+                    let mut data = Chunk::new_with_capacity(&[long()], values.len());
+                    for value in values {
+                        data.append_int64(0, value);
+                    }
+                    Box::new(OneChunkSource {
+                        meta: ExecutorMeta::new(one_long_col_schema(), 0, 3, 3),
+                        data: Some(data),
+                    }) as Box<dyn Executor>
+                })
+                .collect();
+            let source = crate::union_all::UnionAllExec::new(
+                ExecutorMeta::new(one_long_col_schema(), 1, 3, 3),
+                children,
+            );
+            let filter = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("gt"),
+                long(),
+                vec![
+                    Expression::Column(one_long_col_schema().columns[0].clone()),
+                    Expression::Constant(Constant::new(Datum::Int(1), long())),
+                ],
+            ));
+            let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+            let mut selection = SelectionExec::new(
+                ExecutorMeta::new(one_long_col_schema(), 2, 1, 1),
+                vec![filter],
+                Box::new(source),
+                ctx.clone(),
+                ctx.statement_memory(),
+            );
+            assert!(selection.batched);
+            assert_eq!(selection.filters.tikv_compilations(), 0);
+            selection.open().unwrap();
+            assert_eq!(ctx.tikv_expression_rows(), 0);
+            let mut req = selection.new_chunk();
+            for expected in [2, 3, 4, 5] {
+                selection.next(&mut req).unwrap();
+                assert_eq!(req.num_rows(), 1);
+                assert_eq!(req.get_row(0).get_int64(0), expected);
+                assert_eq!(
+                    selection.filters.tikv_compilations(),
+                    u64::from(engine),
+                    "engine={engine}, row={expected}"
+                );
+            }
+            selection.next(&mut req).unwrap();
+            assert_eq!(req.num_rows(), 0);
+            assert_eq!(ctx.tikv_expression_rows(), if engine { 6 } else { 0 });
+            assert_eq!(selection.filters.tikv_compilations(), u64::from(engine));
+            selection.close().unwrap();
+            assert_eq!(ctx.statement_memory().bytes_consumed(), 0);
+        }
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn selection_engine_false_and_null_skip_later_overflow() {
+        for (engine, row_mode) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut data = Chunk::new_with_capacity(&[long()], 2);
+            data.append_int64(0, 0);
+            data.append_null(0);
+            let source = OneChunkSource {
+                meta: ExecutorMeta::new(one_long_col_schema(), 0, 2, 2),
+                data: Some(data),
+            };
+            let integer = |value| Expression::Constant(Constant::new(Datum::Int(value), long()));
+            let first = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("gt"),
+                long(),
+                vec![
+                    Expression::Column(one_long_col_schema().columns[0].clone()),
+                    integer(0),
+                ],
+            ));
+            let overflow = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("plus"),
+                long(),
+                vec![integer(i64::MAX), integer(1)],
+            ));
+            let mut filters = vec![first, overflow];
+            if row_mode {
+                filters.push(Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new("getvar_int"),
+                    long(),
+                    vec![Expression::Constant(Constant::new(
+                        Datum::Bytes(b"v".to_vec()),
+                        string(),
+                    ))],
+                )));
+            }
+            let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+            let mut selection = SelectionExec::new(
+                ExecutorMeta::new(one_long_col_schema(), 1, 2, 2),
+                filters,
+                Box::new(source),
+                ctx.clone(),
+                ctx.statement_memory(),
+            );
+            assert_eq!(selection.batched, !row_mode);
+            selection.open().unwrap();
+            let mut req = selection.new_chunk();
+            selection.next(&mut req).unwrap();
+            assert_eq!(req.num_rows(), 0);
+            assert_eq!(ctx.tikv_expression_rows(), if engine { 2 } else { 0 });
+            // Only the first predicate is demanded, so overflow never compiles.
+            assert_eq!(selection.filters.tikv_compilations(), u64::from(engine));
+            assert!(ctx.take_warnings().is_empty());
+            selection.close().unwrap();
+            assert_eq!(ctx.statement_memory().bytes_consumed(), 0);
+        }
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn selection_engine_row_mode_preserves_side_effect_demand() {
+        for engine in [false, true] {
+            let mut data = Chunk::new_with_capacity(&[long()], 4);
+            data.append_int64(0, 0);
+            data.append_null(0);
+            data.append_int64(0, 1);
+            data.append_int64(0, 2);
+            let source = OneChunkSource {
+                meta: ExecutorMeta::new(one_long_col_schema(), 0, 4, 4),
+                data: Some(data),
+            };
+            let column = Expression::Column(one_long_col_schema().columns[0].clone());
+            let first = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("gt"),
+                long(),
+                vec![
+                    column,
+                    Expression::Constant(Constant::new(Datum::Int(0), long())),
+                ],
+            ));
+            let variable_name =
+                Expression::Constant(Constant::new(Datum::Bytes(b"v".to_vec()), string()));
+            let previous = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("getvar_int"),
+                long(),
+                vec![variable_name.clone()],
+            ));
+            let increment = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("plus"),
+                long(),
+                vec![
+                    previous,
+                    Expression::Constant(Constant::new(Datum::Int(1), long())),
+                ],
+            ));
+            let assignment = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("setvar"),
+                long(),
+                vec![variable_name, increment],
+            ));
+            let ctx = crate::StmtContext::for_query()
+                .with_tikv_expression(engine)
+                .with_user_vars(Arc::new(std::sync::Mutex::new(HashMap::new())));
+            ctx.set_uservar("v", Datum::Int(0));
+            let mut selection = SelectionExec::new(
+                ExecutorMeta::new(one_long_col_schema(), 1, 4, 4),
+                vec![first, assignment],
+                Box::new(source),
+                ctx.clone(),
+                ctx.statement_memory(),
+            );
+            assert!(!selection.batched);
+            selection.open().unwrap();
+            assert_eq!(ctx.get_uservar("v"), Some(Datum::Int(0)));
+            let mut req = selection.new_chunk();
+            for expected in [1, 2] {
+                selection.next(&mut req).unwrap();
+                assert_eq!(req.num_rows(), 1);
+                assert_eq!(req.get_row(0).get_int64(0), expected);
+                assert_eq!(ctx.get_uservar("v"), Some(Datum::Int(expected)));
+                // Pure predicates enter the engine; setvar retains the native
+                // facade fallback and never runs ahead to the next output row.
+                assert_eq!(
+                    ctx.tikv_expression_rows(),
+                    if engine { expected as u64 + 2 } else { 0 }
+                );
+                assert_eq!(selection.filters.tikv_compilations(), u64::from(engine));
+            }
+            selection.next(&mut req).unwrap();
+            assert_eq!(req.num_rows(), 0);
+            assert_eq!(ctx.get_uservar("v"), Some(Datum::Int(2)));
+            assert_eq!(ctx.tikv_expression_rows(), if engine { 4 } else { 0 });
+            selection.close().unwrap();
+            assert_eq!(ctx.statement_memory().bytes_consumed(), 0);
         }
     }
 

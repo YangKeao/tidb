@@ -69,6 +69,103 @@ pub fn vectorizable(expressions: &[Expression]) -> bool {
     !((nextval > 0 && (lastval > 0 || setval > 0)) || nextval > 1)
 }
 
+/// Retained predicate programs. Evaluation order and NULL policy remain owned
+/// by the filtering operation; each predicate has an independent engine cache.
+pub struct FilterProgram {
+    filters: Vec<Expression>,
+    suites: Vec<EvaluatorSuite>,
+    vectorizable: bool,
+}
+
+impl FilterProgram {
+    /// Build metadata without evaluating any predicate or input row.
+    pub fn new(filters: Vec<Expression>) -> Self {
+        Self {
+            vectorizable: vectorizable(&filters),
+            suites: filters
+                .iter()
+                .map(|expr| EvaluatorSuite::new(vec![expr.clone()], true))
+                .collect(),
+            filters,
+        }
+    }
+
+    /// Physical-mask filtering with the existing input-selection and NULL rules.
+    pub fn consider_null<C: Columns>(
+        &self,
+        ctx: &C,
+        vec_enabled: bool,
+        input: &Chunk,
+        selected: Vec<bool>,
+        nulls: Vec<bool>,
+    ) -> Result<(Vec<bool>, Vec<bool>), EvalError> {
+        let (mut selected, nulls) = filter_physical_rows(
+            ctx,
+            vec_enabled,
+            &self.filters,
+            input,
+            selected,
+            nulls,
+            !vec_enabled || !self.vectorizable,
+            Some(&self.suites),
+        )?;
+        apply_input_selection(input, &mut selected);
+        Ok((selected, nulls))
+    }
+
+    /// Ordinary WHERE matching: evaluate in order and stop at false OR NULL.
+    /// The row index is already physical; never apply the chunk selection twice.
+    pub fn matches_row<C: Columns>(
+        &self,
+        ctx: &C,
+        row: tidb_chunk::row::Row<'_>,
+    ) -> Result<bool, EvalError> {
+        let virtual_input = row.chunk().is_none().then(|| {
+            let mut input = Chunk::new_with_capacity(&[], 1);
+            input.set_num_virtual_rows(1);
+            input
+        });
+        let input = row
+            .chunk()
+            .or(virtual_input.as_ref())
+            .expect("filter input");
+        let physical = if virtual_input.is_some() {
+            0
+        } else {
+            row.idx()
+        };
+        for suite in &self.suites {
+            let value = eval_filter_row(suite, ctx, input, physical)?;
+            if crate::truthy_of(&value)? != Some(true) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Number of engine compilations retained by this predicate set.
+    #[cfg(feature = "tikv-expr")]
+    pub fn tikv_compilations(&self) -> u64 {
+        self.suites
+            .iter()
+            .map(|suite| suite.program.tikv_compilations())
+            .sum()
+    }
+}
+
+fn eval_filter_row<C: Columns>(
+    suite: &EvaluatorSuite,
+    ctx: &C,
+    input: &Chunk,
+    physical: usize,
+) -> Result<Datum, EvalError> {
+    suite
+        .eval_selected(ctx, input, &[physical])
+        .map_err(into_eval_error)?
+        .pop()
+        .ok_or_else(|| EvalError::Unsupported("filter returned no value"))
+}
+
 /// Go `expression.VecEvalBool`/`VectorizedFilterConsiderNull`.
 ///
 /// The returned mask is indexed by the physical rows of `input`, just like
@@ -102,6 +199,7 @@ pub fn vectorized_filter_consider_null<C: Columns>(
         selected,
         nulls,
         !vec_enabled || !vectorizable(filters),
+        None,
     )?;
     apply_input_selection(input, &mut selected);
     Ok((selected, nulls))
@@ -118,7 +216,16 @@ pub fn vec_eval_bool<C: Columns>(
     selected: Vec<bool>,
     nulls: Vec<bool>,
 ) -> Result<(Vec<bool>, Vec<bool>), EvalError> {
-    filter_physical_rows(ctx, vec_enabled, filters, input, selected, nulls, false)
+    filter_physical_rows(
+        ctx,
+        vec_enabled,
+        filters,
+        input,
+        selected,
+        nulls,
+        false,
+        None,
+    )
 }
 
 fn filter_physical_rows<C: Columns>(
@@ -129,6 +236,7 @@ fn filter_physical_rows<C: Columns>(
     mut selected: Vec<bool>,
     mut nulls: Vec<bool>,
     row_based: bool,
+    programs: Option<&[EvaluatorSuite]>,
 ) -> Result<(Vec<bool>, Vec<bool>), EvalError> {
     // `Chunk::num_rows` is selection-aware in Rust. Go's VecEvalBool instead
     // clears the input selection while evaluating and returns a mask sized to
@@ -143,11 +251,30 @@ fn filter_physical_rows<C: Columns>(
         return Ok((selected, nulls));
     }
 
+    // An engine request must enter the admission/diagnostics facade even for
+    // predicates for which native typed kernels happen to exist. In particular
+    // a required engine cannot silently execute user-variable effects here.
+    #[cfg(feature = "tikv-expr")]
+    let engine = ctx.tikv_expression_required() || ctx.tikv_expression_context().is_some();
+    #[cfg(not(feature = "tikv-expr"))]
+    let engine = false;
+    let owned_programs = (engine && programs.is_none()).then(|| {
+        filters
+            .iter()
+            .map(|expr| EvaluatorSuite::new(vec![expr.clone()], true))
+            .collect::<Vec<_>>()
+    });
+    let programs = if engine {
+        programs.or(owned_programs.as_deref())
+    } else {
+        None
+    };
+
     // Go falls back to rowBasedFilter when vectorization is disabled or any
     // filter is not vectorizable. Keep the same filter-major order and
     // three-valued truth handling in that branch.
     if row_based {
-        for filter in filters {
+        for (position, filter) in filters.iter().enumerate() {
             let int_type = filter
                 .static_type()
                 .is_some_and(|ty| ty.eval_type() == tidb_datatype::EvalType::Int);
@@ -155,7 +282,10 @@ fn filter_physical_rows<C: Columns>(
                 if !selected[row_index] {
                     continue;
                 }
-                let value = filter.eval(ctx, input.physical_row(row_index))?;
+                let value = match programs {
+                    Some(programs) => eval_filter_row(&programs[position], ctx, input, row_index)?,
+                    None => filter.eval(ctx, input.physical_row(row_index))?,
+                };
                 let truth = crate::truthy_of(&value)?;
                 if truth.is_none() && int_type {
                     nulls[row_index] = true;
@@ -179,11 +309,31 @@ fn filter_physical_rows<C: Columns>(
             Some(true) => 1,
         })
     };
-    for filter in filters {
+    for (position, filter) in filters.iter().enumerate() {
         if sel.is_empty() {
             break;
         }
-        let column_wise = if !vec_enabled {
+        let column_wise = if let Some(programs) = programs {
+            is_zero.clear();
+            if !vec_enabled || !vectorizable(std::slice::from_ref(filter)) {
+                for &physical in &sel {
+                    is_zero.push(truth_code(&eval_filter_row(
+                        &programs[position],
+                        ctx,
+                        input,
+                        physical,
+                    )?)?);
+                }
+            } else {
+                for value in programs[position]
+                    .eval_selected(ctx, input, &sel)
+                    .map_err(into_eval_error)?
+                {
+                    is_zero.push(truth_code(&value)?);
+                }
+            }
+            true
+        } else if !vec_enabled {
             false
         } else {
             match filter {
@@ -1413,6 +1563,139 @@ mod tests {
             vectorized_filter_consider_null(&ctx, true, &both, &input, Vec::new(), Vec::new())
                 .unwrap();
         assert_eq!(selected, vec![false, true, false, false]);
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn retained_filters_execute_live_physical_rows_and_cache_programs() {
+        struct EngineContext {
+            rows: Cell<usize>,
+        }
+        impl Columns for EngineContext {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn tikv_expression_context(&self) -> Option<crate::tikv::Context> {
+                Some(crate::tikv::Context::default())
+            }
+            fn tikv_expression_required(&self) -> bool {
+                true
+            }
+            fn record_tikv_expression_rows(&self, rows: usize) {
+                self.rows.set(self.rows.get() + rows);
+            }
+        }
+        let ctx = EngineContext { rows: Cell::new(0) };
+        let filters = FilterProgram::new(vec![
+            scalar("lt", vec![input_column(0), int_const(10)]),
+            scalar("plus", vec![input_column(0), int_const(1)]),
+        ]);
+        let mut input = Chunk::new_with_capacity(&[long()], 3);
+        for value in [0, 2, i64::MAX] {
+            input.append_int64(0, value);
+        }
+        input.set_sel(Some(vec![1]));
+        for run in 1..=2 {
+            let (selected, nulls) = filters
+                .consider_null(&ctx, true, &input, vec![], vec![])
+                .unwrap();
+            assert_eq!(selected, vec![false, true, false]);
+            assert_eq!(nulls, vec![false; 3]);
+            // Evaluate all physical rows before intersecting the input Sel,
+            // but never evaluate PLUS on the row rejected by LT.
+            assert_eq!(ctx.rows.get(), run * 5);
+            assert_eq!(filters.tikv_compilations(), 2);
+        }
+        assert_eq!(input.sel(), Some([1].as_slice()));
+        assert!(filters.matches_row(&ctx, input.physical_row(0)).unwrap());
+        assert_eq!(ctx.rows.get(), 12);
+        assert_eq!(filters.tikv_compilations(), 2);
+
+        // Ordinary NULL ends demand; NULL from an IN-rewritten equality is
+        // carried until a later false, exactly as in the existing vector API.
+        let mut in_col = input_column(0);
+        if let Expression::Column(col) = &mut in_col {
+            col.in_operand = true;
+        }
+        let null_eq = scalar("eq", vec![in_col, int_const(0)]);
+        let mut null_input = Chunk::new_with_capacity(&[long()], 1);
+        null_input.append_null(0);
+        let cnf = FilterProgram::new(vec![null_eq, int_const(0)]);
+        assert_eq!(
+            cnf.consider_null(&ctx, true, &null_input, vec![], vec![])
+                .unwrap(),
+            (vec![false], vec![false])
+        );
+        let before = ctx.rows.get();
+        assert!(!cnf.matches_row(&ctx, null_input.physical_row(0)).unwrap());
+        assert_eq!(ctx.rows.get(), before + 1);
+        let null_first = FilterProgram::new(vec![
+            input_column(0),
+            scalar("plus", vec![int_const(i64::MAX), int_const(1)]),
+        ]);
+        assert_eq!(
+            null_first
+                .consider_null(&ctx, true, &null_input, vec![], vec![])
+                .unwrap()
+                .0,
+            vec![false]
+        );
+        assert_eq!(null_first.tikv_compilations(), 1);
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn filtering_must_not_bypass_required_engine() {
+        struct RequiredContext(Cell<usize>);
+        impl Columns for RequiredContext {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn tikv_expression_context(&self) -> Option<crate::tikv::Context> {
+                Some(crate::tikv::Context::default())
+            }
+            fn tikv_expression_required(&self) -> bool {
+                true
+            }
+            fn get_uservar(&self, _: &str) -> Option<Datum> {
+                self.0.set(self.0.get() + 1);
+                Some(Datum::Bytes(b"1".to_vec()))
+            }
+        }
+        let filter = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("getvar"),
+            string(),
+            vec![string_const("x")],
+        ));
+        let mut input = Chunk::new_with_capacity(&[], 1);
+        input.set_num_virtual_rows(1);
+        for vectorized in [false, true] {
+            let ctx = RequiredContext(Cell::new(0));
+            assert!(matches!(
+                vectorized_filter_consider_null(
+                    &ctx,
+                    vectorized,
+                    std::slice::from_ref(&filter),
+                    &input,
+                    vec![],
+                    vec![],
+                ),
+                Err(EvalError::ExternalEngine { code: 1105, .. })
+            ));
+            assert_eq!(ctx.0.get(), 0, "native side effect must not execute");
+            assert!(matches!(
+                vec_eval_bool(
+                    &ctx,
+                    vectorized,
+                    std::slice::from_ref(&filter),
+                    &input,
+                    vec![],
+                    vec![],
+                ),
+                Err(EvalError::ExternalEngine { code: 1105, .. })
+            ));
+            assert_eq!(ctx.0.get(), 0);
+        }
     }
 
     #[cfg(feature = "tikv-expr")]

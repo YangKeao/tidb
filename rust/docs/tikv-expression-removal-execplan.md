@@ -130,7 +130,7 @@ remain in the workspace.
       than putting metadata in group state or mutable `AggFunc` descriptors.
       Tests pin NULL/extra-argument/sort-key/FIRST_ROW demand, physical selection,
       engine row counts and one compilation per used argument across clones.
-      Current inventory: 29 sites, 16 production-scope / 13 test-only, or 14
+      That step's inventory: 29 sites, 16 production-scope / 13 test-only, or 14
       production-scope excluding the unlinked duplicate.
 - [x] Retain window aggregate input programs across frame recomputation in
       `WindowAggregateEvaluator`. Every frame still starts a fresh accumulator.
@@ -139,6 +139,14 @@ remain in the workspace.
       per-frame reconstruction made both new cache assertions fail first.
       Typed aggregate kernels remain outside expression-engine row receipts;
       this does not replace recomputation with a sliding-window algorithm.
+- [x] Retain Selection predicates in `FilterProgram` and remove its duplicate
+      NULL/string-IN kernels. Batch and VecEvalBool engine requests now enter
+      admission rather than silently using native kernels. The required-engine
+      getvar regression failed before the fix and now rejects before effects.
+      Pin physical masks, NULL policy, cross-chunk cache reuse and row-mode
+      side-effect demand. Current inventory: 28 sites, 15 production / 13 test,
+      or 13 production excluding the unlinked duplicate. Convenience filter
+      APIs outside Selection still need caller-retained programs.
 - [ ] Retain condition programs in remaining `eval_bool` hot callers (the public
       convenience wrapper currently builds temporary programs). Existing joined scratch-row copies remain;
       eliminating them requires the independent-column facade, not more row
@@ -725,6 +733,37 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+Retained filter/admission validation (TiDB `rust/`, same serial guarded environment,
+no local Cargo patch):
+
+    cargo test -q -p tidb-expr --features tikv-expr --lib filtering_must_not_bypass_required_engine --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --lib evaluator::tests --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --lib selection::tests --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --locked --offline -j1 -- --test-threads=1
+
+The first command failed before implementation because the filtering facade
+ignored required-engine admission and executed getvar natively. The first
+post-fix compile caught an owned String passed to Unsupported(&'static str);
+after that mechanical correction, 20 evaluator and 10 Selection tests passed.
+Expression feature-on passed 1217 / 63 / 0; off 1183 / 18 / 0 (99 ignored lib
+tests each). Executor on passed 1368 / 355 / 6 / 2; off 1335 / 329 / 6 / 0
+(184 ignored integration tests each). All heavy runs were serial with one
+Cargo/test worker, guarded at 8192-MiB RSS / 16384-MiB AS. Sampled peak RSS:
+2593.6 MiB red control; 1101.7 MiB compile correction; successful commands
+2231.5 / 2164.4 / 1493.4 / 3115.0 / 2626.5 / 2747.7 MiB.
+The Selection tests read multiple real child chunks, assert admitted engine row
+receipts and one retained compilation, and explicitly keep native facade
+fallback for user-variable assignment. Runtime engine-off contexts retain the
+native typed batch path. No errors are caught for native replay. Masks retain
+the existing all-physical-rows-before-Sel intersection contract; rejected rows
+are removed before later predicates. Classifier: 43 raw / 28 evaluator sites,
+15 production / 13 test (13 production excluding the dead copy). Full mysql
+replay, Go-oracle expansion, performance, make lint/PR readiness and engine-only
+execution remain unverified.
 
 Window aggregate-cache validation (TiDB `rust/`, same serial guarded environment,
 no local Cargo patch):

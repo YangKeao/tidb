@@ -11,10 +11,10 @@ kind needs. This is the measurement, and the method is repeatable:
 
 ## What the raw hits are
 
-After aggregate argument/order-key routing, the raw grep returns 44 hits.
+After Selection filter routing, the raw grep returns 43 hits.
 `rust/scripts/classify-native-eval-sites.py` classifies call arguments from an
-eight-line window. Its bounded test-scope scanner reports **16 production /
-13 test-only** after the Join/lookup and aggregate-expression migrations. It
+eight-line window. Its bounded test-scope scanner reports **15 production /
+13 test-only** after the Join/lookup, aggregate and Selection migrations. It
 previously reproduced the manual 26 / 13 audit (rather than the old 19 / 20).
 Helper/field attributes no longer taint siblings, and inner attributes apply
 only to their enclosing file/module. Delimiters inside comments and literals
@@ -32,17 +32,17 @@ the fix; the final suite passes 18 tests, including additional test-attribute
 and conservative unsupported-generic controls. That tooling-only validation
 recorded 54 raw / 39 evaluator sites without running Rust/SQL/performance/lint.
 The newer executor migrations below reran executor tests; current counts
-are 44 raw / 29 evaluator sites.
+are 43 raw / 28 evaluator sites.
 
 | Kind | All sites | Production only |
 | --- | --- | --- |
 | one row of a chunk (`get_row(0)`) | 11 | 4 |
-| a row-loop variable or comparator | 13 | 12 |
+| a row-loop variable or comparator | 12 | 11 |
 | a constant with no input row (`Row::empty()`) | 5 | 0 |
 | not the evaluator: no-argument `constant.eval()`/`column.eval()`, the planner's `metadata.eval(k)`, the statement predicate's own four-argument `eval(row, catalog, db, ctx)` | 15 | -- |
 
-The textual native evaluator surface outside projections is **29 sites**:
-**16 production-scope** and **13 test-only**. Test-only
+The textual native evaluator surface outside projections is **28 sites**:
+**15 production-scope** and **13 test-only**. Test-only
 calls are re-pointed with the corpora rather than converted. This is a textual
 inventory, not a proof of reachability. The driver's six-argument
 `UpdateExpression::eval` is deliberately
@@ -55,7 +55,7 @@ One classifier caveat is now confirmed rather than hypothetical:
 unlinked duplicate. `lib.rs` exports the actual `StreamAggExec` and
 `GroupedStreamAggExec` from `hash_agg.rs`, and `driver/physical_builder.rs`
 imports those types; `cargo test --lib -- --list` contains none of
-`stream_agg.rs`'s tests. Excluding these two known dead calls leaves **14**
+`stream_agg.rs`'s tests. Excluding these two known dead calls leaves **13**
 production-scope sites requiring routing/reachability review (not the earlier
 heuristic's 17).
 Do not convert the dead duplicate; migrate `hash_agg.rs`'s real aggregate paths
@@ -133,6 +133,17 @@ retain these input plans across frames while allocating fresh accumulator
 state per frame. Real emission tests pin one compilation, overlapping/empty/
 FIRST_ROW frames and delayed overflow demand; recomputation itself is unchanged.
 
+Selection now retains `FilterProgram` across child chunks and no longer owns
+separate NULL/string-IN predicate kernels. Row-mode matching uses retained
+single-row suites; the batch/VecEvalBool facades route engine requests through
+admission, including required-engine contexts without an engine. A regression
+first exposed the old batch facade executing native getvar despite requiring
+the engine. The native typed vector path remains for non-requesting contexts.
+Tests pin engine receipts/cache reuse, physical-mask intersection after
+filtering, NULL-from-IN continuation versus ordinary NULL, and side-effect/error
+demand. Convenience filter APIs still construct temporary programs; callers
+must retain `FilterProgram` for cross-call compilation reuse.
+
 Remaining ordering-sensitive calls are not candidates for an eager whole-chunk
 cache. For example, `union_scan.rs` evaluates generated columns into a `MutRow`,
 where each write can feed the next expression. It needs an order-preserving
@@ -159,12 +170,12 @@ The remaining 13 actual test-only sites are not listed below.
 | 2 | `tidb-executor/src/access_cost.rs` |
 | 2 | `tidb-executor/src/driver/dml/correlated.rs` |
 | 2 | `tidb-executor/src/stream_agg.rs` (unlinked duplicate) |
-| 1 each | `column_default.rs`, `generated_column.rs`, `partition_pruning.rs`, `predicate_pushdown.rs`, `selection.rs`, `union_scan.rs`, `sort.rs` |
+| 1 each | `column_default.rs`, `generated_column.rs`, `partition_pruning.rs`, `predicate_pushdown.rs`, `union_scan.rs`, `sort.rs` |
 
 
 ## What each kind needs for the removal
 
-* **A row loop or comparator (12 production-scope).** Where eager
+* **A row loop or comparator (11 production-scope).** Where eager
   evaluation preserves observable order, evaluate the expression for the whole
   chunk before the loop and index the result vector. Otherwise use selected
   rows at the original demand points, as the Window key path does. That is now
