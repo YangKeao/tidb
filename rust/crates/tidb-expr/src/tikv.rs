@@ -26,7 +26,10 @@ use std::sync::Arc;
 use prost::Message;
 use tidb_chunk::chunk::Chunk;
 use tidb_datatype::{Datum, EvalType, FieldType, FieldTypeCode};
-use tidb_query_expr::standalone::{ColumnRef as EngineColumnRef, PreparedExpression, ScalarRef};
+use tidb_query_expr::standalone::{
+    ColumnRef as EngineColumnRef, PreparedExpression, ScalarRef,
+    SelectedColumnRef as EngineSelectedColumnRef,
+};
 
 mod admission;
 mod bridge;
@@ -348,32 +351,44 @@ impl TikvExpression {
                 }
             })
             .collect::<Result<_, _>>()?;
+        let selected: Vec<_> = borrowed
+            .iter()
+            .copied()
+            .map(|column| EngineSelectedColumnRef {
+                column,
+                selection: input.sel(),
+            })
+            .collect();
+        let output_rows = input.sel().map_or(row_count, <[usize]>::len);
         let mut destination = output.column_mut(output_index);
         let expected = self.result_type.eval_type();
-        let result =
-            self.prepared
-                .eval_borrowed_shared(&borrowed, row_count, input.sel(), |value| {
-                    match value {
-                        ScalarRef::Null => destination.append_null(),
-                        ScalarRef::Int(value) if expected == EvalType::Int => {
-                            destination.append_int64(value)
-                        }
-                        ScalarRef::Real(value) if expected == EvalType::Real => {
-                            destination.append_float64(value)
-                        }
-                        ScalarRef::Bytes(value) if expected == EvalType::String => {
-                            destination.append_bytes(value)
-                        }
-                        _ => {
-                            return Err(tidb_query_expr::standalone::Error {
-                                code: 1105,
-                                message: "borrowed expression result type does not match output"
-                                    .to_owned(),
-                            })
-                        }
+        let result = self.prepared.eval_borrowed_selected_shared(
+            &selected,
+            row_count,
+            output_rows,
+            |value| {
+                match value {
+                    ScalarRef::Null => destination.append_null(),
+                    ScalarRef::Int(value) if expected == EvalType::Int => {
+                        destination.append_int64(value)
                     }
-                    Ok(())
-                });
+                    ScalarRef::Real(value) if expected == EvalType::Real => {
+                        destination.append_float64(value)
+                    }
+                    ScalarRef::Bytes(value) if expected == EvalType::String => {
+                        destination.append_bytes(value)
+                    }
+                    _ => {
+                        return Err(tidb_query_expr::standalone::Error {
+                            code: 1105,
+                            message: "borrowed expression result type does not match output"
+                                .to_owned(),
+                        })
+                    }
+                }
+                Ok(())
+            },
+        );
         let diagnostics = match result {
             Ok(diagnostics) => diagnostics,
             Err(error) => {
