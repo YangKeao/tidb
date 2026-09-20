@@ -152,10 +152,11 @@ fn fold_constant(expression: &Expression) -> Option<Datum> {
             {
                 return None;
             }
-            let mut chunk = tidb_chunk::chunk::Chunk::new_empty(&[]);
-            chunk.set_num_virtual_rows(1);
-            expression
-                .eval(&crate::StmtContext::for_query(), chunk.get_row(0))
+            let context = crate::StmtContext::for_query();
+            #[cfg(feature = "tikv-expr")]
+            let context = context.with_tikv_expression(true);
+            tidb_expr::evaluator::eval_constant_row(expression, &context)
+                .map_err(tidb_expr::evaluator::into_eval_error)
                 .ok()
         }
     }
