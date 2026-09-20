@@ -681,6 +681,120 @@ fn the_inline_projection_prunes_the_output_but_not_the_condition() {
     );
 }
 
+#[cfg(feature = "tikv-expr")]
+#[test]
+fn cached_conditions_preserve_null_continuation_and_short_circuit() {
+    use tidb_ast::CiString;
+    use tidb_expr::{constant::Constant, scalar_function::ScalarFunction};
+    let input = chunk_of(&[None]);
+    let mut in_column = Column::new(1, long());
+    in_column.index = 0;
+    in_column.in_operand = true;
+    let eq = tidb_expr::new_function::new_function(
+        &TestCtx,
+        "eq",
+        long(),
+        vec![Expression::Column(in_column), always_true()],
+    )
+    .unwrap();
+    let fail = Expression::ScalarFunction(ScalarFunction::new(
+        CiString::new("plus"),
+        long(),
+        vec![
+            Expression::Constant(Constant::new(Datum::Int(i64::MAX), long())),
+            always_true(),
+        ],
+    ));
+    for engine in [false, true] {
+        for (expressions, expected, evaluated) in [
+            (vec![column_condition(0), fail.clone()], (false, false), 1),
+            (vec![eq.clone()], (false, true), 1),
+            (
+                vec![eq.clone(), always_false(), fail.clone()],
+                (false, false),
+                2,
+            ),
+        ] {
+            let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+            let program = ConditionEvaluator::new(&expressions);
+            assert_eq!(program.evaluate(&ctx, input.get_row(0)).unwrap(), expected);
+            assert_eq!(
+                ctx.tikv_expression_rows(),
+                if engine { evaluated } else { 0 }
+            );
+            if expressions.len() > evaluated as usize {
+                assert_eq!(program.programs.last().unwrap().1.tikv_compilations(), 0);
+            }
+        }
+        // NULL from an IN equality must continue and expose the later error.
+        let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+        let program = ConditionEvaluator::new(&[eq.clone(), fail.clone()]);
+        assert!(program.evaluate(&ctx, input.get_row(0)).is_err());
+        assert_eq!(ctx.tikv_expression_rows(), if engine { 1 } else { 0 });
+    }
+}
+
+#[cfg(feature = "tikv-expr")]
+#[test]
+fn condition_clones_share_cache_and_use_physical_row_cursors() {
+    let ctx = crate::StmtContext::for_query().with_tikv_expression(true);
+    let mut input = chunk_of(&[None, Some(1), Some(0)]);
+    input.set_sel(Some(vec![1, 0]));
+    let program = ConditionEvaluator::new(&[column_condition(0)]);
+    let cloned = program.clone();
+    assert!(Arc::ptr_eq(&program.programs[0].1, &cloned.programs[0].1));
+    assert_eq!(
+        program.evaluate(&ctx, input.get_row(0)).unwrap(),
+        (true, false)
+    );
+    assert_eq!(
+        cloned.evaluate(&ctx, input.physical_row(2)).unwrap(),
+        (false, false)
+    );
+    assert_eq!(ctx.tikv_expression_rows(), 2);
+    assert_eq!(program.programs[0].1.tikv_compilations(), 1);
+    assert_eq!(input.sel(), Some(&[1, 0][..]));
+    assert_eq!(
+        eval_bool(&ctx, &[column_condition(0)], input.get_row(0)).unwrap(),
+        (true, false)
+    );
+    assert_eq!(
+        eval_bool(&ctx, &[always_true()], Row::empty()).unwrap(),
+        (true, false)
+    );
+}
+
+#[cfg(feature = "tikv-expr")]
+#[test]
+fn semi_joiner_conditions_execute_in_the_engine() {
+    let ctx = crate::StmtContext::for_query().with_tikv_expression(true);
+    let outer = chunk_of(&[Some(7)]);
+    let inners = chunk_of(&[Some(0), Some(1)]);
+    let mut joiner = new_joiner(
+        ctx.clone(),
+        JoinType::SemiJoin,
+        false,
+        &[],
+        vec![column_condition(1)],
+        &[long()],
+        &[long()],
+        None,
+        false,
+        sizes(),
+    );
+    assert_eq!(
+        drive(&mut *joiner, &outer, 0, &inners, 1, NAAJType::Unknown),
+        vec![vec![Some(7)]]
+    );
+    assert_eq!(ctx.tikv_expression_rows(), 2);
+    let mut cloned = joiner.clone_joiner();
+    assert_eq!(
+        drive(&mut *cloned, &outer, 0, &inners, 1, NAAJType::Unknown),
+        vec![vec![Some(7)]]
+    );
+    assert_eq!(ctx.tikv_expression_rows(), 4);
+}
+
 #[test]
 fn eval_bool_treats_a_plain_null_as_false_and_an_eq_from_in_null_as_unknown() {
     // Go `expression.EvalBool`: a NULL short-circuits to (false, false) unless

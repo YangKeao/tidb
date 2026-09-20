@@ -10,7 +10,7 @@ kind needs. This is the measurement, and the method is repeatable:
 
 ## What the raw hits are
 
-After the Window RANGE migration, the raw grep above returns 57 hits. They are
+After the Join CNF routing, the raw grep above returns 56 hits. They are
 classified mechanically by `rust/scripts/classify-native-eval-sites.py` (its rule is its
 docstring), which reads a hit plus the following eight lines so a call whose
 arguments span lines is still classified by its argument list:
@@ -18,12 +18,12 @@ arguments span lines is still classified by its argument list:
 | Kind | All sites | Production only |
 | --- | --- | --- |
 | one row of a chunk (`get_row(0)`) | 11 | 2 |
-| a row-loop variable or comparator | 26 | 15 |
+| a row-loop variable or comparator | 25 | 14 |
 | a constant with no input row (`Row::empty()`) | 5 | 3 |
 | not the evaluator: no-argument `constant.eval()`/`column.eval()`, the planner's `metadata.eval(k)`, the statement predicate's own four-argument `eval(row, catalog, db, ctx)` | 15 | -- |
 
-The mechanical native evaluator surface outside projections is **42 sites**:
-**20 production-labelled** and **22 test-only** (a file under a `tests/`
+The mechanical native evaluator surface outside projections is **41 sites**:
+**19 production-labelled** and **22 test-only** (a file under a `tests/`
 directory, a `src/*tests.rs` module, or any line below its file's first
 `#[cfg(test)]`). Test-only calls are re-pointed with the corpora rather than
 converted. This is a textual inventory, not a proof of reachability. The driver's six-argument `UpdateExpression::eval` is deliberately
@@ -36,7 +36,7 @@ One classifier caveat is now confirmed rather than hypothetical:
 unlinked duplicate. `lib.rs` exports the actual `StreamAggExec` and
 `GroupedStreamAggExec` from `hash_agg.rs`, and `driver/physical_builder.rs`
 imports those types; `cargo test --lib -- --list` contains none of
-`stream_agg.rs`'s tests. Excluding these two known dead calls leaves **18**
+`stream_agg.rs`'s tests. Excluding these two known dead calls leaves **17**
 production-labelled sites requiring routing/reachability review.
 Do not convert the dead duplicate; migrate `hash_agg.rs`'s real aggregate paths
 instead.
@@ -60,16 +60,22 @@ CURRENT ROW/UNBOUNDED paths that never demand expressions. All seven direct
 native calls in `window.rs` are now routed through suites. This is not an
 engine-only claim: suite admission and feature-gated native paths remain.
 
-The remaining ordering-sensitive calls are still counted by the mechanical inventory; they are not candidates for
-an eager whole-chunk cache. `window.rs` demands partition/RANGE/LAG/LEAD
-expressions only when the current frame reaches a row, so a later-row error
-cannot pre-empt an earlier key/frame short-circuit. `joiner::eval_bool` has the
-same condition-by-condition rule, including Go's special NULL continuation for
-an `IN`-rewritten equality. `union_scan.rs` evaluates generated columns into a
-`MutRow`, where each write can be an input to the next generating expression.
-They need a selected-row, order-preserving engine interface (or an adapter that
-uses one), not a copied dense-row workaround. The corresponding window gap is
-also recorded in TiKV's `EXPRESSION_SEMANTIC_GAPS.md`.
+`joiner::eval_bool` now dispatches through `ConditionEvaluator`, preserving the
+original condition order, ordinary NULL rejection, and NULL continuation for
+IN-rewritten equality. It selects `Row.idx()` physically through the shared
+input chunk, never applying `Chunk.sel()` twice. Semi-family joiners retain the
+programs and clone them by `Arc`, so compilation is shared; tests assert cache
+identity/count and actual engine rows through a semi join and its clone. The
+public convenience `eval_bool` wrapper constructs temporary programs: other
+hot callers still need retained caches. Existing join scratch-row copies were
+not removed; no new copied row is introduced by the evaluator routing.
+
+Remaining ordering-sensitive calls are not candidates for an eager whole-chunk
+cache. For example, `union_scan.rs` evaluates generated columns into a `MutRow`,
+where each write can feed the next expression. It needs an order-preserving
+engine interface, not a new copied dense-row workaround. Window/Join demand
+invariants and remaining input-copy limitations are also recorded in TiKV's
+`EXPRESSION_SEMANTIC_GAPS.md`.
 
 ## Production sites by file
 
@@ -82,12 +88,12 @@ because they are re-pointed with the corpora, not converted.
 | 3 | `tidb-planner/src/ranger/go_cases.rs` |
 | 2 | `tidb-executor/src/driver/dml/correlated.rs` |
 | 2 | `tidb-executor/src/stream_agg.rs` (unlinked duplicate) |
-| 1 each | `column_default.rs`, `generated_column.rs`, `hash_agg/input.rs`, `join.rs`, `joiner.rs`, `partition_pruning.rs`, `predicate_pushdown.rs`, `selection.rs`, `union_scan.rs`, `sort.rs` |
+| 1 each | `column_default.rs`, `generated_column.rs`, `hash_agg/input.rs`, `join.rs`, `partition_pruning.rs`, `predicate_pushdown.rs`, `selection.rs`, `union_scan.rs`, `sort.rs` |
 
 
 ## What each kind needs for the removal
 
-* **A row loop or comparator (15 production-labelled).** Where eager
+* **A row loop or comparator (14 production-labelled).** Where eager
   evaluation preserves observable order, evaluate the expression for the whole
   chunk before the loop and index the result vector. Otherwise use selected
   rows at the original demand points, as the Window key path does. That is now

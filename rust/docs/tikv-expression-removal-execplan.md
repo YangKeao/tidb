@@ -81,12 +81,16 @@ remain in the workspace.
       failed before the fix; row-major programs now emit a `NotAdmitted` receipt
       and mandatory-engine contexts receive an `ExternalEngine` error before
       any native side effect. Optional-engine behavior stays native but visible.
-- [ ] Route Join evaluations at their original demand points. TiDB is pinned to
-      engine `5c1fb99bc8f006791136d9f922394866111cecbb`, but its Join adapter has
-      not yet consumed the independent-length interface. Borrowed evaluation
-      still rejects lazy programs. Next, route Join's borrowed row cursors via
-      `EvaluatorSuite::eval_selected` and retained condition programs, preserving
-      NULL-from-IN continuation and condition-by-condition short-circuit.
+- [x] Route `joiner::eval_bool` through `ConditionEvaluator` and selected suites,
+      preserving condition-by-condition short-circuit and NULL-from-IN
+      continuation. Semi-family joiners retain the programs; clones share them
+      through `Arc`. Tests assert engine execution, physical row semantics,
+      skipped later compilations/errors and shared compilation counts.
+- [ ] Retain condition programs in remaining `eval_bool` hot callers (the public
+      convenience wrapper currently builds temporary programs) and migrate
+      other Join expression sites. Existing joined scratch-row copies remain;
+      eliminating them requires the independent-column facade, not more row
+      copies. TiDB is pinned to engine `5c1fb99`; borrowed lazy remains unsupported.
 
 - [x] Milestone A (point 6): engine shareable and thread-safe.
       TiKV metadata is `Send + Sync`, `PreparedExpression` is asserted
@@ -669,6 +673,22 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+Join CNF routing validation (TiDB `rust/`, same serial guarded environment,
+no local Cargo patch):
+
+    cargo test -q -p tidb-executor --features tikv-expr --lib joiner:: --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --locked --offline -j1 -- --test-threads=1
+
+Targeted tests: 22 passed. Feature-on executor groups: 1352 / 355 / 6 / 2
+passed; feature-off: 1335 / 329 / 6 / 0 passed; both integration groups have
+184 ignored tests. Peaks: 3975.0 / 2246.7 / 3005.7 MiB. The classifier now
+reports 56 raw hits and 41 evaluator sites (19 production-labelled, 22
+test-only); excluding two known unlinked calls leaves 17 to review/route.
+No zero-copy Join or engine-only claim is made. The convenience CNF wrapper
+still creates temporary programs, and existing scratch-row copying remains.
+Performance, full mysql replay and repository-wide lint were not rerun.
 
 Selected-suite/cache and mandatory-engine validation (TiDB `rust/`, same
 serial guarded environment, no local Cargo patch):
