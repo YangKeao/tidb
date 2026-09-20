@@ -527,7 +527,9 @@ pub(crate) fn eval_over_dependencies<S: GeneratedColumnSlot>(
 }
 
 /// Evaluates one expression against a row of datums by materializing the row
-/// into the single-row chunk [`Expression::eval`] reads.
+/// into a single-row chunk for the shared evaluation facade.
+/// Statement/profile-aware callers must retain programs to amortize compilation;
+/// this compatibility helper does not cache mutable table descriptors.
 ///
 /// `ctx` is the STATEMENT's evaluation context, not a placeholder: a
 /// generated expression is evaluated under the same SQL mode as any other
@@ -549,7 +551,16 @@ pub(crate) fn eval_over_row(
     for index in row.len()..types.len() {
         chunk.append_datum(index, &Datum::Null);
     }
-    expr.eval(ctx, chunk.get_row(0))
+    if types.is_empty() {
+        chunk.set_num_virtual_rows(1);
+    }
+    tidb_expr::evaluator::EvaluatorSuite::new(vec![expr.clone()], true)
+        .eval_selected_for_cast(ctx, &chunk, &[0])
+        .map_err(tidb_expr::evaluator::into_eval_error)?
+        .pop()
+        .ok_or(tidb_expr::EvalError::Unsupported(
+            "generated expression returned no value",
+        ))
 }
 
 /// Why DDL refused a generated column.
@@ -987,6 +998,62 @@ mod tests {
                 field_type: int_type(),
             },
         ]
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn generated_engine_keeps_name_binding_and_empty_input_semantics() {
+        use tidb_expr::{column::Column, constant::Constant};
+        for engine in [false, true] {
+            let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+            let mut columns = chain(false);
+            columns.swap(0, 1); // Current table order differs from dependency order.
+            let mut row = vec![Datum::Null, Datum::Int(5), Datum::Null];
+            materialize(&columns, &mut row, false, &ctx).unwrap();
+            assert_eq!(row, vec![Datum::Int(6), Datum::Int(5), Datum::Int(7)]);
+            assert_eq!(ctx.tikv_expression_rows(), if engine { 2 } else { 0 });
+            let literal = Expression::Constant(Constant::new(Datum::Int(7), int_type()));
+            assert_eq!(
+                eval_over_row(&literal, &[], &[], &ctx).unwrap(),
+                Datum::Int(7)
+            );
+            let mut missing = Column::new(2, int_type());
+            missing.index = 1;
+            assert_eq!(
+                eval_over_row(
+                    &Expression::Column(missing),
+                    &[int_type(), int_type()],
+                    &[Datum::Int(5)],
+                    &ctx
+                )
+                .unwrap(),
+                Datum::Null
+            );
+            assert_eq!(ctx.tikv_expression_rows(), if engine { 4 } else { 0 });
+            let mut bad = vec![Datum::Null, Datum::Int(i64::MAX), Datum::Int(99)];
+            assert!(materialize(&columns, &mut bad, false, &ctx).is_err());
+            assert_eq!(
+                bad[2],
+                Datum::Int(99),
+                "later generated column must remain untouched"
+            );
+        }
+    }
+
+    #[test]
+    fn generated_binary_literal_keeps_numeric_conversion_kind() {
+        let resolver = TableColumnResolver::new(&[], &[], tidb_datatype::SessionTimeZone::utc());
+        let source = parse_generated_expr("0x10");
+        let expression = tidb_expr::rewriter::rewrite_expr_resolved(&source, &resolver).unwrap();
+        let value = eval_over_row(&expression, &[], &[], &tidb_expr::NoColumns).unwrap();
+        let converted = value
+            .convert_to_in(
+                &int_type(),
+                tidb_datatype::DEFAULT_STATEMENT_FLAGS,
+                &tidb_datatype::SessionTimeZone::utc(),
+            )
+            .unwrap();
+        assert_eq!(converted.value, Datum::Int(16));
     }
 
     #[test]

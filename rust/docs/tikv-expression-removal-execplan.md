@@ -153,8 +153,20 @@ remain in the workspace.
       reuse and stopping/recovery after overflow. Replace Sort's column-only
       AST dispatch with validated materialized-cell transfer (not engine work),
       preserving deferred-constant skipping and unsupported-shape rejection.
-      Current inventory: 26 sites, 13 production / 13 test, or 11 production
+      That step's inventory: 26 sites, 13 production / 13 test, or 11 production
       excluding the dead duplicate.
+- [x] Route general generated-row and computed-default evaluation through the
+      facade, preserving physical row selection, name rebinding, virtual empty
+      rows, and the existing session rewrite/cast boundary. Reproduced and fixed
+      BinaryLiteral tag loss (16 became 0 or an error) with a separate
+      `eval_selected_for_cast` path; ordinary typed projection APIs stay intact.
+      Reproduced and fixed missing ENUM/SET numeric metadata adaptation in Sort
+      and late-cast scalar results. Current inventory: 24 sites, 11 production /
+      13 test, or 9 production excluding the unlinked duplicate.
+- [ ] Retain generated/default compatibility programs in statement-owned plans
+      with schema/zone/LIKE rewrite invalidation. The public mutable descriptors
+      are not safe cache owners; temporary compilation and gather copies remain.
+      Binary literal and clock admission gaps still need engine support.
 - [ ] Retain condition programs in remaining `eval_bool` hot callers (the public
       convenience wrapper currently builds temporary programs). Existing joined scratch-row copies remain;
       eliminating them requires the independent-column facade, not more row
@@ -741,6 +753,55 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+Schema-expression/late-cast validation (TiDB `rust/`, same serial guarded
+environment, no local Cargo patch):
+
+    cargo test -q -p tidb-executor --features tikv-expr --lib generated_column::tests::generated_engine_keeps --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --lib generated_binary_literal_keeps_numeric_conversion_kind --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --lib generated_column::tests --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --lib evaluator::tests --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --lib column_default::tests --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --lib union_scan::tests::generated_engine::binary_literal --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --lib union_scan::tests --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr -p tidb-executor --features tidb-executor/tikv-expr --lib hybrid_numeric_flag --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --lib hybrid_numeric_flag --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --locked --offline -j1 -- --test-threads=1
+
+Evidence in `expression-reuse/`: `generated-binding-before.log` fails with
+zero engine rows vs two; `generated-literal-native-fixed.log` pins the original
+0x10 -> 16 behavior, while `generated-binding-typed.log` fails with 0 instead
+of 16 after typed-facade routing. `union-literal-before.log` independently
+reproduces an IncorrectValue error from the same tag loss. The separate
+`eval_selected_for_cast` path preserves native fallback Datum kinds without
+changing typed projection APIs, required-engine refusal, or no-error-replay.
+Binary literals remain engine-declined, not engine-executed. Initial compile
+failures (Chunk import/clock fixture tuple and missing into_eval_error) were
+corrected before behavioral validation. Scoped passes: 21 evaluator, 9 generated,
+12 default and 11 UnionScan tests; the additional hybrid test follows below.
+
+Self-review found `ENUM_SET_AS_INT` was lost by Sort's plain cell transfer and
+late-cast result carriers. `hybrid-flag-before.log` and
+`hybrid-cast-before.log` both fail Enum vs UInt; `hybrid-flag-fixed.log` passes
+both ENUM/SET regressions after metadata adaptation. This is ordinal/bitmask
+value transport, not copied scalar kernels. Final `schema-expr-on/off.log`
+pass 1219/63 and 1185/18 (99 ignored unit tests each); final
+`schema-executor-on/off.log` pass 1381/355/6/2 and 1340/329/6/0 (184 ignored
+integration tests each). These final runs include all new regressions.
+
+Single Cargo/test workers and serial heavy commands used the 8192-MiB RSS /
+16384-MiB AS guard. Largest sampled RSS across the round: 3228.0 MiB; final
+hybrid/expr-on/executor-on/expr-off/executor-off samples: 2531.8 / 1994.9 /
+2462.4 / 1161.1 / 2018.7 MiB. Short cached scoped runs can under-sample peaks.
+Classifier: 39 raw / 24 evaluator / 11 production / 13 test, or 9 production
+excluding the dead duplicate. Generated/default helpers intentionally retain no
+cache on mutable model descriptors; statement-owned retention and gather-copy
+removal remain pending. Native fallback/casts, clock/binary admission gaps and
+native kernel deletion remain. Full mysql replay, expanded Go oracle, performance
+and make lint/PR readiness were not verified.
 
 UnionScan/Sort validation (TiDB `rust/`, same serial guarded environment,
 no local Cargo patch):

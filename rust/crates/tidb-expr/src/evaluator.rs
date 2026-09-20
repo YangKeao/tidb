@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use tidb_chunk::chunk::Chunk;
 use tidb_chunk::chunk_util::ColumnSwapHelper;
-use tidb_datatype::{Datum, FieldType};
+use tidb_datatype::{Datum, FieldType, FieldTypeCode};
 
 use crate::context::{Columns, EvalError};
 use crate::expression::Expression;
@@ -740,7 +740,7 @@ impl EvaluatorSuite {
         ctx: &C,
         input: &Chunk,
     ) -> Result<Vec<Datum>, EvaluatorError> {
-        self.eval_single_input(ctx, input, None)
+        self.eval_single_input(ctx, input, None, false)
     }
 
     /// Evaluate one calculated expression for explicit physical row indices.
@@ -753,7 +753,21 @@ impl EvaluatorSuite {
         input: &Chunk,
         physical_rows: &[usize],
     ) -> Result<Vec<Datum>, EvaluatorError> {
-        self.eval_single_input(ctx, input, Some(physical_rows))
+        self.eval_single_input(ctx, input, Some(physical_rows), false)
+    }
+
+    /// Evaluate values for a subsequent SQL/table cast. Native fallback values
+    /// retain their Datum kinds instead of round-tripping through a typed
+    /// output column (which erases e.g. BinaryLiteral's numeric semantics).
+    /// Engine admission, required-engine errors and no-error-replay rules are
+    /// identical to eval_selected; this is not new engine type support.
+    pub fn eval_selected_for_cast<C: Columns>(
+        &self,
+        ctx: &C,
+        input: &Chunk,
+        physical_rows: &[usize],
+    ) -> Result<Vec<Datum>, EvaluatorError> {
+        self.eval_single_input(ctx, input, Some(physical_rows), true)
     }
 
     fn eval_single_input<C: Columns>(
@@ -761,6 +775,7 @@ impl EvaluatorSuite {
         ctx: &C,
         input: &Chunk,
         selection: Option<&[usize]>,
+        preserve_native_datums: bool,
     ) -> Result<Vec<Datum>, EvaluatorError> {
         if self.program.calculated.len() != 1
             || self.program.calculated_output_indexes.as_slice() != [0]
@@ -784,10 +799,35 @@ impl EvaluatorSuite {
         }
         let rows = selection.map_or_else(|| input.num_rows(), <[usize]>::len);
         let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), rows);
-        self.evaluate_rows_selected(ctx, input, &mut output, selection)?;
-        Ok((0..rows)
-            .map(|row| output.get_row(row).get_datum(0, &ty))
-            .collect())
+        let mut native_datums = Vec::new();
+        self.evaluate_rows_selected_with_datums(
+            ctx,
+            input,
+            &mut output,
+            selection,
+            preserve_native_datums.then_some(&mut native_datums),
+        )?;
+        let values = if preserve_native_datums && native_datums.len() == rows {
+            native_datums
+        } else {
+            (0..rows)
+                .map(|row| output.get_row(row).get_datum(0, &ty))
+                .collect()
+        };
+        // The hybrid flag describes the scalar value exposed to the caller,
+        // even when a materialized/engine column stores the ENUM/SET carrier.
+        // Projection APIs keep their existing typed-column representation.
+        if preserve_native_datums && ty.has_flag(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT) {
+            return Ok(values
+                .into_iter()
+                .map(|value| match (ty.code(), value) {
+                    (FieldTypeCode::Enum, Datum::Enum(value, _)) => Datum::UInt(value.value()),
+                    (FieldTypeCode::Set, Datum::Set(value, _)) => Datum::UInt(value.value()),
+                    (_, value) => value,
+                })
+                .collect());
+        }
+        Ok(values)
     }
 
     /// The evaluation half of [`run`](Self::run): everything except the
@@ -808,6 +848,18 @@ impl EvaluatorSuite {
         output: &mut Chunk,
         selection: Option<&[usize]>,
     ) -> Result<(), EvaluatorError> {
+        self.evaluate_rows_selected_with_datums(ctx, input, output, selection, None)
+    }
+
+    fn evaluate_rows_selected_with_datums<C: Columns>(
+        &self,
+        ctx: &C,
+        input: &Chunk,
+        output: &mut Chunk,
+        selection: Option<&[usize]>,
+        mut native_datums: Option<&mut Vec<Datum>>,
+    ) -> Result<(), EvaluatorError> {
+        debug_assert!(native_datums.is_none() || self.program.calculated.len() == 1);
         if let Some(selection) = selection {
             let physical_rows = input.physical_rows();
             if selection.iter().any(|&row| row >= physical_rows) {
@@ -928,7 +980,11 @@ impl EvaluatorSuite {
                         if rows != 0 {
                             let value = constant.eval_in(ctx)?;
                             for _ in 0..rows {
-                                output.append_datum(*output_index, &value);
+                                if let Some(values) = native_datums.as_deref_mut() {
+                                    values.push(value.clone());
+                                } else {
+                                    output.append_datum(*output_index, &value);
+                                }
                             }
                         }
                         continue;
@@ -938,7 +994,8 @@ impl EvaluatorSuite {
                     // Go's typed `VecEvalDecimal` for decimal arithmetic.
                     // This native vector kernel reads input.sel(); explicit
                     // physical selections instead use the scalar loop below.
-                    if selection.is_none()
+                    if native_datums.is_none()
+                        && selection.is_none()
                         && function.vec_eval_decimal_arithmetic(input, output, *output_index)?
                     {
                         continue;
@@ -946,7 +1003,11 @@ impl EvaluatorSuite {
                 }
                 for row_index in 0..rows {
                     let value = expression.eval(ctx, row_at(row_index))?;
-                    output.append_datum(*output_index, &value);
+                    if let Some(values) = native_datums.as_deref_mut() {
+                        values.push(value);
+                    } else {
+                        output.append_datum(*output_index, &value);
+                    }
                 }
             }
         } else {
@@ -957,7 +1018,11 @@ impl EvaluatorSuite {
                     .zip(&program.calculated)
                 {
                     let value = expression.eval(ctx, row_at(row_index))?;
-                    output.append_datum(*output_index, &value);
+                    if let Some(values) = native_datums.as_deref_mut() {
+                        values.push(value);
+                    } else {
+                        output.append_datum(*output_index, &value);
+                    }
                 }
             }
         }
@@ -1563,6 +1628,124 @@ mod tests {
             vectorized_filter_consider_null(&ctx, true, &both, &input, Vec::new(), Vec::new())
                 .unwrap();
         assert_eq!(selected, vec![false, true, false, false]);
+    }
+
+    #[test]
+    fn late_cast_values_apply_hybrid_numeric_flag() {
+        for code in [FieldTypeCode::Enum, FieldTypeCode::Set] {
+            let mut ty = FieldType::new(code).with_elems(["a", "b"]);
+            ty.add_flags(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT);
+            let (value, numeric) = if code == FieldTypeCode::Enum {
+                (
+                    Datum::Enum(tidb_datatype::MysqlEnum::new("b", 2), ty.collation()),
+                    2,
+                )
+            } else {
+                (
+                    Datum::Set(tidb_datatype::MysqlSet::new("a,b", 3), ty.collation()),
+                    3,
+                )
+            };
+            let mut input = Chunk::new_with_capacity(std::slice::from_ref(&ty), 1);
+            input.append_datum(0, &value);
+            let mut column = crate::column::Column::new(1, ty.clone());
+            column.index = 0;
+            for expr in [
+                Expression::Constant(Constant::new(value, ty)),
+                Expression::Column(column),
+            ] {
+                let suite = EvaluatorSuite::new(vec![expr], true);
+                assert_eq!(
+                    suite
+                        .eval_selected_for_cast(&crate::NoColumns, &input, &[0])
+                        .unwrap(),
+                    vec![Datum::UInt(numeric)]
+                );
+                #[cfg(feature = "tikv-expr")]
+                {
+                    struct Engine;
+                    impl Columns for Engine {
+                        fn get(&self, _: &[String]) -> Option<Datum> {
+                            None
+                        }
+                        fn tikv_expression_context(&self) -> Option<crate::tikv::Context> {
+                            Some(crate::tikv::Context::default())
+                        }
+                    }
+                    assert_eq!(
+                        suite.eval_selected_for_cast(&Engine, &input, &[0]).unwrap(),
+                        vec![Datum::UInt(numeric)]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn late_cast_values_keep_native_datum_kinds_without_changing_projection() {
+        let value = Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(vec![0, 16]));
+        let literal = Expression::Constant(Constant::new(value.clone(), string()));
+        let mut deferred = Constant::new(Datum::Null, string());
+        deferred.deferred_expr = Some(Box::new(literal.clone()));
+        let mut input = Chunk::new_with_capacity(&[], 2);
+        input.set_num_virtual_rows(2);
+        for expression in [literal, Expression::Constant(deferred)] {
+            let expected = expression
+                .eval(&crate::NoColumns, tidb_chunk::row::Row::empty())
+                .unwrap();
+            let suite = EvaluatorSuite::new(vec![expression], true);
+            assert_eq!(
+                suite
+                    .eval_selected_for_cast(&crate::NoColumns, &input, &[1, 0, 1])
+                    .unwrap(),
+                vec![expected.clone(); 3]
+            );
+            let typed = suite
+                .eval_selected(&crate::NoColumns, &input, &[0])
+                .unwrap();
+            assert!(!matches!(&typed[0], Datum::BinaryLiteral(_)));
+            assert_eq!(typed[0].as_raw_bytes(), Some([0, 16].as_slice()));
+            #[cfg(feature = "tikv-expr")]
+            {
+                struct EngineContext {
+                    required: bool,
+                    fallbacks: Cell<usize>,
+                }
+                impl Columns for EngineContext {
+                    fn get(&self, _: &[String]) -> Option<Datum> {
+                        None
+                    }
+                    fn tikv_expression_context(&self) -> Option<crate::tikv::Context> {
+                        Some(crate::tikv::Context::default())
+                    }
+                    fn tikv_expression_required(&self) -> bool {
+                        self.required
+                    }
+                    fn record_tikv_expression_fallback(&self, _: crate::tikv::FallbackReason) {
+                        self.fallbacks.set(self.fallbacks.get() + 1);
+                    }
+                }
+                for required in [false, true] {
+                    let ctx = EngineContext {
+                        required,
+                        fallbacks: Cell::new(0),
+                    };
+                    let result = suite.eval_selected_for_cast(&ctx, &input, &[0]);
+                    assert_eq!(ctx.fallbacks.get(), 1);
+                    if required {
+                        assert!(matches!(
+                            result,
+                            Err(EvaluatorError::Eval(EvalError::ExternalEngine {
+                                code: 1105,
+                                ..
+                            }))
+                        ));
+                    } else {
+                        assert_eq!(result.unwrap(), vec![expected.clone()]);
+                    }
+                }
+            }
+        }
     }
 
     #[cfg(feature = "tikv-expr")]

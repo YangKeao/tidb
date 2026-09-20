@@ -11,10 +11,10 @@ kind needs. This is the measurement, and the method is repeatable:
 
 ## What the raw hits are
 
-After UnionScan routing and materialized Sort key transfer, the raw grep returns 41 hits.
+After generated-column/default routing, the raw grep returns 39 hits.
 `rust/scripts/classify-native-eval-sites.py` classifies call arguments from an
-eight-line window. Its bounded test-scope scanner reports **13 production /
-13 test-only** after the Join/lookup, aggregate, Selection and UnionScan migrations. It
+eight-line window. Its bounded test-scope scanner reports **11 production /
+13 test-only** after the Join/lookup, aggregate, filter and schema-expression migrations. It
 previously reproduced the manual 26 / 13 audit (rather than the old 19 / 20).
 Helper/field attributes no longer taint siblings, and inner attributes apply
 only to their enclosing file/module. Delimiters inside comments and literals
@@ -32,17 +32,17 @@ the fix; the final suite passes 18 tests, including additional test-attribute
 and conservative unsupported-generic controls. That tooling-only validation
 recorded 54 raw / 39 evaluator sites without running Rust/SQL/performance/lint.
 The newer executor migrations below reran executor tests; current counts
-are 41 raw / 26 evaluator sites.
+are 39 raw / 24 evaluator sites.
 
 | Kind | All sites | Production only |
 | --- | --- | --- |
-| one row of a chunk (`get_row(0)`) | 11 | 4 |
-| a row-loop variable or comparator | 10 | 9 |
+| one row of a chunk (`get_row(0)`) | 10 | 3 |
+| a row-loop variable or comparator | 9 | 8 |
 | a constant with no input row (`Row::empty()`) | 5 | 0 |
 | not the evaluator: no-argument `constant.eval()`/`column.eval()`, the planner's `metadata.eval(k)`, the statement predicate's own four-argument `eval(row, catalog, db, ctx)` | 15 | -- |
 
-The textual native evaluator surface outside projections is **26 sites**:
-**13 production-scope** and **13 test-only**. Test-only
+The textual native evaluator surface outside projections is **24 sites**:
+**11 production-scope** and **13 test-only**. Test-only
 calls are re-pointed with the corpora rather than converted. This is a textual
 inventory, not a proof of reachability. The driver's six-argument
 `UpdateExpression::eval` is deliberately
@@ -55,7 +55,7 @@ One classifier caveat is now confirmed rather than hypothetical:
 unlinked duplicate. `lib.rs` exports the actual `StreamAggExec` and
 `GroupedStreamAggExec` from `hash_agg.rs`, and `driver/physical_builder.rs`
 imports those types; `cargo test --lib -- --list` contains none of
-`stream_agg.rs`'s tests. Excluding these two known dead calls leaves **11**
+`stream_agg.rs`'s tests. Excluding these two known dead calls leaves **9**
 production-scope sites requiring routing/reachability review (not the earlier
 heuristic's 17).
 Do not convert the dead duplicate; migrate `hash_agg.rs`'s real aggregate paths
@@ -176,12 +176,12 @@ The remaining 13 actual test-only sites are not listed below.
 | 2 | `tidb-executor/src/access_cost.rs` |
 | 2 | `tidb-executor/src/driver/dml/correlated.rs` |
 | 2 | `tidb-executor/src/stream_agg.rs` (unlinked duplicate) |
-| 1 each | `column_default.rs`, `generated_column.rs`, `partition_pruning.rs`, `predicate_pushdown.rs` |
+| 1 each | `partition_pruning.rs`, `predicate_pushdown.rs` |
 
 
 ## What each kind needs for the removal
 
-* **A row loop or comparator (9 production-scope).** Where eager
+* **A row loop or comparator (8 production-scope).** Where eager
   evaluation preserves observable order, evaluate the expression for the whole
   chunk before the loop and index the result vector. Otherwise use selected
   rows at the original demand points, as the Window key path does. That is now
@@ -189,7 +189,7 @@ The remaining 13 actual test-only sites are not listed below.
   runs the suite over the caller's chunk and returns one datum per row, so the
   loop does not pick an implementation cell by cell. See the
   `VecGroupChecker` and hash-shuffle conversions below.
-* **One chunk row (4 production-scope).** These are probes: partition pruning,
+* **One chunk row (3 production-scope).** These are probes: partition pruning,
   access-cost estimates, column defaults, generated columns, `dual`, correlated
   subquery inputs. The input is a one-row chunk already, so a one-row engine call
   is sufficient; `eval_chunk` covers it (a chunk with one row), and
@@ -409,21 +409,34 @@ per mode than before, the new one -- and `--test all -- tikv_expression`
 Two lessons for the rest of the 36: a "per-row site" can be a *defensive* site
 whose only outcome is an error, in which case deletion is not a conversion but a
 simplification; and the shape of the expression (`Column` only, enforced by
-`validate_by_items`) bounds what any wrapping could ever do. `eval_sort_key`'s
-own site (one call, `Expression::Column` against a real row) is the remaining
-`sort.rs` hit and is *not* of this kind: it returns a value, and `Expression::eval`
-also applies the `ENUM_SET_AS_INT` rewrite to a column of that type, so a direct
-cell read is not equivalent and the conversion has to go through a compiled
-program.
+`validate_by_items`) bounds what any wrapping could ever do. The later
+`eval_sort_key` migration transfers materialized cells directly, but MUST also
+honor `ENUM_SET_AS_INT`: plain cell transfer returned ENUM label/carrier data
+where the old evaluator returned UInt ordinal/bitmask values. A failing ENUM/SET
+regression now pins that metadata adapter. This is not scalar-function execution.
 
-The next candidate is therefore a *production* site that returns a value.
-`column_default.rs::evaluate` (one site, line 847) is the best fit: a computed
-`DEFAULT` evaluated once per inserted row, with a sized `&impl Columns` context
-and a row that comes from the insert's own chunk, which is exactly the shape
-`eval_row_values` was built for. The virtual-row probes are the other family:
-`driver/agg_build.rs:158` and `driver/dml.rs:1503,1778` evaluate over a
-one-row chunk the same way `eval_constant_row` does. The `stmt_context.rs`
-probes (`SPACE(2000)`) are *not* candidates -- they are inside `#[cfg(test)]`,
-which is why the classifier's test-only split matters here.
+## Schema expressions and late casts
+
+`generated_column::eval_over_row` and `column_default::evaluate` now use
+`EvaluatorSuite::eval_selected_for_cast`. Generated dependencies still resolve
+names/types against the current schema; the existing gather copy and per-session
+rewrite stay in place. Defaults borrow the physical row or create a virtual
+empty row; settled literal defaults stay outside expression evaluation. These
+compatibility entry points create temporary programs: statement-owned retention
+and its schema/zone/LIKE-escape invalidation are still pending. Public mutable
+column descriptors are NOT silently treated as immutable caches.
+
+The ordinary typed-output facade is unsuitable before a late table cast: a root
+`0x10` lost its BinaryLiteral kind, producing Int(0) instead of Int(16), and the
+UnionScan table cast returned an error. The new entry shares engine admission,
+cache and error dispatch but preserves native fallback Datum values; engine
+errors never replay, and required-engine declines still fail. It also honors
+ENUM/SET numeric flags on materialized results. Ordinary projection APIs keep
+their typed representation. Binary literal admission remains declined: this
+fix preserves fallback compatibility, not engine-only type support. UnionScan's
+retained generating programs use this entry too.
+
+The `stmt_context.rs` probes (`SPACE(2000)`) remain test-only; they are not
+production migration candidates.
 
 

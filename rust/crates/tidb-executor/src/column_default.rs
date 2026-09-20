@@ -55,6 +55,7 @@ use tidb_ast::Expr;
 use tidb_datatype::{
     ConversionFlags, Converted, Datum, DatumValueError, FieldType, FieldTypeCode, SessionTimeZone,
 };
+use tidb_expr::evaluator::{into_eval_error, EvaluatorSuite};
 use tidb_expr::expression::Expression;
 use tidb_expr::rewriter::{rewrite_expr_resolved, NoResolver};
 use tidb_expr::Columns;
@@ -844,7 +845,31 @@ pub fn evaluate(
         .map(|converted| converted.value)
         .map_err(|_| tidb_expr::EvalError::Unsupported("a stored DEFAULT the column cannot hold"));
     };
-    let value = computed.expr.eval(ctx, row)?;
+    // The public descriptor is mutable, so it cannot safely retain a compiled
+    // expression. Per-statement suite retention remains future work.
+    let suite = EvaluatorSuite::new(vec![computed.expr.clone()], true);
+    let virtual_input = row.chunk().is_none().then(|| {
+        let mut input = tidb_chunk::chunk::Chunk::new_with_capacity(&[], 1);
+        input.set_num_virtual_rows(1);
+        input
+    });
+    let input = row
+        .chunk()
+        .or(virtual_input.as_ref())
+        .expect("computed default input");
+    // Row::idx already names a physical row; do not apply input.sel() again.
+    let physical = if virtual_input.is_some() {
+        0
+    } else {
+        row.idx()
+    };
+    let value = suite
+        .eval_selected_for_cast(ctx, input, &[physical])
+        .map_err(into_eval_error)?
+        .pop()
+        .ok_or(tidb_expr::EvalError::Unsupported(
+            "computed DEFAULT returned no value",
+        ))?;
     if value.is_null() {
         return Ok(Datum::Null);
     }
@@ -868,6 +893,197 @@ mod tests {
     use super::*;
     use tidb_datatype::{CoreTime, Time, TimeType, STRICT_FLAGS};
     use tidb_model::column::COLUMN_INFO_VERSION0;
+
+    #[cfg(feature = "tikv-expr")]
+    mod runtime_engine {
+        use super::*;
+        use tidb_ast::CiString;
+        use tidb_chunk::{chunk::Chunk, row::Row};
+        use tidb_expr::{column::Column, constant::Constant, scalar_function::ScalarFunction};
+
+        fn long() -> FieldType {
+            FieldType::new(FieldTypeCode::LongLong)
+        }
+
+        fn integer(value: i64) -> Expression {
+            Expression::Constant(Constant::new(Datum::Int(value), long()))
+        }
+
+        fn plus(value: Expression) -> Expression {
+            Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("plus"),
+                long(),
+                vec![value, integer(1)],
+            ))
+        }
+
+        // Direct runtime fixtures exercise suite admission and physical rows;
+        // they do NOT change the DDL DEFAULT function allow-list.
+        fn computed(expr: Expression) -> ColumnDefault {
+            ColumnDefault::Computed(Box::new(ComputedDefault {
+                text: "runtime fixture".to_owned(),
+                kind: ComputedDefaultKind::Expression,
+                expr,
+                added_origin_safety: AddedOriginSafety::Safe,
+            }))
+        }
+
+        fn eval(
+            default: &ColumnDefault,
+            ty: &FieldType,
+            ctx: &crate::StmtContext,
+            row: Row<'_>,
+        ) -> Result<Datum, tidb_expr::EvalError> {
+            evaluate(default, ty, COLUMN_INFO_VERSION1, STRICT_FLAGS, ctx, row)
+        }
+
+        #[test]
+        fn computed_default_selects_one_physical_row_with_null_and_overflow() {
+            let mut column = Column::new(1, long());
+            column.index = 0;
+            let default = computed(plus(Expression::Column(column)));
+            let mut input = Chunk::new_with_capacity(&[long()], 4);
+            input.append_int64(0, 4);
+            input.append_int64(0, i64::MAX);
+            input.append_null(0);
+            input.append_int64(0, 19);
+            input.set_sel(Some(vec![3, 0, 2]));
+
+            for engine in [false, true] {
+                let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+                // get_row has already translated logical 0 to physical 3,
+                // which is outside the selection vector's index range.
+                assert_eq!(
+                    eval(&default, &long(), &ctx, input.get_row(0)).unwrap(),
+                    Datum::Int(20)
+                );
+                assert_eq!(
+                    eval(&default, &long(), &ctx, input.physical_row(0)).unwrap(),
+                    Datum::Int(5)
+                );
+                assert_eq!(
+                    eval(&default, &long(), &ctx, input.get_row(2)).unwrap(),
+                    Datum::Null
+                );
+                assert_eq!(ctx.tikv_expression_rows(), if engine { 3 } else { 0 });
+                assert_eq!(ctx.tikv_not_admitted_fallbacks(), 0);
+                assert_eq!(ctx.tikv_unrepresentable_input_fallbacks(), 0);
+
+                let error = eval(&default, &long(), &ctx, input.physical_row(1)).unwrap_err();
+                if engine {
+                    // An engine failure must survive into_eval_error, not be
+                    // replayed natively and replaced by IntOverflow.
+                    assert!(matches!(
+                        error,
+                        tidb_expr::EvalError::ExternalEngine { code: 1690, .. }
+                    ));
+                } else {
+                    assert_eq!(error, tidb_expr::EvalError::IntOverflow);
+                }
+                assert_eq!(input.sel(), Some([3, 0, 2].as_slice()));
+            }
+        }
+
+        #[test]
+        fn computed_default_empty_row_uses_engine_but_settled_value_does_not() {
+            // JSON_QUOTE is already DDL-allowed as well as engine-admitted.
+            let expr = Expr::Func {
+                name: "json_quote".to_owned(),
+                args: vec![Expr::String("hello".to_owned())],
+                origin_position: 0,
+            };
+            let ty = FieldType::new(FieldTypeCode::Varchar);
+            let default = build(&expr, &ty, |_| panic!("computed default must not fold")).unwrap();
+            for engine in [false, true] {
+                let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+                for _ in 0..2 {
+                    assert_eq!(
+                        eval(&default, &ty, &ctx, Row::empty())
+                            .unwrap()
+                            .sql_string()
+                            .unwrap(),
+                        "\"hello\""
+                    );
+                }
+                assert_eq!(ctx.tikv_expression_rows(), if engine { 2 } else { 0 });
+                assert_eq!(ctx.tikv_not_admitted_fallbacks(), 0);
+                assert_eq!(ctx.tikv_unrepresentable_input_fallbacks(), 0);
+                assert_eq!(
+                    eval(
+                        &ColumnDefault::Value(Datum::Int(7)),
+                        &long(),
+                        &ctx,
+                        Row::empty(),
+                    )
+                    .unwrap(),
+                    Datum::Int(7)
+                );
+                assert_eq!(ctx.tikv_expression_rows(), if engine { 2 } else { 0 });
+            }
+        }
+
+        #[test]
+        fn computed_default_public_expression_mutation_is_not_stale() {
+            for engine in [false, true] {
+                let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+                let mut default = computed(plus(integer(1)));
+                assert_eq!(
+                    eval(&default, &long(), &ctx, Row::empty()).unwrap(),
+                    Datum::Int(2)
+                );
+                let ColumnDefault::Computed(descriptor) = &mut default else {
+                    unreachable!()
+                };
+                descriptor.expr = plus(integer(9));
+                assert_eq!(
+                    eval(&default, &long(), &ctx, Row::empty()).unwrap(),
+                    Datum::Int(10)
+                );
+                assert_eq!(ctx.tikv_expression_rows(), if engine { 2 } else { 0 });
+            }
+        }
+
+        #[test]
+        fn computed_clock_reads_each_statement_and_preserves_target_precision() {
+            let ty = FieldType::new(FieldTypeCode::Timestamp).with_decimal(3);
+            let default = stored_clock_marker_default(&ty, Some("3")).unwrap();
+            for engine in [false, true] {
+                for (seconds, offset, zone, expected) in [
+                    (
+                        1_700_000_000,
+                        0,
+                        SessionTimeZone::utc(),
+                        "2023-11-14 22:13:20.123",
+                    ),
+                    (
+                        1_700_000_001,
+                        8 * 60 * 60,
+                        fixed_zone("+08:00", 8 * 60 * 60),
+                        "2023-11-15 06:13:21.123",
+                    ),
+                ] {
+                    let ctx = crate::StmtContext::for_query()
+                        .with_tikv_expression(engine)
+                        .with_clock((seconds, 123_456_000, offset), zone);
+                    for _ in 0..2 {
+                        let Datum::Time(time) = eval(&default, &ty, &ctx, Row::empty()).unwrap()
+                        else {
+                            panic!("clock default must retain a typed timestamp")
+                        };
+                        assert_eq!(time.to_string(), expected);
+                        assert_eq!(time.kind(), TimeType::Timestamp);
+                        assert_eq!(time.fsp(), 3);
+                    }
+                    // Session clocks remain host-owned, not engine-admitted.
+                    assert_eq!(ctx.tikv_expression_rows(), 0);
+                    assert_eq!(
+                        ctx.tikv_not_admitted_fallbacks(),
+                        if engine { 2 } else { 0 }
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn literal_show_create_clause_uses_util_output_format() {

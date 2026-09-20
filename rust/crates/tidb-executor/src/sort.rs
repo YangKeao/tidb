@@ -43,7 +43,7 @@ use crate::executor::{ExecError, Executor, ExecutorMeta};
 use tidb_chunk::chunk::Chunk;
 use tidb_chunk::compare::ColumnCompareFunc;
 use tidb_chunk::row::{OwnedRow, Row};
-use tidb_datatype::{Datum, FieldType};
+use tidb_datatype::{Datum, FieldType, FieldTypeCode};
 use tidb_expr::expression::Expression;
 use tidb_expr::schema::Schema;
 use tidb_expr::{Columns, EvalError};
@@ -299,7 +299,25 @@ pub fn eval_sort_key<C: Columns>(
                         "column index is outside the input row",
                     )));
                 }
-                key.push(row.get_datum(index, ret_type));
+                let value = row.get_datum(index, ret_type);
+                // Hybrid metadata requests an ordinal/bitmask key, not the
+                // ENUM/SET label. This is materialized value transfer, not a
+                // scalar-function evaluation.
+                key.push(
+                    if ret_type.has_flag(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT) {
+                        match (ret_type.code(), value) {
+                            (FieldTypeCode::Enum, Datum::Enum(value, _)) => {
+                                Datum::UInt(value.value())
+                            }
+                            (FieldTypeCode::Set, Datum::Set(value, _)) => {
+                                Datum::UInt(value.value())
+                            }
+                            (_, value) => value,
+                        }
+                    } else {
+                        value
+                    },
+                );
             }
             // Go's `buildKeyColumns` omits constants, so even a deferred
             // constant is never evaluated while sorting or merging rows.
@@ -1545,6 +1563,37 @@ mod tests {
             less_by_items(&by, &[Datum::Null], &[Datum::Int(9)]).unwrap(),
             Ordering::Equal
         );
+    }
+
+    #[test]
+    fn sort_key_preserves_hybrid_numeric_flag() {
+        for code in [FieldTypeCode::Enum, FieldTypeCode::Set] {
+            let mut ty = FieldType::new(code).with_elems(["a", "b"]);
+            ty.add_flags(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT);
+            let (value, numeric) = if code == FieldTypeCode::Enum {
+                (
+                    Datum::Enum(tidb_datatype::MysqlEnum::new("b", 2), ty.collation()),
+                    2,
+                )
+            } else {
+                (
+                    Datum::Set(tidb_datatype::MysqlSet::new("a,b", 3), ty.collation()),
+                    3,
+                )
+            };
+            let mut chunk = Chunk::new_with_capacity(std::slice::from_ref(&ty), 1);
+            chunk.append_datum(0, &value);
+            let mut column = Column::new(1, ty);
+            column.index = 0;
+            let by = [SortByItem {
+                expr: Expression::Column(column),
+                desc: false,
+            }];
+            assert_eq!(
+                eval_sort_key(&by, &NoColumns, chunk.get_row(0)).unwrap(),
+                vec![Datum::UInt(numeric)]
+            );
+        }
     }
 
     #[test]

@@ -640,7 +640,7 @@ impl<C: Columns> UnionScanExec<C> {
                     .chunk()
                     .ok_or_else(|| ExecError::internal("union scan: mutable row has no chunk"))?;
                 EvaluatorSuite::from_program(Arc::clone(program))
-                    .eval_selected(&self.ctx, input, &[row.idx()])
+                    .eval_selected_for_cast(&self.ctx, input, &[row.idx()])
                     .map_err(into_eval_error)?
                     .pop()
                     .ok_or_else(|| {
@@ -972,6 +972,29 @@ mod tests {
                 stmt: ctx.clone(),
                 ctx,
             })
+        }
+
+        #[test]
+        fn binary_literal_reaches_table_cast_without_becoming_text() {
+            for engine in [false, true] {
+                let expr = Expression::Constant(Constant::new(
+                    Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(vec![0x10])),
+                    FieldType::new(FieldTypeCode::VarString),
+                ));
+                let mut exec = exec(vec![expr], vec![vec![Datum::Int(5), Datum::Null]], engine);
+                exec.open().unwrap();
+                let mut output = exec.new_chunk();
+                exec.next(&mut output).unwrap();
+                assert_eq!(output.num_rows(), 1);
+                assert_eq!(
+                    output.get_row(0).get_datum_row(exec.ret_field_types()),
+                    vec![Datum::Int(5), Datum::Int(16)]
+                );
+                // Binary literal generation is declined, not engine execution;
+                // only the post-generation numeric predicate runs in TiKV.
+                assert_eq!(exec.ctx.tikv_expression_rows(), u64::from(engine));
+                exec.close().unwrap();
+            }
         }
 
         #[test]
