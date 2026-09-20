@@ -11,10 +11,11 @@ kind needs. This is the measurement, and the method is repeatable:
 
 ## What the raw hits are
 
-After JoinExec/index-hash caching, the raw grep above returns 54 hits.
+After chunk-backed/parallel residual routing, the raw grep returns 53 hits.
 `rust/scripts/classify-native-eval-sites.py` classifies call arguments from an
-eight-line window. Its bounded test-scope scanner now reproduces the manual
-scope audit below: **26 production / 13 test-only**, not the old 19 / 20 split.
+eight-line window. Its bounded test-scope scanner reports **25 production /
+13 test-only** after removing the audited chunk-residual dispatch site. It
+previously reproduced the manual 26 / 13 audit (rather than the old 19 / 20).
 Helper/field attributes no longer taint siblings, and inner attributes apply
 only to their enclosing file/module. Delimiters inside comments and literals
 are masked; uncertain cfg/item syntax stays production-labelled. This is still
@@ -28,19 +29,20 @@ From the repository root:
 
 The initial 16-test regression suite failed with 16 subtest failures before
 the fix; the final suite passes 18 tests, including additional test-attribute
-and conservative unsupported-generic controls. The source inventory remains
-54 raw hits / 39 evaluator sites. This tooling-only validation did not rerun
-Rust, SQL, performance or repository-wide lint checks.
+and conservative unsupported-generic controls. That tooling-only validation
+recorded 54 raw / 39 evaluator sites without running Rust/SQL/performance/lint.
+The newer chunk-residual migration below reran executor tests; current counts
+are 53 raw / 38 evaluator sites.
 
 | Kind | All sites | Production only |
 | --- | --- | --- |
 | one row of a chunk (`get_row(0)`) | 11 | 4 |
-| a row-loop variable or comparator | 23 | 22 |
+| a row-loop variable or comparator | 22 | 21 |
 | a constant with no input row (`Row::empty()`) | 5 | 0 |
 | not the evaluator: no-argument `constant.eval()`/`column.eval()`, the planner's `metadata.eval(k)`, the statement predicate's own four-argument `eval(row, catalog, db, ctx)` | 15 | -- |
 
-The textual native evaluator surface outside projections is **39 sites**:
-**26 production-scope** and **13 test-only** after the scope audit. Test-only
+The textual native evaluator surface outside projections is **38 sites**:
+**25 production-scope** and **13 test-only**. Test-only
 calls are re-pointed with the corpora rather than converted. This is a textual
 inventory, not a proof of reachability. The driver's six-argument
 `UpdateExpression::eval` is deliberately
@@ -53,7 +55,7 @@ One classifier caveat is now confirmed rather than hypothetical:
 unlinked duplicate. `lib.rs` exports the actual `StreamAggExec` and
 `GroupedStreamAggExec` from `hash_agg.rs`, and `driver/physical_builder.rs`
 imports those types; `cargo test --lib -- --list` contains none of
-`stream_agg.rs`'s tests. Excluding these two known dead calls leaves **24**
+`stream_agg.rs`'s tests. Excluding these two known dead calls leaves **23**
 production-scope sites requiring routing/reachability review (not the earlier
 heuristic's 17).
 Do not convert the dead duplicate; migrate `hash_agg.rs`'s real aggregate paths
@@ -93,7 +95,14 @@ Their ordinary matching path rejects NULL immediately rather than adopting
 anti-semi's special continuation policy. Scalar index-hash task/worker output
 clones share the corresponding program cache. Changing merge keys refreshes
 the residual cache; tests cover the changed predicate result, not just cache
-identity. `matches_chunk_rows` and other chunk/parallel paths are still native.
+identity. `matches_chunk_rows` now routes through the same ordinary-match
+program: serial chunk-backed probes and both specialized exact-key/general
+parallel workers share the retained residual cache. Real Next-loop tests cover
+native/engine contexts, multiple task windows, the actual dispatch selector,
+exact engine row counts and one compilation. The helper's NULL short-circuit
+still skips an overflowing later condition. Existing scratch-row copies remain;
+outer-filter convenience calls and the index-bound expression site are not yet
+fully migrated/cached.
 
 Remaining ordering-sensitive calls are not candidates for an eager whole-chunk
 cache. For example, `union_scan.rs` evaluates generated columns into a `MutRow`,
@@ -119,15 +128,15 @@ The remaining 13 actual test-only sites are not listed below.
 | --- | --- |
 | 3 | `tidb-executor/src/driver/dml.rs` |
 | 6 | `tidb-executor/src/hash_agg.rs` |
-| 2 each | `tidb-executor/src/access_cost.rs`, `tidb-executor/src/join.rs` |
+| 2 | `tidb-executor/src/access_cost.rs` |
 | 2 | `tidb-executor/src/driver/dml/correlated.rs` |
 | 2 | `tidb-executor/src/stream_agg.rs` (unlinked duplicate) |
-| 1 each | `column_default.rs`, `generated_column.rs`, `hash_agg/input.rs`, `access_path.rs`, `partition_pruning.rs`, `predicate_pushdown.rs`, `selection.rs`, `union_scan.rs`, `sort.rs` |
+| 1 each | `column_default.rs`, `generated_column.rs`, `hash_agg/input.rs`, `access_path.rs`, `join.rs`, `partition_pruning.rs`, `predicate_pushdown.rs`, `selection.rs`, `union_scan.rs`, `sort.rs` |
 
 
 ## What each kind needs for the removal
 
-* **A row loop or comparator (22 production-scope).** Where eager
+* **A row loop or comparator (21 production-scope).** Where eager
   evaluation preserves observable order, evaluate the expression for the whole
   chunk before the loop and index the result vector. Otherwise use selected
   rows at the original demand points, as the Window key path does. That is now

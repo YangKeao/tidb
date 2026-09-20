@@ -218,6 +218,10 @@ pub(crate) struct ConditionEvaluator {
 }
 
 impl ConditionEvaluator {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.programs.is_empty()
+    }
+
     pub(crate) fn new(expressions: &[Expression]) -> Self {
         Self {
             programs: expressions

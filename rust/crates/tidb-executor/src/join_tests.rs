@@ -78,7 +78,20 @@ fn cached_join_conditions_preserve_ordinary_and_anti_null_demand() {
                     );
                 }
             }
-            assert_eq!(ctx.tikv_expression_rows(), if engine { 2 } else { 0 });
+            // Chunk-backed residuals always use ordinary NULL-immediate
+            // rejection, even when exercised with this anti-semi fixture.
+            assert!(!JoinExec::matches_chunk_rows(
+                &ctx,
+                &join.condition_evaluator,
+                &Cell::new(0),
+                &mut scratch,
+                left.get_row(0),
+                right.get_row(0),
+                1,
+                1,
+            )
+            .unwrap());
+            assert_eq!(ctx.tikv_expression_rows(), if engine { 3 } else { 0 });
             assert_eq!(
                 join.condition_evaluator.compilations(),
                 if !engine {
@@ -89,6 +102,100 @@ fn cached_join_conditions_preserve_ordinary_and_anti_null_demand() {
                     1
                 }
             );
+        }
+    }
+}
+
+#[cfg(feature = "tikv-expr")]
+#[test]
+fn chunk_probe_paths_share_one_residual_compilation() {
+    // Serial chunk-backed, specialized exact-key parallel, and general
+    // multi-key parallel probes all reach the same cached residual program.
+    for engine in [false, true] {
+        for (serial, key_width) in [(true, 1), (false, 1), (false, 2)] {
+            let width = key_width + 1;
+            let count = if serial { 3 } else { CHUNK * 2 + 3 };
+            let mut value = Column::new(width as i64, long());
+            value.index = (width - 1) as i64;
+            let residual = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("gt"),
+                long(),
+                vec![
+                    Expression::Column(value),
+                    Expression::Constant(Constant::new(Datum::Int(0), long())),
+                ],
+            ));
+            let mut conditions: Vec<_> = (0..key_width).map(|key| eq_on(key, key, width)).collect();
+            conditions.push(residual);
+            let left = (0..count)
+                .map(|index| {
+                    let mut row = vec![Datum::Int(1); width];
+                    row[width - 1] = Datum::Int(index as i64);
+                    row
+                })
+                .collect();
+            let right = vec![vec![Datum::Int(1); width]];
+            let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+            let mut join = JoinExec::new(
+                ExecutorMeta::new(schema_of(width * 2), 1, CHUNK, CHUNK),
+                JoinKind::Inner,
+                conditions,
+                Box::new(RowSource::new(left, width)),
+                Box::new(RowSource::new(right, width)),
+                ctx.clone(),
+                StatementMemory::default(),
+            );
+            join.set_hash_build_is_left(false);
+            join.set_parallelism(2);
+            if serial {
+                // A probe-side filter selects the existing serial chunk path.
+                // Its three engine evaluations are separate from the residual.
+                join.outer_filter =
+                    vec![Expression::Constant(Constant::new(Datum::Int(1), long()))];
+                join.filter_is_left = true;
+            }
+            join.open().unwrap();
+            let mut output = join.new_chunk();
+            let mut values = Vec::new();
+            loop {
+                join.next(&mut output).unwrap();
+                if output.num_rows() == 0 {
+                    break;
+                }
+                values.extend(
+                    (0..output.num_rows()).map(|row| output.get_row(row).get_int64(width - 1)),
+                );
+            }
+            values.sort_unstable();
+            assert_eq!(values, (1..count as i64).collect::<Vec<_>>());
+            assert_eq!(join.condition_evals(), count as u64);
+            assert_eq!(
+                ctx.tikv_expression_rows(),
+                if engine {
+                    (count * if serial { 2 } else { 1 }) as u64
+                } else {
+                    0
+                }
+            );
+            assert_eq!(
+                join.residual_evaluator.compilations(),
+                if engine { 1 } else { 0 }
+            );
+            if serial {
+                assert_eq!(join.parallel_probe_windows(), 0);
+            } else {
+                assert!(
+                    join.parallel_probe_windows() > 1,
+                    "must exercise multiple task windows"
+                );
+                let shared = &join.parallel_probe.as_ref().unwrap().shared;
+                assert_eq!(shared.unique_exact_int, key_width == 1);
+                assert_eq!(
+                    shared.residual_evaluator.compilations(),
+                    if engine { 1 } else { 0 }
+                );
+            }
+            join.close().unwrap();
         }
     }
 }

@@ -276,7 +276,7 @@ struct ParallelProbeShared<C> {
     kind: JoinKind,
     builds_preserved: bool,
     ctx: C,
-    residual_conditions: Vec<Expression>,
+    residual_evaluator: crate::joiner::ConditionEvaluator,
     condition_types: Vec<FieldType>,
 }
 
@@ -1806,7 +1806,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
 
     fn matches_chunk_rows(
         ctx: &C,
-        conditions: &[Expression],
+        conditions: &crate::joiner::ConditionEvaluator,
         condition_evals: &Cell<u64>,
         scratch: &mut Chunk,
         left: Row<'_>,
@@ -1821,13 +1821,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
         scratch.reset();
         scratch.append_partial_row_limited(0, left, left_width);
         scratch.append_partial_row_limited(left_width, right, right_width);
-        let row = scratch.get_row(0);
-        for condition in conditions {
-            if !truthy(&condition.eval(ctx, row)?)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        conditions.matches(ctx, scratch.get_row(0))
     }
 
     /// Concatenates an outer and an inner row back into left-then-right
@@ -3601,7 +3595,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
             kind: self.kind,
             builds_preserved: self.hash_builds_preserved_side(),
             ctx: self.ctx.clone(),
-            residual_conditions: self.residual_conditions.clone(),
+            residual_evaluator: self.residual_evaluator.clone(),
             condition_types: self.condition_types.clone(),
         };
         let (result_tx, result_rx) = std::sync::mpsc::channel();
@@ -3821,7 +3815,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
                     shared.kind,
                     shared.builds_preserved,
                     &shared.ctx,
-                    shared.residual_conditions.as_slice(),
+                    &shared.residual_evaluator,
                     &mut scratch,
                 )?
             } else {
@@ -3930,7 +3924,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
         let kind = shared.kind;
         let builds_preserved = shared.builds_preserved;
         let probe_is_left = shared.probe_is_left;
-        let residual_conditions = shared.residual_conditions.as_slice();
+        let residual_conditions = &shared.residual_evaluator;
         if output.num_cols() != output_layout.width() {
             return Err(ExecError::internal(
                 "parallel hash join output schema mismatch",
@@ -4233,7 +4227,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
         kind: JoinKind,
         builds_preserved: bool,
         ctx: &C,
-        residual_conditions: &[Expression],
+        residual_conditions: &crate::joiner::ConditionEvaluator,
         scratch: &mut ProbeBatchScratch,
     ) -> Result<ParallelProbeResult, ExecError> {
         // `output` carries rows from the earlier probe chunks of this run;
@@ -5134,7 +5128,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
         let exact_int = keys.first().filter(|key| {
             use_exact_int && keys.len() == 1 && key.class == KeyClass::Int && !key.null_safe
         });
-        let conditions = &self.residual_conditions;
+        let conditions = &self.residual_evaluator;
         let ctx = &self.ctx;
         let condition_evals = &self.condition_evals;
         let condition_chunk = &mut self.condition_chunk;

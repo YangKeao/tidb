@@ -93,7 +93,7 @@ remain in the workspace.
       merge-key selection rewrites the residual expression list.
 - [x] Audit native-site classification scopes: the old first-`#[cfg(test)]`
       heuristic hides ten production calls and misses three file-wide test-only
-      calls. Current 39 evaluator sites split into 26 production-scope / 13
+      calls. That audit's 39 evaluator sites split into 26 production-scope / 13
       test-only after manual correction, or 24 excluding the known unlinked
       duplicate. Earlier production/test splits are historical heuristic output,
       not an accurate deletion-work count; source evidence is in the inventory.
@@ -102,6 +102,13 @@ remain in the workspace.
       final tests pass. The script now reproduces the manual 26 production /
       13 test-only split. Unknown scopes remain production-labelled; this
       textual inventory still is not a reachability or deletion-readiness proof.
+- [x] Route `matches_chunk_rows` through retained ordinary-match programs.
+      Serial chunk-backed probes and exact/general parallel workers now share
+      the same residual compilation cache rather than owning another expression
+      vector. Next-loop tests assert results, exact engine rows, multiple task
+      windows and one compilation; NULL still skips an overflowing later term.
+      Current inventory: 38 evaluator sites, 25 production-scope / 13 test-only,
+      or 23 production-scope after excluding the known unlinked duplicate.
 - [ ] Retain condition programs in remaining `eval_bool` hot callers (the public
       convenience wrapper currently builds temporary programs) and migrate
       other Join expression sites. Existing joined scratch-row copies remain;
@@ -689,6 +696,27 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+Chunk-backed/parallel residual validation (TiDB `rust/`, same serial guarded
+environment, no local Cargo patch):
+
+    cargo test -q -p tidb-executor --features tikv-expr --lib join::tests:: --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --locked --offline -j1 -- --test-threads=1
+
+The first targeted run passed 41 and failed one new assertion: the test had
+mistakenly used the table's `parallel_exact_int_enabled` flag as the worker
+selector. Source inspection confirmed dispatch uses `shared.unique_exact_int`
+(which also checks key count/class). The corrected assertion checks that actual
+selector and the shared cache. Targeted tests then passed 42; full feature-on
+groups passed 1356 / 355 / 6 / 2, feature-off passed 1335 / 329 / 6 / 0, both
+with 184 ignored integration tests. Peak RSS: 3181.4 MiB for the initial run;
+2519.9 / 2562.2 / 2039.6 MiB for the three successful commands. Tests use two
+small probe workers where needed; Cargo and test-harness workers stay at one.
+The classifier reports 53 raw / 38 evaluator sites (25 production / 13 test).
+Scratch input copies, outer-filter temporary programs and the index-bound
+native site remain. Performance, full mysql replay and repository-wide lint
+were not rerun; this does not establish engine-only Join execution.
 
 Native-site scope classifier validation (TiDB repository root; tooling-only,
 no heavy build jobs):
