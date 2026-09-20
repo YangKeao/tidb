@@ -22,6 +22,10 @@ use tidb_chunk::ColumnRead;
 use tidb_codec::JoinKeyColumn;
 use tidb_datatype::MYDECIMAL_STRUCT_SIZE;
 
+#[cfg(all(test, feature = "tikv-expr"))]
+#[path = "input_engine_tests.rs"]
+mod engine_tests;
+
 type DecimalBatch = Arc<[Option<(i128, u32)>]>;
 type DecimalCache = smallvec::SmallVec<[Option<DecimalBatch>; 4]>;
 type IntegerBatch = Arc<[Option<i64>]>;
@@ -36,8 +40,58 @@ pub(super) enum IntegerAggOp {
     Avg,
 }
 
+/// Immutable argument programs are owned by the input plan, not mutable
+/// AggFunc descriptors or per-group accumulator state. Cloned worker plans
+/// and bindings retain the same compilation cache.
+#[derive(Clone)]
+pub(super) struct AggInputMode<T = usize> {
+    pub(super) kind: AggInputKind<T>,
+    programs: Arc<AggInputPrograms>,
+}
+
+pub(super) struct AggInputPrograms {
+    pub(super) arg: Option<Arc<EvaluatorProgram>>,
+    pub(super) extra: Vec<Arc<EvaluatorProgram>>,
+    order: Vec<Arc<EvaluatorProgram>>,
+}
+
+impl AggInputPrograms {
+    fn new(func: &AggFunc) -> Self {
+        let program = |expr: &Expression| Arc::new(EvaluatorProgram::new(vec![expr.clone()], true));
+        Self {
+            arg: func.arg.as_ref().map(program),
+            extra: func.extra_args.iter().map(program).collect(),
+            order: func
+                .order_by
+                .iter()
+                .map(|(expr, _)| program(expr))
+                .collect(),
+        }
+    }
+
+    pub(super) fn arguments(&self) -> impl Iterator<Item = &Arc<EvaluatorProgram>> {
+        self.arg.iter().chain(self.extra.iter())
+    }
+}
+
+impl AggInputMode {
+    pub(super) fn new(func: &AggFunc) -> Self {
+        Self {
+            kind: AggInputKind::new(func),
+            programs: Arc::new(AggInputPrograms::new(func)),
+        }
+    }
+
+    pub(super) fn bind<'a>(&self, chunk: &'a Chunk) -> AggInputMode<ColumnRead<'a>> {
+        AggInputMode {
+            kind: self.kind.bind(chunk),
+            programs: Arc::clone(&self.programs),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
-pub(super) enum AggInputMode<T = usize> {
+pub(super) enum AggInputKind<T = usize> {
     Expression,
     FirstRow,
     CountAll,
@@ -91,7 +145,7 @@ pub(super) enum AggInputMode<T = usize> {
     },
 }
 
-impl AggInputMode {
+impl AggInputKind {
     pub(super) fn new(func: &AggFunc) -> Self {
         Self::typed(func).unwrap_or(Self::Expression)
     }
@@ -270,33 +324,33 @@ impl AggInputMode {
         }
     }
 
-    pub(super) fn bind<'a>(&self, chunk: &'a Chunk) -> AggInputMode<ColumnRead<'a>> {
+    pub(super) fn bind<'a>(&self, chunk: &'a Chunk) -> AggInputKind<ColumnRead<'a>> {
         // Type/offset checks belong to the plan, and both slot indexing and
         // the immutable column read view belong to this chunk boundary.
         // Holding the view matches Go's direct column pointer and avoids
         // reacquiring a shared read handle for every row.
         match *self {
-            Self::Expression => AggInputMode::Expression,
-            Self::FirstRow => AggInputMode::FirstRow,
-            Self::CountAll => AggInputMode::CountAll,
-            Self::Count(index) => AggInputMode::Count(chunk.column(index)),
-            Self::CountDistinctInt(index) => AggInputMode::CountDistinctInt(chunk.column(index)),
-            Self::CountDistinctReal { column, float32 } => AggInputMode::CountDistinctReal {
+            Self::Expression => AggInputKind::Expression,
+            Self::FirstRow => AggInputKind::FirstRow,
+            Self::CountAll => AggInputKind::CountAll,
+            Self::Count(index) => AggInputKind::Count(chunk.column(index)),
+            Self::CountDistinctInt(index) => AggInputKind::CountDistinctInt(chunk.column(index)),
+            Self::CountDistinctReal { column, float32 } => AggInputKind::CountDistinctReal {
                 column: chunk.column(column),
                 float32,
             },
-            Self::CountDistinctString { column, collation } => AggInputMode::CountDistinctString {
+            Self::CountDistinctString { column, collation } => AggInputKind::CountDistinctString {
                 column: chunk.column(column),
                 collation,
             },
             Self::CountDistinctDecimal(index) => {
-                AggInputMode::CountDistinctDecimal(chunk.column(index))
+                AggInputKind::CountDistinctDecimal(chunk.column(index))
             }
-            Self::CountDistinctDuration { column, fsp } => AggInputMode::CountDistinctDuration {
+            Self::CountDistinctDuration { column, fsp } => AggInputKind::CountDistinctDuration {
                 column: chunk.column(column),
                 fsp,
             },
-            Self::FinalCount { column, unsigned } => AggInputMode::FinalCount {
+            Self::FinalCount { column, unsigned } => AggInputKind::FinalCount {
                 column: chunk.column(column),
                 unsigned,
             },
@@ -304,7 +358,7 @@ impl AggInputMode {
                 column,
                 unsigned,
                 op,
-            } => AggInputMode::Integer {
+            } => AggInputKind::Integer {
                 column: chunk.column(column),
                 unsigned,
                 op,
@@ -313,7 +367,7 @@ impl AggInputMode {
                 column,
                 float32,
                 op,
-            } => AggInputMode::Real {
+            } => AggInputKind::Real {
                 column: chunk.column(column),
                 float32,
                 op,
@@ -322,12 +376,12 @@ impl AggInputMode {
                 column,
                 collation,
                 is_max,
-            } => AggInputMode::String {
+            } => AggInputKind::String {
                 column: chunk.column(column),
                 collation,
                 is_max,
             },
-            Self::Time { column, is_max } => AggInputMode::Time {
+            Self::Time { column, is_max } => AggInputKind::Time {
                 column: chunk.column(column),
                 is_max,
             },
@@ -335,13 +389,13 @@ impl AggInputMode {
                 column,
                 fsp,
                 is_max,
-            } => AggInputMode::Duration {
+            } => AggInputKind::Duration {
                 column: chunk.column(column),
                 fsp,
                 is_max,
             },
-            Self::Decimal(index) => AggInputMode::Decimal(chunk.column(index)),
-            Self::AvgDecimal { sum, count } => AggInputMode::AvgDecimal {
+            Self::Decimal(index) => AggInputKind::Decimal(chunk.column(index)),
+            Self::AvgDecimal { sum, count } => AggInputKind::AvgDecimal {
                 sum: chunk.column(sum),
                 count: count.map(|(index, unsigned)| (chunk.column(index), unsigned)),
             },
@@ -349,7 +403,7 @@ impl AggInputMode {
     }
 }
 
-impl AggInputMode<ColumnRead<'_>> {
+impl AggInputKind<ColumnRead<'_>> {
     /// `None` leaves the exact expression path in charge: non-column input,
     /// decimal scale/width changes, or a count outside the scalar domain.
     fn update_cell(
@@ -553,7 +607,9 @@ impl AggInputMode<ColumnRead<'_>> {
             }
         }
     }
+}
 
+impl AggInputMode<ColumnRead<'_>> {
     pub(super) fn update<C: Columns>(
         &self,
         func: &AggFunc,
@@ -577,15 +633,16 @@ impl AggInputMode<ColumnRead<'_>> {
         extra_values: &mut Vec<Datum>,
     ) -> Result<i64, ExecError> {
         if let Some(delta) =
-            self.update_cell(state, row.idx(), decimal_data, integer_data, real_data)
+            self.kind
+                .update_cell(state, row.idx(), decimal_data, integer_data, real_data)
         {
             return Ok(delta);
         }
         extra_values.clear();
-        let input = eval_agg_input(func, ctx, row, &mut *extra_values)?;
-        let mut sort_key = Vec::with_capacity(func.order_by.len());
-        for (expr, _) in &func.order_by {
-            sort_key.push(expr.eval(ctx, row)?);
+        let input = eval_agg_input(func, &self.programs, ctx, row, &mut *extra_values)?;
+        let mut sort_key = Vec::with_capacity(self.programs.order.len());
+        for program in &self.programs.order {
+            sort_key.push(eval_agg_expr(program, ctx, row)?);
         }
         state.update(input.value, extra_values, sort_key, input.distinct_key)
     }
@@ -624,9 +681,9 @@ pub(super) fn prepare_decimal_cache(modes: &[AggInputMode], chunk: &Chunk) -> De
     modes
         .iter()
         .map(|mode| {
-            let index = match mode {
-                AggInputMode::Decimal(index) => Some(*index),
-                AggInputMode::AvgDecimal { sum, .. } => Some(*sum),
+            let index = match &mode.kind {
+                AggInputKind::Decimal(index) => Some(*index),
+                AggInputKind::AvgDecimal { sum, .. } => Some(*sum),
                 _ => None,
             }?;
             if let Some((_, batch)) = batches.iter().find(|(cached, _)| *cached == index) {
@@ -665,14 +722,14 @@ pub(super) fn prepare_integer_cache(modes: &[AggInputMode], chunk: &Chunk) -> In
     modes
         .iter()
         .map(|mode| {
-            let index = match mode {
-                AggInputMode::CountDistinctInt(index) => Some(*index),
-                AggInputMode::FinalCount { column, .. } => Some(*column),
-                AggInputMode::Integer { column, .. } => Some(*column),
-                AggInputMode::Time { column, .. } | AggInputMode::Duration { column, .. } => {
+            let index = match &mode.kind {
+                AggInputKind::CountDistinctInt(index) => Some(*index),
+                AggInputKind::FinalCount { column, .. } => Some(*column),
+                AggInputKind::Integer { column, .. } => Some(*column),
+                AggInputKind::Time { column, .. } | AggInputKind::Duration { column, .. } => {
                     Some(*column)
                 }
-                AggInputMode::AvgDecimal {
+                AggInputKind::AvgDecimal {
                     count: Some((index, _)),
                     ..
                 } => Some(*index),
@@ -713,9 +770,9 @@ pub(super) fn prepare_real_cache(modes: &[AggInputMode], chunk: &Chunk) -> RealC
     modes
         .iter()
         .map(|mode| {
-            let index = match mode {
-                AggInputMode::CountDistinctReal { column, .. }
-                | AggInputMode::Real { column, .. } => Some(*column),
+            let index = match &mode.kind {
+                AggInputKind::CountDistinctReal { column, .. }
+                | AggInputKind::Real { column, .. } => Some(*column),
                 _ => None,
             }?;
             if let Some((_, batch)) = batches.iter().find(|(cached, _)| *cached == index) {

@@ -122,8 +122,19 @@ remain in the workspace.
       rows, cross-batch compilation reuse and recovery after a demanded error.
       The first run caught an incorrect column-swap setting for direct bounds;
       calculated-value mode fixed it. No direct native call remains in `join.rs`.
-      Current inventory: 36 sites, 23 production-scope / 13 test-only, or 21
+      That step's inventory: 36 sites, 23 production-scope / 13 test-only, or 21
       production-scope excluding the unlinked duplicate. Fallback still exists.
+- [x] Route all seven direct aggregate argument/order-key sites through
+      per-expression programs retained in `AggInputMode`. Keep typed dispatch
+      as `AggInputKind`; cloned plans/bindings share caches across groups rather
+      than putting metadata in group state or mutable `AggFunc` descriptors.
+      Tests pin NULL/extra-argument/sort-key/FIRST_ROW demand, physical selection,
+      engine row counts and one compilation per used argument across clones.
+      Current inventory: 29 sites, 16 production-scope / 13 test-only, or 14
+      production-scope excluding the unlinked duplicate.
+- [ ] Retain window aggregate input programs across frame recomputation:
+      `window_frame_value` currently constructs a fresh input plan each frame.
+      Typed aggregate kernels remain outside expression-engine row receipts.
 - [ ] Retain condition programs in remaining `eval_bool` hot callers (the public
       convenience wrapper currently builds temporary programs). Existing joined scratch-row copies remain;
       eliminating them requires the independent-column facade, not more row
@@ -710,6 +721,29 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+Aggregate argument-program validation (TiDB `rust/`, same serial guarded
+environment, no local Cargo patch):
+
+    cargo test -q -p tidb-executor --features tikv-expr --lib hash_agg:: --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --locked --offline -j1 -- --test-threads=1
+
+The first build caught one remaining test matching `AggInputMode::FinalCount`
+after the type became a plan wrapper (E0223); the assertion now inspects its
+unchanged typed `kind`. All 68 aggregate tests then passed, including three new
+engine/native demand/cache tests. Full feature-on groups passed 1363 / 355 / 6 /
+2, feature-off passed 1335 / 329 / 6 / 0, both with 184 ignored integration
+tests. Peak RSS: 2228.1 MiB for the initial build failure; 3392.9 / 2394.1 /
+2878.1 MiB for the successful commands, under the 8192-MiB RSS / 16384-MiB AS
+guard with one Cargo/test-harness worker. Classifier: 44 raw / 29 evaluator
+sites, 16 production / 13 test (14 production after excluding the dead copy).
+Typed aggregate kernels and encoding/rendering remain unchanged. GROUP_CONCAT
+sort-after-NULL is pinned as current native behavior, not a Go-oracle result.
+Window-frame input plans still need cross-frame retention. No new input-row
+scratch copy was added; additional per-plan metadata and runtime allocation
+costs were not benchmarked. Full mysql replay, performance, repository-wide
+lint and engine-only execution remain unverified.
 
 Index-probe bound validation (TiDB `rust/`, same serial guarded environment,
 no local Cargo patch):

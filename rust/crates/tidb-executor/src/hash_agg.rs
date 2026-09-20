@@ -99,7 +99,7 @@ use tidb_datatype::{
     TimeType, MAX_DECIMAL_SCALE, UNSPECIFIED_LENGTH,
 };
 use tidb_expr::compare_datums;
-use tidb_expr::evaluator::EvaluatorSuite;
+use tidb_expr::evaluator::{into_eval_error, EvaluatorProgram, EvaluatorSuite};
 use tidb_expr::expression::Expression;
 use tidb_expr::schema::Schema;
 use tidb_expr::{Columns, SessionTimeZone};
@@ -3597,12 +3597,41 @@ impl<C: HashAggContext> Executor for HashAggExec<C> {
     }
 }
 
+/// Evaluate only the demanded physical row; argument/order-key sequencing is
+/// owned by the aggregate, not by a multi-expression column-major projection.
+fn eval_agg_expr<C: Columns>(
+    program: &Arc<EvaluatorProgram>,
+    ctx: &C,
+    row: tidb_chunk::row::Row<'_>,
+) -> Result<Datum, ExecError> {
+    let virtual_input = row.chunk().is_none().then(|| {
+        let mut input = Chunk::new_with_capacity(&[], 1);
+        input.set_num_virtual_rows(1);
+        input
+    });
+    let input = row
+        .chunk()
+        .or(virtual_input.as_ref())
+        .expect("aggregate input");
+    let physical = if virtual_input.is_some() {
+        0
+    } else {
+        row.idx()
+    };
+    EvaluatorSuite::from_program(Arc::clone(program))
+        .eval_selected(ctx, input, &[physical])
+        .map_err(into_eval_error)?
+        .pop()
+        .ok_or_else(|| ExecError::internal("aggregate expression returned no value"))
+}
+
 /// The value one aggregate function takes from `row`, with any EXTRA argument
 /// values it keeps separate. Go evaluates these inside
 /// `UpdatePartialResult`, per function; this port evaluates them once at the
 /// call site and hands the result to [`AggState::update`].
 fn eval_agg_input<C: Columns>(
     f: &AggFunc,
+    programs: &input::AggInputPrograms,
     ctx: &C,
     row: tidb_chunk::row::Row<'_>,
     extra_values: &mut Vec<Datum>,
@@ -3613,8 +3642,8 @@ fn eval_agg_input<C: Columns>(
             AggKind::ApproxCountDistinct | AggKind::GroupConcat { .. }
         ) {
         (
-            match &f.arg {
-                Some(expr) => Some(expr.eval(ctx, row)?),
+            match &programs.arg {
+                Some(program) => Some(eval_agg_expr(program, ctx, row)?),
                 None => None,
             },
             None,
@@ -3622,12 +3651,12 @@ fn eval_agg_input<C: Columns>(
     } else if matches!(f.kind, AggKind::JsonObjectAgg { .. } | AggKind::Avg) {
         // JSON_OBJECTAGG keeps key/value separate. Final-mode AVG uses the
         // same representation for Go's `(partial count, partial sum)` pair.
-        for expr in &f.extra_args {
-            extra_values.push(expr.eval(ctx, row)?);
+        for program in &programs.extra {
+            extra_values.push(eval_agg_expr(program, ctx, row)?);
         }
         (
-            match &f.arg {
-                Some(expr) => Some(expr.eval(ctx, row)?),
+            match &programs.arg {
+                Some(program) => Some(eval_agg_expr(program, ctx, row)?),
                 None => None,
             },
             None,
@@ -3643,8 +3672,8 @@ fn eval_agg_input<C: Columns>(
         // so no argument's encoding can bleed into the next
         // and manufacture a false collision or split.
         let mut tuple_key = Some(Vec::new());
-        for expr in f.arg.iter().chain(f.extra_args.iter()) {
-            let datum = expr.eval(ctx, row)?;
+        for program in programs.arguments() {
+            let datum = eval_agg_expr(program, ctx, row)?;
             if datum == Datum::Null {
                 tuple_key = None;
                 break;
@@ -3671,8 +3700,13 @@ fn eval_agg_input<C: Columns>(
         // variable-width encodings) because the sketch's
         // hash input has to match Go byte for byte.
         let mut tuple_key = Some(Vec::new());
-        for expr in f.arg.iter().chain(f.extra_args.iter()) {
-            let datum = expr.eval(ctx, row)?;
+        for (expr, program) in f
+            .arg
+            .iter()
+            .chain(f.extra_args.iter())
+            .zip(programs.arguments())
+        {
+            let datum = eval_agg_expr(program, ctx, row)?;
             if datum == Datum::Null {
                 tuple_key = None;
                 break;
@@ -3690,8 +3724,13 @@ fn eval_agg_input<C: Columns>(
         // then dedupes over this concatenated value.
         let mut concatenated = Some(Vec::new());
         let mut distinct_key = f.distinct.then(Vec::new);
-        for expr in f.arg.iter().chain(f.extra_args.iter()) {
-            let datum = expr.eval(ctx, row)?;
+        for (expr, program) in f
+            .arg
+            .iter()
+            .chain(f.extra_args.iter())
+            .zip(programs.arguments())
+        {
+            let datum = eval_agg_expr(program, ctx, row)?;
             if datum == Datum::Null {
                 concatenated = None;
                 distinct_key = None;
@@ -5136,7 +5175,7 @@ mod tests {
             let mut fast = AggState::new(&func);
             let mut exact = AggState::new(&func);
             let mode = AggInputMode::new(&func);
-            assert!(matches!(mode, AggInputMode::FinalCount { .. }));
+            assert!(matches!(mode.kind, input::AggInputKind::FinalCount { .. }));
             // Selection order and repeated physical rows must not become
             // indices into the packed column themselves.
             chunk.set_sel(Some(vec![values.len() - 1, 0, values.len() - 1]));
@@ -5172,7 +5211,10 @@ mod tests {
         let mut chunk = Chunk::new_with_capacity(&[text], 1);
         chunk.append_bytes(0, b"3");
         assert!(
-            matches!(AggInputMode::new(&func), AggInputMode::Expression),
+            matches!(
+                AggInputMode::new(&func).kind,
+                input::AggInputKind::Expression
+            ),
             "a non-integer partial count must not be read as a cell"
         );
     }
