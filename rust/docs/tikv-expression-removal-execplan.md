@@ -191,8 +191,12 @@ remain in the workspace.
       bounds; reject TIMESTAMP (including hidden timestamp values), packed zero
       and metadata mismatches. Engine-required tests cover offsets, SQL modes,
       copying/borrowed transports, partial/invalid dates and nested YEAR.
-- [ ] Unify packed-zero temporal literal decode and TIMESTAMP timezone semantics;
-      do not widen those shapes or flip defaults before their contracts agree.
+- [x] Permit packed-zero DATE/DATETIME only when engine compilation is warning-
+      free. Test permissive execution, restrictive-mode compile decline, required
+      rejection, optional native fallback and mode changes on the same program.
+      Decoder warnings never reach the host, including with warning capacity 0.
+- [ ] Unify packed-zero decoding under restrictive modes and TIMESTAMP timezone
+      semantics; these still prevent engine-only coverage/default switching.
 - [ ] Audit expression-internal and other forwarding entrypoints before native
       removal; retain partition programs at a safe owner. Zero direct live hits
       in the narrow outside-core `.eval` inventory is not deletion readiness.
@@ -786,6 +790,33 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+Context-dependent zero temporal admission (TiDB `rust/`, same guarded environment):
+
+    cargo test -q -p tidb-expr --features tikv-expr --test all zero_temporal_constants --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+
+`zero-temporal-red.log` records zero engine rows instead of one in permissive
+mode. Removing the unconditional zero gate allows the existing standalone compile
+policy to decide: warning-free decoding executes; warnings/errors produce a
+compile decline before host-visible effects. This is not execution-error replay.
+The DATE/DATETIME(0/6) matrix uses one retained program per type across mode
+changes and recovery to permissive mode. NO_ZERO_DATE, strict mode and
+IGNORE_TRUNCATE variants test warning/error rejection, optional native output,
+required 1105 errors, and no warning leakage; warning capacity zero still rejects
+based on total warning count. Existing admission instrumentation records declines
+even in required mode, not only actual native fallbacks; the initial
+`zero-temporal-green.log` assertion assumed otherwise and was corrected.
+
+`zero-temporal-fixed.log` passes the focused matrix. Full expression:
+1222/67 passed (99 unit ignored); executor: 1399/355/6/2 (184 integration
+ignored), in `zero-temporal-expr.log` and `zero-temporal-executor.log`.
+Serial single-worker guarded peak sample 2529.9 MiB (8192 RSS / 16384 AS MiB
+limits). Only feature-on adapter/test code changed; feature-off and TiKV suites
+were not rerun. No performance, new Go oracle, full mysql replay or make lint.
+Restricted zero-date profiles still decline and TIMESTAMP remains excluded;
+there is no engine-only or native-removal claim.
 
 DATE/DATETIME literal admission validation (TiDB `rust/`, same guarded environment):
 

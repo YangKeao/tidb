@@ -160,10 +160,11 @@ fn admission_rejection(expression: &Expression) -> Option<&'static str> {
     }
 }
 
-/// Nonzero DATE/DATETIME payloads are wall fields, not timezone instants.
+/// DATE/DATETIME payloads carry wall fields, not timezone instants.
 /// Their kind/FSP live in protobuf metadata, so reject metadata that would
-/// reinterpret the native scalar value. Packed zero follows TiKV's SQL-mode
-/// validating decoder path and remains excluded until that contract is unified.
+/// reinterpret the native scalar value. Packed zero additionally requires
+/// warning-free engine compilation: standalone rejects decoder warnings/errors
+/// before execution, so restrictive SQL modes remain explicit compile declines.
 fn temporal_constant_supported(value: &Datum, ty: &FieldType) -> bool {
     if !(-1..=6).contains(&ty.decimal()) {
         return false;
@@ -181,10 +182,7 @@ fn temporal_constant_supported(value: &Datum, ty: &FieldType) -> bool {
     } else {
         ty.decimal().max(0) as u8
     };
-    time.kind() == kind
-        && time.fsp() == fsp
-        && !time.is_zero()
-        && super::bridge::check_time(*time, ty).is_ok()
+    time.kind() == kind && time.fsp() == fsp && super::bridge::check_time(*time, ty).is_ok()
 }
 
 #[cfg(test)]

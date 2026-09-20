@@ -680,13 +680,97 @@ fn temporal_constant_shapes_execute_without_fallback() {
 }
 
 #[test]
+fn zero_temporal_constants_require_warning_free_compilation() {
+    struct ZeroContext {
+        config: Context,
+        required: bool,
+        rows: Cell<usize>,
+        fallbacks: Cell<usize>,
+    }
+    impl Columns for ZeroContext {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn tikv_expression_context(&self) -> Option<Context> {
+            Some(self.config.clone())
+        }
+        fn tikv_expression_required(&self) -> bool {
+            self.required
+        }
+        fn record_tikv_expression_rows(&self, rows: usize) {
+            self.rows.set(self.rows.get() + rows);
+        }
+        fn record_tikv_expression_fallback(&self, _: FallbackReason) {
+            self.fallbacks.set(self.fallbacks.get() + 1);
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            panic!("compile warning leaked: {code} {message}");
+        }
+    }
+    // TiKV SqlMode/Flag bit values (expr/ctx.rs). Both strict rejection and
+    // non-strict warning paths must remain non-admitted, not warning replay.
+    const NO_ZERO_DATE: u64 = 1 << 24;
+    const STRICT_ALL_TABLES: u64 = 1 << 22;
+    for (ty, kind, fsp) in [
+        (date(), TimeType::Date, 0),
+        (datetime(0), TimeType::DateTime, 0),
+        (datetime(6), TimeType::DateTime, 6),
+    ] {
+        let value = Datum::Time(Time::from_date_checked(0, 0, 0, 0, 0, 0, 0, kind, fsp).unwrap());
+        let program = Arc::new(EvaluatorProgram::new(
+            vec![literal(value.clone(), &ty)],
+            true,
+        ));
+        let mut input = Chunk::new_empty(&[]);
+        input.set_num_virtual_rows(1);
+        for (mode, flags, max_warning_count, admitted) in [
+            (0, 0, 64, true),
+            (NO_ZERO_DATE, 0, 64, false),
+            (NO_ZERO_DATE, 0, 0, false),
+            (NO_ZERO_DATE | STRICT_ALL_TABLES, 0, 64, false),
+            (NO_ZERO_DATE | STRICT_ALL_TABLES, 1, 64, false),
+            (0, 0, 64, true),
+        ] {
+            for required in [false, true] {
+                let ctx = ZeroContext {
+                    config: Context {
+                        sql_mode: mode,
+                        flags,
+                        max_warning_count,
+                        ..Context::default()
+                    },
+                    required,
+                    rows: Cell::new(0),
+                    fallbacks: Cell::new(0),
+                };
+                let result = EvaluatorSuite::from_program(Arc::clone(&program))
+                    .eval_selected_for_cast(&ctx, &input, &[0]);
+                if admitted || !required {
+                    assert_eq!(result.unwrap(), vec![value.clone()]);
+                } else {
+                    assert!(matches!(
+                        result,
+                        Err(tidb_expr::evaluator::EvaluatorError::Eval(
+                            tidb_expr::EvalError::ExternalEngine { code: 1105, .. }
+                        ))
+                    ));
+                }
+                assert_eq!(ctx.rows.get(), usize::from(admitted));
+                // This hook records admission declines even in required mode;
+                // the Err above proves that required mode does not fall back.
+                assert_eq!(ctx.fallbacks.get(), usize::from(!admitted));
+            }
+        }
+    }
+}
+
+#[test]
 fn temporal_constant_unsafe_shapes_remain_declined() {
     let dt = Time::from_date_checked(2024, 3, 14, 12, 0, 0, 123456, TimeType::DateTime, 6).unwrap();
     let timestamp =
         Time::from_date_checked(2024, 3, 14, 12, 0, 0, 0, TimeType::Timestamp, 0).unwrap();
     let malformed =
         Time::from_date_checked(2024, 13, 14, 0, 0, 0, 0, TimeType::DateTime, 0).unwrap();
-    let zero = Time::from_date_checked(0, 0, 0, 0, 0, 0, 0, TimeType::DateTime, 0).unwrap();
     for (value, ty) in [
         (Datum::Time(dt), datetime(0)),
         (Datum::Time(dt), date()),
@@ -696,7 +780,6 @@ fn temporal_constant_unsafe_shapes_remain_declined() {
             FieldType::new(FieldTypeCode::Timestamp).with_decimal(0),
         ),
         (Datum::Time(malformed), datetime(0)),
-        (Datum::Time(zero), datetime(0)),
         (Datum::Int(20240314), date()),
     ] {
         assert!(
