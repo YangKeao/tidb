@@ -3195,7 +3195,10 @@ fn point_partition_id(
             &rebuild.common_handle_columns,
             &rebuild.common_handle_lengths,
             0,
-            &|expr| expr.eval(ctx, tidb_chunk::row::Row::empty()),
+            &|expr| {
+                tidb_expr::evaluator::eval_constant_row(expr, ctx)
+                    .map_err(tidb_expr::evaluator::into_eval_error)
+            },
         )
         .map_err(|error| DriverError::unsupported(format!("point partition range: {error:?}")))?;
         let [range] = result.ranges.as_slice() else {
