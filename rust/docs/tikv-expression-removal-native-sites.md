@@ -10,7 +10,7 @@ kind needs. This is the measurement, and the method is repeatable:
 
 ## What the raw hits are
 
-After the Window key/value migration, the raw grep above returns 59 hits. They are
+After the Window RANGE migration, the raw grep above returns 57 hits. They are
 classified mechanically by `rust/scripts/classify-native-eval-sites.py` (its rule is its
 docstring), which reads a hit plus the following eight lines so a call whose
 arguments span lines is still classified by its argument list:
@@ -18,12 +18,12 @@ arguments span lines is still classified by its argument list:
 | Kind | All sites | Production only |
 | --- | --- | --- |
 | one row of a chunk (`get_row(0)`) | 11 | 2 |
-| a row-loop variable or comparator | 28 | 17 |
+| a row-loop variable or comparator | 26 | 15 |
 | a constant with no input row (`Row::empty()`) | 5 | 3 |
 | not the evaluator: no-argument `constant.eval()`/`column.eval()`, the planner's `metadata.eval(k)`, the statement predicate's own four-argument `eval(row, catalog, db, ctx)` | 15 | -- |
 
-The mechanical native evaluator surface outside projections is **44 sites**:
-**22 production-labelled** and **22 test-only** (a file under a `tests/`
+The mechanical native evaluator surface outside projections is **42 sites**:
+**20 production-labelled** and **22 test-only** (a file under a `tests/`
 directory, a `src/*tests.rs` module, or any line below its file's first
 `#[cfg(test)]`). Test-only calls are re-pointed with the corpora rather than
 converted. This is a textual inventory, not a proof of reachability. The driver's six-argument `UpdateExpression::eval` is deliberately
@@ -36,7 +36,7 @@ One classifier caveat is now confirmed rather than hypothetical:
 unlinked duplicate. `lib.rs` exports the actual `StreamAggExec` and
 `GroupedStreamAggExec` from `hash_agg.rs`, and `driver/physical_builder.rs`
 imports those types; `cargo test --lib -- --list` contains none of
-`stream_agg.rs`'s tests. Excluding these two known dead calls leaves **20**
+`stream_agg.rs`'s tests. Excluding these two known dead calls leaves **18**
 production-labelled sites requiring routing/reachability review.
 Do not convert the dead duplicate; migrate `hash_agg.rs`'s real aggregate paths
 instead.
@@ -52,7 +52,13 @@ that unselected overflowing rows and skipped keys do not execute. Value
 and use single-row selections. Emission-path tests compare native and engine
 results, assert engine receipts, and verify absent targets skip arguments,
 in-range targets skip defaults, and out-of-partition defaults use the current
-row. This removes five native sites in total; RANGE bounds still have two.
+row. RANGE now retains separate calculation/comparison suites per bound and
+uses the same helper: current-row targets are evaluated in order, candidate rows
+advance monotonically, and each comparison stops at the first unequal key.
+Tests cover both sort directions, skipped overflowing candidates/keys, and
+CURRENT ROW/UNBOUNDED paths that never demand expressions. All seven direct
+native calls in `window.rs` are now routed through suites. This is not an
+engine-only claim: suite admission and feature-gated native paths remain.
 
 The remaining ordering-sensitive calls are still counted by the mechanical inventory; they are not candidates for
 an eager whole-chunk cache. `window.rs` demands partition/RANGE/LAG/LEAD
@@ -72,7 +78,6 @@ because they are re-pointed with the corpora, not converted.
 
 | Sites | File |
 | --- | --- |
-| 2 | `tidb-executor/src/window.rs` |
 | 3 | `tidb-executor/src/driver/dml.rs` |
 | 3 | `tidb-planner/src/ranger/go_cases.rs` |
 | 2 | `tidb-executor/src/driver/dml/correlated.rs` |
@@ -82,7 +87,7 @@ because they are re-pointed with the corpora, not converted.
 
 ## What each kind needs for the removal
 
-* **A row loop or comparator (17 production-labelled).** Where eager
+* **A row loop or comparator (15 production-labelled).** Where eager
   evaluation preserves observable order, evaluate the expression for the whole
   chunk before the loop and index the result vector. Otherwise use selected
   rows at the original demand points, as the Window key path does. That is now

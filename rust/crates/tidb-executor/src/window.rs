@@ -108,6 +108,11 @@ struct WindowValueEvaluators {
     default: Option<EvaluatorSuite>,
 }
 
+struct WindowRangeEvaluators {
+    calc: Vec<EvaluatorSuite>,
+    compare: Vec<EvaluatorSuite>,
+}
+
 impl WindowValueEvaluators {
     fn new(func: &WindowFunction) -> Self {
         let (arg, default) = match func {
@@ -135,6 +140,7 @@ pub struct WindowExec<C: Columns> {
     /// First peer, exclusive last peer, one-based dense rank.
     peers: Vec<(usize, usize, usize)>,
     frame: WindowFrameSpec,
+    range_suites: [Option<WindowRangeEvaluators>; 2],
     range_start: usize,
     range_end: usize,
     child: Box<dyn Executor>,
@@ -173,7 +179,9 @@ impl<C: Columns> WindowExec<C> {
             .collect();
         let partition_suites = Self::key_suites(&partition_by);
         let order_suites = Self::key_suites(&order_by);
+        let range_suites = Self::range_suites(&frame);
         Self {
+            range_suites,
             value_suites,
             partition_suites,
             order_suites,
@@ -321,6 +329,19 @@ impl<C: Columns> WindowExec<C> {
         Ok(true)
     }
 
+    fn range_suites(frame: &WindowFrameSpec) -> [Option<WindowRangeEvaluators>; 2] {
+        [
+            frame.range.as_ref().and_then(|range| range.start.as_ref()),
+            frame.range.as_ref().and_then(|range| range.end.as_ref()),
+        ]
+        .map(|bound| {
+            bound.map(|bound| WindowRangeEvaluators {
+                calc: Self::key_suites(&bound.calc_funcs),
+                compare: Self::key_suites(&bound.compare_cols),
+            })
+        })
+    }
+
     /// Go `getStartOffset`/`getEndOffset` for the ROWS frame, clamped to the
     /// partition. The end bound is exclusive.
     fn frame_range(
@@ -329,15 +350,13 @@ impl<C: Columns> WindowExec<C> {
         start: usize,
         end: usize,
     ) -> Result<(usize, usize), ExecError> {
-        if let Some(frame) = &self.frame.range {
+        if self.frame.range.is_some() {
             if index == start {
                 self.range_start = start;
                 self.range_end = start;
             }
-            self.range_start =
-                self.range_bound(frame.start.as_ref(), index, self.range_start, end, false)?;
-            self.range_end =
-                self.range_bound(frame.end.as_ref(), index, self.range_end, end, true)?;
+            self.range_start = self.range_bound(index, self.range_start, end, false)?;
+            self.range_end = self.range_bound(index, self.range_end, end, true)?;
             return Ok((self.range_start, self.range_end.max(self.range_start)));
         }
         let start_bound = match self.frame.start {
@@ -378,14 +397,20 @@ impl<C: Columns> WindowExec<C> {
     /// Go rangeFrameWindowProcessor advances both offsets monotonically.
     /// CompareCols reads the candidate row; CalcFuncs reads the current row.
     fn range_bound(
-        &self,
-        bound: Option<&tidb_planner::logical::window::FrameBound>,
+        &mut self,
         current: usize,
         mut cursor: usize,
         end: usize,
         is_end: bool,
     ) -> Result<usize, ExecError> {
         use tidb_planner::logical::window::BoundType;
+        let bound = self.frame.range.as_ref().and_then(|frame| {
+            if is_end {
+                frame.end.as_ref()
+            } else {
+                frame.start.as_ref()
+            }
+        });
         let Some(bound) = bound.filter(|bound| !bound.unbounded) else {
             return Ok(if is_end {
                 end
@@ -400,10 +425,13 @@ impl<C: Columns> WindowExec<C> {
                 self.peers[current].0
             });
         }
-        let targets = bound
-            .calc_funcs
+        let suites = self.range_suites[usize::from(is_end)]
+            .as_ref()
+            .expect("RANGE bound suites");
+        let targets = suites
+            .calc
             .iter()
-            .map(|expr| expr.eval(&self.ctx, self.rows.get_row(current)))
+            .map(|suite| Self::eval_selected_row(&self.ctx, &mut self.rows, suite, current))
             .collect::<Result<Vec<_>, _>>()?;
         if targets.len() != self.order_by.len() || bound.compare_cols.len() != targets.len() {
             return Err(ExecError::internal(
@@ -412,8 +440,10 @@ impl<C: Columns> WindowExec<C> {
         }
         while cursor < end {
             let mut order = Ordering::Equal;
-            for (expr, target) in bound.compare_cols.iter().zip(&targets) {
-                let value = expr.eval(&self.ctx, self.rows.get_row(cursor))?;
+            for ((expr, suite), target) in
+                bound.compare_cols.iter().zip(&suites.compare).zip(&targets)
+            {
+                let value = Self::eval_selected_row(&self.ctx, &mut self.rows, suite, cursor)?;
                 order = tidb_expr::compare_datums_with_collation(
                     &value,
                     target,
@@ -674,6 +704,116 @@ mod selected_key_tests {
         exec.peers = vec![(0, values.len(), 1); values.len()];
         exec.fetched = true;
         exec
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    fn set_range(
+        exec: &mut WindowExec<crate::StmtContext>,
+        bound: tidb_planner::logical::window::FrameBound,
+        descending: bool,
+    ) {
+        // Use the same bound at both ends to test inclusive/exclusive scans.
+        exec.order_by = bound.compare_cols.clone();
+        exec.order_suites = WindowExec::<crate::StmtContext>::key_suites(&exec.order_by);
+        exec.frame.range = Some(tidb_planner::logical::window::WindowFrame {
+            frame_type: tidb_planner::logical::window::FrameType::Ranges,
+            start: Some(bound.clone()),
+            end: Some(bound),
+        });
+        exec.frame.range_desc = descending;
+        exec.range_suites = WindowExec::<crate::StmtContext>::range_suites(&exec.frame);
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn window_range_scans_only_demanded_candidates() {
+        use tidb_planner::logical::window::{BoundType, FrameBound};
+        for engine in [false, true] {
+            for descending in [false, true] {
+                let values = if descending {
+                    [2, 1, 0, i64::MAX]
+                } else {
+                    [0, 1, 2, i64::MAX]
+                };
+                let mut exec = seeded_value_exec(WindowFunction::RowNumber, &values, engine);
+                set_range(
+                    &mut exec,
+                    FrameBound {
+                        bound_type: BoundType::Preceding,
+                        calc_funcs: vec![key(0)],
+                        compare_cols: vec![key(0)],
+                        ..Default::default()
+                    },
+                    descending,
+                );
+                assert_eq!(exec.frame_range(1, 0, 4).unwrap(), (1, 2));
+                assert_eq!(exec.ctx.tikv_expression_rows(), if engine { 7 } else { 0 });
+                // The overflowing tail did not run during either bound scan.
+                assert!(exec.range_bound(1, 3, 4, false).is_err());
+                assert!(exec.rows.sel().is_none());
+                assert_eq!(exec.rows.num_rows(), 4);
+            }
+        }
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn window_range_comparison_keys_short_circuit() {
+        use tidb_planner::logical::window::{BoundType, FrameBound};
+        for engine in [false, true] {
+            let ty = FieldType::new(FieldTypeCode::LongLong);
+            let constant =
+                |value| Expression::Constant(Constant::new(Datum::Int(value), ty.clone()));
+            let fail = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("plus"),
+                ty.clone(),
+                vec![constant(i64::MAX), constant(1)],
+            ));
+            let mut exec = seeded_value_exec(WindowFunction::RowNumber, &[5, 0, 2], engine);
+            set_range(
+                &mut exec,
+                FrameBound {
+                    bound_type: BoundType::Following,
+                    calc_funcs: vec![key(0), constant(0)],
+                    compare_cols: vec![key(0), fail],
+                    ..Default::default()
+                },
+                false,
+            );
+            // Candidate key 6 is already greater than current key 3. The
+            // second comparison expression would overflow if evaluated.
+            assert_eq!(exec.range_bound(2, 0, 3, false).unwrap(), 0);
+            assert_eq!(exec.ctx.tikv_expression_rows(), if engine { 3 } else { 0 });
+            // Equal first keys do demand the erroring second comparison.
+            assert!(exec.range_bound(0, 0, 3, false).is_err());
+            assert!(exec.rows.sel().is_none());
+        }
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn window_range_peer_and_unbounded_paths_skip_expressions() {
+        use tidb_planner::logical::window::{BoundType, FrameBound};
+        for engine in [false, true] {
+            for unbounded in [false, true] {
+                let mut exec =
+                    seeded_value_exec(WindowFunction::RowNumber, &[i64::MAX, i64::MAX], engine);
+                set_range(
+                    &mut exec,
+                    FrameBound {
+                        bound_type: BoundType::CurrentRow,
+                        unbounded,
+                        calc_funcs: vec![key(0)],
+                        compare_cols: vec![key(0)],
+                        ..Default::default()
+                    },
+                    false,
+                );
+                assert_eq!(exec.frame_range(0, 0, 2).unwrap(), (0, 2));
+                assert_eq!(exec.ctx.tikv_expression_rows(), 0);
+                assert!(exec.rows.sel().is_none());
+            }
+        }
     }
 
     #[cfg(feature = "tikv-expr")]
