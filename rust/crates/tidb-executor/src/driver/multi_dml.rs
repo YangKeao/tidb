@@ -701,9 +701,14 @@ fn join_sources(
             let mut joins = true;
             for condition in &conditions {
                 let chunk = row_chunk(&values, &field_types)?;
-                let selected = condition
-                    .eval(ctx, chunk.get_row(0))
-                    .map_err(|e| DriverError::Exec(ExecError::Eval(e)))?;
+                let selected = tidb_expr::evaluator::eval_chunk(condition, ctx, &chunk)
+                    .map_err(tidb_expr::evaluator::into_eval_error)
+                    .map_err(|e| DriverError::Exec(ExecError::Eval(e)))?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| {
+                        DriverError::Exec(ExecError::internal("join row chunk is empty"))
+                    })?;
                 if !datum_is_true(&selected) {
                     joins = false;
                     break;
@@ -872,10 +877,14 @@ pub(crate) fn run_multi_update(
             let old = &values[table.offset..table.end()];
             let mut new_row = old.to_vec();
             for assignment in assignments.iter().filter(|a| a.slot == slot) {
-                let value = assignment
-                    .value
-                    .eval(ctx, chunk.get_row(0))
-                    .map_err(|e| DriverError::Exec(ExecError::Eval(e)))?;
+                let value = tidb_expr::evaluator::eval_chunk(&assignment.value, ctx, &chunk)
+                    .map_err(tidb_expr::evaluator::into_eval_error)
+                    .map_err(|e| DriverError::Exec(ExecError::Eval(e)))?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| {
+                        DriverError::Exec(ExecError::internal("update row chunk is empty"))
+                    })?;
                 new_row[assignment.column] = cast_value_for_update_assignment(
                     value,
                     &table.columns[assignment.column].1,
