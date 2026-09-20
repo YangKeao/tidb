@@ -35,7 +35,6 @@ mod admission;
 mod bridge;
 mod lowering;
 
-use bridge::copy_column;
 use lowering::{admitted, lower};
 
 use crate::expression::Expression;
@@ -201,10 +200,10 @@ impl TikvExpression {
         &self.wire_signatures
     }
 
-    fn requires_native_input(&self, input: &Chunk) -> bool {
+    fn requires_native_input(&self, input: &Chunk, selection: Option<&[usize]>) -> bool {
         self.inputs
             .iter()
-            .any(|(index, ty)| bridge::requires_native(input, *index, ty))
+            .any(|(index, ty)| bridge::requires_native_selected(input, selection, *index, ty))
     }
 
     fn borrowed_layout(ty: &FieldType) -> bool {
@@ -230,23 +229,37 @@ impl TikvExpression {
         context: &C,
         input: &Chunk,
     ) -> Result<Vec<Datum>, EvalError> {
+        self.evaluate_selected(context, input, input.sel())
+    }
+
+    /// Evaluate explicit physical rows without changing `input.sel()`. `None`
+    /// means dense physical order, not the chunk's existing logical selection.
+    /// Repeated and reordered indices are allowed; invalid indices are errors.
+    pub fn evaluate_selected<C: Columns>(
+        &self,
+        context: &C,
+        input: &Chunk,
+        selection: Option<&[usize]>,
+    ) -> Result<Vec<Datum>, EvalError> {
+        validate_selection(input, selection)?;
+        let rows = selection.map_or_else(|| input.physical_rows(), <[usize]>::len);
         let mut columns = Vec::with_capacity(self.inputs.len());
         for (index, ty) in &self.inputs {
             if *index >= input.num_cols() {
                 return Err(invalid("TiKV expression input column is out of bounds"));
             }
-            columns.push(copy_column(input, *index, ty)?);
+            columns.push(bridge::copy_column_selected(input, selection, *index, ty)?);
         }
-        // copy_column already gathers Chunk.sel in order, including duplicates.
+        // The bridge already gathers the requested physical rows, with repeats.
         let output = self
             .prepared
-            .eval_shared(&columns, input.num_rows(), None)
+            .eval_shared(&columns, rows, None)
             .map_err(engine_error)?;
         for warning in output.warnings {
             context.append_warning(mysql_code(warning.code), &warning.message);
         }
         let result = bridge::into_datums(output.column, &self.result_type)?;
-        context.record_tikv_expression_rows(input.num_rows());
+        context.record_tikv_expression_rows(rows);
         Ok(result)
     }
 
@@ -262,6 +275,20 @@ impl TikvExpression {
         output: &mut Chunk,
         output_index: usize,
     ) -> Result<(), EvalError> {
+        self.evaluate_into_selected(context, input, input.sel(), output, output_index)
+    }
+
+    /// Borrow explicit physical rows, retaining the no-replay/error contract of
+    /// `evaluate_into`. This does not mutate or clone the input chunk/selection.
+    pub fn evaluate_into_selected<C: Columns>(
+        &self,
+        context: &C,
+        input: &Chunk,
+        selection: Option<&[usize]>,
+        output: &mut Chunk,
+        output_index: usize,
+    ) -> Result<(), EvalError> {
+        validate_selection(input, selection)?;
         if output_index >= output.num_cols()
             || self.inputs.iter().any(|(i, _)| *i >= input.num_cols())
         {
@@ -296,13 +323,13 @@ impl TikvExpression {
             || aliases_input
             || output_shared
         {
-            for value in self.evaluate(context, input)? {
+            for value in self.evaluate_selected(context, input, selection)? {
                 output.append_datum(output_index, &value);
             }
             return Ok(());
         }
         let row_count = input.physical_rows();
-        let logical_rows = input.num_rows();
+        let logical_rows = selection.map_or(row_count, <[usize]>::len);
         // Distinct indexes can alias one Column owner. Lock that owner only
         // once; repeated read-lock acquisition can block behind a writer.
         let mut unique_indexes = Vec::new();
@@ -354,12 +381,9 @@ impl TikvExpression {
         let selected: Vec<_> = borrowed
             .iter()
             .copied()
-            .map(|column| EngineSelectedColumnRef {
-                column,
-                selection: input.sel(),
-            })
+            .map(|column| EngineSelectedColumnRef { column, selection })
             .collect();
-        let output_rows = input.sel().map_or(row_count, <[usize]>::len);
+        let output_rows = logical_rows;
         let mut destination = output.column_mut(output_index);
         let expected = self.result_type.eval_type();
         let result = self.prepared.eval_borrowed_selected_shared(
@@ -534,6 +558,14 @@ impl ProjectionCache {
     }
 }
 
+fn validate_selection(input: &Chunk, selection: Option<&[usize]>) -> Result<(), EvalError> {
+    let physical_rows = input.physical_rows();
+    if selection.is_some_and(|rows| rows.iter().any(|&row| row >= physical_rows)) {
+        return Err(invalid("TiKV physical selection is out of bounds"));
+    }
+    Ok(())
+}
+
 /// Run one already-compiled expression against a batch.
 ///
 /// `Ok(None)` means the engine produced this expression's column.
@@ -546,20 +578,34 @@ pub(crate) fn evaluate_shared<C: Columns>(
     output: &mut Chunk,
     output_index: usize,
 ) -> Result<Option<FallbackReason>, EvalError> {
+    evaluate_shared_selected(program, context, input, input.sel(), output, output_index)
+}
+
+/// The same dispatch with an explicit physical selection. Representability
+/// checks must use this selection too, not the source chunk's logical rows.
+pub(crate) fn evaluate_shared_selected<C: Columns>(
+    program: &TikvExpression,
+    context: &C,
+    input: &Chunk,
+    selection: Option<&[usize]>,
+    output: &mut Chunk,
+    output_index: usize,
+) -> Result<Option<FallbackReason>, EvalError> {
+    validate_selection(input, selection)?;
     // Both adapters decline unrepresentable payloads BEFORE executing kernels
     // (nonfinite reals/vectors, temporal JSON and other exact-bridge limits).
-    if program.requires_native_input(input) {
+    if program.requires_native_input(input, selection) {
         return Ok(Some(FallbackReason::UnrepresentableInput));
     }
     match context.tikv_expression_backend() {
         Backend::Borrowed if output.column(output_index).rows() == 0 => {
-            program.evaluate_into(context, input, output, output_index)?;
+            program.evaluate_into_selected(context, input, selection, output, output_index)?;
         }
         Backend::Copying | Backend::Borrowed => {
             // The existing suite can append calculated expressions after a
             // prefix. Preserve it, including on errors, via owned staging;
             // the public direct borrowed API intentionally requires empty output.
-            for value in &program.evaluate(context, input)? {
+            for value in &program.evaluate_selected(context, input, selection)? {
                 output.append_datum(output_index, value);
             }
         }

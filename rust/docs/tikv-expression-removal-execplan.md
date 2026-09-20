@@ -65,10 +65,19 @@ remain in the workspace.
       and delegates without allocating a row-count vector. Tests cover unequal
       lengths across batches, null/repeated/reordered rows, mixed dense and
       selected inputs, empty output, constants and preflight failures.
+- [x] TiDB adapter exposes `evaluate_selected` and `evaluate_into_selected`
+      for explicit physical rows without mutating the source chunk's selection.
+      Both copying and borrowed paths, plus representability preflight, use the
+      supplied selection. Existing APIs delegate using `input.sel()`. Tests
+      cover reordered/repeated rows, unselected overflow/nonfinite input,
+      input-selection preservation, dense/empty selection and selected errors.
 - [ ] Route Join evaluations at their original demand points. TiDB is pinned to
       engine `5c1fb99bc8f006791136d9f922394866111cecbb`, but its Join adapter has
       not yet consumed the independent-length interface. Borrowed evaluation
-      still rejects lazy programs.
+      still rejects lazy programs. Next, thread explicit physical selection
+      through `EvaluatorSuite` so Join's borrowed row cursors can reuse the
+      existing compiled cache without cloning/mutating their source chunks;
+      then replace CNF evaluation while preserving NULL-from-IN continuation.
 
 - [x] Milestone A (point 6): engine shareable and thread-safe.
       TiKV metadata is `Send + Sync`, `PreparedExpression` is asserted
@@ -651,6 +660,20 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+Explicit physical selection adapter validation (TiDB `rust/`, same serial
+memory-guarded environment, no local Cargo patch):
+
+    cargo test -q -p tidb-expr --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+
+Expression results: 1213 lib tests passed (99 ignored) and 62 integration tests
+passed; peak RSS 2230.1 MiB. Executor groups passed 1349 / 355 / 6 / 2 tests
+(184 integration tests ignored), peak RSS 3199.5 MiB. This adapter API does not
+yet route Join callers;
+no copied input chunk or concatenated row was introduced, while the pre-existing
+copying backend still materializes selected cells when chosen. Performance, mysql
+replay and repository-wide lint were not verified for this incremental change.
 
 Independent physical input lengths follow-up: TiKV package tests passed
 484 tests (4 doc tests ignored), peak RSS 1071.0 MiB, using the TiKV command

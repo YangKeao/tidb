@@ -90,14 +90,14 @@ fn array<const N: usize>(bytes: &[u8]) -> Result<[u8; N], EvalError> {
 /// malformed storage. Check selection, validity, signed offsets and cell bounds
 /// before decoding. Only selected rows are materialized, in order with repeats.
 fn cells<T>(
-    input: &Chunk,
+    selection: Option<&[usize]>,
     logical_rows: usize,
     view: &ColumnReadView<'_>,
     mut decode: impl FnMut(&[u8]) -> Result<T, EvalError>,
 ) -> Result<Vec<Option<T>>, EvalError> {
     (0..logical_rows)
         .map(|logical| {
-            let row = match input.sel() {
+            let row = match selection {
                 Some(selection) => *selection
                     .get(logical)
                     .ok_or_else(|| invalid("TiKV selection is out of bounds"))?,
@@ -144,8 +144,14 @@ fn cells<T>(
         .collect()
 }
 
-pub(super) fn copy_column(
+#[cfg(test)]
+fn copy_column(input: &Chunk, index: usize, ty: &FieldType) -> Result<EngineColumn, EvalError> {
+    copy_column_selected(input, input.sel(), index, ty)
+}
+
+pub(super) fn copy_column_selected(
     input: &Chunk,
+    selection: Option<&[usize]>,
     index: usize,
     ty: &FieldType,
 ) -> Result<EngineColumn, EvalError> {
@@ -156,7 +162,7 @@ pub(super) fn copy_column(
     // num_rows reads the first column owner; do this before holding any owner
     // guard, since another index can alias it and recursive read locking can
     // deadlock behind a waiting writer.
-    let logical_rows = input.num_rows();
+    let logical_rows = selection.map_or_else(|| input.physical_rows(), <[usize]>::len);
     let column = input.column(index);
     let view = column.read_view();
     let expected_width = match ty.code() {
@@ -172,7 +178,7 @@ pub(super) fn copy_column(
         return Err(invalid("TiKV input layout does not match its FieldType"));
     }
     Ok(match family {
-        Family::Int => EngineColumn::Int(cells(input, logical_rows, &view, |bytes| {
+        Family::Int => EngineColumn::Int(cells(selection, logical_rows, &view, |bytes| {
             if ty.code() == FieldTypeCode::Bit {
                 let width = (ty.flen() as usize).div_ceil(8);
                 if bytes.len() != width {
@@ -188,7 +194,7 @@ pub(super) fn copy_column(
                 Ok(i64::from_ne_bytes(array(bytes)?))
             }
         })?),
-        Family::Real => EngineColumn::Real(cells(input, logical_rows, &view, |bytes| {
+        Family::Real => EngineColumn::Real(cells(selection, logical_rows, &view, |bytes| {
             let value = if ty.code() == FieldTypeCode::Float {
                 f64::from(f32::from_ne_bytes(array(bytes)?))
             } else {
@@ -199,36 +205,41 @@ pub(super) fn copy_column(
             }
             Ok(value)
         })?),
-        Family::Bytes => EngineColumn::Bytes(cells(input, logical_rows, &view, |bytes| {
+        Family::Bytes => EngineColumn::Bytes(cells(selection, logical_rows, &view, |bytes| {
             if ty.code() == FieldTypeCode::Null {
                 return Err(invalid("non-NULL value in a NULL-typed TiKV input"));
             }
             Ok(bytes.to_vec())
         })?),
-        Family::Decimal => EngineColumn::Decimal(cells(input, logical_rows, &view, |bytes| {
+        Family::Decimal => EngineColumn::Decimal(cells(selection, logical_rows, &view, |bytes| {
             decimal_from_chunk(bytes).map_err(engine_error)
         })?),
-        Family::DateTime => EngineColumn::DateTime(cells(input, logical_rows, &view, |bytes| {
-            let time = Time::from_go_raw(u64::from_ne_bytes(array(bytes)?)).map_err(shape_error)?;
-            let time = check_time(time, ty)?;
-            // Both engines' chunk Time layouts store local SQL wall fields.
-            // Packed datum/epoch codecs would incorrectly apply a timezone to
-            // TIMESTAMP again. Chunk transport never consults the session TZ.
-            let raw = time.go_raw().to_le_bytes();
-            date_time_from_chunk(&raw).map_err(engine_error)
-        })?),
-        Family::Duration => EngineColumn::Duration(cells(input, logical_rows, &view, |bytes| {
-            let nanos = i64::from_ne_bytes(array(bytes)?);
-            let fsp = ty.decimal().max(0) as i8;
-            if nanos % 10_i64.pow(9 - fsp as u32) != 0 {
-                return Err(invalid(
-                    "TiKV duration bridge would round hidden fractional digits",
-                ));
-            }
-            EngineDuration::from_nanos(nanos, fsp).map_err(|error| engine_error(error.into()))
-        })?),
-        Family::Json => EngineColumn::Json(cells(input, logical_rows, &view, json_from_chunk)?),
-        Family::Enum => EngineColumn::Enum(cells(input, logical_rows, &view, |bytes| {
+        Family::DateTime => {
+            EngineColumn::DateTime(cells(selection, logical_rows, &view, |bytes| {
+                let time =
+                    Time::from_go_raw(u64::from_ne_bytes(array(bytes)?)).map_err(shape_error)?;
+                let time = check_time(time, ty)?;
+                // Both engines' chunk Time layouts store local SQL wall fields.
+                // Packed datum/epoch codecs would incorrectly apply a timezone to
+                // TIMESTAMP again. Chunk transport never consults the session TZ.
+                let raw = time.go_raw().to_le_bytes();
+                date_time_from_chunk(&raw).map_err(engine_error)
+            })?)
+        }
+        Family::Duration => {
+            EngineColumn::Duration(cells(selection, logical_rows, &view, |bytes| {
+                let nanos = i64::from_ne_bytes(array(bytes)?);
+                let fsp = ty.decimal().max(0) as i8;
+                if nanos % 10_i64.pow(9 - fsp as u32) != 0 {
+                    return Err(invalid(
+                        "TiKV duration bridge would round hidden fractional digits",
+                    ));
+                }
+                EngineDuration::from_nanos(nanos, fsp).map_err(|error| engine_error(error.into()))
+            })?)
+        }
+        Family::Json => EngineColumn::Json(cells(selection, logical_rows, &view, json_from_chunk)?),
+        Family::Enum => EngineColumn::Enum(cells(selection, logical_rows, &view, |bytes| {
             let (value, name) = if bytes.is_empty() {
                 (0, &[][..])
             } else {
@@ -245,7 +256,7 @@ pub(super) fn copy_column(
         // Same chunk cell as ENUM: `[8-byte native-endian bitmask][name bytes]`.
         // The name is not re-derived from `elems`; the engine treats the cell's
         // own bytes as authoritative and only the bit mask is compared.
-        Family::Set => EngineColumn::Set(cells(input, logical_rows, &view, |bytes| {
+        Family::Set => EngineColumn::Set(cells(selection, logical_rows, &view, |bytes| {
             let (value, name) = if bytes.is_empty() {
                 (0, &[][..])
             } else {
@@ -259,7 +270,7 @@ pub(super) fn copy_column(
             Ok(EngineSet::new(name.to_vec(), value))
         })?),
         Family::Vector => {
-            EngineColumn::VectorFloat32(cells(input, logical_rows, &view, |bytes| {
+            EngineColumn::VectorFloat32(cells(selection, logical_rows, &view, |bytes| {
                 let count = u32::from_le_bytes(array(
                     bytes
                         .get(..4)
@@ -532,7 +543,17 @@ fn temporal_json(code: u8, bytes: &[u8]) -> bool {
 ///
 /// Bad column indexes, selection bounds and storage layouts are not classified
 /// as native-only SQL values; copy_column reports those errors independently.
-pub(super) fn requires_native(input: &Chunk, index: usize, ty: &FieldType) -> bool {
+#[cfg(test)]
+fn requires_native(input: &Chunk, index: usize, ty: &FieldType) -> bool {
+    requires_native_selected(input, input.sel(), index, ty)
+}
+
+pub(super) fn requires_native_selected(
+    input: &Chunk,
+    selection: Option<&[usize]>,
+    index: usize,
+    ty: &FieldType,
+) -> bool {
     if index >= input.num_cols() || !supported_type(ty) {
         return false;
     }
@@ -556,10 +577,10 @@ pub(super) fn requires_native(input: &Chunk, index: usize, ty: &FieldType) -> bo
     // num_rows reads the first column owner; do this before holding any owner
     // guard, since another index can alias it and recursive read locking can
     // deadlock behind a waiting writer.
-    let logical_rows = input.num_rows();
+    let logical_rows = selection.map_or_else(|| input.physical_rows(), <[usize]>::len);
     let column = input.column(index);
     let view = column.read_view();
-    let unsupported = cells(input, logical_rows, &view, |bytes| {
+    let unsupported = cells(selection, logical_rows, &view, |bytes| {
         Ok(match ty.code() {
             FieldTypeCode::Float if view.fixed_len() == Some(4) => {
                 !f32::from_ne_bytes(array(bytes)?).is_finite()
@@ -606,6 +627,24 @@ pub(super) fn requires_native(input: &Chunk, index: usize, ty: &FieldType) -> bo
 mod tests {
     use super::*;
     use tidb_datatype::FieldTypeFlags;
+
+    #[test]
+    fn explicit_selection_controls_representation_preflight() {
+        let ty = FieldType::new(FieldTypeCode::Double);
+        let mut input = Chunk::new_with_capacity(std::slice::from_ref(&ty), 2);
+        input.append_float64(0, f64::INFINITY);
+        input.append_float64(0, 2.5);
+        input.set_sel(Some(vec![0]));
+        assert!(requires_native(&input, 0, &ty));
+        assert!(!requires_native_selected(&input, Some(&[1]), 0, &ty));
+        assert!(requires_native_selected(&input, None, 0, &ty));
+        assert!(!requires_native_selected(&input, Some(&[]), 0, &ty));
+        assert_eq!(
+            copy_column_selected(&input, Some(&[1, 1]), 0, &ty).unwrap(),
+            EngineColumn::Real(vec![Some(2.5), Some(2.5)])
+        );
+        assert_eq!(input.sel(), Some(&[0][..]));
+    }
 
     fn round_trip(ty: &FieldType, values: &[Datum]) -> Vec<Datum> {
         let mut input = Chunk::new(std::slice::from_ref(ty), values.len(), values.len().max(1));

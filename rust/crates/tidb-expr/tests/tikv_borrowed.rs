@@ -84,6 +84,96 @@ fn values(chunk: &Chunk, ty: &FieldType) -> Vec<Datum> {
         .collect()
 }
 
+#[test]
+fn explicit_physical_selection_preserves_input_and_skips_other_rows() {
+    let ty = FieldType::new(FieldTypeCode::LongLong);
+    let expr = call("plus", &ty, vec![col(0, &ty), integer(1, &ty)]);
+    let mut input = Chunk::new_with_capacity(std::slice::from_ref(&ty), 3);
+    for value in [1, i64::MAX, 3] {
+        input.append_int64(0, value);
+    }
+    input.set_sel(Some(vec![1]));
+    for backend in [Backend::Copying, Backend::Borrowed] {
+        let context = TestContext::new(Some(backend));
+        let program = TikvExpression::compile(&expr, context.tikv_expression_context().unwrap())
+            .unwrap()
+            .unwrap();
+        let selected = [2, 0, 2];
+        let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), 3);
+        if backend == Backend::Borrowed {
+            program
+                .evaluate_into_selected(&context, &input, Some(&selected), &mut output, 0)
+                .unwrap();
+        } else {
+            for value in program
+                .evaluate_selected(&context, &input, Some(&selected))
+                .unwrap()
+            {
+                output.append_datum(0, &value);
+            }
+        }
+        assert_eq!(
+            values(&output, &ty),
+            vec![Datum::Int(4), Datum::Int(2), Datum::Int(4)]
+        );
+        assert_eq!(context.total_rows.get(), 3);
+        assert_eq!(
+            context.borrowed_rows.get(),
+            if backend == Backend::Borrowed { 3 } else { 0 }
+        );
+        assert_eq!(input.sel(), Some(&[1][..]));
+        assert_eq!(input.get_row(0).get_int64(0), i64::MAX);
+
+        let error_context = TestContext::new(Some(backend));
+        let mut partial = Chunk::new_with_capacity(std::slice::from_ref(&ty), 2);
+        if backend == Backend::Borrowed {
+            assert!(program
+                .evaluate_into_selected(&error_context, &input, Some(&[0, 1]), &mut partial, 0)
+                .is_err());
+            assert_eq!(partial.num_rows(), 0);
+        } else {
+            assert!(program
+                .evaluate_selected(&error_context, &input, Some(&[0, 1]))
+                .is_err());
+        }
+        assert_eq!(error_context.total_rows.get(), 0);
+        assert_eq!(input.sel(), Some(&[1][..]));
+        assert!(program
+            .evaluate_selected(&error_context, &input, Some(&[3]))
+            .is_err());
+        assert!(program
+            .evaluate_into_selected(&error_context, &input, Some(&[3]), &mut partial, 0)
+            .is_err());
+        program
+            .evaluate_into_selected(&error_context, &input, Some(&[]), &mut partial, 0)
+            .unwrap();
+        assert_eq!(partial.num_rows(), 0);
+    }
+}
+
+#[test]
+fn explicit_dense_selection_ignores_existing_chunk_selection() {
+    let ty = FieldType::new(FieldTypeCode::LongLong);
+    let context = TestContext::new(Some(Backend::Borrowed));
+    let program = TikvExpression::compile(&col(0, &ty), Context::default())
+        .unwrap()
+        .unwrap();
+    let mut input = Chunk::new_with_capacity(std::slice::from_ref(&ty), 2);
+    input.append_int64(0, 7);
+    input.append_int64(0, 9);
+    input.set_sel(Some(vec![1]));
+    assert_eq!(
+        program.evaluate_selected(&context, &input, None).unwrap(),
+        vec![Datum::Int(7), Datum::Int(9)]
+    );
+    let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), 2);
+    program
+        .evaluate_into_selected(&context, &input, None, &mut output, 0)
+        .unwrap();
+    assert_eq!(values(&output, &ty), vec![Datum::Int(7), Datum::Int(9)]);
+    assert_eq!(input.sel(), Some(&[1][..]));
+}
+
 fn three_way(expression: Expression, input: &mut Chunk, ty: &FieldType) -> Vec<Datum> {
     let selection = input.sel().map(<[usize]>::to_vec);
     let mut expected = None;
