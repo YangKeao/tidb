@@ -60,9 +60,15 @@ remain in the workspace.
       scans, comparison-key short-circuit, selected errors and CURRENT ROW /
       UNBOUNDED paths. There are no direct native eval calls left in `window.rs`;
       suite-level native admission/fallback remains, so Window is not engine-only.
-- [ ] Route Join evaluations at their original demand points. Borrowed selected evaluation still rejects lazy
-      programs and requires equal physical input lengths; independent selections
-      alone do not remove these limitations.
+- [x] TiKV `eval_borrowed_selected_columns_shared` accepts independent physical
+      lengths per input column. The existing shared-count API remains compatible
+      and delegates without allocating a row-count vector. Tests cover unequal
+      lengths across batches, null/repeated/reordered rows, mixed dense and
+      selected inputs, empty output, constants and preflight failures.
+- [ ] Route Join evaluations at their original demand points. TiDB is pinned to
+      engine `5c1fb99bc8f006791136d9f922394866111cecbb`, but its Join adapter has
+      not yet consumed the independent-length interface. Borrowed evaluation
+      still rejects lazy programs.
 
 - [x] Milestone A (point 6): engine shareable and thread-safe.
       TiKV metadata is `Send + Sync`, `PreparedExpression` is asserted
@@ -646,6 +652,15 @@ milestones before it.
 ## Artifacts and Notes
 
 
+Independent physical input lengths follow-up: TiKV package tests passed
+484 tests (4 doc tests ignored), peak RSS 1071.0 MiB, using the TiKV command
+recorded below. TiDB was pinned to the tested fork revision `5c1fb99` and ran
+without any local Cargo patch, using the two recovery-audit commands below:
+1212 lib tests passed (99 ignored), 60 integration tests passed. Peaks were
+2372.5 MiB and 2153.3 MiB. `Cargo.lock` was regenerated and retained. No TiDB
+Join routing is claimed by these facade-only tests; executor/mysql replay and
+performance/lint were not rerun for this dependency update.
+
 Window RANGE follow-up reran the same three commands below unchanged.
 Targeted tests: 8 passed. Feature-on suite groups: 1349 / 355 / 6 / 2 passed;
 feature-off: 1335 / 329 / 6 / 0 passed; both integration suites had 184 ignored
@@ -725,4 +740,6 @@ records the dense-selection regression and unpatched tests, and corrects the
 remaining borrowed-lazy and unequal-input-length limitations. It does not mark
 Window/Join migration or native deletion complete. Subsequent Window key and
 value/default and RANGE entries record incremental routing and test evidence;
-Join and native removal remain outstanding.
+Join and native removal remain outstanding. The independent-length facade
+follow-up removes the equal-physical-length restriction via a new compatible
+entry point; the borrowed-lazy restriction remains.

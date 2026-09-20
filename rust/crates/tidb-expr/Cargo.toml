@@ -19,7 +19,7 @@ tikv-expr = ["dep:tidb_query_expr", "dep:prost"]
 
 [dependencies]
 # Original TiKV kernels with copying and borrowed-input embedding adapters.
-tidb_query_expr = { git = "https://github.com/YangKeao/tikv.git", rev = "d847323beba1e93513314018fbb5ee946e4b9c79", optional = true }
+tidb_query_expr = { git = "https://github.com/YangKeao/tikv.git", rev = "5c1fb99bc8f006791136d9f922394866111cecbb", optional = true }
 prost = { workspace = true, optional = true }
 stacker = { workspace = true }
 tidb-hack = { path = "../tidb-hack" }
