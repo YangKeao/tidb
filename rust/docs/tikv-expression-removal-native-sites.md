@@ -36,6 +36,16 @@ counted: it is a wrapper whose branches call `Expression::eval`
 (`driver/dml/correlated.rs:134,137`), so it is a real dispatch site even though
 the callee is the same evaluator.
 
+One classifier caveat is now confirmed rather than hypothetical:
+`tidb-executor/src/stream_agg.rs` has two textual evaluator calls but is an
+unlinked duplicate. `lib.rs` exports the actual `StreamAggExec` and
+`GroupedStreamAggExec` from `hash_agg.rs`, and `driver/physical_builder.rs`
+imports those types; `cargo test --lib -- --list` contains none of
+`stream_agg.rs`'s tests. The 65/43 figures remain the mechanical textual gate,
+but only **41** of its 43 production-labelled sites are reachable routing work.
+Do not convert the dead duplicate; migrate `hash_agg.rs`'s real aggregate paths
+instead.
+
 ## Production sites by file
 
 Generated from the classifier; the remaining 22 test-only sites are not listed

@@ -60,8 +60,10 @@ engine context mandatory rather than of deleting conditionals.
 
 ## 2. Consumers that must be rerouted
 
-Every one of the 43 production reroutable sites either moves to the engine or
-disappears; the 22 test-only sites are re-pointed with their corpora.
+The classifier has 43 production-labelled textual sites, but two belong to the
+unlinked `stream_agg.rs` duplicate; every one of the remaining **41 reachable**
+routing sites either moves to the engine or disappears. The 22 test-only sites
+are re-pointed with their corpora.
 `tikv-expression-removal-native-sites.md` has the by-file inventory and the
 reproducible classifier; the kinds are:
 
