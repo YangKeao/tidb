@@ -590,6 +590,124 @@ fn tikv_coverage_string_and_misc_families_differential() {
 }
 
 #[test]
+fn temporal_constant_shapes_execute_without_fallback() {
+    struct TemporalContext {
+        config: Context,
+        backend: Backend,
+        rows: Cell<usize>,
+    }
+    impl Columns for TemporalContext {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn tikv_expression_context(&self) -> Option<Context> {
+            Some(self.config.clone())
+        }
+        fn tikv_expression_required(&self) -> bool {
+            true
+        }
+        fn tikv_expression_backend(&self) -> Backend {
+            self.backend
+        }
+        fn record_tikv_expression_rows(&self, rows: usize) {
+            self.rows.set(self.rows.get() + rows);
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            panic!("unexpected temporal warning {code}: {message}");
+        }
+    }
+    let make = |y, m, d, h, micro, kind, fsp| {
+        Datum::Time(Time::from_date_checked(y, m, d, h, 0, 0, micro, kind, fsp).unwrap())
+    };
+    let cases = vec![
+        (date(), make(2024, 3, 14, 0, 0, TimeType::Date, 0)),
+        (date(), make(2024, 3, 14, 12, 0, TimeType::Date, 0)),
+        (datetime(0), make(2024, 3, 14, 12, 0, TimeType::DateTime, 0)),
+        (
+            datetime(3),
+            make(2024, 3, 14, 12, 123456, TimeType::DateTime, 3),
+        ),
+        (
+            datetime(6),
+            make(2024, 3, 14, 12, 123456, TimeType::DateTime, 6),
+        ),
+        (
+            datetime(0).with_decimal(-1),
+            make(2024, 3, 14, 12, 0, TimeType::DateTime, 0),
+        ),
+        (datetime(0), make(2024, 0, 1, 0, 0, TimeType::DateTime, 0)),
+        (datetime(0), make(2024, 2, 31, 0, 0, TimeType::DateTime, 0)),
+        (date(), Datum::Null),
+        (datetime(6), Datum::Null),
+    ];
+    let mut input = Chunk::new_empty(&[]);
+    input.set_num_virtual_rows(1);
+    for offset in [-43200, 0, 28800] {
+        for sql_mode in [0, u64::MAX] {
+            for backend in [Backend::Copying, Backend::Borrowed] {
+                let ctx = TemporalContext {
+                    config: Context {
+                        time_zone_offset: offset,
+                        sql_mode,
+                        ..Context::default()
+                    },
+                    backend,
+                    rows: Cell::new(0),
+                };
+                for (ty, value) in &cases {
+                    let suite = EvaluatorSuite::new(vec![literal(value.clone(), ty)], true);
+                    assert_eq!(
+                        suite.eval_selected_for_cast(&ctx, &input, &[0]).unwrap(),
+                        vec![value.clone()],
+                        "{ty:?} {value:?} offset={offset} sql_mode={sql_mode}"
+                    );
+                }
+                let year = call(
+                    "year",
+                    &int(),
+                    vec![literal(cases[4].1.clone(), &cases[4].0)],
+                );
+                assert_eq!(
+                    EvaluatorSuite::new(vec![year], true)
+                        .eval_selected_for_cast(&ctx, &input, &[0])
+                        .unwrap(),
+                    vec![Datum::Int(2024)]
+                );
+                assert_eq!(ctx.rows.get(), cases.len() + 1);
+            }
+        }
+    }
+}
+
+#[test]
+fn temporal_constant_unsafe_shapes_remain_declined() {
+    let dt = Time::from_date_checked(2024, 3, 14, 12, 0, 0, 123456, TimeType::DateTime, 6).unwrap();
+    let timestamp =
+        Time::from_date_checked(2024, 3, 14, 12, 0, 0, 0, TimeType::Timestamp, 0).unwrap();
+    let malformed =
+        Time::from_date_checked(2024, 13, 14, 0, 0, 0, 0, TimeType::DateTime, 0).unwrap();
+    let zero = Time::from_date_checked(0, 0, 0, 0, 0, 0, 0, TimeType::DateTime, 0).unwrap();
+    for (value, ty) in [
+        (Datum::Time(dt), datetime(0)),
+        (Datum::Time(dt), date()),
+        (Datum::Time(timestamp), datetime(0)),
+        (
+            Datum::Time(timestamp),
+            FieldType::new(FieldTypeCode::Timestamp).with_decimal(0),
+        ),
+        (Datum::Time(malformed), datetime(0)),
+        (Datum::Time(zero), datetime(0)),
+        (Datum::Int(20240314), date()),
+    ] {
+        assert!(
+            TikvExpression::compile(&literal(value, &ty), Context::default())
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
+#[test]
 fn tikv_coverage_temporal_json_vector_families_differential() {
     let mut failures = Vec::new();
     let time = FieldType::new(FieldTypeCode::Datetime).with_decimal(6);

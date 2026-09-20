@@ -108,18 +108,15 @@ fn admission_rejection(expression: &Expression) -> Option<&'static str> {
             if value.param_marker.is_some() {
                 return Some("constant-param-marker");
             }
-            // A temporal constant is sent as a packed protobuf payload whose
-            // encoding depends on session settings the constant does not carry,
-            // and the shape is unverified here, so keep it native rather than
-            // risk a native value becoming an engine ERROR. This arm *is*
-            // reachable: the rewriter folds `cast(<literal> as datetime)` into
-            // a temporal constant even though it leaves `date('...')` calls
-            // alone.
-            if matches!(
-                ty.code(),
-                FieldTypeCode::Date | FieldTypeCode::Datetime | FieldTypeCode::Timestamp
-            ) {
-                return Some("constant-temporal");
+            // Packed TIMESTAMP decoding applies a session timezone; the
+            // context-free catalog encoder cannot establish that contract yet.
+            if ty.code() == FieldTypeCode::Timestamp {
+                return Some("constant-timestamp");
+            }
+            if matches!(ty.code(), FieldTypeCode::Date | FieldTypeCode::Datetime)
+                && !temporal_constant_supported(&value.value, ty)
+            {
+                return Some("constant-temporal-shape");
             }
             if matches!(value.value, Datum::Real(v) | Datum::Float32(v) if !v.is_finite()) {
                 return Some("constant-nonfinite-real");
@@ -159,6 +156,68 @@ fn admission_rejection(expression: &Expression) -> Option<&'static str> {
                 return Some("lazy-shape");
             }
             function.args.iter().find_map(admission_rejection)
+        }
+    }
+}
+
+/// Nonzero DATE/DATETIME payloads are wall fields, not timezone instants.
+/// Their kind/FSP live in protobuf metadata, so reject metadata that would
+/// reinterpret the native scalar value. Packed zero follows TiKV's SQL-mode
+/// validating decoder path and remains excluded until that contract is unified.
+fn temporal_constant_supported(value: &Datum, ty: &FieldType) -> bool {
+    if !(-1..=6).contains(&ty.decimal()) {
+        return false;
+    }
+    let Datum::Time(time) = value else {
+        return matches!(value, Datum::Null);
+    };
+    let kind = match ty.code() {
+        FieldTypeCode::Date => tidb_datatype::TimeType::Date,
+        FieldTypeCode::Datetime => tidb_datatype::TimeType::DateTime,
+        _ => return false,
+    };
+    let fsp = if ty.code() == FieldTypeCode::Date {
+        0
+    } else {
+        ty.decimal().max(0) as u8
+    };
+    time.kind() == kind
+        && time.fsp() == fsp
+        && !time.is_zero()
+        && super::bridge::check_time(*time, ty).is_ok()
+}
+
+#[cfg(test)]
+mod temporal_literal_tests {
+    use super::*;
+
+    #[test]
+    fn packed_temporal_literal_uses_existing_wire_format() {
+        for (code, kind, fsp, hour, micro) in [
+            (FieldTypeCode::Date, tidb_datatype::TimeType::Date, 0, 0, 0),
+            (
+                FieldTypeCode::Datetime,
+                tidb_datatype::TimeType::DateTime,
+                3,
+                12,
+                123456,
+            ),
+        ] {
+            let ty = FieldType::new(code).with_decimal(fsp);
+            let value =
+                tidb_datatype::Time::from_date_checked(2024, 3, 14, hour, 34, 56, micro, kind, fsp)
+                    .unwrap();
+            let expr = Expression::Constant(crate::constant::Constant::new(Datum::Time(value), ty));
+            assert!(admitted(&expr));
+            let pb = lower(&expr, &|_| None).unwrap();
+            let ymd = ((2024_u64 * 13 + 3) << 5) | 14;
+            let hms = ((hour as u64) << 12) | (34 << 6) | 56;
+            let packed = (((ymd << 17) | hms) << 24) | micro as u64;
+            assert_eq!(pb.tp, Some(ExprType::MysqlTime as i32));
+            assert_eq!(pb.val, Some(packed.to_be_bytes().to_vec()));
+            let metadata = pb.field_type.unwrap();
+            assert_eq!(metadata.tp, Some(i32::from(code.mysql_type())));
+            assert_eq!(metadata.decimal, Some(fsp as i32));
         }
     }
 }

@@ -186,6 +186,13 @@ remain in the workspace.
       native-fallback requests. Reordered operands reproduced -7 versus 7.
       Current narrow inventory: 38 raw / 22 candidates / 4 production / 18 test;
       four production candidates are dead duplicates or routed DML wrappers.
+- [x] Admit verified nonzero DATE/DATETIME constants and typed NULLs through
+      existing MysqlTime wire encoding. Require matching kind/FSP and physical
+      bounds; reject TIMESTAMP (including hidden timestamp values), packed zero
+      and metadata mismatches. Engine-required tests cover offsets, SQL modes,
+      copying/borrowed transports, partial/invalid dates and nested YEAR.
+- [ ] Unify packed-zero temporal literal decode and TIMESTAMP timezone semantics;
+      do not widen those shapes or flip defaults before their contracts agree.
 - [ ] Audit expression-internal and other forwarding entrypoints before native
       removal; retain partition programs at a safe owner. Zero direct live hits
       in the narrow outside-core `.eval` inventory is not deletion readiness.
@@ -779,6 +786,40 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+DATE/DATETIME literal admission validation (TiDB `rust/`, same guarded environment):
+
+    cargo test -q -p tidb-expr --features tikv-expr --test all temporal_constant_ --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --locked --offline -j1 temporal_ -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+
+`temporal-admission-red.log` fails engine-required evaluation with 1105/NotAdmitted
+before the shape gate changes. The final matrix requires engine execution for
+DATE/DATETIME(0/3/6), default precision, typed NULL, partial-zero and invalid-calendar
+(nonzero packed) dates. It covers offsets -12h/UTC/+8h, sql_mode 0/all-known bits,
+copying/borrowed modes, literal value/kind/FSP equality and nested YEAR: 132 engine
+rows with no warnings or native fallback. A unit test pins MysqlTime's exact
+8-byte big-endian packed payload and existing type/FSP metadata; no wire changes.
+Mismatch, malformed physical fields, hidden/declared TIMESTAMP and packed-zero
+shapes remain explicitly declined. This is existing TiKV kernel capability now
+admitted by TiDB, not new general temporal parsing or clock support.
+
+Audit found a material boundary in TiKV Time::from_packed_u64: nonzero
+DATE/DATETIME uses unchecked wall-field construction; zero uses SQL-mode
+validation and can warn/error; TIMESTAMP applies timezone conversion. Native
+Constant evaluation just returns its value. Admission therefore checks kind/FSP,
+reuses bridge physical-shape checks, and leaves zero/TIMESTAMP excluded rather
+than silently changing success/error or emitting decode warnings. The context-free
+catalog encoder and TiKV code are unchanged.
+
+`temporal-admission-green.log`: 15 unit / 4 integration targeted tests pass.
+Full expression: 1222/66 passed (99 unit ignored); executor: 1399/355/6/2
+passed (184 integration ignored). Full logs: `temporal-expr-on.log` and
+`temporal-executor-on.log`. Serial single-worker 8192-RSS/16384-AS MiB guard;
+sampled peak 3071.0 MiB (scoped build 2538.3 MiB). Feature-off code is unchanged
+and was not rerun this round. No TiKV code changes/test rerun, new benchmark,
+Go oracle, full mysql replay or make lint; native fallback remains.
 
 INSERT/scalar-helper validation (TiDB `rust/`, same serial guarded environment):
 

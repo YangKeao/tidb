@@ -311,7 +311,7 @@ fn check_enum(name: &[u8], value: u64, ty: &FieldType) -> Result<(), EvalError> 
     Ok(())
 }
 
-fn check_time(time: Time, ty: &FieldType) -> Result<Time, EvalError> {
+pub(super) fn check_time(time: Time, ty: &FieldType) -> Result<Time, EvalError> {
     let expected = match ty.code() {
         FieldTypeCode::Date => TimeType::Date,
         FieldTypeCode::Datetime => TimeType::DateTime,
