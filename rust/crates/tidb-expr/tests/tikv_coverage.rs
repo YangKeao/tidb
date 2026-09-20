@@ -590,6 +590,196 @@ fn tikv_coverage_string_and_misc_families_differential() {
 }
 
 #[test]
+fn binary_literal_integer_casts_use_engine_with_exact_numeric_kind() {
+    let mut input = Chunk::new_empty(&[]);
+    input.set_num_virtual_rows(2);
+    let cases = [
+        (vec![], 0_u64),
+        (vec![1], 1),
+        (vec![b'1'], 49),
+        (vec![0, 16], 16),
+        (vec![0; 8], 0),
+        (i64::MAX.to_be_bytes().to_vec(), i64::MAX as u64),
+        ((1_u64 << 63).to_be_bytes().to_vec(), 1_u64 << 63),
+        (u64::MAX.to_be_bytes().to_vec(), u64::MAX),
+    ];
+    for (raw, number) in cases {
+        for unsigned in [false, true] {
+            if !unsigned && number > i64::MAX as u64 {
+                continue;
+            }
+            let ty = int().with_flags(if unsigned { 1 << 5 } else { 0 });
+            let name = if unsigned {
+                "cast_unsigned"
+            } else {
+                "cast_signed"
+            };
+            let expression = call(
+                name,
+                &ty,
+                vec![literal(Datum::BinaryLiteral(raw.clone().into()), &bytes())],
+            );
+            let expected = if unsigned {
+                Datum::UInt(number)
+            } else {
+                Datum::Int(number as i64)
+            };
+            let program = Arc::new(EvaluatorProgram::new(vec![expression], true));
+            for backend in [None, Some(Backend::Copying), Some(Backend::Borrowed)] {
+                let ctx = TestContext {
+                    backend,
+                    engine_required: backend.is_some(),
+                    ..TestContext::default()
+                };
+                let suite = EvaluatorSuite::from_program(Arc::clone(&program));
+                assert_eq!(
+                    suite
+                        .eval_selected_for_cast(&ctx, &input, &[1, 0, 1])
+                        .unwrap(),
+                    vec![expected.clone(); 3]
+                );
+                assert!(suite
+                    .eval_selected_for_cast(&ctx, &input, &[])
+                    .unwrap()
+                    .is_empty());
+                assert_eq!(ctx.rows.get(), if backend.is_some() { 3 } else { 0 });
+                assert!(ctx.warnings.borrow().is_empty());
+            }
+            assert_eq!(program.tikv_compilations(), 1);
+        }
+    }
+}
+
+#[test]
+fn binary_literal_integer_cast_unsafe_shapes_remain_declined() {
+    let unsigned = int().with_flags(1 << 5);
+    let raw = |value: Vec<u8>| literal(Datum::BinaryLiteral(value.into()), &bytes());
+    let mut expressions = vec![
+        raw(vec![1]),
+        call(
+            "cast_signed",
+            &int(),
+            vec![raw((1_u64 << 63).to_be_bytes().to_vec())],
+        ),
+        call(
+            "cast_signed",
+            &int(),
+            vec![raw(u64::MAX.to_be_bytes().to_vec())],
+        ),
+        call("cast_unsigned", &unsigned, vec![raw(vec![0; 9])]),
+        call("cast_unsigned", &unsigned, vec![raw(vec![1; 9])]),
+        call("cast_unsigned", &int(), vec![raw(vec![1])]),
+        call("cast_signed", &unsigned, vec![raw(vec![1])]),
+        call("cast", &int(), vec![raw(vec![1])]),
+        call("cast", &real(), vec![raw(vec![1])]),
+        call("cast", &decimal(), vec![raw(vec![1])]),
+        call(
+            "cast_signed",
+            &int(),
+            vec![literal(
+                Datum::BinaryLiteral(vec![1].into()),
+                &text().with_flags(1 << 7),
+            )],
+        ),
+        call(
+            "if",
+            &bytes(),
+            vec![
+                literal(Datum::Int(1), &int()),
+                raw(vec![1]),
+                literal(Datum::Bytes(vec![1].into()), &bytes()),
+            ],
+        ),
+    ];
+    let mut deferred = Constant::new(Datum::BinaryLiteral(vec![1].into()), bytes());
+    deferred.deferred_expr = Some(Box::new(raw(vec![2])));
+    let mut parameter = Constant::new(Datum::BinaryLiteral(vec![1].into()), bytes());
+    parameter.param_marker = Some(Default::default());
+    for constant in [deferred, parameter] {
+        expressions.push(call(
+            "cast_unsigned",
+            &unsigned,
+            vec![Expression::Constant(constant)],
+        ));
+    }
+    for expression in expressions {
+        assert!(
+            TikvExpression::compile(&expression, Context::default())
+                .unwrap()
+                .is_none(),
+            "unexpected admission: {expression:?}"
+        );
+    }
+    // Preserve current native saturation; engine signed bitcast is not replayed.
+    let mut input = Chunk::new_empty(&[]);
+    input.set_num_virtual_rows(1);
+    let expression = call(
+        "cast_signed",
+        &int(),
+        vec![raw(u64::MAX.to_be_bytes().to_vec())],
+    );
+    let ctx = TestContext {
+        backend: Some(Backend::Copying),
+        ..TestContext::default()
+    };
+    assert_eq!(
+        EvaluatorSuite::new(vec![expression], true)
+            .eval_selected_for_cast(&ctx, &input, &[0])
+            .unwrap(),
+        vec![Datum::Int(i64::MAX)]
+    );
+    assert_eq!(ctx.rows.get(), 0);
+    assert!(ctx.warnings.borrow().is_empty());
+    // Bypass only the adapter's gate to reproduce the engine side of the gap.
+    use prost::Message;
+    use tidb_proto::tipb::{Expr as PbExpr, ExprType};
+    let field = tidb_expr::pushdown_catalog::field_type_to_pb;
+    let wire = PbExpr {
+        tp: Some(ExprType::ScalarFunc as i32),
+        sig: tidb_query_expr::standalone::scalar_function_signature("CastStringAsInt"),
+        field_type: field(&int()),
+        children: vec![PbExpr {
+            tp: Some(ExprType::String as i32),
+            val: Some(vec![0xff; 8]),
+            field_type: field(&bytes()),
+            ..PbExpr::default()
+        }],
+        ..PbExpr::default()
+    };
+    let mut engine = tidb_query_expr::standalone::PreparedExpression::compile(
+        &wire.encode_to_vec(),
+        &[],
+        Context::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        engine.eval(&[], 1, None).unwrap().column,
+        tidb_query_expr::standalone::Column::Int(vec![Some(-1)])
+    );
+}
+
+#[test]
+fn binary_collation_alone_does_not_authorize_literal_integer_cast() {
+    let expression = call(
+        "cast_signed",
+        &int(),
+        vec![literal(Datum::Bytes(vec![b'1'].into()), &bytes())],
+    );
+    let mut input = Chunk::new_empty(&[]);
+    input.set_num_virtual_rows(1);
+    let native = EvaluatorSuite::new(vec![expression.clone()], true)
+        .eval_selected_for_cast(&TestContext::default(), &input, &[0])
+        .unwrap();
+    assert_eq!(native, vec![Datum::Int(1)]);
+    if let Some(engine) = TikvExpression::compile(&expression, Context::default()).unwrap() {
+        panic!(
+            "ordinary binary bytes incorrectly admitted: native={native:?}, engine={:?}",
+            engine.evaluate(&TestContext::default(), &input)
+        );
+    }
+}
+
+#[test]
 fn temporal_constant_shapes_execute_without_fallback() {
     struct TemporalContext {
         config: Context,

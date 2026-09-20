@@ -167,12 +167,57 @@ fn admission_rejection(expression: &Expression, context: &super::Context) -> Opt
             if !row.shape.permits(function) {
                 return Some("lazy-shape");
             }
+            if let Some(allowed) = binary_constant_integer_cast(function) {
+                return (!allowed).then_some("binary-constant-integer-cast-shape");
+            }
             function
                 .args
                 .iter()
                 .find_map(|arg| admission_rejection(arg, context))
         }
     }
+}
+
+/// CastStringAsInt treats a binary-collated constant as a binary number. Only
+/// actual literal provenance authorizes that kernel: ordinary bytes b"1" mean
+/// decimal 1 natively, not the literal's 49. Keep this exception local to explicit
+/// integer CAST; root/lazy forwarding still needs a literal-kind carrier.
+fn binary_constant_integer_cast(function: &ScalarFunction) -> Option<bool> {
+    let name = function.func_name.lowercase();
+    if !matches!(name, "cast" | "cast_signed" | "cast_unsigned") {
+        return None;
+    }
+    let target = function.get_static_type()?;
+    if target.eval_type() != EvalType::Int || function.args.len() != 1 {
+        return None;
+    }
+    let Expression::Constant(constant) = &function.args[0] else {
+        return None;
+    };
+    let source = constant.ret_type.as_ref()?;
+    if !source.is_binary_string() || matches!(constant.value, Datum::Null) {
+        return None;
+    }
+    if constant.deferred_expr.is_some()
+        || constant.param_marker.is_some()
+        || !super::bridge::supported_type(source)
+        || source.code() != FieldTypeCode::VarString
+        || source.charset_name() != "binary"
+        || target.code() != FieldTypeCode::LongLong
+        || !matches!(
+            (name, target.is_unsigned()),
+            ("cast_signed", false) | ("cast_unsigned", true)
+        )
+    {
+        return Some(false);
+    }
+    let Datum::BinaryLiteral(value) = &constant.value else {
+        return Some(false);
+    };
+    let bytes = value.as_bytes();
+    // Native signed CAST saturates a high-bit u64; the engine bitcasts it.
+    // Reject that shape instead of silently changing the result.
+    Some(bytes.len() <= 8 && (target.is_unsigned() || bytes.len() < 8 || bytes[0] < 0x80))
 }
 
 /// DATE/DATETIME payloads carry wall fields, not timezone instants.

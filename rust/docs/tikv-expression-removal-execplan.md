@@ -206,6 +206,12 @@ remain in the workspace.
 - [ ] Unify packed-zero decoding under restrictive modes and named-zone/DST
       TIMESTAMP transport. London fold has a reproduced native/engine instant
       mismatch; named non-UTC zones remain declined. No default switch yet.
+- [x] Admit direct, bounded signed/unsigned BinaryLiteral integer CAST via the
+      existing TiKV kernel, retaining numeric output kinds and compiled programs.
+      Refuse ordinary binary-collated non-null constants in integer CAST after
+      reproducing native 1 versus engine 49; keep signed high-bit casts excluded.
+- [ ] Add a literal-kind carrier/provenance contract for root/lazy forwarding and
+      remaining binary/BIT coercions. Direct numeric CAST is only a narrow subset.
 - [ ] Audit expression-internal and other forwarding entrypoints before native
       removal; retain partition programs at a safe owner. Zero direct live hits
       in the narrow outside-core `.eval` inventory is not deletion readiness.
@@ -799,6 +805,44 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+Bounded BinaryLiteral integer CAST (TiDB `rust/`, same guarded environment):
+
+    cargo test -q -p tidb-expr --features tikv-expr --test all binary_ --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+
+`binary-cast-red.log` reproduces two distinct failures: safe BinaryLiteral CAST
+is NotAdmitted in required mode; ordinary binary-collated bytes b"1" cast to
+signed yields native Int(1) versus engine Int(49). TiKV's existing CastStringAsInt
+selector treats any binary-collated scalar constant as a binary number; collation
+alone does not prove literal provenance. A local shape rule, after the normal
+admission-table gate, admits only direct cast_signed/cast_unsigned with matching
+LongLong signedness, canonical binary VarString source, no deferred/parameter
+input, payload <=8 bytes, and signed value <=i64::MAX. Non-null ordinary binary
+string constants in integer CAST are now declined rather than misinterpreted;
+NULL/column/text-collation handling is otherwise unchanged. No lowering, kernel,
+wire or engine-pin change is required.
+
+`binary-cast-green.log` and final `binary-cast-final.log`: 3 focused tests pass.
+14 signed/unsigned value shapes (empty, ASCII-as-literal 49, leading zeros,
+max signed, high-bit/full-u64 unsigned) produce 84 engine rows across copying/
+borrowed modes and repeated selections; native and required-engine numeric Datum
+kinds agree, empty selections stay empty, warnings remain empty, and each retained
+program compiles once. Negative cases include root/lazy literal forwarding,
+generic/real/decimal casts, metadata mismatch, BINARY flag without binary
+collation, >8-byte payload, deferred and parameter constants. Final targeted test
+also bypasses only adapter admission to reproduce full-u64 signed native
+saturation to i64::MAX versus raw TiKV -1; this is a guarded discrepancy, not a
+Go-correctness or native-bug-fix claim. Other implicit binary-string coercions
+are not covered, and root/lazy literal-kind transport remains missing.
+
+Full `binary-cast-expr.log`: 1222/72 passed (99 unit ignored);
+`binary-cast-executor.log`: 1399/355/6/2 (184 integration ignored). The final
+raw-engine assertion was added afterward and passed in the 3-test targeted run.
+Serial one-worker guard: sampled peak 2432.5 MiB, RSS/AS limits 8192/16384 MiB.
+No feature-off/TiKV rerun, performance, new Go oracle, full mysql replay, make lint
+or PR-readiness claim; native fallback remains.
 
 Fixed-offset TIMESTAMP literal packing (same serial guarded environment):
 
