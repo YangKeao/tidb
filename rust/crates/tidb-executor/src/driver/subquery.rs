@@ -650,9 +650,12 @@ fn eval_expr_on_row(
     let rewritten = rewrite_expr_resolved(expr, &ScopeResolver { scope })
         .map_err(|e| DriverError::Exec(ExecError::Eval(e)))?;
     let chunk = row_chunk(values, &types)?;
-    rewritten
-        .eval(ctx, chunk.get_row(0))
-        .map_err(|e| DriverError::Exec(ExecError::Eval(e)))
+    tidb_expr::evaluator::eval_chunk(&rewritten, ctx, &chunk)
+        .map_err(tidb_expr::evaluator::into_eval_error)
+        .map_err(|e| DriverError::Exec(ExecError::Eval(e)))?
+        .into_iter()
+        .next()
+        .ok_or_else(|| DriverError::Exec(ExecError::internal("outer-row chunk is empty")))
 }
 
 /// Finds the one correlated subquery in `expr`, replacing it with a reference
