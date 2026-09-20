@@ -10,7 +10,7 @@ kind needs. This is the measurement, and the method is repeatable:
 
 ## What the raw hits are
 
-The raw grep above returns 64 hits at the current branch state. They are
+After the Window key migration, the raw grep above returns 62 hits. They are
 classified mechanically by `rust/scripts/classify-native-eval-sites.py` (its rule is its
 docstring), which reads a hit plus the following eight lines so a call whose
 arguments span lines is still classified by its argument list:
@@ -18,20 +18,15 @@ arguments span lines is still classified by its argument list:
 | Kind | All sites | Production only |
 | --- | --- | --- |
 | one row of a chunk (`get_row(0)`) | 11 | 2 |
-| a row-loop variable or comparator | 33 | 22 |
+| a row-loop variable or comparator | 31 | 20 |
 | a constant with no input row (`Row::empty()`) | 5 | 3 |
 | not the evaluator: no-argument `constant.eval()`/`column.eval()`, the planner's `metadata.eval(k)`, the statement predicate's own four-argument `eval(row, catalog, db, ctx)` | 15 | -- |
 
-So the native evaluator surface outside projections is **61 sites**, and every
-one of them is row-at-a-time: `Expression::eval` against a single `Row`. Of
-those, **39 are production** and **22 only run under `cargo test`** (a file
-under a `tests/` directory, a `src/*tests.rs` module, or any line below its
-file's first `#[cfg(test)]`); the classifier reports both because test-only
-calls are re-pointed with the corpora rather than converted, so 39 -- not 61 --
-is the pre-deletion routing work. The earlier hand count in this file said 90
-raw and 75 sites; the difference is the 14 raw hits the conversions removed (see
-the conversion sections) and a classification that is now a script rather than
-a reading. The driver's six-argument `UpdateExpression::eval` is deliberately
+The mechanical native evaluator surface outside projections is **47 sites**:
+**25 production-labelled** and **22 test-only** (a file under a `tests/`
+directory, a `src/*tests.rs` module, or any line below its file's first
+`#[cfg(test)]`). Test-only calls are re-pointed with the corpora rather than
+converted. This is a textual inventory, not a proof of reachability. The driver's six-argument `UpdateExpression::eval` is deliberately
 counted: it is a wrapper whose branches call `Expression::eval`
 (`driver/dml/correlated.rs:134,137`), so it is a real dispatch site even though
 the callee is the same evaluator.
@@ -41,14 +36,22 @@ One classifier caveat is now confirmed rather than hypothetical:
 unlinked duplicate. `lib.rs` exports the actual `StreamAggExec` and
 `GroupedStreamAggExec` from `hash_agg.rs`, and `driver/physical_builder.rs`
 imports those types; `cargo test --lib -- --list` contains none of
-`stream_agg.rs`'s tests. The 65/43 figures remain the mechanical textual gate,
-but only **41** of its 43 production-labelled sites are reachable routing work.
+`stream_agg.rs`'s tests. Excluding these two known dead calls leaves **23**
+production-labelled sites requiring routing/reachability review.
 Do not convert the dead duplicate; migrate `hash_agg.rs`'s real aggregate paths
 instead.
 
 ## Ordering-blocked native calls
 
-These are still counted by the mechanical inventory; they are not candidates for
+Window partition/order key comparisons now retain one `EvaluatorSuite` per key
+and evaluate a single-row selection at the original left/right demand points.
+A mismatch skips later keys; errors restore the dense buffer before propagation.
+Tests assert engine row receipts, one compilation across repeated calls, and
+that unselected overflowing rows and skipped keys do not execute. This removes
+two native sites, not all Window evaluation: RANGE bounds and value/default
+reads remain native (five sites).
+
+The remaining ordering-sensitive calls are still counted by the mechanical inventory; they are not candidates for
 an eager whole-chunk cache. `window.rs` demands partition/RANGE/LAG/LEAD
 expressions only when the current frame reaches a row, so a later-row error
 cannot pre-empt an earlier key/frame short-circuit. `joiner::eval_bool` has the
@@ -66,37 +69,37 @@ because they are re-pointed with the corpora, not converted.
 
 | Sites | File |
 | --- | --- |
-| 7 | `tidb-executor/src/window.rs` |
-| 6 | `tidb-executor/src/driver/dml.rs` |
-| 4 | `tidb-executor/src/hash_agg.rs` |
-| 3 | `tidb-executor/src/driver/dml/correlated.rs` |
+| 5 | `tidb-executor/src/window.rs` |
+| 3 | `tidb-executor/src/driver/dml.rs` |
 | 3 | `tidb-planner/src/ranger/go_cases.rs` |
-| 2 | `driver/multi_dml.rs`, `stream_agg.rs` |
-| 1 each | `column_default.rs`, `driver/agg_build.rs`, `driver/physical_builder.rs`, `driver/subquery.rs`, `generated_column.rs`, `hash_agg/group_key.rs`, `hash_agg/input.rs`, `join.rs`, `joiner.rs`, `partition_pruning.rs` (the sparse fallback), `predicate_pushdown.rs`, `selection.rs`, `union_scan.rs`, `sort.rs`, `tidb-planner/src/physical/scan_ranges.rs`, `tidb-planner/src/ranger/points.rs` |
+| 2 | `tidb-executor/src/driver/dml/correlated.rs` |
+| 2 | `tidb-executor/src/stream_agg.rs` (unlinked duplicate) |
+| 1 each | `column_default.rs`, `generated_column.rs`, `hash_agg/input.rs`, `join.rs`, `joiner.rs`, `partition_pruning.rs`, `predicate_pushdown.rs`, `selection.rs`, `union_scan.rs`, `sort.rs` |
 
 
 ## What each kind needs for the removal
 
-* **A row loop or comparator (26 production).** The surrounding loop already
-  holds a chunk, so the engine's own strength applies: evaluate the expression
-  for the whole chunk *before* the loop and index the result vector. That is now
+* **A row loop or comparator (20 production-labelled).** Where eager
+  evaluation preserves observable order, evaluate the expression for the whole
+  chunk before the loop and index the result vector. Otherwise use selected
+  rows at the original demand points, as the Window key path does. That is now
   one call -- `tidb_expr::evaluator::eval_chunk(expression, ctx, chunk)` -- which
   runs the suite over the caller's chunk and returns one datum per row, so the
   loop does not pick an implementation cell by cell. See the
   `VecGroupChecker` and hash-shuffle conversions below.
-* **One chunk row (11 production).** These are probes: partition pruning,
+* **One chunk row (2 production-labelled).** These are probes: partition pruning,
   access-cost estimates, column defaults, generated columns, `dual`, correlated
   subquery inputs. The input is a one-row chunk already, so a one-row engine call
   is sufficient; `eval_chunk` covers it (a chunk with one row), and
   `eval_row_values` covers the variant whose row is a `&[Datum]` instead.
-* **A constant with no row (6 production).** `physical_builder` and `agg_build`
-  evaluate a constant expression with `Row::empty()`. The engine handles this
+* **A constant with no row (3 production-labelled).** These remaining
+  `ranger/go_cases.rs` calls use `Row::empty()`. The engine handles this
   with a virtual one-row chunk (the corpus does it with
   `set_num_virtual_rows(1)`), which is `eval_constant_row`.
 
-None of the 43 needs a new kernel; they need the call to move. What still needs
-a *new* engine capability is a different list: the clock family's host clock
-(checklist section 6), and the two wire-permanent names.
+This inventory measures dispatch sites, not kernel coverage. Each migration
+must establish admission, representation and ordering compatibility with tests;
+a count alone cannot prove that all remaining sites need only a call rewrite.
 
 ## The first conversion, with evidence
 

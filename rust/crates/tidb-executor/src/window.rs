@@ -27,6 +27,7 @@ use std::cmp::Ordering;
 
 use tidb_chunk::chunk::Chunk;
 use tidb_datatype::{Datum, FieldType};
+use tidb_expr::evaluator::{into_eval_error, EvaluatorSuite};
 use tidb_expr::expression::Expression;
 use tidb_expr::Columns;
 
@@ -106,6 +107,8 @@ pub struct WindowExec<C: Columns> {
     funcs: Vec<WindowFuncSpec>,
     partition_by: Vec<Expression>,
     order_by: Vec<Expression>,
+    partition_suites: Vec<EvaluatorSuite>,
+    order_suites: Vec<EvaluatorSuite>,
     /// First peer, exclusive last peer, one-based dense rank.
     peers: Vec<(usize, usize, usize)>,
     frame: WindowFrameSpec,
@@ -141,7 +144,11 @@ impl<C: Columns> WindowExec<C> {
     ) -> Self {
         let types = child.ret_field_types().to_vec();
         let capacity = child.init_cap();
+        let partition_suites = Self::key_suites(&partition_by);
+        let order_suites = Self::key_suites(&order_by);
         Self {
+            partition_suites,
+            order_suites,
             meta,
             funcs,
             partition_by,
@@ -198,7 +205,16 @@ impl<C: Columns> WindowExec<C> {
             let mut peer_start = start;
             let mut rank = 1;
             for peer_end in start + 1..=end {
-                if peer_end < end && self.same_keys(&self.order_by, peer_end - 1, peer_end)? {
+                if peer_end < end
+                    && Self::same_keys(
+                        &self.ctx,
+                        &mut self.rows,
+                        &self.order_by,
+                        &self.order_suites,
+                        peer_end - 1,
+                        peer_end,
+                    )?
+                {
                     continue;
                 }
                 self.peers[peer_start..peer_end].fill((peer_start, peer_end, rank));
@@ -212,16 +228,59 @@ impl<C: Columns> WindowExec<C> {
 
     /// Go's partition boundary: consecutive rows belong to one partition
     /// when every `PARTITION BY` key compares equal (NULLs equal).
-    fn same_partition(&self, left: usize, right: usize) -> Result<bool, ExecError> {
-        self.same_keys(&self.partition_by, left, right)
+    fn same_partition(&mut self, left: usize, right: usize) -> Result<bool, ExecError> {
+        Self::same_keys(
+            &self.ctx,
+            &mut self.rows,
+            &self.partition_by,
+            &self.partition_suites,
+            left,
+            right,
+        )
     }
 
-    fn same_keys(&self, keys: &[Expression], left: usize, right: usize) -> Result<bool, ExecError> {
-        let left_row = self.rows.get_row(left);
-        let right_row = self.rows.get_row(right);
-        for expression in keys {
-            let left_value = expression.eval(&self.ctx, left_row)?;
-            let right_value = expression.eval(&self.ctx, right_row)?;
+    fn key_suites(keys: &[Expression]) -> Vec<EvaluatorSuite> {
+        keys.iter()
+            .cloned()
+            .map(|key| EvaluatorSuite::new(vec![key], true))
+            .collect()
+    }
+
+    /// The private drained buffer is dense between calls. Select only the
+    /// demanded row without copying its columns, and restore the buffer before
+    /// propagating a normal evaluation error. Suites retain compiled programs,
+    /// not result values (which could become stale for effectful expressions).
+    fn eval_key_row(
+        ctx: &C,
+        rows: &mut Chunk,
+        suite: &EvaluatorSuite,
+        row: usize,
+    ) -> Result<Datum, ExecError> {
+        debug_assert!(rows.sel().is_none());
+        rows.set_sel(Some(vec![row]));
+        let result = suite.eval_chunk(ctx, rows);
+        rows.set_sel(None);
+        result
+            .map_err(into_eval_error)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| ExecError::internal("window key evaluation returned no row"))
+    }
+
+    fn same_keys(
+        ctx: &C,
+        rows: &mut Chunk,
+        keys: &[Expression],
+        suites: &[EvaluatorSuite],
+        left: usize,
+        right: usize,
+    ) -> Result<bool, ExecError> {
+        debug_assert_eq!(keys.len(), suites.len());
+        for (expression, suite) in keys.iter().zip(suites) {
+            // Preserve left/right and key order: a mismatch must not demand
+            // later keys, and later rows must not be evaluated eagerly.
+            let left_value = Self::eval_key_row(ctx, rows, suite, left)?;
+            let right_value = Self::eval_key_row(ctx, rows, suite, right)?;
             if tidb_expr::compare_datums_with_collation(
                 &left_value,
                 &right_value,
@@ -500,5 +559,93 @@ impl<C: Columns + Send> Executor for WindowExec<C> {
 
     fn new_chunk(&self) -> Chunk {
         self.meta.new_chunk()
+    }
+}
+
+#[cfg(test)]
+mod selected_key_tests {
+    use super::*;
+    use tidb_ast::CiString;
+    use tidb_datatype::FieldTypeCode;
+    use tidb_expr::{column::Column, constant::Constant, scalar_function::ScalarFunction};
+
+    fn key(index: i64) -> Expression {
+        let ty = FieldType::new(FieldTypeCode::LongLong);
+        let mut col = Column::new(index + 1, ty.clone());
+        col.index = index;
+        Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("plus"),
+            ty.clone(),
+            vec![
+                Expression::Column(col),
+                Expression::Constant(Constant::new(Datum::Int(1), ty)),
+            ],
+        ))
+    }
+
+    fn rows(values: &[i64]) -> Chunk {
+        let mut rows =
+            Chunk::new_with_capacity(&[FieldType::new(FieldTypeCode::LongLong)], values.len());
+        for &value in values {
+            rows.append_int64(0, value);
+        }
+        rows
+    }
+
+    #[test]
+    fn window_key_selection_restores_dense_buffer_without_engine() {
+        let ctx = crate::StmtContext::for_query();
+        let mut rows = rows(&[1, 1, 2, i64::MAX]);
+        let keys = [key(0)];
+        let suites = WindowExec::<crate::StmtContext>::key_suites(&keys);
+        assert!(WindowExec::same_keys(&ctx, &mut rows, &keys, &suites, 0, 1).unwrap());
+        assert!(!WindowExec::same_keys(&ctx, &mut rows, &keys, &suites, 1, 2).unwrap());
+        assert!(WindowExec::eval_key_row(&ctx, &mut rows, &suites[0], 3).is_err());
+        assert!(rows.sel().is_none());
+        assert_eq!(rows.num_rows(), 4);
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn window_key_engine_preserves_demand_and_compiled_cache() {
+        use std::sync::Arc;
+        use tidb_expr::evaluator::EvaluatorProgram;
+        let ctx = crate::StmtContext::for_query().with_tikv_expression(true);
+        let mut rows = rows(&[1, 1, 2, i64::MAX]);
+        let keys = [key(0)];
+        let program = Arc::new(EvaluatorProgram::new(keys.to_vec(), true));
+        let suites = [EvaluatorSuite::from_program(program.clone())];
+        assert!(WindowExec::same_keys(&ctx, &mut rows, &keys, &suites, 0, 1).unwrap());
+        assert!(!WindowExec::same_keys(&ctx, &mut rows, &keys, &suites, 1, 2).unwrap());
+        assert_eq!(ctx.tikv_expression_rows(), 4);
+        assert_eq!(program.tikv_compilations(), 1);
+        // The overflowing row was not demanded above. It errors only now.
+        assert!(WindowExec::eval_key_row(&ctx, &mut rows, &suites[0], 3).is_err());
+        assert!(rows.sel().is_none());
+        assert_eq!(rows.num_rows(), 4);
+        assert_eq!(
+            WindowExec::eval_key_row(&ctx, &mut rows, &suites[0], 0).unwrap(),
+            Datum::Int(2)
+        );
+        assert_eq!(program.tikv_compilations(), 1);
+    }
+
+    #[cfg(feature = "tikv-expr")]
+    #[test]
+    fn window_key_mismatch_skips_later_erroring_key() {
+        let ctx = crate::StmtContext::for_query().with_tikv_expression(true);
+        let ty = FieldType::new(FieldTypeCode::LongLong);
+        let mut rows = Chunk::new_with_capacity(&[ty.clone(), ty], 2);
+        for value in [1, 2] {
+            rows.append_int64(0, value);
+            rows.append_int64(1, i64::MAX);
+        }
+        let keys = [key(0), key(1)];
+        let suites = WindowExec::<crate::StmtContext>::key_suites(&keys);
+        assert!(!WindowExec::same_keys(&ctx, &mut rows, &keys, &suites, 0, 1).unwrap());
+        assert_eq!(ctx.tikv_expression_rows(), 2);
+        assert!(rows.sel().is_none());
+        assert!(WindowExec::eval_key_row(&ctx, &mut rows, &suites[1], 0).is_err());
+        assert!(rows.sel().is_none());
     }
 }

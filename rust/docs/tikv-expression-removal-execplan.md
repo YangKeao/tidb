@@ -45,9 +45,15 @@ remain in the workspace.
       The new regression failed before the fix; the engine package now passes
       481 tests. Added cross-batch independent selection, empty-selection and
       invalid-length/index/nonfinite preflight coverage.
-- [ ] Route Window/Join at their original demand points. Borrowed selected
-      evaluation still rejects lazy programs and requires equal physical input
-      lengths; independent selections alone do not remove these limitations.
+- [x] Route Window partition/order key comparisons through retained suites and
+      single-row selections at their original demand points. Three focused
+      tests cover engine receipts, one compilation across repeated calls,
+      skipped overflowing rows/keys and selection restoration after errors.
+      Full executor regressions passed with engine on/off (see artifacts).
+- [ ] Route remaining Window RANGE/value/default and Join evaluations at their
+      original demand points. Borrowed selected evaluation still rejects lazy
+      programs and requires equal physical input lengths; independent selections
+      alone do not remove these limitations.
 
 - [x] Milestone A (point 6): engine shareable and thread-safe.
       TiKV metadata is `Send + Sync`, `PreparedExpression` is asserted
@@ -630,6 +636,22 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+Window key migration validation (TiDB repository `rust/`, same memory-guarded
+serial environment as below, no Cargo patch):
+
+    cargo test -q -p tidb-executor --features tikv-expr --lib window::selected_key_tests --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --locked --offline -j1 -- --test-threads=1
+
+The targeted run passed all 3 tests. Feature-on suite groups passed
+1344 / 355 / 6 / 2 tests, feature-off groups passed 1335 / 329 / 6 / 0;
+both integration suites had 184 ignored tests. Peak RSS across these commands
+was 3376.3 MiB. The native-site classifier now reports 62 raw hits, 47 evaluator
+sites (25 production-labelled and 22 test-only); two production-labelled sites
+remain the known unlinked `stream_agg.rs` duplicate. Window has five native sites
+left, down from seven. Full mysql replay, performance and repository-wide lint
+were not rerun for this incremental migration.
 
 Recovery-audit commands (TiDB repository `rust/`, no Cargo patch):
 
