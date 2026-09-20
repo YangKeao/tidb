@@ -554,7 +554,7 @@ fn run_insert_with_physical(
 
     enum PreparedInsertValue {
         Generated,
-        Expression(Box<Expression>),
+        Expression(Box<tidb_expr::evaluator::EvaluatorSuite>),
     }
 
     // Go lowers every explicit VALUES default while building the insert plan,
@@ -689,7 +689,11 @@ fn run_insert_with_physical(
                         rewrite_with_prepared_defaults(value, &resolver, &defaults)?
                     }
                 };
-                prepared.push(PreparedInsertValue::Expression(Box::new(expression)));
+                // Own metadata now, but evaluate at the original row-major
+                // demand point below, after explicit defaults are prepared.
+                prepared.push(PreparedInsertValue::Expression(Box::new(
+                    tidb_expr::evaluator::EvaluatorSuite::new(vec![expression], true),
+                )));
             }
             prepared_value_rows.push(prepared);
         }
@@ -759,9 +763,14 @@ fn run_insert_with_physical(
                 Some(_) => value_rows[index][position].clone(),
                 None => match &prepared_value_rows[index][position] {
                     PreparedInsertValue::Generated => continue,
-                    PreparedInsertValue::Expression(expression) => expression
-                        .eval(ctx, eval_chunk.get_row(0))
-                        .map_err(|e| DriverError::Exec(ExecError::Eval(e)))?,
+                    PreparedInsertValue::Expression(suite) => suite
+                        .eval_selected_for_cast(ctx, &eval_chunk, &[0])
+                        .map_err(tidb_expr::evaluator::into_eval_error)
+                        .map_err(|e| DriverError::Exec(ExecError::Eval(e)))?
+                        .pop()
+                        .ok_or_else(|| {
+                            DriverError::Exec(ExecError::internal("INSERT value returned no row"))
+                        })?,
                 },
             };
             row[offset] = value;
@@ -4054,6 +4063,59 @@ pub(crate) fn row_chunk(
         chunk.append_datum(i, &Datum::Null);
     }
     Ok(chunk)
+}
+
+#[cfg(all(test, feature = "tikv-expr"))]
+mod insert_engine_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_values_stop_at_error_before_later_rows() {
+        for engine in [false, true] {
+            let mut catalog = Catalog::default();
+            crate::run_create_table_on("create table t (a bigint)", &mut catalog).unwrap();
+            let ctx = crate::StmtContext::for_dml(false, false, false).with_tikv_expression(engine);
+            assert!(crate::run_insert_on(
+                "insert into t values (7), (9223372036854775807 + 1), (8)",
+                &mut catalog,
+                &ctx
+            )
+            .is_err());
+            assert_eq!(ctx.tikv_expression_rows(), if engine { 1 } else { 0 });
+            assert!(crate::run_select_on(
+                "select a from t",
+                &catalog,
+                &crate::StmtContext::for_query()
+            )
+            .unwrap()
+            .is_empty());
+        }
+    }
+
+    #[test]
+    fn explicit_values_dispatch_without_losing_binary_assignment_values() {
+        for engine in [false, true] {
+            let mut catalog = Catalog::default();
+            crate::run_create_table_on("create table t (a bigint)", &mut catalog).unwrap();
+            let ctx = crate::StmtContext::for_dml(false, false, false).with_tikv_expression(engine);
+            crate::run_insert_on("insert into t values (1), (2)", &mut catalog, &ctx).unwrap();
+            assert_eq!(ctx.tikv_expression_rows(), if engine { 2 } else { 0 });
+            crate::run_insert_on("insert into t values (0x10)", &mut catalog, &ctx).unwrap();
+            assert_eq!(
+                crate::run_select_on(
+                    "select a from t order by a",
+                    &catalog,
+                    &crate::StmtContext::for_query()
+                )
+                .unwrap(),
+                vec![
+                    vec![Datum::Int(1)],
+                    vec![Datum::Int(2)],
+                    vec![Datum::Int(16)]
+                ]
+            );
+        }
+    }
 }
 
 /// Go's `WHERE` truth test: NULL and zero are false.

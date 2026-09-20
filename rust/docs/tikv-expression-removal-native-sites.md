@@ -9,7 +9,32 @@ kind needs. This is the measurement, and the method is repeatable:
     cd rust/crates
     grep -rn "\.eval(" --include=*.rs . | grep -v '/tidb-expr/src/'
 
-## Current snapshot after DML/pruning routing
+## Current snapshot after INSERT and scalar-helper routing
+
+Classifier: **38 raw / 22 candidates / 4 production / 18 test-only**. The four
+production candidates are two unlinked duplicate calls and two routed DML
+wrapper calls. Thus this narrow outside-expression-core `.eval` inventory has
+no remaining direct live native call. This is NOT native removal: expression
+internals, forwarding helpers, native conversions, optional fallback and the
+feature/default switch still require work.
+
+Explicit INSERT VALUES now own suites in their prepared descriptors and execute
+at the original row-major demand point, after explicit defaults are prepared.
+SQL tests pin engine receipts, binary literal assignment and stopping at overflow
+before later rows or storage writes. Programs are local to insert preparation;
+there is no cross-statement cache or performance claim.
+
+The general scalar helpers are now repaired too: `eval_row_values` preserves
+original indexes (the old remap returned -7 instead of 7 for reordered operands),
+handles empty virtual rows, and no longer requests caller-native fallback.
+Its existing optional result API now always returns Some on success, including
+feature-off; invalid input/required-engine refusal returns an error. Both it and
+`eval_constant_row` preserve native scalar Datum kinds through the shared facade.
+Borrowed/copying and feature-off tests cover the contract; helper-local programs
+are still temporary. No production `eval_row_values` callers remain; constant
+helper consumers include planner ranges and DDL.
+
+## Historical snapshot after DML/pruning routing
 
 The classifier now reports **39 raw / 23 evaluator candidates / 5 production /
 18 test-only**. New DML tests add textual `.eval` wrapper calls; these are not

@@ -176,12 +176,19 @@ remain in the workspace.
       row binding, physical indexes, Apply order and scalar assignment values.
       Fix zero-column virtual input. Remove sparse partition native bypass via
       the scalar-preserving facade (temporary program, not cross-bound caching).
-      Current classifier: 39 raw / 23 candidates / 5 production / 18 test;
+      That step's classifier: 39 raw / 23 candidates / 5 production / 18 test;
       manual inspection subtracts two dead duplicate calls and two routed DML
       wrappers, leaving one direct live candidate (INSERT VALUES). Earlier
       counts included wrappers and were not direct-native-call counts.
-- [ ] Audit remaining forwarding helpers and `eval_row_values` empty inputs;
-      migrate INSERT VALUES and retain partition programs at a safe owner.
+- [x] Route explicit INSERT VALUES through prepared suites at original demand
+      points. Repair scalar helpers: preserve original indexes and scalar kinds,
+      provide virtual empty rows, and return Some/error instead of external
+      native-fallback requests. Reordered operands reproduced -7 versus 7.
+      Current narrow inventory: 38 raw / 22 candidates / 4 production / 18 test;
+      four production candidates are dead duplicates or routed DML wrappers.
+- [ ] Audit expression-internal and other forwarding entrypoints before native
+      removal; retain partition programs at a safe owner. Zero direct live hits
+      in the narrow outside-core `.eval` inventory is not deletion readiness.
 - [ ] Retain generated/default compatibility programs in statement-owned plans
       with schema/zone/LIKE rewrite invalidation. The public mutable descriptors
       are not safe cache owners; temporary compilation and gather copies remain.
@@ -772,6 +779,43 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+INSERT/scalar-helper validation (TiDB `rust/`, same serial guarded environment):
+
+    cargo test -q -p tidb-executor --features tikv-expr --lib insert_engine_tests --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --locked --offline -j1 scalar_row_helpers -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --test all --locked --offline -j1 eval_row_values_preserves_indexes -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-planner --lib --locked --offline -j1 ranger::points -- --test-threads=1
+    cargo test -q -p tidb-planner --lib --locked --offline -j1 physical::tests -- --test-threads=1
+
+`insert-engine-red.log` has zero engine rows instead of two. Final INSERT tests
+pass both receipts and scalar binary assignment, and pin overflow stopping before
+later rows/storage writes. `scalar-helper-before.log` demonstrates wrong indexed
+arithmetic (-7 instead of +7); `scalar-index-before.log` catches the old external
+None fallback. Initial `scalar-helper-red.log` was a BinaryLiteral fixture compile
+error, not behavioral evidence; `scalar-index-red.log` used an invalid test target
+(`all` is the actual integration target). Final tests preserve original indexes,
+empty constants, scalar kinds, required-context errors and parameter single-read
+behavior, including feature-off and both engine transport modes.
+
+`insert-helper-expr-on/off.log`: 1221/64 and 1187/18 passed, 99 ignored unit
+tests each. Executor on/off: 1399/355/6/2 and 1346/329/6/0, with 184 ignored
+integration tests each. Planner ranger points: 15 passed. The attempted
+physical::scan_ranges filter selected zero tests, so is not evidence; the actual
+physical::tests module was run instead (46 passed). Serial single-worker guarded commands
+sampled at most 2700.3 MiB RSS this round; full expr/executor on/off samples were
+2022.3/2560.4/1542.9/2175.8 MiB (limits 8192 RSS / 16384 AS MiB).
+
+Scalar helper Option success semantics intentionally changed (always Some,
+otherwise error); there are no production eval_row_values callers. Constant-row
+consumers include planner ranges and DDL, covered by executor and scoped planner
+regression, not a full Go oracle. Native fallback/conversions/kernels remain;
+INSERT/helper programs are local, not cross-statement retained. No new benchmark,
+full mysql replay, TiKV suite or make lint run; no PR-readiness claim.
 
 DML/pruning validation (TiDB `rust/`, same serial guarded environment):
 

@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use tidb_chunk::chunk::Chunk;
 use tidb_chunk::chunk_util::ColumnSwapHelper;
-use tidb_datatype::{Datum, FieldType, FieldTypeCode};
+use tidb_datatype::{Datum, FieldTypeCode};
 
 use crate::context::{Columns, EvalError};
 use crate::expression::Expression;
@@ -489,10 +489,8 @@ pub fn eval_chunk<C: Columns>(
     EvaluatorSuite::new(vec![expression.clone()], true).eval_chunk(ctx, input)
 }
 
-/// Immutable projection expressions and logical column mapping. Actual input
-/// column ownership is discovered separately by each execution's suite.
 /// Evaluates a **constant** expression through the suite, with no input
-/// columns.
+/// columns. Native scalar Datum kinds are preserved for subsequent SQL casts.
 ///
 /// A row-at-a-time call site that has no input chunk -- the shape
 /// `expression.eval(ctx, dual.get_row(0))` over an empty one-row chunk -- can be
@@ -511,16 +509,9 @@ pub fn eval_constant_row<C: Columns>(
     expression: &Expression,
     ctx: &C,
 ) -> Result<Datum, EvaluatorError> {
-    let ty = expression.static_type().cloned().ok_or_else(|| {
-        EvaluatorError::Eval(EvalError::Unsupported(
-            "an expression without a static type cannot be evaluated",
-        ))
-    })?;
     let mut input = Chunk::new_empty(&[]);
     input.set_num_virtual_rows(1);
-    let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), 1);
-    EvaluatorSuite::new(vec![expression.clone()], true).run(ctx, &mut input, &mut output)?;
-    Ok(output.get_row(0).get_datum(0, &ty))
+    eval_scalar_row(expression, ctx, &input)
 }
 
 /// Evaluates `expression` for **one row** whose column values are indexed by the
@@ -532,12 +523,15 @@ pub fn eval_constant_row<C: Columns>(
 /// expression and the native evaluator otherwise, so the coexistence fallback
 /// is the suite's, not the caller's.
 ///
-/// `Ok(None)` means the caller must evaluate natively itself: the expression
-/// references a sparse set of column indexes (something other than
-/// `0..values.len()`), which this helper refuses rather than guess a chunk
-/// layout for. Every real caller so far passes the expression's dependencies in
-/// order. After the native evaluator is deleted that branch becomes the
-/// structured `ExternalEngine` error instead of a native call.
+/// Values retain their original positions, including unreferenced columns;
+/// sparse references are valid when their indexes exist in `values`. Empty
+/// values represent one virtual row, not zero rows. Native scalar Datum kinds
+/// are preserved for subsequent SQL casts.
+///
+/// The optional return type is retained for compatibility, but success now
+/// always returns `Some`, with or without the engine feature. Errors (including
+/// out-of-bounds references and required-engine refusals) are returned directly;
+/// this helper no longer asks callers to perform their own native fallback.
 ///
 /// Like [`eval_constant_row`], the compiled program is not cached.
 pub fn eval_row_values<C: Columns>(
@@ -545,44 +539,26 @@ pub fn eval_row_values<C: Columns>(
     ctx: &C,
     values: &[Datum],
 ) -> Result<Option<Datum>, EvaluatorError> {
-    // Without the engine there is nothing to choose: the caller keeps its own
-    // native evaluation, which is what builds this configuration anyway.
-    #[cfg(not(feature = "tikv-expr"))]
-    {
-        let _ = (expression, ctx, values);
-        return Ok(None);
+    if values.is_empty() {
+        return eval_constant_row(expression, ctx).map(Some);
     }
-    #[cfg(feature = "tikv-expr")]
-    {
-        let mut remapped = expression.clone();
-        let mut inputs = Vec::new();
-        let mut positions = std::collections::BTreeMap::new();
-        if !crate::tikv::remap_columns(&mut remapped, &mut inputs, &mut positions) {
-            return Ok(None);
-        }
-        let mut types: Vec<Option<FieldType>> = vec![None; values.len()];
-        for (original, ty) in &inputs {
-            let Some(slot) = types.get_mut(*original) else {
-                return Ok(None);
-            };
-            *slot = Some(ty.clone());
-        }
-        let Some(types) = types.into_iter().collect::<Option<Vec<FieldType>>>() else {
-            return Ok(None);
-        };
-        let ty = expression.static_type().cloned().ok_or_else(|| {
-            EvaluatorError::Eval(EvalError::Unsupported(
-                "an expression without a static type cannot be evaluated",
-            ))
-        })?;
-        let mut input = Chunk::new_with_capacity(&types, 1);
-        for (index, value) in values.iter().enumerate() {
-            input.append_datum(index, value);
-        }
-        let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), 1);
-        EvaluatorSuite::new(vec![remapped], true).run(ctx, &mut input, &mut output)?;
-        Ok(Some(output.get_row(0).get_datum(0, &ty)))
-    }
+    let input = tidb_chunk::mutrow::MutRow::from_datums(values);
+    let row = input.to_row();
+    let chunk = row
+        .chunk()
+        .ok_or(EvaluatorError::Chunk("missing scalar input row"))?;
+    eval_scalar_row(expression, ctx, chunk).map(Some)
+}
+
+fn eval_scalar_row<C: Columns>(
+    expression: &Expression,
+    ctx: &C,
+    input: &Chunk,
+) -> Result<Datum, EvaluatorError> {
+    EvaluatorSuite::new(vec![expression.clone()], true)
+        .eval_selected_for_cast(ctx, input, &[0])?
+        .pop()
+        .ok_or(EvaluatorError::Chunk("scalar evaluation returned no value"))
 }
 
 pub struct EvaluatorProgram {
@@ -1099,6 +1075,47 @@ mod tests {
         let mut constant = Constant::new(Datum::Null, field_type);
         constant.param_marker = Some(ParamMarker { order: 0 });
         Expression::Constant(constant)
+    }
+
+    #[test]
+    fn scalar_row_helpers_preserve_values_indexes_and_errors() {
+        let reordered = scalar("minus", vec![input_column(1), input_column(0)]);
+        assert_eq!(
+            eval_row_values(&reordered, &NoColumns, &[Datum::Int(3), Datum::Int(10)]),
+            Ok(Some(Datum::Int(7)))
+        );
+        assert_eq!(
+            eval_row_values(
+                &input_column(2),
+                &NoColumns,
+                &[Datum::Null, Datum::Int(9), Datum::Int(42)],
+            ),
+            Ok(Some(Datum::Int(42)))
+        );
+        assert!(eval_row_values(&input_column(2), &NoColumns, &[Datum::Int(42)]).is_err());
+        assert_eq!(
+            eval_row_values(&int_const(42), &NoColumns, &[]),
+            Ok(Some(Datum::Int(42)))
+        );
+        let value = Datum::BinaryLiteral(vec![0x41].into());
+        let binary = Expression::Constant(Constant::new(value.clone(), string()));
+        assert_eq!(eval_constant_row(&binary, &NoColumns), Ok(value.clone()));
+        assert_eq!(eval_row_values(&binary, &NoColumns, &[]), Ok(Some(value)));
+        let error = EvalError::Unsupported("unbound prepared parameter");
+        let ctx = CountedParameter {
+            value: Err(error.clone()),
+            reads: Cell::new(0),
+        };
+        assert_eq!(
+            eval_constant_row(&parameter(long()), &ctx),
+            Err(EvaluatorError::Eval(error.clone()))
+        );
+        assert_eq!(ctx.reads.get(), 1);
+        assert_eq!(
+            eval_row_values(&parameter(long()), &ctx, &[]),
+            Err(EvaluatorError::Eval(error))
+        );
+        assert_eq!(ctx.reads.get(), 2);
     }
 
     #[test]

@@ -2233,9 +2233,9 @@ fn tikv_coverage_set_column_round_trip_and_string_use() {
 /// `eval_row_values` is the entry point a row-at-a-time call site uses when it
 /// has one row with columns. It must answer the same value the native row
 /// evaluator would, must actually run the engine when the resolver has one, and
-/// must refuse a sparse column set instead of guessing a chunk layout.
+/// must preserve original column indexes, including sparse references.
 #[test]
-fn eval_row_values_is_dense_only_and_matches_native() {
+fn eval_row_values_preserves_indexes_and_matches_native() {
     let ty = int();
     let dense = call(
         "plus",
@@ -2260,8 +2260,7 @@ fn eval_row_values_is_dense_only_and_matches_native() {
     );
     assert_eq!(engine.rows.get(), 1);
 
-    // Column 3 with one value is not a layout, so the helper refuses and the
-    // caller keeps its own row evaluation.
+    // Column 3 requires a fourth value, not an external native fallback.
     let mut third = Column::new(4, ty.clone());
     third.index = 3;
     let sparse = call(
@@ -2269,12 +2268,80 @@ fn eval_row_values_is_dense_only_and_matches_native() {
         &ty,
         vec![Expression::Column(third), literal(Datum::Int(1), &ty)],
     );
-    assert_eq!(
-        tidb_expr::evaluator::eval_row_values(&sparse, &engine, &[Datum::Int(41)]).unwrap(),
-        None
-    );
+    assert!(tidb_expr::evaluator::eval_row_values(&sparse, &engine, &[Datum::Int(41)]).is_err());
+    for backend in [None, Some(Backend::Copying), Some(Backend::Borrowed)] {
+        let ctx = TestContext {
+            backend,
+            ..TestContext::default()
+        };
+        assert_eq!(
+            tidb_expr::evaluator::eval_row_values(
+                &sparse,
+                &ctx,
+                &[Datum::Int(9), Datum::Null, Datum::Int(7), Datum::Int(41)],
+            )
+            .unwrap(),
+            Some(Datum::Int(42))
+        );
+        let reordered = call("minus", &ty, vec![column(1, &ty), column(0, &ty)]);
+        assert_eq!(
+            tidb_expr::evaluator::eval_row_values(
+                &reordered,
+                &ctx,
+                &[Datum::Int(3), Datum::Int(10)],
+            )
+            .unwrap(),
+            Some(Datum::Int(7))
+        );
+        if backend.is_some() {
+            assert_eq!(ctx.rows.get(), 2);
+        }
+    }
 }
 
+#[test]
+fn scalar_row_helpers_handle_empty_values_and_required_context() {
+    use tidb_expr::evaluator::{eval_constant_row, eval_row_values, EvaluatorError};
+    let expression = literal(Datum::Int(42), &int());
+    for backend in [None, Some(Backend::Copying), Some(Backend::Borrowed)] {
+        let ctx = TestContext {
+            backend,
+            ..TestContext::default()
+        };
+        assert_eq!(
+            eval_row_values(&expression, &ctx, &[]).unwrap(),
+            Some(Datum::Int(42))
+        );
+        assert_eq!(
+            eval_constant_row(&expression, &ctx).unwrap(),
+            Datum::Int(42)
+        );
+        let value = Datum::BinaryLiteral(vec![0x41].into());
+        let binary = literal(value.clone(), &bytes());
+        assert_eq!(eval_constant_row(&binary, &ctx).unwrap(), value);
+        assert_eq!(eval_row_values(&binary, &ctx, &[]).unwrap(), Some(value));
+    }
+    let required = TestContext {
+        engine_required: true,
+        ..TestContext::default()
+    };
+    for result in [
+        eval_constant_row(&expression, &required),
+        eval_row_values(&expression, &required, &[]).map(|v| v.unwrap()),
+    ] {
+        assert!(matches!(
+            result,
+            Err(EvaluatorError::Eval(tidb_expr::EvalError::ExternalEngine {
+                code: 1105,
+                ..
+            }))
+        ));
+    }
+    let invalid = call("unknown_scalar_row_helper", &int(), vec![]);
+    let ctx = TestContext::default();
+    assert!(eval_constant_row(&invalid, &ctx).is_err());
+    assert!(eval_row_values(&invalid, &ctx, &[]).is_err());
+}
 
 /// `eval_chunk` is the seam a row loop uses: one expression, every row of a
 /// chunk the caller already built. It must answer the same values the native
