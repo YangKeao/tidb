@@ -152,6 +152,11 @@ pub(crate) fn is_removed_native_misc(name: &str) -> bool {
             | "BIN_TO_UUID"
             | "TIDB_SHARD"
             | "TIDB_DECODE_KEY"
+            | "TIDB_DECODE_PLAN"
+            | "TIDB_DECODE_BINARY_PLAN"
+            | "TIDB_ENCODE_SQL_DIGEST"
+            | "FORMAT_BYTES"
+            | "FORMAT_NANO_TIME"
             | "VITESS_HASH"
     )
 }

@@ -3215,14 +3215,14 @@ mod builtin_type_tests {
     #[test]
     fn go_captured_edge_case_values() {
         // NULL propagates through every one of them.
-        for expr in [
-            "is_ipv4(null)",
-            "is_ipv6(null)",
-            "format_bytes(null)",
-            "format_nano_time(null)",
-            "to_seconds(null)",
-        ] {
+        for expr in ["is_ipv4(null)", "is_ipv6(null)", "to_seconds(null)"] {
             assert_eq!(eval(expr), Datum::Null, "{expr}");
+        }
+        for expr in ["format_bytes(null)", "format_nano_time(null)"] {
+            assert!(
+                matches!(try_eval(expr), Err(EvalError::Unsupported(_))),
+                "{expr}"
+            );
         }
         for expr in ["is_uuid(null)", "uuid_version(null)"] {
             assert_eq!(
@@ -3318,23 +3318,21 @@ mod builtin_type_tests {
         // The zero date has no seconds count.
         assert_eq!(eval("to_seconds('0000-00-00')"), Datum::Null);
         assert_eq!(eval("to_seconds(950501)"), Datum::Int(62_966_505_600));
-        assert_eq!(eval("format_bytes(0)"), text_datum("0 bytes"));
+        // Former values were `0 bytes`, the decoded plan, `malformed`, and
+        // `(plan discarded because too long)`. Native info kernels are deleted.
         let encoded = tidb_util::plancodec::compress(b"0\t1\t0\t1\teq(a, 1)\n");
-        assert_eq!(
-            eval(&format!("tidb_decode_plan('{encoded}')")),
-            text_datum(
-                "\tid       \ttask\testRows\toperator info\n\tSelection\troot\t1      \teq(a, 1)"
-            )
-        );
-        assert_eq!(
-            eval("tidb_decode_plan('malformed')"),
-            text_datum("malformed")
-        );
         let binary_discarded = tidb_util::plancodec::BINARY_PLAN_DISCARDED_ENCODED.as_str();
-        assert_eq!(
-            eval(&format!("tidb_decode_binary_plan('{binary_discarded}')")),
-            text_datum("(plan discarded because too long)")
-        );
+        for expr in [
+            "format_bytes(0)".to_owned(),
+            format!("tidb_decode_plan('{encoded}')"),
+            "tidb_decode_plan('malformed')".to_owned(),
+            format!("tidb_decode_binary_plan('{binary_discarded}')"),
+        ] {
+            assert!(
+                matches!(try_eval(&expr), Err(EvalError::Unsupported(_))),
+                "{expr}"
+            );
+        }
         assert_eq!(
             eval("time_format('23:00:00', '%H %k')"),
             text_datum("23 23")

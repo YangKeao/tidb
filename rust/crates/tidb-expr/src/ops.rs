@@ -1162,8 +1162,8 @@ fn time_compare_ordering(
 ///
 /// This is a proof about CALLERS, so it lapses if someone calls these from
 /// somewhere new -- which is exactly what happened to
-/// [`to_f64_with_mysql_string`], reached from `math_fn`, `string_fn`,
-/// `builtin_ext::info` and `builtin_ext::compare2` on datums these guards
+/// [`to_f64_with_mysql_string`], formerly reached from deleted math/string/info
+/// families and still from `builtin_ext::compare2` on datums these guards
 /// never saw. That function no longer relies on a caller proof at all: it
 /// returns a `Result` and lets `Datum::to_f64` decide, per its own audit
 /// table. `to_decimal` still rests on the argument above.
@@ -1669,12 +1669,11 @@ mod tests {
                 .is_ok()
         );
         assert_eq!(log.taken(), vec![truncated("12abc")]);
-        assert!(
-            crate::builtin_ext::dispatch("FORMAT_BYTES", &[s("12abc")], &log)
-                .expect("dispatches")
-                .is_ok()
-        );
-        assert_eq!(log.taken(), vec![truncated("12abc")]);
+        assert!(matches!(
+            crate::func::eval_func_values_in("FORMAT_BYTES", &[s("12abc")], &log),
+            Some(Err(EvalError::Unsupported(_)))
+        ));
+        assert_eq!(log.taken(), vec![]);
     }
 
     /// `MIN`/`MAX` over a `json` column -- TiDB's own issue-31640 case, whose
@@ -1818,9 +1817,9 @@ mod tests {
     /// than through `eval_binary`.
     ///
     /// `eval_binary`'s guard above is a proof about one caller, and
-    /// `to_f64_with_mysql_string` has four others that guard nothing:
-    /// `math_fn`, `string_fn`, `builtin_ext::info` and
-    /// `builtin_ext::compare2`. Every one of them used to read a vector as
+    /// `to_f64_with_mysql_string` historically had unguarded math, string and
+    /// info-family callers; the retained `builtin_ext::compare2` path is the
+    /// remaining relevant caller. Those removed paths used to read a vector as
     /// `0.0` -- `FORMAT_BYTES(vec)` answered `0 bytes`. TiDB errors on all of
     /// these (`SQRT(VEC_FROM_TEXT('[1,2]'))`, `FIELD(1, ...)`,
     /// `INTERVAL(1, ...)`, `FORMAT_BYTES(...)`, `FORMAT(..., 2)` -- captured,
@@ -1866,11 +1865,10 @@ mod tests {
                 )))
             );
         }
-        assert!(
-            crate::builtin_ext::dispatch("FORMAT_BYTES", &[vector()], &crate::NoColumns)
-                .expect("dispatches")
-                .is_err()
-        );
+        assert!(matches!(
+            crate::func::eval_func_values_in("FORMAT_BYTES", &[vector()], &crate::NoColumns),
+            Some(Err(EvalError::Unsupported(_)))
+        ));
         assert!(crate::builtin_ext::dispatch(
             "INTERVAL",
             &[Datum::Int(1), vector()],
@@ -1888,13 +1886,11 @@ mod tests {
             crate::func::eval_func_values_in("SQRT", &[e()], &crate::NoColumns),
             Some(Err(EvalError::Unsupported(_)))
         ));
-        // `FORMAT_BYTES(e)` is `2 bytes`, not `0 bytes`.
-        assert_eq!(
-            crate::builtin_ext::dispatch("FORMAT_BYTES", &[e()], &crate::NoColumns)
-                .expect("dispatches")
-                .map(|value| value.sql_string().unwrap()),
-            Ok("2 bytes".to_owned())
-        );
+        // Former `FORMAT_BYTES(e)` was `2 bytes`; the native info kernel is gone.
+        assert!(matches!(
+            crate::func::eval_func_values_in("FORMAT_BYTES", &[e()], &crate::NoColumns),
+            Some(Err(EvalError::Unsupported(_)))
+        ));
         // Deleted FORMAT refuses before inspecting the former ETReal enum or
         // temporal domains, so neither value can re-enable native formatting.
         let date = Datum::Time(

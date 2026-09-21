@@ -129,6 +129,11 @@ const DECLINED: &[&str] = &[
     "find_in_set(' ' collate utf8mb4_general_ci, '  , , ,' collate utf8mb4_general_ci)",
     "format(12345.67, 2, 'en_us')",
     "format(1234567.89, 2, 'en_US')",
+    "format_bytes(2048)",
+    "format_nano_time(2000)",
+    "tidb_decode_binary_plan('malformed')",
+    "tidb_decode_plan('malformed')",
+    "tidb_encode_sql_digest('select 1')",
     "greatest('2020-01-01','99-1-1')",
     "greatest(-9223372036854775808, cast('9223372036854775809' as unsigned))",
     "greatest(\"a\", \"b\", \"c\")",
@@ -192,7 +197,7 @@ fn declined_expressions_stay_declined() {
 #[test]
 fn the_gap_count_is_pinned() {
     assert_eq!(COVERED.len(), 19, "the covered list changed size");
-    assert_eq!(DECLINED.len(), 67, "the declined list changed size");
+    assert_eq!(DECLINED.len(), 72, "the declined list changed size");
 }
 
 /// The resolver that milestone E ends up with: an engine context and no native
@@ -278,7 +283,7 @@ fn every_declined_expression_fails_cleanly_without_the_native_evaluator() {
 /// all. `plan_builder.rs` folds the rewritten tree with the live statement
 /// context (`fold_constant_in_mode`) before the plan exists. After physical
 /// native-kernel deletion, constant-foldable declines become a single
-/// `Constant`; the 43 pinned here are the ones whose constant form *does*
+/// `Constant`; the 48 pinned here are the ones whose constant form *does*
 /// reach the adapter, which is the surface the removal actually has to answer
 /// for.
 ///
@@ -307,6 +312,11 @@ const SURVIVES_FOLD: &[&str] = &[
     "find_in_set(' ' collate utf8mb4_general_ci, '  , , ,' collate utf8mb4_general_ci)",
     "format(12345.67, 2, 'en_us')",
     "format(1234567.89, 2, 'en_US')",
+    "format_bytes(2048)",
+    "format_nano_time(2000)",
+    "tidb_decode_binary_plan('malformed')",
+    "tidb_decode_plan('malformed')",
+    "tidb_encode_sql_digest('select 1')",
     "greatest(-9223372036854775808, cast('9223372036854775809' as unsigned))",
     "hex(weight_string('a'))",
     "hex(weight_string('aAÁàãăâ' collate utf8mb4_general_ci))",

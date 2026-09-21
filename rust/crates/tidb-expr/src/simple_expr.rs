@@ -1680,11 +1680,11 @@ mod tests {
             ));
             let mut chunk = tidb_chunk::chunk::Chunk::new(&[], 1, 1);
             let row = chunk.get_row(0);
-            let value = node
-                .eval(&crate::context::NoColumns, row)
-                .unwrap_or_else(|error| panic!("{name}({argument:?}): {error:?}"));
-            let text = value.sql_string().expect("string result");
-            assert_eq!(text, *expected, "{name}({argument:?})");
+            let _ = expected;
+            assert!(matches!(
+                node.eval(&crate::context::NoColumns, row),
+                Err(crate::EvalError::Unsupported(_))
+            ));
         }
 
         // NULL propagates.
@@ -1698,10 +1698,10 @@ mod tests {
         ));
         let mut chunk = tidb_chunk::chunk::Chunk::new(&[], 1, 1);
         let row = chunk.get_row(0);
-        assert!(node
-            .eval(&crate::context::NoColumns, row)
-            .unwrap()
-            .is_null());
+        assert!(matches!(
+            node.eval(&crate::context::NoColumns, row),
+            Err(crate::EvalError::Unsupported(_))
+        ));
     }
 
     /// Go `ParseSimpleExpr`'s empty-string guard.

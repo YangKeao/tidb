@@ -455,6 +455,11 @@ fn removed_marker_for_name(name: &str, nonbinary_find_in_set: bool) -> Option<&'
             | "BIN_TO_UUID"
             | "TIDB_SHARD"
             | "TIDB_DECODE_KEY"
+            | "TIDB_DECODE_PLAN"
+            | "TIDB_DECODE_BINARY_PLAN"
+            | "TIDB_ENCODE_SQL_DIGEST"
+            | "FORMAT_BYTES"
+            | "FORMAT_NANO_TIME"
             | "VITESS_HASH"
     ) {
         return Some(MISC_REMOVED);

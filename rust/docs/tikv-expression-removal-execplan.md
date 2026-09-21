@@ -342,6 +342,23 @@ remain in the workspace.
       carried math/crypto failures. Broad replay remains red by design: Native
       has 182 divergences; Copying has 167 and 416246 engine rows. This is not a
       compatibility claim.
+- [x] Seventeenth physical-deletion tranche: removed `builtin_ext/info.rs`, its
+      family registration and dispatch hook, eliminating native FORMAT_BYTES,
+      FORMAT_NANO_TIME, TIDB_DECODE_PLAN, TIDB_DECODE_BINARY_PLAN and
+      TIDB_ENCODE_SQL_DIGEST implementations, formatter/coercion helpers and plan
+      codec wrappers. All names now hit the existing miscellaneous fail-closed
+      guard before argument coercion or warnings. Admission rows remain excluded
+      but now carry the concrete removed-kernel reason instead of NOT_TRIAGED.
+      Direct helper, rewriter, simple-expression, session and differential tests
+      retain former Go values as independent oracle data and assert structured
+      refusal. Constant folding ratchet entries keep all five names visible.
+      Validation is 1178 library and 77 external tests, SQL-digest contraction
+      in both feature modes, expression/query diffs, runtime 317 receipts / 2026
+      engine rows / 160 borrowed rows, static 212 admitted / 172 excluded / 0
+      missing, and repository lint. Full session has only the four carried
+      math/crypto failures. Broad replay remains red by design: Native has 182
+      divergences; Copying has 167 and 416246 engine rows. This is not a
+      compatibility claim.
 - [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
       in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected
       borrowed facade was used by the adapter while the manifest still pinned

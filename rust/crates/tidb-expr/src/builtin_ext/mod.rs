@@ -23,7 +23,6 @@
 use crate::{Datum, EvalError};
 
 pub(crate) mod compare2;
-pub(crate) mod info;
 pub(crate) mod json;
 
 pub(crate) use compare2::{extremum_with_signature, interval_lazy, GlCmpStringMode, GlSignature};
@@ -34,14 +33,11 @@ pub(crate) use json::{
 /// Tries each family in turn; `None` if no family implements `name`.
 ///
 /// `ctx` is the statement warning sink (`crate::Columns`). The retained
-/// `info` and `compare2` families use it for FORMAT_BYTES/FORMAT_NANO_TIME and
-/// INTERVAL coercion diagnostics; the deleted string2 family cannot warn.
+/// `compare2` family uses it for INTERVAL coercion diagnostics.
 pub(crate) fn dispatch(
     name: &str,
     vals: &[Datum],
     ctx: &dyn crate::Columns,
 ) -> Option<Result<Datum, EvalError>> {
-    info::dispatch(name, vals, ctx)
-        .or_else(|| json::dispatch(name, vals))
-        .or_else(|| compare2::dispatch(name, vals, ctx))
+    json::dispatch(name, vals).or_else(|| compare2::dispatch(name, vals, ctx))
 }
