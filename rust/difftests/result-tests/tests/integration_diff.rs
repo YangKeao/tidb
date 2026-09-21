@@ -644,8 +644,8 @@ fn ensure_stats_fixtures_unzipped(dir: &std::path::Path) {
 }
 
 fn expected_removed_marker(topic: &str, sql: &str) -> Option<&'static str> {
-    if let Some(removed_native::STRING2_REMOVED) = removed_native::expected_removed_marker(sql) {
-        return Some(removed_native::STRING2_REMOVED);
+    if let Some(marker) = removed_native::expected_removed_marker(sql) {
+        return Some(marker);
     }
     let parsed = removed_native::parsed_function_names(sql)?;
     let has = |names: &[&str]| {
@@ -801,10 +801,14 @@ fn requires_engine_statement(sql: &str) -> bool {
     !sql.trim_start().to_ascii_lowercase().starts_with("explain")
         && (is_any_value_statement(sql)
             || removed_native::requires_string2_engine(sql)
-            || removed_native::requires_inet_engine(sql))
+            || removed_native::requires_inet_engine(sql)
+            || removed_native::requires_radix_engine(sql))
 }
 
 fn is_engine_shape_contraction(sql: &str) -> bool {
+    if removed_native::is_radix_shape_contraction(sql) {
+        return true;
+    }
     let normalized = sql.trim_start().to_ascii_lowercase();
     let Some(names) = removed_native::parsed_function_names(sql) else {
         return false;
@@ -958,6 +962,24 @@ fn removed_kernel_classification_is_statement_scoped() {
     assert!(may_classify_native_contraction(
         true,
         "select any_value(v), abs(v) from t group by k"
+    ));
+    assert_eq!(
+        expected_removed_marker("unrelated/topic", "select hex(abs(1))"),
+        Some(removed_native::RADIX_REMOVED)
+    );
+    assert_eq!(
+        expected_removed_marker("unrelated/topic", "select oct('8')"),
+        Some(removed_native::RADIX_REMOVED)
+    );
+    assert!(!may_classify_native_contraction(false, "select hex('a')"));
+    assert!(!may_classify_native_contraction(false, "select oct('8')"));
+    assert!(may_classify_native_contraction(
+        false,
+        "select oct(b'11111111')"
+    ));
+    assert!(!may_classify_native_contraction(
+        false,
+        "select oct('8'), hex('a')"
     ));
 }
 

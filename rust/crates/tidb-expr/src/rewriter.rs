@@ -3216,7 +3216,6 @@ mod builtin_type_tests {
     fn go_captured_edge_case_values() {
         // NULL propagates through every one of them.
         for expr in [
-            "ord(null)",
             "is_ipv4(null)",
             "is_ipv6(null)",
             "format_bytes(null)",
@@ -3248,12 +3247,17 @@ mod builtin_type_tests {
                 "{expr}"
             );
         }
-        // `ORD('')` is 0, not NULL -- the empty string has no first code
-        // point but the signature still returns an integer.
-        assert_eq!(eval("ord('')"), Datum::Int(0));
-        // A multi-byte first character contributes its whole UTF-8 encoding
-        // read as a big-endian number: 0xE4BDA0 = 14990752.
-        assert_eq!(eval("ord('你好')"), Datum::Int(14_990_752));
+        // ORD values are TiKV-only. Preserve these former edge shapes as exact
+        // native refusals; independent engine values live in the source table.
+        for expr in ["ord(null)", "ord('')", "ord('你好')"] {
+            assert_eq!(
+                try_eval(expr),
+                Err(EvalError::Unsupported(
+                    "native integer radix evaluation was removed; TiKV engine required or function unsupported"
+                )),
+                "{expr}"
+            );
+        }
         // The packet-limited encoder kernel was physically deleted. Preserve
         // both former edge shapes and require the same explicit contraction.
         for expr in ["to_base64(null)", "to_base64('')"] {
@@ -3282,8 +3286,13 @@ mod builtin_type_tests {
                 "{expr}"
             );
         }
-        // `BIT_COUNT(-1)` counts the two's-complement bits: all 64.
-        assert_eq!(eval("bit_count(-1)"), Datum::Int(64));
+        // BIT_COUNT values are TiKV-only after native deletion.
+        assert_eq!(
+            try_eval("bit_count(-1)"),
+            Err(EvalError::Unsupported(
+                "native integer radix evaluation was removed; TiKV engine required or function unsupported"
+            ))
+        );
         // `INTERVAL` with a NULL first argument is -1, not NULL: Go's
         // `builtinIntervalRealSig` reports "below every bucket".
         assert_eq!(eval("interval(null, 1, 2)"), Datum::Int(-1));

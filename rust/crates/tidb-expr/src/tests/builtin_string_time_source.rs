@@ -468,26 +468,25 @@ fn test_oct() {
         ("9999999999999999999999999", "1777777777777777777777"),
         ("-9999999999999999999999999", "1777777777777777777777"),
     ] {
-        let expr = format!("oct('{arg}')");
-        assert_eq!(e(&expr), format!("STR:{want}"), "{expr}");
-    }
-    // The non-string sources take the integer-datum path: floats as REAL
-    // constants, ints directly, binary literals by payload.
-    let real_rows = [("oct(1.0)", "STR:1"), ("oct(9.5)", "STR:11")];
-    for (expr, want) in real_rows {
-        assert_eq!(e(expr), want, "{expr}");
-        assert_eq!(chunk_e(expr), want, "{expr}");
+        assert_engine_radix_value(&format!("oct('{arg}')"), &format!("STR:{want}"));
     }
     for (expr, want) in [
+        ("oct(1.0)", "STR:1"),
+        ("oct(9.5)", "STR:11"),
         ("oct(13)", "STR:15"),
         ("oct(1025)", "STR:2001"),
-        ("oct(b'11111111')", "STR:377"),
-        ("oct(b'1010')", "STR:12"),
-        ("oct(b'0101')", "STR:5"),
         ("oct(NULL)", "NULL"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
-        assert_eq!(chunk_e(expr), want, "{expr}");
+        assert_engine_radix_value(expr, want);
+    }
+    for (expr, _former_go_value) in [
+        ("oct(b'11111111')", "377"),
+        ("oct(b'1010')", "12"),
+        ("oct(b'0101')", "5"),
+    ] {
+        assert_radix_refusal(expr);
+        #[cfg(feature = "tikv-expr")]
+        assert!(engine_declines(expr), "engine unexpectedly admitted {expr}");
     }
 }
 
@@ -635,10 +634,7 @@ fn test_from_base64_sig() {
 fn test_ord_charset_table() {
     for (expr, want) in [
         (r"ord('2')", "INT:50"),
-        ("ord(2)", "INT:50"),
         (r#"ord('23')"#, "INT:50"),
-        ("ord(23)", "INT:50"),
-        ("ord(2.3)", "INT:50"),
         ("ord(NULL)", "NULL"),
         (r#"ord('')"#, "INT:0"),
         (r"ord('你好')", "INT:14990752"),
@@ -647,42 +643,50 @@ fn test_ord_charset_table() {
         (r"ord('👍')", "INT:4036989325"),
         (r"ord('א')", "INT:55184"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        assert_engine_radix_value(expr, want);
+    }
+    for (expr, _former_go_value) in [("ord(2)", "50"), ("ord(23)", "50"), ("ord(2.3)", "50")] {
+        assert_radix_refusal(expr);
+        #[cfg(feature = "tikv-expr")]
+        assert!(engine_declines(expr), "engine unexpectedly admitted {expr}");
     }
 
-    let ord_typed = |charset: &str, text: Datum| {
+    // GBK constants require native charset conversion and therefore become
+    // explicit contractions until TiKV can safely lower non-leaf ORD values.
+    for (text, _former_go_value) in [
+        ("数据库", 51965),
+        ("abc", 97),
+        ("一二三", 53947),
+        ("àáèé", 43172),
+    ] {
         let mut ft = FieldType::new(FieldTypeCode::VarString);
-        ft.set_charset_name(charset.to_string());
+        ft.set_charset_name("gbk".to_string());
+        let error = format!(
+            "{:?}",
+            eval_scalar(
+                "ORD",
+                FieldType::new(FieldTypeCode::LongLong),
+                vec![const_arg_typed(Datum::new_string(text.to_string()), ft)],
+                &NoColumns,
+            )
+            .expect_err("native ORD charset path is deleted")
+        );
+        assert!(error.contains("native integer radix evaluation was removed"));
+    }
+    let error = format!(
+        "{:?}",
         eval_scalar(
             "ORD",
             FieldType::new(FieldTypeCode::LongLong),
-            vec![const_arg_typed(text, ft)],
+            vec![const_arg_typed(
+                Datum::Int(0),
+                FieldType::new(FieldTypeCode::LongLong),
+            )],
             &NoColumns,
         )
-        .unwrap()
-    };
-    // Go drives the gbk rows by switching CharacterSetConnection so each
-    // literal constant is FOLDED into gbk before evaluation; the argument
-    // keeps a gbk-typed field type carrying the payload's own bytes. Same
-    // preconditions: a utf8 TEXT payload together with a gbk-declared type,
-    // i.e. exactly what converted constants look like at signature time.
-    let s_gbk = |text: &str| Datum::new_string(text.to_string());
-    assert_eq!(ord_typed("gbk", s_gbk("数据库")), Datum::Int(51965));
-    assert_eq!(ord_typed("gbk", s_gbk("abc")), Datum::Int(97));
-    assert_eq!(ord_typed("gbk", s_gbk("一二三")), Datum::Int(53947));
-    assert_eq!(ord_typed("gbk", s_gbk("àáèé")), Datum::Int(43172));
-    // An INT argument into the ORD sig also verifies NewZero()-style arity
-    // parity: construction succeeds against the integer constant.
-    assert!(eval_scalar(
-        "ORD",
-        FieldType::new(FieldTypeCode::LongLong),
-        vec![const_arg_typed(
-            Datum::Int(0),
-            FieldType::new(FieldTypeCode::LongLong)
-        )],
-        &NoColumns,
-    )
-    .is_ok());
+        .expect_err("numeric ORD coercion is contracted")
+    );
+    assert!(error.contains("native integer radix evaluation was removed"));
 }
 
 /// Go `pkg/expression/builtin_string_test.go:2444 TestElt`. Complete table.
@@ -1461,11 +1465,13 @@ fn test_vectorized_builtin_string_eval_one_vec() {
     // Preserve the default-generator Unicode shape as an explicit contraction.
     assert_packet_string_refusal(r"lpad('中文', 5, '字符')");
     // Rpad/Lpad binary signature selection through hex-literal payloads.
+    #[cfg(feature = "tikv-expr")]
     assert_eq!(
-        v(r"instr(unhex('66'), unhex('66'))"),
-        Datum::Int(1),
+        engine_e(r"instr(unhex('66'), unhex('66'))"),
+        "INT:1",
         "single-byte needle over binary-literal haystack shares LOCATE"
     );
+    assert_radix_refusal(r"unhex('66')");
     // Locate select-string generators keep plain-text semantics: their
     // alphabet strings compare as ASCII substrings.
     for (expr, want) in [
@@ -1507,10 +1513,12 @@ fn test_vectorized_builtin_string_func() {
 /// unsigned masks) inside this batch's gate.
 #[test]
 fn test_vectorized_builtin_string_eval_one_vec_2() {
-    // Bin/Oct string-vs-literal split boundaries (master oct doc).
-    assert_eq!(e("bin('10aa')"), "STR:1010");
-    assert_eq!(e("bin('')"), "STR:0"); // see receipt: master-table contradiction documented
-    assert_eq!(e("oct(b'11111111')"), "STR:377");
+    // BIN remains TiKV-only; OCT's binary-literal provenance is contracted.
+    assert_engine_radix_value("bin('10aa')", "STR:1010");
+    assert_engine_radix_value("bin('')", "STR:0");
+    assert_radix_refusal("oct(b'11111111')");
+    #[cfg(feature = "tikv-expr")]
+    assert!(engine_declines("oct(b'11111111')"));
     // Elt out-of-range and mixed-mode coercion.
     assert_eq!(e("elt(3, 2, 3, 11, 1)"), "STR:11");
     // Quote's control-byte escapes.

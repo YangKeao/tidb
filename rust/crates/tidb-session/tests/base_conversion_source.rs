@@ -4,6 +4,8 @@
 //! alphabet ('abc' -> 'YWJj').
 
 use tidb_session::Session;
+#[cfg(feature = "tikv-expr")]
+use tidb_session::TikvExpressionBackend;
 
 fn assert_packet_string_removed(session: &mut Session, sql: &str) {
     let error = session
@@ -52,8 +54,24 @@ fn base_conversions_round_trip() {
         conv_error.contains("native math evaluation was removed; TiKV engine required"),
         "{conv_error}"
     );
-    assert_eq!(try_sql(&mut session, "select bin(10)"), "s:1010");
-    assert_eq!(try_sql(&mut session, "select oct(8)"), "s:10");
+    #[cfg(feature = "tikv-expr")]
+    {
+        let mut engine_session = Session::new();
+        engine_session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
+        let engine_before = engine_session.tikv_expression_rows();
+        assert_eq!(try_sql(&mut engine_session, "select bin(10)"), "s:1010");
+        assert_eq!(try_sql(&mut engine_session, "select oct(8)"), "s:10");
+        assert_eq!(try_sql(&mut engine_session, "select oct('8')"), "s:10");
+        assert!(engine_session.tikv_expression_rows() > engine_before);
+    }
+    #[cfg(not(feature = "tikv-expr"))]
+    for sql in ["select bin(10)", "select oct(8)", "select oct('8')"] {
+        let error = session
+            .run(sql)
+            .expect_err("native radix kernel is deleted")
+            .to_string();
+        assert!(error.contains("native integer radix evaluation was removed; TiKV engine required or function unsupported"), "{sql}: {error}");
+    }
 
     // Keep both former source shapes, but pin the explicit contraction after
     // deleting the session packet-aware encoder kernel.

@@ -20,8 +20,8 @@ use crate::coerce::{bool_int, truthy_of};
 use crate::eval_in;
 use crate::row::row_compare;
 use crate::string_fn::{
-    bin, bit_count, char_func_with_context, elt, field, hex, locate, locate_collation,
-    locate_with_position, oct, ord, quote, substring_index, unhex,
+    char_func_with_context, elt, field, locate, locate_collation, locate_with_position, quote,
+    substring_index,
 };
 use crate::time_fn::calendar::{date_add, date_diff, date_format, date_part, from_days, time_part};
 use crate::{BuildContext, Columns, Datum, EvalError, StringLengthFunction};
@@ -198,6 +198,16 @@ pub(crate) fn is_removed_native_string2(name: &str) -> bool {
     )
 }
 
+/// Native integer-radix/character-code kernels were physically removed.
+/// Admitted shapes execute only in TiKV; provenance, warning, or NULL-mask
+/// shapes that the adapter cannot preserve are explicit contractions.
+pub(crate) fn is_removed_native_radix(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "HEX" | "UNHEX" | "BIN" | "OCT" | "ORD" | "BIT_COUNT"
+    )
+}
+
 /// Evaluates a builtin scalar function over its evaluated arguments.
 pub(crate) fn eval_func(
     name: &str,
@@ -246,6 +256,11 @@ pub(crate) fn eval_func(
     if is_removed_native_string2(&name) {
         return Err(EvalError::Unsupported(
             "native string2 evaluation was removed; TiKV engine required or function unsupported",
+        ));
+    }
+    if is_removed_native_radix(&name) {
+        return Err(EvalError::Unsupported(
+            "native integer radix evaluation was removed; TiKV engine required or function unsupported",
         ));
     }
     // The AST evaluator is also an expression-construction entry point for
@@ -663,6 +678,11 @@ pub(crate) fn eval_func_values_in(
             "native string2 evaluation was removed; TiKV engine required or function unsupported",
         )));
     }
+    if is_removed_native_radix(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native integer radix evaluation was removed; TiKV engine required or function unsupported",
+        )));
+    }
     // The session-state builtins: pure functions of their argument VALUES
     // plus the session, which `cols` supplies. They live here rather than in
     // `eval_func_values` (values alone) so the row path and the chunk path
@@ -735,6 +755,11 @@ pub(crate) fn eval_func_values(
     if is_removed_native_string2(name) {
         return Some(Err(EvalError::Unsupported(
             "native string2 evaluation was removed; TiKV engine required or function unsupported",
+        )));
+    }
+    if is_removed_native_radix(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native integer radix evaluation was removed; TiKV engine required or function unsupported",
         )));
     }
     // Go `BuildCastFunction4Union`'s in-union cast-to-unsigned CLAMPS a
@@ -978,17 +1003,11 @@ pub(crate) fn eval_func_values(
         "INSTR" if vals.len() == 2 => {
             locate(&vals[1], &vals[0], locate_collation(&vals[0], &vals[1]))
         }
-        "HEX" if vals.len() == 1 => hex(vals),
-        "UNHEX" if vals.len() == 1 => unhex(vals),
-        "BIN" if vals.len() == 1 => bin(vals),
-        "OCT" if vals.len() == 1 => oct(vals),
         "FIELD" if vals.len() >= 2 => field(vals, ctx),
         "ELT" if vals.len() >= 2 => elt(vals),
         "SUBSTRING_INDEX" if vals.len() == 3 => substring_index(vals),
         "DATE_FORMAT" if vals.len() == 2 => date_format(&vals[0], &vals[1]),
-        "ORD" if vals.len() == 1 => ord(vals),
         "QUOTE" if vals.len() == 1 => quote(vals),
-        "BIT_COUNT" if vals.len() == 1 => bit_count(vals),
         "CHAR_FUNC" if !vals.is_empty() => char_func_with_context(vals, ctx),
         // Go `builtinLoadFileSig.evalString` reads the argument and then
         // returns `"", true, nil` UNCONDITIONALLY: TiDB has no server-side

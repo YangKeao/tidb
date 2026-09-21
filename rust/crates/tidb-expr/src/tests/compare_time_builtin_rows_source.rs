@@ -85,7 +85,11 @@ fn test_compare_builtin_nullif_rows() {
     assert_eq!(chunk_e("NULLIF(1+2, 1)"), "INT:3"); // :2847
     assert_eq!(chunk_e("NULLIF(1, 1+2)"), "INT:1"); // :2849
     assert_eq!(chunk_e("NULLIF(2+3, 1+2)"), "INT:5"); // :2851
-    assert_eq!(chunk_e("HEX(NULLIF(\"abc\", 1))"), "STR:616263"); // :2853
+                                                      // The retained source value is 616263, but NULLIF cannot be lowered as a
+                                                      // child of HEX without reintroducing eager native evaluation.
+    assert_radix_refusal("HEX(NULLIF(\"abc\", 1))"); // :2853
+    #[cfg(feature = "tikv-expr")]
+    assert!(engine_declines("HEX(NULLIF(\"abc\", 1))"));
 }
 
 #[test]

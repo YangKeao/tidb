@@ -44,17 +44,59 @@ use tidb_session::{Session, StmtResult, TikvExpressionBackend};
 #[test]
 fn retained_locate_is_not_a_local_contraction() {
     assert_eq!(expected_removed_marker("locate('b', 'abc')"), None);
+    assert_eq!(
+        expected_removed_marker("hex(upper('a'))"),
+        Some(removed_native::RADIX_REMOVED)
+    );
+    assert_eq!(
+        expected_removed_marker("upper(hex('a'))"),
+        Some(removed_native::STRING2_REMOVED)
+    );
+    assert!(!may_accept_removed_marker(
+        "upper(hex('a'))",
+        removed_native::STRING2_REMOVED
+    ));
+    assert!(!may_accept_removed_marker(
+        "inet6_ntoa(unhex('00000000'))",
+        removed_native::INET_REMOVED
+    ));
+    assert!(!may_accept_removed_marker(
+        "oct('8')",
+        removed_native::RADIX_REMOVED
+    ));
+    assert!(may_accept_removed_marker(
+        "oct(b'11111111')",
+        removed_native::RADIX_REMOVED
+    ));
 }
 
 fn corpus_dir() -> PathBuf {
     difftest_root().join("corpus").join("expr")
 }
 
+fn may_accept_removed_marker(expr: &str, marker: &str) -> bool {
+    let sql = format!("select {expr}");
+    if marker == removed_native::RADIX_REMOVED {
+        return removed_native::is_radix_shape_contraction(&sql);
+    }
+    // A retained outer family must not hide failure to lower/execute an inner
+    // retained family merely because its own native boundary then refuses.
+    if marker == removed_native::STRING2_REMOVED {
+        return !removed_native::requires_radix_engine(&sql)
+            && !removed_native::requires_inet_engine(&sql);
+    }
+    if marker == removed_native::INET_REMOVED {
+        return !removed_native::requires_radix_engine(&sql)
+            && !removed_native::requires_string2_engine(&sql);
+    }
+    true
+}
+
 /// Parses `expr` by wrapping it in `SELECT`, then returns its evaluated label.
 fn expected_removed_marker(expr: &str) -> Option<&'static str> {
     let sql = format!("select {expr}");
-    if let Some(removed_native::STRING2_REMOVED) = removed_native::expected_removed_marker(&sql) {
-        return Some(removed_native::STRING2_REMOVED);
+    if let Some(marker) = removed_native::expected_removed_marker(&sql) {
+        return Some(marker);
     }
     let parsed = removed_native::parsed_function_names(&sql)?;
     let has = |names: &[&str]| {
@@ -193,7 +235,10 @@ fn expected_removed_marker(expr: &str) -> Option<&'static str> {
 fn rust_eval_label(expr: &str) -> Result<String, String> {
     let sql = format!("select {expr}");
     #[cfg(feature = "tikv-expr")]
-    if removed_native::requires_string2_engine(&sql) || removed_native::requires_inet_engine(&sql) {
+    if removed_native::requires_string2_engine(&sql)
+        || removed_native::requires_inet_engine(&sql)
+        || removed_native::requires_radix_engine(&sql)
+    {
         let mut session = Session::new();
         session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
         let before = session.tikv_expression_rows();
@@ -245,9 +290,10 @@ fn expr_eval_matches_go_engine() {
     for (expr, want) in exprs.iter().zip(&golden) {
         let evaluated = rust_eval_label(expr);
         if let Some(marker) = expected_removed_marker(expr) {
-            if evaluated
-                .as_ref()
-                .is_err_and(|error| error.contains(marker))
+            if may_accept_removed_marker(expr, marker)
+                && evaluated
+                    .as_ref()
+                    .is_err_and(|error| error.contains(marker))
             {
                 contracted += 1;
                 continue;

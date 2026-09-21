@@ -1467,10 +1467,10 @@ fn bit_count_source_table() {
         ("bit_count('xxx')", Datum::Int(0)),
         ("bit_count(null)", Datum::Null),
     ] {
-        assert_eq!(e(sql), want.label(), "{sql}");
+        assert_engine_radix_value(sql, &want.label());
     }
     // uint64(math.MaxUint64) -- spelled past the signed constant domain.
-    assert_eq!(e("bit_count(18446744073709551615)"), Datum::Int(64).label());
+    assert_engine_radix_value("bit_count(18446744073709551615)", "INT:64");
 }
 
 // ---------------------------------------------------------------------------

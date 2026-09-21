@@ -716,12 +716,11 @@ fn arithmetic(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr
     // shapes diverge (a DATETIME result keeps scale 0 where native keeps the
     // promoted scale, and an INTERVAL argument rounds differently), so the
     // minted spellings stay native until that coercion is reproduced exactly.
-    // `cast_signed`/`cast_unsigned` are the rewriter's spellings for an
-    // explicit `CAST(x AS SIGNED|UNSIGNED)`. Every source family has a
-    // `Cast{source}AsInt` kernel and the local arm derives it from the
-    // function's own static type, so these two are the subset of the minted
-    // spellings that needs no metadata of its own. The temporal/string
-    // spellings are not interchangeable this way (corpus plan 7.4).
+    // The explicit allow-list below contains only independently exercised
+    // spellings. `cast_signed`/`cast_unsigned` derive their integer kernel from
+    // the function's static type. The temporal/string entries retain their
+    // existing focused corpus evidence (corpus plan 7.4); `cast_json` remains
+    // an explicit spelling contraction.
     if matches!(
         name,
         "cast"
@@ -1201,7 +1200,7 @@ fn math(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr> {
 }
 
 fn strings(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr> {
-    use EvalType::{Int, String as Bytes};
+    use EvalType::{Datetime, Duration, Int, Json, String as Bytes, Timestamp};
     let ty = function.get_static_type()?;
     let name = function.func_name.lowercase();
     if matches!(name, "to_binary" | "from_binary") {
@@ -1296,9 +1295,21 @@ fn strings(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr> {
     // explicit COLLATE can outrank a binary literal/cast and retain UTF-8
     // character offsets.
     let search_binary = function.derived_collation() == tidb_datatype::Collation::Binary;
+    // CastJsonAsString itself is supported, but HEX(JSON)'s inferred result
+    // width is 8 * MaxBlobWidth (34359738360). The bridge intentionally checks
+    // protobuf i32 metadata instead of truncating it, so this composition cannot
+    // yet be encoded. Decline before it could fall into the integer signature.
+    if name == "hex" && children.len() == 1 && child_type(&children[0])?.eval_type() == Json {
+        return None;
+    }
     let (signature, targets): (&str, &[EvalType]) = match name {
         "hex" if children.len() == 1 => {
-            if child_type(&children[0])?.eval_type() == Bytes {
+            if matches!(
+                child_type(&children[0])?.eval_type(),
+                Bytes | Datetime | Timestamp | Duration
+            ) {
+                // Go's string signature covers ETString and temporal values.
+                // Decimal and real inputs use the integer signature.
                 ("HexStrArg", &[Bytes])
             } else {
                 ("HexIntArg", &[Int])

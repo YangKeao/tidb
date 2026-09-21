@@ -29,10 +29,10 @@
 //! RS:béa|62A9C361
 //! ```
 
-use super::assert_string2_refusal;
-#[cfg(feature = "tikv-expr")]
-use super::engine_e;
 use super::{assert_packet_string_refusal, e};
+use super::{assert_radix_refusal, assert_string2_refusal};
+#[cfg(feature = "tikv-expr")]
+use super::{engine_declines, engine_e};
 
 /// One captured `(expression, TiDB answer)` pair per signature, in both the
 /// character and the binary spelling of the same call.
@@ -181,14 +181,21 @@ fn case_pad_and_ord_keep_their_binary_answers() {
         ("hex(upper(cast('aéb' as binary)))", "STR:61C3A962"),
         ("hex(lower(cast('aÉb' as binary)))", "STR:61C38962"),
     ]);
-    captured(&[
-        // ORD reads the argument charset: one byte for binary, the whole
-        // first character folded base-256 otherwise.
-        ("ord(cast('éb' as binary))", "INT:195"),
-        ("ord('éb')", "INT:50089"),
-        ("ord(convert('éb' using binary))", "INT:195"),
-        ("char_length(convert('aéb' using binary))", "INT:4"),
-    ]);
+    captured_engine(&[("ord('éb')", "INT:50089")]);
+    captured(&[("char_length(convert('aéb' using binary))", "INT:4")]);
+    // ORD's TiKV NULL mask is safe only for leaf Bytes arguments. Binary casts
+    // and CONVERT USING remain explicit contractions after native deletion.
+    for expression in [
+        "ord(cast('éb' as binary))",
+        "ord(convert('éb' using binary))",
+    ] {
+        assert_radix_refusal(expression);
+        #[cfg(feature = "tikv-expr")]
+        assert!(
+            engine_declines(expression),
+            "engine unexpectedly admitted {expression}"
+        );
+    }
     // CONVERT USING is not lowerable as a child. With no native UPPER/LEFT
     // fallback, these shapes are explicit structured contractions.
     for expression in [

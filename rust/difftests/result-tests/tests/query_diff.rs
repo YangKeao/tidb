@@ -65,12 +65,23 @@ fn requires_tikv_engine(sql: &str) -> bool {
     cfg!(feature = "tikv-expr")
         && (is_any_value(sql)
             || removed_native::requires_string2_engine(sql)
-            || removed_native::requires_inet_engine(sql))
+            || removed_native::requires_inet_engine(sql)
+            || removed_native::requires_radix_engine(sql))
+}
+
+fn may_accept_engine_required_marker(sql: &str, marker: &str) -> bool {
+    if matches!(
+        marker,
+        removed_native::STRING2_REMOVED | removed_native::INET_REMOVED
+    ) {
+        return false;
+    }
+    marker != removed_native::RADIX_REMOVED || removed_native::is_radix_shape_contraction(sql)
 }
 
 fn expected_removed_marker(sql: &str) -> Option<&'static str> {
-    if let Some(removed_native::STRING2_REMOVED) = removed_native::expected_removed_marker(sql) {
-        return Some(removed_native::STRING2_REMOVED);
+    if let Some(marker) = removed_native::expected_removed_marker(sql) {
+        return Some(marker);
     }
     let parsed = removed_native::parsed_function_names(sql)?;
     let has = |names: &[&str]| {
@@ -211,6 +222,30 @@ fn is_misc_contraction(sql: &str) -> bool {
 #[test]
 fn retained_locate_is_not_a_local_contraction() {
     assert_eq!(expected_removed_marker("select locate('b', 'abc')"), None);
+    assert_eq!(
+        expected_removed_marker("select hex(upper('a'))"),
+        Some(removed_native::RADIX_REMOVED)
+    );
+    assert_eq!(
+        expected_removed_marker("select upper(hex('a'))"),
+        Some(removed_native::STRING2_REMOVED)
+    );
+    assert!(!may_accept_engine_required_marker(
+        "select inet6_ntoa(unhex('00000000'))",
+        removed_native::INET_REMOVED
+    ));
+    assert!(!may_accept_engine_required_marker(
+        "select upper(hex('a'))",
+        removed_native::STRING2_REMOVED
+    ));
+    assert!(!may_accept_engine_required_marker(
+        "select oct('8')",
+        removed_native::RADIX_REMOVED
+    ));
+    assert!(may_accept_engine_required_marker(
+        "select oct(b'11111111')",
+        removed_native::RADIX_REMOVED
+    ));
 }
 
 fn corpus_dir() -> PathBuf {
@@ -294,13 +329,15 @@ fn run_pair(
         }
         // A statement can contain both an engine-required retained string
         // function and an independently contracted family. Accept only that
-        // other family's exact parsed marker; never accept STRING2 here, which
-        // would hide a failure to execute the retained function in TiKV.
+        // other family's exact parsed marker. STRING2 must execute; RADIX may
+        // refuse only for an explicitly enumerated provenance/NULL-mask shape.
         if requires_tikv_engine {
-            if let Some(marker) = expected_removed_marker(sql)
-                .filter(|marker| *marker != removed_native::STRING2_REMOVED)
-            {
-                if outcome.as_ref().is_err_and(|error| error.contains(marker)) {
+            if let Err(error) = &outcome {
+                let exact_contraction = removed_native::removed_markers(sql)
+                    .into_iter()
+                    .filter(|marker| may_accept_engine_required_marker(sql, marker))
+                    .any(|marker| error.contains(marker));
+                if exact_contraction {
                     matched += 1;
                     continue;
                 }

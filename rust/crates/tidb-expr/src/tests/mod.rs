@@ -142,13 +142,22 @@ pub(super) fn chunk_e(expr: &str) -> String {
 pub(super) const PACKET_STRING_REMOVED: &str =
     "Unsupported(\"native packet-limited string evaluation was removed; function unsupported\")";
 
+fn outer_radix_or(expr: &str, inner_marker: &'static str) -> &'static str {
+    let lower = expr.trim_start().to_ascii_lowercase();
+    if ["hex(", "unhex(", "bin(", "oct(", "ord(", "bit_count("]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+    {
+        RADIX_REMOVED
+    } else {
+        inner_marker
+    }
+}
+
 pub(super) fn assert_packet_string_refusal(expr: &str) {
-    assert_eq!(e(expr), PACKET_STRING_REMOVED, "AST boundary: {expr}");
-    assert_eq!(
-        chunk_e(expr),
-        PACKET_STRING_REMOVED,
-        "chunk boundary: {expr}"
-    );
+    let expected = outer_radix_or(expr, PACKET_STRING_REMOVED);
+    assert_eq!(e(expr), expected, "AST boundary: {expr}");
+    assert_eq!(chunk_e(expr), expected, "chunk boundary: {expr}");
 }
 
 pub(super) const MISC_REMOVED: &str =
@@ -166,11 +175,12 @@ pub(super) const STRING2_REMOVED: &str =
     "Unsupported(\"native string2 evaluation was removed; TiKV engine required or function unsupported\")";
 
 pub(super) fn assert_string2_refusal(expr: &str) {
-    assert_eq!(e(expr), STRING2_REMOVED, "AST boundary: {expr}");
+    let expected = outer_radix_or(expr, STRING2_REMOVED);
+    assert_eq!(e(expr), expected, "AST boundary: {expr}");
     let chunk = chunk_case(expr, &NoColumns)
         .map(|value| value.label())
         .unwrap_or_else(|error| error);
-    assert_eq!(chunk, STRING2_REMOVED, "native chunk boundary: {expr}");
+    assert_eq!(chunk, expected, "native chunk boundary: {expr}");
 }
 
 pub(super) fn assert_engine_string2_value(expr: &str, expected: &str) {
@@ -178,6 +188,24 @@ pub(super) fn assert_engine_string2_value(expr: &str, expected: &str) {
     assert_eq!(engine_e(expr), expected, "TiKV engine: {expr}");
     let _ = expected;
     assert_string2_refusal(expr);
+}
+
+pub(super) const RADIX_REMOVED: &str =
+    "Unsupported(\"native integer radix evaluation was removed; TiKV engine required or function unsupported\")";
+
+pub(super) fn assert_radix_refusal(expr: &str) {
+    assert_eq!(e(expr), RADIX_REMOVED, "AST boundary: {expr}");
+    let chunk = chunk_case(expr, &NoColumns)
+        .map(|value| value.label())
+        .unwrap_or_else(|error| error);
+    assert_eq!(chunk, RADIX_REMOVED, "native chunk boundary: {expr}");
+}
+
+pub(super) fn assert_engine_radix_value(expr: &str, expected: &str) {
+    #[cfg(feature = "tikv-expr")]
+    assert_eq!(engine_e(expr), expected, "TiKV engine: {expr}");
+    let _ = expected;
+    assert_radix_refusal(expr);
 }
 
 fn chunk_e_with(expr: &str, ctx: &impl Columns) -> String {
@@ -293,6 +321,14 @@ pub(super) fn engine_e_with_backend(expr: &str, backend: crate::tikv::Backend) -
 }
 
 #[cfg(feature = "tikv-expr")]
+pub(super) fn engine_v(expr: &str) -> Datum {
+    match engine_case(expr).unwrap_or_else(|| panic!("TiKV engine declined: {expr}")) {
+        Ok(value) => value,
+        Err(error) => panic!("TiKV engine failed for {expr}: {error}"),
+    }
+}
+
+#[cfg(feature = "tikv-expr")]
 pub(super) fn engine_declines(expr: &str) -> bool {
     engine_case(expr).is_none()
 }
@@ -371,31 +407,70 @@ fn bin_follows_tidb_implicit_integer_coercion() {
         ),
         ("null", "NULL"),
     ] {
-        assert_eq!(e(&format!("bin({input})")), want, "BIN({input})");
+        assert_engine_radix_value(&format!("bin({input})"), want);
     }
+    // A scientific SQL literal selects the REAL signature and therefore keeps
+    // Go's ties-to-even cast before the TiKV BIN kernel.
+    assert_engine_radix_value("bin(10.5e0)", "STR:1010");
+    // Native arity and malformed-byte helper behavior is no longer retained.
+    assert_eq!(e("bin()"), RADIX_REMOVED);
+    assert_eq!(
+        crate::func::eval_func_values(
+            "BIN",
+            &[Datum::new_bytes(vec![0xff])],
+            &NoColumns
+        ),
+        Some(Err(EvalError::Unsupported(
+            "native integer radix evaluation was removed; TiKV engine required or function unsupported"
+        )))
+    );
+}
 
-    // A Go `float64` table datum selects `builtinCastRealAsIntSig`, whose
-    // ties-to-even rule is distinct from decimal's half-up rule.
-    assert_eq!(
-        string_fn::bin(&[Datum::Real(10.0)]).unwrap(),
-        Datum::new_string("1010".to_string())
-    );
-    assert_eq!(
-        string_fn::bin(&[Datum::Real(10.5)]).unwrap(),
-        Datum::new_string("1010".to_string())
-    );
-    assert_eq!(
-        string_fn::bin(&[Datum::new_bytes(b"10".to_vec())]).unwrap(),
-        Datum::new_string("1010".to_string())
-    );
-    assert_eq!(
-        string_fn::bin(&[Datum::new_bytes(vec![0xff])]).unwrap(),
-        Datum::new_string("0".to_string())
-    );
-    assert_eq!(
-        string_fn::bin(&[]),
-        Err(EvalError::Unsupported("bad BIN arity"))
-    );
+#[test]
+fn bit_count_raw_value_boundary_is_engine_only() {
+    // The SQL engine table independently pins these Go answers. Arbitrary raw
+    // values may no longer invoke the deleted helper directly.
+    for (value, _former_go_value) in [
+        (Datum::UInt(u64::MAX), 64),
+        (Datum::new_string("9223372036854775808"), 1),
+        (Datum::new_bytes(vec![b'1', 0xff]), 1),
+    ] {
+        assert_eq!(
+            crate::func::eval_func_values("BIT_COUNT", &[value], &NoColumns),
+            Some(Err(EvalError::Unsupported(
+                "native integer radix evaluation was removed; TiKV engine required or function unsupported"
+            )))
+        );
+    }
+}
+
+#[test]
+fn hex_bit_value_boundary_is_explicitly_removed() {
+    for (value, _former_go_value) in [
+        (
+            Datum::Bit(tidb_datatype::BinaryLiteral::from(vec![
+                0, 0, 0, 0, 0, 0x41,
+            ])),
+            "41",
+        ),
+        (Datum::new_bytes(vec![0, 0x41]), "0041"),
+    ] {
+        assert_eq!(
+            crate::func::eval_func_values("HEX", &[value], &NoColumns),
+            Some(Err(EvalError::Unsupported(
+                "native integer radix evaluation was removed; TiKV engine required or function unsupported"
+            )))
+        );
+    }
+}
+
+#[test]
+fn hex_binary_literal_source_kind_is_contracted() {
+    // Go's byte-string answer is 0041. The adapter intentionally refuses the
+    // missing source-kind provenance instead of inferring it from wire bytes.
+    assert_radix_refusal("hex(0x0041)");
+    #[cfg(feature = "tikv-expr")]
+    assert!(engine_declines("hex(0x0041)"));
 }
 
 /// Complete representable rows from `TestOrd` in
@@ -407,10 +482,7 @@ fn bin_follows_tidb_implicit_integer_coercion() {
 fn ord_source_vectors_preserve_utf8_and_binary_bytes() {
     for (expr, want) in [
         ("ord('2')", "INT:50"),
-        ("ord(2)", "INT:50"),
         ("ord('23')", "INT:50"),
-        ("ord(23)", "INT:50"),
-        ("ord(2.3)", "INT:50"),
         ("ord(NULL)", "NULL"),
         ("ord('')", "INT:0"),
         ("ord('你好')", "INT:14990752"),
@@ -419,37 +491,30 @@ fn ord_source_vectors_preserve_utf8_and_binary_bytes() {
         ("ord('👍')", "INT:4036989325"),
         ("ord('א')", "INT:55184"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        assert_engine_radix_value(expr, want);
     }
-    assert_eq!(
-        string_fn::ord(&[Datum::new_bytes(vec![0xe4, 0xbd, 0xa0])]).unwrap(),
-        Datum::Int(0xe4)
-    );
-    assert_eq!(
-        string_fn::ord(&[Datum::new_collation_string(
-            vec![0xe4, 0xbd, 0xa0],
-            tidb_datatype::Collation::Binary,
-        )])
-        .unwrap(),
-        Datum::Int(0xe4)
-    );
-    assert_eq!(
-        string_fn::ord(&[Datum::new_bytes(vec![0xff])]).unwrap(),
-        Datum::Int(0xff)
-    );
-    for charset in ["ascii", "latin1"] {
-        let mut field_type = tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString);
-        field_type.set_charset_name(charset);
-        assert_eq!(
-            string_fn::ord_with_type(&[Datum::new_string("你")], Some(&field_type)).unwrap(),
-            Datum::Int(0xe4),
-            "{charset}",
-        );
+    // TiKV's NULL repair is safe only for a leaf Bytes argument. Numeric
+    // implicit casts, nested casts, and arbitrary native value calls are
+    // explicit contractions.
+    for expr in ["ord(2)", "ord(23)", "ord(2.3)"] {
+        assert_radix_refusal(expr);
+        #[cfg(feature = "tikv-expr")]
+        assert!(engine_declines(expr), "engine unexpectedly admitted {expr}");
     }
+    assert_radix_refusal("ord(cast('éb' as binary))");
+    #[cfg(feature = "tikv-expr")]
+    assert!(engine_declines("ord(cast('éb' as binary))"));
     assert_eq!(
-        string_fn::ord(&[]),
-        Err(EvalError::Unsupported("bad ORD arity"))
+        crate::func::eval_func_values(
+            "ORD",
+            &[Datum::new_bytes(vec![0xff])],
+            &NoColumns
+        ),
+        Some(Err(EvalError::Unsupported(
+            "native integer radix evaluation was removed; TiKV engine required or function unsupported"
+        )))
     );
+    assert_eq!(e("ord()"), RADIX_REMOVED);
 }
 
 /// Source scalar rows from `pkg/expression/builtin_string_test.go:1436
@@ -470,8 +535,6 @@ fn hex_source_vectors_preserve_numeric_and_byte_signatures() {
         ("-1", "STR:FFFFFFFFFFFFFFFF"),
         ("-12.3e0", "STR:FFFFFFFFFFFFFFF4"),
         ("-12.8e0", "STR:FFFFFFFFFFFFFFF3"),
-        ("0x0c", "STR:0C"),
-        ("0x12", "STR:12"),
         (
             "cast('2017-01-01 12:01:01' as datetime)",
             "STR:323031372D30312D30312031323A30313A3031",
@@ -484,38 +547,64 @@ fn hex_source_vectors_preserve_numeric_and_byte_signatures() {
             "STR:E4B880E5BF9228E0B991E280A2E38582E280A229D988E29CA7",
         ),
     ] {
-        assert_eq!(e(&format!("hex({input})")), want, "HEX({input})");
+        assert_engine_radix_value(&format!("hex({input})"), want);
+    }
+    // Go returns 7B2261223A20317D (`{"a": 1}`). The existing explicit
+    // `cast_json` spelling gate prevents TiKV lowering, so pin this separately
+    // from the string-signature rows rather than selecting HEX's integer arm.
+    assert_radix_refusal("hex(cast('{\"a\":1}' as json))");
+    #[cfg(feature = "tikv-expr")]
+    assert!(engine_declines("hex(cast('{\"a\":1}' as json))"));
+
+    // Binary-literal provenance is intentionally rejected by recursive TiKV
+    // admission rather than guessed from the payload bytes.
+    for expr in ["hex(0x0c)", "hex(0x12)"] {
+        assert_radix_refusal(expr);
+        #[cfg(feature = "tikv-expr")]
+        assert!(engine_declines(expr), "engine unexpectedly admitted {expr}");
     }
 }
 
 /// Scalar rows from `pkg/expression/builtin_string_test.go:1508
-/// TestUnhexFunc`. Go returns binary bytes even when the payload also happens
-/// to be valid UTF-8; retaining `Bytes` rather than upgrading it to `String`
-/// preserves that build-time type boundary.
+/// TestUnhexFunc`. TiKV returns an ETString value with binary collation even
+/// when the payload is valid UTF-8; retaining that binary metadata preserves
+/// the SQL type boundary without a native `Bytes` helper.
 #[test]
 fn unhex_source_vectors_preserve_odd_digit_left_padding() {
+    let binary = |bytes| Datum::new_collation_string(bytes, tidb_datatype::Collation::Binary);
     for (input, want) in [
-        ("'4D7953514C'", Datum::new_bytes(b"MySQL".to_vec())),
-        ("'1267'", Datum::new_bytes(b"\x12g".to_vec())),
-        ("'126'", Datum::new_bytes(b"\x01&".to_vec())),
-        ("''", Datum::new_bytes(Vec::new())),
-        ("1267", Datum::new_bytes(b"\x12g".to_vec())),
-        ("126", Datum::new_bytes(b"\x01&".to_vec())),
+        ("'4D7953514C'", binary(b"MySQL".to_vec())),
+        ("'1267'", binary(b"\x12g".to_vec())),
+        ("'126'", binary(b"\x01&".to_vec())),
+        ("''", binary(Vec::new())),
+        ("1267", binary(b"\x12g".to_vec())),
+        ("126", binary(b"\x01&".to_vec())),
         ("1267.3", Datum::Null),
         ("'string'", Datum::Null),
         ("'你好'", Datum::Null),
         ("null", Datum::Null),
     ] {
-        assert_eq!(v(&format!("unhex({input})")), want, "UNHEX({input})");
+        let expr = format!("unhex({input})");
+        #[cfg(feature = "tikv-expr")]
+        assert_eq!(engine_v(&expr), want, "UNHEX({input})");
+        let _ = &want;
+        assert_radix_refusal(&expr);
     }
 
-    assert_eq!(v("unhex('FF00')"), Datum::new_bytes(vec![0xff, 0]));
-    // Go's ETString evaluator accepts arbitrary bytes.  Invalid UTF-8 is
-    // therefore an invalid hex payload and returns NULL, rather than leaking
-    // a Rust decoding error before `hex.DecodeString` gets to decide.
+    #[cfg(feature = "tikv-expr")]
+    assert_eq!(engine_v("unhex('FF00')"), binary(vec![0xff, 0]));
+    assert_radix_refusal("unhex('FF00')");
+    // Arbitrary native bytes can no longer bypass lowering and are refused at
+    // the values-only boundary instead of recreating UNHEX locally.
     assert_eq!(
-        string_fn::unhex(&[Datum::new_bytes(vec![0xff])]),
-        Ok(Datum::Null)
+        crate::func::eval_func_values(
+            "UNHEX",
+            &[Datum::new_bytes(vec![0xff])],
+            &NoColumns
+        ),
+        Some(Err(EvalError::Unsupported(
+            "native integer radix evaluation was removed; TiKV engine required or function unsupported"
+        )))
     );
 }
 
@@ -546,9 +635,21 @@ fn bit_length_source_vectors_preserve_utf8_byte_count() {
 #[test]
 fn oct_source_vectors_preserve_distinct_string_and_integer_signatures() {
     for (expr, want) in [
-        ("oct('-2.7')", "STR:1777777777777777777776"),
         ("oct(-1.5e0)", "STR:1777777777777777777777"),
         ("oct(-1)", "STR:1777777777777777777777"),
+        ("oct(1.0e0)", "STR:1"),
+        ("oct(9.5e0)", "STR:11"),
+        ("oct(13)", "STR:15"),
+        ("oct(1025)", "STR:2001"),
+        ("oct(null)", "NULL"),
+    ] {
+        assert_engine_radix_value(expr, want);
+    }
+
+    // TiKV owns the string signature too; these rows ensure it does not get
+    // silently rewritten to the integer signature.
+    for (expr, want) in [
+        ("oct('-2.7')", "STR:1777777777777777777776"),
         ("oct('0')", "STR:0"),
         ("oct('1')", "STR:1"),
         ("oct('8')", "STR:10"),
@@ -557,10 +658,6 @@ fn oct_source_vectors_preserve_distinct_string_and_integer_signatures() {
         ("oct('100')", "STR:144"),
         ("oct('1024')", "STR:2000"),
         ("oct('2048')", "STR:4000"),
-        ("oct(1.0e0)", "STR:1"),
-        ("oct(9.5e0)", "STR:11"),
-        ("oct(13)", "STR:15"),
-        ("oct(1025)", "STR:2001"),
         ("oct('8a8')", "STR:10"),
         ("oct('abc')", "STR:0"),
         (
@@ -571,25 +668,21 @@ fn oct_source_vectors_preserve_distinct_string_and_integer_signatures() {
             "oct('-9999999999999999999999999')",
             "STR:1777777777777777777777",
         ),
-        ("oct(null)", "NULL"),
-        // Regression from builtinOctStringSig / issue #59446, also present
-        // in tests/integrationtest/t/expression/builtin.test.
         ("oct('')", "NULL"),
-        // The same upstream fixture keeps this distinct from an empty input:
-        // whitespace makes a nonempty value whose numeric prefix is empty.
         ("oct(' ')", "STR:0"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        assert_engine_radix_value(expr, want);
     }
-
-    // `builtinOctStringSig` also receives binary values produced by another
-    // ETString function.  Go's byte-prefix parser sees an invalid leading
-    // byte as an empty numeric prefix and returns zero; it does not reject the
-    // value merely because the byte sequence is not UTF-8.
-    assert_eq!(e("oct(unhex('FF'))"), "STR:0");
+    assert_engine_radix_value("oct(unhex('FF'))", "STR:0");
     assert_eq!(
-        string_fn::oct(&[Datum::new_bytes(vec![0xff])]),
-        Ok(Datum::new_string("0".to_string()))
+        crate::func::eval_func_values(
+            "OCT",
+            &[Datum::new_bytes(vec![0xff])],
+            &NoColumns
+        ),
+        Some(Err(EvalError::Unsupported(
+            "native integer radix evaluation was removed; TiKV engine required or function unsupported"
+        )))
     );
 }
 
@@ -773,7 +866,13 @@ fn char_length_public_eval_uses_source_field_type() {
         ("char_length(elt(1, 0xE4BDA0, 'x'))", "INT:3"),
         ("character_length((0xE4BDA0))", "INT:3"),
     ] {
-        assert_eq!(e(expression), want, "{expression}");
+        if expression.contains("unhex(") {
+            #[cfg(feature = "tikv-expr")]
+            assert_eq!(engine_e(expression), want, "TiKV: {expression}");
+            assert_eq!(e(expression), RADIX_REMOVED, "native: {expression}");
+        } else {
+            assert_eq!(e(expression), want, "{expression}");
+        }
     }
     assert_packet_string_refusal("char_length(from_base64('5L2g'))");
 }
@@ -1073,8 +1172,13 @@ fn string_functions() {
     assert_packet_string_refusal("concat('a', 'b', 'c')");
     assert_packet_string_refusal("concat('x', NULL)");
     assert_eq!(e("length('héllo')"), "INT:6"); // bytes
-    assert_eq!(e("length(unhex('FF00'))"), "INT:2"); // arbitrary bytes
-    assert_eq!(e("octet_length(unhex('FF00'))"), "INT:2");
+    #[cfg(feature = "tikv-expr")]
+    {
+        assert_eq!(engine_e("length(unhex('FF00'))"), "INT:2");
+        assert_eq!(engine_e("octet_length(unhex('FF00'))"), "INT:2");
+    }
+    assert_eq!(e("length(unhex('FF00'))"), RADIX_REMOVED);
+    assert_eq!(e("octet_length(unhex('FF00'))"), RADIX_REMOVED);
     assert_eq!(e("char_length('héllo')"), "INT:5"); // chars
     assert_engine_string2_value("upper('abc')", "STR:ABC");
     assert_engine_string2_value("left('hello', 3)", "STR:hel");
@@ -1509,7 +1613,10 @@ fn instr_source_vectors_preserve_string_coercion_and_nulls() {
     }
     // Valid binary bytes still use the same position in this value domain;
     // invalid-byte/session collation signatures remain explicit boundaries.
-    assert_eq!(e("instr(unhex('666f6f626172'), unhex('626172'))"), "INT:4");
+    let binary = "instr(unhex('666f6f626172'), unhex('626172'))";
+    #[cfg(feature = "tikv-expr")]
+    assert_eq!(engine_e(binary), "INT:4");
+    assert_eq!(e(binary), RADIX_REMOVED);
 }
 
 #[test]
@@ -2192,7 +2299,7 @@ fn weight_string_and_load_file_source_vectors() {
     // collation rather than the temporal type's binary metadata.
     assert_eq!(
         chunk_e_with("hex(weight_string(cast(20190821 as date)))", &GeneralCi),
-        PACKET_STRING_REMOVED
+        RADIX_REMOVED
     );
     assert_packet_string_refusal("hex(weight_string('ab' as binary(4)))");
     assert_packet_string_refusal("hex(weight_string('A' collate utf8mb4_general_ci))");
@@ -2276,8 +2383,7 @@ fn hex_and_bit_literals_are_binary_literals_in_a_numeric_context() {
             "INT:1",
         ),
         ("0x0A + 0x0A", "UINT:20"),
-        // The remaining string contexts still preserve literal octets.
-        ("hex(0x1A)", "STR:1A"),
+        // The remaining retained string contexts preserve literal octets.
         ("length(0x4142)", "INT:2"),
         ("char_length(0xF0288C28)", "INT:4"),
         ("char_length(0xE4BDA0)", "INT:3"),
@@ -2285,6 +2391,8 @@ fn hex_and_bit_literals_are_binary_literals_in_a_numeric_context() {
     ] {
         assert_eq!(e(expr), want, "{expr}");
     }
+    assert_radix_refusal("hex(0x1A)");
+    assert!(engine_declines("hex(0x1A)"));
     assert_packet_string_refusal("concat(0x41, 'x')");
     assert!(engine_declines("abs(b'11')"));
     assert_eq!(

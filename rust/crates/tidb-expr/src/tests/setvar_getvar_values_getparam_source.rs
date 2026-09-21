@@ -582,7 +582,8 @@ fn vectorized_builtin_other_func_representable_arms() {
         Datum::new_string("9".to_owned())
     );
 
-    // ast.BitCount arm: both tiers agree on the packed-popcount builtin.
-    assert_eq!(chunk_e("bit_count(7)"), e("bit_count(7)"));
-    assert_eq!(chunk_e("bit_count(-1)"), e("bit_count(-1)"));
+    // BIT_COUNT is now TiKV-only; the independent source values remain pinned
+    // while both native boundaries refuse.
+    assert_engine_radix_value("bit_count(7)", "INT:3");
+    assert_engine_radix_value("bit_count(-1)", "INT:64");
 }

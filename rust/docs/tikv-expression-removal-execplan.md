@@ -238,6 +238,35 @@ remain in the workspace.
       and static 216 admitted / 168 excluded / 0 missing. The broad replay is
       still an intentionally red 181-native / 167-Copying diagnostic; Copying
       executes 416245 engine rows. This is not a compatibility claim.
+- [x] Twelfth physical-deletion tranche: removed the native `HEX`, `UNHEX`,
+      `BIN`, `OCT`, `ORD`, and `BIT_COUNT` kernels, their type-aware helpers,
+      private coercion/encoding helpers, direct tests, and residual value/scalar
+      dispatch. All four native entry boundaries now refuse the names before
+      evaluation. Ordinary admitted numeric/string/typed-column shapes execute
+      only in TiKV, including OCT's string signature. OCT binary-literal
+      provenance, non-leaf/numeric ORD, binary-literal HEX, and HEX over
+      non-lowerable TRANSLATE/NULLIF shapes are
+      explicit contractions. The independent Go source values remain in
+      engine-only tables or alongside exact contraction assertions. A deletion
+      regression exposed and fixed adapter signature selection for temporal HEX:
+      ETDatetime/ETTimestamp/ETDuration select `HexStrArg`, while decimal/real/int
+      select `HexIntArg`. A typed TIMESTAMP column executes with its Go-captured
+      value. JSON is explicitly declined before signature selection: its
+      inferred HEX result width is `8 * MaxBlobWidth = 34359738360`, which the
+      checked protobuf-i32 metadata bridge refuses rather than truncates.
+      `CastJsonAsString` itself is supported; constant and typed JSON Go values
+      are retained as exact contractions around this composition-level gap.
+      Validation is 1185 expression library
+      tests, 77 external expression tests, ten focused session runs in both
+      feature modes, expression/query diffs, runtime 30 tests / 323 receipts /
+      2072 engine rows / 160 borrowed rows, and static 216 admitted / 168
+      excluded / 0 missing. The full session external suite still has the same
+      four carried non-radix failures (math/crypto contractions) as the earlier
+      packet-tail baseline; this tranche adds none. Broad replay remains an
+      intentionally red diagnostic: Native has 182 divergences (one new empty
+      partition result after a refused native HEX write), while Copying returns
+      to 167 divergences and executes 416238 engine rows in the final run. This
+      is not a compatibility claim.
 - [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
       in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected
       borrowed facade was used by the adapter while the manifest still pinned

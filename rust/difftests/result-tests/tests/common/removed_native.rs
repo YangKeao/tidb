@@ -24,10 +24,13 @@ pub const STRING2_REMOVED: &str =
     "native string2 evaluation was removed; TiKV engine required or function unsupported";
 pub const INET_REMOVED: &str =
     "native INET conversion evaluation was removed; TiKV engine required";
+pub const RADIX_REMOVED: &str =
+    "native integer radix evaluation was removed; TiKV engine required or function unsupported";
 
 #[derive(Default)]
 struct FunctionCollector {
     names: BTreeSet<String>,
+    ordered_names: Vec<String>,
     binary_find_in_set: bool,
     nonbinary_find_in_set: bool,
 }
@@ -48,12 +51,15 @@ impl Visitor for FunctionCollector {
                             }
                         }
                     }
+                    self.ordered_names.push(upper_name.clone());
                     self.names.insert(upper_name);
                 }
                 Expr::Regexp { .. } => {
+                    self.ordered_names.push("REGEXP".to_owned());
                     self.names.insert("REGEXP".to_owned());
                 }
                 Expr::WeightString { .. } => {
+                    self.ordered_names.push("WEIGHT_STRING".to_owned());
                     self.names.insert("WEIGHT_STRING".to_owned());
                 }
                 _ => {}
@@ -114,123 +120,248 @@ pub fn requires_inet_engine(sql: &str) -> bool {
         .any(|name| collector.names.contains(*name))
 }
 
-pub fn expected_removed_marker(sql: &str) -> Option<&'static str> {
-    let collector = collect_functions(sql)?;
-    let has = |candidates: &[&str]| {
-        candidates
-            .iter()
-            .any(|name| collector.names.contains(*name))
+pub fn requires_radix_engine(sql: &str) -> bool {
+    let Some(collector) = collect_functions(sql) else {
+        return false;
     };
-    if has(&[
-        "RAND", "ABS", "SIGN", "CEIL", "CEILING", "FLOOR", "ROUND", "TRUNCATE", "SQRT", "POW",
-        "POWER", "EXP", "LN", "LOG", "LOG2", "LOG10", "PI", "SIN", "COS", "TAN", "ASIN", "ACOS",
-        "ATAN", "ATAN2", "COT", "RADIANS", "DEGREES", "CONV", "CRC32",
-    ]) {
+    ["HEX", "UNHEX", "BIN", "OCT", "ORD", "BIT_COUNT"]
+        .iter()
+        .any(|name| collector.names.contains(*name))
+}
+
+fn compact_sql_outside_strings(sql: &str) -> String {
+    let lower = sql.trim_start().to_ascii_lowercase();
+    let mut chars = lower.chars().peekable();
+    let mut compact = String::new();
+    let mut quoted = false;
+    let mut escaped = false;
+    while let Some(ch) = chars.next() {
+        if quoted {
+            compact.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '\'' {
+                if chars.peek() == Some(&'\'') {
+                    compact.push(chars.next().unwrap());
+                } else {
+                    quoted = false;
+                }
+            }
+        } else if ch == '\'' {
+            quoted = true;
+            compact.push(ch);
+        } else if !ch.is_ascii_whitespace() {
+            compact.push(ch);
+        }
+    }
+    compact
+}
+
+/// Exact corpus shapes deliberately contracted because lowering cannot preserve
+/// source-kind provenance or ORD's NULL mask without replaying a child natively.
+/// This is intentionally a whole-expression/statement allow-list: a prefix
+/// match could mask an ordinary second SELECT item or a changed argument type.
+pub fn is_radix_shape_contraction(sql: &str) -> bool {
+    let compact = compact_sql_outside_strings(sql);
+    let expr = compact
+        .strip_prefix("select")
+        .unwrap_or(&compact)
+        .trim_end_matches(';');
+    matches!(
+        expr,
+        "hex(0x0c)"
+            | "hex(0x12)"
+            | "hex(0x0041)"
+            | "hex(translate(cast('中'asbinary),'中','x'))"
+            | "hex(translate(cast('abc'asbinary),cast('ab'asbinary),cast('x'asbinary)))"
+            | "hex(translate(cast('abc'asbinary),cast(''asbinary),'xy'))"
+            | "hex(translate(cast('aéb'asbinary),cast('é'asbinary),'z'))"
+            | "hex(translate(cast('aabb'asbinary),cast('aa'asbinary),'xy'))"
+            | "hex(translate(cast('abc'asbinary),cast('cba'asbinary),cast('123'asbinary)))"
+            | "hex(uuid_to_bin('5f13f854-d74a-11f0-9b7a-0ae0156bd76z'))"
+            | "hex(uuid_to_bin('123e4567-e89b-02d3-a456-426614174000'))"
+            | "hex(uuid_to_bin('123e4567-e89b-12d3-a456-426614174000'))"
+            | "hex(vitess_hash(a))fromt_intorderbyid"
+            | "hex(vitess_hash(convert(a,decimal(8,4))))fromt_intwhereid=5"
+            | "oct(b'11111111')"
+            | "ord(2)"
+            | "ord(23)"
+            | "ord(2.3)"
+            | "ord(cast('éb'asbinary))"
+            | "ord(convert('éb'usingbinary))"
+            | "ord(unhex('e4bda0'))"
+    )
+}
+
+fn removed_marker_for_name(name: &str, nonbinary_find_in_set: bool) -> Option<&'static str> {
+    if matches!(
+        name,
+        "RAND"
+            | "ABS"
+            | "SIGN"
+            | "CEIL"
+            | "CEILING"
+            | "FLOOR"
+            | "ROUND"
+            | "TRUNCATE"
+            | "SQRT"
+            | "POW"
+            | "POWER"
+            | "EXP"
+            | "LN"
+            | "LOG"
+            | "LOG2"
+            | "LOG10"
+            | "PI"
+            | "SIN"
+            | "COS"
+            | "TAN"
+            | "ASIN"
+            | "ACOS"
+            | "ATAN"
+            | "ATAN2"
+            | "COT"
+            | "RADIANS"
+            | "DEGREES"
+            | "CONV"
+            | "CRC32"
+    ) {
         return Some("native math evaluation was removed; TiKV engine required");
     }
-    if has(&[
-        "MD5",
-        "SHA",
-        "SHA1",
-        "SHA2",
-        "SM3",
-        "RANDOM_BYTES",
-        "PASSWORD",
-        "VALIDATE_PASSWORD_STRENGTH",
-        "ENCODE",
-        "DECODE",
-        "COMPRESS",
-        "AES_ENCRYPT",
-        "AES_DECRYPT",
-        "UNCOMPRESS",
-        "UNCOMPRESSED_LENGTH",
-    ]) {
+    if matches!(
+        name,
+        "MD5"
+            | "SHA"
+            | "SHA1"
+            | "SHA2"
+            | "SM3"
+            | "RANDOM_BYTES"
+            | "PASSWORD"
+            | "VALIDATE_PASSWORD_STRENGTH"
+            | "ENCODE"
+            | "DECODE"
+            | "COMPRESS"
+            | "AES_ENCRYPT"
+            | "AES_DECRYPT"
+            | "UNCOMPRESS"
+            | "UNCOMPRESSED_LENGTH"
+    ) {
         return Some("native crypto evaluation was removed; TiKV engine required");
     }
-    if has(&[
-        "VEC_DIMS",
-        "VEC_L1_DISTANCE",
-        "VEC_L2_DISTANCE",
-        "VEC_NEGATIVE_INNER_PRODUCT",
-        "VEC_COSINE_DISTANCE",
-        "VEC_L2_NORM",
-        "VEC_FROM_TEXT",
-        "VEC_AS_TEXT",
-    ]) {
+    if matches!(
+        name,
+        "VEC_DIMS"
+            | "VEC_L1_DISTANCE"
+            | "VEC_L2_DISTANCE"
+            | "VEC_NEGATIVE_INNER_PRODUCT"
+            | "VEC_COSINE_DISTANCE"
+            | "VEC_L2_NORM"
+            | "VEC_FROM_TEXT"
+            | "VEC_AS_TEXT"
+    ) {
         return Some("native vector evaluation was removed; TiKV engine required");
     }
-    if has(&["JSON_DEPTH", "JSON_STORAGE_FREE", "JSON_STORAGE_SIZE"]) {
+    if matches!(
+        name,
+        "JSON_DEPTH" | "JSON_STORAGE_FREE" | "JSON_STORAGE_SIZE"
+    ) {
         return Some("native JSON depth/storage evaluation was removed; TiKV engine required");
     }
-    if has(&["INET_ATON", "INET_NTOA", "INET6_ATON", "INET6_NTOA"]) {
+    if matches!(
+        name,
+        "INET_ATON" | "INET_NTOA" | "INET6_ATON" | "INET6_NTOA"
+    ) {
         return Some(INET_REMOVED);
     }
-    if has(&[
-        "REGEXP",
-        "RLIKE",
-        "REGEXP_LIKE",
-        "REGEXP_SUBSTR",
-        "REGEXP_INSTR",
-        "REGEXP_REPLACE",
-    ]) {
+    if matches!(
+        name,
+        "REGEXP" | "RLIKE" | "REGEXP_LIKE" | "REGEXP_SUBSTR" | "REGEXP_INSTR" | "REGEXP_REPLACE"
+    ) {
         return Some("native regexp evaluation was removed; TiKV engine required");
     }
-    if has(&[
-        "REPEAT",
-        "SPACE",
-        "LPAD",
-        "RPAD",
-        "TO_BASE64",
-        "WEIGHT_STRING",
-        "CONCAT",
-        "CONCAT_WS",
-        "INSERT_FUNC",
-        "MAKE_SET",
-        "FROM_BASE64",
-    ]) {
+    if matches!(
+        name,
+        "REPEAT"
+            | "SPACE"
+            | "LPAD"
+            | "RPAD"
+            | "TO_BASE64"
+            | "WEIGHT_STRING"
+            | "CONCAT"
+            | "CONCAT_WS"
+            | "INSERT_FUNC"
+            | "MAKE_SET"
+            | "FROM_BASE64"
+    ) {
         return Some("native packet-limited string evaluation was removed; function unsupported");
     }
-    if has(&[
-        "SUBSTRING",
-        "SUBSTR",
-        "MID",
-        "ASCII",
-        "BIT_LENGTH",
-        "UPPER",
-        "UCASE",
-        "LOWER",
-        "LCASE",
-        "LEFT",
-        "RIGHT",
-        "REVERSE",
-        "REPLACE",
-        "STRCMP",
-        "FORMAT",
-        "EXPORT_SET",
-        "LTRIM",
-        "RTRIM",
-        "TRANSLATE",
-    ]) || collector.nonbinary_find_in_set
+    if matches!(name, "HEX" | "UNHEX" | "BIN" | "OCT" | "ORD" | "BIT_COUNT") {
+        return Some(RADIX_REMOVED);
+    }
+    if matches!(
+        name,
+        "SUBSTRING"
+            | "SUBSTR"
+            | "MID"
+            | "ASCII"
+            | "BIT_LENGTH"
+            | "UPPER"
+            | "UCASE"
+            | "LOWER"
+            | "LCASE"
+            | "LEFT"
+            | "RIGHT"
+            | "REVERSE"
+            | "REPLACE"
+            | "STRCMP"
+            | "FORMAT"
+            | "EXPORT_SET"
+            | "LTRIM"
+            | "RTRIM"
+            | "TRANSLATE"
+    ) || (name == "FIND_IN_SET" && nonbinary_find_in_set)
     {
         return Some(STRING2_REMOVED);
     }
-    if has(&[
-        "UUID",
-        "UUID_V4",
-        "UUID_V7",
-        "NAME_CONST",
-        "IS_UUID",
-        "UUID_VERSION",
-        "UUID_TIMESTAMP",
-        "UUID_TO_BIN",
-        "BIN_TO_UUID",
-        "TIDB_SHARD",
-        "TIDB_DECODE_KEY",
-        "VITESS_HASH",
-    ]) {
+    if matches!(
+        name,
+        "UUID"
+            | "UUID_V4"
+            | "UUID_V7"
+            | "NAME_CONST"
+            | "IS_UUID"
+            | "UUID_VERSION"
+            | "UUID_TIMESTAMP"
+            | "UUID_TO_BIN"
+            | "BIN_TO_UUID"
+            | "TIDB_SHARD"
+            | "TIDB_DECODE_KEY"
+            | "VITESS_HASH"
+    ) {
         return Some(MISC_REMOVED);
     }
     None
+}
+
+pub fn removed_markers(sql: &str) -> Vec<&'static str> {
+    let Some(collector) = collect_functions(sql) else {
+        return Vec::new();
+    };
+    let mut markers = Vec::new();
+    for name in &collector.ordered_names {
+        if let Some(marker) = removed_marker_for_name(name, collector.nonbinary_find_in_set) {
+            if !markers.contains(&marker) {
+                markers.push(marker);
+            }
+        }
+    }
+    markers
+}
+
+pub fn expected_removed_marker(sql: &str) -> Option<&'static str> {
+    removed_markers(sql).into_iter().next()
 }
 
 #[test]
@@ -264,6 +395,51 @@ fn markers_come_from_parsed_function_nodes_not_text() {
         assert_eq!(expected_removed_marker(sql), Some(INET_REMOVED), "{sql}");
     }
     assert!(!requires_inet_engine("select 'inet_aton(1.2.3.4)'"));
+    for sql in [
+        "select hex('a')",
+        "select unhex('61')",
+        "select bin(2)",
+        "select oct(8)",
+        "select ord('a')",
+        "select bit_count(7)",
+    ] {
+        assert!(requires_radix_engine(sql), "{sql}");
+        assert_eq!(expected_removed_marker(sql), Some(RADIX_REMOVED), "{sql}");
+    }
+    assert_eq!(
+        expected_removed_marker("select hex(upper('a'))"),
+        Some(RADIX_REMOVED)
+    );
+    assert_eq!(
+        expected_removed_marker("select upper(hex('a'))"),
+        Some(STRING2_REMOVED)
+    );
+    for sql in [
+        "select hex(0x0c)",
+        "select hex(translate(cast('中' as binary), '中', 'x'))",
+        "select oct(b'11111111')",
+        "select ord(2)",
+        "select ord(cast('éb' as binary))",
+    ] {
+        assert!(is_radix_shape_contraction(sql), "{sql}");
+    }
+    for sql in [
+        "select hex('a')",
+        "select bin(2)",
+        "select bit_count(7)",
+        "select oct('8')",
+        "select oct('8' is null)",
+        "select oct('8'), hex('a')",
+        "select hex(0x0c), bit_count(7)",
+        "select oct('8') as value",
+        "select oct('8') /* changed statement */",
+    ] {
+        assert!(!is_radix_shape_contraction(sql), "{sql}");
+    }
+    assert_eq!(
+        expected_removed_marker("select inet6_ntoa(unhex('00000000'))"),
+        Some(INET_REMOVED)
+    );
     for sql in [
         "select ascii('a')",
         "select bit_length('a')",

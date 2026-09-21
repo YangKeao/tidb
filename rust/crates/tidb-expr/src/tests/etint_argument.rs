@@ -225,46 +225,33 @@ fn the_int_cast_raises_the_cast_s_own_1292() {
 /// `oct(b'01000001')` is `101`. Routing `OCT` through the mask would give
 /// the ENUM its ordinal and break the first two.
 #[test]
-fn oct_is_signature_selected_and_not_a_member_of_the_layer() {
+fn oct_is_signature_selected_and_now_explicitly_contracted() {
     assert_eq!(crate::arg_eval_type::int_arg_mask("OCT"), 0);
 
-    let oct = |value: Datum| crate::string_fn::oct(&[value]).unwrap().label();
-    assert_eq!(
-        oct(Datum::Enum(MysqlEnum::new("y", 2), Collation::Utf8Mb4Bin)),
-        "STR:0"
-    );
-    assert_eq!(
-        oct(Datum::Set(MysqlSet::new("a,c", 5), Collation::Utf8Mb4Bin)),
-        "STR:0"
-    );
-    // The BIT arm is the one row here with a RECORDED witness:
-    // `tests/integrationtest/r/expression/issues.result:80-84` replays
-    // `SELECT b+0, BIN(b), OCT(b), HEX(b) FROM t` over a `BIT(8)` column and
-    // records `255 11111111 377 FF`, `10 1010 12 A`, `5 101 5 5`.
-    for (value, want) in [(255u64, "STR:377"), (10, "STR:12"), (5, "STR:5")] {
-        assert_eq!(oct(Datum::Bit(BinaryLiteral::from_uint(value, None))), want);
+    // Binary-literal provenance is still declined; ordinary string signatures
+    // are owned by TiKV and must retain Go's parsing behavior.
+    assert_radix_refusal("oct(b'01000001')");
+    #[cfg(feature = "tikv-expr")]
+    assert!(engine_declines("oct(b'01000001')"));
+    for (expr, want) in [
+        ("oct('A')", "STR:0"),
+        ("oct('')", "NULL"),
+        ("oct('18446744073709551616')", "STR:1777777777777777777777"),
+    ] {
+        assert_engine_radix_value(expr, want);
     }
-    assert_eq!(oct(Datum::Bit(BinaryLiteral::from_uint(3, None))), "STR:3");
-    // `b'01000001'` is the byte `A`; the INTEGER signature renders 65 as
-    // octal `101`, while a text parse of `A` would be `0`.
-    assert_eq!(
-        oct(Datum::BinaryLiteral(BinaryLiteral::from_uint(65, None))),
-        "STR:101"
-    );
-    // The string signature keeps its own contract for every non-hybrid,
-    // non-integer source: captured `oct('A')` is `0` and `oct(1.2345)` is `1`.
-    assert_eq!(oct(Datum::new_string("A".to_string())), "STR:0");
-    assert_eq!(e("oct(1.2345)"), "STR:1");
-    // The two BOUNDARIES that separate `builtinOctStringSig` from the
-    // `types.ETInt` cast by VALUE, not just by classification -- routing
-    // `OCT` through the mask would move both. Captured: `oct('')` is NULL
-    // where `CAST('' AS SIGNED)` is `0`, and `oct('18446744073709551616')`
-    // is `1777777777777777777777` (`strconv.ParseUint`'s `ErrRange` pinned
-    // at `MaxUint64`) where `CAST(... AS SIGNED)` saturates at `i64::MAX`,
-    // i.e. `777777777777777777777`.
-    assert_eq!(e("oct('')"), "NULL");
-    assert_eq!(
-        e("oct('18446744073709551616')"),
-        "STR:1777777777777777777777"
-    );
+    for value in [
+        Datum::Enum(MysqlEnum::new("y", 2), Collation::Utf8Mb4Bin),
+        Datum::Set(MysqlSet::new("a,c", 5), Collation::Utf8Mb4Bin),
+        Datum::Bit(BinaryLiteral::from_uint(255, None)),
+        Datum::BinaryLiteral(BinaryLiteral::from_uint(65, None)),
+    ] {
+        assert_eq!(
+            crate::func::eval_func_values("OCT", &[value], &NoColumns),
+            Some(Err(EvalError::Unsupported(
+                "native integer radix evaluation was removed; TiKV engine required or function unsupported"
+            )))
+        );
+    }
+    assert_engine_radix_value("oct(1.2345)", "STR:1");
 }

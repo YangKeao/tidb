@@ -3,6 +3,8 @@
 //! explicit 4-byte form does (`b = 'a\0\0\0'`).
 
 use tidb_session::Session;
+#[cfg(feature = "tikv-expr")]
+use tidb_session::TikvExpressionBackend;
 
 fn rows(session: &mut Session, sql: &str) -> String {
     match session.run(sql).unwrap() {
@@ -23,18 +25,36 @@ fn rows(session: &mut Session, sql: &str) -> String {
 #[test]
 fn binary_pads_with_nul_bytes() {
     let mut session = Session::new();
+    #[cfg(feature = "tikv-expr")]
+    session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
     session
         .run("create table t (id int primary key, b binary(4))")
         .unwrap();
     session.run("insert into t values (1, 'a')").unwrap();
 
-    // hex() returns the string "61000000"; the debug form shows its ASCII bytes.
-    let hex_row = rows(&mut session, "select hex(b) from t");
-    assert!(
-        hex_row.contains("54, 49, 48, 48, 48, 48, 48, 48"),
-        "{hex_row}"
+    // HEX over a typed BINARY column executes only in TiKV.
+    #[cfg(feature = "tikv-expr")]
+    {
+        let engine_before = session.tikv_expression_rows();
+        let hex_row = rows(&mut session, "select hex(b) from t");
+        assert!(
+            hex_row.contains("54, 49, 48, 48, 48, 48, 48, 48"),
+            "{hex_row}"
+        );
+        assert!(session.tikv_expression_rows() > engine_before);
+    }
+    #[cfg(not(feature = "tikv-expr"))]
+    {
+        let error = session
+            .run("select hex(b) from t")
+            .expect_err("native HEX kernel is deleted")
+            .to_string();
+        assert!(error.contains("native integer radix evaluation was removed; TiKV engine required or function unsupported"), "{error}");
+    }
+    assert_eq!(
+        first_count(&mut session, "select count(*) from t where b = 'a'"),
+        "Int(0)"
     );
-    assert_eq!(first_count(&mut session, "select count(*) from t where b = 'a'"), "Int(0)");
     assert_eq!(
         first_count(&mut session, r"select count(*) from t where b = 'a\0\0\0'"),
         "Int(1)"

@@ -962,6 +962,11 @@ impl ScalarFunction {
                 "native string2 evaluation was removed; TiKV engine required or function unsupported",
             ));
         }
+        if crate::func::is_removed_native_radix(self.func_name.lowercase()) {
+            return Err(EvalError::Unsupported(
+                "native integer radix evaluation was removed; TiKV engine required or function unsupported",
+            ));
+        }
         if let Some(value) = self.eval_fast_integer_binary(ctx, row)? {
             return self.coerce_to_ret_type(value);
         }
@@ -2090,13 +2095,6 @@ impl ScalarFunction {
         // `dispatch` below and stays the documented partial boundary.
         let arg_types: Vec<Option<FieldType>> =
             self.args.iter().map(|a| a.static_type().cloned()).collect();
-        if upper == "HEX" {
-            return crate::string_fn::hex_with_type(
-                &vals,
-                arg_types.first().and_then(Option::as_ref),
-                ctx,
-            );
-        }
         // Go's `newBaseBuiltinFuncWithTp` argument-cast layer
         // (`crate::arg_eval_type`), the one point where a builtin's declared
         // argument eval types are imposed. Only this tier has the static
@@ -2105,12 +2103,6 @@ impl ScalarFunction {
         let vals = crate::arg_eval_type::wrap_datetime_args(&upper, vals, &arg_types, ctx)?;
         let vals = crate::arg_eval_type::wrap_int_args(&upper, vals, &arg_types, ctx)?;
         let vals = crate::arg_eval_type::wrap_string_args(&upper, vals, &arg_types, ctx)?;
-        if upper == "ORD" {
-            return crate::string_fn::ord_with_type(
-                &vals,
-                arg_types.first().and_then(Option::as_ref),
-            );
-        }
         if let Some(result) = crate::builtin_ext::json_dispatch_typed(&upper, &vals, &arg_types) {
             return result;
         }

@@ -185,8 +185,9 @@ pub(crate) fn wrap_datetime_args(
 /// `oct(e)` is `0` -- `builtinOctStringSig` parsing the text `y` -- while
 /// `make_set(e,'p','q','r')` is `q`, the ordinal `2`. Routing `OCT` through
 /// this mask would give it the ordinal and break the first of those.
-/// `OCT`'s integer-vs-string split is therefore owned by `string_fn::oct`,
-/// where the rest of Go's signature selection already lives.
+/// `OCT`'s integer-vs-string split is therefore owned by TiKV lowering. The
+/// adapter admits the proven integer signature; source-kind shapes it cannot
+/// preserve are explicit contractions rather than native coercion.
 pub(crate) const fn int_arg_mask(name: &str) -> ArgMask {
     match name.as_bytes() {
         // `builtin_string.go:3305-3306` `argTps := make([]types.EvalType, 0,

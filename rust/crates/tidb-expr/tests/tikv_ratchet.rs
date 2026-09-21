@@ -299,6 +299,7 @@ const SURVIVES_FOLD: &[&str] = &[
     "ifnull(1, 'x' regexp '[')",
     "ifnull(null, cast('[1]' as json))",
     "make_set(1, 'a', 'b', 'c')",
+    "oct(b'11111111')",
     "regexp_like('abc', 'abc', 'p')",
     "round(1.2345,'2')",
     "round(3.14,'abc')",
@@ -356,5 +357,7 @@ fn folded_away_expressions_never_reach_the_adapter() {
         folded.len() + survived.len() + skipped.len(),
         DECLINED.len()
     );
-    assert_eq!(folded.len(), 26, "the folded count changed");
+    // OCT(binary literal) can no longer fold through a native kernel; it stays
+    // visible as the explicit provenance contraction above.
+    assert_eq!(folded.len(), 25, "the folded count changed");
 }
