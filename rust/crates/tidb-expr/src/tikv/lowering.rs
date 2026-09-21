@@ -190,10 +190,11 @@ fn admission_rejection(
     }
 }
 
-/// CastStringAsInt treats a binary-collated constant as a binary number. Only
-/// actual literal provenance authorizes that kernel: ordinary bytes b"1" mean
-/// decimal 1 natively, not the literal's 49. Keep this exception local to explicit
-/// integer CAST; root/lazy forwarding still needs a literal-kind carrier.
+/// Only source literal provenance authorizes numeric MysqlBit transport: ordinary
+/// bytes b"1" mean decimal 1, not the literal's 49. Keep this exception local to
+/// explicit integer CAST; root/lazy forwarding still needs a literal-kind carrier.
+/// Ordinary binary strings remain guarded until native parity is established for
+/// the new text compilation policy's diagnostics and value profiles.
 fn binary_constant_integer_cast(function: &ScalarFunction) -> Option<bool> {
     let name = function.func_name.lowercase();
     if !matches!(name, "cast" | "cast_signed" | "cast_unsigned") {
@@ -343,14 +344,23 @@ pub(super) fn lower(
             _ => None,
         };
     };
-    let children = function
+    let mut children = function
         .args
         .iter()
         .map(|arg| lower(arg, columns, context))
         .collect::<Option<Vec<_>>>()?;
     if binary_constant_integer_cast(function) == Some(true) {
-        // Only source-AST provenance may authorize this constant binary kernel.
-        return raw_node("CastStringAsInt", children, function.get_static_type()?);
+        // Preserve source-authenticated numeric provenance under text-constant
+        // compilation. Keep the raw bytes; TiKV's existing MysqlBit decoder,
+        // not adapter arithmetic/constant folding, supplies the unsigned value.
+        let child = children.first_mut()?;
+        let width = (child.val.as_ref()?.len() * 8).max(1) as i64;
+        let bits = FieldType::new(FieldTypeCode::Bit)
+            .with_flen(width)
+            .with_flags(1 << 5);
+        child.tp = Some(ExprType::MysqlBit as i32);
+        child.field_type = Some(field_type_to_pb(&bits)?);
+        return node("CastIntAsInt", children, function.get_static_type()?);
     }
     local_call(function, children.clone())
         .or_else(|| families::lower(function, children.clone()))
@@ -376,6 +386,37 @@ fn unproven_binary_numeric_cast(expr: &PbExpr) -> bool {
             && child.field_type.as_ref().and_then(|ty| ty.collate)
                 .is_some_and(|id| id.checked_abs() == Some(tidb_datatype::collation_name_to_id("binary")))
     })
+}
+
+#[test]
+fn numeric_literal_cast_preserves_raw_bytes_in_mysql_bit_transport() {
+    let source = FieldType::new(FieldTypeCode::VarString)
+        .with_charset_name("binary")
+        .with_collation_name("binary");
+    let target = FieldType::new(FieldTypeCode::LongLong).with_flags(1 << 5);
+    for raw in [vec![], vec![b'1'], vec![0, 16], vec![0xff; 8]] {
+        let literal = Expression::Constant(crate::constant::Constant::new(
+            Datum::BinaryLiteral(raw.clone().into()),
+            source.clone(),
+        ));
+        let expression = Expression::ScalarFunction(ScalarFunction::new(
+            tidb_ast::CiString::new("cast_unsigned"),
+            target.clone(),
+            vec![literal],
+        ));
+        let context = super::Context::default();
+        assert!(admitted(&expression, &context));
+        let wire = lower(&expression, &|_| None, &context).unwrap();
+        assert_eq!(wire.sig, scalar_function_signature("CastIntAsInt"));
+        assert_eq!(wire.children.len(), 1);
+        let child = &wire.children[0];
+        assert_eq!(child.tp, Some(ExprType::MysqlBit as i32));
+        assert_eq!(child.val.as_deref(), Some(raw.as_slice()));
+        let field = child.field_type.as_ref().unwrap();
+        assert_eq!(field.tp, Some(i32::from(FieldTypeCode::Bit.mysql_type())));
+        assert_eq!(field.flag.unwrap() & (1 << 5), 1 << 5);
+        assert_eq!(field.flen, Some((raw.len() * 8).max(1) as i32));
+    }
 }
 
 #[test]

@@ -218,9 +218,11 @@ remain in the workspace.
 - [x] Add TiKV opt-in compile_with_text_constants using existing numeric text
       kernels, keeping legacy default dispatch. Fix MysqlBit scalar CAST detection;
       test interleaved policies, truncation diagnostics and a skipped failing arm.
-- [ ] Pin/adopt engine db9c7f0 in TiDB, encoding source-authorized numeric literals
-      as numeric nodes and proving native parity before removing coercion guards.
-      Current TiDB pin remains c93c2bb; this API is not integrated yet.
+- [x] Pin/adopt engine db9c7f0 in TiDB with one fixed text-constant compile policy.
+      Encode only source-authorized numeric literals as MysqlBit + CastIntAsInt;
+      preserve raw payload bytes and let TiKV decode. Existing guards remain.
+- [ ] Prove native value/diagnostic parity for ordinary binary-string numeric
+      profiles before relaxing direct/synthesized coercion guards.
 - [ ] Add a literal-kind carrier/provenance contract for root/lazy forwarding and
       remaining binary/BIT coercions. Direct numeric CAST is only a narrow subset.
 - [ ] Audit expression-internal and other forwarding entrypoints before native
@@ -233,7 +235,7 @@ remain in the workspace.
 - [ ] Retain condition programs in remaining `eval_bool` hot callers (the public
       convenience wrapper currently builds temporary programs). Existing joined scratch-row copies remain;
       eliminating them requires the independent-column facade, not more row
-      copies. TiDB is pinned to engine `c93c2bb`; borrowed lazy remains unsupported.
+      copies. TiDB is pinned to engine `db9c7f0`; borrowed lazy remains unsupported.
 
 - [x] Milestone A (point 6): engine shareable and thread-safe.
       TiKV metadata is `Send + Sync`, `PreparedExpression` is asserted
@@ -816,6 +818,36 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+TiDB adoption of text-constant compilation (TiDB `rust/`, same serial guard):
+
+    cargo test -q -p tidb-expr --features tikv-expr --test all binary_literal_integer_casts_use_engine --locked -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+
+The first command fetches the pinned personal-fork revision db9c7f0. Manifest and
+lock source identities migrate from c93c2bb; a diff assertion confirms all 46
+changed lock lines are only those revisions. Prior dependency bindings/versions
+are retained, and --locked accepts the graph. The adapter now always selects
+compile_with_text_constants; its cache never mixes compilation policies.
+
+`text-adoption-red.log` proves simply changing the compile call is unsound:
+existing BinaryLiteral integer CAST now leaks a truncation warning (empty literal
+misread as text). Source-authenticated direct literal CAST now carries unchanged
+raw bytes in existing MysqlBit wire nodes with unsigned metadata; CastIntAsInt
+consumes the TiKV-decoded ordinal. No numeric parsing/arithmetic or constant
+folding is added to TiDB. A unit test pins raw payload identity, wire kind, width,
+unsigned metadata and signature for empty, ASCII, padded and full-u64 literals.
+The signed-boundary, deferred/parameter, root/lazy carrier and ordinary-text
+coercion guards remain. No unsafe shape is newly admitted in this adoption.
+
+`text-adoption-expr.log`: 1224/75 passed (99 unit ignored), including the existing
+84-row signed/unsigned literal matrix, exact Datum kinds, no warnings, both
+transports, repeated/empty selections and one retained compilation.
+`text-adoption-executor.log`: 1399/355/6/2 (184 integration ignored). Sampled peak
+3626.3 MiB, one worker, RSS/AS limits 8192/16384 MiB. No feature-off/Go oracle/full
+mysql replay/performance/lint rerun or PR-readiness claim. Next work is native
+parity for ordinary binary string numeric conversion, not blanket guard removal.
 
 Engine text-constant compile policy (TiKV root, same serial guarded environment):
 

@@ -160,8 +160,13 @@ impl TikvExpression {
         // Lowering and the engine have independent capability sets. A compile
         // refusal is safe to keep native; unlike evaluation, compilation here
         // has no caller-visible warnings, session state, or input mutation.
-        let prepared = match PreparedExpression::compile(&encoded.encode_to_vec(), &schema, context)
-        {
+        // This adapter/cache has one fixed policy. Source-verified numeric
+        // literals use MysqlBit transport; ordinary String/Bytes are text.
+        let prepared = match PreparedExpression::compile_with_text_constants(
+            &encoded.encode_to_vec(),
+            &schema,
+            context,
+        ) {
             Ok(prepared) => prepared,
             Err(error) => {
                 if debug_declines() {
