@@ -966,6 +966,86 @@ fn binary_literal_integer_cast_unsafe_shapes_remain_declined() {
 }
 
 #[test]
+fn bounded_binary_text_integer_casts_use_text_not_literal_semantics() {
+    let mut input = Chunk::new_empty(&[]);
+    input.set_num_virtual_rows(2);
+    for (raw, number) in [
+        ("0", 0_u64),
+        ("1", 1),
+        ("000001", 1),
+        ("123456", 123456),
+        ("999999", 999999),
+    ] {
+        for as_string in [false, true] {
+            let mut value = Datum::Bytes(raw.as_bytes().to_vec().into());
+            if as_string {
+                value.set_string(raw.as_bytes().to_vec(), bytes().collation());
+            }
+            for unsigned in [false, true] {
+                let ty = int().with_flags(if unsigned { 1 << 5 } else { 0 });
+                let expression = call(
+                    if unsigned {
+                        "cast_unsigned"
+                    } else {
+                        "cast_signed"
+                    },
+                    &ty,
+                    vec![literal(value.clone(), &bytes())],
+                );
+                let expected = if unsigned {
+                    Datum::UInt(number)
+                } else {
+                    Datum::Int(number as i64)
+                };
+                let program = Arc::new(EvaluatorProgram::new(vec![expression.clone()], true));
+                for backend in [None, Some(Backend::Copying), Some(Backend::Borrowed)] {
+                    let ctx = TestContext {
+                        backend,
+                        engine_required: backend.is_some(),
+                        ..TestContext::default()
+                    };
+                    let suite = EvaluatorSuite::from_program(Arc::clone(&program));
+                    assert_eq!(
+                        suite
+                            .eval_selected_for_cast(&ctx, &input, &[1, 0, 1])
+                            .unwrap(),
+                        vec![expected.clone(); 3]
+                    );
+                    assert!(suite
+                        .eval_selected_for_cast(&ctx, &input, &[])
+                        .unwrap()
+                        .is_empty());
+                    assert_eq!(ctx.rows.get(), if backend.is_some() { 3 } else { 0 });
+                    assert!(ctx.fallbacks.borrow().is_empty());
+                    assert!(ctx.warnings.borrow().is_empty());
+                }
+                assert_eq!(program.tikv_compilations(), 1);
+                for flags in [0, 482] {
+                    for sql_mode in [0, u64::MAX] {
+                        let engine = TikvExpression::compile(
+                            &expression,
+                            Context {
+                                flags,
+                                sql_mode,
+                                ..Context::default()
+                            },
+                        )
+                        .unwrap()
+                        .unwrap();
+                        let ctx = TestContext::default();
+                        assert_eq!(
+                            engine.evaluate(&ctx, &input).unwrap(),
+                            vec![expected.clone(); 2]
+                        );
+                        assert!(ctx.warnings.borrow().is_empty());
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn binary_collation_alone_does_not_authorize_literal_integer_cast() {
     let expression = call(
         "cast_signed",
@@ -978,12 +1058,100 @@ fn binary_collation_alone_does_not_authorize_literal_integer_cast() {
         .eval_selected_for_cast(&TestContext::default(), &input, &[0])
         .unwrap();
     assert_eq!(native, vec![Datum::Int(1)]);
-    if let Some(engine) = TikvExpression::compile(&expression, Context::default()).unwrap() {
-        panic!(
-            "ordinary binary bytes incorrectly admitted: native={native:?}, engine={:?}",
-            engine.evaluate(&TestContext::default(), &input)
-        );
+    let engine = TikvExpression::compile(&expression, Context::default())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        engine.evaluate(&TestContext::default(), &input).unwrap(),
+        native
+    );
+}
+
+#[test]
+fn binary_text_integer_cast_diagnostic_and_metadata_shapes_stay_declined() {
+    for raw in [
+        b"".as_slice(),
+        b" 1",
+        b"+1",
+        b"-1",
+        b"1.0",
+        b"1e1",
+        b"1x",
+        b"1\0",
+        b"\xff",
+        b"1000000",
+        b"18446744073709551616",
+    ] {
+        for as_string in [false, true] {
+            let mut value = Datum::Bytes(raw.to_vec());
+            if as_string {
+                value.set_string(raw.to_vec(), bytes().collation());
+            }
+            for unsigned in [false, true] {
+                let ty = int().with_flags(if unsigned { 1 << 5 } else { 0 });
+                let expression = call(
+                    if unsigned {
+                        "cast_unsigned"
+                    } else {
+                        "cast_signed"
+                    },
+                    &ty,
+                    vec![literal(value.clone(), &bytes())],
+                );
+                assert!(
+                    TikvExpression::compile(&expression, Context::default())
+                        .unwrap()
+                        .is_none(),
+                    "{expression:?}"
+                );
+            }
+        }
     }
+    let scalar = || literal(Datum::Bytes(b"1".to_vec()), &bytes());
+    for expression in [
+        call("cast", &int(), vec![scalar()]),
+        call("cast_signed", &int().with_flags(1 << 5), vec![scalar()]),
+        call("cast_unsigned", &int(), vec![scalar()]),
+    ] {
+        assert!(TikvExpression::compile(&expression, Context::default())
+            .unwrap()
+            .is_none());
+    }
+    let mut deferred = Constant::new(Datum::Bytes(b"1".to_vec()), bytes());
+    deferred.deferred_expr = Some(Box::new(scalar()));
+    let mut parameter = Constant::new(Datum::Bytes(b"1".to_vec()), bytes());
+    parameter.param_marker = Some(Default::default());
+    for constant in [
+        deferred,
+        parameter,
+        Constant::new(
+            Datum::Bytes(b"1".to_vec()),
+            bytes().with_charset_name("utf8mb4"),
+        ),
+    ] {
+        assert!(TikvExpression::compile(
+            &call("cast_signed", &int(), vec![Expression::Constant(constant)]),
+            Context::default()
+        )
+        .unwrap()
+        .is_none());
+    }
+    let mut input = Chunk::new_empty(&[]);
+    input.set_num_virtual_rows(1);
+    check(
+        "nested bounded text CAST",
+        call(
+            "plus",
+            &int(),
+            vec![
+                call("cast_signed", &int(), vec![scalar()]),
+                literal(Datum::Int(1), &int()),
+            ],
+        ),
+        &mut input,
+        &int(),
+    )
+    .unwrap();
 }
 
 #[test]

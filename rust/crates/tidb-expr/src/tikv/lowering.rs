@@ -179,8 +179,9 @@ fn admission_rejection(
             if !row.shape.permits(function) {
                 return Some("lazy-shape");
             }
-            if let Some(allowed) = binary_constant_integer_cast(function) {
-                return (!allowed).then_some("binary-constant-integer-cast-shape");
+            if let Some(kind) = binary_constant_integer_cast(function) {
+                return matches!(kind, BinaryIntegerCast::Declined)
+                    .then_some("binary-constant-integer-cast-shape");
             }
             function
                 .args
@@ -190,12 +191,17 @@ fn admission_rejection(
     }
 }
 
-/// Only source literal provenance authorizes numeric MysqlBit transport: ordinary
-/// bytes b"1" mean decimal 1, not the literal's 49. Keep this exception local to
-/// explicit integer CAST; root/lazy forwarding still needs a literal-kind carrier.
-/// Ordinary binary strings remain guarded until native parity is established for
-/// the new text compilation policy's diagnostics and value profiles.
-fn binary_constant_integer_cast(function: &ScalarFunction) -> Option<bool> {
+enum BinaryIntegerCast {
+    Literal,
+    Text,
+    Declined,
+}
+
+/// Source kind selects numeric MysqlBit transport versus textual conversion:
+/// ordinary bytes b"1" mean decimal 1, not the literal's 49. Both exceptions are
+/// local to explicit integer CAST. Text is limited to short ASCII digits with
+/// no range/truncation diagnostics; broader profiles remain unproven.
+fn binary_constant_integer_cast(function: &ScalarFunction) -> Option<BinaryIntegerCast> {
     let name = function.func_name.lowercase();
     if !matches!(name, "cast" | "cast_signed" | "cast_unsigned") {
         return None;
@@ -222,15 +228,31 @@ fn binary_constant_integer_cast(function: &ScalarFunction) -> Option<bool> {
             ("cast_signed", false) | ("cast_unsigned", true)
         )
     {
-        return Some(false);
+        return Some(BinaryIntegerCast::Declined);
     }
-    let Datum::BinaryLiteral(value) = &constant.value else {
-        return Some(false);
+    if let Datum::BinaryLiteral(value) = &constant.value {
+        let bytes = value.as_bytes();
+        // Native signed CAST saturates a high-bit u64; the engine bitcasts it.
+        let allowed =
+            bytes.len() <= 8 && (target.is_unsigned() || bytes.len() < 8 || bytes[0] < 0x80);
+        return Some(if allowed {
+            BinaryIntegerCast::Literal
+        } else {
+            BinaryIntegerCast::Declined
+        });
+    }
+    let text = match &constant.value {
+        Datum::Bytes(value) => value.as_slice(),
+        Datum::String(value) => value.bytes(),
+        _ => return Some(BinaryIntegerCast::Declined),
     };
-    let bytes = value.as_bytes();
-    // Native signed CAST saturates a high-bit u64; the engine bitcasts it.
-    // Reject that shape instead of silently changing the result.
-    Some(bytes.len() <= 8 && (target.is_unsigned() || bytes.len() < 8 || bytes[0] < 0x80))
+    Some(
+        if (1..=6).contains(&text.len()) && text.iter().all(u8::is_ascii_digit) {
+            BinaryIntegerCast::Text
+        } else {
+            BinaryIntegerCast::Declined
+        },
+    )
 }
 
 /// DATE/DATETIME payloads carry wall fields, not timezone instants.
@@ -349,7 +371,13 @@ pub(super) fn lower(
         .iter()
         .map(|arg| lower(arg, columns, context))
         .collect::<Option<Vec<_>>>()?;
-    if binary_constant_integer_cast(function) == Some(true) {
+    let integer_cast = binary_constant_integer_cast(function);
+    if matches!(integer_cast, Some(BinaryIntegerCast::Text)) {
+        // Only this source-validated direct shape may use textual integer
+        // conversion. Synthesized/catalog casts remain guarded independently.
+        return raw_node("CastStringAsInt", children, function.get_static_type()?);
+    }
+    if matches!(integer_cast, Some(BinaryIntegerCast::Literal)) {
         // Preserve source-authenticated numeric provenance under text-constant
         // compilation. Keep the raw bytes; TiKV's existing MysqlBit decoder,
         // not adapter arithmetic/constant folding, supplies the unsigned value.

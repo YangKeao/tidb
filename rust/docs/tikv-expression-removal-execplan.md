@@ -221,8 +221,12 @@ remain in the workspace.
 - [x] Pin/adopt engine db9c7f0 in TiDB with one fixed text-constant compile policy.
       Encode only source-authorized numeric literals as MysqlBit + CastIntAsInt;
       preserve raw payload bytes and let TiKV decode. Existing guards remain.
-- [ ] Prove native value/diagnostic parity for ordinary binary-string numeric
-      profiles before relaxing direct/synthesized coercion guards.
+- [x] Admit direct cast_signed/cast_unsigned of canonical binary VarString
+      String/Bytes constants containing 1..6 ASCII digits. Keep their textual
+      wire kind distinct from BinaryLiteral numeric transport; verify kinds,
+      zero warnings, both transports, retained compilation and mode profiles.
+- [ ] Prove native value/diagnostic parity for remaining ordinary binary-string
+      numeric profiles before relaxing implicit/real/range/truncation guards.
 - [ ] Add a literal-kind carrier/provenance contract for root/lazy forwarding and
       remaining binary/BIT coercions. Direct numeric CAST is only a narrow subset.
 - [ ] Audit expression-internal and other forwarding entrypoints before native
@@ -818,6 +822,39 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+Bounded ordinary binary-text integer CAST (TiDB `rust/`, same serial guard):
+
+    cargo test -q -p tidb-expr --features tikv-expr --test all bounded_binary_text --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-expr --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+
+`bounded-text-red.log` reproduces required-engine NotAdmitted. The source-level
+integer-cast classifier now distinguishes Literal/Text/Declined after shared
+metadata, arity, target signedness and deferred/parameter checks. Only explicit
+cast_signed/cast_unsigned over ordinary String/Bytes, canonical binary VarString,
+and 1..6 ASCII digits may enter the text kernel directly. No parsing or numeric
+constant folding occurs in TiDB. Literal operands retain MysqlBit numeric encoding.
+The generic node/catalog coercion guard is unchanged: wire equality still cannot
+authorize a synthesized sibling conversion. Generic cast, float/real conversion,
+signs, spaces, fractions, exponent, suffix/NUL/non-UTF8, longer digit sequences,
+metadata/name mismatch, deferred and parameter cases remain declined.
+
+Five value shapes (0, 1, 000001, 123456, 999999) x both source datum kinds x both
+integer signednesses: 120 selected engine rows across Copying/Borrowed, exact
+native Int/UInt parity, empty/repeated selection, no fallback/warnings, one cached
+compilation per retained program. Direct engine profile checks add flags 0/482 x
+sql_mode 0/u64::MAX (160 rows), with identical values and no warnings. A nested
+explicit text CAST succeeds, while previous implicit-provenance tests remain
+closed. The old binary-collation test now asserts text 1, never literal 49.
+These are bounded Rust-native comparisons, not a Go oracle or diagnostic-profile
+compatibility claim beyond the admitted warning-free subset.
+
+`bounded-text-expr.log`: 1224/77 passed (99 unit ignored).
+`bounded-text-executor.log`: 1399/355/6/2 (184 integration ignored). All heavy
+commands serial and single-worker; sampled peak 2323.1 MiB, limits 8192 RSS /
+16384 AS MiB. No feature-off/TiKV code rerun, mysql replay, performance, lint or
+PR-readiness claim. Native default/fallback remains outside verified shapes.
 
 TiDB adoption of text-constant compilation (TiDB `rust/`, same serial guard):
 
