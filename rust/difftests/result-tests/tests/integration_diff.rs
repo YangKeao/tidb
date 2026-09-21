@@ -895,6 +895,30 @@ fn hidden_removed_marker_allowed(topic: &str, sql: &str, error: &str) -> bool {
 }
 
 #[test]
+fn admitted_string_length_statements_execute_tikv_rows() {
+    let mut session = Session::new();
+    session.set_tikv_expression_backend(Some(tidb_session::TikvExpressionBackend::Copying));
+    for sql in [
+        "select length('héllo')",
+        "select octet_length(3.14)",
+        "select char_length('你好')",
+        "select character_length(null)",
+        "select char_length('héllo'), length('héllo')",
+    ] {
+        assert!(requires_engine_statement(sql), "{sql}");
+        let before = session.tikv_expression_rows();
+        let result = session.run(sql).unwrap_or_else(|error| {
+            panic!("required string-length statement failed through TiKV: {sql}: {error:?}")
+        });
+        assert!(matches!(result, tidb_session::StmtResult::Rows(_)), "{sql}");
+        assert!(
+            session.tikv_expression_rows() > before,
+            "required string-length statement executed no TiKV row: {sql}"
+        );
+    }
+}
+
+#[test]
 fn removed_kernel_classification_is_statement_scoped() {
     let misc =
         "native miscellaneous evaluation was removed; TiKV engine required or function unsupported";
