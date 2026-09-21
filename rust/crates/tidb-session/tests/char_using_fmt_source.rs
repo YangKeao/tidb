@@ -34,18 +34,31 @@ fn try_sql(session: &mut Session, sql: &str) -> String {
 fn char_composition_and_short_formats() {
     let mut session = Session::new();
 
-    // Two ints: 'H', 'I'.
-    assert_eq!(try_sql(&mut session, "select char(72, 73)"), "s:HI");
-
-    // 0x5927 is emitted as the two bytes 0x59 0x27, decoded as ASCII-valid.
-    assert_eq!(try_sql(&mut session, "select char(22823 using utf8mb4)"), "s:Y'");
+    // Former Go values: `HI` and `Y'`. TiKV has no CHAR_FUNC kernel, so both
+    // shapes are explicit contractions after physical native deletion.
+    for sql in ["select char(72, 73)", "select char(22823 using utf8mb4)"] {
+        let error = session
+            .run(sql)
+            .expect_err("CHAR_FUNC has no TiKV kernel")
+            .to_string();
+        assert!(
+            error.contains("native string auxiliary evaluation was removed; TiKV engine required or function unsupported"),
+            "{sql}: {error}"
+        );
+    }
 
     // Short month + day without a leading zero.
-    assert_eq!(try_sql(&mut session, "select date_format('2024-02-15', '%b %c')"), "s:Feb 2");
+    assert_eq!(
+        try_sql(&mut session, "select date_format('2024-02-15', '%b %c')"),
+        "s:Feb 2"
+    );
 
     // 12-hour clock with the AM/PM marker.
     assert_eq!(
-        try_sql(&mut session, "select date_format('2024-02-15 13:45:00', '%r')"),
+        try_sql(
+            &mut session,
+            "select date_format('2024-02-15 13:45:00', '%r')"
+        ),
         "s:01:45:00 PM"
     );
 }

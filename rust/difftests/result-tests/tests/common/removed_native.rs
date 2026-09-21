@@ -207,8 +207,8 @@ pub fn is_radix_shape_contraction(sql: &str) -> bool {
 }
 
 /// Exact shapes that cannot safely use the pinned TiKV kernels: direct binary
-/// literals lose their source provenance at QUOTE, while the unsigned count
-/// would wrap before SUBSTRING_INDEX's `abs()` branch.
+/// literals lose their source provenance at QUOTE, the unsigned count would wrap
+/// before SUBSTRING_INDEX's `abs()` branch, and TiKV has no CHAR signature.
 pub fn is_string_aux_shape_contraction(sql: &str) -> bool {
     let compact = compact_sql_outside_strings(sql);
     let expr = compact
@@ -225,6 +225,9 @@ pub fn is_string_aux_shape_contraction(sql: &str) -> bool {
             | "quote(x'5c22')"
             | "quote(x'001a')"
             | "quote(char(0,26))"
+            | "char(72,73)"
+            | "char(22823usingutf8mb4)"
+            | "char(65,16740,67.5usingutf8)"
             | "substring_index('www.pingcap.com','.','2')"
             | "substring_index('www.pingcap.com','.',2.5)"
             | "substring_index(\"aaa.bbb.ccc.ddd.eee\",'.',18446744073709551613)"
@@ -336,7 +339,7 @@ fn removed_marker_for_name(name: &str, nonbinary_find_in_set: bool) -> Option<&'
     if matches!(name, "HEX" | "UNHEX" | "BIN" | "OCT" | "ORD" | "BIT_COUNT") {
         return Some(RADIX_REMOVED);
     }
-    if matches!(name, "SUBSTRING_INDEX" | "QUOTE") {
+    if matches!(name, "SUBSTRING_INDEX" | "QUOTE" | "CHAR_FUNC") {
         return Some(STRING_AUX_REMOVED);
     }
     if matches!(
@@ -510,6 +513,12 @@ fn markers_come_from_parsed_function_nodes_not_text() {
         );
         assert!(!is_string_aux_shape_contraction(sql), "{sql}");
     }
+    assert!(!requires_string_aux_engine("select char(72, 73)"));
+    assert_eq!(
+        expected_removed_marker("select char(72, 73)"),
+        Some(STRING_AUX_REMOVED)
+    );
+    assert!(is_string_aux_shape_contraction("select char(72, 73)"));
     for sql in [
         "select quote(x'001a')",
         "select substring_index('www.pingcap.com', '.', '2')",

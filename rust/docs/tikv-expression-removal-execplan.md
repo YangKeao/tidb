@@ -288,6 +288,23 @@ remain in the workspace.
       carried math/crypto contractions. Broad replay remains intentionally red:
       Native has 182 divergences; Copying has 167 and executes 416244 engine
       rows. This is not a compatibility claim.
+- [x] Fourteenth physical-deletion tranche: removed the native `CHAR_FUNC`
+      byte-assembly/charset-decoding kernel, its integer-byte helper, raw charset
+      sentinel preprocessing, and residual value dispatch. All four native entry
+      boundaries now refuse `CHAR_FUNC` before argument evaluation. TiKV has no
+      CHAR signature, so every CHAR shape is an explicit structured contraction;
+      former Go values remain beside refusal assertions rather than being silently
+      dropped or replayed. Constant folding can no longer erase constant CHAR
+      calls through the deleted kernel, and the ratchet now requires the call to
+      survive as a visible adapter decline. Validation is 1185 library and 77
+      external tests, the focused session contraction in both feature modes,
+      expression/query diffs, runtime 30 tests / 322 receipts / 2064 engine rows
+      / 160 borrowed rows, static 216 admitted / 168 excluded / 0 missing, and
+      repository lint. The full session suite adds no failures to the four
+      carried math/crypto contractions. Broad replay remains intentionally red:
+      Native has 182 divergences; Copying has 167 and executes 416242 engine
+      rows. FIELD and ELT remain native and are the next string-tail deletion
+      candidates; this is not a compatibility claim.
 - [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
       in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected
       borrowed facade was used by the adapter while the manifest still pinned

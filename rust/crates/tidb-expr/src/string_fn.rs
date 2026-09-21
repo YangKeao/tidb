@@ -13,14 +13,13 @@
 
 //! Remaining native string builtin helpers. Case conversion, LEFT/RIGHT,
 //! REVERSE, REPLACE, STRCMP, ASCII, BIT_LENGTH, HEX/UNHEX, BIN/OCT, ORD,
-//! BIT_COUNT, SUBSTRING_INDEX, and QUOTE were physically removed; retained
-//! lowerable shapes execute only through TiKV. LOCATE/INSTR/POSITION and `TRIM(...)` retain native helpers
+//! BIT_COUNT, SUBSTRING_INDEX, QUOTE, and CHAR_FUNC were physically removed;
+//! retained lowerable shapes execute only through TiKV. LOCATE/INSTR/POSITION and `TRIM(...)` retain native helpers
 //! for later semantic-gap work.
 
 use crate::coerce::{coerce_str, coerce_str_bytes};
 use crate::ops::to_f64_with_mysql_string;
 use crate::{Datum, EvalError};
-use tidb_datatype::{find_encoding, get_default_collation, Collation, TransformOp};
 
 /// `POSITION(substr IN str)`: the 1-indexed, character-based position of
 /// `substr`'s first occurrence in `str`; `0` if not found; an empty
@@ -333,70 +332,6 @@ pub(crate) fn elt(vals: &[Datum]) -> Result<Datum, EvalError> {
             Datum::new_string(selected)
         },
     )
-}
-
-/// `CHAR(n1, n2, ...)` (parser-renamed `CHAR_FUNC`) ported from
-/// `builtinCharSig.convertToBytes` in `pkg/expression/builtin_string.go`.
-/// No-`USING` CHAR returns `Datum::Bytes` exactly as TiDB's binary signature
-/// does, including invalid UTF-8 and embedded NUL.
-#[cfg(test)]
-pub(crate) fn char_func(vals: &[Datum]) -> Result<Datum, EvalError> {
-    char_func_with_context(vals, &crate::context::NoColumns)
-}
-
-pub(crate) fn char_func_with_context(
-    vals: &[Datum],
-    ctx: &dyn crate::context::Columns,
-) -> Result<Datum, EvalError> {
-    // The last argument is the charset sentinel appended by the parser.
-    let Some((charset, nums)) = vals.split_last() else {
-        return Err(EvalError::Unsupported("CHAR requires arguments"));
-    };
-    let mut bytes = Vec::new();
-    for v in nums {
-        match v {
-            Datum::Null => {} // skipped, matching TiDB's EvalInt NULL path
-            _ => append_char_integer(&mut bytes, crate::cast::to_i64_signed(v)),
-        }
-    }
-    if *charset == Datum::Null {
-        return Ok(Datum::new_bytes(bytes));
-    }
-
-    let charset = std::str::from_utf8(
-        charset
-            .as_raw_bytes()
-            .ok_or(EvalError::Unsupported("CHAR charset argument"))?,
-    )
-    .map_err(|_| EvalError::Unsupported("CHAR charset argument"))?
-    .to_ascii_lowercase();
-    let (decoded, error) = find_encoding(&charset)
-        .transform(&bytes, TransformOp::DECODE)
-        .into_parts();
-    if let Some(error) = error {
-        ctx.append_warning(1300, &error.to_string());
-        if ctx.strict_sql_mode() {
-            return Ok(Datum::Null);
-        }
-    }
-    let collation_name = get_default_collation(&charset)
-        .map_err(|_| EvalError::Unsupported("CHAR charset argument"))?;
-    let collation = Collation::from_name(&collation_name)
-        .ok_or(EvalError::Unsupported("CHAR charset argument"))?;
-    Ok(Datum::new_collation_string(decoded, collation))
-}
-
-fn append_char_integer(bytes: &mut Vec<u8>, mut value: i64) {
-    let mut current = Vec::with_capacity(4);
-    for _ in 0..4 {
-        current.push((value & 0xff) as u8);
-        value >>= 8;
-        if value == 0 {
-            break;
-        }
-    }
-    current.reverse();
-    bytes.extend(current);
 }
 
 /// `TRIM([{BOTH|LEADING|TRAILING} [remstr]] FROM str)` / `TRIM(str)` /

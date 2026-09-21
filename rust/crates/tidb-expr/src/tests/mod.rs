@@ -895,6 +895,9 @@ fn char_length_public_eval_uses_source_field_type() {
             #[cfg(feature = "tikv-expr")]
             assert_eq!(engine_e(expression), want, "TiKV: {expression}");
             assert_eq!(e(expression), RADIX_REMOVED, "native: {expression}");
+        } else if expression.contains("char(") {
+            let _ = want; // retained Go value: CHAR_FUNC has no TiKV kernel
+            assert_string_aux_contraction(expression);
         } else {
             assert_eq!(e(expression), want, "{expression}");
         }
@@ -903,9 +906,9 @@ fn char_length_public_eval_uses_source_field_type() {
 }
 
 #[test]
-fn char_using_reaches_both_public_evaluators() {
-    assert_eq!(e("char(65, 16740, 67.5 using utf8)"), "STR:AAdD");
-    assert_eq!(chunk_e("char(65, 16740, 67.5 using utf8)"), "STR:AAdD");
+fn char_using_is_an_explicit_contraction() {
+    // Former Go value: STR:AAdD. TiKV has no CHAR_FUNC kernel.
+    assert_string_aux_contraction("char(65, 16740, 67.5 using utf8)");
 }
 
 #[test]

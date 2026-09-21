@@ -19,9 +19,7 @@ use tidb_ast::{BinaryOp, Expr};
 use crate::coerce::{bool_int, truthy_of};
 use crate::eval_in;
 use crate::row::row_compare;
-use crate::string_fn::{
-    char_func_with_context, elt, field, locate, locate_collation, locate_with_position,
-};
+use crate::string_fn::{elt, field, locate, locate_collation, locate_with_position};
 use crate::time_fn::calendar::{date_add, date_diff, date_format, date_part, from_days, time_part};
 use crate::{BuildContext, Columns, Datum, EvalError, StringLengthFunction};
 
@@ -211,7 +209,7 @@ pub(crate) fn is_removed_native_radix(name: &str) -> bool {
 pub(crate) fn is_removed_native_string_aux(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
-        "SUBSTRING_INDEX" | "QUOTE"
+        "SUBSTRING_INDEX" | "QUOTE" | "CHAR_FUNC"
     )
 }
 
@@ -458,15 +456,7 @@ pub(crate) fn eval_func(
     }
     let vals: Vec<Datum> = args
         .iter()
-        .enumerate()
-        .map(|(index, arg)| {
-            if name == "CHAR_FUNC" && index + 1 == args.len() {
-                if let Expr::RawString(charset) = arg {
-                    return Ok(Datum::new_string(charset.clone()));
-                }
-            }
-            eval_in(arg, cols)
-        })
+        .map(|arg| eval_in(arg, cols))
         .collect::<Result<_, _>>()?;
     // Go `HandleBinaryLiteral`'s `funcPropBinAware` arm. The chunk path reads
     // the argument's static charset; this value-only path reads the datum's
@@ -1028,7 +1018,6 @@ pub(crate) fn eval_func_values(
         "FIELD" if vals.len() >= 2 => field(vals, ctx),
         "ELT" if vals.len() >= 2 => elt(vals),
         "DATE_FORMAT" if vals.len() == 2 => date_format(&vals[0], &vals[1]),
-        "CHAR_FUNC" if !vals.is_empty() => char_func_with_context(vals, ctx),
         // Go `builtinLoadFileSig.evalString` reads the argument and then
         // returns `"", true, nil` UNCONDITIONALLY: TiDB has no server-side
         // file access at all, so LOAD_FILE is NULL for every path, readable
