@@ -8,10 +8,12 @@ before this documentation update. TiDB actually builds the pinned engine
 `db9c7f08d954fef02519b86a55c2d72cf72ef697`, not arbitrary TiKV HEAD.
 Only YangKeao personal forks have been used for publication.
 
-**Do not switch the default or delete native yet.** A fresh refusal-intolerant
-corpus audit still fails 61 tests, exposing 59 distinct first-refused expressions.
-The migration objective remains active/incomplete; reaching an automation round
-limit is neither completion nor a technical blocker.
+**Do not switch the default yet. Physical deletion is now deliberately in
+progress.** The first tranche removed the complete native math-kernel directory
+and made unverified math families explicitly unsupported; this invalidates the
+older policy of retaining every native family until compatibility was complete.
+The earlier refusal-intolerant corpus still exposed 59 distinct first-refused
+expressions, so the migration objective remains active/incomplete.
 
 ## Acceptance status for the six requested items
 
@@ -37,9 +39,9 @@ Logs are in `/home/agent/tidb/expression-reuse/`.
 | Log | Result | Scope/qualification |
 | --- | --- | --- |
 | `checkpoint-executor-native.log` | 1346 library + 329 integration + 6 tests passed; 184 integration ignored | Feature-off executor compatibility, not engine coverage. |
-| `checkpoint-expression-engine.log` | 1224 library + 77 integration passed; 99 library ignored | Feature enabled; ordinary corpus checks may decline/retain native. |
-| `checkpoint-runtime-gate.log` | 30 tests, 368 fixture receipts, 2394 engine rows, 160 observed borrowed rows | Exact baseline and zero native fallback in receipted engine contexts. Native oracle is intentionally separate. 47 integration tests filtered out; not all SQL shapes. |
-| `checkpoint-static-gate.log` | Self-check and check pass | 384 declaration rows, 240 admitted / 144 excluded, zero missing registry/synthesized names. Static candidates are not execution coverage. |
+| `native-math-delete-full-lib-tests.log` + `native-math-delete-integration-tests.log` | 1216 library + 77 integration passed; 99 library ignored | Feature enabled after physical math deletion; contracted families assert explicit refusal. |
+| `native-math-runtime-gate-green.log` | 30 tests, 334 fixture receipts, 2150 engine rows, 160 observed borrowed rows | Reviewed baseline after removing 34 now-contracted math receipts; zero fallback in receipted engine contexts. |
+| current static gate | Self-check and check pass | 384 declaration rows, 223 admitted / 161 excluded, zero missing registry/synthesized names. Static candidates are not execution coverage. |
 | `checkpoint-engine-only.log` | **1163 passed / 61 failed / 99 ignored**, exit 101 | All 61 failed sections report adapter refusal; 59 distinct first-refused expressions. This is an incomplete cutover gate. |
 
 Sampled peak for these fresh runs: 2210.3 MiB. Very short cached runs can be

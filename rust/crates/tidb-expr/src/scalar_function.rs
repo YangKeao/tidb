@@ -415,87 +415,6 @@ fn decimal_arithmetic_overflow_error(
     }
 }
 
-/// Renders the argument expression used by Go's math overflow signatures.
-/// These signatures report their function name and source-shaped arguments,
-/// rather than the datum-only `FloatOverflow` carrier returned by the shared
-/// math implementation.
-fn math_overflow_expression(function: &ScalarFunction, ctx: &dyn Columns) -> Option<String> {
-    fn render(expression: &Expression, ctx: &dyn Columns) -> Option<String> {
-        match expression {
-            Expression::Constant(constant) => match constant.eval_in(ctx).ok()? {
-                Datum::Int(value) => Some(value.to_string()),
-                Datum::UInt(value) => Some(value.to_string()),
-                Datum::Float32(value) => Some(tidb_datatype::format_float_g_shortest(value)),
-                Datum::Real(value) => Some(tidb_datatype::format_float_g_shortest(value)),
-                Datum::Decimal(value) => Some(value.to_string()),
-                Datum::Null => Some("NULL".to_owned()),
-                _ => None,
-            },
-            Expression::Column(column) if !column.orig_name.is_empty() => {
-                Some(column.orig_name.clone())
-            }
-            Expression::CorrelatedColumn(column) if !column.column.orig_name.is_empty() => {
-                Some(column.column.orig_name.clone())
-            }
-            Expression::ScalarFunction(function) => {
-                if let Some(op) = binary_op_for_name(function.func_name.lowercase()) {
-                    let symbol = arithmetic_symbol(op)?;
-                    let [left, right] = function.args.as_slice() else {
-                        return None;
-                    };
-                    return Some(format!(
-                        "({} {symbol} {})",
-                        render(left, ctx)?,
-                        render(right, ctx)?
-                    ));
-                }
-                let args = function
-                    .args
-                    .iter()
-                    .map(|expression| render(expression, ctx))
-                    .collect::<Option<Vec<_>>>()?;
-                Some(format!(
-                    "{}({})",
-                    function.func_name.lowercase(),
-                    args.join(", ")
-                ))
-            }
-            _ => None,
-        }
-    }
-
-    let args = function
-        .args
-        .iter()
-        .map(|expression| render(expression, ctx))
-        .collect::<Option<Vec<_>>>()?;
-    Some(format!(
-        "{}({})",
-        function.func_name.lowercase(),
-        args.join(", ")
-    ))
-}
-
-/// Converts the datum-only overflow carriers from math builtins into Go's
-/// function-specific 1690 diagnostics while the argument expressions remain
-/// available on the scalar-function node.
-fn math_overflow_error(
-    function: &ScalarFunction,
-    error: EvalError,
-    ctx: &dyn Columns,
-) -> EvalError {
-    let name = function.func_name.lowercase();
-    let value = match (name, &error) {
-        ("abs", EvalError::IntOverflow) => "BIGINT",
-        ("cot" | "exp" | "pow" | "power", EvalError::FloatOverflow) => "DOUBLE",
-        _ => return error,
-    };
-    let Some(expression) = math_overflow_expression(function, ctx) else {
-        return error;
-    };
-    EvalError::DataOutOfRange { value, expression }
-}
-
 impl ScalarFunction {
     /// Builds a scalar-function node.
     #[must_use]
@@ -998,6 +917,11 @@ impl ScalarFunction {
     /// type -- see [`Self::coerce_to_ret_type`] for why that is the whole
     /// point of Go's `Eval` and not an afterthought.
     pub fn eval(&self, ctx: &dyn Columns, row: Row<'_>) -> Result<Datum, EvalError> {
+        if crate::func::is_removed_native_math(self.func_name.lowercase()) {
+            return Err(EvalError::Unsupported(
+                "native math evaluation was removed; TiKV engine required",
+            ));
+        }
         if let Some(value) = self.eval_fast_integer_binary(ctx, row)? {
             return self.coerce_to_ret_type(value);
         }
@@ -1921,30 +1845,6 @@ impl ScalarFunction {
                 return built.eval(&self.args[0].eval(ctx, row)?);
             }
         }
-        // Go `randFunctionClass`: a constant `RAND(N)` owns one
-        // statement-scoped generator per AST occurrence, a nonconstant
-        // argument starts a fresh generator every row. The AST evaluator
-        // (`crate::func::eval_func`) gets that per-call identity from the
-        // `Expr` node's own address (`expr as *const Expr as usize`, stable
-        // for the query's lifetime because the tree is evaluated by
-        // reference, never rebuilt per row); this node is evaluated the same
-        // way, so its own address serves identically. A literal argument is
-        // classified by matching `Expression::Constant` directly -- unlike
-        // the AST classifier this does not recurse through a folded
-        // arithmetic tree of literals (e.g. `RAND(1+2)`), because constant
-        // folding is not yet wired for scalar functions here (`const_level`
-        // above is conservatively `ConstNone`); every case this port targets
-        // passes RAND a bare literal.
-        if name == "rand" {
-            let vals: Vec<Datum> = self
-                .args
-                .iter()
-                .map(|a| a.eval(ctx, row))
-                .collect::<Result<_, _>>()?;
-            let arg_is_constant = matches!(self.args.first(), Some(Expression::Constant(_)));
-            let function_key = Some(std::ptr::from_ref(self) as usize);
-            return crate::math_fn::eval_rand_values(&vals, ctx, function_key, arg_is_constant);
-        }
         // Go `builtinInStringSig` compares the tested value with each list
         // item through the function's own collator, which the derivation
         // aggregated over ALL of them -- so `ci_col IN ('A')` folds case just
@@ -2473,31 +2373,6 @@ impl ScalarFunction {
                 }
                 _ => Ok(result),
             };
-        }
-        if matches!(upper.as_str(), "ROUND" | "TRUNCATE")
-            && matches!(vals.first(), Some(Datum::Decimal(_)))
-        {
-            return crate::math_fn::round_or_truncate_with_result_decimal(
-                &vals,
-                upper == "ROUND",
-                self.ret_type.as_ref().map(FieldType::decimal),
-                ctx,
-            );
-        }
-        if matches!(upper.as_str(), "CEIL" | "CEILING" | "FLOOR")
-            && matches!(vals.first(), Some(Datum::Decimal(_)))
-        {
-            return crate::math_fn::ceil_floor_with_result_domain(
-                &vals,
-                upper != "FLOOR",
-                self.ret_type
-                    .as_ref()
-                    .map(|field_type| field_type.eval_type() == tidb_datatype::EvalType::Decimal),
-                ctx,
-            );
-        }
-        if let Some(result) = crate::math_fn::dispatch_values(&upper, &vals, ctx) {
-            return result.map_err(|error| math_overflow_error(self, error, ctx));
         }
         if let Some(result) = crate::func::eval_func_values_in(&upper, &vals, ctx) {
             return result;
@@ -3484,13 +3359,10 @@ mod tests {
                 decimal_type.clone(),
                 vec![decimal(), scale()],
             );
-            let value = function
-                .eval(&crate::context::NoColumns, tidb_chunk::row::Row::empty())
-                .expect("decimal ROUND/TRUNCATE must evaluate");
-            let Datum::Decimal(value) = value else {
-                panic!("{name} returned a non-decimal value")
-            };
-            assert_eq!(value.to_string(), "1.23", "{name}");
+            assert!(matches!(
+                function.eval(&crate::context::NoColumns, tidb_chunk::row::Row::empty()),
+                Err(EvalError::Unsupported(_))
+            ));
         }
     }
 
@@ -3678,9 +3550,12 @@ mod tests {
         let row = chk.get_row(0);
         let konst = |d: Datum| Expression::Constant(Constant::new(d, ft()));
 
-        // ABS(-5) = 5 via math_fn's shared values-only dispatch.
+        // Native math entry points fail closed after the kernel deletion.
         let abs = ScalarFunction::new(CiString::new("abs"), ft(), vec![konst(Datum::Int(-5))]);
-        assert_eq!(abs.eval(&NoColumns, row).unwrap(), Datum::Int(5));
+        assert!(matches!(
+            abs.eval(&NoColumns, row),
+            Err(EvalError::Unsupported(_))
+        ));
 
         // CONCAT('a', 'b') = 'ab' via the shared string arm.
         let concat = ScalarFunction::new(
@@ -3726,10 +3601,10 @@ mod tests {
         chk2.append_int64(0, -9);
         let abs_col =
             ScalarFunction::new(CiString::new("abs"), ft(), vec![Expression::Column(col)]);
-        assert_eq!(
-            abs_col.eval(&NoColumns, chk2.get_row(0)).unwrap(),
-            Datum::Int(9)
-        );
+        assert!(matches!(
+            abs_col.eval(&NoColumns, chk2.get_row(0)),
+            Err(EvalError::Unsupported(_))
+        ));
 
         // `IF` is a lazy control form now, so it evaluates here: the
         // condition picks the branch (this used to be the example of a
@@ -3837,22 +3712,15 @@ mod tests {
             keys: Cell::new(Vec::new()),
         };
 
-        assert_eq!(rand_five.eval(&columns, row).unwrap(), Datum::Real(0.5));
-        assert_eq!(rand_five.eval(&columns, row).unwrap(), Datum::Real(0.5));
-        let keys = columns.keys.into_inner();
-        assert_eq!(keys.len(), 2);
-        // The SAME node produced the same key both times.
-        assert_eq!(keys[0], keys[1]);
-
-        // A DIFFERENT node (a different RAND(5) call site) gets a different
-        // key, because each owns its own generator.
-        let rand_five_again =
-            ScalarFunction::new(CiString::new("rand"), real_ft(), vec![konst(Datum::Int(5))]);
-        let columns2 = RandColumns {
-            keys: Cell::new(Vec::new()),
-        };
-        rand_five_again.eval(&columns2, row).unwrap();
-        assert_ne!(columns2.keys.into_inner()[0], keys[0]);
+        assert!(matches!(
+            rand_five.eval(&columns, row),
+            Err(EvalError::Unsupported(_))
+        ));
+        assert!(matches!(
+            rand_five.eval(&columns, row),
+            Err(EvalError::Unsupported(_))
+        ));
+        assert!(columns.keys.into_inner().is_empty());
     }
 
     #[test]
@@ -3877,7 +3745,10 @@ mod tests {
         let columns = SeqColumns {
             next: std::cell::Cell::new(0.75),
         };
-        assert_eq!(rand.eval(&columns, row).unwrap(), Datum::Real(0.75));
+        assert!(matches!(
+            rand.eval(&columns, row),
+            Err(EvalError::Unsupported(_))
+        ));
     }
 
     #[test]

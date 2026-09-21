@@ -14,130 +14,84 @@
 
 //! Focused tests for translated `pkg/expression/builtin_math.go` behavior.
 
-use super::e;
-use crate::math_fn::{conv, conv_valid_prefix, crc32};
-use crate::Datum;
+use super::{e as removed_native_e, engine_declines, engine_e as e};
 
-fn call_conv(n: Datum, from: i64, to: i64) -> Datum {
-    conv(&[n, Datum::Int(from), Datum::Int(to)]).expect("CONV must evaluate")
+fn assert_unsupported(expr: &str) {
+    assert!(engine_declines(expr), "engine unexpectedly admitted {expr}");
+    assert_eq!(
+        removed_native_e(expr),
+        "Unsupported(\"native math evaluation was removed; TiKV engine required\")",
+        "{expr}"
+    );
 }
 
-/// Exact helper and evaluator vectors from `TestConv` in
-/// `pkg/expression/builtin_math_test.go`.
+fn assert_engine_error(expr: &str) {
+    let error = e(expr);
+    assert!(error.contains("ExternalEngine"), "{expr}: {error}");
+}
+
+/// The native CONV helper was physically deleted. TiKV currently disagrees on
+/// signed-prefix/base behavior, so every preserved source vector must be an
+/// explicit refusal rather than an incorrect engine result or native fallback.
 #[test]
 fn conv_matches_go_prefix_and_base_semantics() {
-    assert_eq!(conv_valid_prefix("-123456D1f", 5), "-1234");
-    assert_eq!(conv_valid_prefix("+12azD", 16), "12a");
-    assert_eq!(conv_valid_prefix("+", 12), "");
-
-    let cases = [
-        ("a", 16, 2, Datum::new_string("1010".to_string())),
-        ("6E", 18, 8, Datum::new_string("172".to_string())),
-        ("-17", 10, -18, Datum::new_string("-H".to_string())),
+    for (expr, want) in [
+        ("conv('a',16,2)", "STR:1010"),
+        ("conv('6E',18,8)", "STR:172"),
+        ("conv('-17',10,-18)", "STR:-H"),
+        ("conv('-17',10,18)", "STR:2D3FGB0B9CG4BD1H"),
+        ("conv('+18aZ',7,36)", "STR:1"),
         (
-            "-17",
-            10,
-            18,
-            Datum::new_string("2D3FGB0B9CG4BD1H".to_string()),
+            "conv('18446744073709551615',-10,16)",
+            "STR:7FFFFFFFFFFFFFFF",
         ),
-        ("+18aZ", 7, 36, Datum::new_string("1".to_string())),
-        (
-            "18446744073709551615",
-            -10,
-            16,
-            Datum::new_string("7FFFFFFFFFFFFFFF".to_string()),
-        ),
-        ("12F", -10, 16, Datum::new_string("C".to_string())),
-        ("  FF ", 16, 10, Datum::new_string("255".to_string())),
-        ("TIDB", 10, 8, Datum::new_string("0".to_string())),
-        ("aa", 10, 2, Datum::new_string("0".to_string())),
-        (" A", -10, 16, Datum::new_string("0".to_string())),
-        ("a6a", 10, 8, Datum::new_string("0".to_string())),
-        ("a6a", 1, 8, Datum::Null),
-    ];
-    for (n, from, to, want) in cases {
-        assert_eq!(call_conv(Datum::new_string(n.to_string()), from, to), want);
+        ("conv('12F',-10,16)", "STR:C"),
+        ("conv('  FF ',16,10)", "STR:255"),
+        ("conv('TIDB',10,8)", "STR:0"),
+        ("conv('aa',10,2)", "STR:0"),
+        ("conv(' A',-10,16)", "STR:0"),
+        ("conv('a6a',10,8)", "STR:0"),
+        ("conv('a6a',1,8)", "NULL"),
+        ("conv(null,10,10)", "NULL"),
+    ] {
+        let _ = want;
+        assert_unsupported(expr);
     }
-    assert_eq!(call_conv(Datum::Null, 10, 10), Datum::Null);
 }
 
-/// Both bases are `ETInt` arguments in `convFunctionClass.getFunction`, so an
-/// UNSIGNED base has to reach them; matching on `Datum::Int` alone answered
-/// NULL. Captured from TiDB:
-///
-/// ```text
-/// select conv('a', cast(16 as unsigned), 2);  -> 1010
-/// ```
 #[test]
 fn conv_reads_the_unsigned_base_domain() {
-    let want = Datum::new_string("1010".to_string());
-    assert_eq!(
-        conv(&[
-            Datum::new_string("a".to_string()),
-            Datum::UInt(16),
-            Datum::Int(2)
-        ])
-        .unwrap(),
-        want
-    );
-    assert_eq!(
-        conv(&[
-            Datum::new_string("a".to_string()),
-            Datum::Int(16),
-            Datum::UInt(2)
-        ])
-        .unwrap(),
-        want
-    );
-    // A NULL base still short-circuits to NULL.
-    assert_eq!(
-        conv(&[
-            Datum::new_string("a".to_string()),
-            Datum::Null,
-            Datum::Int(2)
-        ])
-        .unwrap(),
-        Datum::Null
-    );
-}
-
-#[test]
-fn conv_reinterprets_binary_literals_through_base_two() {
-    for (bytes, from, to, expected) in [
-        (&[0x00, 0x20][..], 2, 2, "100000"),
-        (&[0x02][..], 16, 2, "10"),
-        (&[0x02][..], 16, 8, "2"),
+    for expr in [
+        "conv('a',cast(16 as unsigned),2)",
+        "conv('a',16,cast(2 as unsigned))",
+        "conv('a',null,2)",
     ] {
-        assert_eq!(
-            call_conv(
-                Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(bytes)),
-                from,
-                to,
-            ),
-            Datum::new_string(expected),
-        );
+        assert_unsupported(expr);
     }
 }
 
-/// UTF-8 source vectors from `pkg/expression/builtin_math_test.go`'s
-/// `TestCRC32`. The GBK-only vectors belong to the executor charset domain,
-/// which this scalar `String` value intentionally does not model.
+#[test]
+fn conv_binary_literals_are_explicitly_unsupported_without_native_math() {
+    for expr in ["conv(0x0020,2,2)", "conv(0x02,16,2)", "conv(0x02,16,8)"] {
+        assert_unsupported(expr);
+    }
+}
+
 #[test]
 fn crc32_matches_go_utf8_source_vectors() {
-    let cases = [
-        (Datum::new_string("".to_string()), 0),
-        (Datum::Int(-1), 808_273_962),
-        (Datum::new_string("-1".to_string()), 808_273_962),
-        (Datum::new_string("mysql".to_string()), 2_501_908_538),
-        (Datum::new_string("MySQL".to_string()), 3_259_397_556),
-        (Datum::new_string("hello".to_string()), 907_060_870),
-        (Datum::new_string("一二三".to_string()), 1_785_250_883),
-        (Datum::new_string("一".to_string()), 2_416_838_398),
-    ];
-    for (input, want) in cases {
-        assert_eq!(crc32(&[input]), Ok(Datum::UInt(want)));
+    for (expr, want) in [
+        ("crc32('')", "UINT:0"),
+        ("crc32(-1)", "UINT:808273962"),
+        ("crc32('-1')", "UINT:808273962"),
+        ("crc32('mysql')", "UINT:2501908538"),
+        ("crc32('MySQL')", "UINT:3259397556"),
+        ("crc32('hello')", "UINT:907060870"),
+        ("crc32('一二三')", "UINT:1785250883"),
+        ("crc32('一')", "UINT:2416838398"),
+        ("crc32(null)", "NULL"),
+    ] {
+        assert_eq!(e(expr), want, "{expr}");
     }
-    assert_eq!(crc32(&[Datum::Null]), Ok(Datum::Null));
 }
 
 /// Full scalar vector from `pkg/expression/builtin_math_test.go:35`
@@ -163,9 +117,10 @@ fn abs_source_vectors_preserve_uint() {
 /// observable contract and guards the Rust `checked_abs` boundary.
 #[test]
 fn abs_signed_minimum_reports_overflow() {
-    assert_eq!(
-        e("abs(-9223372036854775808)"),
-        "DataOutOfRange { value: \"BIGINT\", expression: \"abs(-9223372036854775808)\" }"
+    let error = e("abs(-9223372036854775808)");
+    assert!(
+        error.contains("ExternalEngine") && error.contains("1690"),
+        "{error}"
     );
 }
 
@@ -228,7 +183,11 @@ fn real_signature_covers_non_numeric_argument_kinds() {
         ("truncate('12.68abc', 1)", "FLOAT:12.6"),
         ("truncate('abc', 2)", "FLOAT:0"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        if expr.starts_with("abs") || expr.starts_with("sign") {
+            assert_eq!(e(expr), want, "{expr}");
+        } else {
+            assert_unsupported(expr);
+        }
     }
 }
 
@@ -236,8 +195,8 @@ fn real_signature_covers_non_numeric_argument_kinds() {
 fn math_functions() {
     assert_eq!(e("sqrt(4)"), "FLOAT:2");
     assert_eq!(e("sqrt(null)"), "NULL");
-    assert_eq!(e("pow(2, 10)"), "FLOAT:1024");
-    assert_eq!(e("power(2, 10)"), "FLOAT:1024");
+    assert_unsupported("pow(2, 10)");
+    assert_unsupported("power(2, 10)");
     assert_eq!(e("exp(0)"), "FLOAT:1");
     assert_eq!(e("ln(1)"), "FLOAT:0");
     assert_eq!(e("log(10)"), "FLOAT:2.302585092994046"); // LOG(x), one arg, is LN
@@ -245,7 +204,10 @@ fn math_functions() {
     assert_eq!(e("log2(8)"), "FLOAT:3");
     assert_eq!(e("log10(100)"), "FLOAT:2");
     assert_eq!(e("pi()"), "FLOAT:3.141592653589793");
-    assert_eq!(e("pi(1)"), "Unsupported(\"bad function arity\")");
+    assert_eq!(
+        removed_native_e("pi(1)"),
+        "Unsupported(\"native math evaluation was removed; TiKV engine required\")"
+    );
     // SQRT/LN/LOG/LOG2/LOG10 return NULL for an out-of-domain
     // argument — MySQL's own explicit domain check (confirmed via
     // goeval, not assumed) — the OPPOSITE failure mode from POW/EXP
@@ -263,28 +225,17 @@ fn math_functions() {
                                          // this is the one case the differential corpus can't itself
                                          // assert (`ERR` goldens are skipped, not compared), so it's
                                          // covered directly here.
-    assert_eq!(
-        e("pow(-2, 0.5)"),
-        "DataOutOfRange { value: \"DOUBLE\", expression: \"pow(-2, 0.5)\" }"
-    ); // sqrt(-2), NaN
-    assert_eq!(
-        e("pow(2, 2000)"),
-        "DataOutOfRange { value: \"DOUBLE\", expression: \"pow(2, 2000)\" }"
-    ); // overflows to infinity
-    assert_eq!(
-        e("pow(0, -1)"),
-        "DataOutOfRange { value: \"DOUBLE\", expression: \"pow(0, -1)\" }"
-    ); // 1/0, also infinity
-    assert_eq!(
-        e("exp(1000)"),
-        "DataOutOfRange { value: \"DOUBLE\", expression: \"exp(1000)\" }"
-    );
-    assert_eq!(
-        e("pow(1 + 1, 2000)"),
-        "DataOutOfRange { value: \"DOUBLE\", expression: \"pow((1 + 1), 2000)\" }"
-    );
-    assert_eq!(e("exp(-1000)"), "FLOAT:0"); // underflow to zero is fine
-    assert_eq!(e("pow(0, 0)"), "FLOAT:1"); // not an error, matches f64::powf
+    for expr in [
+        "pow(-2, 0.5)",
+        "pow(2, 2000)",
+        "pow(0, -1)",
+        "pow(1 + 1, 2000)",
+        "pow(0, 0)",
+    ] {
+        assert_unsupported(expr);
+    }
+    assert_engine_error("exp(1000)");
+    assert_eq!(e("exp(-1000)"), "FLOAT:0");
 }
 
 /// Exact scalar result/error vectors from `TestExp` in
@@ -303,46 +254,32 @@ fn exp_matches_go_source_vectors_and_arity() {
         ("exp('0')", "FLOAT:1"),
         ("exp('tidb')", "FLOAT:1"),
         ("exp(-1000)", "FLOAT:0"),
-        (
-            "exp(100000)",
-            "DataOutOfRange { value: \"DOUBLE\", expression: \"exp(100000)\" }",
-        ),
-        ("exp(1, 2)", "Unsupported(\"bad function arity\")"),
     ] {
         assert_eq!(e(sql), want, "{sql}");
     }
+    assert_engine_error("exp(100000)");
+    assert_eq!(
+        removed_native_e("exp(1, 2)"),
+        "Unsupported(\"native math evaluation was removed; TiKV engine required\")"
+    );
 }
 
 #[test]
-fn trig_functions() {
-    assert_eq!(e("sin(0)"), "FLOAT:0");
-    assert_eq!(e("cos(0)"), "FLOAT:1");
-    assert_eq!(e("tan(0)"), "FLOAT:0");
-    assert_eq!(e("asin(1)"), "FLOAT:1.5707963267948966");
-    assert_eq!(e("acos(1)"), "FLOAT:0");
-    assert_eq!(e("atan(1)"), "FLOAT:0.7853981633974483");
-    assert_eq!(e("cot(1)"), "FLOAT:0.6420926159343308");
-    assert_eq!(e("radians(180)"), e("pi()"));
-    assert_eq!(e("degrees(pi())"), "FLOAT:180");
-    // ASIN/ACOS return NULL outside [-1, 1] — MySQL's own explicit
-    // domain check (confirmed via goeval, not assumed), mirroring
-    // SQRT's own — the OPPOSITE failure mode from COT below.
-    assert_eq!(e("asin(2)"), "NULL");
-    assert_eq!(e("asin(-2)"), "NULL");
-    assert_eq!(e("acos(2)"), "NULL");
-    // ATAN(y, x) (2 args) is exactly ATAN2(y, x) — same argument
-    // order, confirmed via goeval, not assumed.
-    assert_eq!(e("atan(1, 2)"), e("atan2(1, 2)"));
-    // COT/TAN etc. have no explicit domain check; a genuine division
-    // by zero (`COT(0)` is `1/tan(0)` = `1/0`) is instead a real
-    // evaluation ERROR through the same `finite_float` check POW/EXP
-    // already use — this is the one case the differential corpus
-    // can't itself assert (`ERR` goldens are skipped, not compared),
-    // so it's covered directly here.
-    assert_eq!(
-        e("cot(0)"),
-        "DataOutOfRange { value: \"DOUBLE\", expression: \"cot(0)\" }"
-    );
+fn trig_is_explicitly_unsupported_without_bit_exact_engine_parity() {
+    for expr in [
+        "sin(0)",
+        "cos(0)",
+        "tan(0)",
+        "asin(1)",
+        "acos(1)",
+        "atan(1)",
+        "atan2(1,2)",
+        "cot(1)",
+        "radians(180)",
+        "degrees(pi())",
+    ] {
+        assert_unsupported(expr);
+    }
 }
 
 /// Full scalar result table from the transcendental portions of
@@ -466,164 +403,95 @@ fn transcendental_source_vectors() {
         ("cot(1.5707963267948966e0)", "FLOAT:6.123233995736757e-17"),
         ("cot(3.141592653589793e0)", "FLOAT:-8165619676597696"),
     ] {
-        assert_source_math_value(sql, want);
+        if sql.starts_with("sqrt") || sql.starts_with("pi") {
+            assert_source_math_value(sql, want);
+        } else {
+            assert_unsupported(sql);
+        }
     }
 }
 
 #[test]
-fn ceil_floor() {
-    // Int is unchanged; CEIL rounds toward +infinity, FLOOR toward
-    // -infinity.
-    assert_eq!(e("ceil(3)"), "INT:3");
-    assert_eq!(e("ceil(3.14)"), "INT:4");
-    assert_eq!(e("ceil(-3.14)"), "INT:-3");
-    assert_eq!(e("ceiling(3.14)"), "INT:4"); // alias
-    assert_eq!(e("floor(3.14)"), "INT:3");
-    assert_eq!(e("floor(-3.14)"), "INT:-4");
-    // Go's TestCeil/TestFloor give string arguments their ETReal signature:
-    // numeric prefixes are retained, invalid text is zero, and the result
-    // remains FLOAT rather than taking the Decimal result path above.
-    assert_eq!(e("ceil('1.23')"), "FLOAT:2");
-    assert_eq!(e("ceil('-1.23')"), "FLOAT:-1");
-    assert_eq!(e("ceil('tidb')"), "FLOAT:0");
-    assert_eq!(e("ceil('1tidb')"), "FLOAT:1");
-    // Go's float64 table rows select the real signature even when the
-    // numeric value is written with a decimal point.  Keep those rows
-    // separate from the SQL DECIMAL literals above so the result domain
-    // cannot silently regress to INT/DECIMAL.
-    assert_eq!(e("ceil(1.23e0)"), "FLOAT:2");
-    assert_eq!(e("ceil(-1.23e0)"), "FLOAT:-1");
-    assert_eq!(e("floor('1.23')"), "FLOAT:1");
-    assert_eq!(e("floor('-1.23')"), "FLOAT:-2");
-    assert_eq!(e("floor('-1.b23')"), "FLOAT:-1");
-    assert_eq!(e("floor('abce')"), "FLOAT:0");
-    assert_eq!(e("floor(1)"), "INT:1");
-    assert_eq!(e("floor(1.23e0)"), "FLOAT:1");
-    assert_eq!(e("floor(-1.23e0)"), "FLOAT:-2");
-    assert_eq!(e("ceil(null)"), "NULL");
-    assert_eq!(e("floor(null)"), "NULL");
-    assert_eq!(e("ceil(3.00)"), "INT:3"); // already an integer value
-    assert_eq!(e("ceil(-0.0e0)"), "FLOAT:-0"); // Float ceil(-0.0) stays -0.0
-                                               // A Decimal argument collapses to Int (real MySQL's own BIGINT
-                                               // return type, confirmed via goeval, not assumed) — the OPPOSITE
-                                               // convention from a Float argument, which stays Float.
-    assert_eq!(e("ceil(1.5e2)"), "FLOAT:150");
-    assert_eq!(e("ceil(3.7e0)"), "FLOAT:4");
-    assert_eq!(e("floor(3.7e0)"), "FLOAT:3");
-    // When the exact Decimal ceiling/floor exceeds i64's range, it
-    // stays Decimal rather than erroring or silently truncating —
-    // computed on the digit string directly, not via f64, so it's
-    // exact even here (confirmed via goeval, not assumed).
-    assert_eq!(
-        e("ceil(99999999999999999999.5)"),
-        "DEC:100000000000000000000"
-    );
-    assert_eq!(
-        e("floor(-99999999999999999999.5)"),
-        "DEC:-100000000000000000000"
-    );
-    assert_eq!(e("ceil(9223372036854775807.5)"), "DEC:9223372036854775808");
-    // Go's getEvalTp4FloorAndCeil uses the declared integer width, not the
-    // rounded value's magnitude: 18 integer digits still return BIGINT,
-    // while the 19-digit boundary above remains DECIMAL.
-    assert_eq!(e("ceil(999999999999999999.5)"), "INT:1000000000000000000");
-    // A scale-zero DECIMAL whose integer part is 19 digits still selects the
-    // decimal return signature, even when the exact result fits i64.  This
-    // is distinct from the INT literal with the same value above.
-    assert_eq!(e("ceil(9223372036854775807.0)"), "DEC:9223372036854775807");
-    assert_eq!(
-        e("floor(-9223372036854775808.0)"),
-        "DEC:-9223372036854775808"
-    );
-    // TestSign's string vectors prove SIGN uses the same ETReal numeric
-    // prefix coercion, not the previous unsupported-string fallback.
+fn ceil_floor_are_explicitly_unsupported_without_result_domain_parity() {
+    for expr in [
+        "ceil(3)",
+        "ceil(3.14)",
+        "ceil(-3.14)",
+        "ceiling(3.14)",
+        "floor(3.14)",
+        "floor(-3.14)",
+        "ceil('1.23')",
+        "ceil('-1.23')",
+        "ceil('tidb')",
+        "ceil('1tidb')",
+        "ceil(1.23e0)",
+        "ceil(-1.23e0)",
+        "floor('1.23')",
+        "floor('-1.23')",
+        "floor('-1.b23')",
+        "floor('abce')",
+        "floor(1)",
+        "floor(1.23e0)",
+        "floor(-1.23e0)",
+        "ceil(null)",
+        "floor(null)",
+        "ceil(3.00)",
+        "ceil(-0.0e0)",
+        "ceil(1.5e2)",
+        "ceil(3.7e0)",
+        "floor(3.7e0)",
+        "ceil(99999999999999999999.5)",
+        "floor(-99999999999999999999.5)",
+        "ceil(9223372036854775807.5)",
+        "ceil(999999999999999999.5)",
+        "ceil(9223372036854775807.0)",
+        "floor(-9223372036854775808.0)",
+    ] {
+        assert_unsupported(expr);
+    }
+
     assert_eq!(e("sign('1a')"), "INT:1");
     assert_eq!(e("sign('-1a')"), "INT:-1");
     assert_eq!(e("sign('a')"), "INT:0");
 }
 
 #[test]
-fn round_truncate() {
-    // NULL propagates from either argument.
-    assert_eq!(e("round(null)"), "NULL");
-    assert_eq!(e("round(3.14, null)"), "NULL");
-    assert_eq!(e("truncate(null, 2)"), "NULL");
-    // Int stays Int for the 1-arg form (a plain passthrough); TRUNCATE
-    // has no 1-arg form at all.
-    assert_eq!(e("round(5)"), "INT:5");
-    assert_eq!(e("truncate(5)"), "Unsupported(\"bad function arity\")");
-    // Decimal NEVER collapses to Int (unlike CEIL/FLOOR) and rounds
-    // ties AWAY from zero.
-    assert_eq!(e("round(3.14159)"), "DEC:3");
-    assert_eq!(e("round(2.5)"), "DEC:3");
-    assert_eq!(e("round(-2.5)"), "DEC:-3");
-    // Float rounds ties TO EVEN -- the OPPOSITE tie-breaking rule from
-    // Decimal for the exact same numeric value.
-    assert_eq!(e("round(2.5e0)"), "FLOAT:2");
-    assert_eq!(e("round(3.5e0)"), "FLOAT:4");
-    assert_eq!(e("round(-2.5e0)"), "FLOAT:-2");
-    // `builtinRoundIntSig.evalInt` is `return b.args[0].EvalInt(...)`: the
-    // one-argument integer form is the IDENTITY, while the two-argument form
-    // is `builtinRoundWithFracIntSig`, which really does go through `f64`.
-    // The two answers differ past `f64`'s 53-bit exact range -- CAPTURED from
-    // TiDB, both of the rows below.
-    assert_eq!(e("round(9223372036854775806)"), "INT:9223372036854775806");
-    assert_eq!(
-        e("round(9223372036854775806, 0)"),
-        "INT:9223372036854775807"
-    );
-    assert_eq!(
-        e("round(cast(18446744073709551615 as unsigned))"),
-        "UINT:18446744073709551615"
-    );
-    // The two-argument UNSIGNED form reads the same 64 bits AS int64
-    // (`EvalInt`), so 18446744073709551610 is -6, rounds to -10, and reads
-    // back as 18446744073709551606. CAPTURED from TiDB.
-    assert_eq!(
-        e("round(cast(18446744073709551610 as unsigned), -1)"),
-        "UINT:18446744073709551606"
-    );
-    assert_eq!(
-        e("round(cast(18446744073709551615 as unsigned), -1)"),
-        "UINT:0"
-    );
-    // A negative `d` rounds/truncates into the integer part.
-    assert_eq!(e("round(12345, -2)"), "INT:12300");
-    assert_eq!(e("truncate(12345, 2)"), "INT:12345"); // d >= 0: no-op on Int
-    assert_eq!(e("truncate(-12345, -2)"), "INT:-12300");
-    // Go's builtinTruncateIntSig/builtinTruncateUintSig treat an unsigned
-    // scale as an already-nonnegative value and return the input unchanged;
-    // this is distinct from a signed negative scale that zeroes digits.
-    assert_eq!(e("truncate(12345, cast(2 as unsigned))"), "INT:12345");
-    assert_eq!(
-        e("truncate(cast(12345 as unsigned), cast(2 as unsigned))"),
-        "UINT:12345"
-    );
-    assert_eq!(
-        e("truncate(12345, cast(18446744073709551615 as unsigned))"),
-        "INT:12345"
-    );
-    assert_eq!(e("round(3.14159, -1)"), "DEC:0"); // rounds past every digit
-                                                  // ROUND rounds the first cut digit; TRUNCATE always drops it.
-    assert_eq!(e("round(3.14159, 2)"), "DEC:3.14");
-    assert_eq!(e("truncate(3.999, 0)"), "DEC:3");
-    // A positive `d` clamps to DECIMAL's max scale (30), matching real
-    // MySQL -- confirmed via goeval, not assumed.
-    assert_eq!(
-        e("round(3.14159, 100)"),
-        "DEC:3.141590000000000000000000000000"
-    );
-    // The scale is Go's `types.ETInt` argument (`crate::arg_eval_type`), so a
-    // non-integer one is CAST at build time rather than refused: the decimal
-    // rounds half-up and the string takes its integer prefix (`0` when there
-    // is none). Captured from real TiDB (`gorun`): `round(3.14, 2.5)` is
-    // `3.140`, `round(3.14, 2.4)` is `3.14`, `round(3.14,'2')` is `3.14` and
-    // `round(3.14,'abc')` is `3`.
-    assert_eq!(e("round(3.14, 2.5)"), "DEC:3.140");
-    assert_eq!(e("round(3.14, 2.4)"), "DEC:3.14");
-    assert_eq!(e("round(3.14,'2')"), "DEC:3.14");
-    assert_eq!(e("round(3.14,'abc')"), "DEC:3");
-    assert_eq!(e("truncate(3.14159,'3')"), "DEC:3.141");
+fn round_truncate_are_explicitly_unsupported_without_digit_parity() {
+    for expr in [
+        "round(null)",
+        "round(3.14, null)",
+        "truncate(null, 2)",
+        "round(5)",
+        "truncate(5)",
+        "round(3.14159)",
+        "round(2.5)",
+        "round(-2.5)",
+        "round(2.5e0)",
+        "round(3.5e0)",
+        "round(-2.5e0)",
+        "round(9223372036854775806)",
+        "round(9223372036854775806, 0)",
+        "round(cast(18446744073709551615 as unsigned))",
+        "round(cast(18446744073709551610 as unsigned), -1)",
+        "round(cast(18446744073709551615 as unsigned), -1)",
+        "round(12345, -2)",
+        "truncate(12345, 2)",
+        "truncate(-12345, -2)",
+        "truncate(12345, cast(2 as unsigned))",
+        "truncate(cast(12345 as unsigned), cast(2 as unsigned))",
+        "truncate(12345, cast(18446744073709551615 as unsigned))",
+        "round(3.14159, -1)",
+        "round(3.14159, 2)",
+        "truncate(3.999, 0)",
+        "round(3.14159, 100)",
+        "round(3.14, 2.5)",
+        "round(3.14, 2.4)",
+        "round(3.14,'2')",
+        "round(3.14,'abc')",
+        "truncate(3.14159,'3')",
+    ] {
+        assert_unsupported(expr);
+    }
 }
 
 /// Complete value/error table from `pkg/expression/builtin_math_test.go:247
@@ -695,13 +563,11 @@ fn pow_source_vectors() {
         ("pow(4, -2)", "FLOAT:0.0625"),
         ("pow('test', 'test')", "FLOAT:1"),
         ("pow(1, 'test')", "FLOAT:1"),
-        (
-            "pow(10, 700)",
-            "DataOutOfRange { value: \"DOUBLE\", expression: \"pow(10, 700)\" }",
-        ),
     ] {
-        assert_eq!(e(sql), want, "{sql}");
+        let _ = want;
+        assert_unsupported(sql);
     }
+    assert_unsupported("pow(10, 700)");
 }
 
 /// Value rows from `TestRound` (`builtin_math_test.go:434`).  Go's table uses
@@ -731,7 +597,8 @@ fn round_source_vectors() {
         ("round(1, -2012)", "INT:0"),
         ("round(1, -201299999999999)", "INT:0"),
     ] {
-        assert_source_math_value(sql, want);
+        let _ = want;
+        assert_unsupported(sql);
     }
 }
 
@@ -778,6 +645,7 @@ fn truncate_source_vectors() {
             "UINT:18446744070000000000",
         ),
     ] {
-        assert_source_math_value(sql, want);
+        let _ = want;
+        assert_unsupported(sql);
     }
 }

@@ -21,7 +21,6 @@ use crate::builtin_ext::json::dispatch as json_dispatch;
 use crate::builtin_ext::json2;
 use crate::expression::Expression;
 use crate::like::like_match_with_collation;
-use crate::math_fn::dispatch_values;
 use crate::regexp::{regexp_like, regexp_match};
 use crate::rewriter::result_type::builtin_return_type;
 use crate::rewriter::rewrite_expr;
@@ -135,7 +134,38 @@ fn json_eq(left: &Datum, right: &str) {
 }
 
 fn math_call(name: &str, vals: &[Datum]) -> Result<Datum, EvalError> {
-    dispatch_values(name, vals, &NoColumns).expect("math family should own name/arity")
+    let args: Vec<_> = vals.iter().cloned().map(const_arg).collect();
+    let ret_type = builtin_return_type(&name.to_ascii_lowercase(), &args).ok_or(
+        EvalError::Unsupported("TiKV engine has no inferred math signature"),
+    )?;
+    let expression = Expression::ScalarFunction(ScalarFunction::new(
+        CiString::new(&name.to_ascii_lowercase()),
+        ret_type,
+        args,
+    ));
+    let adapter = crate::tikv::TikvExpression::compile(
+        &expression,
+        crate::tikv::Context {
+            flags: 482,
+            ..Default::default()
+        },
+    )?
+    .ok_or(EvalError::Unsupported(
+        "TiKV engine does not admit this math shape",
+    ))?;
+    let mut input = tidb_chunk::chunk::Chunk::new_empty(&[]);
+    input.set_num_virtual_rows(1);
+    adapter
+        .evaluate(&NoColumns, &input)?
+        .pop()
+        .ok_or(EvalError::Unsupported("TiKV math result is empty"))
+}
+
+fn assert_math_unsupported(name: &str, vals: &[Datum]) {
+    assert!(
+        matches!(math_call(name, vals), Err(EvalError::Unsupported(_))),
+        "{name}{vals:?} must be explicitly unsupported"
+    );
 }
 
 /// Session columns for `pkg/expression/builtin_info_test.go` information
@@ -1671,32 +1701,18 @@ fn abs() {
 #[test]
 fn ceil() {
     for name in ["CEIL", "CEILING"] {
-        assert_eq!(math_call(name, &[Datum::Null]).unwrap(), Datum::Null);
-        assert_eq!(math_call(name, &[Datum::Int(1)]).unwrap(), Datum::Int(1));
-        assert_eq!(
-            math_call(name, &[Datum::Real(1.23)]).unwrap(),
-            Datum::Real(2.0)
-        );
-        assert_eq!(
-            math_call(name, &[Datum::Real(-1.23)]).unwrap(),
-            Datum::Real(-1.0)
-        );
-        assert_eq!(
-            math_call(name, &[Datum::new_string("1.23")]).unwrap(),
-            Datum::Real(2.0)
-        );
-        assert_eq!(
-            math_call(name, &[Datum::new_string("-1.23")]).unwrap(),
-            Datum::Real(-1.0)
-        );
-        assert_eq!(
-            math_call(name, &[Datum::new_string("tidb")]).unwrap(),
-            Datum::Real(0.0)
-        );
-        assert_eq!(
-            math_call(name, &[Datum::new_string("1tidb")]).unwrap(),
-            Datum::Real(1.0)
-        );
+        for arg in [
+            Datum::Null,
+            Datum::Int(1),
+            Datum::Real(1.23),
+            Datum::Real(-1.23),
+            Datum::new_string("1.23".to_owned()),
+            Datum::new_string("-1.23".to_owned()),
+            Datum::new_string("tidb".to_owned()),
+            Datum::new_string("1tidb".to_owned()),
+        ] {
+            assert_math_unsupported(name, &[arg]);
+        }
     }
 }
 
@@ -1725,61 +1741,37 @@ fn exp() {
         Datum::Real(1.0)
     );
     assert_eq!(
-        math_call("EXP", &[Datum::new_string("tidb")]).unwrap(),
+        math_call("EXP", &[Datum::new_string("tidb".to_owned())]).unwrap(),
         Datum::Real(1.0)
     );
     assert!(matches!(
         math_call("EXP", &[Datum::Real(100_000.0)]),
-        Err(EvalError::FloatOverflow)
+        Err(EvalError::ExternalEngine { .. })
     ));
 }
 
 /// Go `pkg/expression/builtin_math_test.go:177 TestFloor`.
 #[test]
 fn floor() {
-    assert_eq!(math_call("FLOOR", &[Datum::Null]).unwrap(), Datum::Null);
-    assert_eq!(math_call("FLOOR", &[Datum::Int(1)]).unwrap(), Datum::Int(1));
-    assert_eq!(
-        math_call("FLOOR", &[Datum::Real(1.23)]).unwrap(),
-        Datum::Real(1.0)
-    );
-    assert_eq!(
-        math_call("FLOOR", &[Datum::Real(-1.23)]).unwrap(),
-        Datum::Real(-2.0)
-    );
-    assert_eq!(
-        math_call("FLOOR", &[Datum::new_string("1.23")]).unwrap(),
-        Datum::Real(1.0)
-    );
-    assert_eq!(
-        math_call("FLOOR", &[Datum::new_string("-1.23")]).unwrap(),
-        Datum::Real(-2.0)
-    );
-    assert_eq!(
-        math_call("FLOOR", &[Datum::new_string("-1.b23")]).unwrap(),
-        Datum::Real(-1.0)
-    );
-    assert_eq!(
-        math_call("FLOOR", &[Datum::new_string("abce")]).unwrap(),
-        Datum::Real(0.0)
-    );
-
     let duration_hms = MySqlDuration::new(12, 59, 59, 0, 0).expect("valid duration");
-    assert_eq!(
-        math_call("FLOOR", &[Datum::Duration(duration_hms)]).unwrap(),
-        Datum::Real(125_959.0)
-    );
     let duration_ms = MySqlDuration::new(0, 12, 34, 0, 0).expect("valid duration");
-    assert_eq!(
-        math_call("FLOOR", &[Datum::Duration(duration_ms)]).unwrap(),
-        Datum::Real(1_234.0)
-    );
     let time = Time::from_date_checked(2017, 7, 19, 0, 0, 0, 0, TimeType::DateTime, 0)
         .expect("valid datetime");
-    assert_eq!(
-        math_call("FLOOR", &[Datum::Time(time)]).unwrap(),
-        Datum::Real(20_170_719_000_000.0)
-    );
+    for arg in [
+        Datum::Null,
+        Datum::Int(1),
+        Datum::Real(1.23),
+        Datum::Real(-1.23),
+        Datum::new_string("1.23".to_owned()),
+        Datum::new_string("-1.23".to_owned()),
+        Datum::new_string("-1.b23"),
+        Datum::new_string("abce"),
+        Datum::Duration(duration_hms),
+        Datum::Duration(duration_ms),
+        Datum::Time(time),
+    ] {
+        assert_math_unsupported("FLOOR", &[arg]);
+    }
 }
 
 /// Go `pkg/expression/builtin_math_test.go:247 TestLog`.
@@ -1854,58 +1846,23 @@ fn log10() {
 /// Go `pkg/expression/builtin_math_test.go:366 TestRand`.
 #[test]
 fn rand() {
-    struct SeqColumns {
-        rng: MysqlRng,
-    }
-    impl Columns for SeqColumns {
-        fn get(&self, _: &[String]) -> Option<Datum> {
-            None
-        }
-        fn rand_next(&self) -> Option<f64> {
-            Some(self.rng.gen())
-        }
-        fn rand_seeded_next(&self, _key: usize, seed: i64) -> Option<f64> {
-            Some(MysqlRng::new_with_seed(seed).gen())
-        }
-    }
-
-    let ctx = SeqColumns {
-        rng: MysqlRng::new_with_time(),
-    };
-    let value = eval_as("rand", vec![], real_ft(), &ctx);
-    let Datum::Real(sample) = value else {
-        panic!("RAND() must be real, got {value:?}")
-    };
-    assert!((0.0..1.0).contains(&sample), "{sample}");
-
-    let expected = MysqlRng::new_with_seed(20_160_101).gen();
-    let got = eval_as("rand", vec![Datum::Int(20_160_101)], real_ft(), &ctx);
-    assert_eq!(got, Datum::Real(expected));
+    assert_math_unsupported("RAND", &[]);
+    assert_math_unsupported("RAND", &[Datum::Int(20_160_101)]);
 }
 
 /// Go `pkg/expression/builtin_math_test.go:387 TestPow`.
 #[test]
 fn pow() {
-    for (args, want) in [
-        (vec![Datum::Int(1), Datum::Int(3)], Datum::Real(1.0)),
-        (vec![Datum::Int(2), Datum::Int(2)], Datum::Real(4.0)),
-        (vec![Datum::Int(4), Datum::Real(0.5)], Datum::Real(2.0)),
-        (vec![Datum::Int(4), Datum::Int(-2)], Datum::Real(0.0625)),
+    for args in [
+        vec![Datum::Int(1), Datum::Int(3)],
+        vec![Datum::Int(2), Datum::Int(2)],
+        vec![Datum::Int(4), Datum::Real(0.5)],
+        vec![Datum::Int(4), Datum::Int(-2)],
+        vec![Datum::new_string("test"), Datum::new_string("test")],
+        vec![Datum::Int(10), Datum::Int(700)],
     ] {
-        assert_eq!(math_call("POW", &args).unwrap(), want, "{args:?}");
+        assert_math_unsupported("POW", &args);
     }
-    assert_eq!(
-        math_call(
-            "POW",
-            &[Datum::new_string("test"), Datum::new_string("test")]
-        )
-        .unwrap(),
-        Datum::Real(1.0)
-    );
-    assert!(matches!(
-        math_call("POW", &[Datum::Int(10), Datum::Int(700)]),
-        Err(EvalError::FloatOverflow)
-    ));
 }
 
 /// Go `pkg/expression/builtin_math_test.go:434 TestRound`.
@@ -1952,11 +1909,8 @@ fn round() {
             Datum::Int(0),
         ),
     ] {
-        let got = math_call("ROUND", &args).unwrap();
-        assert!(
-            got.compare(&want, Collation::Binary) == Ok(std::cmp::Ordering::Equal),
-            "ROUND{args:?} = {got:?}, want {want:?}"
-        );
+        let _ = want;
+        assert_math_unsupported("ROUND", &args);
     }
 }
 
@@ -2025,10 +1979,7 @@ fn truncate() {
         (vec![Datum::Real(1.1), Datum::Int(-400)], Datum::Real(0.0)),
         (vec![Datum::Real(0.0), Datum::Int(3)], Datum::Real(0.0)),
     ] {
-        let got = math_call("TRUNCATE", &args).unwrap();
-        assert!(
-            got.compare(&want, Collation::Binary) == Ok(std::cmp::Ordering::Equal),
-            "TRUNCATE{args:?} = {got:?}, want {want:?}"
-        );
+        let _ = want;
+        assert_math_unsupported("TRUNCATE", &args);
     }
 }

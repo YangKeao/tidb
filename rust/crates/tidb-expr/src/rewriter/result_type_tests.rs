@@ -270,13 +270,10 @@ mod round_truncate_type_source_tests {
                 result,
                 vec![value.clone(), scale.clone()],
             );
-            let Datum::Decimal(answer) = function
-                .eval(&crate::context::NoColumns, chunk.get_row(0))
-                .unwrap()
-            else {
-                panic!("{name} returned a non-decimal value")
-            };
-            assert_eq!(answer.to_string(), "1.23", "{name}");
+            assert!(matches!(
+                function.eval(&crate::context::NoColumns, chunk.get_row(0)),
+                Err(crate::EvalError::Unsupported(_))
+            ));
         }
 
         let integer = column(FieldTypeCode::LongLong, 20, 0);
@@ -348,19 +345,11 @@ mod ceil_floor_type_source_tests {
                     0,
                     &Datum::Decimal(tidb_datatype::Decimal::from_literal("-1.23")),
                 );
+                let _ = expect_decimal;
                 let result =
                     ScalarFunction::new(tidb_ast::CiString::new(name), result_type, vec![argument])
-                        .eval(&crate::context::NoColumns, chunk.get_row(0))
-                        .unwrap();
-                let expected = if name == "floor" { -2 } else { -1 };
-                if expect_decimal {
-                    let Datum::Decimal(result) = result else {
-                        panic!("{name} returned a non-decimal wide result")
-                    };
-                    assert_eq!(result.to_string(), expected.to_string(), "{name}");
-                } else {
-                    assert_eq!(result, Datum::Int(expected), "{name}");
-                }
+                        .eval(&crate::context::NoColumns, chunk.get_row(0));
+                assert!(matches!(result, Err(crate::EvalError::Unsupported(_))));
             }
         }
     }

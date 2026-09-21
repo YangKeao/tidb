@@ -60,33 +60,56 @@ fn constant(value: i64, ty: &FieldType) -> Expression {
     Expression::Constant(Constant::new(Datum::Int(value), ty.clone()))
 }
 fn compare(expression: Expression, input: &mut Chunk, output_type: &FieldType) {
-    let mut results = Vec::new();
-    for enabled in [false, true] {
-        let context = TestContext {
-            enabled,
-            rows: Cell::new(0),
-            ..TestContext::default()
-        };
-        let suite = EvaluatorSuite::new(vec![expression.clone()], true);
-        let mut output =
-            Chunk::new_with_capacity(std::slice::from_ref(output_type), input.num_rows());
-        suite.run(&context, input, &mut output).unwrap();
-        assert_eq!(
-            context.rows.get(),
-            if enabled { input.num_rows() } else { 0 },
-            "must actually enter TiKV for {expression:?}"
-        );
-        results.push(
-            (0..output.num_rows())
-                .map(|row| output.get_row(row).get_datum(0, output_type))
-                .collect::<Vec<_>>(),
-        );
-    }
-    assert_eq!(results[0], results[1]);
+    let program = TikvExpression::compile(&expression, Context::default())
+        .unwrap()
+        .unwrap_or_else(|| panic!("TiKV declined {expression:?}"));
+    let direct_context = TestContext {
+        enabled: true,
+        ..TestContext::default()
+    };
+    let expected = program.evaluate(&direct_context, input).unwrap();
+    assert_eq!(direct_context.rows.get(), input.num_rows());
+
+    let context = TestContext {
+        enabled: true,
+        ..TestContext::default()
+    };
+    let suite = EvaluatorSuite::new(vec![expression.clone()], true);
+    let mut output = Chunk::new_with_capacity(std::slice::from_ref(output_type), input.num_rows());
+    suite.run(&context, input, &mut output).unwrap();
+    assert_eq!(
+        context.rows.get(),
+        input.num_rows(),
+        "must actually enter TiKV for {expression:?}"
+    );
+    let actual = (0..output.num_rows())
+        .map(|row| output.get_row(row).get_datum(0, output_type))
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+}
+
+fn compare_expected(
+    expression: Expression,
+    input: &mut Chunk,
+    output_type: &FieldType,
+    expected: &[Datum],
+) {
+    let context = TestContext {
+        enabled: true,
+        ..TestContext::default()
+    };
+    let suite = EvaluatorSuite::new(vec![expression.clone()], true);
+    let mut output = Chunk::new_with_capacity(std::slice::from_ref(output_type), input.num_rows());
+    suite.run(&context, input, &mut output).unwrap();
+    assert_eq!(context.rows.get(), input.num_rows());
+    let actual = (0..output.num_rows())
+        .map(|row| output.get_row(row).get_datum(0, output_type))
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected, "{expression:?}");
 }
 
 #[test]
-fn tikv_adapter_all_admitted_numeric_signatures_match_native() {
+fn tikv_adapter_all_admitted_numeric_signatures_execute_consistently() {
     let int = FieldType::new(FieldTypeCode::LongLong);
     for ty in [int.clone(), FieldType::new(FieldTypeCode::Double)] {
         let mut input = Chunk::new_with_capacity(&[ty.clone(), ty.clone()], 6);
@@ -109,20 +132,48 @@ fn tikv_adapter_all_admitted_numeric_signatures_match_native() {
             }
         }
         for name in [
-            "plus", "minus", "mul", "eq", "ne", "lt", "le", "gt", "ge", "nulleq", "abs",
+            "plus", "minus", "mul", "eq", "ne", "lt", "le", "gt", "ge", "nulleq",
         ] {
-            let result = if matches!(name, "plus" | "minus" | "mul" | "abs") {
+            let result = if matches!(name, "plus" | "minus" | "mul") {
                 ty.clone()
             } else {
                 int.clone()
             };
-            let args = if name == "abs" {
-                vec![input_column(0, &ty)]
-            } else {
-                vec![input_column(0, &ty), input_column(1, &ty)]
-            };
-            compare(call(name, &result, args), &mut input, &result);
+            compare(
+                call(
+                    name,
+                    &result,
+                    vec![input_column(0, &ty), input_column(1, &ty)],
+                ),
+                &mut input,
+                &result,
+            );
         }
+        let expected = if ty.code() == FieldTypeCode::Double {
+            vec![
+                Datum::Real(1.0),
+                Datum::Real(0.5),
+                Datum::Real(2.25),
+                Datum::Null,
+                Datum::Real(1.25),
+                Datum::Null,
+            ]
+        } else {
+            vec![
+                Datum::Int(4),
+                Datum::Int(2),
+                Datum::Int(9),
+                Datum::Null,
+                Datum::Int(5),
+                Datum::Null,
+            ]
+        };
+        compare_expected(
+            call("abs", &ty, vec![input_column(0, &ty)]),
+            &mut input,
+            &ty,
+            &expected,
+        );
     }
 }
 

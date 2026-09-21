@@ -90,7 +90,7 @@ const COVERED: &[&str] = &[
     "cast('12:59:59' as time) < cast('12:59:59' as time)",
     "coalesce(cast('12:59:59' as time), cast('12:59:59.555' as time(3)))",
     "oct(1.0)",
-    "if(cast('2020-10-10 12:59:59' as datetime), 1, 2)"
+    "if(cast('2020-10-10 12:59:59' as datetime), 1, 2)",
 ];
 
 /// Expressions that still fall back to native. Gaining one is progress; the
@@ -266,9 +266,9 @@ fn every_declined_expression_fails_cleanly_without_the_native_evaluator() {
 ///
 /// A **constant-only** expression does not necessarily reach the adapter at
 /// all. `plan_builder.rs` folds the rewritten tree with the live statement
-/// context (`fold_constant_in_mode`) before the plan exists, so 40 of the 59
-/// declined expressions become a single `Constant` and the engine never sees a
-/// function shape. The 17 pinned here are the ones whose constant form *does*
+/// context (`fold_constant_in_mode`) before the plan exists. After physical
+/// native-math deletion, 36 of the 59 declined expressions become a single
+/// `Constant`; the 21 pinned here are the ones whose constant form *does*
 /// reach the adapter, which is the surface the removal actually has to answer
 /// for.
 ///
@@ -286,6 +286,7 @@ const SURVIVES_FOLD: &[&str] = &[
     "cast('2019-11-02 22:00:05' as datetime) in (cast('2019-11-02 22:00:04' as datetime), cast('2019-11-02 22:00:05' as datetime))",
     "coalesce(1, 'x' regexp '[')",
     "coalesce(cast(1 as json), cast(2 as json))",
+    "cot(1)",
     "greatest(-9223372036854775808, cast('9223372036854775809' as unsigned))",
     "hex(weight_string('a'))",
     "hex(weight_string('aAÁàãăâ' collate utf8mb4_general_ci))",
@@ -293,7 +294,10 @@ const SURVIVES_FOLD: &[&str] = &[
     "ifnull(1, 'x' regexp '[')",
     "ifnull(null, cast('[1]' as json))",
     "regexp_like('abc', 'abc', 'p')",
+    "round(1.2345,'2')",
+    "round(3.14,'abc')",
     "round(5, -100)",
+    "truncate(1234.5678,'-2')",
     "upper(elt(1,'a',x'61'))",
 ];
 
@@ -334,7 +338,13 @@ fn folded_away_expressions_never_reach_the_adapter() {
     assert_eq!(survived, SURVIVES_FOLD);
     // The same two planning-time refusals the post-deletion test pins never
     // reach the fold either.
-    assert_eq!(skipped, ["(1, 2) = (1, 2, 3)", "convert('haha' using cp866)"]);
-    assert_eq!(folded.len() + survived.len() + skipped.len(), DECLINED.len());
-    assert_eq!(folded.len(), 40, "the folded count changed");
+    assert_eq!(
+        skipped,
+        ["(1, 2) = (1, 2, 3)", "convert('haha' using cp866)"]
+    );
+    assert_eq!(
+        folded.len() + survived.len() + skipped.len(),
+        DECLINED.len()
+    );
+    assert_eq!(folded.len(), 36, "the folded count changed");
 }

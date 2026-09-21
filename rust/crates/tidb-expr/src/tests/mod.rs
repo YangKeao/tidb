@@ -209,6 +209,22 @@ fn engine_case(expr: &str) -> Option<Result<Datum, String>> {
     })
 }
 
+/// Engine-only replacement for source-vector tests whose native family has
+/// been physically deleted. A declined expression is a visible test failure,
+/// never a native fallback.
+#[cfg(feature = "tikv-expr")]
+pub(super) fn engine_e(expr: &str) -> String {
+    match engine_case(expr).unwrap_or_else(|| panic!("TiKV engine declined: {expr}")) {
+        Ok(value) => value.label(),
+        Err(error) => error,
+    }
+}
+
+#[cfg(feature = "tikv-expr")]
+pub(super) fn engine_declines(expr: &str) -> bool {
+    engine_case(expr).is_none()
+}
+
 /// Parses and evaluates a constant expression to its raw `Datum`.
 pub(super) fn v(expr: &str) -> Datum {
     let stmt = tidb_parser::parse(&format!("select {expr}")).expect("parse");
@@ -1000,8 +1016,8 @@ fn comparisons() {
 
 #[test]
 fn builtin_functions() {
-    assert_eq!(e("abs(-5)"), "INT:5");
-    assert_eq!(e("sign(-3)"), "INT:-1");
+    assert_eq!(engine_e("abs(-5)"), "INT:5");
+    assert_eq!(engine_e("sign(-3)"), "INT:-1");
     assert_eq!(e("least(3, 1, 2)"), "INT:1");
     assert_eq!(e("greatest(1, 2, 3)"), "INT:3");
     assert_eq!(e("least(5, 3, NULL, 1)"), "NULL");
@@ -1012,7 +1028,7 @@ fn builtin_functions() {
     assert_eq!(e("nullif(3, 3)"), "NULL");
     assert_eq!(e("nullif(3, 4)"), "INT:3");
     // Nested calls fold too.
-    assert_eq!(e("greatest(abs(-1), sign(-4), 0)"), "INT:1");
+    assert_eq!(engine_e("greatest(abs(-1), sign(-4), 0)"), "INT:1");
 }
 
 #[test]
@@ -1980,8 +1996,8 @@ fn decimals() {
     assert_eq!(e("0.0 is false"), "INT:1");
     assert_eq!(e("0.0 and 1"), "INT:0");
     // Builtins.
-    assert_eq!(e("abs(-3.14)"), "DEC:3.14");
-    assert_eq!(e("sign(-3.14)"), "INT:-1");
+    assert_eq!(engine_e("abs(-3.14)"), "DEC:3.14");
+    assert_eq!(engine_e("sign(-3.14)"), "INT:-1");
     assert_eq!(e("nullif(3.14, 3.140)"), "NULL"); // equal despite differing scale
     assert_eq!(e("least(1.5, 2.5, 0.5)"), "DEC:0.5");
 
@@ -2064,7 +2080,7 @@ fn floats() {
     // NULLIF's equality reuses the same cross-type promotion, unlike
     // a hand-rolled same-type-only check.
     assert_eq!(e("nullif(150, 1.5e2)"), "NULL");
-    assert_eq!(e("sign(0.0e0)"), "INT:0"); // unlike IEEE-754 signum, never 0
+    assert_eq!(engine_e("sign(0.0e0)"), "INT:0"); // unlike IEEE-754 signum, never 0
 }
 
 /// `TRANSLATE` was fully ported on both signatures and reachable from the AST
@@ -2217,7 +2233,6 @@ fn hex_and_bit_literals_are_binary_literals_in_a_numeric_context() {
         // `UnsignedFlag` for Hex and Binary literals, not for Bit), so its
         // arithmetic answers INT where a hex literal's answers UINT.
         ("b'101' + 1", "INT:6"),
-        ("abs(b'11')", "FLOAT:3"),
         ("0x1A > 25", "INT:1"),
         ("0xFF + 0", "UINT:255"),
         ("b'' + 0", "INT:0"),
@@ -2285,6 +2300,12 @@ fn hex_and_bit_literals_are_binary_literals_in_a_numeric_context() {
     ] {
         assert_eq!(e(expr), want, "{expr}");
     }
+    assert!(engine_declines("abs(b'11')"));
+    assert_eq!(
+        e("abs(b'11')"),
+        "Unsupported(\"native math evaluation was removed; TiKV engine required\")"
+    );
+
     // The CHUNK tier reads the same signedness off the operand's real
     // `FieldType` where this tier reads it off the AST node, so the two must
     // agree on the rows where the two literal forms diverge.

@@ -30,12 +30,50 @@ use crate::string_packet::{pad, repeat, space, to_base64};
 use crate::time_fn::calendar::{date_add, date_diff, date_format, date_part, from_days, time_part};
 use crate::{BuildContext, Columns, Datum, EvalError, StringLengthFunction};
 
+/// Native math kernels were physically removed. Keep the names only as an
+/// execution-boundary refusal list so planners can still construct metadata
+/// for expressions the TiKV adapter supports.
+pub(crate) fn is_removed_native_math(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "RAND"
+            | "ABS"
+            | "SIGN"
+            | "CEIL"
+            | "CEILING"
+            | "FLOOR"
+            | "ROUND"
+            | "TRUNCATE"
+            | "SQRT"
+            | "POW"
+            | "POWER"
+            | "EXP"
+            | "LN"
+            | "LOG"
+            | "LOG2"
+            | "LOG10"
+            | "PI"
+            | "SIN"
+            | "COS"
+            | "TAN"
+            | "ASIN"
+            | "ACOS"
+            | "ATAN"
+            | "ATAN2"
+            | "COT"
+            | "RADIANS"
+            | "DEGREES"
+            | "CONV"
+            | "CRC32"
+    )
+}
+
 /// Evaluates a builtin scalar function over its evaluated arguments.
 pub(crate) fn eval_func(
     name: &str,
     args: &[Expr],
     cols: &dyn Columns,
-    function_key: Option<usize>,
+    _function_key: Option<usize>,
 ) -> Result<Datum, EvalError> {
     let name = name.to_ascii_uppercase();
     // The AST evaluator is also an expression-construction entry point for
@@ -53,6 +91,11 @@ pub(crate) fn eval_func(
         args.len()
     };
     crate::builtin_registry::verify_args_by_count(&name, arity_count)?;
+    if is_removed_native_math(&name) {
+        return Err(EvalError::Unsupported(
+            "native math evaluation was removed; TiKV engine required",
+        ));
+    }
     // `DATE_ADD`/`DATE_SUB`'s second argument is an `Expr::Interval` (a
     // value *and* a unit keyword), not a plain expression `eval_in` can
     // evaluate on its own — handled here, before every other function's
@@ -291,9 +334,6 @@ pub(crate) fn eval_func(
     let vals = crate::arg_eval_type::wrap_datetime_args(name.as_str(), vals, &[], cols)?;
     let vals = crate::arg_eval_type::wrap_int_args(name.as_str(), vals, &[], cols)?;
     let vals = crate::arg_eval_type::wrap_string_args(name.as_str(), vals, &[], cols)?;
-    if let Some(result) = crate::math_fn::dispatch(name.as_str(), args, &vals, cols, function_key) {
-        return result;
-    }
     if let Some(result) = eval_func_values_in(name.as_str(), &vals, cols) {
         return result;
     }
@@ -449,6 +489,11 @@ pub(crate) fn eval_func_values_in(
     vals: &[Datum],
     cols: &dyn Columns,
 ) -> Option<Result<Datum, EvalError>> {
+    if is_removed_native_math(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native math evaluation was removed; TiKV engine required",
+        )));
+    }
     // Go's `builtinFromBase64Sig` checks the estimated decoded length against
     // `max_allowed_packet` before decoding and routes an over-limit result
     // through the statement warning policy. Keep this context-sensitive arm
@@ -490,9 +535,7 @@ pub(crate) fn eval_func_values_in(
 ///   branch, so eager-evaluating both would change semantics, e.g. a guarded
 ///   `1/0`), `CASE`, and the `DATE_ADD`/`DATE_SUB`/`ADDDATE`/`SUBDATE`
 ///   family whose second argument is an `Expr::Interval`, not a value;
-/// - session-state functions: `RAND` (needs
-///   the argument AST and per-call `function_key` for generator identity),
-///   the sequence functions (`NEXTVAL`/`LASTVAL`/`SETVAL`), and the
+/// - removed native math functions, including `RAND`; the sequence functions (`NEXTVAL`/`LASTVAL`/`SETVAL`), and the
 ///   `time_fn` family (its dispatch takes `Columns` for the statement clock,
 ///   time zone, and `default_week_format`);
 /// - the `LENGTH`/`OCTET_LENGTH`/`CHAR_LENGTH`/`CHARACTER_LENGTH` family: Go
@@ -641,9 +684,6 @@ pub(crate) fn eval_func_values(
             _ => 0.0,
         };
         return Some(Ok(Datum::Real(if res < 0.0 { 0.0 } else { res })));
-    }
-    if let Some(result) = crate::math_fn::dispatch_values(name, vals, ctx) {
-        return Some(result);
     }
     let result = match name {
         // Go `builtinGetParamStringSig.evalString` reads the integer selector

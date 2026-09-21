@@ -1641,14 +1641,13 @@ mod tests {
         );
         assert_eq!(log.taken(), vec![]);
 
-        // One warning per coercion, never deduplicated: both arguments of a
-        // two-argument builtin raise their own.
-        assert_eq!(
-            crate::math_fn::dispatch_values("POW", &[s("2abc"), s("3xyz")], &log)
-                .expect("dispatches"),
-            Ok(Datum::Real(8.0))
-        );
-        assert_eq!(log.taken(), vec![truncated("2abc"), truncated("3xyz")]);
+        // Native math coercion was physically removed. Direct native entry
+        // points refuse before coercion, so they cannot emit partial warnings.
+        assert!(matches!(
+            crate::func::eval_func_values_in("POW", &[s("2abc"), s("3xyz")], &log),
+            Some(Err(EvalError::Unsupported(_)))
+        ));
+        assert_eq!(log.taken(), vec![]);
 
         // The same sink serves every family that coerces, not just math:
         // FIELD, FORMAT, INTERVAL and FORMAT_BYTES each raise their own.
@@ -1832,9 +1831,10 @@ mod tests {
 
         for name in ["SQRT", "EXP", "LN", "SIN", "CEIL", "FLOOR"] {
             assert!(
-                crate::math_fn::dispatch_values(name, &[vector()], &crate::NoColumns)
-                    .expect("dispatches")
-                    .is_err(),
+                matches!(
+                    crate::func::eval_func_values_in(name, &[vector()], &crate::NoColumns),
+                    Some(Err(EvalError::Unsupported(_)))
+                ),
                 "{name}(vector)"
             );
         }
@@ -1865,10 +1865,10 @@ mod tests {
         // ordinal, never as the name -- `SQRT(e)` is `SQRT(2)`.
         let e = || Datum::Enum(MysqlEnum::new("8", 2), Collation::Utf8Mb4Bin);
         assert_eq!(to_f64_with_mysql_string(&e(), &crate::NoColumns), Ok(2.0));
-        assert_eq!(
-            crate::math_fn::dispatch_values("SQRT", &[e()], &crate::NoColumns).expect("dispatches"),
-            Ok(Datum::Real(2.0f64.sqrt()))
-        );
+        assert!(matches!(
+            crate::func::eval_func_values_in("SQRT", &[e()], &crate::NoColumns),
+            Some(Err(EvalError::Unsupported(_)))
+        ));
         // `FORMAT_BYTES(e)` is `2 bytes`, not `0 bytes`.
         assert_eq!(
             crate::builtin_ext::dispatch("FORMAT_BYTES", &[e()], &crate::NoColumns)

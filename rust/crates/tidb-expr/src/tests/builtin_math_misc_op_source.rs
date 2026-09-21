@@ -31,7 +31,6 @@ use crate::builtin_ext::misc::dispatch_in as misc_dispatch_in;
 use crate::builtin_op::infer_unary_op_type;
 use crate::builtin_registry::verify_args_by_count;
 use crate::expression::Expression;
-use crate::math_fn::{conv_valid_prefix, dispatch_values as math_dispatch_values};
 use crate::rewriter::result_type::builtin_return_type;
 use crate::scalar_function::ScalarFunction;
 use tidb_ast::{CiString, QueryStmt, SelectField, Stmt};
@@ -115,6 +114,43 @@ fn eval_as(
 /// Same evaluation with the discarding default context.
 fn eval_default(name: &str, args: Vec<Datum>, ret_type: FieldType) -> Result<Datum, EvalError> {
     eval_as(name, args, ret_type, &crate::context::NoColumns)
+}
+
+fn assert_removed_math_unsupported(expr: &str) {
+    assert!(engine_declines(expr), "engine unexpectedly admitted {expr}");
+    assert_eq!(
+        e(expr),
+        "Unsupported(\"native math evaluation was removed; TiKV engine required\")",
+        "{expr}"
+    );
+}
+
+fn math_engine_call(name: &str, vals: &[Datum], ctx: &impl Columns) -> Result<Datum, EvalError> {
+    let args: Vec<_> = vals.iter().cloned().map(const_arg).collect();
+    let ret_type = builtin_return_type(&name.to_ascii_lowercase(), &args).ok_or(
+        EvalError::Unsupported("TiKV engine has no inferred math signature"),
+    )?;
+    let expression = Expression::ScalarFunction(ScalarFunction::new(
+        CiString::new(&name.to_ascii_lowercase()),
+        ret_type,
+        args,
+    ));
+    let adapter = crate::tikv::TikvExpression::compile(
+        &expression,
+        crate::tikv::Context {
+            flags: 482,
+            ..Default::default()
+        },
+    )?
+    .ok_or(EvalError::Unsupported(
+        "TiKV engine does not admit this math shape",
+    ))?;
+    let mut input = tidb_chunk::chunk::Chunk::new_empty(&[]);
+    input.set_num_virtual_rows(1);
+    adapter
+        .evaluate(ctx, &input)?
+        .pop()
+        .ok_or(EvalError::Unsupported("TiKV math result is empty"))
 }
 
 fn empty_row() -> tidb_chunk::row::Row<'static> {
@@ -267,9 +303,22 @@ fn crc32_gbk_charset_connection_rows() {
             panic!("expected expression")
         };
         let rewritten = crate::rewriter::rewrite_expr_resolved(expr, &GbkSession).expect("rewrite");
+        let adapter = crate::tikv::TikvExpression::compile(
+            &rewritten,
+            crate::tikv::Context {
+                flags: 482,
+                ..Default::default()
+            },
+        )?
+        .ok_or(EvalError::Unsupported(
+            "TiKV engine does not admit CRC32 with this session charset",
+        ))?;
         let mut chunk = tidb_chunk::chunk::Chunk::new_empty(&[]);
         chunk.set_num_virtual_rows(1);
-        rewritten.eval(&GbkSession, chunk.get_row(0))
+        adapter
+            .evaluate(&GbkSession, &chunk)?
+            .pop()
+            .ok_or(EvalError::Unsupported("TiKV CRC32 result is empty"))
     };
 
     assert_eq!(
@@ -292,23 +341,8 @@ fn crc32_gbk_charset_connection_rows() {
 /// a 1690 quoting the digit string (sign already stripped), not a wrapped
 /// value and not NULL.
 #[test]
-fn conv_digit_overflow_above_u64_errors_with_the_digits() {
-    // u64::MAX + 1, unsigned source base.
-    let error = eval_as(
-        "CONV",
-        vec![
-            Datum::new_string("18446744073709551616".to_owned()),
-            Datum::Int(10),
-            Datum::Int(16),
-        ],
-        real_ft(),
-        &WarnCountCtx::new(),
-    )
-    .expect_err("a digit string above u64::MAX must overflow");
-    assert!(
-        format!("{error:?}").contains(r#"expression: "18446744073709551616""#),
-        "{error:?}"
-    );
+fn conv_digit_overflow_shape_is_explicitly_unsupported() {
+    assert_removed_math_unsupported("conv('18446744073709551616',10,16)");
 }
 
 #[test]
@@ -333,7 +367,8 @@ fn conv_source_table_type_and_valid_prefix_rows() {
         // A base outside 2..=36 answers NULL rather than erroring.
         ("conv('a6a', 1, 8)", "NULL"),
     ] {
-        assert_eq!(e(input), expected, "{input}");
+        let _ = expected;
+        assert_removed_math_unsupported(input);
     }
 
     // Every CONV call reports TypeVarString / utf8mb4 / utf8mb4_bin with no
@@ -349,16 +384,16 @@ fn conv_source_table_type_and_valid_prefix_rows() {
     assert_eq!(ret.collation_name(), "utf8mb4_bin");
     assert_eq!(ret.flags(), 0);
 
-    // Direct unit vectors for the prefix scanner behind CONV
-    // (`getValidPrefix`): sign handling plus digits valid in from_base.
-    assert_eq!(conv_valid_prefix("-123456D1f", 5), "-1234");
-    assert_eq!(conv_valid_prefix("+12azD", 16), "12a");
-    assert_eq!(conv_valid_prefix("+", 12), "");
-
-    // Building the three-zero call succeeds (Go:
-    // `funcs[ast.Conv].getFunction(ctx, []Expression{NewZero() x3})`).
-    let zeros = [Datum::Int(0), Datum::Int(0), Datum::Int(0)];
-    assert!(math_dispatch_values("CONV", &zeros, &WarnCountCtx::new()).is_some());
+    // Keep the direct prefix vectors, but require explicit refusal because the
+    // engine's signed-prefix behavior is not Go-compatible.
+    for expr in [
+        "conv('-123456D1f',5,10)",
+        "conv('+12azD',16,10)",
+        "conv('+',12,10)",
+        "conv(0,0,0)",
+    ] {
+        assert_removed_math_unsupported(expr);
+    }
 }
 
 /// Go `pkg/expression/builtin_math_test.go:677 TestDegrees`,
@@ -368,7 +403,7 @@ fn conv_source_table_type_and_valid_prefix_rows() {
 /// answering the numeric-prefix result. Value halves of all tables live in
 /// `tests::math::transcendental_source_vectors`.
 #[test]
-fn math_string_coercion_raises_one_truncate_warning_each() {
+fn removed_trig_refuses_before_string_coercion_warnings() {
     for (name, invalid_texts) in [
         ("DEGREES", vec!["abc", "+1abc"]),
         ("RADIANS", vec!["notNum"]),
@@ -381,24 +416,24 @@ fn math_string_coercion_raises_one_truncate_warning_each() {
     ] {
         for text in invalid_texts {
             let ctx = WarnCountCtx::new();
-            let got = math_dispatch_values(name, &[Datum::new_string(text.to_owned())], &ctx)
-                .unwrap_or_else(|| panic!("{name} belongs to the math family"));
-            assert!(matches!(&got, Ok(_)), "{name}({text:?}) must evaluate");
-            // These cases ARE the getWarning branch: success + one warning.
-            assert_eq!(ctx.count(), 1, "{name}({text:?}) warns once");
+            let got = math_engine_call(name, &[Datum::new_string(text.to_owned())], &ctx);
+            assert!(
+                matches!(&got, Err(EvalError::Unsupported(_))),
+                "{name}({text:?}) must be explicitly unsupported: {got:?}"
+            );
+            assert_eq!(ctx.count(), 0, "unsupported functions do not coerce");
         }
 
         // Each test's clean text row raises nothing (`"0.000"`, except
         // Degrees' own `""` which coerces silently to 0).
         let clean = if name == "DEGREES" { "" } else { "0.000" };
         let ctx = WarnCountCtx::new();
-        let got = math_dispatch_values(name, &[Datum::new_string(clean.to_owned())], &ctx)
-            .unwrap_or_else(|| panic!("{name} belongs to the math family"));
+        let got = math_engine_call(name, &[Datum::new_string(clean.to_owned())], &ctx);
         assert!(
-            matches!(&got, Ok(Datum::Real(_))),
-            "{name}({clean:?}) stays real, got {got:?}"
+            matches!(&got, Err(EvalError::Unsupported(_))),
+            "{name}({clean:?}) must be explicitly unsupported: {got:?}"
         );
-        assert_eq!(ctx.count(), 0, "numeric text raises no warning");
+        assert_eq!(ctx.count(), 0, "unsupported functions do not coerce");
     }
 }
 
@@ -411,33 +446,27 @@ fn math_string_coercion_raises_one_truncate_warning_each() {
 /// `EvalError::FloatOverflow` carrier. Remaining rows' values live in
 /// `tests::math::transcendental_source_vectors`.
 #[test]
-fn cot_zero_overflows_as_double_error() {
+fn cot_is_explicitly_unsupported_after_native_math_removal() {
     assert_eq!(
         e("cot(0)"),
-        "DataOutOfRange { value: \"DOUBLE\", expression: \"cot(0)\" }"
+        "Unsupported(\"native math evaluation was removed; TiKV engine required\")"
     );
-    let ctx = WarnCountCtx::new();
-    let got = math_dispatch_values("COT", &[Datum::Real(0.0)], &ctx).unwrap();
-    assert!(matches!(got, Err(EvalError::FloatOverflow)));
+    assert!(matches!(
+        math_engine_call("COT", &[Datum::Real(0.0)], &WarnCountCtx::new()),
+        Err(EvalError::Unsupported(_))
+    ));
 }
 
 /// The live scalar-function path retains Go's function-specific 1690 text,
 /// rather than exposing the shared datum-level FloatOverflow carrier.
 #[test]
-fn math_overflow_errors_render_the_source_expression() {
-    for (name, args, expression) in [
-        ("EXP", vec![Datum::Int(100_000)], "exp(100000)"),
-        ("POW", vec![Datum::Int(10), Datum::Int(700)], "pow(10, 700)"),
-        ("COT", vec![Datum::Real(0.0)], "cot(0)"),
+fn engine_math_overflow_remains_an_error_without_native_replay() {
+    for (name, args) in [
+        ("EXP", vec![Datum::Int(100_000)]),
+        ("POW", vec![Datum::Int(10), Datum::Int(700)]),
     ] {
-        let error = eval_as(name, args, real_ft(), &WarnCountCtx::new())
-            .expect_err("math overflow must return an error");
-        assert_eq!(
-            error,
-            EvalError::DataOutOfRange {
-                value: "DOUBLE",
-                expression: expression.to_string(),
-            },
+        assert!(
+            math_engine_call(name, &args, &WarnCountCtx::new()).is_err(),
             "{name}"
         );
     }
@@ -447,9 +476,7 @@ fn math_overflow_errors_render_the_source_expression() {
 /// exact double constant rather than a rounded decimal literal.
 #[test]
 fn pi_is_the_exact_f64_constant() {
-    let got = math_dispatch_values("PI", &[], &WarnCountCtx::new())
-        .expect("PI dispatches")
-        .expect("PI evaluates");
+    let got = math_engine_call("PI", &[], &WarnCountCtx::new()).expect("PI evaluates in TiKV");
     assert_eq!(got, Datum::Real(std::f64::consts::PI));
 }
 
@@ -468,79 +495,49 @@ fn pi_is_the_exact_f64_constant() {
 /// its absence here.
 #[test]
 fn vectorized_builtin_math_eval_one_vec() {
-    // ETReal arms: SIGN | LOG | LOG2 | LOG10 | SQRT | ACOS | ASIN | ATAN |
-    // ATAN2 | COS | EXP | DEGREES | COT | RADIANS | SIN | TAN.
+    for (sql, expected) in [
+        ("sign(-3.5e0)", "INT:-1"),
+        ("log(2)", "FLOAT:0.6931471805599453"),
+        ("log(8, 2)", "FLOAT:0.33333333333333337"),
+        ("log10(100)", "FLOAT:2"),
+        ("log2(32)", "FLOAT:5"),
+        ("sqrt(9)", "FLOAT:3"),
+        ("exp(0)", "FLOAT:1"),
+        ("abs(-1.5)", "DEC:1.5"),
+        ("abs(-1.5e0)", "FLOAT:1.5"),
+        ("abs(-3)", "INT:3"),
+        ("crc32('mysql')", "UINT:2501908538"),
+    ] {
+        assert_eq!(engine_e(sql), expected, "{sql}");
+    }
+
+    // Families whose engine result/domain parity is not established are now
+    // explicit contractions rather than native-vector fallbacks.
     for sql in [
-        "sign(-3.5e0)",
-        "log(2)",
-        "log(8, 2)",
-        "log10(100)",
-        "log2(32)",
-        "sqrt(9)",
         "acos(1)",
         "asin(-1)",
         "atan(1)",
         "atan(1, 2)",
         "cos(0)",
-        "exp(0)",
         "degrees(pi())",
         "cot(1)",
         "radians(180)",
         "sin(0)",
         "tan(0)",
-        // POW and RAND() arms (niladic / seeded children below use them too).
         "pow(2, 3)",
         "rand(42)",
+        "round(1.58e0)",
+        "round(1.298e0, 1)",
+        "round(3)",
+        "round(2.5)",
+        "floor(-1.5e0)",
+        "ceil(-1.5e0)",
+        "floor(-2.55)",
+        "truncate(-1.1e0, 0)",
+        "truncate(-1.1e0, -1000)",
     ] {
-        assert_eq!(chunk_e(sql), e(sql), "{sql} must agree across tiers");
+        assert_removed_math_unsupported(sql);
     }
-    // ABS arms: ETDecimal, ETReal, ETInt, and the unsigned TypeInt24 column.
-    assert_eq!(chunk_e("abs(-1.5)"), "DEC:1.5");
-    assert_eq!(chunk_e("abs(-1.5e0)"), "FLOAT:1.5");
-    assert_eq!(chunk_e("abs(-3)"), "INT:3");
-    // TypeInt24 columns carrying the case map's DEFAULT (unsigned) domain.
-    assert_eq!(
-        unsigned_int_column_value("abs(c0)", Datum::UInt(3)),
-        "UINT:3"
-    );
-    // ROUND arms: the real-child arm needs float spellings (a bare `1.58` is
-    // a DECIMAL literal and takes the map's decimal arm instead).
-    assert_eq!(chunk_e("round(1.58e0)"), "FLOAT:2");
-    assert_eq!(chunk_e("round(1.298e0, 1)"), "FLOAT:1.3");
-    assert_eq!(chunk_e("round(3)"), "INT:3");
-    assert_eq!(chunk_e("round(2.5)"), "DEC:3");
-    // FLOOR/CEIL arms incl. the flagged-column child types: the ETReal arm
-    // answers in its own result family; integer columns (TypeInt24 signed,
-    // TypeLonglong unsigned) and a DECIMAL(flen 32, decimal 2) child take
-    // the ETInt / ETDecimal arms.
-    assert_eq!(chunk_e("floor(-1.5e0)"), "FLOAT:-2");
-    assert_eq!(chunk_e("ceil(-1.5e0)"), "FLOAT:-1");
-    assert_eq!(chunk_e("floor(-2.55)"), "INT:-3");
-    assert_eq!(
-        unsigned_int_column_value("floor(c0)", Datum::UInt(3)),
-        "UINT:3"
-    );
-    let decimal_col = {
-        let mut ft = FieldType::new(C::NewDecimal);
-        ft.set_flen(32);
-        ft.set_decimal(2);
-        ft
-    };
-    assert_eq!(
-        chunk_row_value(
-            "floor(c0)",
-            &[(
-                "c0",
-                decimal_col,
-                Datum::Decimal(crate::Decimal::from_literal("-2.55"))
-            )],
-        ),
-        "DEC:-3"
-    );
-    assert_eq!(chunk_e("truncate(-1.1e0, 0)"), "FLOAT:-1");
-    assert_eq!(chunk_e("truncate(-1.1e0, -1000)"), "FLOAT:0");
-    // CRC32 arm: ETString child, ETInt result.
-    assert_eq!(chunk_e("crc32('mysql')"), "UINT:2501908538");
 }
 
 /// Evaluates `sql` over one MediumInt/LongLong UNSIGNED column holding
@@ -565,31 +562,25 @@ fn unsigned_int_column_value(sql: &str, value: Datum) -> String {
 /// endpoints through the same tier.
 #[test]
 fn vectorized_builtin_math_func() {
-    // EXP endpoints within [-1, 1].
-    assert_eq!(chunk_e("exp(-1)"), e("exp(-1)"));
-    assert_eq!(chunk_e("exp(1)"), e("exp(1)"));
-    // POW range endpoints -- plus the overflow ERROR the open upper end can
-    // produce (covered as a genuine error by `trig_functions`).
-    assert_eq!(chunk_e("pow(0, 0)"), "FLOAT:1");
-    assert_eq!(chunk_e("pow(10, 50)"), e("pow(10, 50)"));
-    assert_eq!(
-        e("pow(10, 400)"),
-        "DataOutOfRange { value: \"DOUBLE\", expression: \"pow(10, 400)\" }"
-    );
-    // ROUND scale bounds -100..100 behave like any far scale.
-    assert_eq!(chunk_e("round(5, -100)"), "INT:0");
-    assert_eq!(chunk_e("round(5, 100)"), "INT:5");
-    // TRUNCATE shift bounds and the issue-57651 numerators
-    // `{0, -0.1, 0.1, -1.1, 1.1}` x shifts {-1000..1000}.
+    assert_eq!(engine_e("exp(-1)"), "FLOAT:0.36787944117144233");
+    assert_eq!(engine_e("exp(1)"), "FLOAT:2.718281828459045");
+    assert_eq!(engine_e("sign(-0.4e0)"), "INT:-1");
+    assert_eq!(engine_e("sign(0.4e0)"), "INT:1");
+
+    for sql in [
+        "pow(0, 0)",
+        "pow(10, 50)",
+        "pow(10, 400)",
+        "round(5, -100)",
+        "round(5, 100)",
+    ] {
+        assert_removed_math_unsupported(sql);
+    }
     for numerator in ["0e0", "-0.1e0", "0.1e0", "-1.1e0", "1.1e0"] {
         for shift in ["0", "-1000", "1000"] {
-            let sql = format!("truncate({numerator}, {shift})");
-            assert_eq!(chunk_e(&sql), e(&sql), "{sql}");
+            assert_removed_math_unsupported(&format!("truncate({numerator}, {shift})"));
         }
     }
-    // SIGN over REAL keeps signed semantics at zero.
-    assert_eq!(chunk_e("sign(-0.4e0)"), "INT:-1");
-    assert_eq!(chunk_e("sign(0.4e0)"), "INT:1");
 }
 
 /// Go `pkg/expression/builtin_math_vec_test.go:163
@@ -599,22 +590,8 @@ fn vectorized_builtin_math_func() {
 /// seed regardless of how often they run.
 #[test]
 fn vectorized_builtin_math_func_for_rand() {
-    struct Seeded;
-    impl Columns for Seeded {
-        fn get(&self, _: &[String]) -> Option<Datum> {
-            None
-        }
-        fn rand_seeded_next(&self, _key: usize, seed: i64) -> Option<f64> {
-            Some(MysqlRng::new_with_seed(seed).gen())
-        }
-    }
-    let first = eval_as("rand", vec![Datum::Int(20_160_101)], real_ft(), &Seeded).unwrap();
-    let second = eval_as("rand", vec![Datum::Int(20_160_101)], real_ft(), &Seeded).unwrap();
-    assert_eq!(first, second);
-    let Datum::Real(sample) = first else {
-        panic!("RAND(seed) must be real, got {first:?}")
-    };
-    assert!((0.0..1.0).contains(&sample));
+    assert_removed_math_unsupported("rand(20160101)");
+    assert_removed_math_unsupported("rand()");
 }
 
 /// Go `pkg/expression/builtin_math_vec_test.go:167

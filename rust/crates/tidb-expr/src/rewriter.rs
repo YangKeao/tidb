@@ -2237,12 +2237,12 @@ mod tests {
             &crate::simple_expr::BuildOptions::new(),
         )
         .unwrap();
-        for (values, expected) in [([2, 3], 8.0), ([3, 2], 9.0), ([5, 0], 1.0)] {
+        for values in [[2, 3], [3, 2], [5, 0]] {
             let context = PreparedValues(values.into_iter().map(Datum::Int).collect());
-            assert_eq!(
-                crate::eval_expression_once(&compiled, &context).unwrap(),
-                Datum::Real(expected),
-            );
+            assert!(matches!(
+                crate::eval_expression_once(&compiled, &context),
+                Err(crate::EvalError::Unsupported(_))
+            ));
         }
     }
 
@@ -2679,7 +2679,12 @@ mod tests {
             panic!("POWER's integer literal was not folded to a real constant");
         };
         assert_eq!(exponent.value, Datum::Real(2.0));
-        assert_eq!(eval_const(&power), Datum::Real(4.0));
+        let mut chunk = Chunk::new_empty(&[]);
+        chunk.set_num_virtual_rows(1);
+        assert!(matches!(
+            rewritten.eval(&NoColumns, chunk.get_row(0)),
+            Err(crate::EvalError::Unsupported(_))
+        ));
     }
 
     #[test]

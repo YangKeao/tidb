@@ -6,8 +6,8 @@
     "tikv": "521ac7330208b7f74f2b182bc373882687967280"
   },
   "current_revisions": {
-    "tidb": "3055d9c0f803a4615398cd00f8df0a67e34b9beb",
-    "tikv": "a29dfa9bdeb45d8357e67b12829396addb1e6fc3"
+    "tidb": "8259745c54837f525f06f7ee695ec6f04ec60db3",
+    "tikv": "afc1525e11ad50b7314afdee5b10d5b6b7f52e7f"
   },
   "source_sha256": {
     "tidb/pkg/expression/builtin.go": "496f0b345019f0af073dab6cf7b6608087135728ca96ffe1323708d4cba13b4e",
@@ -61,7 +61,7 @@
     "tidb/rust/crates/tidb-expr/src/builtin_registry.rs": "0138401ebdc33b31f5bbe7c9da032d8b89bd57099d0e8fe73dc4ac5e6f0a0ae7",
     "tidb/rust/crates/tidb-expr/src/pushdown_catalog.rs": "0799664d5779a8632efa6b3a7f77b5d84ad59ccaa9a97468364b4c02dd5515d8",
     "tidb/rust/crates/tidb-expr/src/tikv.rs": "5e25572b4afea40dea82275c7b6ff9eedd6f6d414916f4485666e41ccb4b0802",
-    "tidb/rust/crates/tidb-expr/src/tikv/admission.rs": "1534d5e18e4fe9d49ff6d388476e85b671ed9d21637d5a3ec24ad1cdc8dc8751",
+    "tidb/rust/crates/tidb-expr/src/tikv/admission.rs": "4ac83cb3ee23bb2879a5e5900cd42f4fde2df06ae22b198132aff1947305250c",
     "tidb/rust/crates/tidb-expr/src/tikv/lowering.rs": "251de7be20f056ffa4e1240c7c3b426a9eda45f6df5b3adb812b66d6e4e12730",
     "tidb/rust/crates/tidb-expr/src/tikv/lowering/families.rs": "43a1e3b06a5f54a1f9268dfc94c1ffda6c791dc4f7d34393d02d7d2c4365b08a",
     "tidb/rust/crates/tidb-proto/proto/select.proto": "2fc136f4c341c1e3d6617ff3c5e7641ebab35188feebaff632ff8235e360f5c5",
@@ -104,14 +104,14 @@
     "engine_with_go_internal_cast_evidence": 51,
     "engine_lazy_risk": 34,
     "admission_rows": 384,
-    "admission_admitted": 240,
-    "admission_excluded": 144,
+    "admission_admitted": 223,
+    "admission_excluded": 161,
     "admission_registry_names": 309,
     "admission_synthesized_names": 75,
     "admission_missing_registry_names": 0,
     "admission_missing_synthesized_names": 0,
-    "signatures_admitted_by_table": 388,
-    "signatures_excluded_by_table": 126,
+    "signatures_admitted_by_table": 357,
+    "signatures_excluded_by_table": 157,
     "signatures_untested_by_table": 126
   },
   "current_facade_policy": "engine_builder_with_safety_preflight",
@@ -3621,11 +3621,11 @@
     },
     {
       "name": "acos",
-      "decision": "admitted",
-      "signature": "Family:Family::Math",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native trig was removed and the engine's libm path is not verified bit-exact with Go"
     },
     {
       "name": "adddate",
@@ -3685,27 +3685,27 @@
     },
     {
       "name": "asin",
-      "decision": "admitted",
-      "signature": "Family:Family::Math",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native trig was removed and the engine's libm path is not verified bit-exact with Go"
     },
     {
       "name": "atan",
-      "decision": "admitted",
-      "signature": "Family:Family::Math",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native trig was removed and the engine's libm path is not verified bit-exact with Go"
     },
     {
       "name": "atan2",
-      "decision": "admitted",
-      "signature": "Family:Family::Math",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native trig was removed and the engine's libm path is not verified bit-exact with Go"
     },
     {
       "name": "benchmark",
@@ -3949,19 +3949,19 @@
     },
     {
       "name": "ceil",
-      "decision": "admitted",
-      "signature": "Family:Family::Math",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native math was removed and engine decimal result-domain parity is not established"
     },
     {
       "name": "ceiling",
-      "decision": "admitted",
-      "signature": "Family:Family::Math",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native math was removed and engine decimal result-domain parity is not established"
     },
     {
       "name": "char_func",
@@ -4053,11 +4053,11 @@
     },
     {
       "name": "conv",
-      "decision": "admitted",
-      "signature": "Family:Family::Math",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native math was removed and engine signed-prefix/base parity is not established"
     },
     {
       "name": "convert",
@@ -4085,11 +4085,11 @@
     },
     {
       "name": "cos",
-      "decision": "admitted",
-      "signature": "Family:Family::Math",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native trig was removed and the engine's libm path is not verified bit-exact with Go"
     },
     {
       "name": "cot",
@@ -4097,7 +4097,7 @@
       "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": "the port's COT is Go-exact (1/go_tan, a port of Go's math.Tan) while the engine's libm tan is one ULP above Go's, so its COT is one ULP below; native keeps the Go-exact answer (math_fn::tests::cot_matches_go_and_libm_tan_does_not)"
+      "reason": "the engine's libm tan differs from Go's result by one ULP; the native math kernel was deleted, so COT is explicitly unsupported until the engine can provide the required result"
     },
     {
       "name": "crc32",
@@ -4615,11 +4615,11 @@
     },
     {
       "name": "degrees",
-      "decision": "admitted",
-      "signature": "Family:Family::Math",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native trig was removed and the engine's libm path is not verified bit-exact with Go"
     },
     {
       "name": "div",
@@ -4698,11 +4698,11 @@
     },
     {
       "name": "floor",
-      "decision": "admitted",
-      "signature": "Family:Family::Math",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native math was removed and engine decimal result-domain parity is not established"
     },
     {
       "name": "format",
@@ -5785,19 +5785,19 @@
     },
     {
       "name": "pow",
-      "decision": "admitted",
-      "signature": "Family:Family::Math",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native math was removed and engine domain/error parity is not established"
     },
     {
       "name": "power",
-      "decision": "admitted",
-      "signature": "Family:Family::Math",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native math was removed and engine domain/error parity is not established"
     },
     {
       "name": "quarter",
@@ -5819,11 +5819,11 @@
     },
     {
       "name": "radians",
-      "decision": "admitted",
-      "signature": "Family:Family::Math",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native trig was removed and the engine's libm path is not verified bit-exact with Go"
     },
     {
       "name": "rand",
@@ -5947,11 +5947,11 @@
     },
     {
       "name": "round",
-      "decision": "admitted",
-      "signature": "Family:Family::Math",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native math was removed and engine digit/result parity is not established"
     },
     {
       "name": "row",
@@ -6069,11 +6069,11 @@
     },
     {
       "name": "sin",
-      "decision": "admitted",
-      "signature": "Family:Family::Math",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native trig was removed and the engine's libm path is not verified bit-exact with Go"
     },
     {
       "name": "sleep",
@@ -6184,11 +6184,11 @@
     },
     {
       "name": "tan",
-      "decision": "admitted",
-      "signature": "Family:Family::Math",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native trig was removed and the engine's libm path is not verified bit-exact with Go"
     },
     {
       "name": "tidb_bounded_staleness",
@@ -6438,11 +6438,11 @@
     },
     {
       "name": "truncate",
-      "decision": "admitted",
-      "signature": "Family:Family::Math",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native math was removed and engine digit/result parity is not established"
     },
     {
       "name": "ucase",
@@ -11521,7 +11521,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "ceil",
         "ceiling"
@@ -11553,7 +11553,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "ceil",
         "ceiling"
@@ -11585,7 +11585,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "ceil",
         "ceiling"
@@ -11617,7 +11617,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "ceil",
         "ceiling"
@@ -11650,7 +11650,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "ceil",
         "ceiling"
@@ -11681,7 +11681,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "floor"
       ]
@@ -11711,7 +11711,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "floor"
       ]
@@ -11741,7 +11741,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "floor"
       ]
@@ -11771,7 +11771,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "floor"
       ]
@@ -11802,7 +11802,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "floor"
       ]
@@ -11833,7 +11833,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "round"
       ]
@@ -11863,7 +11863,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "round"
       ]
@@ -11894,7 +11894,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "round"
       ]
@@ -11925,7 +11925,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "round"
       ]
@@ -11955,7 +11955,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "round"
       ]
@@ -11986,7 +11986,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "round"
       ]
@@ -12191,7 +12191,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "pow",
         "power"
@@ -12220,7 +12220,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "conv"
       ]
@@ -12332,7 +12332,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "acos"
       ]
@@ -12360,7 +12360,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "asin"
       ]
@@ -12389,7 +12389,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "atan",
         "atan2"
@@ -12419,7 +12419,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "atan",
         "atan2"
@@ -12448,7 +12448,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "cos"
       ]
@@ -12504,7 +12504,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "degrees"
       ]
@@ -12588,7 +12588,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "radians"
       ]
@@ -12616,7 +12616,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "sin"
       ]
@@ -12644,7 +12644,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "tan"
       ]
@@ -12674,7 +12674,7 @@
       "borrowed_classification": "mapper_requires_runtime_probe",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "truncate"
       ]
@@ -12704,7 +12704,7 @@
       "borrowed_classification": "mapper_requires_runtime_probe",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "truncate"
       ]
@@ -12734,7 +12734,7 @@
       "borrowed_classification": "mapper_requires_runtime_probe",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "truncate"
       ]
@@ -12764,7 +12764,7 @@
       "borrowed_classification": "mapper_requires_runtime_probe",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "truncate"
       ]

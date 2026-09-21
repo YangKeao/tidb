@@ -135,8 +135,8 @@ const SHAPES: &[(&str, bool)] = &[
     ("cast(i0 as signed)", true),
     ("cast(s0 as char)", true),
     ("cast(d0 as date)", true),
-    // Digits: a literal int runs in the engine, a string one does not.
-    ("round(c0, 2)", true),
+    // ROUND/TRUNCATE are explicit contractions after native math deletion.
+    ("round(c0, 2)", false),
     ("round(c0, '2')", false),
     ("truncate(c0, -2)", false),
     // Collation-sensitive strings.
@@ -181,6 +181,6 @@ fn column_bearing_shapes_have_the_pinned_outcome() {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-    assert_eq!(covered, 28, "the covered count changed");
+    assert_eq!(covered, 27, "the covered count changed");
     assert_eq!(SHAPES.len(), 48, "the shape list changed size");
 }

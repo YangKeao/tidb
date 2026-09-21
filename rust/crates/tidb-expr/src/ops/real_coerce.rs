@@ -168,7 +168,7 @@ pub(crate) fn to_f64(v: Datum) -> f64 {
 ///
 /// AUDIT of the `0.0` fallbacks below, against `Datum.ToFloat64` in
 /// `pkg/types/datum.go`.  Callers reached today: `float_binary` (via
-/// `eval_binary`), `math_fn::{sign, numeric_arg, ceil_floor}`,
+/// `eval_binary`), the now-removed native math family,
 /// `string_fn::{field, format_number_text}`, `builtin_ext::info::real_arg`
 /// and `builtin_ext::compare2::interval_real` (which carries its own copy of
 /// the same prefix rule, with the same fallbacks).  Every verdict below is a
@@ -194,10 +194,9 @@ pub(crate) fn to_f64(v: Datum) -> f64 {
 ///
 /// Both gaps this audit found are now CLOSED.
 ///
-///  * `math_fn::{abs, sign, round_or_truncate}` matched a closed list of
-///    kinds and refused the rest, so `ABS('12abc')` was an error where TiDB
-///    answers 12. Each now ends in the `ETReal` signature Go's own
-///    per-eval-type dispatch selects, reached through this coercion.
+///  * The deleted native math family once matched a closed list of kinds and
+///    refused the rest. Math now reaches this coercion only through TiKV; this
+///    module no longer claims a local ABS/SIGN/ROUND implementation.
 ///  * TiDB raises `1292 Truncated incorrect DOUBLE value: '<text>'` whenever
 ///    the numeric prefix is shorter than the operand, and this function is
 ///    where Go raises it too (`getValidFloatPrefix` calls

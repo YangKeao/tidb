@@ -54,9 +54,18 @@ fn a_non_integer_etint_argument_is_cast_before_the_signature_runs() {
         ("locate('b','abcdef','2')", "INT:2"),
         ("make_set('3','a','b','c')", "STR:a,b"),
     ] {
-        let (row, chunk) = both(expr);
-        assert_eq!(row, want, "{expr}");
-        assert_eq!(chunk, want, "{expr} (chunk tier)");
+        if expr.starts_with("round") || expr.starts_with("truncate") {
+            let _ = want;
+            assert!(engine_declines(expr));
+            assert_eq!(
+                e(expr),
+                "Unsupported(\"native math evaluation was removed; TiKV engine required\")"
+            );
+        } else {
+            let (row, chunk) = both(expr);
+            assert_eq!(row, want, "{expr}");
+            assert_eq!(chunk, want, "{expr} (chunk tier)");
+        }
     }
 }
 
@@ -83,9 +92,12 @@ fn the_int_cast_boundary_is_the_ordinary_cast_as_signed() {
         // decimal -- captured, `select round("1200","1")` is `1200`.
         ("round(\"1200\",\"1\")", "FLOAT:1200"),
     ] {
-        let (row, chunk) = both(expr);
-        assert_eq!(row, want, "{expr}");
-        assert_eq!(chunk, want, "{expr} (chunk tier)");
+        let _ = want;
+        assert!(engine_declines(expr));
+        assert_eq!(
+            e(expr),
+            "Unsupported(\"native math evaluation was removed; TiKV engine required\")"
+        );
     }
 }
 
@@ -100,9 +112,12 @@ fn a_negative_string_scale_still_shifts_left() {
         ("truncate(1234.5678,'-2')", "DEC:1200"),
         ("round(1234.5678,'-2')", "DEC:1200"),
     ] {
-        let (row, chunk) = both(expr);
-        assert_eq!(row, want, "{expr}");
-        assert_eq!(chunk, want, "{expr} (chunk tier)");
+        let _ = want;
+        assert!(engine_declines(expr));
+        assert_eq!(
+            e(expr),
+            "Unsupported(\"native math evaluation was removed; TiKV engine required\")"
+        );
     }
 }
 

@@ -268,6 +268,32 @@ fn three_way(expression: Expression, input: &mut Chunk, ty: &FieldType) -> Vec<D
     expected.unwrap()
 }
 
+fn engine_two_way_expected(
+    expression: Expression,
+    input: &mut Chunk,
+    ty: &FieldType,
+    expected: &[Datum],
+) {
+    let selection = input.sel().map(<[usize]>::to_vec);
+    for backend in [Some(Backend::Copying), Some(Backend::Borrowed)] {
+        let context = TestContext::new(backend);
+        let suite = EvaluatorSuite::new(vec![expression.clone()], true);
+        let mut output = Chunk::new_with_capacity(std::slice::from_ref(ty), input.num_rows());
+        suite.run(&context, input, &mut output).unwrap();
+        assert_eq!(context.total_rows.get(), input.num_rows());
+        assert_eq!(
+            context.borrowed_rows.get(),
+            if backend == Some(Backend::Borrowed) {
+                input.num_rows()
+            } else {
+                0
+            }
+        );
+        assert_eq!(values(&output, ty), expected, "{backend:?}: {expression:?}");
+        assert_eq!(input.sel(), selection.as_deref());
+    }
+}
+
 #[test]
 fn tikv_borrowed_suite_preserves_append_semantics_with_copying_fallback() {
     let ty = FieldType::new(FieldTypeCode::LongLong);
@@ -311,7 +337,7 @@ fn tikv_borrowed_suite_preserves_append_semantics_with_copying_fallback() {
 }
 
 #[test]
-fn tikv_borrowed_all_numeric_signatures_match_copying_and_native() {
+fn tikv_borrowed_all_numeric_signatures_match_copying() {
     let int = FieldType::new(FieldTypeCode::LongLong);
     for ty in [int.clone(), FieldType::new(FieldTypeCode::Double)] {
         let mut input = Chunk::new_with_capacity(&[ty.clone(), ty.clone()], 6);
@@ -335,20 +361,46 @@ fn tikv_borrowed_all_numeric_signatures_match_copying_and_native() {
         }
         input.set_sel(Some(vec![5, 2, 0, 3, 1, 2, 4]));
         for name in [
-            "plus", "minus", "mul", "eq", "ne", "lt", "le", "gt", "ge", "nulleq", "abs",
+            "plus", "minus", "mul", "eq", "ne", "lt", "le", "gt", "ge", "nulleq",
         ] {
-            let result = if matches!(name, "plus" | "minus" | "mul" | "abs") {
+            let result = if matches!(name, "plus" | "minus" | "mul") {
                 &ty
             } else {
                 &int
             };
-            let args = if name == "abs" {
-                vec![col(0, &ty)]
-            } else {
-                vec![col(0, &ty), col(1, &ty)]
-            };
-            three_way(call(name, result, args), &mut input, result);
+            three_way(
+                call(name, result, vec![col(0, &ty), col(1, &ty)]),
+                &mut input,
+                result,
+            );
         }
+        let abs_expected = if ty.code() == FieldTypeCode::Double {
+            vec![
+                Datum::Null,
+                Datum::Real(2.25),
+                Datum::Real(1.0),
+                Datum::Null,
+                Datum::Real(0.5),
+                Datum::Real(2.25),
+                Datum::Real(1.25),
+            ]
+        } else {
+            vec![
+                Datum::Null,
+                Datum::Int(9),
+                Datum::Int(4),
+                Datum::Null,
+                Datum::Int(2),
+                Datum::Int(9),
+                Datum::Int(5),
+            ]
+        };
+        engine_two_way_expected(
+            call("abs", &ty, vec![col(0, &ty)]),
+            &mut input,
+            &ty,
+            &abs_expected,
+        );
         let nested = call(
             "mul",
             &ty,

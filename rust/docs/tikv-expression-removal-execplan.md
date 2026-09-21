@@ -25,13 +25,19 @@ families) and the TiKV RPN engine reached through the `tikv-expr` feature. The
 goal is to make TiKV's engine the **only** evaluator, so that one set of
 kernels defines SQL value semantics everywhere.
 
+The current shortest-path policy physically deletes native kernel families
+before complete compatibility. A retained function must execute in TiKV;
+otherwise admission and the residual structural evaluator must both return a
+structured `Unsupported` error. There is no native replay after an engine
+error. Tests keep their source vectors but assert the contraction explicitly
+when parity is not established.
 
-The purpose of the plan is to sequence that removal so each step is verifiable
-and reversible. Definition of done, stated as behavior: the `tikv-expr`
-feature disappears (the engine is always on), no code path evaluates an
-expression through the old kernels, and the full Rust suite plus the
-mysql-tester replay pass with the engine executing every expression. Until
-then the native path stays and remains the default.
+The purpose of the plan is to sequence that removal so each step is verifiable.
+Definition of done, stated as behavior: the `tikv-expr` feature disappears (the
+engine is always on), no code path evaluates an expression through old kernels,
+and the declared Rust and SQL demonstration gates pass. Full historical MySQL
+function compatibility is not a prerequisite for the deletion demo; every
+intentional contraction must be listed and must never silently fall back.
 
 The feature gate is the temporary coexistence mechanism. It is deleted only
 at milestone E, and deleting it is the signal that the replacement is
@@ -42,7 +48,19 @@ remain in the workspace.
 
 ## Progress
 
-
+- [x] First physical-deletion tranche: removed `src/math_fn/` (1,674 lines of
+      kernels plus 170 lines of support/tests), removed every production
+      `math_fn` dispatch, and added fail-closed guards to both residual native
+      entry points. Retained ABS/SIGN/SQRT/EXP/LN/LOG/LOG2/LOG10/PI/CRC32
+      vectors execute through TiKV. CONV, POW/POWER, ROUND/TRUNCATE,
+      CEIL/CEILING/FLOOR, RAND and all trig functions are explicitly excluded
+      because parity is not established; their preserved source vectors assert
+      both engine decline and structured native refusal. The guarded full suite
+      passes: 1216 library tests and 77 integration tests (99 ignored). The
+      runtime gate's reviewed contraction baseline is 30 tests / 334 receipts /
+      2150 engine rows / 160 borrowed rows; static admission is 223 admitted /
+      161 excluded. This is one family only and is not the final native-removal
+      claim.
 - [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
       in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected
       borrowed facade was used by the adapter while the manifest still pinned
@@ -237,12 +255,14 @@ remain in the workspace.
 - [x] Repair static inventory checks: scan production functions after test items,
       resolve symbolic exclusion reasons, reject unparsed rows, and ignore only
       informational snapshot HEADs when comparing committed reports. Generated
-      table has 384 rows (240 declared admitted / 144 excluded), no missing names.
+      table has 384 rows (223 declared admitted / 161 excluded), no missing names.
 - [x] Add a CI-callable runtime receipt gate for the fixed tikv_coverage module:
-      mandatory engine contexts for positive differential fixtures, actual row/
-      borrowed accounting, exact baseline comparison, failure/empty/ignored/
-      fallback/identity/count rejection. Local baseline: 368 receipts, 2394 engine
-      rows, 160 observed borrowed rows, 30 tests passed (47 filtered out).
+      copying/borrowed engine parity fixtures (explicitly not a semantic oracle),
+      actual row/borrowed accounting, exact baseline comparison, and failure/
+      empty/ignored/fallback/identity/count rejection. Independent retained-math
+      source vectors remain in the unit/source corpus. Reviewed post-math-deletion baseline:
+      334 receipts, 2150 engine rows, 160 observed borrowed rows, 30 tests
+      passed (47 filtered out).
 - [ ] Wire/validate the runtime gate in actual hosted CI and extend engine-only
       coverage beyond this fixture set. Static names and runtime receipt counts
       are not proof of all SQL shapes or native deletion readiness.
@@ -281,7 +301,7 @@ remain in the workspace.
       copying/borrowed backend does not.
 - [x] Milestone B foundation (partial point 2): explicit admission table and
       observable fallback gate. Current static inventory has 384 rows
-      (240 declared admitted, 144 excluded with a reason) covering the
+      (223 declared admitted, 161 excluded with a reason) covering the
       309-name Go-derived registry plus the synthesized spellings; a test fails
       if a name has no row. Falls back are reported as `NotAdmitted`,
       `LazyRisk` or `UnrepresentableInput` and the SQL differential helper

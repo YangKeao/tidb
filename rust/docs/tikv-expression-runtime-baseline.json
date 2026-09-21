@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "scope": "check()-based native differential fixtures; two requested engine modes, observed borrowed rows; not all SQL shapes",
+  "scope": "check()-based engine copying/borrowed parity fixtures; observed borrowed rows; not an independent semantic oracle and not all SQL shapes",
   "command": [
     "cargo",
     "test",
@@ -20,8 +20,8 @@
     "--test-threads=1"
   ],
   "tests_passed": 30,
-  "fixture_receipts": 368,
-  "engine_rows": 2394,
+  "fixture_receipts": 334,
+  "engine_rows": 2150,
   "borrowed_rows": 160,
   "records": [
     {
@@ -62,16 +62,6 @@
       "input_rows": 4,
       "engine_rows": 8,
       "borrowed_rows": 4,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "acos",
-      "wire_signatures": [
-        2142
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
-      "borrowed_rows": 0,
       "native_fallbacks": 0
     },
     {
@@ -121,46 +111,6 @@
       ],
       "input_rows": 4,
       "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "asin",
-      "wire_signatures": [
-        2143
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "atan",
-      "wire_signatures": [
-        2144
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "atan2_binary",
-      "wire_signatures": [
-        2145
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "atan_binary",
-      "wire_signatures": [
-        2145
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
       "borrowed_rows": 0,
       "native_fallbacks": 0
     },
@@ -520,56 +470,6 @@
       "native_fallbacks": 0
     },
     {
-      "label": "ceil_decimal",
-      "wire_signatures": [
-        2108
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "ceil_int",
-      "wire_signatures": [
-        2106
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "ceil_real",
-      "wire_signatures": [
-        2109
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "ceil_uint",
-      "wire_signatures": [
-        2106
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "ceiling",
-      "wire_signatures": [
-        2109
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
       "label": "char_length_bytes",
       "wire_signatures": [
         7065
@@ -633,26 +533,6 @@
       "label": "compress",
       "wire_signatures": [
         4503
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "conv",
-      "wire_signatures": [
-        2138
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "cos",
-      "wire_signatures": [
-        2146
       ],
       "input_rows": 3,
       "engine_rows": 6,
@@ -1140,16 +1020,6 @@
       "native_fallbacks": 0
     },
     {
-      "label": "degrees",
-      "wire_signatures": [
-        2148
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
       "label": "div_decimal",
       "wire_signatures": [
         212
@@ -1254,46 +1124,6 @@
       "label": "field",
       "wire_signatures": [
         7013
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "floor_decimal",
-      "wire_signatures": [
-        2113
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "floor_int",
-      "wire_signatures": [
-        2111
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "floor_real",
-      "wire_signatures": [
-        2114
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "floor_uint",
-      "wire_signatures": [
-        2111
       ],
       "input_rows": 4,
       "engine_rows": 8,
@@ -2823,26 +2653,6 @@
       "native_fallbacks": 0
     },
     {
-      "label": "pow_binary",
-      "wire_signatures": [
-        2137
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "power_binary",
-      "wire_signatures": [
-        2137
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
       "label": "quarter",
       "wire_signatures": [
         6073
@@ -2869,16 +2679,6 @@
       ],
       "input_rows": 4,
       "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "radians",
-      "wire_signatures": [
-        2151
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
       "borrowed_rows": 0,
       "native_fallbacks": 0
     },
@@ -2989,86 +2789,6 @@
       ],
       "input_rows": 3,
       "engine_rows": 6,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "round_decimal",
-      "wire_signatures": [
-        2123
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "round_frac_decimal",
-      "wire_signatures": [
-        2126
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "round_frac_int",
-      "wire_signatures": [
-        2125
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "round_frac_real",
-      "wire_signatures": [
-        2124
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "round_frac_uint",
-      "wire_signatures": [
-        2125
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "round_int",
-      "wire_signatures": [
-        2122
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "round_real",
-      "wire_signatures": [
-        2121
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "round_uint",
-      "wire_signatures": [
-        2122
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
       "borrowed_rows": 0,
       "native_fallbacks": 0
     },
@@ -3185,16 +2905,6 @@
       "wire_signatures": [
         2,
         2140
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "sin",
-      "wire_signatures": [
-        2152
       ],
       "input_rows": 3,
       "engine_rows": 6,
@@ -3322,16 +3032,6 @@
       "native_fallbacks": 0
     },
     {
-      "label": "tan",
-      "wire_signatures": [
-        2153
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
       "label": "time_to_sec",
       "wire_signatures": [
         6075
@@ -3406,46 +3106,6 @@
       ],
       "input_rows": 3,
       "engine_rows": 6,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "truncate_frac_decimal",
-      "wire_signatures": [
-        2156
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "truncate_frac_int",
-      "wire_signatures": [
-        2154
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "truncate_frac_real",
-      "wire_signatures": [
-        2155
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "truncate_frac_uint",
-      "wire_signatures": [
-        2157
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
       "borrowed_rows": 0,
       "native_fallbacks": 0
     },

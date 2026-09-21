@@ -182,8 +182,10 @@ fn equal(left: &Datum, right: &Datum) -> bool {
     }
 }
 
-/// A successful row is evidence for this exact fixture, not every shape of its
-/// signature. Numeric math uses a 1e-12 relative/absolute comparison tolerance.
+/// A successful receipt proves engine execution plus copying/borrowed transport
+/// parity for this exact fixture. It is deliberately not a semantic oracle;
+/// independent retained-math values live in `src/tests/math.rs` and the source
+/// corpus modules, while contracted families use `check_declined` below.
 fn check(
     label: &str,
     expression: Expression,
@@ -203,10 +205,10 @@ fn check(
     let mut baseline_warnings = Vec::new();
     let mut engine_rows = 0;
     let mut borrowed_rows = 0;
-    for backend in [None, Some(Backend::Copying), Some(Backend::Borrowed)] {
+    for backend in [Some(Backend::Copying), Some(Backend::Borrowed)] {
         let context = TestContext {
             backend,
-            engine_required: backend.is_some(),
+            engine_required: true,
             ..TestContext::default()
         };
         let suite = EvaluatorSuite::new(vec![expression.clone()], true);
@@ -214,18 +216,14 @@ fn check(
         suite
             .run(&context, input, &mut output)
             .map_err(|e| format!("{label} {backend:?}: {e:?}"))?;
-        let expected_count = if backend.is_some() {
-            input.num_rows()
-        } else {
-            0
-        };
+        let expected_count = input.num_rows();
         if context.rows.get() != expected_count {
             return Err(format!(
-                "{label} {backend:?}: native fallback, rows={}",
+                "{label} {backend:?}: engine row mismatch, rows={}",
                 context.rows.get()
             ));
         }
-        if backend.is_some() && !context.fallbacks.borrow().is_empty() {
+        if !context.fallbacks.borrow().is_empty() {
             return Err(format!(
                 "{label} {backend:?}: engine context still fell back: {:?}",
                 context.fallbacks.borrow()
@@ -239,7 +237,7 @@ fn check(
         let values = (0..output.num_rows())
             .map(|row| output.get_row(row).get_datum(0, ty))
             .collect::<Vec<_>>();
-        if backend.is_none() {
+        if backend == Some(Backend::Copying) {
             baseline = values;
             baseline_warnings = context.warnings.into_inner();
         } else {
@@ -250,12 +248,12 @@ fn check(
                     .all(|(right, left)| equal(left, right))
             {
                 return Err(format!(
-                    "{label} {backend:?}: native={baseline:?}, engine={values:?}"
+                    "{label} {backend:?}: copying={baseline:?}, borrowed={values:?}"
                 ));
             }
             if *context.warnings.borrow() != baseline_warnings {
                 return Err(format!(
-                    "{label} {backend:?}: warnings native={baseline_warnings:?}, engine={:?}",
+                    "{label} {backend:?}: warnings copying={baseline_warnings:?}, borrowed={:?}",
                     context.warnings.borrow()
                 ));
             }
@@ -287,6 +285,15 @@ fn check(
     Ok(())
 }
 
+fn check_declined(label: &str, expression: Expression) -> Result<(), String> {
+    match TikvExpression::compile(&expression, Context::default())
+        .map_err(|error| format!("{label}: compile error {error:?}"))?
+    {
+        None => Ok(()),
+        Some(_) => Err(format!("{label}: expected explicit engine decline")),
+    }
+}
+
 fn record(result: Result<(), String>, failures: &mut Vec<String>) {
     if let Err(error) = result {
         failures.push(error);
@@ -294,7 +301,7 @@ fn record(result: Result<(), String>, failures: &mut Vec<String>) {
 }
 
 #[test]
-fn tikv_coverage_numeric_families_differential() {
+fn tikv_coverage_numeric_families_engine_receipts() {
     let mut failures = Vec::new();
     for (tag, ty, left, right) in [
         (
@@ -349,9 +356,7 @@ fn tikv_coverage_numeric_families_differential() {
                 &mut failures,
             );
         }
-        for name in [
-            "abs", "isnull", "istrue", "isfalse", "not", "round", "ceil", "floor",
-        ] {
+        for name in ["abs", "isnull", "istrue", "isfalse", "not"] {
             let result = if matches!(name, "isnull" | "istrue" | "isfalse" | "not") {
                 int()
             } else {
@@ -367,17 +372,24 @@ fn tikv_coverage_numeric_families_differential() {
                 &mut failures,
             );
         }
+        for name in ["round", "ceil", "floor"] {
+            record(
+                check_declined(
+                    &format!("{name}_{tag}"),
+                    call(name, &ty, vec![column(0, &ty)]),
+                ),
+                &mut failures,
+            );
+        }
         for name in ["round", "truncate"] {
             record(
-                check(
+                check_declined(
                     &format!("{name}_frac_{tag}"),
                     call(
                         name,
                         &ty,
                         vec![column(0, &ty), literal(Datum::Int(1), &int())],
                     ),
-                    &mut input,
-                    &ty,
                 ),
                 &mut failures,
             );
@@ -418,27 +430,42 @@ fn tikv_coverage_numeric_families_differential() {
         std::slice::from_ref(&ty),
         &[vec![Datum::Real(0.25), Datum::Real(0.5), Datum::Null]],
     );
-    for name in [
-        // `cot` is excluded: this port is one ULP from Go while the engine matches Go.
-        "sin", "cos", "tan", "asin", "acos", "atan", "sqrt", "exp", "degrees", "radians", "log2",
-        "log10", "ln", "log",
-    ] {
+    for name in ["sqrt", "exp", "log2", "log10", "ln", "log"] {
         record(
             check(name, call(name, &ty, vec![column(0, &ty)]), &mut input, &ty),
             &mut failures,
         );
     }
-    for name in ["pow", "power", "log", "atan", "atan2"] {
+    for name in [
+        "sin", "cos", "tan", "asin", "acos", "atan", "degrees", "radians",
+    ] {
         record(
-            check(
+            check_declined(name, call(name, &ty, vec![column(0, &ty)])),
+            &mut failures,
+        );
+    }
+    record(
+        check(
+            "log_binary",
+            call(
+                "log",
+                &ty,
+                vec![column(0, &ty), literal(Datum::Real(2.0), &ty)],
+            ),
+            &mut input,
+            &ty,
+        ),
+        &mut failures,
+    );
+    for name in ["pow", "power", "atan", "atan2"] {
+        record(
+            check_declined(
                 &format!("{name}_binary"),
                 call(
                     name,
                     &ty,
                     vec![column(0, &ty), literal(Datum::Real(2.0), &ty)],
                 ),
-                &mut input,
-                &ty,
             ),
             &mut failures,
         );
@@ -447,7 +474,7 @@ fn tikv_coverage_numeric_families_differential() {
 }
 
 #[test]
-fn tikv_coverage_string_and_misc_families_differential() {
+fn tikv_coverage_string_and_misc_families_engine_receipts() {
     let mut failures = Vec::new();
     for (tag, ty, values) in [
         (
@@ -1530,7 +1557,7 @@ fn temporal_constant_unsafe_shapes_remain_declined() {
 }
 
 #[test]
-fn tikv_coverage_temporal_json_vector_families_differential() {
+fn tikv_coverage_temporal_json_vector_families_engine_receipts() {
     let mut failures = Vec::new();
     let time = FieldType::new(FieldTypeCode::Datetime).with_decimal(6);
     let value =
@@ -1898,7 +1925,7 @@ fn tikv_coverage_declined_expression_is_a_structured_error_when_required() {
 }
 
 #[test]
-fn tikv_coverage_control_selector_family_differential() {
+fn tikv_coverage_control_selector_family_engine_receipts() {
     let mut failures = Vec::new();
     let ty = int();
     let text_ty = text();
@@ -2067,7 +2094,7 @@ fn tikv_coverage_control_selector_family_differential() {
 }
 
 #[test]
-fn tikv_coverage_string_misc_extended_differential() {
+fn tikv_coverage_string_misc_extended_engine_receipts() {
     let mut failures = Vec::new();
     let ints = int();
     let reals = real();
@@ -2103,12 +2130,8 @@ fn tikv_coverage_string_misc_extended_differential() {
         );
     }
     // conv reads (value, from_base, to_base).
-    let mut conv_input = fixture(
-        std::slice::from_ref(&strings),
-        &[vec![string("FF"), string("10"), Datum::Null]],
-    );
     record(
-        check(
+        check_declined(
             "conv",
             call(
                 "conv",
@@ -2119,8 +2142,6 @@ fn tikv_coverage_string_misc_extended_differential() {
                     literal(Datum::Int(10), &ints),
                 ],
             ),
-            &mut conv_input,
-            &strings,
         ),
         &mut failures,
     );
@@ -2404,19 +2425,14 @@ fn tikv_coverage_string_misc_extended_differential() {
         &mut failures,
     );
     record(
-        check(
-            "ceiling",
-            call("ceiling", &reals, vec![column(0, &reals)]),
-            &mut real_input,
-            &reals,
-        ),
+        check_declined("ceiling", call("ceiling", &reals, vec![column(0, &reals)])),
         &mut failures,
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
-fn tikv_coverage_temporal_extended_differential() {
+fn tikv_coverage_temporal_extended_engine_receipts() {
     let mut failures = Vec::new();
     let ints = int();
     let reals = real();
@@ -2851,7 +2867,7 @@ fn tikv_coverage_temporal_extended_differential() {
 }
 
 #[test]
-fn tikv_coverage_json_extended_differential() {
+fn tikv_coverage_json_extended_engine_receipts() {
     let mut failures = Vec::new();
     let ints = int();
     let strings = text();
@@ -3008,7 +3024,7 @@ fn tikv_coverage_json_extended_differential() {
 }
 
 #[test]
-fn tikv_coverage_cast_family_differential() {
+fn tikv_coverage_cast_family_engine_receipts() {
     let mut failures = Vec::new();
     let ints = int();
     let reals = real();

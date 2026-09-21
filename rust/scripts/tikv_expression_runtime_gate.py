@@ -57,7 +57,7 @@ def collect(output: str, exit_code: int) -> dict:
     records.sort(key=lambda row: (row["label"], row["wire_signatures"], row["input_rows"],
                                  row["engine_rows"], row["borrowed_rows"]))
     return {"schema_version": 1,
-            "scope": "check()-based native differential fixtures; two requested engine modes, observed borrowed rows; not all SQL shapes",
+            "scope": "check()-based engine copying/borrowed parity fixtures; observed borrowed rows; not an independent semantic oracle and not all SQL shapes",
             "command": COMMAND, "tests_passed": int(summaries[0][0]),
             "fixture_receipts": len(records), "engine_rows": sum(row["engine_rows"] for row in records),
             "borrowed_rows": sum(row["borrowed_rows"] for row in records), "records": records}

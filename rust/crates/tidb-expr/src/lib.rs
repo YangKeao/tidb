@@ -40,25 +40,17 @@
 //! though `1/0` is never evaluated — which cannot be replicated without a
 //! genuine type-inference pass and is deliberately NOT attempted here;
 //! the result is simply whichever branch was taken, in its own natural
-//! type), plus builtin functions: numeric (`ABS`, `SIGN`, `LEAST`,
-//! `GREATEST`, `COALESCE`, `IF`, `IFNULL`, `NULLIF`, `CEIL`/`CEILING`,
-//! `FLOOR` — the last two return `Int` for an `Int`/`Decimal` argument
-//! (`Decimal` computed EXACTLY, via [`Decimal::ceil_floor`], not
-//! through `f64`) but `Float` for a `Float` one, confirmed via `goeval`,
-//! not assumed; `ROUND`/`TRUNCATE` — a DIFFERENT type rule from
-//! `CEIL`/`FLOOR`: `Decimal` NEVER collapses to `Int`, and rounds ties
-//! away from zero via [`Decimal::round_to_scale`]/
-//! [`Decimal::truncate_to_scale`], clamped to `DECIMAL`'s max
-//! scale (30) for a positive scale argument, while `Float` rounds ties TO
-//! EVEN via [`math_fn`]'s bit-for-bit port of Go's `types.Round`/
-//! `types.Truncate` — including Go's own `math.Pow10` lookup table, which
-//! is NOT the same as `f64::powi` for most exponents, confirmed by
-//! diffing bit patterns, not assumed), transcendental ([`math_fn`]: `SQRT`,
-//! `POW`/`POWER`, `EXP`, `LN`, `LOG`, `LOG2`, `LOG10`, `PI`, and the trigonometric
-//! family — `SIN`, `COS`, `TAN`, `ASIN`, `ACOS`, `ATAN`/`ATAN2`, `COT`,
-//! `RADIANS`, `DEGREES` — every one of these always returns `Float`), and
-//! string (`CONCAT`, `LENGTH`, `CHAR_LENGTH`, `UPPER`, `LOWER`, `LEFT`,
-//! `RIGHT`, `SUBSTRING`), all of which nest.
+//! type), plus non-math builtins such as `LEAST`, `GREATEST`, `COALESCE`,
+//! `IF`, `IFNULL` and `NULLIF`, and string functions (`CONCAT`, `LENGTH`,
+//! `CHAR_LENGTH`, `UPPER`, `LOWER`, `LEFT`,
+//! `RIGHT`, `SUBSTRING`). The former native math-kernel module was physically
+//! removed. With the TiKV adapter enabled, retained math families (`ABS`,
+//! `SIGN`, `SQRT`, `EXP`, `LN`, `LOG`, `LOG2`, `LOG10`, `PI`, `CRC32`) execute
+//! in TiKV. Unverified families (`CONV`, `POW`/`POWER`, `ROUND`/`TRUNCATE`,
+//! `CEIL`/`CEILING`/`FLOOR`, `RAND`, and trigonometric functions) are explicit
+//! `Unsupported` contractions rather than native fallbacks. The residual AST
+//! and scalar-function evaluators reject every removed math name; they do not
+//! implement those kernels. Supported builtins may still nest.
 //!
 //! Date-part extraction (`YEAR`, `MONTH`, `DAY`/`DAYOFMONTH`, `QUARTER`,
 //! `DAYOFYEAR`, `DAYOFWEEK`, `WEEKDAY`, `TO_DAYS`, `TO_SECONDS`) and
@@ -358,7 +350,6 @@ mod func;
 mod grouping;
 pub mod infer_pushdown;
 mod like;
-mod math_fn;
 pub mod metabuild;
 pub mod new_function;
 pub use new_function::{
@@ -420,10 +411,73 @@ fn is_signed_binary_literal(expr: &Expr) -> bool {
     }
 }
 
-/// Go's arithmetic signatures include the source-shaped binary expression in
-/// DOUBLE and DECIMAL overflow errors. The AST evaluator retains that syntax
-/// until this boundary; the values-only operator helper intentionally keeps
-/// returning its datum-level carrier.
+fn render_ast_expression(expression: &Expr) -> Option<String> {
+    match expression {
+        Expr::Int(value) => Some(value.clone()),
+        Expr::Float(value) => Some(tidb_datatype::format_float_g_shortest(*value)),
+        Expr::Decimal(value) => Some(value.clone()),
+        Expr::Null => Some("NULL".to_owned()),
+        Expr::Column(path) => Some(path.join(".")),
+        Expr::Unary(tidb_ast::UnaryOp::Plus, expression) => {
+            Some(format!("+{}", render_ast_expression(expression)?))
+        }
+        Expr::Unary(tidb_ast::UnaryOp::Minus, expression) => {
+            Some(format!("-{}", render_ast_expression(expression)?))
+        }
+        Expr::Paren(expression) => Some(format!("({})", render_ast_expression(expression)?)),
+        Expr::Binary(operator, left, right) => render_ast_binary_expression(*operator, left, right),
+        Expr::Func { name, args, .. } => {
+            let args = args
+                .iter()
+                .map(render_ast_expression)
+                .collect::<Option<Vec<_>>>()?;
+            Some(format!(
+                "{}({})",
+                name.to_ascii_lowercase(),
+                args.join(", ")
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn render_ast_binary_expression(
+    operator: tidb_ast::BinaryOp,
+    left: &Expr,
+    right: &Expr,
+) -> Option<String> {
+    use tidb_ast::BinaryOp;
+    let operator = match operator {
+        BinaryOp::Plus => "+",
+        BinaryOp::Minus => "-",
+        BinaryOp::Mul => "*",
+        BinaryOp::Div => "/",
+        BinaryOp::Mod => "%",
+        BinaryOp::IntDiv => "DIV",
+        BinaryOp::BitOr => "|",
+        BinaryOp::BitAnd => "&",
+        BinaryOp::BitXor => "^",
+        BinaryOp::LeftShift => "<<",
+        BinaryOp::RightShift => ">>",
+        BinaryOp::Eq => "=",
+        BinaryOp::NullEq => "<=>",
+        BinaryOp::Ge => ">=",
+        BinaryOp::Gt => ">",
+        BinaryOp::Le => "<=",
+        BinaryOp::Lt => "<",
+        BinaryOp::Ne => "!=",
+        BinaryOp::LogicAnd => "AND",
+        BinaryOp::LogicOr => "OR",
+        BinaryOp::LogicXor => "XOR",
+    };
+    Some(format!(
+        "({} {} {})",
+        render_ast_expression(left)?,
+        operator,
+        render_ast_expression(right)?
+    ))
+}
+
 fn ast_binary_overflow_error(
     operator: tidb_ast::BinaryOp,
     left: &Expr,
@@ -438,12 +492,12 @@ fn ast_binary_overflow_error(
         EvalError::DecimalOverflow => "DECIMAL",
         _ => return error,
     };
-    let Some(expression) = crate::math_fn::render_ast_binary_expression(operator, left, right)
-    else {
+    let Some(expression) = render_ast_binary_expression(operator, left, right) else {
         return error;
     };
     EvalError::DataOutOfRange { value, expression }
 }
+
 use coerce::{bool_int, coerce_str, coerce_str_bytes};
 use func::{eval_func, eval_in_list, negate_if};
 use like::like_match;
