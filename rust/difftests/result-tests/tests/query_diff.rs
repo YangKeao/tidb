@@ -63,7 +63,9 @@ fn is_any_value(sql: &str) -> bool {
 
 fn requires_tikv_engine(sql: &str) -> bool {
     cfg!(feature = "tikv-expr")
-        && (is_any_value(sql) || removed_native::requires_string2_engine(sql))
+        && (is_any_value(sql)
+            || removed_native::requires_string2_engine(sql)
+            || removed_native::requires_inet_engine(sql))
 }
 
 fn expected_removed_marker(sql: &str) -> Option<&'static str> {

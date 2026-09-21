@@ -197,6 +197,26 @@ remain in the workspace.
       0 missing. Full replay remains intentionally red at the pre-existing 181
       native and 167 Copying divergences; Copying executes 416240 engine rows.
       This is not a final native-removal or full-compatibility claim.
+- [x] Tenth physical-deletion tranche: removed the native `INET_ATON`,
+      `INET_NTOA`, `INET6_ATON`, and `INET6_NTOA` kernels and their compare2
+      dispatch arms. The four admitted miscellaneous signatures now execute
+      only through TiKV; AST, contextual-value, values-only, and scalar native
+      boundaries return the exact INET engine-required error before arity or
+      child evaluation. All former IPv4 shorthand/full/range/NULL and IPv6
+      binary/render/malformed vectors remain: native receipts assert refusal and
+      engine-only source rows assert independent values without fallback. The
+      existing runtime coverage fixtures record positive engine rows for all
+      four signatures. TiKV returns NULL for malformed INET_ATON and INET6_ATON
+      text where the production Go kernels report an error; these accepted gaps
+      are pinned in tests and `EXPRESSION_SEMANTIC_GAPS.md`, not hidden as parity.
+      The source corpus is 36 `*_source.rs` files / 447 tests. Validation is
+      1186 expression library tests plus 77 external expression tests green;
+      expression/query differential tests green; runtime remains 30 tests / 323
+      receipts / 2072 engine rows / 160 borrowed rows and static admission
+      remains 216 admitted / 168 excluded / 0 missing. Full replay remains the
+      intentionally red 181 native / 167 Copying divergence diagnostic;
+      Copying executes 416241 engine rows. This is not a final native-removal or
+      full-compatibility claim.
 - [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
       in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected
       borrowed facade was used by the adapter while the manifest still pinned

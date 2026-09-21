@@ -161,6 +161,15 @@ pub(crate) fn is_removed_native_misc(name: &str) -> bool {
     )
 }
 
+/// Native INET conversion kernels were physically removed. These four names
+/// remain supported only through the admitted TiKV miscellaneous signatures.
+pub(crate) fn is_removed_native_inet_conversion(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "INET_ATON" | "INET_NTOA" | "INET6_ATON" | "INET6_NTOA"
+    )
+}
+
 /// Native `string2` SQL kernels were physically removed. The admitted binary
 /// or ordinary shapes must execute in TiKV; engine-inexpressible shapes are
 /// explicit contractions at this boundary.
@@ -218,6 +227,11 @@ pub(crate) fn eval_func(
     if is_removed_native_misc(&name) {
         return Err(EvalError::Unsupported(
             "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
+        ));
+    }
+    if is_removed_native_inet_conversion(&name) {
+        return Err(EvalError::Unsupported(
+            "native INET conversion evaluation was removed; TiKV engine required",
         ));
     }
     if is_removed_native_string2(&name) {
@@ -630,6 +644,11 @@ pub(crate) fn eval_func_values_in(
             "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
         )));
     }
+    if is_removed_native_inet_conversion(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native INET conversion evaluation was removed; TiKV engine required",
+        )));
+    }
     if is_removed_native_string2(name) {
         return Some(Err(EvalError::Unsupported(
             "native string2 evaluation was removed; TiKV engine required or function unsupported",
@@ -669,9 +688,10 @@ pub(crate) fn eval_func_values_in(
 ///   `1/0`), `CASE`, and the `DATE_ADD`/`DATE_SUB`/`ADDDATE`/`SUBDATE`
 ///   family whose second argument is an `Expr::Interval`, not a value;
 /// - removed native math, crypto, vector, JSON depth/storage, regexp,
-///   packet-limited string, and miscellaneous functions, including `RAND`,
-///   `RANDOM_BYTES`, `VEC_FROM_TEXT`, JSON storage accounting, REGEXP/RLIKE,
-///   REPEAT/SPACE, UUID helpers, and hash/shard helpers;
+///   packet-limited string, miscellaneous, and INET conversion functions,
+///   including `RAND`, `RANDOM_BYTES`, `VEC_FROM_TEXT`, JSON storage accounting,
+///   REGEXP/RLIKE, REPEAT/SPACE, UUID helpers, hash/shard helpers, and all four
+///   INET address converters;
 ///   the sequence functions (`NEXTVAL`/`LASTVAL`/`SETVAL`), and the
 ///   `time_fn` family (its dispatch takes `Columns` for the statement clock,
 ///   time zone, and `default_week_format`);
@@ -696,6 +716,11 @@ pub(crate) fn eval_func_values(
     if is_removed_native_misc(name) {
         return Some(Err(EvalError::Unsupported(
             "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
+        )));
+    }
+    if is_removed_native_inet_conversion(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native INET conversion evaluation was removed; TiKV engine required",
         )));
     }
     if is_removed_native_string2(name) {

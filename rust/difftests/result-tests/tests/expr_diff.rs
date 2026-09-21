@@ -189,7 +189,7 @@ fn expected_removed_marker(expr: &str) -> Option<&'static str> {
 fn rust_eval_label(expr: &str) -> Result<String, String> {
     let sql = format!("select {expr}");
     #[cfg(feature = "tikv-expr")]
-    if removed_native::requires_string2_engine(&sql) {
+    if removed_native::requires_string2_engine(&sql) || removed_native::requires_inet_engine(&sql) {
         let mut session = Session::new();
         session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
         let before = session.tikv_expression_rows();

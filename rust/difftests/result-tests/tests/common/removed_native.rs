@@ -22,6 +22,8 @@ pub const MISC_REMOVED: &str =
     "native miscellaneous evaluation was removed; TiKV engine required or function unsupported";
 pub const STRING2_REMOVED: &str =
     "native string2 evaluation was removed; TiKV engine required or function unsupported";
+pub const INET_REMOVED: &str =
+    "native INET conversion evaluation was removed; TiKV engine required";
 
 #[derive(Default)]
 struct FunctionCollector {
@@ -86,6 +88,15 @@ pub fn requires_string2_engine(sql: &str) -> bool {
             .any(|name| collector.names.contains(*name))
 }
 
+pub fn requires_inet_engine(sql: &str) -> bool {
+    let Some(collector) = collect_functions(sql) else {
+        return false;
+    };
+    ["INET_ATON", "INET_NTOA", "INET6_ATON", "INET6_NTOA"]
+        .iter()
+        .any(|name| collector.names.contains(*name))
+}
+
 pub fn expected_removed_marker(sql: &str) -> Option<&'static str> {
     let collector = collect_functions(sql)?;
     let has = |candidates: &[&str]| {
@@ -133,6 +144,9 @@ pub fn expected_removed_marker(sql: &str) -> Option<&'static str> {
     }
     if has(&["JSON_DEPTH", "JSON_STORAGE_FREE", "JSON_STORAGE_SIZE"]) {
         return Some("native JSON depth/storage evaluation was removed; TiKV engine required");
+    }
+    if has(&["INET_ATON", "INET_NTOA", "INET6_ATON", "INET6_NTOA"]) {
+        return Some(INET_REMOVED);
     }
     if has(&[
         "REGEXP",
@@ -213,6 +227,16 @@ fn markers_come_from_parsed_function_nodes_not_text() {
     let collated = "select find_in_set(cast('b' as binary), 'a,b' collate utf8mb4_general_ci)";
     assert!(!requires_string2_engine(collated));
     assert_eq!(expected_removed_marker(collated), Some(STRING2_REMOVED));
+    for sql in [
+        "select inet_aton('1.2.3.4')",
+        "select inet_ntoa(0)",
+        "select inet6_aton('::1')",
+        "select inet6_ntoa(unhex('00000000'))",
+    ] {
+        assert!(requires_inet_engine(sql), "{sql}");
+        assert_eq!(expected_removed_marker(sql), Some(INET_REMOVED), "{sql}");
+    }
+    assert!(!requires_inet_engine("select 'inet_aton(1.2.3.4)'"));
     for sql in [
         "select concat('a', 'b')",
         "select concat_ws(',', 'a', 'b')",

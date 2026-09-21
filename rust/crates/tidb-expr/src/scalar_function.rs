@@ -952,6 +952,11 @@ impl ScalarFunction {
                 "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
             ));
         }
+        if crate::func::is_removed_native_inet_conversion(self.func_name.lowercase()) {
+            return Err(EvalError::Unsupported(
+                "native INET conversion evaluation was removed; TiKV engine required",
+            ));
+        }
         if crate::func::is_removed_native_string2(self.func_name.lowercase()) {
             return Err(EvalError::Unsupported(
                 "native string2 evaluation was removed; TiKV engine required or function unsupported",

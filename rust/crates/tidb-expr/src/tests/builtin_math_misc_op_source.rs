@@ -616,6 +616,108 @@ fn uuid_generation_v1_v4_v7_shapes_are_explicitly_contracted() {
     }
 }
 
+#[test]
+fn inet_conversion_native_refusal_precedes_arity_and_children() {
+    for expr in [
+        "inet_aton()",
+        "inet_ntoa(1, 2)",
+        "inet6_aton(not_a_function())",
+        "inet6_ntoa(not_a_function())",
+    ] {
+        assert_eq!(
+            e(expr),
+            "Unsupported(\"native INET conversion evaluation was removed; TiKV engine required\")",
+            "{expr}"
+        );
+    }
+}
+
+#[cfg(feature = "tikv-expr")]
+#[test]
+fn inet_conversion_source_vectors_execute_only_in_tikv() {
+    for (expr, want) in [
+        ("inet_aton(null)", "NULL"),
+        ("inet_aton('255.255.255.255')", "UINT:4294967295"),
+        ("inet_aton('0.0.0.0')", "UINT:0"),
+        ("inet_aton('127.0.0.1')", "UINT:2130706433"),
+        ("inet_aton('113.14.22.3')", "UINT:1896748547"),
+        ("inet_aton('127')", "UINT:127"),
+        ("inet_aton('127.255')", "UINT:2130706687"),
+        ("inet_aton('127.2.1')", "UINT:2130837505"),
+        // The shared engine reports invalid spellings as SQL NULL; the Go
+        // production kernel returns an error. Keep the gap explicit.
+        ("inet_aton('')", "NULL"),
+        ("inet_aton('0.0.0.256')", "NULL"),
+        ("inet_aton('127,256')", "NULL"),
+        ("inet_aton('123.2.1.')", "NULL"),
+        ("inet_aton('127.0.0.1.1')", "NULL"),
+        // Generator-only dot-led spellings have no Go value pin; TiKV's
+        // shorthand parser deterministically yields these unsigned values.
+        ("inet_aton('.122')", "UINT:122"),
+        ("inet_aton('.123.123')", "UINT:8061051"),
+        ("inet_ntoa(167773449)", "STR:10.0.5.9"),
+        ("inet_ntoa(2063728641)", "STR:123.2.0.1"),
+        ("inet_ntoa(0)", "STR:0.0.0.0"),
+        ("inet_ntoa(545460846593)", "NULL"),
+        ("inet_ntoa(-1)", "NULL"),
+        ("inet_ntoa(4294967295)", "STR:255.255.255.255"),
+        ("inet_ntoa(null)", "NULL"),
+    ] {
+        assert_eq!(engine_e(expr), want, "TiKV engine: {expr}");
+    }
+}
+
+#[cfg(feature = "tikv-expr")]
+#[test]
+fn inet6_conversion_source_vectors_execute_only_in_tikv() {
+    for (expr, want) in [
+        ("hex(inet6_aton('0.0.0.0'))", "STR:00000000"),
+        ("hex(inet6_aton('10.0.5.9'))", "STR:0A000509"),
+        (
+            "hex(inet6_aton('fdfe::5a55:caff:fefa:9089'))",
+            "STR:FDFE0000000000005A55CAFFFEFA9089",
+        ),
+        (
+            "hex(inet6_aton('::ffff:1.2.3.4'))",
+            "STR:00000000000000000000FFFF01020304",
+        ),
+        // TiKV returns NULL here while the Go production kernel returns an
+        // error; this accepted gap is recorded explicitly.
+        ("inet6_aton('')", "NULL"),
+        ("inet6_aton('Not IP address')", "NULL"),
+        ("inet6_aton('1.0002.3.4')", "NULL"),
+        ("inet6_aton('1.2.256')", "NULL"),
+        (
+            "hex(inet6_aton('::ffff:255.255.255.255'))",
+            "STR:00000000000000000000FFFFFFFFFFFF",
+        ),
+        ("inet6_aton(null)", "NULL"),
+        ("inet6_ntoa(unhex('00000000'))", "STR:0.0.0.0"),
+        ("inet6_ntoa(unhex('0A000509'))", "STR:10.0.5.9"),
+        (
+            "inet6_ntoa(unhex('FDFE0000000000005A55CAFFFEFA9089'))",
+            "STR:fdfe::5a55:caff:fefa:9089",
+        ),
+        (
+            "inet6_ntoa(unhex('00000000000000000000FFFF01020304'))",
+            "STR:::ffff:1.2.3.4",
+        ),
+        (
+            "inet6_ntoa(unhex('00000000000000000000FFFFFFFFFFFF'))",
+            "STR:::ffff:255.255.255.255",
+        ),
+        ("inet6_ntoa('')", "NULL"),
+        ("inet6_ntoa(unhex('0A0005'))", "NULL"),
+        (
+            "inet6_ntoa(unhex('000000000000000000000000000000'))",
+            "NULL",
+        ),
+        ("inet6_ntoa(null)", "NULL"),
+    ] {
+        assert_eq!(engine_e(expr), want, "TiKV engine: {expr}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // pkg/expression/builtin_miscellaneous_vec_test.go (items 218–222)
 // ---------------------------------------------------------------------------
@@ -630,49 +732,11 @@ fn uuid_generation_v1_v4_v7_shapes_are_explicitly_contracted() {
 /// dedicated tests below instead.
 #[test]
 fn vectorized_builtin_miscellaneous_eval_one_vec() {
-    // Inet6Aton / IsIPv6 / IsIPv4 / InetNtoa / InetAton arms.
-    assert_eq!(
-        call("INET6_ATON", &[bin_str(b"127.0.0.1")]),
-        Datum::new_bytes([127, 0, 0, 1])
-    );
-    assert_eq!(
-        call("INET6_ATON", &[s("fdfe::5a55:caff:fefa:9089")]),
-        Datum::new_bytes([
-            0xfd, 0xfe, 0, 0, 0, 0, 0, 0, 0x5a, 0x55, 0xca, 0xff, 0xfe, 0xfa, 0x90, 0x89,
-        ])
-    );
+    // INET converter vectors moved to the two engine-only source tests above;
+    // these predicates remain native candidates for a later deletion tranche.
     assert_eq!(call("IS_IPV6", &[s("2001:db8::68")]), Datum::Int(1));
     assert_eq!(call("IS_IPV6", &[s("192.168.0.1")]), Datum::Int(0));
     assert_eq!(call("IS_IPV4", &[s("11.11.11.11")]), Datum::Int(1));
-    assert_eq!(call("INET_NTOA", &[Datum::Int(167773449)]), s("10.0.5.9"));
-    assert_eq!(call("INET_NTOA", &[Datum::Int(-1)]), Datum::Null);
-    assert_eq!(
-        call("INET_ATON", &[s("255.255.255.255")]),
-        Datum::UInt(4294967295)
-    );
-    // InetAton's second gener -- the explicit SELECT-string list. Left-
-    // extension makes 1/2/3-byte prefixes valid.
-    let wanted: [(&str, Datum); 5] = [
-        (
-            "11.11.11.11",
-            Datum::UInt(u64::from(u32::from_be_bytes([11, 11, 11, 11]))),
-        ),
-        ("255.255.255.255", Datum::UInt(4294967295)),
-        ("127", Datum::UInt(127)),
-        ("127.255", Datum::UInt(2130706687)),
-        ("127.2.1", Datum::UInt(2130837505)),
-    ];
-    for (text, want) in wanted {
-        assert_eq!(call("INET_ATON", &[s(text)]), want, "{text}");
-    }
-    // Dot-led spellings ride along inside the gener list but carry no
-    // asserted output there either way (the Go table's malformed rows are
-    // pinned by compare2::inet_aton_go_vectors).
-    for text in [".122", ".123.123"] {
-        // Only reachability is exercised; the arm has no output pin.
-        let _ = compare2_dispatch("INET_ATON", &[s(text)], &crate::context::NoColumns)
-            .expect("InetAton owns INET_ATON");
-    }
     // IsIPv4Mapped / IsIPv4Compat byte-generator shapes: a mapped address's
     // ten zero prefix + ffff marker + v4 tail reads 1; plain text reads 0.
     let mut mapped = vec![0_u8; 16];

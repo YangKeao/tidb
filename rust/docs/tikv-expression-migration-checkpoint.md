@@ -2,8 +2,7 @@
 
 ## Revisions and decision
 
-This checkpoint now includes the ninth native packet-context string-tail deletion
-tranche. The revision and publication text below is retained as historical
+This checkpoint now includes the tenth native INET-conversion deletion tranche. The revision and publication text below is retained as historical
 context for the preceding packet-string tranche; it is not a fresh publication
 or hosted-CI claim. TiDB builds its pinned engine rather than arbitrary TiKV
 HEAD, and this document does not establish TiKV server compatibility.
@@ -15,22 +14,26 @@ Only YangKeao personal forks had been used for that publication. This paragraph
 is retained as history, not a current publication or hosted-CI result.
 
 **Do not switch the default yet. Physical deletion is deliberately in
-progress.** Nine tranches have now removed the complete native math-kernel
+progress.** Ten tranches have now removed the complete native math-kernel
 folder plus crypto/encryption, vector, JSON depth/storage, both regexp modules,
 the packet-limited string module, miscellaneous kernels, `builtin_ext/string2.rs`,
-and the packet-context string tail, together with their residual dispatch.
-`CONCAT`, `CONCAT_WS`, `INSERT_FUNC`, `MAKE_SET`, and `FROM_BASE64` are now
+the packet-context string tail, and all four INET conversion kernels, together
+with their residual dispatch. `CONCAT`, `CONCAT_WS`, `INSERT_FUNC`, `MAKE_SET`,
+and `FROM_BASE64` are now
 explicit contractions because the shared facade does not transport their
 `max_allowed_packet` and warning policy. Earlier miscellaneous/string2
-contractions remain in force; retained supported shapes continue through TiKV.
-This invalidates older retained/native claims for those names without claiming
+contractions remain in force. `INET_ATON`, `INET_NTOA`, `INET6_ATON`, and
+`INET6_NTOA` are retained only through TiKV; malformed INET_ATON/INET6_ATON
+return NULL instead of the production Go kernels' error, an explicit semantic
+gap. This invalidates older
+retained/native claims for those names without claiming
 full compatibility.
 The earlier refusal-intolerant corpus still exposed 59 distinct first-refused
 expressions, so the migration objective remains active/incomplete.
 
 ## Acceptance status for the six requested items
 
-The six-item acceptance framework is unchanged by the ninth deletion tranche;
+The six-item acceptance framework is unchanged by the tenth deletion tranche;
 none of the rows below should be read as completion.
 
 | Item | Established foundation | Remaining acceptance work |
@@ -49,11 +52,11 @@ counts and overbroad lazy/datatype milestone wording.
 
 ## Validation results
 
-Current ninth-tranche gates: runtime **30 tests / 323 receipts / 2072 engine
+Current tenth-tranche gates: runtime **30 tests / 323 receipts / 2072 engine
 rows / 160 borrowed rows / zero native fallbacks**; static **384 rows / 216
 admitted / 168 excluded / 0 missing**. The source corpus is **36 `*_source.rs`
-files / 444 tests**. The expression library and external suites pass **1183 +
-77** tests; two focused session contraction tests pass. Feature-off test
+files / 447 tests**. The expression library and external suites pass **1186 +
+77** tests; expression/query differential gates pass. Feature-off test
 compilation remains red on previously documented unguarded engine-only test
 imports. These facts do not establish hosted CI, an end-to-end SQL demo, full
 compatibility, or TiKV server compatibility.
@@ -85,6 +88,8 @@ Logs are in `/home/agent/tidb/expression-reuse/`.
 | `packet-tail-full-lib-final2.log` + `packet-tail-test-all-final.log` | 1183 expression library + 77 external tests passed; 99 library tests ignored | Native CONCAT/CONCAT_WS/INSERT_FUNC/MAKE_SET/FROM_BASE64 kernels and duplicate scalar paths are physically absent; all former value domains are exact packet-string contractions. |
 | `packet-tail-session-{concat2,insert2}.log` + `packet-tail-result-diffs3.log` | 2 focused session tests and expression/query differential gates passed | SQL paths fail closed with the exact packet-string marker; classifier acceptance requires parsed function identity and does not treat literal/comment text as a contraction. |
 | `packet-tail-integration-{native2,copying}.log` | native: 181 carried divergences; Copying: 416240 engine rows / 167 carried divergences | Full replay remains intentionally red; the packet-tail deletion adds explicit contractions without hiding the two retained SUBSTRING routing failures or unrelated divergences. |
+| `inet-lib-final.log` + `inet-test-all-final.log` + `inet-result-diffs-final.log` | 1186 expression library + 77 external tests and expression/query differential gates passed | Native INET converter kernels/dispatch are absent; source vectors assert exact native refusal or independent engine-only values without fallback. Existing runtime fixtures record engine rows for all four converters, while query diffs require positive row deltas for IPv4 converters. |
+| `inet-integration-{native,copying}.log` | native: 181 carried divergences; Copying: 416241 engine rows / 167 carried divergences | Full replay remains intentionally red; admitted INET execution does not mask engine errors or unrelated divergences. |
 | `native-misc-lint.log` | exit 0 | Repository `make -j1 lint` passed under the memory guard. |
 | current static gate | Self-check and check pass | 384 declaration rows, 216 admitted / 168 excluded, zero missing registry/synthesized names. Static candidates are not execution coverage. |
 | `checkpoint-engine-only.log` | **1163 passed / 61 failed / 99 ignored**, exit 101 | All 61 failed sections report adapter refusal; 59 distinct first-refused expressions. This is an incomplete cutover gate. |

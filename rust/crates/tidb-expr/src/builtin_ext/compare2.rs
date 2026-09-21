@@ -15,7 +15,7 @@
 //! implementation in `pkg/expression/builtin_*.go`, cited per function.
 
 use std::cmp::Ordering;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::Ipv6Addr;
 use std::str::FromStr;
 
 use tidb_ast::BinaryOp;
@@ -36,10 +36,6 @@ pub(crate) fn dispatch(
         ("GREATEST", _) => Some(extremum(vals, Ordering::Greater, ctx)),
         ("INTERVAL", n) if n >= 2 => Some(interval(vals, ctx)),
         ("ISNULL", 1) => Some(Ok(Datum::Int(i64::from(matches!(vals[0], Datum::Null))))),
-        ("INET_ATON", 1) => Some(inet_aton(&vals[0])),
-        ("INET_NTOA", 1) => Some(inet_ntoa(&vals[0])),
-        ("INET6_ATON", 1) => Some(inet6_aton(&vals[0])),
-        ("INET6_NTOA", 1) => Some(inet6_ntoa(&vals[0])),
         ("IS_IPV4", 1) => Some(is_ipv4_value(&vals[0])),
         ("IS_IPV4_MAPPED", 1) => Some(is_ipv4_mapped_value(&vals[0])),
         ("IS_IPV4_COMPAT", 1) => Some(is_ipv4_compat_value(&vals[0])),
@@ -742,140 +738,6 @@ fn interval_real(value: &Datum, ctx: &dyn crate::Columns) -> Result<f64, EvalErr
     crate::ops::to_f64_with_mysql_string(value, ctx)
 }
 
-/// `INET_ATON(expr)`: decimal dotted IPv4 to an unsigned 32-bit integer,
-/// including TiDB/MySQL's one-, two-, and three-component shorthand. Port of
-/// `builtinInetAtonSig.evalInt` in `pkg/expression/builtin_miscellaneous.go`.
-/// Invalid non-NULL input is an evaluation error in TiDB's strict-context
-/// unit test; this family has no matching generic SQL-error variant, so it is
-/// surfaced as `Unsupported` until the frozen `EvalError` domain grows one.
-fn inet_aton(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(text) = coerce_str(value)? else {
-        return Ok(Datum::Null);
-    };
-    if text.is_empty() || text.ends_with('.') {
-        return Err(EvalError::Unsupported("invalid INET_ATON address"));
-    }
-    let mut result = 0_u64;
-    let mut byte_result = 0_u64;
-    let mut dots = 0_u8;
-    for byte in text.bytes() {
-        match byte {
-            b'0'..=b'9' => {
-                byte_result = byte_result * 10 + u64::from(byte - b'0');
-                if byte_result > 255 {
-                    return Err(EvalError::Unsupported("invalid INET_ATON address"));
-                }
-            }
-            b'.' => {
-                dots += 1;
-                if dots > 3 {
-                    return Err(EvalError::Unsupported("invalid INET_ATON address"));
-                }
-                result = (result << 8) + byte_result;
-                byte_result = 0;
-            }
-            _ => return Err(EvalError::Unsupported("invalid INET_ATON address")),
-        }
-    }
-    if dots == 1 {
-        result <<= 8;
-    }
-    if dots <= 2 {
-        result <<= 8;
-    }
-    Ok(Datum::UInt((result << 8) + byte_result))
-}
-
-/// `INET_NTOA(expr)`: unsigned 32-bit integer to canonical dotted IPv4.
-/// Port of `builtinInetNtoaSig.evalString` in
-/// `pkg/expression/builtin_miscellaneous.go`. The scalar domain has no
-/// planning-time `ETInt` cast, so only its already-integer values are
-/// representable faithfully; other types remain honestly unsupported.
-fn inet_ntoa(value: &Datum) -> Result<Datum, EvalError> {
-    let value = match value {
-        Datum::Null => return Ok(Datum::Null),
-        Datum::Int(value) => *value as u64,
-        Datum::UInt(value) => *value,
-        _ => return Err(EvalError::Unsupported("INET_NTOA non-integer argument")),
-    };
-    let Ok(value) = u32::try_from(value) else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::new_string(format!(
-        "{}.{}.{}.{}",
-        value >> 24,
-        (value >> 16) & 0xff,
-        (value >> 8) & 0xff,
-        value & 0xff
-    )))
-}
-
-/// `INET6_ATON(expr)`: parse an IPv4 or IPv6 spelling into the raw network
-/// byte representation used by TiDB's binary `ETString` signature.  Go's
-/// `net.ParseIP` always returns a 16-byte value for a colon-containing
-/// spelling, including IPv4-mapped and IPv4-compatible forms; the source
-/// then keeps the four-byte representation only for a plain dotted IPv4
-/// input.  Port of `builtinInet6AtonSig.evalString` in
-/// `pkg/expression/builtin_miscellaneous.go`.
-fn inet6_aton(value: &Datum) -> Result<Datum, EvalError> {
-    let text = match value {
-        Datum::Null => return Ok(Datum::Null),
-        // `EvalString` in the Go signature preserves raw bytes.  IP syntax is
-        // ASCII, so invalid UTF-8 is simply the same parse failure rather than
-        // a lossy replacement conversion.
-        Datum::String(value) => std::str::from_utf8(value.bytes()),
-        Datum::Bytes(value) => std::str::from_utf8(value),
-        _ => return inet6_aton_text(&coerce_str(value)?.expect("non-NULL scalar")),
-    }
-    .map_err(|_| EvalError::Unsupported("invalid INET6_ATON address"))?;
-    inet6_aton_text(text)
-}
-
-fn inet6_aton_text(text: &str) -> Result<Datum, EvalError> {
-    if text.is_empty() {
-        return Err(EvalError::Unsupported("invalid INET6_ATON address"));
-    }
-    // Keep the source's four-byte result only when the original spelling is
-    // plain IPv4.  `Ipv6Addr::from_str` handles all colon-containing forms,
-    // including embedded IPv4 and mapped IPv4, and its octets are exactly the
-    // bytes Go copies from `ip.To16()`/`ip.To4()`.
-    if !text.contains(':') {
-        if let Ok(ip) = Ipv4Addr::from_str(text) {
-            return Ok(Datum::new_bytes(ip.octets()));
-        }
-    }
-    Ipv6Addr::from_str(text)
-        .map(|ip| Datum::new_bytes(ip.octets()))
-        .map_err(|_| EvalError::Unsupported("invalid INET6_ATON address"))
-}
-
-/// `INET6_NTOA(expr)`: render a four- or sixteen-byte binary string as the
-/// canonical textual IPv4/IPv6 spelling.  Go first asks `net.IP.String()` to
-/// format the bytes and then prefixes a sixteen-byte mapped IPv4 result with
-/// `::ffff:`; Rust's `Ipv6Addr` formatter emits that same canonical mapped
-/// spelling.  Any other byte length is SQL `NULL`, matching the source's
-/// `net.ParseIP(ip) == nil` branch.  Port of
-/// `builtinInet6NtoaSig.evalString` in `pkg/expression/builtin_miscellaneous.go`.
-fn inet6_ntoa(value: &Datum) -> Result<Datum, EvalError> {
-    let bytes = match value {
-        Datum::Null => return Ok(Datum::Null),
-        Datum::String(value) => value.bytes().to_vec(),
-        Datum::Bytes(value) => value.clone(),
-        // The Go function's argument is ETString, so numeric constants are
-        // first rendered by EvalString and then interpreted as raw bytes.
-        _ => coerce_str(value)?.expect("non-NULL scalar").into_bytes(),
-    };
-    match bytes.len() {
-        4 => Ok(Datum::new_string(
-            Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]).to_string(),
-        )),
-        16 => Ok(Datum::new_string(
-            Ipv6Addr::from(<[u8; 16]>::try_from(bytes).unwrap()).to_string(),
-        )),
-        _ => Ok(Datum::Null),
-    }
-}
-
 /// `IS_IPV4(expr)`: strict four-component decimal IPv4 predicate. Port of
 /// `builtinIsIPv4Sig.evalInt` and its `isIPv4` helper in
 /// `pkg/expression/builtin_miscellaneous.go`.
@@ -980,6 +842,20 @@ mod tests {
 
     fn s(value: &str) -> Datum {
         Datum::new_string(value.to_string())
+    }
+
+    fn assert_inet_refusal(name: &str, vals: &[Datum]) {
+        assert!(
+            dispatch(name, vals, &crate::NoColumns).is_none(),
+            "deleted {name} must have no compare2 dispatch"
+        );
+        assert_eq!(
+            crate::func::eval_func_values_in(name, vals, &crate::NoColumns),
+            Some(Err(crate::EvalError::Unsupported(
+                "native INET conversion evaluation was removed; TiKV engine required"
+            ))),
+            "{name} {vals:?}"
+        );
     }
 
     /// `TestIntervalFunc` vectors that fit the current signed `Datum` domain.
@@ -1088,10 +964,10 @@ mod tests {
         }
     }
 
-    /// `TestInetAton` exact valid/NULL vectors. Its malformed-input vectors
-    /// assert a strict-context TiDB error, which is still an error here.
+    /// Preserve `TestInetAton` valid, NULL, and malformed vectors while the
+    /// deleted native path refuses every shape before value inspection.
     #[test]
-    fn inet_aton_go_vectors() {
+    fn inet_aton_go_vectors_are_explicit_native_refusals() {
         let cases = [
             (Datum::Null, Datum::Null),
             (s("255.255.255.255"), Datum::UInt(4_294_967_295)),
@@ -1103,18 +979,18 @@ mod tests {
             (s("127.2.1"), Datum::UInt(2_130_837_505)),
         ];
         for (arg, want) in cases {
-            assert_eq!(call("INET_ATON", &[arg]), want);
+            let _ = want;
+            assert_inet_refusal("INET_ATON", &[arg]);
         }
         for invalid in ["", "0.0.0.256", "127,256", "123.2.1.", "127.0.0.1.1"] {
-            assert!(dispatch("INET_ATON", &[s(invalid)], &crate::NoColumns)
-                .unwrap()
-                .is_err());
+            assert_inet_refusal("INET_ATON", &[s(invalid)]);
         }
     }
 
-    /// `TestInetNtoa` vectors, including values outside the IPv4 range.
+    /// Preserve `TestInetNtoa` vectors, including values outside the IPv4
+    /// range, as explicit native-boundary refusals.
     #[test]
-    fn inet_ntoa_go_vectors() {
+    fn inet_ntoa_go_vectors_are_explicit_native_refusals() {
         let cases = [
             (
                 Datum::Int(167_773_449),
@@ -1134,15 +1010,15 @@ mod tests {
             (Datum::Null, Datum::Null),
         ];
         for (arg, want) in cases {
-            assert_eq!(call("INET_NTOA", &[arg]), want);
+            let _ = want;
+            assert_inet_refusal("INET_NTOA", &[arg]);
         }
     }
 
-    /// `TestInet6AtoN` exact source vectors.  The result is binary even when
-    /// the input is ordinary dotted IPv4 text: a plain IPv4 spelling uses
-    /// four bytes, while every colon-containing spelling uses sixteen.
+    /// Preserve `TestInet6AtoN` binary, IPv4, IPv6, NULL, and malformed source
+    /// vectors as explicit native-boundary refusals.
     #[test]
-    fn inet6_aton_go_vectors() {
+    fn inet6_aton_go_vectors_are_explicit_native_refusals() {
         let cases = [
             ("0.0.0.0", Datum::new_bytes([0, 0, 0, 0])),
             ("10.0.5.9", Datum::new_bytes([0x0a, 0, 5, 9])),
@@ -1168,20 +1044,16 @@ mod tests {
             ),
         ];
         for (text, want) in cases {
-            match want {
-                Datum::Null => assert!(dispatch("INET6_ATON", &[s(text)], &crate::NoColumns)
-                    .unwrap()
-                    .is_err()),
-                want => assert_eq!(call("INET6_ATON", &[s(text)]), want),
-            }
+            let _ = want;
+            assert_inet_refusal("INET6_ATON", &[s(text)]);
         }
-        assert_eq!(call("INET6_ATON", &[Datum::Null]), Datum::Null);
+        assert_inet_refusal("INET6_ATON", &[Datum::Null]);
     }
 
-    /// `TestInet6NtoA` exact source vectors, including invalid byte lengths
-    /// and the NULL input path.
+    /// Preserve `TestInet6NtoA` exact source vectors, invalid byte lengths,
+    /// and NULL as explicit native-boundary refusals.
     #[test]
-    fn inet6_ntoa_go_vectors() {
+    fn inet6_ntoa_go_vectors_are_explicit_native_refusals() {
         let cases = [
             (Datum::new_bytes([0, 0, 0, 0]), "0.0.0.0"),
             (Datum::new_bytes([0x0a, 0, 5, 9]), "10.0.5.9"),
@@ -1203,12 +1075,13 @@ mod tests {
             ),
         ];
         for (value, want) in cases {
-            assert_eq!(call("INET6_NTOA", &[value]), s(want));
+            let _ = want;
+            assert_inet_refusal("INET6_NTOA", &[value]);
         }
         for bytes in [Vec::new(), vec![0x0a, 0, 5], vec![0; 15]] {
-            assert_eq!(call("INET6_NTOA", &[Datum::new_bytes(bytes)]), Datum::Null);
+            assert_inet_refusal("INET6_NTOA", &[Datum::new_bytes(bytes)]);
         }
-        assert_eq!(call("INET6_NTOA", &[Datum::Null]), Datum::Null);
+        assert_inet_refusal("INET6_NTOA", &[Datum::Null]);
     }
 
     /// `TestIsIPv4` and `TestIsIPv6` vectors, plus their NULL checks.

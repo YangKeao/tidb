@@ -721,6 +721,9 @@ fn expected_removed_marker(topic: &str, sql: &str) -> Option<&'static str> {
     if has(&["json_depth(", "json_storage_free(", "json_storage_size("]) {
         return Some("native JSON depth/storage evaluation was removed; TiKV engine required");
     }
+    if has(&["inet_aton(", "inet_ntoa(", "inet6_aton(", "inet6_ntoa("]) {
+        return Some(removed_native::INET_REMOVED);
+    }
     if has(&[
         "regexp_like(",
         "regexp_substr(",
@@ -797,7 +800,9 @@ fn is_any_value_statement(sql: &str) -> bool {
 
 fn requires_engine_statement(sql: &str) -> bool {
     !sql.trim_start().to_ascii_lowercase().starts_with("explain")
-        && (is_any_value_statement(sql) || removed_native::requires_string2_engine(sql))
+        && (is_any_value_statement(sql)
+            || removed_native::requires_string2_engine(sql)
+            || removed_native::requires_inet_engine(sql))
 }
 
 fn may_classify_native_contraction(native_backend: bool, sql: &str) -> bool {

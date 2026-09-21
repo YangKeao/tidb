@@ -3208,8 +3208,6 @@ mod builtin_type_tests {
         // NULL propagates through every one of them.
         for expr in [
             "ord(null)",
-            "inet_aton(null)",
-            "inet_ntoa(null)",
             "is_ipv4(null)",
             "is_ipv6(null)",
             "format_bytes(null)",
@@ -3223,6 +3221,20 @@ mod builtin_type_tests {
                 try_eval(expr),
                 Err(EvalError::Unsupported(
                     "native miscellaneous evaluation was removed; TiKV engine required or function unsupported"
+                )),
+                "{expr}"
+            );
+        }
+        for expr in [
+            "inet_aton(null)",
+            "inet_ntoa(null)",
+            "inet6_aton(null)",
+            "inet6_ntoa(null)",
+        ] {
+            assert_eq!(
+                try_eval(expr),
+                Err(EvalError::Unsupported(
+                    "native INET conversion evaluation was removed; TiKV engine required"
                 )),
                 "{expr}"
             );
@@ -3266,12 +3278,23 @@ mod builtin_type_tests {
         // `INTERVAL` with a NULL first argument is -1, not NULL: Go's
         // `builtinIntervalRealSig` reports "below every bucket".
         assert_eq!(eval("interval(null, 1, 2)"), Datum::Int(-1));
-        // `INET_NTOA` refuses an out-of-range address with NULL.
-        assert_eq!(eval("inet_ntoa(-1)"), Datum::Null);
-        assert_eq!(eval("inet_ntoa(0)"), text_datum("0.0.0.0"));
-        assert_eq!(eval("inet_ntoa(4294967295)"), text_datum("255.255.255.255"));
-        // A dotted-quad prefix is left-extended, so `'127'` is 127.
-        assert_eq!(eval("inet_aton('127')"), Datum::UInt(127));
+        // Preserve the former INET converter edge rows as exact native
+        // refusals; their successful value evidence now belongs to TiKV-only
+        // source tests.
+        for expr in [
+            "inet_ntoa(-1)",
+            "inet_ntoa(0)",
+            "inet_ntoa(4294967295)",
+            "inet_aton('127')",
+        ] {
+            assert_eq!(
+                try_eval(expr),
+                Err(EvalError::Unsupported(
+                    "native INET conversion evaluation was removed; TiKV engine required"
+                )),
+                "{expr}"
+            );
+        }
         assert_eq!(eval("isnull(null)"), Datum::Int(1));
         assert_eq!(eval("isnull(0)"), Datum::Int(0));
         // The zero date has no seconds count.
