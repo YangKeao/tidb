@@ -248,6 +248,10 @@ remain in the workspace.
       with schema/zone/LIKE rewrite invalidation. The public mutable descriptors
       are not safe cache owners; temporary compilation and gather copies remain.
       Binary literal and clock admission gaps still need engine support.
+- [x] Retain hash JoinExec outer-filter programs per open, reusing across build
+      and probe rows/chunks. Reopen replaces the expression snapshot; a false
+      first CNF term never compiles an unreachable unsupported tail. Direct
+      executor tests cover 8204 engine filter rows with one compile per open.
 - [ ] Retain condition programs in remaining `eval_bool` hot callers (the public
       convenience wrapper currently builds temporary programs). Existing joined scratch-row copies remain;
       eliminating them requires the independent-column facade, not more row
@@ -834,6 +838,37 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+Hash JoinExec outer-filter program retention (TiDB `rust/`, same guarded env):
+
+    cargo test -q -p tidb-executor --features tikv-expr --lib chunk_probe_paths_share_one_residual_compilation --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --lib hash_outer_filter_programs --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --lib join::tests:: --locked --offline -j1 -- --test-threads=1
+
+`outer-filter-cache-red.log`: adding the owner plus a compile-count assertion
+without routing execution through it yields zero retained compilations rather
+than one; the old row loop still uses the temporary eval_bool wrapper. Hash
+build/probe filters now use an owned ConditionEvaluator refreshed by open.
+No truthiness kernel, filter order or runtime-error fallback is changed. This
+retains immutable programs, not execution scratch or rows. The private filter
+snapshot must remain stable during execution; close/reopen picks up changes.
+
+`outer-filter-cache-green.log` passes the new lifecycle test: native/engine,
+left build versus left probe, 2051 rows over three chunks, then reopen with a
+false filter plus an unsupported tail. The output changes from all rows to none,
+compilation resets to zero on open then reaches exactly one, and the unreachable
+tail stays uncompiled. Total 8204 engine filter evaluations across the two sides
+and two opens. The existing serial/parallel residual fixture also now checks its
+separate outer-filter compilation count. These direct-executor seed tests set the
+private outer_filter; production planner population and performance are not
+claimed. Merge's temporary outer-filter wrapper remains a separate follow-up.
+
+`outer-filter-cache-executor.log`: 1400/355/6/2 passed (184 integration ignored).
+`outer-filter-cache-native.log`: 39 feature-off join tests passed, 1307 filtered.
+All heavy runs serial, single worker; sampled peak 2759.1 MiB with 8192 RSS /
+16384 AS MiB limits. No full feature-off suite, Go oracle, mysql replay, performance,
+lint or PR-readiness claim. The native evaluator/default has not been removed.
 
 Runtime execution receipt gate (TiDB repository root, existing guarded Rust env):
 

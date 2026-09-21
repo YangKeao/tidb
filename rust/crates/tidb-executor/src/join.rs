@@ -1353,6 +1353,8 @@ pub struct JoinExec<C: Columns> {
     native_hash: bool,
     concurrency: usize,
     outer_filter: Vec<Expression>,
+    // Refreshed at open; hash execution shares programs across build/probe rows.
+    outer_filter_evaluator: crate::joiner::ConditionEvaluator,
     filter_is_left: bool,
     /// The complete logical `ON` clause. The nested-loop reference path must
     /// retain every condition, including equality keys.
@@ -1518,6 +1520,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
             native_hash,
             concurrency: 1,
             outer_filter: Vec::new(),
+            outer_filter_evaluator: crate::joiner::ConditionEvaluator::new(&[]),
             filter_is_left: true,
             condition_evaluator: crate::joiner::ConditionEvaluator::new(&conditions),
             residual_evaluator: crate::joiner::ConditionEvaluator::new(&residual_conditions),
@@ -4597,12 +4600,9 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
             if !self.outer_filter.is_empty() && self.filter_is_left == build_is_left {
                 let selected = (0..chunk.num_rows())
                     .map(|index| {
-                        crate::joiner::eval_bool(
-                            &self.ctx,
-                            &self.outer_filter,
-                            chunk.get_row(index),
-                        )
-                        .map(|result| result.0)
+                        self.outer_filter_evaluator
+                            .evaluate(&self.ctx, chunk.get_row(index))
+                            .map(|result| result.0)
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 table
@@ -4671,18 +4671,18 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
             self.right_exec_mut()
         };
         let result = probe.next(&mut chunk);
-        let selected = if !self.outer_filter.is_empty()
-            && self.filter_is_left != self.hash_build_is_left()
-        {
-            (0..chunk.num_rows())
-                .map(|index| {
-                    crate::joiner::eval_bool(&self.ctx, &self.outer_filter, chunk.get_row(index))
-                        .map(|result| result.0)
-                })
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            Vec::new()
-        };
+        let selected =
+            if !self.outer_filter.is_empty() && self.filter_is_left != self.hash_build_is_left() {
+                (0..chunk.num_rows())
+                    .map(|index| {
+                        self.outer_filter_evaluator
+                            .evaluate(&self.ctx, chunk.get_row(index))
+                            .map(|result| result.0)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            } else {
+                Vec::new()
+            };
         let hash = self.hash.as_mut().expect("hash state exists in this arm");
         hash.probe_done = chunk.num_rows() == 0;
         hash.probe_chunk = chunk;
@@ -5502,6 +5502,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> Executor for JoinExec<C> {
             plan.source.open()?;
         }
         self.condition_evals.set(0);
+        self.outer_filter_evaluator = crate::joiner::ConditionEvaluator::new(&self.outer_filter);
         Ok(())
     }
 

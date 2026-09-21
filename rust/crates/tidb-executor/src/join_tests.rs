@@ -108,6 +108,80 @@ fn cached_join_conditions_preserve_ordinary_and_anti_null_demand() {
 
 #[cfg(feature = "tikv-expr")]
 #[test]
+fn hash_outer_filter_programs_reuse_and_refresh_on_open() {
+    for engine in [false, true] {
+        for build_left in [false, true] {
+            let count = CHUNK * 2 + 3;
+            let rows: Vec<_> = (0..count)
+                .map(|index| vec![Datum::Int(index as i64)])
+                .collect();
+            let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+            let mut join = JoinExec::new(
+                ExecutorMeta::new(schema_of(2), 1, CHUNK, CHUNK),
+                JoinKind::Inner,
+                vec![eq_on(0, 0, 1)],
+                Box::new(RowSource::new(rows.clone(), 1)),
+                Box::new(RowSource::new(rows, 1)),
+                ctx.clone(),
+                StatementMemory::default(),
+            );
+            join.set_hash_build_is_left(build_left);
+            join.set_parallelism(1);
+            join.filter_is_left = true;
+            for (phase, accept) in [true, false].into_iter().enumerate() {
+                join.outer_filter = vec![Expression::Constant(Constant::new(
+                    Datum::Int(i64::from(accept)),
+                    long(),
+                ))];
+                if !accept {
+                    // Retaining metadata must not compile an unreachable CNF tail.
+                    join.outer_filter
+                        .push(Expression::ScalarFunction(ScalarFunction::new(
+                            CiString::new("must_not_run_outer_filter"),
+                            long(),
+                            vec![],
+                        )));
+                }
+                join.open().unwrap();
+                assert_eq!(join.outer_filter_evaluator.compilations(), 0);
+                let mut output = join.new_chunk();
+                let mut seen = Vec::new();
+                loop {
+                    join.next(&mut output).unwrap();
+                    if output.num_rows() == 0 {
+                        break;
+                    }
+                    seen.extend((0..output.num_rows()).map(|row| output.get_row(row).get_int64(0)));
+                }
+                seen.sort_unstable();
+                assert_eq!(
+                    seen,
+                    if accept {
+                        (0..count as i64).collect::<Vec<_>>()
+                    } else {
+                        vec![]
+                    }
+                );
+                assert_eq!(
+                    join.outer_filter_evaluator.compilations(),
+                    u64::from(engine)
+                );
+                assert_eq!(
+                    ctx.tikv_expression_rows(),
+                    if engine {
+                        ((phase + 1) * count) as u64
+                    } else {
+                        0
+                    }
+                );
+                join.close().unwrap();
+            }
+        }
+    }
+}
+
+#[cfg(feature = "tikv-expr")]
+#[test]
 fn chunk_probe_paths_share_one_residual_compilation() {
     // Serial chunk-backed, specialized exact-key parallel, and general
     // multi-key parallel probes all reach the same cached residual program.
@@ -180,6 +254,10 @@ fn chunk_probe_paths_share_one_residual_compilation() {
             assert_eq!(
                 join.residual_evaluator.compilations(),
                 if engine { 1 } else { 0 }
+            );
+            assert_eq!(
+                join.outer_filter_evaluator.compilations(),
+                u64::from(engine && serial)
             );
             if serial {
                 assert_eq!(join.parallel_probe_windows(), 0);
