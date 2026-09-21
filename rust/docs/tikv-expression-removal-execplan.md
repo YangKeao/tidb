@@ -215,6 +215,12 @@ remain in the workspace.
 - [x] Reproduce unsafe implicit binary-string casts and enforce a common
       signature+operand-shape guard for local nodes and catalog substitution,
       preserving only source-authorized literal CAST subtrees.
+- [x] Add TiKV opt-in compile_with_text_constants using existing numeric text
+      kernels, keeping legacy default dispatch. Fix MysqlBit scalar CAST detection;
+      test interleaved policies, truncation diagnostics and a skipped failing arm.
+- [ ] Pin/adopt engine db9c7f0 in TiDB, encoding source-authorized numeric literals
+      as numeric nodes and proving native parity before removing coercion guards.
+      Current TiDB pin remains c93c2bb; this API is not integrated yet.
 - [ ] Add a literal-kind carrier/provenance contract for root/lazy forwarding and
       remaining binary/BIT coercions. Direct numeric CAST is only a narrow subset.
 - [ ] Audit expression-internal and other forwarding entrypoints before native
@@ -810,6 +816,42 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+Engine text-constant compile policy (TiKV root, same serial guarded environment):
+
+    cargo test -q -p tidb_query_expr --lib constant_ --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb_query_expr --lib --locked --offline -j1 -- --test-threads=1
+    cargo fmt -p tidb_query_expr -- --check
+
+`engine-text-policy-red.log` reproduces two failures: an API stub delegating to
+legacy compile still returns 49 instead of text 1, and MysqlBit used as CAST's
+argument errors as unsupported scalar despite already having a literal decoder.
+TiKV `db9c7f0` adds an opt-in compile_with_text_constants entrypoint. An internal
+context-aware builder mapper selects existing CastStringAsInt/Real textual
+kernels for ordinary String/Bytes constant nodes; no kernel body, global setting,
+Context field, or wire layout changes. Default compile/coprocessor string dispatch
+stays legacy. MysqlBit joins scalar classification and can retain full-u64 bits
+through integer CAST in both modes. Compiled programs remain Send+Sync; caches
+mixing the entrypoints must include policy in their keys.
+
+First `engine-text-policy-green.log` failed on the test's unintended DOUBLE(0,0)
+metadata (49 out of range), not policy dispatch. The fixture now uses unspecified
+flen/decimal (-1). Final `engine-text-policy-lib.log`: ALL 488 expression-library
+unit tests pass, including both String/Bytes wire kinds, integer/real 1 versus
+legacy 49, nested sqrt 1 versus legacy 7, interleaved programs, repeated selection,
+strict truncation error, warning reset/count with storage disabled, and skipping
+an error-producing text CAST in an unselected lazy IF arm. Sampled peak across
+runs 1266.6 MiB; final full run 1078.8 MiB, under 8192 RSS / 16384 AS MiB limits.
+Formatter later required only reflow of the new cache-policy doc comment; rerun
+fmt/check succeeded. STANDALONE.md and the coprocessor maintenance embedding
+section now document the policy and correct stale eager-only/unsupported-Set text.
+
+TiDB code/pin are deliberately unchanged this round: no claim of native parity,
+borrowed-policy validation, full binary-literal carrier semantics, or removed
+fallback. Next adoption must preserve source literal provenance (e.g. numeric
+MysqlBit encoding for the verified numeric CAST subset), test diagnostics/profile
+boundaries and then relax the adapter guards. No full TiKV workspace suite,
+TiDB rerun, Go oracle, mysql replay, performance, make lint/dev or PR readiness.
 
 Canonical BIT roots and implicit-coercion provenance (TiDB `rust/`, same guard):
 
