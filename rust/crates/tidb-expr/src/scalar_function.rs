@@ -952,6 +952,11 @@ impl ScalarFunction {
                 "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
             ));
         }
+        if crate::func::is_removed_native_string2(self.func_name.lowercase()) {
+            return Err(EvalError::Unsupported(
+                "native string2 evaluation was removed; TiKV engine required or function unsupported",
+            ));
+        }
         if let Some(value) = self.eval_fast_integer_binary(ctx, row)? {
             return self.coerce_to_ret_type(value);
         }
@@ -2015,34 +2020,8 @@ impl ScalarFunction {
         {
             let collation = self.derived_collation();
             match name {
-                // `LOCATE(substr, str[, pos])` / `INSTR(str, substr)`: the
-                // same 1-indexed position; INSTR swaps its arguments
-                // internally. The three-argument form is LOCATE-only (Go has
-                // no position signature for INSTR) and takes its arguments
-                // UNSWAPPED, starting the search at `pos`
-                // (`builtinLocate3Args{,UTF8}Sig`).
-                "locate" if matches!(self.args.len(), 2 | 3) => {
-                    let substr = self.args[0].eval(ctx, row)?;
-                    let str = self.args[1].eval(ctx, row)?;
-                    if self.args.len() == 3 {
-                        // Go declares the position `types.ETInt`, so
-                        // `newBaseBuiltinFuncWithTp` wraps it in
-                        // `WrapWithCastAsInt` — the same boundary the wrap
-                        // layer applies (`cast_arg_as_int`), applied here
-                        // because this arm returns before that pass.
-                        let position = self.args[2].eval(ctx, row)?;
-                        let position = crate::cast::cast_arg_as_int(
-                            &position,
-                            self.args[2].static_type(),
-                            ctx,
-                        )?;
-                        return crate::string_fn::locate_with_position(
-                            &[substr, str, position],
-                            collation,
-                        );
-                    }
-                    return crate::string_fn::locate(&substr, &str, collation);
-                }
+                // INSTR retains this helper until the remaining string owner
+                // is deleted; LOCATE itself is guarded and TiKV-only.
                 "instr" if self.args.len() == 2 => {
                     let a = self.args[0].eval(ctx, row)?;
                     let b = self.args[1].eval(ctx, row)?;
@@ -2051,10 +2030,6 @@ impl ScalarFunction {
                 "strcmp" if self.args.len() == 2 => {
                     let vals = [self.args[0].eval(ctx, row)?, self.args[1].eval(ctx, row)?];
                     return crate::string_fn::strcmp_with_collation(&vals, collation);
-                }
-                "find_in_set" if self.args.len() == 2 => {
-                    let vals = [self.args[0].eval(ctx, row)?, self.args[1].eval(ctx, row)?];
-                    return crate::builtin_ext::find_in_set_with_collation(&vals, collation);
                 }
                 // Go `greatestFunctionClass`/`leastFunctionClass`: the
                 // ETString signature compares under `b.collation`, and

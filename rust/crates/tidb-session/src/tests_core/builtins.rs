@@ -32,11 +32,15 @@ fn everyday_string_and_date_builtins() {
             .unwrap(),
         StmtResult::Rows(vec![vec![Datum::new_string("QuWhattic")]])
     );
-    assert_eq!(
-        session
-            .run("SELECT EXPORT_SET(5, 'Y', 'N', ',', 4)")
-            .unwrap(),
-        StmtResult::Rows(vec![vec![Datum::new_string("Y,N,Y,N")]])
+    let error = session
+        .run("SELECT EXPORT_SET(5, 'Y', 'N', ',', 4)")
+        .expect_err("EXPORT_SET has no TiKV kernel")
+        .to_string();
+    assert!(
+        error.contains(
+            "native string2 evaluation was removed; TiKV engine required or function unsupported"
+        ),
+        "{error}"
     );
     assert_eq!(
         session
@@ -94,11 +98,20 @@ fn get_format_reaches_the_sql_expression_path() {
 #[test]
 fn position_reaches_the_sql_expression_path() {
     let mut session = Session::new();
+    #[cfg(feature = "tikv-expr")]
+    session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
+    #[cfg(feature = "tikv-expr")]
+    let engine_before = session.tikv_expression_rows();
     assert_eq!(
         session
             .run("SELECT POSITION('A' IN '大A写'), POSITION('' IN 'abc'), POSITION(NULL IN 'abc')")
             .unwrap(),
         StmtResult::Rows(vec![vec![Datum::Int(2), Datum::Int(1), Datum::Null]])
+    );
+    #[cfg(feature = "tikv-expr")]
+    assert!(
+        session.tikv_expression_rows() > engine_before,
+        "POSITION must execute through TiKV"
     );
 }
 

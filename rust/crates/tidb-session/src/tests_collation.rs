@@ -213,6 +213,10 @@ fn binary_is_no_pad_and_utf8mb4_bin_is_pad_space() {
 #[test]
 fn collation_aware_string_builtins() {
     let mut session = collation_session();
+    #[cfg(feature = "tikv-expr")]
+    session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
+    #[cfg(feature = "tikv-expr")]
+    let engine_before = session.tikv_expression_rows();
     for (sql, expected) in [
         ("SELECT INSTR('ABC', 'b')", "0"),
         ("SELECT INSTR('ABC' COLLATE utf8mb4_general_ci, 'b')", "2"),
@@ -244,6 +248,11 @@ fn collation_aware_string_builtins() {
         row_text(session.run("SELECT LOCATE('b', c) FROM ci")),
         vec![vec!["0"], vec!["0"], vec!["1"], vec!["1"]]
     );
+    #[cfg(feature = "tikv-expr")]
+    assert!(
+        session.tikv_expression_rows() > engine_before,
+        "LOCATE must execute through TiKV"
+    );
 }
 
 /// `FIELD`, `FIND_IN_SET` and `REGEXP` also search with the derived collator,
@@ -270,29 +279,46 @@ fn field_find_in_set_and_regexp_use_the_derived_collation() {
         ("SELECT FIELD('ABC', 'abc' COLLATE utf8mb4_general_ci)", "1"),
         // `utf8mb4_bin` is PAD SPACE, so the collator ignores trailing blanks.
         ("SELECT FIELD('a ' COLLATE utf8mb4_bin, 'a')", "1"),
-        ("SELECT FIND_IN_SET('B', 'a,b,c')", "0"),
-        (
-            "SELECT FIND_IN_SET('B' COLLATE utf8mb4_general_ci, 'a,b,c')",
-            "2",
-        ),
-        ("SELECT FIND_IN_SET('B' COLLATE utf8mb4_bin, 'a,b,c')", "0"),
-        (
-            "SELECT FIND_IN_SET('b', 'a,B,c' COLLATE utf8mb4_general_ci)",
-            "2",
-        ),
-        // `FIND_IN_SET` keys WITHOUT trimming right spaces, so unlike `FIELD`
-        // above a trailing blank still makes the member differ even under a
-        // PAD SPACE collation.
-        (
-            "SELECT FIND_IN_SET('a ' COLLATE utf8mb4_general_ci, 'a,b')",
-            "0",
-        ),
         // A non-string argument list keeps Go's REAL signature, which consults
         // no collation at all: `FIELD(1, '1')` matches numerically.
         ("SELECT FIELD(1, '1')", "1"),
         ("SELECT FIELD('1', 1)", "1"),
     ] {
         assert_eq!(one(&mut session, sql), expected, "{sql}");
+    }
+
+    // TiKV currently lowers FIND_IN_SET only when both static argument types
+    // are binary strings. Preserve the original collation rows as explicit
+    // unsupported shapes instead of silently replaying the deleted kernel.
+    for sql in [
+        "SELECT FIND_IN_SET('B', 'a,b,c')",
+        "SELECT FIND_IN_SET('B' COLLATE utf8mb4_general_ci, 'a,b,c')",
+        "SELECT FIND_IN_SET('B' COLLATE utf8mb4_bin, 'a,b,c')",
+        "SELECT FIND_IN_SET('b', 'a,B,c' COLLATE utf8mb4_general_ci)",
+        "SELECT FIND_IN_SET('a ' COLLATE utf8mb4_general_ci, 'a,b')",
+    ] {
+        let error = session
+            .run(sql)
+            .expect_err("non-binary FIND_IN_SET")
+            .to_string();
+        assert!(
+            error.contains("native string2 evaluation was removed; TiKV engine required or function unsupported"),
+            "{sql}: {error}"
+        );
+    }
+    #[cfg(feature = "tikv-expr")]
+    {
+        session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
+        let before = session.tikv_expression_rows();
+        assert_eq!(
+            one(
+                &mut session,
+                "SELECT FIND_IN_SET(CAST('B' AS BINARY), CAST('a,B,c' AS BINARY))"
+            ),
+            "2"
+        );
+        assert!(session.tikv_expression_rows() > before);
+        session.set_tikv_expression_backend(None);
     }
 
     let regexp_rows = [
@@ -332,19 +358,24 @@ fn field_find_in_set_and_regexp_use_the_derived_collation() {
     for (sql, expected) in [
         ("SELECT FIELD(c, 'A') FROM ci", ["1", "1", "0", "0"]),
         ("SELECT FIELD(c, 'A') FROM bn", ["0", "1", "0", "0"]),
-        (
-            "SELECT FIND_IN_SET(c, 'x,A,y') FROM ci",
-            ["2", "2", "0", "0"],
-        ),
-        (
-            "SELECT FIND_IN_SET(c, 'x,A,y') FROM bn",
-            ["0", "2", "0", "0"],
-        ),
     ] {
         assert_eq!(
             row_text(session.run(sql)),
             expected.map(|cell| vec![cell.to_owned()]).to_vec(),
             "{sql}"
+        );
+    }
+    for sql in [
+        "SELECT FIND_IN_SET(c, 'x,A,y') FROM ci",
+        "SELECT FIND_IN_SET(c, 'x,A,y') FROM bn",
+    ] {
+        let error = session
+            .run(sql)
+            .expect_err("non-binary FIND_IN_SET column shape")
+            .to_string();
+        assert!(
+            error.contains("native string2 evaluation was removed; TiKV engine required or function unsupported"),
+            "{sql}: {error}"
         );
     }
 
@@ -388,11 +419,21 @@ fn field_find_in_set_and_regexp_use_the_derived_collation() {
 #[test]
 fn instr_and_locate_report_byte_offsets_under_a_binary_collation() {
     let mut session = collation_session();
+    #[cfg(feature = "tikv-expr")]
+    session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
+    #[cfg(feature = "tikv-expr")]
+    let engine_before = session.tikv_expression_rows();
     for (sql, expected) in [
         ("SELECT INSTR(CAST('aéb' AS BINARY), 'b')", "4"),
         ("SELECT INSTR('aéb', 'b')", "3"),
         ("SELECT LOCATE('b', CAST('aéb' AS BINARY))", "4"),
         ("SELECT LOCATE('b', 'aéb')", "3"),
+        // EXPLICIT character collation outranks the binary cast, so Go keeps
+        // the UTF-8 signature despite one raw binary argument.
+        (
+            "SELECT LOCATE(CAST('b' AS BINARY), 'aéb' COLLATE utf8mb4_general_ci)",
+            "3",
+        ),
         // A miss is still 0, and an empty needle still matches at 1.
         ("SELECT INSTR(CAST('aéb' AS BINARY), 'z')", "0"),
         ("SELECT INSTR(CAST('aéb' AS BINARY), '')", "1"),
@@ -404,6 +445,11 @@ fn instr_and_locate_report_byte_offsets_under_a_binary_collation() {
     assert_eq!(
         row_text(session.run("SELECT INSTR(c, 'B') FROM vb")),
         vec![vec!["0"], vec!["0"], vec!["0"], vec!["1"]]
+    );
+    #[cfg(feature = "tikv-expr")]
+    assert!(
+        session.tikv_expression_rows() > engine_before,
+        "binary LOCATE must execute through TiKV"
     );
 }
 

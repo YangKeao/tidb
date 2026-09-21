@@ -21,10 +21,9 @@ use crate::eval_in;
 use crate::row::row_compare;
 use crate::string_fn::{
     ascii, bin, bit_count, bit_length, case_convert, char_func_with_context, concat_with_context,
-    concat_ws_with_context, elt, export_set, field, format_num, from_base64,
-    from_base64_with_packet_limit, hex, locate, locate_collation, locate_with_position, make_set,
-    oct, ord, quote, replace, reverse, str_insert, str_take, strcmp, substring, substring_index,
-    unhex,
+    concat_ws_with_context, elt, field, from_base64, from_base64_with_packet_limit, hex, locate,
+    locate_collation, make_set, oct, ord, quote, replace, reverse, str_insert, str_take, strcmp,
+    substring_index, unhex,
 };
 use crate::time_fn::calendar::{date_add, date_diff, date_format, date_part, from_days, time_part};
 use crate::{BuildContext, Columns, Datum, EvalError, StringLengthFunction};
@@ -153,6 +152,25 @@ pub(crate) fn is_removed_native_misc(name: &str) -> bool {
     )
 }
 
+/// Native `string2` SQL kernels were physically removed. The admitted binary
+/// or ordinary shapes must execute in TiKV; engine-inexpressible shapes are
+/// explicit contractions at this boundary.
+pub(crate) fn is_removed_native_string2(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "SUBSTRING"
+            | "SUBSTR"
+            | "MID"
+            | "LOCATE"
+            | "FORMAT"
+            | "FIND_IN_SET"
+            | "EXPORT_SET"
+            | "LTRIM"
+            | "RTRIM"
+            | "TRANSLATE"
+    )
+}
+
 /// Evaluates a builtin scalar function over its evaluated arguments.
 pub(crate) fn eval_func(
     name: &str,
@@ -191,6 +209,11 @@ pub(crate) fn eval_func(
     if is_removed_native_misc(&name) {
         return Err(EvalError::Unsupported(
             "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
+        ));
+    }
+    if is_removed_native_string2(&name) {
+        return Err(EvalError::Unsupported(
+            "native string2 evaluation was removed; TiKV engine required or function unsupported",
         ));
     }
     // The AST evaluator is also an expression-construction entry point for
@@ -598,6 +621,11 @@ pub(crate) fn eval_func_values_in(
             "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
         )));
     }
+    if is_removed_native_string2(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native string2 evaluation was removed; TiKV engine required or function unsupported",
+        )));
+    }
     // Go's `builtinFromBase64Sig` checks the estimated decoded length against
     // `max_allowed_packet` before decoding and routes an over-limit result
     // through the statement warning policy. Keep this context-sensitive arm
@@ -667,6 +695,11 @@ pub(crate) fn eval_func_values(
     if is_removed_native_misc(name) {
         return Some(Err(EvalError::Unsupported(
             "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
+        )));
+    }
+    if is_removed_native_string2(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native string2 evaluation was removed; TiKV engine required or function unsupported",
         )));
     }
     // Go `BuildCastFunction4Union`'s in-union cast-to-unsigned CLAMPS a
@@ -906,22 +939,13 @@ pub(crate) fn eval_func_values(
         "LOWER" | "LCASE" => case_convert(vals, false),
         "LEFT" if vals.len() == 2 => str_take(vals, true),
         "RIGHT" if vals.len() == 2 => str_take(vals, false),
-        "SUBSTRING" | "SUBSTR" | "MID" if vals.len() == 3 => substring(vals),
         "REVERSE" => reverse(vals),
         // `ASCII`: the first BYTE's numeric value (0 for the empty string).
         "ASCII" => ascii(vals),
         "REPLACE" if vals.len() == 3 => replace(vals),
         "STRCMP" if vals.len() == 2 => strcmp(vals),
-        // `LOCATE(substr, str)` / `INSTR(str, substr)` — same 1-indexed
-        // char position, arguments in the opposite order (reusing
-        // `position`, which already handles the empty-substr and
-        // not-found rules).
-        "LOCATE" if vals.len() == 2 => {
-            locate(&vals[0], &vals[1], locate_collation(&vals[0], &vals[1]))
-        }
-        "LOCATE" if vals.len() == 3 => {
-            locate_with_position(vals, locate_collation(&vals[0], &vals[1]))
-        }
+        // `INSTR(str, substr)` reuses the retained collation-aware position
+        // helper; LOCATE itself is TiKV-only after native string2 deletion.
         "INSTR" if vals.len() == 2 => {
             locate(&vals[1], &vals[0], locate_collation(&vals[0], &vals[1]))
         }
@@ -932,7 +956,6 @@ pub(crate) fn eval_func_values(
         "BIT_LENGTH" => bit_length(vals),
         "FIELD" if vals.len() >= 2 => field(vals, ctx),
         "ELT" if vals.len() >= 2 => elt(vals),
-        "EXPORT_SET" => export_set(vals),
         "CONCAT_WS" if vals.len() >= 2 => concat_ws_with_context(vals, ctx),
         "SUBSTRING_INDEX" if vals.len() == 3 => substring_index(vals),
         // The parser renames `INSERT(...)` to `INSERT_FUNC` to avoid the
@@ -957,7 +980,6 @@ pub(crate) fn eval_func_values(
         "ORD" if vals.len() == 1 => ord(vals),
         "QUOTE" if vals.len() == 1 => quote(vals),
         "BIT_COUNT" if vals.len() == 1 => bit_count(vals),
-        "FORMAT" if vals.len() == 2 => format_num(vals, ctx),
         "CHAR_FUNC" if !vals.is_empty() => char_func_with_context(vals, ctx),
         // Go `builtinLoadFileSig.evalString` reads the argument and then
         // returns `"", true, nil` UNCONDITIONALLY: TiDB has no server-side

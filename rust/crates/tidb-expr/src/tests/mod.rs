@@ -68,6 +68,7 @@ mod regexp_source_vectors;
 mod regexp_vec_cache_source;
 mod scalar_function_semantics_source;
 mod setvar_getvar_values_getparam_source;
+mod string2_contraction_source;
 mod util_filter_condition_source;
 mod vectorizable_and_chunk_eval_source;
 mod vectorized_filter_consider_null_gap_source;
@@ -159,6 +160,17 @@ pub(super) fn assert_misc_refusal(expr: &str) {
         .map(|value| value.label())
         .unwrap_or_else(|error| error);
     assert_eq!(chunk, MISC_REMOVED, "native chunk boundary: {expr}");
+}
+
+pub(super) const STRING2_REMOVED: &str =
+    "Unsupported(\"native string2 evaluation was removed; TiKV engine required or function unsupported\")";
+
+pub(super) fn assert_string2_refusal(expr: &str) {
+    assert_eq!(e(expr), STRING2_REMOVED, "AST boundary: {expr}");
+    let chunk = chunk_case(expr, &NoColumns)
+        .map(|value| value.label())
+        .unwrap_or_else(|error| error);
+    assert_eq!(chunk, STRING2_REMOVED, "native chunk boundary: {expr}");
 }
 
 fn chunk_e_with(expr: &str, ctx: &impl Columns) -> String {
@@ -1090,7 +1102,10 @@ fn string_functions() {
     assert_eq!(e("upper('abc')"), "STR:ABC");
     assert_eq!(e("left('hello', 3)"), "STR:hel");
     assert_eq!(e("right('hello', 2)"), "STR:lo");
-    assert_eq!(e("substring('hello', 2, 3)"), "STR:ell");
+    #[cfg(feature = "tikv-expr")]
+    assert_eq!(engine_e("substring('hello', 2, 3)"), "STR:ell");
+    #[cfg(not(feature = "tikv-expr"))]
+    assert_string2_refusal("substring('hello', 2, 3)");
     assert_eq!(e("concat('n=', 5)"), "STR:n=5"); // int coerced
     assert_eq!(e("if(1, 'yes', 'no')"), "STR:yes");
 }
@@ -2141,11 +2156,15 @@ fn floats() {
 /// select translate('hello', 'lo', 'L');    -> heLL
 /// ```
 #[test]
-fn translate_is_reachable_from_the_chunk_tier() {
-    assert_eq!(chunk_e("translate('abcabc', 'ab', 'xy')"), "STR:xycxyc");
-    assert_eq!(chunk_e("translate('hello', 'lo', 'L')"), "STR:heLL");
-    assert_eq!(chunk_e("translate('中文测试', '中试', 'XY')"), "STR:X文测Y");
-    assert_eq!(chunk_e("translate('abc', null, 'x')"), "NULL");
+fn translate_source_rows_are_explicitly_contracted() {
+    for expr in [
+        "translate('abcabc', 'ab', 'xy')",
+        "translate('hello', 'lo', 'L')",
+        "translate('中文测试', '中试', 'XY')",
+        "translate('abc', null, 'x')",
+    ] {
+        assert_string2_refusal(expr);
+    }
 }
 
 /// `WEIGHT_STRING` and `LOAD_FILE`, both previously refused outright.

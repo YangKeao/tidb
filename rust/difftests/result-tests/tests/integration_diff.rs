@@ -644,6 +644,9 @@ fn ensure_stats_fixtures_unzipped(dir: &std::path::Path) {
 }
 
 fn expected_removed_marker(topic: &str, sql: &str) -> Option<&'static str> {
+    if let Some(removed_native::STRING2_REMOVED) = removed_native::expected_removed_marker(sql) {
+        return Some(removed_native::STRING2_REMOVED);
+    }
     let parsed = removed_native::parsed_function_names(sql)?;
     let has = |names: &[&str]| {
         names
@@ -738,6 +741,21 @@ fn expected_removed_marker(topic: &str, sql: &str) -> Option<&'static str> {
     ]) {
         return Some("native packet-limited string evaluation was removed; function unsupported");
     }
+    if has(&[
+        "substring(",
+        "substr(",
+        "mid(",
+        "locate(",
+        "format(",
+        "export_set(",
+        "ltrim(",
+        "rtrim(",
+        "translate(",
+    ]) {
+        return Some(
+            "native string2 evaluation was removed; TiKV engine required or function unsupported",
+        );
+    }
     let db_default_insert = topic == "db_integration"
         && matches!(
             normalized_sql.as_str(),
@@ -772,8 +790,13 @@ fn is_any_value_statement(sql: &str) -> bool {
             .is_some_and(|names| names.contains("ANY_VALUE"))
 }
 
+fn requires_engine_statement(sql: &str) -> bool {
+    !sql.trim_start().to_ascii_lowercase().starts_with("explain")
+        && (is_any_value_statement(sql) || removed_native::requires_string2_engine(sql))
+}
+
 fn may_classify_native_contraction(native_backend: bool, sql: &str) -> bool {
-    native_backend || !is_any_value_statement(sql)
+    native_backend || !requires_engine_statement(sql)
 }
 
 fn is_native_any_value_refusal(native_backend: bool, sql: &str, error: &str) -> bool {
@@ -866,6 +889,9 @@ fn removed_kernel_classification_is_statement_scoped() {
         "native math evaluation was removed; TiKV engine required"
     ));
     assert!(expected_removed_marker("unrelated/topic", "select 1").is_none());
+    assert!(
+        expected_removed_marker("unrelated/topic", "select find_in_set(c, 'a,b') from t").is_none()
+    );
     assert!(is_any_value_statement(
         "select any_value(v) from t group by k"
     ));
@@ -1116,7 +1142,7 @@ fn run_topic_on_this_stack(topic: &str) -> Result<TopicReport, String> {
         let before_rows = connections.expression_rows().0;
         let native_backend =
             connections.expression_backend() == mysqltest_connections::ExpressionBackend::Native;
-        let require_any_value_engine = is_any_value_statement(&stmt.sql) && !native_backend;
+        let require_engine = requires_engine_statement(&stmt.sql) && !native_backend;
         let outcome = compare(
             topic,
             native_backend,
@@ -1129,9 +1155,9 @@ fn run_topic_on_this_stack(topic: &str) -> Result<TopicReport, String> {
         if after_rows > before_rows {
             report.engine_statements += 1;
         }
-        if require_any_value_engine && (!outcome.is_ok() || after_rows <= before_rows) {
+        if require_engine && (!outcome.is_ok() || after_rows <= before_rows) {
             report.divergences.push(format!(
-                "\n--- [{topic}] {}\n  rust: ANY_VALUE must succeed through TiKV and increment engine rows",
+                "\n--- [{topic}] {}\n  rust: required expression must succeed through TiKV and increment engine rows",
                 stmt.sql
             ));
             continue;

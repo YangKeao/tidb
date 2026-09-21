@@ -1427,7 +1427,7 @@
     {
       "label": "instr_utf8",
       "wire_signatures": [
-        7024
+        7025
       ],
       "input_rows": 4,
       "engine_rows": 8,
@@ -2037,7 +2037,7 @@
     {
       "label": "locate_utf8",
       "wire_signatures": [
-        7030
+        7032
       ],
       "input_rows": 4,
       "engine_rows": 8,

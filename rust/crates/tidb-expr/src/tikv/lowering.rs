@@ -1291,6 +1291,11 @@ fn strings(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr> {
             .then_some(())
             .and_then(|()| node(unary, all_as(children, Bytes)?, ty));
     }
+    // LOCATE/INSTR select their byte signature from Go's aggregated function
+    // collation, not from either raw argument alone. An implicit column or an
+    // explicit COLLATE can outrank a binary literal/cast and retain UTF-8
+    // character offsets.
+    let search_binary = function.derived_collation() == tidb_datatype::Collation::Binary;
     let (signature, targets): (&str, &[EvalType]) = match name {
         "hex" if children.len() == 1 => {
             if child_type(&children[0])?.eval_type() == Bytes {
@@ -1328,9 +1333,12 @@ fn strings(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr> {
         "substring_index" => ("SubstringIndex", &[Bytes, Bytes, Int]),
         "strcmp" => ("Strcmp", &[Bytes, Bytes]),
         "find_in_set" => ("FindInSet", &[Bytes, Bytes]),
-        "instr" => (if binary { "Instr" } else { "InstrUtf8" }, &[Bytes, Bytes]),
+        "instr" => (
+            if search_binary { "Instr" } else { "InstrUtf8" },
+            &[Bytes, Bytes],
+        ),
         "locate" | "position" if children.len() == 2 => (
-            if binary {
+            if search_binary {
                 "Locate2Args"
             } else {
                 "Locate2ArgsUtf8"
@@ -1338,7 +1346,7 @@ fn strings(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr> {
             &[Bytes, Bytes],
         ),
         "locate" | "position" if children.len() == 3 => (
-            if binary {
+            if search_binary {
                 "Locate3Args"
             } else {
                 "Locate3ArgsUtf8"
@@ -1355,14 +1363,10 @@ fn strings(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr> {
         "regexp_like" if children.len() == 3 => ("RegexpLikeSig", &[Bytes, Bytes, Bytes]),
         _ => return regexp_extended(function, children),
     };
-    // FIND_IN_SET compares with the argument's collation; the engine compares
-    // bytes, so a non-binary collation would answer differently.
-    if name == "find_in_set"
-        && !function
-            .args
-            .iter()
-            .all(|arg| arg.static_type().is_some_and(|ty| ty.is_binary_string()))
-    {
+    // FIND_IN_SET compares with the function's aggregated collation; TiKV's
+    // bytewise signature is valid exactly when that derived collation is
+    // binary, including mixed-operand forms where binary wins precedence.
+    if name == "find_in_set" && function.derived_collation() != tidb_datatype::Collation::Binary {
         return None;
     }
     node(signature, cast_args(children, targets)?, ty)

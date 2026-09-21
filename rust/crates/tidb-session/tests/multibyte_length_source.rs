@@ -3,6 +3,8 @@
 //! character-positioned; CONVERT ... USING transcodes.
 
 use tidb_session::Session;
+#[cfg(feature = "tikv-expr")]
+use tidb_session::TikvExpressionBackend;
 
 fn rows(session: &mut Session, sql: &str) -> String {
     match session.run(sql).unwrap() {
@@ -29,17 +31,36 @@ fn rows(session: &mut Session, sql: &str) -> String {
 #[test]
 fn char_vs_byte_lengths() {
     let mut session = Session::new();
+    #[cfg(feature = "tikv-expr")]
+    session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
+    #[cfg(feature = "tikv-expr")]
+    let engine_before = session.tikv_expression_rows();
 
     assert_eq!(
-        rows(&mut session, "select char_length('中a'), octet_length('中a')"),
+        rows(
+            &mut session,
+            "select char_length('中a'), octet_length('中a')"
+        ),
         "i:2|i:4"
     );
 
     // Positions are in characters, not bytes: both answers include '中'.
-    assert_eq!(
-        rows(&mut session, "select substring('中abc', 1, 2), mid('中abc', 2, 2)"),
-        "s:中a|s:ab"
-    );
+    let sql = "select substring('中abc', 1, 2), mid('中abc', 2, 2)";
+    #[cfg(feature = "tikv-expr")]
+    assert_eq!(rows(&mut session, sql), "s:中a|s:ab");
+    #[cfg(not(feature = "tikv-expr"))]
+    assert!(session
+        .run(sql)
+        .expect_err("native SUBSTRING/MID kernels are deleted")
+        .to_string()
+        .contains(
+            "native string2 evaluation was removed; TiKV engine required or function unsupported"
+        ));
 
-    assert_eq!(rows(&mut session, "select convert('ab' using ascii)"), "s:ab");
+    assert_eq!(
+        rows(&mut session, "select convert('ab' using ascii)"),
+        "s:ab"
+    );
+    #[cfg(feature = "tikv-expr")]
+    assert!(session.tikv_expression_rows() > engine_before);
 }

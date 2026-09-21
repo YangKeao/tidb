@@ -159,6 +159,24 @@ remain in the workspace.
       statements must succeed and increment the TiKV row counter. Native
       integration replay records 77 explicit contractions plus one native-only
       refusal and still exposes the same 160 unrelated carried divergences.
+- [x] Eighth physical-deletion tranche: physically deleted
+      `builtin_ext/string2.rs` plus the orphaned SUBSTRING, three-argument
+      LOCATE, FORMAT, and EXPORT_SET helpers from `string_fn.rs`; guarded
+      SUBSTRING/SUBSTR/MID, LOCATE, FORMAT, FIND_IN_SET, EXPORT_SET, LTRIM,
+      RTRIM, and TRANSLATE at every residual native boundary. FORMAT,
+      EXPORT_SET, TRANSLATE, and non-binary FIND_IN_SET are explicit
+      contractions. Retained SUBSTRING/LOCATE/TRIM and binary FIND_IN_SET source
+      rows execute engine-only; LOCATE/INSTR now select TiKV's byte signature
+      from the aggregated binary collation, honoring explicit/implicit collation
+      precedence over a raw binary operand. Validation is 1185
+      expression library tests + 77 integration tests green, five focused
+      session SQL tests green with positive TiKV row deltas, runtime 30 tests /
+      323 receipts / 2072 engine rows / 160 borrowed rows, and static 216
+      admitted / 168 excluded / 0 missing. Native replay records 91 explicit
+      contractions + one native-only refusal with 181 carried divergences;
+      Copying executes 416592 engine rows and exposes 167 divergences, including
+      two retained SUBSTRING statements whose whole complex program is not yet
+      engine-routable. This is not a green full-integration claim.
 - [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
       in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected
       borrowed facade was used by the adapter while the manifest still pinned

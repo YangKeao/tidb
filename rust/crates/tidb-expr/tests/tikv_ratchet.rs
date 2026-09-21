@@ -268,7 +268,7 @@ fn every_declined_expression_fails_cleanly_without_the_native_evaluator() {
 /// all. `plan_builder.rs` folds the rewritten tree with the live statement
 /// context (`fold_constant_in_mode`) before the plan exists. After physical
 /// native-kernel deletion, constant-foldable declines become a single
-/// `Constant`; the 23 pinned here are the ones whose constant form *does*
+/// `Constant`; the 30 pinned here are the ones whose constant form *does*
 /// reach the adapter, which is the surface the removal actually has to answer
 /// for.
 ///
@@ -287,6 +287,11 @@ const SURVIVES_FOLD: &[&str] = &[
     "coalesce(1, 'x' regexp '[')",
     "coalesce(cast(1 as json), cast(2 as json))",
     "cot(1)",
+    "find_in_set('a', 'b,a,c,a')",
+    "find_in_set(' ', '  , , ,') collate utf8mb4_general_ci",
+    "find_in_set(' ' collate utf8mb4_general_ci, '  , , ,' collate utf8mb4_general_ci)",
+    "format(12345.67, 2, 'en_us')",
+    "format(1234567.89, 2, 'en_US')",
     "greatest(-9223372036854775808, cast('9223372036854775809' as unsigned))",
     "hex(weight_string('a'))",
     "hex(weight_string('aAÁàãăâ' collate utf8mb4_general_ci))",
@@ -298,6 +303,8 @@ const SURVIVES_FOLD: &[&str] = &[
     "round(3.14,'abc')",
     "round(5, -100)",
     "to_base64('')",
+    "translate('ABC', 'A', 'B')",
+    "translate('abcabc', 'ab', 'xy')",
     "truncate(1234.5678,'-2')",
     "upper(elt(1,'a',x'61'))",
     "weight_string(NULL)",
@@ -348,5 +355,5 @@ fn folded_away_expressions_never_reach_the_adapter() {
         folded.len() + survived.len() + skipped.len(),
         DECLINED.len()
     );
-    assert_eq!(folded.len(), 34, "the folded count changed");
+    assert_eq!(folded.len(), 27, "the folded count changed");
 }

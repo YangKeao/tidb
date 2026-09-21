@@ -4,6 +4,8 @@
 //! (lpad('中', 2, 'ab') = 'a中').
 
 use tidb_session::Session;
+#[cfg(feature = "tikv-expr")]
+use tidb_session::TikvExpressionBackend;
 
 fn assert_packet_string_removed(session: &mut Session, sql: &str) {
     let error = session
@@ -43,9 +45,25 @@ fn try_sql(session: &mut Session, sql: &str) -> String {
 #[test]
 fn character_positions_not_bytes() {
     let mut session = Session::new();
+    #[cfg(feature = "tikv-expr")]
+    session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
+    #[cfg(feature = "tikv-expr")]
+    let engine_before = session.tikv_expression_rows();
 
-    assert_eq!(try_sql(&mut session, "select locate('a', '中a')"), "i:2");
+    let locate = "select locate('a', '中a')";
+    #[cfg(feature = "tikv-expr")]
+    assert_eq!(try_sql(&mut session, locate), "i:2");
+    #[cfg(not(feature = "tikv-expr"))]
+    assert!(session
+        .run(locate)
+        .expect_err("native LOCATE kernel is deleted")
+        .to_string()
+        .contains(
+            "native string2 evaluation was removed; TiKV engine required or function unsupported"
+        ));
     assert_eq!(try_sql(&mut session, "select instr('中a', 'a')"), "i:2");
+    #[cfg(feature = "tikv-expr")]
+    assert!(session.tikv_expression_rows() > engine_before);
 
     // 6 bytes -> 48 bits.
     assert_eq!(try_sql(&mut session, "select bit_length('中a')"), "i:32");

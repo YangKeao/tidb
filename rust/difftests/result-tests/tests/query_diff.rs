@@ -61,11 +61,15 @@ fn is_any_value(sql: &str) -> bool {
             .is_some_and(|names| names.contains("ANY_VALUE"))
 }
 
-fn requires_any_value_engine(sql: &str) -> bool {
-    cfg!(feature = "tikv-expr") && is_any_value(sql)
+fn requires_tikv_engine(sql: &str) -> bool {
+    cfg!(feature = "tikv-expr")
+        && (is_any_value(sql) || removed_native::requires_string2_engine(sql))
 }
 
 fn expected_removed_marker(sql: &str) -> Option<&'static str> {
+    if let Some(removed_native::STRING2_REMOVED) = removed_native::expected_removed_marker(sql) {
+        return Some(removed_native::STRING2_REMOVED);
+    }
     let parsed = removed_native::parsed_function_names(sql)?;
     let has = |names: &[&str]| {
         names
@@ -160,6 +164,21 @@ fn expected_removed_marker(sql: &str) -> Option<&'static str> {
         return Some("native packet-limited string evaluation was removed; function unsupported");
     }
     if has(&[
+        "substring(",
+        "substr(",
+        "mid(",
+        "locate(",
+        "format(",
+        "export_set(",
+        "ltrim(",
+        "rtrim(",
+        "translate(",
+    ]) {
+        return Some(
+            "native string2 evaluation was removed; TiKV engine required or function unsupported",
+        );
+    }
+    if has(&[
         "uuid(",
         "uuid_v4(",
         "uuid_v7(",
@@ -194,7 +213,7 @@ fn rust_run(sql: &str) -> Result<String, String> {
     let ordered = statement_is_ordered(&stmt);
     let mut session = Session::new();
     #[cfg(feature = "tikv-expr")]
-    let engine_before = if is_any_value(sql) {
+    let engine_before = if requires_tikv_engine(sql) {
         session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
         Some(session.tikv_expression_rows())
     } else {
@@ -210,11 +229,11 @@ fn rust_run(sql: &str) -> Result<String, String> {
     #[cfg(feature = "tikv-expr")]
     if let Some(before) = engine_before {
         if let Err(error) = &result {
-            return Err(format!("ANY_VALUE TiKV execution failed: {error}"));
+            return Err(format!("required TiKV execution failed: {error}"));
         }
         if session.tikv_expression_rows() <= before {
             return Err(format!(
-                "ANY_VALUE query did not execute a TiKV-engine row: {sql}"
+                "required query did not execute a TiKV-engine row: {sql}"
             ));
         }
     }
@@ -246,14 +265,14 @@ fn run_pair(
     let mut skipped = 0;
     for (sql, want) in stmts.iter().zip(&golden) {
         let outcome = rust_run(sql);
-        let requires_any_value_engine = requires_any_value_engine(sql);
-        if !requires_any_value_engine && is_misc_contraction(sql) {
+        let requires_tikv_engine = requires_tikv_engine(sql);
+        if !requires_tikv_engine && is_misc_contraction(sql) {
             let error = outcome.expect_err("explicit native-misc contraction");
             assert!(error.contains(MISC_REMOVED), "{sql}: {error}");
             matched += 1;
             continue;
         }
-        if let Some(marker) = (!requires_any_value_engine)
+        if let Some(marker) = (!requires_tikv_engine)
             .then(|| expected_removed_marker(sql))
             .flatten()
         {
@@ -282,15 +301,20 @@ fn run_pair(
 #[cfg(feature = "tikv-expr")]
 #[test]
 fn any_value_engine_requirement_excludes_explain_and_mixed_contractions() {
-    assert!(requires_any_value_engine(
+    assert!(requires_tikv_engine(
         "select any_value(v), abs(v) from t group by v"
     ));
-    assert!(!requires_any_value_engine(
+    assert!(!requires_tikv_engine(
         "explain select any_value(v) from t group by v"
     ));
     assert_eq!(
         expected_removed_marker("select any_value(v), abs(v) from t group by v"),
         Some("native math evaluation was removed; TiKV engine required")
+    );
+    assert_eq!(
+        expected_removed_marker("select find_in_set(c, 'a,b') from t"),
+        None,
+        "an unresolved column collation must never be masked as a contraction"
     );
 }
 

@@ -466,7 +466,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("encode", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_CRYPTO_UNVERIFIED),
     row("eq", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::Any, ""),
     row("exp", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
-    row("export_set", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
+    row("export_set", Decision::Excluded, Signature::None, &[], Shape::Any, NO_ENGINE_KERNEL),
     row("extract", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::String, EvalType::Datetime], Shape::Any, ""),
     row("field", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::Any, ""),
     row("find_in_set", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),

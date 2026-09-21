@@ -3,6 +3,8 @@
 //! custom character) strip as written.
 
 use tidb_session::Session;
+#[cfg(feature = "tikv-expr")]
+use tidb_session::TikvExpressionBackend;
 
 fn rows(session: &mut Session, sql: &str) -> String {
     match session.run(sql).unwrap() {
@@ -28,6 +30,10 @@ fn rows(session: &mut Session, sql: &str) -> String {
 #[test]
 fn concat_ws_and_trim_forms() {
     let mut session = Session::new();
+    #[cfg(feature = "tikv-expr")]
+    session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
+    #[cfg(feature = "tikv-expr")]
+    let engine_before = session.tikv_expression_rows();
 
     // NULL arguments are skipped; the separator is emitted between kept values.
     assert_eq!(
@@ -35,13 +41,40 @@ fn concat_ws_and_trim_forms() {
         "s:a-b"
     );
     // A NULL separator poisons the whole result.
-    assert_eq!(rows(&mut session, "select concat_ws(null, 'a', 'b')"), "Null");
+    assert_eq!(
+        rows(&mut session, "select concat_ws(null, 'a', 'b')"),
+        "Null"
+    );
 
     assert_eq!(rows(&mut session, "select trim('  ab  ')"), "s:ab");
-    assert_eq!(rows(&mut session, "select ltrim('  ab  ')"), "s:ab  ");
-    assert_eq!(rows(&mut session, "select rtrim('  ab  ')"), "s:  ab");
+    #[cfg(feature = "tikv-expr")]
+    {
+        assert_eq!(rows(&mut session, "select ltrim('  ab  ')"), "s:ab  ");
+        assert_eq!(rows(&mut session, "select rtrim('  ab  ')"), "s:  ab");
+    }
+    #[cfg(not(feature = "tikv-expr"))]
+    for sql in ["select ltrim('  ab  ')", "select rtrim('  ab  ')"] {
+        assert!(
+            session
+                .run(sql)
+                .expect_err("native LTRIM/RTRIM kernels are deleted")
+                .to_string()
+                .contains(
+                    "native string2 evaluation was removed; TiKV engine required or function unsupported"
+                ),
+            "{sql}"
+        );
+    }
 
     // remstr forms.
-    assert_eq!(rows(&mut session, "select trim(both 'x' from 'xxabxx')"), "s:ab");
-    assert_eq!(rows(&mut session, "select trim(leading 'x' from 'xxab')"), "s:ab");
+    assert_eq!(
+        rows(&mut session, "select trim(both 'x' from 'xxabxx')"),
+        "s:ab"
+    );
+    assert_eq!(
+        rows(&mut session, "select trim(leading 'x' from 'xxab')"),
+        "s:ab"
+    );
+    #[cfg(feature = "tikv-expr")]
+    assert!(session.tikv_expression_rows() > engine_before);
 }

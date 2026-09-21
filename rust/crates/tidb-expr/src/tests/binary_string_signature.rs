@@ -29,6 +29,10 @@
 //! RS:béa|62A9C361
 //! ```
 
+#[cfg(not(feature = "tikv-expr"))]
+use super::assert_string2_refusal;
+#[cfg(feature = "tikv-expr")]
+use super::engine_e;
 use super::{assert_packet_string_refusal, e};
 
 /// One captured `(expression, TiDB answer)` pair per signature, in both the
@@ -40,9 +44,25 @@ fn captured(cases: &[(&str, &str)]) {
     }
 }
 
+#[cfg(feature = "tikv-expr")]
+#[track_caller]
+fn captured_engine(cases: &[(&str, &str)]) {
+    for (expression, expected) in cases {
+        assert_eq!(&engine_e(expression), expected, "TiKV engine: {expression}");
+    }
+}
+
+#[cfg(not(feature = "tikv-expr"))]
+#[track_caller]
+fn captured_engine(cases: &[(&str, &str)]) {
+    for (expression, _) in cases {
+        assert_string2_refusal(expression);
+    }
+}
+
 #[test]
 fn substring_selects_bytes_for_a_binary_argument() {
-    captured(&[
+    captured_engine(&[
         // builtinSubstring2ArgsUTF8Sig / builtinSubstring2ArgsSig
         ("hex(substring('aéb', 2))", "STR:C3A962"),
         ("hex(substring(cast('aéb' as binary), 2))", "STR:C3A962"),
@@ -108,7 +128,7 @@ fn insert_selects_bytes_when_either_string_argument_is_binary() {
 
 #[test]
 fn locate_and_instr_report_byte_offsets_for_a_binary_argument() {
-    captured(&[
+    captured_engine(&[
         ("instr('aéb', 'b')", "INT:3"),
         ("instr(cast('aéb' as binary), 'b')", "INT:4"),
         ("locate('b', 'aéb')", "INT:3"),
@@ -129,7 +149,7 @@ fn locate_and_instr_report_byte_offsets_for_a_binary_argument() {
 /// units, so a binary search may start INSIDE a multi-byte character.
 #[test]
 fn locate_with_a_start_position_counts_pos_in_the_same_units() {
-    captured(&[
+    captured_engine(&[
         ("locate('b', 'aéb', 1)", "INT:3"),
         ("locate(cast('b' as binary), 'aéb', 1)", "INT:4"),
         ("locate('b', 'aéb', 3)", "INT:3"),
@@ -183,8 +203,8 @@ fn case_pad_and_ord_keep_their_binary_answers() {
 fn utf8_and_case_insensitive_signatures_are_untouched() {
     // The seam must not leak into the character signatures: these are the
     // same answers TiDB gives, with no binary argument anywhere.
+    captured_engine(&[("hex(substring('中文测试', 2, 2))", "STR:E69687E6B58B")]);
     captured(&[
-        ("hex(substring('中文测试', 2, 2))", "STR:E69687E6B58B"),
         ("hex(left('中文测试', 2))", "STR:E4B8ADE69687"),
         ("hex(reverse('中文测试'))", "STR:E8AF95E6B58BE69687E4B8AD"),
         ("char_length('中文测试')", "INT:4"),

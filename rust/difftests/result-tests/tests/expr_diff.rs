@@ -38,6 +38,8 @@ use std::path::PathBuf;
 
 use difftest::{difftest_root, load_corpus_dir, validate_executable_corpora};
 use tidb_ast::{QueryStmt, SelectField, Stmt};
+#[cfg(feature = "tikv-expr")]
+use tidb_session::{Session, StmtResult, TikvExpressionBackend};
 
 fn corpus_dir() -> PathBuf {
     difftest_root().join("corpus").join("expr")
@@ -45,7 +47,11 @@ fn corpus_dir() -> PathBuf {
 
 /// Parses `expr` by wrapping it in `SELECT`, then returns its evaluated label.
 fn expected_removed_marker(expr: &str) -> Option<&'static str> {
-    let parsed = removed_native::parsed_function_names(&format!("select {expr}"))?;
+    let sql = format!("select {expr}");
+    if let Some(removed_native::STRING2_REMOVED) = removed_native::expected_removed_marker(&sql) {
+        return Some(removed_native::STRING2_REMOVED);
+    }
+    let parsed = removed_native::parsed_function_names(&sql)?;
     let has = |names: &[&str]| {
         names
             .iter()
@@ -139,6 +145,21 @@ fn expected_removed_marker(expr: &str) -> Option<&'static str> {
         return Some("native packet-limited string evaluation was removed; function unsupported");
     }
     if has(&[
+        "substring(",
+        "substr(",
+        "mid(",
+        "locate(",
+        "format(",
+        "export_set(",
+        "ltrim(",
+        "rtrim(",
+        "translate(",
+    ]) {
+        return Some(
+            "native string2 evaluation was removed; TiKV engine required or function unsupported",
+        );
+    }
+    if has(&[
         "uuid(",
         "uuid_v4(",
         "uuid_v7(",
@@ -161,7 +182,26 @@ fn expected_removed_marker(expr: &str) -> Option<&'static str> {
 }
 
 fn rust_eval_label(expr: &str) -> Result<String, String> {
-    let stmt = tidb_parser::parse(&format!("select {expr}")).map_err(|e| e.message)?;
+    let sql = format!("select {expr}");
+    #[cfg(feature = "tikv-expr")]
+    if removed_native::requires_string2_engine(&sql) {
+        let mut session = Session::new();
+        session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
+        let before = session.tikv_expression_rows();
+        let result = session.run(&sql).map_err(|e| e.to_string())?;
+        let StmtResult::Rows(rows) = result else {
+            return Err("engine-required expression returned no rows".to_owned());
+        };
+        if session.tikv_expression_rows() <= before {
+            return Err("engine-required expression did not execute a TiKV row".to_owned());
+        }
+        return rows
+            .first()
+            .and_then(|row| row.first())
+            .map(tidb_datatype::Datum::label)
+            .ok_or_else(|| "engine-required expression returned no datum".to_owned());
+    }
+    let stmt = tidb_parser::parse(&sql).map_err(|e| e.message)?;
     let Stmt::Query(query) = stmt else {
         return Err("not a query".to_string());
     };

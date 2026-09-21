@@ -16,13 +16,18 @@ use std::any::Any;
 use std::collections::BTreeSet;
 
 use tidb_ast::{Expr, Visitable, Visitor};
+use tidb_expr::{expression::Expression, rewriter::rewrite_expr};
 
 pub const MISC_REMOVED: &str =
     "native miscellaneous evaluation was removed; TiKV engine required or function unsupported";
+pub const STRING2_REMOVED: &str =
+    "native string2 evaluation was removed; TiKV engine required or function unsupported";
 
 #[derive(Default)]
 struct FunctionCollector {
     names: BTreeSet<String>,
+    binary_find_in_set: bool,
+    nonbinary_find_in_set: bool,
 }
 
 impl Visitor for FunctionCollector {
@@ -30,7 +35,18 @@ impl Visitor for FunctionCollector {
         if let Some(expr) = node.downcast_mut::<Expr>() {
             match expr {
                 Expr::Func { name, .. } => {
-                    self.names.insert(name.to_ascii_uppercase());
+                    let upper_name = name.to_ascii_uppercase();
+                    let is_find_in_set = upper_name == "FIND_IN_SET";
+                    if is_find_in_set {
+                        if let Ok(Expression::ScalarFunction(function)) = rewrite_expr(expr) {
+                            if function.derived_collation() == tidb_datatype::Collation::Binary {
+                                self.binary_find_in_set = true;
+                            } else {
+                                self.nonbinary_find_in_set = true;
+                            }
+                        }
+                    }
+                    self.names.insert(upper_name);
                 }
                 Expr::Regexp { .. } => {
                     self.names.insert("REGEXP".to_owned());
@@ -49,16 +65,34 @@ impl Visitor for FunctionCollector {
     }
 }
 
-pub fn parsed_function_names(sql: &str) -> Option<BTreeSet<String>> {
+fn collect_functions(sql: &str) -> Option<FunctionCollector> {
     let mut stmt = tidb_parser::parse(sql).ok()?;
     let mut collector = FunctionCollector::default();
     stmt.accept(&mut collector);
-    Some(collector.names)
+    Some(collector)
+}
+
+pub fn parsed_function_names(sql: &str) -> Option<BTreeSet<String>> {
+    Some(collect_functions(sql)?.names)
+}
+
+pub fn requires_string2_engine(sql: &str) -> bool {
+    let Some(collector) = collect_functions(sql) else {
+        return false;
+    };
+    collector.binary_find_in_set
+        || ["SUBSTRING", "SUBSTR", "MID", "LOCATE", "LTRIM", "RTRIM"]
+            .iter()
+            .any(|name| collector.names.contains(*name))
 }
 
 pub fn expected_removed_marker(sql: &str) -> Option<&'static str> {
-    let names = parsed_function_names(sql)?;
-    let has = |candidates: &[&str]| candidates.iter().any(|name| names.contains(*name));
+    let collector = collect_functions(sql)?;
+    let has = |candidates: &[&str]| {
+        candidates
+            .iter()
+            .any(|name| collector.names.contains(*name))
+    };
     if has(&[
         "RAND", "ABS", "SIGN", "CEIL", "CEILING", "FLOOR", "ROUND", "TRUNCATE", "SQRT", "POW",
         "POWER", "EXP", "LN", "LOG", "LOG2", "LOG10", "PI", "SIN", "COS", "TAN", "ASIN", "ACOS",
@@ -121,6 +155,20 @@ pub fn expected_removed_marker(sql: &str) -> Option<&'static str> {
         return Some("native packet-limited string evaluation was removed; function unsupported");
     }
     if has(&[
+        "SUBSTRING",
+        "SUBSTR",
+        "MID",
+        "LOCATE",
+        "FORMAT",
+        "EXPORT_SET",
+        "LTRIM",
+        "RTRIM",
+        "TRANSLATE",
+    ]) || collector.nonbinary_find_in_set
+    {
+        return Some(STRING2_REMOVED);
+    }
+    if has(&[
         "UUID",
         "UUID_V4",
         "UUID_V7",
@@ -152,5 +200,18 @@ fn markers_come_from_parsed_function_nodes_not_text() {
     assert_eq!(
         expected_removed_marker("select 1 regexp '1'"),
         Some("native regexp evaluation was removed; TiKV engine required")
+    );
+    assert!(requires_string2_engine(
+        "select find_in_set(cast('b' as binary), 'a,b')"
+    ));
+    assert!(!requires_string2_engine("select find_in_set('b', 'a,b')"));
+    let collated = "select find_in_set(cast('b' as binary), 'a,b' collate utf8mb4_general_ci)";
+    assert!(!requires_string2_engine(collated));
+    assert_eq!(expected_removed_marker(collated), Some(STRING2_REMOVED));
+    // Without a column resolver the derived collation is unproven; do not let
+    // the generic contraction marker hide a binary-column routing regression.
+    assert_eq!(
+        expected_removed_marker("select find_in_set(c, 'a,b')"),
+        None
     );
 }

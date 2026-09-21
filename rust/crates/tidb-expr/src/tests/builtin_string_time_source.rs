@@ -1149,8 +1149,8 @@ fn test_translate_tables() {
         (r"translate('error', 'error', null)", "NULL"),
         (r"translate(null, null, null)", "NULL"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
-        assert_eq!(chunk_e(expr), want, "{expr}");
+        let _ = want;
+        assert_string2_refusal(expr);
     }
     for (expr, want_hex) in [
         (
@@ -1170,8 +1170,8 @@ fn test_translate_tables() {
             "FFFEFEFD",
         ),
     ] {
-        assert_eq!(e(expr), format!("STR:{want_hex}"), "{expr}");
-        assert_eq!(chunk_e(expr), format!("STR:{want_hex}"), "{expr}");
+        let _ = want_hex;
+        assert_string2_refusal(expr);
     }
 }
 
@@ -1188,15 +1188,11 @@ fn test_translate_tables() {
 #[test]
 fn test_format_values_and_number_side_truncate_warnings() {
     // formatTests: the pre-issue-#8796 literal rows.
-    assert_eq!(
-        e("format(12332.12341111111111111111111111111111111111111, 4)"),
-        "STR:12,332.1234"
-    );
-    assert_eq!(e("format(NULL, 22)"), "NULL");
+    assert_string2_refusal("format(12332.12341111111111111111111111111111111111111, 4)");
+    assert_string2_refusal("format(NULL, 22)");
 
-    // formatTests1 value rows are carried verbatim by
-    // builtin_ext::string2::format_matches_go_source_vectors; only their
-    // warning halves are split between this fn and the gap below.
+    // Keep the formatTests1 input rows visible while requiring fail-closed
+    // refusal before either former numeric coercion or warning side effect.
     let ctx = PacketWarnCtx::new(64 << 20);
     for (number, precision, want) in [
         ("12332.123444", "4", Some("12,332.1234")),
@@ -1221,10 +1217,16 @@ fn test_format_values_and_number_side_truncate_warnings() {
                 ),
             ],
             &ctx,
-        )
-        .unwrap();
-        assert_eq!(got_text(&got), want.unwrap(), "{number}/{precision}");
-        ctx.drain();
+        );
+        let _ = want;
+        assert_eq!(
+            got,
+            Err(EvalError::Unsupported(
+                "native string2 evaluation was removed; TiKV engine required or function unsupported"
+            )),
+            "{number}/{precision}"
+        );
+        assert!(ctx.drain().is_empty(), "deleted FORMAT cannot warn");
     }
     // Truncated-number rows raise exactly ONE ErrTruncatedWrongVal-class
     // (1292) warning apiece; clean rows raise none.
@@ -1258,8 +1260,10 @@ fn test_format_values_and_number_side_truncate_warnings() {
         ("-A123345", "4"),
     ] {
         let drained = warnings_of(number, precision);
-        assert_eq!(drained.len(), 1, "{number}/{precision}: {drained:?}");
-        assert_eq!(drained[0].0, 1292_u16);
+        assert!(
+            drained.is_empty(),
+            "deleted FORMAT cannot warn for {number}/{precision}: {drained:?}"
+        );
     }
 }
 
@@ -1309,15 +1313,19 @@ fn test_format_precision_side_truncate_warning_counts() {
                 ),
             ],
             &ctx,
-        )
-        .unwrap();
-        assert!(!got.is_null(), "FORMAT({number:?}, {precision:?})");
-        let warnings = ctx.drain();
-        let expected = expected_messages
-            .into_iter()
-            .map(|message| (1292, (*message).to_owned()))
-            .collect::<Vec<_>>();
-        assert_eq!(warnings, expected, "{number}/{precision}");
+        );
+        let _ = expected_messages;
+        assert_eq!(
+            got,
+            Err(EvalError::Unsupported(
+                "native string2 evaluation was removed; TiKV engine required or function unsupported"
+            )),
+            "FORMAT({number:?}, {precision:?})"
+        );
+        assert!(
+            ctx.drain().is_empty(),
+            "deleted FORMAT cannot emit partial warnings"
+        );
     }
 }
 
@@ -1325,8 +1333,8 @@ fn test_format_precision_side_truncate_warning_counts() {
 /// complete style table — CommaDot (and every MySQL en_US fallback), DotComma
 /// es rounding up through "-10,00", SpaceComma, NoneComma/AposDot/AposComma/
 /// NoneDot/Indian groups, case-insensitive locale keys, NULL-locale fallback,
-/// unknown-locale fallback — asserted value-first; the two warning-halves are
-/// carried by `builtin_ext::string2::unknown_and_null_locales_warn_1649`.
+/// unknown-locale fallback — retained as source inputs, now asserting that the
+/// deleted FORMAT kernel refuses before producing a value or warning.
 #[test]
 fn test_format_with_locale() {
     let rows = [
@@ -1396,8 +1404,9 @@ fn test_format_with_locale() {
         ("format(12345.67, 2, 'de_GE')", "STR:12,345.67"),
         ("format(12345.67, 2, 'non_existent')", "STR:12,345.67"),
     ];
-    for (expr, want) in rows {
-        assert_eq!(chunk_e(expr), want, "{expr}");
+    for (expr, former_answer) in rows {
+        let _ = former_answer;
+        assert_string2_refusal(expr);
     }
 }
 
@@ -1482,15 +1491,17 @@ fn test_vectorized_builtin_string_eval_one_vec() {
         (r"instr('010010001000010', '1110')", "INT:0"),
         (r"locate('100', '010010001000010')", "INT:2"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        let got = if expr.starts_with("locate") {
+            engine_e(expr)
+        } else {
+            e(expr)
+        };
+        assert_eq!(got, want, "{expr}");
     }
     // Insert NULL-argument propagation under mixed nulls.
     assert_eq!(e(r#"insert_func('abc', 2, null, 'X')"#), "NULL");
-    // Translate preserves length minus deletions across generators' ranges.
-    assert_eq!(
-        e(r"translate('abcdefghijklmno', 'acegi', 'XYZ')"),
-        "STR:XbYdZfhjklmno"
-    );
+    // TRANSLATE has no TiKV scalar signature and is an explicit contraction.
+    assert_string2_refusal(r"translate('abcdefghijklmno', 'acegi', 'XYZ')");
     // Substring_index zero-count empty arm from range (-4, 4).
     assert_eq!(e(r"substring_index('aaa.bbb.ccc.ddd.eee', '.', 0)"), "STR:");
     assert_eq!(
@@ -1533,8 +1544,8 @@ fn test_vectorized_builtin_string_eval_one_vec_2() {
         Datum::new_bytes(b"ab\nc".to_vec())
     );
     assert_packet_string_refusal("to_base64('ab c')");
-    // Format locale fallbacks + IsNull signature arms.
-    assert_eq!(chunk_e("format(12345.67, 2, 'en_us')"), "STR:12,345.67");
+    // FORMAT has no TiKV scalar signature and is an explicit contraction.
+    assert_string2_refusal("format(12345.67, 2, 'en_us')");
     assert_eq!(e("isnull(1)"), "INT:0");
     assert_eq!(e("isnull(NULL)"), "INT:1");
 }
@@ -2606,27 +2617,9 @@ fn test_current_date_current_time_utc_time_clocks() {
 /// the bounds and matches through the collator.
 #[test]
 fn locate_with_position_matches_go_three_args_signature() {
-    use crate::context::NoColumns;
-    let text = FieldType::new(FieldTypeCode::VarString);
-    let int = FieldType::new(FieldTypeCode::LongLong);
     let eval = |substr: &str, hay: &str, pos: i64| {
-        eval_scalar(
-            "LOCATE",
-            FieldType::new(FieldTypeCode::LongLong),
-            vec![
-                Expression::Constant(crate::constant::Constant::new(
-                    Datum::new_string(substr.as_bytes().to_vec()),
-                    text.clone(),
-                )),
-                Expression::Constant(crate::constant::Constant::new(
-                    Datum::new_string(hay.as_bytes().to_vec()),
-                    text.clone(),
-                )),
-                Expression::Constant(crate::constant::Constant::new(Datum::Int(pos), int.clone())),
-            ],
-            &NoColumns,
-        )
-        .unwrap()
+        let label = engine_e(&format!("locate('{substr}', '{hay}', {pos})"));
+        Datum::Int(label.strip_prefix("INT:").unwrap().parse().unwrap())
     };
 
     // Go `TestLocatePosition` rows.
@@ -2649,21 +2642,5 @@ fn locate_with_position_matches_go_three_args_signature() {
     // 'B' matches 'aBc' at 2 with a start position of 1. (The
     // case-insensitive rule is separately pinned by the 2-arg sibling
     // capture `INSTR('ABC' COLLATE utf8mb4_general_ci, 'b')` = 2.)
-    let exact = eval_scalar(
-        "LOCATE",
-        FieldType::new(FieldTypeCode::LongLong),
-        vec![
-            Expression::Constant(crate::constant::Constant::new(
-                Datum::new_string(b"B".to_vec()),
-                text.clone(),
-            )),
-            Expression::Constant(crate::constant::Constant::new(
-                Datum::new_string(b"aBc".to_vec()),
-                text.clone(),
-            )),
-            Expression::Constant(crate::constant::Constant::new(Datum::Int(1), int.clone())),
-        ],
-        &NoColumns,
-    );
-    assert_eq!(exact.unwrap(), Datum::Int(2));
+    assert_eq!(engine_e("locate('B', 'aBc', 1)"), "INT:2");
 }

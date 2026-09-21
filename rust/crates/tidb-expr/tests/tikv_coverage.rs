@@ -1919,14 +1919,20 @@ fn tikv_coverage_declined_expression_is_a_structured_error_when_required() {
         "the refusal reason must still be recorded"
     );
 
-    // A resolver that still has the native evaluator keeps answering.
+    // The residual resolver also refuses: the native TRANSLATE kernel was
+    // physically deleted, so an engine decline can never replay it.
     let context = TestContext {
         backend: Some(Backend::Copying),
         ..TestContext::default()
     };
     let suite = EvaluatorSuite::new(vec![expression], true);
     let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), 1);
-    suite.run(&context, &mut input, &mut output).unwrap();
+    assert_eq!(
+        suite.run(&context, &mut input, &mut output),
+        Err(EvaluatorError::Eval(EvalError::Unsupported(
+            "native string2 evaluation was removed; TiKV engine required or function unsupported"
+        )))
+    );
     assert_eq!(context.rows.get(), 0);
 }
 

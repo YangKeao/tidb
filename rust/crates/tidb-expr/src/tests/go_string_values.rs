@@ -191,19 +191,30 @@ fn go_test_ltrim_rtrim() {
         ("bar", "bar"),
         ("", ""),
     ];
-    for (input, expected) in ltrim_cases {
-        let value =
-            eval_string_sig("ltrim", vec![s(input)]).unwrap_or_else(|e| panic!("ltrim: {e:?}"));
-        assert_eq!(str_of(&value), *expected, "ltrim({input:?})");
+    for (input, _former_answer) in ltrim_cases {
+        assert_eq!(
+            eval_string_sig("ltrim", vec![s(input)]),
+            Err(EvalError::Unsupported(
+                "native string2 evaluation was removed; TiKV engine required or function unsupported"
+            )),
+            "ltrim({input:?})"
+        );
     }
-    for (input, expected) in [("   bar   ", "   bar"), ("bar   ", "bar")] {
-        let value =
-            eval_string_sig("rtrim", vec![s(input)]).unwrap_or_else(|e| panic!("rtrim: {e:?}"));
-        assert_eq!(str_of(&value), expected, "rtrim({input:?})");
+    for (input, _former_answer) in [("   bar   ", "   bar"), ("bar   ", "bar")] {
+        assert_eq!(
+            eval_string_sig("rtrim", vec![s(input)]),
+            Err(EvalError::Unsupported(
+                "native string2 evaluation was removed; TiKV engine required or function unsupported"
+            )),
+            "rtrim({input:?})"
+        );
     }
-    assert!(eval_string_sig("ltrim", vec![Datum::Null])
-        .unwrap()
-        .is_null());
+    assert_eq!(
+        eval_string_sig("ltrim", vec![Datum::Null]),
+        Err(EvalError::Unsupported(
+            "native string2 evaluation was removed; TiKV engine required or function unsupported"
+        ))
+    );
 }
 
 /// Go `TestInsert` (`builtin_string_test.go:2349`): the full source table,

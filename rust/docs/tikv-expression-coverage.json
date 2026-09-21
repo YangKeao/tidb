@@ -6,7 +6,7 @@
     "tikv": "521ac7330208b7f74f2b182bc373882687967280"
   },
   "current_revisions": {
-    "tidb": "bc73b0451a8eae62755354f426f3aead8dc77ebb",
+    "tidb": "47724c4646a632a2ff09a69b4036c539a4024af6",
     "tikv": "4c372b84e275fa3e9b943cbd20e9d3844db3837a"
   },
   "source_sha256": {
@@ -61,8 +61,8 @@
     "tidb/rust/crates/tidb-expr/src/builtin_registry.rs": "0138401ebdc33b31f5bbe7c9da032d8b89bd57099d0e8fe73dc4ac5e6f0a0ae7",
     "tidb/rust/crates/tidb-expr/src/pushdown_catalog.rs": "0799664d5779a8632efa6b3a7f77b5d84ad59ccaa9a97468364b4c02dd5515d8",
     "tidb/rust/crates/tidb-expr/src/tikv.rs": "5e25572b4afea40dea82275c7b6ff9eedd6f6d414916f4485666e41ccb4b0802",
-    "tidb/rust/crates/tidb-expr/src/tikv/admission.rs": "1ec0b1754b3c43fd0a291eb9a3184746e546ad3aefa86d86625495e3cffce96d",
-    "tidb/rust/crates/tidb-expr/src/tikv/lowering.rs": "251de7be20f056ffa4e1240c7c3b426a9eda45f6df5b3adb812b66d6e4e12730",
+    "tidb/rust/crates/tidb-expr/src/tikv/admission.rs": "ead079b2d6c71d158c30f0b599d3b206026f0649039c49ebaae661a823e64af0",
+    "tidb/rust/crates/tidb-expr/src/tikv/lowering.rs": "519042e502bdf0e625ba4a1bd5a9df10ad030429bcfc2154ac3a5db06a22f534",
     "tidb/rust/crates/tidb-expr/src/tikv/lowering/families.rs": "43a1e3b06a5f54a1f9268dfc94c1ffda6c791dc4f7d34393d02d7d2c4365b08a",
     "tidb/rust/crates/tidb-proto/proto/select.proto": "2fc136f4c341c1e3d6617ff3c5e7641ebab35188feebaff632ff8235e360f5c5",
     "tikv/components/tidb_query_expr/src/impl_arithmetic.rs": "14b1cbeec2caeda133d275a4d12569e415cc75c459b7646be07908108bd0d7a6",
@@ -4667,7 +4667,7 @@
       "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": "not triaged: no lowering site selects this name and the engine-only corpus never reaches it"
+      "reason": "engine has no kernel: tipb defines the signature but the pinned engine does not dispatch it"
     },
     {
       "name": "extract",

@@ -70,9 +70,14 @@ fn a_non_string_etstring_argument_is_cast_before_the_signature_runs() {
         // `elt('2abc','x','y','z')` is `y`.
         ("elt('2abc','x','y','z')", "STR:y"),
     ] {
-        let (row, chunk) = both(expr);
-        assert_eq!(row, want, "{expr}");
-        assert_eq!(chunk, want, "{expr} (chunk tier)");
+        if expr.starts_with("ltrim") || expr.starts_with("rtrim") {
+            let _ = want;
+            assert_string2_refusal(expr);
+        } else {
+            let (row, chunk) = both(expr);
+            assert_eq!(row, want, "{expr}");
+            assert_eq!(chunk, want, "{expr} (chunk tier)");
+        }
     }
 }
 
@@ -229,10 +234,10 @@ fn an_etstring_argument_is_read_as_bytes_not_as_utf8() {
 
         let trimmed = wrap_string_args("LTRIM", vec![value.clone()], &[None], &NoColumns).unwrap();
         assert_eq!(
-            crate::builtin_ext::string2::dispatch("LTRIM", &trimmed, &NoColumns)
-                .unwrap()
-                .unwrap(),
-            Datum::new_bytes(vec![0xFF]),
+            crate::func::eval_func_values_in("LTRIM", &trimmed, &NoColumns),
+            Some(Err(EvalError::Unsupported(
+                "native string2 evaluation was removed; TiKV engine required or function unsupported"
+            ))),
             "ltrim({value:?})"
         );
 
@@ -272,14 +277,14 @@ fn the_space_scan_is_one_sided_and_byte_exact() {
         ("LTRIM", " 中 ", "中 "),
         ("RTRIM", " 中 ", " 中"),
     ];
-    for (name, input, want) in cases {
+    for (name, input, _former_answer) in cases {
         let vals =
             wrap_string_args(name, vec![Datum::new_string(input)], &[None], &NoColumns).unwrap();
         assert_eq!(
-            crate::builtin_ext::string2::dispatch(name, &vals, &NoColumns)
-                .unwrap()
-                .unwrap(),
-            Datum::new_string(want),
+            crate::func::eval_func_values_in(name, &vals, &NoColumns),
+            Some(Err(EvalError::Unsupported(
+                "native string2 evaluation was removed; TiKV engine required or function unsupported"
+            ))),
             "{name}({input:?})"
         );
     }

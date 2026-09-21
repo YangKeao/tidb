@@ -3,6 +3,8 @@
 //! comma list, and JSON_OBJECTAGG builds a document from grouped rows.
 
 use tidb_session::Session;
+#[cfg(feature = "tikv-expr")]
+use tidb_session::TikvExpressionBackend;
 
 fn try_sql(session: &mut Session, sql: &str) -> String {
     match session.run(sql) {
@@ -37,7 +39,33 @@ fn membership_positions() {
         "i:2"
     );
     // A missing member answers 0.
-    assert_eq!(try_sql(&mut session, "select field('z', 'a', 'b', 'c')"), "i:0");
+    assert_eq!(
+        try_sql(&mut session, "select field('z', 'a', 'b', 'c')"),
+        "i:0"
+    );
     assert_eq!(try_sql(&mut session, "select elt(2, 'a', 'b')"), "s:b");
-    assert_eq!(try_sql(&mut session, "select find_in_set('b', 'a,b,c')"), "i:2");
+    let sql = "select find_in_set('b', 'a,b,c')";
+    let error = session
+        .run(sql)
+        .expect_err("non-binary FIND_IN_SET is contracted")
+        .to_string();
+    assert!(
+        error.contains(
+            "native string2 evaluation was removed; TiKV engine required or function unsupported"
+        ),
+        "{sql}: {error}"
+    );
+    #[cfg(feature = "tikv-expr")]
+    {
+        session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
+        let before = session.tikv_expression_rows();
+        assert_eq!(
+            try_sql(
+                &mut session,
+                "select find_in_set(cast('b' as binary), 'a,b,c')"
+            ),
+            "i:2"
+        );
+        assert!(session.tikv_expression_rows() > before);
+    }
 }
