@@ -177,6 +177,26 @@ remain in the workspace.
       Copying executes 416592 engine rows and exposes 167 divergences, including
       two retained SUBSTRING statements whose whole complex program is not yet
       engine-routable. This is not a green full-integration claim.
+- [x] Ninth physical-deletion tranche: removed the remaining native `CONCAT`,
+      `CONCAT_WS`, `INSERT_FUNC`, `MAKE_SET`, and `FROM_BASE64` kernels from
+      `string_fn.rs`, their value-dispatch arms, the duplicate lazy scalar
+      CONCAT evaluators, the context-sensitive FROM_BASE64 path, and the public
+      `concat_values` escape hatch. All five names were already excluded by the
+      admission table as `PACKET_CONTEXT_UNAVAILABLE`: the embedded facade has
+      no verified `max_allowed_packet` or warning-policy transport. Every
+      residual native boundary now returns the exact packet-string unsupported
+      error before argument evaluation, allocation, decoding, or warning
+      emission. Former scalar, binary, NULL, Unicode, malformed-base64, packet
+      overflow, and folding inputs remain as explicit contraction receipts;
+      constant folding must leave these calls visible rather than recreating a
+      native kernel. The source corpus is 36 `*_source.rs` files / 444 tests.
+      Validation is 1183 expression library tests plus 77 external expression
+      tests green, two focused session SQL contraction tests green, expression
+      and query differential tests green, runtime 30 tests / 323 receipts / 2072
+      engine rows / 160 borrowed rows, and static 216 admitted / 168 excluded /
+      0 missing. Full replay remains intentionally red at the pre-existing 181
+      native and 167 Copying divergences; Copying executes 416240 engine rows.
+      This is not a final native-removal or full-compatibility claim.
 - [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
       in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected
       borrowed facade was used by the adapter while the manifest still pinned

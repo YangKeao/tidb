@@ -192,3 +192,75 @@ fn ci_weight_string_source_shapes_are_explicitly_contracted() {
         }
     }
 }
+
+#[test]
+fn concat_family_source_rows_are_explicitly_contracted() {
+    for values in [
+        vec![Datum::Null],
+        vec![Datum::new_string("a"), Datum::new_string("b")],
+        vec![Datum::new_bytes(vec![0xff]), Datum::new_string("a")],
+    ] {
+        assert_values("CONCAT", &values, &crate::NoColumns);
+    }
+    for values in [
+        vec![Datum::Null, Datum::new_string("a")],
+        vec![
+            Datum::new_string(","),
+            Datum::new_string("a"),
+            Datum::Null,
+            Datum::new_string("b"),
+        ],
+        vec![
+            Datum::new_bytes(vec![b'|']),
+            Datum::new_bytes(vec![0xff]),
+            Datum::new_string("b"),
+        ],
+    ] {
+        assert_values("CONCAT_WS", &values, &crate::NoColumns);
+    }
+}
+
+#[test]
+fn insert_make_set_and_from_base64_source_rows_are_explicitly_contracted() {
+    for values in [
+        vec![
+            Datum::new_string("Quadratic"),
+            Datum::Int(3),
+            Datum::Int(4),
+            Datum::new_string("What"),
+        ],
+        vec![
+            Datum::new_string("我叫小雨呀"),
+            Datum::Int(3),
+            Datum::Int(2),
+            Datum::new_string("王雨叶"),
+        ],
+        vec![
+            Datum::new_string("abc"),
+            Datum::Null,
+            Datum::Int(1),
+            Datum::new_string("x"),
+        ],
+    ] {
+        assert_values("INSERT_FUNC", &values, &crate::NoColumns);
+    }
+
+    for values in [
+        vec![
+            Datum::Int(5),
+            Datum::new_string("a"),
+            Datum::new_string("b"),
+        ],
+        vec![Datum::Null, Datum::new_string("a")],
+    ] {
+        assert_values("MAKE_SET", &values, &crate::NoColumns);
+    }
+
+    for values in [
+        vec![Datum::new_string("YWJj")],
+        vec![Datum::new_string("YWIgYw==")],
+        vec![Datum::Null],
+    ] {
+        assert_values("FROM_BASE64", &values, &crate::NoColumns);
+    }
+}

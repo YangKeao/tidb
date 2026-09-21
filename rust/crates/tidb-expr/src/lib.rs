@@ -759,12 +759,6 @@ pub fn date_add_interval(
     time_fn::calendar::date_add(unit, date, amount, sign)
 }
 
-/// Applies TiDB's byte-preserving `CONCAT` coercion to already-evaluated
-/// values without round-tripping them through literal AST nodes.
-pub fn concat_values(values: &[Datum]) -> Result<Datum, EvalError> {
-    string_fn::concat(values)
-}
-
 /// Applies a binary operator with the current session's explicit
 /// `div_precision_increment`. Every table-backed scalar, grouped, and window
 /// division path calls this rather than relying on [`apply_binary`]'s

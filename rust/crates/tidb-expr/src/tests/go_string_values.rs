@@ -274,13 +274,14 @@ fn go_test_insert() {
         (vec![s("我叫小雨呀"), i(-1), i(2), Datum::Null], None),
     ];
     for (args, expected) in cases {
-        let value = eval_string_sig("insert_func", args.clone())
-            .or_else(|_| eval_string_sig("insert", args.clone()))
-            .unwrap_or_else(|e| panic!("insert {args:?}: {e:?}"));
-        match expected {
-            Some(text) => assert_eq!(str_of(&value), *text, "{args:?}"),
-            None => assert!(value.is_null(), "{args:?}: {value:?}"),
-        }
+        let _ = expected;
+        assert_eq!(
+            eval_string_sig("insert_func", args.clone()),
+            Err(EvalError::Unsupported(
+                "native packet-limited string evaluation was removed; function unsupported"
+            )),
+            "{args:?}"
+        );
     }
 }
 

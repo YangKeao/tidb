@@ -738,6 +738,11 @@ fn expected_removed_marker(topic: &str, sql: &str) -> Option<&'static str> {
         "rpad(",
         "to_base64(",
         "weight_string(",
+        "concat(",
+        "concat_ws(",
+        "insert_func(",
+        "make_set(",
+        "from_base64(",
     ]) {
         return Some("native packet-limited string evaluation was removed; function unsupported");
     }

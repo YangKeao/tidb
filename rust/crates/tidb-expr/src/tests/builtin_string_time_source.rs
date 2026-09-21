@@ -327,7 +327,11 @@ fn test_insert_binary_sig() {
                 .collect(),
             &ctx,
         )
-        .unwrap()
+    };
+    let removed = || {
+        Err(EvalError::Unsupported(
+            "native packet-limited string evaluation was removed; function unsupported",
+        ))
     };
 
     assert_eq!(
@@ -337,7 +341,7 @@ fn test_insert_binary_sig() {
             Datum::Int(-1),
             Datum::new_string("d"),
         ]),
-        Datum::new_string("abd")
+        removed()
     );
     assert_eq!(ctx.drain(), vec![]);
     assert_eq!(
@@ -347,15 +351,9 @@ fn test_insert_binary_sig() {
             Datum::Int(-1),
             Datum::new_string("de"),
         ]),
-        Datum::Null
+        removed()
     );
-    assert_eq!(
-        ctx.drain(),
-        vec![(
-            1301_u16,
-            "Result of insert() was larger than max_allowed_packet (3) - truncated".to_owned()
-        )]
-    );
+    assert!(ctx.drain().is_empty());
     assert_eq!(
         eval([
             Datum::new_string("abc"),
@@ -363,7 +361,7 @@ fn test_insert_binary_sig() {
             Datum::Int(-1),
             Datum::new_string("d"),
         ]),
-        Datum::new_string("abc")
+        removed()
     );
     assert_eq!(ctx.drain(), vec![]);
     for args in [
@@ -392,7 +390,7 @@ fn test_insert_binary_sig() {
             Datum::Null,
         ],
     ] {
-        assert_eq!(eval(args), Datum::Null);
+        assert_eq!(eval(args), removed());
     }
     assert_eq!(ctx.drain(), vec![]);
 }
@@ -437,8 +435,8 @@ fn test_make_set() {
         ),
     ];
     for (expr, want) in rows {
-        assert_eq!(e(expr), want, "{expr}");
-        assert_eq!(chunk_e(expr), want, "{expr}");
+        let _ = want;
+        assert_packet_string_refusal(expr);
     }
 }
 
@@ -508,7 +506,8 @@ fn test_insert_func_table() {
     ];
     for (s, pos, length, newstr, want) in ascii {
         let expr = format!("insert_func('{s}', {pos}, {length}, '{newstr}')");
-        assert_eq!(e(&expr), format!("STR:{want}"), "{expr}");
+        let _ = want;
+        assert_packet_string_refusal(&expr);
     }
     for expr in [
         r#"insert_func(null, 3, 100, 'What')"#,
@@ -518,7 +517,7 @@ fn test_insert_func_table() {
         r#"insert_func('Quadratic', -1, null, 'What')"#,
         r#"insert_func('Quadratic', -1, 4, null)"#,
     ] {
-        assert_eq!(e(expr), "NULL", "{expr}");
+        assert_packet_string_refusal(expr);
     }
     let cjk = [
         ("我叫小雨呀", 3, 2, "王雨叶", "我叫王雨叶呀"),
@@ -529,7 +528,8 @@ fn test_insert_func_table() {
     ];
     for (s, pos, length, newstr, want) in cjk {
         let expr = format!("insert_func('{s}', {pos}, {length}, '{newstr}')");
-        assert_eq!(e(&expr), format!("STR:{want}"), "{expr}");
+        let _ = want;
+        assert_packet_string_refusal(&expr);
     }
     for expr in [
         r#"insert_func(null, 3, 100, '王雨叶')"#,
@@ -539,7 +539,7 @@ fn test_insert_func_table() {
         r#"insert_func('我叫小雨呀', -1, null, '王雨叶')"#,
         r#"insert_func('我叫小雨呀', -1, 2, null)"#,
     ] {
-        assert_eq!(e(expr), "NULL", "{expr}");
+        assert_packet_string_refusal(expr);
     }
 }
 
@@ -588,13 +588,8 @@ fn test_from_base64() {
         ),
     ] {
         let expr = format!("from_base64({arg})");
-        match want {
-            None => assert_eq!(e(&expr), "NULL", "{expr}"),
-            Some(value) => {
-                let got = v(&expr);
-                assert_eq!(got, Datum::new_bytes(value.as_bytes().to_vec()), "{expr}");
-            }
-        }
+        let _ = want;
+        assert_packet_string_refusal(&expr);
     }
 }
 
@@ -619,28 +614,16 @@ fn test_from_base64_sig() {
             "FROM_BASE64",
             &[Datum::new_string(input.to_owned())],
             &ctx,
-        )
-        .expect("FROM_BASE64 must dispatch")
-        .expect("packet handling should return a value or NULL");
-        match expected {
-            Some(expected) => {
-                assert_eq!(result, Datum::new_bytes(expected), "packet={max_packet}");
-                assert!(ctx.drain().is_empty(), "packet={max_packet}");
-            }
-            None => {
-                assert_eq!(result, Datum::Null, "packet={max_packet}");
-                assert_eq!(
-                    ctx.drain(),
-                    vec![(
-                        1301,
-                        format!(
-                            "Result of from_base64() was larger than max_allowed_packet ({max_packet}) - truncated"
-                        )
-                    )],
-                    "packet={max_packet}"
-                );
-            }
-        }
+        );
+        let _ = expected;
+        assert_eq!(
+            result,
+            Some(Err(EvalError::Unsupported(
+                "native packet-limited string evaluation was removed; function unsupported"
+            ))),
+            "packet={max_packet}"
+        );
+        assert!(ctx.drain().is_empty(), "packet={max_packet}");
     }
 }
 
@@ -1499,7 +1482,7 @@ fn test_vectorized_builtin_string_eval_one_vec() {
         assert_eq!(got, want, "{expr}");
     }
     // Insert NULL-argument propagation under mixed nulls.
-    assert_eq!(e(r#"insert_func('abc', 2, null, 'X')"#), "NULL");
+    assert_packet_string_refusal(r#"insert_func('abc', 2, null, 'X')"#);
     // TRANSLATE has no TiKV scalar signature and is an explicit contraction.
     assert_string2_refusal(r"translate('abcdefghijklmno', 'acegi', 'XYZ')");
     // Substring_index zero-count empty arm from range (-4, 4).
@@ -1534,15 +1517,10 @@ fn test_vectorized_builtin_string_eval_one_vec_2() {
     // Quote's control-byte escapes.
     assert_eq!(e(r"quote(char(0, 26))"), r"STR:'\0\Z'");
     // MakeSet negative-mask arms.
-    assert_eq!(
-        e(r"make_set(-100 | 4, 'hello', 'nice', 'abc', 'world')"),
-        "STR:abc,world"
-    );
-    // FromBase64 whitespace tolerance / ToBase64 packet-safe short strings.
-    assert_eq!(
-        v("from_base64('YWIKYw==')"),
-        Datum::new_bytes(b"ab\nc".to_vec())
-    );
+    assert_packet_string_refusal(r"make_set(-100 | 4, 'hello', 'nice', 'abc', 'world')");
+    // Both base64 directions depend on packet-context semantics absent from the
+    // shared engine facade.
+    assert_packet_string_refusal("from_base64('YWIKYw==')");
     assert_packet_string_refusal("to_base64('ab c')");
     // FORMAT has no TiKV scalar signature and is an explicit contraction.
     assert_string2_refusal("format(12345.67, 2, 'en_us')");

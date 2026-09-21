@@ -306,6 +306,24 @@ fn folded_datum_of(expr: Expression) -> Datum {
     }
 }
 
+fn assert_removed_concat_survives_fold(expr: Expression) -> Expression {
+    let folded = fold(&expr);
+    assert!(
+        matches!(&folded, Expression::ScalarFunction(function) if function.func_name.lowercase() == "concat"),
+        "deleted CONCAT must not be native-folded: {folded:?}"
+    );
+    let mut chunk = tidb_chunk::chunk::Chunk::new_empty(&[]);
+    chunk.set_num_virtual_rows(1);
+    assert_eq!(
+        folded.eval(&NoColumns, chunk.get_row(0)),
+        Err(EvalError::Unsupported(
+            "native packet-limited string evaluation was removed; function unsupported"
+        )),
+        "surviving CONCAT must be an explicit contraction"
+    );
+    folded
+}
+
 /// `pkg/expression/constant_test.go:274 TestConstantFoldingCharsetConvert`:
 /// folding sees THROUGH the internal `tidb_binary` transcodes the rewriter
 /// plants. LENGTH of a GBK-tagged constant transcoded to binary counts GBK
@@ -358,7 +376,10 @@ fn constant_folding_sees_through_internal_charset_transcodes() {
             tagged_string_const("中文", "binary", "binary"),
         ))],
     );
-    assert_eq!(folded_datum_of(plain_concat), Datum::new_string("中文"));
+    let plain_concat = assert_removed_concat_survives_fold(plain_concat);
+    assert!(!plain_concat
+        .static_type()
+        .is_some_and(FieldType::is_binary_string));
 
     // concat(from_binary('\xd2\xbb' @binary -> gbk_bin flen -1), '中文' @gbk_bin)
     // -> '一中文'.
@@ -383,10 +404,10 @@ fn constant_folding_sees_through_internal_charset_transcodes() {
             tagged_string_const("中文", "gbk", "gbk_bin"),
         ],
     );
+    let leading_gbk = assert_removed_concat_survives_fold(leading_gbk);
     assert_eq!(
-        folded_datum_of(leading_gbk).label(),
-        "STR:一中文",
-        "from_binary contributes 一 ahead of the tagged GBK constant"
+        leading_gbk.static_type().map(FieldType::charset_name),
+        Some("gbk")
     );
 
     // ... and reversed argument order reads '中文一'.
@@ -401,7 +422,7 @@ fn constant_folding_sees_through_internal_charset_transcodes() {
             )),
         ],
     );
-    assert_eq!(folded_datum_of(trailing_gbk).label(), "STR:中文一");
+    assert_removed_concat_survives_fold(trailing_gbk);
 }
 
 /// Master row 6 of `pkg/expression/constant_test.go:274
@@ -410,17 +431,16 @@ fn constant_folding_sees_through_internal_charset_transcodes() {
 /// the character-set half transcoded to its own encoding.
 #[test]
 fn constant_folding_charset_binary_result_matches_source() {
-    let folded = folded_datum_of(build(
+    let folded = assert_removed_concat_survives_fold(build(
         "concat",
         vec![
             tagged_string_const("中文", "gbk", "gbk_bin"),
             raw_binary_const(&[0xd2, 0xbb]),
         ],
     ));
-    assert_eq!(
-        folded.as_raw_bytes(),
-        Some(&[0xd6, 0xd0, 0xce, 0xc4, 0xd2, 0xbb][..])
-    );
+    assert!(folded
+        .static_type()
+        .is_some_and(FieldType::is_binary_string));
 }
 
 /// First two tables of `pkg/expression/constant_test.go:72

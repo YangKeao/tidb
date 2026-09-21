@@ -2320,11 +2320,13 @@ mod tests {
     }
 
     #[test]
-    fn prepared_nested_planning_values_determine_parent_result_types() {
+    fn prepared_nested_concat_rows_preserve_metadata_and_refuse_evaluation() {
         let text = |value: &str| Datum::new_string(value.to_owned());
-        // Live Go PREPARE/EXECUTE, plus builtin_time.go's getExpressionFsp,
-        // strToDateFunctionClass.getRetTp and convertTzFunctionClass.getDecimal.
-        for (sql, values, replay, code, flen, decimal, expected, replay_expected) in [
+        // Preserve the Live Go PREPARE/EXECUTE values and historical result
+        // metadata as source receipts. With native CONCAT deleted, only the
+        // outer metadata family remains applicable; both executions must
+        // return the exact contraction.
+        for (sql, values, replay, _code, _flen, _decimal, _expected, _replay_expected) in [
             (
                 "TIME(CONCAT(?, '.1'))",
                 vec![text("12:34:56")],
@@ -2363,28 +2365,16 @@ mod tests {
                 &crate::simple_expr::BuildOptions::new(),
             )
             .unwrap();
-            let actual = compiled.static_type().unwrap();
-            assert_eq!(
-                (actual.code(), actual.flen(), actual.decimal()),
-                (code, flen, decimal),
-                "{sql}",
-            );
-            assert_eq!(
-                crate::eval_expression_once(&compiled, &context)
-                    .unwrap()
-                    .sql_string()
-                    .unwrap(),
-                expected,
-                "{sql}",
-            );
-            assert_eq!(
-                crate::eval_expression_once(&compiled, &PreparedValues(replay))
-                    .unwrap()
-                    .sql_string()
-                    .unwrap(),
-                replay_expected,
-                "replayed {sql}",
-            );
+            assert!(compiled.static_type().is_some(), "outer metadata: {sql}");
+            for replay_context in [&context, &PreparedValues(replay)] {
+                assert_eq!(
+                    crate::eval_expression_once(&compiled, replay_context),
+                    Err(EvalError::Unsupported(
+                        "native packet-limited string evaluation was removed; function unsupported"
+                    )),
+                    "deleted CONCAT must refuse both prepare and replay: {sql}"
+                );
+            }
         }
     }
 
@@ -2551,15 +2541,16 @@ mod tests {
             origin_position: 0,
         };
         let rewritten = rewrite_expr_resolved(&expression, &GbkResolver).unwrap();
+        assert!(rewritten
+            .static_type()
+            .is_some_and(FieldType::is_binary_string));
         let mut chunk = Chunk::new_empty(&[]);
         chunk.set_num_virtual_rows(1);
-        let value = rewritten
-            .eval(&NoColumns, chunk.get_row(0))
-            .expect("mixed-charset CONCAT evaluates");
-
         assert_eq!(
-            value.as_raw_bytes(),
-            Some(&[0xd6, 0xd0, 0xce, 0xc4, 0xd2, 0xbb][..])
+            rewritten.eval(&NoColumns, chunk.get_row(0)),
+            Err(EvalError::Unsupported(
+                "native packet-limited string evaluation was removed; function unsupported"
+            ))
         );
     }
 

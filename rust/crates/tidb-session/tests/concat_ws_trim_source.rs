@@ -6,6 +6,18 @@ use tidb_session::Session;
 #[cfg(feature = "tikv-expr")]
 use tidb_session::TikvExpressionBackend;
 
+fn assert_packet_string_removed(session: &mut Session, sql: &str) {
+    let error = session
+        .run(sql)
+        .expect_err("deleted packet-limited string kernel must refuse");
+    assert!(
+        error
+            .to_string()
+            .contains("native packet-limited string evaluation was removed; function unsupported"),
+        "{sql}: {error}"
+    );
+}
+
 fn rows(session: &mut Session, sql: &str) -> String {
     match session.run(sql).unwrap() {
         tidb_session::StmtResult::Rows(rows) => rows
@@ -35,16 +47,10 @@ fn concat_ws_and_trim_forms() {
     #[cfg(feature = "tikv-expr")]
     let engine_before = session.tikv_expression_rows();
 
-    // NULL arguments are skipped; the separator is emitted between kept values.
-    assert_eq!(
-        rows(&mut session, "select concat_ws('-', 'a', null, 'b')"),
-        "s:a-b"
-    );
-    // A NULL separator poisons the whole result.
-    assert_eq!(
-        rows(&mut session, "select concat_ws(null, 'a', 'b')"),
-        "Null"
-    );
+    // Packet-context semantics are not exposed by the shared TiKV facade, so
+    // both ordinary and NULL shapes fail closed before argument evaluation.
+    assert_packet_string_removed(&mut session, "select concat_ws('-', 'a', null, 'b')");
+    assert_packet_string_removed(&mut session, "select concat_ws(null, 'a', 'b')");
 
     assert_eq!(rows(&mut session, "select trim('  ab  ')"), "s:ab");
     #[cfg(feature = "tikv-expr")]

@@ -298,6 +298,7 @@ const SURVIVES_FOLD: &[&str] = &[
     "if(cast('3' as json), 1, 2)",
     "ifnull(1, 'x' regexp '[')",
     "ifnull(null, cast('[1]' as json))",
+    "make_set(1, 'a', 'b', 'c')",
     "regexp_like('abc', 'abc', 'p')",
     "round(1.2345,'2')",
     "round(3.14,'abc')",
@@ -355,5 +356,5 @@ fn folded_away_expressions_never_reach_the_adapter() {
         folded.len() + survived.len() + skipped.len(),
         DECLINED.len()
     );
-    assert_eq!(folded.len(), 27, "the folded count changed");
+    assert_eq!(folded.len(), 26, "the folded count changed");
 }

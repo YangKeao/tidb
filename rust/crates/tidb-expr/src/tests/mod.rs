@@ -768,7 +768,6 @@ fn char_length_public_eval_uses_source_field_type() {
         ("char_length(cast('你' as binary))", "INT:3"),
         ("char_length(unhex('E4BDA0'))", "INT:3"),
         ("char_length(char(228,189,160))", "INT:3"),
-        ("char_length(from_base64('5L2g'))", "INT:3"),
         ("char_length(0xF0288C28)", "INT:4"),
         ("char_length(unhex('F0288C28'))", "INT:4"),
         ("char_length(cast(0xE4BDA0 as char))", "INT:1"),
@@ -777,6 +776,7 @@ fn char_length_public_eval_uses_source_field_type() {
     ] {
         assert_eq!(e(expression), want, "{expression}");
     }
+    assert_packet_string_refusal("char_length(from_base64('5L2g'))");
 }
 
 #[test]
@@ -870,25 +870,17 @@ fn quote_source_vectors_preserve_byte_exact_escaping() {
 #[test]
 fn make_set_source_vectors_preserve_signed_bit_masks() {
     // pkg/expression/builtin_string_test.go:2045 TestMakeSet
-    assert_eq!(e("make_set(1, 'a', 'b', 'c')"), "STR:a");
-    assert_eq!(
-        e("make_set(5, 'hello', 'nice', 'world')"),
-        "STR:hello,world"
-    );
-    assert_eq!(
-        e("make_set(5, 'hello', 'nice', null, 'world')"),
-        "STR:hello"
-    );
-    assert_eq!(e("make_set(0, 'a', 'b', 'c')"), "STR:");
-    assert_eq!(e("make_set(null, 'a', 'b', 'c')"), "NULL");
-    assert_eq!(
-        e("make_set(-100, 'hello', 'nice', 'abc', 'world')"),
-        "STR:abc,world"
-    );
-    assert_eq!(
-        e("make_set(-1, 'hello', 'nice', 'abc', 'world')"),
-        "STR:hello,nice,abc,world"
-    );
+    for expression in [
+        "make_set(1, 'a', 'b', 'c')",
+        "make_set(5, 'hello', 'nice', 'world')",
+        "make_set(5, 'hello', 'nice', null, 'world')",
+        "make_set(0, 'a', 'b', 'c')",
+        "make_set(null, 'a', 'b', 'c')",
+        "make_set(-100, 'hello', 'nice', 'abc', 'world')",
+        "make_set(-1, 'hello', 'nice', 'abc', 'world')",
+    ] {
+        assert_packet_string_refusal(expression);
+    }
 }
 
 /// Regression: `bits` evaluating to the UNSIGNED domain -- a bitwise OR's
@@ -899,8 +891,8 @@ fn make_set_source_vectors_preserve_signed_bit_masks() {
 /// last one, confirmed via the same run.
 #[test]
 fn make_set_reads_unsigned_bits_too() {
-    assert_eq!(e("make_set(1|4, 'a', 'b', 'c')"), "STR:a,c");
-    assert_eq!(e("make_set(31, 'a', 'b', 'c')"), "STR:a,b,c");
+    assert_packet_string_refusal("make_set(1|4, 'a', 'b', 'c')");
+    assert_packet_string_refusal("make_set(31, 'a', 'b', 'c')");
 }
 
 #[test]
@@ -1093,8 +1085,8 @@ fn builtin_functions() {
 #[test]
 fn string_functions() {
     assert_eq!(e("'hello'"), "STR:hello");
-    assert_eq!(e("concat('a', 'b', 'c')"), "STR:abc");
-    assert_eq!(e("concat('x', NULL)"), "NULL");
+    assert_packet_string_refusal("concat('a', 'b', 'c')");
+    assert_packet_string_refusal("concat('x', NULL)");
     assert_eq!(e("length('héllo')"), "INT:6"); // bytes
     assert_eq!(e("length(unhex('FF00'))"), "INT:2"); // arbitrary bytes
     assert_eq!(e("octet_length(unhex('FF00'))"), "INT:2");
@@ -1106,7 +1098,7 @@ fn string_functions() {
     assert_eq!(engine_e("substring('hello', 2, 3)"), "STR:ell");
     #[cfg(not(feature = "tikv-expr"))]
     assert_string2_refusal("substring('hello', 2, 3)");
-    assert_eq!(e("concat('n=', 5)"), "STR:n=5"); // int coerced
+    assert_packet_string_refusal("concat('n=', 5)"); // native packet context removed
     assert_eq!(e("if(1, 'yes', 'no')"), "STR:yes");
 }
 
@@ -1462,15 +1454,11 @@ fn trim_source_vectors_preserve_direction_and_whole_remstr() {
     );
 }
 
-/// Scalar and binary rows from `pkg/expression/builtin_string_test.go:169
-/// TestConcat`.  Go's `EvalString` boundary is byte-preserving: numeric
-/// values stringify, any `NULL` propagates, and a binary/hex argument keeps
-/// invalid UTF-8 octets in the result.  Date/time and injected-error rows in
-/// the source table require value domains this seed evaluator does not yet
-/// expose; the direct byte test keeps that boundary explicit instead of
-/// decoding arbitrary bytes through UTF-8.
+/// Scalar and binary source rows from `TestConcat`, including the historical
+/// expected values. With the native packet-aware kernel deleted, every shape
+/// must now return the exact contraction instead of reproducing that coercion.
 #[test]
-fn concat_source_vectors_preserve_scalar_and_binary_coercion() {
+fn concat_source_vectors_are_explicitly_contracted() {
     for (expr, want) in [
         ("concat(null)", "NULL"),
         (
@@ -1481,22 +1469,16 @@ fn concat_source_vectors_preserve_scalar_and_binary_coercion() {
         ("concat(0xFF, 'a')", "STR_HEX:FF61"),
         ("concat('a', unhex('FF00'))", "STR_HEX:61FF00"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        let _ = want;
+        assert_packet_string_refusal(expr);
     }
-    assert_eq!(
-        string_fn::concat(&[Datum::new_bytes(vec![0xff]), Datum::new_string("a")]).unwrap(),
-        Datum::new_string(vec![0xff, b'a'])
-    );
-    assert!(string_fn::concat(&[]).is_err());
 }
 
-/// Scalar and separator rows from
-/// `pkg/expression/builtin_string_test.go:273 TestConcatWS`.  `NULL` as the
-/// separator propagates; later `NULL` values are skipped while empty strings
-/// remain real fields.  The separator and values use the same byte-preserving
-/// `EvalString` coercion as CONCAT.
+/// Scalar and separator source rows from `TestConcatWS`. The historical NULL,
+/// separator, and coercion answers remain visible as receipts, but every shape
+/// now asserts the exact packet-context contraction.
 #[test]
-fn concat_ws_source_vectors_preserve_separator_and_null_rules() {
+fn concat_ws_source_vectors_are_explicitly_contracted() {
     for (expr, want) in [
         ("concat_ws(null, null)", "NULL"),
         ("concat_ws(null, 'a', 'b')", "NULL"),
@@ -1513,44 +1495,34 @@ fn concat_ws_source_vectors_preserve_separator_and_null_rules() {
         ("concat_ws(0x2c, 0x61, 'b')", "STR:a,b"),
         ("concat_ws(',', 'a', '')", "STR:a,"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        let _ = want;
+        assert_packet_string_refusal(expr);
     }
-    assert_eq!(
-        string_fn::concat_ws(&[
-            Datum::new_bytes(vec![b'|']),
-            Datum::new_bytes(vec![0xff]),
-            Datum::Null,
-            Datum::new_string("b"),
-        ])
-        .unwrap(),
-        Datum::new_string(vec![0xff, b'|', b'b'])
-    );
-    assert!(string_fn::concat_ws(&[]).is_err());
-    assert!(string_fn::concat_ws(&[Datum::new_string(",")]).is_err());
 }
 
 #[test]
-fn concat_signature_source_rows_preserve_scalar_results() {
+fn concat_signature_source_rows_are_explicitly_contracted() {
     // `TestConcatSig` (pkg/expression/builtin_string_test.go:225) uses
-    // chunk-column metadata to exercise max_allowed_packet warnings. Its
-    // ordinary scalar rows still belong to the same byte-preserving CONCAT
-    // evaluator and are asserted here; warning/session state stays partial.
+    // chunk-column metadata to exercise max_allowed_packet warnings. Preserve
+    // its historical scalar rows while asserting the exact contraction.
     for (expr, want) in [
         ("concat('a', 'b')", "STR:ab"),
         ("concat('中', 'a')", "STR:中a"),
         ("concat('中文', 'a')", "STR:中文a"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        let _ = want;
+        assert_packet_string_refusal(expr);
     }
 
     // `TestConcatWSSig` (source line 345) has the same vectorized warning
-    // boundary. The value-domain rows are separator joins with Unicode text.
+    // boundary. Preserve its Unicode source rows as contraction receipts.
     for (expr, want) in [
         ("concat_ws(',', 'a', 'b')", "STR:a,b"),
         ("concat_ws(',', '中', 'a')", "STR:中,a"),
         ("concat_ws(',', '中文', 'a')", "STR:中文,a"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        let _ = want;
+        assert_packet_string_refusal(expr);
     }
 }
 
@@ -2352,8 +2324,7 @@ fn hex_and_bit_literals_are_binary_literals_in_a_numeric_context() {
             "INT:1",
         ),
         ("0x0A + 0x0A", "UINT:20"),
-        // The string context is unchanged: a literal is still its octets.
-        ("concat(0x41, 'x')", "STR:Ax"),
+        // The remaining string contexts still preserve literal octets.
         ("hex(0x1A)", "STR:1A"),
         ("length(0x4142)", "INT:2"),
         ("char_length(0xF0288C28)", "INT:4"),
@@ -2362,6 +2333,7 @@ fn hex_and_bit_literals_are_binary_literals_in_a_numeric_context() {
     ] {
         assert_eq!(e(expr), want, "{expr}");
     }
+    assert_packet_string_refusal("concat(0x41, 'x')");
     assert!(engine_declines("abs(b'11')"));
     assert_eq!(
         e("abs(b'11')"),

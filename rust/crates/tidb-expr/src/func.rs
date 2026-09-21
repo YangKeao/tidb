@@ -20,10 +20,9 @@ use crate::coerce::{bool_int, truthy_of};
 use crate::eval_in;
 use crate::row::row_compare;
 use crate::string_fn::{
-    ascii, bin, bit_count, bit_length, case_convert, char_func_with_context, concat_with_context,
-    concat_ws_with_context, elt, field, from_base64, from_base64_with_packet_limit, hex, locate,
-    locate_collation, make_set, oct, ord, quote, replace, reverse, str_insert, str_take, strcmp,
-    substring_index, unhex,
+    ascii, bin, bit_count, bit_length, case_convert, char_func_with_context, elt, field, hex,
+    locate, locate_collation, oct, ord, quote, replace, reverse, str_take, strcmp, substring_index,
+    unhex,
 };
 use crate::time_fn::calendar::{date_add, date_diff, date_format, date_part, from_days, time_part};
 use crate::{BuildContext, Columns, Datum, EvalError, StringLengthFunction};
@@ -127,7 +126,17 @@ pub(crate) fn is_removed_native_regexp(name: &str) -> bool {
 pub(crate) fn is_removed_native_packet_string(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
-        "REPEAT" | "SPACE" | "LPAD" | "RPAD" | "TO_BASE64" | "WEIGHT_STRING"
+        "REPEAT"
+            | "SPACE"
+            | "LPAD"
+            | "RPAD"
+            | "TO_BASE64"
+            | "WEIGHT_STRING"
+            | "CONCAT"
+            | "CONCAT_WS"
+            | "INSERT_FUNC"
+            | "MAKE_SET"
+            | "FROM_BASE64"
     )
 }
 
@@ -626,14 +635,6 @@ pub(crate) fn eval_func_values_in(
             "native string2 evaluation was removed; TiKV engine required or function unsupported",
         )));
     }
-    // Go's `builtinFromBase64Sig` checks the estimated decoded length against
-    // `max_allowed_packet` before decoding and routes an over-limit result
-    // through the statement warning policy. Keep this context-sensitive arm
-    // ahead of the values-only table so AST and chunk evaluation agree.
-    if name == "FROM_BASE64" {
-        return Some(from_base64_with_packet_limit(vals, Some(cols)));
-    }
-
     // The session-state builtins: pure functions of their argument VALUES
     // plus the session, which `cols` supplies. They live here rather than in
     // `eval_func_values` (values alone) so the row path and the chunk path
@@ -934,7 +935,6 @@ pub(crate) fn eval_func_values(
             Ok(if equal { Datum::Null } else { a })
         }
         // ---- string functions ----
-        "CONCAT" if !vals.is_empty() => concat_with_context(vals, ctx),
         "UPPER" | "UCASE" => case_convert(vals, true),
         "LOWER" | "LCASE" => case_convert(vals, false),
         "LEFT" if vals.len() == 2 => str_take(vals, true),
@@ -956,26 +956,7 @@ pub(crate) fn eval_func_values(
         "BIT_LENGTH" => bit_length(vals),
         "FIELD" if vals.len() >= 2 => field(vals, ctx),
         "ELT" if vals.len() >= 2 => elt(vals),
-        "CONCAT_WS" if vals.len() >= 2 => concat_ws_with_context(vals, ctx),
         "SUBSTRING_INDEX" if vals.len() == 3 => substring_index(vals),
-        // The parser renames `INSERT(...)` to `INSERT_FUNC` to avoid the
-        // reserved statement keyword (the same desugar `CHAR`→`CHAR_FUNC`
-        // uses).
-        "INSERT_FUNC" if vals.len() == 4 => str_insert(vals).and_then(|result| {
-            let result_len = match &result {
-                Datum::String(value) => value.bytes().len(),
-                Datum::Bytes(value) => value.len(),
-                Datum::Null => return Ok(Datum::Null),
-                _ => return Err(EvalError::Unsupported("INSERT result type")),
-            };
-            if result_len as u64 > ctx.max_allowed_packet() {
-                ctx.handle_allowed_packet_overflowed("insert")?;
-                Ok(Datum::Null)
-            } else {
-                Ok(result)
-            }
-        }),
-        "MAKE_SET" if !vals.is_empty() => make_set(vals),
         "DATE_FORMAT" if vals.len() == 2 => date_format(&vals[0], &vals[1]),
         "ORD" if vals.len() == 1 => ord(vals),
         "QUOTE" if vals.len() == 1 => quote(vals),
@@ -986,7 +967,6 @@ pub(crate) fn eval_func_values(
         // file access at all, so LOAD_FILE is NULL for every path, readable
         // or not. CAPTURED: `select load_file('/etc/hosts')` is NULL.
         "LOAD_FILE" if vals.len() == 1 => Ok(Datum::Null),
-        "FROM_BASE64" if vals.len() == 1 => from_base64(vals),
         // ---- date-part extraction ----
         // A `DATE`/`DATETIME` value is a plain string to this evaluator (no
         // date value domain), so these parse the string's calendar
@@ -1324,20 +1304,18 @@ mod tests {
         ];
 
         for (args, expected) in rows {
+            let _ = expected;
             assert_eq!(
-                eval_func_values("INSERT_FUNC", &args, &ctx)
-                    .expect("INSERT must be dispatched")
-                    .expect("source rows must evaluate"),
-                expected
+                eval_func_values("INSERT_FUNC", &args, &ctx),
+                Some(Err(EvalError::Unsupported(
+                    "native packet-limited string evaluation was removed; function unsupported"
+                )))
             );
         }
 
-        assert_eq!(
-            *ctx.warnings.borrow(),
-            vec![(
-                1301,
-                "Result of insert() was larger than max_allowed_packet (3) - truncated".to_owned(),
-            )]
+        assert!(
+            ctx.warnings.borrow().is_empty(),
+            "deleted INSERT kernel cannot emit packet warnings"
         );
     }
 }

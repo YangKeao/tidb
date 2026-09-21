@@ -107,8 +107,8 @@ fn reverse_selects_byte_order_for_a_binary_argument() {
 }
 
 #[test]
-fn insert_selects_bytes_when_either_string_argument_is_binary() {
-    captured(&[
+fn insert_source_rows_are_explicitly_contracted() {
+    for (expression, expected) in [
         ("hex(insert('aébcd', 2, 2, 'X'))", "STR:61586364"),
         (
             "hex(insert(cast('aébcd' as binary), 2, 2, 'X'))",
@@ -123,7 +123,10 @@ fn insert_selects_bytes_when_either_string_argument_is_binary() {
             "hex(insert(cast('aébcd' as binary), 0, 2, 'X'))",
             "STR:61C3A9626364",
         ),
-    ]);
+    ] {
+        let _ = expected;
+        assert_packet_string_refusal(expression);
+    }
 }
 
 #[test]

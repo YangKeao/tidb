@@ -2,7 +2,7 @@
 
 ## Revisions and decision
 
-This checkpoint now includes the seventh native miscellaneous-kernel deletion
+This checkpoint now includes the ninth native packet-context string-tail deletion
 tranche. The revision and publication text below is retained as historical
 context for the preceding packet-string tranche; it is not a fresh publication
 or hosted-CI claim. TiDB builds its pinned engine rather than arbitrary TiKV
@@ -15,23 +15,22 @@ Only YangKeao personal forks had been used for that publication. This paragraph
 is retained as history, not a current publication or hosted-CI result.
 
 **Do not switch the default yet. Physical deletion is deliberately in
-progress.** Seven tranches have now removed the complete native math-kernel
+progress.** Nine tranches have now removed the complete native math-kernel
 folder plus crypto/encryption, vector, JSON depth/storage, both regexp modules,
-the packet-limited string module, `builtin_ext/misc.rs`, `tidb-util/src/vitess.rs`,
-and `tidb-executor/src/tidb_decode_key.rs`, together with their residual
-branches. The seventh tranche also removed the DES dependency and
-`TIDB_DECODE_KEY` snapshot/cache plumbing. `UUID`, `UUID_V4`, `UUID_V7`,
-`NAME_CONST`, `IS_UUID`, `UUID_VERSION`, `UUID_TIMESTAMP`, `UUID_TO_BIN`,
-`BIN_TO_UUID`, `TIDB_SHARD`, `TIDB_DECODE_KEY`, and `VITESS_HASH` are explicit
-contractions. `ANY_VALUE` remains admitted and is proven TiKV-only; planner
-`TIDB_SHARD` generated-column synthesis now declines. This invalidates older
-retained/native claims for those names without claiming full compatibility.
+the packet-limited string module, miscellaneous kernels, `builtin_ext/string2.rs`,
+and the packet-context string tail, together with their residual dispatch.
+`CONCAT`, `CONCAT_WS`, `INSERT_FUNC`, `MAKE_SET`, and `FROM_BASE64` are now
+explicit contractions because the shared facade does not transport their
+`max_allowed_packet` and warning policy. Earlier miscellaneous/string2
+contractions remain in force; retained supported shapes continue through TiKV.
+This invalidates older retained/native claims for those names without claiming
+full compatibility.
 The earlier refusal-intolerant corpus still exposed 59 distinct first-refused
 expressions, so the migration objective remains active/incomplete.
 
 ## Acceptance status for the six requested items
 
-The six-item acceptance framework is unchanged by the seventh deletion tranche;
+The six-item acceptance framework is unchanged by the ninth deletion tranche;
 none of the rows below should be read as completion.
 
 | Item | Established foundation | Remaining acceptance work |
@@ -50,12 +49,14 @@ counts and overbroad lazy/datatype milestone wording.
 
 ## Validation results
 
-Current seventh-tranche gates: runtime **30 tests / 323 receipts / 2072 engine
+Current ninth-tranche gates: runtime **30 tests / 323 receipts / 2072 engine
 rows / 160 borrowed rows / zero native fallbacks**; static **384 rows / 216
-admitted / 168 excluded / 0 missing**. The source corpus is **35 `*_source.rs`
-files / 437 tests**, including **14** in `misc_contraction_source.rs`. These
-facts do not establish feature-off success, hosted CI, an end-to-end SQL demo,
-full compatibility, or TiKV server compatibility.
+admitted / 168 excluded / 0 missing**. The source corpus is **36 `*_source.rs`
+files / 444 tests**. The expression library and external suites pass **1183 +
+77** tests; two focused session contraction tests pass. Feature-off test
+compilation remains red on previously documented unguarded engine-only test
+imports. These facts do not establish hosted CI, an end-to-end SQL demo, full
+compatibility, or TiKV server compatibility.
 
 The command/log table below is preserved from the sixth packet-string tranche;
 only rows explicitly labelled current remain current. All heavy commands ran
@@ -81,6 +82,9 @@ Logs are in `/home/agent/tidb/expression-reuse/`.
 | `misc-review-integration-native-final3.log` + `misc-review-integration-copying-final4.log` | native: 77 exact statement contractions + 1 native-only `ANY_VALUE` refusal and 160 carried divergences; Copying: 416611 engine rows and 161 carried divergences | Generic marker-only acceptance was removed. Parsed function identity and exact prepared/default SQL are required; executable engine-backed `ANY_VALUE` must succeed and increment the TiKV row counter. This is not a green full-integration claim. |
 | `string2-expr-final-battery.log` + `string2-runtime-gate-first.log` | 1185 expression library + 77 integration passed; runtime 30 tests / 323 receipts / 2072 engine rows / 160 borrowed rows | `string2.rs` and the orphaned SUBSTRING/LOCATE/FORMAT/EXPORT_SET helpers are physically absent; retained binary/string search shapes use TiKV and contractions fail before warnings or replay. |
 | `string2-integration-native-final2.log` + `string2-integration-copying-final2.log` | native: 91 exact contractions + 1 native-only refusal / 181 carried divergences; Copying: 416592 engine rows / 167 carried divergences | Two complex retained SUBSTRING statements remain visible engine-routing failures; the replay is intentionally red and is not a full-integration claim. |
+| `packet-tail-full-lib-final2.log` + `packet-tail-test-all-final.log` | 1183 expression library + 77 external tests passed; 99 library tests ignored | Native CONCAT/CONCAT_WS/INSERT_FUNC/MAKE_SET/FROM_BASE64 kernels and duplicate scalar paths are physically absent; all former value domains are exact packet-string contractions. |
+| `packet-tail-session-{concat2,insert2}.log` + `packet-tail-result-diffs3.log` | 2 focused session tests and expression/query differential gates passed | SQL paths fail closed with the exact packet-string marker; classifier acceptance requires parsed function identity and does not treat literal/comment text as a contraction. |
+| `packet-tail-integration-{native2,copying}.log` | native: 181 carried divergences; Copying: 416240 engine rows / 167 carried divergences | Full replay remains intentionally red; the packet-tail deletion adds explicit contractions without hiding the two retained SUBSTRING routing failures or unrelated divergences. |
 | `native-misc-lint.log` | exit 0 | Repository `make -j1 lint` passed under the memory guard. |
 | current static gate | Self-check and check pass | 384 declaration rows, 216 admitted / 168 excluded, zero missing registry/synthesized names. Static candidates are not execution coverage. |
 | `checkpoint-engine-only.log` | **1163 passed / 61 failed / 99 ignored**, exit 101 | All 61 failed sections report adapter refusal; 59 distinct first-refused expressions. This is an incomplete cutover gate. |

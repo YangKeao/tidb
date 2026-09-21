@@ -151,6 +151,11 @@ pub fn expected_removed_marker(sql: &str) -> Option<&'static str> {
         "RPAD",
         "TO_BASE64",
         "WEIGHT_STRING",
+        "CONCAT",
+        "CONCAT_WS",
+        "INSERT_FUNC",
+        "MAKE_SET",
+        "FROM_BASE64",
     ]) {
         return Some("native packet-limited string evaluation was removed; function unsupported");
     }
@@ -208,6 +213,19 @@ fn markers_come_from_parsed_function_nodes_not_text() {
     let collated = "select find_in_set(cast('b' as binary), 'a,b' collate utf8mb4_general_ci)";
     assert!(!requires_string2_engine(collated));
     assert_eq!(expected_removed_marker(collated), Some(STRING2_REMOVED));
+    for sql in [
+        "select concat('a', 'b')",
+        "select concat_ws(',', 'a', 'b')",
+        "select insert('abc', 2, 1, 'x')",
+        "select make_set(1, 'a')",
+        "select from_base64('YQ==')",
+    ] {
+        assert_eq!(
+            expected_removed_marker(sql),
+            Some("native packet-limited string evaluation was removed; function unsupported"),
+            "{sql}"
+        );
+    }
     // Without a column resolver the derived collation is unproven; do not let
     // the generic contraction marker hide a binary-column routing regression.
     assert_eq!(
