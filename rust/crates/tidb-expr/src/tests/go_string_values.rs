@@ -87,7 +87,7 @@ fn str_of(datum: &Datum) -> String {
 /// Go `TestLengthAndOctetLength` (`builtin_string_test.go:39`): both names
 /// count BYTES; numbers render first; NULL is NULL.
 #[test]
-fn go_test_length_and_octet_length() {
+fn go_length_and_octet_length_datum_oracles_now_contract() {
     for name in ["length", "octet_length"] {
         let cases: &[(Datum, Option<i64>)] = &[
             (s("abc"), Some(3)),
@@ -96,13 +96,14 @@ fn go_test_length_and_octet_length() {
             (Datum::Real(3.14), Some(4)),
             (Datum::Null, None),
         ];
-        for (arg, expected) in cases {
-            let value =
-                eval_int_sig(name, vec![arg.clone()]).unwrap_or_else(|e| panic!("{name}: {e:?}"));
-            match expected {
-                Some(length) => assert_eq!(value, i(*length), "{name}({arg:?})"),
-                None => assert!(value.is_null(), "{name}({arg:?})"),
-            }
+        for (arg, former_expected) in cases {
+            assert_eq!(
+                eval_int_sig(name, vec![arg.clone()]),
+                Err(crate::EvalError::Unsupported(
+                    "native string length evaluation was removed; TiKV engine required"
+                )),
+                "{name}({arg:?}); former {former_expected:?}"
+            );
         }
     }
 }

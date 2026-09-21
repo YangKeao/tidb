@@ -952,6 +952,11 @@ impl ScalarFunction {
                 "native LEAST/GREATEST/INTERVAL evaluation was removed; TiKV engine required",
             ));
         }
+        if crate::func::is_removed_native_string_length(self.func_name.lowercase()) {
+            return Err(EvalError::Unsupported(
+                "native string length evaluation was removed; TiKV engine required",
+            ));
+        }
         if crate::func::is_removed_native_misc(self.func_name.lowercase()) {
             return Err(EvalError::Unsupported(
                 "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
@@ -1738,23 +1743,6 @@ impl ScalarFunction {
             };
             ctx.set_last_insert_id(recorded);
             return Ok(Datum::Int(recorded as i64));
-        }
-        // Go picks a string-length signature from the ARGUMENT's type before
-        // any value exists, which is what `build_string_length` models.
-        if self.args.len() == 1 {
-            let length = match name {
-                "length" | "octet_length" => Some(crate::StringLengthFunction::Length),
-                "char_length" | "character_length" => Some(crate::StringLengthFunction::CharLength),
-                _ => None,
-            };
-            if let Some(function) = length {
-                let argument_type = self.args[0].static_type().cloned().unwrap_or_else(|| {
-                    tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::Null)
-                });
-                let built =
-                    crate::BuildContext::default().build_string_length(function, argument_type);
-                return built.eval(&self.args[0].eval(ctx, row)?);
-            }
         }
         // Go `builtinInStringSig` compares the tested value with each list
         // item through the function's own collator, which the derivation

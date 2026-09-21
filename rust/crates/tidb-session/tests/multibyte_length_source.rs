@@ -6,6 +6,20 @@ use tidb_session::Session;
 #[cfg(feature = "tikv-expr")]
 use tidb_session::TikvExpressionBackend;
 
+#[cfg(not(feature = "tikv-expr"))]
+fn assert_string_length_removed(session: &mut Session, sql: &str, former_expected: &str) {
+    let Err(tidb_executor::DriverError::Exec(tidb_executor::ExecError::Eval(
+        tidb_executor::EvalError::Unsupported(message),
+    ))) = session.run(sql)
+    else {
+        panic!("{sql}: expected length contraction; former {former_expected}")
+    };
+    assert_eq!(
+        message, "native string length evaluation was removed; TiKV engine required",
+        "{sql}: former {former_expected}"
+    );
+}
+
 fn rows(session: &mut Session, sql: &str) -> String {
     match session.run(sql).unwrap() {
         tidb_session::StmtResult::Rows(rows) => rows
@@ -36,13 +50,11 @@ fn char_vs_byte_lengths() {
     #[cfg(feature = "tikv-expr")]
     let engine_before = session.tikv_expression_rows();
 
-    assert_eq!(
-        rows(
-            &mut session,
-            "select char_length('中a'), octet_length('中a')"
-        ),
-        "i:2|i:4"
-    );
+    let length_sql = "select char_length('中a'), octet_length('中a')";
+    #[cfg(feature = "tikv-expr")]
+    assert_eq!(rows(&mut session, length_sql), "i:2|i:4");
+    #[cfg(not(feature = "tikv-expr"))]
+    assert_string_length_removed(&mut session, length_sql, "i:2|i:4");
 
     // Positions are in characters, not bytes: both answers include '中'.
     let sql = "select substring('中abc', 1, 2), mid('中abc', 2, 2)";

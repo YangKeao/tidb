@@ -328,7 +328,6 @@
 pub mod aggregation;
 mod arg_eval_type;
 mod binary_literal;
-mod build;
 pub mod builtin_arithmetic;
 #[cfg(test)]
 mod builtin_cast_semantics;
@@ -388,7 +387,6 @@ pub mod user_vars;
 
 pub use field_name::{find_field_name, find_field_name_index_by_column, NonUniqueFieldName};
 
-pub use build::{BuildContext, BuiltStringLength, StringLengthFunction, StringLengthSignature};
 pub use coerce::truthy_of;
 pub use context::{
     BlockEncryptionMode, Columns, CurrentTso, ErrorLevel, EvalError, JsonError, NoColumns,

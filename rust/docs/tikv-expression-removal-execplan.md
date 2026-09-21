@@ -403,6 +403,21 @@ remain in the workspace.
       divergences / 9877 compared; Copying 167 / 10253 with 416267 engine rows
       and zero borrowed rows. `make -j1 lint` passes. These replay numbers are
       contraction evidence, not a compatibility claim.
+- [x] Twentieth physical-deletion tranche: delete the single-purpose `build.rs`
+      string-length evaluator, its exported typed-build API, the AST/scalar
+      LENGTH/OCTET_LENGTH/CHAR_LENGTH/CHARACTER_LENGTH branches, and all native
+      byte/rune-count helpers. All four local boundaries now fail closed before
+      child evaluation; admitted text/binary column shapes execute in TiKV and
+      lowerer-declined literals/casts/nested removed children are explicit
+      contractions. Library is 1167 passed / 99 ignored; external is 77 passed;
+      expression/query differential are 3/4 passed; session Copying is 334
+      passed / 4 carried failures and feature-off is 332 / the same 4. Static
+      and runtime gates pass. Broad replay remains intentionally red: Native
+      176 divergences / 9830 compared; Copying 167 / 10253 with 416268 engine
+      rows and zero borrowed rows. `make -j1 lint` passes. Review found that
+      admitted constant length shapes were initially masked as contractions;
+      the harness now routes them through Copying with positive row accounting,
+      leaving only five exact lowerer-declined statements as contractions.
 - [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
       in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected
       borrowed facade was used by the adapter while the manifest still pinned

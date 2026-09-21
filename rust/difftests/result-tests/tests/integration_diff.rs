@@ -801,6 +801,7 @@ fn requires_engine_statement(sql: &str) -> bool {
     !sql.trim_start().to_ascii_lowercase().starts_with("explain")
         && (is_any_value_statement(sql)
             || removed_native::requires_string2_engine(sql)
+            || removed_native::requires_string_length_engine(sql)
             || removed_native::requires_inet_engine(sql)
             || removed_native::requires_radix_engine(sql)
             || removed_native::requires_string_aux_engine(sql))
@@ -809,6 +810,7 @@ fn requires_engine_statement(sql: &str) -> bool {
 fn is_engine_shape_contraction(sql: &str) -> bool {
     if removed_native::is_radix_shape_contraction(sql)
         || removed_native::is_string_aux_shape_contraction(sql)
+        || removed_native::is_string_length_shape_contraction(sql)
     {
         return true;
     }
@@ -954,6 +956,10 @@ fn removed_kernel_classification_is_statement_scoped() {
         "select sign(strcmp(case when a is null then 'b' else 'b' end, 'a')), char(a) from t"
     ));
     assert!(!is_engine_shape_contraction("select strcmp('a', 'b')"));
+    assert!(requires_engine_statement("select length('abc')"));
+    assert!(!is_engine_shape_contraction("select length('abc')"));
+    assert!(!requires_engine_statement("select length(0x01)"));
+    assert!(is_engine_shape_contraction("select length(0x01)"));
     assert!(is_engine_shape_contraction_refusal(
         "set sql_mode=(select replace(@@sql_mode, 'x', ''))",
         "Exec(Eval(Unsupported(\"expression form is not yet supported by the rewriter\")))"

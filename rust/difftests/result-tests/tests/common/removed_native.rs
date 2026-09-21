@@ -18,6 +18,8 @@ use std::collections::BTreeSet;
 use tidb_ast::{Expr, Visitable, Visitor};
 use tidb_expr::{expression::Expression, rewriter::rewrite_expr};
 
+pub const STRING_LENGTH_REMOVED: &str =
+    "native string length evaluation was removed; TiKV engine required";
 pub const COMPARE2_REMOVED: &str =
     "native LEAST/GREATEST/INTERVAL evaluation was removed; TiKV engine required";
 pub const MISC_REMOVED: &str =
@@ -111,6 +113,29 @@ pub fn requires_string2_engine(sql: &str) -> bool {
             "LTRIM",
             "RTRIM",
         ]
+        .iter()
+        .any(|name| collector.names.contains(*name))
+}
+
+pub fn is_string_length_shape_contraction(sql: &str) -> bool {
+    matches!(
+        sql.trim().to_ascii_lowercase().as_str(),
+        "select length(concat('a', 'bc'))"
+            | "select length(0x01)"
+            | "select length(cast('你好world' as binary(5)))"
+            | "select octet_length(0x01)"
+            | "select octet_length(cast('你好world' as binary(5)))"
+    )
+}
+
+pub fn requires_string_length_engine(sql: &str) -> bool {
+    if is_string_length_shape_contraction(sql) {
+        return false;
+    }
+    let Some(collector) = collect_functions(sql) else {
+        return false;
+    };
+    ["LENGTH", "OCTET_LENGTH", "CHAR_LENGTH", "CHARACTER_LENGTH"]
         .iter()
         .any(|name| collector.names.contains(*name))
 }
@@ -545,6 +570,9 @@ pub fn removed_markers(sql: &str) -> Vec<&'static str> {
     ) {
         markers.push(COMPARE2_REMOVED);
     }
+    if is_string_length_shape_contraction(sql) {
+        markers.push(STRING_LENGTH_REMOVED);
+    }
     let Some(collector) = collect_functions(sql) else {
         return markers;
     };
@@ -710,6 +738,28 @@ fn markers_come_from_parsed_function_nodes_not_text() {
             Some("native packet-limited string evaluation was removed; function unsupported"),
             "{sql}"
         );
+    }
+    for sql in [
+        "select length('abc')",
+        "select octet_length(3.14)",
+        "select char_length('你好')",
+        "select character_length(null)",
+        "select char_length('héllo'), length('héllo')",
+    ] {
+        assert!(requires_string_length_engine(sql), "{sql}");
+        assert!(!is_string_length_shape_contraction(sql), "{sql}");
+        assert_eq!(expected_removed_marker(sql), None, "{sql}");
+    }
+    for sql in [
+        "select length(concat('a', 'bc'))",
+        "select length(0x01)",
+        "select length(cast('你好world' as binary(5)))",
+        "select octet_length(0x01)",
+        "select octet_length(cast('你好world' as binary(5)))",
+    ] {
+        assert!(!requires_string_length_engine(sql), "{sql}");
+        assert!(is_string_length_shape_contraction(sql), "{sql}");
+        assert_eq!(expected_removed_marker(sql), Some(STRING_LENGTH_REMOVED));
     }
     // Without a column resolver the derived collation is unproven; do not let
     // the generic contraction marker hide a binary-column routing regression.

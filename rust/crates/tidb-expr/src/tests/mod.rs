@@ -184,6 +184,30 @@ pub(super) fn assert_engine_compare2_value(expr: &str, expected: &str) {
     assert_compare2_refusal(expr, expected);
 }
 
+pub(super) const STRING_LENGTH_REMOVED: &str =
+    "Unsupported(\"native string length evaluation was removed; TiKV engine required\")";
+
+pub(super) fn assert_string_length_refusal(expr: &str, former_expected: &str) {
+    assert_eq!(
+        e(expr),
+        STRING_LENGTH_REMOVED,
+        "AST boundary: {expr}; former {former_expected}"
+    );
+    let chunk = chunk_case(expr, &NoColumns)
+        .map(|value| value.label())
+        .unwrap_or_else(|error| error);
+    assert_eq!(
+        chunk, STRING_LENGTH_REMOVED,
+        "native chunk boundary: {expr}; former {former_expected}"
+    );
+}
+
+pub(super) fn assert_engine_string_length_value(expr: &str, expected: &str) {
+    #[cfg(feature = "tikv-expr")]
+    assert_eq!(engine_e(expr), expected, "TiKV engine: {expr}");
+    assert_string_length_refusal(expr, expected);
+}
+
 pub(super) const MISC_REMOVED: &str =
     "Unsupported(\"native miscellaneous evaluation was removed; TiKV engine required or function unsupported\")";
 
@@ -864,14 +888,18 @@ fn length_and_octet_length_source_vectors_count_evaluated_bytes() {
             ("null", "NULL"),
         ] {
             let expression = format!("{function}({argument})");
-            assert_eq!(e(&expression), want, "{expression}");
+            if argument.starts_with("0x") {
+                assert_string_length_refusal(&expression, want);
+            } else {
+                assert_engine_string_length_value(&expression, want);
+            }
         }
 
         // A binary cast can retain an incomplete UTF-8 suffix.  LENGTH and
         // OCTET_LENGTH must count the raw bytes selected by Go's
         // `builtinLengthSig`, rather than trying to decode or count runes.
         let expression = format!("{function}(cast('你好world' as binary(5)))");
-        assert_eq!(e(&expression), "INT:5", "{expression}");
+        assert_string_length_refusal(&expression, "INT:5");
     }
 }
 
@@ -892,7 +920,7 @@ fn char_length_source_vectors_preserve_utf8_rune_count_and_coercion() {
         ("char_length(3.14)", "INT:4"),
         ("char_length(null)", "NULL"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        assert_engine_string_length_value(expr, want);
     }
 }
 
@@ -918,15 +946,14 @@ fn char_length_public_eval_uses_source_field_type() {
         if expression.contains("unhex(") {
             #[cfg(feature = "tikv-expr")]
             assert_eq!(engine_e(expression), want, "TiKV: {expression}");
-            assert_eq!(e(expression), RADIX_REMOVED, "native: {expression}");
+            assert_string_length_refusal(expression, want);
         } else if expression.contains("char(") || expression.contains("elt(") {
-            let _ = want; // retained Go value for the explicit contraction
-            assert_string_aux_contraction(expression);
+            assert_string_length_refusal(expression, want);
         } else {
-            assert_eq!(e(expression), want, "{expression}");
+            assert_string_length_refusal(expression, want);
         }
     }
-    assert_packet_string_refusal("char_length(from_base64('5L2g'))");
+    assert_string_length_refusal("char_length(from_base64('5L2g'))", "INT:3");
 }
 
 #[test]
@@ -979,7 +1006,7 @@ fn char_length_rejects_unresolved_field_type_before_runtime_datum() {
     assert_eq!(
         eval_in(&expression, &RuntimeBytes),
         Err(EvalError::Unsupported(
-            "unresolved CHAR_LENGTH argument FieldType"
+            "native string length evaluation was removed; TiKV engine required"
         ))
     );
 }
@@ -1243,15 +1270,15 @@ fn string_functions() {
     assert_eq!(e("'hello'"), "STR:hello");
     assert_packet_string_refusal("concat('a', 'b', 'c')");
     assert_packet_string_refusal("concat('x', NULL)");
-    assert_eq!(e("length('héllo')"), "INT:6"); // bytes
+    assert_engine_string_length_value("length('héllo')", "INT:6"); // bytes
     #[cfg(feature = "tikv-expr")]
     {
         assert_eq!(engine_e("length(unhex('FF00'))"), "INT:2");
         assert_eq!(engine_e("octet_length(unhex('FF00'))"), "INT:2");
     }
-    assert_eq!(e("length(unhex('FF00'))"), RADIX_REMOVED);
-    assert_eq!(e("octet_length(unhex('FF00'))"), RADIX_REMOVED);
-    assert_eq!(e("char_length('héllo')"), "INT:5"); // chars
+    assert_string_length_refusal("length(unhex('FF00'))", "INT:2");
+    assert_string_length_refusal("octet_length(unhex('FF00'))", "INT:2");
+    assert_engine_string_length_value("char_length('héllo')", "INT:5"); // chars
     assert_engine_string2_value("upper('abc')", "STR:ABC");
     assert_engine_string2_value("left('hello', 3)", "STR:hel");
     assert_engine_string2_value("right('hello', 2)", "STR:lo");
@@ -2375,7 +2402,11 @@ fn hex_and_bit_literals_are_binary_literals_in_a_numeric_context() {
         ("char_length(0xE4BDA0)", "INT:3"),
         ("0x41 = 'A'", "INT:1"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        if expr.starts_with("length(") || expr.starts_with("char_length(") {
+            assert_string_length_refusal(expr, want);
+        } else {
+            assert_eq!(e(expr), want, "{expr}");
+        }
     }
     assert_radix_refusal("hex(0x1A)");
     assert!(engine_declines("hex(0x1A)"));

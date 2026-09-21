@@ -332,11 +332,20 @@ fn raw_binary_const(bytes: &[u8]) -> Expression {
     Expression::Constant(Constant::new(value, field_type))
 }
 
-fn folded_datum_of(expr: Expression) -> Datum {
-    match fold(&expr) {
-        Expression::Constant(constant) => constant.value,
-        other => panic!("expected the fold to reach a Constant, got {other:?}"),
-    }
+fn assert_removed_length_survives_fold(expr: Expression, former_expected: i64) {
+    let folded = fold(&expr);
+    assert!(
+        matches!(&folded, Expression::ScalarFunction(function) if function.func_name.lowercase() == "length"),
+        "deleted LENGTH must survive; former {former_expected}: {folded:?}"
+    );
+    let mut chunk = tidb_chunk::chunk::Chunk::new_empty(&[]);
+    chunk.set_num_virtual_rows(1);
+    assert_eq!(
+        folded.eval(&NoColumns, chunk.get_row(0)),
+        Err(EvalError::Unsupported(
+            "native string length evaluation was removed; TiKV engine required"
+        ))
+    );
 }
 
 fn assert_removed_concat_survives_fold(expr: Expression) -> Expression {
@@ -383,11 +392,7 @@ fn constant_folding_sees_through_internal_charset_transcodes() {
             tagged_string_const("中文", "gbk", "gbk_bin"),
         ))],
     );
-    assert_eq!(
-        folded_datum_of(length_gbk),
-        Datum::Int(4),
-        "GBK encodes 中文 as two 2-byte characters"
-    );
+    assert_removed_length_survives_fold(length_gbk, 4);
 
     // length(to_binary('中文' @utf8mb4_bin)) -> 6.
     let length_utf8 = build(
@@ -398,7 +403,7 @@ fn constant_folding_sees_through_internal_charset_transcodes() {
             tagged_string_const("中文", "utf8mb4", "utf8mb4_bin"),
         ))],
     );
-    assert_eq!(folded_datum_of(length_utf8), Datum::Int(6));
+    assert_removed_length_survives_fold(length_utf8, 6);
 
     // concat(from_binary('中文' @binary)) -> '中文'.
     let plain_concat = build(

@@ -5,6 +5,19 @@
 
 use tidb_session::Session;
 
+fn assert_string_length_removed(session: &mut Session, sql: &str, former_expected: &str) {
+    let Err(tidb_executor::DriverError::Exec(tidb_executor::ExecError::Eval(
+        tidb_executor::EvalError::Unsupported(message),
+    ))) = session.run(sql)
+    else {
+        panic!("{sql}: expected length contraction; former {former_expected}")
+    };
+    assert_eq!(
+        message, "native string length evaluation was removed; TiKV engine required",
+        "{sql}: former {former_expected}"
+    );
+}
+
 fn rows(session: &mut Session, sql: &str) -> String {
     match session.run(sql).unwrap() {
         tidb_session::StmtResult::Rows(rows) => rows
@@ -34,12 +47,8 @@ fn clock_shape_contracts() {
         "Int(1)"
     );
 
-    // CURTIME is at least HH:MM:SS.
-    assert_eq!(
-        rows(&mut session, "select char_length(curtime()) >= 8"),
-        "Int(1)"
-    );
-
-    // NOW() is a full datetime.
-    assert_eq!(rows(&mut session, "select char_length(now()) = 19"), "Int(1)");
+    // Former clock-shape values remain the oracle; the removed outer length
+    // kernel now refuses before evaluating its clock child.
+    assert_string_length_removed(&mut session, "select char_length(curtime()) >= 8", "Int(1)");
+    assert_string_length_removed(&mut session, "select char_length(now()) = 19", "Int(1)");
 }

@@ -65,6 +65,7 @@ fn requires_tikv_engine(sql: &str) -> bool {
     cfg!(feature = "tikv-expr")
         && (is_any_value(sql)
             || removed_native::requires_string2_engine(sql)
+            || removed_native::requires_string_length_engine(sql)
             || removed_native::requires_inet_engine(sql)
             || removed_native::requires_radix_engine(sql)
             || removed_native::requires_string_aux_engine(sql))
@@ -84,6 +85,9 @@ fn may_accept_engine_required_marker(sql: &str, marker: &str) -> bool {
     }
     if marker == removed_native::RADIX_REMOVED {
         return removed_native::is_radix_shape_contraction(sql);
+    }
+    if marker == removed_native::STRING_LENGTH_REMOVED {
+        return removed_native::is_string_length_shape_contraction(sql);
     }
     marker != removed_native::STRING_AUX_REMOVED
         || removed_native::is_string_aux_shape_contraction(sql)

@@ -20,7 +20,7 @@ use crate::coerce::{bool_int, truthy_of};
 use crate::eval_in;
 use crate::row::row_compare;
 use crate::time_fn::calendar::{date_add, date_diff, date_format, date_part, from_days, time_part};
-use crate::{BuildContext, Columns, Datum, EvalError, StringLengthFunction};
+use crate::{Columns, Datum, EvalError};
 
 /// Native math kernels were physically removed. Keep the names only as an
 /// execution-boundary refusal list so planners can still construct metadata
@@ -142,6 +142,14 @@ pub(crate) fn is_removed_native_compare2(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "LEAST" | "GREATEST" | "INTERVAL"
+    )
+}
+
+/// Native LENGTH/CHAR_LENGTH kernels and their typed build seam were removed.
+pub(crate) fn is_removed_native_string_length(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "LENGTH" | "OCTET_LENGTH" | "CHAR_LENGTH" | "CHARACTER_LENGTH"
     )
 }
 
@@ -279,6 +287,11 @@ pub(crate) fn eval_func(
             "native LEAST/GREATEST/INTERVAL evaluation was removed; TiKV engine required",
         ));
     }
+    if is_removed_native_string_length(&name) {
+        return Err(EvalError::Unsupported(
+            "native string length evaluation was removed; TiKV engine required",
+        ));
+    }
     if is_removed_native_misc(&name) {
         return Err(EvalError::Unsupported(
             "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
@@ -376,31 +389,6 @@ pub(crate) fn eval_func(
             },
             _ => Err(EvalError::Unsupported("sequence function arguments")),
         };
-    }
-    // Go selects these signatures from the argument expression's FieldType
-    // while building the function, before EvalString produces a runtime
-    // datum. Keep the same ordering here: source AST type facts choose one
-    // immutable evaluator first, then only that evaluator sees the value.
-    if args.len() == 1 {
-        let function = match name.as_str() {
-            "LENGTH" | "OCTET_LENGTH" => Some(StringLengthFunction::Length),
-            "CHAR_LENGTH" | "CHARACTER_LENGTH" => Some(StringLengthFunction::CharLength),
-            _ => None,
-        };
-        if let Some(function) = function {
-            let built = BuildContext::default().build_string_length_for_expr(function, &args[0])?;
-            let value = eval_in(&args[0], cols)?;
-            // `LENGTH`/`OCTET_LENGTH` are binary-aware and count the ENCODED
-            // bytes; `CHAR_LENGTH` is `funcPropNone` and counts characters of
-            // the UTF-8 form, so only the former transcodes.
-            let value = match function {
-                StringLengthFunction::Length => {
-                    crate::convert_charset::to_binary_by_collation(&value)?
-                }
-                StringLengthFunction::CharLength => value,
-            };
-            return built.eval(&value);
-        }
     }
     // `IF` is a lazy control function in Go: `builtinIf*Sig` evaluates the
     // condition through its wrapped `EvalInt`, then evaluates exactly one
@@ -701,6 +689,11 @@ pub(crate) fn eval_func_values_in(
             "native LEAST/GREATEST/INTERVAL evaluation was removed; TiKV engine required",
         )));
     }
+    if is_removed_native_string_length(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native string length evaluation was removed; TiKV engine required",
+        )));
+    }
     if is_removed_native_misc(name) {
         return Some(Err(EvalError::Unsupported(
             "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
@@ -760,17 +753,13 @@ pub(crate) fn eval_func_values_in(
 ///   `1/0`), `CASE`, and the `DATE_ADD`/`DATE_SUB`/`ADDDATE`/`SUBDATE`
 ///   family whose second argument is an `Expr::Interval`, not a value;
 /// - removed native math, crypto, vector, JSON depth/storage, regexp,
-///   packet-limited string, miscellaneous, and INET conversion functions,
-///   including `RAND`, `RANDOM_BYTES`, `VEC_FROM_TEXT`, JSON storage accounting,
-///   REGEXP/RLIKE, REPEAT/SPACE, UUID helpers, hash/shard helpers, and all four
-///   INET address converters;
-///   the sequence functions (`NEXTVAL`/`LASTVAL`/`SETVAL`), and the
-///   `time_fn` family (its dispatch takes `Columns` for the statement clock,
-///   time zone, and `default_week_format`);
-/// - the `LENGTH`/`OCTET_LENGTH`/`CHAR_LENGTH`/`CHARACTER_LENGTH` family: Go
-///   selects the signature from the argument expression's FieldType via
-///   `BuildContext::build_string_length_for_expr` BEFORE seeing any runtime
-///   value, so it genuinely needs the argument AST, not just the value.
+///   packet-limited string, string-length, miscellaneous, and INET conversion
+///   functions, including `RAND`, `RANDOM_BYTES`, `VEC_FROM_TEXT`, JSON storage
+///   accounting, REGEXP/RLIKE, LENGTH/CHAR_LENGTH, REPEAT/SPACE, UUID helpers,
+///   hash/shard helpers, and all four INET address converters;
+/// - the sequence functions (`NEXTVAL`/`LASTVAL`/`SETVAL`), and the `time_fn`
+///   family (its dispatch takes `Columns` for the statement clock, time zone,
+///   and `default_week_format`);
 ///
 /// `COALESCE` is eager here exactly as in `eval_func`'s existing eager path
 /// (Go's `builtinCoalesceSig` evaluates arguments in order over values, not
@@ -788,6 +777,11 @@ pub(crate) fn eval_func_values(
     if is_removed_native_compare2(name) {
         return Some(Err(EvalError::Unsupported(
             "native LEAST/GREATEST/INTERVAL evaluation was removed; TiKV engine required",
+        )));
+    }
+    if is_removed_native_string_length(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native string length evaluation was removed; TiKV engine required",
         )));
     }
     if is_removed_native_misc(name) {

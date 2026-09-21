@@ -451,19 +451,21 @@ fn tikv_borrowed_bytes_length_and_direct_bytes_output_preserve_payloads() {
     input.append_null(0);
     input.set_sel(Some(vec![4, 2, 5, 0, 4, 1, 3]));
     let original_pointer = input.column(0).get_bytes(0).as_ptr();
+    let expected_lengths = [
+        Datum::Int(131_072),
+        Datum::Int(0),
+        Datum::Null,
+        Datum::Int(3),
+        Datum::Int(131_072),
+        Datum::Int(2),
+        Datum::Int(6),
+    ];
     for name in ["length", "octet_length"] {
-        let rows = three_way(call(name, &int, vec![col(0, &bytes)]), &mut input, &int);
-        assert_eq!(
-            rows,
-            vec![
-                Datum::Int(131_072),
-                Datum::Int(0),
-                Datum::Null,
-                Datum::Int(3),
-                Datum::Int(131_072),
-                Datum::Int(2),
-                Datum::Int(6)
-            ]
+        engine_two_way_expected(
+            call(name, &int, vec![col(0, &bytes)]),
+            &mut input,
+            &int,
+            &expected_lengths,
         );
     }
     // Direct output must preserve arbitrary bytes too, not just their lengths.
