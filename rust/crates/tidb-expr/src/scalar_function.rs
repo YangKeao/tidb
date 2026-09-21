@@ -937,6 +937,11 @@ impl ScalarFunction {
                 "native JSON depth/storage evaluation was removed; TiKV engine required",
             ));
         }
+        if crate::func::is_removed_native_regexp(self.func_name.lowercase()) {
+            return Err(EvalError::Unsupported(
+                "native regexp evaluation was removed; TiKV engine required",
+            ));
+        }
         if let Some(value) = self.eval_fast_integer_binary(ctx, row)? {
             return self.coerce_to_ret_type(value);
         }
@@ -1469,63 +1474,6 @@ impl ScalarFunction {
                 }
                 return Ok(value);
             }
-        }
-        // Go `builtinRegexpLikeSig`: both operands are stringified, NULL in
-        // either propagates, and `NOT REGEXP` is a separate unary NOT wrapped
-        // around this call by the rewriter -- see `Expr::Regexp`'s own doc.
-        if name == "regexp" && self.args.len() == 2 {
-            let value = self.args[0].eval(ctx, row)?;
-            let pattern = self.args[1].eval(ctx, row)?;
-            if value.is_null() || pattern.is_null() {
-                return Ok(Datum::Null);
-            }
-            let text = value
-                .sql_string()
-                .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP operand"))?;
-            let pattern = pattern
-                .sql_string()
-                .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP pattern"))?;
-            let matched = crate::regexp::regexp_match_with_collation(
-                &text,
-                &pattern,
-                self.derived_collation(),
-            )?;
-            return Ok(Datum::Int(i64::from(matched)));
-        }
-        if name == "regexp_like" && matches!(self.args.len(), 2 | 3) {
-            let string_arg = |index: usize| -> Result<Option<String>, EvalError> {
-                let value = self.args[index].eval(ctx, row)?;
-                let value =
-                    crate::cast::cast_arg_as_string(&value, self.args[index].static_type(), ctx)?;
-                if value.is_null() {
-                    return Ok(None);
-                }
-                value
-                    .sql_string()
-                    .map(Some)
-                    .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP_LIKE argument"))
-            };
-            let Some(text) = string_arg(0)? else {
-                return Ok(Datum::Null);
-            };
-            let Some(pattern) = string_arg(1)? else {
-                return Ok(Datum::Null);
-            };
-            let match_type = if self.args.len() == 3 {
-                let Some(match_type) = string_arg(2)? else {
-                    return Ok(Datum::Null);
-                };
-                match_type
-            } else {
-                String::new()
-            };
-            let matched = crate::regexp::regexp_like_with_collation(
-                &text,
-                &pattern,
-                &match_type,
-                self.derived_collation(),
-            )?;
-            return Ok(Datum::Int(i64::from(matched)));
         }
         // The charset boundary: `to_binary`/`from_binary` are the implicit
         // calls the rewriter wraps a non-UTF-8 argument in (Go

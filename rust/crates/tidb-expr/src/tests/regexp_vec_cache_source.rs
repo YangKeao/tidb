@@ -16,11 +16,10 @@
 //! TestRegexpInStrVec/TestRegexpReplaceVec`),
 //! `builtin_regexp_vec_const_test.go::TestVectorizedBuiltinRegexpForConstants`,
 //! and the memoization contract `builtin_regexp_test.go::TestRegexpCache`
-//! pins on Go's side. The scalar value tables themselves were ported earlier
-//! (`crate::builtin_ext::regexp::tests`, `tests::regexp_like`); this module
-//! re-derives the HARNESS dimensions those Go tests add on top — their exact
-//! generator arrays swept as cross-tier agreements, plus the constant-pattern
-//! corpus invariant.
+//! pins on Go's side. The scalar value tables now live in
+//! `tests::regexp_source_vectors`; this module re-derives the HARNESS dimensions
+//! those Go tests add on top — their exact generator arrays swept through TiKV,
+//! plus the constant-pattern corpus invariant.
 
 use super::*;
 
@@ -32,17 +31,29 @@ fn sql_literal(value: &str) -> String {
     format!("'{escaped}'")
 }
 
+fn engine_parity(sql: &str) -> String {
+    let copying = engine_e_with_backend(sql, crate::tikv::Backend::Copying);
+    let borrowed = engine_e_with_backend(sql, crate::tikv::Backend::Borrowed);
+    assert_eq!(copying, borrowed, "TiKV adapter parity: {sql}");
+    copying
+}
+
+fn engine_success(sql: &str) -> String {
+    let result = engine_parity(sql);
+    assert!(!result.contains("ExternalEngine"), "{sql}: {result}");
+    result
+}
+
 /// GO PORT of `pkg/expression/builtin_regexp_test.go:298 TestRegexpLikeVec`.
 ///
 /// The Go harness sweeps EXACT generator arrays over REGEXP_LIKE —
 /// `expr × pattern × matchType` plus constant/null-operand arm variants — and
-/// requires each vectorized row to equal its scalar evaluation. This tier
-/// keeps ONE evaluator per expression shape, so the harness invariant becomes
-/// cross-tier agreement: the AST/value tier and the rewritten chunk tier must
-/// answer identically across the complete sweep (96 combos), errors included
-/// (`icc` stays legal — the rightmost rule makes the trailing flag win).
+/// requires each vectorized row to equal its scalar evaluation. After native
+/// regexp deletion, the exact 96-combination shape sweep is retained as a TiKV
+/// execution/admission gate with exact Copying/Borrowed result parity;
+/// `icc` stays legal because the rightmost flag wins.
 #[test]
-fn regexp_like_vec_generator_matrix_agrees_across_tiers() {
+fn regexp_like_vec_generator_matrix_executes_in_tikv() {
     let exprs = ["abc", "aBc", "Good\nday", "\n"];
     let patterns = ["abc", "od$", "^day", "day$", "."];
     let match_types = ["m", "i", "icc", "cii", "s", "msi"];
@@ -54,7 +65,7 @@ fn regexp_like_vec_generator_matrix_agrees_across_tiers() {
                 sql_literal(text),
                 sql_literal(pattern)
             );
-            assert_eq!(e(&plain), chunk_e(&plain), "{plain}");
+            let _engine_result = engine_success(&plain);
             for match_type in match_types {
                 let sql = format!(
                     "regexp_like({}, {}, {})",
@@ -62,7 +73,7 @@ fn regexp_like_vec_generator_matrix_agrees_across_tiers() {
                     sql_literal(pattern),
                     sql_literal(match_type)
                 );
-                assert_eq!(e(&sql), chunk_e(&sql), "{sql}");
+                let _engine_result = engine_success(&sql);
             }
         }
     }
@@ -72,7 +83,7 @@ fn regexp_like_vec_generator_matrix_agrees_across_tiers() {
         "regexp_like('abc', NULL, 'm')",
         "regexp_like('abc', 'abc', NULL)",
     ] {
-        assert_eq!(chunk_e(null_arm), "NULL", "{null_arm}");
+        assert_eq!(engine_parity(null_arm), "NULL", "{null_arm}");
     }
 }
 
@@ -80,12 +91,11 @@ fn regexp_like_vec_generator_matrix_agrees_across_tiers() {
 ///
 /// Sweep of Go's exact generator arrays:
 /// `expr[5] x pattern[10] x position{1,5} x occurrence{-1,10} x matchType[6]`.
-/// Positions can legitimately fall out of range ("position 5" against
-/// one-character inputs); both tiers share the source's `ErrRegexp`
-/// index-out-of-bounds behavior there, and the agreement assertion covers that
-/// instead of duplicating it.
+/// Every listed input has at least five characters, so these generator rows
+/// must all succeed; out-of-range runtime errors are pinned separately by the
+/// independent scalar source vectors.
 #[test]
-fn regexp_substr_vec_generator_matrix_agrees_across_tiers() {
+fn regexp_substr_vec_generator_matrix_executes_in_tikv() {
     let exprs = [
         "abc abd abe",
         "你好啊啊啊啊啊",
@@ -112,7 +122,7 @@ fn regexp_substr_vec_generator_matrix_agrees_across_tiers() {
                             occurrence,
                             sql_literal(match_type)
                         );
-                        assert_eq!(e(&sql), chunk_e(&sql), "{sql}");
+                        let _engine_result = engine_success(&sql);
                     }
                 }
             }
@@ -126,7 +136,7 @@ fn regexp_substr_vec_generator_matrix_agrees_across_tiers() {
 /// `expr[5] x pattern[10] x position{1,5} x occurrence{-1,10} x
 /// returnOption{0,1} x matchType[6]`, asserted as exhaustive tier agreement.
 #[test]
-fn regexp_instr_vec_generator_matrix_agrees_across_tiers() {
+fn regexp_instr_vec_generator_matrix_executes_in_tikv() {
     let exprs = [
         "abc abd abe",
         "你好啊啊啊啊啊",
@@ -156,7 +166,7 @@ fn regexp_instr_vec_generator_matrix_agrees_across_tiers() {
                                 return_option,
                                 sql_literal(match_type)
                             );
-                            assert_eq!(e(&sql), chunk_e(&sql), "{sql}");
+                            let _engine_result = engine_success(&sql);
                         }
                     }
                 }
@@ -172,7 +182,7 @@ fn regexp_instr_vec_generator_matrix_agrees_across_tiers() {
 /// signature's own `ErrRegexp` substitution error; the sweep asserts both
 /// tiers agree row for row.
 #[test]
-fn regexp_replace_vec_generator_matrix_agrees_across_tiers() {
+fn regexp_replace_vec_generator_matrix_executes_in_tikv() {
     let exprs = [
         "abc abd abe",
         "你好啊啊啊啊啊",
@@ -203,7 +213,7 @@ fn regexp_replace_vec_generator_matrix_agrees_across_tiers() {
                                 occurrence,
                                 sql_literal(match_type)
                             );
-                            assert_eq!(e(&sql), chunk_e(&sql), "{sql}");
+                            let _engine_result = engine_success(&sql);
                         }
                     }
                 }
@@ -220,11 +230,10 @@ fn regexp_replace_vec_generator_matrix_agrees_across_tiers() {
 /// CONSTANT pattern `\A[A-Za-z]{3,5}\d{1,5}[[:alpha:]]*\z` and requires the
 /// batch result to equal the per-row scalar evaluation exactly (same non-null
 /// mask, same ints). A deterministic corpus standing in for the generator is
-/// driven through the production chunk tier and compared against the shared
-/// scalar matcher — including mismatching, digit-heavy, and boundary-length
-/// rows so both outcomes are exercised.
+/// retained as a TiKV execution sweep, with independent anchor and POSIX-class
+/// expected-value spot checks.
 #[test]
-fn regexp_constant_pattern_corpus_matches_scalar_evaluation() {
+fn regexp_constant_pattern_corpus_keeps_expected_tikv_results() {
     let pattern = r"\A[A-Za-z]{3,5}\d{1,5}[[:alpha:]]*\z";
     let corpus = [
         "Abcde12345ghijk",   // full match: 5 letters, 5 digits, tail letters
@@ -243,11 +252,11 @@ fn regexp_constant_pattern_corpus_matches_scalar_evaluation() {
             sql_literal(text),
             sql_literal(pattern)
         );
-        assert_eq!(e(&sql), chunk_e(&sql), "{sql}");
+        let _engine_result = engine_success(&sql);
     }
     // Anchor behavior spot checks so the corpus cannot hide a dropped anchor.
     assert_eq!(
-        chunk_e(&format!(
+        engine_parity(&format!(
             "regexp_like({},{})",
             sql_literal("abc12"),
             sql_literal(pattern)
@@ -255,7 +264,7 @@ fn regexp_constant_pattern_corpus_matches_scalar_evaluation() {
         "INT:1"
     );
     assert_eq!(
-        chunk_e(&format!(
+        engine_parity(&format!(
             "regexp_like({},{})",
             sql_literal(" abc12"),
             sql_literal(pattern)
@@ -264,7 +273,7 @@ fn regexp_constant_pattern_corpus_matches_scalar_evaluation() {
     );
     // POSIX classes are honored, not matched literally.
     assert_eq!(
-        chunk_e("regexp_like('abc99x', '[[:alpha:]]+[[:digit:]]+[[:alpha:]]')"),
+        engine_parity("regexp_like('abc99x', '[[:alpha:]]+[[:digit:]]+[[:alpha:]]')"),
         "INT:1"
     );
 }

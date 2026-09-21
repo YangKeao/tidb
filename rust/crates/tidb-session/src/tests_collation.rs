@@ -287,11 +287,6 @@ fn field_find_in_set_and_regexp_use_the_derived_collation() {
             "SELECT FIND_IN_SET('a ' COLLATE utf8mb4_general_ci, 'a,b')",
             "0",
         ),
-        ("SELECT 'ABC' REGEXP 'abc'", "0"),
-        ("SELECT 'ABC' COLLATE utf8mb4_general_ci REGEXP 'abc'", "1"),
-        ("SELECT 'ABC' COLLATE utf8mb4_unicode_ci REGEXP 'abc'", "1"),
-        ("SELECT 'ABC' COLLATE utf8mb4_bin REGEXP 'abc'", "0"),
-        ("SELECT 'ABC' REGEXP 'abc' COLLATE utf8mb4_general_ci", "1"),
         // A non-string argument list keeps Go's REAL signature, which consults
         // no collation at all: `FIELD(1, '1')` matches numerically.
         ("SELECT FIELD(1, '1')", "1"),
@@ -299,6 +294,38 @@ fn field_find_in_set_and_regexp_use_the_derived_collation() {
     ] {
         assert_eq!(one(&mut session, sql), expected, "{sql}");
     }
+
+    let regexp_rows = [
+        ("SELECT 'ABC' REGEXP 'abc'", "0"),
+        ("SELECT 'ABC' COLLATE utf8mb4_general_ci REGEXP 'abc'", "1"),
+        ("SELECT 'ABC' COLLATE utf8mb4_unicode_ci REGEXP 'abc'", "1"),
+        ("SELECT 'ABC' COLLATE utf8mb4_bin REGEXP 'abc'", "0"),
+        ("SELECT 'ABC' REGEXP 'abc' COLLATE utf8mb4_general_ci", "1"),
+    ];
+    #[cfg(feature = "tikv-expr")]
+    {
+        session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
+        for (sql, expected) in regexp_rows {
+            let result = session
+                .run(sql)
+                .unwrap_or_else(|error| panic!("{sql}: {error}"));
+            assert_eq!(row_text(Ok(result))[0][0], expected, "{sql}");
+        }
+        assert!(session.tikv_expression_rows() >= regexp_rows.len() as u64);
+        session.set_tikv_expression_backend(None);
+    }
+    #[cfg(not(feature = "tikv-expr"))]
+    for (sql, _) in regexp_rows {
+        let error = session
+            .run(sql)
+            .expect_err("native regexp kernel is deleted")
+            .to_string();
+        assert!(
+            error.contains("native regexp evaluation was removed; TiKV engine required"),
+            "{sql}: {error}"
+        );
+    }
+
     // Derived from a COLUMN rather than a COLLATE clause: the `_ci` column is
     // IMPLICIT and beats the literal's COERCIBLE, the `_bin` column is the
     // control. Rows are the fixture's 'a','A','b','B' in insertion order.
@@ -313,13 +340,40 @@ fn field_find_in_set_and_regexp_use_the_derived_collation() {
             "SELECT FIND_IN_SET(c, 'x,A,y') FROM bn",
             ["0", "2", "0", "0"],
         ),
-        ("SELECT c REGEXP 'a' FROM ci", ["1", "1", "0", "0"]),
-        ("SELECT c REGEXP 'a' FROM bn", ["1", "0", "0", "0"]),
     ] {
         assert_eq!(
             row_text(session.run(sql)),
             expected.map(|cell| vec![cell.to_owned()]).to_vec(),
             "{sql}"
+        );
+    }
+
+    let column_regexp_rows = [
+        ("SELECT c REGEXP 'a' FROM ci", ["1", "1", "0", "0"]),
+        ("SELECT c REGEXP 'a' FROM bn", ["1", "0", "0", "0"]),
+    ];
+    #[cfg(feature = "tikv-expr")]
+    {
+        session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
+        for (sql, expected) in column_regexp_rows {
+            assert_eq!(
+                row_text(session.run(sql)),
+                expected.map(|cell| vec![cell.to_owned()]).to_vec(),
+                "{sql}"
+            );
+        }
+        assert!(session.tikv_expression_rows() >= 13);
+        session.set_tikv_expression_backend(None);
+    }
+    #[cfg(not(feature = "tikv-expr"))]
+    for (sql, _) in column_regexp_rows {
+        let error = session
+            .run(sql)
+            .expect_err("native regexp kernel is deleted")
+            .to_string();
+        assert!(
+            error.contains("native regexp evaluation was removed; TiKV engine required"),
+            "{sql}: {error}"
         );
     }
 }

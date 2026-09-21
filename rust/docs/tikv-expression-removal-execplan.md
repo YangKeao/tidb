@@ -104,6 +104,20 @@ remain in the workspace.
       Static admission and the reviewed runtime baseline remain 216/168 and 30
       tests / 323 receipts / 2072 engine rows / 160 borrowed rows. This is still
       not the final native-removal claim.
+- [x] Fifth physical-deletion tranche: removed the 817-line positional-regexp
+      module, the 215-line shared regexp/operator module, their dispatch and
+      re-export, plus the residual AST, ScalarFunction, and value-evaluator
+      kernels. REGEXP/RLIKE and REGEXP_LIKE/SUBSTR/INSTR/REPLACE now execute
+      only in TiKV. Every former scalar source vector remains with independent
+      outputs and TiKV runtime error 1139; the all-success 96/1200/2400/4320
+      generator sweeps compare Copying and Borrowed result strings byte-for-byte.
+      Both native boundaries assert the exact structured refusal for all
+      six names. Invalid literal patterns/match types that TiKV rejects
+      while compiling are explicit shape contractions, never native fallback.
+      The guarded suite passes 1196 library tests plus 77 integration tests (99
+      ignored), and the opted-in session SQL test proves at least five regexp
+      rows executed through TiKV. This is still not the final native-removal
+      claim.
 - [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
       in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected
       borrowed facade was used by the adapter while the manifest still pinned

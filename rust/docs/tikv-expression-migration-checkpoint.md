@@ -2,18 +2,19 @@
 
 ## Revisions and decision
 
-This tranche builds from published TiDB `58a7b20` and TiKV documentation
-HEAD `4c372b8`; the fresh results below include the current JSON-leaf-deletion
+This tranche builds from published TiDB `c0426cc` and TiKV documentation
+HEAD `4c372b8`; the fresh results below include the current regexp-deletion
 working tree. TiDB actually builds the pinned engine
 `db9c7f08d954fef02519b86a55c2d72cf72ef697`, not arbitrary TiKV HEAD.
 Only YangKeao personal forks have been used for publication.
 
 **Do not switch the default yet. Physical deletion is now deliberately in
-progress.** The first four tranches removed the complete native math-kernel
-folder plus crypto/encryption, vector, and JSON depth/storage SQL-kernel files.
-Unverified math, all former crypto functions, VEC_FROM_TEXT, JSON storage
-accounting, and non-typed JSON_DEPTH shapes are explicitly unsupported;
-retained vector names and typed-column JSON_DEPTH execute only in TiKV. This
+progress.** The first five tranches removed the complete native math-kernel
+folder plus crypto/encryption, vector, JSON depth/storage, and both regexp
+kernel modules and residual branches. Unverified math, all former crypto
+functions, VEC_FROM_TEXT, JSON storage accounting, non-typed JSON_DEPTH shapes,
+and invalid literal regexp shapes are explicit contractions. Retained vector,
+typed-column JSON_DEPTH, and valid regexp names execute only in TiKV. This
 invalidates the older policy of retaining every native family until
 compatibility was complete.
 The earlier refusal-intolerant corpus still exposed 59 distinct first-refused
@@ -43,14 +44,16 @@ Logs are in `/home/agent/tidb/expression-reuse/`.
 | Log | Result | Scope/qualification |
 | --- | --- | --- |
 | `checkpoint-executor-native.log` | 1346 library + 329 integration + 6 tests passed; 184 integration ignored | Feature-off executor compatibility, not engine coverage. |
-| `native-json-leaf-delete-full-lib-tests.log` + `native-json-leaf-delete-integration-tests.log` | 1198 library + 77 integration passed; 99 library ignored | Feature enabled after physical math, crypto, vector, and JSON leaf deletion; typed-column JSON_DEPTH has independent TiKV vectors and every original shape has exact native refusal. |
+| `native-regexp-delete-full-lib-tests.log` + `native-regexp-delete-integration-tests.log` | 1196 library + 77 integration passed; 99 library ignored | Feature enabled after five physical-deletion tranches; valid regexp rows execute in TiKV and all native boundaries refuse exactly. |
+| `native-regexp-session-focused.log` | 1 passed | Opted-in end-to-end SQL covers all six regexp names and requires at least five observed TiKV rows. |
+| `native-regexp-session-unit-{chunk,collation,default}.log` + `native-regexp-session-feature-off.log` | 6 targeted runs passed | Chunk/operator, derived-collation, and computed-default SQL execute through TiKV when opted in; feature-off shapes assert exact refusal. |
 | `native-json-leaf-session-focused.log` + `native-json-leaf-session-unit-{storage,depth}.log` | 3 targeted tests passed | Session SQL verifies structured contraction for deleted JSON storage functions and non-typed JSON_DEPTH shapes, including NULL. |
-| `native-json-leaf-session-full-lib.log` | **1707 passed / 19 failed / 209 ignored**, exit 101 | No JSON test failed; the broad session suite remains red on stale success expectations for earlier math/crypto/vector contractions and is not a green gate. |
-| `native-json-leaf-runtime-gate-green.log` | 30 tests, 323 fixture receipts, 2072 engine rows, 160 observed borrowed rows | Reviewed baseline remains exact; admitted JSON_DEPTH/vector receipts execute with zero fallback. |
+| `native-regexp-session-full-lib.log` | **1707 passed / 19 failed / 209 ignored**, exit 101 | No regexp/JSON test failed; the broad session suite remains red on stale success expectations for earlier math/crypto/vector contractions and is not a green gate. |
+| `native-regexp-runtime-gate-green.log` | 30 tests, 323 fixture receipts, 2072 engine rows, 160 observed borrowed rows | Reviewed baseline remains exact after regexp deletion; admitted regexp/JSON/vector receipts execute with zero fallback. |
 | current static gate | Self-check and check pass | 384 declaration rows, 216 admitted / 168 excluded, zero missing registry/synthesized names. Static candidates are not execution coverage. |
 | `checkpoint-engine-only.log` | **1163 passed / 61 failed / 99 ignored**, exit 101 | All 61 failed sections report adapter refusal; 59 distinct first-refused expressions. This is an incomplete cutover gate. |
 
-Sampled peak for these fresh runs: 2210.3 MiB. Very short cached runs can be
+Sampled peak for these fresh runs: 3257.8 MiB. Very short cached runs can be
 below the guard's sampling interval; their near-zero samples are not actual
 zero-memory claims. Feature-on executor previously passed 1402/355/6/2 with
 184 integration ignored in `probe-error-executor.log` at this code revision.

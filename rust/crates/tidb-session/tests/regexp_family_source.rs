@@ -1,8 +1,10 @@
+#![cfg(feature = "tikv-expr")]
+
 //! The REGEXP family: RLIKE/REGEXP matching, REGEXP_REPLACE with a global
 //! character-class substitution, REGEXP_SUBSTR extracting the first match,
 //! REGEXP_INSTR's 1-based position, and the case-insensitive REGEXP_LIKE.
 
-use tidb_session::Session;
+use tidb_session::{Session, TikvExpressionBackend};
 
 fn try_sql(session: &mut Session, sql: &str) -> String {
     match session.run(sql) {
@@ -30,10 +32,13 @@ fn try_sql(session: &mut Session, sql: &str) -> String {
 
 #[test]
 fn regexp_operators_and_functions() {
-    let mut session = Session::new();
+    let mut session = Session::new().with_tikv_expression_backend(TikvExpressionBackend::Copying);
 
     assert_eq!(
-        try_sql(&mut session, "select 'hello' regexp '^h.*o$', 'hello' rlike 'xyz'"),
+        try_sql(
+            &mut session,
+            "select 'hello' regexp '^h.*o$', 'hello' rlike 'xyz'"
+        ),
         "i:1|i:0"
     );
     // Every digit is replaced.
@@ -53,5 +58,9 @@ fn regexp_operators_and_functions() {
     assert_eq!(
         try_sql(&mut session, "select regexp_like('Hello', '^[hH]')"),
         "i:1"
+    );
+    assert!(
+        session.tikv_expression_rows() >= 5,
+        "every retained regexp expression must execute in TiKV"
     );
 }

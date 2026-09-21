@@ -994,9 +994,10 @@ fn like_between_case_and_builtins() {
 /// against captured TiDB output. Before this test, the chunk rewriter had
 /// no `Expr::Regexp` arm, so `SELECT ... WHERE b REGEXP '...'` failed
 /// even though the same expression worked as a bare `SELECT`.
+#[cfg(feature = "tikv-expr")]
 #[test]
 fn regexp_through_the_chunk_path() {
-    let mut session = Session::new();
+    let mut session = Session::new().with_tikv_expression_backend(TikvExpressionBackend::Copying);
     session
         .run("CREATE TABLE t (a BIGINT PRIMARY KEY, b VARCHAR(20))")
         .unwrap();
@@ -1032,6 +1033,21 @@ fn regexp_through_the_chunk_path() {
     // result -- `[expression:1139]Got error 'error parsing regexp:
     // missing closing ): `(`' from regexp`.
     assert!(session.run("SELECT 'abc' REGEXP '('").is_err());
+    assert!(session.tikv_expression_rows() > 0);
+}
+
+#[cfg(not(feature = "tikv-expr"))]
+#[test]
+fn regexp_without_engine_fails_closed() {
+    let mut session = Session::new();
+    let error = session
+        .run("SELECT 'abc' REGEXP '^a'")
+        .expect_err("native regexp kernel is deleted")
+        .to_string();
+    assert!(
+        error.contains("native regexp evaluation was removed; TiKV engine required"),
+        "{error}"
+    );
 }
 
 /// `MAKE_SET` regression, checked against mock TiDB. `1|4` evaluates to

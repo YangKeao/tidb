@@ -58,7 +58,11 @@ mod in_func_decimal_collation_source;
 mod json_merge_patch_integration_source;
 mod math;
 mod operand_dispatch;
+#[cfg(feature = "tikv-expr")]
 mod regexp_like;
+#[cfg(feature = "tikv-expr")]
+mod regexp_source_vectors;
+#[cfg(feature = "tikv-expr")]
 mod regexp_vec_cache_source;
 mod scalar_function_semantics_source;
 mod setvar_getvar_values_getparam_source;
@@ -163,9 +167,20 @@ fn chunk_case(expr: &str, ctx: &impl Columns) -> Result<Datum, String> {
 /// declined it (a listed exclusion), so the native answer stands alone.
 #[cfg(feature = "tikv-expr")]
 fn engine_case(expr: &str) -> Option<Result<Datum, String>> {
+    engine_case_with_backend(expr, crate::tikv::Backend::Copying)
+}
+
+#[cfg(feature = "tikv-expr")]
+fn engine_case_with_backend(
+    expr: &str,
+    backend: crate::tikv::Backend,
+) -> Option<Result<Datum, String>> {
     use std::cell::Cell;
 
-    struct EngineColumns(Cell<bool>);
+    struct EngineColumns {
+        fallback: Cell<bool>,
+        backend: crate::tikv::Backend,
+    }
     impl Columns for EngineColumns {
         fn get(&self, _: &[String]) -> Option<Datum> {
             None
@@ -176,8 +191,11 @@ fn engine_case(expr: &str) -> Option<Result<Datum, String>> {
                 ..Default::default()
             })
         }
+        fn tikv_expression_backend(&self) -> crate::tikv::Backend {
+            self.backend
+        }
         fn record_tikv_expression_fallback(&self, _: crate::tikv::FallbackReason) {
-            self.0.set(true)
+            self.fallback.set(true)
         }
     }
 
@@ -194,13 +212,16 @@ fn engine_case(expr: &str) -> Option<Result<Datum, String>> {
     let rewritten = crate::rewriter::rewrite_expr(expr).ok()?;
     let ty = rewritten.static_type()?.clone();
 
-    let columns = EngineColumns(Cell::new(false));
+    let columns = EngineColumns {
+        fallback: Cell::new(false),
+        backend,
+    };
     let suite = crate::evaluator::EvaluatorSuite::new(vec![rewritten], true);
     let mut input = tidb_chunk::chunk::Chunk::new_empty(&[]);
     input.set_num_virtual_rows(1);
     let mut output = tidb_chunk::chunk::Chunk::new_with_capacity(std::slice::from_ref(&ty), 1);
     let outcome = suite.run(&columns, &mut input, &mut output);
-    if columns.0.get() {
+    if columns.fallback.get() {
         return None;
     }
     Some(match outcome {
@@ -214,7 +235,14 @@ fn engine_case(expr: &str) -> Option<Result<Datum, String>> {
 /// never a native fallback.
 #[cfg(feature = "tikv-expr")]
 pub(super) fn engine_e(expr: &str) -> String {
-    match engine_case(expr).unwrap_or_else(|| panic!("TiKV engine declined: {expr}")) {
+    engine_e_with_backend(expr, crate::tikv::Backend::Copying)
+}
+
+#[cfg(feature = "tikv-expr")]
+pub(super) fn engine_e_with_backend(expr: &str, backend: crate::tikv::Backend) -> String {
+    match engine_case_with_backend(expr, backend)
+        .unwrap_or_else(|| panic!("TiKV {backend:?} engine declined: {expr}"))
+    {
         Ok(value) => value.label(),
         Err(error) => error,
     }

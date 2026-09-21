@@ -17,12 +17,13 @@
 //! intent from the Go source it exercises.
 
 use super::{chunk_e, e};
+#[cfg(feature = "tikv-expr")]
+use super::{engine_declines, engine_e};
 use crate::builtin_ext::json::dispatch as json_dispatch;
 #[cfg(feature = "tikv-expr")]
 use crate::column::Column;
 use crate::expression::Expression;
 use crate::like::like_match_with_collation;
-use crate::regexp::{regexp_like, regexp_match};
 use crate::rewriter::result_type::builtin_return_type;
 use crate::rewriter::rewrite_expr;
 use crate::scalar_function::ScalarFunction;
@@ -1699,6 +1700,7 @@ fn like() {
 }
 
 /// Go `pkg/expression/builtin_like_test.go:63 TestRegexp`.
+#[cfg(feature = "tikv-expr")]
 #[test]
 fn regexp() {
     for (pattern, input, want, is_err) in [
@@ -1716,23 +1718,19 @@ fn regexp() {
         ("[a", "", 0, true),
         ("\\", "", 0, true),
     ] {
+        let input = input.replace('\\', "\\\\").replace('\'', "''");
+        let pattern = pattern.replace('\\', "\\\\").replace('\'', "''");
+        let sql = format!("'{input}' regexp '{pattern}'");
         if is_err {
-            assert!(
-                matches!(
-                    regexp_match(input, pattern),
-                    Err(EvalError::Unsupported("invalid regular expression pattern"))
-                ),
-                "pattern {pattern:?}"
-            );
-            continue;
+            assert!(engine_declines(&sql), "invalid literal pattern: {sql}");
+        } else {
+            assert_eq!(engine_e(&sql), format!("INT:{want}"), "{sql}");
         }
         assert_eq!(
-            regexp_like(input, pattern, "").unwrap(),
-            want == 1,
-            "{input} regexp {pattern}"
+            e(&sql),
+            "Unsupported(\"native regexp evaluation was removed; TiKV engine required\")",
+            "native fallback: {sql}"
         );
-        let sql = format!("'{input}' regexp '{pattern}'");
-        assert_eq!(e(&sql), format!("INT:{want}"), "{sql}");
     }
 }
 
@@ -1789,7 +1787,14 @@ fn ci_like() {
 #[test]
 fn vectorized_builtin_like_func() {
     assert_eq!(e("'a' like 'a'"), "INT:1");
-    assert_eq!(e("'a' regexp 'a'"), "INT:1");
+    #[cfg(feature = "tikv-expr")]
+    {
+        assert_eq!(engine_e("'a' regexp 'a'"), "INT:1");
+        assert_eq!(
+            e("'a' regexp 'a'"),
+            "Unsupported(\"native regexp evaluation was removed; TiKV engine required\")"
+        );
+    }
     assert_eq!(chunk_e("'baab' like 'b_%b'"), "INT:1");
 }
 

@@ -1020,8 +1020,9 @@ fn collate_expr() {
 /// substring/partial match (no implicit `^`/`$` anchoring), `NULL`
 /// from either operand propagates, and a non-string operand is
 /// coerced the SAME way `LIKE` already does — all confirmed via
-/// `gorun`. See `crate::regexp::regexp_match`'s own doc for the
-/// empty-pattern/malformed-pattern error rules, also exercised here.
+/// `gorun`. Empty and malformed literal patterns are preserved here as
+/// explicit TiKV compile declines after native regexp deletion.
+#[cfg(feature = "tikv-expr")]
 #[test]
 fn regexp_expr_eval() {
     let cases: &[(&str, &str)] = &[
@@ -1046,15 +1047,25 @@ fn regexp_expr_eval() {
         ),
     ];
     for (expr, want) in cases {
-        assert_eq!(&e(expr), want, "expr: {expr}");
+        if want.starts_with("Unsupported") {
+            assert!(engine_declines(expr), "invalid literal pattern: {expr}");
+        } else {
+            assert_eq!(&engine_e(expr), want, "expr: {expr}");
+        }
+        assert_eq!(
+            e(expr),
+            "Unsupported(\"native regexp evaluation was removed; TiKV engine required\")",
+            "native fallback: {expr}"
+        );
     }
 }
 
 /// The original two-argument `[NOT] REGEXP` function is registered separately
 /// from `REGEXP_LIKE` in Go (`pkg/expression/builtin_like_test.go:64
-/// TestRegexp`).  Keep every successful source row running through the real
-/// parser and `Expr::Regexp` dispatch as well as through the leaf builder
-/// tests in `regexp.rs`.
+/// TestRegexp`). Keep every successful source row running through the real
+/// parser and TiKV rewrite, while direct AST evaluation proves the removed
+/// operator kernel cannot be a fallback.
+#[cfg(feature = "tikv-expr")]
 #[test]
 fn regexp_source_rows_through_dispatch() {
     let rows: &[(&str, &str)] = &[
@@ -1071,14 +1082,18 @@ fn regexp_source_rows_through_dispatch() {
         ("'a' not regexp 'b'", "INT:1"),
     ];
     for (expr, want) in rows {
-        assert_eq!(&e(expr), want, "expression: {expr}");
+        assert_eq!(&engine_e(expr), want, "expression: {expr}");
+        assert_eq!(
+            e(expr),
+            "Unsupported(\"native regexp evaluation was removed; TiKV engine required\")",
+            "native fallback: {expr}"
+        );
     }
 }
 
 /// `MATCH(col, ...) AGAINST(expr [modifier])` evaluates as `Unsupported` —
 /// no fulltext index or scoring is modelled at all (see
-/// `tidb_ast::Expr::MatchAgainst`'s own doc for the same "parse/restore
-/// fidelity only" boundary `Expr::Regexp` already established).
+/// `tidb_ast::Expr::MatchAgainst`'s own parse/restore-only contract).
 #[test]
 fn match_against_unsupported() {
     let cases: &[(&str, &str)] = &[

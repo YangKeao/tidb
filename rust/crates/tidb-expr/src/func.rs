@@ -115,6 +115,14 @@ pub(crate) fn is_removed_native_json_leaf(name: &str) -> bool {
     )
 }
 
+/// Native regular-expression kernels and operator branches were physically removed.
+pub(crate) fn is_removed_native_regexp(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "REGEXP" | "RLIKE" | "REGEXP_LIKE" | "REGEXP_SUBSTR" | "REGEXP_INSTR" | "REGEXP_REPLACE"
+    )
+}
+
 /// Evaluates a builtin scalar function over its evaluated arguments.
 pub(crate) fn eval_func(
     name: &str,
@@ -138,6 +146,11 @@ pub(crate) fn eval_func(
     if is_removed_native_json_leaf(&name) {
         return Err(EvalError::Unsupported(
             "native JSON depth/storage evaluation was removed; TiKV engine required",
+        ));
+    }
+    if is_removed_native_regexp(&name) {
+        return Err(EvalError::Unsupported(
+            "native regexp evaluation was removed; TiKV engine required",
         ));
     }
     // The AST evaluator is also an expression-construction entry point for
@@ -320,41 +333,6 @@ pub(crate) fn eval_func(
         let arg = crate::rewriter::rewrite_expr(arg)?;
         return crate::collation_derive::info_metadata_value(&name.to_ascii_lowercase(), &arg)
             .ok_or(EvalError::Unsupported("information metadata function"));
-    }
-    if name == "REGEXP_LIKE" && matches!(args.len(), 2 | 3) {
-        let string_arg = |index: usize| -> Result<Option<String>, EvalError> {
-            let value = eval_in(&args[index], cols)?;
-            let value = crate::cast::cast_arg_as_string(&value, None, cols)?;
-            if value.is_null() {
-                return Ok(None);
-            }
-            value
-                .sql_string()
-                .map(Some)
-                .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP_LIKE argument"))
-        };
-        let Some(text) = string_arg(0)? else {
-            return Ok(Datum::Null);
-        };
-        let Some(pattern) = string_arg(1)? else {
-            return Ok(Datum::Null);
-        };
-        let match_type = if args.len() == 3 {
-            let Some(match_type) = string_arg(2)? else {
-                return Ok(Datum::Null);
-            };
-            match_type
-        } else {
-            String::new()
-        };
-        return Ok(Datum::Int(i64::from(
-            crate::regexp::regexp_like_with_collation(
-                &text,
-                &pattern,
-                &match_type,
-                crate::ops::DERIVATION_FREE_COLLATION,
-            )?,
-        )));
     }
     let vals: Vec<Datum> = args
         .iter()
@@ -565,6 +543,11 @@ pub(crate) fn eval_func_values_in(
             "native JSON depth/storage evaluation was removed; TiKV engine required",
         )));
     }
+    if is_removed_native_regexp(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native regexp evaluation was removed; TiKV engine required",
+        )));
+    }
     // Go's `builtinFromBase64Sig` checks the estimated decoded length against
     // `max_allowed_packet` before decoding and routes an over-limit result
     // through the statement warning policy. Keep this context-sensitive arm
@@ -606,8 +589,9 @@ pub(crate) fn eval_func_values_in(
 ///   branch, so eager-evaluating both would change semantics, e.g. a guarded
 ///   `1/0`), `CASE`, and the `DATE_ADD`/`DATE_SUB`/`ADDDATE`/`SUBDATE`
 ///   family whose second argument is an `Expr::Interval`, not a value;
-/// - removed native math, crypto, vector, and JSON depth/storage leaf functions,
-///   including `RAND`, `RANDOM_BYTES`, `VEC_FROM_TEXT`, and JSON storage accounting;
+/// - removed native math, crypto, vector, JSON depth/storage, and regexp functions,
+///   including `RAND`, `RANDOM_BYTES`, `VEC_FROM_TEXT`, JSON storage accounting,
+///   and REGEXP/RLIKE;
 ///   the sequence functions (`NEXTVAL`/`LASTVAL`/`SETVAL`), and the
 ///   `time_fn` family (its dispatch takes `Columns` for the statement clock,
 ///   time zone, and `default_week_format`);

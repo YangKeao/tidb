@@ -731,15 +731,15 @@ Go source: GO PORT of `pkg/expression/integration_test/integration_test.go` `Tes
 
 Rank **(a)**; 7 tests: a=5, b=0, c=0, gap=2.
 
-Go source: Source-first ports of `pkg/expression.part5`'s vectorized regexp harnesses (`builtin_regexp_test.go::TestRegexpLikeVec/TestRegexpSubstrVec/ TestRegexpInStrVec/TestRegexpReplaceVec`), `builtin_regexp_vec_const_test.go::TestVectorizedBuiltinRegexpForConstants`, and the memoization contract `builtin_regexp_test.go::TestRegexpCache` pins on Go's side. The scalar value tables themselves were ported earlier (`crate::builtin_ext::regexp::tests`, `tests::regexp_like`); this module re-derives the HARNESS dimensions those Go tests add on top — their exact generator arrays swept as cross-tier agreements, plus the constant-pattern corpus invariant.
+Go source: Source-first ports of `pkg/expression.part5`'s vectorized regexp harnesses (`builtin_regexp_test.go::TestRegexpLikeVec/TestRegexpSubstrVec/ TestRegexpInStrVec/TestRegexpReplaceVec`), `builtin_regexp_vec_const_test.go::TestVectorizedBuiltinRegexpForConstants`, and the memoization contract `builtin_regexp_test.go::TestRegexpCache` pins on Go's side. The scalar value tables now live in `tests::regexp_source_vectors` and `tests::regexp_like`; this module re-derives the HARNESS dimensions those Go tests add on top — their exact all-success generator arrays compare TiKV Copying and Borrowed result strings, plus the constant-pattern corpus invariant. Exact native refusal is pinned separately by `regexp_source_vectors` and `regexp_like`.
 
 | `#[test] fn` | tier | admitted subject names | excluded subject names | native helpers |
 | --- | --- | --- | --- | --- |
-| `regexp_like_vec_generator_matrix_agrees_across_tiers` | A+C | `regexp_like` | &mdash; | &mdash; |
-| `regexp_substr_vec_generator_matrix_agrees_across_tiers` | A+C | `regexp_substr` | &mdash; | &mdash; |
-| `regexp_instr_vec_generator_matrix_agrees_across_tiers` | A+C | `regexp_instr` | &mdash; | &mdash; |
-| `regexp_replace_vec_generator_matrix_agrees_across_tiers` | A+C | `regexp_replace` | &mdash; | &mdash; |
-| `regexp_constant_pattern_corpus_matches_scalar_evaluation` | A+C | `regexp_like` | &mdash; | &mdash; |
+| `regexp_like_vec_generator_matrix_executes_in_tikv` | E | `regexp_like` | &mdash; | &mdash; |
+| `regexp_substr_vec_generator_matrix_executes_in_tikv` | E | `regexp_substr` | &mdash; | &mdash; |
+| `regexp_instr_vec_generator_matrix_executes_in_tikv` | E | `regexp_instr` | &mdash; | &mdash; |
+| `regexp_replace_vec_generator_matrix_executes_in_tikv` | E | `regexp_replace` | &mdash; | &mdash; |
+| `regexp_constant_pattern_corpus_keeps_expected_tikv_results` | E | `regexp_like` | &mdash; | &mdash; |
 | `regexp_cache_identity_by_statement_context_gap` (ign) | -- | &mdash; | &mdash; | &mdash; |
 | `regexp_and_other_vec_benchmark_gap` (ign) | -- | &mdash; | &mdash; | &mdash; |
 
@@ -939,10 +939,10 @@ Go source: `pkg/expression/builtin_vectorized_test.go:878 TestVectorizedFilterCo
 | `quarter` | `evaluator_go_tables_source.rs` | `evaluator_go_tables_source.rs::extract_master_unit_table_matches_source` |
 | `quote` | `builtin_string_time_source.rs` | `builtin_string_time_source.rs::test_quote`, `builtin_string_time_source.rs::test_vectorized_builtin_string_eval_one_vec_2`, `builtin_string_time_source.rs::test_vectorized_builtin_string_func_2` |
 | `radians` | `builtin_math_misc_op_source.rs` | `builtin_math_misc_op_source.rs::math_string_coercion_raises_one_truncate_warning_each`, `builtin_math_misc_op_source.rs::vectorized_builtin_math_eval_one_vec` |
-| `regexp_instr` | `regexp_vec_cache_source.rs` | `regexp_vec_cache_source.rs::regexp_instr_vec_generator_matrix_agrees_across_tiers` |
-| `regexp_like` | `builtin_info_json_math_source.rs`, `regexp_vec_cache_source.rs` | `builtin_info_json_math_source.rs::json_contains_path`, `builtin_info_json_math_source.rs::json_storage_free`, `regexp_vec_cache_source.rs::regexp_constant_pattern_corpus_matches_scalar_evaluation` ... |
-| `regexp_replace` | `regexp_vec_cache_source.rs` | `regexp_vec_cache_source.rs::regexp_replace_vec_generator_matrix_agrees_across_tiers` |
-| `regexp_substr` | `regexp_vec_cache_source.rs` | `regexp_vec_cache_source.rs::regexp_substr_vec_generator_matrix_agrees_across_tiers` |
+| `regexp_instr` | `regexp_vec_cache_source.rs` | `regexp_vec_cache_source.rs::regexp_instr_vec_generator_matrix_executes_in_tikv` |
+| `regexp_like` | `builtin_info_json_math_source.rs`, `regexp_vec_cache_source.rs` | `builtin_info_json_math_source.rs::json_contains_path`, `builtin_info_json_math_source.rs::json_storage_free`, `regexp_vec_cache_source.rs::regexp_constant_pattern_corpus_keeps_expected_tikv_results` ... |
+| `regexp_replace` | `regexp_vec_cache_source.rs` | `regexp_vec_cache_source.rs::regexp_replace_vec_generator_matrix_executes_in_tikv` |
+| `regexp_substr` | `regexp_vec_cache_source.rs` | `regexp_vec_cache_source.rs::regexp_substr_vec_generator_matrix_executes_in_tikv` |
 | `right` | `builtin_string_time_source.rs` | `builtin_string_time_source.rs::test_string_right` |
 | `rightshift` | `builtin_math_misc_op_source.rs` | `builtin_math_misc_op_source.rs::shift_parameter_count_boundaries` |
 | `round` | `builtin_info_json_math_source.rs`, `builtin_math_misc_op_source.rs` | `builtin_info_json_math_source.rs::json_contains_path`, `builtin_info_json_math_source.rs::json_storage_free`, `builtin_info_json_math_source.rs::round` ... |

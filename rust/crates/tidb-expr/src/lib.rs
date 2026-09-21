@@ -60,7 +60,9 @@
 //! Vector datatype/bridge support remains. The former native JSON depth/storage
 //! leaf module is also deleted: typed-column `JSON_DEPTH` executes in TiKV,
 //! while text/other depth shapes and both storage-accounting functions fail
-//! closed. Supported builtins may still nest.
+//! closed. Both native regexp modules and the residual operator/function
+//! branches are deleted; REGEXP/RLIKE and REGEXP_LIKE/SUBSTR/INSTR/REPLACE
+//! execute only in TiKV. Supported builtins may still nest.
 //!
 //! Date-part extraction (`YEAR`, `MONTH`, `DAY`/`DAYOFMONTH`, `QUARTER`,
 //! `DAYOFYEAR`, `DAYOFWEEK`, `WEEKDAY`, `TO_DAYS`, `TO_SECONDS`) and
@@ -371,7 +373,6 @@ mod ops;
 pub mod pb_predicate;
 pub mod pushdown_catalog;
 pub mod ranger_context;
-mod regexp;
 pub mod rewriter;
 mod row;
 pub mod scalar_function;
@@ -397,7 +398,6 @@ pub use context::{
 };
 pub use grouping::{GroupingFunction, GroupingMetadata, GroupingMetadataError, GroupingMode};
 pub use like::{ilike_match, like_match_with_collation};
-pub use regexp::regexp_match_bin_collation;
 pub use row::{compare_datums, compare_datums_with_collation};
 pub(crate) use tidb_datatype::{Datum, Decimal};
 pub use tidb_util::mathutil::MysqlRng;
@@ -515,7 +515,6 @@ use ops::{
     effective_div_precision_increment, eval_binary, eval_binary_with_div_precision, eval_unary,
     logic_and,
 };
-use regexp::regexp_match;
 use row::row_compare;
 use string_fn::{position, trim_value};
 
@@ -1192,26 +1191,12 @@ pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
                 }
             }
         }
-        // Case-sensitive (utf8mb4_bin) `[NOT] REGEXP`/`RLIKE`, the SAME
-        // NULL-propagation and non-string-operand-coercion rules
-        // `Expr::Like` just above already established (confirmed via
-        // `gorun`: `5 REGEXP '5'` is `TRUE`) — see `crate::regexp::
-        // regexp_match`'s own doc for the empty-pattern/malformed-
-        // pattern error rules.
-        Expr::Regexp { expr, pattern, not } => {
-            match (eval_in(expr, cols)?, eval_in(pattern, cols)?) {
-                (Datum::Null, _) | (_, Datum::Null) => Ok(Datum::Null),
-                (v, p) => {
-                    let value = v
-                        .sql_string()
-                        .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP operand"))?;
-                    let pattern = p
-                        .sql_string()
-                        .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP pattern"))?;
-                    Ok(bool_int(regexp_match(&value, &pattern)? ^ not))
-                }
-            }
-        }
+        // The native regexp operator kernel was physically deleted. SQL
+        // execution rewrites this shape to the admitted TiKV `regexp` scalar;
+        // direct AST evaluation must fail closed without evaluating children.
+        Expr::Regexp { .. } => Err(EvalError::Unsupported(
+            "native regexp evaluation was removed; TiKV engine required",
+        )),
         // Go `weightStringFunctionClass`: a NUMERIC argument builds
         // `builtinWeightStringNullSig`, which is always NULL. Go reads that
         // off the argument's FieldType while BUILDING; this tier has only the

@@ -1444,23 +1444,38 @@ fn computed_default_whitelist_evaluates_the_allowed_function_shapes() {
     session
         .run("INSERT INTO default_function_suite (id) VALUES (1)")
         .unwrap();
-    assert_eq!(
-        rows(
-            &mut session,
-            "SELECT formatted, LENGTH(compact), login_name, \
-                    compact REGEXP '^[A-F0-9]{32}$', HEX(packed), \
-                    JSON_EXTRACT(document,'$.k') \
-             FROM default_function_suite"
-        ),
-        [[
-            "2023-11-14",
-            "32",
-            "BOB",
-            "1",
-            "6CCD780CBABA102695645B8C656024DB",
-            "7",
-        ]]
-    );
+    let projection = "SELECT formatted, LENGTH(compact), login_name, \
+                compact REGEXP '^[A-F0-9]{32}$', HEX(packed), \
+                JSON_EXTRACT(document,'$.k') \
+         FROM default_function_suite";
+    #[cfg(feature = "tikv-expr")]
+    {
+        session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
+        assert_eq!(
+            rows(&mut session, projection),
+            [[
+                "2023-11-14",
+                "32",
+                "BOB",
+                "1",
+                "6CCD780CBABA102695645B8C656024DB",
+                "7",
+            ]]
+        );
+        assert!(session.tikv_expression_rows() > 0);
+        session.set_tikv_expression_backend(None);
+    }
+    #[cfg(not(feature = "tikv-expr"))]
+    {
+        let error = session
+            .run(projection)
+            .expect_err("native regexp kernel is deleted")
+            .to_string();
+        assert!(
+            error.contains("native regexp evaluation was removed; TiKV engine required"),
+            "{error}"
+        );
+    }
     assert_eq!(
         code(
             &mut session,
