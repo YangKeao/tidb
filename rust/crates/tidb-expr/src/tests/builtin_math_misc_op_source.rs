@@ -244,6 +244,13 @@ fn bin_str(bytes: &[u8]) -> Datum {
 
 /// Dispatches one value through the retained comparison family. Deleted
 /// miscellaneous names are tested through their explicit refusal boundaries.
+fn assert_removed_misc_values(name: &str, vals: &[Datum]) {
+    assert!(matches!(
+        crate::func::eval_func_values_in(name, vals, &crate::NoColumns),
+        Some(Err(EvalError::Unsupported(_)))
+    ));
+}
+
 fn call(name: &str, vals: &[Datum]) -> Datum {
     compare2_dispatch(name, vals, &crate::context::NoColumns)
         .unwrap_or_else(|| panic!("{name} must belong to the comparison family"))
@@ -732,19 +739,18 @@ fn inet6_conversion_source_vectors_execute_only_in_tikv() {
 /// dedicated tests below instead.
 #[test]
 fn vectorized_builtin_miscellaneous_eval_one_vec() {
-    // INET converter vectors moved to the two engine-only source tests above;
-    // these predicates remain native candidates for a later deletion tranche.
-    assert_eq!(call("IS_IPV6", &[s("2001:db8::68")]), Datum::Int(1));
-    assert_eq!(call("IS_IPV6", &[s("192.168.0.1")]), Datum::Int(0));
-    assert_eq!(call("IS_IPV4", &[s("11.11.11.11")]), Datum::Int(1));
+    // Former Go results were 1, 0 and 1; native predicate kernels are deleted.
+    assert_removed_misc_values("IS_IPV6", &[s("2001:db8::68")]);
+    assert_removed_misc_values("IS_IPV6", &[s("192.168.0.1")]);
+    assert_removed_misc_values("IS_IPV4", &[s("11.11.11.11")]);
     // IsIPv4Mapped / IsIPv4Compat byte-generator shapes: a mapped address's
     // ten zero prefix + ffff marker + v4 tail reads 1; plain text reads 0.
     let mut mapped = vec![0_u8; 16];
     mapped[10] = 0xff;
     mapped[11] = 0xff;
     mapped[12..16].copy_from_slice(&[1, 2, 3, 4]);
-    assert_eq!(call("IS_IPV4_MAPPED", &[bin_str(&mapped)]), Datum::Int(1));
-    assert_eq!(call("IS_IPV4_MAPPED", &[s("plain text")]), Datum::Int(0));
+    assert_removed_misc_values("IS_IPV4_MAPPED", &[bin_str(&mapped)]);
+    assert_removed_misc_values("IS_IPV4_MAPPED", &[s("plain text")]);
 
     // Keep the miscellaneous source shapes, but direct native boundaries must
     // now refuse. ANY_VALUE remains admitted only through TiKV.
@@ -1434,7 +1440,7 @@ fn vectorized_builtin_op_func() {
         (C::Double, Datum::Real(0.0)),
     ] {
         let out = chunk_row_value("isnull(c0)", &[("c0", FieldType::new(code), value)]);
-        assert!(out.starts_with("INT:"), "{out}");
+        assert!(out.starts_with("Unsupported("), "{out}");
     }
 }
 

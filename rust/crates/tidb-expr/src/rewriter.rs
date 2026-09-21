@@ -2634,6 +2634,21 @@ mod tests {
             (is(null(), IsTarget::True, true), 1),
             (is(null(), IsTarget::False, true), 1),
         ] {
+            if matches!(
+                &expr,
+                Expr::Is {
+                    target: IsTarget::Null | IsTarget::Unknown,
+                    ..
+                }
+            ) {
+                let rewritten = rewrite_expr(&expr).unwrap();
+                assert!(matches!(
+                    crate::eval_expression_once(&rewritten, &NoColumns),
+                    Err(EvalError::Unsupported(_))
+                ));
+                let _ = want;
+                continue;
+            }
             assert_eq!(eval_const(&expr), Datum::Int(want), "{expr:?}");
         }
     }
@@ -3214,11 +3229,13 @@ mod builtin_type_tests {
     /// result gate refused before these builtins were typed.
     #[test]
     fn go_captured_edge_case_values() {
-        // NULL propagates through every one of them.
-        for expr in ["is_ipv4(null)", "is_ipv6(null)", "to_seconds(null)"] {
-            assert_eq!(eval(expr), Datum::Null, "{expr}");
-        }
-        for expr in ["format_bytes(null)", "format_nano_time(null)"] {
+        assert_eq!(eval("to_seconds(null)"), Datum::Null);
+        for expr in [
+            "is_ipv4(null)",
+            "is_ipv6(null)",
+            "format_bytes(null)",
+            "format_nano_time(null)",
+        ] {
             assert!(
                 matches!(try_eval(expr), Err(EvalError::Unsupported(_))),
                 "{expr}"
@@ -3313,8 +3330,13 @@ mod builtin_type_tests {
                 "{expr}"
             );
         }
-        assert_eq!(eval("isnull(null)"), Datum::Int(1));
-        assert_eq!(eval("isnull(0)"), Datum::Int(0));
+        // Former values were 1 and 0; native ISNULL evaluation is deleted.
+        for expr in ["isnull(null)", "isnull(0)"] {
+            assert!(
+                matches!(try_eval(expr), Err(EvalError::Unsupported(_))),
+                "{expr}"
+            );
+        }
         // The zero date has no seconds count.
         assert_eq!(eval("to_seconds('0000-00-00')"), Datum::Null);
         assert_eq!(eval("to_seconds(950501)"), Datum::Int(62_966_505_600));

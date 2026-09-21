@@ -14,4 +14,18 @@
 
 //! All topology-independent `tidb-session` integration tests in one process.
 
+fn assert_removed_misc(session: &mut tidb_session::Session, sql: &str, former_expected: &str) {
+    let Err(tidb_executor::DriverError::Exec(tidb_executor::ExecError::Eval(
+        tidb_executor::EvalError::Unsupported(message),
+    ))) = session.run(sql)
+    else {
+        panic!("{sql}: expected structured unsupported; former result was {former_expected}")
+    };
+    assert_eq!(
+        message,
+        "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
+        "{sql}: former result was {former_expected}",
+    );
+}
+
 include!(concat!(env!("OUT_DIR"), "/all_tests.rs"));

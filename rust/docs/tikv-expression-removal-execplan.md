@@ -359,6 +359,31 @@ remain in the workspace.
       math/crypto failures. Broad replay remains red by design: Native has 182
       divergences; Copying has 167 and 416246 engine rows. This is not a
       compatibility claim.
+- [x] Eighteenth physical-deletion tranche: removed native ISNULL and
+      IS_IPV4/IS_IPV4_COMPAT/IS_IPV4_MAPPED/IS_IPV6 value dispatch, IP parsing
+      and raw-byte predicate helpers, the ISNULL chunk-bitmap shortcut, and the
+      raw AST IS NULL/UNKNOWN evaluator. Direct native entry points fail closed
+      before child evaluation. Admission remains enabled: ISNULL columns and
+      leaf IP columns execute through the TiKV bridge (including its NULL mask),
+      while constant-only Session corpus statements are explicit bounded
+      contractions because that path evaluates before retained program
+      execution. Planner null-rejection keeps its symbolic IF(ISNULL(inner),...)
+      proof without creating a runtime evaluator or folding ISNULL calls away.
+      The prepared point-get IS NULL residual evaluator and its dead
+      contradiction-plan machinery are also deleted; the fast path declines and
+      a paired prepared-session test requires positive TiKV row accounting. The
+      dedicated constant-folder ISNULL handler is deleted too: constants,
+      NOT-NULL columns and deferred parameters retain the scalar call until the
+      TiKV/structured-unsupported boundary.
+      Affected join, subquery, CHECK, ordering and truth-predicate tests preserve
+      former expected values while asserting the precise contraction; neighboring
+      successful shapes keep value assertions. Validation is 1181 library and 77
+      external tests, expression/query diffs, runtime 319 receipts / 2062 engine
+      rows / 160 borrowed rows, and repository lint. Session returned to only the
+      four carried math/crypto failures: Copying 334 passed and feature-off 332.
+      Broad replay remains intentionally red: Native has 176 divergences;
+      Copying has 167 divergences and 416271 engine rows. This is not a
+      compatibility claim.
 - [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
       in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected
       borrowed facade was used by the adapter while the manifest still pinned

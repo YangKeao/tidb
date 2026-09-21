@@ -1082,10 +1082,10 @@ fn cached_rows(
     .1
 }
 
-/// `col IS NULL` beside the pins is a row-level residual: it never pins a
-/// key, and the cached read answers only rows whose decoded slot is NULL.
+/// `col IS NULL` beside equality pins declines the native prepared-point fast
+/// path; the session-level companion test proves TiKV executes the predicate.
 #[test]
-fn prepared_point_cache_answers_an_is_null_residual() {
+fn prepared_point_cache_declines_an_is_null_residual() {
     let mut catalog = Catalog::default();
     crate::run_create_table_on(
         "CREATE TABLE null_pin (\
@@ -1115,26 +1115,11 @@ fn prepared_point_cache_answers_an_is_null_residual() {
         "SELECT alwcobj, alwcnum, lmtdms, flgval FROM null_pin WHERE alwcobj = ? AND alwcnum = ? AND lmtdms IS NULL AND flgval = ?",
     )
     .unwrap();
-    let plan = std::sync::Arc::new(
+    assert!(
         build_prepared_point_get_plan(&stmt, 3, &catalog, DEFAULT_DATABASE, &Default::default())
-            .expect("an equality pin beside IS NULL is a reusable prepared plan"),
+            .is_none(),
+        "IS NULL must decline the native prepared-point residual fast path"
     );
-
-    let zone: tidb_datatype::SessionTimeZone = Default::default();
-    let ctx = crate::kv_table::PreparedPointGetDecodeContext::for_query(false, zone.clone());
-    let rows = cached_rows(
-        &plan,
-        &mut catalog,
-        &ctx,
-        &zone,
-        &[
-            Datum::Bytes(b"o1".to_vec()),
-            Datum::Bytes(b"n1".to_vec()),
-            Datum::Bytes(b"1".to_vec()),
-        ],
-    );
-    assert_eq!(rows.len(), 1);
-    assert_eq!(datum_text_for_test(&rows[0][1]), "n1");
 }
 
 /// The shared planner keeps YCSB E's bounded clustered range on its ordinary

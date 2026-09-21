@@ -466,8 +466,19 @@ fn try_fold_nullified_function(
         let [condition, when_true, when_false] = function.args.as_slice() else {
             return None;
         };
-        let condition = try_fold_nullified_constant(inner_column_ids, condition)?;
-        let take_true = crate::truthy_of(&condition.value).ok()? == Some(true);
+        let take_true = match condition {
+            Expression::ScalarFunction(condition)
+                if condition.func_name.lowercase() == "isnull" && condition.args.len() == 1 =>
+            {
+                try_fold_nullified_constant(inner_column_ids, &condition.args[0])?
+                    .value
+                    .is_null()
+            }
+            condition => {
+                let condition = try_fold_nullified_constant(inner_column_ids, condition)?;
+                crate::truthy_of(&condition.value).ok()? == Some(true)
+            }
+        };
         return try_fold_nullified_constant(
             inner_column_ids,
             if take_true { when_true } else { when_false },

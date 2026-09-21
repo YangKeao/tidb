@@ -637,6 +637,10 @@ mod tests {
                 [Some(14), Some(10), Some(14), Some(10)],
             ),
         ] {
+            let is_removed_isnull = matches!(
+                &original,
+                Expression::ScalarFunction(function) if function.func_name.lowercase() == "isnull"
+            );
             let folded = crate::expr_util::fold_constant_with(
                 &original,
                 &Parameters(vec![Datum::Int(1)]),
@@ -647,6 +651,17 @@ mod tests {
                 .zip(answers)
             {
                 let ctx = Parameters(vec![value]);
+                if is_removed_isnull {
+                    assert!(matches!(
+                        crate::eval_expression_once(&original, &ctx),
+                        Err(EvalError::Unsupported(_))
+                    ));
+                    assert!(matches!(
+                        crate::eval_expression_once(&folded, &ctx),
+                        Err(EvalError::Unsupported(_))
+                    ));
+                    continue;
+                }
                 let expected = expected.map_or(Datum::Null, Datum::Int);
                 assert_eq!(
                     crate::eval_expression_once(&original, &ctx).unwrap(),

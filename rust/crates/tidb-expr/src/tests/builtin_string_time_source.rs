@@ -1502,8 +1502,8 @@ fn test_vectorized_builtin_string_eval_one_vec_2() {
     assert_packet_string_refusal("to_base64('ab c')");
     // FORMAT has no TiKV scalar signature and is an explicit contraction.
     assert_string2_refusal("format(12345.67, 2, 'en_us')");
-    assert_eq!(e("isnull(1)"), "INT:0");
-    assert_eq!(e("isnull(NULL)"), "INT:1");
+    assert_misc_refusal("isnull(1)");
+    assert_misc_refusal("isnull(NULL)");
 }
 
 /// Go `pkg/expression/builtin_string_vec_test.go:587
@@ -1552,35 +1552,24 @@ fn benchmark_vectorized_generated_builtin_string_func() {}
 /// Go `pkg/expression/builtin_test.go:126 TestIsNullFunc`.
 #[test]
 fn test_is_null_func() {
-    assert_eq!(e("isnull(1)"), "INT:0");
-    assert_eq!(e("isnull(NULL)"), "INT:1");
-    // The typed-int signature answers through the same dispatcher.
-    assert_eq!(
-        eval_scalar(
-            "ISNULL",
-            FieldType::new(FieldTypeCode::LongLong),
-            vec![const_arg_typed(
-                Datum::Int(1),
-                FieldType::new(FieldTypeCode::LongLong)
-            )],
-            &NoColumns,
-        )
-        .unwrap(),
-        Datum::Int(0)
-    );
-    assert_eq!(
-        eval_scalar(
-            "ISNULL",
-            FieldType::new(FieldTypeCode::LongLong),
-            vec![const_arg_typed(
-                Datum::Null,
-                FieldType::new(FieldTypeCode::Null)
-            )],
-            &NoColumns,
-        )
-        .unwrap(),
-        Datum::Int(1)
-    );
+    assert_misc_refusal("isnull(1)");
+    assert_misc_refusal("isnull(NULL)");
+    // Former typed results were 0 and 1 respectively; the native dispatcher
+    // and vector shortcut are physically deleted.
+    for argument in [
+        const_arg_typed(Datum::Int(1), FieldType::new(FieldTypeCode::LongLong)),
+        const_arg_typed(Datum::Null, FieldType::new(FieldTypeCode::Null)),
+    ] {
+        assert!(matches!(
+            eval_scalar(
+                "ISNULL",
+                FieldType::new(FieldTypeCode::LongLong),
+                vec![argument],
+                &NoColumns,
+            ),
+            Err(EvalError::Unsupported(_))
+        ));
+    }
 }
 
 /// An advisory-lock session stub with the source's single-lock semantics:

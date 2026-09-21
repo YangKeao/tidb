@@ -49,8 +49,6 @@ pub(crate) enum PointResidualBound {
     Literal(Datum),
     /// A `?` marker resolved against each EXECUTE's parameters.
     Param(usize),
-    /// `column IS NULL`: the decoded row must carry a NULL in its slot.
-    IsNull,
 }
 
 /// The immutable part of Go's cached `PointGetPlan` for one prepared handle
@@ -94,11 +92,6 @@ pub struct PreparedPointGetPlan {
     /// [`FastPointOutput::offsets`] the residual column decodes to), paired
     /// with the bound to compare against.
     residuals: Vec<(usize, PointResidualBound)>,
-    /// A WHERE conjunct that SCHEMA contradicts (`NOT NULL` column `IS NULL`)
-    /// makes every row unmatched before any key is read. The plan then binds
-    /// to an always-empty execution, exactly like a NULL pin, and no storage
-    /// read ever runs -- the cached shape of Go's `TableDual`.
-    contradiction: bool,
     output: FastPointOutput,
     row_decoder: crate::kv_table::PreparedPointGetRowDecoder,
     cached_keys: std::sync::Mutex<Vec<PreparedPointCacheKey>>,
@@ -117,45 +110,6 @@ impl PreparedPointCacheKey {
             && self.environment == actual.environment
             && prepared_parameter_types_compatible(&self.parameter_types, &actual.parameter_types)
     }
-}
-
-/// Builds the always-empty plan for a schema-contradicted WHERE: nothing is
-/// pinned and nothing is residual, because no row can survive the predicate.
-fn contradiction_plan(
-    schema_version: u64,
-    current_database: &str,
-    database: &str,
-    table_name: &str,
-    table_id: i64,
-    common_handle_offsets: Vec<usize>,
-    handle_offset: Option<usize>,
-    table: &crate::KvTable,
-    output: FastPointOutput,
-) -> Option<PreparedPointGetPlan> {
-    Some(PreparedPointGetPlan {
-        schema_version,
-        current_database: current_database.to_owned(),
-        database: database.to_owned(),
-        table: table_name.to_owned(),
-        table_key: CatalogTableKey::new(database, table_name),
-        table_id,
-        parameter_orders: Vec::new(),
-        pin_types: Vec::new(),
-        target: PreparedPointTarget::RowHandle,
-        handle_literals: Vec::new(),
-        common_handle_offsets,
-        residuals: Vec::new(),
-        contradiction: true,
-        row_decoder: crate::kv_table::PreparedPointGetRowDecoder::new_with_handles(
-            table.visible_columns(),
-            handle_offset,
-            &[],
-            &output.offsets,
-        )
-        .ok()?,
-        output,
-        cached_keys: std::sync::Mutex::new(Vec::new()),
-    })
 }
 
 impl PreparedPointGetPlan {
@@ -245,11 +199,6 @@ impl PreparedPointGetPlan {
                 cache_hit,
             })
         };
-        if self.contradiction {
-            // `NOT NULL col IS NULL` matched no rows at PLAN time; parameters
-            // cannot change a schema fact.
-            return execution(None, None, Vec::new());
-        }
         let mut key_values = Vec::with_capacity(self.parameter_orders.len());
         for (index, handle_type) in self.pin_types.iter().enumerate() {
             let value = match (&self.parameter_orders[index], &self.handle_literals[index]) {
@@ -283,7 +232,6 @@ impl PreparedPointGetPlan {
         let mut residuals = Vec::with_capacity(self.residuals.len());
         for (position, bound) in &self.residuals {
             let check = match bound {
-                PointResidualBound::IsNull => ResidualCheck::IsNull,
                 PointResidualBound::Literal(value) => ResidualCheck::Equal(value.clone()),
                 PointResidualBound::Param(order) => {
                     let value = values.get(*order)?;
@@ -975,7 +923,6 @@ pub(crate) fn run_prepared_select_for_test(
 #[derive(Clone, Debug)]
 enum ResidualCheck {
     Equal(Datum),
-    IsNull,
 }
 
 impl PreparedPointGetExecution {
@@ -1120,36 +1067,9 @@ pub fn build_prepared_point_get_plan(
                 };
                 resolved.push((offset, PreparedPointPredicate::Eq(order, literal)));
             }
-            PreparedPointConjunct::IsNull { path } => {
-                let Some((offset, _, _)) = resolver.resolve(&path) else {
-                    return None;
-                };
-                resolved.push((offset, PreparedPointPredicate::IsNull));
-            }
         }
     }
     drop(resolver);
-    // A schema contradiction ends the search before any key is named: a NOT
-    // NULL column can never satisfy `IS NULL`, so the answer is always empty
-    // (Go constant-folds this into a `TableDual` and its plan cache keeps it).
-    if resolved.iter().any(|(offset, kind)| {
-        matches!(kind, PreparedPointPredicate::IsNull)
-            && columns[*offset]
-                .1
-                .has_flag(tidb_datatype::FieldTypeFlags::NOT_NULL)
-    }) {
-        return contradiction_plan(
-            catalog.metadata_version(),
-            current_database,
-            database,
-            table_name,
-            table.table_id,
-            common_handle_offsets.clone(),
-            handle_offset,
-            table,
-            output,
-        );
-    }
     let handle_offsets: Vec<usize> = match handle_offset {
         Some(offset) => vec![offset],
         None => common_handle_offsets.to_vec(),
@@ -1218,9 +1138,6 @@ pub fn build_prepared_point_get_plan(
             None => return None,
         };
         match kind {
-            PreparedPointPredicate::IsNull => {
-                residuals.push((position, PointResidualBound::IsNull));
-            }
             PreparedPointPredicate::Eq(marker_order, literal) => {
                 let column_type = &output.columns[position].1;
                 if !point_byte_safe(column_type) {
@@ -1280,7 +1197,6 @@ pub fn build_prepared_point_get_plan(
         .ok()?,
         common_handle_offsets,
         residuals,
-        contradiction: false,
         output,
         cached_keys: std::sync::Mutex::new(Vec::new()),
     })
@@ -1427,25 +1343,20 @@ fn collect_prepared_table_names(
     collect_query(query, current_database, names);
 }
 
-/// One `column = ?`, `column = const`, or `column IS NULL` conjunct of a
-/// prepared point read's WHERE, its column path kept UNRESOLVED until the
-/// builder maps it through the statement's scope.
+/// One `column = ?` or `column = const` conjunct of a prepared point read's
+/// WHERE, its column path kept UNRESOLVED until the builder maps it through the
+/// statement's scope.
 enum PreparedPointConjunct {
     Eq {
         path: Vec<String>,
         order: Option<usize>,
         literal: Option<Datum>,
     },
-    IsNull {
-        path: Vec<String>,
-    },
 }
 
-/// One WHERE conjunct RESOLVED to its column offset. `Eq` may pin a key;
-/// `IsNull` is inherently a row-level check (NULL never equals a key value).
+/// One WHERE equality conjunct resolved to its column offset.
 enum PreparedPointPredicate {
     Eq(Option<usize>, Option<Datum>),
-    IsNull,
 }
 
 type ResolvedConjunct = (usize, PreparedPointPredicate);
@@ -1454,7 +1365,6 @@ impl PreparedPointPredicate {
     fn eq_parts(&self) -> Option<(Option<usize>, Option<Datum>)> {
         match self {
             PreparedPointPredicate::Eq(order, literal) => Some((*order, literal.clone())),
-            PreparedPointPredicate::IsNull => None,
         }
     }
 }
@@ -1526,20 +1436,6 @@ fn prepared_point_eq_conjuncts(
                         true
                     }
                 }
-            }
-            Expr::Is { expr, target, not }
-                if matches!(target, tidb_ast::IsTarget::Null) && !*not =>
-            {
-                // `col IS NULL`: a row-level check (NULL never equals, so it
-                // can never pin a key), admitted beside the equalities.
-                let Expr::Column(path) = unparenthesized(expr) else {
-                    return false;
-                };
-                if path.is_empty() {
-                    return false;
-                }
-                out.push(PreparedPointConjunct::IsNull { path: path.clone() });
-                true
             }
             _ => false,
         }
@@ -1717,15 +1613,13 @@ impl Executor for PreparedPointGetExecutor {
 }
 
 /// The residual gate shared by every prepared point-read arm: each unconsumed
-/// predicate must hold on the decoded row -- an `=` compared in its own
-/// domain, or a NULL present where `IS NULL` demanded one.
+/// equality predicate must hold on the decoded row in its own domain.
 fn residuals_pass(
     row: &[Datum],
     columns: &[(String, FieldType)],
     residuals: &[(usize, ResidualCheck)],
 ) -> bool {
     residuals.iter().all(|(position, check)| match check {
-        ResidualCheck::IsNull => row.get(*position).is_some_and(Datum::is_null),
         ResidualCheck::Equal(expected) => row.get(*position).is_some_and(|actual| {
             actual
                 .compare(expected, (&columns[*position].1).collation())
@@ -1734,9 +1628,8 @@ fn residuals_pass(
     })
 }
 
-/// Whether ONE equality conjunct names this column (an `IS NULL` beside it
-/// does not compete for a key). The column pins a key only if exactly one
-/// such equality exists and nothing else touches it.
+/// Whether exactly one equality conjunct names this column. The column pins a
+/// key only if exactly one such equality exists and nothing else touches it.
 fn column_pinned_once(offset: usize, resolved: &[ResolvedConjunct]) -> bool {
     let mut hits = resolved
         .iter()

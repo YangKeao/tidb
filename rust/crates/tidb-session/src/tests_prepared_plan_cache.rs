@@ -84,6 +84,31 @@ fn binary_prepared_result_authority_path_reuses_select_plan() {
     );
 }
 
+#[cfg(feature = "tikv-expr")]
+#[test]
+fn prepared_point_is_null_declines_native_fast_path_and_uses_tikv() {
+    let mut session = Session::new();
+    session.set_tikv_expression_backend(Some(crate::TikvExpressionBackend::Copying));
+    session
+        .run("CREATE TABLE prepared_null_engine (id BIGINT PRIMARY KEY, v BIGINT NULL)")
+        .unwrap();
+    session
+        .run("INSERT INTO prepared_null_engine VALUES (1,NULL),(2,20)")
+        .unwrap();
+    let prepared = session
+        .prepare_ast("SELECT id FROM prepared_null_engine WHERE id=? AND v IS NULL")
+        .unwrap();
+    let before = session.tikv_expression_rows();
+    let (output, _) = session
+        .run_prepared_with_result_authority(&prepared, &[Datum::Int(1)])
+        .unwrap();
+    let crate::StmtOutput::Rows { rows, .. } = output else {
+        panic!("expected rows")
+    };
+    assert_eq!(rows, vec![vec![Datum::Int(1)]]);
+    assert!(session.tikv_expression_rows() > before);
+}
+
 #[test]
 fn unchanged_session_reuses_the_prepared_plan_cache_environment() {
     let mut session = Session::new();

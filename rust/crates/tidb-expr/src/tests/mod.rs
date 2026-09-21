@@ -331,7 +331,7 @@ fn engine_case_with_backend(
 /// been physically deleted. A declined expression is a visible test failure,
 /// never a native fallback.
 #[cfg(feature = "tikv-expr")]
-pub(super) fn engine_e(expr: &str) -> String {
+pub(crate) fn engine_e(expr: &str) -> String {
     engine_e_with_backend(expr, crate::tikv::Backend::Copying)
 }
 
@@ -1597,10 +1597,11 @@ fn predicates() {
     assert_eq!(e("5 between 6 and 10"), "INT:0");
     assert_eq!(e("5 not between 6 and 10"), "INT:1");
     assert_eq!(e("NULL between 1 and 10"), "NULL");
-    // IS always resolves to TRUE/FALSE, never NULL.
-    assert_eq!(e("NULL is null"), "INT:1");
-    assert_eq!(e("1 is null"), "INT:0");
-    assert_eq!(e("1 is not null"), "INT:1");
+    // Former IS NULL values were 1, 0 and 1; that direct AST kernel is gone.
+    assert_misc_refusal("NULL is null");
+    assert_misc_refusal("1 is null");
+    assert_misc_refusal("1 is not null");
+    // IS TRUE/FALSE remains a distinct retained predicate.
     assert_eq!(e("1 is true"), "INT:1");
     assert_eq!(e("0 is true"), "INT:0");
     assert_eq!(e("NULL is true"), "INT:0");

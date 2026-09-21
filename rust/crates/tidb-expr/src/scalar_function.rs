@@ -2503,7 +2503,10 @@ impl ScalarFunction {
         is_zero: &mut Vec<i8>,
     ) -> Result<bool, EvalError> {
         let name = self.func_name.lowercase();
-        if name != "not" && name != "isnull" {
+        if crate::func::is_removed_native_misc(name) {
+            return Ok(false);
+        }
+        if name != "not" {
             return self.vec_eval_numeric_compare(input, sel, is_zero);
         }
         // `coerce_to_ret_type` leaves an integer alone only for an integer
@@ -2526,21 +2529,6 @@ impl ScalarFunction {
                         *code = i8::from(*code == 0);
                     }
                 }
-                Ok(true)
-            }
-            ("isnull", [Expression::Column(column)]) => {
-                let Some(index) = usize::try_from(column.index)
-                    .ok()
-                    .filter(|&index| index < input.num_cols())
-                else {
-                    return Ok(false);
-                };
-                let column = input.column(index);
-                is_zero.clear();
-                is_zero.extend(
-                    sel.iter()
-                        .map(|&physical| i8::from(column.is_null(physical))),
-                );
                 Ok(true)
             }
             _ => Ok(false),

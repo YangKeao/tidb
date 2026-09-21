@@ -1136,12 +1136,17 @@ pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
             Ok(negate_if(logic_and(ge, le)?, *not))
         }
         Expr::Is { expr, target, not } => {
-            // IS is always TRUE/FALSE (never NULL): it tests a definite property.
+            if matches!(target, IsTarget::Null | IsTarget::Unknown) {
+                return Err(EvalError::Unsupported(
+                    "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
+                ));
+            }
+            // IS TRUE/FALSE remains definite and never returns NULL.
             let v = eval_in(expr, cols)?;
             let holds = match target {
-                IsTarget::Null | IsTarget::Unknown => v == Datum::Null,
                 IsTarget::True => truthy_of(&v)? == Some(true),
                 IsTarget::False => truthy_of(&v)? == Some(false),
+                IsTarget::Null | IsTarget::Unknown => unreachable!(),
             };
             Ok(bool_int(holds ^ not))
         }

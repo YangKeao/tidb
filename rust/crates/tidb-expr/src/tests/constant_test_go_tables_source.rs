@@ -25,7 +25,7 @@
 
 use super::*;
 use crate::column::Column;
-use crate::constant::Constant;
+use crate::constant::{Constant, ParamMarker};
 use crate::evaluator::EvaluatorSuite;
 use crate::expr_util::FunctionBuilder;
 use crate::expr_util::{
@@ -35,7 +35,7 @@ use crate::expr_util::{
 use crate::expression::Expression;
 use crate::scalar_function::ScalarFunction;
 use tidb_ast::CiString;
-use tidb_datatype::{FieldType, FieldTypeCode};
+use tidb_datatype::{FieldType, FieldTypeCode, FieldTypeFlags};
 
 fn longlong_type() -> tidb_datatype::FieldType {
     FieldType::new(FieldTypeCode::LongLong)
@@ -168,7 +168,12 @@ fn constant_folding_isnull_and_unary_not_reduce() {
     // not(plus(1,1)) inside eq folds to eq(Column#0, 0). `not` is Go's
     // ast.UnaryNot name in the registry.
     let expr = build("isnull", vec![int_const(1)]);
-    assert_eq!(expect_int_constant(&fold(&expr), "isnull(1)"), 0);
+    let folded_isnull = fold(&expr);
+    expect_scalar_function(&folded_isnull, "isnull", 1);
+    assert!(matches!(
+        crate::eval_expression_once(&folded_isnull, &NoColumns),
+        Err(EvalError::Unsupported(_))
+    ));
 
     let expr = build(
         "eq",
@@ -180,6 +185,32 @@ fn constant_folding_isnull_and_unary_not_reduce() {
     let folded = fold(&expr);
     let root = expect_scalar_function(&folded, "eq", 2);
     assert_eq!(expect_int_constant(&root.args[1], "not(2)"), 0);
+}
+
+#[test]
+fn removed_isnull_never_folds_before_the_engine_boundary() {
+    let mut not_null_type = longlong_type();
+    not_null_type.add_flags(FieldTypeFlags::NOT_NULL);
+    let not_null_column = Expression::Column(Column::new(7, not_null_type));
+
+    let mut parameter = Constant::new(Datum::Null, longlong_type());
+    parameter.param_marker = Some(ParamMarker { order: 0 });
+
+    for (label, argument) in [
+        ("constant", int_const(1)),
+        ("not-null column", not_null_column),
+        ("deferred parameter", Expression::Constant(parameter)),
+    ] {
+        let folded = fold(&build("isnull", vec![argument]));
+        expect_scalar_function(&folded, "isnull", 1);
+        assert!(
+            matches!(
+                crate::eval_expression_once(&folded, &NoColumns),
+                Err(EvalError::Unsupported(_))
+            ),
+            "{label} ISNULL must reach the engine/unsupported boundary"
+        );
+    }
 }
 
 /// Rows 7-8 of `pkg/expression/constant_test.go:198 TestConstantFolding`

@@ -1,6 +1,5 @@
-//! The IS TRUE / IS FALSE / IS UNKNOWN (UNKNOWN alias of NULL) family:
-//! NULL never satisfies IS TRUE or IS FALSE but satisfies IS UNKNOWN, and
-//! each has a negated IS NOT form.
+//! IS TRUE/FALSE and their negated forms remain executable; the former
+//! IS UNKNOWN result is retained as an oracle for its explicit contraction.
 
 use tidb_session::Session;
 
@@ -21,7 +20,7 @@ fn rows(session: &mut Session, sql: &str) -> String {
 }
 
 #[test]
-fn truth_value_predicates() {
+fn true_false_survive_while_unknown_contracts() {
     let mut session = Session::new();
 
     assert_eq!(
@@ -32,9 +31,10 @@ fn truth_value_predicates() {
         rows(&mut session, "select 1 is false, 0 is false, null is false"),
         "Int(0)|Int(1)|Int(0)"
     );
-    assert_eq!(
-        rows(&mut session, "select 1 is unknown, null is unknown, null is not unknown"),
-        "Int(0)|Int(1)|Int(0)"
+    crate::assert_removed_misc(
+        &mut session,
+        "select 1 is unknown, null is unknown, null is not unknown",
+        "Int(0)|Int(1)|Int(0)",
     );
     assert_eq!(
         rows(&mut session, "select null is not true, 0 is not true"),

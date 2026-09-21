@@ -20,8 +20,8 @@
     "--test-threads=1"
   ],
   "tests_passed": 30,
-  "fixture_receipts": 317,
-  "engine_rows": 2026,
+  "fixture_receipts": 319,
+  "engine_rows": 2062,
   "borrowed_rows": 160,
   "records": [
     {
@@ -1480,6 +1480,18 @@
       "native_fallbacks": 0
     },
     {
+      "label": "is_ipv4_compat",
+      "wire_signatures": [
+        3114,
+        4107,
+        4566
+      ],
+      "input_rows": 9,
+      "engine_rows": 18,
+      "borrowed_rows": 0,
+      "native_fallbacks": 0
+    },
+    {
       "label": "is_ipv4_mapped",
       "wire_signatures": [
         3114,
@@ -1488,6 +1500,18 @@
       ],
       "input_rows": 5,
       "engine_rows": 10,
+      "borrowed_rows": 0,
+      "native_fallbacks": 0
+    },
+    {
+      "label": "is_ipv4_mapped",
+      "wire_signatures": [
+        3114,
+        4107,
+        4567
+      ],
+      "input_rows": 9,
+      "engine_rows": 18,
       "borrowed_rows": 0,
       "native_fallbacks": 0
     },

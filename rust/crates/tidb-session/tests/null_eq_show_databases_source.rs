@@ -1,6 +1,5 @@
-//! Null-safe equality and SHOW DATABASES: `<=>` matches NULL to NULL where
-//! `=` yields UNKNOWN, `<=> NULL` answers directly, and SHOW DATABASES
-//! lists the created schema beside the system ones.
+//! Null-safe equality and SHOW DATABASES remain executable; the former
+//! `<=> NULL ... IS NULL` result is retained as an explicit contraction oracle.
 
 use tidb_session::Session;
 
@@ -15,9 +14,9 @@ fn rows(session: &mut Session, sql: &str) -> Vec<String> {
                         tidb_datatype::Datum::Bytes(b) => {
                             String::from_utf8_lossy(b).into_owned().to_uppercase()
                         }
-                        tidb_datatype::Datum::String(s) => {
-                            String::from_utf8_lossy(&s.bytes()).into_owned().to_uppercase()
-                        }
+                        tidb_datatype::Datum::String(s) => String::from_utf8_lossy(&s.bytes())
+                            .into_owned()
+                            .to_uppercase(),
                         tidb_datatype::Datum::Null => "NULL".to_owned(),
                         other => format!("{other:?}"),
                     })
@@ -34,7 +33,7 @@ fn one(session: &mut Session, sql: &str) -> String {
 }
 
 #[test]
-fn null_safe_equality_and_schema_list() {
+fn null_safe_equality_survives_while_is_null_filter_contracts() {
     let mut session = Session::new();
     session.run("create table t (a int, b int)").unwrap();
     session
@@ -45,8 +44,15 @@ fn null_safe_equality_and_schema_list() {
     assert_eq!(one(&mut session, "select a, b from t where a = b"), "1|1");
 
     // `<=>`: NULL matches NULL.
-    assert_eq!(one(&mut session, "select a, b from t where a <=> b"), "1|1;NULL|NULL");
-    assert_eq!(one(&mut session, "select a <=> NULL from t where a is null"), "1");
+    assert_eq!(
+        one(&mut session, "select a, b from t where a <=> b"),
+        "1|1;NULL|NULL"
+    );
+    crate::assert_removed_misc(
+        &mut session,
+        "select a <=> NULL from t where a is null",
+        "1",
+    );
 
     // SHOW DATABASES lists created schemas beside the system ones.
     session.run("create database zzz_probe").unwrap();
@@ -54,5 +60,9 @@ fn null_safe_equality_and_schema_list() {
     let mut dbs = rows(&mut session, "show databases");
     dbs.sort();
     assert!(dbs.contains(&"ZZZ_PROBE".to_owned()), "{dbs:?}");
-    assert!(dbs.iter().any(|db| db == "MYSQL" || db == "INFORMATION_SCHEMA"), "{dbs:?}");
+    assert!(
+        dbs.iter()
+            .any(|db| db == "MYSQL" || db == "INFORMATION_SCHEMA"),
+        "{dbs:?}"
+    );
 }

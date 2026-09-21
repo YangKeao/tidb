@@ -15,9 +15,6 @@
 //! implementation in `pkg/expression/builtin_*.go`, cited per function.
 
 use std::cmp::Ordering;
-use std::net::Ipv6Addr;
-use std::str::FromStr;
-
 use tidb_ast::BinaryOp;
 use tidb_datatype::{EvalType, FieldType, FieldTypeFlags, TimeType};
 
@@ -35,11 +32,6 @@ pub(crate) fn dispatch(
         ("LEAST", _) => Some(extremum(vals, Ordering::Less, ctx)),
         ("GREATEST", _) => Some(extremum(vals, Ordering::Greater, ctx)),
         ("INTERVAL", n) if n >= 2 => Some(interval(vals, ctx)),
-        ("ISNULL", 1) => Some(Ok(Datum::Int(i64::from(matches!(vals[0], Datum::Null))))),
-        ("IS_IPV4", 1) => Some(is_ipv4_value(&vals[0])),
-        ("IS_IPV4_MAPPED", 1) => Some(is_ipv4_mapped_value(&vals[0])),
-        ("IS_IPV4_COMPAT", 1) => Some(is_ipv4_compat_value(&vals[0])),
-        ("IS_IPV6", 1) => Some(is_ipv6_value(&vals[0])),
         _ => None,
     }
 }
@@ -738,95 +730,6 @@ fn interval_real(value: &Datum, ctx: &dyn crate::Columns) -> Result<f64, EvalErr
     crate::ops::to_f64_with_mysql_string(value, ctx)
 }
 
-/// `IS_IPV4(expr)`: strict four-component decimal IPv4 predicate. Port of
-/// `builtinIsIPv4Sig.evalInt` and its `isIPv4` helper in
-/// `pkg/expression/builtin_miscellaneous.go`.
-fn is_ipv4_value(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(value) = coerce_str(value)? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int(i64::from(is_ipv4(&value))))
-}
-
-fn is_ipv4(value: &str) -> bool {
-    let mut dots = 0;
-    let mut component = 0_u16;
-    let mut previous_dot = true;
-    for byte in value.bytes() {
-        match byte {
-            b'0'..=b'9' => {
-                // Only whether the component exceeds 255 matters. Saturate
-                // rather than letting an arbitrarily long invalid component
-                // overflow Rust's debug arithmetic before we reject it.
-                component = component
-                    .saturating_mul(10)
-                    .saturating_add(u16::from(byte - b'0'));
-                previous_dot = false;
-            }
-            b'.' => {
-                dots += 1;
-                if dots > 3 || component > 255 || previous_dot {
-                    return false;
-                }
-                component = 0;
-                previous_dot = true;
-            }
-            _ => return false,
-        }
-    }
-    dots == 3 && component <= 255 && !previous_dot
-}
-
-/// `IS_IPV4_MAPPED(expr)`: true only for a sixteen-byte binary payload whose
-/// first twelve bytes are the IPv4-mapped prefix (`::ffff:`).  The Go
-/// signature receives an ETString and tests the raw bytes directly; keeping
-/// this helper byte-oriented is important because arbitrary SQL strings are
-/// allowed to contain invalid UTF-8.  Port of
-/// `builtinIsIPv4MappedSig.evalInt` in `pkg/expression/builtin_miscellaneous.go`.
-fn is_ipv4_mapped_value(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(bytes) = eval_string_bytes(value)? else {
-        return Ok(Datum::Null);
-    };
-    let mapped = bytes.len() == 16 && bytes[..12] == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff];
-    Ok(Datum::Int(i64::from(mapped)))
-}
-
-/// `IS_IPV4_COMPAT(expr)`: true only for a sixteen-byte binary payload whose
-/// first twelve bytes are all zero (`::/96`, excluding the mapped `::ffff:`
-/// prefix by construction).  Port of `builtinIsIPv4CompatSig.evalInt` in
-/// `pkg/expression/builtin_miscellaneous.go`.
-fn is_ipv4_compat_value(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(bytes) = eval_string_bytes(value)? else {
-        return Ok(Datum::Null);
-    };
-    let compat = bytes.len() == 16 && bytes[..12] == [0; 12];
-    Ok(Datum::Int(i64::from(compat)))
-}
-
-/// Evaluates the ETString argument used by the Go IPv4 binary predicates
-/// without decoding or replacing arbitrary bytes.  Numeric constants still
-/// follow the normal EvalString coercion used by the source signature.
-fn eval_string_bytes(value: &Datum) -> Result<Option<Vec<u8>>, EvalError> {
-    match value {
-        Datum::Null => Ok(None),
-        Datum::String(value) => Ok(Some(value.bytes().to_vec())),
-        Datum::Bytes(value) => Ok(Some(value.clone())),
-        _ => Ok(coerce_str(value)?.map(|text| text.into_bytes())),
-    }
-}
-
-/// `IS_IPV6(expr)`: true for a parseable IPv6 address, including an IPv4
-/// mapped spelling, but false for a pure IPv4 address. Port of
-/// `builtinIsIPv6Sig.evalInt` in `pkg/expression/builtin_miscellaneous.go`.
-fn is_ipv6_value(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(value) = coerce_str(value)? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int(i64::from(
-        Ipv6Addr::from_str(&value).is_ok() && !is_ipv4(&value),
-    )))
-}
-
 #[cfg(test)]
 mod tests {
     use super::dispatch;
@@ -842,6 +745,13 @@ mod tests {
 
     fn s(value: &str) -> Datum {
         Datum::new_string(value.to_string())
+    }
+
+    fn assert_removed_misc(name: &str, vals: &[Datum]) {
+        assert!(matches!(
+            crate::func::eval_func_values_in(name, vals, &crate::NoColumns),
+            Some(Err(crate::EvalError::Unsupported(_)))
+        ));
     }
 
     fn assert_inet_refusal(name: &str, vals: &[Datum]) {
@@ -1100,9 +1010,16 @@ mod tests {
             ("168.1.2", 0),
             ("1.2.3.4.5", 0),
         ] {
-            assert_eq!(call("IS_IPV4", &[s(ip)]), Datum::Int(want));
+            #[cfg(feature = "tikv-expr")]
+            assert_eq!(
+                crate::tests::engine_e(&format!("is_ipv4('{ip}')")),
+                format!("INT:{want}")
+            );
+            assert_removed_misc("IS_IPV4", &[s(ip)]);
         }
-        assert_eq!(call("IS_IPV4", &[Datum::Null]), Datum::Null);
+        #[cfg(feature = "tikv-expr")]
+        assert_eq!(crate::tests::engine_e("is_ipv4(null)"), "NULL");
+        assert_removed_misc("IS_IPV4", &[Datum::Null]);
         for (ip, want) in [
             ("2001:250:207:0:0:eef2::1", 1),
             ("2001:0250:0207:0001:0000:0000:0000:ff02", 1),
@@ -1110,9 +1027,16 @@ mod tests {
             ("192.168.1.1", 0),
             ("::ffff:1.2.3.4", 1),
         ] {
-            assert_eq!(call("IS_IPV6", &[s(ip)]), Datum::Int(want));
+            #[cfg(feature = "tikv-expr")]
+            assert_eq!(
+                crate::tests::engine_e(&format!("is_ipv6('{ip}')")),
+                format!("INT:{want}")
+            );
+            assert_removed_misc("IS_IPV6", &[s(ip)]);
         }
-        assert_eq!(call("IS_IPV6", &[Datum::Null]), Datum::Null);
+        #[cfg(feature = "tikv-expr")]
+        assert_eq!(crate::tests::engine_e("is_ipv6(null)"), "NULL");
+        assert_removed_misc("IS_IPV6", &[Datum::Null]);
     }
 
     /// `TestIsIPv4Mapped` and `TestIsIPv4Compat` operate on raw ETString
@@ -1137,12 +1061,10 @@ mod tests {
             (vec![0xff; 16], 0),
         ];
         for (bytes, want) in mapped_cases {
-            assert_eq!(
-                call("IS_IPV4_MAPPED", &[Datum::new_bytes(bytes)]),
-                Datum::Int(want)
-            );
+            let _ = want;
+            assert_removed_misc("IS_IPV4_MAPPED", &[Datum::new_bytes(bytes)]);
         }
-        assert_eq!(call("IS_IPV4_MAPPED", &[Datum::Null]), Datum::Null);
+        assert_removed_misc("IS_IPV4_MAPPED", &[Datum::Null]);
 
         let compat_cases = [
             (vec![], 0),
@@ -1157,12 +1079,10 @@ mod tests {
             (vec![0xff; 16], 0),
         ];
         for (bytes, want) in compat_cases {
-            assert_eq!(
-                call("IS_IPV4_COMPAT", &[Datum::new_bytes(bytes)]),
-                Datum::Int(want)
-            );
+            let _ = want;
+            assert_removed_misc("IS_IPV4_COMPAT", &[Datum::new_bytes(bytes)]);
         }
-        assert_eq!(call("IS_IPV4_COMPAT", &[Datum::Null]), Datum::Null);
+        assert_removed_misc("IS_IPV4_COMPAT", &[Datum::Null]);
     }
 
     /// Go `TestIsNullFunc`; `builtin*IsNullSig.evalInt` in `builtin_op.go`
@@ -1170,15 +1090,24 @@ mod tests {
     /// source's integer/NULL rows and cover the other Rust datum families too.
     #[test]
     fn test_is_null_func() {
+        #[cfg(feature = "tikv-expr")]
+        for (expr, want) in [
+            ("isnull(0)", "INT:0"),
+            ("isnull('')", "INT:0"),
+            ("isnull(0.0)", "INT:0"),
+            ("isnull(null)", "INT:1"),
+        ] {
+            assert_eq!(crate::tests::engine_e(expr), want, "{expr}");
+        }
         for value in [
             Datum::Int(0),
             s(""),
             Datum::Decimal(Decimal::from_literal("0.0")),
             Datum::Real(0.0),
         ] {
-            assert_eq!(call("ISNULL", &[value]), Datum::Int(0));
+            assert_removed_misc("ISNULL", &[value]);
         }
-        assert_eq!(call("ISNULL", &[Datum::Null]), Datum::Int(1));
+        assert_removed_misc("ISNULL", &[Datum::Null]);
     }
 
     /// LEAST/GREATEST print the SIGNATURE's scale, not the winner's own.

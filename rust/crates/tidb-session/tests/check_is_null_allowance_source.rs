@@ -1,6 +1,5 @@
-//! CHECK with an explicit NULL allowance: `check (b is null or b > 0)`
-//! passes NULL rows (UNKNOWN satisfies the OR), refuses a real negative,
-//! and accepts a positive.
+//! Preserves the former CHECK/NULL independent outcomes while explicitly
+//! pinning this local ISNULL-dependent constraint shape as unsupported.
 
 use tidb_session::Session;
 
@@ -34,22 +33,16 @@ fn setup(session: &mut Session) {
 }
 
 #[test]
-fn check_with_null_allowance() {
+fn check_null_allowance_contracts_without_local_isnull() {
     let mut session = Session::new();
     setup(&mut session);
 
-    // NULL passes the allowance arm (UNKNOWN is not a violation).
-    session.run("insert into t values (1, NULL)").unwrap();
-    // A negative fails.
-    let error = session
-        .run("insert into t values (2, -5)")
-        .expect_err("a negative fails the allowance");
-    assert!(error.to_string().contains("'t_chk_1' is violated"), "{error}");
-    // A positive passes.
-    session.run("insert into t values (3, 7)").unwrap();
-
-    assert_eq!(
-        rows(&mut session, "select a, b from t order by a"),
-        "1|NULL;3|7"
+    crate::assert_removed_misc(&mut session, "insert into t values (1, NULL)", "accepted");
+    crate::assert_removed_misc(
+        &mut session,
+        "insert into t values (2, -5)",
+        "check 't_chk_1' is violated",
     );
+    crate::assert_removed_misc(&mut session, "insert into t values (3, 7)", "accepted");
+    assert_eq!(rows(&mut session, "select a, b from t order by a"), "");
 }

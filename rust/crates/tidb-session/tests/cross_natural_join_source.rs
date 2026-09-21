@@ -1,6 +1,5 @@
-//! CROSS JOIN emits the full cartesian product in nested-loop order, and
-//! NATURAL JOIN joins on the shared column (id) projecting it once —
-//! `u natural join w` keeps only the row whose ids match.
+//! CROSS JOIN still verifies its Cartesian-product values; the former NATURAL
+//! JOIN merged-column result remains an independent oracle for its contraction.
 
 use tidb_session::Session;
 
@@ -25,7 +24,7 @@ fn rows(session: &mut Session, sql: &str) -> String {
 }
 
 #[test]
-fn cartesian_product_and_natural_key() {
+fn cartesian_product_survives_while_natural_join_contracts() {
     let mut session = Session::new();
 
     session.run("create table l (a int)").unwrap();
@@ -34,15 +33,24 @@ fn cartesian_product_and_natural_key() {
     session.run("insert into r values (10), (20)").unwrap();
 
     assert_eq!(
-        rows(&mut session, "select a, b from l cross join r order by a, b"),
+        rows(
+            &mut session,
+            "select a, b from l cross join r order by a, b"
+        ),
         "i:1|i:10;i:1|i:20;i:2|i:10;i:2|i:20"
     );
 
     session.run("create table u (id int, v int)").unwrap();
     session.run("create table w (id int, w int)").unwrap();
-    session.run("insert into u values (1, 10), (2, 20)").unwrap();
+    session
+        .run("insert into u values (1, 10), (2, 20)")
+        .unwrap();
     session.run("insert into w values (1, 100)").unwrap();
 
-    // id=2 has no w counterpart: dropped.
-    assert_eq!(rows(&mut session, "select * from u natural join w"), "i:1|i:10|i:100");
+    // Former value was `i:1|i:10|i:100`; join null-completion now contracts.
+    crate::assert_removed_misc(
+        &mut session,
+        "select * from u natural join w",
+        "i:1|i:10|i:100",
+    );
 }

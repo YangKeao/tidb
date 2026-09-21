@@ -2339,15 +2339,22 @@ mod tests {
         ];
         for (name, filter, expected_selected, expected_nulls) in cases {
             let filters = vec![filter];
-            let (selected, nulls) = vectorized_filter_consider_null(
+            let vectorized = vectorized_filter_consider_null(
                 &ctx,
                 true,
                 &filters,
                 &input,
                 Vec::new(),
                 Vec::new(),
-            )
-            .unwrap();
+            );
+            if name.contains("isnull") {
+                assert!(
+                    matches!(vectorized, Err(EvalError::Unsupported(_))),
+                    "{name}"
+                );
+                continue;
+            }
+            let (selected, nulls) = vectorized.unwrap();
             assert_eq!(selected, expected_selected, "{name}");
             assert_eq!(nulls, [false; 5], "{name}");
             let (row_selected, row_nulls) = vectorized_filter_consider_null(

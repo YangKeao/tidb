@@ -285,6 +285,37 @@ fn check(
     Ok(())
 }
 
+fn check_expected(
+    label: &str,
+    expression: Expression,
+    input: &mut Chunk,
+    ty: &FieldType,
+    expected: &[Datum],
+) -> Result<(), String> {
+    let context = TestContext {
+        backend: Some(Backend::Copying),
+        engine_required: true,
+        ..TestContext::default()
+    };
+    let suite = EvaluatorSuite::new(vec![expression.clone()], true);
+    let mut output = Chunk::new_with_capacity(std::slice::from_ref(ty), input.num_rows());
+    suite
+        .run(&context, input, &mut output)
+        .map_err(|error| format!("{label}: {error:?}"))?;
+    let actual = (0..output.num_rows())
+        .map(|row| output.get_row(row).get_datum(0, ty))
+        .collect::<Vec<_>>();
+    if actual.len() != expected.len()
+        || !actual
+            .iter()
+            .zip(expected)
+            .all(|(left, right)| equal(left, right))
+    {
+        return Err(format!("{label}: expected={expected:?}, actual={actual:?}"));
+    }
+    check(label, expression, input, ty)
+}
+
 fn check_declined(label: &str, expression: Expression) -> Result<(), String> {
     match TikvExpression::compile(&expression, Context::default())
         .map_err(|error| format!("{label}: compile error {error:?}"))?
@@ -3162,12 +3193,82 @@ fn tikv_coverage_is_ipv_family_masks_null() {
             string("::127.0.0.1"),
         ]],
     );
-    for name in ["is_ipv4", "is_ipv6", "is_ipv4_compat", "is_ipv4_mapped"] {
-        check(
+    for (name, expected) in [
+        (
+            "is_ipv4",
+            vec![
+                Datum::Int(1),
+                Datum::Null,
+                Datum::Int(0),
+                Datum::Int(0),
+                Datum::Int(0),
+            ],
+        ),
+        (
+            "is_ipv6",
+            vec![
+                Datum::Int(0),
+                Datum::Null,
+                Datum::Int(1),
+                Datum::Int(1),
+                Datum::Int(1),
+            ],
+        ),
+        (
+            "is_ipv4_compat",
+            vec![
+                Datum::Int(0),
+                Datum::Null,
+                Datum::Int(0),
+                Datum::Int(0),
+                Datum::Int(0),
+            ],
+        ),
+        (
+            "is_ipv4_mapped",
+            vec![
+                Datum::Int(0),
+                Datum::Null,
+                Datum::Int(0),
+                Datum::Int(0),
+                Datum::Int(0),
+            ],
+        ),
+    ] {
+        check_expected(
             name,
             call(name, &result, vec![column(0, &ty)]),
             &mut input,
             &result,
+            &expected,
+        )
+        .unwrap();
+    }
+
+    let mut binary_input = fixture(
+        std::slice::from_ref(&ty),
+        &[vec![
+            Datum::new_bytes(vec![]),
+            Datum::new_bytes(vec![0x10; 4]),
+            Datum::new_bytes(vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 1, 2, 3, 4]),
+            Datum::new_bytes(vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0xff, 0xff, 1, 2, 3, 4]),
+            Datum::new_bytes(vec![0, 1, 2, 3, 4, 5, 6]),
+            Datum::new_bytes(vec![0xff; 16]),
+            Datum::new_bytes(vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4]),
+            Datum::new_bytes(vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 2, 3, 4]),
+            Datum::new_bytes(vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0xff, 0xff, 1, 2, 3, 4]),
+        ]],
+    );
+    for (name, expected) in [
+        ("is_ipv4_mapped", vec![0, 0, 1, 0, 0, 0, 0, 0, 0]),
+        ("is_ipv4_compat", vec![0, 0, 0, 0, 0, 0, 1, 0, 0]),
+    ] {
+        check_expected(
+            name,
+            call(name, &result, vec![column(0, &ty)]),
+            &mut binary_input,
+            &result,
+            &expected.into_iter().map(Datum::Int).collect::<Vec<_>>(),
         )
         .unwrap();
     }

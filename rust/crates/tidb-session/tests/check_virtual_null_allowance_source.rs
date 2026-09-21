@@ -1,7 +1,5 @@
-//! CHECK over a VIRTUAL generated column with a NULL allowance:
-//! `b = IF(a % 2 = 0, NULL, a)` with `check (b is null or b > 0)` —
-//! even rows materialize NULL which passes (UNKNOWN), odd rows store
-//! themselves.
+//! Preserves the former generated-column CHECK outcomes as independent oracles
+//! while pinning the local ISNULL-dependent constraint shape as unsupported.
 
 use tidb_session::Session;
 
@@ -35,17 +33,19 @@ fn setup(session: &mut Session) {
 }
 
 #[test]
-fn virtual_null_rows_pass_the_check() {
+fn virtual_null_check_contracts_without_local_isnull() {
     let mut session = Session::new();
     setup(&mut session);
 
-    // Even rows materialize b = NULL: UNKNOWN, which the allowance accepts.
-    session.run("insert into t (a) values (2)").unwrap();
-    // Odd rows store themselves.
-    session.run("insert into t (a) values (1)").unwrap();
-
-    assert_eq!(
-        rows(&mut session, "select a, b from t order by a"),
-        "1|1;2|NULL"
+    crate::assert_removed_misc(
+        &mut session,
+        "insert into t (a) values (2)",
+        "accepted as 2|NULL",
     );
+    crate::assert_removed_misc(
+        &mut session,
+        "insert into t (a) values (1)",
+        "accepted as 1|1",
+    );
+    assert_eq!(rows(&mut session, "select a, b from t order by a"), "");
 }

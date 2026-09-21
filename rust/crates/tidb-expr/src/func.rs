@@ -135,8 +135,10 @@ pub(crate) fn is_removed_native_packet_string(name: &str) -> bool {
     )
 }
 
-/// Native miscellaneous value kernels were physically removed. ANY_VALUE is
-/// retained only through TiKV; the other names are explicit contractions.
+/// Native miscellaneous value kernels were physically removed. Admission and
+/// lowering decide which listed names/shapes execute through TiKV (including
+/// retained ANY_VALUE, ISNULL and IP predicates); all others fail closed as
+/// explicit contractions rather than falling back to a local kernel.
 pub(crate) fn is_removed_native_misc(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
@@ -157,6 +159,11 @@ pub(crate) fn is_removed_native_misc(name: &str) -> bool {
             | "TIDB_ENCODE_SQL_DIGEST"
             | "FORMAT_BYTES"
             | "FORMAT_NANO_TIME"
+            | "ISNULL"
+            | "IS_IPV4"
+            | "IS_IPV4_MAPPED"
+            | "IS_IPV4_COMPAT"
+            | "IS_IPV6"
             | "VITESS_HASH"
     )
 }
@@ -973,7 +980,6 @@ pub(crate) fn eval_func_values(
         }
         // Go `builtinIntIsNullSig`: 1 when the argument is NULL, else 0 --
         // never NULL itself. `IS UNKNOWN` is the same function.
-        "ISNULL" if vals.len() == 1 => Ok(Datum::Int(i64::from(vals[0] == Datum::Null))),
         // Go `builtinIntIsTrueSig` with keepNull false: NULL and zero are 0.
         "ISTRUE" if vals.len() == 1 => {
             truthy_of(&vals[0]).map(|t| Datum::Int(i64::from(t == Some(true))))

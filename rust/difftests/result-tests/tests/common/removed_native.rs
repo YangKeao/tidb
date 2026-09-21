@@ -472,6 +472,39 @@ pub fn removed_markers(sql: &str) -> Vec<&'static str> {
     if is_string_aux_shape_contraction(sql) {
         markers.push(STRING_AUX_REMOVED);
     }
+    // Constant-only Session queries are evaluated before the retained TiKV
+    // program path. Keep this corpus boundary exact; column-backed shapes stay
+    // admitted and engine-backed.
+    if matches!(
+        sql.trim().to_ascii_lowercase().as_str(),
+        "select case when null is null then 'isnull' else 'notnull' end"
+            | "select 1.5e2 is null"
+            | "select null is null"
+            | "select 1 is null"
+            | "select 1 is not null"
+            | "select isnull(null), isnull(0), isnull('')"
+            | "select is_ipv4('192.168.1.1')"
+            | "select is_ipv4('255.255.255.255')"
+            | "select is_ipv4('10.t.255.255')"
+            | "select is_ipv4('10.1.2.3.4')"
+            | "select is_ipv4('2001:250:207:0:0:eef2::1')"
+            | "select is_ipv4('::ffff:1.2.3.4')"
+            | "select is_ipv4('1...1')"
+            | "select is_ipv4('192.168.1.')"
+            | "select is_ipv4('.168.1.2')"
+            | "select is_ipv4('168.1.2')"
+            | "select is_ipv4('1.2.3.4.5')"
+            | "select is_ipv4(null)"
+            | "select is_ipv6('2001:250:207:0:0:eef2::1')"
+            | "select is_ipv6('2001:0250:0207:0001:0000:0000:0000:ff02')"
+            | "select is_ipv6('2001:250:207::eff2::1，')"
+            | "select is_ipv6('192.168.1.1')"
+            | "select is_ipv6('::ffff:1.2.3.4')"
+            | "select is_ipv6(null)"
+            | "select +now() is null"
+    ) {
+        markers.push(MISC_REMOVED);
+    }
     let Some(collector) = collect_functions(sql) else {
         return markers;
     };

@@ -1,6 +1,6 @@
-//! ANY/ALL quantified comparisons and DISTINCT NULL folding: `> ANY`
-//! passes beyond the subquery minimum, `> ALL` beyond its maximum, and
-//! SELECT DISTINCT folds duplicate NULLs into one row.
+//! Former ANY/ALL value oracles are retained while their internal ISNULL shape
+//! explicitly contracts; the neighboring DISTINCT path still proves duplicate
+//! NULLs fold into one row.
 
 use tidb_session::Session;
 
@@ -36,19 +36,21 @@ fn seed(session: &mut Session) {
 }
 
 #[test]
-fn any_all_and_distinct_nulls() {
+fn any_all_contract_and_distinct_nulls_survive() {
     let mut session = Session::new();
     seed(&mut session);
 
     // `> ANY (10, 25)` = greater than the MIN (10).
-    assert_eq!(
-        rows(&mut session, "select a from t where a > any (select v from s) order by a"),
-        "20;30"
+    crate::assert_removed_misc(
+        &mut session,
+        "select a from t where a > any (select v from s) order by a",
+        "20;30",
     );
     // `> ALL (10, 25)` = greater than the MAX (25).
-    assert_eq!(
-        rows(&mut session, "select a from t where a > all (select v from s) order by a"),
-        "30"
+    crate::assert_removed_misc(
+        &mut session,
+        "select a from t where a > all (select v from s) order by a",
+        "30",
     );
 
     // DISTINCT treats the two NULLs as equal: one NULL row survives.

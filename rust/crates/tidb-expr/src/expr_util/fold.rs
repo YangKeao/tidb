@@ -180,7 +180,7 @@ fn fold_scalar_function(
     opts: &FoldOptions<'_>,
 ) -> (Expression, bool) {
     let name = function.func_name.lowercase();
-    if is_unfoldable_function(name) {
+    if is_unfoldable_function(name) || name == "isnull" {
         return (expr.clone(), false);
     }
 
@@ -195,7 +195,6 @@ fn fold_scalar_function(
         return (retained, true);
     }
     match name {
-        "isnull" => return is_null_handler(expr, function, ctx, opts),
         "if" => return if_fold_handler(expr, function, ctx, opts),
         "ifnull" => return if_null_fold_handler(expr, function, ctx, opts),
         "case" => return case_when_handler(expr, function, ctx, opts),
@@ -335,41 +334,6 @@ fn constant_of(value: Datum, function: &ScalarFunction) -> Constant {
     constant.value = value;
     constant.ret_type = function.ret_type.clone();
     constant
-}
-
-/// Go `isNullHandler` (`constant_fold.go:51`).
-///
-/// Beyond folding a constant argument, this is where `ISNULL(x)` collapses to
-/// `0` for any `x` the type system already declares NOT NULL -- the one arm
-/// that needs no evaluation at all.
-fn is_null_handler(
-    expr: &Expression,
-    function: &ScalarFunction,
-    ctx: &impl Columns,
-    _opts: &FoldOptions<'_>,
-) -> (Expression, bool) {
-    let Some(arg0) = function.get_args().first() else {
-        return (expr.clone(), false);
-    };
-    if let Expression::Constant(constant) = arg0 {
-        let is_deferred_const = constant.deferred_expr.is_some() || constant.param_marker.is_some();
-        let Ok(value) = eval_once(expr, ctx) else {
-            return (expr.clone(), is_deferred_const);
-        };
-        let mut folded = constant_of(value, function);
-        if is_deferred_const {
-            folded.deferred_expr = Some(Box::new(expr.clone()));
-            return (Expression::Constant(folded), true);
-        }
-        return (Expression::Constant(folded), false);
-    }
-    if arg0
-        .static_type()
-        .is_some_and(|t| t.flags() & FieldTypeFlags::NOT_NULL != 0)
-    {
-        return (Expression::Constant(Constant::new_zero()), false);
-    }
-    (expr.clone(), false)
 }
 
 /// Go `ifFoldHandler` (`constant_fold.go:74`): folds `IF(c, a, b)` to the
