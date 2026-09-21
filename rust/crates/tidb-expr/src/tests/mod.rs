@@ -58,6 +58,7 @@ mod in_func_decimal_collation_source;
 mod json_merge_patch_integration_source;
 mod math;
 mod operand_dispatch;
+mod packet_string_contraction_source;
 #[cfg(feature = "tikv-expr")]
 mod regexp_like;
 #[cfg(feature = "tikv-expr")]
@@ -134,6 +135,18 @@ pub(super) fn chunk_e(expr: &str) -> String {
         Ok(value) => value.label(),
         Err(err) => err,
     }
+}
+
+pub(super) const PACKET_STRING_REMOVED: &str =
+    "Unsupported(\"native packet-limited string evaluation was removed; function unsupported\")";
+
+pub(super) fn assert_packet_string_refusal(expr: &str) {
+    assert_eq!(e(expr), PACKET_STRING_REMOVED, "AST boundary: {expr}");
+    assert_eq!(
+        chunk_e(expr),
+        PACKET_STRING_REMOVED,
+        "chunk boundary: {expr}"
+    );
 }
 
 fn chunk_e_with(expr: &str, ctx: &impl Columns) -> String {
@@ -893,9 +906,9 @@ fn field_mixed_arguments_select_one_real_signature() {
 }
 
 #[test]
-fn pad_source_vectors_preserve_unicode_empty_and_overflow_rules() {
+fn pad_source_vectors_are_explicitly_contracted() {
     // pkg/expression/builtin_string_test.go:1747 TestLpad and :1789 TestRpad
-    for (expr, want) in [
+    for (expr, _former_expected) in [
         ("lpad('hi', 5, '?')", "STR:???hi"),
         ("lpad('hi', 1, '?')", "STR:h"),
         ("lpad('hi', 0, '?')", "STR:"),
@@ -923,7 +936,7 @@ fn pad_source_vectors_preserve_unicode_empty_and_overflow_rules() {
         ("rpad('中文', 10, '')", "STR:"),
         ("rpad('1', 4611686018427387904, '1')", "NULL"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        assert_packet_string_refusal(expr);
     }
 }
 
@@ -959,65 +972,53 @@ fn right_and_rpad_sig_source_vectors_preserve_scalar_boundaries() {
         Datum::new_bytes(vec![0xff])
     );
 
-    // The scalar value row in `TestRpadSig` (source line 1831) is the same
-    // rune-based path as the existing RPAD table; the warning-producing
-    // max-packet/vectorized row remains an explicit partial boundary.
-    assert_eq!(e("rpad('abc', 6, '123')"), "STR:abc123");
-    assert_eq!(e("rpad(NULL, 6, '123')"), "NULL");
-    assert_eq!(e("rpad('abc', 6, NULL)"), "NULL");
-    assert_eq!(
-        string_packet::pad(
-            &[
-                Datum::new_bytes(b"ab".to_vec()),
-                Datum::Int(3),
-                Datum::new_bytes(vec![0xff]),
-            ],
-            false,
-            &NoColumns,
-        )
-        .unwrap(),
-        Datum::new_bytes(vec![b'a', b'b', 0xff])
-    );
-    assert_eq!(
-        string_packet::pad(&[], false, &NoColumns),
-        Err(EvalError::Unsupported("bad LPAD/RPAD arguments"))
-    );
+    // Keep every former scalar/binary row, but pin the physical-removal
+    // contract instead of retaining a test-only RPAD implementation.
+    for expr in [
+        "rpad('abc', 6, '123')",
+        "rpad(NULL, 6, '123')",
+        "rpad('abc', 6, NULL)",
+        "rpad(unhex('6162'), 3, unhex('FF'))",
+    ] {
+        assert_packet_string_refusal(expr);
+    }
+    for vals in [
+        vec![
+            Datum::new_bytes(b"ab".to_vec()),
+            Datum::Int(3),
+            Datum::new_bytes(vec![0xff]),
+        ],
+        Vec::new(),
+    ] {
+        assert_eq!(
+            crate::func::eval_func_values_in("RPAD", &vals, &NoColumns),
+            Some(Err(EvalError::Unsupported(
+                "native packet-limited string evaluation was removed; function unsupported",
+            )))
+        );
+    }
 }
 
 #[test]
-fn repeat_source_vectors_preserve_uint_count_and_packet_boundary() {
-    // pkg/expression/builtin_string_test.go:495 TestRepeat
-    assert_eq!(e("repeat('a', 2)"), "STR:aa");
-    for (expr, expected_len) in [
-        ("repeat('a', 16777217)", 16_777_217usize),
-        ("repeat('a', 16777216)", 16_777_216usize),
+fn repeat_source_vectors_are_explicitly_contracted() {
+    // Preserve every Go-source input shape while asserting that no native
+    // packet-sizing kernel remains, including NULL/unsigned/overflow rows.
+    for expr in [
+        "repeat('a', 2)",
+        "repeat('a', 16777217)",
+        "repeat('a', 16777216)",
+        "repeat('a', -1)",
+        "repeat('a', 0)",
+        "repeat('a', cast(0 as unsigned))",
+        "repeat(null, 2)",
+        "repeat('a', null)",
+        "repeat('a', 6)",
+        "repeat('毅', 6)",
+        "repeat('毅', 334)",
+        "repeat('a', 2147483647)",
     ] {
-        match v(expr) {
-            Datum::String(value) => {
-                assert_eq!(value.bytes().len(), expected_len, "{expr}");
-                assert_eq!(value.bytes().first(), Some(&b'a'));
-                assert_eq!(value.bytes().last(), Some(&b'a'));
-            }
-            other => panic!("{expr} returned {other:?}"),
-        }
+        assert_packet_string_refusal(expr);
     }
-    assert_eq!(e("repeat('a', -1)"), "STR:");
-    assert_eq!(e("repeat('a', 0)"), "STR:");
-    assert_eq!(e("repeat('a', cast(0 as unsigned))"), "STR:");
-    assert_eq!(e("repeat(null, 2)"), "NULL");
-    assert_eq!(e("repeat('a', null)"), "NULL");
-
-    // `TestRepeatSig` constructs a custom 1000-byte max_allowed_packet and
-    // checks warning counts.  The value-only evaluator has no warning/session
-    // channel; its default 64 MiB boundary still preserves the representable
-    // positive and Unicode repeat rows from that source table.
-    assert_eq!(e("repeat('a', 6)"), "STR:aaaaaa");
-    assert_eq!(v("repeat('毅', 6)").label(), "STR:毅毅毅毅毅毅");
-    assert_eq!(
-        v("repeat('毅', 334)").label().len(),
-        "STR:".len() + 334 * "毅".len()
-    );
-    assert_eq!(v("repeat('a', 2147483647)"), Datum::Null);
 }
 
 #[test]
@@ -2207,7 +2208,12 @@ fn weight_string_and_load_file_source_vectors() {
         ("load_file('/etc/hosts')", "NULL"),
         ("load_file(null)", "NULL"),
     ] {
-        assert_eq!(chunk_e(sql), want, "{sql}");
+        if sql.contains("weight_string") {
+            let _ = want;
+            assert_packet_string_refusal(sql);
+        } else {
+            assert_eq!(chunk_e(sql), want, "{sql}");
+        }
     }
 
     struct GeneralCi;
@@ -2225,19 +2231,10 @@ fn weight_string_and_load_file_source_vectors() {
     // collation rather than the temporal type's binary metadata.
     assert_eq!(
         chunk_e_with("hex(weight_string(cast(20190821 as date)))", &GeneralCi),
-        "STR:0032003000310039002D00300038002D00320031"
+        PACKET_STRING_REMOVED
     );
-
-    // The AST/value tier agrees on every row EXCEPT the explicit COLLATE one:
-    // it has no collation derivation, so it keys `'A'` under the connection
-    // default and answers `41` where the chunk tier answers the
-    // `utf8mb4_general_ci` weight `0041`. The same documented boundary the
-    // other collation-aware builtins carry.
-    assert_eq!(e("hex(weight_string('ab' as binary(4)))"), "STR:61620000");
-    assert_eq!(
-        e("hex(weight_string('A' collate utf8mb4_general_ci))"),
-        "STR:41"
-    );
+    assert_packet_string_refusal("hex(weight_string('ab' as binary(4)))");
+    assert_packet_string_refusal("hex(weight_string('A' collate utf8mb4_general_ci))");
 }
 
 /// Hex/bit literals carry Go's `KindBinaryLiteral`, not `KindBytes`.

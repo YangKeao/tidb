@@ -3216,7 +3216,6 @@ mod builtin_type_tests {
             "is_ipv6(null)",
             "is_uuid(null)",
             "uuid_version(null)",
-            "to_base64(null)",
             "format_bytes(null)",
             "format_nano_time(null)",
             "to_seconds(null)",
@@ -3229,8 +3228,17 @@ mod builtin_type_tests {
         // A multi-byte first character contributes its whole UTF-8 encoding
         // read as a big-endian number: 0xE4BDA0 = 14990752.
         assert_eq!(eval("ord('你好')"), Datum::Int(14_990_752));
-        // `TO_BASE64('')` is the empty string, NOT NULL.
-        assert_eq!(eval("to_base64('')"), text_datum(""));
+        // The packet-limited encoder kernel was physically deleted. Preserve
+        // both former edge shapes and require the same explicit contraction.
+        for expr in ["to_base64(null)", "to_base64('')"] {
+            assert_eq!(
+                try_eval(expr),
+                Err(EvalError::Unsupported(
+                    "native packet-limited string evaluation was removed; function unsupported"
+                )),
+                "{expr}"
+            );
+        }
         // Native hashes were deleted. Preserve all former edge vectors while
         // requiring the structured contraction instead of a silent fallback.
         for expr in [

@@ -5,6 +5,17 @@
 
 use tidb_session::Session;
 
+fn assert_packet_string_removed(session: &mut Session, sql: &str) {
+    let error = session
+        .run(sql)
+        .expect_err("packet-limited native string kernel is deleted")
+        .to_string();
+    assert!(
+        error.contains("native packet-limited string evaluation was removed; function unsupported"),
+        "{sql}: {error}"
+    );
+}
+
 fn try_sql(session: &mut Session, sql: &str) -> String {
     match session.run(sql) {
         Ok(tidb_session::StmtResult::Rows(rows)) => rows
@@ -39,6 +50,6 @@ fn character_positions_not_bytes() {
     // 6 bytes -> 48 bits.
     assert_eq!(try_sql(&mut session, "select bit_length('中a')"), "i:32");
 
-    // The pad target is 2 CHARACTERS: one pad char fits before 中.
-    assert_eq!(try_sql(&mut session, "select lpad('中', 2, 'ab')"), "s:a中");
+    // Preserve the multibyte pad shape as an explicit contraction.
+    assert_packet_string_removed(&mut session, "select lpad('中', 2, 'ab')");
 }

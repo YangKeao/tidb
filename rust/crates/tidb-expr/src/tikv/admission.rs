@@ -208,6 +208,12 @@ pub(crate) const REMOVED_VECTOR_TEXT_UNSUPPORTED: &str =
 pub(crate) const REMOVED_JSON_STORAGE_UNSUPPORTED: &str =
     "native JSON storage leaves were removed and no pinned-engine lowering for their \
      binary-storage accounting semantics is admitted";
+pub(crate) const REMOVED_PACKET_STRING_UNSUPPORTED: &str =
+    "native packet-limited string kernels were removed; the pinned engine has no equivalent \
+     max_allowed_packet statement setting or verified WEIGHT_STRING wire path";
+pub(crate) const PACKET_CONTEXT_UNAVAILABLE: &str =
+    "native enforces max_allowed_packet before allocating; the pinned engine facade has no \
+     equivalent context setting";
 /// The statement clock (`NOW()`, `CURRENT_TIMESTAMP`, `CURDATE()`,
 /// `CURRENT_TIME`, `UTC_TIMESTAMP()`, `SYSDATE()`).
 ///
@@ -381,8 +387,8 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("coercibility", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
     row("collation", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
     row("compress", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_CRYPTO_UNVERIFIED),
-    row("concat", Decision::Excluded, Signature::None, &[], Shape::Any, "native enforces max_allowed_packet before allocating; the pinned engine facade has no equivalent context setting"),
-    row("concat_ws", Decision::Excluded, Signature::None, &[], Shape::Any, "native enforces max_allowed_packet before allocating; the pinned engine facade has no equivalent context setting"),
+    row("concat", Decision::Excluded, Signature::None, &[], Shape::Any, PACKET_CONTEXT_UNAVAILABLE),
+    row("concat_ws", Decision::Excluded, Signature::None, &[], Shape::Any, PACKET_CONTEXT_UNAVAILABLE),
     row("connection_id", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("conv", Decision::Excluded, Signature::None, &[], Shape::Any, "native math was removed and engine signed-prefix/base parity is not established"),
     row("convert", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
@@ -467,7 +473,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("format_bytes", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
     row("format_nano_time", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
     row("found_rows", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
-    row("from_base64", Decision::Excluded, Signature::None, &[], Shape::Any, "native enforces max_allowed_packet before allocating; the pinned engine facade has no equivalent context setting"),
+    row("from_base64", Decision::Excluded, Signature::None, &[], Shape::Any, PACKET_CONTEXT_UNAVAILABLE),
     row("from_binary", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("from_days", Decision::Excluded, Signature::None, &[], Shape::Any, "TiKV returns the zero date for out-of-range input where Go returns NULL (EXPRESSION_SEMANTIC_GAPS.md)"),
     row("from_unixtime", Decision::Admitted, Signature::Family(Family::Temporal), &[], Shape::Any, ""),
@@ -496,7 +502,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("inet6_ntoa", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
     row("inet_aton", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
     row("inet_ntoa", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
-    row("insert_func", Decision::Excluded, Signature::None, &[], Shape::Any, "native enforces max_allowed_packet before allocating; the pinned engine facade has no equivalent context setting"),
+    row("insert_func", Decision::Excluded, Signature::None, &[], Shape::Any, PACKET_CONTEXT_UNAVAILABLE),
     row("instr", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("intdiv", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
     row("interval", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::Any, ""),
@@ -560,10 +566,10 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("log10", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
     row("log2", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
     row("lower", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
-    row("lpad", Decision::Excluded, Signature::None, &[], Shape::Any, "native enforces max_allowed_packet before allocating; the pinned engine facade has no equivalent context setting"),
+    row("lpad", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_PACKET_STRING_UNSUPPORTED),
     row("lt", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::Any, ""),
     row("ltrim", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
-    row("make_set", Decision::Excluded, Signature::None, &[], Shape::Any, "native enforces max_allowed_packet before allocating; the pinned engine facade has no equivalent context setting"),
+    row("make_set", Decision::Excluded, Signature::None, &[], Shape::Any, PACKET_CONTEXT_UNAVAILABLE),
     row("makedate", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Int, EvalType::Int], Shape::Any, ""),
     row("maketime", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Int, EvalType::Int, EvalType::Real], Shape::Any, ""),
     row("match_against", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
@@ -607,7 +613,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("regexp_substr", Decision::Admitted, Signature::Family(Family::Regexp), &[], Shape::Any, ""),
     row("release_all_locks", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("release_lock", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
-    row("repeat", Decision::Excluded, Signature::None, &[], Shape::Any, "native enforces max_allowed_packet before allocating; the pinned engine facade has no equivalent context setting"),
+    row("repeat", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_PACKET_STRING_UNSUPPORTED),
     row("replace", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("reverse", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("right", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
@@ -616,7 +622,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("round", Decision::Excluded, Signature::None, &[], Shape::Any, "native math was removed and engine digit/result parity is not established"),
     row("row", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
     row("row_count", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
-    row("rpad", Decision::Excluded, Signature::None, &[], Shape::Any, "native enforces max_allowed_packet before allocating; the pinned engine facade has no equivalent context setting"),
+    row("rpad", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_PACKET_STRING_UNSUPPORTED),
     row("rtrim", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("schema", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("sec_to_time", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
@@ -631,7 +637,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("sin", Decision::Excluded, Signature::None, &[], Shape::Any, "native trig was removed and the engine's libm path is not verified bit-exact with Go"),
     row("sleep", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("sm3", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_CRYPTO_UNVERIFIED),
-    row("space", Decision::Excluded, Signature::None, &[], Shape::Any, "native enforces max_allowed_packet before allocating; the pinned engine facade has no equivalent context setting"),
+    row("space", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_PACKET_STRING_UNSUPPORTED),
     row("sqrt", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
     row("str_to_date", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::String, EvalType::String], Shape::Any, ""),
     row("strcmp", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
@@ -666,7 +672,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("timestamp", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Datetime], Shape::Any, ""),
     row("timestampadd", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
     row("timestampdiff", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::String, EvalType::Datetime, EvalType::Datetime], Shape::Any, ""),
-    row("to_base64", Decision::Excluded, Signature::None, &[], Shape::Any, "native enforces max_allowed_packet before allocating; the pinned engine facade has no equivalent context setting"),
+    row("to_base64", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_PACKET_STRING_UNSUPPORTED),
     row("to_binary", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("to_days", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Datetime], Shape::Any, ""),
     row("to_seconds", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Datetime], Shape::Any, ""),
@@ -706,7 +712,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("week", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Datetime, EvalType::Int], Shape::Any, ""),
     row("weekday", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Datetime], Shape::Any, ""),
     row("weekofyear", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Datetime], Shape::Any, ""),
-    row("weight_string", Decision::Excluded, Signature::None, &[], Shape::Any, NO_WIRE_SIGNATURE),
+    row("weight_string", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_PACKET_STRING_UNSUPPORTED),
     row("xor", Decision::Admitted, Signature::Family(Family::Control), &[], Shape::Any, ""),
     row("year", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Datetime], Shape::Any, ""),
     row("yearweek", Decision::Admitted, Signature::Family(Family::Temporal), &[], Shape::Any, ""),
@@ -856,18 +862,17 @@ mod tests {
     /// to-do marker, not a finding.
     #[test]
     fn corpus_gap_names_state_a_verified_reason() {
-        for name in [
-            "translate",
-            "weight_string",
-            "load_file",
-            "json_schema_valid",
-        ] {
+        for name in ["translate", "load_file", "json_schema_valid"] {
             assert_eq!(
                 admission(name).expect("row").exclusion_reason,
                 NO_WIRE_SIGNATURE,
                 "{name}"
             );
         }
+        assert_eq!(
+            admission("weight_string").expect("row").exclusion_reason,
+            REMOVED_PACKET_STRING_UNSUPPORTED
+        );
         for name in [
             "format",
             "char_func",

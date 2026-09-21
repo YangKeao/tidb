@@ -267,15 +267,15 @@ fn every_declined_expression_fails_cleanly_without_the_native_evaluator() {
 /// A **constant-only** expression does not necessarily reach the adapter at
 /// all. `plan_builder.rs` folds the rewritten tree with the live statement
 /// context (`fold_constant_in_mode`) before the plan exists. After physical
-/// native-math deletion, 36 of the 59 declined expressions become a single
-/// `Constant`; the 21 pinned here are the ones whose constant form *does*
+/// native-kernel deletion, constant-foldable declines become a single
+/// `Constant`; the 23 pinned here are the ones whose constant form *does*
 /// reach the adapter, which is the surface the removal actually has to answer
 /// for.
 ///
 /// The caveat the corpus cannot close: it is constant-only, so a
 /// column-bearing shape (`round(col, '2')`) is never generated. The same
 /// refusal that keeps `round(5, -100)` here would also keep `round(col, '2')`
-/// native -- folding cannot remove a shape that carries a column. The 17 are
+/// native -- folding cannot remove a shape that carries a column. This list is
 /// therefore the *observed* production surface, not a bound on it.
 const SURVIVES_FOLD: &[&str] = &[
     "7 in (7, -9, 9)",
@@ -297,8 +297,10 @@ const SURVIVES_FOLD: &[&str] = &[
     "round(1.2345,'2')",
     "round(3.14,'abc')",
     "round(5, -100)",
+    "to_base64('')",
     "truncate(1234.5678,'-2')",
     "upper(elt(1,'a',x'61'))",
+    "weight_string(NULL)",
 ];
 
 /// Which declined expressions the planner folds away, measured with
@@ -346,5 +348,5 @@ fn folded_away_expressions_never_reach_the_adapter() {
         folded.len() + survived.len() + skipped.len(),
         DECLINED.len()
     );
-    assert_eq!(folded.len(), 36, "the folded count changed");
+    assert_eq!(folded.len(), 34, "the folded count changed");
 }

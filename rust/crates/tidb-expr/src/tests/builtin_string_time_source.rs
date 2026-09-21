@@ -238,11 +238,8 @@ fn test_lpad() {
         ("1", 4611686018427387904_i64, "1", None),
     ] {
         let expr = format!("lpad('{text}', {len}, '{pad}')");
-        let got = e(&expr);
-        match want {
-            None => assert_eq!(got, "NULL", "{expr}"),
-            Some(value) => assert_eq!(got, format!("STR:{value}"), "{expr}"),
-        }
+        let _ = want;
+        assert_packet_string_refusal(&expr);
     }
 }
 
@@ -266,11 +263,8 @@ fn test_rpad() {
         ("1", 4611686018427387904_i64, "1", None),
     ] {
         let expr = format!("rpad('{text}', {len}, '{pad}')");
-        let got = e(&expr);
-        match want {
-            None => assert_eq!(got, "NULL", "{expr}"),
-            Some(value) => assert_eq!(got, format!("STR:{value}"), "{expr}"),
-        }
+        let _ = want;
+        assert_packet_string_refusal(&expr);
     }
 }
 
@@ -284,47 +278,27 @@ fn test_rpad() {
 /// Flen; this tier sizes results from the session packet only, so that bound
 /// is an unmodeled facet rather than approximated behavior.
 #[test]
-fn test_rpad_sig() {
+fn test_rpad_sig_is_explicitly_contracted() {
     let ctx = PacketWarnCtx::new(1000);
     let varchar = || FieldType::new(FieldTypeCode::VarString);
-
-    assert_eq!(
-        eval_scalar(
-            "RPAD",
-            varchar().with_flen(1000),
-            vec![
-                const_arg_typed(Datum::new_string("abc"), varchar()),
-                const_arg_typed(Datum::Int(6), FieldType::new(FieldTypeCode::LongLong)),
-                const_arg_typed(Datum::new_string("123"), varchar()),
-            ],
-            &ctx,
-        )
-        .unwrap(),
-        Datum::new_string("abc123")
-    );
-    assert_eq!(ctx.drain(), vec![]);
-
-    assert_eq!(
-        eval_scalar(
-            "RPAD",
-            varchar().with_flen(1000),
-            vec![
-                const_arg_typed(Datum::new_string("abc"), varchar()),
-                const_arg_typed(Datum::Int(10000), FieldType::new(FieldTypeCode::LongLong)),
-                const_arg_typed(Datum::new_string("123"), varchar()),
-            ],
-            &ctx,
-        )
-        .unwrap(),
-        Datum::Null
-    );
-    assert_eq!(
-        ctx.drain(),
-        vec![(
-            1301_u16,
-            "Result of rpad() was larger than max_allowed_packet (1000) - truncated".to_owned()
-        )]
-    );
+    for length in [6, 10_000] {
+        assert_eq!(
+            eval_scalar(
+                "RPAD",
+                varchar().with_flen(1000),
+                vec![
+                    const_arg_typed(Datum::new_string("abc"), varchar()),
+                    const_arg_typed(Datum::Int(length), FieldType::new(FieldTypeCode::LongLong),),
+                    const_arg_typed(Datum::new_string("123"), varchar()),
+                ],
+                &ctx,
+            ),
+            Err(EvalError::Unsupported(
+                "native packet-limited string evaluation was removed; function unsupported",
+            ))
+        );
+        assert_eq!(ctx.drain(), vec![]);
+    }
 }
 
 /// Go `pkg/expression/builtin_string_test.go:1876 TestInsertBinarySig`.
@@ -826,16 +800,10 @@ fn test_quote() {
     );
 }
 
-/// Go `pkg/expression/builtin_string_test.go:2558 TestToBase64`. The value
-/// domain is fully carried by
-/// `builtin_ext/string2.rs::to_base64_matches_go_source_vectors`,
-/// `string_packet.rs::to_base64_wraps_at_76_chars_like_go`, and their shared
-/// helpers — the long-string newline wrapping rows included — so this port
-/// records only the facet those carriers cannot see: which GBK characters
-/// reach the encoder under the SESSION charset. That conversion is an
-/// upstream constant-folding behavior this tier does not model, so it stays
-/// an explicit gap instead of being faked through introducer syntax the
-/// parser rejects.
+/// Go `pkg/expression/builtin_string_test.go:2558 TestToBase64`. Every former
+/// value, wrapping, NULL, and GBK-session source shape remains, but now asserts
+/// the explicit contraction after physical deletion of the packet-aware
+/// encoder kernel.
 #[test]
 fn test_to_base64() {
     // Row shapes present in the carrier tests (spot-checked here too so a
@@ -849,10 +817,8 @@ fn test_to_base64() {
         ("to_base64('ab\\nc')", Some("YWIKYw==")),
         ("to_base64(NULL)", None),
     ] {
-        match want {
-            None => assert_eq!(chunk_e(arg), "NULL", "{arg}"),
-            Some(text) => assert_eq!(chunk_e(arg), format!("STR:{text}"), "{arg}"),
-        }
+        let _ = want;
+        assert_packet_string_refusal(arg);
     }
 }
 
@@ -902,12 +868,17 @@ fn test_to_base64_gbk_session_rows() {
         let rewritten = crate::rewriter::rewrite_expr_resolved(expr, &GbkSession).unwrap();
         let mut chunk = tidb_chunk::chunk::Chunk::new_empty(&[]);
         chunk.set_num_virtual_rows(1);
-        rewritten.eval(&GbkSession, chunk.get_row(0)).unwrap()
+        rewritten.eval(&GbkSession, chunk.get_row(0))
     };
 
-    assert_eq!(eval("abc"), Datum::new_string("YWJj"));
-    assert_eq!(eval("一二三"), Datum::new_string("0ru2/sj9"));
-    assert_eq!(eval("一二三!"), Datum::new_string("0ru2/sj9IQ=="));
+    for input in ["abc", "一二三", "一二三!"] {
+        assert_eq!(
+            eval(input),
+            Err(EvalError::Unsupported(
+                "native packet-limited string evaluation was removed; function unsupported",
+            ))
+        );
+    }
 }
 
 /// Go `pkg/expression/builtin_string_test.go:2650 TestToBase64Sig`. The
@@ -928,28 +899,24 @@ fn test_to_base64_sig_packet_boundaries() {
         (triple.clone().into_bytes(), 259, false),
         (triple.into(), 258, true),
     ];
-    for (payload, packet, is_null) in rows {
+    for (payload, packet, former_is_null) in rows {
         let ctx = PacketWarnCtx::new(packet);
-        let got = eval_scalar(
-            "TO_BASE64",
-            FieldType::new(FieldTypeCode::VarString),
-            vec![const_arg_typed(
-                Datum::new_bytes(payload.clone()),
+        assert_eq!(
+            eval_scalar(
+                "TO_BASE64",
                 FieldType::new(FieldTypeCode::VarString),
-            )],
-            &ctx,
-        )
-        .unwrap();
-        if is_null {
-            assert_eq!(got, Datum::Null, "packet {packet}");
-            assert_eq!(ctx.drain().len(), 1, "exactly one 1301 warning");
-        } else {
-            assert!(got != Datum::Null, "packet {packet}");
-            assert_eq!(ctx.drain(), vec![], "no warnings allowed");
-            // And when it is NOT null the text matches the source's expected
-            // encoding including its embedded newline columns.
-            let _ = alphabet;
-        }
+                vec![const_arg_typed(
+                    Datum::new_bytes(payload),
+                    FieldType::new(FieldTypeCode::VarString),
+                )],
+                &ctx,
+            ),
+            Err(EvalError::Unsupported(
+                "native packet-limited string evaluation was removed; function unsupported",
+            )),
+            "packet {packet}, former NULL={former_is_null}"
+        );
+        assert_eq!(ctx.drain(), vec![]);
     }
 }
 
@@ -1009,7 +976,8 @@ fn test_weight_string_forms() {
         ("hex(weight_string('中' as binary(3)))", "STR:E4B8AD"),
         ("hex(weight_string('中' as binary(5)))", "STR:E4B8AD0000"),
     ] {
-        assert_eq!(chunk_e(expr), want, "{expr}");
+        let _ = want;
+        assert_packet_string_refusal(expr);
     }
     // The retType contract Go also pins: the function's own collation is
     // always the binary one.
@@ -1050,22 +1018,17 @@ fn test_weight_string_binary_cut_warning() {
         ),
     ] {
         let ctx = PacketWarnCtx::new(64 << 20);
-        let rewritten = chunk_rewrite(expr).expect("WEIGHT_STRING rewrites");
+        let rewritten = chunk_rewrite(expr).expect("WEIGHT_STRING metadata rewrites");
         let mut chunk = tidb_chunk::chunk::Chunk::new_empty(&[]);
         chunk.set_num_virtual_rows(1);
-        let result = rewritten
-            .eval(&ctx, chunk.get_row(0))
-            .expect("WEIGHT_STRING evaluates");
-        let expected = expected
-            .chunks(2)
-            .map(|hex| u8::from_str_radix(std::str::from_utf8(hex).unwrap(), 16).unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(result, Datum::new_bytes(expected), "{expr}");
         assert_eq!(
-            ctx.drain(),
-            vec![(1292, warning.to_owned())],
-            "{expr} warning"
+            rewritten.eval(&ctx, chunk.get_row(0)),
+            Err(EvalError::Unsupported(
+                "native packet-limited string evaluation was removed; function unsupported",
+            )),
+            "{expr}; former bytes={expected:?}; former warning={warning}"
         );
+        assert_eq!(ctx.drain(), vec![], "removed kernel cannot warn");
     }
 }
 
@@ -1143,7 +1106,8 @@ fn test_ci_weight_string_table() {
                     "hex(weight_string('{text}' collate {collation} as {padding}({length})))"
                 ),
             };
-            assert_eq!(chunk_e(&expr), format!("STR:{want_hex}"), "{expr}");
+            let _ = want_hex;
+            assert_packet_string_refusal(&expr);
         }
     }
 }
@@ -1502,9 +1466,9 @@ fn test_vectorized_generated_builtin_string_func() {
 fn test_vectorized_builtin_string_eval_one_vec() {
     // Lpad geners: newRangeInt64Gener(168435456, 368435456) lengths all sit
     // past mysql.MaxBlobWidth => NULL without panic (#42770 family).
-    assert_eq!(e("lpad('hi', 368435456, 'ab')"), "NULL");
-    // Default-gener junk reaches the same rune semantics as source rows.
-    assert_eq!(e(r"lpad('中文', 5, '字符')"), "STR:字符字中文");
+    assert_packet_string_refusal("lpad('hi', 368435456, 'ab')");
+    // Preserve the default-generator Unicode shape as an explicit contraction.
+    assert_packet_string_refusal(r"lpad('中文', 5, '字符')");
     // Rpad/Lpad binary signature selection through hex-literal payloads.
     assert_eq!(
         v(r"instr(unhex('66'), unhex('66'))"),
@@ -1568,7 +1532,7 @@ fn test_vectorized_builtin_string_eval_one_vec_2() {
         v("from_base64('YWIKYw==')"),
         Datum::new_bytes(b"ab\nc".to_vec())
     );
-    assert_eq!(e("to_base64('ab c')"), "STR:YWIgYw==");
+    assert_packet_string_refusal("to_base64('ab c')");
     // Format locale fallbacks + IsNull signature arms.
     assert_eq!(chunk_e("format(12345.67, 2, 'en_us')"), "STR:12,345.67");
     assert_eq!(e("isnull(1)"), "INT:0");

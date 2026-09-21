@@ -45,12 +45,26 @@ fn advisory_lock_functions_match_source_boundaries() {
         "select release_lock(null)",
         "select is_free_lock('')",
         "select is_used_lock(null)",
-        "select get_lock(repeat('a', 65), 0)",
-        "select release_lock(repeat('a', 65))",
     ] {
         let error = session.run(sql).unwrap_err().to_mysql_error();
         assert_eq!(error.code, 3057, "{sql}");
     }
+    let overlong_ascii = "a".repeat(65);
+    for sql in [
+        format!("select get_lock('{overlong_ascii}', 0)"),
+        format!("select release_lock('{overlong_ascii}')"),
+    ] {
+        let error = session.run(&sql).unwrap_err().to_mysql_error();
+        assert_eq!(error.code, 3057, "{sql}");
+    }
+    let error = session
+        .run("select repeat('a', 65)")
+        .expect_err("native REPEAT kernel is deleted")
+        .to_string();
+    assert!(
+        error.contains("native packet-limited string evaluation was removed; function unsupported"),
+        "{error}"
+    );
 
     assert_eq!(
         session
@@ -72,9 +86,10 @@ fn advisory_lock_functions_match_source_boundaries() {
         session.warnings()[0].message,
         "Truncated incorrect get_lock value: '-10'"
     );
+    let utf8_name = "ä".repeat(33);
     assert_eq!(
         session
-            .run("select get_lock(repeat(unhex('C3A4'), 33), 0)")
+            .run(&format!("select get_lock('{utf8_name}', 0)"))
             .unwrap(),
         row([Datum::Int(1)])
     );
@@ -84,8 +99,11 @@ fn advisory_lock_functions_match_source_boundaries() {
             .unwrap(),
         row([Datum::Int(1)])
     );
+    let max_ascii = "a".repeat(64);
     assert_eq!(
-        session.run("select get_lock(repeat('a', 64), 0)").unwrap(),
+        session
+            .run(&format!("select get_lock('{max_ascii}', 0)"))
+            .unwrap(),
         row([Datum::Int(1)])
     );
 

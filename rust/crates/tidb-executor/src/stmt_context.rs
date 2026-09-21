@@ -4205,18 +4205,12 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_millis(100));
     }
 
-    /// Go `EvalContext.GetMaxAllowedPacket`, read by every result-sizing
-    /// string builtin: `SPACE(n)` past the limit is NULL with warning 1301
-    /// (`handleAllowedPacketOverflowed`).
-    ///
-    /// Asserted through an EVALUATED builtin rather than through the getter,
-    /// because the getter agreeing with the setter proves nothing: what broke
-    /// was that `StmtContext` did not override the trait default at all, so
-    /// every builtin sized against 64 MiB whatever the session said.
+    /// Go `EvalContext.GetMaxAllowedPacket`, exercised through retained CONCAT.
+    /// Deleted SPACE must instead refuse before allocating or warning.
     #[test]
-    fn a_string_builtin_sizes_its_result_against_this_contexts_packet_limit() {
-        fn space_2000(ctx: &StmtContext) -> Datum {
-            let stmt = tidb_parser::parse("SELECT SPACE(2000)").expect("the probe SQL parses");
+    fn retained_concat_uses_this_contexts_packet_limit_and_space_refuses() {
+        fn evaluate(sql: &str, ctx: &StmtContext) -> Result<Datum, tidb_expr::EvalError> {
+            let stmt = tidb_parser::parse(&format!("SELECT {sql}")).expect("probe SQL parses");
             let tidb_ast::Stmt::Query(query) = &stmt else {
                 panic!("not a query")
             };
@@ -4228,26 +4222,31 @@ mod tests {
             };
             let expression =
                 tidb_expr::rewriter::rewrite_expr_resolved(expr, &tidb_expr::rewriter::NoResolver)
-                    .expect("SPACE rewrites");
+                    .expect("expression rewrites");
             let mut dual = tidb_chunk::chunk::Chunk::new_empty(&[]);
             dual.set_num_virtual_rows(1);
-            expression
-                .eval(ctx, dual.get_row(0))
-                .expect("SPACE evaluates")
+            expression.eval(ctx, dual.get_row(0))
         }
 
+        let payload = "a".repeat(1_000);
+        let concat = format!("CONCAT('{payload}','{payload}')");
         let default = StmtContext::for_query();
-        assert!(
-            matches!(space_2000(&default), Datum::String(_) | Datum::Bytes(_)),
-            "the shipped 64 MiB limit fits 2000 spaces"
-        );
+        assert!(matches!(evaluate(&concat, &default), Ok(Datum::String(_))));
         assert!(default.take_warnings().is_empty());
 
-        let narrow = StmtContext::for_query().with_max_allowed_packet(1024);
-        assert_eq!(space_2000(&narrow), Datum::Null);
+        let narrow = StmtContext::for_query().with_max_allowed_packet(1_024);
+        assert_eq!(evaluate(&concat, &narrow), Ok(Datum::Null));
         let warnings = narrow.take_warnings();
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].1, 1301);
+
+        assert_eq!(
+            evaluate("SPACE(2000)", &narrow),
+            Err(tidb_expr::EvalError::Unsupported(
+                "native packet-limited string evaluation was removed; function unsupported",
+            ))
+        );
+        assert!(narrow.take_warnings().is_empty());
     }
 
     /// Go `handleAllowedPacketOverflowed` (`pkg/expression/errors.go:88-96`)

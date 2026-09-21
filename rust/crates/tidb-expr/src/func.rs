@@ -26,7 +26,6 @@ use crate::string_fn::{
     oct, ord, quote, replace, reverse, str_insert, str_take, strcmp, substring, substring_index,
     unhex,
 };
-use crate::string_packet::{pad, repeat, space, to_base64};
 use crate::time_fn::calendar::{date_add, date_diff, date_format, date_part, from_days, time_part};
 use crate::{BuildContext, Columns, Datum, EvalError, StringLengthFunction};
 
@@ -123,6 +122,16 @@ pub(crate) fn is_removed_native_regexp(name: &str) -> bool {
     )
 }
 
+/// Native packet-limited string kernels were physically removed. All six
+/// names are explicit contractions because TiKV has no equivalent statement
+/// `max_allowed_packet` setting or WEIGHT_STRING wire signature.
+pub(crate) fn is_removed_native_packet_string(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "REPEAT" | "SPACE" | "LPAD" | "RPAD" | "TO_BASE64" | "WEIGHT_STRING"
+    )
+}
+
 /// Evaluates a builtin scalar function over its evaluated arguments.
 pub(crate) fn eval_func(
     name: &str,
@@ -151,6 +160,11 @@ pub(crate) fn eval_func(
     if is_removed_native_regexp(&name) {
         return Err(EvalError::Unsupported(
             "native regexp evaluation was removed; TiKV engine required",
+        ));
+    }
+    if is_removed_native_packet_string(&name) {
+        return Err(EvalError::Unsupported(
+            "native packet-limited string evaluation was removed; function unsupported",
         ));
     }
     // The AST evaluator is also an expression-construction entry point for
@@ -548,6 +562,11 @@ pub(crate) fn eval_func_values_in(
             "native regexp evaluation was removed; TiKV engine required",
         )));
     }
+    if is_removed_native_packet_string(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native packet-limited string evaluation was removed; function unsupported",
+        )));
+    }
     // Go's `builtinFromBase64Sig` checks the estimated decoded length against
     // `max_allowed_packet` before decoding and routes an over-limit result
     // through the statement warning policy. Keep this context-sensitive arm
@@ -589,9 +608,9 @@ pub(crate) fn eval_func_values_in(
 ///   branch, so eager-evaluating both would change semantics, e.g. a guarded
 ///   `1/0`), `CASE`, and the `DATE_ADD`/`DATE_SUB`/`ADDDATE`/`SUBDATE`
 ///   family whose second argument is an `Expr::Interval`, not a value;
-/// - removed native math, crypto, vector, JSON depth/storage, and regexp functions,
-///   including `RAND`, `RANDOM_BYTES`, `VEC_FROM_TEXT`, JSON storage accounting,
-///   and REGEXP/RLIKE;
+/// - removed native math, crypto, vector, JSON depth/storage, regexp, and
+///   packet-limited string functions, including `RAND`, `RANDOM_BYTES`,
+///   `VEC_FROM_TEXT`, JSON storage accounting, REGEXP/RLIKE, and REPEAT/SPACE;
 ///   the sequence functions (`NEXTVAL`/`LASTVAL`/`SETVAL`), and the
 ///   `time_fn` family (its dispatch takes `Columns` for the statement clock,
 ///   time zone, and `default_week_format`);
@@ -608,6 +627,11 @@ pub(crate) fn eval_func_values(
     vals: &[Datum],
     ctx: &dyn Columns,
 ) -> Option<Result<Datum, EvalError>> {
+    if is_removed_native_packet_string(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native packet-limited string evaluation was removed; function unsupported",
+        )));
+    }
     // Go `BuildCastFunction4Union`'s in-union cast-to-unsigned CLAMPS a
     // negative result to 0 (`builtin_cast.go:998`).
     if name == "cast_unsigned_in_union" {
@@ -849,12 +873,8 @@ pub(crate) fn eval_func_values(
         "REVERSE" => reverse(vals),
         // `ASCII`: the first BYTE's numeric value (0 for the empty string).
         "ASCII" => ascii(vals),
-        "REPEAT" if vals.len() == 2 => repeat(vals, ctx),
         "REPLACE" if vals.len() == 3 => replace(vals),
-        "SPACE" if vals.len() == 1 => space(vals, ctx),
         "STRCMP" if vals.len() == 2 => strcmp(vals),
-        "LPAD" if vals.len() == 3 => pad(vals, true, ctx),
-        "RPAD" if vals.len() == 3 => pad(vals, false, ctx),
         // `LOCATE(substr, str)` / `INSTR(str, substr)` — same 1-indexed
         // char position, arguments in the opposite order (reusing
         // `position`, which already handles the empty-substr and
@@ -902,7 +922,6 @@ pub(crate) fn eval_func_values(
         "BIT_COUNT" if vals.len() == 1 => bit_count(vals),
         "FORMAT" if vals.len() == 2 => format_num(vals, ctx),
         "CHAR_FUNC" if !vals.is_empty() => char_func_with_context(vals, ctx),
-        "TO_BASE64" if vals.len() == 1 => to_base64(vals, ctx),
         // Go `builtinLoadFileSig.evalString` reads the argument and then
         // returns `"", true, nil` UNCONDITIONALLY: TiDB has no server-side
         // file access at all, so LOAD_FILE is NULL for every path, readable

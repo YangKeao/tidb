@@ -942,6 +942,11 @@ impl ScalarFunction {
                 "native regexp evaluation was removed; TiKV engine required",
             ));
         }
+        if crate::func::is_removed_native_packet_string(self.func_name.lowercase()) {
+            return Err(EvalError::Unsupported(
+                "native packet-limited string evaluation was removed; function unsupported",
+            ));
+        }
         if let Some(value) = self.eval_fast_integer_binary(ctx, row)? {
             return self.coerce_to_ret_type(value);
         }
@@ -2096,52 +2101,6 @@ impl ScalarFunction {
                         &arg_decimals,
                         all_constant,
                         collation,
-                        ctx,
-                    );
-                }
-                // Go `weightStringFunctionClass`: a NUMERIC argument builds
-                // `builtinWeightStringNullSig` (always NULL) from the
-                // argument's FieldType, and the sort key is taken under the
-                // ARGUMENT's collation -- the function's own is forced to
-                // `binary`, so `derived_collation` is the wrong one here.
-                "weight_string" if !self.args.is_empty() => {
-                    // The `AS` clause travels as the constant second and
-                    // third arguments the rewriter built.
-                    let padding = match self.args.len() {
-                        3 => {
-                            let kind = self.args[1].eval(ctx, row)?;
-                            let length = self.args[2].eval(ctx, row)?;
-                            let binary = kind.sql_string().is_ok_and(|k| k == "BINARY");
-                            Some((binary, crate::cast::to_i64_signed(&length)))
-                        }
-                        _ => None,
-                    };
-                    let arg_type = self.args[0].static_type().cloned().unwrap_or_else(|| {
-                        tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString)
-                    });
-                    // Go starts numeric inputs on the NULL signature, then
-                    // lets AS BINARY replace it with the binary-padding
-                    // signature. AS CHAR deliberately does not replace it.
-                    if arg_type.code().is_type_numeric() && !matches!(padding, Some((true, _))) {
-                        return Ok(Datum::Null);
-                    }
-                    let value = self.args[0].eval(ctx, row)?;
-                    let value = crate::cast::cast_arg_as_string(&value, Some(&arg_type), ctx)?;
-                    let explicit_collation =
-                        crate::collation_derive::coercibility_of(&self.args[0])
-                            == crate::expr_collation::Coercibility::EXPLICIT;
-                    let string_type = crate::cast::cast_arg_as_string_type(
-                        &arg_type,
-                        explicit_collation,
-                        ctx.connection_charset_info(),
-                    );
-                    let arg_collation =
-                        tidb_datatype::Collation::from_name(string_type.collation_name())
-                            .unwrap_or(crate::ops::DERIVATION_FREE_COLLATION);
-                    return crate::string_packet::weight_string(
-                        &value,
-                        padding,
-                        arg_collation,
                         ctx,
                     );
                 }

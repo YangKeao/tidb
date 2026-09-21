@@ -2500,26 +2500,28 @@ fn an_overflow_names_its_class_and_folded_constants_name_their_expression() {
 /// -- a `SET GLOBAL` does NOT reach the session that issued it, which is why
 /// the session copy rather than the global table is the right read.
 #[test]
-fn a_result_sizing_builtin_reads_the_sessions_max_allowed_packet() {
+fn result_sizing_builtins_are_contracted_without_changing_session_packet_scope() {
     let mut session = Session::new();
-    assert_eq!(
-        scalar_text(&mut session, "SELECT space(2000) IS NULL").as_deref(),
-        Some("0")
-    );
+    let assert_removed = |session: &mut Session, sql: &str| {
+        let error = session
+            .run(sql)
+            .expect_err("packet-limited native string kernel is deleted")
+            .to_string();
+        assert!(
+            error.contains(
+                "native packet-limited string evaluation was removed; function unsupported"
+            ),
+            "{sql}: {error}"
+        );
+    };
+    assert_removed(&mut session, "SELECT space(2000) IS NULL");
     session.run("SET GLOBAL max_allowed_packet = 1024").unwrap();
     assert_eq!(
         scalar_text(&mut session, "SELECT @@max_allowed_packet").as_deref(),
         Some("67108864")
     );
-    assert_eq!(
-        scalar_text(&mut session, "SELECT space(2000) IS NULL").as_deref(),
-        Some("0"),
-        "the SET GLOBAL must not reach the session that issued it"
-    );
-    assert_eq!(
-        scalar_text(&mut session, "SELECT length(repeat('ab', 2000))").as_deref(),
-        Some("4000")
-    );
+    assert_removed(&mut session, "SELECT space(2000) IS NULL");
+    assert_removed(&mut session, "SELECT length(repeat('ab', 2000))");
 }
 
 /// Go `SetExecutor.getVarValue`: `SET x = DEFAULT` resolves to

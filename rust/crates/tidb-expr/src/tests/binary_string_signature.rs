@@ -29,7 +29,7 @@
 //! RS:béa|62A9C361
 //! ```
 
-use super::e;
+use super::{assert_packet_string_refusal, e};
 
 /// One captured `(expression, TiDB answer)` pair per signature, in both the
 /// character and the binary spelling of the same call.
@@ -166,12 +166,17 @@ fn case_pad_and_ord_keep_their_binary_answers() {
         ("ord(convert('éb' using binary))", "INT:195"),
         ("char_length(convert('aéb' using binary))", "INT:4"),
         ("hex(left(convert('aéb' using binary), 2))", "STR:61C3"),
-        // LPAD/RPAD pad to a BYTE width when EITHER string is binary.
-        ("hex(lpad(cast('aéb' as binary), 5, 'z'))", "STR:7A61C3A962"),
-        ("hex(rpad(cast('aéb' as binary), 5, 'z'))", "STR:61C3A9627A"),
-        ("hex(lpad('aéb', 5, 'z'))", "STR:7A7A61C3A962"),
-        ("hex(lpad('aéb', 5, cast('z' as binary)))", "STR:7A61C3A962"),
     ]);
+    // Keep the former binary/character signature fixtures, but assert their
+    // explicit contraction after the packet-limited kernels were deleted.
+    for expression in [
+        "hex(lpad(cast('aéb' as binary), 5, 'z'))",
+        "hex(rpad(cast('aéb' as binary), 5, 'z'))",
+        "hex(lpad('aéb', 5, 'z'))",
+        "hex(lpad('aéb', 5, cast('z' as binary)))",
+    ] {
+        assert_packet_string_refusal(expression);
+    }
 }
 
 #[test]

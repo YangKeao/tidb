@@ -342,7 +342,6 @@ mod tests {
     use super::{dispatch, locate3};
     use crate::coerce::coerce_str;
     use crate::string_fn::{char_func, format_num, format_num_locale, position, substring};
-    use crate::string_packet::to_base64;
     use crate::Datum;
     use tidb_datatype::{Collation, MysqlEnum, MysqlSet};
 
@@ -892,8 +891,16 @@ mod tests {
     /// are represented by passing their resulting GBK bytes directly, which
     /// is exactly the byte boundary consumed by `EvalString`.
     #[test]
-    fn to_base64_matches_go_source_vectors() {
-        for (input, want) in [
+    fn to_base64_source_vectors_are_explicitly_contracted() {
+        let assert_removed = |input: Datum| {
+            assert_eq!(
+                crate::func::eval_func_values_in("TO_BASE64", &[input], &crate::NoColumns),
+                Some(Err(crate::EvalError::Unsupported(
+                    "native packet-limited string evaluation was removed; function unsupported",
+                )))
+            );
+        };
+        for (input, _former_expected) in [
             (string(""), ""),
             (string("abc"), "YWJj"),
             (string("ab c"), "YWIgYw=="),
@@ -904,39 +911,18 @@ mod tests {
             (string("qwerty123456"), "cXdlcnR5MTIzNDU2"),
             (string("一二三"), "5LiA5LqM5LiJ"),
         ] {
-            assert_eq!(
-                to_base64(&[input], &crate::NoColumns).unwrap(),
-                string(want)
-            );
+            assert_removed(input);
         }
-        assert_eq!(
-            to_base64(&[Datum::Null], &crate::NoColumns).unwrap(),
-            Datum::Null
-        );
-        assert_eq!(
-            to_base64(
-                &[Datum::new_bytes(vec![0xd2, 0xbb, 0xb6, 0xfe, 0xc8, 0xfd])],
-                &crate::NoColumns
-            )
-            .unwrap(),
-            string("0ru2/sj9")
-        );
-        assert_eq!(
-            to_base64(&[Datum::new_bytes(vec![0xff, 0x00])], &crate::NoColumns).unwrap(),
-            string("/wA=")
-        );
+        for input in [
+            Datum::Null,
+            Datum::new_bytes(vec![0xd2, 0xbb, 0xb6, 0xfe, 0xc8, 0xfd]),
+            Datum::new_bytes(vec![0xff, 0x00]),
+        ] {
+            assert_removed(input);
+        }
         let long = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        assert_eq!(
-            to_base64(&[string(long)], &crate::NoColumns).unwrap(),
-            string(
-                "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0\nNTY3ODkrLw=="
-            )
-        );
-        let triple = format!("{long}{long}{long}");
-        assert_eq!(
-            to_base64(&[string(&triple)], &crate::NoColumns).unwrap(),
-            string("QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0\nNTY3ODkrL0FCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4\neXowMTIzNDU2Nzg5Ky9BQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWmFiY2RlZmdoaWprbG1ub3Bx\ncnN0dXZ3eHl6MDEyMzQ1Njc4OSsv")
-        );
+        assert_removed(string(long));
+        assert_removed(string(&format!("{long}{long}{long}")));
     }
 
     /// Complete representable scalar tables from `TestSubstring` and
@@ -1122,11 +1108,13 @@ mod tests {
     }
 
     #[test]
-    fn to_base64_wraps_at_the_go_76_column_boundary() {
+    fn to_base64_wrap_boundary_is_explicitly_contracted() {
         let input = string("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/");
         assert_eq!(
-            to_base64(&[input], &crate::NoColumns).unwrap().sql_string().unwrap(),
-            "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0\nNTY3ODkrLw=="
+            crate::func::eval_func_values_in("TO_BASE64", &[input], &crate::NoColumns),
+            Some(Err(crate::EvalError::Unsupported(
+                "native packet-limited string evaluation was removed; function unsupported",
+            )))
         );
     }
 

@@ -118,6 +118,19 @@ remain in the workspace.
       ignored), and the opted-in session SQL test proves at least five regexp
       rows executed through TiKV. This is still not the final native-removal
       claim.
+- [x] Sixth physical-deletion tranche: removed the 738-line
+      `src/string_packet.rs` module plus every REPEAT/SPACE/LPAD/RPAD/TO_BASE64
+      dispatch arm and both WEIGHT_STRING AST/scalar kernels. All six names
+      were already excluded because the embedded engine has no equivalent
+      statement `max_allowed_packet` setting or verified WEIGHT_STRING wire
+      path; they now return one structured unsupported error before arity,
+      child evaluation, allocation, or warning emission. Seven deleted-file
+      test functions were replaced one-for-one by contraction receipts carrying
+      their source inputs, including the 42 collation/padding shapes. The
+      guarded library suite remains 1196 passed / 99 ignored, and six targeted
+      session source tests pass with exact refusal while unrelated retained
+      behavior remains asserted. This is still not the final native-removal
+      claim.
 - [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
       in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected
       borrowed facade was used by the adapter while the manifest still pinned

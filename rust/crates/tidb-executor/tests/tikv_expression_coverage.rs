@@ -318,30 +318,43 @@ fn tikv_expression_coverage_sql_lazy_control_executes_without_the_dead_branch() 
 }
 
 #[test]
-fn tikv_expression_coverage_sql_packet_limited_functions_remain_native() {
+fn tikv_expression_coverage_sql_packet_contractions_and_retained_concat_are_explicit() {
     let catalog = table(
         "CREATE TABLE packet_values (id BIGINT, n BIGINT, s VARCHAR(32))",
         "INSERT INTO packet_values VALUES (1,4,'a'),(2,16,'abcdefgh'),(3,NULL,NULL)",
     );
-    for expression in ["SPACE(n)", "REPEAT(s,n)", "CONCAT(s,s)"] {
+    for expression in ["SPACE(n)", "REPEAT(s,n)"] {
         let sql = format!("SELECT {expression} FROM packet_values ORDER BY id");
-        compare_sql(
-            &catalog,
-            &sql,
-            || StmtContext::for_query().with_max_allowed_packet(8),
-            false,
-        );
-        let native = StmtContext::for_query().with_max_allowed_packet(8);
-        let rows = run_select_on(&sql, &catalog, &native).unwrap();
-        assert_eq!(rows[1][0], Datum::Null, "packet overflow: {sql}");
+        let context = StmtContext::for_query().with_max_allowed_packet(8);
+        let error = run_select_on(&sql, &catalog, &context)
+            .expect_err("native packet-limited string kernel is deleted")
+            .to_string();
         assert!(
-            native
-                .take_warnings()
-                .iter()
-                .any(|warning| warning.1 == 1301),
-            "missing packet warning: {sql}"
+            error.contains(
+                "native packet-limited string evaluation was removed; function unsupported"
+            ),
+            "{sql}: {error}"
+        );
+        assert!(
+            context.take_warnings().is_empty(),
+            "deleted kernel warned: {sql}"
         );
     }
+
+    let sql = "SELECT CONCAT(s,s) FROM packet_values ORDER BY id";
+    compare_sql(
+        &catalog,
+        sql,
+        || StmtContext::for_query().with_max_allowed_packet(8),
+        false,
+    );
+    let native = StmtContext::for_query().with_max_allowed_packet(8);
+    let rows = run_select_on(sql, &catalog, &native).unwrap();
+    assert_eq!(rows[1][0], Datum::Null, "retained CONCAT overflow");
+    assert!(native
+        .take_warnings()
+        .iter()
+        .any(|warning| warning.1 == 1301));
 }
 
 #[test]

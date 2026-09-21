@@ -250,8 +250,10 @@ names are `offline_mode`, `read_only`, `super_read_only`,
   refused.
 * **The SQL behavior reader is now fixed.** `Session::statement_context` reads
   the session copy and passes it through `StmtContext::with_max_allowed_packet`,
-  which `SPACE()` and the other result-sizing builtins consume. A global write
-  affects a newly seeded session, not the current session, matching Go.
+  which retained result-sizing builtins such as `CONCAT()` consume. A global
+  write affects a newly seeded session, not the current session, matching Go.
+  Deleted REPEAT/SPACE/LPAD/RPAD/TO_BASE64/WEIGHT_STRING kernels now refuse
+  before consulting this context or emitting a packet warning.
 * **The network packet limit is still node configuration, not the sysvar.**
   `PacketReader` already accepts a per-connection limit, and `tidb-server`
   supplies `NodeConfig::max_allowed_packet`; a later `SET GLOBAL` does not

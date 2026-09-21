@@ -11201,9 +11201,10 @@ risks without claiming repository-wide parity.
 - 2026-09-06 (IF/IFNULL + length-edge pin): NULL-falsy IF, the IFNULL
   fallback, and LEFT/RIGHT zero/negative/over-length rules. Pinned in
   `crates/tidb-session/tests/if_ifnull_length_edges_source.rs`.
-- 2026-09-06 (LPAD/RPAD/REVERSE pin): pad cycling, truncation to target
-  length, zero-length, rune-based REVERSE, and REPEAT's negative-count
-  empty. Pinned in
+- 2026-09-06 (LPAD/RPAD/REPEAT contraction + REVERSE pin): the former pad
+  cycling/truncation/zero-length and negative-count source shapes now assert
+  structured unsupported after native-kernel deletion; rune-based REVERSE
+  remains a value assertion. Pinned in
   `crates/tidb-session/tests/lpad_rpad_reverse_source.rs`.
 - 2026-09-06 (CONCAT_WS/TRIM pin): NULL-argument skipping with the
   NULL-separator poison, plus TRIM/LTRIM/RTRIM and BOTH/LEADING remstr
@@ -11337,9 +11338,10 @@ risks without claiming repository-wide parity.
   final-sigma hazard (Σ -> σ via the simple mapping, not the word-final
   ς a full Unicode fold produces), and NULL propagation. Pinned in
   `crates/tidb-session/tests/lower_upper_case_source.rs`.
-- 2026-09-06 (REPLACE/SPACE pin): replace-all expansion, no-op and empty
-  search strings, SPACE's negative clamp, and NULL propagation. Pinned
-  in `crates/tidb-session/tests/replace_space_source.rs`.
+- 2026-09-06 (REPLACE pin + SPACE contraction): replace-all expansion, no-op,
+  empty-search behavior, and NULL propagation remain value assertions; all
+  former SPACE source rows assert structured unsupported. Pinned in
+  `crates/tidb-session/tests/replace_space_source.rs`.
 - 2026-09-06 (math edges pin): SQRT(-1) -> NULL, POW's negative-fractional
   out-of-range error, SIGN/ABS sign rules. Pinned in
   `crates/tidb-session/tests/math_edge_source.rs`.
@@ -11347,9 +11349,10 @@ risks without claiming repository-wide parity.
   rules — 0/beyond-pos unchanged, negative length splices to end, NULL
   propagates. Pinned in
   `crates/tidb-session/tests/insert_fn_splice_source.rs`.
-- 2026-09-06 (multibyte positions pin): LOCATE/INSTR report character
-  positions, BIT_LENGTH counts bits, LPAD's target is characters. Pinned
-  in `crates/tidb-session/tests/multibyte_position_source.rs`.
+- 2026-09-06 (multibyte positions pin + LPAD contraction): LOCATE/INSTR
+  report character positions and BIT_LENGTH counts bits; the former multibyte
+  LPAD source shape now asserts structured unsupported. Pinned in
+  `crates/tidb-session/tests/multibyte_position_source.rs`.
 - 2026-09-06 (JSON introspection pin): JSON_KEYS, JSON_LENGTH on objects
   and arrays, and JSON_UNQUOTE's escape resolution (including through an
   EXTRACT round trip). Pinned in

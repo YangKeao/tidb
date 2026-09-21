@@ -143,40 +143,17 @@ fn go_test_left_and_right() {
 /// Go `TestRepeatSig` (`builtin_string_test.go`): repetition within the
 /// declared flen; anything past it answers NULL with the packet warning.
 #[test]
-fn go_test_repeat() {
-    let value = eval_string_sig("repeat", vec![s("a"), i(6)]).unwrap();
-    assert_eq!(str_of(&value), "aaaaaa");
-    let value = eval_string_sig("repeat", vec![s("毅"), i(6)]).unwrap();
-    assert_eq!(str_of(&value), "毅毅毅毅毅毅");
-    // Go's table also pins {a, 10001} and {毅, 334}: both answer NULL with
-    // warning 1301 because the SIGNATURE was built with a 1000-byte
-    // maxAllowedPacket (`builtinRepeatSig{base, 1000}`). That limit is a
-    // session value here, so the boundary itself is exercised by
-    // `string_packet`'s own tests under a controlled context; through the
-    // default session the same rows simply repeat.
-    {
-        struct SmallPacket;
-        impl crate::context::Columns for SmallPacket {
-            fn get(&self, _: &[String]) -> Option<Datum> {
-                None
-            }
-            fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
-                tidb_datatype::SessionTimeZone::utc()
-            }
-            fn max_allowed_packet(&self) -> u64 {
-                1000
-            }
-        }
-        let function = ScalarFunction::new(
-            CiString::new("repeat"),
-            FieldType::new(C::VarString),
-            vec![const_arg(s("a")), const_arg(i(10_001))],
-        );
-        let empty = tidb_chunk::chunk::Chunk::new_with_capacity(&[], 1);
-        let value = function
-            .eval(&SmallPacket, empty.get_row(0))
-            .unwrap_or_else(|e| panic!("repeat over packet: {e:?}"));
-        assert!(value.is_null(), "past the packet bound repeat answers NULL");
+fn go_test_repeat_is_explicitly_contracted() {
+    const REFUSAL: crate::EvalError = crate::EvalError::Unsupported(
+        "native packet-limited string evaluation was removed; function unsupported",
+    );
+    for args in [
+        vec![s("a"), i(6)],
+        vec![s("毅"), i(6)],
+        vec![s("a"), i(10_001)],
+        vec![s("毅"), i(334)],
+    ] {
+        assert_eq!(eval_string_sig("repeat", args), Err(REFUSAL));
     }
 }
 

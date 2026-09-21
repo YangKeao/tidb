@@ -510,7 +510,7 @@ their typed representation. Binary literal admission remains declined: this
 fix preserves fallback compatibility, not engine-only type support. UnionScan's
 retained generating programs use this entry too.
 
-The `stmt_context.rs` probes (`SPACE(2000)`) remain test-only; they are not
-production migration candidates.
+The `stmt_context.rs` test-only probe now demonstrates retained CONCAT packet
+handling plus exact SPACE refusal; it is not a production migration candidate.
 
 

@@ -1,11 +1,11 @@
 # TiKV expression corpus re-pointing plan
 
-Work list for re-pointing the 33 Go-test source ports in
+Living work list for re-pointing the 34 Go-test source-port files in
 `rust/crates/tidb-expr/src/tests/*_source.rs` at the local TiKV engine, as
-required by `tikv-expression-removal-checklist.md` section 3. Read-only
-analysis: no file was edited except this document; no cargo/go command was run.
+required by `tikv-expression-removal-checklist.md` section 3. The packet-string
+addendum below records the sixth physical-deletion tranche.
 
-Branch `feat/tikv-expression-coverage`, HEAD `b755409`. Admission authority:
+Branch `feat/tikv-expression-coverage`, published base `e76c191` plus the current working tree. Admission authority:
 `rust/crates/tidb-expr/src/tikv/admission.rs` (`ADMISSION_ROWS`), differential
 pattern to imitate: `rust/crates/tidb-expr/tests/tikv_coverage.rs`.
 
@@ -19,15 +19,18 @@ count at commit `4e1c7c7` (the commit that introduced the table). At HEAD
 `tikv-expression-coverage.json` already records `admission_admitted: 230`,
 `admission_excluded: 154`. `tikv-expression-coverage.md` section 1.1 and
 `tikv-expression-removal-checklist.md` section 3 repeat the stale 232/152.
-All numbers below use the HEAD table.
+That paragraph is the historical starting snapshot. Rows explicitly marked
+“live” and the packet-string addendum reflect the current six-tranche tree;
+older cross-tabulations remain useful planning history and are not recounted as
+current admission coverage.
 
-## 0.1 Headline numbers
+## 0.1 Headline numbers (live totals where marked; remaining cross-tabs are historical)
 
 | Item | Count |
 | --- | --- |
-| `*_source.rs` files | 33 |
-| `#[test]` functions | 413 |
-| Admission rows | 384 (230 admitted, 154 excluded) |
+| `*_source.rs` files (live) | 34 |
+| `#[test]` functions (live) | 423 |
+| Admission rows (live) | 384 (216 admitted, 168 excluded) |
 | Admitted names with >=1 source-port test | 141 |
 | Admitted names with no source-port test but covered by `tests/tikv_coverage.rs` | 89 |
 | Admitted names covered only elsewhere in the crate | 0 |
@@ -290,9 +293,9 @@ Go source: Batch b071 ports of `pkg/expression.part6`: `func Test*` items 301–
 | `#[test] fn` | tier | admitted subject names | excluded subject names | native helpers |
 | --- | --- | --- | --- | --- |
 | `test_field` | A+C | `field` | &mdash; | &mdash; |
-| `test_lpad` | A | &mdash; | `lpad` | &mdash; |
-| `test_rpad` | A | &mdash; | `rpad` | &mdash; |
-| `test_rpad_sig` | E | &mdash; | `rpad` | &mdash; |
+| `test_lpad` | A+C | &mdash; | `lpad` | &mdash; |
+| `test_rpad` | A+C | &mdash; | `rpad` | &mdash; |
+| `test_rpad_sig_is_explicitly_contracted` | E | &mdash; | `rpad` | &mdash; |
 | `test_insert_binary_sig` | E | &mdash; | `insert_func` | &mdash; |
 | `test_load_file` | A+C | &mdash; | `load_file` | &mdash; |
 | `test_make_set` | A+C | &mdash; | `make_set` | &mdash; |
@@ -303,13 +306,13 @@ Go source: Batch b071 ports of `pkg/expression.part6`: `func Test*` items 301–
 | `test_ord_charset_table` | A+E | `ord` | &mdash; | &mdash; |
 | `test_elt` | A+C | `elt` | &mdash; | &mdash; |
 | `test_quote` | E | `quote` | &mdash; | &mdash; |
-| `test_to_base64` | C | &mdash; | `to_base64` | &mdash; |
-| `test_to_base64_gbk_session_rows` | C+E | &mdash; | `to_base64` | &mdash; |
+| `test_to_base64` | A+C | &mdash; | `to_base64` | &mdash; |
+| `test_to_base64_gbk_session_rows` | E | &mdash; | `to_base64` | &mdash; |
 | `test_to_base64_sig_packet_boundaries` | E | &mdash; | `to_base64` | &mdash; |
 | `test_string_right` | A+C | `right` | &mdash; | &mdash; |
-| `test_weight_string_forms` | C+E | `hex` | `weight_string` | &mdash; |
+| `test_weight_string_forms` | A+C+E | `hex` | `weight_string` | &mdash; |
 | `test_weight_string_binary_cut_warning` | E | &mdash; | `weight_string` | &mdash; |
-| `test_ci_weight_string_table` | C | `hex` | `weight_string` | &mdash; |
+| `test_ci_weight_string_table` | A+C | `hex` | `weight_string` | &mdash; |
 | `test_translate_tables` | A+C | `hex`, `unhex` | `translate` | &mdash; |
 | `test_format_values_and_number_side_truncate_warnings` | A+E | &mdash; | `format` | `builtin_ext::string2` |
 | `test_format_precision_side_truncate_warning_counts` | E | &mdash; | `format` | &mdash; |
@@ -816,6 +819,24 @@ Go source: `pkg/expression/builtin_vectorized_test.go:878 TestVectorizedFilterCo
 
 ---
 
+### `packet_string_contraction_source.rs` (sixth-tranche addendum)
+
+Rank **(a)**; 7 tests. These replace the seven test functions physically
+removed with `string_packet.rs`. They retain Go's scalar, wrapping,
+`max_allowed_packet`, NULL, and 42 WEIGHT_STRING collation/padding source shapes,
+but assert structured unsupported rather than carrying a test-only copy of the
+deleted kernels.
+
+| `#[test] fn` | tier | admitted subject names | contracted subject names | native helpers |
+| --- | --- | --- | --- | --- |
+| `max_allowed_packet_overflow_rows_are_explicitly_contracted` | E | &mdash; | `lpad`, `repeat`, `rpad`, `space`, `to_base64` | &mdash; |
+| `space_source_scalar_vectors_are_explicitly_contracted` | E | &mdash; | `space` | &mdash; |
+| `pad_truncation_and_character_count_rows_are_explicitly_contracted` | A+C | &mdash; | `lpad`, `rpad` | &mdash; |
+| `to_base64_wrap_boundaries_are_explicitly_contracted` | E | &mdash; | `to_base64` | &mdash; |
+| `to_base64_null_is_explicitly_contracted` | E | &mdash; | `to_base64` | &mdash; |
+| `to_base64_packet_limit_rows_are_explicitly_contracted` | E | &mdash; | `to_base64` | &mdash; |
+| `ci_weight_string_source_shapes_are_explicitly_contracted` | A+C | `hex` (unreached wrapper) | `weight_string` | &mdash; |
+
 ## 2. Historical admitted-name cross-tabulation
 
 > **Superseded snapshot:** this section predates physical math/crypto deletion
@@ -1028,7 +1049,7 @@ number of source-port tests.
 | `format` | no local engine lowering: not selected by local_call, the temporal/JSON/vector families... | `builtin_string_time_source.rs::test_format_precision_side_truncate_warning_counts`, `builtin_string_time_source.rs::test_format_values_and_number_side_truncate_warnings`, `builtin_string_time_source.rs::test_format_with_locale` ... |
 | `found_rows` | no local engine lowering: not selected by local_call, the temporal/JSON/vector families... | `ilike_info_cast_source.rs::test_current_resource_group`, `ilike_info_cast_source.rs::test_current_user`, `ilike_info_cast_source.rs::test_database` ... |
 | `setvar` | session state, statement clock, RNG, user variables, sequences, or effects are absent f... | `builtin_vectorized_time_infra_source.rs::vectorized_check_predicates_over_constants_columns_and_correlated`, `setvar_getvar_values_getparam_source.rs::setvar_from_column_snapshots_the_row_value`, `setvar_getvar_values_getparam_source.rs::setvar_stores_session_value_and_returns_it` ... |
-| `to_base64` | native enforces max_allowed_packet before allocating; the pinned engine facade has no e... | `builtin_string_time_source.rs::test_to_base64`, `builtin_string_time_source.rs::test_to_base64_gbk_session_rows`, `builtin_string_time_source.rs::test_to_base64_sig_packet_boundaries` ... |
+| `to_base64` | native packet-limited string kernels were removed; no equivalent engine packet context is... | `builtin_string_time_source.rs::test_to_base64`, `builtin_string_time_source.rs::test_to_base64_gbk_session_rows`, `builtin_string_time_source.rs::test_to_base64_sig_packet_boundaries` ... |
 | `cast_signed` | no local engine lowering: not selected by local_call, the temporal/JSON/vector families... | `aggregation_arithmetic_cast_source.rs::test_cast_func_sig_as_int`, `aggregation_arithmetic_cast_source.rs::test_cast_func_sig_null_and_hybrid`, `aggregation_arithmetic_cast_source.rs::test_cast_functions_string_to_unsigned_and_signed` ... |
 | `from_base64` | native enforces max_allowed_packet before allocating; the pinned engine facade has no e... | `builtin_string_time_source.rs::test_from_base64`, `builtin_string_time_source.rs::test_from_base64_sig`, `builtin_string_time_source.rs::test_vectorized_builtin_string_eval_one_vec_2` ... |
 | `insert_func` | native enforces max_allowed_packet before allocating; the pinned engine facade has no e... | `builtin_string_time_source.rs::test_insert_binary_sig`, `builtin_string_time_source.rs::test_insert_func_table`, `builtin_string_time_source.rs::test_vectorized_builtin_string_eval_one_vec` ... |
@@ -1037,13 +1058,13 @@ number of source-port tests.
 | `get_lock` | session state, statement clock, RNG, user variables, sequences, or effects are absent f... | `advisory_get_lock_integration_source.rs::test_get_lock_call_semantics_table`, `advisory_get_lock_integration_source.rs::test_get_lock_rejects_bad_names_with_3057`, `builtin_string_time_source.rs::test_lock` |
 | `getparam` | session state, statement clock, RNG, user variables, sequences, or effects are absent f... | `expression_null_const_source.rs::test_const_level_case_table`, `function_traits_source.rs::unfoldable_functions_contains_sysdate`, `setvar_getvar_values_getparam_source.rs::getparam_function_evaluation_matches_plan_cache_values` |
 | `json_storage_size` | no local engine lowering: not selected by local_call, the temporal/JSON/vector families... | `builtin_info_json_math_source.rs::json_contains_path`, `builtin_info_json_math_source.rs::json_storage_free`, `builtin_info_json_math_source.rs::json_storage_size` |
-| `lpad` | native enforces max_allowed_packet before allocating; the pinned engine facade has no e... | `builtin_string_time_source.rs::test_lpad`, `builtin_string_time_source.rs::test_vectorized_builtin_string_eval_one_vec`, `builtin_string_time_source.rs::test_vectorized_builtin_string_func` |
+| `lpad` | native packet-limited string kernels were removed; no equivalent engine packet context is... | `builtin_string_time_source.rs::test_lpad`, `builtin_string_time_source.rs::test_vectorized_builtin_string_eval_one_vec`, `builtin_string_time_source.rs::test_vectorized_builtin_string_func` |
 | `make_set` | native enforces max_allowed_packet before allocating; the pinned engine facade has no e... | `builtin_string_time_source.rs::test_make_set`, `builtin_string_time_source.rs::test_vectorized_builtin_string_eval_one_vec_2`, `builtin_string_time_source.rs::test_vectorized_builtin_string_func_2` |
 | `now` | session state, statement clock, RNG, user variables, sequences, or effects are absent f... | `builtin_string_time_source.rs::test_now_utc_timestamp_fixed_clock`, `helper_current_timestamp_source.rs::test_current_timestamp_time_zone_case_table`, `helper_current_timestamp_source.rs::test_timestamp_sysvar_renders_fixed_now_literal_rows` |
 | `release_lock` | session state, statement clock, RNG, user variables, sequences, or effects are absent f... | `advisory_get_lock_integration_source.rs::test_get_lock_call_semantics_table`, `advisory_get_lock_integration_source.rs::test_get_lock_rejects_bad_names_with_3057`, `builtin_string_time_source.rs::test_lock` |
 | `translate` | no local engine lowering: not selected by local_call, the temporal/JSON/vector families... | `builtin_string_time_source.rs::test_translate_tables`, `builtin_string_time_source.rs::test_vectorized_builtin_string_eval_one_vec`, `builtin_string_time_source.rs::test_vectorized_builtin_string_func` |
 | `uuid` | session state, statement clock, RNG, user variables, sequences, or effects are absent f... | `builtin_math_misc_op_source.rs::uuid_generation_v1_v4_v7_shapes`, `expression_null_const_source.rs::test_const_level_case_table`, `function_traits_source.rs::unfoldable_functions_contains_sysdate` |
-| `weight_string` | no local engine lowering: not selected by local_call, the temporal/JSON/vector families... | `builtin_string_time_source.rs::test_ci_weight_string_table`, `builtin_string_time_source.rs::test_weight_string_binary_cut_warning`, `builtin_string_time_source.rs::test_weight_string_forms` |
+| `weight_string` | native packet-limited string kernels were removed; no verified engine wire path is admitt... | `builtin_string_time_source.rs::test_ci_weight_string_table`, `builtin_string_time_source.rs::test_weight_string_binary_cut_warning`, `builtin_string_time_source.rs::test_weight_string_forms` |
 | `aes_decrypt` | no local engine lowering: not selected by local_call, the temporal/JSON/vector families... | `crypto_encryption_source.rs::test_aes_decrypt`, `crypto_encryption_source.rs::test_aes_encrypt` |
 | `benchmark` | session state, statement clock, RNG, user variables, sequences, or effects are absent f... | `builtin_info_json_math_source.rs::bench_mark`, `builtin_info_json_math_source.rs::vectorized_builtin_info_func` |
 | `cast_json` | no local engine lowering: not selected by local_call, the temporal/JSON/vector families... | `aggregation_arithmetic_cast_source.rs::test_cast_binary_string_as_json_sig`, `compare_control_source.rs::test_compare` |
@@ -1069,7 +1090,7 @@ number of source-port tests.
 | `password` | no local engine lowering: not selected by local_call, the temporal/JSON/vector families... | `crypto_encryption_source.rs::encoding_error_rows_follow_session_charset_conversion`, `crypto_encryption_source.rs::test_password` |
 | `row` | no local engine lowering: not selected by local_call, the temporal/JSON/vector families... | `advisory_get_lock_integration_source.rs::test_get_lock_call_semantics_table`, `compare_time_builtin_rows_source.rs::test_compare_builtin_row_constructor_rows` |
 | `row_count` | no local engine lowering: not selected by local_call, the temporal/JSON/vector families... | `builtin_info_json_math_source.rs::row_count`, `builtin_info_json_math_source.rs::vectorized_builtin_info_func` |
-| `rpad` | native enforces max_allowed_packet before allocating; the pinned engine facade has no e... | `builtin_string_time_source.rs::test_rpad`, `builtin_string_time_source.rs::test_rpad_sig` |
+| `rpad` | native packet-limited string kernels were removed; no equivalent engine packet context is... | `builtin_string_time_source.rs::test_rpad`, `builtin_string_time_source.rs::test_rpad_sig_is_explicitly_contracted` |
 | `sleep` | session state, statement clock, RNG, user variables, sequences, or effects are absent f... | `builtin_math_misc_op_source.rs::sleep_vectorized_incorrect_argument_levels`, `evaluator_go_tables_source.rs::sleep_errctx_levels_and_null_arguments_follow_the_caller` |
 | `sysdate` | session state, statement clock, RNG, user variables, sequences, or effects are absent f... | `builtin_time_calendars_source.rs::with_time_zone_clock_builtins_render_the_session_zone`, `function_traits_source.rs::unfoldable_functions_contains_sysdate` |
 | `tidb_version` | no local engine lowering: not selected by local_call, the temporal/JSON/vector families... | `builtin_info_json_math_source.rs::tidb_version`, `builtin_info_json_math_source.rs::vectorized_builtin_info_func` |
@@ -1635,10 +1656,13 @@ worse than none for the removal decision.
 
 The 100 rows that used it are now split by a check anyone can repeat:
 
-* **`NO_WIRE_SIGNATURE`** (4 names: `translate`, `weight_string`, `load_file`,
+* **`NO_WIRE_SIGNATURE`** (3 names: `translate`, `load_file`,
   `json_schema_valid`) -- `grep -E '^\s*<Name> = '` finds nothing in the pinned
-  `tipb/proto/expression.proto`. No lowering can ever push these; after native
-  deletion they must raise a classified error.
+  `tipb/proto/expression.proto`. No lowering can ever push these.
+* **`REMOVED_PACKET_STRING_UNSUPPORTED`** (6 names: `repeat`, `space`, `lpad`,
+  `rpad`, `to_base64`, `weight_string`) -- their native module was physically
+  deleted; no equivalent packet context or verified WEIGHT_STRING wire path is
+  admitted, so every shape raises one classified error.
 * **`NO_ENGINE_KERNEL`** (5: `format`, `char_func`, `convert_using`,
   `convert_tz`, `cast_vector`) -- the signature is in the proto, but
   `components/tidb_query_expr/src/lib.rs` has no `ScalarFuncSig::<Name>` arm.

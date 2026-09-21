@@ -380,7 +380,6 @@ pub mod schema;
 pub mod sessionexpr;
 pub mod simple_expr;
 mod string_fn;
-mod string_packet;
 mod string_signature;
 #[cfg(feature = "tikv-expr")]
 pub mod tikv;
@@ -1197,42 +1196,11 @@ pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
         Expr::Regexp { .. } => Err(EvalError::Unsupported(
             "native regexp evaluation was removed; TiKV engine required",
         )),
-        // Go `weightStringFunctionClass`: a NUMERIC argument builds
-        // `builtinWeightStringNullSig`, which is always NULL. Go reads that
-        // off the argument's FieldType while BUILDING; this tier has only the
-        // evaluated value, whose kind is the same fact for every argument a
-        // constant expression can produce. The collation likewise comes from
-        // the VALUE here (`Datum::String` carries one) rather than from a
-        // static type -- the chunk tier reads the real derived one.
-        Expr::WeightString { expr, as_type } => {
-            let value = eval_in(expr, cols)?;
-            if matches!(
-                value,
-                Datum::Int(_)
-                    | Datum::UInt(_)
-                    | Datum::Real(_)
-                    | Datum::Float32(_)
-                    | Datum::Decimal(_)
-            ) {
-                return Ok(Datum::Null);
-            }
-            let collation = match &value {
-                Datum::String(text) => text.collation(),
-                Datum::Bytes(_) => tidb_datatype::Collation::Binary,
-                _ => crate::ops::DERIVATION_FREE_COLLATION,
-            };
-            string_packet::weight_string(
-                &value,
-                as_type.map(|(kind, length)| {
-                    (
-                        kind == tidb_ast::WeightStringType::Binary,
-                        i64::try_from(length).unwrap_or(i64::MAX),
-                    )
-                }),
-                collation,
-                cols,
-            )
-        }
+        // The native WEIGHT_STRING kernel was physically deleted. Keep the
+        // AST shape for parsing/planning, but fail before evaluating its child.
+        Expr::WeightString { .. } => Err(EvalError::Unsupported(
+            "native packet-limited string evaluation was removed; function unsupported",
+        )),
         Expr::Position { substr, str } => Ok(position(
             coerce_str(&eval_in(substr, cols)?)?,
             coerce_str(&eval_in(str, cols)?)?,

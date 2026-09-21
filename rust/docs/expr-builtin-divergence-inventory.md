@@ -233,14 +233,14 @@ identical Go `ETInt` cast.
   `if uint64(len(s)+len(d)) > b.maxAllowedPacket { return "", true, handleAllowedPacketOverflowed(...) }`,
   which appends warning `1301 Result of concat() was larger than max_allowed_packet`
   and returns `NULL`.
-- Rust: `rust/crates/tidb-expr/src/string_fn.rs` — the packet guard now
-  exists (`ctx.max_allowed_packet()` in `concat`, `LPAD`/`RPAD`, `REPEAT`,
-  and the shared `string_packet` helpers).
+- Rust: `rust/crates/tidb-expr/src/string_fn.rs` — CONCAT's own packet guard
+  remains and reads `ctx.max_allowed_packet()`. The separate native module for
+  REPEAT/SPACE/LPAD/RPAD/TO_BASE64/WEIGHT_STRING was physically deleted; those
+  six names now return an explicit structured unsupported error.
 
 A `CONCAT` result over `max_allowed_packet` (default 64 MiB) is `NULL` + warning
-in Go; Rust now refuses the same way through the evaluator's
-`max_allowed_packet` context (FIXED, verified 2026-09-04, alongside the other
-packet-limited string builtins).
+in Go; the retained CONCAT evaluator still follows that context. This does not
+imply support for the six deleted packet-limited string kernels.
 
 ---
 
@@ -353,11 +353,12 @@ these.
    static promotion across EVERY branch (gorun-confirmed) needs a genuine
    type-inference pass and is deliberately not attempted in the eval crate
    (`lib.rs:1009-1016`).
-4. *Strings* — RESOLVED (2026-09-03/04): `REPLACE`, `LPAD`/`RPAD` (content,
-   truncation, character counting, packet limit), `STRCMP`'s collation,
-   `ELT`/`FIELD`/`MAKE_SET`, and `EXPORT_SET` are implemented with
-   Go-pinned regressions (string_fn.rs, string_packet.rs,
-   func.rs `TestInsertBinarySig` port covering INSERT's packet overflow).
+4. *Strings* — PARTIAL after native-kernel deletion: `REPLACE`, `STRCMP`'s
+   collation, `ELT`/`FIELD`/`MAKE_SET`, and `EXPORT_SET` remain implemented with
+   Go-pinned regressions. REPEAT/SPACE/LPAD/RPAD/TO_BASE64/WEIGHT_STRING are
+   explicit contractions; their source fixtures now pin structured refusal.
+   INSERT's retained packet-overflow path remains covered by the
+   `TestInsertBinarySig` port.
    The formerly open `CHAR` vs `VARCHAR` padding item is CLOSED
    (2026-09-05) as implemented and pinned: the collation layer trims
    trailing spaces exactly for Go's `binPaddingCollator` set
