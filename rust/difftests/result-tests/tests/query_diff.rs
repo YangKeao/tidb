@@ -66,17 +66,27 @@ fn requires_tikv_engine(sql: &str) -> bool {
         && (is_any_value(sql)
             || removed_native::requires_string2_engine(sql)
             || removed_native::requires_inet_engine(sql)
-            || removed_native::requires_radix_engine(sql))
+            || removed_native::requires_radix_engine(sql)
+            || removed_native::requires_string_aux_engine(sql))
 }
 
 fn may_accept_engine_required_marker(sql: &str, marker: &str) -> bool {
+    if removed_native::requires_string_aux_engine(sql)
+        && marker != removed_native::STRING_AUX_REMOVED
+    {
+        return false;
+    }
     if matches!(
         marker,
         removed_native::STRING2_REMOVED | removed_native::INET_REMOVED
     ) {
         return false;
     }
-    marker != removed_native::RADIX_REMOVED || removed_native::is_radix_shape_contraction(sql)
+    if marker == removed_native::RADIX_REMOVED {
+        return removed_native::is_radix_shape_contraction(sql);
+    }
+    marker != removed_native::STRING_AUX_REMOVED
+        || removed_native::is_string_aux_shape_contraction(sql)
 }
 
 fn expected_removed_marker(sql: &str) -> Option<&'static str> {
@@ -245,6 +255,10 @@ fn retained_locate_is_not_a_local_contraction() {
     assert!(may_accept_engine_required_marker(
         "select oct(b'11111111')",
         removed_native::RADIX_REMOVED
+    ));
+    assert!(!may_accept_engine_required_marker(
+        "select abs(substring_index('a.b.c', '.', 2))",
+        "native math evaluation was removed; TiKV engine required"
     ));
 }
 

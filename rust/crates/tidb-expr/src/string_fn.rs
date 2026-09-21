@@ -12,9 +12,9 @@
 // limitations under the License.
 
 //! Remaining native string builtin helpers. Case conversion, LEFT/RIGHT,
-//! REVERSE, REPLACE, STRCMP, ASCII, BIT_LENGTH, HEX/UNHEX, BIN/OCT, ORD, and
-//! BIT_COUNT were physically removed; retained lowerable shapes execute only
-//! through TiKV. LOCATE/INSTR/POSITION and `TRIM(...)` retain native helpers
+//! REVERSE, REPLACE, STRCMP, ASCII, BIT_LENGTH, HEX/UNHEX, BIN/OCT, ORD,
+//! BIT_COUNT, SUBSTRING_INDEX, and QUOTE were physically removed; retained
+//! lowerable shapes execute only through TiKV. LOCATE/INSTR/POSITION and `TRIM(...)` retain native helpers
 //! for later semantic-gap work.
 
 use crate::coerce::{coerce_str, coerce_str_bytes};
@@ -164,16 +164,6 @@ pub(crate) fn position_with_collation(
         }
     }
     Datum::Int(0)
-}
-
-/// Preserve binary result semantics when the source string is binary; normal
-/// SQL strings retain the ordinary String datum/collation boundary.
-fn string_result(source: &Datum, bytes: Vec<u8>) -> Datum {
-    if matches!(source, Datum::Bytes(_)) {
-        Datum::new_bytes(bytes)
-    } else {
-        Datum::new_string(bytes)
-    }
 }
 
 /// `FIELD(needle, a, b, c, ...)`: the 1-based index of the first argument
@@ -343,112 +333,6 @@ pub(crate) fn elt(vals: &[Datum]) -> Result<Datum, EvalError> {
             Datum::new_string(selected)
         },
     )
-}
-
-/// `SUBSTRING_INDEX(str, delim, count)`: the substring before the `count`-th
-/// occurrence of `delim` — from the left for `count > 0`, from the right for
-/// `count < 0` (`SUBSTRING_INDEX('a.b.c.d', '.', -2)` = `c.d`). `count = 0`
-/// yields the empty string; `|count|` past the number of parts yields the
-/// whole string. `NULL` if any argument is `NULL`.
-pub(crate) fn substring_index(vals: &[Datum]) -> Result<Datum, EvalError> {
-    let [value, delim_value, count_value] = vals else {
-        return Err(EvalError::Unsupported("bad SUBSTRING_INDEX arity"));
-    };
-    let (Some(s), Some(delim)) = (coerce_str_bytes(value)?, coerce_str_bytes(delim_value)?) else {
-        return Ok(Datum::Null);
-    };
-    if count_value == &Datum::Null {
-        return Ok(Datum::Null);
-    }
-    if delim.is_empty() {
-        return Ok(string_result(value, Vec::new()));
-    }
-    // A UInt64 above MaxInt64 is the source's unsigned ETInt overflow case;
-    // builtinSubstringIndexSig returns the complete string before applying
-    // the negative-count branch.  The ordinary signed path uses TiDB's
-    // shared EvalInt coercion for strings, decimals, and reals.
-    if matches!(count_value, Datum::UInt(n) if *n > i64::MAX as u64) {
-        return Ok(string_result(value, s));
-    }
-    let count = crate::cast::to_i64_signed(count_value);
-    if count == 0 {
-        return Ok(string_result(value, Vec::new()));
-    }
-    let parts = split_bytes(&s, &delim);
-    let (start, end) = if count > 0 {
-        (0, (count as usize).min(parts.len()))
-    } else if count == i64::MIN {
-        (0, parts.len())
-    } else {
-        let n = (-count) as usize;
-        (parts.len().saturating_sub(n), parts.len())
-    };
-    let mut out = Vec::new();
-    for (index, part) in parts[start..end].iter().enumerate() {
-        if index != 0 {
-            out.extend_from_slice(&delim);
-        }
-        out.extend_from_slice(part);
-    }
-    Ok(string_result(value, out))
-}
-
-fn split_bytes<'a>(value: &'a [u8], delim: &[u8]) -> Vec<&'a [u8]> {
-    debug_assert!(!delim.is_empty());
-    let mut parts = Vec::new();
-    let mut start = 0;
-    let mut cursor = 0;
-    while cursor + delim.len() <= value.len() {
-        if &value[cursor..cursor + delim.len()] == delim {
-            parts.push(&value[start..cursor]);
-            cursor += delim.len();
-            start = cursor;
-        } else {
-            cursor += 1;
-        }
-    }
-    parts.push(&value[start..]);
-    parts
-}
-
-/// `QUOTE(s)`: `s` wrapped in single quotes with `'`, `\`, NUL and Ctrl-Z
-/// backslash-escaped — a value safe to paste into SQL. A `NULL` argument
-/// yields the four-character string `NULL` (NOT SQL `NULL`), matching MySQL.
-///
-/// Go's `Quote` (`builtin_string.go:3228-3229`) opens with `runes :=
-/// []rune(str)` and writes the runes back out, so the argument's BYTES are
-/// decoded as UTF-8 with one U+FFFD substituted per malformed byte -- a
-/// LOSSY step that is part of the answer, not an error. Captured from real
-/// TiDB (`gorun`): `hex(quote(v))` over a `varbinary` holding `0xFF` is
-/// `27EFBFBD27`, i.e. `'` U+FFFD `'`, and the same three bytes come back for
-/// a `bit(8)` holding `b'11111111'`. The argument itself is
-/// `crate::arg_eval_type`'s `types.ETString` cast
-/// (`builtin_string.go:3180`).
-pub(crate) fn quote(vals: &[Datum]) -> Result<Datum, EvalError> {
-    let Some(bytes) = crate::arg_eval_type::eval_string(&vals[0])? else {
-        return Ok(Datum::new_string("NULL".to_string()));
-    };
-    let mut out = String::with_capacity(bytes.len() + 2);
-    out.push('\'');
-    // `String::from_utf8_lossy` is Go's `[]rune` conversion: both replace
-    // each malformed byte with U+FFFD rather than refusing the value.
-    for c in String::from_utf8_lossy(&bytes).chars() {
-        match c {
-            '\'' => out.push_str("\\'"),
-            '\\' => out.push_str("\\\\"),
-            '\0' => out.push_str("\\0"),
-            '\x1a' => out.push_str("\\Z"),
-            _ => out.push(c),
-        }
-    }
-    out.push('\'');
-    // Go's `SetBinFlagOrBinStr(args[0].GetType(...), bf.tp)` (`:3184`): a
-    // binary argument makes the quoted result binary too.
-    Ok(if crate::string_signature::is_binary_str(&vals[0]) {
-        Datum::new_bytes(out.into_bytes())
-    } else {
-        Datum::new_string(out)
-    })
 }
 
 /// `CHAR(n1, n2, ...)` (parser-renamed `CHAR_FUNC`) ported from

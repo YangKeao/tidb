@@ -2,7 +2,7 @@
 
 ## Revisions and decision
 
-This checkpoint now includes the twelfth native radix/code deletion tranche.
+This checkpoint now includes the thirteenth native string-auxiliary deletion tranche.
 Its semantic-gap companion is published on the YangKeao TiKV fork at
 `0193236`; TiDB still builds pinned engine
 `db9c7f08d954fef02519b86a55c2d72cf72ef697`, not that documentation HEAD.
@@ -17,13 +17,14 @@ Only YangKeao personal forks had been used for that publication. This paragraph
 is retained as history, not a current publication or hosted-CI result.
 
 **Do not switch the default yet. Physical deletion is deliberately in
-progress.** Twelve tranches have now removed the complete native math-kernel
+progress.** Thirteen tranches have now removed the complete native math-kernel
 folder plus crypto/encryption, vector, JSON depth/storage, both regexp modules,
 the packet-limited string module, miscellaneous kernels, `builtin_ext/string2.rs`,
 the packet-context string tail, all four INET conversion kernels, and the native
 case conversion/ASCII/BIT_LENGTH/LEFT/RIGHT/REVERSE/REPLACE/STRCMP kernels,
-and HEX/UNHEX/BIN/OCT/ORD/BIT_COUNT plus their private coercion helpers,
-together with their residual dispatch. `CONCAT`, `CONCAT_WS`, `INSERT_FUNC`, `MAKE_SET`,
+HEX/UNHEX/BIN/OCT/ORD/BIT_COUNT plus their private coercion helpers, and
+SUBSTRING_INDEX/QUOTE plus their byte-splitting/quoting helpers, together with
+their residual dispatch. `CONCAT`, `CONCAT_WS`, `INSERT_FUNC`, `MAKE_SET`,
 and `FROM_BASE64` are now
 explicit contractions because the shared facade does not transport their
 `max_allowed_packet` and warning policy. Earlier miscellaneous/string2
@@ -37,14 +38,18 @@ contractions. LOCATE/INSTR/POSITION remain native because the embedded TiKV
 path currently loses `utf8mb4_bin` case sensitivity. The twelfth tranche makes
 HEX/UNHEX/BIN/OCT/ORD/BIT_COUNT TiKV-only for admitted shapes, including OCT's
 string signature; binary-literal provenance and non-leaf/numeric ORD are
-explicit contractions. This invalidates older retained/native claims for the deleted
-names without claiming full compatibility.
+explicit contractions. The thirteenth tranche makes SUBSTRING_INDEX and QUOTE
+TiKV-only for guarded shapes. Runtime/unsigned/i64::MIN counts contract around
+the pinned kernel's `abs()` behavior, while binary/BIT/ENUM/SET QUOTE contracts
+because Go substitutes U+FFFD and TiKV preserves malformed bytes. This
+invalidates older retained/native claims for the deleted names without claiming
+full compatibility.
 The earlier refusal-intolerant corpus still exposed 59 distinct first-refused
 expressions, so the migration objective remains active/incomplete.
 
 ## Acceptance status for the six requested items
 
-The six-item acceptance framework is unchanged by the twelfth deletion tranche;
+The six-item acceptance framework is unchanged by the thirteenth deletion tranche;
 none of the rows below should be read as completion.
 
 | Item | Established foundation | Remaining acceptance work |
@@ -63,12 +68,12 @@ counts and overbroad lazy/datatype milestone wording.
 
 ## Validation results
 
-Current twelfth-tranche gates: runtime **30 tests / 323 receipts / 2072 engine
+Current thirteenth-tranche gates: runtime **30 tests / 322 receipts / 2064 engine
 rows / 160 borrowed rows / zero native fallbacks**; static **384 rows / 216
 admitted / 168 excluded / 0 missing**. The source corpus remains **36
 `*_source.rs` files / 447 tests**. The expression library and external suites
-pass **1185 + 77** tests; expression/query differential gates pass, and five
-focused session tests pass in both feature modes. Feature-off expression-library
+pass **1185 + 77** tests; expression/query differential gates pass, and the two
+new focused session tests pass in both feature modes. Feature-off expression-library
 compilation remains red on previously documented unguarded engine-only test
 imports. These facts do not establish hosted CI, an end-to-end SQL demo, full
 compatibility, or TiKV server compatibility.
@@ -109,6 +114,7 @@ Logs are in `/home/agent/tidb/expression-reuse/`.
 | `radix-session-focused1.log` + `radix-result-diffs3.log` | five focused session tests passed in each feature mode; expression/query differential gates passed | Feature-on rows require positive TiKV counters; feature-off rows assert exact radix refusal. |
 | `radix-{runtime,static}-final.log` | runtime 323 fixtures / 2072 engine rows / 160 borrowed rows; static 216 admitted / 168 excluded / 0 missing | Signature inventory remains a count/hash gate, not SQL semantic coverage. |
 | `radix-integration-{native1,copying2}.log` | native 182 divergences; Copying 167 divergences / 416238 engine rows | Native adds one empty partition result after a refused HEX write; Copying returns to the carried divergence count. This is an intentionally red diagnostic. |
+| `string-aux-integration-{native-final,copying-final}.log` | native 182 divergences; Copying 167 divergences / 416244 engine rows | SUBSTRING_INDEX/QUOTE guarded shapes add no broad-replay divergence; the replay remains an intentionally red diagnostic. |
 | `native-misc-lint.log` | exit 0 | Repository `make -j1 lint` passed under the memory guard. |
 | current static gate | Self-check and check pass | 384 declaration rows, 216 admitted / 168 excluded, zero missing registry/synthesized names. Static candidates are not execution coverage. |
 | `checkpoint-engine-only.log` | **1163 passed / 61 failed / 99 ignored**, exit 101 | All 61 failed sections report adapter refusal; 59 distinct first-refused expressions. This is an incomplete cutover gate. |

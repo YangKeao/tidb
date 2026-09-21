@@ -267,6 +267,27 @@ remain in the workspace.
       partition result after a refused native HEX write), while Copying returns
       to 167 divergences and executes 416238 engine rows in the final run. This
       is not a compatibility claim.
+- [x] Thirteenth physical-deletion tranche: removed the native
+      `SUBSTRING_INDEX` and `QUOTE` kernels plus `split_bytes`, binary-result,
+      and UTF-8-lossy quoting helpers. All four native entry boundaries now
+      refuse both names before argument evaluation. Ordinary signed-literal
+      SUBSTRING_INDEX and non-binary QUOTE shapes execute only in TiKV. The
+      lowering bridge deliberately rejects runtime/unsigned/i64::MIN counts:
+      the pinned kernel applies `count.abs()`, so those values can wrap or
+      overflow. QUOTE rejects binary, BIT, ENUM, and SET sources because Go
+      substitutes U+FFFD for malformed bytes while the pinned TiKV kernel
+      preserves them. Direct binary literals, string/decimal counts, and the
+      captured unsigned count are exact contractions; independent Go values
+      remain alongside refusal assertions. Difftest acceptance is an exact
+      whole-statement allow-list so an engine failure in an ordinary shape
+      cannot be relabelled as an expected contraction. Validation is 1185
+      expression library tests, 77 external tests, two focused session tests in
+      both feature modes, expression/query diffs, runtime 30 tests / 322 receipts
+      / 2064 engine rows / 160 borrowed rows, and static 216 admitted / 168
+      excluded / 0 missing. The full session suite adds no failures to its four
+      carried math/crypto contractions. Broad replay remains intentionally red:
+      Native has 182 divergences; Copying has 167 and executes 416244 engine
+      rows. This is not a compatibility claim.
 - [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
       in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected
       borrowed facade was used by the adapter while the manifest still pinned

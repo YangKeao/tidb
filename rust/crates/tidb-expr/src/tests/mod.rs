@@ -208,6 +208,31 @@ pub(super) fn assert_engine_radix_value(expr: &str, expected: &str) {
     assert_radix_refusal(expr);
 }
 
+pub(super) const STRING_AUX_REMOVED: &str =
+    "Unsupported(\"native string auxiliary evaluation was removed; TiKV engine required or function unsupported\")";
+
+pub(super) fn assert_string_aux_refusal(expr: &str) {
+    let expected = outer_radix_or(expr, STRING_AUX_REMOVED);
+    assert_eq!(e(expr), expected, "AST boundary: {expr}");
+    let chunk = chunk_case(expr, &NoColumns)
+        .map(|value| value.label())
+        .unwrap_or_else(|error| error);
+    assert_eq!(chunk, expected, "native chunk boundary: {expr}");
+}
+
+pub(super) fn assert_engine_string_aux_value(expr: &str, expected: &str) {
+    #[cfg(feature = "tikv-expr")]
+    assert_eq!(engine_e(expr), expected, "TiKV engine: {expr}");
+    let _ = expected;
+    assert_string_aux_refusal(expr);
+}
+
+pub(super) fn assert_string_aux_contraction(expr: &str) {
+    assert_string_aux_refusal(expr);
+    #[cfg(feature = "tikv-expr")]
+    assert!(engine_declines(expr), "TiKV unexpectedly admitted: {expr}");
+}
+
 fn chunk_e_with(expr: &str, ctx: &impl Columns) -> String {
     match chunk_case(expr, ctx) {
         Ok(value) => value.label(),
@@ -949,19 +974,24 @@ fn elt_source_vectors_preserve_selector_and_result_coercion() {
 #[test]
 fn quote_source_vectors_preserve_byte_exact_escaping() {
     // pkg/expression/builtin_string_test.go:2528 TestQuote
+    for (hex, want) in [
+        ("446f6e5c277421", "STR:'Don\\\\\\'t!'"),
+        ("446f6e2774", "STR:'Don\\'t'"),
+        ("446f6e22", "STR:'Don\"'"),
+        ("446f6e5c22", "STR:'Don\\\\\"'"),
+        ("5c27", "STR:'\\\\\\''"),
+        ("5c22", "STR:'\\\\\"'"),
+        ("001a", "STR:'\\0\\Z'"),
+    ] {
+        let _ = want; // retained Go value for the contracted binary-literal shape
+        assert_string_aux_contraction(&format!("quote(x'{hex}')"));
+    }
     for (expr, want) in [
-        ("quote(x'446f6e5c277421')", "STR:'Don\\\\\\'t!'"),
-        ("quote(x'446f6e2774')", "STR:'Don\\'t'"),
-        ("quote(x'446f6e22')", "STR:'Don\"'"),
-        ("quote(x'446f6e5c22')", "STR:'Don\\\\\"'"),
-        ("quote(x'5c27')", "STR:'\\\\\\''"),
-        ("quote(x'5c22')", "STR:'\\\\\"'"),
         ("quote('萌萌哒(๑•ᴗ•๑)😊')", "STR:'萌萌哒(๑•ᴗ•๑)😊'"),
         ("quote('㍿㌍㍑㌫')", "STR:'㍿㌍㍑㌫'"),
-        ("quote(x'001a')", "STR:'\\0\\Z'"),
         ("quote(null)", "STR:NULL"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        assert_engine_string_aux_value(expr, want);
     }
 }
 
@@ -1386,42 +1416,19 @@ fn substring_index_source_vectors_preserve_count_and_bytes() {
             "STR:www.pingcap.com",
         ),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        if expr.ends_with("'.', '2')") || expr.ends_with("'.', 2.5)") {
+            assert_string_aux_contraction(expr);
+        } else {
+            assert_engine_string_aux_value(expr, want);
+        }
     }
-    assert_eq!(
-        string_fn::substring_index(&[
-            Datum::new_bytes(b"a\xffb\xffc".to_vec()),
-            Datum::new_bytes(vec![0xff]),
-            Datum::Int(-2),
-        ])
-        .unwrap(),
-        Datum::new_bytes(b"b\xffc".to_vec())
-    );
-    assert_eq!(
-        string_fn::substring_index(&[
-            Datum::new_string("a".to_string()),
-            Datum::new_string(".".to_string()),
-        ]),
-        Err(EvalError::Unsupported("bad SUBSTRING_INDEX arity"))
-    );
-    assert_eq!(
-        string_fn::substring_index(&[
-            Datum::new_string("a.b.c".to_string()),
-            Datum::new_string(".".to_string()),
-            Datum::UInt(i64::MAX as u64 + 1),
-        ])
-        .unwrap(),
-        Datum::new_string("a.b.c".to_string())
-    );
-    assert_eq!(
-        string_fn::substring_index(&[
-            Datum::new_string("a.b.c".to_string()),
-            Datum::new_string(".".to_string()),
-            Datum::Int(i64::MIN),
-        ])
-        .unwrap(),
-        Datum::new_string("a.b.c".to_string())
-    );
+    // TiKV's kernel calls `count.abs()`: i64::MIN can overflow, and the
+    // unsigned-above-i64 source shape cannot be represented by its signature.
+    assert_string_aux_contraction("substring_index('a.b.c', '.', -9223372036854775808)");
+    assert_string_aux_contraction("substring_index('a.b.c', '.', 18446744073709551616)");
+    // The raw invalid-byte Datum case has no SQL spelling with preserved source
+    // provenance, so retain its Go value only as contraction documentation:
+    // SUBSTRING_INDEX(0x61ff62ff63, 0xff, -2) => 0x62ff63.
 }
 
 /// Complete scalar rows from `TestTrim`.  TRIM removes repeated whole byte

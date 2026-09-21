@@ -514,7 +514,7 @@ fn tikv_coverage_string_and_misc_families_engine_receipts() {
             );
         }
         for name in [
-            "lower", "upper", "lcase", "ucase", "reverse", "ltrim", "rtrim", "quote", "hex",
+            "lower", "upper", "lcase", "ucase", "reverse", "ltrim", "rtrim", "hex",
         ] {
             record(
                 check(
@@ -525,6 +525,12 @@ fn tikv_coverage_string_and_misc_families_engine_receipts() {
                 ),
                 &mut failures,
             );
+        }
+        let quote = call("quote", &ty, vec![column(0, &ty)]);
+        if tag == "bytes" {
+            record(check_declined("quote_bytes", quote), &mut failures);
+        } else {
+            record(check("quote_utf8", quote, &mut input, &ty), &mut failures);
         }
         for name in ["md5", "sha1", "sha"] {
             record(

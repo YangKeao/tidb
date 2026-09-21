@@ -90,6 +90,8 @@ const COVERED: &[&str] = &[
     "cast('12:59:59' as time) < cast('12:59:59' as time)",
     "coalesce(cast('12:59:59' as time), cast('12:59:59.555' as time(3)))",
     "oct(1.0)",
+    "quote('safe text')",
+    "substring_index('a.b.c', '.', -2)",
     "if(cast('2020-10-10 12:59:59' as datetime), 1, 2)",
 ];
 
@@ -143,10 +145,14 @@ const DECLINED: &[&str] = &[
     "make_set(1, 'a', 'b', 'c')",
     "NULLIF(1, \"1.0\")",
     "oct(b'11111111')",
+    "quote(x'ff')",
     "regexp_like('abc', 'abc', 'p')",
     "round(1.2345,'2')",
     "round(3.14,'abc')",
     "round(5, -100)",
+    "substring_index('a.b.c', '.', '2')",
+    "substring_index('a.b.c', '.', -9223372036854775808)",
+    "substring_index('a.b.c', '.', 18446744073709551616)",
     "subtime('01:00:00.999999','02:00:00.999998')",
     "timestamp('2020-01-01','01:00:00')",
     "to_base64('')",
@@ -181,8 +187,8 @@ fn declined_expressions_stay_declined() {
 
 #[test]
 fn the_gap_count_is_pinned() {
-    assert_eq!(COVERED.len(), 17, "the covered list changed size");
-    assert_eq!(DECLINED.len(), 59, "the declined list changed size");
+    assert_eq!(COVERED.len(), 19, "the covered list changed size");
+    assert_eq!(DECLINED.len(), 63, "the declined list changed size");
 }
 
 /// The resolver that milestone E ends up with: an engine context and no native
@@ -268,7 +274,7 @@ fn every_declined_expression_fails_cleanly_without_the_native_evaluator() {
 /// all. `plan_builder.rs` folds the rewritten tree with the live statement
 /// context (`fold_constant_in_mode`) before the plan exists. After physical
 /// native-kernel deletion, constant-foldable declines become a single
-/// `Constant`; the 30 pinned here are the ones whose constant form *does*
+/// `Constant`; the 34 pinned here are the ones whose constant form *does*
 /// reach the adapter, which is the surface the removal actually has to answer
 /// for.
 ///
@@ -300,10 +306,14 @@ const SURVIVES_FOLD: &[&str] = &[
     "ifnull(null, cast('[1]' as json))",
     "make_set(1, 'a', 'b', 'c')",
     "oct(b'11111111')",
+    "quote(x'ff')",
     "regexp_like('abc', 'abc', 'p')",
     "round(1.2345,'2')",
     "round(3.14,'abc')",
     "round(5, -100)",
+    "substring_index('a.b.c', '.', '2')",
+    "substring_index('a.b.c', '.', -9223372036854775808)",
+    "substring_index('a.b.c', '.', 18446744073709551616)",
     "to_base64('')",
     "translate('ABC', 'A', 'B')",
     "translate('abcabc', 'ab', 'xy')",

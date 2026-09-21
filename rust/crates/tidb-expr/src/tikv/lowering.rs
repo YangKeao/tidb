@@ -1246,6 +1246,22 @@ fn strings(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr> {
         let value = node("Ord", vec![source], &ord_type)?;
         return node("IfInt", vec![predicate, null, value], ty);
     }
+    // Go QUOTE converts arbitrary-byte inputs through []rune and substitutes
+    // U+FFFD. TiKV preserves invalid bytes, so binary/Bit/Enum/Set sources must
+    // contract rather than return a different value. This guard must precede
+    // the unary family's early return below.
+    if name == "quote" && children.len() == 1 {
+        let source = function.args.first()?.static_type()?;
+        if source.code() != FieldTypeCode::Null
+            && ((source.eval_type() == Bytes && source.charset_name() == "binary")
+                || matches!(
+                    source.code(),
+                    FieldTypeCode::Bit | FieldTypeCode::Enum | FieldTypeCode::Set
+                ))
+        {
+            return None;
+        }
+    }
     let unary = match name {
         "length" | "octet_length" => "Length",
         "bit_length" => "BitLength",
@@ -1301,6 +1317,34 @@ fn strings(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr> {
     // yet be encoded. Decline before it could fall into the integer signature.
     if name == "hex" && children.len() == 1 && child_type(&children[0])?.eval_type() == Json {
         return None;
+    }
+    // TiKV's SUBSTRING_INDEX kernel uses `count.abs()`: i64::MIN is unsafe,
+    // unsigned values can wrap, and a runtime count column can contain either.
+    // Admit only an ordinary signed literal until the shared kernel is fixed.
+    if name == "substring_index" {
+        let safe_signed_literal = match function.args.get(2) {
+            Some(Expression::Constant(constant)) => {
+                constant.deferred_expr.is_none()
+                    && constant.param_marker.is_none()
+                    && (matches!(&constant.value, Datum::Int(value) if *value != i64::MIN)
+                        || constant.value == Datum::Null)
+            }
+            Some(Expression::ScalarFunction(neg))
+                if neg.func_name.lowercase() == "unaryminus" && neg.args.len() == 1 =>
+            {
+                matches!(
+                    neg.args.first(),
+                    Some(Expression::Constant(constant))
+                        if constant.deferred_expr.is_none()
+                            && constant.param_marker.is_none()
+                            && matches!(&constant.value, Datum::Int(value) if *value >= 0)
+                )
+            }
+            _ => false,
+        };
+        if !safe_signed_literal {
+            return None;
+        }
     }
     let (signature, targets): (&str, &[EvalType]) = match name {
         "hex" if children.len() == 1 => {

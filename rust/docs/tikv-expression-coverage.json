@@ -6,7 +6,7 @@
     "tikv": "521ac7330208b7f74f2b182bc373882687967280"
   },
   "current_revisions": {
-    "tidb": "7ccf39face46ed3bf223f4f3c4f676f9d15b7444",
+    "tidb": "66114c4c7a39e0d1330f3107c9fca2acb58d1098",
     "tikv": "0193236428f0f7013ee5d1d397885a61c930cf78"
   },
   "source_sha256": {
@@ -62,7 +62,7 @@
     "tidb/rust/crates/tidb-expr/src/pushdown_catalog.rs": "0799664d5779a8632efa6b3a7f77b5d84ad59ccaa9a97468364b4c02dd5515d8",
     "tidb/rust/crates/tidb-expr/src/tikv.rs": "5e25572b4afea40dea82275c7b6ff9eedd6f6d414916f4485666e41ccb4b0802",
     "tidb/rust/crates/tidb-expr/src/tikv/admission.rs": "ead079b2d6c71d158c30f0b599d3b206026f0649039c49ebaae661a823e64af0",
-    "tidb/rust/crates/tidb-expr/src/tikv/lowering.rs": "0666c60ac41b181af8bc5c6cda8c50083bb75be3479035138eca9d8bd9f08b16",
+    "tidb/rust/crates/tidb-expr/src/tikv/lowering.rs": "c687d1655dba560aeeea46a202d639f690dd7c8039afa4e0e6d1d9870a5e6dee",
     "tidb/rust/crates/tidb-expr/src/tikv/lowering/families.rs": "43a1e3b06a5f54a1f9268dfc94c1ffda6c791dc4f7d34393d02d7d2c4365b08a",
     "tidb/rust/crates/tidb-proto/proto/select.proto": "2fc136f4c341c1e3d6617ff3c5e7641ebab35188feebaff632ff8235e360f5c5",
     "tikv/components/tidb_query_expr/src/impl_arithmetic.rs": "14b1cbeec2caeda133d275a4d12569e415cc75c459b7646be07908108bd0d7a6",

@@ -802,11 +802,14 @@ fn requires_engine_statement(sql: &str) -> bool {
         && (is_any_value_statement(sql)
             || removed_native::requires_string2_engine(sql)
             || removed_native::requires_inet_engine(sql)
-            || removed_native::requires_radix_engine(sql))
+            || removed_native::requires_radix_engine(sql)
+            || removed_native::requires_string_aux_engine(sql))
 }
 
 fn is_engine_shape_contraction(sql: &str) -> bool {
-    if removed_native::is_radix_shape_contraction(sql) {
+    if removed_native::is_radix_shape_contraction(sql)
+        || removed_native::is_string_aux_shape_contraction(sql)
+    {
         return true;
     }
     let normalized = sql.trim_start().to_ascii_lowercase();

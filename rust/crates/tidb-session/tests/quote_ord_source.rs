@@ -34,15 +34,28 @@ fn try_sql(session: &mut Session, sql: &str) -> String {
 #[test]
 fn quoting_and_character_codes() {
     let mut session = Session::new();
+    session
+        .run("create table quote_binary_source(v varbinary(4))")
+        .unwrap();
+    session
+        .run("insert into quote_binary_source values (x'FF')")
+        .unwrap();
     #[cfg(feature = "tikv-expr")]
     session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
-
-    // QUOTE doubles the quote so the output re-parses to the input.
-    assert_eq!(try_sql(&mut session, "select quote('a''b')"), "s:'a\\'b'");
 
     #[cfg(feature = "tikv-expr")]
     {
         let engine_before = session.tikv_expression_rows();
+        // QUOTE doubles the quote so the output re-parses to the input.
+        assert_eq!(try_sql(&mut session, "select quote('a''b')"), "s:'a\\'b'");
+        let binary_quote_error = session
+            .run("select quote(v) from quote_binary_source")
+            .expect_err("malformed binary QUOTE is an explicit contraction")
+            .to_string();
+        assert!(
+            binary_quote_error.contains("native string auxiliary evaluation was removed; TiKV engine required or function unsupported"),
+            "{binary_quote_error}"
+        );
         assert_eq!(try_sql(&mut session, "select ord('A')"), "i:65");
         // ORD on a multibyte character composes its leading bytes.
         assert_eq!(try_sql(&mut session, "select ord('中')"), "i:14989485");
@@ -54,6 +67,14 @@ fn quoting_and_character_codes() {
     }
     #[cfg(not(feature = "tikv-expr"))]
     for (sql, marker) in [
+        (
+            "select quote('a''b')",
+            "native string auxiliary evaluation was removed; TiKV engine required or function unsupported",
+        ),
+        (
+            "select quote(v) from quote_binary_source",
+            "native string auxiliary evaluation was removed; TiKV engine required or function unsupported",
+        ),
         (
             "select ascii('A')",
             "native string2 evaluation was removed; TiKV engine required or function unsupported",

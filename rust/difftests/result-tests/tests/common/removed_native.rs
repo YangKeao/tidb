@@ -26,6 +26,8 @@ pub const INET_REMOVED: &str =
     "native INET conversion evaluation was removed; TiKV engine required";
 pub const RADIX_REMOVED: &str =
     "native integer radix evaluation was removed; TiKV engine required or function unsupported";
+pub const STRING_AUX_REMOVED: &str =
+    "native string auxiliary evaluation was removed; TiKV engine required or function unsupported";
 
 #[derive(Default)]
 struct FunctionCollector {
@@ -129,6 +131,15 @@ pub fn requires_radix_engine(sql: &str) -> bool {
         .any(|name| collector.names.contains(*name))
 }
 
+pub fn requires_string_aux_engine(sql: &str) -> bool {
+    let Some(collector) = collect_functions(sql) else {
+        return false;
+    };
+    ["SUBSTRING_INDEX", "QUOTE"]
+        .iter()
+        .any(|name| collector.names.contains(*name))
+}
+
 fn compact_sql_outside_strings(sql: &str) -> String {
     let lower = sql.trim_start().to_ascii_lowercase();
     let mut chars = lower.chars().peekable();
@@ -192,6 +203,31 @@ pub fn is_radix_shape_contraction(sql: &str) -> bool {
             | "ord(cast('éb'asbinary))"
             | "ord(convert('éb'usingbinary))"
             | "ord(unhex('e4bda0'))"
+    )
+}
+
+/// Exact shapes that cannot safely use the pinned TiKV kernels: direct binary
+/// literals lose their source provenance at QUOTE, while the unsigned count
+/// would wrap before SUBSTRING_INDEX's `abs()` branch.
+pub fn is_string_aux_shape_contraction(sql: &str) -> bool {
+    let compact = compact_sql_outside_strings(sql);
+    let expr = compact
+        .strip_prefix("select")
+        .unwrap_or(&compact)
+        .trim_end_matches(';');
+    matches!(
+        expr,
+        "quote(x'446f6e5c277421')"
+            | "quote(x'446f6e2774')"
+            | "quote(x'446f6e22')"
+            | "quote(x'446f6e5c22')"
+            | "quote(x'5c27')"
+            | "quote(x'5c22')"
+            | "quote(x'001a')"
+            | "quote(char(0,26))"
+            | "substring_index('www.pingcap.com','.','2')"
+            | "substring_index('www.pingcap.com','.',2.5)"
+            | "substring_index(\"aaa.bbb.ccc.ddd.eee\",'.',18446744073709551613)"
     )
 }
 
@@ -299,6 +335,9 @@ fn removed_marker_for_name(name: &str, nonbinary_find_in_set: bool) -> Option<&'
     }
     if matches!(name, "HEX" | "UNHEX" | "BIN" | "OCT" | "ORD" | "BIT_COUNT") {
         return Some(RADIX_REMOVED);
+    }
+    if matches!(name, "SUBSTRING_INDEX" | "QUOTE") {
+        return Some(STRING_AUX_REMOVED);
     }
     if matches!(
         name,
@@ -459,6 +498,32 @@ fn markers_come_from_parsed_function_nodes_not_text() {
     assert!(!requires_string2_engine(
         "select 'upper(a)', 1 /* ascii(x) */"
     ));
+    for sql in [
+        "select quote('safe')",
+        "select substring_index('a.b.c', '.', 2)",
+    ] {
+        assert!(requires_string_aux_engine(sql), "{sql}");
+        assert_eq!(
+            expected_removed_marker(sql),
+            Some(STRING_AUX_REMOVED),
+            "{sql}"
+        );
+        assert!(!is_string_aux_shape_contraction(sql), "{sql}");
+    }
+    for sql in [
+        "select quote(x'001a')",
+        "select substring_index('www.pingcap.com', '.', '2')",
+        "select substring_index(\"aaa.bbb.ccc.ddd.eee\",'.',18446744073709551613)",
+    ] {
+        assert!(is_string_aux_shape_contraction(sql), "{sql}");
+    }
+    for sql in [
+        "select quote(x'001a'), quote('safe')",
+        "select quote(x'001a') as value",
+        "select substring_index('a.b.c', '.', 2.5) /* changed statement */",
+    ] {
+        assert!(!is_string_aux_shape_contraction(sql), "{sql}");
+    }
     for sql in ["select instr('abc', 'b')", "select locate('b', 'abc')"] {
         assert!(!requires_string2_engine(sql), "{sql}");
         assert_eq!(expected_removed_marker(sql), None, "{sql}");

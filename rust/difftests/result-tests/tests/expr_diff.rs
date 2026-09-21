@@ -68,6 +68,14 @@ fn retained_locate_is_not_a_local_contraction() {
         "oct(b'11111111')",
         removed_native::RADIX_REMOVED
     ));
+    assert_eq!(
+        expected_removed_marker("abs(substring_index('a.b.c', '.', 2))"),
+        Some("native math evaluation was removed; TiKV engine required")
+    );
+    assert!(!may_accept_removed_marker(
+        "abs(substring_index('a.b.c', '.', 2))",
+        "native math evaluation was removed; TiKV engine required"
+    ));
 }
 
 fn corpus_dir() -> PathBuf {
@@ -76,18 +84,28 @@ fn corpus_dir() -> PathBuf {
 
 fn may_accept_removed_marker(expr: &str, marker: &str) -> bool {
     let sql = format!("select {expr}");
+    if removed_native::requires_string_aux_engine(&sql)
+        && marker != removed_native::STRING_AUX_REMOVED
+    {
+        return false;
+    }
     if marker == removed_native::RADIX_REMOVED {
         return removed_native::is_radix_shape_contraction(&sql);
+    }
+    if marker == removed_native::STRING_AUX_REMOVED {
+        return removed_native::is_string_aux_shape_contraction(&sql);
     }
     // A retained outer family must not hide failure to lower/execute an inner
     // retained family merely because its own native boundary then refuses.
     if marker == removed_native::STRING2_REMOVED {
         return !removed_native::requires_radix_engine(&sql)
-            && !removed_native::requires_inet_engine(&sql);
+            && !removed_native::requires_inet_engine(&sql)
+            && !removed_native::requires_string_aux_engine(&sql);
     }
     if marker == removed_native::INET_REMOVED {
         return !removed_native::requires_radix_engine(&sql)
-            && !removed_native::requires_string2_engine(&sql);
+            && !removed_native::requires_string2_engine(&sql)
+            && !removed_native::requires_string_aux_engine(&sql);
     }
     true
 }
@@ -238,6 +256,7 @@ fn rust_eval_label(expr: &str) -> Result<String, String> {
     if removed_native::requires_string2_engine(&sql)
         || removed_native::requires_inet_engine(&sql)
         || removed_native::requires_radix_engine(&sql)
+        || removed_native::requires_string_aux_engine(&sql)
     {
         let mut session = Session::new();
         session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));

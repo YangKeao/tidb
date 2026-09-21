@@ -73,6 +73,8 @@ fn a_non_string_etstring_argument_is_cast_before_the_signature_runs() {
         if expr.starts_with("ltrim") || expr.starts_with("rtrim") {
             let _ = want;
             assert_string2_refusal(expr);
+        } else if expr.starts_with("quote") {
+            assert_engine_string_aux_value(expr, want);
         } else {
             let (row, chunk) = both(expr);
             assert_eq!(row, want, "{expr}");
@@ -227,9 +229,11 @@ fn an_etstring_argument_is_read_as_bytes_not_as_utf8() {
     for value in [binary, bit] {
         let quoted = wrap_string_args("QUOTE", vec![value.clone()], &[None], &NoColumns).unwrap();
         assert_eq!(
-            crate::string_fn::quote(&quoted).unwrap(),
-            Datum::new_bytes(vec![b'\'', 0xEF, 0xBF, 0xBD, b'\'']),
-            "quote({value:?})"
+            crate::func::eval_func_values_in("QUOTE", &quoted, &NoColumns),
+            Some(Err(EvalError::Unsupported(
+                "native string auxiliary evaluation was removed; TiKV engine required or function unsupported"
+            ))),
+            "quote({value:?}); former Go bytes were 27EFBFBD27"
         );
 
         let trimmed = wrap_string_args("LTRIM", vec![value.clone()], &[None], &NoColumns).unwrap();

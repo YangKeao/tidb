@@ -725,66 +725,25 @@ fn test_elt() {
 /// ```
 #[test]
 fn test_quote() {
-    /// Master's rule applied to a UTF-8-safe payload (test rows have none).
-    fn expect(payload: &[u8]) -> Vec<u8> {
-        let mut out = vec![b'\''];
-        for b in payload {
-            match *b {
-                b'\'' | b'\\' => {
-                    out.push(b'\\');
-                    out.push(*b);
-                }
-                0 => out.extend_from_slice(b"\\0"),
-                0x1a => out.extend_from_slice(b"\\Z"),
-                other => out.push(other),
-            }
+    for (expr, want) in [
+        ("quote(x'446f6e5c277421')", "STR:'Don\\\\\\'t!'"),
+        ("quote(x'446f6e2774')", "STR:'Don\\'t'"),
+        ("quote(x'446f6e22')", "STR:'Don\"'"),
+        ("quote(x'446f6e5c22')", "STR:'Don\\\\\"'"),
+        ("quote(x'5c27')", "STR:'\\\\\\''"),
+        ("quote(x'5c22')", "STR:'\\\\\"'"),
+        ("quote('萌萌哒(๑•ᴗ•๑)😊')", "STR:'萌萌哒(๑•ᴗ•๑)😊'"),
+        ("quote('㍿㌍㍑㌫')", "STR:'㍿㌍㍑㌫'"),
+        ("quote(x'001a')", "STR:'\\0\\Z'"),
+        ("quote(NULL)", "STR:NULL"),
+    ] {
+        if expr.starts_with("quote(x'") {
+            let _ = want;
+            assert_string_aux_contraction(expr);
+        } else {
+            assert_engine_string_aux_value(expr, want);
         }
-        out.push(b'\'');
-        out
     }
-
-    let cases: [(&str, Vec<u8>); 9] = [
-        ("Don\\'t!", b"Don\\'t!".to_vec()),
-        ("Don't", b"Don't".to_vec()),
-        ("Don\"", b"Don\"".to_vec()),
-        ("Don\\\"", b"Don\\\"".to_vec()),
-        ("\\'", b"\\'".to_vec()),
-        ("\\\"", b"\\\"".to_vec()),
-        ("萌萌哒(๑•ᴗ•๑)😊", "萌萌哒(๑•ᴗ•๑)😊".as_bytes().to_vec()),
-        ("㍿㌍㍑㌫", "㍿㌍㍑㌫".as_bytes().to_vec()),
-        ("<nul><ctrl-z>", vec![0u8, 26u8]),
-    ];
-    for (_label, payload) in cases {
-        let got = eval_scalar(
-            "QUOTE",
-            FieldType::new(FieldTypeCode::VarString),
-            vec![const_arg_typed(
-                Datum::new_bytes(payload.clone()),
-                FieldType::new(FieldTypeCode::VarString),
-            )],
-            &NoColumns,
-        )
-        .unwrap();
-        assert_eq!(
-            got.sql_bytes().unwrap(),
-            expect(&payload),
-            "payload {payload:?}"
-        );
-    }
-    // The NULL arm returns the STRING "NULL" (not SQL NULL).
-    assert_eq!(
-        eval_scalar(
-            "QUOTE",
-            FieldType::new(FieldTypeCode::VarString),
-            vec![const_arg_typed(
-                Datum::Null,
-                FieldType::new(FieldTypeCode::VarString)
-            )],
-            &NoColumns,
-        )
-        .unwrap(),
-        Datum::new_string("NULL")
-    );
 }
 
 /// Go `pkg/expression/builtin_string_test.go:2558 TestToBase64`. Every former
@@ -1490,11 +1449,11 @@ fn test_vectorized_builtin_string_eval_one_vec() {
     assert_packet_string_refusal(r#"insert_func('abc', 2, null, 'X')"#);
     // TRANSLATE has no TiKV scalar signature and is an explicit contraction.
     assert_string2_refusal(r"translate('abcdefghijklmno', 'acegi', 'XYZ')");
-    // Substring_index zero-count empty arm from range (-4, 4).
-    assert_eq!(e(r"substring_index('aaa.bbb.ccc.ddd.eee', '.', 0)"), "STR:");
-    assert_eq!(
-        e(r"substring_index('aaa.bbb.ccc.ddd.eee', '.', 4)"),
-        "STR:aaa.bbb.ccc.ddd"
+    // SUBSTRING_INDEX now executes through TiKV for representable counts.
+    assert_engine_string_aux_value(r"substring_index('aaa.bbb.ccc.ddd.eee', '.', 0)", "STR:");
+    assert_engine_string_aux_value(
+        r"substring_index('aaa.bbb.ccc.ddd.eee', '.', 4)",
+        "STR:aaa.bbb.ccc.ddd",
     );
 }
 
@@ -1521,8 +1480,10 @@ fn test_vectorized_builtin_string_eval_one_vec_2() {
     assert!(engine_declines("oct(b'11111111')"));
     // Elt out-of-range and mixed-mode coercion.
     assert_eq!(e("elt(3, 2, 3, 11, 1)"), "STR:11");
-    // Quote's control-byte escapes.
-    assert_eq!(e(r"quote(char(0, 26))"), r"STR:'\0\Z'");
+    // QUOTE itself is engine-backed, but CHAR_FUNC has no TiKV kernel.
+    assert_string_aux_refusal(r"quote(char(0, 26))");
+    #[cfg(feature = "tikv-expr")]
+    assert!(engine_declines(r"quote(char(0, 26))"));
     // MakeSet negative-mask arms.
     assert_packet_string_refusal(r"make_set(-100 | 4, 'hello', 'nice', 'abc', 'world')");
     // Both base64 directions depend on packet-context semantics absent from the

@@ -967,6 +967,11 @@ impl ScalarFunction {
                 "native integer radix evaluation was removed; TiKV engine required or function unsupported",
             ));
         }
+        if crate::func::is_removed_native_string_aux(self.func_name.lowercase()) {
+            return Err(EvalError::Unsupported(
+                "native string auxiliary evaluation was removed; TiKV engine required or function unsupported",
+            ));
+        }
         if let Some(value) = self.eval_fast_integer_binary(ctx, row)? {
             return self.coerce_to_ret_type(value);
         }

@@ -4,6 +4,8 @@
 //! input.
 
 use tidb_session::Session;
+#[cfg(feature = "tikv-expr")]
+use tidb_session::TikvExpressionBackend;
 
 fn rows(session: &mut Session, sql: &str) -> String {
     match session.run(sql).unwrap() {
@@ -29,19 +31,51 @@ fn rows(session: &mut Session, sql: &str) -> String {
 #[test]
 fn count_sign_and_missing_delimiter() {
     let mut session = Session::new();
-
-    assert_eq!(
-        rows(&mut session, "select substring_index('a.b.c', '.', 2)"),
-        "s:a.b"
-    );
-    assert_eq!(
-        rows(&mut session, "select substring_index('a.b.c', '.', -1)"),
-        "s:c"
-    );
-    assert_eq!(
-        rows(&mut session, "select substring_index('a.b.c', '.', -2)"),
-        "s:b.c"
-    );
-    assert_eq!(rows(&mut session, "select substring_index('a.b.c', '.', 0)"), "s:");
-    assert_eq!(rows(&mut session, "select substring_index('abc', '.', 2)"), "s:abc");
+    session
+        .run("create table substring_index_counts(s varchar(16), c bigint)")
+        .unwrap();
+    session
+        .run("insert into substring_index_counts values ('a.b.c', 2)")
+        .unwrap();
+    #[cfg(feature = "tikv-expr")]
+    {
+        session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
+        let before = session.tikv_expression_rows();
+        for (sql, want) in [
+            ("select substring_index('a.b.c', '.', 2)", "s:a.b"),
+            ("select substring_index('a.b.c', '.', -1)", "s:c"),
+            ("select substring_index('a.b.c', '.', -2)", "s:b.c"),
+            ("select substring_index('a.b.c', '.', 0)", "s:"),
+            ("select substring_index('abc', '.', 2)", "s:abc"),
+        ] {
+            assert_eq!(rows(&mut session, sql), want, "{sql}");
+        }
+        let runtime_count_error = session
+            .run("select substring_index(s, '.', c) from substring_index_counts")
+            .expect_err("runtime SUBSTRING_INDEX count is an explicit contraction")
+            .to_string();
+        assert!(
+            runtime_count_error.contains("native string auxiliary evaluation was removed; TiKV engine required or function unsupported"),
+            "{runtime_count_error}"
+        );
+        assert!(session.tikv_expression_rows() > before);
+    }
+    #[cfg(not(feature = "tikv-expr"))]
+    for sql in [
+        "select substring_index('a.b.c', '.', 2)",
+        "select substring_index('a.b.c', '.', -1)",
+        "select substring_index('a.b.c', '.', -2)",
+        "select substring_index('a.b.c', '.', 0)",
+        "select substring_index('abc', '.', 2)",
+        "select substring_index(s, '.', c) from substring_index_counts",
+    ] {
+        let error = session
+            .run(sql)
+            .expect_err("native SUBSTRING_INDEX kernel is deleted")
+            .to_string();
+        assert!(
+            error.contains("native string auxiliary evaluation was removed; TiKV engine required or function unsupported"),
+            "{sql}: {error}"
+        );
+    }
 }
