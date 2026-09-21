@@ -927,6 +927,11 @@ impl ScalarFunction {
                 "native crypto evaluation was removed; TiKV engine required",
             ));
         }
+        if crate::func::is_removed_native_vector(self.func_name.lowercase()) {
+            return Err(EvalError::Unsupported(
+                "native vector evaluation was removed; TiKV engine required",
+            ));
+        }
         if let Some(value) = self.eval_fast_integer_binary(ctx, row)? {
             return self.coerce_to_ret_type(value);
         }

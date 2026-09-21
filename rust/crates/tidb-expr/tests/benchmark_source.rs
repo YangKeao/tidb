@@ -132,7 +132,7 @@ fn benchmark_preserves_count_and_error_short_circuits() {
     assert_eq!(
         eval_built("benchmark(1, vec_from_text('[1]'))", &NoColumns),
         Err(EvalError::Unsupported(
-            "VectorFloat32 is not supported for BENCHMARK()"
+            "native vector evaluation was removed; TiKV engine required"
         ))
     );
 }

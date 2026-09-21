@@ -2,17 +2,19 @@
 
 ## Revisions and decision
 
-This tranche builds from published TiDB `78a39b7` and TiKV documentation
+This tranche builds from published TiDB `463ac51` and TiKV documentation
 HEAD `4c372b8`; the fresh results below include the current crypto-deletion
 working tree. TiDB actually builds the pinned engine
 `db9c7f08d954fef02519b86a55c2d72cf72ef697`, not arbitrary TiKV HEAD.
 Only YangKeao personal forks have been used for publication.
 
 **Do not switch the default yet. Physical deletion is now deliberately in
-progress.** The first two tranches removed the complete native math-kernel
-folder and crypto/encryption kernel file. Unverified math and all former crypto
-families are explicitly unsupported; this invalidates the older policy of
-retaining every native family until compatibility was complete.
+progress.** The first three tranches removed the complete native math-kernel
+folder, crypto/encryption kernel file, and vector SQL-kernel file. Unverified
+math, all former crypto functions, and VEC_FROM_TEXT are explicitly
+unsupported; seven retained vector names execute only in TiKV. This invalidates
+the older policy of retaining every native family until compatibility was
+complete.
 The earlier refusal-intolerant corpus still exposed 59 distinct first-refused
 expressions, so the migration objective remains active/incomplete.
 
@@ -40,8 +42,8 @@ Logs are in `/home/agent/tidb/expression-reuse/`.
 | Log | Result | Scope/qualification |
 | --- | --- | --- |
 | `checkpoint-executor-native.log` | 1346 library + 329 integration + 6 tests passed; 184 integration ignored | Feature-off executor compatibility, not engine coverage. |
-| `native-crypto-delete-full-lib-tests.log` + `native-crypto-delete-integration-tests.log` | 1203 library + 77 integration passed; 99 library ignored | Feature enabled after physical math and crypto deletion; preserved contracted vectors assert engine decline and exact native refusal. |
-| `native-crypto-runtime-gate-green.log` | 30 tests, 323 fixture receipts, 2072 engine rows, 160 observed borrowed rows | Reviewed baseline after removing 11 now-contracted crypto receipts; zero fallback in receipted engine contexts. |
+| `native-vector-delete-full-lib-tests.log` + `native-vector-delete-integration-tests.log` | 1201 library + 77 integration passed; 99 library ignored | Feature enabled after physical math, crypto, and vector SQL-kernel deletion; seven vector names have independent TiKV result vectors plus exact native refusal, while contracted names assert engine decline. |
+| `native-vector-runtime-gate-green.log` | 30 tests, 323 fixture receipts, 2072 engine rows, 160 observed borrowed rows | Reviewed baseline remains exact after vector deletion; seven vector names execute through receipted engine contexts with zero fallback. |
 | current static gate | Self-check and check pass | 384 declaration rows, 216 admitted / 168 excluded, zero missing registry/synthesized names. Static candidates are not execution coverage. |
 | `checkpoint-engine-only.log` | **1163 passed / 61 failed / 99 ignored**, exit 101 | All 61 failed sections report adapter refusal; 59 distinct first-refused expressions. This is an incomplete cutover gate. |
 

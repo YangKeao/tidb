@@ -1682,6 +1682,14 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
                     "native crypto evaluation was removed; TiKV engine required",
                 ));
             }
+            // VEC_FROM_TEXT is the only removed-vector name not admitted by
+            // TiKV. Refuse it before arity/child work; the seven admitted
+            // vector names must still be rewritten for engine execution.
+            if lowered == "vec_from_text" {
+                return Err(EvalError::Unsupported(
+                    "native vector evaluation was removed; TiKV engine required",
+                ));
+            }
             if lowered == "grouping" {
                 let args = args
                     .iter()

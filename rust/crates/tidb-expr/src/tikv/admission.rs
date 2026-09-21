@@ -59,9 +59,10 @@
 //! This table was derived from the pre-table behaviour: a name is `Admitted`
 //! if and only if the old `admitted()` returned true for some shape *and* one
 //! of `local_call`, `families::lower` or `catalog_call` could lower it. Names
-//! that the old code admitted but no lowering site understood were, and
-//! remain, executed natively; they are recorded here as `Excluded` so that a
-//! future name cannot join them by accident.
+//! that the old code admitted but no lowering site understood are recorded as
+//! `Excluded` so that a future name cannot join them by accident. Depending on
+//! deletion status, an excluded name now either uses temporary compatibility
+//! evaluation or returns structured `Unsupported`.
 
 use tidb_datatype::EvalType;
 
@@ -73,7 +74,8 @@ use crate::scalar_function::ScalarFunction;
 pub(crate) enum Decision {
     /// At least one shape lowers to a wire signature.
     Admitted,
-    /// Always falls back to the native evaluator.
+    /// Never reaches the engine; the owning boundary either fails closed or,
+    /// for a not-yet-deleted family, uses compatibility evaluation.
     Excluded,
 }
 
@@ -200,6 +202,9 @@ pub(crate) const NATIVE_SESSION_STATE: &str =
 pub(crate) const REMOVED_CRYPTO_UNVERIFIED: &str =
     "native crypto was removed and no engine-compatible implementation with verified diagnostics, \
      collation, and session semantics is admitted";
+pub(crate) const REMOVED_VECTOR_TEXT_UNSUPPORTED: &str =
+    "native vector SQL kernels were removed and the pinned engine does not dispatch \
+     VecFromTextSig/CastStringAsVectorFloat32";
 /// The statement clock (`NOW()`, `CURRENT_TIMESTAMP`, `CURDATE()`,
 /// `CURRENT_TIME`, `UTC_TIMESTAMP()`, `SYSDATE()`).
 ///
@@ -688,7 +693,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("vec_as_text", Decision::Admitted, Signature::Family(Family::Vector), &[EvalType::VectorFloat32], Shape::Any, ""),
     row("vec_cosine_distance", Decision::Admitted, Signature::Family(Family::Vector), &[EvalType::VectorFloat32, EvalType::VectorFloat32], Shape::Any, ""),
     row("vec_dims", Decision::Admitted, Signature::Family(Family::Vector), &[EvalType::VectorFloat32], Shape::Any, ""),
-    row("vec_from_text", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
+    row("vec_from_text", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_VECTOR_TEXT_UNSUPPORTED),
     row("vec_l1_distance", Decision::Admitted, Signature::Family(Family::Vector), &[EvalType::VectorFloat32, EvalType::VectorFloat32], Shape::Any, ""),
     row("vec_l2_distance", Decision::Admitted, Signature::Family(Family::Vector), &[EvalType::VectorFloat32, EvalType::VectorFloat32], Shape::Any, ""),
     row("vec_l2_norm", Decision::Admitted, Signature::Family(Family::Vector), &[EvalType::VectorFloat32], Shape::Any, ""),

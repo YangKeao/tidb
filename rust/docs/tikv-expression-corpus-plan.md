@@ -380,7 +380,7 @@ Go source: Remaining `pkg/expression/builtin_time_test.go` rows (the alphabetica
 
 ### `builtin_vectorized_time_infra_source.rs`
 
-Rank **(a)**; 14 tests: a=4, b=2, c=2, gap=6.
+Rank **(a)**; 15 tests: a=4, b=3, c=2, gap=6.
 
 Go source: GO PORTS of the vectorized-harness slices assigned to this batch: `builtin_time_vec_generated_test.go` (:11718), `builtin_time_vec_test.go` (:567-:610 VecMonth), `builtin_vec_vec_test.go` (:201), and `builtin_vectorized_test.go` (:104-:194 Benchmarks, :564 DoubleRow2Vec, :589 DoubleVec2Row, :744/:758 MockDouble Benchmarks, :775 VectorizedCheck, :804 Float32ColVec, :836 VecEvalBool, :857 RowBasedFilterAndVectorizedFilter). Go drives these through `vecExprBenchCase` tables filled by random data generators and compared across Go's SEPARATE vectorized/row evaluators. This crate has one evaluator per tier, so the same contracts are pinned deterministically: columnar input chunks agree cell-by-cell with the scalar answers every source row demands, and null bits travel with them.
 
@@ -395,7 +395,8 @@ Go source: GO PORTS of the vectorized-harness slices assigned to this batch: `bu
 | `double_evaluation_reproduces_the_projected_column_exactly` | E+S | &mdash; | &mdash; | &mdash; |
 | `benchmark_mock_double_row_and_vec` (ign) | -- | &mdash; | &mdash; | &mdash; |
 | `vectorized_check_predicates_over_constants_columns_and_correlated` | E | &mdash; | `setvar` | &mdash; |
-| `vectorized_builtin_vec_families_match_master_shapes` | B | `vec_as_text`, `vec_dims`, `vec_l2_norm` | &mdash; | `vec::dispatch` |
+| `vectorized_builtin_vec_families_match_master_shapes` | B | `vec_as_text`, `vec_dims`, `vec_l1_distance`, `vec_l2_distance`, `vec_l2_norm`, `vec_negative_inner_product`, `vec_cosine_distance` | &mdash; | no native helper; TiKV + refusal |
+| `vec_from_text_is_an_explicit_engine_contraction` | B | &mdash; | `vec_from_text` | refusal only |
 | `float32_col_vectorization` (ign) | -- | &mdash; | &mdash; | &mdash; |
 | `vec_eval_bool_matches_row_eval_bool` (ign) | -- | &mdash; | &mdash; | &mdash; |
 | `row_based_filter_and_vectorized_filter_agree` (ign) | -- | &mdash; | &mdash; | &mdash; |
@@ -1165,7 +1166,7 @@ selection machinery); the other eight are (c-structure).
 | (a) | `expression_with_null_source.rs` | 6 | 4 | 0 | 1 | 1 | SQL text / Expression tree already |
 | (a) | `helper_current_timestamp_source.rs` | 4 | 4 | 0 | 0 | 0 | SQL text / Expression tree already |
 | (a) | `in_func_decimal_collation_source.rs` | 4 | 4 | 0 | 0 | 0 | SQL text / Expression tree already |
-| (a) | `builtin_vectorized_time_infra_source.rs` | 14 | 4 | 2 | 2 | 6 | SQL text / Expression tree already |
+| (a) | `builtin_vectorized_time_infra_source.rs` | 15 | 4 | 3 | 2 | 6 | vector rows use TiKV + explicit native refusal |
 | (a) | `find_in_set_lookup_source.rs` | 4 | 3 | 0 | 0 | 1 | SQL text / Expression tree already |
 | (a) | `advisory_get_lock_integration_source.rs` | 2 | 2 | 0 | 0 | 0 | SQL text / Expression tree already |
 | (a) | `convert_using_signature_source.rs` | 3 | 2 | 0 | 0 | 1 | SQL text / Expression tree already |

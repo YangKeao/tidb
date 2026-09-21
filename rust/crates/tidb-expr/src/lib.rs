@@ -53,8 +53,11 @@
 //! implement those kernels. The former native crypto/encryption module is also
 //! deleted; its hashes, AES/legacy ciphers, compression, password helpers and
 //! RNG are explicit `Unsupported` contractions until engine charset,
-//! collation, diagnostic and session semantics are verified. Supported
-//! builtins may still nest.
+//! collation, diagnostic and session semantics are verified. The native vector
+//! SQL module is deleted: `VEC_DIMS`, the distance/norm family, and
+//! `VEC_AS_TEXT` execute in TiKV, while `VEC_FROM_TEXT` is explicitly
+//! unsupported because the pinned engine does not dispatch its signatures.
+//! Vector datatype/bridge support remains. Supported builtins may still nest.
 //!
 //! Date-part extraction (`YEAR`, `MONTH`, `DAY`/`DAYOFMONTH`, `QUARTER`,
 //! `DAYOFYEAR`, `DAYOFWEEK`, `WEEKDAY`, `TO_DAYS`, `TO_SECONDS`) and

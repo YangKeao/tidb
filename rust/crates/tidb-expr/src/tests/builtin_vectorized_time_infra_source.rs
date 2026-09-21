@@ -396,38 +396,198 @@ fn vectorized_check_predicates_over_constants_columns_and_correlated() {
     assert!(!vectorizable(std::slice::from_ref(&raw_setvar)));
 }
 
+fn vector_expression(name: &str, args: &[Datum]) -> Expression {
+    let vector_type = FieldType::new(FieldTypeCode::VectorFloat32);
+    let args: Vec<_> = args
+        .iter()
+        .cloned()
+        .map(|value| Expression::Constant(Constant::new(value, vector_type.clone())))
+        .collect();
+    let ret_type =
+        crate::rewriter::result_type::builtin_return_type(&name.to_ascii_lowercase(), &args)
+            .expect("vector result metadata remains available");
+    Expression::ScalarFunction(ScalarFunction::new(
+        CiString::new(&name.to_ascii_lowercase()),
+        ret_type,
+        args,
+    ))
+}
+
+#[cfg(feature = "tikv-expr")]
+fn engine_vector_eval(name: &str, args: &[Datum]) -> Result<Datum, EvalError> {
+    let expression = vector_expression(name, args);
+    let adapter =
+        crate::tikv::TikvExpression::compile(&expression, crate::tikv::Context::default())
+            .expect("admitted vector expression must compile without error")
+            .expect("admitted vector expression must not be declined by TiKV");
+    let mut input = Chunk::new_empty(&[]);
+    input.set_num_virtual_rows(1);
+    adapter
+        .evaluate(&NoColumns, &input)?
+        .pop()
+        .ok_or(EvalError::Unsupported("TiKV vector result is empty"))
+}
+
+fn assert_native_vector_refusal(name: &str, args: &[Datum]) {
+    let expression = vector_expression(name, args);
+    assert_eq!(
+        expression.eval(&NoColumns, tidb_chunk::row::Row::empty()),
+        Err(EvalError::Unsupported(
+            "native vector evaluation was removed; TiKV engine required",
+        )),
+        "{name}{args:?} scalar fallback"
+    );
+    assert_eq!(
+        crate::func::eval_func_values_in(name, args, &NoColumns),
+        Some(Err(EvalError::Unsupported(
+            "native vector evaluation was removed; TiKV engine required",
+        ))),
+        "{name}{args:?} values fallback"
+    );
+}
+
 /// GO PORT of `pkg/expression/builtin_vec_vec_test.go:201
-/// TestVectorizedBuiltinVecFunc`: every vector-distance family in
-/// `vecBuiltinVecCases` behaves uniformly over FIXED vectors and NULL-vector
-/// vectors. Pre-existing carriers live in `builtin_ext/vec.rs`; the rows here
-/// carry the master table's own shapes: dimension counts, L2/norm magnitudes,
-/// and AS_TEXT round-trips.
+/// TestVectorizedBuiltinVecFunc` plus the unique vectors formerly embedded by
+/// the deleted native module. Seven admitted names must execute in TiKV and
+/// still refuse both native fallback boundaries.
 #[test]
 fn vectorized_builtin_vec_families_match_master_shapes() {
     let vector_of = |values: &[f32]| {
         Datum::new_vector_float32(tidb_datatype::VectorFloat32::must_create(values.to_vec()))
     };
     let rows = vec![
-        ("VEC_DIMS", vec![vector_of(&[1.0, 2.0, 3.0])], "INT:3"),
-        ("VEC_DIMS", vec![Datum::Null], "NULL"),
-        ("VEC_L2_NORM", vec![vector_of(&[3.0, 4.0])], "FLOAT:5"),
-        ("VEC_L2_NORM", vec![Datum::Null], "NULL"),
-        ("VEC_AS_TEXT", vec![vector_of(&[1.0, 2.0])], "STR:[1,2]"),
+        ("VEC_DIMS", vec![vector_of(&[1.0, 2.0])], Datum::Int(2)),
+        ("VEC_DIMS", vec![vector_of(&[1.0, 2.0, 3.0])], Datum::Int(3)),
+        ("VEC_DIMS", vec![Datum::Null], Datum::Null),
+        (
+            "VEC_L2_NORM",
+            vec![vector_of(&[3.0, 4.0])],
+            Datum::Real(5.0),
+        ),
+        ("VEC_L2_NORM", vec![Datum::Null], Datum::Null),
+        (
+            "VEC_AS_TEXT",
+            vec![vector_of(&[1.0, 2.0])],
+            Datum::new_string("[1,2]"),
+        ),
+        (
+            "VEC_L1_DISTANCE",
+            vec![vector_of(&[1.0, 2.0]), vector_of(&[3.0, 5.0])],
+            Datum::Real(5.0),
+        ),
+        (
+            "VEC_L2_DISTANCE",
+            vec![vector_of(&[0.0, 0.0]), vector_of(&[3.0, 4.0])],
+            Datum::Real(5.0),
+        ),
+        (
+            "VEC_NEGATIVE_INNER_PRODUCT",
+            vec![vector_of(&[1.0, 2.0]), vector_of(&[3.0, 4.0])],
+            Datum::Real(-11.0),
+        ),
+        (
+            "VEC_COSINE_DISTANCE",
+            vec![vector_of(&[0.0]), vector_of(&[1.0])],
+            Datum::Null,
+        ),
     ];
-    for (name, args, want) in rows {
+    for (name, args, expected) in rows {
+        #[cfg(feature = "tikv-expr")]
         assert_eq!(
-            crate::builtin_ext::vec::dispatch(name, &args)
-                .expect("a VEC_ family name")
-                .expect("vector shapes evaluate")
-                .label(),
-            want,
+            engine_vector_eval(name, &args),
+            Ok(expected),
             "{name}{args:?}"
         );
+        #[cfg(not(feature = "tikv-expr"))]
+        let _ = expected;
+        assert_native_vector_refusal(name, &args);
     }
-    // The L1/L2/Cosine/NegativeInnerProduct magnitudes and the different-
-    // dimension domain error are pinned by `builtin_ext/vec.rs`'s own tests;
-    // the CosineDistance `[0,0,0]` NaN-origin NULL shape rides the same
-    // distance path those tests carry.
+
+    let mismatched = vec![vector_of(&[1.0]), vector_of(&[1.0, 2.0])];
+    #[cfg(feature = "tikv-expr")]
+    {
+        let result = engine_vector_eval("VEC_L2_DISTANCE", &mismatched);
+        assert!(
+            matches!(
+                &result,
+                Err(EvalError::ExternalEngine { code: 10000, message })
+                    if message.ends_with("vectors have different dimensions: 1 and 2")
+            ),
+            "different dimensions must preserve the engine's exact error: {result:?}"
+        );
+    }
+    assert_native_vector_refusal("VEC_L2_DISTANCE", &mismatched);
+}
+
+#[test]
+fn vec_from_text_is_an_explicit_engine_contraction() {
+    let args = vec![Expression::Constant(Constant::new(
+        Datum::new_string("[1,2]"),
+        FieldType::new(FieldTypeCode::VarString),
+    ))];
+    let ret_type = crate::rewriter::result_type::builtin_return_type("vec_from_text", &args)
+        .expect("VEC_FROM_TEXT metadata remains available");
+    let expression = Expression::ScalarFunction(ScalarFunction::new(
+        CiString::new("vec_from_text"),
+        ret_type,
+        args,
+    ));
+    #[cfg(feature = "tikv-expr")]
+    assert!(matches!(
+        crate::tikv::TikvExpression::compile(&expression, crate::tikv::Context::default()),
+        Ok(None)
+    ));
+    assert_eq!(
+        expression.eval(&NoColumns, tidb_chunk::row::Row::empty()),
+        Err(EvalError::Unsupported(
+            "native vector evaluation was removed; TiKV engine required",
+        ))
+    );
+    assert_eq!(
+        crate::func::eval_func_values_in(
+            "VEC_FROM_TEXT",
+            &[Datum::new_string("[1,2]")],
+            &NoColumns,
+        ),
+        Some(Err(EvalError::Unsupported(
+            "native vector evaluation was removed; TiKV engine required",
+        )))
+    );
+
+    let ast = tidb_ast::Expr::Func {
+        name: "vec_from_text".to_owned(),
+        args: vec![tidb_ast::Expr::String("[1,2]".to_owned())],
+        origin_position: 0,
+    };
+    assert_eq!(
+        crate::eval_in(&ast, &NoColumns),
+        Err(EvalError::Unsupported(
+            "native vector evaluation was removed; TiKV engine required",
+        ))
+    );
+    assert!(matches!(
+        crate::rewriter::rewrite_expr(&ast),
+        Err(EvalError::Unsupported(
+            "native vector evaluation was removed; TiKV engine required"
+        ))
+    ));
+    let malformed = tidb_ast::Expr::Func {
+        name: "vec_from_text".to_owned(),
+        args: vec![],
+        origin_position: 0,
+    };
+    for result in [
+        crate::rewriter::rewrite_expr(&malformed).map(|_| Datum::Null),
+        crate::eval_in(&malformed, &NoColumns),
+    ] {
+        assert_eq!(
+            result,
+            Err(EvalError::Unsupported(
+                "native vector evaluation was removed; TiKV engine required",
+            )),
+            "contraction must precede arity validation"
+        );
+    }
 }
 
 /// GO PORT of `pkg/expression/builtin_vectorized_test.go:804

@@ -69,13 +69,27 @@ remain in the workspace.
       UNCOMPRESSED_LENGTH, and AES_ENCRYPT/AES_DECRYPT. The AST and chunk
       rewriter boundaries refuse these names before arity validation or child
       evaluation/folding, so malformed or nested calls cannot expose another
-      native path. All fifteen are explicit contractions: even the pinned engine's hash/compression kernels
-      stay excluded because construction-time charset errors, result collation,
+      native path. All fifteen are explicit contractions: even the pinned
+      engine's hash/compression kernels stay excluded because construction-time charset errors, result collation,
       warnings, and session semantics are not jointly verified. The preserved
       Go source tables now assert engine decline plus the exact structured
       native refusal, including vectors formerly embedded beside the deleted
       kernels. Static admission is 216 admitted / 168 excluded; the reviewed
       runtime baseline is 30 tests / 323 receipts / 2072 engine rows / 160
+      borrowed rows. This is still not the final native-removal claim.
+- [x] Third physical-deletion tranche: removed the 200-line
+      `src/builtin_ext/vec.rs` SQL kernel module and its dispatch. VEC_DIMS,
+      VEC_L1_DISTANCE, VEC_L2_DISTANCE, VEC_NEGATIVE_INNER_PRODUCT,
+      VEC_COSINE_DISTANCE, VEC_L2_NORM, and VEC_AS_TEXT now execute only in
+      TiKV; independent source vectors pin their results while both residual
+      native boundaries return the exact structured refusal. VEC_FROM_TEXT is
+      explicitly contracted before arity/child rewriting because the pinned
+      engine dispatches neither `VecFromTextSig` nor
+      `CastStringAsVectorFloat32`. Planner/result metadata
+      and the `VectorFloat32` datatype remain as bridge structure, not SQL
+      kernels. The guarded suite passes 1201 library tests plus 77 integration
+      tests (99 ignored); static admission and the reviewed runtime baseline
+      remain 216/168 and 30 tests / 323 receipts / 2072 engine rows / 160
       borrowed rows. This is still not the final native-removal claim.
 - [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
       in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected

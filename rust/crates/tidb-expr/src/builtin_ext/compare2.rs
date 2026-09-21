@@ -1375,14 +1375,14 @@ mod tests {
             ],
             origin_position: 0,
         };
-        let rewritten =
-            crate::rewriter::rewrite_expr(&expression).expect("vector extremum rewrite");
-        assert_eq!(
-            rewritten
-                .static_type()
-                .expect("vector return type")
-                .eval_type(),
-            tidb_datatype::EvalType::VectorFloat32
+        assert!(
+            matches!(
+                crate::rewriter::rewrite_expr(&expression),
+                Err(crate::EvalError::Unsupported(
+                    "native vector evaluation was removed; TiKV engine required"
+                ))
+            ),
+            "contracted VEC_FROM_TEXT must stop before building outer GREATEST"
         );
     }
 }

@@ -91,6 +91,22 @@ pub(crate) fn is_removed_native_crypto(name: &str) -> bool {
     )
 }
 
+/// Native vector SQL kernels were physically removed. The seven admitted names
+/// must execute in TiKV; `VEC_FROM_TEXT` is an explicit contraction.
+pub(crate) fn is_removed_native_vector(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "VEC_DIMS"
+            | "VEC_L1_DISTANCE"
+            | "VEC_L2_DISTANCE"
+            | "VEC_NEGATIVE_INNER_PRODUCT"
+            | "VEC_COSINE_DISTANCE"
+            | "VEC_L2_NORM"
+            | "VEC_FROM_TEXT"
+            | "VEC_AS_TEXT"
+    )
+}
+
 /// Evaluates a builtin scalar function over its evaluated arguments.
 pub(crate) fn eval_func(
     name: &str,
@@ -104,6 +120,11 @@ pub(crate) fn eval_func(
     if is_removed_native_crypto(&name) {
         return Err(EvalError::Unsupported(
             "native crypto evaluation was removed; TiKV engine required",
+        ));
+    }
+    if is_removed_native_vector(&name) {
+        return Err(EvalError::Unsupported(
+            "native vector evaluation was removed; TiKV engine required",
         ));
     }
     // The AST evaluator is also an expression-construction entry point for
@@ -519,6 +540,11 @@ pub(crate) fn eval_func_values_in(
     if is_removed_native_crypto(name) {
         return Some(Err(EvalError::Unsupported(
             "native crypto evaluation was removed; TiKV engine required",
+        )));
+    }
+    if is_removed_native_vector(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native vector evaluation was removed; TiKV engine required",
         )));
     }
     // Go's `builtinFromBase64Sig` checks the estimated decoded length against
