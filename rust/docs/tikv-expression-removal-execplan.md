@@ -148,6 +148,17 @@ remain in the workspace.
       `misc_contraction_source.rs`. This is still not a full-compatibility,
       feature-off, end-to-end SQL, hosted-CI, TiKV-server-compatibility, or final
       native-removal claim.
+- [x] Seventh-tranche review hardening: preserve every deleted miscellaneous
+      source input, including non-UTF8 UUID wrappers, all UUID binary spellings,
+      swap flags, shard strings/arities, overflow-warning rows, and the generic
+      index/malformed key decoder fixtures. Visible-call acceptance now requires
+      a parsed AST builtin node plus its exact marker; literal/comment text does
+      not qualify. Prepared/default shapes require exact topic+complete-statement
+      equality plus the marker. `ANY_VALUE` has a distinct refusal kind only on
+      the native backend; Copying/Borrowed errors stay errors, and executable
+      statements must succeed and increment the TiKV row counter. Native
+      integration replay records 77 explicit contractions plus one native-only
+      refusal and still exposes the same 160 unrelated carried divergences.
 - [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
       in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected
       borrowed facade was used by the adapter while the manifest still pinned

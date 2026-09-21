@@ -151,6 +151,7 @@ fn is_uuid_source_rows_are_explicitly_contracted() {
         "6CCD780C-BABA-1026-9564-5B8C656024DQ",
         " 6ccd780c-baba-1026-9564-5b8c656024db",
         "6ccd780c-baba-1026-9564-5b8c656024db ",
+        " 6ccd780c-baba-1026-9564-5b8c656024db ",
         "{99a9ad03-5298-11ec-8f5c-00ff90147ac3*",
         "urn:uuid:99a9ad03-5298-11ec-8f5c-00ff90147ac3",
     ] {
@@ -168,11 +169,17 @@ fn is_uuid_scalar_coercion_rows_are_explicitly_contracted() {
 
 #[test]
 fn is_uuid_byte_boundaries_are_explicitly_contracted() {
+    let mut invalid_wrapper = vec![0xff];
+    invalid_wrapper.extend_from_slice(b"99a9ad03-5298-11ec-8f5c-00ff90147ac3*");
+    let mut leading_space = vec![b' '];
+    leading_space.extend_from_slice(b"99a9ad03-5298-11ec-8f5c-00ff90147ac3");
+    leading_space.push(0xff);
     for value in [
         Datum::new_string(vec![0xff]),
         Datum::Bytes(vec![0xff]),
         Datum::BinaryLiteral(BinaryLiteral::from(vec![0xff])),
-        Datum::Bytes(b"{99a9ad03-5298-11ec-8f5c-00ff90147ac3*".to_vec()),
+        Datum::Bytes(invalid_wrapper),
+        Datum::Bytes(leading_space),
     ] {
         assert_values("IS_UUID", &[value], &crate::NoColumns);
     }
@@ -182,10 +189,12 @@ fn is_uuid_byte_boundaries_are_explicitly_contracted() {
 fn uuid_timestamp_source_rows_are_explicitly_contracted() {
     for text in [
         "5f13f854-d74a-11f0-9b7a-0ae0156bd76b",
+        "c6437ef1-5b86-3a4e-a071-c2d4ad414e65",
+        "a3e3b4a1-ea6d-471e-9860-8303a8b261f6",
+        "271a8175-dadd-5df9-b0bd-20a4a0b441e6",
         "1f0e48c1-7860-69cc-9b3f-35f89c103d4d",
         "019b1440-87b7-7380-ab00-ce413e795004",
         "6ccd780cbaba102695645b8c656024db",
-        "c6437ef1-5b86-3a4e-a071-c2d4ad414e65",
         "00000000-0000-0000-0000-000000000000",
         "ffffffff-ffff-ffff-ffff-ffffffffffff",
         "abc",
@@ -206,19 +215,45 @@ fn uuid_binary_source_rows_are_explicitly_contracted() {
         0x6c, 0xcd, 0x78, 0x0c, 0xba, 0xba, 0x10, 0x26, 0x95, 0x64, 0x5b, 0x8c, 0x65, 0x60, 0x24,
         0xdb,
     ];
+    let swapped = vec![
+        0x10, 0x26, 0xba, 0xba, 0x6c, 0xcd, 0x78, 0x0c, 0x95, 0x64, 0x5b, 0x8c, 0x65, 0x60, 0x24,
+        0xdb,
+    ];
+    for spelling in [
+        canonical,
+        "6CCD780C-BABA-1026-9564-5B8C656024DB",
+        "6ccd780cbaba102695645b8c656024db",
+        "{6ccd780c-baba-1026-9564-5b8c656024db}",
+        "6ccd780c-baba-1026-9564-5b8c6560",
+        " 6ccd780c-baba-1026-9564-5b8c656024db",
+        "6ccd780c-baba-1026-9564-5b8c656024db ",
+        " 6ccd780c-baba-1026-9564-5b8c656024db ",
+    ] {
+        assert_values(
+            "UUID_TO_BIN",
+            &[Datum::new_string(spelling)],
+            &crate::NoColumns,
+        );
+    }
     for vals in [
-        vec![Datum::new_string(canonical)],
         vec![Datum::new_string(canonical), Datum::Int(1)],
         vec![Datum::new_string(canonical), Datum::Null],
+        vec![Datum::new_string(canonical), Datum::new_string("a")],
         vec![Datum::Null],
+        vec![],
+        vec![Datum::Int(1), Datum::Int(2), Datum::Int(3)],
     ] {
         assert_values("UUID_TO_BIN", &vals, &crate::NoColumns);
     }
     for vals in [
         vec![Datum::Bytes(normal.clone())],
         vec![Datum::Bytes(normal.clone()), Datum::Int(1)],
+        vec![Datum::Bytes(normal.clone()), Datum::new_string("a")],
+        vec![Datum::Bytes(swapped)],
         vec![Datum::Bytes(normal[..15].to_vec())],
         vec![Datum::Null],
+        vec![],
+        vec![Datum::Int(1), Datum::Int(2), Datum::Int(3)],
     ] {
         assert_values("BIN_TO_UUID", &vals, &crate::NoColumns);
     }
@@ -226,6 +261,9 @@ fn uuid_binary_source_rows_are_explicitly_contracted() {
 
 #[test]
 fn tidb_shard_source_rows_are_explicitly_contracted() {
+    for vals in [vec![], vec![Datum::Int(1), Datum::Int(2)]] {
+        assert_values("TIDB_SHARD", &vals, &crate::NoColumns);
+    }
     for value in [
         Datum::Int(-1),
         Datum::Int(0),
@@ -233,6 +271,10 @@ fn tidb_shard_source_rows_are_explicitly_contracted() {
         Datum::Int(9_999_999_999_999_999),
         Datum::UInt(u64::MAX),
         Datum::new_string("abc"),
+        Datum::new_string("ope"),
+        Datum::new_string("wopddd"),
+        Datum::new_string("1"),
+        Datum::new_string("-1"),
         Datum::new_string("1.9"),
         Datum::Real(1.9),
         Datum::Decimal(Decimal::from_literal("1.9")),
@@ -244,9 +286,13 @@ fn tidb_shard_source_rows_are_explicitly_contracted() {
 
 #[test]
 fn hash_warning_rows_refuse_without_emitting_native_warnings() {
-    for name in ["VITESS_HASH", "TIDB_SHARD"] {
+    for (name, text) in [
+        ("VITESS_HASH", "18446744073709551614"),
+        ("TIDB_SHARD", "18446744073709551614"),
+        ("VITESS_HASH", "18446744073709551616"),
+    ] {
         let ctx = WarningContext::default();
-        assert_values(name, &[Datum::new_string("18446744073709551614")], &ctx);
+        assert_values(name, &[Datum::new_string(text)], &ctx);
         assert!(ctx.0.borrow().is_empty(), "deleted {name} kernel warned");
     }
 }

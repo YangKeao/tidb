@@ -62,6 +62,8 @@ mod integration_plan_property;
 mod mysqltest_connections;
 #[path = "mysqltest_script.rs"]
 mod mysqltest_script;
+#[path = "common/removed_native.rs"]
+mod removed_native;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -235,9 +237,12 @@ fn integrationtest_dir() -> PathBuf {
 /// recorded no output of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum MatchKind {
-    /// A retained source statement reached the exact fail-closed boundary for
-    /// a physically deleted native miscellaneous kernel.
+    /// A retained source statement reached an exact, statement-allowlisted
+    /// fail-closed boundary for a physically deleted native kernel.
     NativeContraction,
+    /// A retained TiKV-only statement reached its expected native-only refusal.
+    /// Engine backends must instead succeed and increment their row counter.
+    NativeOnlyRefusal,
     /// A result set: header and every row compared cell by cell.
     Rows,
     /// An `EXPLAIN`: the recorded plan's access property compared.
@@ -377,6 +382,8 @@ fn display_block(lines: &[Vec<u8>]) -> String {
 /// divergence to report, and `Err(None)` when the statement was skipped (its
 /// class already recorded).
 fn compare(
+    topic: &str,
+    native_backend: bool,
     session: &mut Session,
     stmt: &Stmt,
     recorded: &[Vec<u8>],
@@ -392,7 +399,10 @@ fn compare(
     } else {
         (recorded, None)
     };
-    match (compare_output(session, stmt, rows, report), warnings) {
+    match (
+        compare_output(topic, native_backend, session, stmt, rows, report),
+        warnings,
+    ) {
         // Only a statement that was actually COMPARED gets its warnings
         // compared: a skip means this tier never produced the outcome the
         // warnings would belong to.
@@ -633,23 +643,260 @@ fn ensure_stats_fixtures_unzipped(dir: &std::path::Path) {
     });
 }
 
-const REMOVED_NATIVE_MARKERS: [&str; 7] = [
-    "native math evaluation was removed; TiKV engine required",
-    "native crypto evaluation was removed; TiKV engine required",
-    "native vector evaluation was removed; TiKV engine required",
-    "native JSON depth/storage evaluation was removed; TiKV engine required",
-    "native regexp evaluation was removed; TiKV engine required",
-    "native packet-limited string evaluation was removed; function unsupported",
-    "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
-];
+fn expected_removed_marker(topic: &str, sql: &str) -> Option<&'static str> {
+    let parsed = removed_native::parsed_function_names(sql)?;
+    let has = |names: &[&str]| {
+        names
+            .iter()
+            .any(|name| parsed.contains(&name.trim().trim_end_matches('(').to_ascii_uppercase()))
+    };
+    let normalized_sql = sql.trim().trim_end_matches(';').to_ascii_lowercase();
+    if has(&[
+        "rand(",
+        "abs(",
+        "sign(",
+        "ceil(",
+        "ceiling(",
+        "floor(",
+        "round(",
+        "truncate(",
+        "sqrt(",
+        "pow(",
+        "power(",
+        "exp(",
+        "ln(",
+        "log(",
+        "log2(",
+        "log10(",
+        "pi(",
+        "sin(",
+        "cos(",
+        "tan(",
+        "asin(",
+        "acos(",
+        "atan(",
+        "atan2(",
+        "cot(",
+        "radians(",
+        "degrees(",
+        "conv(",
+        "crc32(",
+    ]) {
+        return Some("native math evaluation was removed; TiKV engine required");
+    }
+    if has(&[
+        "md5(",
+        "sha(",
+        "sha1(",
+        "sha2(",
+        "sm3(",
+        "random_bytes(",
+        "password(",
+        "validate_password_strength(",
+        "encode(",
+        "decode(",
+        "compress(",
+        "aes_encrypt(",
+        "aes_decrypt(",
+        "uncompress(",
+        "uncompressed_length(",
+    ]) {
+        return Some("native crypto evaluation was removed; TiKV engine required");
+    }
+    if has(&[
+        "vec_dims(",
+        "vec_l1_distance(",
+        "vec_l2_distance(",
+        "vec_negative_inner_product(",
+        "vec_cosine_distance(",
+        "vec_l2_norm(",
+        "vec_from_text(",
+        "vec_as_text(",
+    ]) {
+        return Some("native vector evaluation was removed; TiKV engine required");
+    }
+    if has(&["json_depth(", "json_storage_free(", "json_storage_size("]) {
+        return Some("native JSON depth/storage evaluation was removed; TiKV engine required");
+    }
+    if has(&[
+        "regexp_like(",
+        "regexp_substr(",
+        "regexp_instr(",
+        "regexp_replace(",
+        " regexp ",
+        " rlike ",
+    ]) {
+        return Some("native regexp evaluation was removed; TiKV engine required");
+    }
+    if has(&[
+        "repeat(",
+        "space(",
+        "lpad(",
+        "rpad(",
+        "to_base64(",
+        "weight_string(",
+    ]) {
+        return Some("native packet-limited string evaluation was removed; function unsupported");
+    }
+    let db_default_insert = topic == "db_integration"
+        && matches!(
+            normalized_sql.as_str(),
+            "insert into u1(id) values (1),(2),(3)" | "insert into u2(id) values (1),(2),(3)"
+        );
+    if db_default_insert
+        || has(&[
+            "uuid(",
+            "uuid_v4(",
+            "uuid_v7(",
+            "name_const(",
+            "is_uuid(",
+            "uuid_version(",
+            "uuid_timestamp(",
+            "uuid_to_bin(",
+            "bin_to_uuid(",
+            "tidb_shard(",
+            "tidb_decode_key(",
+            "vitess_hash(",
+        ])
+    {
+        return Some(
+            "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
+        );
+    }
+    None
+}
 
-fn is_removed_native_error(error: &str) -> bool {
-    REMOVED_NATIVE_MARKERS
-        .iter()
-        .any(|marker| error.contains(marker))
+fn is_any_value_statement(sql: &str) -> bool {
+    !sql.trim_start().to_ascii_lowercase().starts_with("explain")
+        && removed_native::parsed_function_names(sql)
+            .is_some_and(|names| names.contains("ANY_VALUE"))
+}
+
+fn may_classify_native_contraction(native_backend: bool, sql: &str) -> bool {
+    native_backend || !is_any_value_statement(sql)
+}
+
+fn is_native_any_value_refusal(native_backend: bool, sql: &str, error: &str) -> bool {
+    native_backend
+        && is_any_value_statement(sql)
+        && error.contains(
+            "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
+        )
+}
+
+fn hidden_removed_marker_allowed(topic: &str, sql: &str, error: &str) -> bool {
+    const MATH: &str = "native math evaluation was removed; TiKV engine required";
+    const CRYPTO: &str = "native crypto evaluation was removed; TiKV engine required";
+    const REGEXP: &str = "native regexp evaluation was removed; TiKV engine required";
+    let sql = sql.trim().trim_end_matches(';').to_ascii_lowercase();
+    let markers: &[&str] = match topic {
+        "executor/partition/partition_with_expression"
+            if sql
+                == "insert into tp values('2020-01-01 19:00:00', 1),('2020-08-15 00:00:00', -1), ('2020-08-18 05:00:01', 2), ('2020-10-01 14:13:15', 3)" =>
+        {
+            &[MATH]
+        }
+        "planner/core/casetest/partition/integration_partition"
+            if [
+                "insert into tabs values (1, 1), (2, 2), (2, 1), (1, 2), (4, 8), (8, 4), (5, 10), (10, 5)",
+                "insert into tceil values (0.23, 1), (3.14, 4.33), (1.2, 30), (5.1, 4.23)",
+                "insert into tfloor values (0.23, 1), (3.14, 4.33), (6.2, 30), (7.1, 4.23)",
+            ]
+            .contains(&sql.as_str()) =>
+        {
+            &[MATH]
+        }
+        "planner/core/integration_partition"
+            if [
+                "insert into t3 values ('1921-05-10 15:20:10')",
+                "insert into t3 values ('1921-05-10 15:20:20')",
+                "insert into t3 values ('1921-05-10 15:20:30')",
+                "insert into t values(202303)",
+            ]
+            .contains(&sql.as_str()) =>
+        {
+            &[MATH]
+        }
+        "expression/plan_cache" if sql == "execute stmt1 using @a" => &[REGEXP, CRYPTO],
+        "expression/plan_cache"
+            if [
+                "execute stmt2 using @a",
+                "execute stmt3 using @a",
+                "execute stmt4 using @a, @r",
+            ]
+            .contains(&sql.as_str()) =>
+        {
+            &[REGEXP]
+        }
+        "expression/plan_cache" if sql == "execute stmt using @a1, @a2, @a3, @a4" => {
+            &[MATH]
+        }
+        _ => &[],
+    };
+    markers.iter().any(|marker| error.contains(marker))
+}
+
+#[test]
+fn removed_kernel_classification_is_statement_scoped() {
+    let misc =
+        "native miscellaneous evaluation was removed; TiKV engine required or function unsupported";
+    assert!(
+        expected_removed_marker("db_integration", "insert into u1(id) values (1),(2),(3)")
+            .is_some_and(|marker| marker == misc)
+    );
+    assert!(expected_removed_marker("db_integration", "insert into u1(id) values (1)").is_none());
+    assert!(expected_removed_marker(
+        "planner/core/casetest/pushdown/push_down",
+        "select any_value(v) from t group by k"
+    )
+    .is_none());
+    assert!(hidden_removed_marker_allowed(
+        "expression/plan_cache",
+        "execute stmt1 using @a",
+        "native crypto evaluation was removed; TiKV engine required"
+    ));
+    assert!(!hidden_removed_marker_allowed(
+        "unrelated/topic",
+        "execute stmt1 using @a",
+        "native crypto evaluation was removed; TiKV engine required"
+    ));
+    assert!(!hidden_removed_marker_allowed(
+        "planner/core/integration_partition",
+        "insert into t values(999)",
+        "native math evaluation was removed; TiKV engine required"
+    ));
+    assert!(expected_removed_marker("unrelated/topic", "select 1").is_none());
+    assert!(is_any_value_statement(
+        "select any_value(v) from t group by k"
+    ));
+    assert!(!is_any_value_statement(
+        "explain select any_value(v) from t group by k"
+    ));
+    let error =
+        "native miscellaneous evaluation was removed; TiKV engine required or function unsupported";
+    assert!(is_native_any_value_refusal(
+        true,
+        "select any_value(v) from t group by k",
+        error
+    ));
+    assert!(!is_native_any_value_refusal(
+        false,
+        "select any_value(v) from t group by k",
+        error
+    ));
+    assert!(!may_classify_native_contraction(
+        false,
+        "select any_value(v), abs(v) from t group by k"
+    ));
+    assert!(may_classify_native_contraction(
+        true,
+        "select any_value(v), abs(v) from t group by k"
+    ));
 }
 
 fn compare_output(
+    topic: &str,
+    native_backend: bool,
     session: &mut Session,
     stmt: &Stmt,
     recorded: &[Vec<u8>],
@@ -713,7 +960,17 @@ fn compare_output(
         eprintln!("SQL< {}ms", started.elapsed().as_millis());
     }
     match (outcome, recorded_error) {
-        (Err(error), _) if is_removed_native_error(&format!("{error:?}")) => {
+        (Err(error), _)
+            if is_native_any_value_refusal(native_backend, sql, &format!("{error:?}")) =>
+        {
+            Ok(MatchKind::NativeOnlyRefusal)
+        }
+        (Err(error), _)
+            if may_classify_native_contraction(native_backend, sql)
+                && (expected_removed_marker(topic, sql)
+                    .is_some_and(|marker| format!("{error:?}").contains(marker))
+                    || hidden_removed_marker_allowed(topic, sql, &format!("{error:?}"))) =>
+        {
             Ok(MatchKind::NativeContraction)
         }
         // TiDB rejected it and so did we. The wording is TiDB's; only the
@@ -857,9 +1114,27 @@ fn run_topic_on_this_stack(topic: &str) -> Result<TopicReport, String> {
             Item::Echo(_) => continue,
         };
         let before_rows = connections.expression_rows().0;
-        let outcome = compare(connections.current(), stmt, &block, &mut report);
-        if connections.expression_rows().0 > before_rows {
+        let native_backend =
+            connections.expression_backend() == mysqltest_connections::ExpressionBackend::Native;
+        let require_any_value_engine = is_any_value_statement(&stmt.sql) && !native_backend;
+        let outcome = compare(
+            topic,
+            native_backend,
+            connections.current(),
+            stmt,
+            &block,
+            &mut report,
+        );
+        let after_rows = connections.expression_rows().0;
+        if after_rows > before_rows {
             report.engine_statements += 1;
+        }
+        if require_any_value_engine && (!outcome.is_ok() || after_rows <= before_rows) {
+            report.divergences.push(format!(
+                "\n--- [{topic}] {}\n  rust: ANY_VALUE must succeed through TiKV and increment engine rows",
+                stmt.sql
+            ));
+            continue;
         }
         if matches!(outcome, Err(None)) && !stmt.expect_error {
             connections.recover_account_row_from_unsupported_create_user(&stmt.sql);

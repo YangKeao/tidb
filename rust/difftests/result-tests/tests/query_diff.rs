@@ -38,6 +38,8 @@
 //!   > rust/difftests/corpus/query_golden.txt
 //! ```
 
+#[path = "common/removed_native.rs"]
+mod removed_native;
 #[path = "result_label.rs"]
 mod result_label;
 
@@ -54,38 +56,131 @@ const MISC_REMOVED: &str =
     "native miscellaneous evaluation was removed; TiKV engine required or function unsupported";
 
 fn is_any_value(sql: &str) -> bool {
-    sql.to_ascii_lowercase().contains("any_value(")
+    !sql.trim_start().to_ascii_lowercase().starts_with("explain")
+        && removed_native::parsed_function_names(sql)
+            .is_some_and(|names| names.contains("ANY_VALUE"))
 }
 
-fn is_removed_native_error(error: &str) -> bool {
-    [
-        "native math evaluation was removed; TiKV engine required",
-        "native crypto evaluation was removed; TiKV engine required",
-        "native vector evaluation was removed; TiKV engine required",
-        "native JSON depth/storage evaluation was removed; TiKV engine required",
-        "native regexp evaluation was removed; TiKV engine required",
-        "native packet-limited string evaluation was removed; function unsupported",
-        MISC_REMOVED,
-    ]
-    .iter()
-    .any(|marker| error.contains(marker))
+fn requires_any_value_engine(sql: &str) -> bool {
+    cfg!(feature = "tikv-expr") && is_any_value(sql)
 }
 
-fn is_misc_contraction(sql: &str) -> bool {
-    let sql = sql.to_ascii_lowercase();
-    [
+fn expected_removed_marker(sql: &str) -> Option<&'static str> {
+    let parsed = removed_native::parsed_function_names(sql)?;
+    let has = |names: &[&str]| {
+        names
+            .iter()
+            .any(|name| parsed.contains(&name.trim().trim_end_matches('(').to_ascii_uppercase()))
+    };
+    if has(&[
+        "rand(",
+        "abs(",
+        "sign(",
+        "ceil(",
+        "ceiling(",
+        "floor(",
+        "round(",
+        "truncate(",
+        "sqrt(",
+        "pow(",
+        "power(",
+        "exp(",
+        "ln(",
+        "log(",
+        "log2(",
+        "log10(",
+        "pi(",
+        "sin(",
+        "cos(",
+        "tan(",
+        "asin(",
+        "acos(",
+        "atan(",
+        "atan2(",
+        "cot(",
+        "radians(",
+        "degrees(",
+        "conv(",
+        "crc32(",
+    ]) {
+        return Some("native math evaluation was removed; TiKV engine required");
+    }
+    if has(&[
+        "md5(",
+        "sha(",
+        "sha1(",
+        "sha2(",
+        "sm3(",
+        "random_bytes(",
+        "password(",
+        "validate_password_strength(",
+        "encode(",
+        "decode(",
+        "compress(",
+        "aes_encrypt(",
+        "aes_decrypt(",
+        "uncompress(",
+        "uncompressed_length(",
+    ]) {
+        return Some("native crypto evaluation was removed; TiKV engine required");
+    }
+    if has(&[
+        "vec_dims(",
+        "vec_l1_distance(",
+        "vec_l2_distance(",
+        "vec_negative_inner_product(",
+        "vec_cosine_distance(",
+        "vec_l2_norm(",
+        "vec_from_text(",
+        "vec_as_text(",
+    ]) {
+        return Some("native vector evaluation was removed; TiKV engine required");
+    }
+    if has(&["json_depth(", "json_storage_free(", "json_storage_size("]) {
+        return Some("native JSON depth/storage evaluation was removed; TiKV engine required");
+    }
+    if has(&[
+        "regexp_like(",
+        "regexp_substr(",
+        "regexp_instr(",
+        "regexp_replace(",
+        " regexp ",
+        " rlike ",
+    ]) {
+        return Some("native regexp evaluation was removed; TiKV engine required");
+    }
+    if has(&[
+        "repeat(",
+        "space(",
+        "lpad(",
+        "rpad(",
+        "to_base64(",
+        "weight_string(",
+    ]) {
+        return Some("native packet-limited string evaluation was removed; function unsupported");
+    }
+    if has(&[
+        "uuid(",
+        "uuid_v4(",
+        "uuid_v7(",
+        "name_const(",
         "is_uuid(",
         "uuid_version(",
         "uuid_timestamp(",
         "uuid_to_bin(",
         "bin_to_uuid(",
-        "vitess_hash(",
         "tidb_shard(",
-        "name_const(",
-    ]
-    .iter()
-    .any(|name| sql.contains(name))
-        || (cfg!(not(feature = "tikv-expr")) && is_any_value(&sql))
+        "tidb_decode_key(",
+        "vitess_hash(",
+    ]) {
+        return Some(MISC_REMOVED);
+    }
+    None
+}
+
+fn is_misc_contraction(sql: &str) -> bool {
+    expected_removed_marker(sql) == Some(MISC_REMOVED)
+        || (cfg!(not(feature = "tikv-expr")) && is_any_value(sql))
 }
 
 fn corpus_dir() -> PathBuf {
@@ -105,18 +200,23 @@ fn rust_run(sql: &str) -> Result<String, String> {
     } else {
         None
     };
-    let result = match session.run(sql).map_err(|e| format!("{e:?}"))? {
-        StmtResult::Rows(rows) => Ok(rows_label(&rows, ordered)),
-        StmtResult::Affected(_) | StmtResult::Done(_) => {
+    let result = match session.run(sql) {
+        Ok(StmtResult::Rows(rows)) => Ok(rows_label(&rows, ordered)),
+        Ok(StmtResult::Affected(_) | StmtResult::Done(_)) => {
             Err("statement produced no rows".to_owned())
         }
+        Err(error) => Err(format!("{error:?}")),
     };
     #[cfg(feature = "tikv-expr")]
     if let Some(before) = engine_before {
-        assert!(
-            session.tikv_expression_rows() > before,
-            "ANY_VALUE query did not execute a TiKV-engine row: {sql}"
-        );
+        if let Err(error) = &result {
+            return Err(format!("ANY_VALUE TiKV execution failed: {error}"));
+        }
+        if session.tikv_expression_rows() <= before {
+            return Err(format!(
+                "ANY_VALUE query did not execute a TiKV-engine row: {sql}"
+            ));
+        }
     }
     result
 }
@@ -146,18 +246,21 @@ fn run_pair(
     let mut skipped = 0;
     for (sql, want) in stmts.iter().zip(&golden) {
         let outcome = rust_run(sql);
-        if is_misc_contraction(sql) {
+        let requires_any_value_engine = requires_any_value_engine(sql);
+        if !requires_any_value_engine && is_misc_contraction(sql) {
             let error = outcome.expect_err("explicit native-misc contraction");
             assert!(error.contains(MISC_REMOVED), "{sql}: {error}");
             matched += 1;
             continue;
         }
-        if outcome
-            .as_ref()
-            .is_err_and(|error| is_removed_native_error(error))
+        if let Some(marker) = (!requires_any_value_engine)
+            .then(|| expected_removed_marker(sql))
+            .flatten()
         {
-            matched += 1;
-            continue;
+            if outcome.as_ref().is_err_and(|error| error.contains(marker)) {
+                matched += 1;
+                continue;
+            }
         }
         if want == "ERR" {
             skipped += 1;
@@ -174,6 +277,21 @@ fn run_pair(
         }
     }
     (matched, skipped)
+}
+
+#[cfg(feature = "tikv-expr")]
+#[test]
+fn any_value_engine_requirement_excludes_explain_and_mixed_contractions() {
+    assert!(requires_any_value_engine(
+        "select any_value(v), abs(v) from t group by v"
+    ));
+    assert!(!requires_any_value_engine(
+        "explain select any_value(v) from t group by v"
+    ));
+    assert_eq!(
+        expected_removed_marker("select any_value(v), abs(v) from t group by v"),
+        Some("native math evaluation was removed; TiKV engine required")
+    );
 }
 
 #[test]

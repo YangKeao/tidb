@@ -31,6 +31,9 @@
 //! `<topic>.golden.txt` the same way — never append to an existing topic's
 //! file unless the addition genuinely belongs to that topic.
 
+#[path = "common/removed_native.rs"]
+mod removed_native;
+
 use std::path::PathBuf;
 
 use difftest::{difftest_root, load_corpus_dir, validate_executable_corpora};
@@ -41,36 +44,120 @@ fn corpus_dir() -> PathBuf {
 }
 
 /// Parses `expr` by wrapping it in `SELECT`, then returns its evaluated label.
-const MISC_REMOVED: &str =
-    "Unsupported(\"native miscellaneous evaluation was removed; TiKV engine required or function unsupported\")";
-
-fn is_removed_native_error(error: &str) -> bool {
-    [
-        "native math evaluation was removed; TiKV engine required",
-        "native crypto evaluation was removed; TiKV engine required",
-        "native vector evaluation was removed; TiKV engine required",
-        "native JSON depth/storage evaluation was removed; TiKV engine required",
-        "native regexp evaluation was removed; TiKV engine required",
-        "native packet-limited string evaluation was removed; function unsupported",
-        "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
-    ]
-    .iter()
-    .any(|marker| error.contains(marker))
-}
-
-fn is_misc_contraction(expr: &str) -> bool {
-    let expr = expr.trim_start().to_ascii_lowercase();
-    [
+fn expected_removed_marker(expr: &str) -> Option<&'static str> {
+    let parsed = removed_native::parsed_function_names(&format!("select {expr}"))?;
+    let has = |names: &[&str]| {
+        names
+            .iter()
+            .any(|name| parsed.contains(&name.trim().trim_end_matches('(').to_ascii_uppercase()))
+    };
+    if has(&[
+        "rand(",
+        "abs(",
+        "sign(",
+        "ceil(",
+        "ceiling(",
+        "floor(",
+        "round(",
+        "truncate(",
+        "sqrt(",
+        "pow(",
+        "power(",
+        "exp(",
+        "ln(",
+        "log(",
+        "log2(",
+        "log10(",
+        "pi(",
+        "sin(",
+        "cos(",
+        "tan(",
+        "asin(",
+        "acos(",
+        "atan(",
+        "atan2(",
+        "cot(",
+        "radians(",
+        "degrees(",
+        "conv(",
+        "crc32(",
+    ]) {
+        return Some("native math evaluation was removed; TiKV engine required");
+    }
+    if has(&[
+        "md5(",
+        "sha(",
+        "sha1(",
+        "sha2(",
+        "sm3(",
+        "random_bytes(",
+        "password(",
+        "validate_password_strength(",
+        "encode(",
+        "decode(",
+        "compress(",
+        "aes_encrypt(",
+        "aes_decrypt(",
+        "uncompress(",
+        "uncompressed_length(",
+    ]) {
+        return Some("native crypto evaluation was removed; TiKV engine required");
+    }
+    if has(&[
+        "vec_dims(",
+        "vec_l1_distance(",
+        "vec_l2_distance(",
+        "vec_negative_inner_product(",
+        "vec_cosine_distance(",
+        "vec_l2_norm(",
+        "vec_from_text(",
+        "vec_as_text(",
+    ]) {
+        return Some("native vector evaluation was removed; TiKV engine required");
+    }
+    if has(&["json_depth(", "json_storage_free(", "json_storage_size("]) {
+        return Some("native JSON depth/storage evaluation was removed; TiKV engine required");
+    }
+    if has(&[
+        "regexp_like(",
+        "regexp_substr(",
+        "regexp_instr(",
+        "regexp_replace(",
+        " regexp ",
+        " rlike ",
+    ]) {
+        return Some("native regexp evaluation was removed; TiKV engine required");
+    }
+    if has(&[
+        "repeat(",
+        "space(",
+        "lpad(",
+        "rpad(",
+        "to_base64(",
+        "weight_string(",
+    ]) {
+        return Some("native packet-limited string evaluation was removed; function unsupported");
+    }
+    if has(&[
+        "uuid(",
+        "uuid_v4(",
+        "uuid_v7(",
         "any_value(",
         "name_const(",
-        "uuid_to_bin(",
-        "bin_to_uuid(",
+        "is_uuid(",
         "uuid_version(",
         "uuid_timestamp(",
+        "uuid_to_bin(",
+        "bin_to_uuid(",
+        "tidb_shard(",
+        "tidb_decode_key(",
         "vitess_hash(",
-    ]
-    .iter()
-    .any(|prefix| expr.starts_with(prefix))
+    ]) {
+        return Some(
+            "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
+        );
+    }
+    None
 }
 
 fn rust_eval_label(expr: &str) -> Result<String, String> {
@@ -107,22 +194,15 @@ fn expr_eval_matches_go_engine() {
     let mut contracted = 0;
     let mut skipped = 0;
     for (expr, want) in exprs.iter().zip(&golden) {
-        if is_misc_contraction(expr) {
-            assert_eq!(
-                rust_eval_label(expr),
-                Err(MISC_REMOVED.to_owned()),
-                "explicit native-misc contraction: {expr}"
-            );
-            contracted += 1;
-            continue;
-        }
         let evaluated = rust_eval_label(expr);
-        if evaluated
-            .as_ref()
-            .is_err_and(|error| is_removed_native_error(error))
-        {
-            contracted += 1;
-            continue;
+        if let Some(marker) = expected_removed_marker(expr) {
+            if evaluated
+                .as_ref()
+                .is_err_and(|error| error.contains(marker))
+            {
+                contracted += 1;
+                continue;
+            }
         }
         if expr
             .trim_start()
