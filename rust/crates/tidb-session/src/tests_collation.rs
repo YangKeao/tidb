@@ -34,6 +34,11 @@ fn one(session: &mut Session, sql: &str) -> String {
     row_text(session.run(sql))[0][0].clone()
 }
 
+fn assert_removed(session: &mut Session, sql: &str, marker: &str) {
+    let error = session.run(sql).expect_err("native evaluator is deleted");
+    assert!(error.to_string().contains(marker), "{sql}: {error}");
+}
+
 fn error_of(session: &mut Session, sql: &str) -> (u16, String) {
     let error = session.run(sql).unwrap_err().to_mysql_error();
     (error.code, error.message)
@@ -213,16 +218,21 @@ fn binary_is_no_pad_and_utf8mb4_bin_is_pad_space() {
 #[test]
 fn collation_aware_string_builtins() {
     let mut session = collation_session();
-    #[cfg(feature = "tikv-expr")]
-    session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
-    #[cfg(feature = "tikv-expr")]
-    let engine_before = session.tikv_expression_rows();
-    for (sql, expected) in [
-        ("SELECT INSTR('ABC', 'b')", "0"),
-        ("SELECT INSTR('ABC' COLLATE utf8mb4_general_ci, 'b')", "2"),
-        ("SELECT INSTR('ABC' COLLATE utf8mb4_bin, 'b')", "0"),
-        ("SELECT LOCATE('b', 'ABC')", "0"),
-        ("SELECT LOCATE('b' COLLATE utf8mb4_general_ci, 'ABC')", "2"),
+    let tail_marker = "native string auxiliary evaluation was removed; TiKV engine required or function unsupported";
+    // Former literal answers were 0/2/0/0/2; column answers were 0/0/1/1.
+    for sql in [
+        "SELECT INSTR('ABC', 'b')",
+        "SELECT INSTR('ABC' COLLATE utf8mb4_general_ci, 'b')",
+        "SELECT INSTR('ABC' COLLATE utf8mb4_bin, 'b')",
+        "SELECT LOCATE('b', 'ABC')",
+        "SELECT LOCATE('b' COLLATE utf8mb4_general_ci, 'ABC')",
+        "SELECT INSTR(c, 'b') FROM ci",
+        "SELECT LOCATE('b', c) FROM ci",
+    ] {
+        assert_removed(&mut session, sql, tail_marker);
+    }
+
+    let strcmp_rows = [
         ("SELECT STRCMP('a', 'A')", "1"),
         (
             "SELECT STRCMP('a' COLLATE utf8mb4_general_ci, 'A' COLLATE utf8mb4_general_ci)",
@@ -232,27 +242,29 @@ fn collation_aware_string_builtins() {
             "SELECT STRCMP('a' COLLATE utf8mb4_bin, 'A' COLLATE utf8mb4_bin)",
             "1",
         ),
-    ] {
-        assert_eq!(one(&mut session, sql), expected, "{sql}");
-    }
-    // Against the `_ci` COLUMN, the column's own collation is derived.
-    assert_eq!(
-        row_text(session.run("SELECT INSTR(c, 'b') FROM ci")),
-        vec![vec!["0"], vec!["0"], vec!["1"], vec!["1"]]
-    );
-    assert_eq!(
-        row_text(session.run("SELECT STRCMP(c, 'A') FROM ci")),
-        vec![vec!["0"], vec!["0"], vec!["1"], vec!["1"]]
-    );
-    assert_eq!(
-        row_text(session.run("SELECT LOCATE('b', c) FROM ci")),
-        vec![vec!["0"], vec!["0"], vec!["1"], vec!["1"]]
-    );
+    ];
     #[cfg(feature = "tikv-expr")]
-    assert!(
-        session.tikv_expression_rows() > engine_before,
-        "LOCATE must execute through TiKV"
-    );
+    {
+        session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
+        let before = session.tikv_expression_rows();
+        for (sql, expected) in strcmp_rows {
+            assert_eq!(one(&mut session, sql), expected, "{sql}");
+        }
+        assert_eq!(
+            row_text(session.run("SELECT STRCMP(c, 'A') FROM ci")),
+            vec![vec!["0"], vec!["0"], vec!["1"], vec!["1"]]
+        );
+        assert!(session.tikv_expression_rows() > before);
+    }
+    #[cfg(not(feature = "tikv-expr"))]
+    {
+        let marker =
+            "native string2 evaluation was removed; TiKV engine required or function unsupported";
+        for (sql, _) in strcmp_rows {
+            assert_removed(&mut session, sql, marker);
+        }
+        assert_removed(&mut session, "SELECT STRCMP(c, 'A') FROM ci", marker);
+    }
 }
 
 /// `FIELD`, `FIND_IN_SET` and `REGEXP` also search with the derived collator,
@@ -451,38 +463,20 @@ fn field_find_in_set_and_regexp_use_the_derived_collation() {
 #[test]
 fn instr_and_locate_report_byte_offsets_under_a_binary_collation() {
     let mut session = collation_session();
-    #[cfg(feature = "tikv-expr")]
-    session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
-    #[cfg(feature = "tikv-expr")]
-    let engine_before = session.tikv_expression_rows();
-    for (sql, expected) in [
-        ("SELECT INSTR(CAST('aéb' AS BINARY), 'b')", "4"),
-        ("SELECT INSTR('aéb', 'b')", "3"),
-        ("SELECT LOCATE('b', CAST('aéb' AS BINARY))", "4"),
-        ("SELECT LOCATE('b', 'aéb')", "3"),
-        // EXPLICIT character collation outranks the binary cast, so Go keeps
-        // the UTF-8 signature despite one raw binary argument.
-        (
-            "SELECT LOCATE(CAST('b' AS BINARY), 'aéb' COLLATE utf8mb4_general_ci)",
-            "3",
-        ),
-        // A miss is still 0, and an empty needle still matches at 1.
-        ("SELECT INSTR(CAST('aéb' AS BINARY), 'z')", "0"),
-        ("SELECT INSTR(CAST('aéb' AS BINARY), '')", "1"),
+    let marker = "native string auxiliary evaluation was removed; TiKV engine required or function unsupported";
+    // Former Go answers were 4,3,4,3,3,0,1 and column 0/0/0/1.
+    for sql in [
+        "SELECT INSTR(CAST('aéb' AS BINARY), 'b')",
+        "SELECT INSTR('aéb', 'b')",
+        "SELECT LOCATE('b', CAST('aéb' AS BINARY))",
+        "SELECT LOCATE('b', 'aéb')",
+        "SELECT LOCATE(CAST('b' AS BINARY), 'aéb' COLLATE utf8mb4_general_ci)",
+        "SELECT INSTR(CAST('aéb' AS BINARY), 'z')",
+        "SELECT INSTR(CAST('aéb' AS BINARY), '')",
+        "SELECT INSTR(c, 'B') FROM vb",
     ] {
-        assert_eq!(one(&mut session, sql), expected, "{sql}");
+        assert_removed(&mut session, sql, marker);
     }
-    // A VARBINARY column derives the same `binary` collation, and never folds
-    // case: only the 'B' row matches.
-    assert_eq!(
-        row_text(session.run("SELECT INSTR(c, 'B') FROM vb")),
-        vec![vec!["0"], vec!["0"], vec!["0"], vec!["1"]]
-    );
-    #[cfg(feature = "tikv-expr")]
-    assert!(
-        session.tikv_expression_rows() > engine_before,
-        "binary LOCATE must execute through TiKV"
-    );
 }
 
 /// `utf8mb4_general_ci` maps sharp-s to `S` and strips the common accents,
@@ -502,10 +496,23 @@ fn general_ci_folding_matches_the_capture() {
         ("SELECT 'É' COLLATE utf8mb4_general_ci = 'é'", "1"),
         ("SELECT 'ä' COLLATE utf8mb4_general_ci = 'a'", "1"),
         ("SELECT '😀' COLLATE utf8mb4_general_ci = '😁'", "1"),
-        ("SELECT STRCMP('ß' COLLATE utf8mb4_general_ci, 's')", "0"),
     ] {
         assert_eq!(one(&mut session, sql), expected, "{sql}");
     }
+    let strcmp = "SELECT STRCMP('ß' COLLATE utf8mb4_general_ci, 's')";
+    #[cfg(feature = "tikv-expr")]
+    {
+        session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
+        let before = session.tikv_expression_rows();
+        assert_eq!(one(&mut session, strcmp), "0");
+        assert!(session.tikv_expression_rows() > before);
+    }
+    #[cfg(not(feature = "tikv-expr"))]
+    assert_removed(
+        &mut session,
+        strcmp,
+        "native string2 evaluation was removed; TiKV engine required or function unsupported",
+    );
 }
 
 /// Two operands whose collations cannot be aggregated raise 1267 with the

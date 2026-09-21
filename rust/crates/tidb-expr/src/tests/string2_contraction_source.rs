@@ -79,7 +79,7 @@ fn substring_alias_and_boundary_rows_are_explicitly_contracted() {
 }
 
 #[test]
-fn locate_is_retained_while_find_in_set_collation_rows_are_contracted() {
+fn locate_and_find_in_set_collation_rows_are_contracted() {
     for (vals, expected) in [
         (vec![s("bar"), s("foobarbar")], Datum::Int(4)),
         (vec![s("bar"), s("foobarbar"), Datum::Int(5)], Datum::Int(7)),
@@ -91,14 +91,16 @@ fn locate_is_retained_while_find_in_set_collation_rows_are_contracted() {
             Datum::Int(2),
         ),
     ] {
-        assert_eq!(
+        let _ = expected;
+        for result in [
             crate::func::eval_func_values_in("LOCATE", &vals, &crate::NoColumns),
-            Some(Ok(expected.clone()))
-        );
-        assert_eq!(
             crate::func::eval_func_values("LOCATE", &vals, &crate::NoColumns),
-            Some(Ok(expected))
-        );
+        ] {
+            assert!(matches!(
+                result,
+                Some(Err(crate::EvalError::Unsupported(_)))
+            ));
+        }
     }
     for vals in [
         vec![s("b"), s("a,b,c")],

@@ -140,11 +140,14 @@ const DECLINED: &[&str] = &[
     "ifnull(null, cast('[1]' as json))",
     "interval(\"9007199254740991\", \"9007199254740992\")",
     "interval(null, 1, 2)",
+    "instr('abc', 'b')",
     "json_schema_valid('{\"required\":[\"a\"]}', '{\"a\":1}')",
     "load_file('')",
+    "locate('b', 'abc')",
     "make_set(1, 'a', 'b', 'c')",
     "NULLIF(1, \"1.0\")",
     "oct(b'11111111')",
+    "position('b' in 'abc')",
     "quote(x'ff')",
     "regexp_like('abc', 'abc', 'p')",
     "round(1.2345,'2')",
@@ -158,6 +161,7 @@ const DECLINED: &[&str] = &[
     "to_base64('')",
     "translate('ABC', 'A', 'B')",
     "translate('abcabc', 'ab', 'xy')",
+    "trim('  a  ')",
     "truncate(1234.5678,'-2')",
     "upper(elt(1,'a',x'61'))",
     "weight_string(NULL)"
@@ -188,7 +192,7 @@ fn declined_expressions_stay_declined() {
 #[test]
 fn the_gap_count_is_pinned() {
     assert_eq!(COVERED.len(), 19, "the covered list changed size");
-    assert_eq!(DECLINED.len(), 63, "the declined list changed size");
+    assert_eq!(DECLINED.len(), 67, "the declined list changed size");
 }
 
 /// The resolver that milestone E ends up with: an engine context and no native
@@ -274,7 +278,7 @@ fn every_declined_expression_fails_cleanly_without_the_native_evaluator() {
 /// all. `plan_builder.rs` folds the rewritten tree with the live statement
 /// context (`fold_constant_in_mode`) before the plan exists. After physical
 /// native-kernel deletion, constant-foldable declines become a single
-/// `Constant`; the 39 pinned here are the ones whose constant form *does*
+/// `Constant`; the 43 pinned here are the ones whose constant form *does*
 /// reach the adapter, which is the surface the removal actually has to answer
 /// for.
 ///
@@ -309,8 +313,11 @@ const SURVIVES_FOLD: &[&str] = &[
     "if(cast('3' as json), 1, 2)",
     "ifnull(1, 'x' regexp '[')",
     "ifnull(null, cast('[1]' as json))",
+    "instr('abc', 'b')",
+    "locate('b', 'abc')",
     "make_set(1, 'a', 'b', 'c')",
     "oct(b'11111111')",
+    "position('b' in 'abc')",
     "quote(x'ff')",
     "regexp_like('abc', 'abc', 'p')",
     "round(1.2345,'2')",
@@ -322,6 +329,7 @@ const SURVIVES_FOLD: &[&str] = &[
     "to_base64('')",
     "translate('ABC', 'A', 'B')",
     "translate('abcabc', 'ab', 'xy')",
+    "trim('  a  ')",
     "truncate(1234.5678,'-2')",
     "upper(elt(1,'a',x'61'))",
     "weight_string(NULL)",

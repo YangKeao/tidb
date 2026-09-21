@@ -42,8 +42,11 @@ use tidb_ast::{QueryStmt, SelectField, Stmt};
 use tidb_session::{Session, StmtResult, TikvExpressionBackend};
 
 #[test]
-fn retained_locate_is_not_a_local_contraction() {
-    assert_eq!(expected_removed_marker("locate('b', 'abc')"), None);
+fn locate_is_a_whole_call_contraction() {
+    assert_eq!(
+        expected_removed_marker("locate('b', 'abc')"),
+        Some(removed_native::STRING_AUX_REMOVED)
+    );
     assert_eq!(
         expected_removed_marker("hex(upper('a'))"),
         Some(removed_native::RADIX_REMOVED)

@@ -18,6 +18,14 @@ fn assert_packet_string_removed(session: &mut Session, sql: &str) {
     );
 }
 
+fn assert_string_tail_removed(session: &mut Session, sql: &str) {
+    let error = session.run(sql).expect_err("native string tail is deleted");
+    assert!(
+        error.to_string().contains("native string auxiliary evaluation was removed; TiKV engine required or function unsupported"),
+        "{sql}: {error}"
+    );
+}
+
 fn rows(session: &mut Session, sql: &str) -> String {
     match session.run(sql).unwrap() {
         tidb_session::StmtResult::Rows(rows) => rows
@@ -52,7 +60,8 @@ fn concat_ws_and_trim_forms() {
     assert_packet_string_removed(&mut session, "select concat_ws('-', 'a', null, 'b')");
     assert_packet_string_removed(&mut session, "select concat_ws(null, 'a', 'b')");
 
-    assert_eq!(rows(&mut session, "select trim('  ab  ')"), "s:ab");
+    // Former value was `s:ab`; TRIM is contracted until direction metadata is safe.
+    assert_string_tail_removed(&mut session, "select trim('  ab  ')");
     #[cfg(feature = "tikv-expr")]
     {
         assert_eq!(rows(&mut session, "select ltrim('  ab  ')"), "s:ab  ");
@@ -72,15 +81,9 @@ fn concat_ws_and_trim_forms() {
         );
     }
 
-    // remstr forms.
-    assert_eq!(
-        rows(&mut session, "select trim(both 'x' from 'xxabxx')"),
-        "s:ab"
-    );
-    assert_eq!(
-        rows(&mut session, "select trim(leading 'x' from 'xxab')"),
-        "s:ab"
-    );
+    // Both former values were `s:ab`; remstr/direction forms contract explicitly.
+    assert_string_tail_removed(&mut session, "select trim(both 'x' from 'xxabxx')");
+    assert_string_tail_removed(&mut session, "select trim(leading 'x' from 'xxab')");
     #[cfg(feature = "tikv-expr")]
     assert!(session.tikv_expression_rows() > engine_before);
 }

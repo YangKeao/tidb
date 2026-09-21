@@ -1746,23 +1746,6 @@ impl ScalarFunction {
             ctx.set_last_insert_id(recorded);
             return Ok(Datum::Int(recorded as i64));
         }
-        // Go `builtinTrim*Sig`: the name carries the direction and the second
-        // argument is the string to remove.
-        if let Some(direction) = match name {
-            "trim" if self.args.len() == 2 => Some(tidb_ast::TrimDirection::Both),
-            "ltrim_with" => Some(tidb_ast::TrimDirection::Leading),
-            "rtrim_with" => Some(tidb_ast::TrimDirection::Trailing),
-            _ => None,
-        } {
-            let value = self.args[0].eval(ctx, row)?;
-            let remstr = self.args[1].eval(ctx, row)?;
-            let binary = matches!(value, Datum::Bytes(_));
-            let text = crate::coerce::coerce_str_bytes(&value)?;
-            let remove = crate::coerce::coerce_str_bytes(&remstr)?;
-            return Ok(crate::string_fn::trim_value(
-                text, remove, direction, binary,
-            ));
-        }
         // Go picks a string-length signature from the ARGUMENT's type before
         // any value exists, which is what `build_string_length` models.
         if self.args.len() == 1 {
@@ -1974,28 +1957,6 @@ impl ScalarFunction {
         {
             let collation = self.derived_collation();
             match name {
-                "locate" if matches!(self.args.len(), 2 | 3) => {
-                    let substr = self.args[0].eval(ctx, row)?;
-                    let str = self.args[1].eval(ctx, row)?;
-                    if self.args.len() == 3 {
-                        let position = self.args[2].eval(ctx, row)?;
-                        let position = crate::cast::cast_arg_as_int(
-                            &position,
-                            self.args[2].static_type(),
-                            ctx,
-                        )?;
-                        return crate::string_fn::locate_with_position(
-                            &[substr, str, position],
-                            collation,
-                        );
-                    }
-                    return crate::string_fn::locate(&substr, &str, collation);
-                }
-                "instr" if self.args.len() == 2 => {
-                    let a = self.args[0].eval(ctx, row)?;
-                    let b = self.args[1].eval(ctx, row)?;
-                    return crate::string_fn::locate(&b, &a, collation);
-                }
                 // Go `greatestFunctionClass`/`leastFunctionClass`: the
                 // ETString signature compares under `b.collation`, and
                 // `resolveType4Extremum` may instead have selected the

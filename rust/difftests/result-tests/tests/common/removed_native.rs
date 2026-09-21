@@ -132,12 +132,24 @@ pub fn requires_radix_engine(sql: &str) -> bool {
 }
 
 pub fn requires_string_aux_engine(sql: &str) -> bool {
+    if is_string_aux_shape_contraction(sql) {
+        return true;
+    }
     let Some(collector) = collect_functions(sql) else {
         return false;
     };
-    ["SUBSTRING_INDEX", "QUOTE", "FIELD", "ELT"]
-        .iter()
-        .any(|name| collector.names.contains(*name))
+    [
+        "SUBSTRING_INDEX",
+        "QUOTE",
+        "FIELD",
+        "ELT",
+        "LOCATE",
+        "INSTR",
+        "POSITION",
+        "TRIM",
+    ]
+    .iter()
+    .any(|name| collector.names.contains(*name))
 }
 
 fn compact_sql_outside_strings(sql: &str) -> String {
@@ -206,19 +218,61 @@ pub fn is_radix_shape_contraction(sql: &str) -> bool {
     )
 }
 
+fn is_whole_string_tail_call(expr: &str) -> bool {
+    let Some(open) = ["locate(", "instr(", "position(", "trim("]
+        .iter()
+        .find(|prefix| expr.starts_with(**prefix))
+        .map(|prefix| prefix.len() - 1)
+    else {
+        return false;
+    };
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, ch) in expr.char_indices().skip(open) {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '\'' {
+                quoted = false;
+            }
+            continue;
+        }
+        match ch {
+            '\'' => quoted = true,
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return index + ch.len_utf8() == expr.len();
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Exact shapes that cannot safely use the pinned TiKV kernels: direct binary
 /// literals lose their source provenance at QUOTE, the unsigned count would wrap
-/// before SUBSTRING_INDEX's `abs()` branch, TiKV has no CHAR signature, and
-/// selected FIELD/ELT coercion shapes are not admitted by the checked bridge.
+/// before SUBSTRING_INDEX's `abs()` branch, TiKV has no CHAR signature, selected
+/// FIELD/ELT coercions are not admitted, and direct string-tail calls lack safe
+/// collation/direction transport. The latter still requires one whole outer call.
 pub fn is_string_aux_shape_contraction(sql: &str) -> bool {
     let compact = compact_sql_outside_strings(sql);
     let expr = compact
         .strip_prefix("select")
         .unwrap_or(&compact)
         .trim_end_matches(';');
+    if is_whole_string_tail_call(expr) {
+        return true;
+    }
     matches!(
         expr,
-        "quote(x'446f6e5c277421')"
+        "locate('lo','hello'),instr('hello','l')"
+            | "quote(x'446f6e5c277421')"
             | "quote(x'446f6e2774')"
             | "quote(x'446f6e22')"
             | "quote(x'446f6e5c22')"
@@ -351,7 +405,15 @@ fn removed_marker_for_name(name: &str, nonbinary_find_in_set: bool) -> Option<&'
     }
     if matches!(
         name,
-        "SUBSTRING_INDEX" | "QUOTE" | "CHAR_FUNC" | "FIELD" | "ELT"
+        "SUBSTRING_INDEX"
+            | "QUOTE"
+            | "CHAR_FUNC"
+            | "FIELD"
+            | "ELT"
+            | "LOCATE"
+            | "INSTR"
+            | "POSITION"
+            | "TRIM"
     ) {
         return Some(STRING_AUX_REMOVED);
     }
@@ -401,10 +463,13 @@ fn removed_marker_for_name(name: &str, nonbinary_find_in_set: bool) -> Option<&'
 }
 
 pub fn removed_markers(sql: &str) -> Vec<&'static str> {
-    let Some(collector) = collect_functions(sql) else {
-        return Vec::new();
-    };
     let mut markers = Vec::new();
+    if is_string_aux_shape_contraction(sql) {
+        markers.push(STRING_AUX_REMOVED);
+    }
+    let Some(collector) = collect_functions(sql) else {
+        return markers;
+    };
     for name in &collector.ordered_names {
         if let Some(marker) = removed_marker_for_name(name, collector.nonbinary_find_in_set) {
             if !markers.contains(&marker) {
@@ -526,7 +591,7 @@ fn markers_come_from_parsed_function_nodes_not_text() {
         );
         assert!(!is_string_aux_shape_contraction(sql), "{sql}");
     }
-    assert!(!requires_string_aux_engine("select char(72, 73)"));
+    assert!(requires_string_aux_engine("select char(72, 73)"));
     assert_eq!(
         expected_removed_marker("select char(72, 73)"),
         Some(STRING_AUX_REMOVED)
@@ -548,7 +613,12 @@ fn markers_come_from_parsed_function_nodes_not_text() {
     }
     for sql in ["select instr('abc', 'b')", "select locate('b', 'abc')"] {
         assert!(!requires_string2_engine(sql), "{sql}");
-        assert_eq!(expected_removed_marker(sql), None, "{sql}");
+        assert!(requires_string_aux_engine(sql), "{sql}");
+        assert_eq!(
+            expected_removed_marker(sql),
+            Some(STRING_AUX_REMOVED),
+            "{sql}"
+        );
     }
     for sql in [
         "select concat('a', 'b')",

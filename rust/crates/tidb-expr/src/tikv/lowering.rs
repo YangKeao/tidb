@@ -1203,6 +1203,15 @@ fn strings(function: &ScalarFunction, children: Vec<PbExpr>) -> Option<PbExpr> {
     use EvalType::{Datetime, Duration, Int, Json, String as Bytes, Timestamp};
     let ty = function.get_static_type()?;
     let name = function.func_name.lowercase();
+    // The final native string-tail kernels were physically deleted. Their
+    // TiKV collation/directional metadata bridge is not yet safe, so contract
+    // these shapes instead of returning a potentially different result.
+    if matches!(
+        name,
+        "locate" | "instr" | "position" | "trim" | "ltrim_with" | "rtrim_with"
+    ) {
+        return None;
+    }
     if matches!(name, "to_binary" | "from_binary") {
         return (children.len() == 1 && same_family(&children, Bytes))
             .then_some(())

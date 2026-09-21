@@ -271,14 +271,12 @@ fn like_escape_clause_makes_the_next_character_literal() {
 #[test]
 fn trim_removes_whole_occurrences_and_an_empty_remstr_is_a_no_op() {
     let mut session = Session::new();
-    assert_eq!(
-        rows(
-            &mut session,
-            "SELECT trim('  bar  '), trim(LEADING 'x' FROM 'xxxbarxxx'), \
-             trim('xx' FROM 'xxhixx'), trim('' FROM 'xxhixx')"
-        ),
-        [["bar", "barxxx", "hi", "xxhixx"]]
-    );
+    let sql = "SELECT trim('  bar  '), trim(LEADING 'x' FROM 'xxxbarxxx'), \
+               trim('xx' FROM 'xxhixx'), trim('' FROM 'xxhixx')";
+    let error = session.run(sql).expect_err("native TRIM is deleted");
+    assert!(error.to_string().contains(
+        "native string auxiliary evaluation was removed; TiKV engine required or function unsupported"
+    ));
 }
 
 /// Hex and bit literals are RAW BYTES, not numbers, in string context. The

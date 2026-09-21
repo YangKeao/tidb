@@ -18,6 +18,14 @@ fn assert_packet_string_removed(session: &mut Session, sql: &str) {
     );
 }
 
+fn assert_string_tail_removed(session: &mut Session, sql: &str) {
+    let error = session.run(sql).expect_err("native string tail is deleted");
+    assert!(
+        error.to_string().contains("native string auxiliary evaluation was removed; TiKV engine required or function unsupported"),
+        "{sql}: {error}"
+    );
+}
+
 fn try_sql(session: &mut Session, sql: &str) -> String {
     match session.run(sql) {
         Ok(tidb_session::StmtResult::Rows(rows)) => rows
@@ -47,28 +55,15 @@ fn character_positions_not_bytes() {
     let mut session = Session::new();
     #[cfg(feature = "tikv-expr")]
     session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
-    #[cfg(feature = "tikv-expr")]
-    let engine_before = session.tikv_expression_rows();
-
-    let locate = "select locate('a', '中a')";
-    assert_eq!(try_sql(&mut session, locate), "i:2");
-    assert_eq!(try_sql(&mut session, "select instr('中a', 'a')"), "i:2");
-    assert_eq!(
-        try_sql(
-            &mut session,
-            "select locate('b' collate utf8mb4_bin, 'aéb' collate utf8mb4_bin, '3')"
-        ),
-        "i:3"
-    );
-    assert_eq!(
-        try_sql(
-            &mut session,
-            "select position('b' in 'aéb' collate utf8mb4_bin)"
-        ),
-        "i:3"
-    );
-    #[cfg(feature = "tikv-expr")]
-    assert!(session.tikv_expression_rows() > engine_before);
+    // Former answers were 2, 2, 3 and 3. Search collation transport is not safe.
+    for sql in [
+        "select locate('a', '中a')",
+        "select instr('中a', 'a')",
+        "select locate('b' collate utf8mb4_bin, 'aéb' collate utf8mb4_bin, '3')",
+        "select position('b' in 'aéb' collate utf8mb4_bin)",
+    ] {
+        assert_string_tail_removed(&mut session, sql);
+    }
 
     // Four bytes -> 32 bits, and the deleted native BIT_LENGTH cannot supply it.
     #[cfg(feature = "tikv-expr")]

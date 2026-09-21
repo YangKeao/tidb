@@ -58,7 +58,8 @@ fn a_non_integer_etint_argument_is_cast_before_the_signature_runs() {
                 "Unsupported(\"native math evaluation was removed; TiKV engine required\")"
             );
         } else if expr.starts_with("locate") {
-            assert_eq!(engine_e(expr), want, "TiKV engine: {expr}");
+            let _ = want;
+            assert_string_aux_contraction(expr);
         } else {
             let _ = want;
             assert_packet_string_refusal(expr);

@@ -168,9 +168,9 @@ pub(crate) fn to_f64(v: Datum) -> f64 {
 ///
 /// AUDIT of the `0.0` fallbacks below, against `Datum.ToFloat64` in
 /// `pkg/types/datum.go`.  Callers reached today: `float_binary` (via
-/// `eval_binary`), the now-removed native math family,
-/// `string_fn::{field, format_number_text}`, `builtin_ext::info::real_arg`
-/// and `builtin_ext::compare2::interval_real` (which carries its own copy of
+/// `eval_binary`), the now-removed native math and string families,
+/// `builtin_ext::info::real_arg` and `builtin_ext::compare2::interval_real`
+/// (which carries its own copy of
 /// the same prefix rule, with the same fallbacks).  Every verdict below is a
 /// captured TiDB answer, not a reading of the Go source alone.
 ///

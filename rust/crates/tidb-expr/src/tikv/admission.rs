@@ -214,6 +214,9 @@ pub(crate) const REMOVED_PACKET_STRING_UNSUPPORTED: &str =
 pub(crate) const PACKET_CONTEXT_UNAVAILABLE: &str =
     "native enforces max_allowed_packet before allocating; the pinned engine facade has no \
      equivalent context setting";
+pub(crate) const STRING_TAIL_METADATA_UNSAFE: &str =
+    "native string-tail kernels were removed; the pinned bridge does not safely preserve search \
+     collation or trim-direction metadata";
 pub(crate) const REMOVED_MISC_UNSUPPORTED: &str =
     "native miscellaneous kernels were removed; only ANY_VALUE remains admitted through TiKV";
 /// The statement clock (`NOW()`, `CURRENT_TIMESTAMP`, `CURDATE()`,
@@ -505,7 +508,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("inet_aton", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
     row("inet_ntoa", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
     row("insert_func", Decision::Excluded, Signature::None, &[], Shape::Any, PACKET_CONTEXT_UNAVAILABLE),
-    row("instr", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
+    row("instr", Decision::Excluded, Signature::None, &[], Shape::Any, STRING_TAIL_METADATA_UNSAFE),
     row("intdiv", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
     row("interval", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::Any, ""),
     row("is_free_lock", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
@@ -563,7 +566,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("load_file", Decision::Excluded, Signature::None, &[], Shape::Any, NO_WIRE_SIGNATURE),
     row("localtime", Decision::Excluded, Signature::None, &[], Shape::Any, NO_WIRE_SIGNATURE),
     row("localtimestamp", Decision::Excluded, Signature::None, &[], Shape::Any, NO_WIRE_SIGNATURE),
-    row("locate", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
+    row("locate", Decision::Excluded, Signature::None, &[], Shape::Any, STRING_TAIL_METADATA_UNSAFE),
     row("log", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
     row("log10", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
     row("log2", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
@@ -600,7 +603,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("period_diff", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Int, EvalType::Int], Shape::Any, ""),
     row("pi", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
     row("plus", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
-    row("position", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
+    row("position", Decision::Excluded, Signature::None, &[], Shape::Any, STRING_TAIL_METADATA_UNSAFE),
     row("pow", Decision::Excluded, Signature::None, &[], Shape::Any, "native math was removed and engine domain/error parity is not established"),
     row("power", Decision::Excluded, Signature::None, &[], Shape::Any, "native math was removed and engine domain/error parity is not established"),
     row("quarter", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Datetime], Shape::Any, ""),
@@ -679,7 +682,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("to_days", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Datetime], Shape::Any, ""),
     row("to_seconds", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Datetime], Shape::Any, ""),
     row("translate", Decision::Excluded, Signature::None, &[], Shape::Any, NO_WIRE_SIGNATURE),
-    row("trim", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
+    row("trim", Decision::Excluded, Signature::None, &[], Shape::Any, STRING_TAIL_METADATA_UNSAFE),
     row("truncate", Decision::Excluded, Signature::None, &[], Shape::Any, "native math was removed and engine digit/result parity is not established"),
     row("ucase", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("unaryminus", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),

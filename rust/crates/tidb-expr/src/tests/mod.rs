@@ -1454,7 +1454,6 @@ fn substring_index_source_vectors_preserve_count_and_bytes() {
 /// form; tabs, CR, and LF remain ordinary payload bytes exactly as in Go.
 #[test]
 fn trim_source_vectors_preserve_direction_and_whole_remstr() {
-    use tidb_ast::TrimDirection;
     for (expr, want) in [
         ("trim('   bar   ')", "STR:bar"),
         ("trim('')", "STR:"),
@@ -1469,70 +1468,10 @@ fn trim_source_vectors_preserve_direction_and_whole_remstr() {
         ("trim(trailing 'xyz' from 'barxxyz')", "STR:barx"),
         ("trim(both 'x' from 'xxxbarxxx')", "STR:bar"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        let _ = want;
+        assert_string_aux_contraction(expr);
     }
-    assert_eq!(
-        string_fn::trim_value(
-            Some(b"\t   bar   \n".to_vec()),
-            Some(b" ".to_vec()),
-            TrimDirection::Both,
-            false,
-        ),
-        Datum::new_string(b"\t   bar   \n".to_vec())
-    );
-    assert_eq!(
-        string_fn::trim_value(
-            Some(b"\r   bar   \t".to_vec()),
-            Some(b" ".to_vec()),
-            TrimDirection::Both,
-            false,
-        ),
-        Datum::new_string(b"\r   bar   \t".to_vec())
-    );
-    assert_eq!(
-        string_fn::trim_value(
-            Some(b"   \tbar\n     ".to_vec()),
-            Some(b" ".to_vec()),
-            TrimDirection::Both,
-            false,
-        ),
-        Datum::new_string(b"\tbar\n".to_vec())
-    );
-    assert_eq!(
-        string_fn::trim_value(
-            Some(b"xxxbarxxx".to_vec()),
-            Some(b"x".to_vec()),
-            TrimDirection::Leading,
-            false,
-        ),
-        Datum::new_string("barxxx".to_string())
-    );
-    assert_eq!(
-        string_fn::trim_value(
-            Some(b"barxxyz".to_vec()),
-            Some(b"xyz".to_vec()),
-            TrimDirection::Trailing,
-            false,
-        ),
-        Datum::new_string("barx".to_string())
-    );
-    assert_eq!(
-        string_fn::trim_value(
-            Some(b"\x20\xff\x20".to_vec()),
-            Some(vec![0x20]),
-            TrimDirection::Both,
-            true,
-        ),
-        Datum::new_bytes(vec![0xff])
-    );
-    assert_eq!(
-        string_fn::trim_value(Some(b"bar".to_vec()), None, TrimDirection::Both, false,),
-        Datum::Null
-    );
-    assert_eq!(
-        string_fn::trim_value(Some(b"bar".to_vec()), None, TrimDirection::Leading, false,),
-        Datum::Null
-    );
+    // Former direct byte-helper expectations are retained in this test's SQL rows.
 }
 
 /// Scalar and binary source rows from `TestConcat`, including the historical
@@ -1634,14 +1573,11 @@ fn instr_source_vectors_preserve_string_coercion_and_nulls() {
         ("instr(NULL, 'foobar')", "NULL"),
         ("instr(NULL, NULL)", "NULL"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        let _ = want;
+        assert_string_aux_contraction(expr);
     }
-    // Valid binary bytes still use the same position in this value domain;
-    // invalid-byte/session collation signatures remain explicit boundaries.
-    let binary = "instr(unhex('666f6f626172'), unhex('626172'))";
-    #[cfg(feature = "tikv-expr")]
-    assert_eq!(engine_e(binary), "INT:4");
-    assert_eq!(e(binary), RADIX_REMOVED);
+    // The former binary value was INT:4; the outer INSTR now refuses first.
+    assert_string_aux_contraction("instr(unhex('666f6f626172'), unhex('626172'))");
 }
 
 #[test]

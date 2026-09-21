@@ -319,7 +319,7 @@
 //! the same file: [`Decimal`] (from the standalone `tidb-datatype` crate),
 //! [`value`] (the [`Datum`] domain,
 //! [`EvalError`], [`Columns`]), [`ops`] (unary/binary operator evaluation),
-//! [`string_fn`] / [`date_fn`] / [`like`] / [`math_fn`] / [`cast`]
+//! [`date_fn`] / [`like`] / [`math_fn`] / [`cast`]
 //! (builtin-function families and `CAST`/`CONVERT`), and [`func`] (the
 //! builtin dispatch table + `IN` predicate) — all wired together by this
 //! file's `eval_in`, the single recursive expression evaluator every other
@@ -379,7 +379,6 @@ pub mod scalar_function;
 pub mod schema;
 pub mod sessionexpr;
 pub mod simple_expr;
-mod string_fn;
 mod string_signature;
 #[cfg(feature = "tikv-expr")]
 pub mod tikv;
@@ -515,7 +514,6 @@ use ops::{
     logic_and,
 };
 use row::row_compare;
-use string_fn::{position, trim_value};
 
 /// Evaluates a constant expression, or returns why it is out of scope.
 pub fn eval(expr: &Expr) -> Result<Datum, EvalError> {
@@ -1195,36 +1193,9 @@ pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
         Expr::WeightString { .. } => Err(EvalError::Unsupported(
             "native packet-limited string evaluation was removed; function unsupported",
         )),
-        Expr::Position { substr, str } => Ok(position(
-            coerce_str(&eval_in(substr, cols)?)?,
-            coerce_str(&eval_in(str, cols)?)?,
+        Expr::Position { .. } | Expr::Trim { .. } => Err(EvalError::Unsupported(
+            "native string auxiliary evaluation was removed; TiKV engine required or function unsupported",
         )),
-        Expr::Trim {
-            expr,
-            remstr,
-            direction,
-        } => {
-            // A bare `TRIM(expr)` (no `remstr`, no `direction`) defaults
-            // to stripping spaces from BOTH ends — see
-            // `tidb_ast::Expr::Trim::remstr`'s own doc for why every
-            // OTHER combination already has a real `remstr` (a `NULL`
-            // remstr's own explicit `NULL` restores un-omitted, so it
-            // still reaches here as a real evaluated expression, not a
-            // magic `None`).
-            let str_value = eval_in(expr, cols)?;
-            let binary = matches!(str_value, Datum::Bytes(_));
-            let str = coerce_str_bytes(&str_value)?;
-            let remstr = match remstr {
-                Some(r) => coerce_str_bytes(&eval_in(r, cols)?)?,
-                None => Some(b" ".to_vec()),
-            };
-            Ok(trim_value(
-                str,
-                remstr,
-                direction.unwrap_or(tidb_ast::TrimDirection::Both),
-                binary,
-            ))
-        }
         Expr::Case {
             value,
             when_clauses,

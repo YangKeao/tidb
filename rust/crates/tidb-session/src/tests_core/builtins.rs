@@ -98,21 +98,13 @@ fn get_format_reaches_the_sql_expression_path() {
 #[test]
 fn position_reaches_the_sql_expression_path() {
     let mut session = Session::new();
-    #[cfg(feature = "tikv-expr")]
-    session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
-    #[cfg(feature = "tikv-expr")]
-    let engine_before = session.tikv_expression_rows();
-    assert_eq!(
-        session
-            .run("SELECT POSITION('A' IN '大A写'), POSITION('' IN 'abc'), POSITION(NULL IN 'abc')")
-            .unwrap(),
-        StmtResult::Rows(vec![vec![Datum::Int(2), Datum::Int(1), Datum::Null]])
-    );
-    #[cfg(feature = "tikv-expr")]
-    assert!(
-        session.tikv_expression_rows() > engine_before,
-        "POSITION must execute through TiKV"
-    );
+    // Former values were 2, 1, NULL; POSITION now contracts before children.
+    let error = session
+        .run("SELECT POSITION('A' IN '大A写'), POSITION('' IN 'abc'), POSITION(NULL IN 'abc')")
+        .expect_err("native POSITION is deleted");
+    assert!(error.to_string().contains(
+        "native string auxiliary evaluation was removed; TiKV engine required or function unsupported"
+    ));
 }
 
 /// A DATETIME/DATE column compared with a string or a number, checked
@@ -329,15 +321,16 @@ fn math_and_conditional_builtins() {
         [["1", "small"], ["2", "big"]]
     );
 
-    // Captured: TRIM's three directions, and its implicit space.
-    assert_eq!(
-        row_text(session.run("SELECT TRIM(' x '), TRIM(LEADING 'x' FROM 'xxa')")),
-        [["x", "a"]]
-    );
-    assert_eq!(
-        row_text(session.run("SELECT TRIM(TRAILING 'a' FROM 'xaa'), SUBSTRING('abc',1,2)")),
-        [["x", "ab"]]
-    );
+    // Former rows were x/a and x/ab. TRIM now contracts before child evaluation.
+    for sql in [
+        "SELECT TRIM(' x '), TRIM(LEADING 'x' FROM 'xxa')",
+        "SELECT TRIM(TRAILING 'a' FROM 'xaa'), SUBSTRING('abc',1,2)",
+    ] {
+        let error = session.run(sql).expect_err("native TRIM is deleted");
+        assert!(error.to_string().contains(
+            "native string auxiliary evaluation was removed; TiKV engine required or function unsupported"
+        ));
+    }
 
     // IF is lazy, so the branch not taken never runs -- a division by
     // zero there would otherwise warn.

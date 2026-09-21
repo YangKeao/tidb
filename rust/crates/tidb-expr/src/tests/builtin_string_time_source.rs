@@ -219,7 +219,6 @@ fn test_field() {
                 | "field('fo', 'Hej', 'ej', 'Heja', 'hej', 'foo')"
                 | "field('ej', 'Hej', 'ej', 'Heja', 'ej', 'hej', 'foo')"
                 | "field(1, 2, 3, 11, 1)"
-                | "field(1.1, 2.1, 3.1, 11.1, 1.1)"
         ) {
             let _ = want;
             assert_string_aux_contraction(expr);
@@ -1445,13 +1444,7 @@ fn test_vectorized_builtin_string_eval_one_vec() {
     // Preserve the default-generator Unicode shape as an explicit contraction.
     assert_packet_string_refusal(r"lpad('中文', 5, '字符')");
     // Rpad/Lpad binary signature selection through hex-literal payloads.
-    #[cfg(feature = "tikv-expr")]
-    assert_eq!(
-        engine_e(r"instr(unhex('66'), unhex('66'))"),
-        "INT:1",
-        "single-byte needle over binary-literal haystack shares LOCATE"
-    );
-    assert_radix_refusal(r"unhex('66')");
+    assert_string_aux_contraction(r"instr(unhex('66'), unhex('66'))");
     // Locate select-string generators keep plain-text semantics: their
     // alphabet strings compare as ASCII substrings.
     for (expr, want) in [
@@ -1459,12 +1452,8 @@ fn test_vectorized_builtin_string_eval_one_vec() {
         (r"instr('010010001000010', '1110')", "INT:0"),
         (r"locate('100', '010010001000010')", "INT:2"),
     ] {
-        let got = if expr.starts_with("locate") {
-            engine_e(expr)
-        } else {
-            e(expr)
-        };
-        assert_eq!(got, want, "{expr}");
+        let _ = want;
+        assert_string_aux_contraction(expr);
     }
     // Insert NULL-argument propagation under mixed nulls.
     assert_packet_string_refusal(r#"insert_func('abc', 2, null, 'X')"#);
@@ -2584,30 +2573,20 @@ fn test_current_date_current_time_utc_time_clocks() {
 /// the bounds and matches through the collator.
 #[test]
 fn locate_with_position_matches_go_three_args_signature() {
-    let eval = |substr: &str, hay: &str, pos: i64| {
-        let label = engine_e(&format!("locate('{substr}', '{hay}', {pos})"));
-        Datum::Int(label.strip_prefix("INT:").unwrap().parse().unwrap())
-    };
-
-    // Go `TestLocatePosition` rows.
-    assert_eq!(eval("bar", "foobarbar", 5), Datum::Int(7));
-    assert_eq!(eval("xbar", "foobarbar", 3), Datum::Int(0));
-    assert_eq!(eval("b", "abc", 2), Datum::Int(2));
-    // pos < 1 zeroes the 0-based index; the bounds then exclude every match.
-    assert_eq!(eval("b", "abc", 0), Datum::Int(0));
-    assert_eq!(eval("b", "abc", -1), Datum::Int(0));
-    // pos beyond the last fit answers 0.
-    assert_eq!(eval("b", "abc", 4), Datum::Int(0));
-    // An empty needle answers pos itself, including at len + 1.
-    assert_eq!(eval("", "abc", 2), Datum::Int(2));
-    assert_eq!(eval("", "abc", 4), Datum::Int(4));
-    assert_eq!(eval("", "abc", 5), Datum::Int(0));
-    // A needle that spans to exactly the end still matches.
-    assert_eq!(eval("bar", "foobarbar", 7), Datum::Int(7));
-
-    // The free-derivation default collation is utf8mb4_bin: byte-exact, so
-    // 'B' matches 'aBc' at 2 with a start position of 1. (The
-    // case-insensitive rule is separately pinned by the 2-arg sibling
-    // capture `INSTR('ABC' COLLATE utf8mb4_general_ci, 'b')` = 2.)
-    assert_eq!(engine_e("locate('B', 'aBc', 1)"), "INT:2");
+    // Former Go answers remain documented by this complete source vector.
+    for (expression, _former) in [
+        ("locate('bar','foobarbar',5)", 7),
+        ("locate('xbar','foobarbar',3)", 0),
+        ("locate('b','abc',2)", 2),
+        ("locate('b','abc',0)", 0),
+        ("locate('b','abc',-1)", 0),
+        ("locate('b','abc',4)", 0),
+        ("locate('','abc',2)", 2),
+        ("locate('','abc',4)", 4),
+        ("locate('','abc',5)", 0),
+        ("locate('bar','foobarbar',7)", 7),
+        ("locate('B','aBc',1)", 2),
+    ] {
+        assert_string_aux_contraction(expression);
+    }
 }

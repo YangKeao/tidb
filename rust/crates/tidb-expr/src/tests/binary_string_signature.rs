@@ -30,7 +30,7 @@
 //! ```
 
 use super::{assert_packet_string_refusal, e};
-use super::{assert_radix_refusal, assert_string2_refusal};
+use super::{assert_radix_refusal, assert_string2_refusal, assert_string_aux_contraction};
 #[cfg(feature = "tikv-expr")]
 use super::{engine_declines, engine_e};
 
@@ -130,7 +130,7 @@ fn insert_source_rows_are_explicitly_contracted() {
 
 #[test]
 fn locate_and_instr_report_byte_offsets_for_a_binary_argument() {
-    captured_engine(&[
+    for (expression, _former) in [
         ("instr('aéb', 'b')", "INT:3"),
         ("instr(cast('aéb' as binary), 'b')", "INT:4"),
         ("locate('b', 'aéb')", "INT:3"),
@@ -140,10 +140,11 @@ fn locate_and_instr_report_byte_offsets_for_a_binary_argument() {
             "locate(cast('é' as binary), cast('aéb' as binary))",
             "INT:2",
         ),
-        // An empty needle matches at 1 and a missing one is 0 either way.
         ("locate(cast('' as binary), 'aéb')", "INT:1"),
         ("locate(cast('z' as binary), 'aéb')", "INT:0"),
-    ]);
+    ] {
+        assert_string_aux_contraction(expression);
+    }
 }
 
 /// The three-argument pair, `builtinLocate3ArgsSig` /
@@ -151,7 +152,7 @@ fn locate_and_instr_report_byte_offsets_for_a_binary_argument() {
 /// units, so a binary search may start INSIDE a multi-byte character.
 #[test]
 fn locate_with_a_start_position_counts_pos_in_the_same_units() {
-    captured_engine(&[
+    for (expression, _former) in [
         ("locate('b', 'aéb', 1)", "INT:3"),
         ("locate(cast('b' as binary), 'aéb', 1)", "INT:4"),
         ("locate('b', 'aéb', 3)", "INT:3"),
@@ -160,13 +161,13 @@ fn locate_with_a_start_position_counts_pos_in_the_same_units() {
         ("locate(cast('b' as binary), 'aéb', 5)", "INT:0"),
         ("locate('é', 'aébé', 3)", "INT:4"),
         ("locate(cast('é' as binary), 'aébé', 3)", "INT:5"),
-        // An empty needle answers `pos` itself; a missing one and an
-        // out-of-range `pos` are both 0.
         ("locate(cast('' as binary), 'aéb', 2)", "INT:2"),
         ("locate('', 'aéb', 2)", "INT:2"),
         ("locate(cast('z' as binary), 'aéb', 1)", "INT:0"),
         ("locate('b', 'aéb', 0)", "INT:0"),
-    ]);
+    ] {
+        assert_string_aux_contraction(expression);
+    }
 }
 
 /// The signatures whose binary branch predates this seam, pinned so the
@@ -243,37 +244,13 @@ fn utf8_and_case_insensitive_signatures_are_untouched() {
 /// ```
 #[test]
 fn only_a_binary_derivation_switches_locate_to_bytes() {
-    use crate::string_fn::locate;
-    use tidb_datatype::{Collation, Datum};
-
-    let ci = Collation::Utf8Mb4GeneralCi;
-    let bin = Collation::Utf8Mb4Bin;
-    let needle = Datum::new_string("b".to_string());
-    let haystack = Datum::new_string("ABC".to_string());
-    assert_eq!(locate(&needle, &haystack, ci).unwrap(), Datum::Int(2));
-    assert_eq!(locate(&needle, &haystack, bin).unwrap(), Datum::Int(0));
-    assert_eq!(
-        locate(
-            &Datum::new_string("É".to_string()),
-            &Datum::new_string("aéb".to_string()),
-            ci,
-        )
-        .unwrap(),
-        Datum::Int(2),
-    );
-    assert_eq!(
-        locate(
-            &Datum::new_string("b".to_string()),
-            &Datum::new_string("aéb".to_string()),
-            Collation::Binary,
-        )
-        .unwrap(),
-        Datum::Int(4),
-    );
-    #[cfg(feature = "tikv-expr")]
-    assert_eq!(
-        engine_e("instr('ABC' collate utf8mb4_bin, 'b')"),
-        "INT:2",
-        "accepted gap: the embedded RPN path loses utf8mb4_bin case sensitivity"
-    );
+    // Former Go values are 2/0/2. Until the TiKV collation bridge preserves
+    // the distinction, all search shapes are explicit contractions.
+    for expr in [
+        "instr('ABC' collate utf8mb4_general_ci, 'b')",
+        "instr('ABC' collate utf8mb4_bin, 'b')",
+        "locate('É' collate utf8mb4_general_ci, 'aéb')",
+    ] {
+        assert_string_aux_contraction(expr);
+    }
 }

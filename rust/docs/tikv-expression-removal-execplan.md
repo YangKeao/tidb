@@ -323,6 +323,25 @@ remain in the workspace.
       the four carried math/crypto contractions. Broad replay remains red by
       design: Native has 182 divergences; Copying has 167 and executes 416246
       engine rows. This is not a compatibility claim.
+- [x] Sixteenth physical-deletion tranche: physically removed the complete
+      `string_fn.rs` module and its LOCATE/INSTR/POSITION and TRIM kernels,
+      collation-aware search helpers, offset conversion, byte-level trim helper,
+      module declaration, value dispatch, scalar bypasses, and direct helper
+      tests. AST POSITION/TRIM and all scalar/value boundaries now refuse before
+      evaluating children. The pinned bridge loses required collation/direction
+      metadata for these signatures (including a confirmed utf8mb4_bin result
+      mismatch), so all shapes are explicit structured contractions rather than
+      potentially wrong TiKV values. Whole-call differential classification is
+      bounded to one complete outer call, plus one exact two-column corpus row;
+      nested or additional SELECT expressions cannot be masked. Former Go values
+      remain as independent oracle data in migrated tests. Runtime receipts fall
+      intentionally from 322/2064 to 317/2026; borrowed rows remain 160.
+      Validation is 1185 library and 77 external tests, focused session/collation
+      SQL in both feature modes, expression/query diffs, static 212 admitted / 172
+      excluded / 0 missing, and repository lint. Full session has only the four
+      carried math/crypto failures. Broad replay remains red by design: Native
+      has 182 divergences; Copying has 167 and 416246 engine rows. This is not a
+      compatibility claim.
 - [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
       in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected
       borrowed facade was used by the adapter while the manifest still pinned

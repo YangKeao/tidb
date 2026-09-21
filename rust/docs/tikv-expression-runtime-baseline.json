@@ -20,8 +20,8 @@
     "--test-threads=1"
   ],
   "tests_passed": 30,
-  "fixture_receipts": 322,
-  "engine_rows": 2064,
+  "fixture_receipts": 317,
+  "engine_rows": 2026,
   "borrowed_rows": 160,
   "records": [
     {
@@ -1415,26 +1415,6 @@
       "native_fallbacks": 0
     },
     {
-      "label": "instr_bytes",
-      "wire_signatures": [
-        7025
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "instr_utf8",
-      "wire_signatures": [
-        7025
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
       "label": "intdiv_decimal",
       "wire_signatures": [
         214
@@ -2021,26 +2001,6 @@
       ],
       "input_rows": 3,
       "engine_rows": 6,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "locate_bytes",
-      "wire_signatures": [
-        7032
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "locate_utf8",
-      "wire_signatures": [
-        7032
-      ],
-      "input_rows": 4,
-      "engine_rows": 8,
       "borrowed_rows": 0,
       "native_fallbacks": 0
     },
@@ -2996,16 +2956,6 @@
       ],
       "input_rows": 2,
       "engine_rows": 4,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "trim",
-      "wire_signatures": [
-        7060
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
       "borrowed_rows": 0,
       "native_fallbacks": 0
     },

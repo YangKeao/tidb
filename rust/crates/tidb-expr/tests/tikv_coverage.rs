@@ -586,17 +586,28 @@ fn tikv_coverage_string_and_misc_families_engine_receipts() {
         );
         // `find_in_set` is excluded: the engine compares bytes, so a non-binary
         // collation would fold case/accents differently.
-        for name in ["strcmp", "instr", "locate"] {
+        record(
+            check(
+                &format!("strcmp_{tag}"),
+                call(
+                    "strcmp",
+                    &int(),
+                    vec![column(0, &ty), literal(string("x"), &ty)],
+                ),
+                &mut input,
+                &int(),
+            ),
+            &mut failures,
+        );
+        for name in ["instr", "locate"] {
             record(
-                check(
+                check_declined(
                     &format!("{name}_{tag}"),
                     call(
                         name,
                         &int(),
                         vec![column(0, &ty), literal(string("x"), &ty)],
                     ),
-                    &mut input,
-                    &int(),
                 ),
                 &mut failures,
             );
@@ -2180,17 +2191,15 @@ fn tikv_coverage_string_misc_extended_engine_receipts() {
         ),
         &mut failures,
     );
-    // The rewriter emits the two-argument TRIM form (direction is BOTH).
+    // TRIM is contracted until the TiKV bridge preserves directional metadata.
     record(
-        check(
+        check_declined(
             "trim",
             call(
                 "trim",
                 &strings,
                 vec![column(0, &strings), literal(string(" "), &strings)],
             ),
-            &mut string_input,
-            &strings,
         ),
         &mut failures,
     );
