@@ -167,12 +167,10 @@ pub(crate) fn to_f64(v: Datum) -> f64 {
 /// numeric comparison/function value.
 ///
 /// AUDIT of the `0.0` fallbacks below, against `Datum.ToFloat64` in
-/// `pkg/types/datum.go`.  Callers reached today: `float_binary` (via
-/// `eval_binary`), the now-removed native math and string families,
-/// the retained `builtin_ext::compare2::interval_real` path (which carries its
-/// own copy of
-/// the same prefix rule, with the same fallbacks).  Every verdict below is a
-/// captured TiDB answer, not a reading of the Go source alone.
+/// `pkg/types/datum.go`. Callers reached today are `float_binary` (via
+/// `eval_binary`) and the remaining operator coercion paths; native math,
+/// string and comparison-family callers have been removed. Every verdict
+/// below is a captured TiDB answer, not a reading of the Go source alone.
 ///
 /// | operand kind | Go | here | verdict |
 /// | --- | --- | --- | --- |

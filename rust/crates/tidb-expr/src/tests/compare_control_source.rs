@@ -22,7 +22,7 @@
 
 use std::cell::RefCell;
 
-use super::{chunk_e, e};
+use super::{assert_compare2_refusal, chunk_e, e};
 use crate::builtin_compare::refine_comparisons;
 use crate::expression::Expression;
 use crate::rewriter::{rewrite_expr_resolved, ColumnResolver};
@@ -587,7 +587,7 @@ fn test_coalesce_fraction_promotion() {
 /// cannot be reproduced because SQL has no TypeUint32 literal-kind; noted
 /// inline below.
 #[test]
-fn test_interval_func() {
+fn interval_go_table_oracles_now_contract() {
     let rows = [
         // (args, ret)
         ("interval(null, 1, 2)", -1),
@@ -635,7 +635,7 @@ fn test_interval_func() {
         ("interval('9007199254740992', '9007199254740993')", 1),
     ];
     for (expr, want) in rows {
-        assert_eq!(chunk_e(expr), format!("INT:{want}"), "{expr}");
+        assert_compare2_refusal(expr, &format!("INT:{want}"));
     }
 
     // {1, uint32(1), uint32(1)} expects getErr=true: `uint32` kinds have no
@@ -655,7 +655,7 @@ fn test_interval_func() {
 /// The injected-error row again requires a non-SQL datum (noted, not built);
 /// the `{nil}` propagation rows appear twice through greatest AND least.
 #[test]
-fn test_greatest_least_func() {
+fn greatest_least_go_table_oracles_now_contract() {
     let rows = [
         // Mixed signed/unsigned: aggregate goes DECIMAL like Go's FromUint.
         (
@@ -723,15 +723,12 @@ fn test_greatest_least_func() {
         ("least(105969664e0, 120000, cast('20:00:00' as time))", "least=STR:105969664"),
     ];
     for (expr, want) in rows {
-        let (side, label) = want.split_once('=').expect("side=label");
-        let got = chunk_e(expr);
-        assert_eq!(got, label, "{side}: {expr}");
+        let (_, label) = want.split_once('=').expect("side=label");
+        assert_compare2_refusal(expr, label);
     }
 
-    // Both classes accept two arguments (funcs[...].getFunction over
-    // NewZero/NewOne succeeds):
-    assert_eq!(chunk_e("greatest(0, 1)"), "INT:1");
-    assert_eq!(chunk_e("least(0, 1)"), "INT:0");
+    assert_compare2_refusal("greatest(0, 1)", "INT:1");
+    assert_compare2_refusal("least(0, 1)", "INT:0");
 }
 
 /// GO PORT of `pkg/expression/builtin_compare_test.go:430

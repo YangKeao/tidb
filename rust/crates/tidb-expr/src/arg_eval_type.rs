@@ -311,9 +311,9 @@ pub(crate) fn wrap_int_args(
 ///    can hold. Captured over `enum('{}','[1]','x')` holding `'{}'`:
 ///    `greatest(e,2)` is `{}` and `least(e,2)` is `2`. That signature-
 ///    selection rung has since LANDED, in
-///    `crate::rewriter::result_type::gl_signature` feeding
-///    `builtin_ext::extremum_with_signature`; the entry stays here as the
-///    measurement that sent it there, not as work outstanding.
+///    The former local signature-selection helper and value kernel are now
+///    deleted; TiKV lowering derives the engine signature directly. The entry
+///    stays here as historical measurement, not as live local dispatch.
 ///
 ///  * **`INTERVAL`** (`builtin_compare.go:1207-1213`): `argTps, argTp :=
 ///    make([]types.EvalType, 0, len(args)), types.ETReal` and

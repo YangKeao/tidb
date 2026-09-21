@@ -160,6 +160,30 @@ pub(super) fn assert_packet_string_refusal(expr: &str) {
     assert_eq!(chunk_e(expr), expected, "chunk boundary: {expr}");
 }
 
+pub(super) const COMPARE2_REMOVED: &str =
+    "Unsupported(\"native LEAST/GREATEST/INTERVAL evaluation was removed; TiKV engine required\")";
+
+pub(super) fn assert_compare2_refusal(expr: &str, former_expected: &str) {
+    assert_eq!(
+        e(expr),
+        COMPARE2_REMOVED,
+        "AST boundary: {expr}; former {former_expected}"
+    );
+    let chunk = chunk_case(expr, &NoColumns)
+        .map(|value| value.label())
+        .unwrap_or_else(|error| error);
+    assert_eq!(
+        chunk, COMPARE2_REMOVED,
+        "native chunk boundary: {expr}; former {former_expected}"
+    );
+}
+
+pub(super) fn assert_engine_compare2_value(expr: &str, expected: &str) {
+    #[cfg(feature = "tikv-expr")]
+    assert_eq!(engine_e(expr), expected, "TiKV engine: {expr}");
+    assert_compare2_refusal(expr, expected);
+}
+
 pub(super) const MISC_REMOVED: &str =
     "Unsupported(\"native miscellaneous evaluation was removed; TiKV engine required or function unsupported\")";
 
@@ -1201,9 +1225,9 @@ fn comparisons() {
 fn builtin_functions() {
     assert_eq!(engine_e("abs(-5)"), "INT:5");
     assert_eq!(engine_e("sign(-3)"), "INT:-1");
-    assert_eq!(e("least(3, 1, 2)"), "INT:1");
-    assert_eq!(e("greatest(1, 2, 3)"), "INT:3");
-    assert_eq!(e("least(5, 3, NULL, 1)"), "NULL");
+    assert_engine_compare2_value("least(3, 1, 2)", "INT:1");
+    assert_engine_compare2_value("greatest(1, 2, 3)", "INT:3");
+    assert_compare2_refusal("least(5, 3, NULL, 1)", "NULL");
     assert_eq!(e("coalesce(NULL, NULL, 7)"), "INT:7");
     assert_eq!(e("if(0, 10, 20)"), "INT:20");
     assert_eq!(e("if(NULL, 10, 20)"), "INT:20");
@@ -1211,7 +1235,7 @@ fn builtin_functions() {
     assert_eq!(e("nullif(3, 3)"), "NULL");
     assert_eq!(e("nullif(3, 4)"), "INT:3");
     // Nested calls fold too.
-    assert_eq!(engine_e("greatest(abs(-1), sign(-4), 0)"), "INT:1");
+    assert_engine_compare2_value("greatest(abs(-1), sign(-4), 0)", "INT:1");
 }
 
 #[test]
@@ -2054,7 +2078,7 @@ fn decimals() {
     assert_eq!(engine_e("abs(-3.14)"), "DEC:3.14");
     assert_eq!(engine_e("sign(-3.14)"), "INT:-1");
     assert_eq!(e("nullif(3.14, 3.140)"), "NULL"); // equal despite differing scale
-    assert_eq!(e("least(1.5, 2.5, 0.5)"), "DEC:0.5");
+    assert_engine_compare2_value("least(1.5, 2.5, 0.5)", "DEC:0.5");
 
     // DIV/MOD: exact via unsigned long division, truncating toward zero.
     // DIV's result is an Int; MOD's is a Decimal at max(scale_a, scale_b),
@@ -2130,8 +2154,8 @@ fn floats() {
     // attempt, not assumed correct): the winning argument `2` is a
     // bare Int literal, but the result is still Float because
     // ANOTHER argument was Float.
-    assert_eq!(e("least(1.5e2, 3.14, 2)"), "FLOAT:2");
-    assert_eq!(e("greatest(1.5e2, 3.14, 2)"), "FLOAT:150");
+    assert_compare2_refusal("least(1.5e2, 3.14, 2)", "FLOAT:2");
+    assert_compare2_refusal("greatest(1.5e2, 3.14, 2)", "FLOAT:150");
     // NULLIF's equality reuses the same cross-type promotion, unlike
     // a hand-rolled same-type-only check.
     assert_eq!(e("nullif(150, 1.5e2)"), "NULL");

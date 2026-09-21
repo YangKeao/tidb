@@ -11,10 +11,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Family modules for builtin scalar functions. Each family exposes
-//! `dispatch(name, vals) -> Option<Result<Datum, EvalError>>`; `None` falls
-//! through to the next family and ultimately to `crate::func::eval_func`'s
-//! `Unsupported` error.
+//! Remaining family modules for builtin scalar functions. The JSON family
+//! exposes `dispatch(name, vals) -> Option<Result<Datum, EvalError>>`; `None`
+//! ultimately reaches `crate::func::eval_func`'s `Unsupported` error.
 //!
 //! These files are seed material until their complete upstream Go packages
 //! are transcreated. Every builtin must cite the Go function it was read from
@@ -22,22 +21,18 @@
 
 use crate::{Datum, EvalError};
 
-pub(crate) mod compare2;
 pub(crate) mod json;
 
-pub(crate) use compare2::{extremum_with_signature, interval_lazy, GlCmpStringMode, GlSignature};
 pub(crate) use json::{
     cast_as_json, cast_as_json_typed, cast_as_json_value_typed,
     dispatch_typed as json_dispatch_typed, JsonSchemaCache,
 };
 /// Tries each family in turn; `None` if no family implements `name`.
 ///
-/// `ctx` is the statement warning sink (`crate::Columns`). The retained
-/// `compare2` family uses it for INTERVAL coercion diagnostics.
 pub(crate) fn dispatch(
     name: &str,
     vals: &[Datum],
-    ctx: &dyn crate::Columns,
+    _ctx: &dyn crate::Columns,
 ) -> Option<Result<Datum, EvalError>> {
-    json::dispatch(name, vals).or_else(|| compare2::dispatch(name, vals, ctx))
+    json::dispatch(name, vals)
 }

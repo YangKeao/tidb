@@ -317,12 +317,17 @@ const SURVIVES_FOLD: &[&str] = &[
     "tidb_decode_binary_plan('malformed')",
     "tidb_decode_plan('malformed')",
     "tidb_encode_sql_digest('select 1')",
+    "greatest('2020-01-01','99-1-1')",
     "greatest(-9223372036854775808, cast('9223372036854775809' as unsigned))",
+    "greatest(\"a\", \"b\", \"c\")",
+    "greatest('a' collate utf8mb4_general_ci, 'B')",
     "hex(weight_string('a'))",
     "hex(weight_string('aAÁàãăâ' collate utf8mb4_general_ci))",
     "if(cast('3' as json), 1, 2)",
     "ifnull(1, 'x' regexp '[')",
     "ifnull(null, cast('[1]' as json))",
+    "interval(\"9007199254740991\", \"9007199254740992\")",
+    "interval(null, 1, 2)",
     "instr('abc', 'b')",
     "locate('b', 'abc')",
     "make_set(1, 'a', 'b', 'c')",
@@ -390,7 +395,7 @@ fn folded_away_expressions_never_reach_the_adapter() {
         folded.len() + survived.len() + skipped.len(),
         DECLINED.len()
     );
-    // CHAR_FUNC, contracted FIELD/ELT shapes, and OCT(binary literal) can no
-    // longer fold through native kernels; they stay visible above.
-    assert_eq!(folded.len(), 20, "the folded count changed");
+    // CHAR_FUNC, contracted FIELD/ELT, OCT(binary literal), and the newly
+    // removed comparison kernels can no longer fold; they stay visible above.
+    assert_eq!(folded.len(), 15, "the folded count changed");
 }

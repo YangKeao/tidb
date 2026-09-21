@@ -99,8 +99,9 @@ fn expect_scalar_function<'a>(
 /// /// `pkg/expression/constant_test.go:198 TestConstantFolding` rows 1-2 and 6:
 /// wholly-constant operator arguments collapse into one literal even when the
 /// surrounding comparison keeps a column (`lt(col#0, 1+2)` -> `lt(col#0, 3)`,
-/// `greatest(1,2)` -> `2`), and a partially-constant nested tree folds only
-/// its innermost constant arm (`plus(col#1, 2+1)` -> `plus(col#1, 3)`).
+/// the former `greatest(1,2)` -> `2` oracle now remains a scalar call), and a
+/// partially-constant nested tree folds only its innermost constant arm
+/// (`plus(col#1, 2+1)` -> `plus(col#1, 3)`).
 #[test]
 fn constant_folding_operator_arguments_reduce_in_place() {
     // lt(Column#0, plus(1, 2)) -> lt(Column#0, 3).
@@ -116,7 +117,8 @@ fn constant_folding_operator_arguments_reduce_in_place() {
     );
     assert_eq!(expect_int_constant(&root.args[1], "plus(1,2)"), 3);
 
-    // lt(Column#0, greatest(1, 2)) -> lt(Column#0, 2).
+    // The former fold was lt(Column#0, 2). With the native extremum kernel
+    // deleted, the scalar call remains for the TiKV/unsupported boundary.
     let expr = build(
         "lt",
         vec![
@@ -126,7 +128,7 @@ fn constant_folding_operator_arguments_reduce_in_place() {
     );
     let folded = fold(&expr);
     let root = expect_scalar_function(&folded, "lt", 2);
-    assert_eq!(expect_int_constant(&root.args[1], "greatest(1,2)"), 2);
+    expect_scalar_function(&root.args[1], "greatest", 2);
 
     // lt(Column#0, plus(Column#1, plus(2, 1))) -> lt(Column#0, plus(Column#1, 3)).
     let expr = build(

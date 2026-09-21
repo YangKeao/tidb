@@ -30,7 +30,6 @@ use super::{Constant, Expression};
 use tidb_datatype::{Datum, FieldType, FieldTypeCode};
 
 use super::control_type::set_numeric_len_from_args;
-use crate::builtin_ext::{GlCmpStringMode, GlSignature};
 use crate::scalar_function::ScalarFunction;
 use crate::EvalError;
 
@@ -2182,93 +2181,6 @@ fn concat_flen(args: &[Expression], skip: usize) -> i64 {
         flen += arg_flen;
     }
     clamp_blob_width(flen)
-}
-
-/// Go `resolveType4Extremum` (`pkg/expression/builtin_compare.go:451`)
-/// followed by the `argTp` overrides both `greatestFunctionClass.getFunction`
-/// and `leastFunctionClass.getFunction` open with -- together, the whole of
-/// how those two pick ONE of their eight signatures:
-///
-/// ```go
-/// resFieldType, fieldTimeType, cmpStringMode := resolveType4Extremum(ctx.GetEvalCtx(), args)
-/// resTp := resFieldType.EvalType()
-/// argTp := resTp
-/// if cmpStringMode != GLCmpStringDirectly {
-///     argTp = types.ETString
-/// } else if resTp == types.ETJson {
-///     unsupportedJSONComparison(ctx, args); argTp = types.ETString; resTp = types.ETString
-/// }
-/// ```
-///
-/// The decisive line is `argTp := resTp`: the comparison domain is the
-/// AGGREGATE of the argument FieldTypes, never the runtime value that happens
-/// to arrive. That is the whole difference between `greatest(e, 2)` over an
-/// `enum('{}','[1]','x')` answering `{}` (an ETString signature, the integer
-/// stringified) and answering `2` (an integer comparison against the enum's
-/// ordinal). Go's own arms then collapse onto three implementations: ETString
-/// has the three [`GlCmpStringMode`] variants, ETDatetime/ETTimestamp is
-/// `builtinGreatestTimeSig` keyed on [`GlSignature::ret_date`], and every
-/// other arm -- ETInt, ETReal, ETDecimal, ETDuration, ETVectorFloat32 --
-/// compares the already-cast arguments and returns the winner unchanged.
-///
-/// `None` means an argument carries no static type here, which is this tier's
-/// "I cannot name Go's signature", never a claim that Go would refuse the
-/// call.
-pub fn gl_signature(args: &[Expression]) -> Option<GlSignature> {
-    let typed: Vec<FieldType> = args
-        .iter()
-        .filter_map(|arg| arg.static_type().cloned())
-        .collect();
-    if typed.len() != args.len() || typed.is_empty() {
-        return None;
-    }
-    let aggregated = tidb_datatype::agg_field_type(&typed);
-    let cmp_string_mode = gl_cmp_string_mode(&aggregated, &typed);
-    // `fieldTimeType`: `GLRetDate` only for an aggregate that is literally
-    // `mysql.TypeDate`, which is what `builtinGreatestTimeSig`'s `cmpAsDate`
-    // carries into `getAccurateTimeTypeForGLRet`.
-    let ret_date = aggregated.code() == FieldTypeCode::Date;
-    let arg_type = if cmp_string_mode == GlCmpStringMode::Directly {
-        match aggregated.eval_type() {
-            // `unsupportedJSONComparison` warns and then compares as text.
-            tidb_datatype::EvalType::Json => tidb_datatype::EvalType::String,
-            other => other,
-        }
-    } else {
-        tidb_datatype::EvalType::String
-    };
-    Some(GlSignature {
-        arg_type,
-        cmp_string_mode,
-        ret_date,
-    })
-}
-
-/// Go `resolveType4Extremum`'s `cmpStringMode` half: when GREATEST/LEAST's
-/// arguments aggregate to a STRING kind that is not itself temporal, and at
-/// least one argument IS a date or datetime, Go compares every argument as a
-/// parsed time instead of as text.
-fn gl_cmp_string_mode(aggregated: &FieldType, typed: &[FieldType]) -> GlCmpStringMode {
-    if !aggregated.eval_type().is_string_kind() || aggregated.code().is_type_temporal() {
-        return GlCmpStringMode::Directly;
-    }
-    // Go scans for a temporal argument but PREFERS a DATETIME one, so a
-    // (DATE, DATETIME, string) list compares as datetime rather than as date.
-    let mut temporal: Option<FieldTypeCode> = None;
-    for ft in typed {
-        if ft.code().is_type_temporal()
-            && (temporal.is_none() || ft.code() == FieldTypeCode::Datetime)
-        {
-            temporal = Some(ft.code());
-        }
-    }
-    match temporal {
-        Some(FieldTypeCode::Date) => GlCmpStringMode::AsDate,
-        Some(code) if code.is_temporal_with_date() => GlCmpStringMode::AsDatetime,
-        // A DURATION is temporal but carries no date, so Go leaves the mode
-        // alone and the plain string signature runs.
-        _ => GlCmpStringMode::Directly,
-    }
 }
 
 fn extremum_return_type(args: &[Expression]) -> Option<FieldType> {

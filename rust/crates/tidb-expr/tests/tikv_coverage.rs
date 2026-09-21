@@ -501,6 +501,29 @@ fn tikv_coverage_numeric_families_engine_receipts() {
             &mut failures,
         );
     }
+    let ty = int();
+    for (name, expected) in [
+        ("greatest", vec![Datum::Int(3), Datum::Int(2), Datum::Null]),
+        ("least", vec![Datum::Int(1), Datum::Int(1), Datum::Null]),
+    ] {
+        let mut input = fixture(
+            &[ty.clone(), ty.clone()],
+            &[
+                vec![Datum::Int(3), Datum::Int(1), Datum::Null],
+                vec![Datum::Int(1), Datum::Int(2), Datum::Int(4)],
+            ],
+        );
+        record(
+            check_expected(
+                &format!("{name}_independent_values"),
+                call(name, &ty, vec![column(0, &ty), column(1, &ty)]),
+                &mut input,
+                &ty,
+                &expected,
+            ),
+            &mut failures,
+        );
+    }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
@@ -2117,8 +2140,8 @@ fn tikv_coverage_control_selector_family_engine_receipts() {
         ],
     );
     record(
-        check(
-            "interval",
+        check_expected(
+            "interval_independent_values",
             call(
                 "interval",
                 &ty,
@@ -2131,6 +2154,7 @@ fn tikv_coverage_control_selector_family_engine_receipts() {
             ),
             &mut input,
             &ty,
+            &[Datum::Int(0), Datum::Int(1), Datum::Int(2), Datum::Int(-1)],
         ),
         &mut failures,
     );

@@ -453,11 +453,8 @@ impl From<EvalError> for EvaluatorError {
 /// Unpacks [`EvaluatorError`] into the `EvalError` a caller-facing signature
 /// wants, without an `impl From<EvaluatorError> for EvalError`.
 ///
-/// That impl would look natural and is deliberately absent: it makes
-/// `EvaluatorError: Into<EvalError>`, and there are call sites whose error type
-/// is only pinned by `Into`-based inference. `builtin_ext/compare2.rs:500`
-/// stops compiling the moment a second `Into<EvalError>` candidate exists
-/// (E0282), so the conversion stays an explicit call.
+/// The explicit conversion keeps caller-facing error boundaries visible and
+/// avoids adding a blanket `Into<EvalError>` inference candidate.
 pub fn into_eval_error(error: EvaluatorError) -> EvalError {
     match error {
         EvaluatorError::Eval(error) => error,

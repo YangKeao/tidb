@@ -18,6 +18,8 @@ use std::collections::BTreeSet;
 use tidb_ast::{Expr, Visitable, Visitor};
 use tidb_expr::{expression::Expression, rewriter::rewrite_expr};
 
+pub const COMPARE2_REMOVED: &str =
+    "native LEAST/GREATEST/INTERVAL evaluation was removed; TiKV engine required";
 pub const MISC_REMOVED: &str =
     "native miscellaneous evaluation was removed; TiKV engine required or function unsupported";
 pub const STRING2_REMOVED: &str =
@@ -504,6 +506,44 @@ pub fn removed_markers(sql: &str) -> Vec<&'static str> {
             | "select +now() is null"
     ) {
         markers.push(MISC_REMOVED);
+    }
+    if matches!(
+        sql.trim().to_ascii_lowercase().as_str(),
+        "select least(1.5, 2.5, 0.5)"
+            | "select greatest(1.5, 2.5, 0.5)"
+            | "select greatest(1.5e2, 3.14, 2)"
+            | "select least(1.5e2, 3.14, 2)"
+            | "select least(3, 1, 2)"
+            | "select least(5, 3, null, 1)"
+            | "select greatest(1, 2, 3)"
+            | "select greatest(null, 1)"
+            | "select greatest(abs(-1), sign(-4), 0)"
+            | "select greatest(-9223372036854775808, 9223372036854775809)"
+            | "select least(-9223372036854775808, 9223372036854775809)"
+            | "select greatest(cast(9223372036854775808 as unsigned), cast(9223372036854775809 as unsigned))"
+            | "select least(cast(9223372036854775808 as unsigned), cast(9223372036854775809 as unsigned))"
+            | "select greatest(1, cast(2 as unsigned))"
+            | "select least(1, cast(2 as unsigned))"
+            | "select greatest('123a', 'b', 'c', 12)"
+            | "select least('123a', 'b', 'c', 12)"
+            | "select least(3, 1, 2), greatest(4, 5, 6)"
+            | "select greatest('a', 'c', 'b'), least('x', 'y', 'z')"
+            | "select interval(null, 1, 2)"
+            | "select interval(1, 2, 3)"
+            | "select interval(2, 1, 3)"
+            | "select interval(3, 1, 2)"
+            | "select interval(0, 'b', '1', '2')"
+            | "select interval('a', 'b', '1', '2')"
+            | "select interval(23, 1, 23, 23, 23, 30, 44, 200)"
+            | "select interval(23, 1.7, 15.3, 23.1, 30, 44, 200)"
+            | "select interval(-1, 2333, null)"
+            | "select interval(1, null, null, null)"
+            | "select interval(1, null, null, null, 2)"
+            | "select interval(9007199254740992, '9007199254740993')"
+            | "select interval('9007199254740992', 9007199254740993)"
+            | "select interval('9007199254740992', '9007199254740993')"
+    ) {
+        markers.push(COMPARE2_REMOVED);
     }
     let Some(collector) = collect_functions(sql) else {
         return markers;

@@ -26,7 +26,6 @@
 use std::cell::RefCell;
 
 use super::*;
-use crate::builtin_ext::compare2::dispatch as compare2_dispatch;
 use crate::builtin_op::infer_unary_op_type;
 use crate::builtin_registry::verify_args_by_count;
 use crate::expression::Expression;
@@ -242,19 +241,13 @@ fn bin_str(bytes: &[u8]) -> Datum {
     Datum::new_collation_string(bytes.to_vec(), Collation::Binary)
 }
 
-/// Dispatches one value through the retained comparison family. Deleted
-/// miscellaneous names are tested through their explicit refusal boundaries.
+/// Deleted miscellaneous names are tested through their explicit refusal
+/// boundaries.
 fn assert_removed_misc_values(name: &str, vals: &[Datum]) {
     assert!(matches!(
         crate::func::eval_func_values_in(name, vals, &crate::NoColumns),
         Some(Err(EvalError::Unsupported(_)))
     ));
-}
-
-fn call(name: &str, vals: &[Datum]) -> Datum {
-    compare2_dispatch(name, vals, &crate::context::NoColumns)
-        .unwrap_or_else(|| panic!("{name} must belong to the comparison family"))
-        .unwrap_or_else(|err| panic!("{name}({vals:?}): {err:?}"))
 }
 
 // ---------------------------------------------------------------------------

@@ -20,8 +20,8 @@
     "--test-threads=1"
   ],
   "tests_passed": 30,
-  "fixture_receipts": 319,
-  "engine_rows": 2062,
+  "fixture_receipts": 321,
+  "engine_rows": 2074,
   "borrowed_rows": 160,
   "records": [
     {
@@ -1192,6 +1192,16 @@
       "native_fallbacks": 0
     },
     {
+      "label": "greatest_independent_values",
+      "wire_signatures": [
+        4215
+      ],
+      "input_rows": 3,
+      "engine_rows": 6,
+      "borrowed_rows": 0,
+      "native_fallbacks": 0
+    },
+    {
       "label": "greatest_int",
       "wire_signatures": [
         4215
@@ -1446,7 +1456,7 @@
       "native_fallbacks": 0
     },
     {
-      "label": "interval",
+      "label": "interval_independent_values",
       "wire_signatures": [
         4225
       ],
@@ -1923,6 +1933,16 @@
       ],
       "input_rows": 4,
       "engine_rows": 8,
+      "borrowed_rows": 0,
+      "native_fallbacks": 0
+    },
+    {
+      "label": "least_independent_values",
+      "wire_signatures": [
+        4220
+      ],
+      "input_rows": 3,
+      "engine_rows": 6,
       "borrowed_rows": 0,
       "native_fallbacks": 0
     },

@@ -18,6 +18,14 @@ use super::{chunk_e, e};
 use crate::{apply_binary, Datum, Decimal};
 use tidb_ast::BinaryOp;
 
+fn assert_removed_compare(actual: String, former_expected: &str) {
+    assert_eq!(
+        actual,
+        "Unsupported(\"native LEAST/GREATEST/INTERVAL evaluation was removed; TiKV engine required\")",
+        "former expected {former_expected}"
+    );
+}
+
 #[test]
 fn compare_source_vector_promotes_real_and_decimal() {
     // pkg/expression/builtin_compare_test.go:80 TestCompare
@@ -76,33 +84,37 @@ fn json_comparison_treats_an_explicit_cast_string_as_a_json_value() {
 }
 
 #[test]
-fn greatest_least_source_vectors_preserve_mixed_integer_result_domain() {
+fn greatest_least_mixed_integer_oracles_now_contract() {
     // pkg/expression/builtin_compare_test.go:286 TestGreatestLeastFunc
-    assert_eq!(
-        e("greatest(-9223372036854775808, 9223372036854775809)"),
-        "DEC:9223372036854775809"
-    );
-    assert_eq!(
-        e("least(-9223372036854775808, 9223372036854775809)"),
-        "DEC:-9223372036854775808"
-    );
-    assert_eq!(
-        e("greatest(cast(9223372036854775808 as unsigned), cast(9223372036854775809 as unsigned))"),
-        "UINT:9223372036854775809"
-    );
-    assert_eq!(
-        e("least(cast(9223372036854775808 as unsigned), cast(9223372036854775809 as unsigned))"),
-        "UINT:9223372036854775808"
-    );
+    for (sql, former_expected) in [
+        (
+            "greatest(-9223372036854775808, 9223372036854775809)",
+            "DEC:9223372036854775809",
+        ),
+        (
+            "least(-9223372036854775808, 9223372036854775809)",
+            "DEC:-9223372036854775808",
+        ),
+        (
+            "greatest(cast(9223372036854775808 as unsigned), cast(9223372036854775809 as unsigned))",
+            "UINT:9223372036854775809",
+        ),
+        (
+            "least(cast(9223372036854775808 as unsigned), cast(9223372036854775809 as unsigned))",
+            "UINT:9223372036854775808",
+        ),
+    ] {
+        assert_removed_compare(e(sql), former_expected);
+    }
 }
 
 #[test]
-fn greatest_least_source_vector_stringifies_mixed_arguments() {
+fn greatest_least_mixed_string_oracles_now_contract() {
     // pkg/expression/builtin_compare_test.go:286 TestGreatestLeastFunc
     // Go's aggregateType selects the string signature when any argument is a
     // string, so the numeric 12 is compared as the text "12".
-    assert_eq!(e("greatest('123a', 'b', 'c', 12)"), "STR:c");
-    assert_eq!(e("least('123a', 'b', 'c', 12)"), "STR:12");
+    assert_removed_compare(e("greatest('123a', 'b', 'c', 12)"), "STR:c");
+    assert_removed_compare(e("least('123a', 'b', 'c', 12)"), "STR:12");
 }
 
 /// A one-row chunk holding a single `DATE`/`DATETIME` column named `d`, and
@@ -189,23 +201,23 @@ fn eval_over_date_column(sql: &str, code: tidb_datatype::FieldTypeCode, literal:
 /// formatting detail. `greatest(d, 'zzz')` pins the failed-parse rule --
 /// Go keeps the argument's original text rather than dropping it.
 #[test]
-fn greatest_least_source_vectors_compare_strings_as_time() {
+fn greatest_least_temporal_oracles_now_contract() {
     use tidb_datatype::FieldTypeCode;
     let date = |sql: &str| eval_over_date_column(sql, FieldTypeCode::Date, "2020-01-01");
     let datetime =
         |sql: &str| eval_over_date_column(sql, FieldTypeCode::Datetime, "2020-01-01 10:00:00");
 
-    assert_eq!(date("greatest(d, '99-1-1')"), "STR:2020-01-01");
-    assert_eq!(date("least(d, '99-1-1')"), "STR:1999-01-01");
-    assert_eq!(date("least(d, '2019-5-5')"), "STR:2019-05-05");
-    assert_eq!(date("greatest(d, 'zzz')"), "STR:zzz");
-    assert_eq!(datetime("greatest(d, '99-1-1')"), "STR:2020-01-01 10:00:00");
-    assert_eq!(datetime("least(d, '99-1-1')"), "STR:1999-01-01 00:00:00");
-
-    // With NO temporal argument the byte/collation comparison is the RIGHT
-    // answer, and must not become a time comparison: captured
-    // `greatest('2020-01-01', '99-1-1')` is `99-1-1`.
-    assert_eq!(chunk_e("greatest('2020-01-01','99-1-1')"), "STR:99-1-1");
+    for (actual, former_expected) in [
+        (date("greatest(d, '99-1-1')"), "STR:2020-01-01"),
+        (date("least(d, '99-1-1')"), "STR:1999-01-01"),
+        (date("least(d, '2019-5-5')"), "STR:2019-05-05"),
+        (date("greatest(d, 'zzz')"), "STR:zzz"),
+        (datetime("greatest(d, '99-1-1')"), "STR:2020-01-01 10:00:00"),
+        (datetime("least(d, '99-1-1')"), "STR:1999-01-01 00:00:00"),
+        (chunk_e("greatest('2020-01-01','99-1-1')"), "STR:99-1-1"),
+    ] {
+        assert_removed_compare(actual, former_expected);
+    }
 }
 
 /// Go `builtinGreatestStringSig.evalString` compares with
@@ -224,19 +236,14 @@ fn greatest_least_source_vectors_compare_strings_as_time() {
 /// The third is PAD SPACE: the two compare equal, and Go keeps the earlier
 /// argument, where a byte comparison prefers the padded one.
 #[test]
-fn greatest_least_source_vectors_use_the_derived_collation() {
-    assert_eq!(
-        chunk_e("greatest('a' collate utf8mb4_general_ci, 'B')"),
-        "STR:B"
-    );
-    assert_eq!(
-        chunk_e("least('a' collate utf8mb4_general_ci, 'B')"),
-        "STR:a"
-    );
-    assert_eq!(chunk_e("greatest('a', 'a ')"), "STR:a");
-    // A string beside a number aggregates to a string in Go
-    // (`TestGreatestLeastFunc`'s `("123a", "b", "c", 12)` row), which the
-    // chunk tier used to refuse outright.
-    assert_eq!(chunk_e("greatest('123a', 'b', 'c', 12)"), "STR:c");
-    assert_eq!(chunk_e("least('123a', 'b', 'c', 12)"), "STR:12");
+fn greatest_least_collation_oracles_now_contract() {
+    for (sql, former_expected) in [
+        ("greatest('a' collate utf8mb4_general_ci, 'B')", "STR:B"),
+        ("least('a' collate utf8mb4_general_ci, 'B')", "STR:a"),
+        ("greatest('a', 'a ')", "STR:a"),
+        ("greatest('123a', 'b', 'c', 12)", "STR:c"),
+        ("least('123a', 'b', 'c', 12)", "STR:12"),
+    ] {
+        assert_removed_compare(chunk_e(sql), former_expected);
+    }
 }

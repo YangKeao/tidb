@@ -135,10 +135,16 @@ pub(crate) fn is_removed_native_packet_string(name: &str) -> bool {
     )
 }
 
-/// Native miscellaneous value kernels were physically removed. Admission and
-/// lowering decide which listed names/shapes execute through TiKV (including
-/// retained ANY_VALUE, ISNULL and IP predicates); all others fail closed as
-/// explicit contractions rather than falling back to a local kernel.
+/// Native LEAST/GREATEST/INTERVAL kernels were physically removed. Admission
+/// and lowering decide which shapes execute through TiKV; every local boundary
+/// fails closed instead of falling back to a native kernel.
+pub(crate) fn is_removed_native_compare2(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "LEAST" | "GREATEST" | "INTERVAL"
+    )
+}
+
 pub(crate) fn is_removed_native_misc(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
@@ -266,6 +272,11 @@ pub(crate) fn eval_func(
     if is_removed_native_packet_string(&name) {
         return Err(EvalError::Unsupported(
             "native packet-limited string evaluation was removed; function unsupported",
+        ));
+    }
+    if is_removed_native_compare2(&name) {
+        return Err(EvalError::Unsupported(
+            "native LEAST/GREATEST/INTERVAL evaluation was removed; TiKV engine required",
         ));
     }
     if is_removed_native_misc(&name) {
@@ -685,6 +696,11 @@ pub(crate) fn eval_func_values_in(
             "native packet-limited string evaluation was removed; function unsupported",
         )));
     }
+    if is_removed_native_compare2(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native LEAST/GREATEST/INTERVAL evaluation was removed; TiKV engine required",
+        )));
+    }
     if is_removed_native_misc(name) {
         return Some(Err(EvalError::Unsupported(
             "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
@@ -767,6 +783,11 @@ pub(crate) fn eval_func_values(
     if is_removed_native_packet_string(name) {
         return Some(Err(EvalError::Unsupported(
             "native packet-limited string evaluation was removed; function unsupported",
+        )));
+    }
+    if is_removed_native_compare2(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native LEAST/GREATEST/INTERVAL evaluation was removed; TiKV engine required",
         )));
     }
     if is_removed_native_misc(name) {

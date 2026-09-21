@@ -947,6 +947,11 @@ impl ScalarFunction {
                 "native packet-limited string evaluation was removed; function unsupported",
             ));
         }
+        if crate::func::is_removed_native_compare2(self.func_name.lowercase()) {
+            return Err(EvalError::Unsupported(
+                "native LEAST/GREATEST/INTERVAL evaluation was removed; TiKV engine required",
+            ));
+        }
         if crate::func::is_removed_native_misc(self.func_name.lowercase()) {
             return Err(EvalError::Unsupported(
                 "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
@@ -1359,18 +1364,6 @@ impl ScalarFunction {
                 }
             }
             return Ok(Datum::Null);
-        }
-        if name == "interval" && self.args.len() >= 2 {
-            let arg_types = self
-                .args
-                .iter()
-                .map(|argument| argument.static_type().cloned())
-                .collect::<Vec<_>>();
-            return crate::builtin_ext::interval_lazy(
-                &arg_types,
-                |index| self.args[index].eval(ctx, row),
-                ctx,
-            );
         }
         // Go builtinLikeSig/builtinIlikeSig evaluate each argument in order
         // and stop at NULL. The escape is EvalInt followed by byte(escape),
@@ -1950,69 +1943,6 @@ impl ScalarFunction {
             let is_owner = ctx.ddl_owner_info()?;
             return Ok(Datum::Int(i64::from(is_owner)));
         }
-        // The remaining collation-aware builtins are intercepted ahead of the
-        // values-only dispatch because that dispatch cannot see the derived
-        // result collation. STRCMP was removed from this native path and is
-        // guarded at the entry boundary above.
-        {
-            let collation = self.derived_collation();
-            match name {
-                // Go `greatestFunctionClass`/`leastFunctionClass`: the
-                // ETString signature compares under `b.collation`, and
-                // `resolveType4Extremum` may instead have selected the
-                // compare-as-time signature from the argument FieldTypes.
-                // Neither is visible to the values-only dispatch below.
-                "greatest" | "least" if !self.args.is_empty() => {
-                    let vals: Vec<Datum> = self
-                        .args
-                        .iter()
-                        .map(|a| a.eval(ctx, row))
-                        .collect::<Result<_, _>>()?;
-                    let want = if name == "greatest" {
-                        std::cmp::Ordering::Greater
-                    } else {
-                        std::cmp::Ordering::Less
-                    };
-                    // Go casts every argument to DECIMAL at that argument's
-                    // OWN decimal (integers at 0), returns the winner raw,
-                    // and folds a fully-constant call to the return type's
-                    // max-argument scale. The per-argument decimals and the
-                    // constness are what the chunk evaluator knows that the
-                    // values alone cannot say.
-                    let arg_decimals: Vec<i64> = self
-                        .args
-                        .iter()
-                        .map(|a| {
-                            a.static_type()
-                                .map_or(tidb_datatype::UNSPECIFIED_LENGTH, |ft| {
-                                    // Go `WrapWithCastAsDecimal` pins integer
-                                    // arguments to scale 0 regardless of the
-                                    // field type's own (often unspecified) value.
-                                    if ft.eval_type() == tidb_datatype::EvalType::Int {
-                                        0
-                                    } else {
-                                        ft.decimal()
-                                    }
-                                })
-                        })
-                        .collect();
-                    let all_constant = self
-                        .args
-                        .iter()
-                        .all(|a| a.const_level() == crate::expression::ConstLevel::STRICT);
-                    return crate::builtin_ext::extremum_with_signature(
-                        &vals,
-                        want,
-                        crate::rewriter::result_type::gl_signature(&self.args),
-                        &arg_decimals,
-                        all_constant,
-                        collation,
-                        ctx,
-                    );
-                }
-                _ => {}
-            }
-        }
         // Values-only builtins (ABS/CONCAT/...): evaluate every
         // argument, then reuse the single Datum-level implementation shared
         // with the AST evaluator (`crate::func::eval_func_values`). Lazy
@@ -2488,14 +2418,11 @@ impl ScalarFunction {
     }
 
     /// Go `VecEvalBool`'s column-wise leg over one filter node: the numeric
-    /// comparisons of [`Self::vec_eval_numeric_compare`], `NOT` over a node
+    /// comparisons of [`Self::vec_eval_numeric_compare`] and `NOT` over a node
     /// this kernel covers (`builtinUnaryNotIntSig.vecEvalInt`: NULL stays
-    /// NULL, zero becomes one, anything else zero) and `IS NULL` over a
-    /// chunk column (`builtin*IsNullSig.vecEvalInt`: the column's null
-    /// bitmap, never NULL itself). `is_zero` and the `Ok(false)` contract are
-    /// those of the comparison kernel; the covered shapes produce what
-    /// [`Self::eval`] produces row by row (`ops::eval_unary`'s three-valued
-    /// NOT and the `ISNULL` value dispatch).
+    /// NULL, zero becomes one, anything else zero). `is_zero` and the
+    /// `Ok(false)` contract are those of the comparison kernel; removed
+    /// families return `Ok(false)` before any local value dispatch.
     pub(crate) fn vec_eval_bool(
         &self,
         input: &Chunk,
@@ -3006,7 +2933,7 @@ mod tests {
     }
 
     #[test]
-    fn logical_and_interval_skip_unreachable_warning_arguments() {
+    fn logical_short_circuit_survives_while_interval_refuses() {
         let ctx = WarningColumns::default();
         let integer = |value| Expression::Constant(Constant::new(Datum::Int(value), ft()));
         let division = || {
@@ -3035,10 +2962,10 @@ mod tests {
             ft(),
             vec![integer(1), integer(0), integer(1), integer(2), division()],
         );
-        assert_eq!(
-            interval.eval(&ctx, tidb_chunk::row::Row::empty()).unwrap(),
-            Datum::Int(2)
-        );
+        assert!(matches!(
+            interval.eval(&ctx, tidb_chunk::row::Row::empty()),
+            Err(EvalError::Unsupported(_))
+        ));
         assert!(ctx.warnings.borrow().is_empty());
 
         let mut not_null_int = ft();
@@ -3055,10 +2982,10 @@ mod tests {
             ft(),
             vec![integer(1), integer(0), integer(1), integer(2), unreachable],
         );
-        assert_eq!(
-            interval.eval(&ctx, tidb_chunk::row::Row::empty()).unwrap(),
-            Datum::Int(2)
-        );
+        assert!(matches!(
+            interval.eval(&ctx, tidb_chunk::row::Row::empty()),
+            Err(EvalError::Unsupported(_))
+        ));
     }
 
     impl Columns for PacketColumns {
@@ -3844,9 +3771,10 @@ mod tests {
     /// `SetDecimal(0)`), not the aggregated max (3), and `select least(1, d)`
     /// is `1` the same way. A fully-constant call is the one exception: the
     /// planner folds it to the RETURN type's scale, so `select least(1, 2.5)`
-    /// is `1.0` (max argument decimal).
+    /// is `1.0` (max argument decimal). The values remain independent oracle
+    /// evidence while this native typed-column path now refuses explicitly.
     #[test]
-    fn extremum_over_typed_columns_keeps_the_winner_own_scale() {
+    fn typed_extremum_preserves_the_former_scale_oracle_and_refuses() {
         let int_ft = FieldType::new(FieldTypeCode::LongLong);
         let mut dec_ft = FieldType::new(FieldTypeCode::NewDecimal);
         dec_ft.set_flen(10);
@@ -3861,54 +3789,19 @@ mod tests {
         col_d.index = 1;
         let least = Expression::ScalarFunction(ScalarFunction::new(
             CiString::new("least"),
-            ret_ft.clone(),
+            ret_ft,
             vec![Expression::Column(col_i), Expression::Column(col_d)],
         ));
-
-        let mut chunk =
-            tidb_chunk::chunk::Chunk::new_with_capacity(&[int_ft.clone(), dec_ft.clone()], 1);
+        let mut chunk = tidb_chunk::chunk::Chunk::new_with_capacity(&[int_ft, dec_ft], 1);
         chunk.append_datum(0, &Datum::Int(-5));
         chunk.append_datum(
             1,
             &Datum::Decimal(tidb_datatype::Decimal::from_literal("2.500")),
         );
-        let datum = least
-            .eval(&crate::context::NoColumns, chunk.get_row(0))
-            .unwrap();
-        let Datum::Decimal(dec) = &datum else {
-            panic!("least over a decimal aggregate answers a decimal");
-        };
-        assert_eq!(dec.scale(), 0, "the integer winner keeps its own scale 0");
-        assert_eq!(dec.to_string(), "-5");
-
-        // Mixed constant + column: `least(1, d)` is `1` (frac 0), not `1.000`.
-        let mut col_d = crate::column::Column::new(2, dec_ft.clone());
-        col_d.index = 0;
-        let least_mixed = Expression::ScalarFunction(ScalarFunction::new(
-            CiString::new("least"),
-            ret_ft,
-            vec![
-                Expression::Constant(Constant::new(Datum::Int(1), int_ft.clone())),
-                Expression::Column(col_d),
-            ],
+        assert!(matches!(
+            least.eval(&crate::context::NoColumns, chunk.get_row(0)),
+            Err(EvalError::Unsupported(_))
         ));
-        let mut chunk = tidb_chunk::chunk::Chunk::new_with_capacity(&[dec_ft], 1);
-        chunk.append_datum(
-            0,
-            &Datum::Decimal(tidb_datatype::Decimal::from_literal("2.500")),
-        );
-        let datum = least_mixed
-            .eval(&crate::context::NoColumns, chunk.get_row(0))
-            .unwrap();
-        let Datum::Decimal(dec) = &datum else {
-            panic!("least over a decimal aggregate answers a decimal");
-        };
-        assert_eq!(
-            dec.scale(),
-            0,
-            "the constant winner keeps its own scale 0 too"
-        );
-        assert_eq!(dec.to_string(), "1");
     }
 
     fn empty_row() -> tidb_chunk::row::Row<'static> {

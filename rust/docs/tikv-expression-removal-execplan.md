@@ -384,6 +384,25 @@ remain in the workspace.
       Broad replay remains intentionally red: Native has 176 divergences;
       Copying has 167 divergences and 416271 engine rows. This is not a
       compatibility claim.
+- [x] Nineteenth physical-deletion tranche: `builtin_ext/compare2.rs`, its dead
+      local signature metadata, and native LEAST/GREATEST/INTERVAL value,
+      typed, temporal, numeric, string, vector and lazy kernels plus scalar
+      dispatch arms are physically deleted. TiKV lowering derives its engine
+      signature directly.
+      Direct AST/value/chunk boundaries fail closed before child evaluation.
+      Former Go and TiDB value tables remain as independent oracle data;
+      simple admitted integer/decimal shapes additionally require TiKV engine
+      values while lowerer-declined shapes explicitly verify contraction.
+      Library is green at 1171 passed / 99 ignored; external is 77 passed;
+      expression/query differential are 3/4 passed; static inventory remains
+      212 admitted / 172 excluded with no missing names; runtime is now 321
+      fixtures / 2074 engine rows / 160 borrowed rows after adding independent
+      LEAST/GREATEST value receipts. Session Copying is back
+      at the carried 334 passed / 4 unrelated failures and feature-off at 332
+      passed / the same 4. Broad replay remains intentionally red: Native 176
+      divergences / 9877 compared; Copying 167 / 10253 with 416267 engine rows
+      and zero borrowed rows. `make -j1 lint` passes. These replay numbers are
+      contraction evidence, not a compatibility claim.
 - [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
       in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected
       borrowed facade was used by the adapter while the manifest still pinned

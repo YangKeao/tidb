@@ -3312,7 +3312,10 @@ mod builtin_type_tests {
         );
         // `INTERVAL` with a NULL first argument is -1, not NULL: Go's
         // `builtinIntervalRealSig` reports "below every bucket".
-        assert_eq!(eval("interval(null, 1, 2)"), Datum::Int(-1));
+        assert!(matches!(
+            try_eval("interval(null, 1, 2)"),
+            Err(EvalError::Unsupported(_))
+        ));
         // Preserve the former INET converter edge rows as exact native
         // refusals; their successful value evidence now belongs to TiKV-only
         // source tests.

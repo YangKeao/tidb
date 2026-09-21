@@ -29,6 +29,32 @@ use super::*;
 /// Evaluates EVERY top-level expression of one `select` list against an empty
 /// virtual row and joins their labels with spaces -- the shape Go's
 /// `testkit.Rows` splits a result row into cells with.
+fn assert_compare2_row_removed(select_list: &str, former_expected: &str) {
+    let stmt = tidb_parser::parse(&format!("select {select_list}")).expect("parse");
+    let Stmt::Query(query) = stmt else {
+        panic!("not query")
+    };
+    let QueryStmt::Select(select) = query.into_inner() else {
+        panic!("not select")
+    };
+    let mut chunk = tidb_chunk::chunk::Chunk::new_empty(&[]);
+    chunk.set_num_virtual_rows(1);
+    for field in &select.fields {
+        let SelectField::Expr { expr, .. } = field else {
+            panic!("not expression")
+        };
+        let rewritten = crate::rewriter::rewrite_expr(expr).expect("rewrite");
+        assert!(
+            matches!(
+                rewritten.eval(&NoColumns, chunk.get_row(0)),
+                Err(EvalError::Unsupported(message))
+                    if message == "native LEAST/GREATEST/INTERVAL evaluation was removed; TiKV engine required"
+            ),
+            "{select_list}; former row {former_expected}"
+        );
+    }
+}
+
 fn eval_row(select_list: &str) -> String {
     let stmt = tidb_parser::parse(&format!("select {select_list}")).expect("parse");
     let Stmt::Query(query) = stmt else {
@@ -93,107 +119,49 @@ fn test_compare_builtin_nullif_rows() {
 }
 
 #[test]
-fn test_compare_builtin_interval_rows() {
-    // integration_test.go:2858
-    assert_eq!(
-        eval_row("interval(null, 1, 2), interval(1, 2, 3), interval(2, 1, 3)"),
-        "INT:-1 INT:0 INT:1"
-    );
-    // integration_test.go:2859
-    assert_eq!(
-        eval_row("interval(3, 1, 2), interval(0, \"b\", \"1\", \"2\"), interval(\"a\", \"b\", \"1\", \"2\")"),
-        "INT:2 INT:1 INT:1"
-    );
-    // integration_test.go:2860
-    assert_eq!(
-        eval_row("interval(23, 1, 23, 23, 23, 30, 44, 200), interval(23, 1.7, 15.3, 23.1, 30, 44, 200), \
-         interval(9007199254740992, 9007199254740993)"),
-        "INT:4 INT:2 INT:0"
-    );
-    // integration_test.go:2861 -- unsigned duality across the int64 boundary;
-    // a signed arg promotes the whole comparison.
-    assert_eq!(
-        eval_row("interval(cast(9223372036854775808 as unsigned), cast(9223372036854775809 as unsigned)), \
-         interval(9223372036854775807, cast(9223372036854775808 as unsigned)), \
-         interval(-9223372036854775807, cast(9223372036854775808 as unsigned))"),
-        "INT:0 INT:0 INT:0"
-    );
-    // integration_test.go:2862
-    assert_eq!(
-        eval_row(
-            "interval(cast(9223372036854775806 as unsigned), 9223372036854775807), \
-         interval(cast(9223372036854775806 as unsigned), -9223372036854775807)"
-        ),
-        "INT:0 INT:1"
-    );
-    // integration_test.go:2863 -- decimal strings compare as REAL against one another.
-    assert_eq!(
-        chunk_e("interval(\"9007199254740991\", \"9007199254740992\")"),
-        "INT:0"
-    );
-    // integration_test.go:2864 -- mixed literal/string comparisons are REAL-signed.
-    assert_eq!(
-        eval_row(
-            "interval(9007199254740992, \"9007199254740993\"), \
-         interval(\"9007199254740992\", 9007199254740993), \
-         interval(\"9007199254740992\", \"9007199254740993\")"
-        ),
-        "INT:1 INT:1 INT:1"
-    );
-    // integration_test.go:2865 -- trailing NULLs sort after everything real.
-    assert_eq!(
-        chunk_e("INTERVAL(100, NULL, NULL, NULL, NULL, NULL, 100)"),
-        "INT:6"
-    );
-    // integration_test.go:2866 -- INTERVAL is ordinary scalar arithmetic.
-    assert_eq!(
-        chunk_e("(INTERVAL(0,(1*5)/2)) + (INTERVAL(5,4,3))"),
-        "INT:2"
-    );
+fn compare_builtin_interval_oracles_now_contract() {
+    for (select_list, former_expected) in [
+        ("interval(null, 1, 2), interval(1, 2, 3), interval(2, 1, 3)", "INT:-1 INT:0 INT:1"),
+        ("interval(3, 1, 2), interval(0, \"b\", \"1\", \"2\"), interval(\"a\", \"b\", \"1\", \"2\")", "INT:2 INT:1 INT:1"),
+        ("interval(23, 1, 23, 23, 23, 30, 44, 200), interval(23, 1.7, 15.3, 23.1, 30, 44, 200), interval(9007199254740992, 9007199254740993)", "INT:4 INT:2 INT:0"),
+        ("interval(cast(9223372036854775808 as unsigned), cast(9223372036854775809 as unsigned)), interval(9223372036854775807, cast(9223372036854775808 as unsigned)), interval(-9223372036854775807, cast(9223372036854775808 as unsigned))", "INT:0 INT:0 INT:0"),
+        ("interval(cast(9223372036854775806 as unsigned), 9223372036854775807), interval(cast(9223372036854775806 as unsigned), -9223372036854775807)", "INT:0 INT:1"),
+        ("interval(\"9007199254740991\", \"9007199254740992\")", "INT:0"),
+        ("interval(9007199254740992, \"9007199254740993\"), interval(\"9007199254740992\", 9007199254740993), interval(\"9007199254740992\", \"9007199254740993\")", "INT:1 INT:1 INT:1"),
+        ("INTERVAL(100, NULL, NULL, NULL, NULL, NULL, 100)", "INT:6"),
+        ("(INTERVAL(0,(1*5)/2)) + (INTERVAL(5,4,3))", "INT:2"),
+    ] {
+        assert_compare2_row_removed(select_list, former_expected);
+    }
 }
 
 #[test]
-fn test_compare_builtin_greatest_least_literal_rows() {
-    // integration_test.go:2874 / 2884 -- plain numeric and string families.
-    assert_eq!(chunk_e("greatest(1, 2, 3)"), "INT:3");
-    assert_eq!(chunk_e("least(1, 2, 3)"), "INT:1");
-    assert_eq!(chunk_e("greatest(\"a\", \"b\", \"c\")"), "STR:c");
-    assert_eq!(chunk_e("least(\"a\", \"b\", \"c\")"), "STR:a");
-    assert_eq!(chunk_e("greatest(1.1, 1.2, 1.3)"), "DEC:1.3");
-    assert_eq!(chunk_e("least(1.1, 1.2, 1.3)"), "DEC:1.1");
-    // String signature when ANY argument is a string; numerics stringify.
-    assert_eq!(chunk_e("greatest(\"123a\", 1, 2)"), "STR:2");
-    assert_eq!(chunk_e("least(\"123a\", 1, 2)"), "STR:1");
-    // Temporal-typed arguments use the temporal signature; bare strings then
-    // parse as time values ("234" reads as year 234 of the current era).
-    assert_eq!(
-        chunk_e(
-            r#"greatest(cast("2017-01-01" as datetime), "123", "234", cast("2018-01-01" as date))"#
+fn compare_builtin_greatest_least_oracles_now_contract() {
+    for (expr, former_expected) in [
+        ("greatest(1, 2, 3)", "INT:3"),
+        ("least(1, 2, 3)", "INT:1"),
+        ("greatest(\"a\", \"b\", \"c\")", "STR:c"),
+        ("least(\"a\", \"b\", \"c\")", "STR:a"),
+        ("greatest(1.1, 1.2, 1.3)", "DEC:1.3"),
+        ("least(1.1, 1.2, 1.3)", "DEC:1.1"),
+        ("greatest(\"123a\", 1, 2)", "STR:2"),
+        ("least(\"123a\", 1, 2)", "STR:1"),
+        (
+            r#"greatest(cast("2017-01-01" as datetime), "123", "234", cast("2018-01-01" as date))"#,
+            "STR:234",
         ),
-        "STR:234"
-    );
-    assert_eq!(
-        chunk_e(
-            r#"least(cast("2017-01-01" as datetime), "123", "234", cast("2018-01-01" as date))"#
+        (
+            r#"least(cast("2017-01-01" as datetime), "123", "234", cast("2018-01-01" as date))"#,
+            "STR:123",
         ),
-        "STR:123"
-    );
-    // One NULL argument propagates (integration_test.go:2876/2886).
-    assert_eq!(
-        chunk_e(r#"greatest(cast("2017-01-01" as date), "123", null)"#),
-        "NULL"
-    );
-    assert_eq!(
-        chunk_e(r#"least(cast("2017-01-01" as date), "123", null)"#),
-        "NULL"
-    );
-    //
-    // go-parity-gap: the companion `show warnings` assertions at
-    // integration_test.go:2881/2890 expect three `Warning 1292 Incorrect time
-    // value: '123'/'234'` rows from these selects. Rust's greatest/least
-    // answers match the values above but do not raise those statements'
-    // warning trail yet; the VALUE rows here are pinned, the warning rows are
-    // not asserted anywhere on the Rust side.
+        (
+            r#"greatest(cast("2017-01-01" as date), "123", null)"#,
+            "NULL",
+        ),
+        (r#"least(cast("2017-01-01" as date), "123", null)"#, "NULL"),
+    ] {
+        assert_compare2_row_removed(expr, former_expected);
+    }
 }
 
 #[test]

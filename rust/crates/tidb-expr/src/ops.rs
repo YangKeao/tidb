@@ -1156,17 +1156,12 @@ fn time_compare_ordering(
 /// returns, `String`/`Bytes` by its top guard, and `Raw`/`VectorFloat32` by
 /// the guard added for them; every remaining kind -- including `Enum`,
 /// `Set`, `Bit`, `BinaryLiteral`, `Time`, `Duration`, `Json` -- has an arm in
-/// `Datum::to_decimal`, so the `.expect()` cannot fire. `extremum` is the
-/// other caller, and it reaches these only after `eval_binary` has already
-/// accepted the same values.
+/// `Datum::to_decimal`, so the `.expect()` cannot fire.
 ///
 /// This is a proof about CALLERS, so it lapses if someone calls these from
-/// somewhere new -- which is exactly what happened to
-/// [`to_f64_with_mysql_string`], formerly reached from deleted math/string/info
-/// families and still from `builtin_ext::compare2` on datums these guards
-/// never saw. That function no longer relies on a caller proof at all: it
-/// returns a `Result` and lets `Datum::to_f64` decide, per its own audit
-/// table. `to_decimal` still rests on the argument above.
+/// somewhere new. [`to_f64_with_mysql_string`] no longer relies on a caller
+/// proof at all: it returns a `Result` and lets `Datum::to_f64` decide, per its
+/// own audit table. `to_decimal` still rests on the argument above.
 pub(crate) fn to_decimal(v: Datum) -> Decimal {
     match v {
         Datum::Decimal(d) => d,
@@ -1663,12 +1658,13 @@ mod tests {
             )))
         );
         assert_eq!(log.taken(), vec![]);
-        assert!(
-            crate::builtin_ext::dispatch("INTERVAL", &[Datum::Int(1), s("12abc")], &log)
-                .expect("dispatches")
-                .is_ok()
+        assert_eq!(
+            crate::func::eval_func_values_in("INTERVAL", &[Datum::Int(1), s("12abc")], &log),
+            Some(Err(EvalError::Unsupported(
+                "native LEAST/GREATEST/INTERVAL evaluation was removed; TiKV engine required"
+            )))
         );
-        assert_eq!(log.taken(), vec![truncated("12abc")]);
+        assert_eq!(log.taken(), vec![]);
         assert!(matches!(
             crate::func::eval_func_values_in("FORMAT_BYTES", &[s("12abc")], &log),
             Some(Err(EvalError::Unsupported(_)))
@@ -1816,11 +1812,10 @@ mod tests {
     /// The SAME unclaimed kinds, reached through the FUNCTION callers rather
     /// than through `eval_binary`.
     ///
-    /// `eval_binary`'s guard above is a proof about one caller, and
-    /// `to_f64_with_mysql_string` historically had unguarded math, string and
-    /// info-family callers; the retained `builtin_ext::compare2` path is the
-    /// remaining relevant caller. Those removed paths used to read a vector as
-    /// `0.0` -- `FORMAT_BYTES(vec)` answered `0 bytes`. TiDB errors on all of
+    /// `eval_binary`'s guard above is a proof about one caller, while
+    /// `to_f64_with_mysql_string` historically had unguarded math, string,
+    /// info and comparison-family callers. Those removed paths used to read a
+    /// vector as `0.0` -- `FORMAT_BYTES(vec)` answered `0 bytes`. TiDB errors on all of
     /// these (`SQRT(VEC_FROM_TEXT('[1,2]'))`, `FIELD(1, ...)`,
     /// `INTERVAL(1, ...)`, `FORMAT_BYTES(...)`, `FORMAT(..., 2)` -- captured,
     /// each one `ERR`), and the enum/ordinal controls beside them must keep
@@ -1869,13 +1864,14 @@ mod tests {
             crate::func::eval_func_values_in("FORMAT_BYTES", &[vector()], &crate::NoColumns),
             Some(Err(EvalError::Unsupported(_)))
         ));
-        assert!(crate::builtin_ext::dispatch(
-            "INTERVAL",
-            &[Datum::Int(1), vector()],
-            &crate::NoColumns
-        )
-        .expect("dispatches")
-        .is_err());
+        assert!(matches!(
+            crate::func::eval_func_values_in(
+                "INTERVAL",
+                &[Datum::Int(1), vector()],
+                &crate::NoColumns
+            ),
+            Some(Err(EvalError::Unsupported(_)))
+        ));
 
         // CONTROLS: the kinds that DO convert keep TiDB's value. `'8'` is
         // ordinal 2 of `enum('9','8','7')`, and `gorun` reads it as the
