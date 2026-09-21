@@ -570,6 +570,33 @@ pub(super) fn binary_literal_type(byte_len: usize, unsigned: bool) -> FieldType 
 ///
 pub(crate) fn builtin_return_type(name: &str, args: &[Expression]) -> Option<FieldType> {
     let mut ft = builtin_return_type_before_ret_tp(name, args)?;
+    // These string functions are strictly NULL-propagating. Preserve the
+    // NOT NULL provenance that a folded, context-independent non-NULL constant
+    // had before native folding was removed. Do not propagate a column's flag:
+    // Go does not include these functions in its not-null-on-not-null set.
+    if matches!(
+        name,
+        "upper"
+            | "ucase"
+            | "lower"
+            | "lcase"
+            | "left"
+            | "right"
+            | "reverse"
+            | "replace"
+            | "strcmp"
+            | "ascii"
+            | "bit_length"
+            | "substring_index"
+    ) && args.iter().all(|arg| {
+        arg.const_level() == crate::expression::ConstLevel::STRICT
+            && (matches!(arg, Expression::Constant(constant) if !matches!(constant.value, Datum::Null))
+                || arg
+                    .static_type()
+                    .is_some_and(|ty| ty.has_flag(tidb_datatype::FieldTypeFlags::NOT_NULL)))
+    }) {
+        ft.add_flags(tidb_datatype::FieldTypeFlags::NOT_NULL);
+    }
     promote_wide_string_result(&mut ft);
     Some(ft)
 }

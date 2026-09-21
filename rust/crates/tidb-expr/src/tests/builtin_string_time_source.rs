@@ -916,8 +916,7 @@ fn test_string_right() {
         (r"right('', 2)", "STR:"),
         (r"right(null, 2)", "NULL"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
-        assert_eq!(chunk_e(expr), want, "{expr}");
+        assert_engine_string2_value(expr, want);
     }
 }
 

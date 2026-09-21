@@ -1957,26 +1957,34 @@ impl ScalarFunction {
             let is_owner = ctx.ddl_owner_info()?;
             return Ok(Datum::Int(i64::from(is_owner)));
         }
-        // The collation-aware string builtins. Go gives each of these a
-        // `baseBuiltinFunc.collator` taken from the derived result collation
-        // (`builtinLocate2ArgsUTF8Sig`, `builtinInstrUTF8Sig`,
-        // `builtinStrcmpSig`), so `INSTR('ABC' COLLATE utf8mb4_general_ci, 'b')`
-        // is 2 while the `utf8mb4_bin` form is 0. They are intercepted here,
-        // ahead of the values-only dispatch, because that dispatch sees values
-        // alone and cannot know which collation was derived.
+        // The remaining collation-aware builtins are intercepted ahead of the
+        // values-only dispatch because that dispatch cannot see the derived
+        // result collation. STRCMP was removed from this native path and is
+        // guarded at the entry boundary above.
         {
             let collation = self.derived_collation();
             match name {
-                // INSTR retains this helper until the remaining string owner
-                // is deleted; LOCATE itself is guarded and TiKV-only.
+                "locate" if matches!(self.args.len(), 2 | 3) => {
+                    let substr = self.args[0].eval(ctx, row)?;
+                    let str = self.args[1].eval(ctx, row)?;
+                    if self.args.len() == 3 {
+                        let position = self.args[2].eval(ctx, row)?;
+                        let position = crate::cast::cast_arg_as_int(
+                            &position,
+                            self.args[2].static_type(),
+                            ctx,
+                        )?;
+                        return crate::string_fn::locate_with_position(
+                            &[substr, str, position],
+                            collation,
+                        );
+                    }
+                    return crate::string_fn::locate(&substr, &str, collation);
+                }
                 "instr" if self.args.len() == 2 => {
                     let a = self.args[0].eval(ctx, row)?;
                     let b = self.args[1].eval(ctx, row)?;
                     return crate::string_fn::locate(&b, &a, collation);
-                }
-                "strcmp" if self.args.len() == 2 => {
-                    let vals = [self.args[0].eval(ctx, row)?, self.args[1].eval(ctx, row)?];
-                    return crate::string_fn::strcmp_with_collation(&vals, collation);
                 }
                 // Go `greatestFunctionClass`/`leastFunctionClass`: the
                 // ETString signature compares under `b.collation`, and

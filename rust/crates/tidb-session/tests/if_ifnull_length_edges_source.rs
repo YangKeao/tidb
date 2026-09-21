@@ -3,6 +3,8 @@
 //! string when the length exceeds the input.
 
 use tidb_session::Session;
+#[cfg(feature = "tikv-expr")]
+use tidb_session::TikvExpressionBackend;
 
 fn rows(session: &mut Session, sql: &str) -> String {
     match session.run(sql).unwrap() {
@@ -29,22 +31,40 @@ fn rows(session: &mut Session, sql: &str) -> String {
 #[test]
 fn control_and_length_edges() {
     let mut session = Session::new();
+    #[cfg(feature = "tikv-expr")]
+    session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
 
     assert_eq!(
-        rows(&mut session, "select if(1, 'a', 'b'), if(0, 'a', 'b'), if(null, 'a', 'b')"),
+        rows(
+            &mut session,
+            "select if(1, 'a', 'b'), if(0, 'a', 'b'), if(null, 'a', 'b')"
+        ),
         "s:a|s:b|s:b"
     );
     assert_eq!(
         rows(&mut session, "select ifnull(null, 7), ifnull(3, 7)"),
         "i:7|i:3"
     );
-    assert_eq!(
-        rows(&mut session, "select left('hello', -2), right('hello', -2)"),
-        "s:|s:"
-    );
-    assert_eq!(rows(&mut session, "select left('hello', 0)"), "s:");
-    assert_eq!(
-        rows(&mut session, "select left('hi', 10), right('hi', 10)"),
-        "s:hi|s:hi"
-    );
+    #[cfg(feature = "tikv-expr")]
+    {
+        let engine_before = session.tikv_expression_rows();
+        assert_eq!(
+            rows(&mut session, "select left('hello', -2), right('hello', -2)"),
+            "s:|s:"
+        );
+        assert_eq!(rows(&mut session, "select left('hello', 0)"), "s:");
+        assert_eq!(
+            rows(&mut session, "select left('hi', 10), right('hi', 10)"),
+            "s:hi|s:hi"
+        );
+        assert!(session.tikv_expression_rows() > engine_before);
+    }
+    #[cfg(not(feature = "tikv-expr"))]
+    {
+        let error = session
+            .run("select left('hello', 1), right('hello', 1)")
+            .expect_err("native LEFT/RIGHT kernels are deleted")
+            .to_string();
+        assert!(error.contains("native string2 evaluation was removed; TiKV engine required or function unsupported"), "{error}");
+    }
 }

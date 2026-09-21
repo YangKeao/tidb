@@ -83,9 +83,26 @@ pub fn requires_string2_engine(sql: &str) -> bool {
         return false;
     };
     collector.binary_find_in_set
-        || ["SUBSTRING", "SUBSTR", "MID", "LOCATE", "LTRIM", "RTRIM"]
-            .iter()
-            .any(|name| collector.names.contains(*name))
+        || [
+            "SUBSTRING",
+            "SUBSTR",
+            "MID",
+            "ASCII",
+            "BIT_LENGTH",
+            "UPPER",
+            "UCASE",
+            "LOWER",
+            "LCASE",
+            "LEFT",
+            "RIGHT",
+            "REVERSE",
+            "REPLACE",
+            "STRCMP",
+            "LTRIM",
+            "RTRIM",
+        ]
+        .iter()
+        .any(|name| collector.names.contains(*name))
 }
 
 pub fn requires_inet_engine(sql: &str) -> bool {
@@ -177,7 +194,17 @@ pub fn expected_removed_marker(sql: &str) -> Option<&'static str> {
         "SUBSTRING",
         "SUBSTR",
         "MID",
-        "LOCATE",
+        "ASCII",
+        "BIT_LENGTH",
+        "UPPER",
+        "UCASE",
+        "LOWER",
+        "LCASE",
+        "LEFT",
+        "RIGHT",
+        "REVERSE",
+        "REPLACE",
+        "STRCMP",
         "FORMAT",
         "EXPORT_SET",
         "LTRIM",
@@ -237,6 +264,29 @@ fn markers_come_from_parsed_function_nodes_not_text() {
         assert_eq!(expected_removed_marker(sql), Some(INET_REMOVED), "{sql}");
     }
     assert!(!requires_inet_engine("select 'inet_aton(1.2.3.4)'"));
+    for sql in [
+        "select ascii('a')",
+        "select bit_length('a')",
+        "select upper('a')",
+        "select ucase('a')",
+        "select lower('A')",
+        "select lcase('A')",
+        "select left('abc', 1)",
+        "select right('abc', 1)",
+        "select reverse('abc')",
+        "select replace('abc', 'a', 'x')",
+        "select strcmp('a', 'b')",
+    ] {
+        assert!(requires_string2_engine(sql), "{sql}");
+        assert_eq!(expected_removed_marker(sql), Some(STRING2_REMOVED), "{sql}");
+    }
+    assert!(!requires_string2_engine(
+        "select 'upper(a)', 1 /* ascii(x) */"
+    ));
+    for sql in ["select instr('abc', 'b')", "select locate('b', 'abc')"] {
+        assert!(!requires_string2_engine(sql), "{sql}");
+        assert_eq!(expected_removed_marker(sql), None, "{sql}");
+    }
     for sql in [
         "select concat('a', 'b')",
         "select concat_ws(',', 'a', 'b')",

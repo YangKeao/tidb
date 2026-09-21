@@ -2,10 +2,13 @@
 
 ## Revisions and decision
 
-This checkpoint now includes the tenth native INET-conversion deletion tranche. The revision and publication text below is retained as historical
-context for the preceding packet-string tranche; it is not a fresh publication
-or hosted-CI claim. TiDB builds its pinned engine rather than arbitrary TiKV
-HEAD, and this document does not establish TiKV server compatibility.
+This checkpoint now includes the eleventh native string-core deletion tranche.
+Its semantic-gap companion is published on the YangKeao TiKV fork at
+`0193236`; TiDB still builds pinned engine
+`db9c7f08d954fef02519b86a55c2d72cf72ef697`, not that documentation HEAD.
+The revision and publication text below is retained as historical context for
+earlier tranches; this is not a hosted-CI claim and does not establish TiKV
+server compatibility.
 
 Historical sixth-tranche revision context: that checkpoint built from published
 TiDB `e76c191` and TiKV documentation HEAD `4c372b8`; TiDB actually built pinned
@@ -14,26 +17,30 @@ Only YangKeao personal forks had been used for that publication. This paragraph
 is retained as history, not a current publication or hosted-CI result.
 
 **Do not switch the default yet. Physical deletion is deliberately in
-progress.** Ten tranches have now removed the complete native math-kernel
+progress.** Eleven tranches have now removed the complete native math-kernel
 folder plus crypto/encryption, vector, JSON depth/storage, both regexp modules,
 the packet-limited string module, miscellaneous kernels, `builtin_ext/string2.rs`,
-the packet-context string tail, and all four INET conversion kernels, together
-with their residual dispatch. `CONCAT`, `CONCAT_WS`, `INSERT_FUNC`, `MAKE_SET`,
+the packet-context string tail, all four INET conversion kernels, and the native
+case conversion/ASCII/BIT_LENGTH/LEFT/RIGHT/REVERSE/REPLACE/STRCMP kernels,
+together with their residual dispatch. `CONCAT`, `CONCAT_WS`, `INSERT_FUNC`, `MAKE_SET`,
 and `FROM_BASE64` are now
 explicit contractions because the shared facade does not transport their
 `max_allowed_packet` and warning policy. Earlier miscellaneous/string2
 contractions remain in force. `INET_ATON`, `INET_NTOA`, `INET6_ATON`, and
 `INET6_NTOA` are retained only through TiKV; malformed INET_ATON/INET6_ATON
 return NULL instead of the production Go kernels' error, an explicit semantic
-gap. This invalidates older
-retained/native claims for those names without claiming
-full compatibility.
+gap. The eleventh tranche makes UPPER/UCASE, LOWER/LCASE, ASCII, BIT_LENGTH,
+LEFT/RIGHT, REVERSE, REPLACE and STRCMP TiKV-only for admitted shapes; nested
+CONVERT/ELT, SET-subquery REPLACE and mixed CHAR_FUNC/STRCMP shapes are explicit
+contractions. LOCATE/INSTR/POSITION remain native because the embedded TiKV
+path currently loses `utf8mb4_bin` case sensitivity. This invalidates older
+retained/native claims for the deleted names without claiming full compatibility.
 The earlier refusal-intolerant corpus still exposed 59 distinct first-refused
 expressions, so the migration objective remains active/incomplete.
 
 ## Acceptance status for the six requested items
 
-The six-item acceptance framework is unchanged by the tenth deletion tranche;
+The six-item acceptance framework is unchanged by the eleventh deletion tranche;
 none of the rows below should be read as completion.
 
 | Item | Established foundation | Remaining acceptance work |
@@ -52,11 +59,12 @@ counts and overbroad lazy/datatype milestone wording.
 
 ## Validation results
 
-Current tenth-tranche gates: runtime **30 tests / 323 receipts / 2072 engine
+Current eleventh-tranche gates: runtime **30 tests / 323 receipts / 2072 engine
 rows / 160 borrowed rows / zero native fallbacks**; static **384 rows / 216
-admitted / 168 excluded / 0 missing**. The source corpus is **36 `*_source.rs`
-files / 447 tests**. The expression library and external suites pass **1186 +
-77** tests; expression/query differential gates pass. Feature-off test
+admitted / 168 excluded / 0 missing**. The source corpus remains **36
+`*_source.rs` files / 447 tests**. The expression library and external suites
+pass **1185 + 77** tests; expression/query differential gates pass, and eight
+focused session tests pass in both feature modes. Feature-off expression-library
 compilation remains red on previously documented unguarded engine-only test
 imports. These facts do not establish hosted CI, an end-to-end SQL demo, full
 compatibility, or TiKV server compatibility.
@@ -90,6 +98,9 @@ Logs are in `/home/agent/tidb/expression-reuse/`.
 | `packet-tail-integration-{native2,copying}.log` | native: 181 carried divergences; Copying: 416240 engine rows / 167 carried divergences | Full replay remains intentionally red; the packet-tail deletion adds explicit contractions without hiding the two retained SUBSTRING routing failures or unrelated divergences. |
 | `inet-lib-final.log` + `inet-test-all-final.log` + `inet-result-diffs-final.log` | 1186 expression library + 77 external tests and expression/query differential gates passed | Native INET converter kernels/dispatch are absent; source vectors assert exact native refusal or independent engine-only values without fallback. Existing runtime fixtures record engine rows for all four converters, while query diffs require positive row deltas for IPv4 converters. |
 | `inet-integration-{native,copying}.log` | native: 181 carried divergences; Copying: 416241 engine rows / 167 carried divergences | Full replay remains intentionally red; admitted INET execution does not mask engine errors or unrelated divergences. |
+| `string-core-lib-review-final.log` + `string-core-test-all-final.log` | 1185 expression library + 77 external tests passed; 99 library tests ignored | Eleven native string kernels and all residual dispatch are absent; LOCATE/INSTR/POSITION are deliberately retained and tested. |
+| `string-core-session-feature-{on,off}-final.log` + `string-core-result-diffs-final.log` | eight focused session tests passed in each feature mode; expression/query differential gates passed | Feature-on rows require TiKV counters; feature-off rows preserve retained functions and assert exact refusal for deleted names. |
+| `string-core-integration-{native-final,copying-final3}.log` | native: 181 carried divergences; Copying: 416245 engine rows / 167 carried divergences | Shape-specific SET/CHAR_FUNC contractions are exact and cannot classify standalone REPLACE/STRCMP/LOCATE failures; the replay remains intentionally red. |
 | `native-misc-lint.log` | exit 0 | Repository `make -j1 lint` passed under the memory guard. |
 | current static gate | Self-check and check pass | 384 declaration rows, 216 admitted / 168 excluded, zero missing registry/synthesized names. Static candidates are not execution coverage. |
 | `checkpoint-engine-only.log` | **1163 passed / 61 failed / 99 ignored**, exit 101 | All 61 failed sections report adapter refusal; 59 distinct first-refused expressions. This is an incomplete cutover gate. |

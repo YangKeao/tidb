@@ -79,29 +79,37 @@ fn substring_alias_and_boundary_rows_are_explicitly_contracted() {
 }
 
 #[test]
-fn locate_and_find_in_set_collation_rows_are_explicitly_contracted() {
-    for (name, vals) in [
-        ("LOCATE", vec![s("bar"), s("foobarbar")]),
-        ("LOCATE", vec![s("bar"), s("foobarbar"), Datum::Int(5)]),
+fn locate_is_retained_while_find_in_set_collation_rows_are_contracted() {
+    for (vals, expected) in [
+        (vec![s("bar"), s("foobarbar")], Datum::Int(4)),
+        (vec![s("bar"), s("foobarbar"), Datum::Int(5)], Datum::Int(7)),
         (
-            "LOCATE",
             vec![
                 Datum::new_bytes(vec![0xff]),
                 Datum::new_bytes(vec![0, 0xff]),
             ],
+            Datum::Int(2),
         ),
-        ("FIND_IN_SET", vec![s("b"), s("a,b,c")]),
-        ("FIND_IN_SET", vec![s("a,b"), s("a,b,c")]),
-        (
-            "FIND_IN_SET",
-            vec![
-                Datum::new_bytes(vec![0xff]),
-                Datum::new_bytes(vec![0, b',', 0xff]),
-            ],
-        ),
-        ("FIND_IN_SET", vec![Datum::Null, s("a,b")]),
     ] {
-        assert_values(name, &vals, &crate::NoColumns);
+        assert_eq!(
+            crate::func::eval_func_values_in("LOCATE", &vals, &crate::NoColumns),
+            Some(Ok(expected.clone()))
+        );
+        assert_eq!(
+            crate::func::eval_func_values("LOCATE", &vals, &crate::NoColumns),
+            Some(Ok(expected))
+        );
+    }
+    for vals in [
+        vec![s("b"), s("a,b,c")],
+        vec![s("a,b"), s("a,b,c")],
+        vec![
+            Datum::new_bytes(vec![0xff]),
+            Datum::new_bytes(vec![0, b',', 0xff]),
+        ],
+        vec![Datum::Null, s("a,b")],
+    ] {
+        assert_values("FIND_IN_SET", &vals, &crate::NoColumns);
     }
 }
 

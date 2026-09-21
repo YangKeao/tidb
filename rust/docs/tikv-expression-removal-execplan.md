@@ -217,6 +217,27 @@ remain in the workspace.
       intentionally red 181 native / 167 Copying divergence diagnostic;
       Copying executes 416241 engine rows. This is not a final native-removal or
       full-compatibility claim.
+- [x] Eleventh physical-deletion tranche: removed the native `UPPER`/`UCASE`,
+      `LOWER`/`LCASE`, `ASCII`, `BIT_LENGTH`, `LEFT`, `RIGHT`, `REVERSE`,
+      `REPLACE`, and `STRCMP` kernels and every residual value/scalar dispatch.
+      Four native entry boundaries reject those names before arity or child
+      evaluation; admitted standalone shapes execute only in TiKV. Independent
+      source values include both case aliases, Unicode/binary boundaries,
+      count edges, replacement and comparison NULL/coercion rows. Nested
+      `CONVERT USING`/`ELT`, SET-subquery REPLACE, and mixed CHAR_FUNC/STRCMP
+      shapes are explicit structured contractions rather than fallback. Strict
+      non-NULL constant provenance through these functions, plus Go-compatible
+      CAST propagation, preserves view metadata without falsely marking a
+      function over a NOT NULL column as non-nullable or recreating value kernels. `LOCATE`,
+      `INSTR`, and `POSITION` remain native: an engine probe returns 2 for
+      `INSTR('ABC' COLLATE utf8mb4_bin,'b')` where Go/native return 0, so the
+      unresolved RPN collator-selection gap is documented rather than silently
+      accepted. Validation is 1185 expression library tests, 77 external tests,
+      eight focused session tests in both feature modes, expression/query diffs,
+      runtime 30 tests / 323 receipts / 2072 engine rows / 160 borrowed rows,
+      and static 216 admitted / 168 excluded / 0 missing. The broad replay is
+      still an intentionally red 181-native / 167-Copying diagnostic; Copying
+      executes 416245 engine rows. This is not a compatibility claim.
 - [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
       in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected
       borrowed facade was used by the adapter while the manifest still pinned
@@ -514,6 +535,13 @@ remain in the workspace.
 ## Surprises & Discoveries
 
 
+The eleventh tranche exposed a non-obvious LOCATE/INSTR boundary: TiKV's
+UTF-8 kernel lowercases only for a case-insensitive collator, but the embedded
+path still returns 2 for `INSTR('ABC' COLLATE utf8mb4_bin,'b')` instead of 0.
+The exact metadata-loss point is not yet isolated, so LOCATE, INSTR and POSITION
+remain native and an engine regression probe keeps the gap visible. This avoids
+changing TiKV server behavior speculatively.
+
 The parity target is narrower than "all of MySQL": it is whatever the native
 evaluator can do today. Functions the Rust port never implemented are out of
 scope for the removal, because deleting code cannot lose behavior that does
@@ -719,6 +747,15 @@ every string/int kernel accept `Set` without a new ordinary signature.
   Rationale: warnings, RNG draws and lock side effects are not replayable.
 - Decision: engine wording does not have to match Go; error-versus-success
   classification does. Rationale: agreed scope with the requester.
+- Decision: retain LOCATE/INSTR/POSITION until the embedded `utf8mb4_bin`
+  collator-selection gap is isolated. Rationale: the TiKV kernel is conditional
+  on its selected collator, so changing server-side search semantics based only
+  on the embedded symptom would be speculative.
+- Decision: retain strict-constant result-type/nullability provenance and Go's
+  CAST propagation while deleting value kernels, but do not infer NOT NULL from
+  string-function columns. Rationale: planner/view metadata is bridge structure;
+  native constant folding must not be required to preserve a constant view,
+  while Go intentionally leaves `UPPER(not_null_column)` nullable.
 
 
 ## Outcomes & Retrospective

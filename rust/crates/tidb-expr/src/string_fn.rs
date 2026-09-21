@@ -11,185 +11,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Remaining native string builtin helpers (`LENGTH`, `UPPER`/`LOWER`,
-//! `LEFT`/`RIGHT`), dispatched from `crate::func::eval_func`,
-//! plus `position`/`trim_value` below. `POSITION(a IN b)` and `TRIM(...)`
-//! have dedicated AST grammars; the row evaluator handles those nodes
-//! directly, while the production rewriter lowers them to scalar functions.
+//! Remaining native string/radix builtin helpers. Case conversion, LEFT/RIGHT,
+//! REVERSE, REPLACE, STRCMP, ASCII, and BIT_LENGTH were physically removed;
+//! retained lowerable shapes execute only through TiKV. LOCATE/INSTR/POSITION
+//! and `TRIM(...)` retain native helpers for later semantic-gap work.
 
 use crate::coerce::{coerce_str, coerce_str_bytes};
 use crate::ops::to_f64_with_mysql_string;
-use crate::string_signature::StrUnits;
 use crate::{Datum, EvalError};
-use tidb_datatype::{
-    find_encoding, get_default_collation, Collation, FieldType, GoString, TransformOp,
-};
-use tidb_hack::{go_to_lower, go_to_upper};
-
-/// `LOWER`/`UPPER`: text signatures apply Unicode case mapping while binary
-/// signatures return the original bytes unchanged (the source selects those
-/// signatures from the argument FieldType before evaluation).  Numeric values
-/// still pass through the ordinary ETString conversion.
-pub(crate) fn case_convert(vals: &[Datum], upper: bool) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad case-conversion arity"));
-    }
-    match &vals[0] {
-        Datum::Null => Ok(Datum::Null),
-        // `builtinUpperSig`/`builtinLowerSig` return the argument untouched --
-        // not even ASCII-folded -- for every binary-charset spelling, which is
-        // what `is_binary_str` decides in one place.
-        value if crate::string_signature::is_binary_str(value) => Ok(Datum::new_bytes(
-            coerce_str_bytes(value)?.expect("non-NULL value has bytes"),
-        )),
-        value => {
-            let Some(bytes) = coerce_str_bytes(value)? else {
-                return Ok(Datum::Null);
-            };
-            // Go's charset encoders receive a Go string. Their Unicode case
-            // path ranges over it, so each malformed byte becomes one
-            // RuneError before case mapping rather than causing an error or
-            // being collapsed with an adjacent malformed byte.
-            let text = GoString::from(bytes).to_utf8_lossy_go();
-            Ok(Datum::new_string(if upper {
-                go_simple_case(&text, true)
-            } else {
-                go_simple_case(&text, false)
-            }))
-        }
-    }
-}
-
-/// TiDB maps case with `strings.ToUpper`/`ToLower`
-/// (`parser/charset/encoding_base.go`), which walk the string applying the
-/// SIMPLE per-rune mappings `unicode.ToUpper`/`ToLower`. Rust's
-/// `str::to_uppercase`/`to_lowercase` apply the FULL mappings instead,
-/// which diverge on 103 code points: `ß` expands to "SS", the ligatures
-/// (ﬁ, ﬄ) and Turkish `İ` grow extra characters, and the 27 Greek
-/// iota-subscript vowels change to a DIFFERENT single vowel
-/// (U+1FA4 -> U+1FAC) rather than expanding.
-///
-/// `tidb_hack::go_to_upper`/`go_to_lower` reproduce Go's simple tables
-/// exactly; see their docs for the per-code-point argument.
-fn go_simple_case(text: &str, upper: bool) -> String {
-    if upper {
-        go_to_upper(text)
-    } else {
-        go_to_lower(text)
-    }
-}
-
-#[cfg(test)]
-mod case_convert_tests {
-    use super::case_convert;
-    use crate::Datum;
-    use tidb_datatype::{Collation, MysqlEnum};
-
-    #[test]
-    fn enum_names_follow_the_selected_binary_or_unicode_signature() {
-        let binary = Datum::new_enum(MysqlEnum::new([0xff], 1), Collation::Binary);
-        assert_eq!(
-            case_convert(&[binary], true),
-            Ok(Datum::new_bytes(vec![0xff]))
-        );
-
-        let text = Datum::new_enum(MysqlEnum::new([0xe2, 0x82], 1), Collation::Utf8Mb4Bin);
-        assert_eq!(
-            case_convert(&[text], true),
-            Ok(Datum::new_string("\u{fffd}\u{fffd}"))
-        );
-    }
-}
-
-/// `ASCII(s)`: return the first byte of the evaluated string, not the first
-/// Unicode scalar value. Go's `EvalString` preserves binary arguments, so
-/// this uses byte-preserving coercion instead of a UTF-8-checked one.
-pub(crate) fn ascii(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(bytes) = coerce_str_bytes(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int(i64::from(bytes.first().copied().unwrap_or(0))))
-}
-
-/// `BIT_LENGTH(s)`: count evaluated bytes and multiply by eight. This follows
-/// Go's `len(val)` contract for ordinary UTF-8 and binary values alike.
-pub(crate) fn bit_length(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(bytes) = coerce_str_bytes(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int((bytes.len() as i64) * 8))
-}
-
-/// `LEFT`/`RIGHT`: the first or last `n` units, where `builtinLeftSig` and
-/// `builtinRightSig` count BYTES for a binary argument (preserving invalid
-/// UTF-8) and their `...UTF8Sig` twins count CHARACTERS. `NULL` if either
-/// argument is `NULL`.
-pub(crate) fn str_take(vals: &[Datum], from_left: bool) -> Result<Datum, EvalError> {
-    if vals.len() != 2 {
-        return Err(EvalError::Unsupported("bad LEFT/RIGHT arguments"));
-    }
-    let n = match &vals[1] {
-        Datum::Null => return Ok(Datum::Null),
-        value => crate::cast::to_i64_signed(value).max(0) as usize,
-    };
-    let Some(units) = StrUnits::of(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    let (start, end) = if from_left {
-        (0, n.min(units.len()))
-    } else {
-        (units.len().saturating_sub(n), units.len())
-    };
-    Ok(units.pack(units.slice(start, end).to_vec()))
-}
-
-/// `REVERSE(s)`: the units of `s` in the opposite order. Go's
-/// `reverseFunctionClass.getFunction` selects `builtinReverseSig`
-/// (`reverseBytes`) for a binary or BIT argument and `builtinReverseUTF8Sig`
-/// (`reverseRunes`) otherwise, so reversing a binary value must NOT permute
-/// the bytes of a multi-byte character back into a valid one.
-pub(crate) fn reverse(vals: &[Datum]) -> Result<Datum, EvalError> {
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad REVERSE arity"));
-    };
-    let Some(units) = StrUnits::of(value)? else {
-        return Ok(Datum::Null);
-    };
-    let mut out = Vec::with_capacity(units.bytes().len());
-    for unit in units.units().rev() {
-        out.extend_from_slice(unit);
-    }
-    Ok(units.pack(out))
-}
+use tidb_datatype::{find_encoding, get_default_collation, Collation, FieldType, TransformOp};
 
 /// `POSITION(substr IN str)`: the 1-indexed, character-based position of
 /// `substr`'s first occurrence in `str`; `0` if not found; an empty
-/// `substr` always matches at position `1` (confirmed via `gorun`).
-/// `NULL` if either operand is `NULL`.
+/// `substr` always matches at position `1`. `NULL` propagates.
 pub(crate) fn position(substr: Option<String>, str: Option<String>) -> Datum {
     position_with_collation(substr, str, tidb_datatype::Collation::Utf8Mb4Bin)
 }
 
 /// `LOCATE(substr, str)` / `INSTR(str, substr)` / `POSITION(substr IN str)`
-/// over the raw arguments, which is what selects the signature.
-///
-/// `locateFunctionClass.getFunction` picks `builtinLocate2ArgsSig` over
-/// `builtinLocate2ArgsUTF8Sig` when the function's DERIVED collation is
-/// `binary` (`bf.collation == charset.CollationBin`), and that signature is a
-/// plain `strings.Index`: a 1-based BYTE offset, with no collation folding.
-/// The UTF-8 signature reports a 1-based CHARACTER offset instead, so the two
-/// disagree for any haystack with a multi-byte prefix.
-///
-/// `collation` is the derived collation where the caller has one; the AST
-/// evaluator has no derivation pass and passes `binary` exactly when
-/// [`crate::string_signature::is_binary_str`] holds for an argument, which is
-/// the same condition that makes Go's aggregate `binary`.
+/// over the raw arguments, selecting byte offsets only for binary collation.
 pub(crate) fn locate(
     substr: &Datum,
     str: &Datum,
@@ -214,8 +54,81 @@ pub(crate) fn locate(
     Ok(Datum::Int(found.map_or(0, |index| index as i64 + 1)))
 }
 
-/// The collation `LOCATE`/`INSTR` derive when no derivation pass ran: Go's
-/// aggregate is `binary` as soon as one string argument is binary.
+/// `LOCATE(substr, str, pos)` under the selected byte or character collation.
+pub(crate) fn locate_with_position(
+    vals: &[Datum],
+    collation: tidb_datatype::Collation,
+) -> Result<Datum, EvalError> {
+    let [substr, str, pos] = vals else {
+        return Err(EvalError::Unsupported("bad LOCATE arity"));
+    };
+    let binary = collation == tidb_datatype::Collation::Binary;
+    let needle_opt = if binary {
+        coerce_str_bytes(substr)?.map(|bytes| bytes.to_vec())
+    } else {
+        coerce_str(substr)?.map(|text| text.into_bytes())
+    };
+    let hay_opt = if binary {
+        coerce_str_bytes(str)?.map(|bytes| bytes.to_vec())
+    } else {
+        coerce_str(str)?.map(|text| text.into_bytes())
+    };
+    let (Some(needle), Some(hay)) = (needle_opt, hay_opt) else {
+        return Ok(Datum::Null);
+    };
+    let Some(position) = crate::arg_eval_type::eval_int(pos)? else {
+        return Ok(Datum::Null);
+    };
+    let start = position - 1;
+
+    if binary {
+        if start < 0 || start > hay.len() as i64 - needle.len() as i64 {
+            return Ok(Datum::Int(0));
+        }
+        if needle.is_empty() {
+            return Ok(Datum::Int(start + 1));
+        }
+        let found = hay[start as usize..]
+            .windows(needle.len())
+            .position(|window| window == needle.as_slice());
+        return Ok(Datum::Int(
+            found.map_or(0, |index| start + index as i64 + 1),
+        ));
+    }
+
+    let lower = tidb_datatype::is_ci_collation(collation.name());
+    let (needle, hay) = if lower {
+        (
+            tidb_mysql::to_lowercase(&String::from_utf8_lossy(&needle)).into_bytes(),
+            tidb_mysql::to_lowercase(&String::from_utf8_lossy(&hay)).into_bytes(),
+        )
+    } else {
+        (needle, hay)
+    };
+    let needle = String::from_utf8(needle)
+        .map_err(|_| EvalError::Unsupported("invalid UTF-8 LOCATE needle"))?;
+    let hay = String::from_utf8(hay)
+        .map_err(|_| EvalError::Unsupported("invalid UTF-8 LOCATE haystack"))?;
+    let needle: Vec<char> = needle.chars().collect();
+    let hay: Vec<char> = hay.chars().collect();
+    if start < 0 || start > hay.len() as i64 - needle.len() as i64 {
+        return Ok(Datum::Int(0));
+    }
+    if needle.is_empty() {
+        return Ok(Datum::Int(start + 1));
+    }
+    let slice: String = hay[start as usize..].iter().collect();
+    let window = needle.iter().collect::<String>();
+    for offset in 0..=(slice.chars().count() - needle.len()) {
+        let candidate: String = slice.chars().skip(offset).take(needle.len()).collect();
+        if collation.compare(candidate.as_bytes(), window.as_bytes()) == std::cmp::Ordering::Equal {
+            return Ok(Datum::Int(start + offset as i64 + 1));
+        }
+    }
+    Ok(Datum::Int(0))
+}
+
+/// The collation `LOCATE`/`INSTR` derive when no derivation pass ran.
 pub(crate) fn locate_collation(substr: &Datum, str: &Datum) -> tidb_datatype::Collation {
     if crate::string_signature::is_binary_str(substr) || crate::string_signature::is_binary_str(str)
     {
@@ -226,20 +139,6 @@ pub(crate) fn locate_collation(substr: &Datum, str: &Datum) -> tidb_datatype::Co
 }
 
 /// `LOCATE`/`INSTR`/`POSITION` under an explicit collation.
-///
-/// Go's `builtinLocate2ArgsUTF8Sig`/`builtinInstrUTF8Sig` search with the
-/// function's own collator, so a case-insensitive collation finds a
-/// case-folded occurrence: captured from TiDB,
-/// `INSTR('ABC' COLLATE utf8mb4_general_ci, 'b')` is 2 where the
-/// `utf8mb4_bin` form is 0. The position reported is a 1-based CHARACTER
-/// index into the haystack either way.
-///
-/// The window is compared by the collation rather than by bytes, which is
-/// what makes a folding collation match; a collation whose folding changes
-/// character COUNT (none this tier registers) would need a different scan.
-///
-/// A `binary` collation selects Go's OTHER signature -- byte offsets, not
-/// character ones -- and never reaches here: [`locate`] branches to it first.
 pub(crate) fn position_with_collation(
     substr: Option<String>,
     str: Option<String>,
@@ -266,49 +165,6 @@ pub(crate) fn position_with_collation(
     Datum::Int(0)
 }
 
-/// `REPLACE(str, from, to)`: every non-overlapping occurrence of `from` in
-/// `str` replaced by `to`. An empty `from` leaves `str` unchanged (matching
-/// MySQL, and avoiding a pathological empty-pattern replace). `NULL` if any
-/// argument is `NULL`.
-pub(crate) fn replace(vals: &[Datum]) -> Result<Datum, EvalError> {
-    let [value, from, to] = vals else {
-        return Err(EvalError::Unsupported("bad REPLACE arity"));
-    };
-    let (Some(s), Some(from), Some(to)) = (
-        coerce_str_bytes(value)?,
-        coerce_str_bytes(from)?,
-        coerce_str_bytes(to)?,
-    ) else {
-        return Ok(Datum::Null);
-    };
-    if from.is_empty() {
-        return Ok(string_result(value, s));
-    }
-    Ok(string_result(value, replace_bytes(&s, &from, &to)))
-}
-
-/// Replaces non-overlapping byte occurrences, matching Go's
-/// `strings.ReplaceAll` over an arbitrary Go string.  Keeping this byte based
-/// means binary arguments never pass through a lossy UTF-8 decode.
-fn replace_bytes(value: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(value.len());
-    let mut cursor = 0;
-    while cursor <= value.len() {
-        let Some(relative) = value[cursor..]
-            .windows(from.len())
-            .position(|window| window == from)
-        else {
-            out.extend_from_slice(&value[cursor..]);
-            break;
-        };
-        let start = cursor + relative;
-        out.extend_from_slice(&value[cursor..start]);
-        out.extend_from_slice(to);
-        cursor = start + from.len();
-    }
-    out
-}
-
 /// Preserve binary result semantics when the source string is binary; normal
 /// SQL strings retain the ordinary String datum/collation boundary.
 fn string_result(source: &Datum, bytes: Vec<u8>) -> Datum {
@@ -317,55 +173,6 @@ fn string_result(source: &Datum, bytes: Vec<u8>) -> Datum {
     } else {
         Datum::new_string(bytes)
     }
-}
-
-/// `STRCMP(a, b)`: `-1`/`0`/`1` under TiDB's default `utf8mb4_bin` PAD SPACE
-/// collation; a binary operand switches the source signature to the raw
-/// binary collation. `NULL` propagates from either operand.
-pub(crate) fn strcmp(vals: &[Datum]) -> Result<Datum, EvalError> {
-    let [left, right] = vals else {
-        return Err(EvalError::Unsupported("bad STRCMP arity"));
-    };
-    let (Some(a), Some(b)) = (coerce_str_bytes(left)?, coerce_str_bytes(right)?) else {
-        return Ok(Datum::Null);
-    };
-    let collation = if matches!(left, Datum::Bytes(_)) || matches!(right, Datum::Bytes(_)) {
-        tidb_datatype::Collation::Binary
-    } else {
-        left.collation()
-            .or_else(|| right.collation())
-            .unwrap_or(tidb_datatype::Collation::DEFAULT)
-    };
-    strcmp_under(&a, &b, collation)
-}
-
-/// `STRCMP` under the collation the expression derivation aggregated
-/// (Go `builtinStrcmpSig`, which compares with `b.collator`). Captured from
-/// TiDB: `STRCMP('a' COLLATE utf8mb4_general_ci, 'A' COLLATE
-/// utf8mb4_general_ci)` is 0 where the `utf8mb4_bin` form is 1.
-pub(crate) fn strcmp_with_collation(
-    vals: &[Datum],
-    collation: tidb_datatype::Collation,
-) -> Result<Datum, EvalError> {
-    let [left, right] = vals else {
-        return Err(EvalError::Unsupported("bad STRCMP arity"));
-    };
-    let (Some(a), Some(b)) = (coerce_str_bytes(left)?, coerce_str_bytes(right)?) else {
-        return Ok(Datum::Null);
-    };
-    strcmp_under(&a, &b, collation)
-}
-
-fn strcmp_under(
-    a: &[u8],
-    b: &[u8],
-    collation: tidb_datatype::Collation,
-) -> Result<Datum, EvalError> {
-    Ok(Datum::Int(match collation.compare(a, b) {
-        std::cmp::Ordering::Less => -1,
-        std::cmp::Ordering::Equal => 0,
-        std::cmp::Ordering::Greater => 1,
-    }))
 }
 
 /// `HEX(x)`: renders a numeric argument's implicit-integer bits as uppercase

@@ -1951,6 +1951,15 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
                 }
             }
             let arg = rewrite_expr_resolved(&cast.expr, resolver)?;
+            // Go's CAST result preserves NOT NULL when its source is proven
+            // non-NULL. This must come from static metadata rather than native
+            // constant evaluation now that retained string kernels are gone.
+            if arg
+                .static_type()
+                .is_some_and(|ty| ty.has_flag(tidb_datatype::FieldTypeFlags::NOT_NULL))
+            {
+                ret_type.add_flags(tidb_datatype::FieldTypeFlags::NOT_NULL);
+            }
             // `CAST(x AS BINARY)` is Go's `funcPropAuto` binary-result arm:
             // a gbk-charset argument transcodes on the way in, which is why
             // `HEX(CAST(gbk_col AS BINARY))` reports the GBK bytes.

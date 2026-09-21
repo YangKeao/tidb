@@ -41,6 +41,11 @@ use tidb_ast::{QueryStmt, SelectField, Stmt};
 #[cfg(feature = "tikv-expr")]
 use tidb_session::{Session, StmtResult, TikvExpressionBackend};
 
+#[test]
+fn retained_locate_is_not_a_local_contraction() {
+    assert_eq!(expected_removed_marker("locate('b', 'abc')"), None);
+}
+
 fn corpus_dir() -> PathBuf {
     difftest_root().join("corpus").join("expr")
 }
@@ -153,7 +158,6 @@ fn expected_removed_marker(expr: &str) -> Option<&'static str> {
         "substring(",
         "substr(",
         "mid(",
-        "locate(",
         "format(",
         "export_set(",
         "ltrim(",

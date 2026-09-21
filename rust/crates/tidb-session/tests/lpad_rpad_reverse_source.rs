@@ -3,6 +3,8 @@
 //! with a negative count is empty.
 
 use tidb_session::Session;
+#[cfg(feature = "tikv-expr")]
+use tidb_session::TikvExpressionBackend;
 
 fn assert_packet_string_removed(session: &mut Session, sql: &str) {
     let error = session
@@ -39,6 +41,8 @@ fn rows(session: &mut Session, sql: &str) -> String {
 #[test]
 fn pad_reverse_repeat_edges() {
     let mut session = Session::new();
+    #[cfg(feature = "tikv-expr")]
+    session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
 
     for sql in [
         "select lpad('ab', 4, 'xy')",
@@ -49,8 +53,21 @@ fn pad_reverse_repeat_edges() {
         assert_packet_string_removed(&mut session, sql);
     }
 
-    // Multibyte-safe reversal.
-    assert_eq!(rows(&mut session, "select reverse('héllo')"), "s:olléh");
+    // Multibyte-safe reversal must execute in TiKV when available.
+    #[cfg(feature = "tikv-expr")]
+    {
+        let engine_before = session.tikv_expression_rows();
+        assert_eq!(rows(&mut session, "select reverse('héllo')"), "s:olléh");
+        assert!(session.tikv_expression_rows() > engine_before);
+    }
+    #[cfg(not(feature = "tikv-expr"))]
+    {
+        let error = session
+            .run("select reverse('héllo')")
+            .expect_err("native REVERSE kernel is deleted")
+            .to_string();
+        assert!(error.contains("native string2 evaluation was removed; TiKV engine required or function unsupported"), "{error}");
+    }
 
     assert_packet_string_removed(&mut session, "select repeat('a', -1), repeat('ab', 3)");
 }

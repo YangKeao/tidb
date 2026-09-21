@@ -173,6 +173,13 @@ pub(super) fn assert_string2_refusal(expr: &str) {
     assert_eq!(chunk, STRING2_REMOVED, "native chunk boundary: {expr}");
 }
 
+pub(super) fn assert_engine_string2_value(expr: &str, expected: &str) {
+    #[cfg(feature = "tikv-expr")]
+    assert_eq!(engine_e(expr), expected, "TiKV engine: {expr}");
+    let _ = expected;
+    assert_string2_refusal(expr);
+}
+
 fn chunk_e_with(expr: &str, ctx: &impl Columns) -> String {
     match chunk_case(expr, ctx) {
         Ok(value) => value.label(),
@@ -524,18 +531,11 @@ fn bit_length_source_vectors_preserve_utf8_byte_count() {
         ("'一二三'", "INT:72"),
         ("'一二三!'", "INT:80"),
     ] {
-        assert_eq!(
-            e(&format!("bit_length({input})")),
-            want,
-            "BIT_LENGTH({input})"
-        );
+        assert_engine_string2_value(&format!("bit_length({input})"), want);
     }
 
     // Go's len(val) counts binary bytes without UTF-8 validation.
-    assert_eq!(
-        string_fn::bit_length(&[Datum::new_bytes(vec![0xff, 0x00])]).unwrap(),
-        Datum::Int(16)
-    );
+    assert_engine_string2_value("bit_length(unhex('FF00'))", "INT:16");
 }
 
 /// Full UTF-8-value-domain vector from
@@ -669,11 +669,15 @@ fn ilike_uses_source_ascii_lowering_and_escape_rules() {
 #[test]
 fn reverse_source_vectors_preserve_scalar_string_coercion() {
     // pkg/expression/builtin_string_test.go:689 TestReverse
-    assert_eq!(e("reverse(null)"), "NULL");
-    assert_eq!(e("reverse('abc')"), "STR:cba");
-    assert_eq!(e("reverse('LIKE')"), "STR:EKIL");
-    assert_eq!(e("reverse(123)"), "STR:321");
-    assert_eq!(e("reverse('')"), "STR:");
+    for (expr, want) in [
+        ("reverse(null)", "NULL"),
+        ("reverse('abc')", "STR:cba"),
+        ("reverse('LIKE')", "STR:EKIL"),
+        ("reverse(123)", "STR:321"),
+        ("reverse('')", "STR:"),
+    ] {
+        assert_engine_string2_value(expr, want);
+    }
 }
 
 /// Default-charset scalar rows from
@@ -695,16 +699,11 @@ fn ascii_source_vectors_preserve_first_byte_and_string_coercion() {
         ("ascii('')", "INT:0"),
         ("ascii('你好')", "INT:228"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        assert_engine_string2_value(expr, want);
     }
 
-    // Go's EvalString also accepts binary values. Keep this raw-byte case
-    // separate from the SQL source table because the parser does not expose
-    // an invalid-UTF-8 string literal in this seed value domain.
-    assert_eq!(
-        string_fn::ascii(&[Datum::new_bytes(vec![0xff, 0x00])]).unwrap(),
-        Datum::Int(255)
-    );
+    // Go's EvalString also accepts arbitrary binary values.
+    assert_engine_string2_value("ascii(unhex('FF00'))", "INT:255");
 }
 
 /// Currently representable scalar rows from
@@ -976,23 +975,9 @@ fn right_and_rpad_sig_source_vectors_preserve_scalar_boundaries() {
         ("right('', 2)", "STR:"),
         ("right(NULL, 2)", "NULL"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        assert_engine_string2_value(expr, want);
     }
-    assert_eq!(v("right(unhex('6162FF'), 1)"), Datum::new_bytes(vec![0xff]));
-    assert_eq!(
-        string_fn::str_take(
-            &[
-                Datum::new_collation_string(
-                    vec![0x61, 0x62, 0xff],
-                    tidb_datatype::Collation::Binary,
-                ),
-                Datum::Int(1),
-            ],
-            false,
-        )
-        .unwrap(),
-        Datum::new_bytes(vec![0xff])
-    );
+    assert_engine_string2_value("hex(right(unhex('6162FF'), 1))", "STR:FF");
 
     // Keep every former scalar/binary row, but pin the physical-removal
     // contract instead of retaining a test-only RPAD implementation.
@@ -1091,9 +1076,9 @@ fn string_functions() {
     assert_eq!(e("length(unhex('FF00'))"), "INT:2"); // arbitrary bytes
     assert_eq!(e("octet_length(unhex('FF00'))"), "INT:2");
     assert_eq!(e("char_length('héllo')"), "INT:5"); // chars
-    assert_eq!(e("upper('abc')"), "STR:ABC");
-    assert_eq!(e("left('hello', 3)"), "STR:hel");
-    assert_eq!(e("right('hello', 2)"), "STR:lo");
+    assert_engine_string2_value("upper('abc')", "STR:ABC");
+    assert_engine_string2_value("left('hello', 3)", "STR:hel");
+    assert_engine_string2_value("right('hello', 2)", "STR:lo");
     #[cfg(feature = "tikv-expr")]
     assert_eq!(engine_e("substring('hello', 2, 3)"), "STR:ell");
     #[cfg(not(feature = "tikv-expr"))]
@@ -1130,18 +1115,14 @@ fn lower_upper_source_vectors_preserve_case_and_binary_boundaries() {
         ),
         ("upper('abc测试def')", "STR:ABC测试DEF"),
         ("upper('abcテストdef')", "STR:ABCテストDEF"),
+        ("lcase('AbC')", "STR:abc"),
+        ("ucase('AbC')", "STR:ABC"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        assert_engine_string2_value(expr, want);
     }
-    assert_eq!(
-        string_fn::case_convert(&[Datum::new_bytes(vec![b'A', 0xff])], false).unwrap(),
-        Datum::new_bytes(vec![b'A', 0xff])
-    );
-    assert_eq!(
-        string_fn::case_convert(&[Datum::new_bytes(vec![b'a', 0xff])], true).unwrap(),
-        Datum::new_bytes(vec![b'a', 0xff])
-    );
-    assert!(string_fn::case_convert(&[], false).is_err());
+    assert_engine_string2_value("hex(lower(unhex('41FF')))", "STR:41FF");
+    assert_engine_string2_value("hex(upper(unhex('61FF')))", "STR:61FF");
+    assert_eq!(e("upper()"), STRING2_REMOVED);
 }
 
 /// Complete representable rows from `TestStrcmp` in
@@ -1170,32 +1151,12 @@ fn strcmp_source_vectors_preserve_coercion_and_nulls() {
         ("strcmp('123 ', '123')", "INT:0"),
         ("strcmp(123, '123 ')", "INT:0"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        assert_engine_string2_value(expr, want);
     }
-    assert_eq!(
-        string_fn::strcmp(&[Datum::new_bytes(vec![0xff]), Datum::new_bytes(vec![0x00]),]).unwrap(),
-        Datum::Int(1)
-    );
-    assert_eq!(
-        string_fn::strcmp(&[
-            Datum::new_bytes(b"a".to_vec()),
-            Datum::new_bytes(b"a ".to_vec()),
-        ])
-        .unwrap(),
-        Datum::Int(-1)
-    );
-    assert_eq!(
-        string_fn::strcmp(&[
-            Datum::new_string("a ".to_string()),
-            Datum::new_bytes(b"a".to_vec()),
-        ])
-        .unwrap(),
-        Datum::Int(1)
-    );
-    assert_eq!(
-        string_fn::strcmp(&[Datum::new_string("a".to_string())]),
-        Err(EvalError::Unsupported("bad STRCMP arity"))
-    );
+    assert_engine_string2_value("strcmp(unhex('FF'), unhex('00'))", "INT:1");
+    assert_engine_string2_value("strcmp(unhex('61'), unhex('6120'))", "INT:-1");
+    assert_engine_string2_value("strcmp('a ', unhex('61'))", "INT:1");
+    assert_eq!(e("strcmp('a')"), STRING2_REMOVED);
 }
 
 /// Complete representable rows from `TestLeft` and `TestRight` in
@@ -1231,12 +1192,12 @@ fn left_right_source_vectors_preserve_count_and_byte_boundaries() {
         ("right(1234, 3)", "STR:234"),
         ("right(12.34, 3)", "STR:.34"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        assert_engine_string2_value(expr, want);
     }
-    assert_eq!(v("left(unhex('0102'), 1)"), Datum::new_bytes(vec![0x01]));
-    assert_eq!(v("right(unhex('0102'), 1)"), Datum::new_bytes(vec![0x02]));
-    assert_eq!(e("left('你好世界', 2)"), "STR:你好");
-    assert_eq!(e("right('你好世界', 2)"), "STR:世界");
+    assert_engine_string2_value("hex(left(unhex('0102'), 1))", "STR:01");
+    assert_engine_string2_value("hex(right(unhex('0102'), 1))", "STR:02");
+    assert_engine_string2_value("left('你好世界', 2)", "STR:你好");
+    assert_engine_string2_value("right('你好世界', 2)", "STR:世界");
 }
 
 /// Complete representable rows from `TestReplace` in
@@ -1260,22 +1221,13 @@ fn replace_source_vectors_preserve_byte_coercion() {
         ("replace('a', NULL, 'b')", "NULL"),
         ("replace('a', 'b', NULL)", "NULL"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        assert_engine_string2_value(expr, want);
     }
-    assert_eq!(
-        string_fn::replace(&[
-            Datum::new_bytes(vec![0xff, 0x00, b'a']),
-            Datum::new_bytes(vec![0xff]),
-            Datum::new_bytes(vec![0xfe, b'b']),
-        ])
-        .unwrap(),
-        Datum::new_bytes(vec![0xfe, b'b', 0x00, b'a'])
+    assert_engine_string2_value(
+        "hex(replace(unhex('FF0061'), unhex('FF'), unhex('FE62')))",
+        "STR:FE620061",
     );
-    assert!(string_fn::replace(&[
-        Datum::new_string("abc".to_string()),
-        Datum::new_string("a".to_string()),
-    ])
-    .is_err());
+    assert_eq!(e("replace('abc', 'a')"), STRING2_REMOVED);
 }
 
 /// Complete representable rows from `TestSubstringIndex` in

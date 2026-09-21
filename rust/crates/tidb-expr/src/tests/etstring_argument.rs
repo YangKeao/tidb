@@ -346,14 +346,10 @@ fn the_field_mode_arms_are_measured_above_the_double_boundary() {
 /// selected argument answers `A` to both.
 #[test]
 fn elt_takes_its_result_charset_from_every_candidate() {
-    assert_eq!(
-        both("upper(elt(1,'a',x'61'))"),
-        ("STR:a".into(), "STR:a".into())
-    );
-    assert_eq!(
-        both("upper(elt(1,'a','x'))"),
-        ("STR:A".into(), "STR:A".into())
-    );
+    // TiKV cannot lower these nested ELT shapes. With UPPER's native kernel
+    // removed they are explicit contractions, not a native fallback.
+    assert_string2_refusal("upper(elt(1,'a',x'61'))");
+    assert_string2_refusal("upper(elt(1,'a','x'))");
     // The same fact at the value seam: a binary candidate anywhere makes the
     // whole result `Datum::Bytes`, which is what `is_binary_str` then reads.
     let vals = vec![

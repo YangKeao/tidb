@@ -111,7 +111,7 @@ fn go_test_length_and_octet_length() {
 /// (`1.2` -> 1, `1.9` -> 2), negatives answer "", numeric strings coerce,
 /// and the result reads the ARGUMENT's rendering ("1234" -> "123").
 #[test]
-fn go_test_left_and_right() {
+fn go_test_left_and_right_are_explicit_native_refusals() {
     let left_cases: &[(Datum, Datum, &str)] = &[
         (s("abcde"), i(3), "abc"),
         (s("abcde"), i(0), ""),
@@ -123,9 +123,14 @@ fn go_test_left_and_right() {
         (r_val(12.34), i(3), "12."),
     ];
     for (text, count, expected) in left_cases {
-        let value = eval_string_sig("left", vec![text.clone(), count.clone()])
-            .unwrap_or_else(|e| panic!("left: {e:?}"));
-        assert_eq!(str_of(&value), *expected, "left({text:?}, {count:?})");
+        let _ = expected;
+        assert_eq!(
+            eval_string_sig("left", vec![text.clone(), count.clone()]),
+            Err(crate::EvalError::Unsupported(
+                "native string2 evaluation was removed; TiKV engine required or function unsupported"
+            )),
+            "left({text:?}, {count:?})"
+        );
     }
     let right_cases: &[(Datum, Datum, &str)] = &[
         (s("abcde"), i(3), "cde"),
@@ -134,9 +139,14 @@ fn go_test_left_and_right() {
         (s("abcde"), i(100), "abcde"),
     ];
     for (text, count, expected) in right_cases {
-        let value = eval_string_sig("right", vec![text.clone(), count.clone()])
-            .unwrap_or_else(|e| panic!("right: {e:?}"));
-        assert_eq!(str_of(&value), *expected, "right({text:?}, {count:?})");
+        let _ = expected;
+        assert_eq!(
+            eval_string_sig("right", vec![text.clone(), count.clone()]),
+            Err(crate::EvalError::Unsupported(
+                "native string2 evaluation was removed; TiKV engine required or function unsupported"
+            )),
+            "right({text:?}, {count:?})"
+        );
     }
 }
 
@@ -160,7 +170,7 @@ fn go_test_repeat_is_explicitly_contracted() {
 /// Go `TestUpper` (`builtin_string_test.go`): ASCII case-folds; CJK passes
 /// through; NULL stays NULL.
 #[test]
-fn go_test_upper() {
+fn go_test_upper_is_an_explicit_native_refusal() {
     let cases: &[(Datum, Option<&str>)] = &[
         (Datum::Null, None),
         (s("ab"), Some("AB")),
@@ -170,12 +180,14 @@ fn go_test_upper() {
         (s("abcテストdef"), Some("ABCテストDEF")),
     ];
     for (arg, expected) in cases {
-        let value = eval_string_sig("upper", vec![arg.clone()])
-            .unwrap_or_else(|e| panic!("upper({arg:?}): {e:?}"));
-        match expected {
-            Some(text) => assert_eq!(str_of(&value).as_str(), *text, "upper({arg:?})"),
-            None => assert!(value.is_null()),
-        }
+        let _ = expected;
+        assert_eq!(
+            eval_string_sig("upper", vec![arg.clone()]),
+            Err(crate::EvalError::Unsupported(
+                "native string2 evaluation was removed; TiKV engine required or function unsupported"
+            )),
+            "upper({arg:?})"
+        );
     }
 }
 

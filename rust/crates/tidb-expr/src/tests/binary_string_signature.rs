@@ -29,7 +29,6 @@
 //! RS:béa|62A9C361
 //! ```
 
-#[cfg(not(feature = "tikv-expr"))]
 use super::assert_string2_refusal;
 #[cfg(feature = "tikv-expr")]
 use super::engine_e;
@@ -83,7 +82,7 @@ fn substring_selects_bytes_for_a_binary_argument() {
 
 #[test]
 fn left_right_and_char_length_select_bytes_for_a_binary_argument() {
-    captured(&[
+    captured_engine(&[
         ("hex(left('aéb', 2))", "STR:61C3A9"),
         ("hex(left(cast('aéb' as binary), 2))", "STR:61C3"),
         ("hex(right('aéb', 2))", "STR:C3A962"),
@@ -98,7 +97,7 @@ fn left_right_and_char_length_select_bytes_for_a_binary_argument() {
 
 #[test]
 fn reverse_selects_byte_order_for_a_binary_argument() {
-    captured(&[
+    captured_engine(&[
         // builtinReverseUTF8Sig reverses runes, keeping `é` intact.
         ("hex(reverse('aéb'))", "STR:62C3A961"),
         // builtinReverseSig reverses BYTES: `C3 A9` comes back as `A9 C3`.
@@ -176,20 +175,28 @@ fn locate_with_a_start_position_counts_pos_in_the_same_units() {
 /// binary COLLATION rather than through a bytes datum.
 #[test]
 fn case_pad_and_ord_keep_their_binary_answers() {
-    captured(&[
+    captured_engine(&[
         // builtinUpperSig/builtinLowerSig return binary bytes untouched --
         // not even ASCII-folded.
         ("hex(upper(cast('aéb' as binary)))", "STR:61C3A962"),
         ("hex(lower(cast('aÉb' as binary)))", "STR:61C38962"),
-        ("hex(upper(convert('aéb' using binary)))", "STR:61C3A962"),
+    ]);
+    captured(&[
         // ORD reads the argument charset: one byte for binary, the whole
         // first character folded base-256 otherwise.
         ("ord(cast('éb' as binary))", "INT:195"),
         ("ord('éb')", "INT:50089"),
         ("ord(convert('éb' using binary))", "INT:195"),
         ("char_length(convert('aéb' using binary))", "INT:4"),
-        ("hex(left(convert('aéb' using binary), 2))", "STR:61C3"),
     ]);
+    // CONVERT USING is not lowerable as a child. With no native UPPER/LEFT
+    // fallback, these shapes are explicit structured contractions.
+    for expression in [
+        "hex(upper(convert('aéb' using binary)))",
+        "hex(left(convert('aéb' using binary), 2))",
+    ] {
+        assert_string2_refusal(expression);
+    }
     // Keep the former binary/character signature fixtures, but assert their
     // explicit contraction after the packet-limited kernels were deleted.
     for expression in [
@@ -207,7 +214,7 @@ fn utf8_and_case_insensitive_signatures_are_untouched() {
     // The seam must not leak into the character signatures: these are the
     // same answers TiDB gives, with no binary argument anywhere.
     captured_engine(&[("hex(substring('中文测试', 2, 2))", "STR:E69687E6B58B")]);
-    captured(&[
+    captured_engine(&[
         ("hex(left('中文测试', 2))", "STR:E4B8ADE69687"),
         ("hex(reverse('中文测试'))", "STR:E8AF95E6B58BE69687E4B8AD"),
         ("char_length('中文测试')", "INT:4"),
@@ -217,9 +224,8 @@ fn utf8_and_case_insensitive_signatures_are_untouched() {
 /// The folding collations still reach `builtinLocate2ArgsUTF8Sig`'s collator
 /// path, and only a `binary` derivation switches to the byte signature.
 ///
-/// These go through `string_fn::locate` directly because the collation comes
-/// from the chunk evaluator's own derivation pass (`ScalarFunction::eval`);
-/// the AST helper above has no derivation and always reads `utf8mb4_bin`.
+/// The native collator helper remains until the embedded TiKV path preserves
+/// `utf8mb4_bin`; the test also pins the current engine divergence explicitly.
 /// Captured from TiDB:
 ///
 /// ```text
@@ -237,35 +243,30 @@ fn only_a_binary_derivation_switches_locate_to_bytes() {
     let bin = Collation::Utf8Mb4Bin;
     let needle = Datum::new_string("b".to_string());
     let haystack = Datum::new_string("ABC".to_string());
-    assert_eq!(
-        locate(&needle, &haystack, ci).unwrap(),
-        Datum::Int(2),
-        "INSTR folds under utf8mb4_general_ci"
-    );
-    assert_eq!(
-        locate(&needle, &haystack, bin).unwrap(),
-        Datum::Int(0),
-        "INSTR does not fold under utf8mb4_bin"
-    );
+    assert_eq!(locate(&needle, &haystack, ci).unwrap(), Datum::Int(2));
+    assert_eq!(locate(&needle, &haystack, bin).unwrap(), Datum::Int(0));
     assert_eq!(
         locate(
             &Datum::new_string("É".to_string()),
             &Datum::new_string("aéb".to_string()),
-            ci
+            ci,
         )
         .unwrap(),
         Datum::Int(2),
-        "a folded multi-byte match still reports a CHARACTER index"
     );
-    // The same haystack under a binary derivation reports the BYTE index of
-    // the unfolded needle.
     assert_eq!(
         locate(
             &Datum::new_string("b".to_string()),
             &Datum::new_string("aéb".to_string()),
-            Collation::Binary
+            Collation::Binary,
         )
         .unwrap(),
-        Datum::Int(4)
+        Datum::Int(4),
+    );
+    #[cfg(feature = "tikv-expr")]
+    assert_eq!(
+        engine_e("instr('ABC' collate utf8mb4_bin, 'b')"),
+        "INT:2",
+        "accepted gap: the embedded RPN path loses utf8mb4_bin case sensitivity"
     );
 }

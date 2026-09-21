@@ -51,22 +51,40 @@ fn character_positions_not_bytes() {
     let engine_before = session.tikv_expression_rows();
 
     let locate = "select locate('a', '中a')";
-    #[cfg(feature = "tikv-expr")]
     assert_eq!(try_sql(&mut session, locate), "i:2");
-    #[cfg(not(feature = "tikv-expr"))]
-    assert!(session
-        .run(locate)
-        .expect_err("native LOCATE kernel is deleted")
-        .to_string()
-        .contains(
-            "native string2 evaluation was removed; TiKV engine required or function unsupported"
-        ));
     assert_eq!(try_sql(&mut session, "select instr('中a', 'a')"), "i:2");
+    assert_eq!(
+        try_sql(
+            &mut session,
+            "select locate('b' collate utf8mb4_bin, 'aéb' collate utf8mb4_bin, '3')"
+        ),
+        "i:3"
+    );
+    assert_eq!(
+        try_sql(
+            &mut session,
+            "select position('b' in 'aéb' collate utf8mb4_bin)"
+        ),
+        "i:3"
+    );
     #[cfg(feature = "tikv-expr")]
     assert!(session.tikv_expression_rows() > engine_before);
 
-    // 6 bytes -> 48 bits.
-    assert_eq!(try_sql(&mut session, "select bit_length('中a')"), "i:32");
+    // Four bytes -> 32 bits, and the deleted native BIT_LENGTH cannot supply it.
+    #[cfg(feature = "tikv-expr")]
+    {
+        let bit_length_before = session.tikv_expression_rows();
+        assert_eq!(try_sql(&mut session, "select bit_length('中a')"), "i:32");
+        assert!(session.tikv_expression_rows() > bit_length_before);
+    }
+    #[cfg(not(feature = "tikv-expr"))]
+    {
+        let error = session
+            .run("select bit_length('中a')")
+            .expect_err("native BIT_LENGTH kernel is deleted")
+            .to_string();
+        assert!(error.contains("native string2 evaluation was removed; TiKV engine required or function unsupported"), "{error}");
+    }
 
     // Preserve the multibyte pad shape as an explicit contraction.
     assert_packet_string_removed(&mut session, "select lpad('中', 2, 'ab')");

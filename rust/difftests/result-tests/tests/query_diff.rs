@@ -174,7 +174,6 @@ fn expected_removed_marker(sql: &str) -> Option<&'static str> {
         "substring(",
         "substr(",
         "mid(",
-        "locate(",
         "format(",
         "export_set(",
         "ltrim(",
@@ -207,6 +206,11 @@ fn expected_removed_marker(sql: &str) -> Option<&'static str> {
 fn is_misc_contraction(sql: &str) -> bool {
     expected_removed_marker(sql) == Some(MISC_REMOVED)
         || (cfg!(not(feature = "tikv-expr")) && is_any_value(sql))
+}
+
+#[test]
+fn retained_locate_is_not_a_local_contraction() {
+    assert_eq!(expected_removed_marker("select locate('b', 'abc')"), None);
 }
 
 fn corpus_dir() -> PathBuf {
@@ -286,6 +290,20 @@ fn run_pair(
             if outcome.as_ref().is_err_and(|error| error.contains(marker)) {
                 matched += 1;
                 continue;
+            }
+        }
+        // A statement can contain both an engine-required retained string
+        // function and an independently contracted family. Accept only that
+        // other family's exact parsed marker; never accept STRING2 here, which
+        // would hide a failure to execute the retained function in TiKV.
+        if requires_tikv_engine {
+            if let Some(marker) = expected_removed_marker(sql)
+                .filter(|marker| *marker != removed_native::STRING2_REMOVED)
+            {
+                if outcome.as_ref().is_err_and(|error| error.contains(marker)) {
+                    matched += 1;
+                    continue;
+                }
             }
         }
         if want == "ERR" {
