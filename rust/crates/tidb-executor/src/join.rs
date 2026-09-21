@@ -1353,7 +1353,7 @@ pub struct JoinExec<C: Columns> {
     native_hash: bool,
     concurrency: usize,
     outer_filter: Vec<Expression>,
-    // Refreshed at open; hash execution shares programs across build/probe rows.
+    // Refreshed at open; hash and merge execution share programs across rows.
     outer_filter_evaluator: crate::joiner::ConditionEvaluator,
     filter_is_left: bool,
     /// The complete logical `ON` clause. The nested-loop reference path must
@@ -2803,7 +2803,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
         tracker: &Arc<Tracker>,
         memory: &StatementMemory,
         ctx: &C,
-        filters: &[Expression],
+        filters: &crate::joiner::ConditionEvaluator,
     ) -> Result<(), ExecError> {
         side.group_len = 0;
         side.group_start = 0;
@@ -2826,7 +2826,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
             side.selected.clear();
             for index in 0..side.chunk.num_rows() {
                 side.selected
-                    .push(crate::joiner::eval_bool(ctx, filters, side.chunk.get_row(index))?.0);
+                    .push(filters.evaluate(ctx, side.chunk.get_row(index))?.0);
             }
         }
 
@@ -3229,7 +3229,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
                     &tracker,
                     &memory,
                     &self.ctx,
-                    &self.outer_filter,
+                    &self.outer_filter_evaluator,
                 )?;
             }
             if outer_side.group_len == 0 {

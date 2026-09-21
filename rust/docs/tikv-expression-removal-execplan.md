@@ -252,6 +252,9 @@ remain in the workspace.
       and probe rows/chunks. Reopen replaces the expression snapshot; a false
       first CNF term never compiles an unreachable unsupported tail. Direct
       executor tests cover 8204 engine filter rows with one compile per open.
+- [x] Reuse the same owner for Merge outer-filter programs. Add 4102 engine
+      filter rows across reopen/chunks and six NULL-filter rows in left/right
+      outer joins; preserve outer rows and skip unsupported CNF tails.
 - [ ] Retain condition programs in remaining `eval_bool` hot callers (the public
       convenience wrapper currently builds temporary programs). Existing joined scratch-row copies remain;
       eliminating them requires the independent-column facade, not more row
@@ -838,6 +841,43 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+Merge JoinExec outer-filter program retention (TiDB `rust/`, same guarded env):
+
+    cargo test -q -p tidb-executor --features tikv-expr --lib join_outer_filter_programs --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --lib join::tests:: --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+
+`merge-filter-cache-red.log`: extending the existing lifecycle fixture to Merge
+fails with retained compilation count 0 instead of 1 before changing the row
+loop. fetch_outer_group now takes the saved ConditionEvaluator rather than
+reconstructing programs via eval_bool. Row order, CNF NULL policy, truthiness,
+selection and execution state remain unchanged. The owner is refreshed at open,
+just like the hash path. This is cached scalar filtering, NOT a new vectorized
+short-circuit implementation or borrowed-lazy support.
+
+`merge-filter-cache-green.log` records an intermediate test compilation failure:
+the new fixture initially named nonexistent LeftOuter/RightOuter variants. After
+using the actual Left/Right variants, `merge-filter-cache-join.log` passes all
+45 join tests. The shared lifecycle fixture covers 2051 Merge rows across three
+chunks, then reopen with a false head and unsupported tail: 4102 engine filter
+rows, one compilation per open, no stale true snapshot or eager tail compilation.
+A separate NULL-head fixture checks both left/right outer joins in native/engine
+modes: all outer rows survive with NULL padding, only the first term compiles,
+and the engine counts three rows per side. These remain direct-executor seed
+fixtures; planner population, package-transcreation completeness and performance
+are not established.
+
+`merge-filter-cache-executor.log`: 1401/355/6/2 passed, 184 integration ignored.
+Rust runs are serial/single-worker under the 8192 RSS / 16384 AS MiB guard;
+sampled peak 2852.9 MiB. No Go oracle, mysql replay, new feature-off suite, hosted
+CI or native deletion claim. Repository lint passed (exit 0, sampled peak
+267.8 MiB) in `merge-filter-cache-lint.log`, using from repository root:
+
+    GOMAXPROCS=1 GOFLAGS='-p=1' GOPATH=/home/agent/tidb/expression-reuse/go GOCACHE=/home/agent/tidb/expression-reuse/go-cache python3 ../tools/limited-run.py --rss-mib 8192 --as-mib 16384 -- make -j1 lint
+
+This runs the repository's Go revive/dashboard checks, not Rust clippy or SQL
+semantic parity. It does not establish whole-migration/PR readiness.
 
 Hash JoinExec outer-filter program retention (TiDB `rust/`, same guarded env):
 

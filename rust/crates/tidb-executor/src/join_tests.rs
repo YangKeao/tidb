@@ -108,9 +108,9 @@ fn cached_join_conditions_preserve_ordinary_and_anti_null_demand() {
 
 #[cfg(feature = "tikv-expr")]
 #[test]
-fn hash_outer_filter_programs_reuse_and_refresh_on_open() {
+fn join_outer_filter_programs_reuse_and_refresh_on_open() {
     for engine in [false, true] {
-        for build_left in [false, true] {
+        for (merge, build_left) in [(false, false), (false, true), (true, false)] {
             let count = CHUNK * 2 + 3;
             let rows: Vec<_> = (0..count)
                 .map(|index| vec![Datum::Int(index as i64)])
@@ -126,6 +126,12 @@ fn hash_outer_filter_programs_reuse_and_refresh_on_open() {
                 StatementMemory::default(),
             );
             join.set_hash_build_is_left(build_left);
+            if merge {
+                join.set_merge_plan(crate::merge_join_plan::MergeJoinPlan {
+                    keys: vec![crate::merge_join_plan::MergeJoinKey { left: 0, right: 0 }],
+                    desc: false,
+                });
+            }
             join.set_parallelism(1);
             join.filter_is_left = true;
             for (phase, accept) in [true, false].into_iter().enumerate() {
@@ -273,6 +279,64 @@ fn chunk_probe_paths_share_one_residual_compilation() {
                     if engine { 1 } else { 0 }
                 );
             }
+            join.close().unwrap();
+        }
+    }
+}
+
+#[cfg(feature = "tikv-expr")]
+#[test]
+fn merge_outer_null_filter_preserves_rows_and_skips_tail() {
+    for engine in [false, true] {
+        for kind in [JoinKind::Left, JoinKind::Right] {
+            let rows = vec![
+                vec![Datum::Int(1)],
+                vec![Datum::Int(2)],
+                vec![Datum::Int(3)],
+            ];
+            let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+            let mut join = JoinExec::new(
+                ExecutorMeta::new(schema_of(2), 1, CHUNK, CHUNK),
+                kind,
+                vec![eq_on(0, 0, 1)],
+                Box::new(RowSource::new(rows.clone(), 1)),
+                Box::new(RowSource::new(rows, 1)),
+                ctx.clone(),
+                StatementMemory::default(),
+            );
+            join.set_merge_plan(crate::merge_join_plan::MergeJoinPlan {
+                keys: vec![crate::merge_join_plan::MergeJoinKey { left: 0, right: 0 }],
+                desc: false,
+            });
+            join.outer_filter = vec![
+                Expression::Constant(Constant::new(Datum::Null, long())),
+                Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new("must_not_run_null_filter_tail"),
+                    long(),
+                    vec![],
+                )),
+            ];
+            join.open().unwrap();
+            let mut output = join.new_chunk();
+            let mut seen = Vec::new();
+            let preserved = if kind == JoinKind::Left { 0 } else { 1 };
+            loop {
+                join.next(&mut output).unwrap();
+                if output.num_rows() == 0 {
+                    break;
+                }
+                for index in 0..output.num_rows() {
+                    let row = output.get_row(index);
+                    assert!(row.is_null(1 - preserved));
+                    seen.push(row.get_int64(preserved));
+                }
+            }
+            assert_eq!(seen, vec![1, 2, 3]);
+            assert_eq!(ctx.tikv_expression_rows(), if engine { 3 } else { 0 });
+            assert_eq!(
+                join.outer_filter_evaluator.compilations(),
+                u64::from(engine)
+            );
             join.close().unwrap();
         }
     }
