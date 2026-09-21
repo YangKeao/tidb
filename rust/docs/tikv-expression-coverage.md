@@ -34,8 +34,8 @@ separates four different questions that are easy to conflate:
 | Baseline local adapter (before this work) | 23 signatures / 13 names |
 | Baseline engine facade whitelist | 52 signatures |
 | Dispatched signatures with adapter source or generated-name evidence now | 461 |
-| Admission table rows (Milestone B) | 384 = 230 admitted + 154 excluded |
-| Per-signature admission status | 385 admitted, 129 excluded, 126 untested |
+| Admission table rows (current deletion checkpoint) | 384 = 216 admitted + 168 excluded |
+| Per-signature admission status | 351 admitted, 163 excluded, 126 untested |
 
 The last source-evidence number is deliberately an over-approximation from
 static source evidence; it is no longer what decides support. Since Milestone B
@@ -59,10 +59,9 @@ runs.
 
 ### 1.2 Evaluation types
 
-The standalone facade now carries exact native values for every engine type
-except `Set` (which the native type/codecs do not support): `Int`, `Real`,
-`Bytes`, `Decimal`, `DateTime`, `Duration`, `Json`, `Enum` and
-`VectorFloat32`. Decimal is transported as the native 40-byte value rather than
+The standalone facade carries exact native values for `Int`, `Real`, `Bytes`,
+`Decimal`, `DateTime`, `Duration`, `Json`, `Enum`, `Set`, and `VectorFloat32`.
+Decimal is transported as the native 40-byte value rather than
 text; the old text bridge silently discarded hidden fractional digits.
 
 The TiDB side converts chunk storage to those carriers and back in
@@ -77,10 +76,11 @@ preserved or the value is declined.
 `rust/crates/tidb-expr/src/tikv/lowering.rs` and its `lowering/families.rs`
 child map function names onto wire signatures. The covered families include
 integer/real/decimal arithmetic, comparisons and `IN`, bit operators and
-`BIT_COUNT`, the math family, string functions (case, trim, substring,
-`LENGTH`/`CHAR_LENGTH`, `HEX`, `INSTR`, `LOCATE`, `REPLACE`, hashes, `LIKE`,
-regexp), temporal extraction/formatting/arithmetic, JSON operations, vector
-operations, and leaf-only control flow.
+`BIT_COUNT`, selected math functions, string functions (case, trim, substring,
+`LENGTH`/`CHAR_LENGTH`, `HEX`, `INSTR`, `LOCATE`, `REPLACE`, `LIKE`, regexp),
+temporal extraction/formatting/arithmetic, JSON operations, vector operations,
+and guarded control flow. Former crypto-family hashes are deliberately excluded
+in the current 216-admitted / 168-excluded table.
 
 Two structural rules keep that breadth honest:
 
@@ -89,8 +89,10 @@ Two structural rules keep that breadth honest:
   `GREATEST`/`LEAST` are admitted only when the arguments that may be skipped
   are leaves, and the adapter refuses to insert an implicit cast there.
 * **No session semantics the embedder cannot represent.** Clock, RNG,
-  user-variable, lock, packet-limit and mode-dependent functions stay native
-  because the local `Context` has no binding for them.
+  user-variable, lock, packet-limit and mode-dependent functions are excluded
+  from engine admission. Former crypto RNG/AES/password implementations were
+  physically deleted and now return structured `Unsupported`; other native
+  families remain only while their later deletion tranches are incomplete.
 
 
 ## 2. Problems found and how they are handled
@@ -247,9 +249,11 @@ Landed and verified:
   the shared `EvaluatorProgram`, so every projection worker of one plan reuses
   one compilation and evaluates without holding the cache lock.
 * **Explicit admission.** `tikv/admission.rs` holds one sorted row per SQL
-  name (384 rows; 230 admitted, 154 excluded with a reason) and the pipeline
-  reports `FallbackReason::{NotAdmitted, UnrepresentableInput}` for anything
-  that stays native. The differential tests fail on a silent fallback.
+  name (384 rows; 216 admitted, 168 excluded with a reason) and the pipeline
+  reports `FallbackReason::{NotAdmitted, UnrepresentableInput}`. Deleted-family
+  exclusions become structured `Unsupported`, while not-yet-deleted families
+  may still use compatibility mode. Runtime receipt tests reject silent fallback
+  but are not an independent semantic oracle.
 * **Lazy evaluation, steps 1-2.** `RpnFnMeta.lazy_fn_ptr`, the `LazyChildren`
   pull interface and the `eval_subtree` evaluator refactor; `IfNullInt` is the
   first lazy kernel. `with_lazy` clears `borrowed_fn_ptr` so the borrowed

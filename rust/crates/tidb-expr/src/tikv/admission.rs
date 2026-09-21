@@ -197,6 +197,9 @@ pub(crate) const EXPLICIT_CAST_SPELLING: &str =
 pub(crate) const NATIVE_SESSION_STATE: &str =
     "session state, statement clock, RNG, user variables, sequences, or effects are absent from the \
      embedded engine Context";
+pub(crate) const REMOVED_CRYPTO_UNVERIFIED: &str =
+    "native crypto was removed and no engine-compatible implementation with verified diagnostics, \
+     collation, and session semantics is admitted";
 /// The statement clock (`NOW()`, `CURRENT_TIMESTAMP`, `CURDATE()`,
 /// `CURRENT_TIME`, `UTC_TIMESTAMP()`, `SYSDATE()`).
 ///
@@ -317,8 +320,8 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("acos", Decision::Excluded, Signature::None, &[], Shape::Any, "native trig was removed and the engine's libm path is not verified bit-exact with Go"),
     row("adddate", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
     row("addtime", Decision::Admitted, Signature::Family(Family::Temporal), &[], Shape::Any, ""),
-    row("aes_decrypt", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
-    row("aes_encrypt", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
+    row("aes_decrypt", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_CRYPTO_UNVERIFIED),
+    row("aes_encrypt", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_CRYPTO_UNVERIFIED),
     // Short-circuit families: every dispatched `If*`/`IfNull*`/`Coalesce*`/
     // `CaseWhen*`/`LogicalAnd`/`LogicalOr`/`LogicalXor` signature has a lazy
     // kernel in the pinned engine, so a non-leaf child in a skipped position is
@@ -369,7 +372,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("coalesce", Decision::Admitted, Signature::Family(Family::Control), &[], Shape::Any, ""),
     row("coercibility", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
     row("collation", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
-    row("compress", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
+    row("compress", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_CRYPTO_UNVERIFIED),
     row("concat", Decision::Excluded, Signature::None, &[], Shape::Any, "native enforces max_allowed_packet before allocating; the pinned engine facade has no equivalent context setting"),
     row("concat_ws", Decision::Excluded, Signature::None, &[], Shape::Any, "native enforces max_allowed_packet before allocating; the pinned engine facade has no equivalent context setting"),
     row("connection_id", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
@@ -439,12 +442,12 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("dayofmonth", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Datetime], Shape::Any, ""),
     row("dayofweek", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Datetime], Shape::Any, ""),
     row("dayofyear", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Datetime], Shape::Any, ""),
-    row("decode", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
+    row("decode", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_CRYPTO_UNVERIFIED),
     row("default_func", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
     row("degrees", Decision::Excluded, Signature::None, &[], Shape::Any, "native trig was removed and the engine's libm path is not verified bit-exact with Go"),
     row("div", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
     row("elt", Decision::Admitted, Signature::Family(Family::Control), &[], Shape::Any, ""),
-    row("encode", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
+    row("encode", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_CRYPTO_UNVERIFIED),
     row("eq", Decision::Admitted, Signature::Family(Family::Comparison), &[], Shape::Any, ""),
     row("exp", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
     row("export_set", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
@@ -556,7 +559,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("makedate", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Int, EvalType::Int], Shape::Any, ""),
     row("maketime", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Int, EvalType::Int, EvalType::Real], Shape::Any, ""),
     row("match_against", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
-    row("md5", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
+    row("md5", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_CRYPTO_UNVERIFIED),
     row("microsecond", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Duration], Shape::Any, ""),
     row("mid", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("minus", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
@@ -576,7 +579,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("octet_length", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("or", Decision::Admitted, Signature::Family(Family::Control), &[], Shape::Any, ""),
     row("ord", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
-    row("password", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
+    row("password", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_CRYPTO_UNVERIFIED),
     row("period_add", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Int, EvalType::Int], Shape::Any, ""),
     row("period_diff", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Int, EvalType::Int], Shape::Any, ""),
     row("pi", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
@@ -613,13 +616,13 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("session_user", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("setval", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("setvar", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
-    row("sha", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
-    row("sha1", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
-    row("sha2", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
+    row("sha", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_CRYPTO_UNVERIFIED),
+    row("sha1", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_CRYPTO_UNVERIFIED),
+    row("sha2", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_CRYPTO_UNVERIFIED),
     row("sign", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
     row("sin", Decision::Excluded, Signature::None, &[], Shape::Any, "native trig was removed and the engine's libm path is not verified bit-exact with Go"),
     row("sleep", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
-    row("sm3", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
+    row("sm3", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_CRYPTO_UNVERIFIED),
     row("space", Decision::Excluded, Signature::None, &[], Shape::Any, "native enforces max_allowed_packet before allocating; the pinned engine facade has no equivalent context setting"),
     row("sqrt", Decision::Admitted, Signature::Family(Family::Math), &[], Shape::Any, ""),
     row("str_to_date", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::String, EvalType::String], Shape::Any, ""),
@@ -664,8 +667,8 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("truncate", Decision::Excluded, Signature::None, &[], Shape::Any, "native math was removed and engine digit/result parity is not established"),
     row("ucase", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("unaryminus", Decision::Admitted, Signature::Family(Family::Arithmetic), &[], Shape::Any, ""),
-    row("uncompress", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
-    row("uncompressed_length", Decision::Admitted, Signature::Family(Family::Miscellaneous), &[], Shape::Any, ""),
+    row("uncompress", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_CRYPTO_UNVERIFIED),
+    row("uncompressed_length", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_CRYPTO_UNVERIFIED),
     row("unhex", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("unix_timestamp", Decision::Admitted, Signature::Family(Family::Temporal), &[], Shape::Any, ""),
     row("upper", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
@@ -680,7 +683,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("uuid_v4", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("uuid_v7", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("uuid_version", Decision::Excluded, Signature::None, &[], Shape::Any, "TiKV UUID_VERSION/UUID_TIMESTAMP parse malformed input leniently where Go raises error 1411"),
-    row("validate_password_strength", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
+    row("validate_password_strength", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_CRYPTO_UNVERIFIED),
     row("values", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("vec_as_text", Decision::Admitted, Signature::Family(Family::Vector), &[EvalType::VectorFloat32], Shape::Any, ""),
     row("vec_cosine_distance", Decision::Admitted, Signature::Family(Family::Vector), &[EvalType::VectorFloat32, EvalType::VectorFloat32], Shape::Any, ""),

@@ -50,7 +50,11 @@
 //! `CEIL`/`CEILING`/`FLOOR`, `RAND`, and trigonometric functions) are explicit
 //! `Unsupported` contractions rather than native fallbacks. The residual AST
 //! and scalar-function evaluators reject every removed math name; they do not
-//! implement those kernels. Supported builtins may still nest.
+//! implement those kernels. The former native crypto/encryption module is also
+//! deleted; its hashes, AES/legacy ciphers, compression, password helpers and
+//! RNG are explicit `Unsupported` contractions until engine charset,
+//! collation, diagnostic and session semantics are verified. Supported
+//! builtins may still nest.
 //!
 //! Date-part extraction (`YEAR`, `MONTH`, `DAY`/`DAYOFMONTH`, `QUARTER`,
 //! `DAYOFYEAR`, `DAYOFWEEK`, `WEEKDAY`, `TO_DAYS`, `TO_SECONDS`) and

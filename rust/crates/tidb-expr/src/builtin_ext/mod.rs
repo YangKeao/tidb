@@ -23,7 +23,6 @@
 use crate::{Datum, EvalError};
 
 pub(crate) mod compare2;
-pub(crate) mod crypto;
 pub(crate) mod info;
 pub(crate) mod json;
 pub(crate) mod json2;
@@ -33,7 +32,6 @@ pub(crate) mod string2;
 pub(crate) mod vec;
 
 pub(crate) use compare2::{extremum_with_signature, interval_lazy, GlCmpStringMode, GlSignature};
-pub(crate) use crypto::eval_aes_lazy;
 pub(crate) use json::{
     cast_as_json, cast_as_json_typed, cast_as_json_value_typed,
     dispatch_typed as json_dispatch_typed, JsonSchemaCache,
@@ -54,7 +52,6 @@ pub(crate) fn dispatch(
     ctx: &dyn crate::Columns,
 ) -> Option<Result<Datum, EvalError>> {
     string2::dispatch(name, vals, ctx)
-        .or_else(|| crypto::dispatch(name, vals, ctx))
         .or_else(|| info::dispatch(name, vals, ctx))
         .or_else(|| json::dispatch(name, vals))
         .or_else(|| json2::dispatch(name, vals))

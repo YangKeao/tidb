@@ -6,8 +6,8 @@
     "tikv": "521ac7330208b7f74f2b182bc373882687967280"
   },
   "current_revisions": {
-    "tidb": "8259745c54837f525f06f7ee695ec6f04ec60db3",
-    "tikv": "afc1525e11ad50b7314afdee5b10d5b6b7f52e7f"
+    "tidb": "78a39b7e5b4fde85f25a05e292e886b3367fed6f",
+    "tikv": "4c372b84e275fa3e9b943cbd20e9d3844db3837a"
   },
   "source_sha256": {
     "tidb/pkg/expression/builtin.go": "496f0b345019f0af073dab6cf7b6608087135728ca96ffe1323708d4cba13b4e",
@@ -61,7 +61,7 @@
     "tidb/rust/crates/tidb-expr/src/builtin_registry.rs": "0138401ebdc33b31f5bbe7c9da032d8b89bd57099d0e8fe73dc4ac5e6f0a0ae7",
     "tidb/rust/crates/tidb-expr/src/pushdown_catalog.rs": "0799664d5779a8632efa6b3a7f77b5d84ad59ccaa9a97468364b4c02dd5515d8",
     "tidb/rust/crates/tidb-expr/src/tikv.rs": "5e25572b4afea40dea82275c7b6ff9eedd6f6d414916f4485666e41ccb4b0802",
-    "tidb/rust/crates/tidb-expr/src/tikv/admission.rs": "4ac83cb3ee23bb2879a5e5900cd42f4fde2df06ae22b198132aff1947305250c",
+    "tidb/rust/crates/tidb-expr/src/tikv/admission.rs": "0f982aafb02503965b023868a57d6922ca9b93d354ce6e138a24241dbbc5e30f",
     "tidb/rust/crates/tidb-expr/src/tikv/lowering.rs": "251de7be20f056ffa4e1240c7c3b426a9eda45f6df5b3adb812b66d6e4e12730",
     "tidb/rust/crates/tidb-expr/src/tikv/lowering/families.rs": "43a1e3b06a5f54a1f9268dfc94c1ffda6c791dc4f7d34393d02d7d2c4365b08a",
     "tidb/rust/crates/tidb-proto/proto/select.proto": "2fc136f4c341c1e3d6617ff3c5e7641ebab35188feebaff632ff8235e360f5c5",
@@ -104,14 +104,14 @@
     "engine_with_go_internal_cast_evidence": 51,
     "engine_lazy_risk": 34,
     "admission_rows": 384,
-    "admission_admitted": 223,
-    "admission_excluded": 161,
+    "admission_admitted": 216,
+    "admission_excluded": 168,
     "admission_registry_names": 309,
     "admission_synthesized_names": 75,
     "admission_missing_registry_names": 0,
     "admission_missing_synthesized_names": 0,
-    "signatures_admitted_by_table": 357,
-    "signatures_excluded_by_table": 157,
+    "signatures_admitted_by_table": 351,
+    "signatures_excluded_by_table": 163,
     "signatures_untested_by_table": 126
   },
   "current_facade_policy": "engine_builder_with_safety_preflight",
@@ -3649,7 +3649,7 @@
       "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": "not triaged: no lowering site selects this name and the engine-only corpus never reaches it"
+      "reason": "native crypto was removed and no engine-compatible implementation with verified diagnostics, collation, and session semantics is admitted"
     },
     {
       "name": "aes_encrypt",
@@ -3657,7 +3657,7 @@
       "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": "not triaged: no lowering site selects this name and the engine-only corpus never reaches it"
+      "reason": "native crypto was removed and no engine-compatible implementation with verified diagnostics, collation, and session semantics is admitted"
     },
     {
       "name": "and",
@@ -4021,11 +4021,11 @@
     },
     {
       "name": "compress",
-      "decision": "admitted",
-      "signature": "Family:Family::Miscellaneous",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native crypto was removed and no engine-compatible implementation with verified diagnostics, collation, and session semantics is admitted"
     },
     {
       "name": "concat",
@@ -4603,7 +4603,7 @@
       "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": "not triaged: no lowering site selects this name and the engine-only corpus never reaches it"
+      "reason": "native crypto was removed and no engine-compatible implementation with verified diagnostics, collation, and session semantics is admitted"
     },
     {
       "name": "default_func",
@@ -4643,7 +4643,7 @@
       "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": "not triaged: no lowering site selects this name and the engine-only corpus never reaches it"
+      "reason": "native crypto was removed and no engine-compatible implementation with verified diagnostics, collation, and session semantics is admitted"
     },
     {
       "name": "eq",
@@ -5561,11 +5561,11 @@
     },
     {
       "name": "md5",
-      "decision": "admitted",
-      "signature": "Family:Family::Miscellaneous",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native crypto was removed and no engine-compatible implementation with verified diagnostics, collation, and session semantics is admitted"
     },
     {
       "name": "microsecond",
@@ -5735,7 +5735,7 @@
       "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": "not triaged: no lowering site selects this name and the engine-only corpus never reaches it"
+      "reason": "native crypto was removed and no engine-compatible implementation with verified diagnostics, collation, and session semantics is admitted"
     },
     {
       "name": "period_add",
@@ -6037,27 +6037,27 @@
     },
     {
       "name": "sha",
-      "decision": "admitted",
-      "signature": "Family:Family::Miscellaneous",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native crypto was removed and no engine-compatible implementation with verified diagnostics, collation, and session semantics is admitted"
     },
     {
       "name": "sha1",
-      "decision": "admitted",
-      "signature": "Family:Family::Miscellaneous",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native crypto was removed and no engine-compatible implementation with verified diagnostics, collation, and session semantics is admitted"
     },
     {
       "name": "sha2",
-      "decision": "admitted",
-      "signature": "Family:Family::Miscellaneous",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native crypto was removed and no engine-compatible implementation with verified diagnostics, collation, and session semantics is admitted"
     },
     {
       "name": "sign",
@@ -6089,7 +6089,7 @@
       "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": "not triaged: no lowering site selects this name and the engine-only corpus never reaches it"
+      "reason": "native crypto was removed and no engine-compatible implementation with verified diagnostics, collation, and session semantics is admitted"
     },
     {
       "name": "space",
@@ -6462,19 +6462,19 @@
     },
     {
       "name": "uncompress",
-      "decision": "admitted",
-      "signature": "Family:Family::Miscellaneous",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native crypto was removed and no engine-compatible implementation with verified diagnostics, collation, and session semantics is admitted"
     },
     {
       "name": "uncompressed_length",
-      "decision": "admitted",
-      "signature": "Family:Family::Miscellaneous",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native crypto was removed and no engine-compatible implementation with verified diagnostics, collation, and session semantics is admitted"
     },
     {
       "name": "unhex",
@@ -6594,7 +6594,7 @@
       "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": "not triaged: no lowering site selects this name and the engine-only corpus never reaches it"
+      "reason": "native crypto was removed and no engine-compatible implementation with verified diagnostics, collation, and session semantics is admitted"
     },
     {
       "name": "values",
@@ -16006,7 +16006,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "compress"
       ]
@@ -16034,7 +16034,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "md5"
       ]
@@ -16117,7 +16117,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "sha",
         "sha1"
@@ -16146,7 +16146,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "sha2"
       ]
@@ -16174,7 +16174,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "uncompress"
       ]
@@ -16202,7 +16202,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "uncompressed_length"
       ]

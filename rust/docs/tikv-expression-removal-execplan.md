@@ -61,6 +61,22 @@ remain in the workspace.
       2150 engine rows / 160 borrowed rows; static admission is 223 admitted /
       161 excluded. This is one family only and is not the final native-removal
       claim.
+- [x] Second physical-deletion tranche: removed the 1,466-line
+      `src/builtin_ext/crypto.rs`, its dispatch/re-export and crypto-only direct
+      dependencies; both residual evaluator entry points now fail closed for
+      MD5, SHA/SHA1/SHA2, SM3, RANDOM_BYTES, PASSWORD,
+      VALIDATE_PASSWORD_STRENGTH, ENCODE/DECODE, COMPRESS/UNCOMPRESS/
+      UNCOMPRESSED_LENGTH, and AES_ENCRYPT/AES_DECRYPT. The AST and chunk
+      rewriter boundaries refuse these names before arity validation or child
+      evaluation/folding, so malformed or nested calls cannot expose another
+      native path. All fifteen are explicit contractions: even the pinned engine's hash/compression kernels
+      stay excluded because construction-time charset errors, result collation,
+      warnings, and session semantics are not jointly verified. The preserved
+      Go source tables now assert engine decline plus the exact structured
+      native refusal, including vectors formerly embedded beside the deleted
+      kernels. Static admission is 216 admitted / 168 excluded; the reviewed
+      runtime baseline is 30 tests / 323 receipts / 2072 engine rows / 160
+      borrowed rows. This is still not the final native-removal claim.
 - [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
       in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected
       borrowed facade was used by the adapter while the manifest still pinned

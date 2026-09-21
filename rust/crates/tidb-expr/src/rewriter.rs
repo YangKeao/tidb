@@ -1673,6 +1673,15 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
         // the shared `eval_func_values` implementation runs it.
         Expr::Func { name, args, .. } => {
             let lowered = name.to_ascii_lowercase();
+            // The whole native crypto family is deleted and currently
+            // contracted. Refuse before arity validation or recursive child
+            // rewriting/folding so unreachable child failures/effects cannot
+            // leak through a function that will never execute.
+            if crate::func::is_removed_native_crypto(&lowered) {
+                return Err(EvalError::Unsupported(
+                    "native crypto evaluation was removed; TiKV engine required",
+                ));
+            }
             if lowered == "grouping" {
                 let args = args
                     .iter()
@@ -2086,6 +2095,32 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
 }
 
 #[cfg(test)]
+fn removed_crypto_metadata_for_test(expr: &Expr) -> Expression {
+    match expr {
+        Expr::String(value) => {
+            let mut field_type = FieldType::new(FieldTypeCode::VarString);
+            field_type.set_flen(value.len() as i64);
+            Expression::Constant(crate::constant::Constant::new(
+                Datum::new_string(value.clone()),
+                field_type,
+            ))
+        }
+        Expr::Int(value) => Expression::Constant(crate::constant::Constant::new(
+            Datum::Int(value.parse().expect("integer metadata literal")),
+            FieldType::new(FieldTypeCode::LongLong),
+        )),
+        Expr::Func { name, args, .. } => {
+            let args: Vec<_> = args.iter().map(removed_crypto_metadata_for_test).collect();
+            let lowered = name.to_ascii_lowercase();
+            let ret_type = builtin_return_type(&lowered, &args)
+                .expect("removed crypto metadata remains available");
+            Expression::ScalarFunction(ScalarFunction::new(CiString::new(&lowered), ret_type, args))
+        }
+        other => panic!("unsupported removed-crypto metadata expression {other:?}"),
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::context::NoColumns;
@@ -2361,7 +2396,15 @@ mod tests {
             args,
             origin_position: 0,
         };
-        let flen = |expr: &Expr| rewrite_expr(expr).unwrap().static_type().unwrap().flen();
+        let flen = |expr: &Expr| {
+            let expression = match expr {
+                Expr::Func { name, .. } if crate::func::is_removed_native_crypto(name) => {
+                    removed_crypto_metadata_for_test(expr)
+                }
+                _ => rewrite_expr(expr).unwrap(),
+            };
+            expression.static_type().unwrap().flen()
+        };
 
         let uuid = "6ccd780c-baba-1026-9564-5b8c656024db";
         for (expr, expected, why) in [
@@ -2453,7 +2496,8 @@ mod tests {
         }
 
         for name in ["AES_ENCRYPT", "AES_DECRYPT"] {
-            let built = rewrite_expr(&call(name, vec![str_arg("a"), str_arg("k")])).unwrap();
+            let built =
+                removed_crypto_metadata_for_test(&call(name, vec![str_arg("a"), str_arg("k")]));
             assert_eq!(
                 built.static_type().unwrap().charset_name(),
                 "binary",
@@ -2938,7 +2982,7 @@ mod builtin_type_tests {
     use super::result_type::base64_needed_encoded_length;
     use super::*;
 
-    fn rewrite(sql_expr: &str) -> Expression {
+    fn parse_expr(sql_expr: &str) -> Expr {
         let stmt = tidb_parser::parse(&format!("SELECT {sql_expr}")).expect("parses");
         let tidb_ast::Stmt::Query(query) = stmt else {
             panic!("expected a query")
@@ -2949,7 +2993,17 @@ mod builtin_type_tests {
         let tidb_ast::SelectField::Expr { expr, .. } = &select.fields.fields()[0] else {
             panic!("expected an expression field")
         };
-        rewrite_expr_resolved(expr, &NoResolver).expect("rewrites")
+        expr.clone()
+    }
+
+    fn rewrite(sql_expr: &str) -> Expression {
+        let expr = parse_expr(sql_expr);
+        match &expr {
+            Expr::Func { name, .. } if crate::func::is_removed_native_crypto(name) => {
+                removed_crypto_metadata_for_test(&expr)
+            }
+            _ => rewrite_expr_resolved(&expr, &NoResolver).expect("rewrites"),
+        }
     }
 
     fn ret_type(sql_expr: &str) -> FieldType {
@@ -2959,12 +3013,16 @@ mod builtin_type_tests {
         }
     }
 
-    fn eval(sql_expr: &str) -> Datum {
+    fn try_eval(sql_expr: &str) -> Result<Datum, EvalError> {
         let mut chunk = tidb_chunk::chunk::Chunk::new_empty(&[]);
         chunk.set_num_virtual_rows(1);
-        rewrite(sql_expr)
+        let expr = parse_expr(sql_expr);
+        rewrite_expr_resolved(&expr, &NoResolver)?
             .eval(&crate::context::NoColumns, chunk.get_row(0))
-            .expect("evaluates")
+    }
+
+    fn eval(sql_expr: &str) -> Datum {
+        try_eval(sql_expr).expect("evaluates")
     }
 
     fn text_datum(value: &str) -> Datum {
@@ -3137,10 +3195,6 @@ mod builtin_type_tests {
         // NULL propagates through every one of them.
         for expr in [
             "ord(null)",
-            "sha(null)",
-            "sha1(null)",
-            "sha2('x', null)",
-            "sha2(null, 224)",
             "inet_aton(null)",
             "inet_ntoa(null)",
             "is_ipv4(null)",
@@ -3162,15 +3216,23 @@ mod builtin_type_tests {
         assert_eq!(eval("ord('你好')"), Datum::Int(14_990_752));
         // `TO_BASE64('')` is the empty string, NOT NULL.
         assert_eq!(eval("to_base64('')"), text_datum(""));
-        // `SHA('')` still hashes: SHA-1 of zero bytes.
-        assert_eq!(
-            eval("sha('')"),
-            text_datum("da39a3ee5e6b4b0d3255bfef95601890afd80709")
-        );
-        // `SHA2`'s length argument: 0 means 256, and any value outside
-        // {0, 224, 256, 384, 512} yields NULL rather than an error.
-        assert_eq!(eval("sha2('pingcap', 0)"), eval("sha2('pingcap', 256)"));
-        assert_eq!(eval("sha2('x', 255)"), Datum::Null);
+        // Native hashes were deleted. Preserve all former edge vectors while
+        // requiring the structured contraction instead of a silent fallback.
+        for expr in [
+            "sha(null)",
+            "sha1(null)",
+            "sha2('x', null)",
+            "sha2(null, 224)",
+            "sha('')",
+            "sha2('pingcap', 0)",
+            "sha2('pingcap', 256)",
+            "sha2('x', 255)",
+        ] {
+            assert!(
+                matches!(try_eval(expr), Err(EvalError::Unsupported(_))),
+                "{expr}"
+            );
+        }
         // `BIT_COUNT(-1)` counts the two's-complement bits: all 64.
         assert_eq!(eval("bit_count(-1)"), Datum::Int(64));
         // `INTERVAL` with a NULL first argument is -1, not NULL: Go's

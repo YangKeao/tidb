@@ -68,6 +68,29 @@ pub(crate) fn is_removed_native_math(name: &str) -> bool {
     )
 }
 
+/// Native encryption/compression kernels were physically removed. These names
+/// remain only as an execution-boundary refusal list for TiKV-backed planning.
+pub(crate) fn is_removed_native_crypto(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "MD5"
+            | "SHA"
+            | "SHA1"
+            | "SHA2"
+            | "SM3"
+            | "RANDOM_BYTES"
+            | "PASSWORD"
+            | "VALIDATE_PASSWORD_STRENGTH"
+            | "ENCODE"
+            | "DECODE"
+            | "COMPRESS"
+            | "AES_ENCRYPT"
+            | "AES_DECRYPT"
+            | "UNCOMPRESS"
+            | "UNCOMPRESSED_LENGTH"
+    )
+}
+
 /// Evaluates a builtin scalar function over its evaluated arguments.
 pub(crate) fn eval_func(
     name: &str,
@@ -76,6 +99,13 @@ pub(crate) fn eval_func(
     _function_key: Option<usize>,
 ) -> Result<Datum, EvalError> {
     let name = name.to_ascii_uppercase();
+    // Deleted crypto families fail before arity checks or child evaluation so
+    // malformed/nested calls cannot expose a different native boundary.
+    if is_removed_native_crypto(&name) {
+        return Err(EvalError::Unsupported(
+            "native crypto evaluation was removed; TiKV engine required",
+        ));
+    }
     // The AST evaluator is also an expression-construction entry point for
     // session execution, so it must enforce the same function-class arity as
     // `new_function_impl`. DATE_ADD/SUB and ADDDATE/SUBDATE retain their
@@ -173,14 +203,6 @@ pub(crate) fn eval_func(
             };
             return built.eval(&value);
         }
-    }
-    if let Some(result) = crate::builtin_ext::eval_aes_lazy(
-        name.as_str(),
-        args.len(),
-        |index| eval_in(&args[index], cols),
-        cols,
-    ) {
-        return result;
     }
     // `IF` is a lazy control function in Go: `builtinIf*Sig` evaluates the
     // condition through its wrapped `EvalInt`, then evaluates exactly one
@@ -494,6 +516,11 @@ pub(crate) fn eval_func_values_in(
             "native math evaluation was removed; TiKV engine required",
         )));
     }
+    if is_removed_native_crypto(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native crypto evaluation was removed; TiKV engine required",
+        )));
+    }
     // Go's `builtinFromBase64Sig` checks the estimated decoded length against
     // `max_allowed_packet` before decoding and routes an over-limit result
     // through the statement warning policy. Keep this context-sensitive arm
@@ -535,7 +562,8 @@ pub(crate) fn eval_func_values_in(
 ///   branch, so eager-evaluating both would change semantics, e.g. a guarded
 ///   `1/0`), `CASE`, and the `DATE_ADD`/`DATE_SUB`/`ADDDATE`/`SUBDATE`
 ///   family whose second argument is an `Expr::Interval`, not a value;
-/// - removed native math functions, including `RAND`; the sequence functions (`NEXTVAL`/`LASTVAL`/`SETVAL`), and the
+/// - removed native math and crypto functions, including `RAND` and `RANDOM_BYTES`;
+///   the sequence functions (`NEXTVAL`/`LASTVAL`/`SETVAL`), and the
 ///   `time_fn` family (its dispatch takes `Columns` for the statement clock,
 ///   time zone, and `default_week_format`);
 /// - the `LENGTH`/`OCTET_LENGTH`/`CHAR_LENGTH`/`CHARACTER_LENGTH` family: Go

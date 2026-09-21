@@ -514,8 +514,7 @@ fn tikv_coverage_string_and_misc_families_engine_receipts() {
             );
         }
         for name in [
-            "lower", "upper", "lcase", "ucase", "reverse", "ltrim", "rtrim", "quote", "hex", "md5",
-            "sha1", "sha",
+            "lower", "upper", "lcase", "ucase", "reverse", "ltrim", "rtrim", "quote", "hex",
         ] {
             record(
                 check(
@@ -523,6 +522,15 @@ fn tikv_coverage_string_and_misc_families_engine_receipts() {
                     call(name, &ty, vec![column(0, &ty)]),
                     &mut input,
                     &ty,
+                ),
+                &mut failures,
+            );
+        }
+        for name in ["md5", "sha1", "sha"] {
+            record(
+                check_declined(
+                    &format!("{name}_{tag}"),
+                    call(name, &ty, vec![column(0, &ty)]),
                 ),
                 &mut failures,
             );
@@ -543,15 +551,13 @@ fn tikv_coverage_string_and_misc_families_engine_receipts() {
             );
         }
         record(
-            check(
+            check_declined(
                 &format!("sha2_{tag}"),
                 call(
                     "sha2",
                     &ty,
                     vec![column(0, &ty), literal(Datum::Int(256), &int())],
                 ),
-                &mut input,
-                &ty,
             ),
             &mut failures,
         );
@@ -2369,36 +2375,26 @@ fn tikv_coverage_string_misc_extended_engine_receipts() {
         ),
         &mut failures,
     );
-    // compress/uncompress use the four-byte length frame plus a zlib stream.
+    // Native compression is gone; engine warning/collation parity is not yet
+    // established, so these shapes must decline rather than silently replay.
     record(
-        check(
+        check_declined(
             "compress",
             call("compress", &binary, vec![column(0, &strings)]),
-            &mut string_input,
-            &binary,
         ),
         &mut failures,
     );
-    let framed = Datum::Bytes(vec![
-        11, 0, 0, 0, 120, 156, 203, 72, 205, 201, 201, 87, 40, 207, 47, 202, 73, 1, 0, 26, 11, 4,
-        93,
-    ]);
-    let mut compressed_input = fixture(std::slice::from_ref(&binary), &[vec![framed, Datum::Null]]);
     record(
-        check(
+        check_declined(
             "uncompress",
             call("uncompress", &binary, vec![column(0, &binary)]),
-            &mut compressed_input,
-            &binary,
         ),
         &mut failures,
     );
     record(
-        check(
+        check_declined(
             "uncompressed_length",
             call("uncompressed_length", &ints, vec![column(0, &binary)]),
-            &mut compressed_input,
-            &ints,
         ),
         &mut failures,
     );

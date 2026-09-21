@@ -45,8 +45,8 @@ mention only). The native-helper call sites the task warns about
 (`tests/mod.rs`, `tests/math.rs`, `builtin_compare.rs::tests`, ...). Inside the
 33 ports the only direct native-helper calls are `time_fn::dispatch` /
 `time_fn::add_sub` / `calendar::date_diff`, `cast::eval_cast`,
-`wrap_cast::*`, `crypto::dispatch`, `builtin_ext::{json,json2,string2,info,...}`
-dispatch, `compare2::inet_aton_go_vectors`, `like::like_match_with_collation` and
+`wrap_cast::*`, `builtin_ext::{json,json2,string2,info,...}` dispatch,
+`compare2::inet_aton_go_vectors`, `like::like_match_with_collation` and
 `extract::filter_out_in_place`. That makes the corpus substantially more
 re-pointable than the premise assumes: it is overwhelmingly SQL text and
 `ScalarFunction` calls, not kernel calls.
@@ -490,28 +490,30 @@ Go source: Source-first completion of `pkg/expression/builtin_string_test.go::Te
 
 ### `crypto_encryption_source.rs`
 
-Rank **(b)**; 19 tests: a=1, b=15, c=0, gap=3.
+Rank **(b)**; 21 tests: a=0, b=18, c=0, gap=3.
 
-Go source: GO PORTS of `pkg/expression/builtin_encryption_test.go`'s row tables against `crate::builtin_ext::crypto`'s dispatch boundary. Every expected value below was copied from the Go source table; a value only appears here after checking it against the production code the row exercises. Session-shape notes: - Go switches the session's `character_set_connection` before building the constants (`cryptTests`.chs), so its string literals arrive at the builtin already GBK-encoded through `charset.Transform(OpEncode)`. Direct dispatch rows feed PRE-ENCODED byte datums, while the connection-aware rewrite regression exercises the same `to_binary` boundary (see `encoding_error_rows_follow_session_charset_conversion`). - Go selects the AES signature from `@@block_encryption_mode` at getFunction time. Rust reads the same statement snapshot through
+Go source: ports of `pkg/expression/builtin_encryption_test.go`'s row tables. The native `builtin_ext/crypto.rs` evaluator was physically deleted in the second deletion tranche. All former family members are now explicit contractions: every active source-vector test requires adapter decline, the exact structured refusal from the scalar/value boundaries, and no native helper. Original expected values remain in the tables for later parity work; they are not presented as executed results. Charset, AES mode, compression framing/warning, malformed-input and password-session vectors remain represented.
 
 | `#[test] fn` | tier | admitted subject names | excluded subject names | native helpers |
 | --- | --- | --- | --- | --- |
-| `test_sql_decode` | B | &mdash; | `decode` | `crypto::dispatch` |
-| `test_sql_encode` | B | &mdash; | `encode` | `crypto::dispatch` |
-| `test_aes_encrypt` | B | &mdash; | `aes_decrypt`, `aes_encrypt` | `crypto::dispatch` |
-| `test_aes_decrypt` | B | &mdash; | `aes_decrypt` | `crypto::dispatch` |
-| `test_sha1_hash` | B | `sha` | &mdash; | `crypto::dispatch` |
-| `test_sha2_hash` | B | `sha2` | &mdash; | `crypto::dispatch` |
-| `test_md5_hash` | B | `md5` | &mdash; | `crypto::dispatch` |
-| `encoding_error_rows_follow_session_charset_conversion` | E | `md5` | `password` | &mdash; |
-| `test_random_bytes` | B | &mdash; | `random_bytes` | `crypto::dispatch` |
-| `test_compress_and_uncompress_length_framing` | B | `compress`, `uncompress` | &mdash; | `crypto::dispatch` |
-| `test_uncompress` | B | `uncompress` | &mdash; | `crypto::dispatch` |
-| `test_uncompress_length` | B | `uncompressed_length` | &mdash; | `crypto::dispatch` |
-| `test_validate_password_strength` | B | &mdash; | `validate_password_strength` | `crypto::dispatch` |
-| `test_password` | B | &mdash; | `password` | `crypto::dispatch` |
-| `uncompress_rejects_payload_deeper_than_declared_length` | B | `uncompress` | &mdash; | `crypto::dispatch` |
-| `uncompress_rejects_handcrafted_payload_larger_than_declared_length` | B | `uncompress` | &mdash; | `crypto::dispatch` |
+| `test_sql_decode` | B | &mdash; | `decode` | refusal only |
+| `test_sql_encode` | B | &mdash; | `encode` | refusal only |
+| `test_aes_encrypt` | B | &mdash; | `aes_decrypt`, `aes_encrypt` | refusal only |
+| `test_aes_decrypt` | B | &mdash; | `aes_decrypt` | refusal only |
+| `test_sha1_hash` | B | &mdash; | `sha`, `sha1` | refusal only |
+| `test_sha2_hash` | B | &mdash; | `sha2` | refusal only |
+| `test_md5_hash` | B | &mdash; | `md5` | refusal only |
+| `encoding_error_rows_follow_session_charset_conversion` | B | &mdash; | `md5`, `password` | refusal only |
+| `sm3_is_explicitly_contracted` | B | &mdash; | `sm3` | refusal only |
+| `deleted_kernel_edge_vectors_are_explicitly_contracted` | B | &mdash; | encryption family edges | refusal only |
+| `test_random_bytes` | B | &mdash; | `random_bytes` | refusal only |
+| `test_compress_and_uncompress_length_framing` | B | &mdash; | `compress`, `uncompress` | refusal only |
+| `test_uncompress` | B | &mdash; | `uncompress` | refusal only |
+| `test_uncompress_length` | B | &mdash; | `uncompressed_length` | refusal only |
+| `test_validate_password_strength` | B | &mdash; | `validate_password_strength` | refusal only |
+| `test_password` | B | &mdash; | `password` | refusal only |
+| `uncompress_rejects_payload_deeper_than_declared_length` | B | &mdash; | `uncompress` | refusal only |
+| `uncompress_rejects_handcrafted_payload_larger_than_declared_length` | B | &mdash; | `uncompress` | refusal only |
 | `vectorized_builtin_encryption_harness_gap` (ign) | -- | &mdash; | &mdash; | &mdash; |
 | `uncompress_memory_tracker_gaps` (ign) | -- | &mdash; | &mdash; | &mdash; |
 | `uncompress_overlong_declared_length_vectorized_gap` (ign) | -- | &mdash; | &mdash; | &mdash; |
@@ -813,9 +815,17 @@ Go source: `pkg/expression/builtin_vectorized_test.go:878 TestVectorizedFilterCo
 
 ---
 
-## 2. Admitted-name cross-tabulation
+## 2. Historical admitted-name cross-tabulation
 
-### 2.1 Admitted names with at least one source-port test (141)
+> **Superseded snapshot:** this section predates physical math/crypto deletion
+> and is not the current admission authority. In particular, `compress`, `md5`,
+> `sha`, `sha1`, `sha2`, `uncompress`, and `uncompressed_length` below are now
+> excluded together with every other former crypto-family name. Use generated
+> `tikv-expression-coverage.json` (216 admitted / 168 excluded) and the updated
+> per-file section above. The remaining historical rows are retained only to
+> show the original corpus-mapping inputs and will be regenerated as a unit.
+
+### 2.1 Historical names with at least one source-port test (snapshot: 141)
 
 | admitted name | source-port files | representative tests |
 | --- | --- | --- |
@@ -1164,7 +1174,7 @@ selection machinery); the other eight are (c-structure).
 | (c) | `filter_extract_dnf_source.rs` | 1 | 1 | 0 | 0 | 0 | rewriter DNF structure; survives deletion, keep unchanged |
 | (c) | `util_filter_condition_source.rs` | 1 | 1 | 0 | 0 | 0 | rewriter predicate structure; survives deletion, keep unchanged |
 | (b) | `builtin_info_json_math_source.rs` | 60 | 18 | 28 | 11 | 3 | native helper on Datum per case |
-| (b) | `crypto_encryption_source.rs` | 19 | 1 | 15 | 0 | 3 | native helper on Datum per case |
+| (b) | `crypto_encryption_source.rs` | 21 | 0 | 18 | 0 | 3 | explicit engine decline + scalar/value refusal; no native helper |
 | (c) | `context_override_values_source.rs` | 1 | 0 | 0 | 1 | 0 | structure or gap stub; no evaluator path |
 | (c) | `distsql_pb_roundtrip_gap_source.rs` | 4 | 0 | 0 | 0 | 4 | structure or gap stub; no evaluator path |
 | (c) | `expr_to_pb_lowering_gap_source.rs` | 20 | 0 | 0 | 0 | 20 | structure or gap stub; no evaluator path |
@@ -1205,7 +1215,7 @@ and `setvar_getvar_values_getparam_source.rs` (8).
 (14), `ilike_info_cast_source.rs` (14), `vectorizable_and_chunk_eval_source.rs` (4),
 `helper_current_timestamp_source.rs` (4).
 
-**Batch 4 (rank b, needs trees written):** `crypto_encryption_source.rs` (19),
+**Batch 4 (rank b, explicit contraction complete):** `crypto_encryption_source.rs` (21),
 `builtin_info_json_math_source.rs` (60, JSON family last per the family order).
 
 **Batch 5 (rank c):** keep `distsql_pb_roundtrip_gap_source.rs`,

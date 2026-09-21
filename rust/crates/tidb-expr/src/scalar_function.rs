@@ -922,6 +922,11 @@ impl ScalarFunction {
                 "native math evaluation was removed; TiKV engine required",
             ));
         }
+        if crate::func::is_removed_native_crypto(self.func_name.lowercase()) {
+            return Err(EvalError::Unsupported(
+                "native crypto evaluation was removed; TiKV engine required",
+            ));
+        }
         if let Some(value) = self.eval_fast_integer_binary(ctx, row)? {
             return self.coerce_to_ret_type(value);
         }
@@ -2192,14 +2197,6 @@ impl ScalarFunction {
                 }
                 _ => {}
             }
-        }
-        if let Some(result) = crate::builtin_ext::eval_aes_lazy(
-            name,
-            self.args.len(),
-            |index| self.args[index].eval(ctx, row),
-            ctx,
-        ) {
-            return result;
         }
         // Values-only builtins (ABS/CONCAT/...): evaluate every
         // argument, then reuse the single Datum-level implementation shared
