@@ -255,6 +255,9 @@ remain in the workspace.
 - [x] Reuse the same owner for Merge outer-filter programs. Add 4102 engine
       filter rows across reopen/chunks and six NULL-filter rows in left/right
       outer joins; preserve outer rows and skip unsupported CNF tails.
+- [x] Stop hash probe filtering immediately on a child error, even with partial
+      rows. Preserve the original failure, restore an empty typed chunk, and
+      prove zero filter execution/compilation in native and engine contexts.
 - [ ] Retain condition programs in remaining `eval_bool` hot callers (the public
       convenience wrapper currently builds temporary programs). Existing joined scratch-row copies remain;
       eliminating them requires the independent-column facade, not more row
@@ -841,6 +844,38 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+Probe-child failure boundary (TiDB `rust/`, same guarded env):
+
+    cargo test -q -p tidb-executor --features tikv-expr --lib probe_error_does_not_evaluate_partial_chunk_filters --locked --offline -j1 -- --test-threads=1
+    cargo test -q -p tidb-executor --features tikv-expr --locked --offline -j1 -- --test-threads=1
+
+The fixture's child writes a row then returns a sentinel Internal error.
+`probe-error-red.log` records a test-code compilation mistake (ExecError has
+Debug, not Display). After fixing that assertion, `probe-error-runtime-red.log`
+proves the actual bug: the successful filter reports one engine row AFTER the
+child failed, instead of zero. fill_probe_chunk used to defer propagation until
+after filters; a failing filter could also replace the original failure.
+
+The error is now returned before filter compilation/execution. Partial rows are
+reset and the typed allocated chunk is restored to its owner, with selection
+state cleared. No automatic retry or native replay is introduced; the test
+closes the executor after failure and does not establish retry-after-error
+semantics. `probe-error-green.log` covers native/engine contexts and both a
+successful constant filter and an unsupported poison filter: original sentinel
+error, zero output, zero engine filter rows/compilations, empty one-column chunk.
+Exact sentinel matching identifies the source failure in this local fixture,
+not a requirement to match Go's diagnostic wording.
+
+`probe-error-executor.log`: 1402/355/6/2 passed, 184 integration ignored. Serial,
+single-worker 8192 RSS / 16384 AS MiB guard, sampled peak 2847.7 MiB. From repository
+root, lint passed in `probe-error-lint.log` (104.7 MiB sampled peak):
+
+    GOMAXPROCS=1 GOFLAGS='-p=1' GOPATH=/home/agent/tidb/expression-reuse/go GOCACHE=/home/agent/tidb/expression-reuse/go-cache python3 ../tools/limited-run.py --rss-mib 8192 --as-mib 16384 -- make -j1 lint
+
+This is an embedder execution-boundary fix, not a TiKV kernel divergence or a
+new SQL admission. No Go oracle, mysql replay, new feature-off suite, performance,
+retry-after-error, hosted CI, Rust clippy or whole-migration readiness claim.
 
 Merge JoinExec outer-filter program retention (TiDB `rust/`, same guarded env):
 

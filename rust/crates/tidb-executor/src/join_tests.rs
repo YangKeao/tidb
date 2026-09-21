@@ -108,6 +108,53 @@ fn cached_join_conditions_preserve_ordinary_and_anti_null_demand() {
 
 #[cfg(feature = "tikv-expr")]
 #[test]
+fn probe_error_does_not_evaluate_partial_chunk_filters() {
+    for engine in [true, false] {
+        for poison in [false, true] {
+            let mut probe = RowSource::new(vec![vec![Datum::Int(1)]], 1);
+            probe.fail_after_fill = true;
+            let ctx = crate::StmtContext::for_query().with_tikv_expression(engine);
+            let mut join = JoinExec::new(
+                ExecutorMeta::new(schema_of(2), 1, CHUNK, CHUNK),
+                JoinKind::Inner,
+                vec![eq_on(0, 0, 1)],
+                Box::new(probe),
+                Box::new(RowSource::new(vec![vec![Datum::Int(1)]], 1)),
+                ctx.clone(),
+                StatementMemory::default(),
+            );
+            join.set_hash_build_is_left(false);
+            join.set_parallelism(1);
+            join.filter_is_left = true;
+            join.outer_filter = vec![if poison {
+                Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new("must_not_run_after_probe_error"),
+                    long(),
+                    vec![],
+                ))
+            } else {
+                Expression::Constant(Constant::new(Datum::Int(1), long()))
+            }];
+            join.open().unwrap();
+            let mut output = join.new_chunk();
+            let error = join.next(&mut output).unwrap_err();
+            assert!(
+                matches!(&error, ExecError::Internal(message) if message == "probe failed after filling partial rows"),
+                "{error:?}"
+            );
+            assert_eq!(output.num_rows(), 0);
+            assert_eq!(ctx.tikv_expression_rows(), 0);
+            assert_eq!(join.outer_filter_evaluator.compilations(), 0);
+            let hash = join.hash.as_ref().unwrap();
+            assert_eq!(hash.probe_chunk.num_rows(), 0);
+            assert_eq!(hash.probe_chunk.num_cols(), 1);
+            join.close().unwrap();
+        }
+    }
+}
+
+#[cfg(feature = "tikv-expr")]
+#[test]
 fn join_outer_filter_programs_reuse_and_refresh_on_open() {
     for engine in [false, true] {
         for (merge, build_left) in [(false, false), (false, true), (true, false)] {
@@ -1295,6 +1342,7 @@ struct RowSource {
     cursor: usize,
     read_rows: Option<Arc<std::sync::atomic::AtomicUsize>>,
     fail_after: Option<usize>,
+    fail_after_fill: bool,
     closes: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
 
@@ -1310,6 +1358,7 @@ impl RowSource {
             cursor: 0,
             read_rows: None,
             fail_after: None,
+            fail_after_fill: false,
             closes: None,
         }
     }
@@ -1336,6 +1385,11 @@ impl Executor for RowSource {
         self.cursor = end;
         if let Some(read_rows) = &self.read_rows {
             read_rows.store(end, std::sync::atomic::Ordering::SeqCst);
+        }
+        if self.fail_after_fill {
+            return Err(ExecError::internal(
+                "probe failed after filling partial rows",
+            ));
         }
         Ok(())
     }

@@ -4670,7 +4670,17 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
         } else {
             self.right_exec_mut()
         };
-        let result = probe.next(&mut chunk);
+        if let Err(error) = probe.next(&mut chunk) {
+            // A failed child may have written partial rows. Do not evaluate
+            // their filters (or replace the child error with a filter error).
+            // Restore the allocated, typed chunk without exposing those rows.
+            chunk.reset();
+            let hash = self.hash.as_mut().expect("hash state exists in this arm");
+            hash.probe_chunk = chunk;
+            hash.probe_row = 0;
+            hash.probe_selected.clear();
+            return Err(error);
+        }
         let selected =
             if !self.outer_filter.is_empty() && self.filter_is_left != self.hash_build_is_left() {
                 (0..chunk.num_rows())
@@ -4688,7 +4698,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
         hash.probe_chunk = chunk;
         hash.probe_row = 0;
         hash.probe_selected = selected;
-        result
+        Ok(())
     }
 
     /// Emits every output row the current probe chunk produces.
