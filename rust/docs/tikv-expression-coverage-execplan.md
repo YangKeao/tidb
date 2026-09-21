@@ -14,6 +14,19 @@ The deliverable must distinguish an enum entry from an actually dispatched TiKV 
 
 ## Progress
 
+- [x] Seventh native miscellaneous deletion tranche: physically removed
+  `builtin_ext/misc.rs`, `tidb-util/src/vitess.rs`, and
+  `tidb-executor/src/tidb_decode_key.rs`; removed DES and the
+  `TIDB_DECODE_KEY` snapshot/cache plumbing. Twelve names are explicit
+  contractions: `UUID`, `UUID_V4`, `UUID_V7`, `NAME_CONST`, `IS_UUID`,
+  `UUID_VERSION`, `UUID_TIMESTAMP`, `UUID_TO_BIN`, `BIN_TO_UUID`,
+  `TIDB_SHARD`, `TIDB_DECODE_KEY`, and `VITESS_HASH`. `ANY_VALUE` remains
+  admitted and is proven TiKV-only, while planner `TIDB_SHARD` generated-column
+  synthesis declines. Current gates are runtime 30/323/2072/160 with zero
+  native fallbacks and static 384/216/168/0; the source corpus is 35 files / 437
+  tests, including 14 miscellaneous-contraction tests. This supersedes the
+  historical decision below to keep UUID parsing names native, but makes none of
+  the broader compatibility or deployment claims.
 
 - [x] Verify both baselines are clean and create `feat/tikv-expression-coverage` in TiDB and `feat/standalone-expression-coverage` in TiKV.
 - [x] Read baseline adapter paths and dispatch inventories; find eager RPN control flow and incomplete local protobuf signature coverage.
@@ -57,7 +70,7 @@ The earlier Go IF/GET_LOCK source audit identified a separate suspected planning
 - Decision: local broad lowering remains separate from distributed pushdown authorization. Rationale: changing network predicate policy is outside this request and can lose rows before local filtering.
 - Decision: compile refusals choose native before evaluation; execution errors never trigger replay. Rationale: warnings and side effects cannot generally be rolled back.
 - Decision: generate raw signature IDs from the pinned engine rather than manually extending the local protobuf enum. Rationale: preserve wire compatibility and avoid unrelated generated protocol changes.
-- Decision: keep `uuid_version`/`uuid_timestamp` native after the replay proved TiKV accepts malformed UUIDs where Go raises 1411. Rationale: broad coverage must not change diagnostic behavior; a faithful UUID validator at the boundary is future work.
+- Historical decision (superseded by the seventh deletion tranche): keep `uuid_version`/`uuid_timestamp` native after the replay proved TiKV accepts malformed UUIDs where Go raises 1411. Current handling is explicit contraction after physical native-owner deletion; the rationale remains evidence for why they were not admitted to TiKV.
 - Decision: implement `GREATEST`/`LEAST` over unsigned integers as exact-Decimal comparison plus the original typed cast, and `ORD` as a leaf-only `IF(StringIsNull(x), NULL, ORD(x))` wrapper. Rationale: reuse existing kernels while restoring SQL semantics the legacy kernels do not implement; no kernel is modified.
 - Decision: add a standalone-only checked RPN entry that validates produced Real vectors, leaving stock `eval_decoded` unchanged. Rationale: prevents valid finite inputs from reaching a panic in a later node while preserving TiKV server behavior.
 - Decision: narrow the `flen = 4294967295` blob/JSON sentinel to `-1` in a local wire-metadata helper, matching Go's `ToPBFieldType`. Rationale: real SQL JSON/LONG columns must be encodable without widening the shared pushdown catalog.

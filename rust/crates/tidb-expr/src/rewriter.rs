@@ -3197,8 +3197,15 @@ mod builtin_type_tests {
             FieldTypeCode::NewDecimal
         );
         assert_eq!(ret_type("any_value('x')").code(), FieldTypeCode::VarString);
-        assert_eq!(eval("any_value(1234)"), Datum::Int(1234));
-        assert_eq!(eval("any_value(null)"), Datum::Null);
+        for expr in ["any_value(1234)", "any_value(null)"] {
+            assert_eq!(
+                try_eval(expr),
+                Err(EvalError::Unsupported(
+                    "native miscellaneous evaluation was removed; TiKV engine required or function unsupported"
+                )),
+                "{expr}"
+            );
+        }
     }
 
     /// Edge cases the result corpus does not carry, captured from Go with
@@ -3214,13 +3221,20 @@ mod builtin_type_tests {
             "inet_ntoa(null)",
             "is_ipv4(null)",
             "is_ipv6(null)",
-            "is_uuid(null)",
-            "uuid_version(null)",
             "format_bytes(null)",
             "format_nano_time(null)",
             "to_seconds(null)",
         ] {
             assert_eq!(eval(expr), Datum::Null, "{expr}");
+        }
+        for expr in ["is_uuid(null)", "uuid_version(null)"] {
+            assert_eq!(
+                try_eval(expr),
+                Err(EvalError::Unsupported(
+                    "native miscellaneous evaluation was removed; TiKV engine required or function unsupported"
+                )),
+                "{expr}"
+            );
         }
         // `ORD('')` is 0, not NULL -- the empty string has no first code
         // point but the signature still returns an integer.

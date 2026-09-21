@@ -16,6 +16,16 @@ Rust catalog parsed from its own source. Constants that Go computes at init
 (`strconv.Itoa(config...)`, `GetDefault*()`) are marked below as unverifiable
 from source alone.
 
+## Seventh expression-deletion boundary note
+
+The seventh native miscellaneous-kernel tranche removed the statement-context
+and executor plumbing that existed only for the `TIDB_DECODE_KEY` builtin:
+`tidb-executor/src/tidb_decode_key.rs` and its snapshot/cache path are deleted.
+This does not change the 948-variable census below. It does mean that historical
+references elsewhere to a statement-owned `TIDB_DECODE_KEY` metadata snapshot
+are superseded. The standalone `pkg/util/keydecoder`-shaped lock-diagnostic
+decoder is a separate owner and is not evidence that the SQL builtin remains.
+
 The behavioral census is independently executable:
 
 ```sh

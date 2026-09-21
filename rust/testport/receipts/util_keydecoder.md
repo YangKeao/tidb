@@ -2,6 +2,15 @@
 
 Pinned Go source: `e2788410d8d696605e8cb002585877a063ccc909`.
 
+## Seventh-tranche boundary clarification
+
+This package decoder remains distinct from the deleted SQL builtin owner. The
+seventh native miscellaneous tranche removed
+`rust/crates/tidb-executor/src/tidb_decode_key.rs` and all
+`TIDB_DECODE_KEY` snapshot/cache plumbing; the SQL name is now an explicit
+contraction. Historical wording below about removing a non-Go route remains
+valid history and must not be read as evidence that the builtin still exists.
+
 ## Complete inventory
 
 The pinned package contains `BUILD.bazel`, production `keydecoder.go`, source

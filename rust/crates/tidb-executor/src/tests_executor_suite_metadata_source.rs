@@ -219,9 +219,25 @@ fn duplicate_entry_error_names_the_value_and_key() {
 fn any_value_comparison_leaves_the_column_flag_untouched() {
     let mut catalog = Catalog::default();
     create(&mut catalog, "create table t(a decimal(16, 2))");
-    let rows = run_select_on("select * from t where a > any_value(a)", &catalog, &ctx())
-        .expect("Go runs this query against the empty table");
-    assert!(rows.is_empty());
+    insert(&mut catalog, "insert into t values (1.00)");
+    let sql = "select * from t where a > any_value(a)";
+    #[cfg(feature = "tikv-expr")]
+    {
+        let context = ctx().with_tikv_expression_backend(tidb_expr::tikv::Backend::Copying);
+        let before = context.tikv_expression_rows();
+        let rows = run_select_on(sql, &catalog, &context).expect("ANY_VALUE executes in TiKV");
+        assert!(rows.is_empty());
+        assert!(context.tikv_expression_rows() > before);
+    }
+    #[cfg(not(feature = "tikv-expr"))]
+    {
+        let error = run_select_on(sql, &catalog, &ctx())
+            .expect_err("native ANY_VALUE kernel is deleted")
+            .to_string();
+        assert!(error.contains(
+            "native miscellaneous evaluation was removed; TiKV engine required or function unsupported"
+        ));
+    }
     let table = kv_table_of(&catalog, "t");
     let flag = table.columns[0].field_type.flags();
     assert_eq!(flag, 0, "Go requires GetFlag() == 0 after the query");

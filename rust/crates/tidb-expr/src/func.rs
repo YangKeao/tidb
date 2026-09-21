@@ -132,6 +132,27 @@ pub(crate) fn is_removed_native_packet_string(name: &str) -> bool {
     )
 }
 
+/// Native miscellaneous value kernels were physically removed. ANY_VALUE is
+/// retained only through TiKV; the other names are explicit contractions.
+pub(crate) fn is_removed_native_misc(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "UUID"
+            | "UUID_V4"
+            | "UUID_V7"
+            | "ANY_VALUE"
+            | "NAME_CONST"
+            | "IS_UUID"
+            | "UUID_VERSION"
+            | "UUID_TIMESTAMP"
+            | "UUID_TO_BIN"
+            | "BIN_TO_UUID"
+            | "TIDB_SHARD"
+            | "TIDB_DECODE_KEY"
+            | "VITESS_HASH"
+    )
+}
+
 /// Evaluates a builtin scalar function over its evaluated arguments.
 pub(crate) fn eval_func(
     name: &str,
@@ -165,6 +186,11 @@ pub(crate) fn eval_func(
     if is_removed_native_packet_string(&name) {
         return Err(EvalError::Unsupported(
             "native packet-limited string evaluation was removed; function unsupported",
+        ));
+    }
+    if is_removed_native_misc(&name) {
+        return Err(EvalError::Unsupported(
+            "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
         ));
     }
     // The AST evaluator is also an expression-construction entry point for
@@ -567,6 +593,11 @@ pub(crate) fn eval_func_values_in(
             "native packet-limited string evaluation was removed; function unsupported",
         )));
     }
+    if is_removed_native_misc(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
+        )));
+    }
     // Go's `builtinFromBase64Sig` checks the estimated decoded length against
     // `max_allowed_packet` before decoding and routes an over-limit result
     // through the statement warning policy. Keep this context-sensitive arm
@@ -608,9 +639,10 @@ pub(crate) fn eval_func_values_in(
 ///   branch, so eager-evaluating both would change semantics, e.g. a guarded
 ///   `1/0`), `CASE`, and the `DATE_ADD`/`DATE_SUB`/`ADDDATE`/`SUBDATE`
 ///   family whose second argument is an `Expr::Interval`, not a value;
-/// - removed native math, crypto, vector, JSON depth/storage, regexp, and
-///   packet-limited string functions, including `RAND`, `RANDOM_BYTES`,
-///   `VEC_FROM_TEXT`, JSON storage accounting, REGEXP/RLIKE, and REPEAT/SPACE;
+/// - removed native math, crypto, vector, JSON depth/storage, regexp,
+///   packet-limited string, and miscellaneous functions, including `RAND`,
+///   `RANDOM_BYTES`, `VEC_FROM_TEXT`, JSON storage accounting, REGEXP/RLIKE,
+///   REPEAT/SPACE, UUID helpers, and hash/shard helpers;
 ///   the sequence functions (`NEXTVAL`/`LASTVAL`/`SETVAL`), and the
 ///   `time_fn` family (its dispatch takes `Columns` for the statement clock,
 ///   time zone, and `default_week_format`);
@@ -630,6 +662,11 @@ pub(crate) fn eval_func_values(
     if is_removed_native_packet_string(name) {
         return Some(Err(EvalError::Unsupported(
             "native packet-limited string evaluation was removed; function unsupported",
+        )));
+    }
+    if is_removed_native_misc(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
         )));
     }
     // Go `BuildCastFunction4Union`'s in-union cast-to-unsigned CLAMPS a

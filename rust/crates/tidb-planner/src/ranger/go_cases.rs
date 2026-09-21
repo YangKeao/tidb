@@ -1929,8 +1929,9 @@ fn min_access_conds_for_dnf_match_go() {
 /// Go `TestShardIndexFuncSuites` (`ranger_test.go:1752`): the shard-index
 /// GC-column family's unit surface -- `IsValidShardIndex`,
 /// `ExtractColumnsFromExpr`, `NeedAddColumn4InCond`/`4EqCond`,
-/// `NeedAddGcColumn4ShardIndex`, and `AddExpr4EqAndInCondition`'s three
-/// rewrite shapes with the pinned `tidb_shard` hash values 214 and 122.
+/// `NeedAddGcColumn4ShardIndex`, and the three former shard-prefix rewrite
+/// shapes. After native TIDB_SHARD deletion, structural recognition remains
+/// but synthesis explicitly declines and preserves the original conditions.
 #[test]
 fn shard_index_func_suites_match_go() {
     use super::detacher::{
@@ -2058,21 +2059,20 @@ fn shard_index_func_suites_match_go() {
     assert!(!need_add_column4_eq_cond(&shard_cols, &eq_access, &[]));
     assert!(!need_add_gc_column4_shard_index(&shard_cols, &[], &[]));
 
-    // ---- AddExpr4EqAndInCondition ----
+    // ---- AddExpr4EqAndInCondition contraction ----
+    // Computing the synthetic shard prefix required the deleted native
+    // TIDB_SHARD hash kernel. Preserve each source condition unchanged rather
+    // than replaying or rebuilding that kernel in the planner.
     let column_name = |unique_id: i64| format!("Column#{unique_id}");
     let expr_in4 = build("in", vec![Expression::Column(col0.clone()), con1.clone()]);
-    let cases: &[(&Expression, &str)] = &[
-        (&expr_eq, "[eq(Column#2, 214) eq(Column#0, 1)]"),
-        (&expr_in4, "[and(eq(Column#2, 214), eq(Column#0, 1))]"),
-        (
-            &expr_in,
-            "[or(and(eq(Column#2, 214), eq(Column#0, 1)), and(eq(Column#2, 122), eq(Column#0, 5)))]",
-        ),
-    ];
-    for (input, want) in cases {
-        let rewritten = add_expr4_eq_and_in_condition(std::slice::from_ref(*input), &shard_cols)
-            .expect("rewrites");
-        assert_eq!(&stringify_conds(&rewritten, &column_name), want);
+    for (input, want) in [
+        (&expr_eq, "[eq(Column#0, 1)]"),
+        (&expr_in4, "[in(Column#0, 1)]"),
+        (&expr_in, "[in(Column#0, 1, 5)]"),
+    ] {
+        let rewritten = add_expr4_eq_and_in_condition(std::slice::from_ref(input), &shard_cols)
+            .expect("declines shard synthesis cleanly");
+        assert_eq!(stringify_conds(&rewritten, &column_name), want);
     }
 }
 

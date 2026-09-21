@@ -1,5 +1,13 @@
 # nightly clippy refresh gate sweep — parser/chunk/util/expr (batch #38)
 
+## Current supersession
+
+The `tidb-expr/src/builtin_ext/misc.rs` UUID-hex lint site recorded below was
+later physically deleted by the seventh native miscellaneous-kernel tranche.
+The lint receipt is preserved as historical compiler evidence, not a claim that
+the module remains. The same tranche removed the Vitess DES owner and builtin
+key decoder.
+
 ## Trigger
 
 The toolchain lint refresh behind batches #36/#37 also surfaced warnings in the

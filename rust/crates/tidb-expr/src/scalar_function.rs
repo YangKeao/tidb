@@ -947,6 +947,11 @@ impl ScalarFunction {
                 "native packet-limited string evaluation was removed; function unsupported",
             ));
         }
+        if crate::func::is_removed_native_misc(self.func_name.lowercase()) {
+            return Err(EvalError::Unsupported(
+                "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
+            ));
+        }
         if let Some(value) = self.eval_fast_integer_binary(ctx, row)? {
             return self.coerce_to_ret_type(value);
         }

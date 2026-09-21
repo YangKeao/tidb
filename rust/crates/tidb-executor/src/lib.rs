@@ -164,7 +164,6 @@ mod tests_required_rows_source;
 mod tests_table_part1_source;
 #[cfg(test)]
 mod tests_table_part2_source;
-mod tidb_decode_key;
 pub mod union_all;
 pub use partition_routing::{PartitionDef, PartitionKind, PartitionSpec, RangeBound};
 pub mod expand;
@@ -279,7 +278,6 @@ pub use stmt_context::{
 };
 pub use table_access::TableAccess;
 pub use table_dual::TableDualExec;
-pub use tidb_decode_key::TidbDecodeKeySnapshot;
 pub use tidb_distsql::ReplicaReadType;
 /// The level a statement warning carries -- Go's three `contextutil` levels,
 /// re-exported so the session can read the one a `StmtContext` recorded

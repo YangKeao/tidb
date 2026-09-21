@@ -12,14 +12,35 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! TIDB_DECODE_KEY source fixtures retained as explicit contractions after
+//! physical deletion of its executor decoder and statement catalog snapshot.
+
 use tidb_executor::TableEntry;
 use tidb_tablecodec::table_key::{decode_record_key, encode_table_prefix};
 
-use crate::tests_support::{row_text, warnings_of};
+use crate::tests_support::warnings_of;
 use crate::Session;
 
-fn one(session: &mut Session, sql: &str) -> String {
-    row_text(session.run(sql))[0][0].clone()
+fn assert_removed(session: &mut Session, sql: &str) {
+    let error = session
+        .run(sql)
+        .expect_err("native TIDB_DECODE_KEY kernel is deleted")
+        .to_string();
+    assert!(
+        error.contains(
+            "native miscellaneous evaluation was removed; TiKV engine required or function unsupported"
+        ),
+        "{sql}: {error}"
+    );
+    assert_eq!(
+        warnings_of(session),
+        vec![(
+            1105,
+            "native miscellaneous evaluation was removed; TiKV engine required or function unsupported"
+                .to_owned(),
+        )],
+        "{sql} must expose only the generic structured refusal"
+    );
 }
 
 fn uppercase_hex(bytes: &[u8]) -> String {
@@ -54,59 +75,23 @@ fn table_ids(session: &Session, name: &str) -> (i64, Vec<i64>) {
 }
 
 #[test]
-fn tidb_decode_key_matches_go_generic_and_warning_vectors() {
+fn tidb_decode_key_generic_and_warning_vectors_are_explicitly_contracted() {
     let mut session = Session::new();
-    assert_eq!(
-        one(
-            &mut session,
-            "SELECT TIDB_DECODE_KEY('74800000000000002B5F72800000000000A5D3')",
-        ),
-        r#"{"_tidb_rowid":42451,"table_id":"43"}"#
-    );
-    assert_eq!(
-        one(
-            &mut session,
-            "SELECT TIDB_DECODE_KEY('74800000000000ffff5f7205bff199999999999a013131000000000000f9')",
-        ),
-        r#"{"handle":"{1.1, 11}","table_id":65535}"#
-    );
-    assert_eq!(
-        one(
-            &mut session,
-            "SELECT TIDB_DECODE_KEY('74800000000000019B5F698000000000000001015257303100000000FB013736383232313130FF3900000000000000F8010000000000000000F7')",
-        ),
-        r#"{"index_id":1,"index_vals":"RW01, 768221109, ","table_id":411}"#
-    );
-    assert_eq!(
-        one(
-            &mut session,
-            "SELECT TIDB_DECODE_KEY('7480000000000000FF4700000000000000F8')",
-        ),
-        r#"{"table_id":71}"#
-    );
-    assert_eq!(one(&mut session, "SELECT TIDB_DECODE_KEY(123)"), "123");
-    assert_eq!(
-        warnings_of(&session),
-        vec![(1105, "invalid key: 12".to_owned())]
-    );
-
-    let invalid = "7480000000000000FF2E5F728000000011FFE1A3000000000000";
-    assert_eq!(
-        one(
-            &mut session,
-            &format!("SELECT TIDB_DECODE_KEY('{invalid}')"),
-        ),
-        invalid
-    );
-    assert_eq!(
-        warnings_of(&session),
-        vec![(1105, format!("invalid key: {invalid}"))]
-    );
-    assert_eq!(one(&mut session, "SELECT TIDB_DECODE_KEY(NULL)"), "NULL");
+    for sql in [
+        "SELECT TIDB_DECODE_KEY('74800000000000002B5F72800000000000A5D3')",
+        "SELECT TIDB_DECODE_KEY('74800000000000ffff5f7205bff199999999999a013131000000000000f9')",
+        "SELECT TIDB_DECODE_KEY('74800000000000019B5F698000000000000001015257303100000000FB013736383232313130FF3900000000000000F8010000000000000000F7')",
+        "SELECT TIDB_DECODE_KEY('7480000000000000FF4700000000000000F8')",
+        "SELECT TIDB_DECODE_KEY(123)",
+        "SELECT TIDB_DECODE_KEY('7480000000000000FF2E5F728000000011FFE1A3000000000000')",
+        "SELECT TIDB_DECODE_KEY(NULL)",
+    ] {
+        assert_removed(&mut session, sql);
+    }
 }
 
 #[test]
-fn tidb_decode_key_uses_table_column_and_index_metadata() {
+fn tidb_decode_key_metadata_shapes_are_explicitly_contracted() {
     let mut session = Session::new();
     session
         .run("CREATE TABLE t (a VARCHAR(255), b INT, c DATETIME, PRIMARY KEY (a,b,c))")
@@ -128,14 +113,9 @@ fn tidb_decode_key_uses_table_column_and_index_metadata() {
             .find(|key| tidb_tablecodec::is_record_key(key))
             .unwrap()
     };
-    assert_eq!(
-        one(
-            &mut session,
-            &format!("SELECT TIDB_DECODE_KEY('{}')", wrapped_hex(&key)),
-        ),
-        format!(
-            r#"{{"handle":{{"a":"bbbb","b":"10","c":"2020-01-01 00:00:00"}},"table_id":{table_id}}}"#
-        )
+    assert_removed(
+        &mut session,
+        &format!("SELECT TIDB_DECODE_KEY('{}')", wrapped_hex(&key)),
     );
     let (_, handle) = decode_record_key(&key).unwrap();
     let mut columns = handle.encoded_columns().unwrap();
@@ -145,20 +125,15 @@ fn tidb_decode_key_uses_table_column_and_index_metadata() {
     for column in columns {
         null_key.extend_from_slice(&column);
     }
-    let null_hex = wrapped_hex(&null_key);
-    assert_eq!(
-        one(
-            &mut session,
-            &format!("SELECT TIDB_DECODE_KEY('{null_hex}')"),
-        ),
-        null_hex
+    assert_removed(
+        &mut session,
+        &format!("SELECT TIDB_DECODE_KEY('{}')", wrapped_hex(&null_key)),
     );
 
     session.run("DROP TABLE t").unwrap();
     session
         .run("CREATE TABLE t (a VARCHAR(255), b INT, c DATETIME, INDEX idx(a,b,c))")
         .unwrap();
-    let (table_id, _) = table_ids(&session, "t");
     session
         .run("INSERT INTO t VALUES ('aaaaa', 100, '2000-01-01 00:00:00')")
         .unwrap();
@@ -175,19 +150,14 @@ fn tidb_decode_key_uses_table_column_and_index_metadata() {
             .find(|key| tidb_tablecodec::is_index_key(key))
             .unwrap()
     };
-    assert_eq!(
-        one(
-            &mut session,
-            &format!("SELECT TIDB_DECODE_KEY('{}')", wrapped_hex(&key)),
-        ),
-        format!(
-            r#"{{"index_id":1,"index_vals":{{"a":"aaaaa","b":"100","c":"2000-01-01 00:00:00"}},"table_id":{table_id}}}"#
-        )
+    assert_removed(
+        &mut session,
+        &format!("SELECT TIDB_DECODE_KEY('{}')", wrapped_hex(&key)),
     );
 }
 
 #[test]
-fn tidb_decode_key_distinguishes_clustered_and_partition_handles() {
+fn tidb_decode_key_clustered_partition_shapes_are_explicitly_contracted() {
     let mut session = Session::new();
     session
         .run("CREATE TABLE t (a INT PRIMARY KEY CLUSTERED, b INT, KEY bk(b)) PARTITION BY RANGE (a) (PARTITION p0 VALUES LESS THAN (10), PARTITION p1 VALUES LESS THAN (20))")
@@ -227,31 +197,21 @@ fn tidb_decode_key_distinguishes_clustered_and_partition_handles() {
                 .clone(),
         )
     };
-    assert_eq!(
-        one(
-            &mut session,
-            &format!("SELECT TIDB_DECODE_KEY('{}')", wrapped_hex(&record)),
-        ),
-        format!(r#"{{"a":7,"partition_id":{partition_id},"table_id":"{table_id}"}}"#)
+    assert_removed(
+        &mut session,
+        &format!("SELECT TIDB_DECODE_KEY('{}')", wrapped_hex(&record)),
     );
-    assert_eq!(
-        one(
-            &mut session,
-            &format!(
-                "SELECT TIDB_DECODE_KEY('{}')",
-                uppercase_hex(&encode_table_prefix(partition_id))
-            ),
+    assert_removed(
+        &mut session,
+        &format!(
+            "SELECT TIDB_DECODE_KEY('{}')",
+            uppercase_hex(&encode_table_prefix(partition_id))
         ),
-        format!(r#"{{"partition_id":{partition_id},"table_id":{table_id}}}"#)
     );
     assert_eq!(indexes[0], 1);
-    assert_eq!(
-        one(
-            &mut session,
-            &format!("SELECT TIDB_DECODE_KEY('{}')", wrapped_hex(&index)),
-        ),
-        format!(
-            r#"{{"index_id":1,"index_vals":{{"b":"100"}},"partition_id":{partition_id},"table_id":{table_id}}}"#
-        )
+    assert_removed(
+        &mut session,
+        &format!("SELECT TIDB_DECODE_KEY('{}')", wrapped_hex(&index)),
     );
+    assert_ne!(table_id, partition_id);
 }

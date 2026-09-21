@@ -138,12 +138,22 @@ fn signed_string_overflow_reaches_sql_and_implicit_int_consumers() {
         )],
     );
 
-    let expected_hash = tidb_util::vitess::hash_uint64((-2_i64) as u64).to_string();
+    let error = session
+        .run("SELECT VITESS_HASH('18446744073709551614')")
+        .expect_err("native Vitess hash kernel is deleted")
+        .to_string();
+    assert!(error.contains(
+        "native miscellaneous evaluation was removed; TiKV engine required or function unsupported"
+    ));
     assert_eq!(
-        row_text(session.run("SELECT VITESS_HASH('18446744073709551614')")),
-        [[expected_hash]],
+        warnings(&session),
+        [(
+            1105,
+            "native miscellaneous evaluation was removed; TiKV engine required or function unsupported"
+                .to_owned(),
+        )],
+        "guard must precede the former 8030 implicit-cast warning"
     );
-    assert_eq!(warnings(&session)[0].0, 8030);
 
     assert_eq!(
         row_text(session.run("SELECT CAST('18446744073709551616' AS SIGNED)")),
@@ -158,24 +168,25 @@ fn signed_string_overflow_reaches_sql_and_implicit_int_consumers() {
     );
 }
 
-/// `VITESS_HASH` wraps its argument in Go's `WrapWithCastAsInt`.  A planner
-/// fold must not erase the cast's 8030 diagnostic just because the hash result
-/// itself is constant; the warning belongs to the statement that executes it.
+/// The deleted VITESS_HASH kernel refuses before evaluating its implicit cast,
+/// so it cannot leak the former 8030 warning.
 #[test]
-fn implicit_integer_cast_keeps_warning_after_plan_fold() {
+fn removed_vitess_hash_refuses_before_implicit_integer_cast() {
     let mut session = Session::new();
-    let expected_hash = tidb_util::vitess::hash_uint64((-2_i64) as u64).to_string();
-    assert_eq!(
-        row_text(session.run("SELECT VITESS_HASH('18446744073709551614')")),
-        [[expected_hash]],
-    );
+    let error = session
+        .run("SELECT VITESS_HASH('18446744073709551614')")
+        .expect_err("native Vitess hash kernel is deleted")
+        .to_string();
+    assert!(error.contains(
+        "native miscellaneous evaluation was removed; TiKV engine required or function unsupported"
+    ));
     assert_eq!(
         warnings(&session),
         [(
-            8030,
-            "Cast to signed converted positive out-of-range integer to its negative complement"
+            1105,
+            "native miscellaneous evaluation was removed; TiKV engine required or function unsupported"
                 .to_owned(),
-        )],
+        )]
     );
     assert_eq!(session.wire_warning_count(), 1);
 }

@@ -406,35 +406,6 @@ impl Session {
         }
     }
 
-    fn tidb_decode_key_snapshot(&self) -> Arc<tidb_executor::TidbDecodeKeySnapshot> {
-        let Ok(catalog) = self.catalog.lock() else {
-            return Arc::default();
-        };
-        // Keyed on the METADATA counter, not the mutation counter: Go's
-        // row-decode metadata is cached per infoschema version, which DDL
-        // moves and DML never does. Keying on `version()` here would rebuild
-        // this snapshot on every write statement.
-        let version = catalog.metadata_version();
-        {
-            let cache = self
-                .tidb_decode_key_cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some((cached_version, snapshot)) = cache.as_ref() {
-                if *cached_version == version {
-                    return Arc::clone(snapshot);
-                }
-            }
-        }
-        let snapshot = Arc::new(catalog.tidb_decode_key_snapshot());
-        *self
-            .tidb_decode_key_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some((version, Arc::clone(&snapshot)));
-        snapshot
-    }
-
     /// The scanner-facing half of `@@sql_mode`: the input Go hands
     /// `Parser.SetSQLMode`, read fresh at every parse so a `SET sql_mode`
     /// changes the statements AFTER it and no AST built before it.
@@ -1139,7 +1110,6 @@ impl Session {
                     .with_group_concat_max_len(group_concat_max_len)
                     .with_apply_cache_capacity(apply_cache_capacity)
                     .with_block_encryption_mode(block_encryption_mode)
-                    .with_tidb_decode_key_snapshot(self.tidb_decode_key_snapshot())
                     .with_sql_mode(snapshot.scanner_sql_mode)
                     .with_ddl_job_context(
                         snapshot.ddl_cdc_write_source,
@@ -1234,7 +1204,6 @@ impl Session {
                 .with_group_concat_max_len(group_concat_max_len)
                 .with_apply_cache_capacity(apply_cache_capacity)
                 .with_block_encryption_mode(block_encryption_mode)
-                .with_tidb_decode_key_snapshot(self.tidb_decode_key_snapshot())
                 .with_sysdate_is_now(sysdate_is_now)
                 .with_replica_read(tidb_executor::ReplicaReadType::Leader)
                 .with_lazy_clock(snapshot.timestamp, zone)

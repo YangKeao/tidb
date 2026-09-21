@@ -1,9 +1,10 @@
 # TiKV expression corpus re-pointing plan
 
-Living work list for re-pointing the 34 Go-test source-port files in
+Living work list for re-pointing the 35 Go-test source-port files in
 `rust/crates/tidb-expr/src/tests/*_source.rs` at the local TiKV engine, as
-required by `tikv-expression-removal-checklist.md` section 3. The packet-string
-addendum below records the sixth physical-deletion tranche.
+required by `tikv-expression-removal-checklist.md` section 3. The current
+addendum records the seventh physical-deletion tranche; older cross-tabs are
+retained as historical planning evidence.
 
 Branch `feat/tikv-expression-coverage`, published base `e76c191` plus the current working tree. Admission authority:
 `rust/crates/tidb-expr/src/tikv/admission.rs` (`ADMISSION_ROWS`), differential
@@ -20,16 +21,16 @@ count at commit `4e1c7c7` (the commit that introduced the table). At HEAD
 `admission_excluded: 154`. `tikv-expression-coverage.md` section 1.1 and
 `tikv-expression-removal-checklist.md` section 3 repeat the stale 232/152.
 That paragraph is the historical starting snapshot. Rows explicitly marked
-“live” and the packet-string addendum reflect the current six-tranche tree;
-older cross-tabulations remain useful planning history and are not recounted as
-current admission coverage.
+“live” and the seventh-tranche addendum reflect the current tree; older
+cross-tabulations, including the packet-string snapshot, remain useful planning
+history and are not recounted as current admission coverage.
 
 ## 0.1 Headline numbers (live totals where marked; remaining cross-tabs are historical)
 
 | Item | Count |
 | --- | --- |
-| `*_source.rs` files (live) | 34 |
-| `#[test]` functions (live) | 423 |
+| `*_source.rs` files (live) | 35 |
+| `#[test]` functions (live) | 437 |
 | Admission rows (live) | 384 (216 admitted, 168 excluded) |
 | Admitted names with >=1 source-port test | 141 |
 | Admitted names with no source-port test but covered by `tests/tikv_coverage.rs` | 89 |
@@ -41,12 +42,28 @@ current admission coverage.
 | Files ranked (b) native-helper level | 2 |
 | Files ranked (c) no evaluator path (structure / gap stubs) | 9 |
 
+### 0.2 Seventh miscellaneous-deletion addendum
+
+`misc_contraction_source.rs` adds 14 tests that preserve the deleted module's
+source intent as explicit contraction/TiKV-only evidence. `UUID`, `UUID_V4`,
+`UUID_V7`, `NAME_CONST`, `IS_UUID`, `UUID_VERSION`, `UUID_TIMESTAMP`,
+`UUID_TO_BIN`, `BIN_TO_UUID`, `TIDB_SHARD`, `TIDB_DECODE_KEY`, and
+`VITESS_HASH` now decline with no native fallback. `ANY_VALUE` remains admitted
+and is proven TiKV-only. Planner `TIDB_SHARD` generated-column synthesis also
+declines. The reviewed gates are 30 runtime tests / 323 receipts / 2072 engine
+rows / 160 borrowed rows / zero native fallbacks and 384 static rows / 216
+admitted / 168 excluded / 0 missing. Historical tables below still name tests
+that lived in deleted `builtin_ext/misc.rs`; those native-owner references are
+superseded, not evidence the kernels remain.
+
+### 0.3 How the mapping was determined
+
 Key structural finding: **no `*_source.rs` file calls `string_fn::` or `ops::`**
 directly (verified: `grep -n 'string_fn\|ops::' *_source.rs` finds one comment
 mention only). The native-helper call sites the task warns about
 (`string_fn::length`, `ops::...`) live in the *non-source* test modules
-(`tests/mod.rs`, `tests/math.rs`, `builtin_compare.rs::tests`, ...). Inside the
-33 ports the only direct native-helper calls are `time_fn::dispatch` /
+(`tests/mod.rs`, `tests/math.rs`, `builtin_compare.rs::tests`, ...). In the
+historical 33-port mapping snapshot, the only direct native-helper calls were `time_fn::dispatch` /
 `time_fn::add_sub` / `calendar::date_diff`, `cast::eval_cast`,
 `wrap_cast::*`, `builtin_ext::{json,string2,info,...}` dispatch,
 `compare2::inet_aton_go_vectors`, `like::like_match_with_collation` and
@@ -54,7 +71,7 @@ mention only). The native-helper call sites the task warns about
 re-pointable than the premise assumes: it is overwhelmingly SQL text and
 `ScalarFunction` calls, not kernel calls.
 
-## 0.2 How the mapping was determined
+<!-- The historical mapping method starts below. -->
 
 1. `ADMISSION_ROWS` in `tikv/admission.rs` is parsed for `name`, `decision`,
    `Family`, `required_eval_types`, `Shape` and `exclusion_reason`. The name

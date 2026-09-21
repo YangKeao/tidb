@@ -973,15 +973,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "des"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "916a94e407b54f9034d71dd748234cd1e516ced6284009906ae246f177eafe5a"
-dependencies = [
- "cipher",
-]
-
-[[package]]
 name = "difftest"
 version = "0.0.0"
 dependencies = [
@@ -5854,7 +5845,6 @@ dependencies = [
  "chrono-tz 0.10.4",
  "crc32fast",
  "crossbeam-channel",
- "des",
  "fail 0.4.0",
  "fastrand",
  "flate2",

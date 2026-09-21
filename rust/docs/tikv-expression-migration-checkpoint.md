@@ -2,26 +2,37 @@
 
 ## Revisions and decision
 
-This tranche builds from published TiDB `e76c191` and TiKV documentation
-HEAD `4c372b8`; the fresh results below include the current packet-string
-working tree. TiDB actually builds the pinned engine
-`db9c7f08d954fef02519b86a55c2d72cf72ef697`, not arbitrary TiKV HEAD.
-Only YangKeao personal forks have been used for publication.
+This checkpoint now includes the seventh native miscellaneous-kernel deletion
+tranche. The revision and publication text below is retained as historical
+context for the preceding packet-string tranche; it is not a fresh publication
+or hosted-CI claim. TiDB builds its pinned engine rather than arbitrary TiKV
+HEAD, and this document does not establish TiKV server compatibility.
 
-**Do not switch the default yet. Physical deletion is now deliberately in
-progress.** The first six tranches removed the complete native math-kernel
+Historical sixth-tranche revision context: that checkpoint built from published
+TiDB `e76c191` and TiKV documentation HEAD `4c372b8`; TiDB actually built pinned
+engine `db9c7f08d954fef02519b86a55c2d72cf72ef697`, not arbitrary TiKV HEAD.
+Only YangKeao personal forks had been used for that publication. This paragraph
+is retained as history, not a current publication or hosted-CI result.
+
+**Do not switch the default yet. Physical deletion is deliberately in
+progress.** Seven tranches have now removed the complete native math-kernel
 folder plus crypto/encryption, vector, JSON depth/storage, both regexp modules,
-and the packet-limited string module and residual branches. Unverified math,
-all former crypto functions, VEC_FROM_TEXT, JSON storage accounting, non-typed
-JSON_DEPTH, invalid literal regexp shapes, and REPEAT/SPACE/LPAD/RPAD/TO_BASE64/
-WEIGHT_STRING are explicit contractions. Retained vector, typed-column
-JSON_DEPTH, and valid regexp names execute only in TiKV. This
-invalidates the older policy of retaining every native family until
-compatibility was complete.
+the packet-limited string module, `builtin_ext/misc.rs`, `tidb-util/src/vitess.rs`,
+and `tidb-executor/src/tidb_decode_key.rs`, together with their residual
+branches. The seventh tranche also removed the DES dependency and
+`TIDB_DECODE_KEY` snapshot/cache plumbing. `UUID`, `UUID_V4`, `UUID_V7`,
+`NAME_CONST`, `IS_UUID`, `UUID_VERSION`, `UUID_TIMESTAMP`, `UUID_TO_BIN`,
+`BIN_TO_UUID`, `TIDB_SHARD`, `TIDB_DECODE_KEY`, and `VITESS_HASH` are explicit
+contractions. `ANY_VALUE` remains admitted and is proven TiKV-only; planner
+`TIDB_SHARD` generated-column synthesis now declines. This invalidates older
+retained/native claims for those names without claiming full compatibility.
 The earlier refusal-intolerant corpus still exposed 59 distinct first-refused
 expressions, so the migration objective remains active/incomplete.
 
 ## Acceptance status for the six requested items
+
+The six-item acceptance framework is unchanged by the seventh deletion tranche;
+none of the rows below should be read as completion.
 
 | Item | Established foundation | Remaining acceptance work |
 | --- | --- | --- |
@@ -37,9 +48,18 @@ Historical milestone checkboxes there describe implemented foundations, not
 completion of all six requirements. This checkpoint corrects stale admission
 counts and overbroad lazy/datatype milestone wording.
 
-## Fresh validation results
+## Validation results
 
-All heavy commands ran serially with one worker and the memory guard below.
+Current seventh-tranche gates: runtime **30 tests / 323 receipts / 2072 engine
+rows / 160 borrowed rows / zero native fallbacks**; static **384 rows / 216
+admitted / 168 excluded / 0 missing**. The source corpus is **35 `*_source.rs`
+files / 437 tests**, including **14** in `misc_contraction_source.rs`. These
+facts do not establish feature-off success, hosted CI, an end-to-end SQL demo,
+full compatibility, or TiKV server compatibility.
+
+The command/log table below is preserved from the sixth packet-string tranche;
+only rows explicitly labelled current remain current. All heavy commands ran
+serially with one worker and the memory guard below.
 Logs are in `/home/agent/tidb/expression-reuse/`.
 
 | Log | Result | Scope/qualification |
@@ -54,6 +74,12 @@ Logs are in `/home/agent/tidb/expression-reuse/`.
 | `native-string-packet-session-full-lib.log` | **1707 passed / 19 failed / 209 ignored**, exit 101 | No packet-string/regexp/JSON test failed; the broad suite remains red on stale math/crypto/vector contraction expectations and is not a green gate. |
 | `native-string-packet-runtime-gate-green.log` | 30 tests, 323 fixture receipts, 2072 engine rows, 160 observed borrowed rows | Reviewed admitted baseline remains exact after packet-string deletion and executes with zero fallback. |
 | `native-string-packet-delete-lint.log` | exit 0 | Repository lint passed under the memory guard with one make job. |
+| `native-misc-full-lib-final.log` + `native-misc-integration-final.log` | 1197 library + 77 integration passed; 99 library ignored | Seventh-tranche expression suites; deleted misc tests were replaced by explicit contractions and TiKV-only ANY_VALUE evidence. |
+| `native-misc-session-full-lib-final.log` | **1707 passed / 19 failed / 209 ignored**, exit 101 | Exactly the pre-tranche known math/crypto/vector failure baseline; no miscellaneous-deletion regression remains. |
+| `native-misc-session-integration-final.log` | **333 passed / 5 failed**, exit 101 | Five pre-existing stale math/crypto source expectations; UUID contraction integration tests pass. |
+| `native-misc-{expr,query}-diff.log` | 1 + 1 gates passed | Native removals are named contractions rather than `ERR` skips; query ANY_VALUE uses Copying TiKV with a positive row counter. |
+| `native-misc-integration-diff.log` | 78 named contractions; full replay remains red with 160 unrelated carried divergences | This is evidence for exact contraction classification, not a green full-integration claim. |
+| `native-misc-lint.log` | exit 0 | Repository `make -j1 lint` passed under the memory guard. |
 | current static gate | Self-check and check pass | 384 declaration rows, 216 admitted / 168 excluded, zero missing registry/synthesized names. Static candidates are not execution coverage. |
 | `checkpoint-engine-only.log` | **1163 passed / 61 failed / 99 ignored**, exit 101 | All 61 failed sections report adapter refusal; 59 distinct first-refused expressions. This is an incomplete cutover gate. |
 

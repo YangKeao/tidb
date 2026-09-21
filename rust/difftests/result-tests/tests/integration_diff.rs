@@ -235,6 +235,9 @@ fn integrationtest_dir() -> PathBuf {
 /// recorded no output of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum MatchKind {
+    /// A retained source statement reached the exact fail-closed boundary for
+    /// a physically deleted native miscellaneous kernel.
+    NativeContraction,
     /// A result set: header and every row compared cell by cell.
     Rows,
     /// An `EXPLAIN`: the recorded plan's access property compared.
@@ -630,6 +633,22 @@ fn ensure_stats_fixtures_unzipped(dir: &std::path::Path) {
     });
 }
 
+const REMOVED_NATIVE_MARKERS: [&str; 7] = [
+    "native math evaluation was removed; TiKV engine required",
+    "native crypto evaluation was removed; TiKV engine required",
+    "native vector evaluation was removed; TiKV engine required",
+    "native JSON depth/storage evaluation was removed; TiKV engine required",
+    "native regexp evaluation was removed; TiKV engine required",
+    "native packet-limited string evaluation was removed; function unsupported",
+    "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
+];
+
+fn is_removed_native_error(error: &str) -> bool {
+    REMOVED_NATIVE_MARKERS
+        .iter()
+        .any(|marker| error.contains(marker))
+}
+
 fn compare_output(
     session: &mut Session,
     stmt: &Stmt,
@@ -694,6 +713,9 @@ fn compare_output(
         eprintln!("SQL< {}ms", started.elapsed().as_millis());
     }
     match (outcome, recorded_error) {
+        (Err(error), _) if is_removed_native_error(&format!("{error:?}")) => {
+            Ok(MatchKind::NativeContraction)
+        }
         // TiDB rejected it and so did we. The wording is TiDB's; only the
         // rejection is asserted.
         (Err(_), true) => {

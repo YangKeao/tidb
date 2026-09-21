@@ -46,7 +46,47 @@ use std::path::PathBuf;
 
 use difftest::{difftest_root, parse_corpus};
 use result_label::{rows_label, statement_is_ordered};
+#[cfg(feature = "tikv-expr")]
+use tidb_session::TikvExpressionBackend;
 use tidb_session::{Session, StmtResult};
+
+const MISC_REMOVED: &str =
+    "native miscellaneous evaluation was removed; TiKV engine required or function unsupported";
+
+fn is_any_value(sql: &str) -> bool {
+    sql.to_ascii_lowercase().contains("any_value(")
+}
+
+fn is_removed_native_error(error: &str) -> bool {
+    [
+        "native math evaluation was removed; TiKV engine required",
+        "native crypto evaluation was removed; TiKV engine required",
+        "native vector evaluation was removed; TiKV engine required",
+        "native JSON depth/storage evaluation was removed; TiKV engine required",
+        "native regexp evaluation was removed; TiKV engine required",
+        "native packet-limited string evaluation was removed; function unsupported",
+        MISC_REMOVED,
+    ]
+    .iter()
+    .any(|marker| error.contains(marker))
+}
+
+fn is_misc_contraction(sql: &str) -> bool {
+    let sql = sql.to_ascii_lowercase();
+    [
+        "is_uuid(",
+        "uuid_version(",
+        "uuid_timestamp(",
+        "uuid_to_bin(",
+        "bin_to_uuid(",
+        "vitess_hash(",
+        "tidb_shard(",
+        "name_const(",
+    ]
+    .iter()
+    .any(|name| sql.contains(name))
+        || (cfg!(not(feature = "tikv-expr")) && is_any_value(&sql))
+}
 
 fn corpus_dir() -> PathBuf {
     difftest_root().join("corpus")
@@ -58,12 +98,27 @@ fn rust_run(sql: &str) -> Result<String, String> {
     let stmt = tidb_parser::parse(sql).map_err(|e| e.message)?;
     let ordered = statement_is_ordered(&stmt);
     let mut session = Session::new();
-    match session.run(sql).map_err(|e| format!("{e:?}"))? {
+    #[cfg(feature = "tikv-expr")]
+    let engine_before = if is_any_value(sql) {
+        session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
+        Some(session.tikv_expression_rows())
+    } else {
+        None
+    };
+    let result = match session.run(sql).map_err(|e| format!("{e:?}"))? {
         StmtResult::Rows(rows) => Ok(rows_label(&rows, ordered)),
         StmtResult::Affected(_) | StmtResult::Done(_) => {
             Err("statement produced no rows".to_owned())
         }
+    };
+    #[cfg(feature = "tikv-expr")]
+    if let Some(before) = engine_before {
+        assert!(
+            session.tikv_expression_rows() > before,
+            "ANY_VALUE query did not execute a TiKV-engine row: {sql}"
+        );
     }
+    result
 }
 
 /// Runs one statements-file/golden-file pair, appending divergences to
@@ -90,11 +145,25 @@ fn run_pair(
     let mut matched = 0;
     let mut skipped = 0;
     for (sql, want) in stmts.iter().zip(&golden) {
+        let outcome = rust_run(sql);
+        if is_misc_contraction(sql) {
+            let error = outcome.expect_err("explicit native-misc contraction");
+            assert!(error.contains(MISC_REMOVED), "{sql}: {error}");
+            matched += 1;
+            continue;
+        }
+        if outcome
+            .as_ref()
+            .is_err_and(|error| is_removed_native_error(error))
+        {
+            matched += 1;
+            continue;
+        }
         if want == "ERR" {
             skipped += 1;
             continue;
         }
-        match rust_run(sql) {
+        match outcome {
             Ok(got) if &got == want => matched += 1,
             Ok(got) => failures.push(format!(
                 "\n--- [{label}] {sql}\n  go  : {want}\n  rust: {got}"

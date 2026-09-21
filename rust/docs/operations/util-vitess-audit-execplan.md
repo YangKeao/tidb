@@ -1,9 +1,17 @@
 # `pkg/util/vitess` parity audit ExecPlan
 
-## Objective
+## Current status
 
-Keep the complete Go-master Vitess shard-key hash helper aligned with its Rust
-DES owner, source vectors, and production expression consumer.
+Superseded by the seventh native miscellaneous expression-kernel deletion
+tranche. `tidb-util/src/vitess.rs` and DES were removed; `VITESS_HASH` and
+`TIDB_SHARD` are explicit contractions, and planner `TIDB_SHARD`
+generated-column synthesis declines. The completed audit below is retained only
+as historical source evidence, not as a live-owner or compatibility claim.
+
+## Historical objective
+
+Keep the complete Go-master Vitess shard-key hash helper aligned with its then
+live Rust DES owner, source vectors, and production expression consumer.
 
 ## Progress
 

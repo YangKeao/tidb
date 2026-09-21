@@ -9,6 +9,18 @@ the package tests, not from changing Go source or build artifacts.
 **Status: PARTIAL.** See [Resume here](#resume-here) for exactly where the sweep
 stopped and what is untouched.
 
+## Seventh deletion-tranche supersession note
+
+The native-owner paths discussed by this historical inventory are not all live.
+The seventh deletion tranche physically removed `builtin_ext/misc.rs`,
+`tidb-util/src/vitess.rs`, and `tidb-executor/src/tidb_decode_key.rs`, plus the
+DES dependency and `TIDB_DECODE_KEY` snapshot/cache plumbing. `UUID`, `UUID_V4`,
+`UUID_V7`, `NAME_CONST`, `IS_UUID`, `UUID_VERSION`, `UUID_TIMESTAMP`,
+`UUID_TO_BIN`, `BIN_TO_UUID`, `TIDB_SHARD`, `TIDB_DECODE_KEY`, and
+`VITESS_HASH` are now explicit contractions; prior native/parity statements for
+those names are retained only as history. `ANY_VALUE` remains admitted and is
+proven TiKV-only. This note does not claim full compatibility.
+
 ---
 
 ## The structural cause behind most findings

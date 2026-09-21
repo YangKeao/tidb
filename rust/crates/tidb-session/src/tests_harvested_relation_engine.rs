@@ -919,13 +919,31 @@ fn only_full_group_by_pins_by_name_by_where_equality_and_by_candidate_key() {
     // the group's FIRST row (`builtinIntAnyValueSig` is the identity on the
     // value the aggregation already holds), so `k=1` reports the `v` of
     // `(1,10)`.
-    assert_eq!(
-        rows(
-            &mut session,
-            "SELECT any_value(v), count(*) FROM gg GROUP BY k ORDER BY k"
-        ),
-        [["10", "2"], ["30", "1"]]
-    );
+    let any_value_sql = "SELECT any_value(v), count(*) FROM gg GROUP BY k ORDER BY k";
+    #[cfg(feature = "tikv-expr")]
+    {
+        let before = session.tikv_expression_rows();
+        session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
+        assert_eq!(
+            rows(&mut session, any_value_sql),
+            [["10", "2"], ["30", "1"]]
+        );
+        assert!(
+            session.tikv_expression_rows() > before,
+            "isolated ANY_VALUE query must execute in TiKV"
+        );
+        session.set_tikv_expression_backend(None);
+    }
+    #[cfg(not(feature = "tikv-expr"))]
+    {
+        let error = session
+            .run(any_value_sql)
+            .expect_err(any_value_sql)
+            .to_string();
+        assert!(error.contains(
+            "native miscellaneous evaluation was removed; TiKV engine required or function unsupported"
+        ));
+    }
 
     // Clearing the mode restores the permissive answers, values included.
     session.run("SET sql_mode = 'STRICT_TRANS_TABLES'").unwrap();
@@ -1183,14 +1201,29 @@ fn only_full_group_by_new_checker_scope_and_auxiliary_fields() {
             "{sql}"
         );
     }
-    let result = rows(
-        &mut session,
-        "SELECT a,ANY_VALUE(b) FROM fd_scope GROUP BY a ORDER BY a",
-    );
-    assert_eq!(result.len(), 2);
-    assert_eq!(result[0][0], "1");
-    assert!(["10", "20"].contains(&result[0][1].as_str()));
-    assert_eq!(result[1], ["2", "30"]);
+    let any_value_sql = "SELECT a,ANY_VALUE(b) FROM fd_scope GROUP BY a ORDER BY a";
+    #[cfg(feature = "tikv-expr")]
+    {
+        let before = session.tikv_expression_rows();
+        session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
+        let result = rows(&mut session, any_value_sql);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0][0], "1");
+        assert!(["10", "20"].contains(&result[0][1].as_str()));
+        assert_eq!(result[1], ["2", "30"]);
+        assert!(session.tikv_expression_rows() > before);
+        session.set_tikv_expression_backend(None);
+    }
+    #[cfg(not(feature = "tikv-expr"))]
+    {
+        let error = session
+            .run(any_value_sql)
+            .expect_err(any_value_sql)
+            .to_string();
+        assert!(error.contains(
+            "native miscellaneous evaluation was removed; TiKV engine required or function unsupported"
+        ));
+    }
 }
 
 #[test]

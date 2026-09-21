@@ -1,5 +1,14 @@
 # `pkg/util/vitess` — complete Go-master parity receipt
 
+## Current supersession
+
+The seventh native miscellaneous expression-kernel deletion tranche physically
+removed `rust/crates/tidb-util/src/vitess.rs` and the DES dependency.
+`VITESS_HASH` and its `TIDB_SHARD` consumer are explicit contractions with no
+native fallback; planner `TIDB_SHARD` generated-column synthesis declines. The
+package audit below is preserved as historical evidence and no longer asserts a
+live Rust owner or consumer.
+
 Comparison source: Go `origin/master` at
 `c6054025ed4c32ab3672a2a24ea46892714d21ec` (2026-09-02). The package is
 unchanged from the earlier pinned implementation; this receipt records the

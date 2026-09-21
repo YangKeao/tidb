@@ -255,8 +255,8 @@ pub const TOPICS: &[(&str, &str)] = &[
     ),
     (
         "expression/vitess_hash",
-        "the VITESS_HASH builtin, 9 of 16 compared with the remainder a named \
-         OutOfDomain minority",
+        "the deleted VITESS_HASH owner: 3 exact native-contraction receipts, 10 \
+         other matched statements, and 3 retained planner divergences out of 16",
     ),
     (
         "globalindex/mem_index_non_unique",
@@ -363,8 +363,8 @@ pub const TOPICS: &[(&str, &str)] = &[
     ),
     (
         "expression/uuid",
-        "17 of 41: UUID and UUID_SHORT's shape and uniqueness, with the recorder \
-     rewriting the values it cannot pin",
+        "34 of 41 matched: 27 exact native-contraction receipts plus 7 metadata \
+         side effects; 1 retained divergence and 6 recorder rewrites remain",
     ),
     (
         "planner/core/range_scan_for_like",

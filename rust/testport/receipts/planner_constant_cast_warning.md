@@ -1,5 +1,14 @@
 # `pkg/expression` planner constant-cast warning parity receipt
 
+## Current supersession
+
+The `VITESS_HASH` and `TIDB_SHARD` portions of this receipt are historical. The
+seventh native miscellaneous deletion tranche removed their native owners and
+DES; both names are explicit contractions, and planner `TIDB_SHARD`
+generated-column synthesis now declines. `FORMAT` and generic integer-cast
+warning evidence is unaffected. No retained-kernel claim for the deleted names
+is made here.
+
 Status: completed Rust-only alignment for Go's construction-time integer
 coercion and warning ownership at Go-master
 `f2c346fe4f368ff855e17c1f62e28a89ba7f9723`.

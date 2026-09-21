@@ -2407,21 +2407,14 @@ pub fn need_add_column4_in_cond(
 #[must_use]
 pub fn need_add_gc_column4_shard_index(
     cols: &[tidb_expr::column::Column],
-    access_cond: &[Option<Expression>],
-    column_values: &[Option<ValueInfo>],
+    _access_cond: &[Option<Expression>],
+    _column_values: &[Option<ValueInfo>],
 ) -> bool {
-    if access_cond.len() < 2 || cols.len() < 2 {
-        return false;
-    }
+    // The optimization requires evaluating TIDB_SHARD while planning. Its
+    // native hash kernel was physically deleted and the name is not admitted
+    // to TiKV, so preserve the structural recognizer but decline synthesis.
     if !is_valid_shard_index(cols) {
         return false;
-    }
-    if let Some(Expression::ScalarFunction(function)) = &access_cond[1] {
-        match function.func_name.lowercase() {
-            "eq" => return need_add_column4_eq_cond(cols, access_cond, column_values),
-            "in" => return need_add_column4_in_cond(cols, access_cond, Some(function)),
-            _ => {}
-        }
     }
     false
 }
@@ -2430,41 +2423,12 @@ pub fn need_add_gc_column4_shard_index(
 /// argument column replaced by the value, then folded to its constant --
 /// Go's `expr.Eval(mutRow)`.
 fn eval_virtual_expr_at(
-    virtual_expr: &Expression,
-    value: &Datum,
+    _virtual_expr: &Expression,
+    _value: &Datum,
 ) -> Result<Datum, super::points::PointBuilderError> {
-    fn substitute(expression: &Expression, value: &Datum) -> Expression {
-        match expression {
-            Expression::Column(column) => Expression::Constant(tidb_expr::constant::Constant::new(
-                value.clone(),
-                column.ret_type.clone().unwrap_or_else(|| {
-                    tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::LongLong)
-                }),
-            )),
-            Expression::ScalarFunction(function) => {
-                let mut rewritten = function.clone();
-                rewritten.args = function
-                    .args
-                    .iter()
-                    .map(|argument| substitute(argument, value))
-                    .collect();
-                Expression::ScalarFunction(rewritten)
-            }
-            other => other.clone(),
-        }
-    }
-    let mut substituted = substitute(virtual_expr, value);
-    tidb_expr::fold_constant_in_mode(
-        &mut substituted,
-        &tidb_expr::NoColumns,
-        tidb_expr::ConstantFoldMode::Normal,
-    );
-    match substituted {
-        Expression::Constant(constant) => Ok(constant.value),
-        other => Err(super::points::PointBuilderError::Unsupported(format!(
-            "tidb_shard did not fold: {other:?}"
-        ))),
-    }
+    Err(super::points::PointBuilderError::Unsupported(
+        "native TIDB_SHARD evaluation was removed; shard-index synthesis unsupported".to_owned(),
+    ))
 }
 
 fn eq_function(

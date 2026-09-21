@@ -20,7 +20,7 @@ Legend for `Kind`:
 
 | # | Function / signature | Kind | Symptom | Evidence | Current handling |
 | --- | --- | --- | --- | --- | --- |
-| 1 | `UuidVersion`, `UuidTimestamp` (`uuid_version`, `uuid_timestamp`) | semantics | Malformed UUID strings are accepted; Go raises error 1411 | `integration_diff` `expression/uuid` topics appeared only with the engine enabled | Excluded from local admission (`blocked_name`) |
+| 1 | `UuidVersion`, `UuidTimestamp` (`uuid_version`, `uuid_timestamp`) | semantics | Malformed UUID strings are accepted; Go raises error 1411 | `integration_diff` `expression/uuid` topics appeared only with the engine enabled | Seventh tranche: native owner deleted; both names are explicit contractions with no fallback |
 | 2 | `Ord` (`Ord`) | semantics | `ORD(NULL)` yields 0; Go yields NULL (TiKV's own `test_ord` pins 0) | differential fixture `ord_bytes`/`ord_utf8` | Leaf-only `IF(StringIsNull(x), NULL, ORD(x))` wrapper |
 | 3 | `GreatestInt`, `LeastInt` | semantics | Unsigned integers compared as raw `i64`; values above `i64::MAX` sort as negative | differential fixture `greatest_uint`/`least_uint` | Exact Decimal compare + `CastDecimalAsInt` |
 | 4 | `JSON_SET`, `JSON_INSERT`, `JSON_REPLACE` | semantics | SQL NULL base maps to JSON `null` in TiKV; Go returns SQL NULL | source review of `impl_json.rs` | Base must be declared/known non-NULL |
@@ -39,6 +39,12 @@ Legend for `Kind`:
 | 16 | Decimal zero representation | robustness | `digit_bounds` computes `word_count - 1` on a zero-word value (debug underflow, unsafe release indexing) | debug witness | Canonicalize to `int_cnt = 1`, preserving scale/sign; reject nonzero inactive words |
 | 17 | Mutable `Json` / `VectorFloat32` backing | robustness | Values can be constructed/invalidated outside the checked constructors | source review | Ingress validation before execution |
 | 18 | `SET` evaluation type | type | Pinned engine's `EvalType` has no usable `Set` codec (current TiKV master does list `SetRef`) | inventory `--self-check` | `SET`/geometry/array columns stay native |
+| 19 | Miscellaneous native owner | removal | `builtin_ext/misc.rs`, the Vitess DES helper, and the builtin key decoder were physically deleted | seventh-tranche contraction and gate receipts | `UUID`, `UUID_V4`, `UUID_V7`, `NAME_CONST`, `IS_UUID`, `UUID_VERSION`, `UUID_TIMESTAMP`, `UUID_TO_BIN`, `BIN_TO_UUID`, `TIDB_SHARD`, `TIDB_DECODE_KEY`, and `VITESS_HASH` are explicit contractions with no native fallback; `ANY_VALUE` remains admitted and proven TiKV-only |
+
+Rows that say a function “stays native” describe only their own family. The
+seventh-tranche row supersedes older native-retention wording for its contracted
+names; it does not establish full compatibility, feature-off success, an
+end-to-end SQL demo, hosted CI, or TiKV server compatibility.
 
 ## Pre-existing failures of this working tree (not adapter regressions)
 

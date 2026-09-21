@@ -474,8 +474,6 @@ pub struct StmtContextData {
     /// the builtin is evaluated.
     active_roles: Option<Arc<Vec<(String, String)>>>,
     connection_id: Option<u64>,
-    /// Statement-version catalog metadata used by `TIDB_DECODE_KEY`.
-    tidb_decode_key_snapshot: Option<Arc<crate::TidbDecodeKeySnapshot>>,
     /// Go session advisory-lock map and its shared physical lock authority.
     advisory_locks: crate::advisory_lock_state::AdvisoryLockSession,
     selected_lock_keys: Option<crate::select_lock::SelectedLockKeys>,
@@ -1566,16 +1564,6 @@ context_configuration! {
         self
     }
 
-    /// Attaches the catalog metadata visible to this statement.
-    #[must_use]
-    pub fn with_tidb_decode_key_snapshot(
-        mut self,
-        snapshot: Arc<crate::TidbDecodeKeySnapshot>,
-    ) -> Self {
-        self.tidb_decode_key_snapshot = Some(snapshot);
-        self
-    }
-
     /// Attaches the session-scoped generator unseeded `RAND()` reads and
     /// advances, which Go keeps on `SessionVars.Rng` for the session's whole
     /// lifetime (shared across statements, unlike constant `RAND(N)`'s
@@ -1819,7 +1807,6 @@ impl StmtContext {
             login_user: None,
             global_sysvars: None,
             connection_id: None,
-            tidb_decode_key_snapshot: None,
             advisory_locks: session.advisory_locks,
             selected_lock_keys: None,
             statement_clock: None,
@@ -3852,19 +3839,6 @@ impl Columns for StmtContext {
 
     fn connection_id(&self) -> Option<u64> {
         self.connection_id
-    }
-
-    fn tidb_decode_key(&self, input: &[u8]) -> Vec<u8> {
-        let Some(snapshot) = &self.tidb_decode_key_snapshot else {
-            return input.to_vec();
-        };
-        match snapshot.decode(input, &self.time_zone()) {
-            Ok(decoded) => decoded,
-            Err(message) => {
-                self.append_warning(1105, &message);
-                input.to_vec()
-            }
-        }
     }
 
     fn acquire_advisory_lock(

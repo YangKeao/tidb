@@ -448,9 +448,6 @@ pub struct Session {
     /// (no hosting server pushed one) leaves `Uptime` unserved, matching a
     /// session with no registered server provider.
     server_start_timestamp: Option<i64>,
-    /// Metadata snapshot cache keyed by the catalog mutation version.
-    tidb_decode_key_cache:
-        std::sync::Mutex<Option<(u64, Arc<tidb_executor::TidbDecodeKeySnapshot>)>>,
     /// One connection-wide memory/disk tracker pair. Every statement gets a
     /// fresh child below these roots, so an open cursor remains counted when
     /// the client starts its next command.
@@ -813,7 +810,6 @@ impl Session {
             executor_first_run_breakpoint: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             external_executor_breakpoint_scope: false,
             server_start_timestamp: None,
-            tidb_decode_key_cache: std::sync::Mutex::new(None),
             session_memory: tidb_executor::SessionMemory::new(
                 tidb_util::memory::DEF_MEM_QUOTA_QUERY,
                 tidb_executor::OomAction::Cancel,

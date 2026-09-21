@@ -58,6 +58,19 @@ fn rows(session: &mut Session, sql: &str) -> Vec<Vec<String>> {
     row_text(session.run(sql))
 }
 
+fn assert_misc_default_removed(session: &mut Session, sql: &str) {
+    let error = session
+        .run(sql)
+        .expect_err("native miscellaneous default kernel is deleted")
+        .to_string();
+    assert!(
+        error.contains(
+            "native miscellaneous evaluation was removed; TiKV engine required or function unsupported"
+        ),
+        "{sql}: {error}"
+    );
+}
+
 #[test]
 fn on_update_current_timestamp_tracks_real_row_changes() {
     let mut session = Session::new();
@@ -338,16 +351,20 @@ fn alter_column_options_preserve_computed_default_and_on_update_semantics() {
     session
         .run("ALTER TABLE alter_clock MODIFY COLUMN token VARCHAR(64) DEFAULT (uuid())")
         .unwrap();
+    assert_misc_default_removed(
+        &mut session,
+        "INSERT INTO alter_clock (id, v) VALUES (4, 1)",
+    );
     session
-        .run("INSERT INTO alter_clock (id, v) VALUES (4, 1)")
+        .run("INSERT INTO alter_clock (id, v, token) VALUES (4, 1, 'explicit')")
         .unwrap();
     assert_eq!(
         rows(
             &mut session,
             "SELECT length(token) FROM alter_clock WHERE id = 4"
         ),
-        [["36"]],
-        "MODIFY incorrectly inherited ADD COLUMN's unsafe-origin refusal"
+        [["8"]],
+        "explicit values must bypass the contracted default"
     );
 
     for sql in [
@@ -527,7 +544,7 @@ fn an_expression_default_prints_parenthesised() {
 /// `DEFAULT (uuid())` is on Go's whitelist, prints as an expression, and is
 /// evaluated independently for every omitted row.
 #[test]
-fn a_uuid_default_is_evaluated_per_omitted_row() {
+fn a_uuid_default_retains_metadata_but_evaluation_is_contracted() {
     let mut session = Session::new();
     session
         .run("CREATE TABLE t4 (a INT, b VARCHAR(64) DEFAULT (uuid()))")
@@ -537,17 +554,14 @@ fn a_uuid_default_is_evaluated_per_omitted_row() {
         "{}",
         show_create(&mut session, "t4")
     );
-    session.run("INSERT INTO t4 (a) VALUES (1), (2)").unwrap();
-    let values = rows(&mut session, "SELECT b FROM t4 ORDER BY a");
-    assert_eq!(values.len(), 2);
-    for value in &values {
-        let value = &value[0];
-        assert_eq!(value.len(), 36, "{value}");
-        for at in [8, 13, 18, 23] {
-            assert_eq!(value.as_bytes()[at], b'-', "{value}");
-        }
-    }
-    assert_ne!(values[0][0], values[1][0]);
+    assert_misc_default_removed(&mut session, "INSERT INTO t4 (a) VALUES (1), (2)");
+    session
+        .run("INSERT INTO t4 (a, b) VALUES (1, 'x'), (2, 'y')")
+        .unwrap();
+    assert_eq!(
+        rows(&mut session, "SELECT b FROM t4 ORDER BY a"),
+        [["x"], ["y"]]
+    );
 }
 
 /// An omitted expression-default column is evaluated per row: `insert into t4
@@ -1247,12 +1261,20 @@ fn alter_column_set_default_retains_computed_expressions() {
     );
 
     session.run("SET timestamp = 1700000000").unwrap();
+    assert_misc_default_removed(
+        &mut session,
+        "INSERT INTO alter_default_expr (id) VALUES (1)",
+    );
     session
-        .run("INSERT INTO alter_default_expr (id) VALUES (1)")
+        .run("INSERT INTO alter_default_expr (id, token) VALUES (1, 'x')")
         .unwrap();
     session.run("SET timestamp = 1700000100").unwrap();
+    assert_misc_default_removed(
+        &mut session,
+        "INSERT INTO alter_default_expr (id) VALUES (2)",
+    );
     session
-        .run("INSERT INTO alter_default_expr (id) VALUES (2)")
+        .run("INSERT INTO alter_default_expr (id, token) VALUES (2, 'y')")
         .unwrap();
     let values = rows(
         &mut session,
@@ -1261,9 +1283,8 @@ fn alter_column_set_default_retains_computed_expressions() {
     assert_eq!(values[0], ["0", "NULL", "NULL"]);
     assert_eq!(values[1][1], "2023-11-14 22:13:20.000");
     assert_eq!(values[2][1], "2023-11-14 22:15:00.000");
-    assert_eq!(values[1][2].len(), 36);
-    assert_eq!(values[2][2].len(), 36);
-    assert_ne!(values[1][2], values[2][2]);
+    assert_eq!(values[1][2], "x");
+    assert_eq!(values[2][2], "y");
 
     assert_eq!(
         code(
@@ -1441,8 +1462,16 @@ fn computed_default_whitelist_evaluates_the_allowed_function_shapes() {
              document JSON DEFAULT (json_object('k',7)))",
         )
         .unwrap();
+    assert_misc_default_removed(
+        &mut session,
+        "INSERT INTO default_function_suite (id) VALUES (1)",
+    );
     session
-        .run("INSERT INTO default_function_suite (id) VALUES (1)")
+        .run(
+            "INSERT INTO default_function_suite (id, compact, packed) VALUES \
+             (1, 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', \
+              UNHEX('6CCD780CBABA102695645B8C656024DB'))",
+        )
         .unwrap();
     let projection = "SELECT formatted, LENGTH(compact), login_name, \
                 compact REGEXP '^[A-F0-9]{32}$', HEX(packed), \

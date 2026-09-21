@@ -1555,22 +1555,23 @@ fn misc_and_encryption_builtins_reach_live_sql() {
     // itself now has independent round-trip coverage below; this fixed Go
     // vector keeps the inverse functions interoperable with Go output.
     const COMPRESSED_AAAAAAAA: &str = "08000000789C4A840240000000FFFF0DAC0309";
+    for sql in [
+        "SELECT NAME_CONST('a', 5)",
+        "SELECT HEX(UUID_TO_BIN('6ccd780c-baba-1026-9564-5b8c656024db'))",
+        "SELECT BIN_TO_UUID(UNHEX('6CCD780CBABA102695645B8C656024DB'))",
+        "SELECT UUID_TIMESTAMP('6ccd780c-baba-1026-9564-5b8c656024db')",
+        "SELECT TIDB_SHARD(1)",
+        "SELECT VITESS_HASH(123)",
+    ] {
+        let error = session
+            .run(sql)
+            .expect_err("native miscellaneous kernel is deleted")
+            .to_string();
+        assert!(error.contains(
+            "native miscellaneous evaluation was removed; TiKV engine required or function unsupported"
+        ));
+    }
     for (sql, expected) in [
-        ("SELECT NAME_CONST('a', 5)", "5"),
-        (
-            "SELECT HEX(UUID_TO_BIN('6ccd780c-baba-1026-9564-5b8c656024db'))",
-            "6CCD780CBABA102695645B8C656024DB",
-        ),
-        (
-            "SELECT BIN_TO_UUID(UNHEX('6CCD780CBABA102695645B8C656024DB'))",
-            "6ccd780c-baba-1026-9564-5b8c656024db",
-        ),
-        (
-            "SELECT UUID_TIMESTAMP('6ccd780c-baba-1026-9564-5b8c656024db')",
-            "-11129156903.290674",
-        ),
-        ("SELECT TIDB_SHARD(1)", "214"),
-        ("SELECT VITESS_HASH(123)", "1155070131015363447"),
         (
             "SELECT PASSWORD('x')",
             "*B69027D44F6E5EDC07F1AEAD1477967B16F28227",

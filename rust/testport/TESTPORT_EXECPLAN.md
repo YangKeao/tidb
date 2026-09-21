@@ -41,6 +41,19 @@ For each bounded behavior cluster:
    package-complete parity claim is made while gaps remain.
 
 ## Progress
+- Seventh native miscellaneous expression-kernel deletion tranche: physically
+  removed `tidb-expr/src/builtin_ext/misc.rs`, `tidb-util/src/vitess.rs`, and
+  `tidb-executor/src/tidb_decode_key.rs`; removed DES and the
+  `TIDB_DECODE_KEY` snapshot/cache path. `UUID`, `UUID_V4`, `UUID_V7`,
+  `NAME_CONST`, `IS_UUID`, `UUID_VERSION`, `UUID_TIMESTAMP`, `UUID_TO_BIN`,
+  `BIN_TO_UUID`, `TIDB_SHARD`, `TIDB_DECODE_KEY`, and `VITESS_HASH` are
+  explicit contractions. `ANY_VALUE` remains admitted and is proven TiKV-only,
+  and planner `TIDB_SHARD` generated-column synthesis declines. The gate
+  checkpoint is runtime 30 tests / 323 receipts / 2072 engine rows / 160
+  borrowed rows / zero native fallbacks; static 384 / 216 / 168 / 0; corpus 35
+  source files / 437 tests, including 14 miscellaneous-contraction tests. This
+  entry supersedes the retained-owner claims later in this historical plan and
+  is not a package-parity or full-compatibility claim. Receipt: `receipts/b072.md`.
 - 2026-09-07 (`pkg/util/stmtsummary/v2` corrective Rust alignment): reused the
   complete direct Go-package inventory under the user's Rust-only scope, then
   read the 6,875-line/five-module Rust owner, all 255 functions, 27 tests, 38
@@ -3517,6 +3530,10 @@ d8d033a882 (rust: align pkg/ddl mview job envelope metadata with Go master)
   added the Ready documentation-only plan at
   `docs/operations/util-paging-audit-execplan.md`.
 
+- Superseded by the seventh native miscellaneous deletion tranche: the following
+  `pkg/util/vitess` entry is retained as historical package-audit evidence, but
+  its Rust DES owner and `VITESS_HASH`/`TIDB_SHARD` consumers were later deleted
+  or contracted.
 - 2026-09-02: refreshed the complete Go-master `pkg/util/vitess` inventory at
   `c6054025ed4c32ab3672a2a24ea46892714d21ec`: four tracked artifacts, 154
   lines, one production function, five source vectors, TestMain, and no
@@ -5777,8 +5794,11 @@ d8d033a882 (rust: align pkg/ddl mview job envelope metadata with Go master)
   non-nil empty slice while still honoring JSON `omitempty`. The ordinary
   `DEADLOCKS` and `DATA_LOCK_WAITS` consumers now share this decoder;
   `DATA_LOCK_WAITS` no longer routes raw lock keys through the unrelated
-  hexadecimal `TIDB_DECODE_KEY` builtin decoder. Complete inventory and WIP
-  gates are recorded in `receipts/util_keydecoder.md`.
+  hexadecimal `TIDB_DECODE_KEY` builtin decoder. The seventh native
+  miscellaneous deletion tranche subsequently removed that builtin decoder and
+  its snapshot/cache plumbing; the separate lock-diagnostic `keydecoder` owner
+  remains. Complete historical inventory and WIP gates are recorded in
+  `receipts/util_keydecoder.md`.
 - 2026-08-29: completed the pinned Go `pkg/util/workloadrepo` package
   audit (eight production files, one test file, and `BUILD.bazel`; no package
   doc, generated, or platform variants). Added its Rust owner and ordinary
@@ -9653,8 +9673,9 @@ risks without claiming repository-wide parity.
   This closes the one member of the six `tidb_*` server-hook classes whose
   plumbing was already complete. Evidence is recorded in
   `receipts/tidb_is_ddl_owner_arm.md`.
-- 2026-09-05 (`pkg/expression` planner constant-cast warning preservation):
-  Rust's executable planner now keeps string/byte integer casts and the
+- 2026-09-05 (`pkg/expression` planner constant-cast warning preservation;
+  `VITESS_HASH`/`TIDB_SHARD` portion superseded by the seventh deletion tranche):
+  Rust's executable planner then kept string/byte integer casts and the
   `VITESS_HASH`, `TIDB_SHARD`, and `FORMAT` integer-coercion carriers unfolded
   when folding through `NoColumns`, so Go's live statement context can report
   1292/8030 diagnostics at execution. Explicit construction-time folds retain

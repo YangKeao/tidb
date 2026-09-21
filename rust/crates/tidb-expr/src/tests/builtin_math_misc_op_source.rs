@@ -27,7 +27,6 @@ use std::cell::RefCell;
 
 use super::*;
 use crate::builtin_ext::compare2::dispatch as compare2_dispatch;
-use crate::builtin_ext::misc::dispatch_in as misc_dispatch_in;
 use crate::builtin_op::infer_unary_op_type;
 use crate::builtin_registry::verify_args_by_count;
 use crate::expression::Expression;
@@ -243,14 +242,11 @@ fn bin_str(bytes: &[u8]) -> Datum {
     Datum::new_collation_string(bytes.to_vec(), Collation::Binary)
 }
 
-/// Dispatches one value through whichever ported family owns the name --
-/// the single map Go reaches via `funcs[name].getFunction(...)`. The misc
-/// dispatcher preserves warnings but the comparison/misc leaf level of these
-/// tests is warning-free by construction.
+/// Dispatches one value through the retained comparison family. Deleted
+/// miscellaneous names are tested through their explicit refusal boundaries.
 fn call(name: &str, vals: &[Datum]) -> Datum {
     compare2_dispatch(name, vals, &crate::context::NoColumns)
-        .or_else(|| misc_dispatch_in(name, vals, &crate::context::NoColumns))
-        .unwrap_or_else(|| panic!("{name} must belong to a ported family"))
+        .unwrap_or_else(|| panic!("{name} must belong to the comparison family"))
         .unwrap_or_else(|err| panic!("{name}({vals:?}): {err:?}"))
 }
 
@@ -610,69 +606,14 @@ fn benchmark_vectorized_builtin_math_func() {}
 // pkg/expression/builtin_miscellaneous_test.go (items 200–217)
 // ---------------------------------------------------------------------------
 
-/// Go `pkg/expression/builtin_miscellaneous_test.go:144 TestUUID`: every
-/// generator builtin emits canonical five-group hex spelling whose group
-/// lengths are 8/4/4/4/12 and whose version nibble matches 1/4/7.
-///
-/// The remainder of this file's tests (`TestInetAton` .. `TestTidbShard`,
-/// sans generation) were pinned exhaustively against the same source table by
-/// earlier landing on this branch -- see `compare2.rs`'s
-/// `inet_aton_go_vectors`, `inet_ntoa_go_vectors`, `inet6_aton_go_vectors`,
-/// `inet6_ntoa_go_vectors`, `is_ip_go_vectors`,
-/// `is_ipv4_binary_predicate_go_vectors` and `misc.rs`'s
-/// `any_value_returns_its_argument`,
-/// `test_any_value_hybrid_string_eval_with_int_sig`,
-/// `name_const_preserves_representable_value_domains`,
-/// `uuid_version_matches_go_uuid_parse_and_version_nibble`,
-/// `is_uuid_matches_go_parse_acceptance`,
-/// `uuid_timestamp_matches_go_versioned_timestamp_semantics`,
-/// `uuid_binary_builtins_match_go_swap_and_raw_byte_vectors`,
-/// `tidb_shard_matches_vitess_des_and_etint_coercion`. They stay the cited
-/// ports; the receipt maps each Go item to them.
+/// Go `pkg/expression/builtin_miscellaneous_test.go:144 TestUUID`. Preserve all
+/// three generator source names as explicit contractions after deleting the
+/// clock/RNG kernels.
 #[test]
-fn uuid_generation_v1_v4_v7_shapes() {
-    for (name, version_digit) in [("UUID", '1'), ("UUID_V4", '4'), ("UUID_V7", '7')] {
-        let first = misc_dispatch_in(name, &[], &crate::context::NoColumns)
-            .unwrap_or_else(|| panic!("{name} belongs to the misc family"))
-            .unwrap_or_else(|err| panic!("{name}: {err:?}"));
-        let text = uuid_spelling_of(&first, name);
-        check_shape_and_version(name, &text, version_digit);
-        // Generators accept ZERO constants (Go:
-        // `funcs[tf.funcName].getFunction(ctx, datumsToConstants(nil))`).
-        assert!(misc_dispatch_in(name, &[], &crate::context::NoColumns).is_some());
+fn uuid_generation_v1_v4_v7_shapes_are_explicitly_contracted() {
+    for expr in ["uuid()", "uuid_v4()", "uuid_v7()"] {
+        assert_misc_refusal(expr);
     }
-}
-
-fn uuid_spelling_of(datum: &Datum, name: &str) -> String {
-    let Datum::String(text) = datum else {
-        panic!("{name} must be a string, got {datum:?}")
-    };
-    text.as_utf8().expect("canonical UUID spelling").to_owned()
-}
-
-fn check_shape_and_version(name: &str, text: &str, version_digit: char) {
-    let parts: Vec<&str> = text.split('-').collect();
-    assert_eq!(parts.len(), 5, "{name}: {text:?}");
-    assert_eq!(
-        [
-            parts[0].len(),
-            parts[1].len(),
-            parts[2].len(),
-            parts[3].len(),
-            parts[4].len()
-        ],
-        [8, 4, 4, 4, 12],
-        "{name}: {text:?}"
-    );
-    assert!(
-        text.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-'),
-        "{name}: {text:?}"
-    );
-    assert_eq!(
-        char::from(parts[2].as_bytes()[0]),
-        version_digit,
-        "{name}: version nibble of {text:?}"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -741,73 +682,21 @@ fn vectorized_builtin_miscellaneous_eval_one_vec() {
     assert_eq!(call("IS_IPV4_MAPPED", &[bin_str(&mapped)]), Datum::Int(1));
     assert_eq!(call("IS_IPV4_MAPPED", &[s("plain text")]), Datum::Int(0));
 
-    // AnyValue arms preserve each family the map lists (ETDuration, ETInt,
-    // ETDecimal, ETTimestamp-domain, ETReal, ETString, ETJson).
-    let duration = Datum::Duration(MySqlDuration::new(12, 34, 56, 0, 0).unwrap());
-    let json = Datum::Json(tidb_datatype::BinaryJSON::parse(r#"{"a":1}"#).unwrap());
-    for value in [
-        duration,
-        Datum::Int(-7),
-        Datum::Decimal(crate::Decimal::from_literal("-0.5")),
-        Datum::Real(2.5),
-        s("x"),
-        json.clone(),
+    // Keep the miscellaneous source shapes, but direct native boundaries must
+    // now refuse. ANY_VALUE remains admitted only through TiKV.
+    for expr in [
+        "any_value(-7)",
+        "any_value(-0.5)",
+        "any_value('x')",
+        "name_const('label', 5)",
+        "name_const('label', null)",
+        "is_uuid('5f13f854-d74a-11f0-9b7a-0ae0156bd76b')",
+        "uuid_version('5f13f854-d74a-11f0-9b7a-0ae0156bd76b')",
+        "uuid_timestamp('5f13f854-d74a-11f0-9b7a-0ae0156bd76b')",
+        "uuid_to_bin('5f13f854-d74a-11f0-9b7a-0ae0156bd76b')",
     ] {
-        assert_eq!(
-            misc_dispatch_in(
-                "ANY_VALUE",
-                std::slice::from_ref(&value),
-                &crate::context::NoColumns
-            )
-            .expect("ANY_VALUE arity")
-            .unwrap(),
-            value
-        );
+        assert_misc_refusal(expr);
     }
-    // NameConst arms echo the value argument unchanged per ET-family pair.
-    assert_eq!(
-        misc_dispatch_in(
-            "NAME_CONST",
-            &[s("label"), Datum::Int(5)],
-            &crate::context::NoColumns
-        )
-        .unwrap()
-        .unwrap(),
-        Datum::Int(5)
-    );
-    let echoed = misc_dispatch_in(
-        "NAME_CONST",
-        &[s("label"), json.clone()],
-        &crate::context::NoColumns,
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(echoed, json);
-    assert_eq!(
-        misc_dispatch_in(
-            "NAME_CONST",
-            &[s("label"), Datum::Null],
-            &crate::context::NoColumns
-        )
-        .unwrap()
-        .unwrap(),
-        Datum::Null
-    );
-
-    // IsUUID / UUIDVersion / UUIDTimestamp / UUIDToBin arms over fixed
-    // well-formed spellings -- the randomized generators emit this shape.
-    let v1_text = "5f13f854-d74a-11f0-9b7a-0ae0156bd76b";
-    assert_eq!(call("IS_UUID", &[s(v1_text)]), Datum::Int(1));
-    assert_eq!(call("UUID_VERSION", &[s(v1_text)]), Datum::Int(1));
-    let timestamp = call("UUID_TIMESTAMP", &[s(v1_text)]);
-    assert!(matches!(timestamp, Datum::Decimal(_)));
-    assert_eq!(
-        call("UUID_TO_BIN", &[s(v1_text)]),
-        Datum::new_bytes([
-            0x5f, 0x13, 0xf8, 0x54, 0xd7, 0x4a, 0x11, 0xf0, 0x9b, 0x7a, 0x0a, 0xe0, 0x15, 0x6b,
-            0xd7, 0x6b,
-        ])
-    );
 }
 
 /// Go `pkg/expression/builtin_miscellaneous_vec_test.go:128
@@ -815,39 +704,15 @@ fn vectorized_builtin_miscellaneous_eval_one_vec() {
 /// round trip and the google/uuid Parse acceptance quirk ({braced},
 /// short input errors).
 #[test]
-fn vectorized_builtin_miscellaneous_func() {
-    let canonical = "6ccd780c-baba-1026-9564-5b8c656024db";
-    let normal: Vec<u8> = vec![
-        0x6c, 0xcd, 0x78, 0x0c, 0xba, 0xba, 0x10, 0x26, 0x95, 0x64, 0x5b, 0x8c, 0x65, 0x60, 0x24,
-        0xdb,
-    ];
-    assert_eq!(
-        call("BIN_TO_UUID", &[Datum::new_bytes(normal.clone())]),
-        s(canonical)
-    );
-    assert_eq!(
-        call(
-            "BIN_TO_UUID",
-            &[Datum::new_bytes(normal.clone()), Datum::Int(1)]
-        ),
-        s("baba1026-780c-6ccd-9564-5b8c656024db")
-    );
-    // Too-short byte strings refuse to parse rather than truncating.
-    assert!(misc_dispatch_in(
-        "BIN_TO_UUID",
-        &[Datum::new_bytes(normal[..15].to_vec())],
-        &crate::context::NoColumns
-    )
-    .unwrap()
-    .is_err());
-    // Braced spelling accepted by google/uuid's Parse in BOTH directions.
-    assert_eq!(
-        call(
-            "UUID_TO_BIN",
-            &[s("{6ccd780c-baba-1026-9564-5b8c656024db}")]
-        ),
-        Datum::new_bytes(normal)
-    );
+fn vectorized_builtin_miscellaneous_func_is_explicitly_contracted() {
+    for expr in [
+        "bin_to_uuid(x'6ccd780cbaba102695645b8c656024db')",
+        "bin_to_uuid(x'6ccd780cbaba102695645b8c656024db', 1)",
+        "bin_to_uuid(x'6ccd780cbaba102695645b8c656024', 1)",
+        "uuid_to_bin('{6ccd780c-baba-1026-9564-5b8c656024db}')",
+    ] {
+        assert_misc_refusal(expr);
+    }
 }
 
 /// Go `pkg/expression/builtin_miscellaneous_vec_test.go:149

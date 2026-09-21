@@ -9,6 +9,19 @@ kind needs. This is the measurement, and the method is repeatable:
     cd rust/crates
     grep -rn "\.eval(" --include=*.rs . | grep -v '/tidb-expr/src/'
 
+## Seventh miscellaneous-deletion scope note
+
+The seventh tranche deletes native SQL-kernel owners rather than another
+outside-projection `.eval` call site: `builtin_ext/misc.rs`,
+`tidb-util/src/vitess.rs`, and `tidb-executor/src/tidb_decode_key.rs` are gone,
+as are DES and `TIDB_DECODE_KEY` snapshot/cache plumbing. The twelve contracted
+names have no native fallback; `ANY_VALUE` remains admitted and is proven
+TiKV-only. Planner `TIDB_SHARD` generated-column synthesis declines. Therefore
+the raw/candidate counts below remain the historical outside-expression-core
+inventory and must not be used to infer that those deleted owners survive.
+Current gates are runtime 30 tests / 323 receipts / 2072 engine rows / 160
+borrowed rows / zero native fallbacks and static 384/216/168/0.
+
 ## Current snapshot after INSERT and scalar-helper routing
 
 Classifier: **38 raw / 22 candidates / 4 production / 18 test-only**. The four

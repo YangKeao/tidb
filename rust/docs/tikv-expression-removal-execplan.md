@@ -131,6 +131,23 @@ remain in the workspace.
       session source tests pass with exact refusal while unrelated retained
       behavior remains asserted. This is still not the final native-removal
       claim.
+- [x] Seventh physical-deletion tranche: removed
+      `tidb-expr/src/builtin_ext/misc.rs`, `tidb-util/src/vitess.rs`, and
+      `tidb-executor/src/tidb_decode_key.rs`, removed the DES dependency, and
+      deleted the `TIDB_DECODE_KEY` snapshot/cache plumbing. `UUID`, `UUID_V4`,
+      `UUID_V7`, `NAME_CONST`, `IS_UUID`, `UUID_VERSION`, `UUID_TIMESTAMP`,
+      `UUID_TO_BIN`, `BIN_TO_UUID`, `TIDB_SHARD`, `TIDB_DECODE_KEY`, and
+      `VITESS_HASH` are explicit contractions at both residual native
+      boundaries. `ANY_VALUE` remains admitted and is proven TiKV-only. Planner
+      `TIDB_SHARD` generated-column synthesis now declines instead of creating
+      an expression whose native owner was deleted. The reviewed runtime gate
+      remains 30 tests / 323 receipts / 2072 engine rows / 160 borrowed rows
+      with zero native fallbacks; the static gate remains 384 rows / 216
+      admitted / 168 excluded / 0 missing. The source corpus is now 35
+      `*_source.rs` files / 437 tests, including 14 tests in
+      `misc_contraction_source.rs`. This is still not a full-compatibility,
+      feature-off, end-to-end SQL, hosted-CI, TiKV-server-compatibility, or final
+      native-removal claim.
 - [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
       in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected
       borrowed facade was used by the adapter while the manifest still pinned

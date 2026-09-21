@@ -57,6 +57,7 @@ mod ilike_info_cast_source;
 mod in_func_decimal_collation_source;
 mod json_merge_patch_integration_source;
 mod math;
+mod misc_contraction_source;
 mod operand_dispatch;
 mod packet_string_contraction_source;
 #[cfg(feature = "tikv-expr")]
@@ -147,6 +148,17 @@ pub(super) fn assert_packet_string_refusal(expr: &str) {
         PACKET_STRING_REMOVED,
         "chunk boundary: {expr}"
     );
+}
+
+pub(super) const MISC_REMOVED: &str =
+    "Unsupported(\"native miscellaneous evaluation was removed; TiKV engine required or function unsupported\")";
+
+pub(super) fn assert_misc_refusal(expr: &str) {
+    assert_eq!(e(expr), MISC_REMOVED, "AST boundary: {expr}");
+    let chunk = chunk_case(expr, &NoColumns)
+        .map(|value| value.label())
+        .unwrap_or_else(|error| error);
+    assert_eq!(chunk, MISC_REMOVED, "native chunk boundary: {expr}");
 }
 
 fn chunk_e_with(expr: &str, ctx: &impl Columns) -> String {
@@ -570,13 +582,19 @@ fn oct_source_vectors_preserve_distinct_string_and_integer_signatures() {
 }
 
 #[test]
-fn any_value_source_vectors_preserve_value_labels() {
+fn any_value_source_vectors_execute_only_in_tikv() {
     // pkg/expression/builtin_miscellaneous_test.go:240 TestAnyValue
-    assert_eq!(e("any_value(null)"), "NULL");
-    assert_eq!(e("any_value(1234)"), "INT:1234");
-    assert_eq!(e("any_value(-153)"), "INT:-153");
-    assert_eq!(e("any_value(cast(3.1415926 as double))"), "FLOAT:3.1415926");
-    assert_eq!(e("any_value('Hello, World')"), "STR:Hello, World");
+    for (expr, want) in [
+        ("any_value(null)", "NULL"),
+        ("any_value(1234)", "INT:1234"),
+        ("any_value(-153)", "INT:-153"),
+        ("any_value(cast(3.1415926 as double))", "FLOAT:3.1415926"),
+        ("any_value('Hello, World')", "STR:Hello, World"),
+    ] {
+        #[cfg(feature = "tikv-expr")]
+        assert_eq!(engine_e(expr), want, "TiKV: {expr}");
+        assert_misc_refusal(expr);
+    }
 }
 
 #[test]

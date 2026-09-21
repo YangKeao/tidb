@@ -354,7 +354,9 @@ impl Connections {
         // `SET time_zone = 'Asia/Shanghai'` on every connection it opens --
         // and run-tests.sh exports TZ=Asia/Shanghai for the server to match.
         // Without it `select @@time_zone` reads the recording's literal
-        // value, and every FROM_UNIXTIME/UUID_TIMESTAMP cell is shifted.
+        // value and every FROM_UNIXTIME cell is shifted. UUID_TIMESTAMP was
+        // covered here historically; its native owner is now deleted and the
+        // replay records the exact structured contraction instead.
         session
             .run("SET time_zone = 'Asia/Shanghai'")
             .expect("mysql-tester's driver handshake time zone is accepted");

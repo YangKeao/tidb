@@ -180,10 +180,6 @@ toml = "0.8"
 # remaining stack drops below a red zone -- and is what rustc itself uses in
 # its own recursive walkers.
 stacker = "0.1"
-# TiDB's `TIDB_SHARD` uses Vitess' exact DES-ECB/null-key hash. RustCrypto's
-# audited DES implementation preserves that algorithm without a hand-rolled
-# cryptographic primitive.
-des = "=0.9.0"
 # `pkg/util/encrypt` uses Go's standard-library AES primitive. RustCrypto's
 # audited AES implementation supplies the same 128-bit block primitive; TiDB's
 # exact ECB/CBC/OFB/CTR/CFB framing stays source-shaped in `tidb-util`.
