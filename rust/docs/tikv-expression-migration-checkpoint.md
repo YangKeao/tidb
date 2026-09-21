@@ -2,19 +2,20 @@
 
 ## Revisions and decision
 
-This tranche builds from published TiDB `463ac51` and TiKV documentation
-HEAD `4c372b8`; the fresh results below include the current crypto-deletion
+This tranche builds from published TiDB `58a7b20` and TiKV documentation
+HEAD `4c372b8`; the fresh results below include the current JSON-leaf-deletion
 working tree. TiDB actually builds the pinned engine
 `db9c7f08d954fef02519b86a55c2d72cf72ef697`, not arbitrary TiKV HEAD.
 Only YangKeao personal forks have been used for publication.
 
 **Do not switch the default yet. Physical deletion is now deliberately in
-progress.** The first three tranches removed the complete native math-kernel
-folder, crypto/encryption kernel file, and vector SQL-kernel file. Unverified
-math, all former crypto functions, and VEC_FROM_TEXT are explicitly
-unsupported; seven retained vector names execute only in TiKV. This invalidates
-the older policy of retaining every native family until compatibility was
-complete.
+progress.** The first four tranches removed the complete native math-kernel
+folder plus crypto/encryption, vector, and JSON depth/storage SQL-kernel files.
+Unverified math, all former crypto functions, VEC_FROM_TEXT, JSON storage
+accounting, and non-typed JSON_DEPTH shapes are explicitly unsupported;
+retained vector names and typed-column JSON_DEPTH execute only in TiKV. This
+invalidates the older policy of retaining every native family until
+compatibility was complete.
 The earlier refusal-intolerant corpus still exposed 59 distinct first-refused
 expressions, so the migration objective remains active/incomplete.
 
@@ -42,8 +43,10 @@ Logs are in `/home/agent/tidb/expression-reuse/`.
 | Log | Result | Scope/qualification |
 | --- | --- | --- |
 | `checkpoint-executor-native.log` | 1346 library + 329 integration + 6 tests passed; 184 integration ignored | Feature-off executor compatibility, not engine coverage. |
-| `native-vector-delete-full-lib-tests.log` + `native-vector-delete-integration-tests.log` | 1201 library + 77 integration passed; 99 library ignored | Feature enabled after physical math, crypto, and vector SQL-kernel deletion; seven vector names have independent TiKV result vectors plus exact native refusal, while contracted names assert engine decline. |
-| `native-vector-runtime-gate-green.log` | 30 tests, 323 fixture receipts, 2072 engine rows, 160 observed borrowed rows | Reviewed baseline remains exact after vector deletion; seven vector names execute through receipted engine contexts with zero fallback. |
+| `native-json-leaf-delete-full-lib-tests.log` + `native-json-leaf-delete-integration-tests.log` | 1198 library + 77 integration passed; 99 library ignored | Feature enabled after physical math, crypto, vector, and JSON leaf deletion; typed-column JSON_DEPTH has independent TiKV vectors and every original shape has exact native refusal. |
+| `native-json-leaf-session-focused.log` + `native-json-leaf-session-unit-{storage,depth}.log` | 3 targeted tests passed | Session SQL verifies structured contraction for deleted JSON storage functions and non-typed JSON_DEPTH shapes, including NULL. |
+| `native-json-leaf-session-full-lib.log` | **1707 passed / 19 failed / 209 ignored**, exit 101 | No JSON test failed; the broad session suite remains red on stale success expectations for earlier math/crypto/vector contractions and is not a green gate. |
+| `native-json-leaf-runtime-gate-green.log` | 30 tests, 323 fixture receipts, 2072 engine rows, 160 observed borrowed rows | Reviewed baseline remains exact; admitted JSON_DEPTH/vector receipts execute with zero fallback. |
 | current static gate | Self-check and check pass | 384 declaration rows, 216 admitted / 168 excluded, zero missing registry/synthesized names. Static candidates are not execution coverage. |
 | `checkpoint-engine-only.log` | **1163 passed / 61 failed / 99 ignored**, exit 101 | All 61 failed sections report adapter refusal; 59 distinct first-refused expressions. This is an incomplete cutover gate. |
 

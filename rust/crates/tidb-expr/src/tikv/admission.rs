@@ -205,6 +205,9 @@ pub(crate) const REMOVED_CRYPTO_UNVERIFIED: &str =
 pub(crate) const REMOVED_VECTOR_TEXT_UNSUPPORTED: &str =
     "native vector SQL kernels were removed and the pinned engine does not dispatch \
      VecFromTextSig/CastStringAsVectorFloat32";
+pub(crate) const REMOVED_JSON_STORAGE_UNSUPPORTED: &str =
+    "native JSON storage leaves were removed and no pinned-engine lowering for their \
+     binary-storage accounting semantics is admitted";
 /// The statement clock (`NOW()`, `CURRENT_TIMESTAMP`, `CURDATE()`,
 /// `CURRENT_TIME`, `UTC_TIMESTAMP()`, `SYSDATE()`).
 ///
@@ -533,8 +536,8 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("json_schema_valid", Decision::Excluded, Signature::None, &[], Shape::Any, NO_WIRE_SIGNATURE),
     row("json_search", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
     row("json_set", Decision::Admitted, Signature::Family(Family::Json), &[], Shape::Any, ""),
-    row("json_storage_free", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
-    row("json_storage_size", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
+    row("json_storage_free", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_JSON_STORAGE_UNSUPPORTED),
+    row("json_storage_size", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_JSON_STORAGE_UNSUPPORTED),
     row("json_type", Decision::Admitted, Signature::Family(Family::Json), &[EvalType::Json], Shape::Any, ""),
     row("json_unquote", Decision::Admitted, Signature::Family(Family::Json), &[], Shape::Any, ""),
     row("json_valid", Decision::Admitted, Signature::Family(Family::Json), &[], Shape::Any, ""),

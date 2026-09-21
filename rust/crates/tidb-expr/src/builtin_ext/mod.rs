@@ -25,7 +25,6 @@ use crate::{Datum, EvalError};
 pub(crate) mod compare2;
 pub(crate) mod info;
 pub(crate) mod json;
-pub(crate) mod json2;
 pub(crate) mod misc;
 pub(crate) mod regexp;
 pub(crate) mod string2;
@@ -53,7 +52,6 @@ pub(crate) fn dispatch(
     string2::dispatch(name, vals, ctx)
         .or_else(|| info::dispatch(name, vals, ctx))
         .or_else(|| json::dispatch(name, vals))
-        .or_else(|| json2::dispatch(name, vals))
         .or_else(|| regexp::dispatch(name, vals))
         .or_else(|| compare2::dispatch(name, vals, ctx))
         .or_else(|| misc::dispatch_in(name, vals, ctx))

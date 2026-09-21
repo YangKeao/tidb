@@ -107,6 +107,14 @@ pub(crate) fn is_removed_native_vector(name: &str) -> bool {
     )
 }
 
+/// Native JSON depth/storage leaf kernels were physically removed.
+pub(crate) fn is_removed_native_json_leaf(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "JSON_DEPTH" | "JSON_STORAGE_FREE" | "JSON_STORAGE_SIZE"
+    )
+}
+
 /// Evaluates a builtin scalar function over its evaluated arguments.
 pub(crate) fn eval_func(
     name: &str,
@@ -125,6 +133,11 @@ pub(crate) fn eval_func(
     if is_removed_native_vector(&name) {
         return Err(EvalError::Unsupported(
             "native vector evaluation was removed; TiKV engine required",
+        ));
+    }
+    if is_removed_native_json_leaf(&name) {
+        return Err(EvalError::Unsupported(
+            "native JSON depth/storage evaluation was removed; TiKV engine required",
         ));
     }
     // The AST evaluator is also an expression-construction entry point for
@@ -547,6 +560,11 @@ pub(crate) fn eval_func_values_in(
             "native vector evaluation was removed; TiKV engine required",
         )));
     }
+    if is_removed_native_json_leaf(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native JSON depth/storage evaluation was removed; TiKV engine required",
+        )));
+    }
     // Go's `builtinFromBase64Sig` checks the estimated decoded length against
     // `max_allowed_packet` before decoding and routes an over-limit result
     // through the statement warning policy. Keep this context-sensitive arm
@@ -582,13 +600,14 @@ pub(crate) fn eval_func_values_in(
 /// chunk rows; `eval_func` calls it too, so there is exactly ONE
 /// implementation of each function.
 ///
-/// Deliberately OUTSIDE this entry (they stay AST/session-bound in
-/// `eval_func`):
+/// Deliberately OUTSIDE this entry (they are AST/session-bound in `eval_func`
+/// or have been physically removed):
 /// - lazy control forms: `IF` (Go's `builtinIf*Sig` evaluates exactly one
 ///   branch, so eager-evaluating both would change semantics, e.g. a guarded
 ///   `1/0`), `CASE`, and the `DATE_ADD`/`DATE_SUB`/`ADDDATE`/`SUBDATE`
 ///   family whose second argument is an `Expr::Interval`, not a value;
-/// - removed native math and crypto functions, including `RAND` and `RANDOM_BYTES`;
+/// - removed native math, crypto, vector, and JSON depth/storage leaf functions,
+///   including `RAND`, `RANDOM_BYTES`, `VEC_FROM_TEXT`, and JSON storage accounting;
 ///   the sequence functions (`NEXTVAL`/`LASTVAL`/`SETVAL`), and the
 ///   `time_fn` family (its dispatch takes `Columns` for the statement clock,
 ///   time zone, and `default_week_format`);

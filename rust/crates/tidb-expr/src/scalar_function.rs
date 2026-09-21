@@ -932,6 +932,11 @@ impl ScalarFunction {
                 "native vector evaluation was removed; TiKV engine required",
             ));
         }
+        if crate::func::is_removed_native_json_leaf(self.func_name.lowercase()) {
+            return Err(EvalError::Unsupported(
+                "native JSON depth/storage evaluation was removed; TiKV engine required",
+            ));
+        }
         if let Some(value) = self.eval_fast_integer_binary(ctx, row)? {
             return self.coerce_to_ret_type(value);
         }

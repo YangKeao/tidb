@@ -57,7 +57,10 @@
 //! SQL module is deleted: `VEC_DIMS`, the distance/norm family, and
 //! `VEC_AS_TEXT` execute in TiKV, while `VEC_FROM_TEXT` is explicitly
 //! unsupported because the pinned engine does not dispatch its signatures.
-//! Vector datatype/bridge support remains. Supported builtins may still nest.
+//! Vector datatype/bridge support remains. The former native JSON depth/storage
+//! leaf module is also deleted: typed-column `JSON_DEPTH` executes in TiKV,
+//! while text/other depth shapes and both storage-accounting functions fail
+//! closed. Supported builtins may still nest.
 //!
 //! Date-part extraction (`YEAR`, `MONTH`, `DAY`/`DAYOFMONTH`, `QUARTER`,
 //! `DAYOFYEAR`, `DAYOFWEEK`, `WEEKDAY`, `TO_DAYS`, `TO_SECONDS`) and

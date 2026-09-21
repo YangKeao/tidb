@@ -1690,6 +1690,13 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
                     "native vector evaluation was removed; TiKV engine required",
                 ));
             }
+            // JSON_DEPTH remains admitted; only the two storage leaves are
+            // contracted before arity/child work.
+            if matches!(lowered.as_str(), "json_storage_free" | "json_storage_size") {
+                return Err(EvalError::Unsupported(
+                    "native JSON depth/storage evaluation was removed; TiKV engine required",
+                ));
+            }
             if lowered == "grouping" {
                 let args = args
                     .iter()

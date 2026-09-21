@@ -70,8 +70,8 @@ remain in the workspace.
       rewriter boundaries refuse these names before arity validation or child
       evaluation/folding, so malformed or nested calls cannot expose another
       native path. All fifteen are explicit contractions: even the pinned
-      engine's hash/compression kernels stay excluded because construction-time charset errors, result collation,
-      warnings, and session semantics are not jointly verified. The preserved
+      engine's hash/compression kernels stay excluded because construction-time
+      charset errors, result collation, warnings, and session semantics are not jointly verified. The preserved
       Go source tables now assert engine decline plus the exact structured
       native refusal, including vectors formerly embedded beside the deleted
       kernels. Static admission is 216 admitted / 168 excluded; the reviewed
@@ -85,12 +85,25 @@ remain in the workspace.
       native boundaries return the exact structured refusal. VEC_FROM_TEXT is
       explicitly contracted before arity/child rewriting because the pinned
       engine dispatches neither `VecFromTextSig` nor
-      `CastStringAsVectorFloat32`. Planner/result metadata
-      and the `VectorFloat32` datatype remain as bridge structure, not SQL
+      `CastStringAsVectorFloat32`. Planner/result metadata and the
+      `VectorFloat32` datatype remain as bridge structure, not SQL
       kernels. The guarded suite passes 1201 library tests plus 77 integration
       tests (99 ignored); static admission and the reviewed runtime baseline
       remain 216/168 and 30 tests / 323 receipts / 2072 engine rows / 160
       borrowed rows. This is still not the final native-removal claim.
+- [x] Fourth physical-deletion tranche: removed the 251-line
+      `src/builtin_ext/json2.rs` JSON depth/storage SQL-kernel module and its
+      dispatch. Typed JSON-column `JSON_DEPTH` executes in TiKV against every
+      preserved depth vector; the original text/other constant shapes require
+      explicit engine decline and exact native refusal. JSON_STORAGE_FREE and
+      JSON_STORAGE_SIZE are explicit contractions because no pinned-engine
+      binary-storage-accounting lowering is admitted; all former Go result,
+      NULL, malformed-document and arity vectors remain and assert decline plus
+      refusal. The guarded suite passes 1198 library tests plus 77 integration
+      tests (99 ignored), and the migrated session SQL contraction test passes.
+      Static admission and the reviewed runtime baseline remain 216/168 and 30
+      tests / 323 receipts / 2072 engine rows / 160 borrowed rows. This is still
+      not the final native-removal claim.
 - [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
       in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected
       borrowed facade was used by the adapter while the manifest still pinned

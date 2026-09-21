@@ -3,6 +3,17 @@
 use crate::tests_support::*;
 use crate::*;
 
+fn assert_removed_json_leaf(session: &mut Session, sql: &str) {
+    let error = session
+        .run(sql)
+        .expect_err("deleted JSON depth/storage SQL kernel must fail closed")
+        .to_string();
+    assert!(
+        error.contains("native JSON depth/storage evaluation was removed; TiKV engine required"),
+        "{sql}: {error}"
+    );
+}
+
 /// Go `builtinJSONMemberOfSig`: the left operand is a JSON value (an SQL
 /// string stays a JSON string), while the right operand is parsed as a JSON
 /// document and may be either an array or a scalar.
@@ -59,43 +70,32 @@ fn json_path_and_overlap_predicates_reach_chunk_evaluation() {
 /// Go `builtinJSONStorage{Free,Size}Sig`, including the exact BinaryJSON
 /// byte sizes pinned by `TestJSONStorageSize` in `builtin_json_test.go`.
 #[test]
-fn json_storage_functions_reach_chunk_evaluation() {
+fn json_storage_functions_are_explicitly_contracted() {
     let mut session = Session::new();
-    assert_eq!(
-        session
-            .run(
-                r#"SELECT JSON_STORAGE_FREE('null'),
-                          JSON_STORAGE_FREE('{\"a\":1}'),
-                          JSON_STORAGE_FREE(NULL),
-                          JSON_STORAGE_SIZE('null'),
-                          JSON_STORAGE_SIZE('true'),
-                          JSON_STORAGE_SIZE('1'),
-                          JSON_STORAGE_SIZE('\"1\"'),
-                          JSON_STORAGE_SIZE('{}'),
-                          JSON_STORAGE_SIZE('{\"a\":1}'),
-                          JSON_STORAGE_SIZE('[{\"a\":{\"a\":1},\"b\":2}]'),
-                          JSON_STORAGE_SIZE('{\"a\": 1000, \"b\": \"wxyz\", \"c\": \"[1, 3, 5, 7]\"}'),
-                          JSON_STORAGE_SIZE(NULL)"#,
-            )
-            .unwrap(),
-        StmtResult::Rows(vec![vec![
-            Datum::Int(0),
-            Datum::Int(0),
-            Datum::Null,
-            Datum::Int(2),
-            Datum::Int(2),
-            Datum::Int(9),
-            Datum::Int(3),
-            Datum::Int(9),
-            Datum::Int(29),
+    for (sql, _preserved_go_expected) in [
+        ("SELECT JSON_STORAGE_FREE('null')", Datum::Int(0)),
+        ("SELECT JSON_STORAGE_FREE('{\"a\":1}')", Datum::Int(0)),
+        ("SELECT JSON_STORAGE_FREE(NULL)", Datum::Null),
+        ("SELECT JSON_STORAGE_SIZE('null')", Datum::Int(2)),
+        ("SELECT JSON_STORAGE_SIZE('true')", Datum::Int(2)),
+        ("SELECT JSON_STORAGE_SIZE('1')", Datum::Int(9)),
+        ("SELECT JSON_STORAGE_SIZE('\"1\"')", Datum::Int(3)),
+        ("SELECT JSON_STORAGE_SIZE('{}')", Datum::Int(9)),
+        ("SELECT JSON_STORAGE_SIZE('{\"a\":1}')", Datum::Int(29)),
+        (
+            "SELECT JSON_STORAGE_SIZE('[{\"a\":{\"a\":1},\"b\":2}]')",
             Datum::Int(82),
+        ),
+        (
+            "SELECT JSON_STORAGE_SIZE('{\"a\": 1000, \"b\": \"wxyz\", \"c\": \"[1, 3, 5, 7]\"}')",
             Datum::Int(71),
-            Datum::Null,
-        ]])
-    );
-
-    assert!(session.run("SELECT JSON_STORAGE_SIZE('not json')").is_err());
-    assert!(session.run("SELECT JSON_STORAGE_FREE('not json')").is_err());
+        ),
+        ("SELECT JSON_STORAGE_SIZE(NULL)", Datum::Null),
+        ("SELECT JSON_STORAGE_SIZE('not json')", Datum::Null),
+        ("SELECT JSON_STORAGE_FREE('not json')", Datum::Null),
+    ] {
+        assert_removed_json_leaf(&mut session, sql);
+    }
 }
 
 /// `JSON_TABLE` is REFUSED, and this test records WHY rather than
@@ -721,8 +721,8 @@ fn json_value_functions() {
     check!("SELECT JSON_CONTAINS(NULL,'1')", "NULL");
     check!(r#"SELECT JSON_CONTAINS('{"a":1}','1','$.zz')"#, "NULL");
 
-    // JSON_LENGTH / JSON_KEYS / JSON_DEPTH. Every scalar has length one
-    // and depth one; JSON_KEYS is NULL for a non-object.
+    // JSON_LENGTH / JSON_KEYS retain their scalar behavior. The former
+    // JSON_DEPTH expectations remain below as explicit contracted vectors.
     check!(r#"SELECT JSON_LENGTH('{"a":1,"b":2}')"#, "2");
     check!("SELECT JSON_LENGTH('[1,2,3]')", "3");
     check!("SELECT JSON_LENGTH('1')", "1");
@@ -745,12 +745,16 @@ fn json_value_functions() {
         r#"SELECT JSON_KEYS('{"a":{"z":1,"y":2}}','$.a')"#,
         r#"["y", "z"]"#
     );
-    check!("SELECT JSON_DEPTH('1')", "1");
-    check!("SELECT JSON_DEPTH('[]')", "1");
-    check!("SELECT JSON_DEPTH('{}')", "1");
-    check!("SELECT JSON_DEPTH('[1,[2,[3]]]')", "4");
-    check!(r#"SELECT JSON_DEPTH('{"a":{"b":{"c":1}}}')"#, "4");
-    check!("SELECT JSON_DEPTH(NULL)", "NULL");
+    for (sql, _preserved_go_expected) in [
+        ("SELECT JSON_DEPTH('1')", "1"),
+        ("SELECT JSON_DEPTH('[]')", "1"),
+        ("SELECT JSON_DEPTH('{}')", "1"),
+        ("SELECT JSON_DEPTH('[1,[2,[3]]]')", "4"),
+        (r#"SELECT JSON_DEPTH('{"a":{"b":{"c":1}}}')"#, "4"),
+        ("SELECT JSON_DEPTH(NULL)", "NULL"),
+    ] {
+        assert_removed_json_leaf(&mut session, sql);
+    }
 
     // JSON_VALID never raises: a malformed document, and every non-string
     // SQL value, is simply zero.

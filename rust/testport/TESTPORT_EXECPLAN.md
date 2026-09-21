@@ -11460,9 +11460,11 @@ risks without claiming repository-wide parity.
 - 2026-09-08 (JSON_OVERLAPS/MEMBER OF pin): shared-member detection, the
   MEMBER OF membership syntax, and OBJECT type reporting. Pinned in
   `crates/tidb-session/tests/json_overlaps_member_source.rs`.
-- 2026-09-08 (JSON storage pin): JSON_STORAGE_FREE's zero-for-parsed-docs
-  rule, JSON_STORAGE_SIZE's plausible binary size, and NULL propagation.
-  Pinned in `crates/tidb-session/tests/json_storage_source.rs`.
+- 2026-09-08 (JSON storage contraction pin): the former
+  JSON_STORAGE_FREE zero result, JSON_STORAGE_SIZE binary-size shape, and NULL
+  vectors are retained but now require the exact structured refusal after
+  physical native-kernel deletion. Pinned in
+  `crates/tidb-session/tests/json_storage_source.rs`.
 - 2026-09-08 (day-number pin): TO_DAYS's Gregorian day number, FROM_DAYS
   inversion, and TO_SECONDS's whole-day boundary. Pinned in
   `crates/tidb-session/tests/day_number_source.rs`.

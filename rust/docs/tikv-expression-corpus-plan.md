@@ -45,7 +45,7 @@ mention only). The native-helper call sites the task warns about
 (`tests/mod.rs`, `tests/math.rs`, `builtin_compare.rs::tests`, ...). Inside the
 33 ports the only direct native-helper calls are `time_fn::dispatch` /
 `time_fn::add_sub` / `calendar::date_diff`, `cast::eval_cast`,
-`wrap_cast::*`, `builtin_ext::{json,json2,string2,info,...}` dispatch,
+`wrap_cast::*`, `builtin_ext::{json,string2,info,...}` dispatch,
 `compare2::inet_aton_go_vectors`, `like::like_match_with_collation` and
 `extract::filter_out_in_place`. That makes the corpus substantially more
 re-pointable than the premise assumes: it is overwhelmingly SQL text and
@@ -180,7 +180,7 @@ Go source: Batch b068 ports of `pkg/expression.part3` (`func Test*` items 121–
 | `current_role` | E | &mdash; | `current_role` | &mdash; |
 | `connection_id` | E | &mdash; | `connection_id` | &mdash; |
 | `version` | E | &mdash; | `version` | &mdash; |
-| `bench_mark` | C+E | `cast`, `json_array` | `benchmark` | `json2::dispatch` |
+| `bench_mark` | C+E | `cast`, `json_array` | `benchmark` | `json::dispatch` |
 | `charset` | E | &mdash; | `charset` | &mdash; |
 | `coercibility` | E | &mdash; | `coercibility` | &mdash; |
 | `collation` | E | &mdash; | `collation` | &mdash; |
@@ -191,35 +191,35 @@ Go source: Batch b068 ports of `pkg/expression.part3` (`func Test*` items 121–
 | `format_nano_time` | B | &mdash; | `format_nano_time` | `info::dispatch` |
 | `vectorized_builtin_info_func` | E | &mdash; | `benchmark`, `connection_id`, `current_role`, `last_insert_id`, `row_count`, `tidb_version`, `version` | &mdash; |
 | `benchmark_vectorized_builtin_info_func` (ign) | -- | &mdash; | &mdash; | &mdash; |
-| `json_type` | B | `json_type` | &mdash; | `json2::dispatch` |
-| `json_quote` | B | `json_quote` | &mdash; | `json2::dispatch` |
-| `json_unquote` | B | `json_unquote` | &mdash; | `json2::dispatch` |
-| `json_sum_crc32` | B | &mdash; | &mdash; | `json2::dispatch` |
-| `json_extract` | B | `json_extract` | &mdash; | `json2::dispatch` |
-| `json_set_insert_replace` | B | `json_insert`, `json_replace`, `json_set` | &mdash; | `json2::dispatch` |
-| `json_merge` | B | &mdash; | `json_merge` | `json2::dispatch` |
-| `json_merge_preserve` | B | `json_merge_preserve` | &mdash; | `json2::dispatch` |
-| `json_array` | B | `json_array` | &mdash; | `json2::dispatch` |
-| `json_object` | B | `json_object` | &mdash; | `json2::dispatch` |
-| `json_remove` | B | `json_remove` | &mdash; | `json2::dispatch` |
-| `json_member_of` | B | `json_member_of` | &mdash; | `json2::dispatch` |
-| `json_contains` | B | `json_contains` | &mdash; | `json2::dispatch` |
-| `json_overlaps` | B | &mdash; | `json_overlaps` | `json2::dispatch` |
-| `json_contains_path` | A+C+E | `abs`, `ceil`, `ceiling`, `exp`, `floor`, `json_depth`, `json_keys`, `json_length`, `json_merge_patch`, `json_type`, `json_valid`, `log`, `log10`, `log2`, `pow`, `regexp_like`, `round`, `truncate` | `json_array_append`, `json_array_insert`, `json_contains_path`, `json_pretty`, `json_schema_valid`, `json_search`, `json_storage_free`, `json_storage_size`, `rand`, `time` | `json2::dispatch` |
-| `json_length` | B | `json_length` | &mdash; | `json2::dispatch` |
-| `json_keys` | B | `json_keys` | &mdash; | `json2::dispatch` |
-| `json_depth` | B | `json_depth` | &mdash; | `json2::dispatch` |
-| `json_array_append` | B | &mdash; | `json_array_append` | `json2::dispatch` |
-| `json_search` | B | &mdash; | `json_search` | `json2::dispatch` |
-| `json_array_insert` | B | &mdash; | `json_array_insert` | `json2::dispatch` |
-| `json_valid` | B | `json_valid` | &mdash; | `json2::dispatch` |
-| `json_storage_free` | A+C+E | `abs`, `ceil`, `ceiling`, `exp`, `floor`, `json_keys`, `json_length`, `json_merge_patch`, `json_type`, `log`, `log10`, `log2`, `pow`, `regexp_like`, `round`, `truncate` | `json_pretty`, `json_schema_valid`, `json_storage_free`, `json_storage_size`, `rand`, `time` | `json2::dispatch` |
-| `json_storage_size` | B | `json_merge_patch` | `json_pretty`, `json_storage_size` | `json2::dispatch` |
-| `json_pretty` | B | &mdash; | `json_pretty` | `json2::dispatch` |
-| `json_merge_patch` | B | `json_merge_patch` | &mdash; | `json2::dispatch` |
-| `json_schema_valid` | B | &mdash; | `json_schema_valid` | `json2::dispatch` |
+| `json_type` | B | `json_type` | &mdash; | `json::dispatch` |
+| `json_quote` | B | `json_quote` | &mdash; | `json::dispatch` |
+| `json_unquote` | B | `json_unquote` | &mdash; | `json::dispatch` |
+| `json_sum_crc32` | B | &mdash; | &mdash; | `json::dispatch` |
+| `json_extract` | B | `json_extract` | &mdash; | `json::dispatch` |
+| `json_set_insert_replace` | B | `json_insert`, `json_replace`, `json_set` | &mdash; | `json::dispatch` |
+| `json_merge` | B | &mdash; | `json_merge` | `json::dispatch` |
+| `json_merge_preserve` | B | `json_merge_preserve` | &mdash; | `json::dispatch` |
+| `json_array` | B | `json_array` | &mdash; | `json::dispatch` |
+| `json_object` | B | `json_object` | &mdash; | `json::dispatch` |
+| `json_remove` | B | `json_remove` | &mdash; | `json::dispatch` |
+| `json_member_of` | B | `json_member_of` | &mdash; | `json::dispatch` |
+| `json_contains` | B | `json_contains` | &mdash; | `json::dispatch` |
+| `json_overlaps` | B | &mdash; | `json_overlaps` | `json::dispatch` |
+| `json_contains_path` | A+C+E | `abs`, `ceil`, `ceiling`, `exp`, `floor`, `json_depth`, `json_keys`, `json_length`, `json_merge_patch`, `json_type`, `json_valid`, `log`, `log10`, `log2`, `pow`, `regexp_like`, `round`, `truncate` | `json_array_append`, `json_array_insert`, `json_contains_path`, `json_pretty`, `json_schema_valid`, `json_search`, `json_storage_free`, `json_storage_size`, `rand`, `time` | `json::dispatch` |
+| `json_length` | B | `json_length` | &mdash; | `json::dispatch` |
+| `json_keys` | B | `json_keys` | &mdash; | `json::dispatch` |
+| `json_depth` | B | `json_depth` (typed JSON only) | text/other shapes | no native helper; TiKV + refusal |
+| `json_array_append` | B | &mdash; | `json_array_append` | `json::dispatch` |
+| `json_search` | B | &mdash; | `json_search` | `json::dispatch` |
+| `json_array_insert` | B | &mdash; | `json_array_insert` | `json::dispatch` |
+| `json_valid` | B | `json_valid` | &mdash; | `json::dispatch` |
+| `json_storage_free` | B | &mdash; | `json_storage_free` | refusal only; Go expected table preserved |
+| `json_storage_size` | B | &mdash; | `json_storage_size` | refusal only; Go expected table preserved |
+| `json_pretty` | B | &mdash; | `json_pretty` | `json::dispatch` |
+| `json_merge_patch` | B | `json_merge_patch` | &mdash; | `json::dispatch` |
+| `json_schema_valid` | B | &mdash; | `json_schema_valid` | `json::dispatch` |
 | `json_schema_valid_cache` | E | &mdash; | `json_schema_valid` | &mdash; |
-| `vectorized_builtin_json_func` | B | `json_keys`, `json_length`, `json_type` | &mdash; | `json2::dispatch` |
+| `vectorized_builtin_json_func` | B | `json_keys`, `json_length`, `json_type` | &mdash; | `json::dispatch` |
 | `benchmark_vectorized_builtin_json_func` (ign) | -- | &mdash; | &mdash; | &mdash; |
 | `like` | A+C | &mdash; | &mdash; | &mdash; |
 | `regexp` | A | &mdash; | &mdash; | &mdash; |

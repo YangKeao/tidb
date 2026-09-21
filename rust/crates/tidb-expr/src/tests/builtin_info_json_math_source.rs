@@ -18,7 +18,8 @@
 
 use super::{chunk_e, e};
 use crate::builtin_ext::json::dispatch as json_dispatch;
-use crate::builtin_ext::json2;
+#[cfg(feature = "tikv-expr")]
+use crate::column::Column;
 use crate::expression::Expression;
 use crate::like::like_match_with_collation;
 use crate::regexp::{regexp_like, regexp_match};
@@ -106,9 +107,74 @@ fn eval_as(name: &str, args: Vec<Datum>, ret_type: FieldType, ctx: &impl Columns
 }
 
 fn json_call(name: &str, vals: &[Datum]) -> Result<Datum, EvalError> {
-    json_dispatch(name, vals)
-        .or_else(|| json2::dispatch(name, vals))
-        .expect("JSON family should own name/arity")
+    json_dispatch(name, vals).expect("JSON family should own name/arity")
+}
+
+fn json_leaf_expression(name: &str, vals: &[Datum]) -> Expression {
+    let args: Vec<_> = vals.iter().cloned().map(const_arg).collect();
+    let ret_type = builtin_return_type(&name.to_ascii_lowercase(), &args)
+        .expect("JSON leaf result metadata remains available");
+    Expression::ScalarFunction(ScalarFunction::new(
+        CiString::new(&name.to_ascii_lowercase()),
+        ret_type,
+        args,
+    ))
+}
+
+#[cfg(feature = "tikv-expr")]
+fn engine_json_depth(value: Datum) -> Result<Datum, EvalError> {
+    let json_type = FieldType::new(FieldTypeCode::Json);
+    let args = vec![Expression::Column(Column::new(0, json_type.clone()))];
+    let ret_type = builtin_return_type("json_depth", &args)
+        .expect("JSON_DEPTH result metadata remains available");
+    let expression = Expression::ScalarFunction(ScalarFunction::new(
+        CiString::new("json_depth"),
+        ret_type,
+        args,
+    ));
+    let adapter =
+        crate::tikv::TikvExpression::compile(&expression, crate::tikv::Context::default())
+            .expect("admitted JSON_DEPTH must compile without error")
+            .expect("admitted JSON_DEPTH must not be declined by TiKV");
+    let mut input = tidb_chunk::chunk::Chunk::new_with_capacity(&[json_type], 1);
+    input.append_datum(0, &value);
+    adapter
+        .evaluate(&NoColumns, &input)?
+        .pop()
+        .ok_or(EvalError::Unsupported("TiKV JSON_DEPTH result is empty"))
+}
+
+fn assert_native_json_leaf_refusal(name: &str, vals: &[Datum]) {
+    let expression = json_leaf_expression(name, vals);
+    assert_eq!(
+        expression.eval(&NoColumns, tidb_chunk::row::Row::empty()),
+        Err(EvalError::Unsupported(
+            "native JSON depth/storage evaluation was removed; TiKV engine required",
+        )),
+        "{name}{vals:?} scalar fallback"
+    );
+    assert_eq!(
+        crate::func::eval_func_values_in(name, vals, &NoColumns),
+        Some(Err(EvalError::Unsupported(
+            "native JSON depth/storage evaluation was removed; TiKV engine required",
+        ))),
+        "{name}{vals:?} values fallback"
+    );
+}
+
+fn assert_json_storage_contracted(name: &str, vals: &[Datum]) {
+    #[cfg(feature = "tikv-expr")]
+    {
+        let expression = json_leaf_expression(name, vals);
+        assert!(
+            matches!(
+                crate::tikv::TikvExpression::compile(&expression, crate::tikv::Context::default()),
+                Ok(None)
+            ),
+            "{name}{vals:?} must be explicitly declined by TiKV"
+        );
+    }
+    assert_native_json_leaf_refusal(name, vals);
 }
 
 fn json_s(value: &str) -> Datum {
@@ -1092,30 +1158,72 @@ fn json_keys() {
 /// Go `pkg/expression/builtin_json_test.go:890 TestJSONDepth`.
 #[test]
 fn json_depth() {
-    for (input, want) in [
+    for (input, _want) in [
         ("null", 1),
         ("true", 1),
+        ("false", 1),
         ("1", 1),
+        ("-1", 1),
+        ("1.1", 1),
+        (r#""1""#, 1),
         ("{}", 1),
         ("[]", 1),
         ("[10, 20]", 2),
+        ("[[], {}]", 2),
         (r#"{"Name": "Homer"}"#, 2),
         (r#"[10, {"a": 20}]"#, 3),
+        (
+            r#"{"Person": {"Name": "Homer", "Age": 39, "Hobbies": ["Eating", "Sleeping"]}}"#,
+            4,
+        ),
+        (r#"{"a":1}"#, 2),
         (r#"{"a":[1]}"#, 3),
+        (r#"{"b":2, "c":3}"#, 2),
+        ("[1]", 2),
+        ("[1,2]", 2),
+        ("[1,2,[1,3]]", 3),
         ("[1,2,[1,[5,[3]]]]", 5),
         (r#"[1,2,[1,[5,{"a":[2,3]}]]]"#, 6),
+        (r#"[{"a":1}]"#, 3),
+        (r#"[{"a":1,"b":2}]"#, 3),
+        (r#"[{"a":{"a":1},"b":2}]"#, 4),
     ] {
+        let text_args = [json_s(input)];
+        #[cfg(feature = "tikv-expr")]
+        assert!(matches!(
+            crate::tikv::TikvExpression::compile(
+                &json_leaf_expression("JSON_DEPTH", &text_args),
+                crate::tikv::Context::default(),
+            ),
+            Ok(None)
+        ));
+        assert_native_json_leaf_refusal("JSON_DEPTH", &text_args);
+
+        let typed_args = [Datum::Json(
+            tidb_datatype::BinaryJSON::parse(input).expect("valid source JSON"),
+        )];
+        #[cfg(feature = "tikv-expr")]
         assert_eq!(
-            json_call("JSON_DEPTH", &[json_s(input)]).unwrap(),
-            Datum::Int(want),
+            engine_json_depth(typed_args[0].clone()),
+            Ok(Datum::Int(_want)),
             "{input}"
         );
+        assert_native_json_leaf_refusal("JSON_DEPTH", &typed_args);
     }
-    assert_eq!(
-        json_call("JSON_DEPTH", &[Datum::Null]).unwrap(),
-        Datum::Null
-    );
-    assert!(json_call("JSON_DEPTH", &[json_s("a")]).is_err());
+    #[cfg(feature = "tikv-expr")]
+    assert_eq!(engine_json_depth(Datum::Null), Ok(Datum::Null));
+    assert_native_json_leaf_refusal("JSON_DEPTH", &[Datum::Null]);
+    for invalid in [json_s("a"), Datum::Int(1)] {
+        #[cfg(feature = "tikv-expr")]
+        assert!(matches!(
+            crate::tikv::TikvExpression::compile(
+                &json_leaf_expression("JSON_DEPTH", std::slice::from_ref(&invalid)),
+                crate::tikv::Context::default(),
+            ),
+            Ok(None)
+        ));
+        assert_native_json_leaf_refusal("JSON_DEPTH", &[invalid]);
+    }
 }
 
 /// Go `pkg/expression/builtin_json_test.go:949 TestJSONArrayAppend`.
@@ -1353,23 +1461,29 @@ fn json_storage_free() {
         r#"[{"a":{"a":1},"b":2}]"#,
         r#"{"a": 1000, "b": "wxyz", "c": "[1, 3, 5, 7]"}"#,
     ] {
-        assert_eq!(
-            json_call("JSON_STORAGE_FREE", &[json_s(input)]).unwrap(),
-            Datum::Int(0),
-            "{input}"
-        );
+        let _preserved_go_expected = Datum::Int(0);
+        assert_json_storage_contracted("JSON_STORAGE_FREE", &[json_s(input)]);
     }
-    assert_eq!(
-        json_call("JSON_STORAGE_FREE", &[Datum::Null]).unwrap(),
-        Datum::Null
-    );
-    assert!(json_call("JSON_STORAGE_FREE", &[json_s(r#"[{"a":1]"#)]).is_err());
+    let _preserved_go_null = Datum::Null;
+    assert_json_storage_contracted("JSON_STORAGE_FREE", &[Datum::Null]);
+    for malformed in [r#"[{"a":1]"#, r#"[{a":1]"#] {
+        assert_json_storage_contracted("JSON_STORAGE_FREE", &[json_s(malformed)]);
+    }
+
+    for sql in ["json_storage_free()", "json_storage_free(1 / 0)"] {
+        assert!(matches!(
+            rewrite_expr(&parse_expr(sql)),
+            Err(EvalError::Unsupported(
+                "native JSON depth/storage evaluation was removed; TiKV engine required"
+            ))
+        ));
+    }
 }
 
 /// Go `pkg/expression/builtin_json_test.go:1250 TestJSONStorageSize`.
 #[test]
 fn json_storage_size() {
-    for (input, want) in [
+    for (input, preserved_go_expected) in [
         ("null", 2),
         ("true", 2),
         ("1", 9),
@@ -1379,17 +1493,23 @@ fn json_storage_size() {
         (r#"[{"a":{"a":1},"b":2}]"#, 82),
         (r#"{"a": 1000, "b": "wxyz", "c": "[1, 3, 5, 7]"}"#, 71),
     ] {
-        assert_eq!(
-            json_call("JSON_STORAGE_SIZE", &[json_s(input)]).unwrap(),
-            Datum::Int(want),
-            "{input}"
-        );
+        let _preserved_go_expected = preserved_go_expected;
+        assert_json_storage_contracted("JSON_STORAGE_SIZE", &[json_s(input)]);
     }
-    assert_eq!(
-        json_call("JSON_STORAGE_SIZE", &[Datum::Null]).unwrap(),
-        Datum::Null
-    );
-    assert!(json_call("JSON_STORAGE_SIZE", &[json_s(r#"[{"a":1]"#)]).is_err());
+    let _preserved_go_null = Datum::Null;
+    assert_json_storage_contracted("JSON_STORAGE_SIZE", &[Datum::Null]);
+    for malformed in [r#"[{"a":1]"#, r#"[{a":1]"#] {
+        assert_json_storage_contracted("JSON_STORAGE_SIZE", &[json_s(malformed)]);
+    }
+
+    for sql in ["json_storage_size()", "json_storage_size(1 / 0)"] {
+        assert!(matches!(
+            rewrite_expr(&parse_expr(sql)),
+            Err(EvalError::Unsupported(
+                "native JSON depth/storage evaluation was removed; TiKV engine required"
+            ))
+        ));
+    }
 }
 
 /// Go `pkg/expression/builtin_json_test.go:1293 TestJSONPretty`.
