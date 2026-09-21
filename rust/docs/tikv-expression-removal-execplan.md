@@ -6,6 +6,15 @@ This is a living ExecPlan governed by repository-root `PLANS.md`. It supersedes
 added a second implementation, this one removes the first. It is an
 exploration on YangKeao forks, not an upstream commitment.
 
+Latest verified handoff: [migration checkpoint](tikv-expression-migration-checkpoint.md).
+At TiDB `982bad9`, the refusal-intolerant corpus still reports **1163 passed /
+61 failed / 99 ignored** (59 distinct first-refused expressions). All failures
+are adapter refusals, not newly classified value mismatches. The environment
+variable makes chunk_e reject declines but still runs its native oracle; this is
+NOT evidence that the native implementation has been removed. Cross-configuration
+regressions and both count gates passed. The six-point objective remains
+incomplete; do not interpret historical foundation milestones as cutover approval.
+
 
 ## Purpose / Big Picture
 
@@ -263,29 +272,30 @@ remain in the workspace.
       eliminating them requires the independent-column facade, not more row
       copies. TiDB is pinned to engine `db9c7f0`; borrowed lazy remains unsupported.
 
-- [x] Milestone A (point 6): engine shareable and thread-safe.
+- [x] Milestone A foundation (partial point 6): shareable engine metadata.
       TiKV metadata is `Send + Sync`, `PreparedExpression` is asserted
       `Send + Sync`, and a compiled program is split from caller-owned
       `ExecutionState`. The TiDB adapter caches the compiled programs on the
       shared `EvaluatorProgram`, and a test proves one plan compiles ONCE for
       three suites while a real statement-policy change recompiles and the
       copying/borrowed backend does not.
-- [x] Milestone B (point 2): explicit admission table and fallback gate.
-      384 rows (228 admitted, 156 excluded with a reason) covering the
+- [x] Milestone B foundation (partial point 2): explicit admission table and
+      observable fallback gate. Current static inventory has 384 rows
+      (240 declared admitted, 144 excluded with a reason) covering the
       309-name Go-derived registry plus the synthesized spellings; a test fails
       if a name has no row. Falls back are reported as `NotAdmitted`,
       `LazyRisk` or `UnrepresentableInput` and the SQL differential helper
       fails on a silent fallback.
-- [x] Milestone C (point 1): short-circuit evaluation.
-      Every lazy-sensitive family the engine dispatches is lazy: Tier 1
-      (IF/IFNULL/COALESCE/CASE/AND/OR/XOR), Tier 2 (ELT/FIELD/GREATEST/LEAST/
-      INTERVAL) and Tier 3 (`AddTime*Null`). `LAZY_SENSITIVE_KERNELS` holds
-      only the all-lazy Tier-1 names, so `eager_lazy_risk()` can no longer
-      report anything and the adapter's mixed-shape gate is inert. The wire
-      format is unchanged; laziness is a signature-driven marker. TiDB's
-      acceptance test is `crates/tidb-expr/tests/tikv_lazy.rs`.
-- [x] Milestone D (point 4): the type support the removal needs.
-      `Set` only: `FieldTypeTp::Set -> EvalType::Set`, the `Set`/`SetRef`/
+- [x] Milestone C foundation (partial point 1): signature-driven lazy engine
+      kernels and TiDB acceptance tests in `crates/tidb-expr/tests/tikv_lazy.rs`.
+      The wire format is unchanged. `eager_lazy_risk()` checks lazy-sensitive
+      nodes lacking lazy_fn_ptr; keep that full-tree gate, even when today's
+      registered signatures yield no risk. It is not a general SQL admission
+      proof, and requested Borrowed mode is not borrowed-lazy support. TiDB's
+      vectorized short-circuit/default-switch acceptance remains separate.
+- [x] Milestone D foundation (partial point 4): Set transport support.
+      This is not proof that all native representations can be removed:
+      literal provenance and temporal transport gaps remain above. Implemented: `FieldTypeTp::Set -> EvalType::Set`, the `Set`/`SetRef`/
       `ChunkedVecSet` carriers, chunk and raw-datum codecs, the hybrid
       Int/Bytes borrows, the standalone `Column::Set`, the cast registration
       and the adapter bridge, with round-trip fixtures. A latent
