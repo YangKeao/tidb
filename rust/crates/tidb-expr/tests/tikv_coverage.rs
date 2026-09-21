@@ -201,9 +201,12 @@ fn check(
     .ok_or_else(|| format!("{label}: declined {expression:?}"))?;
     let mut baseline = Vec::new();
     let mut baseline_warnings = Vec::new();
+    let mut engine_rows = 0;
+    let mut borrowed_rows = 0;
     for backend in [None, Some(Backend::Copying), Some(Backend::Borrowed)] {
         let context = TestContext {
             backend,
+            engine_required: backend.is_some(),
             ..TestContext::default()
         };
         let suite = EvaluatorSuite::new(vec![expression.clone()], true);
@@ -231,6 +234,8 @@ fn check(
         if backend != Some(Backend::Borrowed) && context.borrowed.get() != 0 {
             return Err(format!("{label}: unexpected borrowed counter"));
         }
+        engine_rows += context.rows.get();
+        borrowed_rows += context.borrowed.get();
         let values = (0..output.num_rows())
             .map(|row| output.get_row(row).get_datum(0, ty))
             .collect::<Vec<_>>();
@@ -265,6 +270,19 @@ fn check(
             .collect::<Vec<_>>()
             .join(","),
         input.num_rows()
+    );
+    // Emit only after exact row/fallback accounting and value/warning parity.
+    // Requested Borrowed mode can use copying inside the engine; record the
+    // observed borrowed rows rather than claiming that mode is always zero-copy.
+    eprintln!(
+        "TIKV_RUNTIME_RECEIPT_V1\t{label}\t{}\t{}\t{engine_rows}\t{borrowed_rows}\t0",
+        program
+            .wire_signatures()
+            .iter()
+            .map(i32::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        input.num_rows(),
     );
     Ok(())
 }

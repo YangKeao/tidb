@@ -229,8 +229,14 @@ remain in the workspace.
       resolve symbolic exclusion reasons, reject unparsed rows, and ignore only
       informational snapshot HEADs when comparing committed reports. Generated
       table has 384 rows (240 declared admitted / 144 excluded), no missing names.
-- [ ] Validate/wire runtime engine-only count gates in actual CI; static table
-      completeness and lexical signature candidates are not execution coverage.
+- [x] Add a CI-callable runtime receipt gate for the fixed tikv_coverage module:
+      mandatory engine contexts for positive differential fixtures, actual row/
+      borrowed accounting, exact baseline comparison, failure/empty/ignored/
+      fallback/identity/count rejection. Local baseline: 368 receipts, 2394 engine
+      rows, 160 observed borrowed rows, 30 tests passed (47 filtered out).
+- [ ] Wire/validate the runtime gate in actual hosted CI and extend engine-only
+      coverage beyond this fixture set. Static names and runtime receipt counts
+      are not proof of all SQL shapes or native deletion readiness.
 - [ ] Prove native value/diagnostic parity for remaining ordinary binary-string
       numeric profiles before relaxing implicit/real/range/truncation guards.
 - [ ] Add a literal-kind carrier/provenance contract for root/lazy forwarding and
@@ -828,6 +834,47 @@ milestones before it.
 
 ## Artifacts and Notes
 
+
+Runtime execution receipt gate (TiDB repository root, existing guarded Rust env):
+
+    python3 rust/scripts/tikv_expression_runtime_gate.py --self-test
+    python3 rust/scripts/tikv_expression_runtime_gate.py --update
+    python3 rust/scripts/tikv_expression_runtime_gate.py
+    python3 rust/scripts/tikv_expression_coverage.py --self-check --check
+
+The runtime driver uses the fixed command (cwd `rust/`):
+
+    cargo test -q -p tidb-expr --features tikv-expr --test all tikv_coverage:: --locked --offline -j1 -- --nocapture --test-threads=1
+
+Run the driver under ../tools/limited-run.py --rss-mib 8192 --as-mib 16384; all
+runs serial. Update is explicit, never automatic during normal comparison and
+never allowed after Cargo failure. The driver also rejects no/empty/ignored
+suite, malformed receipts, native fallback, impossible row accounting, missing
+receipts and any count/identity change (including duplicate multiplicity). It
+compares the exact sorted records, not just totals; equal totals cannot conceal
+a changed label/signature/row shape. Rust's check helper now requires the engine
+for both enabled contexts and emits V1 receipts only after row/fallback checks
+and native value/warning parity. Legacy PASS lines remain for existing readers.
+
+`runtime-gate-bootstrap.log`: 30 tests passed, then deliberate missing-baseline
+refusal (47 other integration tests filtered out). `runtime-gate-update.log`
+creates the reviewed baseline; `runtime-gate-check.log` independently repeats
+it. `runtime-gate-parser-red.log` reproduces acceptance of malformed `1,,2` IDs;
+strict syntax plus self-tests now reject it. `runtime-gate-final.log` passes
+30 tests and the exact baseline: 368 receipts, 2394 engine rows, zero native
+fallbacks in those fixtures, 160 observed borrowed rows. A real-baseline mutation
+2394 -> 2393 is rejected in `runtime-gate-drift-red.log`.
+
+Important qualification: Borrowed is a requested mode, not proof of borrowed
+execution. These receipts observe only 160 borrowed rows; the other 2234 engine
+rows used copying, including copying within requested Borrowed mode. Do not
+report the whole suite as zero-copy or SIMD evidence. The native reference is
+intentionally run separately, and tests/rows outside check() produce no receipt;
+this is not coverage of all functions, corpus inputs, or unsupported shapes.
+Sampled compile-run peak 1310.3 MiB; very short cached reruns are below the guard's
+sampling resolution. No production kernel/SQL admission changes, executor/full
+library rerun, Go oracle, mysql replay, performance, hosted CI, lint or PR-readiness
+claim. Baseline JSON is generated only from successful real runs.
 
 Static capability inventory repair (TiDB repository root):
 
