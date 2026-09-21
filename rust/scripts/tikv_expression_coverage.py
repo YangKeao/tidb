@@ -8,9 +8,11 @@ Run from any directory, without Rust/Go builds or third-party packages:
   python3 rust/scripts/tikv_expression_coverage.py --check
 
 Defaults use sibling ../tikv and ../cargo-home's pinned tipb checkout. Override
---tikv/--tipb-proto when those sources live elsewhere. Outputs are deterministic
-for the same source contents. Baseline source is read from git (never checked
-out); current source may include uncommitted work. No distributed policy changes.
+--tikv/--tipb-proto when those sources live elsewhere. Source-derived results are
+deterministic; snapshot HEADs are informational and ignored only by --check.
+All source hashes, counts and rows remain checked. Baseline source is read from
+git (never checked out); current source may include uncommitted work. No
+distributed policy changes. Test-only items do not count as adapter evidence.
 """
 from __future__ import annotations
 
@@ -102,7 +104,43 @@ def refs(text: str, names: dict[str, str]) -> set[str]:
             if token.lower() in names}
 
 
+def production_adapter_source(text: str) -> str:
+    """Mask exact #[test]/#[cfg(test)] items, not the rest of the file.
+
+    This is a lexical inventory, not a Rust cfg evaluator. Balance item bodies
+    and parameter/attribute delimiters; skip quoted literals and comments.
+    """
+    text = uncomment(text)
+    tokens = list(re.finditer(
+        r'"(?:\\[\s\S]|[^"\\])*"|`[^`]*`|\'(?:\\.|[^\'\\])\'|'
+        r'#\[\s*(?:test|cfg\s*\(\s*test\s*\))\s*\]|[{}()\[\];]', text))
+    masked = list(text)
+    end = 0
+    opening = {"{": "}", "(": ")", "[": "]"}
+    for index, token in enumerate(tokens):
+        if token.start() < end or not token[0].startswith("#["):
+            continue
+        stack = []
+        for following in tokens[index + 1:]:
+            value = following[0]
+            if value in opening:
+                stack.append(opening[value])
+            elif value in ("}", ")", "]"):
+                if not stack or stack.pop() != value:
+                    raise ValueError("unbalanced test item")
+                if value == "}" and not stack:
+                    break
+            elif value == ";" and not stack:
+                break
+        else:
+            raise ValueError("unterminated test item")
+        end = following.end()
+        masked[token.start():end] = ["\n" if c == "\n" else " " for c in text[token.start():end]]
+    return "".join(masked)
+
+
 def adapter_refs(text: str, upstream: dict[str, int]) -> set[str]:
+    text = production_adapter_source(text)
     names = {name.lower(): name for name in upstream}
     result = refs(text, names)
     by_id = {number: name for name, number in upstream.items()}
@@ -118,7 +156,7 @@ ADMISSION_ROW = re.compile(
     r'^\s*row\("(?P<name>[^"]+)"\s*,\s*Decision::(?P<decision>Admitted|Excluded)\s*,'
     r'\s*Signature::(?P<sig>\w+)(?:\((?P<sig_arg>[^)]*)\))?\s*,'
     r'\s*&\[(?P<required>[^\]]*)\]\s*,\s*Shape::(?P<shape>\w+)\s*,'
-    r'\s*"(?P<reason>[^"]*)"\s*\)\s*,\s*$',
+    r'\s*(?P<reason>"(?:\\[\s\S]|[^"\\])*"|[A-Z][A-Z0-9_]*)\s*\)\s*,\s*$',
     re.M,
 )
 
@@ -129,22 +167,37 @@ def admission_table(text: str) -> dict[str, dict]:
     This is the report's authority for admitted/excluded status; source-text
     signature evidence is no longer used to decide support.
     """
-    section = text.split("pub(crate) const ADMISSION_ROWS", 1)[1]
+    text = production_adapter_source(text)
+    # Rust string continuation removes the newline and following indentation.
+    def string_value(token: str) -> str:
+        return json.loads(re.sub(r"\\\r?\n\s*", "", token))
+    reasons = {name: string_value(value) for name, value in re.findall(
+        r'\bconst\s+(\w+)\s*:\s*&str\s*=\s*("(?:\\[\s\S]|[^"\\])*")\s*;', text)}
+    section = text.split("pub(crate) const ADMISSION_ROWS", 1)[1].split("];", 1)[0]
     result = {}
     for match in ADMISSION_ROW.finditer(section):
         group = match.groupdict()
         name = group["name"]
         if name in result:
             raise ValueError("duplicate admission row: " + name)
+        reason = group["reason"]
+        if reason.startswith('"'):
+            reason = string_value(reason)
+        elif reason in reasons:
+            reason = reasons[reason]
+        else:
+            raise ValueError("unknown admission reason: " + reason)
         result[name] = {
             "decision": group["decision"].lower(),
             "signature": group["sig"] + (":" + group["sig_arg"] if group["sig_arg"] else ""),
             "required_eval_types": [item.strip() for item in group["required"].split(",") if item.strip()],
             "shape": group["shape"],
-            "reason": group["reason"],
+            "reason": reason,
         }
     if not result:
         raise ValueError("admission table parsed no rows")
+    if len(result) != len(re.findall(r"^\s*row\s*\(", section, re.M)):
+        raise ValueError("admission table contains unparsed rows")
     return result
 
 
@@ -166,7 +219,7 @@ def generated_adapter_candidates(text: str, upstream: dict[str, int]) -> dict[st
     fragments may be any family spelling. Engine/build/arity/type gates remain
     separate. This deliberately includes enum-only candidates, never support.
     """
-    text = uncomment(text.split("#[cfg(test)]", 1)[0])
+    text = production_adapter_source(text)
     families = {"Int", "Real", "Decimal", "String", "Time", "Duration", "Json", "VectorFloat32", "Dec", "Uint"}
     result = collections.defaultdict(set)
     for match in re.finditer(r"\bfn\s+(\w+)\s*\(", text):
@@ -283,7 +336,7 @@ def borrowed_metadata(root: Path) -> set[str]:
 def risks(name: str) -> list[str]:
     result = []
     if name in LAZY:
-        result.append("lazy_children_eager_rpn")
+        result.append("lazy_strategy_requires_runtime_probe")
     if name in VOLATILE:
         result.append("volatile_clock_rng_or_uuid")
     if name == "RandWithSeedFirstGen":
@@ -452,7 +505,7 @@ def make_inventory(args: argparse.Namespace) -> dict:
         "go_registry_classes": len({entry["go_class"] for entry in go_entries}),
         "engine_with_go_constructor_candidate": sum(row["engine_dispatch"] and bool(row["go_constructor_candidate_names"]) for row in rows),
         "engine_with_go_internal_cast_evidence": sum(row["engine_dispatch"] and bool(row["go_internal_cast_constructor_evidence"]) for row in rows),
-        "engine_lazy_risk": sum(row["engine_dispatch"] and "lazy_children_eager_rpn" in row["risk_flags"] for row in rows),
+        "engine_lazy_risk": sum(row["engine_dispatch"] and "lazy_strategy_requires_runtime_probe" in row["risk_flags"] for row in rows),
         "admission_rows": len(admission),
         "admission_admitted": sum(row["decision"] == "admitted" for row in admission.values()),
         "admission_excluded": sum(row["decision"] == "excluded" for row in admission.values()),
@@ -502,7 +555,7 @@ def make_inventory(args: argparse.Namespace) -> dict:
             {"kind": "unsigned", "detail": "Generic integer arithmetic/comparisons choose signedness kernels from both children; some specialized minus/intdiv enum variants are not dispatched."},
             {"kind": "prevalidator", "detail": "LIKE reads children[0] and children[1], ToBinary reads children[0], before the builder invokes validator_ptr; arity must be preflighted."},
             {"kind": "builder_leaf_discrepancy", "detail": "check_expr_tree_supported omits MysqlEnum/MysqlBit, while handle_node_constant supports these typed leaves; build path is authoritative."},
-            {"kind": "eager", "detail": "Builder appends every child before parent; IF/IFNULL/CASE/COALESCE/AND/OR branch side effects and warnings cannot be assumed lazy."},
+            {"kind": "lazy_strategy", "detail": "Builder order alone does not establish evaluation order. Registered lazy kernels exist; inspect eager_lazy_risk and validate the complete tree/backend instead of assuming all branches eager or lazy."},
         ],
         "pushdown_fallback_review": [
             {"kind": "nested_metadata", "detail": "expression_to_pb restores the root static FieldType only; recursively preserve nested Decimal precision/FSP/collation for local embedding."},
@@ -527,13 +580,26 @@ def self_check(inventory: dict) -> None:
     assert by_name["roundwithfracreal"]["engine_dispatch"]
     assert not by_name["unix timestamp current".replace(" ", "")]["engine_dispatch"]
     assert not by_name["minusintunsignedunsigned"]["engine_dispatch"]
-    assert "lazy_children_eager_rpn" in by_name["ifint"]["risk_flags"]
+    assert "lazy_strategy_requires_runtime_probe" in by_name["ifint"]["risk_flags"]
     assert by_name["castintasreal"]["engine_target"] == "map_cast_func(expr)?"
     assert "ceil" in by_name["ceilreal"]["go_constructor_candidate_names"]
     assert "ceiling" in by_name["ceilreal"]["go_constructor_candidate_names"]
     assert len(enum('enum ScalarFuncSig {\n A = 1; // B = 2;\n}')) == 1
     assert adapter_refs('PbExpr { sig: Some(2101) }', {"AbsInt": 2101}) == {"AbsInt"}
     assert set(generated_adapter_candidates('fn cast() { format!("Cast{}As{}", from, to) }', {"CastIntAsReal": 2, "Pi": 2100})) == {"CastIntAsReal"}
+    # Test items may occur before or between production functions. Their
+    # position must neither hide production evidence nor invent test-only support.
+    fixture = '''
+        #[cfg(test)] mod tests {
+            fn test_only() { format!("If{}", ty); "IfInt"; }
+        }
+        fn production() { format!("Cast{}As{}", from, to) }
+        #[test] fn inline_test() { format!("Coalesce{}", ty); "CoalesceInt"; }
+        fn after_test() { "AbsInt" }
+    '''
+    names = {"CastIntAsReal": 1, "IfInt": 2, "CoalesceInt": 3, "AbsInt": 4}
+    assert set(generated_adapter_candidates(fixture, names)) == {"CastIntAsReal"}
+    assert adapter_refs(fixture, names) == {"AbsInt"}
     # Admission-table invariants. These make the report's support authority
     # fail loudly rather than drifting into an implicit "untested".
     table = {row["name"]: row for row in inventory["admission_table"]}
@@ -555,6 +621,37 @@ def self_check(inventory: dict) -> None:
         '];\n')
     assert parsed["plus"]["decision"] == "admitted" and parsed["plus"]["signature"] == "Family:Family::Arithmetic"
     assert parsed["sid"]["decision"] == "excluded" and parsed["sid"]["reason"] == "why"
+    table_source = ('pub(crate) const WHY: &str = "missing \\\n  kernel";\n'
+                    'pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[\n'
+                    'row("x", Decision::Excluded, Signature::None, &[], Shape::Any, WHY),\n];\n')
+    assert admission_table(table_source)["x"]["reason"] == "missing kernel"
+    for broken in [table_source.replace("WHY),", "UNKNOWN),"),
+                   table_source.replace("Shape::Any", "unsupported_shape()"),
+                   table_source.replace("];", 'row("y", Decision::Excluded, Signature::None, &[], unsupported_shape(), WHY),\n];')]:
+        try:
+            admission_table(broken)
+        except (KeyError, ValueError):
+            pass
+        else:
+            raise AssertionError("malformed admission rows must fail closed")
+    masked = production_adapter_source('''#[test] fn x(a: [u8; 2]) { let c = '}'; let s = "}"; }
+#[cfg(test)] mod external;
+fn retained() {}''')
+    assert "retained" in masked and "fn x" not in masked and "external" not in masked
+    snapshot = {"current_revisions": {"tidb": "before"}, "source_sha256": {"input": "same"}, "counts": {"admitted": 1}}
+    committed = dict(snapshot, current_revisions={"tidb": "after"})
+    assert same_inventory_json(json.dumps(snapshot), json.dumps(committed))
+    for changed in [dict(committed, source_sha256={"input": "changed"}),
+                    dict(committed, counts={"admitted": 2})]:
+        assert not same_inventory_json(json.dumps(snapshot), json.dumps(changed))
+
+
+def same_inventory_json(stored: str, current: str) -> bool:
+    """Compare checked sources/results, not informational snapshot HEADs."""
+    left, right = json.loads(stored), json.loads(current)
+    left.pop("current_revisions", None)
+    right.pop("current_revisions", None)
+    return left == right
 
 
 def main() -> int:
@@ -580,7 +677,9 @@ def main() -> int:
     for suffix, content in ((".json", json_text), (".csv", output.getvalue())):
         path = args.output_prefix.with_suffix(suffix)
         if args.check:
-            if not path.exists() or path.read_text() != content:
+            matches = path.exists() and (same_inventory_json(path.read_text(), content)
+                                         if suffix == ".json" else path.read_text() == content)
+            if not matches:
                 print(f"out of date: {path}", file=sys.stderr)
                 return 1
         else:
