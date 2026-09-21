@@ -19,7 +19,7 @@ use tidb_ast::{BinaryOp, Expr};
 use crate::coerce::{bool_int, truthy_of};
 use crate::eval_in;
 use crate::row::row_compare;
-use crate::string_fn::{elt, field, locate, locate_collation, locate_with_position};
+use crate::string_fn::{locate, locate_collation, locate_with_position};
 use crate::time_fn::calendar::{date_add, date_diff, date_format, date_part, from_days, time_part};
 use crate::{BuildContext, Columns, Datum, EvalError, StringLengthFunction};
 
@@ -209,7 +209,7 @@ pub(crate) fn is_removed_native_radix(name: &str) -> bool {
 pub(crate) fn is_removed_native_string_aux(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
-        "SUBSTRING_INDEX" | "QUOTE" | "CHAR_FUNC"
+        "SUBSTRING_INDEX" | "QUOTE" | "CHAR_FUNC" | "FIELD" | "ELT"
     )
 }
 
@@ -1015,8 +1015,6 @@ pub(crate) fn eval_func_values(
         "INSTR" if vals.len() == 2 => {
             locate(&vals[1], &vals[0], locate_collation(&vals[0], &vals[1]))
         }
-        "FIELD" if vals.len() >= 2 => field(vals, ctx),
-        "ELT" if vals.len() >= 2 => elt(vals),
         "DATE_FORMAT" if vals.len() == 2 => date_format(&vals[0], &vals[1]),
         // Go `builtinLoadFileSig.evalString` reads the argument and then
         // returns `"", true, nil` UNCONDITIONALLY: TiDB has no server-side

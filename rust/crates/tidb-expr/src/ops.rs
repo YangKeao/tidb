@@ -1649,10 +1649,13 @@ mod tests {
         ));
         assert_eq!(log.taken(), vec![]);
 
-        // Retained coercing families still warn. Deleted FORMAT refuses before
-        // coercion and therefore cannot emit its former partial warning.
-        assert!(crate::string_fn::field(&[Datum::Int(1), s("12abc")], &log).is_ok());
-        assert_eq!(log.taken(), vec![truncated("12abc")]);
+        // Deleted FIELD and FORMAT refuse before coercion and therefore cannot
+        // emit their former partial warnings.
+        assert!(matches!(
+            crate::func::eval_func_values_in("FIELD", &[Datum::Int(1), s("12abc")], &log),
+            Some(Err(EvalError::Unsupported(_)))
+        ));
+        assert_eq!(log.taken(), vec![]);
         assert_eq!(
             crate::func::eval_func_values_in("FORMAT", &[s("12abc"), Datum::Int(2)], &log),
             Some(Err(EvalError::Unsupported(
@@ -1843,7 +1846,14 @@ mod tests {
                 "{name}(vector)"
             );
         }
-        assert!(crate::string_fn::field(&[Datum::Int(1), vector()], &crate::NoColumns).is_err());
+        assert!(matches!(
+            crate::func::eval_func_values_in(
+                "FIELD",
+                &[Datum::Int(1), vector()],
+                &crate::NoColumns
+            ),
+            Some(Err(EvalError::Unsupported(_)))
+        ));
         for number in [vector(), Datum::Raw(vec![0x08])] {
             assert_eq!(
                 crate::func::eval_func_values_in(

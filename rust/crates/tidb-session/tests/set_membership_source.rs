@@ -33,17 +33,33 @@ fn try_sql(session: &mut Session, sql: &str) -> String {
 #[test]
 fn membership_positions() {
     let mut session = Session::new();
-
-    assert_eq!(
-        try_sql(&mut session, "select field('b', 'a', 'b', 'c')"),
-        "i:2"
-    );
-    // A missing member answers 0.
-    assert_eq!(
-        try_sql(&mut session, "select field('z', 'a', 'b', 'c')"),
-        "i:0"
-    );
-    assert_eq!(try_sql(&mut session, "select elt(2, 'a', 'b')"), "s:b");
+    #[cfg(feature = "tikv-expr")]
+    {
+        session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
+        let before = session.tikv_expression_rows();
+        assert_eq!(
+            try_sql(&mut session, "select field('b', 'a', 'b', 'c')"),
+            "i:2"
+        );
+        assert_eq!(
+            try_sql(&mut session, "select field('z', 'a', 'b', 'c')"),
+            "i:0"
+        );
+        assert_eq!(try_sql(&mut session, "select elt(2, 'a', 'b')"), "s:b");
+        assert!(session.tikv_expression_rows() > before);
+    }
+    #[cfg(not(feature = "tikv-expr"))]
+    for sql in [
+        "select field('b', 'a', 'b', 'c')",
+        "select field('z', 'a', 'b', 'c')",
+        "select elt(2, 'a', 'b')",
+    ] {
+        let error = session
+            .run(sql)
+            .expect_err("TiKV engine required")
+            .to_string();
+        assert!(error.contains("native string auxiliary evaluation was removed"));
+    }
     let sql = "select find_in_set('b', 'a,b,c')";
     let error = session
         .run(sql)

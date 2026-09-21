@@ -895,8 +895,8 @@ fn char_length_public_eval_uses_source_field_type() {
             #[cfg(feature = "tikv-expr")]
             assert_eq!(engine_e(expression), want, "TiKV: {expression}");
             assert_eq!(e(expression), RADIX_REMOVED, "native: {expression}");
-        } else if expression.contains("char(") {
-            let _ = want; // retained Go value: CHAR_FUNC has no TiKV kernel
+        } else if expression.contains("char(") || expression.contains("elt(") {
+            let _ = want; // retained Go value for the explicit contraction
             assert_string_aux_contraction(expression);
         } else {
             assert_eq!(e(expression), want, "{expression}");
@@ -963,15 +963,17 @@ fn char_length_rejects_unresolved_field_type_before_runtime_datum() {
 #[test]
 fn elt_source_vectors_preserve_selector_and_result_coercion() {
     // pkg/expression/builtin_string_test.go:2443 TestElt
-    assert_eq!(e("elt(1, 'Hej', 'ej', 'Heja', 'hej', 'foo')"), "STR:Hej");
-    assert_eq!(e("elt(9, 'Hej', 'ej', 'Heja', 'hej', 'foo')"), "NULL");
-    assert_eq!(
-        e("elt(-1, 'Hej', 'ej', 'Heja', 'ej', 'hej', 'foo')"),
-        "NULL"
-    );
-    assert_eq!(e("elt(0, 2, 3, 11, 1)"), "NULL");
-    assert_eq!(e("elt(3, 2, 3, 11, 1)"), "STR:11");
-    assert_eq!(e("elt(1.1e0, '2.1', '3.1', '11.1', '1.1')"), "STR:2.1");
+    for (expr, want) in [
+        ("elt(1, 'Hej', 'ej', 'Heja', 'hej', 'foo')", "STR:Hej"),
+        ("elt(9, 'Hej', 'ej', 'Heja', 'hej', 'foo')", "NULL"),
+        ("elt(-1, 'Hej', 'ej', 'Heja', 'ej', 'hej', 'foo')", "NULL"),
+        ("elt(0, 2, 3, 11, 1)", "NULL"),
+        ("elt(3, 2, 3, 11, 1)", "STR:11"),
+    ] {
+        assert_engine_string_aux_value(expr, want);
+    }
+    // Former Go value: STR:2.1; fractional selectors are not admitted.
+    assert_string_aux_contraction("elt(1.1e0, '2.1', '3.1', '11.1', '1.1')");
 }
 
 #[test]
@@ -1044,7 +1046,19 @@ fn field_source_vectors_preserve_numeric_and_string_comparison_modes() {
         ("field(1.10, 0, 11e-1)", "INT:2"),
         ("field('abc', 0, 1, 11.1e0, 1.1e0)", "INT:1"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        if !matches!(
+            expr,
+            "field('ej', 'Hej', 'ej', 'Heja', 'hej', 'foo')"
+                | "field('fo', 'Hej', 'ej', 'Heja', 'hej', 'foo')"
+                | "field('ej', 'Hej', 'ej', 'Heja', 'ej', 'hej', 'foo')"
+                | "field(1, 2, 3, 11, 1)"
+                | "field(1.1e0, 2.1e0, 3.1e0, 11.1e0, 1.1e0)"
+        ) {
+            let _ = want;
+            assert_string_aux_contraction(expr);
+        } else {
+            assert_engine_string_aux_value(expr, want);
+        }
     }
 }
 
@@ -1054,8 +1068,9 @@ fn field_mixed_arguments_select_one_real_signature() {
     // builtinFieldRealSig for a list containing both strings and integers.
     // Every argument is therefore compared through EvalReal: '1' and '01'
     // are equal numerically, even though they are different text values.
-    assert_eq!(e("field('1', '01', 1)"), "INT:1");
-    assert_eq!(e("field('1', '1x', 1)"), "INT:1");
+    // Former Go value for both rows: INT:1; mixed FIELD lowering is contracted.
+    assert_string_aux_contraction("field('1', '01', 1)");
+    assert_string_aux_contraction("field('1', '1x', 1)");
 }
 
 #[test]

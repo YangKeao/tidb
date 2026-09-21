@@ -274,7 +274,7 @@ fn every_declined_expression_fails_cleanly_without_the_native_evaluator() {
 /// all. `plan_builder.rs` folds the rewritten tree with the live statement
 /// context (`fold_constant_in_mode`) before the plan exists. After physical
 /// native-kernel deletion, constant-foldable declines become a single
-/// `Constant`; the 35 pinned here are the ones whose constant form *does*
+/// `Constant`; the 39 pinned here are the ones whose constant form *does*
 /// reach the adapter, which is the surface the removal actually has to answer
 /// for.
 ///
@@ -294,6 +294,10 @@ const SURVIVES_FOLD: &[&str] = &[
     "coalesce(1, 'x' regexp '[')",
     "coalesce(cast(1 as json), cast(2 as json))",
     "cot(1)",
+    "elt(1.1, '2.1', '3.1', '11.1', '1.1')",
+    "elt('2abc','x','y','z')",
+    "field(1.10, 0, 11e-1)",
+    "field(NULL, 2, 3, 11, 1)",
     "find_in_set('a', 'b,a,c,a')",
     "find_in_set(' ', '  , , ,') collate utf8mb4_general_ci",
     "find_in_set(' ' collate utf8mb4_general_ci, '  , , ,' collate utf8mb4_general_ci)",
@@ -368,7 +372,7 @@ fn folded_away_expressions_never_reach_the_adapter() {
         folded.len() + survived.len() + skipped.len(),
         DECLINED.len()
     );
-    // CHAR_FUNC and OCT(binary literal) can no longer fold through native
-    // kernels; they stay visible as explicit contractions above.
-    assert_eq!(folded.len(), 24, "the folded count changed");
+    // CHAR_FUNC, contracted FIELD/ELT shapes, and OCT(binary literal) can no
+    // longer fold through native kernels; they stay visible above.
+    assert_eq!(folded.len(), 20, "the folded count changed");
 }

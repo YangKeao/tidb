@@ -75,10 +75,11 @@ fn a_non_string_etstring_argument_is_cast_before_the_signature_runs() {
             assert_string2_refusal(expr);
         } else if expr.starts_with("quote") {
             assert_engine_string_aux_value(expr, want);
+        } else if expr.starts_with("elt('") {
+            let _ = want;
+            assert_string_aux_contraction(expr);
         } else {
-            let (row, chunk) = both(expr);
-            assert_eq!(row, want, "{expr}");
-            assert_eq!(chunk, want, "{expr} (chunk tier)");
+            assert_engine_string_aux_value(expr, want);
         }
     }
 }
@@ -161,10 +162,12 @@ fn the_masks_top_bit_covers_an_unbounded_argument_list() {
     assert_eq!(out[0], Datum::Int(35), "the selector stays an integer");
     assert_eq!(out[31], Datum::new_string("30"));
     assert_eq!(out[40], Datum::new_string("39"));
-    // And the body reads the selected one, 35 positions in.
+    // Former native selected value: `34`. The deleted body now refuses.
     assert_eq!(
-        crate::string_fn::elt(&out).unwrap(),
-        Datum::new_string("34")
+        crate::func::eval_func_values_in("ELT", &out, &NoColumns),
+        Some(Err(crate::EvalError::Unsupported(
+            "native string auxiliary evaluation was removed; TiKV engine required or function unsupported"
+        )))
     );
 }
 
@@ -252,11 +255,11 @@ fn an_etstring_argument_is_read_as_bytes_not_as_utf8() {
             &NoColumns,
         )
         .unwrap();
-        assert_eq!(
-            crate::string_fn::elt(&selected).unwrap(),
-            Datum::new_bytes(vec![0xFF]),
-            "elt(1,{value:?})"
-        );
+        // Former Go/native bytes: FF. ELT now requires TiKV.
+        assert!(matches!(
+            crate::func::eval_func_values_in("ELT", &selected, &NoColumns),
+            Some(Err(EvalError::Unsupported(_)))
+        ));
     }
 }
 
@@ -327,11 +330,11 @@ fn the_field_mode_arms_are_measured_above_the_double_boundary() {
         (vec![Datum::Int(i64::MAX), e, Datum::Int(i64::MAX - 1)], 2),
     ];
     for (vals, want) in cases {
-        assert_eq!(
-            crate::string_fn::field(&vals, &NoColumns).unwrap(),
-            Datum::Int(want),
-            "field({vals:?})"
-        );
+        let _ = want; // retained Go answers above; native FIELD was deleted
+        assert!(matches!(
+            crate::func::eval_func_values_in("FIELD", &vals, &NoColumns),
+            Some(Err(EvalError::Unsupported(_)))
+        ));
     }
 }
 
@@ -361,10 +364,11 @@ fn elt_takes_its_result_charset_from_every_candidate() {
         Datum::new_string("a"),
         Datum::new_bytes(b"a".to_vec()),
     ];
-    assert_eq!(
-        crate::string_fn::elt(&vals).unwrap(),
-        Datum::new_bytes(b"a".to_vec())
-    );
+    // Former native result was binary `a`; the value seam now refuses.
+    assert!(matches!(
+        crate::func::eval_func_values_in("ELT", &vals, &NoColumns),
+        Some(Err(EvalError::Unsupported(_)))
+    ));
 }
 
 /// `FIELD` is the measured NON-member, and this is what it costs to get it
@@ -405,11 +409,11 @@ fn field_reads_a_hybrid_by_its_own_eval_type() {
         ),
     ];
     for (vals, want) in cases {
-        assert_eq!(
-            crate::string_fn::field(&vals, &NoColumns).unwrap(),
-            Datum::Int(want),
-            "field({vals:?})"
-        );
+        let _ = want; // retained Go answers above; native FIELD was deleted
+        assert!(matches!(
+            crate::func::eval_func_values_in("FIELD", &vals, &NoColumns),
+            Some(Err(EvalError::Unsupported(_)))
+        ));
     }
 }
 

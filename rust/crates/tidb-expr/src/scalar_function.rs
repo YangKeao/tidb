@@ -2049,14 +2049,6 @@ impl ScalarFunction {
                         ctx,
                     );
                 }
-                "field" if self.args.len() >= 2 => {
-                    let vals: Vec<Datum> = self
-                        .args
-                        .iter()
-                        .map(|a| a.eval(ctx, row))
-                        .collect::<Result<_, _>>()?;
-                    return crate::string_fn::field_with_collation(&vals, collation, ctx);
-                }
                 _ => {}
             }
         }

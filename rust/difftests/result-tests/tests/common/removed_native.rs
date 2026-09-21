@@ -135,7 +135,7 @@ pub fn requires_string_aux_engine(sql: &str) -> bool {
     let Some(collector) = collect_functions(sql) else {
         return false;
     };
-    ["SUBSTRING_INDEX", "QUOTE"]
+    ["SUBSTRING_INDEX", "QUOTE", "FIELD", "ELT"]
         .iter()
         .any(|name| collector.names.contains(*name))
 }
@@ -208,7 +208,8 @@ pub fn is_radix_shape_contraction(sql: &str) -> bool {
 
 /// Exact shapes that cannot safely use the pinned TiKV kernels: direct binary
 /// literals lose their source provenance at QUOTE, the unsigned count would wrap
-/// before SUBSTRING_INDEX's `abs()` branch, and TiKV has no CHAR signature.
+/// before SUBSTRING_INDEX's `abs()` branch, TiKV has no CHAR signature, and
+/// selected FIELD/ELT coercion shapes are not admitted by the checked bridge.
 pub fn is_string_aux_shape_contraction(sql: &str) -> bool {
     let compact = compact_sql_outside_strings(sql);
     let expr = compact
@@ -228,6 +229,15 @@ pub fn is_string_aux_shape_contraction(sql: &str) -> bool {
             | "char(72,73)"
             | "char(22823usingutf8mb4)"
             | "char(65,16740,67.5usingutf8)"
+            | "elt(1.1e0,'2.1','3.1','11.1','1.1')"
+            | "elt('2abc','x','y','z')"
+            | "field(null,2,3,11,1)"
+            | "field(1.1e0,'2.1','3.1','11.1','1.1')"
+            | "field('1.1a',2.1e0,3.1e0,11.1e0,1.1e0)"
+            | "field(1.10,0,11e-1)"
+            | "field('abc',0,1,11.1e0,1.1e0)"
+            | "field('1','01',1)"
+            | "field('1','1x',1)"
             | "substring_index('www.pingcap.com','.','2')"
             | "substring_index('www.pingcap.com','.',2.5)"
             | "substring_index(\"aaa.bbb.ccc.ddd.eee\",'.',18446744073709551613)"
@@ -339,7 +349,10 @@ fn removed_marker_for_name(name: &str, nonbinary_find_in_set: bool) -> Option<&'
     if matches!(name, "HEX" | "UNHEX" | "BIN" | "OCT" | "ORD" | "BIT_COUNT") {
         return Some(RADIX_REMOVED);
     }
-    if matches!(name, "SUBSTRING_INDEX" | "QUOTE" | "CHAR_FUNC") {
+    if matches!(
+        name,
+        "SUBSTRING_INDEX" | "QUOTE" | "CHAR_FUNC" | "FIELD" | "ELT"
+    ) {
         return Some(STRING_AUX_REMOVED);
     }
     if matches!(

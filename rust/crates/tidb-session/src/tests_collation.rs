@@ -266,25 +266,41 @@ fn collation_aware_string_builtins() {
 #[test]
 fn field_find_in_set_and_regexp_use_the_derived_collation() {
     let mut session = collation_session();
-    for (sql, expected) in [
-        // Both operands bare: the connection collation (utf8mb4_bin) decides.
+    let field_rows = [
         ("SELECT FIELD('ABC', 'x', 'abc')", "0"),
         (
             "SELECT FIELD('ABC' COLLATE utf8mb4_general_ci, 'x', 'abc')",
             "2",
         ),
         ("SELECT FIELD('ABC' COLLATE utf8mb4_bin, 'x', 'abc')", "0"),
-        // The COLLATE may sit on either operand: coercibility ranks them and
-        // EXPLICIT beats the other side's COERCIBLE whichever side it is on.
         ("SELECT FIELD('ABC', 'abc' COLLATE utf8mb4_general_ci)", "1"),
-        // `utf8mb4_bin` is PAD SPACE, so the collator ignores trailing blanks.
         ("SELECT FIELD('a ' COLLATE utf8mb4_bin, 'a')", "1"),
-        // A non-string argument list keeps Go's REAL signature, which consults
-        // no collation at all: `FIELD(1, '1')` matches numerically.
-        ("SELECT FIELD(1, '1')", "1"),
-        ("SELECT FIELD('1', 1)", "1"),
-    ] {
-        assert_eq!(one(&mut session, sql), expected, "{sql}");
+    ];
+    #[cfg(feature = "tikv-expr")]
+    {
+        session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
+        let before = session.tikv_expression_rows();
+        for (sql, expected) in field_rows {
+            assert_eq!(one(&mut session, sql), expected, "{sql}");
+        }
+        assert!(session.tikv_expression_rows() > before);
+        session.set_tikv_expression_backend(None);
+    }
+    #[cfg(not(feature = "tikv-expr"))]
+    for (sql, _) in field_rows {
+        let error = session
+            .run(sql)
+            .expect_err("FIELD requires TiKV")
+            .to_string();
+        assert!(error.contains("native string auxiliary evaluation was removed"));
+    }
+    // Former Go values are both 1; mixed FIELD lowering is explicitly contracted.
+    for sql in ["SELECT FIELD(1, '1')", "SELECT FIELD('1', 1)"] {
+        let error = session
+            .run(sql)
+            .expect_err("mixed FIELD is contracted")
+            .to_string();
+        assert!(error.contains("native string auxiliary evaluation was removed"));
     }
 
     // TiKV currently lowers FIND_IN_SET only when both static argument types
@@ -355,15 +371,31 @@ fn field_find_in_set_and_regexp_use_the_derived_collation() {
     // Derived from a COLUMN rather than a COLLATE clause: the `_ci` column is
     // IMPLICIT and beats the literal's COERCIBLE, the `_bin` column is the
     // control. Rows are the fixture's 'a','A','b','B' in insertion order.
-    for (sql, expected) in [
+    let field_column_rows = [
         ("SELECT FIELD(c, 'A') FROM ci", ["1", "1", "0", "0"]),
         ("SELECT FIELD(c, 'A') FROM bn", ["0", "1", "0", "0"]),
-    ] {
-        assert_eq!(
-            row_text(session.run(sql)),
-            expected.map(|cell| vec![cell.to_owned()]).to_vec(),
-            "{sql}"
-        );
+    ];
+    #[cfg(feature = "tikv-expr")]
+    {
+        session.set_tikv_expression_backend(Some(TikvExpressionBackend::Copying));
+        let before = session.tikv_expression_rows();
+        for (sql, expected) in field_column_rows {
+            assert_eq!(
+                row_text(session.run(sql)),
+                expected.map(|cell| vec![cell.to_owned()]).to_vec(),
+                "{sql}"
+            );
+        }
+        assert!(session.tikv_expression_rows() > before);
+        session.set_tikv_expression_backend(None);
+    }
+    #[cfg(not(feature = "tikv-expr"))]
+    for (sql, _) in field_column_rows {
+        let error = session
+            .run(sql)
+            .expect_err("FIELD requires TiKV")
+            .to_string();
+        assert!(error.contains("native string auxiliary evaluation was removed"));
     }
     for sql in [
         "SELECT FIND_IN_SET(c, 'x,A,y') FROM ci",

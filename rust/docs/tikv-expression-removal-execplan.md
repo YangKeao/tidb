@@ -305,6 +305,24 @@ remain in the workspace.
       Native has 182 divergences; Copying has 167 and executes 416242 engine
       rows. FIELD and ELT remain native and are the next string-tail deletion
       candidates; this is not a compatibility claim.
+- [x] Fifteenth physical-deletion tranche: removed native `FIELD` and `ELT`,
+      including FIELD's comparison-mode/collation kernel, ELT's selected-value
+      body, value dispatch, and the scalar FIELD bypass. All four native entry
+      boundaries now refuse both names before child evaluation. Ordinary
+      homogeneous integer/string/real FIELD and integer-selector ELT shapes run
+      only in TiKV with positive session row-counter evidence. NULL/mixed FIELD,
+      warning-bearing coercions, fractional/string ELT selectors, and the
+      already-pinned binary-result compositions remain exact structured
+      contractions. Constant folding must preserve those contractions rather
+      than evaluating them through the deleted kernels. Planner argument typing
+      and TiKV signature selection remain as bridge metadata, not native kernels.
+      Validation is 1185 library and 77 external tests, focused session SQL in
+      both feature modes, expression/query diffs, runtime 322 receipts / 2064
+      engine rows / 160 borrowed rows, static 216 admitted / 168 excluded / 0
+      missing, and repository lint. The full session suite adds no failures to
+      the four carried math/crypto contractions. Broad replay remains red by
+      design: Native has 182 divergences; Copying has 167 and executes 416246
+      engine rows. This is not a compatibility claim.
 - [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
       in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected
       borrowed facade was used by the adapter while the manifest still pinned

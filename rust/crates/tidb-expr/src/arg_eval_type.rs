@@ -301,7 +301,7 @@ pub(crate) fn wrap_int_args(
 ///    casts nothing. What the flag really picks is
 ///    `builtinFieldStringSig` vs `builtinFieldIntSig` vs
 ///    `builtinFieldRealSig`, and those three disagree about the same values.
-///    `FIELD`'s mode selection is owned by `string_fn::field_with_collation`.
+///    `FIELD`'s mode selection is retained only as planner/TiKV lowering metadata.
 ///
 ///  * **`GREATEST`/`LEAST`** (`builtin_compare.go:502-513`): `argTp` comes
 ///    from `resolveType4Extremum`, i.e. `aggregateType(ctx, args).EvalType()`,
