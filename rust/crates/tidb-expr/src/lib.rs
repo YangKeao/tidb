@@ -210,45 +210,13 @@
 //! digit count alongside its value specifically so the year component's
 //! pivot decision has what it needs.
 //!
-//! `NOW()`/`CURRENT_TIMESTAMP()`/`CURDATE()`/`CURRENT_DATE()`/`CURTIME()`/
-//! `CURRENT_TIME()`/`UTC_TIMESTAMP()`/`UTC_DATE()`/`UTC_TIME()` (each
-//! `CURRENT_*`/`UTC_*` pair a true synonym of its non-`CURRENT_`/`UTC_`
-//! sibling except `CURDATE`/`CURTIME`, which have no `UTC_` counterpart of
-//! their own name; `CURRENT_TIMESTAMP`/`CURRENT_DATE`/`CURRENT_TIME`/
-//! `UTC_DATE`/`UTC_TIME`/`UTC_TIMESTAMP` all also parse bare, with no `()`
-//! at all — a genuine MySQL grammar rule `NOW`/`CURDATE`/`CURTIME` don't
-//! share) all read [`Columns::now`] — the current statement's FIXED clock,
-//! as `(utc_secs, nanos, tz_offset_seconds)`: the RAW Unix time, never
-//! pre-adjusted, plus the session's `time_zone` offset to apply for
-//! LOCAL rendering. `NOW`/`CURRENT_TIMESTAMP`/`CURDATE`/`CURTIME` apply the
-//! offset; `UTC_TIMESTAMP`/`UTC_DATE`/`UTC_TIME` ignore it and render the
-//! raw UTC value directly (confirmed via `gorun`: with a nonzero
-//! `time_zone`, `UTC_TIMESTAMP()` only matches `NOW()` when the offset is
-//! `+00:00`). `CURDATE`/`CURRENT_DATE`/`UTC_DATE` render `YYYY-MM-DD`
-//! only; `CURTIME`/`CURRENT_TIME`/`UTC_TIME` render `HH:MM:SS[.ffffff]`
-//! only (no argument at all for the `DATE` trio — confirmed via `godump
-//! restore`: `CURDATE(1)` is a genuine parse error); the rest render the
-//! full `YYYY-MM-DD HH:MM:SS[.ffffff]`. Rounding is genuinely
-//! INCONSISTENT across this family — confirmed via `gorun` and by reading
-//! `pkg/expression/builtin_time.go`, not assumed uniform: `NOW`/
-//! `CURRENT_TIMESTAMP` always TRUNCATE the fraction; `UTC_TIMESTAMP`
-//! always ROUNDS it (ties away from zero), for both its 0-arg and
-//! explicit-arg forms alike; `CURTIME`/`CURRENT_TIME`/`UTC_TIME` instead
-//! SPLIT — the 0-arg form truncates, but an EXPLICIT argument (even
-//! literally `0`) rounds, matching Go's own two separate signatures for
-//! each (`format` to no fractional digits at all vs. `format` to full
-//! precision then reparse at the target scale). [`NoColumns`]
-//! (constant-expression `eval`) has no session, so every function in this
-//! family is always `Unsupported` there — this evaluator never falls back
-//! to the live wall clock, which would be non-deterministic and
-//! unverifiable against a static golden file; a caller establishes the
-//! clock (via a `SET timestamp = ...`/`SET time_zone = ...` session, in
-//! `tidb-exec`'s case) and threads the SAME value to every resolver used
-//! while executing one top-level statement, so every clock-reading call
-//! within it reads the identical value — matching real MySQL's "the clock
-//! is fixed once per statement" semantics for free, with no dedicated
-//! cache. `SYSDATE()` normally reads the live clock, while
-//! `tidb_sysdate_is_now=ON` routes it through that same fixed statement clock.
+//! Native SQL evaluation of the statement-clock family is physically removed:
+//! `NOW`/`CURRENT_TIMESTAMP`, `LOCALTIME`/`LOCALTIMESTAMP`, the `CUR*` and
+//! `UTC_*` variants, and `SYSDATE` fail closed before child evaluation. Their
+//! parser and result-type contracts remain, but TiKV currently lacks the host
+//! clock needed to execute them. [`Columns::now`] remains only for statement-
+//! owned temporal defaults, zero-argument `UNIX_TIMESTAMP`, and datatype/cast
+//! bridges; those paths must not be treated as a native SQL-function fallback.
 //!
 //! [`Decimal`] arithmetic (`+`/`-`/`*`) and comparison are exact — computed
 //! digit-by-digit on the literal's own digit string, not through a binary

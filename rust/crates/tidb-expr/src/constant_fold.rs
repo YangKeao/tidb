@@ -700,38 +700,22 @@ mod deferred_function_tests {
             vec![],
         ));
 
-        // Fold once under clock 1000.
+        // Folding retains the deferred function shape; it must not capture a
+        // native clock value now that clock evaluation is contracted.
         let mut expr = now_node.clone();
         fold_constant_in_mode(&mut expr, &Clock(1000), ConstantFoldMode::Try);
-
-        // The folded constant must carry the deferred provenance: evaluating
-        // the SAME folded node under a LATER statement clock must serve the
-        // fresh value, not the folding-time one (Go `Constant.DeferredExpr`,
-        // expression_rewriter.go:3016-3029).
-        // Re-executing under a LATER statement clock must re-evaluate: the
-        // folding-time value (00:16:40) must not be served again.
-        let later_value = expr
-            .eval(
-                &Clock(5000),
-                tidb_chunk::chunk::Chunk::new(&[], 1, 1).get_row(0),
-            )
-            .unwrap();
-        let later = later_value.sql_string().unwrap();
-        assert!(
-            later.contains("01:23:20"),
-            "clock 5000 must render 01:23:20, got {later}"
-        );
-        // And the first execution's own value stayed at its own clock.
-        let first_value = expr
-            .eval(
-                &Clock(1000),
-                tidb_chunk::chunk::Chunk::new(&[], 1, 1).get_row(0),
-            )
-            .unwrap();
-        let first = first_value.sql_string().unwrap();
-        assert!(
-            first.contains("00:16:40"),
-            "clock 1000 must render 00:16:40, got {first}"
-        );
+        assert!(matches!(expr, Expression::ScalarFunction(_)));
+        for (clock, former) in [(5000, "01:23:20"), (1000, "00:16:40")] {
+            assert_eq!(
+                expr.eval(
+                    &Clock(clock),
+                    tidb_chunk::chunk::Chunk::new(&[], 1, 1).get_row(0),
+                ),
+                Err(crate::EvalError::Unsupported(
+                    "native temporal clock evaluation was removed; function unsupported"
+                )),
+                "former oracle: {former}"
+            );
+        }
     }
 }

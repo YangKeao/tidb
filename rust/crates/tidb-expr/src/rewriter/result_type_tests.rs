@@ -14,6 +14,43 @@
 
 use super::*;
 
+#[test]
+fn contracted_clock_functions_retain_result_metadata() {
+    let int = |value| {
+        Expression::Constant(Constant::new(
+            Datum::Int(value),
+            FieldType::new(FieldTypeCode::LongLong),
+        ))
+    };
+    for (name, args, code, flen, decimal) in [
+        ("now", vec![int(3)], FieldTypeCode::Datetime, 23, 3),
+        (
+            "utc_timestamp",
+            vec![int(6)],
+            FieldTypeCode::Datetime,
+            26,
+            6,
+        ),
+        ("curdate", vec![], FieldTypeCode::Date, 10, 0),
+        ("utc_date", vec![], FieldTypeCode::Date, 10, 0),
+        ("curtime", vec![int(3)], FieldTypeCode::Duration, 12, 3),
+        ("utc_time", vec![int(6)], FieldTypeCode::Duration, 15, 6),
+        ("sysdate", vec![int(3)], FieldTypeCode::Datetime, 23, 3),
+        (
+            "tidb_bounded_staleness",
+            vec![int(0), int(1)],
+            FieldTypeCode::Datetime,
+            23,
+            3,
+        ),
+        ("tidb_current_tso", vec![], FieldTypeCode::LongLong, 20, 0),
+    ] {
+        let result = builtin_return_type(name, &args).expect("clock metadata remains registered");
+        assert_eq!(result.code(), code, "{name}");
+        assert_eq!((result.flen(), result.decimal()), (flen, decimal), "{name}");
+    }
+}
+
 // `adjustRetFtForCastString` sizes an unspecified CHAR target from the
 // source family (LongLong -> 20), but Go's NUL padding is gated on the
 // FIXED TypeString code (`padZeroForBinaryType`,

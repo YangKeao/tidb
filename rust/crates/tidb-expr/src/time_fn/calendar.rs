@@ -421,10 +421,7 @@ pub(crate) fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
 /// `civil_from_days` algorithm, from the same public source. Used by
 /// [`from_days`] (which converts through [`days_from_civil`]'s own epoch —
 /// see `TO_DAYS`'s `719_528` offset, so the exact epoch choice is internal
-/// and doesn't need to match MySQL's) and, unlike `from_days`, directly on
-/// its OWN public epoch by `crate::time_fn`'s `NOW()`/`CURRENT_TIMESTAMP()`
-/// (a true Unix timestamp's day count IS already `z` in this function's own
-/// terms, since both anchor to 1970-01-01).
+/// and doesn't need to match MySQL's) and by retained calendar arithmetic.
 pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;

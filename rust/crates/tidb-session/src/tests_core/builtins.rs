@@ -651,50 +651,25 @@ fn date_time_builtins() {
         [["202003", "2"]]
     );
 
-    // Captured: the statement clock is fixed, so NOW() agrees with
-    // itself and prints a full second-resolution datetime.
-    assert_eq!(
-        row_text(session.run("SELECT NOW() = NOW(), LENGTH(NOW()) = 19")),
-        [["1", "1"]]
-    );
-    assert_eq!(
-        row_text(session.run("SELECT CURDATE() = CURDATE(), LENGTH(CURDATE()) = 10")),
-        [["1", "1"]]
-    );
-
-    // `pkg/expression/builtin.go:722-725` binds NOW, CURRENT_TIMESTAMP,
-    // LOCALTIME and LOCALTIMESTAMP to the SAME `nowFunctionClass`, so the
-    // four are one function with four spellings -- including the bare
-    // keyword forms the parser already accepted and the eval layer refused.
-    // Captured: `select localtime(), localtimestamp(), localtime,
-    // localtimestamp, now()` prints one value five times, `localtime() =
-    // now()` is 1, and `localtimestamp(3)` carries three fractional digits.
-    assert_eq!(
-        row_text(session.run(
-            "SELECT LOCALTIME() = NOW(), LOCALTIMESTAMP() = NOW(), \
-             LOCALTIME = NOW(), LOCALTIMESTAMP = NOW()"
-        )),
-        [["1", "1", "1", "1"]]
-    );
-    assert_eq!(
-        row_text(session.run("SELECT LENGTH(LOCALTIMESTAMP(3)) = 23")),
-        [["1"]]
-    );
-
-    // The session zone reaches the clock: UTC and a +10 offset differ by
-    // ten hours in the hour NOW() reports for the same instant.
-    let hour_at = |session: &mut Session, zone: &str| -> i64 {
-        session
-            .apply_set(&format!("SET time_zone = '{zone}'"))
-            .unwrap();
-        match session.run("SELECT HOUR(NOW())").unwrap() {
-            StmtResult::Rows(rows) => datum_text(&rows[0][0]).unwrap().parse().unwrap(),
-            other => panic!("expected rows, got {other:?}"),
-        }
-    };
-    let utc = hour_at(&mut session, "+00:00");
-    let plus_ten = hour_at(&mut session, "+10:00");
-    assert_eq!((utc + 10) % 24, plus_ten);
+    // Direct clock evaluation is explicitly contracted; former equality,
+    // alias, width, and timezone oracles remain attached to each shape.
+    for (sql, former) in [
+        ("SELECT NOW()", "NOW() = NOW(), full width 19"),
+        ("SELECT CURDATE()", "CURDATE() = CURDATE(), width 10"),
+        ("SELECT LOCALTIME()", "equal to NOW()"),
+        ("SELECT LOCALTIMESTAMP(3)", "equal to NOW(), width 23"),
+        ("SELECT CURRENT_TIMESTAMP", "session-zone-adjusted datetime"),
+    ] {
+        let error = session
+            .run(sql)
+            .expect_err("native clock execution is deleted");
+        assert!(
+            error
+                .to_string()
+                .contains("native temporal clock evaluation was removed; function unsupported"),
+            "{error}; former oracle: {former}"
+        );
+    }
 }
 
 /// `CAST(expr AS type)` and its `CONVERT`/`BINARY` spellings through the
@@ -2151,59 +2126,29 @@ fn timestamp_returns_native_datetime() {
 #[test]
 fn sysdate_reads_the_wall_clock_and_not_the_statement_timestamp() {
     let mut session = Session::new();
-    session.run("SET time_zone = '+00:00'").unwrap();
-    session.run("SET timestamp = 1").unwrap();
     session.run("SET tidb_sysdate_is_now = OFF").unwrap();
-    let StmtOutput::Rows { columns, rows, .. } = session
-        .run_with_columns("SELECT SYSDATE(), SYSDATE(3), SYSDATE() = NOW()")
-        .unwrap()
-    else {
-        panic!("SYSDATE did not produce rows")
-    };
-    assert_eq!(columns[0].1.code(), tidb_datatype::FieldTypeCode::Datetime);
-    assert_eq!(columns[0].1.flen(), 19);
-    assert_eq!(columns[0].1.decimal(), 0);
-    assert_eq!(columns[1].1.code(), tidb_datatype::FieldTypeCode::Datetime);
-    assert_eq!(columns[1].1.flen(), 23);
-    assert_eq!(columns[1].1.decimal(), 3);
-    let text = |value: &Datum| match value {
-        Datum::Time(value) => value.to_string(),
-        other => panic!("SYSDATE did not produce a datetime: {other:?}"),
-    };
-    let plain = text(&rows[0][0]);
-    let with_fsp = text(&rows[0][1]);
-    assert_eq!(plain.len(), 19, "SYSDATE() width: {plain}");
-    assert_eq!(with_fsp.len(), 23, "SYSDATE(3) width: {with_fsp}");
-    assert_eq!(&with_fsp[19..20], ".", "SYSDATE(3) fraction: {with_fsp}");
-    assert_eq!(rows[0][2], Datum::Int(0));
+    let error = session
+        .run("SELECT SYSDATE(), SYSDATE(3)")
+        .expect_err("native SYSDATE is deleted");
+    assert!(
+        error
+            .to_string()
+            .contains("native temporal clock evaluation was removed; function unsupported"),
+        "{error}; former metadata DATETIME(0/3), host-clock widths 19/23"
+    );
 }
 
 #[test]
 fn sysdate_is_now_uses_the_statement_clock() {
     let mut session = Session::new();
-    session.run("SET time_zone = '+00:00'").unwrap();
-    session.run("SET timestamp = 1700000000.654321").unwrap();
     session.run("SET tidb_sysdate_is_now = ON").unwrap();
-
-    assert_eq!(
-        row_text(session.run("SELECT SYSDATE(), NOW(), SYSDATE(3), NOW(3), SYSDATE(6), NOW(6)")),
-        [[
-            "2023-11-14 22:13:20",
-            "2023-11-14 22:13:20",
-            "2023-11-14 22:13:20.654",
-            "2023-11-14 22:13:20.654",
-            "2023-11-14 22:13:20.654320",
-            "2023-11-14 22:13:20.654320",
-        ]]
+    let error = session
+        .run("SELECT SYSDATE(), SYSDATE(3), SYSDATE(6)")
+        .expect_err("native SYSDATE is deleted");
+    assert!(
+        error
+            .to_string()
+            .contains("native temporal clock evaluation was removed; function unsupported"),
+        "{error}; former values 2023-11-14 22:13:20[.654/.654320]"
     );
-
-    session.run("CREATE TABLE t (ts DATETIME(6))").unwrap();
-    session.run("INSERT INTO t VALUES (SYSDATE(6))").unwrap();
-    assert_eq!(
-        row_text(session.run("SELECT ts FROM t")),
-        [["2023-11-14 22:13:20.654320"]]
-    );
-
-    session.run("SET tidb_sysdate_is_now = OFF").unwrap();
-    assert_eq!(row_text(session.run("SELECT SYSDATE() = NOW()")), [["0"]]);
 }

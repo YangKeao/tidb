@@ -82,6 +82,16 @@ macro_rules! removed_temporal_tail_aliases {
 
 removed_temporal_tail_aliases!(tidb_parse_tso_logical, sec_to_time, time_format);
 
+fn assert_temporal_clock_removed(result: Result<Datum, EvalError>, former: Datum) {
+    assert_eq!(
+        result,
+        Err(EvalError::Unsupported(
+            "native temporal clock evaluation was removed; function unsupported"
+        )),
+        "former oracle: {former:?}"
+    );
+}
+
 fn assert_temporal_tail_removed(result: Result<Datum, EvalError>, former: Datum) {
     assert_eq!(
         result,
@@ -425,51 +435,38 @@ fn month_and_monthname_source_vectors() {
     );
 }
 
-struct FractionalClock;
-
-impl Columns for FractionalClock {
-    fn get(&self, _: &[String]) -> Option<Datum> {
-        None
-    }
-
-    fn now(&self) -> Option<(i64, u32, i32)> {
-        // SET timestamp = 1700000000.654321 is a TypeFloat in Go and
-        // materializes this binary-float nanosecond value.
-        Some((1_700_000_000, 654_320_955, 0))
-    }
-}
-
 #[test]
 fn current_time_truncates_to_microseconds_before_fsp_rounding() {
-    let clock = FractionalClock;
-    assert_eq!(
-        current_time(&[Datum::Int(6)], "curtime", &clock).unwrap(),
-        Datum::new_string("22:13:20.654320".to_string())
-    );
-    assert_eq!(
-        utc_time(&[Datum::Int(6)], &clock).unwrap(),
-        Datum::new_string("22:13:20.654320".to_string())
-    );
-    assert_eq!(
-        utc_timestamp(&[Datum::Int(6)], &clock).unwrap(),
-        Datum::new_string("2023-11-14 22:13:20.654321".to_string()),
-        "UTC_TIMESTAMP rounds raw nanoseconds instead of using the duration path"
-    );
+    for (name, former) in [
+        ("CURTIME", Datum::new_string("22:13:20.654320")),
+        ("UTC_TIME", Datum::new_string("22:13:20.654320")),
+        (
+            "UTC_TIMESTAMP",
+            Datum::new_string("2023-11-14 22:13:20.654321"),
+        ),
+    ] {
+        assert_temporal_clock_removed(
+            crate::func::eval_func_values_in(name, &[Datum::Int(6)], &crate::NoColumns)
+                .expect("registered clock function"),
+            former,
+        );
+    }
 }
 
 #[test]
 fn current_clock_null_fsp_follows_each_go_signature() {
-    let clock = FractionalClock;
-    assert_eq!(now(&[Datum::Null], &clock), now(&[Datum::Int(0)], &clock));
-    assert_eq!(
-        utc_timestamp(&[Datum::Null], &clock),
-        utc_timestamp(&[Datum::Int(0)], &clock)
-    );
-    assert_eq!(
-        current_time(&[Datum::Null], "curtime", &clock),
-        current_time(&[Datum::Int(0)], "curtime", &clock)
-    );
-    assert_eq!(utc_time(&[Datum::Null], &clock), Ok(Datum::Null));
+    for (name, former) in [
+        ("NOW", Datum::new_string("2023-11-14 22:13:20")),
+        ("UTC_TIMESTAMP", Datum::new_string("2023-11-14 22:13:20")),
+        ("CURTIME", Datum::new_string("22:13:20")),
+        ("UTC_TIME", Datum::Null),
+    ] {
+        assert_temporal_clock_removed(
+            crate::func::eval_func_values_in(name, &[Datum::Null], &crate::NoColumns)
+                .expect("registered clock function"),
+            former,
+        );
+    }
 }
 
 #[test]

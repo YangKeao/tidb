@@ -89,7 +89,7 @@ impl ColumnResolver for Zone {
 }
 
 /// Evaluates one select-field expression over the stubbed session.
-fn eval_now(offset_secs: i32) -> String {
+fn eval_now(offset_secs: i32) -> Result<Datum, EvalError> {
     let ctx = Zone {
         inner: TimestampSysVar { offset_secs },
     };
@@ -106,75 +106,37 @@ fn eval_now(offset_secs: i32) -> String {
     let rewritten = rewrite_expr_resolved(expr, &ctx).expect("rewrite");
     let mut chunk = tidb_chunk::chunk::Chunk::new_empty(&[]);
     chunk.set_num_virtual_rows(1);
-    rewritten
-        .eval(&ctx, chunk.get_row(0))
-        .expect("eval")
-        .sql_string()
-        .expect("text")
+    rewritten.eval(&ctx, chunk.get_row(0))
 }
 
 #[test]
 fn test_current_timestamp_time_zone_case_table() {
     // helper_test.go:161-181 (TestCurrentTimestampTimeZone): exact rows for
     // +00:00 then +08:00 over timestamp=1234.
-    assert_eq!(eval_now(0), "1970-01-01 00:20:34");
-    assert_eq!(eval_now(8 * 3600), "1970-01-01 08:20:34");
+    for (offset, former) in [
+        (0, "1970-01-01 00:20:34"),
+        (8 * 3600, "1970-01-01 08:20:34"),
+    ] {
+        assert_eq!(
+            eval_now(offset),
+            Err(EvalError::Unsupported(
+                "native temporal clock evaluation was removed; function unsupported"
+            )),
+            "former oracle: {former}"
+        );
+    }
 }
 
 #[test]
 fn test_timestamp_sysvar_renders_fixed_now_literal_rows() {
-    // integration_test.go:2604-2614 (`set @@timestamp = 12345; ... SELECT
-    // NOW();`) with `time_zone = '+00:00'`: every repeat of the query inside
-    // one statement context prints the same rendered value. 12345 s past the
-    // epoch is 03:25:45 UTC.
-    // (The Go test re-checks `@@timestamp` round-trips and post-DEFAULT
-    // progressions; those halves are session-variable plumbing outside this
-    // crate.)
-    struct Sys {
-        offset_secs: i32,
-    }
-    impl Columns for Sys {
-        fn get(&self, _: &[String]) -> Option<Datum> {
-            None
-        }
-        fn now(&self) -> Option<(i64, u32, i32)> {
-            Some((12_345, 0, self.offset_secs))
-        }
-    }
-    struct ZeroZone;
-    impl ColumnResolver for ZeroZone {
-        fn resolve(&self, path: &[String]) -> Option<(usize, FieldType, i64)> {
-            let _ = path;
-            None
-        }
-        fn time_zone(&self) -> SessionTimeZone {
-            SessionTimeZone::utc()
-        }
-    }
-
-    let ctx = Sys { offset_secs: 0 };
-    let stmt = tidb_parser::parse("select now()").expect("parse");
-    let Stmt::Query(query) = stmt else {
-        panic!("not query")
-    };
-    let QueryStmt::Select(select) = query.into_inner() else {
-        panic!("not select")
-    };
-    let SelectField::Expr { expr, .. } = &select.fields[0] else {
-        panic!("no expr")
-    };
-    let rewritten = rewrite_expr_resolved(expr, &ZeroZone).expect("rewrite");
-    let mut chunk = tidb_chunk::chunk::Chunk::new_empty(&[]);
-    chunk.set_num_virtual_rows(1);
-    // Two executions within one statement context agree (Go asserts the pair
-    // of SELECT NOW() calls both read 1970-01-01 03:25:45).
     for _ in 0..2 {
-        let rendered = rewritten
-            .eval(&ctx, chunk.get_row(0))
-            .expect("eval")
-            .sql_string()
-            .expect("text");
-        assert_eq!(rendered, "1970-01-01 03:25:45");
+        assert_eq!(
+            eval_now(0),
+            Err(EvalError::Unsupported(
+                "native temporal clock evaluation was removed; function unsupported"
+            )),
+            "former oracle: 1970-01-01 03:25:45"
+        );
     }
 }
 

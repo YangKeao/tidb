@@ -839,6 +839,12 @@ fn may_classify_native_contraction(native_backend: bool, sql: &str) -> bool {
     native_backend || !requires_engine_statement(sql) || is_engine_shape_contraction(sql)
 }
 
+fn removed_marker_matches(topic: &str, sql: &str, error: &str) -> bool {
+    expected_removed_marker(topic, sql).is_some_and(|marker| {
+        marker != removed_native::TEMPORAL_CLOCK_REMOVED && error.contains(marker)
+    })
+}
+
 fn is_native_any_value_refusal(native_backend: bool, sql: &str, error: &str) -> bool {
     native_backend
         && is_any_value_statement(sql)
@@ -1084,6 +1090,17 @@ fn removed_kernel_classification_is_statement_scoped() {
         false,
         "select oct('8'), hex('a')"
     ));
+    let clock_error = "native temporal clock evaluation was removed; function unsupported";
+    for sql in [
+        "select if(1, 1, now())",
+        "create table t (ts timestamp default current_timestamp)",
+        "insert into t(id) values (1)",
+    ] {
+        assert!(
+            !removed_marker_matches("unrelated/topic", sql, clock_error),
+            "clock errors must never be replay contractions: {sql}"
+        );
+    }
 }
 
 fn compare_output(
@@ -1159,8 +1176,7 @@ fn compare_output(
         }
         (Err(error), _)
             if may_classify_native_contraction(native_backend, sql)
-                && (expected_removed_marker(topic, sql)
-                    .is_some_and(|marker| format!("{error:?}").contains(marker))
+                && (removed_marker_matches(topic, sql, &format!("{error:?}"))
                     || hidden_removed_marker_allowed(topic, sql, &format!("{error:?}"))
                     || is_engine_shape_contraction_refusal(sql, &format!("{error:?}"))) =>
         {

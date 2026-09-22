@@ -26,6 +26,8 @@ pub const TEMPORAL_VALUE_REMOVED: &str =
     "native temporal value evaluation was removed; TiKV engine required";
 pub const TEMPORAL_TAIL_REMOVED: &str =
     "native temporal tail evaluation was removed; function unsupported";
+pub const TEMPORAL_CLOCK_REMOVED: &str =
+    "native temporal clock evaluation was removed; function unsupported";
 pub const COMPARE2_REMOVED: &str =
     "native LEAST/GREATEST/INTERVAL evaluation was removed; TiKV engine required";
 pub const MISC_REMOVED: &str =
@@ -410,6 +412,25 @@ pub fn is_string_aux_shape_contraction(sql: &str) -> bool {
 }
 
 fn removed_marker_for_name(name: &str, nonbinary_find_in_set: bool) -> Option<&'static str> {
+    if matches!(
+        name,
+        "NOW"
+            | "CURRENT_TIMESTAMP"
+            | "LOCALTIME"
+            | "LOCALTIMESTAMP"
+            | "UTC_TIMESTAMP"
+            | "CURDATE"
+            | "CURRENT_DATE"
+            | "UTC_DATE"
+            | "CURTIME"
+            | "CURRENT_TIME"
+            | "UTC_TIME"
+            | "SYSDATE"
+            | "TIDB_BOUNDED_STALENESS"
+            | "TIDB_CURRENT_TSO"
+    ) {
+        return Some(TEMPORAL_CLOCK_REMOVED);
+    }
     if matches!(
         name,
         "TIDB_PARSE_TSO_LOGICAL" | "GET_FORMAT" | "SEC_TO_TIME" | "TIME_FORMAT"

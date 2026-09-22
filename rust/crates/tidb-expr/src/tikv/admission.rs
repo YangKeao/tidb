@@ -654,8 +654,8 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("sysdate", Decision::Excluded, Signature::None, &[], Shape::Any, SESSION_CLOCK_NEEDS_HOST_CLOCK),
     row("system_user", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("tan", Decision::Excluded, Signature::None, &[], Shape::Any, "native trig was removed and the engine's libm path is not verified bit-exact with Go"),
-    row("tidb_bounded_staleness", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
-    row("tidb_current_tso", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
+    row("tidb_bounded_staleness", Decision::Excluded, Signature::None, &[], Shape::Any, NO_WIRE_SIGNATURE),
+    row("tidb_current_tso", Decision::Excluded, Signature::None, &[], Shape::Any, NO_WIRE_SIGNATURE),
     row("tidb_decode_binary_plan", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_MISC_UNSUPPORTED),
     row("tidb_decode_key", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_MISC_UNSUPPORTED),
     row("tidb_decode_plan", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_MISC_UNSUPPORTED),
@@ -955,7 +955,12 @@ mod tests {
                 "{name}"
             );
         }
-        for name in ["localtime", "localtimestamp"] {
+        for name in [
+            "localtime",
+            "localtimestamp",
+            "tidb_bounded_staleness",
+            "tidb_current_tso",
+        ] {
             assert_eq!(
                 admission(name).expect("row").exclusion_reason,
                 NO_WIRE_SIGNATURE,
@@ -998,6 +1003,10 @@ mod tests {
             "LocalTime0Arg",
             "LocalTimeWithArg",
             "LocalTimestampWithArg",
+            "TidbBoundedStaleness",
+            "TIDBBoundedStaleness",
+            "TidbCurrentTso",
+            "TIDBCurrentTSO",
         ] {
             assert!(
                 scalar_function_signature(spelling).is_none(),

@@ -190,6 +190,28 @@ pub(crate) fn is_removed_native_temporal_value(name: &str) -> bool {
     )
 }
 
+/// Statement-clock and TiDB metadata kernels were removed and are explicit
+/// contractions until their context can be represented by the TiKV engine.
+pub(crate) fn is_removed_native_temporal_clock(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "NOW"
+            | "CURRENT_TIMESTAMP"
+            | "LOCALTIME"
+            | "LOCALTIMESTAMP"
+            | "UTC_TIMESTAMP"
+            | "CURDATE"
+            | "CURRENT_DATE"
+            | "UTC_DATE"
+            | "CURTIME"
+            | "CURRENT_TIME"
+            | "UTC_TIME"
+            | "SYSDATE"
+            | "TIDB_BOUNDED_STALENESS"
+            | "TIDB_CURRENT_TSO"
+    )
+}
+
 /// Native temporal kernels with no admitted TiKV lowering were removed and
 /// are explicit contractions.
 pub(crate) fn is_removed_native_temporal_tail(name: &str) -> bool {
@@ -346,6 +368,11 @@ pub(crate) fn eval_func(
     if is_removed_native_temporal_value(&name) {
         return Err(EvalError::Unsupported(
             "native temporal value evaluation was removed; TiKV engine required",
+        ));
+    }
+    if is_removed_native_temporal_clock(&name) {
+        return Err(EvalError::Unsupported(
+            "native temporal clock evaluation was removed; function unsupported",
         ));
     }
     if is_removed_native_temporal_tail(&name) {
@@ -765,6 +792,11 @@ pub(crate) fn eval_func_values_in(
             "native temporal value evaluation was removed; TiKV engine required",
         )));
     }
+    if is_removed_native_temporal_clock(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native temporal clock evaluation was removed; function unsupported",
+        )));
+    }
     if is_removed_native_temporal_tail(name) {
         return Some(Err(EvalError::Unsupported(
             "native temporal tail evaluation was removed; function unsupported",
@@ -868,6 +900,11 @@ pub(crate) fn eval_func_values(
     if is_removed_native_temporal_value(name) {
         return Some(Err(EvalError::Unsupported(
             "native temporal value evaluation was removed; TiKV engine required",
+        )));
+    }
+    if is_removed_native_temporal_clock(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native temporal clock evaluation was removed; function unsupported",
         )));
     }
     if is_removed_native_temporal_tail(name) {

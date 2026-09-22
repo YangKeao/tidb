@@ -20,7 +20,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tidb_datatype::{Datum, Time};
+use tidb_datatype::Datum;
 
 /// The transaction timestamp visible to one SQL session.
 ///
@@ -84,15 +84,6 @@ pub enum EvalError {
     TooManyGroupingArguments,
     /// Go ErrFieldInGroupingNotGroupBy (3602), with zero-based argument index.
     FieldInGroupingNotGroupBy(usize),
-    /// Go `types.ErrTooBigPrecision` (1426): a clock function's
-    /// fractional-seconds argument exceeds `MaxFsp`, raised at evaluation
-    /// time (`pkg/expression/builtin_time.go:2730` and siblings).
-    TooBigFsp {
-        /// The requested fractional-seconds precision.
-        fsp: i64,
-        /// The clock function's own name (`now`, `curtime`, ...).
-        function: &'static str,
-    },
     /// An external expression engine's original MySQL error identity.
     ExternalEngine {
         /// MySQL error number, preserved rather than wrapped as an internal error.
@@ -573,15 +564,6 @@ pub trait Columns {
         Err(EvalError::ParamIndexExceedParamCounts)
     }
 
-    /// Go `GetStmtMinSafeTime`'s statement-cached SafeTS converted to the
-    /// session timezone. A storage-backed statement overrides this seam;
-    /// contexts without a KV store leave it absent, so bounded staleness
-    /// falls back to the lower bound just as a zero SafeTS does for ordinary
-    /// post-epoch timestamps.
-    fn bounded_staleness_safe_time(&self) -> Option<Time> {
-        None
-    }
-
     /// The statement's connection charset/collation used by implicit casts.
     /// Go reads this from `BuildContext.GetCharsetInfo`; keeping it on the
     /// evaluation context prevents a cast built for one session from silently
@@ -685,12 +667,6 @@ pub trait Columns {
     /// replace it.
     fn found_rows(&self) -> Option<u64> {
         None
-    }
-
-    /// Go `TIDB_CURRENT_TSO()`: the active transaction's start timestamp, or
-    /// zero when this session has no active transaction.
-    fn current_tso(&self) -> i64 {
-        0
     }
 
     /// Go `DDLOwnerPropReader.IsDDLOwner`: whether this node is the DDL

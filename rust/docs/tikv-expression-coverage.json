@@ -6,7 +6,7 @@
     "tikv": "521ac7330208b7f74f2b182bc373882687967280"
   },
   "current_revisions": {
-    "tidb": "1cd3c49c372437652f6a06296e825e32651ecdcc",
+    "tidb": "a772194d62c1edc8755cfd62d11aebc3d1ac0044",
     "tikv": "70592fc3695059855a3b05e79cfce825b2c6f773"
   },
   "source_sha256": {
@@ -61,7 +61,7 @@
     "tidb/rust/crates/tidb-expr/src/builtin_registry.rs": "0138401ebdc33b31f5bbe7c9da032d8b89bd57099d0e8fe73dc4ac5e6f0a0ae7",
     "tidb/rust/crates/tidb-expr/src/pushdown_catalog.rs": "0799664d5779a8632efa6b3a7f77b5d84ad59ccaa9a97468364b4c02dd5515d8",
     "tidb/rust/crates/tidb-expr/src/tikv.rs": "5e25572b4afea40dea82275c7b6ff9eedd6f6d414916f4485666e41ccb4b0802",
-    "tidb/rust/crates/tidb-expr/src/tikv/admission.rs": "1b01eed356ec144452a748b6bc579fd9e5ac029784870a06b01b8c2d24d115f1",
+    "tidb/rust/crates/tidb-expr/src/tikv/admission.rs": "9dbcb9c11cf77cb5eee5b0395d7bd74b7b7ca8d4d51fb89b82038d9a592428fd",
     "tidb/rust/crates/tidb-expr/src/tikv/lowering.rs": "e33fb7eb59901778f87e71ecf122ffd8ea0ee987549557d437a975b74b79b588",
     "tidb/rust/crates/tidb-expr/src/tikv/lowering/families.rs": "43a1e3b06a5f54a1f9268dfc94c1ffda6c791dc4f7d34393d02d7d2c4365b08a",
     "tidb/rust/crates/tidb-proto/proto/select.proto": "2fc136f4c341c1e3d6617ff3c5e7641ebab35188feebaff632ff8235e360f5c5",
@@ -6196,7 +6196,7 @@
       "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": "not triaged: no lowering site selects this name and the engine-only corpus never reaches it"
+      "reason": "unrepresentable on the wire: the pinned tipb defines no ScalarFuncSig for this function"
     },
     {
       "name": "tidb_current_tso",
@@ -6204,7 +6204,7 @@
       "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": "not triaged: no lowering site selects this name and the engine-only corpus never reaches it"
+      "reason": "unrepresentable on the wire: the pinned tipb defines no ScalarFuncSig for this function"
     },
     {
       "name": "tidb_decode_binary_plan",

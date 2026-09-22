@@ -59,6 +59,16 @@ fn assert_temporal_removed(name: &str, vals: &[Datum], former: Datum) {
     );
 }
 
+fn assert_temporal_clock_removed(name: &str, vals: &[Datum], former: Datum) {
+    assert_eq!(
+        crate::func::eval_func_values_in(name, vals, &NoColumns),
+        Some(Err(EvalError::Unsupported(
+            "native temporal clock evaluation was removed; function unsupported"
+        ))),
+        "{name}; former {former:?}"
+    );
+}
+
 fn assert_temporal_tail_removed(name: &str, vals: &[Datum], former: Datum) {
     assert_eq!(
         crate::func::eval_func_values_in(name, vals, &NoColumns),
@@ -83,25 +93,12 @@ fn dispatched(name: &str, vals: &[Datum], cols: &dyn Columns) -> Datum {
 /// UTC calendar date, independent of any session zone.
 #[test]
 fn utc_date_answers_the_utc_statement_date() {
-    // 2021-03-01 00:00:30 UTC (one instant inside Go's own assertion band).
-    let clock = UtcClock {
-        utc_secs: 1_614_556_830,
-        sysdate_is_now: false,
-    };
-    assert_eq!(
-        dispatched("UTC_DATE", &[], &clock),
-        Datum::new_string("2021-03-01")
-    );
-    // Midnight crossing picks up the new UTC day; nothing about a session
-    // zone can shift it.
-    let clock = UtcClock {
-        utc_secs: 1_614_556_800 + 86_400,
-        sysdate_is_now: false,
-    };
-    assert_eq!(
-        dispatched("UTC_DATE", &[], &clock),
-        Datum::new_string("2021-03-02")
-    );
+    for former in [
+        Datum::new_string("2021-03-01"),
+        Datum::new_string("2021-03-02"),
+    ] {
+        assert_temporal_clock_removed("UTC_DATE", &[], former);
+    }
 }
 
 /// GO PORT of `builtin_time_test.go:2099 TestYearWeek`'s three unpinned
@@ -756,45 +753,22 @@ fn time_format_hour_family_rows_match_master() {
 /// Tokyo rendering of the fixed instant, truncated/rounded per its fsp.
 #[test]
 fn with_time_zone_clock_builtins_render_the_session_zone() {
-    struct TokyoClock(i64);
-
-    impl Columns for TokyoClock {
-        fn get(&self, _: &[String]) -> Option<Datum> {
-            None
-        }
-
-        fn now(&self) -> Option<(i64, u32, i32)> {
-            // tz_offset_seconds mirrors Go's session Location: +09:00.
-            Some((self.0, 0, 9 * 3600))
-        }
-
-        fn sysdate_is_now(&self) -> bool {
-            true
-        }
+    for (name, args, former) in [
+        (
+            "SYSDATE",
+            vec![Datum::Int(2)],
+            Datum::new_string("2021-03-01 17:01:09.00"),
+        ),
+        ("CURDATE", vec![], Datum::new_string("2021-03-01")),
+        (
+            "CURRENT_TIME",
+            vec![Datum::Int(2)],
+            Datum::new_string("17:01:09.00"),
+        ),
+        ("CURTIME", vec![], Datum::new_string("17:01:09")),
+    ] {
+        assert_temporal_clock_removed(name, &args, former);
     }
-
-    // 2021-03-01 08:01:09 UTC == 2021-03-01 17:01:09 Tokyo.
-    let ctx = TokyoClock(1_614_585_669);
-
-    // SYSDATE(2): timezone-local, fsp-2 truncation.
-    assert_eq!(
-        dispatched("SYSDATE", &[Datum::Int(2)], &ctx),
-        Datum::new_string("2021-03-01 17:01:09.00"),
-        "SYSDATE(2) in Asia/Tokyo"
-    );
-    assert_eq!(
-        dispatched("CURDATE", &[], &ctx),
-        Datum::new_string("2021-03-01")
-    );
-    // CURRENT_TIME(2) renders a Duration at fsp 2; CURTIME() stays default.
-    assert_eq!(
-        dispatched("CURRENT_TIME", &[Datum::Int(2)], &ctx),
-        Datum::new_string("17:01:09.00")
-    );
-    assert_eq!(
-        dispatched("CURTIME", &[], &ctx),
-        Datum::new_string("17:01:09")
-    );
 }
 
 /// GO PORT of `builtin_time_test.go:3471 TestTidbParseTso`: positive TS
@@ -862,101 +836,33 @@ fn tidb_parse_tso_logical_consecutive_tso_counters() {
     }
 }
 
-/// GO PORT of `builtin_time_test.go:3546 TestTiDBBoundedStaleness`.
+/// Former bounded-staleness values remain explicit while the no-wire builtin contracts.
 #[test]
 fn tidb_bounded_staleness_safets_windows_and_monotonicity() {
-    struct SafeTsContext {
-        safe: Time,
-    }
-
-    impl Columns for SafeTsContext {
-        fn get(&self, _: &[String]) -> Option<Datum> {
-            None
-        }
-
-        fn bounded_staleness_safe_time(&self) -> Option<Time> {
-            Some(self.safe)
-        }
-    }
-
     let left = Time::from_date_checked(2015, 9, 21, 9, 53, 4, 0, TimeType::DateTime, 0).unwrap();
     let right = Time::from_date_checked(2025, 1, 2, 10, 0, 0, 0, TimeType::DateTime, 0).unwrap();
-    let safe =
-        Time::from_date_checked(2020, 6, 7, 8, 9, 10, 123_000, TimeType::DateTime, 6).unwrap();
-    let ctx = SafeTsContext { safe };
-    assert_eq!(
-        dispatched(
-            "TIDB_BOUNDED_STALENESS",
-            &[Datum::Time(left), Datum::Time(right)],
-            &ctx,
+    for (args, former) in [
+        (
+            vec![Datum::Time(left), Datum::Time(right)],
+            Datum::Time(
+                Time::from_date_checked(2020, 6, 7, 8, 9, 10, 123_000, TimeType::DateTime, 3)
+                    .unwrap(),
+            ),
         ),
-        Datum::Time(
-            Time::from_date_checked(2020, 6, 7, 8, 9, 10, 123_000, TimeType::DateTime, 3).unwrap(),
-        )
-    );
-
-    let before = SafeTsContext {
-        safe: Time::from_date_checked(2015, 9, 21, 9, 53, 3, 0, TimeType::DateTime, 0).unwrap(),
-    };
-    assert_eq!(
-        dispatched(
-            "TIDB_BOUNDED_STALENESS",
-            &[Datum::Time(left), Datum::Time(right)],
-            &before,
+        (vec![Datum::Time(right), Datum::Time(left)], Datum::Null),
+        (
+            vec![
+                Datum::Time(
+                    Time::from_date_checked(2015, 0, 21, 9, 53, 4, 0, TimeType::DateTime, 0)
+                        .unwrap(),
+                ),
+                Datum::Time(right),
+            ],
+            Datum::Null,
         ),
-        Datum::Time(
-            Time::from_date_checked(2015, 9, 21, 9, 53, 4, 0, TimeType::DateTime, 3).unwrap(),
-        )
-    );
-
-    let after = SafeTsContext {
-        safe: Time::from_date_checked(2025, 1, 2, 10, 0, 1, 0, TimeType::DateTime, 0).unwrap(),
-    };
-    assert_eq!(
-        dispatched(
-            "TIDB_BOUNDED_STALENESS",
-            &[Datum::Time(left), Datum::Time(right)],
-            &after,
-        ),
-        Datum::Time(
-            Time::from_date_checked(2025, 1, 2, 10, 0, 0, 0, TimeType::DateTime, 3).unwrap(),
-        )
-    );
-
-    assert_eq!(
-        dispatched(
-            "TIDB_BOUNDED_STALENESS",
-            &[Datum::Time(right), Datum::Time(left)],
-            &ctx,
-        ),
-        Datum::Null
-    );
-
-    // The row/AST entry point applies the same ETDatetime wrappers before
-    // dispatching, so string endpoints select the same result signature and
-    // safe timestamp as the chunk path above.
-    let ast_args = [
-        tidb_ast::Expr::String("2015-09-21 09:53:04".to_owned()),
-        tidb_ast::Expr::String("2025-01-02 10:00:00".to_owned()),
-    ];
-    assert_eq!(
-        crate::func::eval_func("TIDB_BOUNDED_STALENESS", &ast_args, &ctx, None),
-        Ok(Datum::Time(
-            Time::from_date_checked(2020, 6, 7, 8, 9, 10, 123_000, TimeType::DateTime, 3).unwrap(),
-        ))
-    );
-
-    // Invalid-zero endpoints are rejected by the signature before window
-    // ordering, matching `handleInvalidTimeError` in Go.
-    let zero = Time::from_date_checked(2015, 0, 21, 9, 53, 4, 0, TimeType::DateTime, 0).unwrap();
-    assert_eq!(
-        dispatched(
-            "TIDB_BOUNDED_STALENESS",
-            &[Datum::Time(zero), Datum::Time(right)],
-            &ctx,
-        ),
-        Datum::Null
-    );
+    ] {
+        assert_temporal_clock_removed("TIDB_BOUNDED_STALENESS", &args, former);
+    }
 }
 
 /// GO PORT of `builtin_time_test.go:3669 TestStrDatetimeAddDurationFreezesWarningArg`:
@@ -1001,32 +907,10 @@ fn str_datetime_add_duration_warns_once_with_frozen_arg_text() {
     );
 }
 
-/// GO PORT of `builtin_time_test.go:3690 TestCurrentTso`: the zero-argument
-/// builtin reports the transaction start TSO the session exposes
-/// (`builtinTiDBCurrentTsoSig.evalInt`, `pkg/expression/builtin_time.go:7259`),
-/// and a session-less resolver reports Go's zero TSO state.
+/// Former transaction and no-transaction values remain explicit while the no-wire builtin contracts.
 #[test]
 fn current_tso_reports_session_transaction_tso() {
-    struct SessionTso(i64);
-
-    impl Columns for SessionTso {
-        fn get(&self, _: &[String]) -> Option<Datum> {
-            None
-        }
-
-        fn current_tso(&self) -> i64 {
-            self.0
-        }
+    for former in [Datum::Int(452_605_852_463_012_352), Datum::Int(0)] {
+        assert_temporal_clock_removed("TIDB_CURRENT_TSO", &[], former);
     }
-
-    let ctx = SessionTso(452_605_852_463_012_352);
-    assert_eq!(
-        dispatched("TIDB_CURRENT_TSO", &[], &ctx),
-        Datum::Int(452_605_852_463_012_352)
-    );
-    // No active transaction (the trait default): Go's zero value.
-    assert_eq!(
-        dispatched("TIDB_CURRENT_TSO", &[], &NoColumns),
-        Datum::Int(0)
-    );
 }

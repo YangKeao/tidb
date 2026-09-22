@@ -18,75 +18,26 @@
 //! citation, and doc comment is unchanged from its prior home in `mod.rs`.
 
 use super::*;
-use tidb_ast::{QueryStmt, SelectField, Stmt};
-
-/// A [`Columns`] fixture with a fixed clock but no columns — for
-/// testing `NOW()`/`CURRENT_TIMESTAMP()` and friends directly, since
-/// `e`/`v`'s `NoColumns` has no session by design (see
-/// `now_current_timestamp` below for that boundary case). Fields:
-/// `(utc_secs, nanos, tz_offset_seconds)`.
-struct FixedClock(i64, u32, i32);
-impl Columns for FixedClock {
-    fn get(&self, _: &[String]) -> Option<Datum> {
-        None
-    }
-    fn now(&self) -> Option<(i64, u32, i32)> {
-        Some((self.0, self.1, self.2))
-    }
-}
-
-fn e_at(expr: &str, clock: &FixedClock) -> String {
-    let stmt = tidb_parser::parse(&format!("select {expr}")).expect("parse");
-    let Stmt::Query(query) = stmt else {
-        panic!("expected Query")
-    };
-    let QueryStmt::Select(s) = query.into_inner() else {
-        panic!("expected Select")
-    };
-    let SelectField::Expr { expr, .. } = &s.fields[0] else {
-        panic!("expected expr field")
-    };
-    match eval_in(expr, clock) {
-        Ok(v) => v.label(),
-        Err(e) => format!("{e:?}"),
-    }
-}
 
 #[test]
 fn case_when() {
-    // Simple form: WHEN compares `value = cond` via ordinary `=`.
     assert_eq!(e("case 1 when 1 then 'a' when 2 then 'b' end"), "STR:a");
     assert_eq!(e("case 2 when 1 then 'a' when 2 then 'b' end"), "STR:b");
-    // No match and no ELSE is NULL.
     assert_eq!(e("case 3 when 1 then 'a' when 2 then 'b' end"), "NULL");
     assert_eq!(e("case 3 when 1 then 'a' else 'c' end"), "STR:c");
-    // Searched form: no compare value, each WHEN is truthiness-tested
-    // directly -- the same three-valued logic IF/WHERE already use.
     assert_eq!(e("case when 1=1 then 10 else 20 end"), "INT:10");
     assert_eq!(e("case when 1=0 then 10 else 20 end"), "INT:20");
     assert_eq!(e("case when 1=0 then 10 end"), "NULL");
-    // A NULL searched condition is neither true nor false -- ELSE wins.
     assert_eq!(e("case when null then 1 else 2 end"), "INT:2");
-    // A NULL simple-CASE value never matches ANY WHEN (NULL = x is
-    // NULL, matching ordinary `=` propagation) -- confirmed via
-    // goeval, not assumed: `CASE NULL WHEN NULL THEN 1 ELSE 2 END`
-    // is `2`, not `1`.
     assert_eq!(e("case null when null then 1 else 2 end"), "INT:2");
     assert_eq!(e("case null when 1 then 'a' else 'b' end"), "STR:b");
-    // The FIRST matching WHEN wins, even if a later one would also
-    // match.
     assert_eq!(
         e("case when 1=1 then 1 when 1=1 then 2 else 3 end"),
         "INT:1"
     );
     assert_eq!(e("case 1 when 1 then 10 when 1 then 20 end"), "INT:10");
-    // LAZY evaluation: only the taken branch is ever evaluated,
-    // matching real MySQL's short-circuit CASE -- a load-bearing SQL
-    // idiom for guarding against errors. `1/0` in the untaken branch
-    // must NOT raise `IntOverflow`/division-by-zero here.
     assert_eq!(e("case when 1=0 then 1/0 else 5 end"), "INT:5");
     assert_eq!(e("case 1 when 2 then 1/0 else 5 end"), "INT:5");
-    // Nests, and composes with ordinary operators.
     assert_eq!(
         e("case when 1=1 then case when 2=2 then 'nested' else 'no' end else 'outer' end"),
         "STR:nested"
@@ -94,165 +45,77 @@ fn case_when() {
     assert_eq!(e("1 + case when 1=1 then 10 else 20 end"), "INT:11");
 }
 
-#[test]
-fn now_current_timestamp() {
-    // `NoColumns` (used by plain constant-expression `eval`) has no
-    // session clock by design -- this evaluator never falls back to
-    // the live wall clock, which would be non-deterministic.
-    assert_eq!(
-        e("now()"),
-        "Unsupported(\"no session clock (SET timestamp)\")"
-    );
-    assert_eq!(
-        e("current_timestamp"),
-        "Unsupported(\"no session clock (SET timestamp)\")"
-    );
-
-    // 1700000000.123456 (Unix epoch, UTC) -- matches the exact value
-    // probed via `gorun` for the `rust/difftests/corpus/table/
-    // now_current_timestamp.txt` topic.
-    let clock = FixedClock(1_700_000_000, 123_456_000, 0);
-    assert_eq!(e_at("now()", &clock), "STR:2023-11-14 22:13:20");
-    // NOW and CURRENT_TIMESTAMP are true synonyms; CURRENT_TIMESTAMP
-    // also parses with no `()` at all.
-    assert_eq!(e_at("current_timestamp", &clock), "STR:2023-11-14 22:13:20");
-    assert_eq!(
-        e_at("current_timestamp()", &clock),
-        "STR:2023-11-14 22:13:20"
-    );
-    // The fractional part TRUNCATES (never rounds) to the requested
-    // 0-6 precision.
-    assert_eq!(e_at("now(3)", &clock), "STR:2023-11-14 22:13:20.123");
-    assert_eq!(e_at("now(6)", &clock), "STR:2023-11-14 22:13:20.123456");
-    // TestNowAndUTCTimestamp's exact invalid source values: only 0-6 is a
-    // valid precision.
-    assert_eq!(
-        e_at("now(8)", &clock),
-        "TooBigFsp { fsp: 8, function: \"now\" }"
-    );
-    assert_eq!(
-        e_at("now(-2)", &clock),
-        "Unsupported(\"bad fractional-seconds-precision argument\")"
-    );
-    // Additional boundary neighbors retain the same contract.
-    assert_eq!(
-        e_at("now(7)", &clock),
-        "TooBigFsp { fsp: 7, function: \"now\" }"
-    );
-    assert_eq!(
-        e_at("now(-1)", &clock),
-        "Unsupported(\"bad fractional-seconds-precision argument\")"
-    );
+fn assert_clock_contracts(rows: &[(&str, &str)]) {
+    for (expr, former) in rows {
+        assert_eq!(
+            e(expr),
+            "Unsupported(\"native temporal clock evaluation was removed; function unsupported\")",
+            "{expr}; former oracle: {former}"
+        );
+    }
 }
 
-/// `pkg/expression/helper_test.go::TestCurrentTimestampTimeZone`.
+#[test]
+fn now_current_timestamp() {
+    assert_clock_contracts(&[
+        ("now()", "STR:2023-11-14 22:13:20"),
+        ("current_timestamp", "STR:2023-11-14 22:13:20"),
+        ("now(6)", "STR:2023-11-14 22:13:20.123456"),
+        ("now(8)", "TooBigFsp 8 for now"),
+    ]);
+}
+
 #[test]
 fn current_timestamp_time_zone_source() {
-    // The Go helper test sets @@timestamp=1234 and then flips @@time_zone.
-    // `FixedClock` carries the same two observable inputs into Rust's
-    // current-timestamp seam: the instant and the session zone offset.
-    let utc = FixedClock(1_234, 0, 0);
-    let plus_eight = FixedClock(1_234, 0, 8 * 3_600);
-
-    assert_eq!(e_at("current_timestamp", &utc), "STR:1970-01-01 00:20:34");
-    assert_eq!(
-        e_at("current_timestamp", &plus_eight),
-        "STR:1970-01-01 08:20:34"
-    );
-    assert_eq!(
-        e_at("current_timestamp()", &plus_eight),
-        "STR:1970-01-01 08:20:34"
-    );
+    assert_clock_contracts(&[(
+        "current_timestamp",
+        "UTC STR:1970-01-01 00:20:34 / +08 STR:1970-01-01 08:20:34",
+    )]);
 }
 
 #[test]
 fn test_current_date() {
-    // A nonzero `time_zone` offset (+05:30, matching the epoch/offset probed
-    // via `gorun`) shifts CURRENT_DATE's local rendering.
-    let clock = FixedClock(1_700_000_000, 654_321_000, 19_800);
-    assert_eq!(e_at("curdate()", &clock), "STR:2023-11-15");
-    assert_eq!(e_at("current_date", &clock), "STR:2023-11-15");
-    assert_eq!(e_at("current_date()", &clock), "STR:2023-11-15");
-    // CURDATE takes no argument at all -- confirmed via `godump restore`:
-    // `CURDATE(1)` is a parse error, not an out-of-range runtime value.
+    assert_clock_contracts(&[
+        ("curdate()", "STR:2023-11-15"),
+        ("current_date", "STR:2023-11-15"),
+    ]);
     assert!(tidb_parser::parse("select curdate(1)").is_err());
 }
 
 #[test]
 fn test_current_time() {
-    // The same nonzero `time_zone` offset shifts CURRENT_TIME.
-    let clock = FixedClock(1_700_000_000, 654_321_000, 19_800);
-    assert_eq!(e_at("curtime()", &clock), "STR:03:43:20");
-    assert_eq!(e_at("current_time", &clock), "STR:03:43:20");
-    // TestCurrentTime's explicit precision table.
-    assert_eq!(e_at("current_time(3)", &clock), "STR:03:43:20.654");
-    assert_eq!(e_at("current_time(6)", &clock), "STR:03:43:20.654321");
-    // Go's parser rejects a signed precision before execution sees it.
+    assert_clock_contracts(&[
+        ("current_time(3)", "STR:03:43:20.654"),
+        ("curtime(0)", "STR:22:13:21"),
+        ("current_time(7)", "TooBigFsp 7"),
+    ]);
     assert!(tidb_parser::parse("select current_time(-1)").is_err());
-    assert_eq!(
-        e_at("current_time(7)", &clock),
-        "TooBigFsp { fsp: 7, function: \"current_time\" }"
-    );
-    assert_eq!(e_at("curtime(3)", &clock), "STR:03:43:20.654");
-
-    // A genuine SPLIT rule, confirmed via `gorun`: the 0-arg form
-    // TRUNCATES, but an EXPLICIT argument (even literally `0`)
-    // ROUNDS. UTC offset 0 here isolates the effect from the
-    // time_zone shift above.
-    let utc = FixedClock(1_700_000_000, 654_321_000, 0);
-    assert_eq!(e_at("curtime()", &utc), "STR:22:13:20"); // truncates
-    assert_eq!(e_at("curtime(0)", &utc), "STR:22:13:21"); // rounds up
 }
 
 #[test]
 fn test_utc_date() {
-    let clock = FixedClock(1_700_000_000, 654_321_000, 19_800);
-    assert_eq!(e_at("utc_date()", &clock), "STR:2023-11-14");
+    assert_clock_contracts(&[("utc_date()", "STR:2023-11-14")]);
 }
 
 #[test]
 fn utc_timestamp_rounding() {
-    // The RAW UTC clock, ignoring `time_zone` entirely -- with a
-    // nonzero offset, `UTC_TIMESTAMP()` still reports the SAME value
-    // it would at offset 0 (confirmed via `gorun`).
-    let clock = FixedClock(1_700_000_000, 654_321_000, 19_800);
-    // UTC_TIMESTAMP() ALWAYS ROUNDS (ties away from zero), for BOTH
-    // the 0-arg and explicit-arg forms alike -- unlike NOW's uniform
-    // truncation, and unlike CURTIME/UTC_TIME's 0-arg/explicit-arg
-    // split. Confirmed via reading `evalUTCTimestampWithFsp` in
-    // `pkg/expression/builtin_time.go`, not assumed.
-    assert_eq!(e_at("utc_timestamp()", &clock), "STR:2023-11-14 22:13:21");
-    assert_eq!(e_at("utc_timestamp(0)", &clock), "STR:2023-11-14 22:13:21");
-    assert_eq!(
-        e_at("utc_timestamp(3)", &clock),
-        "STR:2023-11-14 22:13:20.654"
-    );
-    assert_eq!(
-        e_at("utc_timestamp(6)", &clock),
-        "STR:2023-11-14 22:13:20.654321"
-    );
-    assert_eq!(
-        e_at("utc_timestamp(8)", &clock),
-        "TooBigFsp { fsp: 8, function: \"utc_timestamp\" }"
-    );
-    // Signed precision is a parse error in Go's FuncDatetimePrecListOpt.
+    assert_clock_contracts(&[
+        ("utc_timestamp(0)", "STR:2023-11-14 22:13:21"),
+        ("utc_timestamp(6)", "STR:2023-11-14 22:13:20.654321"),
+        ("utc_timestamp(8)", "TooBigFsp 8"),
+    ]);
     assert!(tidb_parser::parse("select utc_timestamp(-2)").is_err());
 }
 
 #[test]
 fn test_utc_time() {
-    let clock = FixedClock(1_700_000_000, 654_321_000, 19_800);
-    // UTC_TIME has the SAME 0-arg-truncates/explicit-arg-rounds split
-    // as CURTIME.
-    assert_eq!(e_at("utc_time()", &clock), "STR:22:13:20");
-    assert_eq!(e_at("utc_time(0)", &clock), "STR:22:13:21");
-    assert_eq!(e_at("utc_time(3)", &clock), "STR:22:13:20.654");
-    assert_eq!(e_at("utc_time(6)", &clock), "STR:22:13:20.654321");
+    assert_clock_contracts(&[
+        ("utc_time()", "STR:22:13:20"),
+        ("utc_time(0)", "STR:22:13:21"),
+        ("utc_time(6)", "STR:22:13:20.654321"),
+        ("utc_time(7)", "TooBigFsp 7"),
+    ]);
     assert!(tidb_parser::parse("select utc_time(-1)").is_err());
-    assert_eq!(
-        e_at("utc_time(7)", &clock),
-        "TooBigFsp { fsp: 7, function: \"utc_time\" }"
-    );
 }
 
 #[test]

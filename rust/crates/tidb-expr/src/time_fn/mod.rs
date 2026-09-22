@@ -13,15 +13,15 @@
 
 //! Time builtin family, translated from `pkg/expression/builtin_time.go`.
 //!
-//! This module is the single Rust ownership boundary for the Go source
-//! family. It owns both pure value functions and statement-clock functions;
-//! callers enter through one narrow [`dispatch`] seam instead of growing the
-//! generic builtin dispatcher or splitting helpers across unrelated modules.
+//! This module is the remaining native ownership boundary for retained
+//! calendar, duration and timezone functions. Statement-clock and excluded
+//! temporal kernels have been physically removed; callers enter through one
+//! narrow [`dispatch`] seam.
 //!
-//! `ADDTIME`, `SUBTIME`, `TIMESTAMP`, `TIMESTAMPADD` and `SYSDATE` -- the
-//! five that Go types from the argument `FieldType`s rather than from their
-//! values -- live in [`add_sub`], with the microsecond value domain they
-//! need in [`duration_parse`].
+//! `ADDTIME`, `SUBTIME`, `TIMESTAMP` and `TIMESTAMPADD` -- the four retained
+//! functions that Go types from argument `FieldType`s rather than values --
+//! live in [`add_sub`], with their microsecond value domain in
+//! [`duration_parse`].
 
 pub(crate) mod add_sub;
 pub(crate) mod calendar;
@@ -30,7 +30,7 @@ pub(crate) mod duration_parse;
 pub(crate) mod extract;
 mod session_tz;
 
-use self::calendar::{civil_from_days, parse_date_ymd, week_of_year};
+use self::calendar::{parse_date_ymd, week_of_year};
 use crate::coerce::coerce_str;
 use crate::{Columns, Datum, EvalError};
 
@@ -41,22 +41,7 @@ pub(crate) fn dispatch(
     cols: &dyn Columns,
 ) -> Option<Result<Datum, EvalError>> {
     Some(match name {
-        // `pkg/expression/builtin.go:722-725` binds all four names to the SAME
-        // `nowFunctionClass`, so LOCALTIME and LOCALTIMESTAMP are NOW down to
-        // the optional fsp argument and the statement-timestamp clock. Go's
-        // capture: `select localtime(), localtimestamp(), localtime,
-        // localtimestamp, now()` prints one value five times, and
-        // `localtime() = now()` is 1.
-        "NOW" | "CURRENT_TIMESTAMP" | "LOCALTIME" | "LOCALTIMESTAMP" => now(vals, cols),
-        "UTC_TIMESTAMP" => utc_timestamp(vals, cols),
-        "CURDATE" | "CURRENT_DATE" => current_date(vals, cols),
-        "UTC_DATE" => utc_date(vals, cols),
-        "CURTIME" => current_time(vals, "curtime", cols),
-        "CURRENT_TIME" => current_time(vals, "current_time", cols),
-        "UTC_TIME" => utc_time(vals, cols),
         "WEEK" => week(vals, cols.default_week_format()),
-        "TIDB_BOUNDED_STALENESS" => tidb_bounded_staleness(vals, cols),
-        "TIDB_CURRENT_TSO" => current_tso(vals, cols),
         "STR_TO_DATE" => calendar::str_to_date(vals, cols),
         "FROM_DAYS" => calendar::from_days(vals),
         "CONVERT_TZ" => convert_tz::convert_tz(vals),
@@ -73,7 +58,6 @@ pub(crate) fn dispatch(
         "ADDTIME" | "SUBTIME" => add_sub::add_sub_untyped(name, vals, cols),
         "TIMESTAMP" => add_sub::timestamp(vals, cols),
         "TIMESTAMPADD" => add_sub::timestamp_add(vals, cols),
-        "SYSDATE" => add_sub::sysdate(vals, cols),
         "TO_DAYS" => calendar::to_days(vals),
         "TO_SECONDS" => calendar::to_seconds(vals),
         // `EXTRACT(<composite unit> FROM value)`, e.g. `HOUR_MINUTE`,
@@ -84,245 +68,6 @@ pub(crate) fn dispatch(
         | "MINUTE_MICROSECOND" | "SECOND_MICROSECOND" => calendar::extract_composite(name, vals),
         _ => return None,
     })
-}
-
-/// `TIDB_CURRENT_TSO()`: the active transaction's start timestamp, or zero
-/// when the session is not inside a transaction.
-fn current_tso(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    if !vals.is_empty() {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    Ok(Datum::Int(cols.current_tso()))
-}
-
-/// Go `builtinTiDBBoundedStalenessSig.evalTime`: choose a read timestamp from
-/// the requested inclusive window and the statement's SafeTS. The storage
-/// layer publishes the already timezone-adjusted SafeTS through
-/// `Columns::bounded_staleness_safe_time`; a context without storage has no
-/// value and therefore uses the lower bound (the same outcome as a zero
-/// SafeTS for normal post-epoch datetimes). The result is always a DATETIME
-/// with millisecond precision, matching `setDecimalAndFlenForDatetime(3)`.
-fn tidb_bounded_staleness(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    let [left, right] = vals else {
-        return Err(EvalError::WrongParameterCount("tidb_bounded_staleness"));
-    };
-    let (Datum::Time(left), Datum::Time(right)) = (left, right) else {
-        return if vals.iter().any(Datum::is_null) {
-            Ok(Datum::Null)
-        } else {
-            Err(EvalError::Unsupported(
-                "TIDB_BOUNDED_STALENESS arguments reached the signature without ETDatetime casts",
-            ))
-        };
-    };
-    // `builtinTiDBBoundedStalenessSig` runs `InvalidZero` through
-    // `handleInvalidTimeError` before converting either endpoint to Go time.
-    // Keep that check here, after the signature cast has produced typed
-    // values, so zero/zero-in-date inputs cannot accidentally become a valid
-    // lower-bound read timestamp.
-    for value in [left, right] {
-        if value.invalid_zero() {
-            cols.handle_truncate(&format!("Incorrect datetime value: '{value}'"))?;
-            return Ok(Datum::Null);
-        }
-    }
-    if left.compare(*right).is_gt() {
-        return Ok(Datum::Null);
-    }
-    let mut result = match cols.bounded_staleness_safe_time() {
-        Some(safe) if safe.compare(*left).is_lt() => *left,
-        Some(safe) if safe.compare(*right).is_gt() => *right,
-        Some(safe) => safe,
-        None => *left,
-    };
-    result.set_kind(tidb_datatype::TimeType::DateTime);
-    result
-        .set_fsp(3)
-        .map_err(|_| EvalError::Unsupported("invalid bounded-staleness result precision"))?;
-    Ok(Datum::Time(result))
-}
-
-/// `builtinNowWithArgSig` / `builtinNowWithoutArgSig`: local
-/// (`time_zone`-adjusted) statement time, always truncating fractional
-/// seconds. `CURRENT_TIMESTAMP` is the same function class.
-fn now(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    let fsp = parse_fsp_with_null_as_zero(vals, "now")?.unwrap_or(0);
-    let (utc_secs, nanos, tz_offset) = cols.now().ok_or(no_clock_err())?;
-    Ok(Datum::new_string(format_datetime(
-        utc_secs + i64::from(tz_offset),
-        nanos,
-        fsp,
-        false,
-    )))
-}
-
-/// `builtinUTCTimestampWithArgSig` / `builtinUTCTimestampWithoutArgSig`:
-/// raw UTC statement time, always rounding fractional seconds half-up.
-fn utc_timestamp(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    let fsp = parse_fsp_with_null_as_zero(vals, "utc_timestamp")?.unwrap_or(0);
-    let (utc_secs, nanos, _) = cols.now().ok_or(no_clock_err())?;
-    Ok(Datum::new_string(format_datetime(
-        utc_secs, nanos, fsp, true,
-    )))
-}
-
-/// `builtinCurrentDateSig`: local statement date. `CURDATE` and
-/// `CURRENT_DATE` share this signature and accept no argument.
-fn current_date(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    if !vals.is_empty() {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let (utc_secs, _, tz_offset) = cols.now().ok_or(no_clock_err())?;
-    Ok(Datum::new_string(format_date(
-        utc_secs + i64::from(tz_offset),
-    )))
-}
-
-/// `builtinUTCDateSig`: raw UTC statement date with no arguments.
-fn utc_date(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    if !vals.is_empty() {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let (utc_secs, _, _) = cols.now().ok_or(no_clock_err())?;
-    Ok(Datum::new_string(format_date(utc_secs)))
-}
-
-/// `builtinCurrentTime0ArgSig` / `builtinCurrentTime1ArgSig`: local
-/// statement time. The zero-argument signature truncates; an explicit FSP,
-/// including zero, rounds half-up. `CURTIME` and `CURRENT_TIME` are aliases.
-fn current_time(
-    vals: &[Datum],
-    function: &'static str,
-    cols: &dyn Columns,
-) -> Result<Datum, EvalError> {
-    let fsp = parse_fsp_with_null_as_zero(vals, function)?;
-    let (utc_secs, nanos, tz_offset) = cols.now().ok_or(no_clock_err())?;
-    // builtinCurrentTime1ArgSig first renders TimeFSPFormat (six digits,
-    // truncating sub-microsecond nanoseconds) and only then ParseDuration
-    // rounds to the requested FSP. Preserve that two-stage source algorithm;
-    // it is observably different from UTC_TIMESTAMP's direct half-up path.
-    let nanos = fsp.map_or(nanos, |_| nanos / 1_000 * 1_000);
-    Ok(Datum::new_string(format_time_only(
-        utc_secs + i64::from(tz_offset),
-        nanos,
-        fsp.unwrap_or(0),
-        fsp.is_some(),
-    )))
-}
-
-/// `builtinUTCTimeWithoutArgSig` / `builtinUTCTimeWithArgSig`: raw UTC
-/// statement time with the same zero-argument-truncate / explicit-FSP-round
-/// split as [`current_time`].
-fn utc_time(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    if matches!(vals, [Datum::Null]) {
-        return Ok(Datum::Null);
-    }
-    let fsp = parse_fsp_for(vals, "utc_time")?;
-    let (utc_secs, nanos, _) = cols.now().ok_or(no_clock_err())?;
-    // builtinUTCTimeWithArgSig has the identical TimeFSPFormat-then-parse
-    // conversion as CURRENT_TIME's explicit signature.
-    let nanos = fsp.map_or(nanos, |_| nanos / 1_000 * 1_000);
-    Ok(Datum::new_string(format_time_only(
-        utc_secs,
-        nanos,
-        fsp.unwrap_or(0),
-        fsp.is_some(),
-    )))
-}
-
-fn no_clock_err() -> EvalError {
-    EvalError::Unsupported("no session clock (SET timestamp)")
-}
-
-/// Parses the source family's optional 0-6 fractional-seconds precision.
-fn parse_fsp_for(vals: &[Datum], function: &'static str) -> Result<Option<u32>, EvalError> {
-    match vals {
-        [] => Ok(None),
-        [Datum::Int(i)] if (0..=6).contains(i) => Ok(Some(*i as u32)),
-        [Datum::UInt(i)] if *i <= 6 => Ok(Some(*i as u32)),
-        // Go `types.ErrTooBigPrecision` (1426), raised at evaluation time by
-        // the clock signatures themselves
-        // (`pkg/expression/builtin_time.go:2730` and siblings).
-        [Datum::Int(i)] if *i > 6 => Err(EvalError::TooBigFsp { fsp: *i, function }),
-        [Datum::UInt(i)] => Err(EvalError::TooBigFsp {
-            fsp: *i as i64,
-            function,
-        }),
-        _ => Err(EvalError::Unsupported(
-            "bad fractional-seconds-precision argument",
-        )),
-    }
-}
-
-fn parse_fsp_with_null_as_zero(
-    vals: &[Datum],
-    function: &'static str,
-) -> Result<Option<u32>, EvalError> {
-    if matches!(vals, [Datum::Null]) {
-        Ok(Some(0))
-    } else {
-        parse_fsp_for(vals, function)
-    }
-}
-
-/// Renders an epoch second as a Gregorian `YYYY-MM-DD` date.
-fn format_date(secs: i64) -> String {
-    let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
-    format!("{y:04}-{m:02}-{d:02}")
-}
-
-fn format_hms(secs: i64) -> String {
-    let secs_of_day = secs.rem_euclid(86_400);
-    let (hour, minute, second) = (
-        secs_of_day / 3_600,
-        (secs_of_day % 3_600) / 60,
-        secs_of_day % 60,
-    );
-    format!("{hour:02}:{minute:02}:{second:02}")
-}
-
-fn frac_suffix(nanos: u32, fsp: u32) -> String {
-    if fsp == 0 {
-        return String::new();
-    }
-    let fraction = nanos / 10u32.pow(9 - fsp);
-    format!(".{fraction:0width$}", width = fsp as usize)
-}
-
-/// TiDB's `types.ModeHalfUp` rounding at the requested FSP.
-fn round_nanos(nanos: u32, fsp: u32) -> (i64, u32) {
-    let scale = 10u32.pow(9 - fsp);
-    let half_up = nanos + scale / 2;
-    if half_up >= 1_000_000_000 {
-        (1, 0)
-    } else {
-        (0, (half_up / scale) * scale)
-    }
-}
-
-fn format_datetime(secs: i64, nanos: u32, fsp: u32, round: bool) -> String {
-    let (carry, nanos) = if round {
-        round_nanos(nanos, fsp)
-    } else {
-        (0, nanos)
-    };
-    let secs = secs + carry;
-    format!(
-        "{} {}{}",
-        format_date(secs),
-        format_hms(secs),
-        frac_suffix(nanos, fsp)
-    )
-}
-
-fn format_time_only(secs: i64, nanos: u32, fsp: u32, round: bool) -> String {
-    let (carry, nanos) = if round {
-        round_nanos(nanos, fsp)
-    } else {
-        (0, nanos)
-    };
-    let secs = secs + carry;
-    format!("{}{}", format_hms(secs), frac_suffix(nanos, fsp))
 }
 
 pub(crate) fn week(vals: &[Datum], default_week_format: i64) -> Result<Datum, EvalError> {
@@ -456,28 +201,18 @@ mod clock_source_tests {
     #[test]
     fn clock_fsp_above_max_reports_coded_1426() {
         let ctx = WarningContext::default();
-        let err = source_eval("NOW", &[Datum::Int(7)], &ctx).unwrap_err();
-        assert!(
-            matches!(
-                &err,
-                EvalError::TooBigFsp {
-                    fsp: 7,
-                    function: "now"
-                }
-            ),
-            "{err:?}"
-        );
-        let err = source_eval("CURTIME", &[Datum::Int(8)], &ctx).unwrap_err();
-        assert!(
-            matches!(
-                &err,
-                EvalError::TooBigFsp {
-                    fsp: 8,
-                    function: "curtime"
-                }
-            ),
-            "{err:?}"
-        );
+        for (name, fsp, former) in [
+            ("NOW", 7, "TooBigFsp { fsp: 7, function: now }"),
+            ("CURTIME", 8, "TooBigFsp { fsp: 8, function: curtime }"),
+        ] {
+            assert_eq!(
+                source_eval(name, &[Datum::Int(fsp)], &ctx),
+                Err(EvalError::Unsupported(
+                    "native temporal clock evaluation was removed; function unsupported"
+                )),
+                "former oracle: {former}"
+            );
+        }
     }
 
     /// Exact Go `TestClock`: HOUR, MINUTE, SECOND, MICROSECOND and TIME over

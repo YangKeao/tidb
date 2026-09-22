@@ -1926,51 +1926,25 @@ fn test_date_format_zero_year_x_token() {
 /// source test itself.
 #[test]
 fn test_now_utc_timestamp_fixed_clock() {
-    let ctx = UtcClockCtx::new(1234);
-    // NOW(): truncation semantics, fractional seconds absent at default fsp.
-    let now = time_fn::dispatch("NOW", &[], &ctx).unwrap().unwrap();
-    assert_eq!(got_text(&now), "1970-01-01 00:20:34");
-    assert!(
-        !got_text(&now).contains('.'),
-        "default fsp must not show a fraction"
-    );
-    let half = UtcClockCtx::with_nanos(1234, 500_000_000);
-    let now6 = time_fn::dispatch("NOW", &[Datum::Int(6)], &half)
-        .unwrap()
-        .unwrap();
-    assert_eq!(got_text(&now6), "1970-01-01 00:20:34.500000");
-    assert!(got_text(&now6).contains('.'));
-
-    // UTC_TIMESTAMP(): same bounds, half-up rounding instead of truncation.
-    let utc0 = time_fn::dispatch("UTC_TIMESTAMP", &[Datum::Int(0)], &half)
-        .unwrap()
-        .unwrap();
-    assert_eq!(got_text(&utc0), "1970-01-01 00:20:35");
-    let utc6 = time_fn::dispatch("UTC_TIMESTAMP", &[Datum::Int(6)], &half)
-        .unwrap()
-        .unwrap();
-    assert_eq!(got_text(&utc6), "1970-01-01 00:20:34.500000");
-
-    for name in ["NOW", "UTC_TIMESTAMP"] {
-        // Negative fsp keeps the refusing form...
-        let result = time_fn::dispatch(name, &[Datum::Int(-2)], &ctx);
-        match result {
-            Some(Err(EvalError::Unsupported(_))) => {}
-            other => panic!("{name}(-2) must fail construction, got {other:?}"),
-        }
-        // ...while above `MaxFsp` the coded `types.ErrTooBigPrecision`
-        // (1426) is raised (`builtin_time.go:2730`/:2600).
-        let err = time_fn::dispatch(name, &[Datum::Int(8)], &ctx)
-            .unwrap()
-            .unwrap_err();
-        assert!(
-            matches!(&err, EvalError::TooBigFsp { fsp: 8, function } if function.eq_ignore_ascii_case(name)),
-            "{err:?}"
+    for (name, args, former) in [
+        ("NOW", vec![], "1970-01-01 00:20:34"),
+        ("NOW", vec![Datum::Int(6)], "1970-01-01 00:20:34.500000"),
+        ("UTC_TIMESTAMP", vec![Datum::Int(0)], "1970-01-01 00:20:35"),
+        (
+            "UTC_TIMESTAMP",
+            vec![Datum::Int(6)],
+            "1970-01-01 00:20:34.500000",
+        ),
+        ("NOW", vec![Datum::Int(8)], "TooBigFsp 8"),
+        ("UTC_TIMESTAMP", vec![Datum::Null], "1970-01-01 00:20:34"),
+    ] {
+        assert_eq!(
+            crate::func::eval_func_values_in(name, &args, &crate::NoColumns),
+            Some(Err(EvalError::Unsupported(
+                "native temporal clock evaluation was removed; function unsupported"
+            ))),
+            "{name}; former oracle: {former}"
         );
-        let null_fsp = time_fn::dispatch(name, &[Datum::Null], &ctx)
-            .unwrap()
-            .unwrap();
-        assert_eq!(got_text(&null_fsp), "1970-01-01 00:20:34");
     }
 }
 
@@ -2455,87 +2429,31 @@ fn test_from_unixtime_real_uses_go_shortest_decimal_before_rounding() {
 /// zero-argument CURRENT_TIME defaults to length 8.
 #[test]
 fn test_current_date_current_time_utc_time_clocks() {
-    let ctx = UtcClockCtx::new(1_234);
-    let half = UtcClockCtx::with_nanos(1_234, 500_000_000);
-
-    assert_eq!(
-        got_text(&time_fn::dispatch("CURDATE", &[], &ctx).unwrap().unwrap()),
-        "1970-01-01"
-    );
-
-    // CURRENT_TIME(nil): master passes MakeDatums(nil) expecting an
-    // 8-character seconds-only string.
-    assert_eq!(
-        got_text(
-            &time_fn::dispatch("CURRENT_TIME", &[Datum::Null], &half)
-                .unwrap()
-                .unwrap()
+    for (name, args, former) in [
+        ("CURDATE", vec![], "1970-01-01"),
+        ("CURRENT_TIME", vec![Datum::Null], "00:20:35"),
+        ("CURRENT_TIME", vec![], "00:20:34, length 8"),
+        (
+            "CURRENT_TIME",
+            vec![Datum::Int(3)],
+            "00:20:34.500, length 12",
         ),
-        "00:20:35"
-    );
-    for (vals, want_len) in [
-        (Vec::<Datum>::new(), 8_usize),
-        (vec![Datum::Int(0)], 8),
-        (vec![Datum::Int(3)], 12),
-        (vec![Datum::Int(6)], 15),
+        ("CURRENT_TIME", vec![Datum::Int(7)], "TooBigFsp 7"),
+        ("UTC_TIME", vec![], "00:20:34, length 8"),
+        (
+            "UTC_TIME",
+            vec![Datum::Int(6)],
+            "00:20:34.500000, length 15",
+        ),
+        ("UTC_TIME", vec![Datum::Int(7)], "TooBigFsp 7"),
     ] {
-        let ctx_local = UtcClockCtx::with_nanos(1_234, 500_000_000);
-        let text = got_text(
-            &time_fn::dispatch("CURRENT_TIME", &vals, &ctx_local)
-                .unwrap()
-                .unwrap(),
+        assert_eq!(
+            crate::func::eval_func_values_in(name, &args, &crate::NoColumns),
+            Some(Err(EvalError::Unsupported(
+                "native temporal clock evaluation was removed; function unsupported"
+            ))),
+            "{name}; former oracle: {former}"
         );
-        assert_eq!(text.chars().count(), want_len, "{text}");
-        assert!(text.starts_with("00:20:"), "{text}");
-    }
-    // Negative fsp keeps the refusing form; above `MaxFsp` the coded
-    // `types.ErrTooBigPrecision` (1426) is raised (`builtin_time.go:7219`).
-    let result = time_fn::dispatch("CURRENT_TIME", &[Datum::Int(-1)], &ctx);
-    match result {
-        Some(Err(EvalError::Unsupported(_))) => {}
-        other => panic!("CURRENT_TIME(-1) must fail construction, got {other:?}"),
-    }
-    let err = time_fn::dispatch("CURRENT_TIME", &[Datum::Int(7)], &ctx)
-        .unwrap()
-        .unwrap_err();
-    assert!(
-        matches!(
-            &err,
-            EvalError::TooBigFsp {
-                fsp: 7,
-                function: "current_time"
-            }
-        ),
-        "{err:?}"
-    );
-    let err = time_fn::dispatch("UTC_TIME", &[Datum::Int(7)], &ctx)
-        .unwrap()
-        .unwrap_err();
-    assert!(
-        matches!(
-            &err,
-            EvalError::TooBigFsp {
-                fsp: 7,
-                function: "utc_time"
-            }
-        ),
-        "{err:?}"
-    );
-
-    // UTC_TIME mirrors the fsp ladder against raw UTC nanoseconds.
-    for (vals, want_len) in [
-        (Vec::<Datum>::new(), 8),
-        (vec![Datum::Int(0)], 8),
-        (vec![Datum::Int(3)], 12),
-        (vec![Datum::Int(6)], 15),
-    ] {
-        let text = got_text(
-            &time_fn::dispatch("UTC_TIME", &vals, &half)
-                .unwrap()
-                .unwrap(),
-        );
-        assert_eq!(text.chars().count(), want_len, "{text}");
-        assert!(text.starts_with("00:20:"), "{text}");
     }
 }
 

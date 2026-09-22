@@ -3876,10 +3876,6 @@ impl Columns for StmtContext {
         self.last_found_rows
     }
 
-    fn current_tso(&self) -> i64 {
-        self.current_tso.value()
-    }
-
     fn tidb_info(&self) -> String {
         tidb_util::printer::get_tidb_info()
     }

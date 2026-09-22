@@ -11,10 +11,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! `ADDTIME`, `SUBTIME`, `TIMESTAMP`, `TIMESTAMPADD` and `SYSDATE`, from
+//! `ADDTIME`, `SUBTIME`, `TIMESTAMP` and `TIMESTAMPADD`, from
 //! `pkg/expression/builtin_time.go`.
 //!
-//! # What makes these five one module
+//! # What makes these four one module
 //!
 //! Go picks their SIGNATURE from the argument `FieldType`s at build time.
 //! `addTimeFunctionClass.getFunction` is a twelve-way switch over the
@@ -44,12 +44,6 @@
 //! row body does not have it either, which is why the same pair of constants
 //! answers a real value under `SUBTIME`. [`add_sub_time`]'s `row_path` flag
 //! is that guard, and nothing else.
-//!
-//! # SYSDATE clock selection
-//!
-//! `builtinSysDateWithoutFspSig` calls `time.Now()` per evaluation, where
-//! `NOW` returns the one statement timestamp. `tidb_sysdate_is_now` changes
-//! `SYSDATE` into the latter before evaluation.
 
 use tidb_datatype::{Datum, FieldType, FieldTypeCode};
 
@@ -620,143 +614,41 @@ fn number_of(value: &Datum) -> Result<Option<f64>, EvalError> {
     })
 }
 
-/// `builtinSysDateWithFspSig`/`builtinSysDateWithoutFspSig`: `time.Now()` in
-/// the session zone, ROUNDED half-up to `fsp` digits -- not the statement
-/// clock `NOW` reads, which is why two `SYSDATE()` calls in one statement can
-/// differ and `SYSDATE() = NOW()` is `0` on a session whose statement clock
-/// was taken earlier. With `tidb_sysdate_is_now=ON`, Go builds `NOW` instead,
-/// including its truncating FSP behavior.
-pub(crate) fn sysdate(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    if cols.sysdate_is_now() {
-        return super::now(vals, cols);
-    }
-    if vals.len() > 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let fsp = match vals.first() {
-        None | Some(Datum::Null) => 0,
-        Some(Datum::Int(value)) if (0..=i64::from(MAX_FSP)).contains(value) => *value as u32,
-        Some(Datum::UInt(value)) if *value <= MAX_FSP as u64 => *value as u32,
-        Some(value) => {
-            let converted = value
-                .to_i64()
-                .map_err(|_| EvalError::Unsupported("bad fractional-seconds-precision argument"))?;
-            if !(0..=i64::from(MAX_FSP)).contains(&converted.value) {
-                return Err(EvalError::Unsupported(
-                    "bad fractional-seconds-precision argument",
-                ));
-            }
-            converted.value as u32
-        }
-    };
-    // Only the ZONE comes from the statement clock; the instant does not.
-    let (_, _, tz_offset) = cols.now().ok_or(EvalError::Unsupported(
-        "SYSDATE needs the session clock, which is not wired here",
-    ))?;
-    let elapsed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| EvalError::Unsupported("the host clock is before the Unix epoch"))?;
-    let secs = elapsed.as_secs() as i64 + i64::from(tz_offset);
-    Ok(Datum::new_string(super::format_datetime(
-        secs,
-        elapsed.subsec_nanos(),
-        fsp,
-        true,
-    )))
-}
-
 #[cfg(test)]
 mod sysdate_source_tests {
-    use super::sysdate;
-    use crate::{Columns, Datum, EvalError};
+    use crate::{Datum, EvalError, NoColumns};
 
-    struct StatementClock(i64);
+    const REMOVED: EvalError = EvalError::Unsupported(
+        "native temporal clock evaluation was removed; function unsupported",
+    );
 
-    impl Columns for StatementClock {
-        fn get(&self, _: &[String]) -> Option<Datum> {
-            None
-        }
-
-        fn now(&self) -> Option<(i64, u32, i32)> {
-            Some((self.0, 0, 0))
-        }
-    }
-
-    struct AliasedStatementClock;
-
-    impl Columns for AliasedStatementClock {
-        fn get(&self, _: &[String]) -> Option<Datum> {
-            None
-        }
-
-        fn now(&self) -> Option<(i64, u32, i32)> {
-            Some((1_700_000_000, 654_999_999, 8 * 60 * 60))
-        }
-
-        fn sysdate_is_now(&self) -> bool {
-            true
-        }
-    }
-
-    fn host_now(fsp: u32) -> String {
-        let elapsed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap();
-        super::super::format_datetime(elapsed.as_secs() as i64, elapsed.subsec_nanos(), fsp, true)
-    }
-
-    /// Go `TestSysDate`: the function reads the host clock rather than the
-    /// statement `timestamp`, accepts FSP 0 through 6, and rejects a negative
-    /// constant. Rust has one evaluator, so the source's row/vector loops
-    /// converge on this same boundary.
     #[test]
     fn test_sys_date() {
-        for statement_timestamp in [1_234, 0] {
-            let before = host_now(0);
-            let result = sysdate(&[], &StatementClock(statement_timestamp)).unwrap();
-            let after = host_now(0);
-            let Datum::String(result) = result else {
-                panic!("SYSDATE must return its datetime string");
-            };
-            let result = result.as_utf8().unwrap();
-            assert!(before.as_str() <= result && result <= after.as_str());
-        }
-
-        for fsp in 0..=6 {
-            let before = host_now(fsp);
-            let result = sysdate(&[Datum::Int(i64::from(fsp))], &StatementClock(0)).unwrap();
-            let after = host_now(fsp);
-            let Datum::String(result) = result else {
-                panic!("SYSDATE({fsp}) must return its datetime string");
-            };
-            let result = result.as_utf8().unwrap();
-            assert!(
-                before.as_str() <= result && result <= after.as_str(),
-                "fsp={fsp}"
+        for (args, former) in [
+            (vec![], "host clock at fsp 0"),
+            (vec![Datum::Int(6)], "host clock at fsp 6"),
+            (vec![Datum::Int(-2)], "bad fractional-seconds precision"),
+        ] {
+            assert_eq!(
+                crate::func::eval_func_values_in("SYSDATE", &args, &NoColumns),
+                Some(Err(REMOVED.clone())),
+                "former oracle: {former}"
             );
         }
-
-        assert_eq!(
-            sysdate(&[Datum::Int(-2)], &StatementClock(0)),
-            Err(EvalError::Unsupported(
-                "bad fractional-seconds-precision argument"
-            ))
-        );
     }
 
     #[test]
     fn sysdate_is_now_uses_the_statement_clock_and_now_rounding() {
-        assert_eq!(
-            sysdate(&[], &AliasedStatementClock).unwrap(),
-            Datum::new_string("2023-11-15 06:13:20")
-        );
-        assert_eq!(
-            sysdate(&[Datum::Int(3)], &AliasedStatementClock).unwrap(),
-            Datum::new_string("2023-11-15 06:13:20.654")
-        );
-        assert_eq!(
-            sysdate(&[Datum::Int(6)], &AliasedStatementClock).unwrap(),
-            Datum::new_string("2023-11-15 06:13:20.654999")
-        );
+        for (args, former) in [
+            (vec![], "2023-11-15 06:13:20"),
+            (vec![Datum::Int(3)], "2023-11-15 06:13:20.654"),
+            (vec![Datum::Int(6)], "2023-11-15 06:13:20.654999"),
+        ] {
+            assert_eq!(
+                crate::func::eval_func_values_in("SYSDATE", &args, &NoColumns),
+                Some(Err(REMOVED.clone())),
+                "former oracle: {former}"
+            );
+        }
     }
 }

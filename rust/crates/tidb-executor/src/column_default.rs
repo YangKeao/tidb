@@ -54,6 +54,7 @@
 use tidb_ast::Expr;
 use tidb_datatype::{
     ConversionFlags, Converted, Datum, DatumValueError, FieldType, FieldTypeCode, SessionTimeZone,
+    TimeType,
 };
 use tidb_expr::evaluator::{into_eval_error, EvaluatorSuite};
 use tidb_expr::expression::Expression;
@@ -845,6 +846,26 @@ pub fn evaluate(
         .map(|converted| converted.value)
         .map_err(|_| tidb_expr::EvalError::Unsupported("a stored DEFAULT the column cannot hold"));
     };
+    // Clock markers are statement-owned defaults, not ordinary SQL function
+    // evaluation. Route them through the retained temporal-default bridge so
+    // deleting native NOW/CURRENT_DATE kernels does not break DDL/DML.
+    if matches!(
+        computed.kind,
+        ComputedDefaultKind::CurrentTimestamp | ComputedDefaultKind::CurrentDate
+    ) {
+        let kind = match field_type.code() {
+            FieldTypeCode::Date => TimeType::Date,
+            FieldTypeCode::Timestamp => TimeType::Timestamp,
+            _ => TimeType::DateTime,
+        };
+        return tidb_expr::get_time_value(
+            ctx,
+            &Expr::RawString(computed.text.clone()),
+            kind,
+            field_type.decimal(),
+            None,
+        );
+    }
     // The public descriptor is mutable, so it cannot safely retain a compiled
     // expression. Per-statement suite retention remains future work.
     let suite = EvaluatorSuite::new(vec![computed.expr.clone()], true);
@@ -1074,12 +1095,11 @@ mod tests {
                         assert_eq!(time.kind(), TimeType::Timestamp);
                         assert_eq!(time.fsp(), 3);
                     }
-                    // Session clocks remain host-owned, not engine-admitted.
+                    // Statement-owned defaults bypass ordinary expression
+                    // admission, so they are neither engine rows nor native
+                    // fallback attempts.
                     assert_eq!(ctx.tikv_expression_rows(), 0);
-                    assert_eq!(
-                        ctx.tikv_not_admitted_fallbacks(),
-                        if engine { 2 } else { 0 }
-                    );
+                    assert_eq!(ctx.tikv_not_admitted_fallbacks(), 0);
                 }
             }
         }

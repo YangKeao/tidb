@@ -418,6 +418,30 @@ remain in the workspace.
       admitted constant length shapes were initially masked as contractions;
       the harness now routes them through Copying with positive row accounting,
       leaving only five exact lowerer-declined statements as contractions.
+- [x] Twenty-fourth physical-deletion tranche: remove the native statement-clock
+      and TiDB clock-metadata kernels for NOW/CURRENT_TIMESTAMP, LOCALTIME,
+      LOCALTIMESTAMP, UTC_TIMESTAMP, CURDATE/CURRENT_DATE, UTC_DATE,
+      CURTIME/CURRENT_TIME, UTC_TIME, SYSDATE, TIDB_BOUNDED_STALENESS and
+      TIDB_CURRENT_TSO. Dispatch, scalar conversion branches, dedicated clock
+      helpers, host-clock reads, FSP error plumbing and obsolete Columns seams
+      are physically absent. All four native boundaries fail closed before
+      child evaluation; result-type and parser/registry metadata remain. The
+      statement-owned DEFAULT CURRENT_TIMESTAMP/CURRENT_DATE bridge remains
+      separate from ordinary SQL-function execution and keeps fresh-store
+      bootstrap working without rebuilding a clock kernel. All 14 direct SQL
+      spellings have one session contraction table with former independent
+      oracles. The two TiDB metadata functions and LOCAL aliases have no wire
+      signature; the other clock signatures are excluded because TiKV needs a
+      host clock. Library is 1167 / 99 ignored before the added metadata-only
+      test; external is 77; expression/query differential are 3/4; session
+      Copying is 334 / 4 carried failures and feature-off is 332 / the same 4.
+      Static/runtime gates pass at 212 admitted / 172 excluded and 321 fixtures
+      / 2074 engine rows / 160 borrowed rows. Broad replay remains intentionally
+      red: Native 192/9804 and Copying 178/10233 with 416225 engine rows and
+      zero borrowed rows. Clock markers are never replay-masked, including
+      lazy children and DDL defaults. These numbers are contraction evidence, not a
+      compatibility claim. Final library count after adding the metadata-only
+      result-type test is 1168 passed / 99 ignored.
 - [x] Twenty-third physical-deletion tranche: remove the excluded native
       TIDB_PARSE_TSO_LOGICAL, GET_FORMAT, SEC_TO_TIME and TIME_FORMAT kernels,
       dispatch arms and exclusive helpers (323 production lines). GET_FORMAT's

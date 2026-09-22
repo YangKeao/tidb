@@ -967,6 +967,11 @@ impl ScalarFunction {
                 "native temporal value evaluation was removed; TiKV engine required",
             ));
         }
+        if crate::func::is_removed_native_temporal_clock(self.func_name.lowercase()) {
+            return Err(EvalError::Unsupported(
+                "native temporal clock evaluation was removed; function unsupported",
+            ));
+        }
         if crate::func::is_removed_native_temporal_tail(self.func_name.lowercase()) {
             return Err(EvalError::Unsupported(
                 "native temporal tail evaluation was removed; function unsupported",
@@ -2040,32 +2045,9 @@ impl ScalarFunction {
                 None,
             );
         }
-        if upper == "SYSDATE" {
-            let result = crate::time_fn::add_sub::sysdate(&vals, ctx)?;
-            return crate::cast::parse_computed_time(
-                &result,
-                ctx,
-                tidb_datatype::TimeType::DateTime,
-                self.get_static_type().map(FieldType::decimal),
-            );
-        }
         if matches!(
             upper.as_str(),
-            "NOW"
-                | "CURRENT_TIMESTAMP"
-                | "LOCALTIME"
-                | "LOCALTIMESTAMP"
-                | "UTC_TIMESTAMP"
-                | "CURDATE"
-                | "CURRENT_DATE"
-                | "UTC_DATE"
-                | "CURTIME"
-                | "CURRENT_TIME"
-                | "UTC_TIME"
-                | "FROM_DAYS"
-                | "STR_TO_DATE"
-                | "CONVERT_TZ"
-                | "FROM_UNIXTIME"
+            "FROM_DAYS" | "STR_TO_DATE" | "CONVERT_TZ" | "FROM_UNIXTIME"
         ) {
             let mut result = crate::time_fn::dispatch(&upper, &vals, ctx)
                 .expect("the native temporal family is registered")?;
