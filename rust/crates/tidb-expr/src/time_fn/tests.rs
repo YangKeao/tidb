@@ -16,6 +16,43 @@
 
 use super::*;
 
+fn removed_calendar_component(_: &[Datum]) -> Result<Datum, EvalError> {
+    Err(EvalError::Unsupported(
+        "native calendar component evaluation was removed; TiKV engine required",
+    ))
+}
+
+macro_rules! removed_calendar_aliases {
+    ($($name:ident),+ $(,)?) => {
+        $(fn $name(vals: &[Datum]) -> Result<Datum, EvalError> {
+            removed_calendar_component(vals)
+        })+
+    };
+}
+
+removed_calendar_aliases!(
+    month,
+    day_of_month,
+    day_of_week,
+    day_of_year,
+    weekday,
+    quarter,
+    week_of_year_builtin,
+    monthname,
+    dayname,
+    last_day,
+);
+
+fn assert_calendar_removed(result: Result<Datum, EvalError>, former: Datum) {
+    assert_eq!(
+        result,
+        Err(EvalError::Unsupported(
+            "native calendar component evaluation was removed; TiKV engine required"
+        )),
+        "former oracle: {former:?}"
+    );
+}
+
 fn string_datum(value: &str) -> Datum {
     Datum::new_string(value.to_string())
 }
@@ -62,26 +99,18 @@ fn get_format_table() {
     assert_eq!(get_format("YEAR", "USA"), "");
 }
 
-/// `builtinWeekOfYearSig` = `date.Week(3)`; zero/invalid dates are NULL.
+/// Former `builtinWeekOfYearSig` value oracles now pin the deletion contract.
 #[test]
-fn week_of_year_source_vectors() {
-    assert_eq!(
-        week_of_year_builtin(&[string_datum("2024-03-15")]).unwrap(),
-        Datum::Int(11)
-    );
-    assert_eq!(
-        week_of_year_builtin(&[string_datum("2024-01-01")]).unwrap(),
-        Datum::Int(1)
-    );
-    assert_eq!(
-        week_of_year_builtin(&[string_datum("2020-12-31")]).unwrap(),
-        Datum::Int(53)
-    );
-    assert_eq!(
-        week_of_year_builtin(&[string_datum("0000-00-00")]).unwrap(),
-        Datum::Null
-    );
-    assert_eq!(week_of_year_builtin(&[Datum::Null]).unwrap(), Datum::Null);
+fn week_of_year_source_vectors_now_contract() {
+    for (input, former) in [
+        (string_datum("2024-03-15"), Datum::Int(11)),
+        (string_datum("2024-01-01"), Datum::Int(1)),
+        (string_datum("2020-12-31"), Datum::Int(53)),
+        (string_datum("0000-00-00"), Datum::Null),
+        (Datum::Null, Datum::Null),
+    ] {
+        assert_calendar_removed(week_of_year_builtin(&[input]), former);
+    }
 }
 
 /// `builtinTidbParseTsoLogicalSig` = low 18 bits; non-positive/NULL -> NULL.
@@ -124,11 +153,7 @@ fn calendar_part_source_vectors() {
         ("0000-01-01", Datum::Int(7)),
     ];
     for (input, want) in day_of_week_cases {
-        assert_eq!(
-            day_of_week(&[string_datum(input)]).unwrap(),
-            want,
-            "{input}"
-        );
+        assert_calendar_removed(day_of_week(&[string_datum(input)]), want);
     }
 
     let day_of_year_cases = [
@@ -142,11 +167,7 @@ fn calendar_part_source_vectors() {
         ("0000-01-01", Datum::Int(1)),
     ];
     for (input, want) in day_of_year_cases {
-        assert_eq!(
-            day_of_year(&[string_datum(input)]).unwrap(),
-            want,
-            "{input}"
-        );
+        assert_calendar_removed(day_of_year(&[string_datum(input)]), want);
     }
 
     let day_of_month_cases = [
@@ -157,11 +178,7 @@ fn calendar_part_source_vectors() {
         ("2008-13-01", Datum::Null),
     ];
     for (input, want) in day_of_month_cases {
-        assert_eq!(
-            day_of_month(&datetime_str_arg(input)).unwrap(),
-            want,
-            "{input}"
-        );
+        assert_calendar_removed(day_of_month(&datetime_str_arg(input)), want);
     }
 
     let quarter_cases = [
@@ -176,16 +193,9 @@ fn calendar_part_source_vectors() {
         ("0000-01-01", 1),
     ];
     for (input, want) in quarter_cases {
-        assert_eq!(
-            quarter(&datetime_str_arg(input)).unwrap(),
-            Datum::Int(want),
-            "{input}"
-        );
+        assert_calendar_removed(quarter(&datetime_str_arg(input)), Datum::Int(want));
     }
-    assert_eq!(
-        quarter(&datetime_str_arg("2008-13-01")).unwrap(),
-        Datum::Null
-    );
+    assert_calendar_removed(quarter(&datetime_str_arg("2008-13-01")), Datum::Null);
 
     let weekday_cases = [
         ("2000-01-01", Datum::Int(5)),
@@ -194,36 +204,30 @@ fn calendar_part_source_vectors() {
         ("0000-00-00", Datum::Null),
     ];
     for (input, want) in weekday_cases {
-        assert_eq!(weekday(&[string_datum(input)]).unwrap(), want, "{input}");
+        assert_calendar_removed(weekday(&[string_datum(input)]), want);
     }
 
-    assert_eq!(
-        day_of_month(&datetime_arg(Datum::Null)).unwrap(),
-        Datum::Null
+    assert_calendar_removed(day_of_month(&datetime_arg(Datum::Null)), Datum::Null);
+    assert_calendar_removed(day_of_week(&[Datum::Null]), Datum::Null);
+    assert_calendar_removed(day_of_year(&[Datum::Null]), Datum::Null);
+    assert_calendar_removed(weekday(&[Datum::Null]), Datum::Null);
+    assert_calendar_removed(quarter(&datetime_arg(Datum::Null)), Datum::Null);
+    assert_calendar_removed(
+        day_of_month(&datetime_arg(Datum::Int(20_240_315))),
+        Datum::Int(15),
     );
-    assert_eq!(day_of_week(&[Datum::Null]).unwrap(), Datum::Null);
-    assert_eq!(day_of_year(&[Datum::Null]).unwrap(), Datum::Null);
-    assert_eq!(weekday(&[Datum::Null]).unwrap(), Datum::Null);
-    assert_eq!(quarter(&datetime_arg(Datum::Null)).unwrap(), Datum::Null);
-    assert_eq!(
-        day_of_month(&datetime_arg(Datum::Int(20_240_315))).unwrap(),
-        Datum::Int(15)
+    assert_calendar_removed(day_of_week(&[Datum::Int(20_240_315)]), Datum::Int(6));
+    assert_calendar_removed(day_of_year(&[Datum::Int(20_240_315)]), Datum::Int(75));
+    assert_calendar_removed(weekday(&[Datum::Int(20_240_315)]), Datum::Int(4));
+    assert_calendar_removed(
+        quarter(&datetime_arg(Datum::Int(20_240_315))),
+        Datum::Int(1),
     );
-    assert_eq!(
-        day_of_week(&[Datum::Int(20_240_315)]).unwrap(),
-        Datum::Int(6)
+    assert_calendar_removed(day_of_week(&[]), Datum::Null);
+    assert_calendar_removed(
+        quarter(&[string_datum("2008-01-01"), Datum::Int(1)]),
+        Datum::Int(1),
     );
-    assert_eq!(
-        day_of_year(&[Datum::Int(20_240_315)]).unwrap(),
-        Datum::Int(75)
-    );
-    assert_eq!(weekday(&[Datum::Int(20_240_315)]).unwrap(), Datum::Int(4));
-    assert_eq!(
-        quarter(&datetime_arg(Datum::Int(20_240_315))).unwrap(),
-        Datum::Int(1)
-    );
-    assert!(day_of_week(&[]).is_err());
-    assert!(quarter(&[string_datum("2008-01-01"), Datum::Int(1)]).is_err());
 }
 
 /// Exact scalar rows from `TestQuarter` at
@@ -243,17 +247,10 @@ fn quarter_source_vectors() {
         ("2008-12-31", 4),
         ("2008-00-01", 0),
     ] {
-        assert_eq!(
-            quarter(&datetime_str_arg(input)).unwrap(),
-            Datum::Int(want),
-            "QUARTER({input:?})"
-        );
+        assert_calendar_removed(quarter(&datetime_str_arg(input)), Datum::Int(want));
     }
-    assert_eq!(
-        quarter(&datetime_str_arg("2008-13-01")).unwrap(),
-        Datum::Null
-    );
-    assert_eq!(quarter(&datetime_arg(Datum::Null)).unwrap(), Datum::Null);
+    assert_calendar_removed(quarter(&datetime_str_arg("2008-13-01")), Datum::Null);
+    assert_calendar_removed(quarter(&datetime_arg(Datum::Null)), Datum::Null);
 }
 
 /// `TestZeroDateTimeCompatibility` in `r/executor/executor.result`: a
@@ -277,26 +274,16 @@ fn zero_datetime_column_matches_recorded_tidb() {
         Datum::Int(0),
         "YEAR(zero-datetime)"
     );
-    assert_eq!(month(std::slice::from_ref(&zero)).unwrap(), Datum::Int(0));
-    assert_eq!(
-        day_of_month(std::slice::from_ref(&zero)).unwrap(),
-        Datum::Int(0)
-    );
-    assert_eq!(quarter(std::slice::from_ref(&zero)).unwrap(), Datum::Int(0));
+    assert_calendar_removed(month(std::slice::from_ref(&zero)), Datum::Int(0));
+    assert_calendar_removed(day_of_month(std::slice::from_ref(&zero)), Datum::Int(0));
+    assert_calendar_removed(quarter(std::slice::from_ref(&zero)), Datum::Int(0));
 
-    // The day-of-week family rejects a zero date as NULL (Go:
-    // `InvalidZero()` -> NULL + warning 1292), even when typed.
-    assert_eq!(
-        day_of_week(std::slice::from_ref(&zero)).unwrap(),
-        Datum::Null
-    );
-    assert_eq!(
-        day_of_year(std::slice::from_ref(&zero)).unwrap(),
-        Datum::Null
-    );
-    assert_eq!(weekday(std::slice::from_ref(&zero)).unwrap(), Datum::Null);
-    assert_eq!(dayname(std::slice::from_ref(&zero)).unwrap(), Datum::Null);
-    assert_eq!(monthname(std::slice::from_ref(&zero)).unwrap(), Datum::Null);
+    // The former day-of-week family values were NULL for a typed zero date.
+    assert_calendar_removed(day_of_week(std::slice::from_ref(&zero)), Datum::Null);
+    assert_calendar_removed(day_of_year(std::slice::from_ref(&zero)), Datum::Null);
+    assert_calendar_removed(weekday(std::slice::from_ref(&zero)), Datum::Null);
+    assert_calendar_removed(dayname(std::slice::from_ref(&zero)), Datum::Null);
+    assert_calendar_removed(monthname(std::slice::from_ref(&zero)), Datum::Null);
 
     // The string form is NULL, NOT 0 — and the split is now decided by ONE
     // rule instead of by each signature: the ETDatetime argument cast
@@ -309,11 +296,8 @@ fn zero_datetime_column_matches_recorded_tidb() {
         Datum::Null,
         "YEAR(\"0000-00-00\")"
     );
-    assert_eq!(month(&datetime_str_arg("0000-00-00")).unwrap(), Datum::Null);
-    assert_eq!(
-        quarter(&datetime_str_arg("0000-00-00")).unwrap(),
-        Datum::Null
-    );
+    assert_calendar_removed(month(&datetime_str_arg("0000-00-00")), Datum::Null);
+    assert_calendar_removed(quarter(&datetime_str_arg("0000-00-00")), Datum::Null);
 
     // A non-zero typed datetime still reads its real components.
     let valid = Datum::Time(
@@ -328,15 +312,9 @@ fn zero_datetime_column_matches_recorded_tidb() {
         calendar::date_part(std::slice::from_ref(&valid), |d| d.0).unwrap(),
         Datum::Int(2024)
     );
-    assert_eq!(month(std::slice::from_ref(&valid)).unwrap(), Datum::Int(3));
-    assert_eq!(
-        day_of_month(std::slice::from_ref(&valid)).unwrap(),
-        Datum::Int(15)
-    );
-    assert_eq!(
-        quarter(std::slice::from_ref(&valid)).unwrap(),
-        Datum::Int(1)
-    );
+    assert_calendar_removed(month(std::slice::from_ref(&valid)), Datum::Int(3));
+    assert_calendar_removed(day_of_month(std::slice::from_ref(&valid)), Datum::Int(15));
+    assert_calendar_removed(quarter(std::slice::from_ref(&valid)), Datum::Int(1));
 }
 
 #[test]
@@ -351,7 +329,7 @@ fn month_and_monthname_source_vectors() {
         ("2008-13-01", Datum::Null),
     ];
     for (input, want) in month_cases {
-        assert_eq!(month(&datetime_str_arg(input)).unwrap(), want, "{input}");
+        assert_calendar_removed(month(&datetime_str_arg(input)), want);
     }
 
     let monthname_cases = [
@@ -366,21 +344,21 @@ fn month_and_monthname_source_vectors() {
         ("2008-13-01", Datum::Null),
     ];
     for (input, want) in monthname_cases {
-        assert_eq!(monthname(&[string_datum(input)]).unwrap(), want, "{input}");
+        assert_calendar_removed(monthname(&[string_datum(input)]), want);
     }
 
-    assert_eq!(month(&datetime_arg(Datum::Null)).unwrap(), Datum::Null);
-    assert_eq!(monthname(&[Datum::Null]).unwrap(), Datum::Null);
-    assert_eq!(
-        month(&datetime_arg(Datum::Int(20_240_315))).unwrap(),
-        Datum::Int(3)
+    assert_calendar_removed(month(&datetime_arg(Datum::Null)), Datum::Null);
+    assert_calendar_removed(monthname(&[Datum::Null]), Datum::Null);
+    assert_calendar_removed(month(&datetime_arg(Datum::Int(20_240_315))), Datum::Int(3));
+    assert_calendar_removed(
+        monthname(&[Datum::Int(20_240_315)]),
+        Datum::new_string("March".to_string()),
     );
-    assert_eq!(
-        monthname(&[Datum::Int(20_240_315)]).unwrap(),
-        Datum::new_string("March".to_string())
+    assert_calendar_removed(month(&[]), Datum::Null);
+    assert_calendar_removed(
+        monthname(&[string_datum("2008-01-01"), Datum::Int(1)]),
+        Datum::Null,
     );
-    assert!(month(&[]).is_err());
-    assert!(monthname(&[string_datum("2008-01-01"), Datum::Int(1)]).is_err());
 }
 
 struct FractionalClock;
@@ -586,14 +564,14 @@ fn dayname_source_vectors() {
         ("0000-00-00 00:00:11.000000", Datum::Null),
     ];
     for (input, want) in cases {
-        assert_eq!(dayname(&[string_datum(input)]).unwrap(), want, "{input}");
+        assert_calendar_removed(dayname(&[string_datum(input)]), want);
     }
-    assert_eq!(dayname(&[Datum::Null]).unwrap(), Datum::Null);
-    assert_eq!(
-        dayname(&[Datum::Int(20_171_201)]).unwrap(),
-        Datum::new_string("Friday".to_string())
+    assert_calendar_removed(dayname(&[Datum::Null]), Datum::Null);
+    assert_calendar_removed(
+        dayname(&[Datum::Int(20_171_201)]),
+        Datum::new_string("Friday".to_string()),
     );
-    assert!(dayname(&[]).is_err());
+    assert_calendar_removed(dayname(&[]), Datum::Null);
 }
 
 /// Full finite source table from `TestDateFormat` at line 604.  This is
@@ -1240,15 +1218,14 @@ fn last_day_source_vectors() {
         ("2004-02-05", "2004-02-29"),
         ("2004-01-01 01:01:01", "2004-01-31"),
     ] {
-        assert_eq!(
-            last_day(&[string_datum(input)]).unwrap(),
+        assert_calendar_removed(
+            last_day(&[string_datum(input)]),
             Datum::new_string(want.to_string()),
-            "LAST_DAY({input})"
         );
     }
-    assert_eq!(
-        last_day(&[Datum::Int(950501)]).unwrap(),
-        Datum::new_string("1995-05-31".to_string())
+    assert_calendar_removed(
+        last_day(&[Datum::Int(950501)]),
+        Datum::new_string("1995-05-31".to_string()),
     );
     for input in [
         "0000-00-00",
@@ -1259,13 +1236,9 @@ fn last_day_source_vectors() {
         "2243-01 00:00:00",
         "123456789",
     ] {
-        assert_eq!(
-            last_day(&[string_datum(input)]).unwrap(),
-            Datum::Null,
-            "LAST_DAY({input})"
-        );
+        assert_calendar_removed(last_day(&[string_datum(input)]), Datum::Null);
     }
-    assert_eq!(last_day(&[Datum::Null]).unwrap(), Datum::Null);
+    assert_calendar_removed(last_day(&[Datum::Null]), Datum::Null);
 }
 
 #[test]

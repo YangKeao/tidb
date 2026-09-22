@@ -98,6 +98,9 @@ fn may_accept_removed_marker(expr: &str, marker: &str) -> bool {
     if marker == removed_native::STRING_LENGTH_REMOVED {
         return removed_native::is_string_length_shape_contraction(&sql);
     }
+    if marker == removed_native::CALENDAR_COMPONENT_REMOVED {
+        return removed_native::is_calendar_component_shape_contraction(&sql);
+    }
     if marker == removed_native::STRING_AUX_REMOVED {
         return removed_native::is_string_aux_shape_contraction(&sql);
     }
@@ -261,6 +264,7 @@ fn rust_eval_label(expr: &str) -> Result<String, String> {
     #[cfg(feature = "tikv-expr")]
     if removed_native::requires_string2_engine(&sql)
         || removed_native::requires_string_length_engine(&sql)
+        || removed_native::requires_calendar_component_engine(&sql)
         || removed_native::requires_inet_engine(&sql)
         || removed_native::requires_radix_engine(&sql)
         || removed_native::requires_string_aux_engine(&sql)

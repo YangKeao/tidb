@@ -260,11 +260,19 @@ fn date_parts() {
     // String arguments are cast through the datetime domain before extracting
     // calendar components; the time-of-day part does not affect these fields.
     assert_eq!(e("year('2021-03-15')"), "INT:2021");
-    assert_eq!(e("month('2021-03-15')"), "INT:3");
-    assert_eq!(e("day('2021-03-15')"), "INT:15");
-    assert_eq!(e("dayofmonth('2021-03-15')"), "INT:15");
-    assert_eq!(e("quarter('2021-03-15')"), "INT:1");
-    assert_eq!(e("quarter('2021-12-31')"), "INT:4");
+    for (expr, former) in [
+        ("month('2021-03-15')", "INT:3"),
+        ("day('2021-03-15')", "INT:15"),
+        ("dayofmonth('2021-03-15')", "INT:15"),
+        ("quarter('2021-03-15')", "INT:1"),
+        ("quarter('2021-12-31')", "INT:4"),
+    ] {
+        assert_eq!(
+            e(expr),
+            "Unsupported(\"native calendar component evaluation was removed; TiKV engine required\")",
+            "{expr}; former {former}"
+        );
+    }
     assert_eq!(e("year('2021-03-15 10:30:00')"), "INT:2021");
     // Lenient separators (any run of non-digit characters) and
     // whitespace trimming, matching real TiDB's own leniency.
@@ -287,9 +295,17 @@ fn date_parts() {
     // `goeval` -- NOT the same algorithm as the lenient
     // separator-based path above.
     assert_eq!(e("year(20240315)"), "INT:2024");
-    assert_eq!(e("month(20240315)"), "INT:3");
-    assert_eq!(e("day(20240315)"), "INT:15");
-    assert_eq!(e("quarter(20240315)"), "INT:1");
+    for (expr, former) in [
+        ("month(20240315)", "INT:3"),
+        ("day(20240315)", "INT:15"),
+        ("quarter(20240315)", "INT:1"),
+    ] {
+        assert_eq!(
+            e(expr),
+            "Unsupported(\"native calendar component evaluation was removed; TiKV engine required\")",
+            "{expr}; former {former}"
+        );
+    }
     assert_eq!(e("year('20240315')"), "INT:2024"); // quoted string, same reading
                                                    // The 6-digit form's 2-digit year is CENTURY-PIVOTED: 00-69 ->
                                                    // 2000-2069, 70-99 -> 1970-1999 (real MySQL/TiDB convention,
@@ -324,20 +340,24 @@ fn date_parts() {
     assert_eq!(e("datediff('not a date', '2021-01-01')"), "NULL");
     assert_eq!(e("datediff('2021-01-01', NULL)"), "NULL");
 
-    // DAYOFYEAR: 1-based day count within the year, leap-year aware.
-    assert_eq!(e("dayofyear('2021-01-01')"), "INT:1");
-    assert_eq!(e("dayofyear('2021-12-31')"), "INT:365");
-    assert_eq!(e("dayofyear('2020-12-31')"), "INT:366"); // 2020 is a leap year
-    assert_eq!(e("dayofyear('2020-02-29')"), "INT:60");
-
-    // DAYOFWEEK (1=Sunday..7=Saturday) / WEEKDAY (0=Monday..6=Sunday)
-    // over a full week starting 2021-01-01, a Friday.
-    assert_eq!(e("dayofweek('2021-01-01')"), "INT:6"); // Friday
-    assert_eq!(e("dayofweek('2021-01-03')"), "INT:1"); // Sunday
-    assert_eq!(e("dayofweek('2021-01-04')"), "INT:2"); // Monday
-    assert_eq!(e("weekday('2021-01-01')"), "INT:4"); // Friday
-    assert_eq!(e("weekday('2021-01-04')"), "INT:0"); // Monday
-    assert_eq!(e("weekday('2021-02-30')"), "NULL"); // invalid calendar date
+    for (expr, former) in [
+        ("dayofyear('2021-01-01')", "INT:1"),
+        ("dayofyear('2021-12-31')", "INT:365"),
+        ("dayofyear('2020-12-31')", "INT:366"),
+        ("dayofyear('2020-02-29')", "INT:60"),
+        ("dayofweek('2021-01-01')", "INT:6"),
+        ("dayofweek('2021-01-03')", "INT:1"),
+        ("dayofweek('2021-01-04')", "INT:2"),
+        ("weekday('2021-01-01')", "INT:4"),
+        ("weekday('2021-01-04')", "INT:0"),
+        ("weekday('2021-02-30')", "NULL"),
+    ] {
+        assert_eq!(
+            e(expr),
+            "Unsupported(\"native calendar component evaluation was removed; TiKV engine required\")",
+            "{expr}; former {former}"
+        );
+    }
 
     // TO_DAYS: an absolute day number (days_from_civil plus a fixed
     // offset solved from real TiDB's own answer); ignores time-of-day.
@@ -1311,18 +1331,20 @@ fn an_etdatetime_argument_is_cast_before_the_signature_runs() {
     // (`builtin_time.go:1116`, `:1284`): `types.ETInt, types.ETDatetime`.
     // Captured `RS:3` and `RS:15`. Without the cast these are NULL, because
     // a bare 14-digit run is not a calendar date to any string parser.
-    assert_eq!(e("month(20240315123045)"), "INT:3");
-    assert_eq!(e("day(20240315123045)"), "INT:15");
-    // The 8-digit form parsed even before the cast; it must not regress.
-    assert_eq!(e("month(20240315)"), "INT:3");
-    assert_eq!(e("month('20240315123045')"), "INT:3");
-
-    // `quarterFunctionClass` (`:5833`) returns the STORED month with no zero
-    // rejection, so a month-zero packed date is quarter `0` and not NULL --
-    // the boundary that proves the cast keeps a zero-in-date rather than
-    // rejecting it. Captured `RS:0` for both.
-    assert_eq!(e("quarter(20240000)"), "INT:0");
-    assert_eq!(e("month(0)"), "INT:0");
+    for (expr, former) in [
+        ("month(20240315123045)", "INT:3"),
+        ("day(20240315123045)", "INT:15"),
+        ("month(20240315)", "INT:3"),
+        ("month('20240315123045')", "INT:3"),
+        ("quarter(20240000)", "INT:0"),
+        ("month(0)", "INT:0"),
+    ] {
+        assert_eq!(
+            e(expr),
+            "Unsupported(\"native calendar component evaluation was removed; TiKV engine required\")",
+            "{expr}; former {former}"
+        );
+    }
 
     // `dateFormatFunctionClass` (`:832`): `types.ETString, types.ETDatetime,
     // types.ETString` -- argument 0 only. Captured
@@ -1352,7 +1374,11 @@ fn an_etdatetime_argument_is_cast_before_the_signature_runs() {
         ("weekday(20240315123045)", "INT:4"),
         ("last_day(20240315123045)", "STR:2024-03-31"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
+        assert_eq!(
+            e(expr),
+            "Unsupported(\"native calendar component evaluation was removed; TiKV engine required\")",
+            "{expr}; former {want}"
+        );
     }
 
     // `timestampAddFunctionClass` (`:6551`): `types.ETString, types.ETString,
@@ -1428,7 +1454,31 @@ fn an_etdatetime_argument_is_cast_before_the_signature_runs() {
             "STR:2024-03-15 13:30:45",
         ),
     ] {
-        assert_eq!(chunk_e(expr), want, "{expr} (chunk tier)");
+        if [
+            "month(",
+            "day(",
+            "quarter(",
+            "monthname(",
+            "dayname(",
+            "dayofweek(",
+            "dayofyear(",
+            "weekday(",
+            "last_day(",
+        ]
+        .iter()
+        .any(|prefix| expr.starts_with(prefix))
+        {
+            let native = chunk_case(expr, &NoColumns)
+                .map(|datum| datum.label())
+                .unwrap_or_else(|error| error);
+            assert_eq!(
+                native,
+                "Unsupported(\"native calendar component evaluation was removed; TiKV engine required\")",
+                "{expr} (chunk tier); former {want}"
+            );
+        } else {
+            assert_eq!(chunk_e(expr), want, "{expr} (chunk tier)");
+        }
     }
 }
 

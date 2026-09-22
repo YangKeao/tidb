@@ -418,6 +418,18 @@ remain in the workspace.
       admitted constant length shapes were initially masked as contractions;
       the harness now routes them through Copying with positive row accounting,
       leaving only five exact lowerer-declined statements as contractions.
+- [x] Twenty-first physical-deletion tranche: remove the native MONTH,
+      DAY/DAYOFMONTH, DAYOFWEEK, DAYOFYEAR, WEEKDAY, QUARTER, WEEKOFYEAR,
+      MONTHNAME, DAYNAME and LAST_DAY dispatch arms, kernels and private
+      single-date/datetime parsers. Valid retained shapes are TiKV-required and
+      an independent integration receipt proves values plus positive engine
+      rows. The one mixed zero-month QUARTER statement is an exact contraction:
+      TiDB answers 0 for `2008-00-01`, while TiKV answers NULL. Library is 1167
+      passed / 99 ignored; external is 77 passed; expression/query differential
+      are 3/4 passed; session Copying is 334 / 4 carried failures and feature-off
+      is 332 / the same 4. Static/runtime and lint pass. Broad replay remains
+      intentionally red: Native 192 divergences / 9824 compared; Copying 167 /
+      10253 with 416267 engine rows and zero borrowed rows.
 - [x] Recovery audit: pin TiKV `d847323beba1e93513314018fbb5ee946e4b9c79`
       in `crates/tidb-expr/Cargo.toml` and regenerate `Cargo.lock`. The selected
       borrowed facade was used by the adapter while the manifest still pinned

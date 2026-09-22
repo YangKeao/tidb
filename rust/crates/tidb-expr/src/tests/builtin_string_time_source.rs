@@ -1908,8 +1908,8 @@ fn test_day_of_month_zero_date_rows() {
     ] {
         assert_eq!(
             chunk_e_with(&format!("dayofmonth('{input}')"), &ctx),
-            "INT:0",
-            "DAYOFMONTH({input:?}) under IgnoreZeroInDate"
+            "Unsupported(\"native calendar component evaluation was removed; TiKV engine required\")",
+            "DAYOFMONTH({input:?}) under IgnoreZeroInDate; former INT:0"
         );
     }
 }

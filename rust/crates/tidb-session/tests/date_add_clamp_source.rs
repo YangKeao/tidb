@@ -4,6 +4,19 @@
 
 use tidb_session::Session;
 
+fn assert_calendar_removed(session: &mut Session, sql: &str, former_expected: &str) {
+    let Err(tidb_executor::DriverError::Exec(tidb_executor::ExecError::Eval(
+        tidb_executor::EvalError::Unsupported(message),
+    ))) = session.run(sql)
+    else {
+        panic!("{sql}: expected calendar contraction; former {former_expected}")
+    };
+    assert_eq!(
+        message, "native calendar component evaluation was removed; TiKV engine required",
+        "{sql}: former {former_expected}"
+    );
+}
+
 fn rows(session: &mut Session, sql: &str) -> String {
     match session.run(sql).unwrap() {
         tidb_session::StmtResult::Rows(rows) => rows
@@ -32,25 +45,39 @@ fn month_arithmetic_clamps_to_last_day() {
 
     // Both directions clamp Jan 31 / Mar 31 onto Feb 29 (leap year).
     assert_eq!(
-        rows(&mut session, "select date_add('2024-01-31', interval 1 month)"),
+        rows(
+            &mut session,
+            "select date_add('2024-01-31', interval 1 month)"
+        ),
         "s:2024-02-29"
     );
     assert_eq!(
-        rows(&mut session, "select date_sub('2024-03-31', interval 1 month)"),
+        rows(
+            &mut session,
+            "select date_sub('2024-03-31', interval 1 month)"
+        ),
         "s:2024-02-29"
     );
 
     // A negative day interval subtracts.
     assert_eq!(
-        rows(&mut session, "select date_add('2024-01-10', interval -5 day)"),
+        rows(
+            &mut session,
+            "select date_add('2024-01-10', interval -5 day)"
+        ),
         "s:2024-01-05"
     );
 
-    // Calendar accessors.
-    assert_eq!(
-        rows(&mut session, "select last_day('2024-02-15')").contains("2024 2 29"),
-        true
+    // Calendar accessor former values remain pinned as explicit contractions.
+    assert_calendar_removed(
+        &mut session,
+        "select last_day('2024-02-15')",
+        "DATE:2024-02-29",
     );
-    assert_eq!(rows(&mut session, "select monthname('2024-02-15')"), "s:February");
-    assert_eq!(rows(&mut session, "select year('2024-02-15'), quarter('2024-02-15')"), "i:2024|i:1");
+    assert_calendar_removed(&mut session, "select monthname('2024-02-15')", "s:February");
+    assert_calendar_removed(
+        &mut session,
+        "select year('2024-02-15'), quarter('2024-02-15')",
+        "i:2024|i:1",
+    );
 }

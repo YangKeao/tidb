@@ -57,22 +57,12 @@ pub(crate) fn dispatch(
         "DATE" => date(vals, cols),
         "MICROSECOND" => microsecond(vals),
         "TIME" => time(vals, cols),
-        "MONTH" => month(vals),
-        "DAY" | "DAYOFMONTH" => day_of_month(vals),
-        "DAYOFWEEK" => day_of_week(vals),
-        "DAYOFYEAR" => day_of_year(vals),
-        "WEEKDAY" => weekday(vals),
-        "QUARTER" => quarter(vals),
         "WEEK" => week(vals, cols.default_week_format()),
-        "WEEKOFYEAR" => week_of_year_builtin(vals),
         "TIDB_PARSE_TSO_LOGICAL" => tidb_parse_tso_logical(vals),
         "TIDB_BOUNDED_STALENESS" => tidb_bounded_staleness(vals, cols),
         "TIDB_CURRENT_TSO" => current_tso(vals, cols),
         "GET_FORMAT" => get_format_value(vals),
         "YEARWEEK" => yearweek(vals),
-        "MONTHNAME" => monthname(vals),
-        "DAYNAME" => dayname(vals),
-        "LAST_DAY" => last_day(vals),
         "TIME_TO_SEC" => time_to_sec(vals),
         "SEC_TO_TIME" => sec_to_time(vals),
         "MAKEDATE" => makedate(vals),
@@ -429,129 +419,6 @@ fn format_time_only(secs: i64, nanos: u32, fsp: u32, round: bool) -> String {
     format!("{}{}", format_hms(secs), frac_suffix(nanos, fsp))
 }
 
-fn single_date(vals: &[Datum]) -> Result<Option<(i64, u32, u32)>, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    Ok(coerce_str(&vals[0])?.and_then(|s| parse_date_ymd(&s)))
-}
-
-/// Parses a date/datetime argument at the same value boundary as Go's
-/// `EvalTime`.  [`parse_date_ymd`] intentionally ignores a trailing time
-/// suffix because date-part functions only need the calendar fields; the
-/// `LAST_DAY` signature still rejects a malformed suffix (for example
-/// `23:59:61`) before it computes the month end.
-fn single_datetime(vals: &[Datum]) -> Result<Option<(i64, u32, u32)>, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(value) = coerce_str(&vals[0])? else {
-        return Ok(None);
-    };
-    let value = value.trim();
-    let (date, time) = value
-        .split_once(char::is_whitespace)
-        .map_or((value, None), |(date, time)| (date, Some(time.trim())));
-    let Some(ymd) = parse_date_ymd(date) else {
-        return Ok(None);
-    };
-    if let Some(time) = time {
-        if calendar::parse_time_with_fraction(time).is_none() {
-            return Ok(None);
-        }
-    }
-    Ok(Some(ymd))
-}
-
-/// `builtinMonthSig.evalInt` in `pkg/expression/builtin_time.go`.
-///
-/// The source returns the stored month field directly with no zero
-/// rejection, because `monthFunctionClass` declares its argument
-/// `types.ETDatetime` (`builtin_time.go:1116`) and so receives a value
-/// `EvalTime` already produced non-NULL — see [`calendar::component_date`].
-fn month(vals: &[Datum]) -> Result<Datum, EvalError> {
-    Ok(calendar::component_date(vals)?
-        .map_or(Datum::Null, |(_, month, _)| Datum::Int(i64::from(month))))
-}
-
-/// `builtinDayOfMonthSig.evalInt` in `pkg/expression/builtin_time.go`.
-///
-/// The source returns the stored day field directly with no zero rejection,
-/// because `dayOfMonthFunctionClass` declares its argument
-/// `types.ETDatetime` (`builtin_time.go:1284`) and so receives a value
-/// `EvalTime` already produced non-NULL — see [`calendar::component_date`].
-fn day_of_month(vals: &[Datum]) -> Result<Datum, EvalError> {
-    Ok(calendar::component_date(vals)?
-        .map_or(Datum::Null, |(_, _, day)| Datum::Int(i64::from(day))))
-}
-
-/// `builtinDayOfWeekSig.evalInt`: Sunday is 1 through Saturday 7. Invalid
-/// zero dates are NULL in Go even when EvalTime is configured to parse them.
-fn day_of_week(vals: &[Datum]) -> Result<Datum, EvalError> {
-    Ok(
-        single_date(vals)?.map_or(Datum::Null, |(year, month, day)| {
-            Datum::Int((days_from_civil(year, month, day) + 4).rem_euclid(7) + 1)
-        }),
-    )
-}
-
-/// `builtinDayOfYearSig.evalInt`: one-based day within the calendar year.
-/// Invalid zero dates are NULL before this calculation in the Go evaluator.
-fn day_of_year(vals: &[Datum]) -> Result<Datum, EvalError> {
-    Ok(
-        single_date(vals)?.map_or(Datum::Null, |(year, month, day)| {
-            Datum::Int(days_from_civil(year, month, day) - days_from_civil(year, 1, 1) + 1)
-        }),
-    )
-}
-
-/// `builtinWeekDaySig.evalInt`: Monday is 0 through Sunday 6. Like
-/// DAYOFWEEK, zero and invalid-zero dates are NULL in the source.
-fn weekday(vals: &[Datum]) -> Result<Datum, EvalError> {
-    Ok(
-        single_date(vals)?.map_or(Datum::Null, |(year, month, day)| {
-            Datum::Int((days_from_civil(year, month, day) + 3).rem_euclid(7))
-        }),
-    )
-}
-
-/// `builtinQuarterSig.evalInt` = `(date.Month() + 2) / 3`, returning 1-4 for
-/// a real date and `0` for a month-zero one — with no zero rejection, because
-/// `quarterFunctionClass` declares its argument `types.ETDatetime`
-/// (`builtin_time.go:5833`) and so receives a value `EvalTime` already
-/// produced non-NULL. Real TiDB's recorded `QUARTER(v1)` over a
-/// zero-datetime column is `0`; `gorun` confirms `QUARTER(20240000)` is `0`
-/// too, by the same stored month.
-///
-/// The month-zero string form no longer needs a parser of its own here: the
-/// ETDatetime cast ([`crate::arg_eval_type`]) is what decides a string, and
-/// it is `types.ParseTime` under the READ path's `IgnoreZeroInDate`, which
-/// keeps a zero month exactly as Go does.
-fn quarter(vals: &[Datum]) -> Result<Datum, EvalError> {
-    Ok(
-        calendar::component_date(vals)?.map_or(Datum::Null, |(_, month, _)| {
-            Datum::Int(i64::from(month.div_ceil(3)))
-        }),
-    )
-}
-
-/// `builtinWeekWithModeSig` / `builtinWeekWithoutModeSig` in
-/// `pkg/expression/builtin_time.go`. Only the no-mode branch uses the
-/// supplied session `default_week_format`; a caller with no session passes
-/// TiDB's default zero.
-/// `WEEKOFYEAR(date)`. Port of `builtinWeekOfYearSig.evalInt`, which is
-/// `date.Week(3)` — the ISO-like mode-3 week number. Zero and invalid dates are
-/// NULL, matching `week`.
-fn week_of_year_builtin(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(date) = coerce_str(&vals[0])?.and_then(|s| parse_date_ymd(&s)) else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int(week_of_year(date.0, date.1, date.2, 3, false).1))
-}
-
 /// The low 18 bits of a TSO carry its logical component (`oracle`'s
 /// `physicalShiftBits = 18`, `logicalBits = (1<<18)-1`).
 const TSO_LOGICAL_BITS: i64 = (1 << 18) - 1;
@@ -678,53 +545,6 @@ fn yearweek(vals: &[Datum]) -> Result<Datum, EvalError> {
         i64::from(u32::MAX)
     } else {
         result
-    }))
-}
-
-/// `builtinMonthNameSig` in `pkg/expression/builtin_time.go`.
-fn monthname(vals: &[Datum]) -> Result<Datum, EvalError> {
-    const MONTHS: [&str; 12] = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ];
-    Ok(single_date(vals)?.map_or(Datum::Null, |(_, month, _)| {
-        Datum::new_string(MONTHS[(month - 1) as usize].to_string())
-    }))
-}
-
-/// `builtinDayNameSig` in `pkg/expression/builtin_time.go`.
-fn dayname(vals: &[Datum]) -> Result<Datum, EvalError> {
-    const DAYS: [&str; 7] = [
-        "Sunday",
-        "Monday",
-        "Tuesday",
-        "Wednesday",
-        "Thursday",
-        "Friday",
-        "Saturday",
-    ];
-    Ok(single_date(vals)?.map_or(Datum::Null, |(y, m, d)| {
-        Datum::new_string(DAYS[(days_from_civil(y, m, d) + 4).rem_euclid(7) as usize].to_string())
-    }))
-}
-
-/// `builtinLastDaySig` in `pkg/expression/builtin_time.go`.
-fn last_day(vals: &[Datum]) -> Result<Datum, EvalError> {
-    Ok(single_datetime(vals)?.map_or(Datum::Null, |(y, m, _)| {
-        let next_month = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
-        let (last_y, last_m, last_d) =
-            civil_from_days(days_from_civil(next_month.0, next_month.1, 1) - 1);
-        Datum::new_string(format!("{last_y:04}-{last_m:02}-{last_d:02}"))
     }))
 }
 

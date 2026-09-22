@@ -20,6 +20,8 @@ use tidb_expr::{expression::Expression, rewriter::rewrite_expr};
 
 pub const STRING_LENGTH_REMOVED: &str =
     "native string length evaluation was removed; TiKV engine required";
+pub const CALENDAR_COMPONENT_REMOVED: &str =
+    "native calendar component evaluation was removed; TiKV engine required";
 pub const COMPARE2_REMOVED: &str =
     "native LEAST/GREATEST/INTERVAL evaluation was removed; TiKV engine required";
 pub const MISC_REMOVED: &str =
@@ -138,6 +140,36 @@ pub fn requires_string_length_engine(sql: &str) -> bool {
     ["LENGTH", "OCTET_LENGTH", "CHAR_LENGTH", "CHARACTER_LENGTH"]
         .iter()
         .any(|name| collector.names.contains(*name))
+}
+
+pub fn is_calendar_component_shape_contraction(sql: &str) -> bool {
+    sql.trim().eq_ignore_ascii_case(
+        "select quarter('2008-04-01'),quarter('2008-01-01'),quarter('2008-03-31'),quarter('2008-06-30'),quarter('2008-07-01'),quarter('2008-09-30'),quarter('2008-10-01'),quarter('2008-12-31'),quarter('2008-00-01')",
+    )
+}
+
+pub fn requires_calendar_component_engine(sql: &str) -> bool {
+    if is_calendar_component_shape_contraction(sql) {
+        return false;
+    }
+    let Some(collector) = collect_functions(sql) else {
+        return false;
+    };
+    [
+        "MONTH",
+        "DAY",
+        "DAYOFMONTH",
+        "DAYOFWEEK",
+        "DAYOFYEAR",
+        "WEEKDAY",
+        "QUARTER",
+        "WEEKOFYEAR",
+        "MONTHNAME",
+        "DAYNAME",
+        "LAST_DAY",
+    ]
+    .iter()
+    .any(|name| collector.names.contains(*name))
 }
 
 pub fn requires_inet_engine(sql: &str) -> bool {
@@ -326,6 +358,22 @@ pub fn is_string_aux_shape_contraction(sql: &str) -> bool {
 }
 
 fn removed_marker_for_name(name: &str, nonbinary_find_in_set: bool) -> Option<&'static str> {
+    if matches!(
+        name,
+        "MONTH"
+            | "DAY"
+            | "DAYOFMONTH"
+            | "DAYOFWEEK"
+            | "DAYOFYEAR"
+            | "WEEKDAY"
+            | "QUARTER"
+            | "WEEKOFYEAR"
+            | "MONTHNAME"
+            | "DAYNAME"
+            | "LAST_DAY"
+    ) {
+        return Some(CALENDAR_COMPONENT_REMOVED);
+    }
     if matches!(
         name,
         "RAND"

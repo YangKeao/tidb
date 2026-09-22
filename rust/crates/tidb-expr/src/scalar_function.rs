@@ -957,6 +957,11 @@ impl ScalarFunction {
                 "native string length evaluation was removed; TiKV engine required",
             ));
         }
+        if crate::func::is_removed_native_calendar_component(self.func_name.lowercase()) {
+            return Err(EvalError::Unsupported(
+                "native calendar component evaluation was removed; TiKV engine required",
+            ));
+        }
         if crate::func::is_removed_native_misc(self.func_name.lowercase()) {
             return Err(EvalError::Unsupported(
                 "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",

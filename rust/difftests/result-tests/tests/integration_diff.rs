@@ -802,6 +802,7 @@ fn requires_engine_statement(sql: &str) -> bool {
         && (is_any_value_statement(sql)
             || removed_native::requires_string2_engine(sql)
             || removed_native::requires_string_length_engine(sql)
+            || removed_native::requires_calendar_component_engine(sql)
             || removed_native::requires_inet_engine(sql)
             || removed_native::requires_radix_engine(sql)
             || removed_native::requires_string_aux_engine(sql))
@@ -811,6 +812,7 @@ fn is_engine_shape_contraction(sql: &str) -> bool {
     if removed_native::is_radix_shape_contraction(sql)
         || removed_native::is_string_aux_shape_contraction(sql)
         || removed_native::is_string_length_shape_contraction(sql)
+        || removed_native::is_calendar_component_shape_contraction(sql)
     {
         return true;
     }
@@ -916,6 +918,39 @@ fn admitted_string_length_statements_execute_tikv_rows() {
             "required string-length statement executed no TiKV row: {sql}"
         );
     }
+}
+
+#[test]
+fn admitted_calendar_components_execute_tikv_rows_with_independent_values() {
+    let mut session = Session::new();
+    session.set_tikv_expression_backend(Some(tidb_session::TikvExpressionBackend::Copying));
+    let sql = "select month('2024-03-15'), dayofweek('2024-03-15'), monthname('2024-03-15'), last_day('2024-03-15'), weekofyear('2024-03-15')";
+    assert!(requires_engine_statement(sql));
+    let before = session.tikv_expression_rows();
+    let result = session
+        .run(sql)
+        .unwrap_or_else(|error| panic!("required calendar statement failed: {error:?}"));
+    let tidb_session::StmtResult::Rows(rows) = result else {
+        panic!("required calendar statement returned no rows")
+    };
+    assert_eq!(
+        rows,
+        vec![vec![
+            Datum::Int(3),
+            Datum::Int(6),
+            Datum::new_string("March".to_owned()),
+            Datum::Time(
+                tidb_datatype::Time::new(
+                    tidb_datatype::CoreTime::from_date(2024, 3, 31, 0, 0, 0, 0),
+                    tidb_datatype::TimeType::Date,
+                    0,
+                )
+                .unwrap(),
+            ),
+            Datum::Int(11),
+        ]]
+    );
+    assert!(session.tikv_expression_rows() > before);
 }
 
 #[test]

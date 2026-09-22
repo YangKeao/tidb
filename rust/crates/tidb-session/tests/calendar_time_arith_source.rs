@@ -4,6 +4,19 @@
 
 use tidb_session::Session;
 
+fn assert_calendar_removed(session: &mut Session, sql: &str, former_expected: &str) {
+    let Err(tidb_executor::DriverError::Exec(tidb_executor::ExecError::Eval(
+        tidb_executor::EvalError::Unsupported(message),
+    ))) = session.run(sql)
+    else {
+        panic!("{sql}: expected calendar contraction; former {former_expected}")
+    };
+    assert_eq!(
+        message, "native calendar component evaluation was removed; TiKV engine required",
+        "{sql}: former {former_expected}"
+    );
+}
+
 fn try_sql(session: &mut Session, sql: &str) -> String {
     match session.run(sql) {
         Ok(tidb_session::StmtResult::Rows(rows)) => rows
@@ -33,24 +46,32 @@ fn week_and_time_arithmetic() {
     let mut session = Session::new();
 
     // YEARWEEK counts the year belonging to the WEEK, not the date.
-    assert_eq!(
-        try_sql(&mut session, "select weekofyear('2024-01-04'), yearweek('2024-01-04')"),
-        "i:1|i:202353"
+    assert_calendar_removed(
+        &mut session,
+        "select weekofyear('2024-01-04'), yearweek('2024-01-04')",
+        "i:1|i:202353",
     );
 
     // ODBC numbering: 2024-02-15 is a Thursday (5), day 46 of the year.
-    assert_eq!(
-        try_sql(&mut session, "select dayofweek('2024-02-15'), dayofyear('2024-02-15')"),
-        "i:5|i:46"
+    assert_calendar_removed(
+        &mut session,
+        "select dayofweek('2024-02-15'), dayofyear('2024-02-15')",
+        "i:5|i:46",
     );
 
     // Both directions cross midnight.
     assert_eq!(
-        try_sql(&mut session, "select addtime('2024-01-01 23:00:00', '02:00:00')"),
+        try_sql(
+            &mut session,
+            "select addtime('2024-01-01 23:00:00', '02:00:00')"
+        ),
         "s:2024-01-02 01:00:00"
     );
     assert_eq!(
-        try_sql(&mut session, "select subtime('2024-01-01 01:00:00', '02:00:00')"),
+        try_sql(
+            &mut session,
+            "select subtime('2024-01-01 01:00:00', '02:00:00')"
+        ),
         "s:2023-12-31 23:00:00"
     );
 }

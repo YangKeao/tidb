@@ -217,14 +217,18 @@ fn vec_month_zero_dates_stay_warning_free_in_both_flag_modes() {
             level,
         };
         for row in [&zero, &Datum::Null, &zero] {
+            let former = if matches!(row, Datum::Null) {
+                Datum::Null
+            } else {
+                Datum::Int(0)
+            };
             assert_eq!(
-                dispatched("MONTH", std::slice::from_ref(row), &sink),
-                if matches!(row, Datum::Null) {
-                    Datum::Null
-                } else {
-                    Datum::Int(0)
-                },
-                "MONTH({row:?}) at truncate level {level:?}"
+                crate::func::eval_func_values_in("MONTH", std::slice::from_ref(row), &sink)
+                    .expect("removed MONTH is claimed"),
+                Err(EvalError::Unsupported(
+                    "native calendar component evaluation was removed; TiKV engine required"
+                )),
+                "MONTH({row:?}) at truncate level {level:?}; former {former:?}"
             );
         }
         assert!(
