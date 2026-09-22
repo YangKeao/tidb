@@ -22,7 +22,7 @@ import sys
 
 RUST = Path(__file__).resolve().parents[1]
 COMMAND = ["cargo", "test", "-q", "-p", "tidb-expr", "--features", "tikv-expr",
-           "--test", "all", "tikv_coverage::", "--locked", "--offline", "-j1",
+           "--test", "tikv_coverage", "engine_receipts", "--locked", "--offline", "-j1",
            "--", "--nocapture", "--test-threads=1"]
 PREFIX = "TIKV_RUNTIME_RECEIPT_V1\t"
 

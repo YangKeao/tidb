@@ -544,17 +544,26 @@ remain in the workspace.
       implementation. The tranche is seven insertions / 990 deletions; locked
       offline compilation, focused session tests and the SQL demo pass with five
       TiKV engine rows and refused no-context replay.
-- [ ] Post-tranche-36 deletion frontier (2026-03-24): the remaining source
+- [x] Thirty-seventh evidence tranche: generate and check the complete current
+      unsupported inventory (384 admission rows: 211 admitted, 173 excluded, 0
+      missing), refresh the lexical native-call-site audit, and split the runtime
+      receipt corpus into a dedicated engine-only test target rather than
+      compiling intentionally contracted legacy native-comparison tests. The
+      reviewed runtime baseline now passes 8 positive tests / 281 fixtures /
+      1,834 engine rows / 160 borrowed rows / 0 native fallbacks. The default
+      SQL demo independently records five engine rows and refuses its deliberate
+      no-context replay probe.
+- [ ] Post-tranche-37 deletion frontier (2026-03-24): the remaining source
       inventory is intentionally measured before another cut, not counted as
       native-kernel LOC. `builtin_ext/json` is only a 128-line cast/type bridge
       and `time_fn`/`ops` are absent. The four core dispatch/bridge files total
       5,029 lines (`scalar_function.rs` 1,647, `evaluator.rs` 2,227, `cast.rs`
       663 and `lib.rs` 492); executor datum ordering is another 32 lines. The
       next physical cut should separate and delete the remaining generic
-      comparison/coercion helpers while retaining parser,
-      result-type, transport and TiKV lowering pieces. This snapshot prevents the outside-call-site
-      audit from being mistaken for completion: substantial native expression
-      implementation remains.
+      comparison/coercion helpers while retaining parser, result-type, transport
+      and TiKV lowering pieces. This snapshot prevents the outside-call-site
+      audit from being mistaken for completion: substantial bridge and retained
+      source classification work remains.
 - [x] Twenty-sixth physical-deletion tranche: delete the native
       FROM_UNIXTIME and UNIX_TIMESTAMP session-zone kernels plus the complete
       `time_fn/session_tz.rs` module (489 lines), including fixed/named-zone,

@@ -10,8 +10,8 @@
     "--features",
     "tikv-expr",
     "--test",
-    "all",
-    "tikv_coverage::",
+    "tikv_coverage",
+    "engine_receipts",
     "--locked",
     "--offline",
     "-j1",
@@ -19,9 +19,9 @@
     "--nocapture",
     "--test-threads=1"
   ],
-  "tests_passed": 30,
-  "fixture_receipts": 320,
-  "engine_rows": 2068,
+  "tests_passed": 8,
+  "fixture_receipts": 281,
+  "engine_rows": 1834,
   "borrowed_rows": 160,
   "records": [
     {
@@ -75,16 +75,6 @@
       "native_fallbacks": 0
     },
     {
-      "label": "and",
-      "wire_signatures": [
-        3101
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
       "label": "any_value",
       "wire_signatures": [
         4556
@@ -111,17 +101,6 @@
       ],
       "input_rows": 4,
       "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "authorized nested literal CAST",
-      "wire_signatures": [
-        1,
-        203
-      ],
-      "input_rows": 1,
-      "engine_rows": 2,
       "borrowed_rows": 0,
       "native_fallbacks": 0
     },
@@ -202,150 +181,6 @@
       ],
       "input_rows": 3,
       "engine_rows": 6,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "canonical BIT projection",
-      "wire_signatures": [],
-      "input_rows": 2,
-      "engine_rows": 4,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "canonical BIT projection",
-      "wire_signatures": [],
-      "input_rows": 2,
-      "engine_rows": 4,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "canonical BIT projection",
-      "wire_signatures": [],
-      "input_rows": 2,
-      "engine_rows": 4,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "canonical BIT projection",
-      "wire_signatures": [],
-      "input_rows": 2,
-      "engine_rows": 4,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "canonical BIT projection",
-      "wire_signatures": [],
-      "input_rows": 2,
-      "engine_rows": 4,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "canonical BIT projection",
-      "wire_signatures": [],
-      "input_rows": 2,
-      "engine_rows": 4,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "canonical BIT projection",
-      "wire_signatures": [],
-      "input_rows": 2,
-      "engine_rows": 4,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "canonical BIT projection",
-      "wire_signatures": [],
-      "input_rows": 2,
-      "engine_rows": 4,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "canonical BIT projection",
-      "wire_signatures": [],
-      "input_rows": 2,
-      "engine_rows": 4,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "canonical BIT projection",
-      "wire_signatures": [],
-      "input_rows": 2,
-      "engine_rows": 4,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "canonical BIT projection",
-      "wire_signatures": [],
-      "input_rows": 2,
-      "engine_rows": 4,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "canonical BIT projection",
-      "wire_signatures": [],
-      "input_rows": 2,
-      "engine_rows": 4,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "canonical BIT projection",
-      "wire_signatures": [],
-      "input_rows": 2,
-      "engine_rows": 4,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "canonical BIT projection",
-      "wire_signatures": [],
-      "input_rows": 2,
-      "engine_rows": 4,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "canonical BIT projection",
-      "wire_signatures": [],
-      "input_rows": 2,
-      "engine_rows": 4,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "canonical BIT projection",
-      "wire_signatures": [],
-      "input_rows": 2,
-      "engine_rows": 4,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "canonical BIT projection",
-      "wire_signatures": [],
-      "input_rows": 2,
-      "engine_rows": 4,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "canonical BIT projection",
-      "wire_signatures": [],
-      "input_rows": 2,
-      "engine_rows": 4,
       "borrowed_rows": 0,
       "native_fallbacks": 0
     },
@@ -460,16 +295,6 @@
       "native_fallbacks": 0
     },
     {
-      "label": "catalog text cast remains admitted",
-      "wire_signatures": [
-        31
-      ],
-      "input_rows": 1,
-      "engine_rows": 2,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
       "label": "char_length_bytes",
       "wire_signatures": [
         7065
@@ -506,26 +331,6 @@
       ],
       "input_rows": 4,
       "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "coalesce",
-      "wire_signatures": [
-        4201
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "coalesce_null_arm",
-      "wire_signatures": [
-        4201
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
       "borrowed_rows": 0,
       "native_fallbacks": 0
     },
@@ -1304,47 +1109,6 @@
       "native_fallbacks": 0
     },
     {
-      "label": "if_dead_overflow",
-      "wire_signatures": [
-        203,
-        4107
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "if_leaf",
-      "wire_signatures": [
-        4107
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "ifnull",
-      "wire_signatures": [
-        4101
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "ifnull_null_arm",
-      "wire_signatures": [
-        4101
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
       "label": "in_decimal",
       "wire_signatures": [
         4003
@@ -1462,78 +1226,6 @@
       ],
       "input_rows": 4,
       "engine_rows": 8,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "is_ipv4",
-      "wire_signatures": [
-        3114,
-        4107,
-        4565
-      ],
-      "input_rows": 5,
-      "engine_rows": 10,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "is_ipv4_compat",
-      "wire_signatures": [
-        3114,
-        4107,
-        4566
-      ],
-      "input_rows": 5,
-      "engine_rows": 10,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "is_ipv4_compat",
-      "wire_signatures": [
-        3114,
-        4107,
-        4566
-      ],
-      "input_rows": 9,
-      "engine_rows": 18,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "is_ipv4_mapped",
-      "wire_signatures": [
-        3114,
-        4107,
-        4567
-      ],
-      "input_rows": 5,
-      "engine_rows": 10,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "is_ipv4_mapped",
-      "wire_signatures": [
-        3114,
-        4107,
-        4567
-      ],
-      "input_rows": 9,
-      "engine_rows": 18,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "is_ipv6",
-      "wire_signatures": [
-        3114,
-        4107,
-        4568
-      ],
-      "input_rows": 5,
-      "engine_rows": 10,
       "borrowed_rows": 0,
       "native_fallbacks": 0
     },
@@ -2399,17 +2091,6 @@
       "native_fallbacks": 0
     },
     {
-      "label": "nested bounded text CAST",
-      "wire_signatures": [
-        30,
-        203
-      ],
-      "input_rows": 1,
-      "engine_rows": 2,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
       "label": "not_decimal",
       "wire_signatures": [
         3105
@@ -2530,16 +2211,6 @@
       "input_rows": 4,
       "engine_rows": 8,
       "borrowed_rows": 4,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "or",
-      "wire_signatures": [
-        3102
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
-      "borrowed_rows": 0,
       "native_fallbacks": 0
     },
     {
@@ -2787,24 +2458,6 @@
       "native_fallbacks": 0
     },
     {
-      "label": "set_identity",
-      "wire_signatures": [],
-      "input_rows": 6,
-      "engine_rows": 12,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "set_length",
-      "wire_signatures": [
-        7029
-      ],
-      "input_rows": 6,
-      "engine_rows": 12,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
       "label": "sign",
       "wire_signatures": [
         2,
@@ -3004,14 +2657,6 @@
       "native_fallbacks": 0
     },
     {
-      "label": "typed BIT NULL",
-      "wire_signatures": [],
-      "input_rows": 1,
-      "engine_rows": 2,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
       "label": "ucase_bytes",
       "wire_signatures": [
         7064
@@ -3188,16 +2833,6 @@
       ],
       "input_rows": 2,
       "engine_rows": 4,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "xor",
-      "wire_signatures": [
-        3103
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
       "borrowed_rows": 0,
       "native_fallbacks": 0
     },

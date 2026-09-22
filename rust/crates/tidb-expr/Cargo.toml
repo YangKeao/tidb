@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Constant-expression evaluator over the TiDB AST (Phase 0/1 seed of tidb-expr)."
+description = "TiDB expression AST, planning metadata, and TiKV engine lowering."
 
 autotests = false
 build = "../../scripts/aggregate-tests.rs"
@@ -52,6 +52,11 @@ tempfile = { workspace = true }
 [[test]]
 name = "all"
 path = "tests/all.rs"
+
+[[test]]
+name = "tikv_coverage"
+path = "tests/tikv_coverage.rs"
+required-features = ["tikv-expr"]
 
 [[bench]]
 name = "tikv_expression"
