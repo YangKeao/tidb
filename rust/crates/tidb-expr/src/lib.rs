@@ -82,17 +82,6 @@
 //! (including `TO_DAYS('0000-01-01') = 1`) and expose absolute day/second
 //! numbers rather than differences. They reject malformed time suffixes and
 //! zero-date components at the value boundary.
-//! `FROM_DAYS` is `TO_DAYS`'s inverse ([`time_fn::calendar::civil_from_days`], the
-//! complementary half of the same well-known algorithm as
-//! `days_from_civil`), producing a `YYYY-MM-DD` string (still no dedicated
-//! `DATE` value domain — a `goeval` `STR:` label was reused rather than
-//! adding a new `DATE:` one, for direct comparability with how every other
-//! date-shaped value in this crate is already represented); it returns
-//! MySQL's "zero date" string outside the valid year `0001`-`9999` range,
-//! except for a narrow, clearly-anomalous real-TiDB `NULL` sub-band just
-//! above that range, deliberately not reproduced (documented on
-//! [`time_fn::calendar::from_days`] itself).
-//!
 //! `DATE_ADD`/`DATE_SUB(date, INTERVAL amount unit)` are also covered, for
 //! `DAY`, `WEEK`, `MONTH`, `QUARTER`, `YEAR`, `HOUR`, `MINUTE`, `SECOND`, and every
 //! COMPOSITE unit (`YEAR_MONTH`, `DAY_HOUR`, `DAY_MINUTE`, `DAY_SECOND`,
@@ -101,8 +90,8 @@
 //! for the composite split rules, ported from `parseTimeValue`
 //! (`pkg/types/time.go`)).
 //! `DAY` is exact day arithmetic via the same
-//! `days_from_civil`/`civil_from_days` round-trip `TO_DAYS`/`FROM_DAYS`
-//! use, so month/year rollover and leap days are handled correctly for
+//! `days_from_civil`/`civil_from_days` round-trip, so month/year rollover
+//! and leap days are handled correctly for
 //! free (`2021-01-31 + 1 DAY` = `2021-02-01`, `2020-02-28 + 1 DAY` =
 //! `2020-02-29`); `WEEK` is `DAY` with the (already-rounded) amount
 //! pre-multiplied by 7. `MONTH`/`YEAR` are a genuinely DIFFERENT
@@ -949,31 +938,12 @@ pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
         Expr::Extract { unit, value } => {
             time_fn::extract::extract(unit, &eval_in(value, cols)?, None, cols)
         }
-        // `TIMESTAMPADD(unit, n, datetime)`'s unit is a dedicated AST field
-        // rather than an argument expression (see
-        // `tidb_ast::Expr::TimestampAdd`), and Go's
-        // `builtinTimestampAddSig.evalString` reads it as its first VALUE --
-        // so the same implementation the chunk tier reaches through the
-        // rewriter runs here with the unit prepended as a string datum.
-        Expr::TimestampAdd {
-            unit,
-            interval,
-            expr,
-        } => {
-            let vals = vec![
-                Datum::new_string(unit.clone()),
-                eval_in(interval, cols)?,
-                eval_in(expr, cols)?,
-            ];
-            // This arm builds its own argument list, so it must impose the
-            // declared argument eval types itself: Go's
-            // `timestampAddFunctionClass` declares
-            // `types.ETString, types.ETString, types.ETReal, types.ETDatetime`
-            // (`builtin_time.go:6551`), and the signature body is entitled to
-            // a DATETIME third argument either way it is reached.
-            let vals = arg_eval_type::wrap_datetime_args("TIMESTAMPADD", vals, &[], cols)?;
-            time_fn::add_sub::timestamp_add(&vals, cols)
-        }
+        // TIMESTAMPADD has a dedicated AST shape. Refuse before evaluating
+        // either child so removing its native kernel cannot introduce eager
+        // effects or a fallback path.
+        Expr::TimestampAdd { .. } => Err(EvalError::Unsupported(
+            "native temporal residual evaluation was removed; function unsupported",
+        )),
         // Native GET_FORMAT evaluation was removed. Refuse before evaluating
         // the location child so an unsupported shape cannot produce effects.
         Expr::GetFormat { .. } => Err(EvalError::Unsupported(

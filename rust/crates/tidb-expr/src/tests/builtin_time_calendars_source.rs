@@ -69,6 +69,24 @@ fn assert_temporal_clock_removed(name: &str, vals: &[Datum], former: Datum) {
     );
 }
 
+fn assert_temporal_residual_removed(name: &str, vals: &[Datum], former: Datum) {
+    assert_eq!(
+        crate::func::eval_func_values_in(name, vals, &NoColumns),
+        Some(Err(EvalError::Unsupported(
+            "native temporal residual evaluation was removed; function unsupported"
+        ))),
+        "{name}; former {former:?}"
+    );
+}
+
+fn assert_temporal_residual_sql_removed(sql: &str, former: &str) {
+    assert_eq!(
+        e(sql),
+        "Unsupported(\"native temporal residual evaluation was removed; function unsupported\")",
+        "{sql}; former {former}"
+    );
+}
+
 fn assert_temporal_tail_removed(name: &str, vals: &[Datum], former: Datum) {
     assert_eq!(
         crate::func::eval_func_values_in(name, vals, &NoColumns),
@@ -660,7 +678,7 @@ fn timestamp_add_delimited_rows_match_master() {
         ),
     ];
     for (sql, want) in cases {
-        assert_eq!(e(sql), format!("STR:{want}"), "{sql}");
+        assert_temporal_residual_sql_removed(sql, want);
     }
     // Range exits answer NULL under a 1292-shaped warning (Go's "" rows);
     // leap-day folding stays symmetric across the pivot.
@@ -668,7 +686,7 @@ fn timestamp_add_delimited_rows_match_master() {
         "timestampadd(MONTH, 3, '9999-10-29')",
         "timestampadd(MONTH, -3, '0001-01-29')",
     ] {
-        assert_eq!(e(sql), "NULL", "{sql}");
+        assert_temporal_residual_sql_removed(sql, "NULL");
     }
 }
 
@@ -678,11 +696,11 @@ fn timestamp_add_delimited_rows_match_master() {
 /// documentary comment on the larger delimited table.
 #[test]
 fn timestamp_add_numeric_date_arguments_match_master() {
-    assert_eq!(
-        e("timestampadd(MICROSECOND, 1, 950501)"),
-        "STR:1995-05-01 00:00:00.000001"
+    assert_temporal_residual_sql_removed(
+        "timestampadd(MICROSECOND, 1, 950501)",
+        "1995-05-01 00:00:00.000001",
     );
-    assert_eq!(e("timestampadd(DAY, 28768, 0)"), "NULL");
+    assert_temporal_residual_sql_removed("timestampadd(DAY, 28768, 0)", "NULL");
 }
 
 /// GO PORT of `builtin_time_test.go:3035 TestPeriodAdd`'s failing row and
@@ -777,7 +795,6 @@ fn with_time_zone_clock_builtins_render_the_session_zone() {
 /// int or string -- are NULL.
 #[test]
 fn tidb_parse_tso_master_vectors_under_utc() {
-    let utc = ZonedNoColumns(SessionTimeZone::utc());
     for (arg, want) in [
         (
             Datum::Int(404_411_537_129_996_288),
@@ -789,11 +806,7 @@ fn tidb_parse_tso_master_vectors_under_utc() {
         ),
         (Datum::Int(1), "STR:1970-01-01 00:00:00.000000"),
     ] {
-        assert_eq!(
-            dispatched("TIDB_PARSE_TSO", &[arg.clone()], &utc).label(),
-            want,
-            "{arg:?}"
-        );
+        assert_temporal_residual_removed("TIDB_PARSE_TSO", &[arg], Datum::new_string(want));
     }
     for arg in [
         Datum::Int(0),
@@ -801,11 +814,7 @@ fn tidb_parse_tso_master_vectors_under_utc() {
         Datum::new_string("-1"),
         Datum::Null,
     ] {
-        assert_eq!(
-            dispatched("TIDB_PARSE_TSO", &[arg.clone()], &utc),
-            Datum::Null,
-            "{arg:?}"
-        );
+        assert_temporal_residual_removed("TIDB_PARSE_TSO", &[arg], Datum::Null);
     }
 }
 

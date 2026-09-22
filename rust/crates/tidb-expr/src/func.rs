@@ -19,7 +19,7 @@ use tidb_ast::{BinaryOp, Expr};
 use crate::coerce::{bool_int, truthy_of};
 use crate::eval_in;
 use crate::row::row_compare;
-use crate::time_fn::calendar::{date_add, date_diff, date_format, date_part, from_days, time_part};
+use crate::time_fn::calendar::{date_add, date_diff, date_format, date_part, time_part};
 use crate::{Columns, Datum, EvalError};
 
 /// Native math kernels were physically removed. Keep the names only as an
@@ -212,6 +212,15 @@ pub(crate) fn is_removed_native_temporal_clock(name: &str) -> bool {
     )
 }
 
+/// Remaining temporal kernels excluded from TiKV admission were removed and
+/// are explicit contractions.
+pub(crate) fn is_removed_native_temporal_residual(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "CONVERT_TZ" | "FROM_DAYS" | "TIDB_PARSE_TSO" | "TIMESTAMPADD"
+    )
+}
+
 /// Native temporal kernels with no admitted TiKV lowering were removed and
 /// are explicit contractions.
 pub(crate) fn is_removed_native_temporal_tail(name: &str) -> bool {
@@ -373,6 +382,11 @@ pub(crate) fn eval_func(
     if is_removed_native_temporal_clock(&name) {
         return Err(EvalError::Unsupported(
             "native temporal clock evaluation was removed; function unsupported",
+        ));
+    }
+    if is_removed_native_temporal_residual(&name) {
+        return Err(EvalError::Unsupported(
+            "native temporal residual evaluation was removed; function unsupported",
         ));
     }
     if is_removed_native_temporal_tail(&name) {
@@ -797,6 +811,11 @@ pub(crate) fn eval_func_values_in(
             "native temporal clock evaluation was removed; function unsupported",
         )));
     }
+    if is_removed_native_temporal_residual(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native temporal residual evaluation was removed; function unsupported",
+        )));
+    }
     if is_removed_native_temporal_tail(name) {
         return Some(Err(EvalError::Unsupported(
             "native temporal tail evaluation was removed; function unsupported",
@@ -905,6 +924,11 @@ pub(crate) fn eval_func_values(
     if is_removed_native_temporal_clock(name) {
         return Some(Err(EvalError::Unsupported(
             "native temporal clock evaluation was removed; function unsupported",
+        )));
+    }
+    if is_removed_native_temporal_residual(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native temporal residual evaluation was removed; function unsupported",
         )));
     }
     if is_removed_native_temporal_tail(name) {
@@ -1198,8 +1222,6 @@ pub(crate) fn eval_func_values(
         // doesn't matter since only the difference is observable.
         // `TO_DAYS`/`TO_SECONDS`: zero-date calendar arithmetic owned by the
         // time-family module, including strict invalid-suffix handling.
-        // `FROM_DAYS`: the reverse of `TO_DAYS` (see `time_fn::calendar::from_days`).
-        "FROM_DAYS" => from_days(vals),
         "DATEDIFF" if vals.len() == 2 => date_diff(vals),
         // Family extension modules (`crate::builtin_ext`) — each family owns
         // one module with its own `dispatch(name, vals) -> Option<...>`, so

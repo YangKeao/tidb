@@ -32,11 +32,22 @@ fn try_sql(session: &mut Session, sql: &str) -> String {
 fn day_number_inversion() {
     let mut session = Session::new();
 
-    assert_eq!(try_sql(&mut session, "select to_days('2024-01-01')"), "i:739251");
+    assert_eq!(
+        try_sql(&mut session, "select to_days('2024-01-01')"),
+        "i:739251"
+    );
 
-    // FROM_DAYS of the day number restores the original date (year 2000+).
-    let restored = try_sql(&mut session, "select from_days(to_days('2000-01-01'))");
-    assert!(restored.contains("2000 1 1"), "{restored}");
+    // Former oracle: FROM_DAYS restored 2000-01-01. Its native kernel is
+    // deleted, and the outer guard refuses before evaluating TO_DAYS.
+    let error = session
+        .run("select from_days(to_days('2000-01-01'))")
+        .expect_err("FROM_DAYS must contract");
+    assert!(
+        error
+            .to_string()
+            .contains("native temporal residual evaluation was removed; function unsupported"),
+        "{error}; former oracle: 2000-01-01"
+    );
 
     // TO_SECONDS of a midnight date lands on a whole-day boundary.
     assert_eq!(

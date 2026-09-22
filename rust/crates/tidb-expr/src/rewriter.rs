@@ -1633,30 +1633,11 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
         // but the shared implementation `time_fn::dispatch` already takes the
         // unit as its first VALUE — so the unit becomes a constant argument
         // and the one implementation runs unchanged.
-        // `TIMESTAMPADD(unit, n, datetime)` is the same shape as
-        // `TIMESTAMPDIFF` below: the unit is a dedicated AST field, and
-        // `builtinTimestampAddSig.evalString` reads it as its first VALUE
-        // (`b.args[0].EvalString`), so a constant argument reproduces Go's
-        // own argument list exactly.
-        Expr::TimestampAdd {
-            unit,
-            interval,
-            expr,
-        } => {
-            let args = vec![
-                constant_string(unit),
-                rewrite_expr_resolved(interval, resolver)?,
-                rewrite_expr_resolved(expr, resolver)?,
-            ];
-            let ret_type = builtin_return_type("timestampadd", &args).ok_or(
-                EvalError::Unsupported("this builtin is not yet built for chunk evaluation"),
-            )?;
-            Ok(Expression::ScalarFunction(ScalarFunction::new(
-                CiString::new("timestampadd"),
-                ret_type,
-                args,
-            )))
-        }
+        // TIMESTAMPADD has a dedicated AST shape; its native kernel is gone,
+        // so refuse before rewriting/folding either child.
+        Expr::TimestampAdd { .. } => Err(EvalError::Unsupported(
+            "native temporal residual evaluation was removed; function unsupported",
+        )),
         Expr::TimestampDiff { unit, expr1, expr2 } => {
             let args = vec![
                 constant_string(unit),
@@ -1695,6 +1676,14 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
             if matches!(lowered.as_str(), "json_storage_free" | "json_storage_size") {
                 return Err(EvalError::Unsupported(
                     "native JSON depth/storage evaluation was removed; TiKV engine required",
+                ));
+            }
+            // These excluded temporal functions have no native kernel. Refuse
+            // before recursive child rewriting/folding so unreachable child
+            // failures cannot escape through a function that cannot execute.
+            if crate::func::is_removed_native_temporal_residual(&lowered) {
+                return Err(EvalError::Unsupported(
+                    "native temporal residual evaluation was removed; function unsupported",
                 ));
             }
             if lowered == "grouping" {
@@ -2372,8 +2361,16 @@ mod tests {
                 &context,
                 sql,
                 &crate::simple_expr::BuildOptions::new(),
-            )
-            .unwrap();
+            );
+            if sql.starts_with("CONVERT_TZ(") {
+                assert_eq!(
+                    format!("{:?}", compiled.unwrap_err()),
+                    "Build(Unsupported(\"native temporal residual evaluation was removed; function unsupported\"))",
+                    "contract before rewriting the CONCAT child; former prepare/replay values: {_expected}/{_replay_expected}"
+                );
+                continue;
+            }
+            let compiled = compiled.unwrap();
             assert!(compiled.static_type().is_some(), "outer metadata: {sql}");
             for replay_context in [&context, &PreparedValues(replay)] {
                 let removed = if sql.starts_with("TIME(") {
@@ -2387,6 +2384,28 @@ mod tests {
                     "deleted outer family must refuse both prepare and replay: {sql}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn removed_temporal_residuals_refuse_before_child_rewrite() {
+        for sql in [
+            "FROM_DAYS(missing_column)",
+            "CONVERT_TZ(missing_column, '+00:00', '+08:00')",
+            "TIDB_PARSE_TSO(missing_column)",
+            "TIMESTAMPADD(DAY, missing_column, '2020-01-01')",
+        ] {
+            let error = crate::simple_expr::parse_simple_expr(
+                &PreparedValues(Vec::new()),
+                sql,
+                &crate::simple_expr::BuildOptions::new(),
+            )
+            .expect_err("removed residual must refuse during construction");
+            assert_eq!(
+                format!("{error:?}"),
+                "Build(Unsupported(\"native temporal residual evaluation was removed; function unsupported\"))",
+                "{sql} must refuse before resolving its missing child"
+            );
         }
     }
 

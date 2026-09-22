@@ -841,7 +841,13 @@ fn may_classify_native_contraction(native_backend: bool, sql: &str) -> bool {
 
 fn removed_marker_matches(topic: &str, sql: &str, error: &str) -> bool {
     expected_removed_marker(topic, sql).is_some_and(|marker| {
-        marker != removed_native::TEMPORAL_CLOCK_REMOVED && error.contains(marker)
+        if marker == removed_native::TEMPORAL_CLOCK_REMOVED {
+            return false;
+        }
+        if marker == removed_native::TEMPORAL_RESIDUAL_REMOVED {
+            return removed_native::is_temporal_residual_contraction(sql) && error.contains(marker);
+        }
+        error.contains(marker)
     })
 }
 
@@ -1099,6 +1105,23 @@ fn removed_kernel_classification_is_statement_scoped() {
         assert!(
             !removed_marker_matches("unrelated/topic", sql, clock_error),
             "clock errors must never be replay contractions: {sql}"
+        );
+    }
+    let residual_error = "native temporal residual evaluation was removed; function unsupported";
+    assert!(removed_marker_matches(
+        "unrelated/topic",
+        "select from_days(719528)",
+        residual_error
+    ));
+    for sql in [
+        "select if(1, 1, from_days(719528))",
+        "select timestampadd(day, 1, '2020-01-01')",
+        "create table t (d date default (from_days(719528)))",
+        "insert into t(id) values (1)",
+    ] {
+        assert!(
+            !removed_marker_matches("unrelated/topic", sql, residual_error),
+            "residual errors require a whole-statement allowlist entry: {sql}"
         );
     }
 }

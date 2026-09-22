@@ -28,6 +28,8 @@ pub const TEMPORAL_TAIL_REMOVED: &str =
     "native temporal tail evaluation was removed; function unsupported";
 pub const TEMPORAL_CLOCK_REMOVED: &str =
     "native temporal clock evaluation was removed; function unsupported";
+pub const TEMPORAL_RESIDUAL_REMOVED: &str =
+    "native temporal residual evaluation was removed; function unsupported";
 pub const COMPARE2_REMOVED: &str =
     "native LEAST/GREATEST/INTERVAL evaluation was removed; TiKV engine required";
 pub const MISC_REMOVED: &str =
@@ -71,6 +73,10 @@ impl Visitor for FunctionCollector {
                 Expr::GetFormat { .. } => {
                     self.ordered_names.push("GET_FORMAT".to_owned());
                     self.names.insert("GET_FORMAT".to_owned());
+                }
+                Expr::TimestampAdd { .. } => {
+                    self.ordered_names.push("TIMESTAMPADD".to_owned());
+                    self.names.insert("TIMESTAMPADD".to_owned());
                 }
                 Expr::Regexp { .. } => {
                     self.ordered_names.push("REGEXP".to_owned());
@@ -194,6 +200,46 @@ pub fn is_temporal_tail_contraction(sql: &str) -> bool {
     ]
     .iter()
     .any(|name| collector.names.contains(*name))
+}
+
+/// Whole-statement allowlist for corpus rows whose former values are pinned
+/// independently. Do not broaden this to a function-name predicate: lazy
+/// children, DDL defaults, and omitted-column inserts must remain visible.
+pub fn is_temporal_residual_contraction(sql: &str) -> bool {
+    matches!(
+        sql.trim().to_ascii_lowercase().as_str(),
+        "select convert_tz('2004-01-01 12:00:00','+00:00','+10:00')"
+            | "select convert_tz('2004-01-01 12:00:00','-01:00','-10:32')"
+            | "select convert_tz('2004-01-01 12:00:00.25','+00:00','+10:00')"
+            | "select convert_tz('2004-01-01 12:00:00.123456','+00:00','+00:30')"
+            | "select convert_tz('2007-03-11 02:30:00','us/eastern','utc')"
+            | "select convert_tz('2007-11-04 01:30:00','us/eastern','utc')"
+            | "select convert_tz('2004-07-01 12:00:00','europe/berlin','asia/shanghai')"
+            | "select convert_tz('2004-01-01 12:00:00','+14:00','+00:00')"
+            | "select convert_tz('2004-01-01','+00:00','+10:00')"
+            | "select convert_tz('2004-01-01 12:00:00','met','utc')"
+            | "select convert_tz('2004-01-01 12:00:00','+0:9','+00:00')"
+            | "select convert_tz('2004-01-01 12:00:00','+14:01','+00:00')"
+            | "select convert_tz('2004-01-01 12:00:00','+13:60','+00:00')"
+            | "select convert_tz('2004-01-01 12:00:00','','utc')"
+            | "select convert_tz('2004-01-01 12:00:00','bogus/zone','utc')"
+            | "select convert_tz(null,'+00:00','+10:00')"
+            | "select convert_tz('0000-00-00','+00:00','+10:00')"
+            | "select convert_tz('not-a-date','+00:00','+10:00')"
+            | "select from_days(719528)"
+            | "select from_days(738156)"
+            | "select from_days(738321)"
+            | "select from_days(366)"
+            | "select from_days(3652424)"
+            | "select from_days(365)"
+            | "select from_days(0)"
+            | "select from_days(-1)"
+            | "select from_days(null)"
+            | "select from_days(n) from fd order by n"
+            | "select tidb_parse_tso(424930234047906595)"
+            | "select tidb_parse_tso(0)"
+            | "select tidb_parse_tso(null)"
+    )
 }
 
 pub fn is_temporal_value_shape_contraction(sql: &str) -> bool {
@@ -412,6 +458,12 @@ pub fn is_string_aux_shape_contraction(sql: &str) -> bool {
 }
 
 fn removed_marker_for_name(name: &str, nonbinary_find_in_set: bool) -> Option<&'static str> {
+    if matches!(
+        name,
+        "CONVERT_TZ" | "FROM_DAYS" | "TIDB_PARSE_TSO" | "TIMESTAMPADD"
+    ) {
+        return Some(TEMPORAL_RESIDUAL_REMOVED);
+    }
     if matches!(
         name,
         "NOW"

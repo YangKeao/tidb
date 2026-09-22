@@ -18,14 +18,12 @@
 //! temporal kernels have been physically removed; callers enter through one
 //! narrow [`dispatch`] seam.
 //!
-//! `ADDTIME`, `SUBTIME`, `TIMESTAMP` and `TIMESTAMPADD` -- the four retained
-//! functions that Go types from argument `FieldType`s rather than values --
-//! live in [`add_sub`], with their microsecond value domain in
-//! [`duration_parse`].
+//! `ADDTIME`, `SUBTIME` and `TIMESTAMP` -- the three retained functions that
+//! Go types from argument `FieldType`s rather than values -- live in
+//! [`add_sub`], with their microsecond value domain in [`duration_parse`].
 
 pub(crate) mod add_sub;
 pub(crate) mod calendar;
-mod convert_tz;
 pub(crate) mod duration_parse;
 pub(crate) mod extract;
 mod session_tz;
@@ -43,11 +41,8 @@ pub(crate) fn dispatch(
     Some(match name {
         "WEEK" => week(vals, cols.default_week_format()),
         "STR_TO_DATE" => calendar::str_to_date(vals, cols),
-        "FROM_DAYS" => calendar::from_days(vals),
-        "CONVERT_TZ" => convert_tz::convert_tz(vals),
         "FROM_UNIXTIME" => session_tz::from_unixtime(vals, cols),
         "UNIX_TIMESTAMP" => session_tz::unix_timestamp(vals, cols),
-        "TIDB_PARSE_TSO" => session_tz::tidb_parse_tso(vals, cols),
         "TIMESTAMPDIFF" => calendar::timestamp_diff(vals),
         // `ADDTIME`/`SUBTIME` reach here with no static argument types, so
         // every argument takes Go's `default` branch -- which is the branch
@@ -57,7 +52,6 @@ pub(crate) fn dispatch(
         // `row_path = true` selects.
         "ADDTIME" | "SUBTIME" => add_sub::add_sub_untyped(name, vals, cols),
         "TIMESTAMP" => add_sub::timestamp(vals, cols),
-        "TIMESTAMPADD" => add_sub::timestamp_add(vals, cols),
         "TO_DAYS" => calendar::to_days(vals),
         "TO_SECONDS" => calendar::to_seconds(vals),
         // `EXTRACT(<composite unit> FROM value)`, e.g. `HOUR_MINUTE`,

@@ -45,6 +45,16 @@ fn case_when() {
     assert_eq!(e("1 + case when 1=1 then 10 else 20 end"), "INT:11");
 }
 
+fn assert_temporal_residual_contracts(rows: &[(&str, &str)]) {
+    for (expr, former) in rows {
+        assert_eq!(
+            e(expr),
+            "Unsupported(\"native temporal residual evaluation was removed; function unsupported\")",
+            "{expr}; former oracle: {former}"
+        );
+    }
+}
+
 fn assert_clock_contracts(rows: &[(&str, &str)]) {
     for (expr, former) in rows {
         assert_eq!(
@@ -230,15 +240,15 @@ fn date_parts() {
     assert_eq!(e("to_days('not a date')"), "NULL");
     assert_eq!(e("to_days(NULL)"), "NULL");
 
-    // FROM_DAYS: the inverse of TO_DAYS. Outside the valid range
-    // (year 0001-9999) real TiDB returns the "zero date" string.
-    assert_eq!(e("from_days(719528)"), "STR:1970-01-01");
-    assert_eq!(e("from_days(738156)"), "STR:2021-01-01");
-    assert_eq!(e("from_days(366)"), "STR:0001-01-01"); // lower boundary
-    assert_eq!(e("from_days(3652424)"), "STR:9999-12-31"); // upper boundary
-    assert_eq!(e("from_days(365)"), "STR:0000-00-00"); // just below the valid range
-    assert_eq!(e("from_days(0)"), "STR:0000-00-00");
-    assert_eq!(e("from_days(NULL)"), "NULL");
+    assert_temporal_residual_contracts(&[
+        ("from_days(719528)", "STR:1970-01-01"),
+        ("from_days(738156)", "STR:2021-01-01"),
+        ("from_days(366)", "STR:0001-01-01"),
+        ("from_days(3652424)", "STR:9999-12-31"),
+        ("from_days(365)", "STR:0000-00-00"),
+        ("from_days(0)", "STR:0000-00-00"),
+        ("from_days(NULL)", "NULL"),
+    ]);
 
     // DATE_ADD/DATE_SUB with INTERVAL n DAY: exact day arithmetic, so
     // month/year rollover and leap days are handled correctly for free.
@@ -1168,11 +1178,17 @@ fn timestamp_and_timestampadd_match_the_captured_session_answers() {
         ("timestampadd(minute, 5, null)", "NULL"),
         ("timestampadd(second, 1, '9999-12-31 23:59:59')", "NULL"),
     ] {
-        assert_eq!(e(expr), want, "{expr}");
-        // Both tiers answer the oracle's own label now that a time is
-        // labelled `STR:` exactly as `difftests/goeval` labels it. This used
-        // to rewrite `STR:` into `TIME:` for the chunk tier alone.
-        assert_eq!(chunk_e(expr), want, "{expr} (chunk tier)");
+        if expr.starts_with("timestampadd(") {
+            assert_temporal_residual_contracts(&[(expr, want)]);
+            assert_eq!(
+                chunk_e(expr),
+                "Unsupported(\"native temporal residual evaluation was removed; function unsupported\")",
+                "{expr} (chunk tier); former {want}"
+            );
+        } else {
+            assert_eq!(e(expr), want, "{expr}");
+            assert_eq!(chunk_e(expr), want, "{expr} (chunk tier)");
+        }
     }
 }
 
@@ -1255,36 +1271,28 @@ fn an_etdatetime_argument_is_cast_before_the_signature_runs() {
     // index: a mask of `1 << 1` would cast the AMOUNT instead and answer
     // NULL, and a DAY-only assertion would not distinguish which field the
     // unit reached.
-    assert_eq!(
-        e("timestampadd(day,1,20240315123045)"),
-        "STR:2024-03-16 12:30:45"
-    );
-    assert_eq!(
-        e("timestampadd(hour,1,20240315123045)"),
-        "STR:2024-03-15 13:30:45"
-    );
-    // The string form must be untouched by the wrap (Go's `WrapWithCastAsTime`
-    // still builds a cast over an ETString expression; it is only a
-    // DATE/DATETIME/TIMESTAMP one that early-returns).
-    assert_eq!(
-        e("timestampadd(day,1,'2024-03-15 12:30:45')"),
-        "STR:2024-03-16 12:30:45"
-    );
-
-    // `convertTzFunctionClass` (`:5424`): `types.ETDatetime, types.ETDatetime,
-    // types.ETString, types.ETString` -- the LEADING `types.ETDatetime` is the
-    // RETURN type, so the cast belongs to argument 0 and NOT to the zone
-    // strings. Captured `RS:2024-03-15 20:30:45` for both forms; a mask that
-    // treated the return type as an argument would cast `'+00:00'` and answer
-    // NULL.
-    assert_eq!(
-        e("convert_tz(20240315123045,'+00:00','+08:00')"),
-        "STR:2024-03-15 20:30:45"
-    );
-    assert_eq!(
-        e("convert_tz('2024-03-15 12:30:45','+00:00','+08:00')"),
-        "STR:2024-03-15 20:30:45"
-    );
+    assert_temporal_residual_contracts(&[
+        (
+            "timestampadd(day,1,20240315123045)",
+            "STR:2024-03-16 12:30:45",
+        ),
+        (
+            "timestampadd(hour,1,20240315123045)",
+            "STR:2024-03-15 13:30:45",
+        ),
+        (
+            "timestampadd(day,1,'2024-03-15 12:30:45')",
+            "STR:2024-03-16 12:30:45",
+        ),
+        (
+            "convert_tz(20240315123045,'+00:00','+08:00')",
+            "STR:2024-03-15 20:30:45",
+        ),
+        (
+            "convert_tz('2024-03-15 12:30:45','+00:00','+08:00')",
+            "STR:2024-03-15 20:30:45",
+        ),
+    ]);
 
     // Both evaluators impose the layer: the chunk tier from
     // `ScalarFunction::eval` and the row/AST tier from `func::eval_func`, so
@@ -1321,7 +1329,16 @@ fn an_etdatetime_argument_is_cast_before_the_signature_runs() {
             "STR:2024-03-15 13:30:45",
         ),
     ] {
-        if expr.starts_with("date(") {
+        if expr.starts_with("convert_tz(") || expr.starts_with("timestampadd(") {
+            let native = chunk_case(expr, &NoColumns)
+                .map(|datum| datum.label())
+                .unwrap_or_else(|error| error);
+            assert_eq!(
+                native,
+                "Unsupported(\"native temporal residual evaluation was removed; function unsupported\")",
+                "{expr} (chunk tier); former {want}"
+            );
+        } else if expr.starts_with("date(") {
             let native = chunk_case(expr, &NoColumns)
                 .map(|datum| datum.label())
                 .unwrap_or_else(|error| error);

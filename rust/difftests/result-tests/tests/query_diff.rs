@@ -100,6 +100,9 @@ fn may_accept_engine_required_marker(sql: &str, marker: &str) -> bool {
     if marker == removed_native::TEMPORAL_CLOCK_REMOVED {
         return false;
     }
+    if marker == removed_native::TEMPORAL_RESIDUAL_REMOVED {
+        return removed_native::is_temporal_residual_contraction(sql);
+    }
     if marker == removed_native::TEMPORAL_VALUE_REMOVED {
         return removed_native::is_temporal_value_shape_contraction(sql);
     }

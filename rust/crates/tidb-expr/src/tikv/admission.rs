@@ -219,6 +219,8 @@ pub(crate) const STRING_TAIL_METADATA_UNSAFE: &str =
      collation or trim-direction metadata";
 pub(crate) const REMOVED_MISC_UNSUPPORTED: &str =
     "native miscellaneous kernels were removed; only ANY_VALUE remains admitted through TiKV";
+pub(crate) const REMOVED_TEMPORAL_RESIDUAL_UNSUPPORTED: &str =
+    "native residual temporal kernel was removed and no verified pinned-engine lowering is admitted";
 /// The statement clock (`NOW()`, `CURRENT_TIMESTAMP`, `CURDATE()`,
 /// `CURRENT_TIME`, `UTC_TIMESTAMP()`, `SYSDATE()`).
 ///
@@ -665,7 +667,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("tidb_encode_sql_digest", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_MISC_UNSUPPORTED),
     row("tidb_is_ddl_owner", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
     row("tidb_mvcc_info", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
-    row("tidb_parse_tso", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
+    row("tidb_parse_tso", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_TEMPORAL_RESIDUAL_UNSUPPORTED),
     row("tidb_parse_tso_logical", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
     row("tidb_row_checksum", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
     row("tidb_shard", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_MISC_UNSUPPORTED),
@@ -675,7 +677,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("time_to_sec", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Duration], Shape::Any, ""),
     row("timediff", Decision::Admitted, Signature::Family(Family::Temporal), &[], Shape::Any, ""),
     row("timestamp", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::Datetime], Shape::Any, ""),
-    row("timestampadd", Decision::Excluded, Signature::None, &[], Shape::Any, NOT_TRIAGED),
+    row("timestampadd", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_TEMPORAL_RESIDUAL_UNSUPPORTED),
     row("timestampdiff", Decision::Admitted, Signature::Family(Family::Temporal), &[EvalType::String, EvalType::Datetime, EvalType::Datetime], Shape::Any, ""),
     row("to_base64", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_PACKET_STRING_UNSUPPORTED),
     row("to_binary", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),

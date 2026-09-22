@@ -964,50 +964,501 @@ fn str_to_date_day_of_month_follows_allow_invalid_dates() {
     );
 }
 
+fn assert_convert_tz_removed(args: &[Datum], former: &str) {
+    assert_eq!(
+        crate::func::eval_func_values_in("CONVERT_TZ", args, &crate::NoColumns),
+        Some(Err(EvalError::Unsupported(
+            "native temporal residual evaluation was removed; function unsupported"
+        ))),
+        "former oracle: {former}"
+    );
+}
+
+#[test]
+fn test_convert_tz() {
+    let rows = [
+        (
+            string_datum("2004-01-01 12:00:00.111"),
+            string_datum("-00:00"),
+            string_datum("+12:34"),
+            Some("2004-01-02 00:34:00.111"),
+        ),
+        (
+            string_datum("2004-01-01 12:00:00.11"),
+            string_datum("+00:00"),
+            string_datum("+12:34"),
+            Some("2004-01-02 00:34:00.11"),
+        ),
+        (
+            string_datum("2004-01-01 12:00:00.11111111111"),
+            string_datum("-00:00"),
+            string_datum("+12:34"),
+            Some("2004-01-02 00:34:00.111111"),
+        ),
+        (
+            string_datum("2004-01-01 12:00:00"),
+            string_datum("GMT"),
+            string_datum("MET"),
+            Some("2004-01-01 13:00:00"),
+        ),
+        (
+            string_datum("2004-01-01 12:00:00"),
+            string_datum("-01:00"),
+            string_datum("-12:00"),
+            Some("2004-01-01 01:00:00"),
+        ),
+        (
+            string_datum("2004-01-01 12:00:00"),
+            string_datum("-00:00"),
+            string_datum("+13:00"),
+            Some("2004-01-02 01:00:00"),
+        ),
+        (
+            string_datum("2004-01-01 12:00:00"),
+            string_datum("-00:00"),
+            string_datum("-13:00"),
+            Some("2003-12-31 23:00:00"),
+        ),
+        (
+            string_datum("2004-01-01 12:00:00"),
+            string_datum("-00:00"),
+            string_datum("-12:88"),
+            None,
+        ),
+        (
+            string_datum("2004-01-01 12:00:00"),
+            string_datum("+10:82"),
+            string_datum("GMT"),
+            None,
+        ),
+        (
+            string_datum("2004-01-01 12:00:00"),
+            string_datum("+00:00"),
+            string_datum("GMT"),
+            Some("2004-01-01 12:00:00"),
+        ),
+        (
+            string_datum("2004-01-01 12:00:00"),
+            string_datum("GMT"),
+            string_datum("+00:00"),
+            Some("2004-01-01 12:00:00"),
+        ),
+        (
+            Datum::Int(20_040_101),
+            string_datum("+00:00"),
+            string_datum("+10:32"),
+            Some("2004-01-01 10:32:00"),
+        ),
+        (
+            Datum::Real(314_159.0 / 100_000.0),
+            string_datum("+00:00"),
+            string_datum("+10:32"),
+            None,
+        ),
+        (
+            string_datum("2004-01-01 12:00:00"),
+            string_datum(""),
+            string_datum("GMT"),
+            None,
+        ),
+        (
+            string_datum("2004-01-01 12:00:00"),
+            string_datum("GMT"),
+            string_datum(""),
+            None,
+        ),
+        (
+            string_datum("2004-01-01 12:00:00"),
+            string_datum("a"),
+            string_datum("GMT"),
+            None,
+        ),
+        (
+            string_datum("2004-01-01 12:00:00"),
+            string_datum("0"),
+            string_datum("GMT"),
+            None,
+        ),
+        (
+            string_datum("2004-01-01 12:00:00"),
+            string_datum("GMT"),
+            string_datum("a"),
+            None,
+        ),
+        (
+            string_datum("2004-01-01 12:00:00"),
+            string_datum("GMT"),
+            string_datum("0"),
+            None,
+        ),
+        (
+            Datum::Null,
+            string_datum("GMT"),
+            string_datum("+00:00"),
+            None,
+        ),
+        (
+            string_datum("2004-01-01 12:00:00"),
+            Datum::Null,
+            string_datum("+00:00"),
+            None,
+        ),
+        (
+            string_datum("2004-01-01 12:00:00"),
+            string_datum("GMT"),
+            Datum::Null,
+            None,
+        ),
+        (
+            string_datum("2004-01-01 12:00:00"),
+            string_datum("GMT"),
+            string_datum("+10:00"),
+            Some("2004-01-01 22:00:00"),
+        ),
+        (
+            string_datum("2004-01-01 12:00:00"),
+            string_datum("+00:00"),
+            string_datum("MET"),
+            Some("2004-01-01 13:00:00"),
+        ),
+        (
+            string_datum("2004-01-01 12:00:00"),
+            string_datum("+00:00"),
+            string_datum("+14:00"),
+            Some("2004-01-02 02:00:00"),
+        ),
+        (
+            string_datum("2021-10-31 02:59:59"),
+            string_datum("+02:00"),
+            string_datum("Europe/Amsterdam"),
+            Some("2021-10-31 02:59:59"),
+        ),
+        (
+            string_datum("2021-10-31 03:00:00"),
+            string_datum("+01:00"),
+            string_datum("Europe/Amsterdam"),
+            Some("2021-10-31 03:00:00"),
+        ),
+        (
+            string_datum("2021-10-31 02:00:00"),
+            string_datum("+02:00"),
+            string_datum("Europe/Amsterdam"),
+            Some("2021-10-31 02:00:00"),
+        ),
+        (
+            string_datum("2021-10-31 02:59:59"),
+            string_datum("+02:00"),
+            string_datum("Europe/Amsterdam"),
+            Some("2021-10-31 02:59:59"),
+        ),
+        (
+            string_datum("2021-10-31 03:00:00"),
+            string_datum("+02:00"),
+            string_datum("Europe/Amsterdam"),
+            Some("2021-10-31 02:00:00"),
+        ),
+        (
+            string_datum("2021-10-31 02:30:00"),
+            string_datum("+01:00"),
+            string_datum("Europe/Amsterdam"),
+            Some("2021-10-31 02:30:00"),
+        ),
+        (
+            string_datum("2021-10-31 03:00:00"),
+            string_datum("+01:00"),
+            string_datum("Europe/Amsterdam"),
+            Some("2021-10-31 03:00:00"),
+        ),
+        (
+            string_datum("2021-10-31 02:00:00"),
+            string_datum("Europe/Amsterdam"),
+            string_datum("+02:00"),
+            Some("2021-10-31 03:00:00"),
+        ),
+        (
+            string_datum("2021-10-31 02:59:59"),
+            string_datum("Europe/Amsterdam"),
+            string_datum("+02:00"),
+            Some("2021-10-31 03:59:59"),
+        ),
+        (
+            string_datum("2021-10-31 02:00:00"),
+            string_datum("Europe/Amsterdam"),
+            string_datum("+01:00"),
+            Some("2021-10-31 02:00:00"),
+        ),
+        (
+            string_datum("2021-10-31 03:00:00"),
+            string_datum("Europe/Amsterdam"),
+            string_datum("+01:00"),
+            Some("2021-10-31 03:00:00"),
+        ),
+        (
+            string_datum("2021-03-28 02:30:00"),
+            string_datum("Europe/Amsterdam"),
+            string_datum("UTC"),
+            Some("2021-03-28 01:00:00"),
+        ),
+        (
+            string_datum("2007-03-11 2:00:00"),
+            string_datum("America/New_York"),
+            string_datum("America/Chicago"),
+            Some("2007-03-11 01:00:00"),
+        ),
+        (
+            string_datum("2007-03-11 3:00:00"),
+            string_datum("America/New_York"),
+            string_datum("America/Chicago"),
+            Some("2007-03-11 01:00:00"),
+        ),
+        (
+            string_datum("2004-10-00 12:00:00"),
+            string_datum("GMT"),
+            string_datum("MET"),
+            None,
+        ),
+        (
+            string_datum("2004-00-01 12:00:00"),
+            string_datum("GMT"),
+            string_datum("MET"),
+            None,
+        ),
+    ];
+    for (date, from, to, former) in rows {
+        assert_convert_tz_removed(&[date, from, to], former.unwrap_or("NULL"));
+    }
+    use chrono::{Local, LocalResult, NaiveDateTime, TimeZone as _};
+    use chrono_tz::Tz;
+
+    let wall = NaiveDateTime::parse_from_str("2021-10-22 10:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+    let tallinn: Tz = "Europe/Tallinn".parse().unwrap();
+    let tallinn_instant = tallinn.from_local_datetime(&wall).single().unwrap();
+    let to_system = tallinn_instant
+        .with_timezone(&Local)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+    assert_convert_tz_removed(
+        &[
+            string_datum("2021-10-22 10:00:00"),
+            string_datum("Europe/Tallinn"),
+            string_datum("SYSTEM"),
+        ],
+        &to_system,
+    );
+
+    let local_instant = match Local.from_local_datetime(&wall) {
+        LocalResult::Single(value) => value,
+        LocalResult::Ambiguous(_, later) => later,
+        LocalResult::None => panic!("source SYSTEM test wall clock must exist"),
+    };
+    let from_system = local_instant
+        .with_timezone(&tallinn)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+    assert_convert_tz_removed(
+        &[
+            string_datum("2021-10-22 10:00:00"),
+            string_datum("SYSTEM"),
+            string_datum("Europe/Tallinn"),
+        ],
+        &from_system,
+    );
+}
+
+#[test]
+fn goeval_pinned_vectors() {
+    let cases: &[(&str, &str, &str, &str)] = &[
+        (
+            "2004-01-01 12:00:00",
+            "+00:00",
+            "+10:00",
+            "2004-01-01 22:00:00",
+        ),
+        (
+            "2004-01-01 12:00:00",
+            "-01:00",
+            "-10:32",
+            "2004-01-01 02:28:00",
+        ),
+        (
+            "2004-01-01 12:00:00.25",
+            "+00:00",
+            "+10:00",
+            "2004-01-01 22:00:00.25",
+        ),
+        (
+            "2004-01-01 12:00:00.123456",
+            "+00:00",
+            "+00:30",
+            "2004-01-01 12:30:00.123456",
+        ),
+        // Spring-forward gap resolves to the transition instant.
+        (
+            "2007-03-11 02:30:00",
+            "US/Eastern",
+            "UTC",
+            "2007-03-11 07:00:00",
+        ),
+        // A repeated wall clock: `time.Date` answers the EARLIER of the
+        // two instants here...
+        (
+            "2007-11-04 01:30:00",
+            "US/Eastern",
+            "UTC",
+            "2007-11-04 05:30:00",
+        ),
+        (
+            "2021-11-07 01:30:00",
+            "America/Los_Angeles",
+            "UTC",
+            "2021-11-07 08:30:00",
+        ),
+        // ...and the LATER one here, which is why "take the earliest"
+        // is not the rule. Zones east of UTC read the wall clock as UTC
+        // into the post-transition period and land on the second pass.
+        (
+            "2025-10-26 02:30:00",
+            "Europe/Paris",
+            "UTC",
+            "2025-10-26 01:30:00",
+        ),
+        (
+            "2025-10-26 02:30:00.5",
+            "Europe/Paris",
+            "UTC",
+            "2025-10-26 01:30:00.5",
+        ),
+        (
+            "2021-10-31 01:30:00",
+            "Europe/London",
+            "UTC",
+            "2021-10-31 01:30:00",
+        ),
+        (
+            "2021-04-04 02:30:00",
+            "Australia/Sydney",
+            "UTC",
+            "2021-04-03 16:30:00",
+        ),
+        // Controls: unrepeated wall clocks either side of that same
+        // Paris fall-back, and one nowhere near a transition.
+        (
+            "2025-10-26 01:30:00",
+            "Europe/Paris",
+            "UTC",
+            "2025-10-25 23:30:00",
+        ),
+        (
+            "2025-10-26 03:00:00",
+            "Europe/Paris",
+            "UTC",
+            "2025-10-26 02:00:00",
+        ),
+        (
+            "2025-06-15 02:30:00",
+            "Europe/Paris",
+            "UTC",
+            "2025-06-15 00:30:00",
+        ),
+        // Spring-forward gaps in both hemispheres.
+        (
+            "2025-03-30 02:30:00",
+            "Europe/Paris",
+            "UTC",
+            "2025-03-30 01:00:00",
+        ),
+        (
+            "2021-10-03 02:30:00",
+            "Australia/Sydney",
+            "UTC",
+            "2021-10-02 16:00:00",
+        ),
+        (
+            "2004-07-01 12:00:00",
+            "Europe/Berlin",
+            "Asia/Shanghai",
+            "2004-07-01 18:00:00",
+        ),
+        (
+            "2004-01-01 12:00:00",
+            "+14:00",
+            "+00:00",
+            "2003-12-31 22:00:00",
+        ),
+        ("2004-01-01", "+00:00", "+10:00", "2004-01-01 10:00:00"),
+        ("2004-01-01 12:00:00", "MET", "UTC", "2004-01-01 11:00:00"),
+        (
+            "2004-01-01 12:00:00",
+            "+0:9",
+            "+00:00",
+            "2004-01-01 11:51:00",
+        ),
+    ];
+    for (dt, from, to, former) in cases {
+        assert_convert_tz_removed(
+            &[string_datum(dt), string_datum(from), string_datum(to)],
+            former,
+        );
+    }
+}
+
+#[test]
+fn goeval_pinned_nulls() {
+    for (dt, from, to) in [
+        ("2004-01-01 12:00:00", "+14:01", "+00:00"),
+        ("2004-01-01 12:00:00", "+13:60", "+00:00"),
+        ("2004-01-01 12:00:00", "", "UTC"),
+        ("2004-01-01 12:00:00", "bogus/zone", "UTC"),
+        ("0000-00-00", "+00:00", "+10:00"),
+        ("not-a-date", "+00:00", "+10:00"),
+    ] {
+        assert_convert_tz_removed(
+            &[string_datum(dt), string_datum(from), string_datum(to)],
+            "NULL",
+        );
+    }
+    assert_convert_tz_removed(
+        &[Datum::Null, string_datum("+00:00"), string_datum("+10:00")],
+        "NULL",
+    );
+}
+
 /// Exact source rows from `TestFromDays` at
 /// `pkg/expression/builtin_time_test.go:1864`.  The evaluator keeps the
 /// result as a date-shaped string; the Go function's typed DATE result and
 /// warning/SQL-mode state remain outside the value-only boundary.
 #[test]
 fn from_days_source_vectors() {
-    for (day, want) in [
-        (-140, "0000-00-00"),
-        (140, "0000-00-00"),
-        (735_000, "2012-05-12"),
-        (735_030, "2012-06-11"),
-        (735_130, "2012-09-19"),
-        (734_909, "2012-02-11"),
-        (734_878, "2012-01-11"),
-        (734_927, "2012-02-29"),
-        (734_634, "2011-05-12"),
-        (734_664, "2011-06-11"),
-        (734_764, "2011-09-19"),
-        (734_544, "2011-02-11"),
-        (734_513, "2011-01-11"),
-        (3_652_424, "9999-12-31"),
-    ] {
+    let mut rows = vec![
+        (Datum::Int(-140), "0000-00-00"),
+        (Datum::Int(140), "0000-00-00"),
+        (Datum::Int(735_000), "2012-05-12"),
+        (Datum::Int(735_030), "2012-06-11"),
+        (Datum::Int(735_130), "2012-09-19"),
+        (Datum::Int(734_909), "2012-02-11"),
+        (Datum::Int(734_878), "2012-01-11"),
+        (Datum::Int(734_927), "2012-02-29"),
+        (Datum::Int(734_634), "2011-05-12"),
+        (Datum::Int(734_664), "2011-06-11"),
+        (Datum::Int(734_764), "2011-09-19"),
+        (Datum::Int(734_544), "2011-02-11"),
+        (Datum::Int(734_513), "2011-01-11"),
+        (Datum::Int(3_652_424), "9999-12-31"),
+        (Datum::Int(3_652_425), "NULL"),
+        (string_datum("z550z"), "0000-00-00"),
+        (string_datum("6500z"), "0017-10-18"),
+        (string_datum("440"), "0001-03-16"),
+        (Datum::Null, "NULL"),
+    ];
+    for (arg, former) in rows.drain(..) {
         assert_eq!(
-            calendar::from_days(&[Datum::Int(day)]).unwrap(),
-            Datum::new_string(want.to_string()),
-            "FROM_DAYS({day})"
+            crate::func::eval_func_values_in("FROM_DAYS", &[arg], &crate::NoColumns),
+            Some(Err(EvalError::Unsupported(
+                "native temporal residual evaluation was removed; function unsupported"
+            ))),
+            "former oracle: {former}"
         );
     }
-    assert_eq!(
-        calendar::from_days(&[Datum::Int(3_652_425)]).unwrap(),
-        Datum::Null
-    );
-    for (input, want) in [
-        ("z550z", "0000-00-00"),
-        ("6500z", "0017-10-18"),
-        ("440", "0001-03-16"),
-    ] {
-        assert_eq!(
-            calendar::from_days(&[string_datum(input)]).unwrap(),
-            Datum::new_string(want.to_string()),
-            "FROM_DAYS({input:?})"
-        );
-    }
-    assert_eq!(calendar::from_days(&[Datum::Null]).unwrap(), Datum::Null);
 }
 
 /// Exact scalar rows from `TestDateDiff` at

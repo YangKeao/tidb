@@ -3,6 +3,16 @@
 use crate::tests_support::row_text;
 use crate::*;
 
+fn assert_removed(session: &mut Session, sql: &str, marker: &str, former: &str) {
+    let error = session
+        .run(sql)
+        .expect_err("removed native kernel must refuse");
+    assert!(
+        error.to_string().contains(marker),
+        "{sql}: {error}; former oracle: {former}"
+    );
+}
+
 /// Go's `types.ETDatetime` argument declaration over real columns, where the
 /// static `YEAR` type selects `ParseTimeFromYear` and other integers select
 /// `ParseTimeFromNum`.
@@ -16,24 +26,36 @@ fn an_etdatetime_argument_is_cast_from_its_column_type() {
         .run("INSERT INTO yt VALUES (2024, 20240315123045, '2024-03-15')")
         .unwrap();
 
-    assert_eq!(
-        row_text(session.run("SELECT month(y), day(y), quarter(y), year(y) FROM yt")),
-        [["0", "0", "0", "2024"]]
-    );
-    assert_eq!(
-        row_text(session.run("SELECT month(n), day(n), quarter(n), year(n) FROM yt")),
-        [["3", "15", "1", "2024"]]
-    );
-    assert_eq!(
-        row_text(session.run("SELECT month(d), quarter(d), year(d) FROM yt")),
-        [["3", "1", "2024"]]
-    );
+    for (sql, former) in [
+        (
+            "SELECT month(y), day(y), quarter(y), year(y) FROM yt",
+            "0,0,0,2024",
+        ),
+        (
+            "SELECT month(n), day(n), quarter(n), year(n) FROM yt",
+            "3,15,1,2024",
+        ),
+        ("SELECT month(d), quarter(d), year(d) FROM yt", "3,1,2024"),
+    ] {
+        assert_removed(
+            &mut session,
+            sql,
+            "native calendar component evaluation was removed; TiKV engine required",
+            former,
+        );
+    }
     assert_eq!(
         row_text(session.run(
             "SELECT to_days(n), date_format(n,'%Y-%m'), \
-             timestampdiff(day,'2024-01-01',n), timestampadd(day,1,n) FROM yt"
+             timestampdiff(day,'2024-01-01',n) FROM yt"
         )),
-        [["739325", "2024-03", "74", "2024-03-16 12:30:45"]]
+        [["739325", "2024-03", "74"]]
+    );
+    assert_removed(
+        &mut session,
+        "SELECT timestampadd(day,1,n) FROM yt",
+        "native temporal residual evaluation was removed; function unsupported",
+        "2024-03-16 12:30:45",
     );
 }
 
@@ -75,20 +97,24 @@ fn current_clock_builtins_return_native_temporal_values() {
 #[test]
 fn date_constructors_return_native_dates() {
     let mut session = Session::new();
-    let StmtOutput::Rows { columns, rows, .. } = session
-        .run_with_columns(
-            "SELECT LAST_DAY('2024-02-10'), MAKEDATE(2024, 60), \
-                    FROM_DAYS(TO_DAYS('2024-02-29'))",
-        )
-        .unwrap()
-    else {
-        panic!("date constructors did not return rows")
-    };
-    for (column, value) in columns.iter().zip(&rows[0]) {
-        assert_eq!(column.1.code(), tidb_datatype::FieldTypeCode::Date);
-        assert_eq!((column.1.flen(), column.1.decimal()), (10, 0));
-        assert!(matches!(value, Datum::Time(_)));
-        assert_eq!(value.sql_string().unwrap(), "2024-02-29");
+    for (sql, marker, former) in [
+        (
+            "SELECT LAST_DAY('2024-02-10')",
+            "native calendar component evaluation was removed; TiKV engine required",
+            "DATE 2024-02-29, flen 10, decimal 0",
+        ),
+        (
+            "SELECT MAKEDATE(2024, 60)",
+            "native temporal value evaluation was removed; TiKV engine required",
+            "DATE 2024-02-29, flen 10, decimal 0",
+        ),
+        (
+            "SELECT FROM_DAYS(TO_DAYS('2024-02-29'))",
+            "native temporal residual evaluation was removed; function unsupported",
+            "DATE 2024-02-29, flen 10, decimal 0",
+        ),
+    ] {
+        assert_removed(&mut session, sql, marker, former);
     }
 }
 
@@ -182,27 +208,29 @@ fn str_to_date_uses_the_format_to_choose_its_native_domain() {
 #[test]
 fn temporal_difference_and_zone_conversion_return_native_values() {
     let mut session = Session::new();
-    let StmtOutput::Rows { columns, rows, .. } = session
-        .run_with_columns(
-            "SELECT TIMEDIFF('2024-01-02 00:00:00.123', '2024-01-01 23:59:59.120'), \
-                    CONVERT_TZ('2024-01-01 00:00:00.123', '+00:00', '+08:00'), \
-                    CONVERT_TZ('bad.prefix.12', '+00:00', '+08:00')",
-        )
-        .unwrap()
-    else {
-        panic!("temporal conversion builtins did not return rows")
-    };
-    assert_eq!(columns[0].1.code(), tidb_datatype::FieldTypeCode::Duration);
-    assert_eq!((columns[0].1.flen(), columns[0].1.decimal()), (14, 3));
-    assert!(matches!(rows[0][0], Datum::Duration(_)));
-    assert_eq!(rows[0][0].sql_string().unwrap(), "00:00:01.003");
-    assert_eq!(columns[1].1.code(), tidb_datatype::FieldTypeCode::Datetime);
-    assert_eq!((columns[1].1.flen(), columns[1].1.decimal()), (23, 3));
-    assert!(matches!(rows[0][1], Datum::Time(_)));
-    assert_eq!(rows[0][1].sql_string().unwrap(), "2024-01-01 08:00:00.123");
-    assert_eq!(columns[2].1.code(), tidb_datatype::FieldTypeCode::Datetime);
-    assert_eq!((columns[2].1.flen(), columns[2].1.decimal()), (22, 2));
-    assert_eq!(rows[0][2], Datum::Null);
+    assert_removed(
+        &mut session,
+        "SELECT TIMEDIFF('2024-01-02 00:00:00.123', '2024-01-01 23:59:59.120')",
+        "native temporal value evaluation was removed; TiKV engine required",
+        "DURATION 00:00:01.003, flen 14, decimal 3",
+    );
+    for (sql, former) in [
+        (
+            "SELECT CONVERT_TZ('2024-01-01 00:00:00.123', '+00:00', '+08:00')",
+            "DATETIME 2024-01-01 08:00:00.123, flen 23, decimal 3",
+        ),
+        (
+            "SELECT CONVERT_TZ('bad.prefix.12', '+00:00', '+08:00')",
+            "NULL DATETIME, flen 22, decimal 2",
+        ),
+    ] {
+        assert_removed(
+            &mut session,
+            sql,
+            "native temporal residual evaluation was removed; function unsupported",
+            former,
+        );
+    }
 }
 
 #[test]

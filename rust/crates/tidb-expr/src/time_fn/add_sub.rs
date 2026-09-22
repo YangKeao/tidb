@@ -11,10 +11,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! `ADDTIME`, `SUBTIME`, `TIMESTAMP` and `TIMESTAMPADD`, from
+//! `ADDTIME`, `SUBTIME` and `TIMESTAMP`, from
 //! `pkg/expression/builtin_time.go`.
 //!
-//! # What makes these four one module
+//! # What makes these three one module
 //!
 //! Go picks their SIGNATURE from the argument `FieldType`s at build time.
 //! `addTimeFunctionClass.getFunction` is a twelve-way switch over the
@@ -48,7 +48,7 @@
 use tidb_datatype::{Datum, FieldType, FieldTypeCode};
 
 use super::duration_parse::{
-    self, fsp_for_time_add_sub, get_fsp, is_duration, parse_datetime, parse_duration, GoDateTime,
+    fsp_for_time_add_sub, get_fsp, is_duration, parse_datetime, parse_duration, GoDateTime,
     GoDuration, Truncated, MAX_FSP, MIN_FSP,
 };
 use crate::coerce::coerce_str;
@@ -478,140 +478,6 @@ pub(crate) fn timestamp(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, Eva
         )),
         _ => Ok(Datum::Null),
     }
-}
-
-/// `builtinTimestampAddSig.evalString` + `addUnitToTime`.
-pub(crate) fn timestamp_add(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    if vals.len() != 3 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let (Some(unit), Some(amount)) = (coerce_str(&vals[0])?, number_of(&vals[1])?) else {
-        return Ok(Datum::Null);
-    };
-    let Some(text) = coerce_str(&vals[2])? else {
-        return Ok(Datum::Null);
-    };
-    let Some(base) = parse_datetime(&text) else {
-        cols.append_warning(1292, &format!("Incorrect datetime value: '{text}'"));
-        return Ok(Datum::Null);
-    };
-    // Go converts the third argument through `Time.GoTime` before calling
-    // `addUnitToTime`. Zero dates and month/day-zero values therefore fail
-    // before arithmetic (for example `TIMESTAMPADD(DAY, 28768, 0)` is NULL),
-    // even though the signed day-number helper could otherwise produce a
-    // seemingly valid year-78 result.
-    if !base.in_range() {
-        cols.append_warning(1292, &format!("Incorrect datetime value: '{text}'"));
-        return Ok(Datum::Null);
-    }
-    let unit = unit.to_ascii_uppercase();
-    let Some(result) = add_unit_to_time(&unit, base, amount) else {
-        return Err(EvalError::Unsupported("TIMESTAMPADD unit"));
-    };
-    let Some(result) = result else {
-        return Ok(Datum::Null);
-    };
-    if !result.in_range() {
-        cols.append_warning(
-            1292,
-            &format!(
-                "Incorrect time value: '{{{} {} {} {} {} {} {}}}'",
-                result.year,
-                result.month,
-                result.day,
-                result.hour,
-                result.minute,
-                result.second,
-                result.micros
-            ),
-        );
-        return Ok(Datum::Null);
-    }
-    // Go: `fsp := types.DefaultFsp`, raised to `MaxFsp` when the result
-    // carries a microsecond.
-    let fsp = if result.micros == 0 { MIN_FSP } else { MAX_FSP };
-    Ok(Datum::new_string(GoDateTime { fsp, ..result }.format()))
-}
-
-/// Go `addUnitToTime`. The outer `None` is an unknown unit (Go's
-/// `ErrWrongValue`); the inner `None` is its `overflow` return.
-fn add_unit_to_time(unit: &str, base: GoDateTime, amount: f64) -> Option<Option<GoDateTime>> {
-    // Go computes BOTH: `s` is the truncated microsecond count, used only by
-    // SECOND, and `v` is the rounded whole count every other unit uses.
-    let truncated_micros = (amount * 1_000_000.0).trunc();
-    let rounded = amount.round();
-    let micros = match unit {
-        "MICROSECOND" => rounded,
-        "SECOND" => truncated_micros,
-        "MINUTE" => rounded * 60_000_000.0,
-        "HOUR" => rounded * 3_600_000_000.0,
-        "DAY" => rounded * 86_400_000_000.0,
-        "WEEK" => rounded * 7.0 * 86_400_000_000.0,
-        "MONTH" => return Some(add_months(base, rounded, true)),
-        "QUARTER" => return Some(add_months(base, rounded * 3.0, false)),
-        "YEAR" => return Some(add_months(base, rounded * 12.0, false)),
-        _ => return None,
-    };
-    if !micros.is_finite() || micros.abs() > 9e18 {
-        return Some(None);
-    }
-    Some(base.add(GoDuration {
-        micros: micros as i64,
-        fsp: base.fsp,
-    }))
-}
-
-/// The MONTH/QUARTER/YEAR arms of `addUnitToTime`. Go's MONTH arm goes
-/// through `types.AddDate`, which CLAMPS to the target month's last day
-/// (`2020-01-31 + 1 MONTH` is `2020-02-29`), while its QUARTER and YEAR arms
-/// go through Go's own `time.Time.AddDate`, which OVERFLOWS
-/// (`2020-02-29 + 1 YEAR` is `2021-03-01`). Both were captured.
-fn add_months(base: GoDateTime, months: f64, clamp: bool) -> Option<GoDateTime> {
-    if !months.is_finite() || months.abs() > 1e6 {
-        return None;
-    }
-    let total = base.year * 12 + i64::from(base.month) - 1 + months as i64;
-    if total < 0 {
-        return None;
-    }
-    let year = total / 12;
-    let month = (total % 12 + 1) as u32;
-    let day = if clamp {
-        base.day.min(last_day_of_month(year, month))
-    } else {
-        base.day
-    };
-    // A day past the target month's end rolls into the next month here,
-    // which is exactly what Go's `time.Time.AddDate` normalization does.
-    let (year, month, day) =
-        duration_parse::date_from_daynr(duration_parse::daynr(year, month, 1) + i64::from(day) - 1);
-    Some(GoDateTime {
-        year,
-        month,
-        day,
-        ..base
-    })
-}
-
-fn last_day_of_month(year: i64, month: u32) -> u32 {
-    let next = if month == 12 {
-        duration_parse::daynr(year + 1, 1, 1)
-    } else {
-        duration_parse::daynr(year, month + 1, 1)
-    };
-    (next - duration_parse::daynr(year, month, 1)) as u32
-}
-
-fn number_of(value: &Datum) -> Result<Option<f64>, EvalError> {
-    Ok(match value {
-        Datum::Null => None,
-        Datum::Int(v) => Some(*v as f64),
-        Datum::UInt(v) => Some(*v as f64),
-        Datum::Real(v) => Some(*v),
-        Datum::Float32(v) => Some(*v),
-        Datum::Decimal(d) => Some(d.to_f64()),
-        _ => coerce_str(value)?.map(|text| text.trim().parse::<f64>().unwrap_or(0.0)),
-    })
 }
 
 #[cfg(test)]

@@ -267,13 +267,16 @@ fn every_declined_expression_fails_cleanly_without_the_native_evaluator() {
             Err(other) => panic!("{expression} failed with {other:?} instead of a refusal"),
         }
     }
-    // Both skips are planning-time refusals, not engine declines: the
-    // row-value comparison needs a column resolver the rewriter does not have
-    // here, and `convert(... using cp866)` names a charset the port does not
-    // support, so neither expression ever reaches evaluation.
+    // These are planning-time refusals, not engine declines: the row-value
+    // comparison lacks a resolver, cp866 is unsupported, and removed
+    // CONVERT_TZ refuses before recursively rewriting its children.
     assert_eq!(
         skipped,
-        ["(1, 2) = (1, 2, 3)", "convert('haha' using cp866)"]
+        [
+            "(1, 2) = (1, 2, 3)",
+            "convert('haha' using cp866)",
+            "convert_tz(20240315123045,'+00:00','+08:00')",
+        ]
     );
 }
 
@@ -283,7 +286,7 @@ fn every_declined_expression_fails_cleanly_without_the_native_evaluator() {
 /// all. `plan_builder.rs` folds the rewritten tree with the live statement
 /// context (`fold_constant_in_mode`) before the plan exists. After physical
 /// native-kernel deletion, constant-foldable declines become a single
-/// `Constant`; the 48 pinned here are the ones whose constant form *does*
+/// `Constant`; the pinned rows here are the ones whose constant form *does*
 /// reach the adapter, which is the surface the removal actually has to answer
 /// for.
 ///
@@ -385,17 +388,21 @@ fn folded_away_expressions_never_reach_the_adapter() {
         }
     }
     assert_eq!(survived, SURVIVES_FOLD);
-    // The same two planning-time refusals the post-deletion test pins never
-    // reach the fold either.
+    // The same planning-time refusals the post-deletion test pins never reach
+    // the fold either.
     assert_eq!(
         skipped,
-        ["(1, 2) = (1, 2, 3)", "convert('haha' using cp866)"]
+        [
+            "(1, 2) = (1, 2, 3)",
+            "convert('haha' using cp866)",
+            "convert_tz(20240315123045,'+00:00','+08:00')",
+        ]
     );
     assert_eq!(
         folded.len() + survived.len() + skipped.len(),
         DECLINED.len()
     );
-    // CHAR_FUNC, contracted FIELD/ELT, OCT(binary literal), and the newly
-    // removed comparison kernels can no longer fold; they stay visible above.
-    assert_eq!(folded.len(), 15, "the folded count changed");
+    // Removed native families, including CONVERT_TZ, cannot fold; they stay
+    // visible above for fail-closed execution.
+    assert_eq!(folded.len(), 14, "the folded count changed");
 }

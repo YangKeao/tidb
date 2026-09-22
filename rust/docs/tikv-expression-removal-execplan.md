@@ -418,6 +418,29 @@ remain in the workspace.
       admitted constant length shapes were initially masked as contractions;
       the harness now routes them through Copying with positive row accounting,
       leaving only five exact lowerer-declined statements as contractions.
+- [x] Twenty-fifth physical-deletion tranche: remove the excluded native
+      CONVERT_TZ, FROM_DAYS, TIDB_PARSE_TSO and TIMESTAMPADD kernels, dispatch
+      arms and exclusive helpers. The complete `convert_tz.rs` implementation is
+      physically absent; TIMESTAMPADD's dedicated AST path now refuses before
+      either child is evaluated. All four ordinary native boundaries fail closed
+      with `native temporal residual evaluation was removed; function
+      unsupported`. Parser/result-type metadata remains, and FROM_DAYS stays
+      admission-excluded because the pinned TiKV engine's out-of-range zero-date
+      behavior differs from TiDB's NULL sub-band. Deleted CONVERT_TZ source tests
+      retain their names and independent fixed-offset/DST/invalid-zone former
+      oracles as contraction tests. Construction also refuses all four names
+      before recursively rewriting/folding children. The replay harness
+      recognizes TIMESTAMPADD's dedicated AST and uses only a whole-statement
+      exact-SQL allowlist; lazy children and DDL defaults are regression-tested
+      as unmasked. Library is 1169 passed / 99 ignored; external is 77;
+      expression/query differential
+      are 3/4; session Copying is 334 / 4 carried failures and feature-off is
+      332 / the same 4. Static/runtime gates and `make -j1 lint` pass at 212
+      admitted / 172 excluded and 321 fixtures / 2074 engine rows / 160
+      borrowed rows. Broad replay remains intentionally
+      red: Native 192/9804; Copying 178/10233 with 416224 engine rows and zero
+      borrowed rows. These replay numbers are contraction evidence, not a
+      compatibility claim.
 - [x] Twenty-fourth physical-deletion tranche: remove the native statement-clock
       and TiDB clock-metadata kernels for NOW/CURRENT_TIMESTAMP, LOCALTIME,
       LOCALTIMESTAMP, UTC_TIMESTAMP, CURDATE/CURRENT_DATE, UTC_DATE,
