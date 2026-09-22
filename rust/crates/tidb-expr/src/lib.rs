@@ -21,8 +21,6 @@ pub mod aggregation;
 mod arg_eval_type;
 mod binary_literal;
 pub mod builtin_arithmetic;
-#[cfg(test)]
-mod builtin_cast_semantics;
 pub mod builtin_compare;
 mod builtin_ext;
 pub mod builtin_op;

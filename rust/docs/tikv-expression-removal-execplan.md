@@ -507,12 +507,22 @@ remain in the workspace.
       helper are removed. The tranche is 112 insertions / 6,023 deletions;
       locked offline `cargo check -p tidb-session`, the focused session tests
       and the SQL demo pass with five TiKV engine rows and refused native replay.
-- [ ] Post-tranche-32 deletion frontier (2026-03-24): the remaining source
+- [x] Thirty-third physical-deletion tranche: delete the central `eval_cast`
+      native dispatcher, its UNION-unsigned branch, the orphaned integer cast
+      wrapper and the dedicated native-cast test module. `arg_eval_type.rs`
+      contracts from 670 lines to a 29-line typed-string reader after removing
+      all runtime argument-cast masks/wrappers. Decimal result-scale inference
+      now reads only literal integer metadata instead of executing a cast; other
+      constant kinds retain the conservative zero-scale fallback. The tranche
+      is eight insertions / 1,277 deletions. Locked offline compilation, the
+      focused session tests and SQL demo pass with five TiKV engine rows and a
+      refused no-context replay probe.
+- [ ] Post-tranche-33 deletion frontier (2026-03-24): the remaining source
       inventory is intentionally measured before another cut, not counted as
       native-kernel LOC. `builtin_ext/json` is only a 128-line cast/type bridge
-      and `time_fn` is absent. The four core dispatch/bridge files total 6,770
-      lines (`scalar_function.rs` 1,647, `evaluator.rs` 2,227, `cast.rs` 2,367
-      and `lib.rs` 529). The next physical cut should separate and delete the
+      and `time_fn` is absent. The four core dispatch/bridge files total 6,469
+      lines (`scalar_function.rs` 1,647, `evaluator.rs` 2,227, `cast.rs` 2,068
+      and `lib.rs` 527). The next physical cut should separate and delete the
       remaining generic cast/operator/coercion kernels while retaining parser,
       result-type, transport and TiKV lowering pieces. This snapshot prevents the outside-call-site
       audit from being mistaken for completion: substantial native expression

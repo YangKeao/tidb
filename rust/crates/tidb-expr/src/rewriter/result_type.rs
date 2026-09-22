@@ -1129,16 +1129,11 @@ fn round_truncate_return_type(name: &str, args: &[Expression]) -> Option<FieldTy
         constant
             .eval()
             .ok()
-            .and_then(|value| {
-                crate::cast::cast_arg_as_int(
-                    &value,
-                    constant.ret_type.as_ref(),
-                    &crate::context::NoColumns,
-                )
-                .ok()
+            .and_then(|value| match value {
+                Datum::Int(value) if value >= 0 => Some(value),
+                Datum::UInt(value) => i64::try_from(value).ok(),
+                _ => None,
             })
-            .and_then(|value| crate::arg_eval_type::eval_int(&value).ok().flatten())
-            .filter(|decimal| *decimal >= 0)
             .map_or(0, |decimal| decimal.min(MAX_DECIMAL_SCALE))
     } else {
         value_type.decimal()
