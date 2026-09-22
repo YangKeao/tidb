@@ -588,7 +588,16 @@ remain in the workspace.
       The retained library suite now compiles and passes **211/211**; the
       281-fixture engine runtime gate and SQL demo remain green with zero native
       fallback.
-- [ ] Post-tranche-41 deletion frontier (2026-03-24): the remaining source
+- [x] Forty-second physical-deletion tranche: delete twelve remaining
+      `tikv_coverage` tests that still compared against native execution,
+      exercised the removed required-engine coexistence flag, or expected
+      pre-cutover literal/temporal admission behavior. This removes another 787
+      stale lines; the complete standalone coverage target now passes **18/18**
+      rather than 18/30 with twelve deliberate contractions. The eight-test
+      runtime receipt subset remains 281 fixtures / 1,834 engine rows / 160
+      borrowed / zero native fallback, and the SQL demo still records five
+      engine rows with refused no-context replay.
+- [ ] Post-tranche-42 deletion frontier (2026-03-24): the remaining source
       inventory is intentionally measured before another cut, not counted as
       native-kernel LOC. `builtin_ext/json` is only a 128-line cast/type bridge
       and `time_fn`/`ops` are absent. The four core dispatch/bridge files total
