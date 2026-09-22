@@ -107,6 +107,9 @@ fn may_accept_removed_marker(expr: &str, marker: &str) -> bool {
     if marker == removed_native::TEMPORAL_CLOCK_REMOVED {
         return false;
     }
+    if marker == removed_native::TEMPORAL_SESSION_REMOVED {
+        return removed_native::is_temporal_session_contraction(&sql);
+    }
     if marker == removed_native::TEMPORAL_RESIDUAL_REMOVED {
         return removed_native::is_temporal_residual_contraction(&sql);
     }

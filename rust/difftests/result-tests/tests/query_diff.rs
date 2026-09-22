@@ -97,7 +97,10 @@ fn may_accept_engine_required_marker(sql: &str, marker: &str) -> bool {
     if marker == removed_native::TEMPORAL_TAIL_REMOVED {
         return removed_native::is_temporal_tail_contraction(sql);
     }
-    if marker == removed_native::TEMPORAL_CLOCK_REMOVED {
+    if matches!(
+        marker,
+        removed_native::TEMPORAL_CLOCK_REMOVED | removed_native::TEMPORAL_SESSION_REMOVED
+    ) {
         return false;
     }
     if marker == removed_native::TEMPORAL_RESIDUAL_REMOVED {

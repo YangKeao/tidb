@@ -394,11 +394,11 @@ impl Session {
     /// Go `CalculateAsOfTsExpr` (`pkg/sessiontxn/staleread/util.go:41-86`),
     /// over this session's own expression engine.
     ///
-    /// Order is Go's exactly: NULL refuses; a DATETIME interpretation is
-    /// tried first (through `UNIX_TIMESTAMP`, whose session-zone semantics
-    /// are the ported `time.Date`), and only then a raw TSO -- a positive
-    /// integer or a string of digits. A TSO whose physical half is before
-    /// 2013-01-01 refuses with Go's own message.
+    /// NULL refuses. The deleted native UNIX_TIMESTAMP path can no longer
+    /// supply Go's DATETIME-first interpretation; its structured contraction
+    /// falls through only to a raw TSO -- a positive integer or digit string.
+    /// A TSO whose physical half is before 2013-01-01 refuses with Go's own
+    /// message.
     pub(crate) fn resolve_as_of_ts(&mut self, expr: &tidb_ast::Expr) -> Result<u64, DriverError> {
         const TSO_LOGICAL_BITS: u32 = 18;
         // 2013-01-01 00:00:00 UTC in milliseconds, Go's `minTSO` bound.
@@ -414,24 +414,35 @@ impl Session {
             args: vec![tidb_ast::Expr::String(text.to_owned())],
             origin_position: 0,
         };
-        // Go tries the datetime reading FIRST (util.go:60-67), deliberately
-        // differing from `tidb_snapshot` on compact forms. UNIX_TIMESTAMP
-        // answers NULL (or 0) for a string that is no datetime, which is the
-        // fall-through to the raw-TSO reading.
-        let seconds = match self.eval_value(&unix_call(&text))? {
-            Datum::Int(v) if v > 0 => Some(v as f64),
-            Datum::UInt(v) if v > 0 => Some(v as f64),
-            Datum::Real(v) if v > 0.0 => Some(v),
-            Datum::Decimal(decimal) => {
+        // Preserve the raw-TSO fallback when deleted native UNIX_TIMESTAMP
+        // returns its structured contraction. Other evaluation failures still
+        // propagate; DATETIME AS OF remains an explicit unsupported shape.
+        let (seconds, unix_timestamp_removed) = match self.eval_value(&unix_call(&text)) {
+            Ok(Datum::Int(v)) if v > 0 => (Some(v as f64), false),
+            Ok(Datum::UInt(v)) if v > 0 => (Some(v as f64), false),
+            Ok(Datum::Real(v)) if v > 0.0 => (Some(v), false),
+            Ok(Datum::Decimal(decimal)) => {
                 let parsed = decimal.to_string().parse::<f64>().unwrap_or(0.0);
-                (parsed > 0.0).then_some(parsed)
+                ((parsed > 0.0).then_some(parsed), false)
             }
-            _ => None,
+            Ok(_) => (None, false),
+            Err(DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::Unsupported(message),
+            ))) if message
+                == "native session temporal evaluation was removed; TiKV engine required" =>
+            {
+                (None, true)
+            }
+            Err(error) => return Err(error),
         };
         let tso = if let Some(seconds) = seconds {
             ((seconds * 1000.0) as u64) << TSO_LOGICAL_BITS
         } else if let Ok(raw) = text.parse::<u64>() {
             raw
+        } else if unix_timestamp_removed {
+            return Err(as_of_error(
+                "DATETIME AS OF TIMESTAMP is unsupported because native UNIX_TIMESTAMP evaluation was removed",
+            ));
         } else {
             return Err(as_of_error(
                 "cannot parse AS OF TIMESTAMP expression as datetime or TSO",

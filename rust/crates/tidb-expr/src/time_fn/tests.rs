@@ -964,6 +964,105 @@ fn str_to_date_day_of_month_follows_allow_invalid_dates() {
     );
 }
 
+fn assert_session_temporal_removed(name: &str, args: &[Datum], former: &str) {
+    assert_eq!(
+        crate::func::eval_func_values_in(name, args, &crate::NoColumns),
+        Some(Err(EvalError::Unsupported(
+            "native session temporal evaluation was removed; TiKV engine required"
+        ))),
+        "former oracle: {former}"
+    );
+}
+
+#[test]
+fn from_unixtime_goeval_vectors() {
+    for (arg, former) in [
+        (Datum::Int(0), "1970-01-01 11:00:00"),
+        (Datum::Int(1), "1970-01-01 11:00:01"),
+        (Datum::Int(1_447_430_881), "2015-11-14 03:08:01"),
+        (
+            Datum::Decimal(crate::Decimal::from_literal("1447430881.123456")),
+            "2015-11-14 03:08:01.123456",
+        ),
+        (
+            Datum::Decimal(crate::Decimal::from_literal("1447430881.999999")),
+            "2015-11-14 03:08:01.999999",
+        ),
+        (
+            Datum::Decimal(crate::Decimal::from_literal("1447430881.1234567")),
+            "2015-11-14 03:08:01.123457",
+        ),
+        (
+            Datum::Decimal(crate::Decimal::from_literal("1447430881.12")),
+            "2015-11-14 03:08:01.12",
+        ),
+        (Datum::Int(32_536_771_199), "3001-01-19 10:59:59"),
+        (string_datum("1447430881.5"), "2015-11-14 03:08:01.500000"),
+        (Datum::Int(-1), "NULL"),
+        (Datum::Int(32_536_771_200), "NULL"),
+        (Datum::Null, "NULL"),
+    ] {
+        assert_session_temporal_removed("FROM_UNIXTIME", &[arg], former);
+    }
+    assert_session_temporal_removed(
+        "FROM_UNIXTIME",
+        &[Datum::Int(1_447_430_881), string_datum("%H")],
+        "03",
+    );
+}
+
+#[test]
+fn unix_timestamp_goeval_vectors() {
+    for (arg, former) in [
+        ("2015-11-13 10:20:19", "1447370419"),
+        ("2015-11-13 10:20:19.012", "1447370419.012"),
+        ("1970-01-01 00:00:00", "0"),
+        ("1969-12-31 23:59:59", "0"),
+        ("3001-01-18 23:59:59", "32536731599"),
+        ("2038-01-19 03:14:07", "2147444047"),
+        ("0000-00-00 00:00:00", "NULL"),
+        ("not-a-date", "NULL"),
+    ] {
+        assert_session_temporal_removed("UNIX_TIMESTAMP", &[string_datum(arg)], former);
+    }
+    assert_session_temporal_removed("UNIX_TIMESTAMP", &[Datum::Null], "NULL");
+    assert_session_temporal_removed("UNIX_TIMESTAMP", &[], "statement clock");
+}
+
+#[test]
+fn unix_timestamp_in_a_daylight_saving_gap_answers_the_transition() {
+    for (arg, former) in [
+        ("2025-03-30 01:59:59", "1743296399"),
+        ("2025-03-30 02:00:00", "1743296400"),
+        ("2025-03-30 02:30:00", "1743296400"),
+        ("2025-03-30 02:59:59", "1743296400"),
+        ("2025-03-30 03:00:00", "1743296400"),
+        ("2025-10-26 02:30:00", "1761442200"),
+    ] {
+        assert_session_temporal_removed("UNIX_TIMESTAMP", &[string_datum(arg)], former);
+    }
+}
+
+#[test]
+fn tidb_parse_tso_goeval_vectors() {
+    for (arg, former) in [
+        (
+            Datum::Int(424_930_234_047_906_595),
+            "2021-05-14 19:16:41.903000",
+        ),
+        (Datum::Int(0), "NULL"),
+        (Datum::Null, "NULL"),
+    ] {
+        assert_eq!(
+            crate::func::eval_func_values_in("TIDB_PARSE_TSO", &[arg], &crate::NoColumns),
+            Some(Err(EvalError::Unsupported(
+                "native temporal residual evaluation was removed; function unsupported"
+            ))),
+            "former oracle: {former}"
+        );
+    }
+}
+
 fn assert_convert_tz_removed(args: &[Datum], former: &str) {
     assert_eq!(
         crate::func::eval_func_values_in("CONVERT_TZ", args, &crate::NoColumns),

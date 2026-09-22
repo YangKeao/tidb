@@ -221,6 +221,8 @@ pub(crate) const REMOVED_MISC_UNSUPPORTED: &str =
     "native miscellaneous kernels were removed; only ANY_VALUE remains admitted through TiKV";
 pub(crate) const REMOVED_TEMPORAL_RESIDUAL_UNSUPPORTED: &str =
     "native residual temporal kernel was removed and no verified pinned-engine lowering is admitted";
+pub(crate) const SESSION_TIME_ZONE_UNSAFE: &str =
+    "native session-zone temporal kernel was removed; the pinned engine cannot reproduce named-zone DST gap/ambiguity semantics";
 /// The statement clock (`NOW()`, `CURRENT_TIMESTAMP`, `CURDATE()`,
 /// `CURRENT_TIME`, `UTC_TIMESTAMP()`, `SYSDATE()`).
 ///
@@ -691,7 +693,7 @@ pub(crate) const ADMISSION_ROWS: &[AdmissionRow] = &[
     row("uncompress", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_CRYPTO_UNVERIFIED),
     row("uncompressed_length", Decision::Excluded, Signature::None, &[], Shape::Any, REMOVED_CRYPTO_UNVERIFIED),
     row("unhex", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
-    row("unix_timestamp", Decision::Admitted, Signature::Family(Family::Temporal), &[], Shape::Any, ""),
+    row("unix_timestamp", Decision::Excluded, Signature::None, &[], Shape::Any, SESSION_TIME_ZONE_UNSAFE),
     row("upper", Decision::Admitted, Signature::Family(Family::String), &[], Shape::Any, ""),
     row("user", Decision::Excluded, Signature::None, &[], Shape::Any, NATIVE_SESSION_STATE),
     row("utc_date", Decision::Excluded, Signature::None, &[], Shape::Any, SESSION_CLOCK_NEEDS_HOST_CLOCK),

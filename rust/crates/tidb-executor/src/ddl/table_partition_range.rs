@@ -342,8 +342,18 @@ pub(super) fn fold_range_bound(
         ),
     )
     .map_err(|_| DriverError::PartitionValuesNotInt(partition.to_owned()))?;
-    let value = tidb_expr::evaluator::eval_constant_row(&rewritten, ctx)
-        .map_err(|_| DriverError::PartitionValuesNotInt(partition.to_owned()))?;
+    let value = tidb_expr::evaluator::eval_constant_row(&rewritten, ctx).map_err(|error| {
+        if matches!(
+            &error,
+            tidb_expr::evaluator::EvaluatorError::Eval(tidb_expr::EvalError::Unsupported(_))
+        ) {
+            DriverError::from(crate::ExecError::Eval(
+                tidb_expr::evaluator::into_eval_error(error),
+            ))
+        } else {
+            DriverError::PartitionValuesNotInt(partition.to_owned())
+        }
+    })?;
     match value {
         Datum::Int(value) => {
             // Go `checkPartitionValuesIsInt`: a NEGATIVE bound under an

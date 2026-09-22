@@ -841,7 +841,10 @@ fn may_classify_native_contraction(native_backend: bool, sql: &str) -> bool {
 
 fn removed_marker_matches(topic: &str, sql: &str, error: &str) -> bool {
     expected_removed_marker(topic, sql).is_some_and(|marker| {
-        if marker == removed_native::TEMPORAL_CLOCK_REMOVED {
+        if matches!(
+            marker,
+            removed_native::TEMPORAL_CLOCK_REMOVED | removed_native::TEMPORAL_SESSION_REMOVED
+        ) {
             return false;
         }
         if marker == removed_native::TEMPORAL_RESIDUAL_REMOVED {
@@ -1105,6 +1108,18 @@ fn removed_kernel_classification_is_statement_scoped() {
         assert!(
             !removed_marker_matches("unrelated/topic", sql, clock_error),
             "clock errors must never be replay contractions: {sql}"
+        );
+    }
+    let session_temporal_error =
+        "native session temporal evaluation was removed; TiKV engine required";
+    for sql in [
+        "select from_unixtime(0)",
+        "select unix_timestamp(ts) from t",
+        "select if(1, 1, from_unixtime(0))",
+    ] {
+        assert!(
+            !removed_marker_matches("unrelated/topic", sql, session_temporal_error),
+            "admitted session temporal errors must not be replay contractions: {sql}"
         );
     }
     let residual_error = "native temporal residual evaluation was removed; function unsupported";

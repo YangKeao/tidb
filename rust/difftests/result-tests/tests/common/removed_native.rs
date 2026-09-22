@@ -30,6 +30,8 @@ pub const TEMPORAL_CLOCK_REMOVED: &str =
     "native temporal clock evaluation was removed; function unsupported";
 pub const TEMPORAL_RESIDUAL_REMOVED: &str =
     "native temporal residual evaluation was removed; function unsupported";
+pub const TEMPORAL_SESSION_REMOVED: &str =
+    "native session temporal evaluation was removed; TiKV engine required";
 pub const COMPARE2_REMOVED: &str =
     "native LEAST/GREATEST/INTERVAL evaluation was removed; TiKV engine required";
 pub const MISC_REMOVED: &str =
@@ -205,6 +207,35 @@ pub fn is_temporal_tail_contraction(sql: &str) -> bool {
 /// Whole-statement allowlist for corpus rows whose former values are pinned
 /// independently. Do not broaden this to a function-name predicate: lazy
 /// children, DDL defaults, and omitted-column inserts must remain visible.
+pub fn is_temporal_session_contraction(sql: &str) -> bool {
+    matches!(
+        sql.trim().to_ascii_lowercase().as_str(),
+        "select from_unixtime(0)"
+            | "select from_unixtime(1)"
+            | "select from_unixtime(1447430881)"
+            | "select from_unixtime(1447430881.123456)"
+            | "select from_unixtime(1447430881.999999)"
+            | "select from_unixtime(1447430881.1234567)"
+            | "select from_unixtime(1447430881.12)"
+            | "select from_unixtime(-1)"
+            | "select from_unixtime(32536771199)"
+            | "select from_unixtime(32536771200)"
+            | "select from_unixtime('1447430881.5')"
+            | "select from_unixtime(null)"
+            | "select from_unixtime(1447430881, '%y %d %m %h:%i:%s %x')"
+            | "select from_unixtime(1447430881.123, '%h')"
+            | "select unix_timestamp('2015-11-13 10:20:19')"
+            | "select unix_timestamp('2015-11-13 10:20:19.012')"
+            | "select unix_timestamp('1970-01-01 00:00:00')"
+            | "select unix_timestamp('1969-12-31 23:59:59')"
+            | "select unix_timestamp('3001-01-18 23:59:59')"
+            | "select unix_timestamp('2038-01-19 03:14:07')"
+            | "select unix_timestamp('0000-00-00 00:00:00')"
+            | "select unix_timestamp('not-a-date')"
+            | "select unix_timestamp(null)"
+    )
+}
+
 pub fn is_temporal_residual_contraction(sql: &str) -> bool {
     matches!(
         sql.trim().to_ascii_lowercase().as_str(),
@@ -458,6 +489,9 @@ pub fn is_string_aux_shape_contraction(sql: &str) -> bool {
 }
 
 fn removed_marker_for_name(name: &str, nonbinary_find_in_set: bool) -> Option<&'static str> {
+    if matches!(name, "FROM_UNIXTIME" | "UNIX_TIMESTAMP") {
+        return Some(TEMPORAL_SESSION_REMOVED);
+    }
     if matches!(
         name,
         "CONVERT_TZ" | "FROM_DAYS" | "TIDB_PARSE_TSO" | "TIMESTAMPADD"

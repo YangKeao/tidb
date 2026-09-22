@@ -2345,66 +2345,51 @@ fn test_add_sub_time_issue_56861_typed_tables() {
 #[test]
 fn test_from_unixtime_utc_fixed() {
     let utc = UtcClockCtx::new(0);
-    let call = |args: Vec<Datum>| {
-        time_fn::dispatch("FROM_UNIXTIME", &args, &utc)
-            .expect("FROM_UNIXTIME belongs to this family")
-            .map(|d| got_text(&d))
-    };
-    assert_eq!(
-        call(vec![Datum::Int(1_451_606_400)]),
-        Ok("2016-01-01 00:00:00".into())
-    );
-    for fraction in ["1451606400.123456", "1451606400.999999"] {
-        let want = match fraction {
-            "1451606400.123456" => "2016-01-01 00:00:00.123456",
-            _ => "2016-01-01 00:00:00.999999",
-        };
-        let args = vec![Datum::Decimal(tidb_datatype::Decimal::from_literal(
-            fraction,
-        ))];
-        assert_eq!(call(args), Ok(want.to_string()), "{fraction}");
-    }
-    // A scale-7 decimal rounds half-up into the next second.
-    assert_eq!(
-        call(vec![Datum::Decimal(tidb_datatype::Decimal::from_literal(
-            "1451606400.9999999"
-        ))]),
-        Ok("2016-01-01 00:00:01.000000".to_string())
-    );
-    // TestIssue22206 far-future integral bound.
-    assert_eq!(
-        call(vec![Datum::Int(5_000_000_000)]),
-        Ok("2128-06-11 08:53:20".to_string())
-    );
-    // Master compares formatted output against DATE_FORMAT(expect) itself;
-    // mirror that contract on this tier.
     let fmt = "%Y %D %M %h:%i:%s %x";
-    let two_arg = |arg: Datum| {
-        got_text(
-            &time_fn::dispatch("FROM_UNIXTIME", &[arg, Datum::new_string(fmt)], &utc)
-                .unwrap()
-                .unwrap(),
-        )
-    };
-    let oracle = |text: &str| {
-        got_text(
-            &time_fn::calendar::date_format(&Datum::new_string(text), &Datum::new_string(fmt))
-                .unwrap(),
-        )
-    };
-    assert_eq!(
-        two_arg(Datum::Int(1_451_606_400)),
-        oracle("2016-01-01 00:00:00")
-    );
-    assert_eq!(
-        two_arg(Datum::Decimal(tidb_datatype::Decimal::from_literal(
-            "1451606400.123456"
-        ))),
-        oracle("2016-01-01 00:00:00.123456")
-    );
-    // Out-of-domain inputs answer SQL NULL.
-    assert_eq!(call(vec![Datum::Int(-12_345)]), Ok("<null>".into()));
-    assert_eq!(call(vec![Datum::Int(32_536_771_200)]), Ok("<null>".into()));
+    let rows = vec![
+        (vec![Datum::Int(1_451_606_400)], "2016-01-01 00:00:00"),
+        (
+            vec![Datum::Decimal(tidb_datatype::Decimal::from_literal(
+                "1451606400.123456",
+            ))],
+            "2016-01-01 00:00:00.123456",
+        ),
+        (
+            vec![Datum::Decimal(tidb_datatype::Decimal::from_literal(
+                "1451606400.999999",
+            ))],
+            "2016-01-01 00:00:00.999999",
+        ),
+        (
+            vec![Datum::Decimal(tidb_datatype::Decimal::from_literal(
+                "1451606400.9999999",
+            ))],
+            "2016-01-01 00:00:01.000000",
+        ),
+        (vec![Datum::Int(5_000_000_000)], "2128-06-11 08:53:20"),
+        (
+            vec![Datum::Int(1_451_606_400), Datum::new_string(fmt)],
+            "formatted 2016-01-01 00:00:00",
+        ),
+        (
+            vec![
+                Datum::Decimal(tidb_datatype::Decimal::from_literal("1451606400.123456")),
+                Datum::new_string(fmt),
+            ],
+            "formatted 2016-01-01 00:00:00.123456",
+        ),
+        (vec![Datum::Int(-12_345)], "NULL"),
+        (vec![Datum::Int(32_536_771_200)], "NULL"),
+    ];
+    for (args, former) in rows {
+        assert_eq!(
+            crate::func::eval_func_values_in("FROM_UNIXTIME", &args, &utc),
+            Some(Err(EvalError::Unsupported(
+                "native session temporal evaluation was removed; TiKV engine required"
+            ))),
+            "former oracle: {former}"
+        );
+    }
 }
 
 /// Go converts a real argument through `MyDecimal.FromFloat64`, whose
@@ -2414,10 +2399,17 @@ fn test_from_unixtime_utc_fixed() {
 #[test]
 fn test_from_unixtime_real_uses_go_shortest_decimal_before_rounding() {
     let utc = UtcClockCtx::new(0);
-    let result = time_fn::dispatch("FROM_UNIXTIME", &[Datum::Real(1_451_606_400.0363455)], &utc)
-        .unwrap()
-        .unwrap();
-    assert_eq!(got_text(&result), "2016-01-01 00:00:00.036346");
+    assert_eq!(
+        crate::func::eval_func_values_in(
+            "FROM_UNIXTIME",
+            &[Datum::Real(1_451_606_400.0363455)],
+            &utc,
+        ),
+        Some(Err(EvalError::Unsupported(
+            "native session temporal evaluation was removed; TiKV engine required"
+        ))),
+        "former oracle: 2016-01-01 00:00:00.036346"
+    );
 }
 
 /// Go `pkg/expression/builtin_time_test.go:1685 TestCurrentDate` /

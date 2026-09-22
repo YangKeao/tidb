@@ -26,7 +26,6 @@ pub(crate) mod add_sub;
 pub(crate) mod calendar;
 pub(crate) mod duration_parse;
 pub(crate) mod extract;
-mod session_tz;
 
 use self::calendar::{parse_date_ymd, week_of_year};
 use crate::coerce::coerce_str;
@@ -41,8 +40,6 @@ pub(crate) fn dispatch(
     Some(match name {
         "WEEK" => week(vals, cols.default_week_format()),
         "STR_TO_DATE" => calendar::str_to_date(vals, cols),
-        "FROM_UNIXTIME" => session_tz::from_unixtime(vals, cols),
-        "UNIX_TIMESTAMP" => session_tz::unix_timestamp(vals, cols),
         "TIMESTAMPDIFF" => calendar::timestamp_diff(vals),
         // `ADDTIME`/`SUBTIME` reach here with no static argument types, so
         // every argument takes Go's `default` branch -- which is the branch

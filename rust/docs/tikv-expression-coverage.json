@@ -6,7 +6,7 @@
     "tikv": "521ac7330208b7f74f2b182bc373882687967280"
   },
   "current_revisions": {
-    "tidb": "beebb64535ca790e2abbd29e2bbe9cd76b774939",
+    "tidb": "473db84d3f5b8af7a517346db6ecc382bc8d6e38",
     "tikv": "70592fc3695059855a3b05e79cfce825b2c6f773"
   },
   "source_sha256": {
@@ -61,7 +61,7 @@
     "tidb/rust/crates/tidb-expr/src/builtin_registry.rs": "0138401ebdc33b31f5bbe7c9da032d8b89bd57099d0e8fe73dc4ac5e6f0a0ae7",
     "tidb/rust/crates/tidb-expr/src/pushdown_catalog.rs": "0799664d5779a8632efa6b3a7f77b5d84ad59ccaa9a97468364b4c02dd5515d8",
     "tidb/rust/crates/tidb-expr/src/tikv.rs": "5e25572b4afea40dea82275c7b6ff9eedd6f6d414916f4485666e41ccb4b0802",
-    "tidb/rust/crates/tidb-expr/src/tikv/admission.rs": "3843ca8ef530922e8833b8774f3223212becd3f8f7a7bd61532638221dc4a7c4",
+    "tidb/rust/crates/tidb-expr/src/tikv/admission.rs": "ec1c547f1e9f8468003e4163030de54fe43d98858204d423883eac5eb102a3ed",
     "tidb/rust/crates/tidb-expr/src/tikv/lowering.rs": "e33fb7eb59901778f87e71ecf122ffd8ea0ee987549557d437a975b74b79b588",
     "tidb/rust/crates/tidb-expr/src/tikv/lowering/families.rs": "43a1e3b06a5f54a1f9268dfc94c1ffda6c791dc4f7d34393d02d7d2c4365b08a",
     "tidb/rust/crates/tidb-proto/proto/select.proto": "2fc136f4c341c1e3d6617ff3c5e7641ebab35188feebaff632ff8235e360f5c5",
@@ -104,14 +104,14 @@
     "engine_with_go_internal_cast_evidence": 51,
     "engine_lazy_risk": 34,
     "admission_rows": 384,
-    "admission_admitted": 212,
-    "admission_excluded": 172,
+    "admission_admitted": 211,
+    "admission_excluded": 173,
     "admission_registry_names": 309,
     "admission_synthesized_names": 75,
     "admission_missing_registry_names": 0,
     "admission_missing_synthesized_names": 0,
-    "signatures_admitted_by_table": 342,
-    "signatures_excluded_by_table": 172,
+    "signatures_admitted_by_table": 339,
+    "signatures_excluded_by_table": 175,
     "signatures_untested_by_table": 126
   },
   "current_facade_policy": "engine_builder_with_safety_preflight",
@@ -6486,11 +6486,11 @@
     },
     {
       "name": "unix_timestamp",
-      "decision": "admitted",
-      "signature": "Family:Family::Temporal",
+      "decision": "excluded",
+      "signature": "None",
       "required_eval_types": [],
       "shape": "Any",
-      "reason": ""
+      "reason": "native session-zone temporal kernel was removed; the pinned engine cannot reproduce named-zone DST gap/ambiguity semantics"
     },
     {
       "name": "upper",
@@ -21302,7 +21302,7 @@
       "borrowed_classification": "no_dispatch",
       "risk_flags": [],
       "classification": "not_dispatched_by_engine",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "unix_timestamp"
       ]
@@ -21330,7 +21330,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "unix_timestamp"
       ]
@@ -21358,7 +21358,7 @@
       "borrowed_classification": "no_annotated_direct_loader",
       "risk_flags": [],
       "classification": "engine_dispatch_adapter_gap_or_new_mapping_evidence",
-      "admission_status": "admitted",
+      "admission_status": "excluded",
       "admission_names": [
         "unix_timestamp"
       ]

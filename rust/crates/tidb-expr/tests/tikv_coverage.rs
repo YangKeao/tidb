@@ -2778,20 +2778,10 @@ fn tikv_coverage_temporal_extended_engine_receipts() {
         ),
         &mut failures,
     );
-    let mut dt0_input = fixture(
-        std::slice::from_ref(&dt0),
-        &[vec![
-            time_value(2024, 3, 14, 12, 34, 56, 0, 0),
-            time_value(1970, 1, 1, 0, 0, 0, 0, 0),
-            Datum::Null,
-        ]],
-    );
     record(
-        check(
-            "unix_timestamp",
+        check_declined(
+            "unix_timestamp_named_zone_unsafe",
             call("unix_timestamp", &ints, vec![column(0, &dt0)]),
-            &mut dt0_input,
-            &ints,
         ),
         &mut failures,
     );

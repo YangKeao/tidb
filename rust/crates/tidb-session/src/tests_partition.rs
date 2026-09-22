@@ -569,37 +569,25 @@ fn a_range_bound_is_folded_at_create_time() {
 /// from it wrongly, with no error at all.
 #[test]
 fn a_range_bound_folds_under_the_sessions_time_zone() {
-    let bound = |zone: &str| {
+    for (zone, former_bound) in [("+00:00", 1_578_064_200), ("+08:00", 1_578_035_400)] {
         let mut session = Session::new();
         session
             .apply_set(&format!("SET time_zone = '{zone}'"))
             .unwrap();
-        session
+        let error = session
             .run(
                 "CREATE TABLE p (a int, t timestamp) PARTITION BY RANGE (UNIX_TIMESTAMP(t)) (\
                  PARTITION p0 VALUES LESS THAN (UNIX_TIMESTAMP('2020-01-03 15:10:00')), \
                  PARTITION p1 VALUES LESS THAN (MAXVALUE))",
             )
-            .expect("a time_zone-dependent bound is folded, not refused");
-        show_create(&mut session, "p")
-    };
-
-    assert!(
-        bound("+00:00").ends_with(
-            "\nPARTITION BY RANGE (UNIX_TIMESTAMP(`t`))\n(PARTITION `p0` VALUES LESS THAN \
-             (1578064200),\n PARTITION `p1` VALUES LESS THAN (MAXVALUE))"
-        ),
-        "got {}",
-        bound("+00:00")
-    );
-    assert!(
-        bound("+08:00").ends_with(
-            "\nPARTITION BY RANGE (UNIX_TIMESTAMP(`t`))\n(PARTITION `p0` VALUES LESS THAN \
-             (1578035400),\n PARTITION `p1` VALUES LESS THAN (MAXVALUE))"
-        ),
-        "got {}",
-        bound("+08:00")
-    );
+            .expect_err("deleted native UNIX_TIMESTAMP cannot fold a partition bound");
+        assert!(
+            error
+                .to_string()
+                .contains("native session temporal evaluation was removed; TiKV engine required"),
+            "{error}; zone {zone}, former bound {former_bound}"
+        );
+    }
 }
 
 /// The CONTROL for the fold above: a bound that reads no zone is the same
@@ -962,9 +950,9 @@ fn dynamic_partition_points_follow_each_bound_key() {
             "UPDATE point_route SET v = v + 1",
             "DELETE FROM point_route",
         ] {
-            let plan = tests_support::row_text(session.run(&format!(
-                "EXPLAIN {statement} WHERE id = {key} AND v > 0"
-            )));
+            let plan = tests_support::row_text(
+                session.run(&format!("EXPLAIN {statement} WHERE id = {key} AND v > 0")),
+            );
             assert!(
                 plan.iter().any(|row| row[0].contains("Point_Get")
                     && row[3] == format!("table:point_route, partition:{partition}")),
@@ -973,8 +961,10 @@ fn dynamic_partition_points_follow_each_bound_key() {
         }
     }
     session
-        .run("PREPARE restricted_stmt FROM \
-              'SELECT v FROM point_route PARTITION(p0) WHERE id = ? AND v > 0'")
+        .run(
+            "PREPARE restricted_stmt FROM \
+              'SELECT v FROM point_route PARTITION(p0) WHERE id = ? AND v > 0'",
+        )
         .unwrap();
     for (key, expected) in [(1, vec![vec!["11"]]), (11, vec![]), (1, vec![vec!["11"]])] {
         session.run(&format!("SET @route_key = {key}")).unwrap();
@@ -1011,7 +1001,10 @@ fn dynamic_partition_common_points_route_original_values() {
         )));
         assert!(
             plan.iter().any(|row| row[0].contains("Point_Get")
-                && row[3] == format!("table:point_string, partition:{partition}, clustered index:PRIMARY(id)")),
+                && row[3]
+                    == format!(
+                        "table:point_string, partition:{partition}, clustered index:PRIMARY(id)"
+                    )),
             "common point must route the SQL value, not its sort key: {plan:?}"
         );
     }
@@ -1573,14 +1566,20 @@ fn updates_and_deletes_restricted_to_partitions_do_not_escape_the_named_set() {
         .to_mysql_error();
     assert_eq!(error.code, 1747);
     assert_eq!(error.state, *b"HY000");
-    assert_eq!(error.message, "PARTITION () clause on non partitioned table");
+    assert_eq!(
+        error.message,
+        "PARTITION () clause on non partitioned table"
+    );
     let error = session
         .run("INSERT INTO q PARTITION (p0) VALUES (1)")
         .expect_err("an unpartitioned INSERT target has no named partition")
         .to_mysql_error();
     assert_eq!(error.code, 1747);
     assert_eq!(error.state, *b"HY000");
-    assert_eq!(error.message, "PARTITION () clause on non partitioned table");
+    assert_eq!(
+        error.message,
+        "PARTITION () clause on non partitioned table"
+    );
 }
 
 /// A selected UPDATE is not just a restricted scan: the destination of an
@@ -4112,12 +4111,18 @@ fn a_narrow_unsigned_row_handle_is_ranged_over_without_a_split() {
     );
     let plan = tests_support::row_text(session.run("EXPLAIN SELECT id FROM ui WHERE id > 0"));
     let scan = plan.last().expect("table scan");
-    assert!(scan[0].contains("TableFullScan"), "Go's boundary-based name: {plan:?}");
-    assert_eq!(scan[4], "keep order:false, stats:pseudo");
-    let executed = tests_support::row_text(
-        session.run("EXPLAIN ANALYZE SELECT id FROM ui WHERE id > 0"),
+    assert!(
+        scan[0].contains("TableFullScan"),
+        "Go's boundary-based name: {plan:?}"
     );
-    assert_eq!(executed.last().expect("table scan")[2], "2", "the open low bound excludes zero");
+    assert_eq!(scan[4], "keep order:false, stats:pseudo");
+    let executed =
+        tests_support::row_text(session.run("EXPLAIN ANALYZE SELECT id FROM ui WHERE id > 0"));
+    assert_eq!(
+        executed.last().expect("table scan")[2],
+        "2",
+        "the open low bound excludes zero"
+    );
 }
 
 /// A whole-table scan of an unsigned handle KEEPS ORDER, because the scan is

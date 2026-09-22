@@ -20,8 +20,8 @@
     "--test-threads=1"
   ],
   "tests_passed": 30,
-  "fixture_receipts": 321,
-  "engine_rows": 2074,
+  "fixture_receipts": 320,
+  "engine_rows": 2068,
   "borrowed_rows": 160,
   "records": [
     {
@@ -3065,16 +3065,6 @@
       "label": "unhex",
       "wire_signatures": [
         7062
-      ],
-      "input_rows": 3,
-      "engine_rows": 6,
-      "borrowed_rows": 0,
-      "native_fallbacks": 0
-    },
-    {
-      "label": "unix_timestamp",
-      "wire_signatures": [
-        6066
       ],
       "input_rows": 3,
       "engine_rows": 6,

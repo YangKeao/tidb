@@ -69,6 +69,16 @@ fn assert_temporal_clock_removed(name: &str, vals: &[Datum], former: Datum) {
     );
 }
 
+fn assert_temporal_session_removed(name: &str, vals: &[Datum], former: &str) {
+    assert_eq!(
+        crate::func::eval_func_values_in(name, vals, &NoColumns),
+        Some(Err(EvalError::Unsupported(
+            "native session temporal evaluation was removed; TiKV engine required"
+        ))),
+        "{name}; former {former}"
+    );
+}
+
 fn assert_temporal_residual_removed(name: &str, vals: &[Datum], former: Datum) {
     assert_eq!(
         crate::func::eval_func_values_in(name, vals, &NoColumns),
@@ -168,10 +178,7 @@ fn timestamp_diff_flag_block_rows_stay_null() {
 /// DECIMAL otherwise, and 0 -- never NULL -- for out-of-range instants.
 #[test]
 fn unix_timestamp_value_table_under_utc() {
-    let s = |text: &str| Datum::new_string(text);
-    let utc = ZonedNoColumns(SessionTimeZone::utc());
-
-    for (arg, want_label) in [
+    for (arg, former) in [
         (Datum::Int(151_113), "INT:1447372800"),
         (Datum::Int(20_151_113), "INT:1447372800"),
         (Datum::new_string("2015-11-13 10:20:19"), "INT:1447410019"),
@@ -179,29 +186,16 @@ fn unix_timestamp_value_table_under_utc() {
             Datum::new_string("2015-11-13 10:20:19.012"),
             "DEC:1447410019.012",
         ),
-        (s("1970-01-01 00:00:00"), "INT:0"),
-        (s("3001-01-18 23:59:59.999999"), "DEC:32536771199.999999"),
-        // The two out-of-range rows answer decimal ZERO; Go compares through
-        // MyDecimal ToString, which trims the all-zero fraction to "0", so
-        // the zero-valued results are compared on their numeric content.
-        (s("1969-12-31 23:59:59.999999"), "zero-decimal"),
-        (s("3001-01-19 00:00:00.000000"), "zero-decimal"),
+        (Datum::new_string("1970-01-01 00:00:00"), "INT:0"),
+        (
+            Datum::new_string("3001-01-18 23:59:59.999999"),
+            "DEC:32536771199.999999",
+        ),
+        (Datum::new_string("1969-12-31 23:59:59.999999"), "DEC:0"),
+        (Datum::new_string("3001-01-19 00:00:00.000000"), "DEC:0"),
     ] {
-        let got = dispatched("UNIX_TIMESTAMP", &[arg.clone()], &utc);
-        if want_label == "zero-decimal" {
-            match &got {
-                Datum::Decimal(value) => {
-                    assert!(value.is_zero(), "{arg:?} must answer decimal zero");
-                }
-                other => panic!("{arg:?} must answer a DECIMAL, got {other:?}"),
-            }
-        } else {
-            assert_eq!(got.label(), want_label, "{arg:?}");
-        }
+        assert_temporal_session_removed("UNIX_TIMESTAMP", &[arg], former);
     }
-
-    // The remaining packed numeric and zero-in-date rows are pinned by the
-    // source-type regression below.
 }
 
 /// Numeric and zero-in-date rows from Go's `TestUnixTimestamp` that exercise
@@ -210,7 +204,7 @@ fn unix_timestamp_value_table_under_utc() {
 #[test]
 fn unix_timestamp_compact_numeric_and_zero_date_rows_match_master() {
     let utc = ZonedNoColumns(SessionTimeZone::utc());
-    for (sql, want) in [
+    for (sql, former) in [
         ("unix_timestamp(151113102019)", "INT:1447410019"),
         ("unix_timestamp(20151113102019)", "INT:1447410019"),
         ("unix_timestamp(151113102019.12)", "DEC:1447410019.12"),
@@ -221,16 +215,20 @@ fn unix_timestamp_compact_numeric_and_zero_date_rows_match_master() {
         ("unix_timestamp('2017-00-02')", "INT:0"),
         ("unix_timestamp('0000-00-00 00:00:00')", "NULL"),
     ] {
-        assert_eq!(chunk_e_with(sql, &utc), want, "{sql}");
+        assert_eq!(
+            chunk_e_with(sql, &utc),
+            "Unsupported(\"native session temporal evaluation was removed; TiKV engine required\")",
+            "{sql}; former {former}"
+        );
     }
-    for (arg, want) in [
+    for (arg, former) in [
         (Datum::Real(151113102019.0), "INT:1447410019"),
         (
             Datum::Decimal(crate::Decimal::from_literal("151113102019.1234567")),
             "DEC:1447410019.123457",
         ),
     ] {
-        assert_eq!(dispatched("UNIX_TIMESTAMP", &[arg], &utc).label(), want);
+        assert_temporal_session_removed("UNIX_TIMESTAMP", &[arg], former);
     }
 }
 

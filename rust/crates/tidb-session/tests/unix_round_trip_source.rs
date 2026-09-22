@@ -47,20 +47,32 @@ fn extract_uses_datetime_and_signed_duration_units() {
 fn zone_invariant_round_trip() {
     let mut session = Session::new();
 
-    // The round trip is exact no matter the session zone.
-    assert_eq!(
-        rows(&mut session, "select unix_timestamp(from_unixtime(86400))"),
-        "i:86400"
+    // Former oracle: the nested round trip was 86400 in every session zone.
+    // Both native kernels are deleted; the outer refusal occurs before replay.
+    let error = session
+        .run("select unix_timestamp(from_unixtime(86400))")
+        .expect_err("native UNIX timestamp round trip must not run");
+    assert!(
+        error
+            .to_string()
+            .contains("native session temporal evaluation was removed; TiKV engine required"),
+        "{error}; former oracle: 86400"
     );
 
     assert_eq!(
-        rows(&mut session, "select extract(year from '2024-03-15'), extract(month from '2024-03-15')"),
+        rows(
+            &mut session,
+            "select extract(year from '2024-03-15'), extract(month from '2024-03-15')"
+        ),
         "i:2024|i:3"
     );
 
     // ADDDATE/SUBDATE: the DATE_ADD/DATE_SUB aliases.
     assert_eq!(
-        rows(&mut session, "select adddate('2024-01-31', interval 1 day), subdate('2024-02-01', interval 1 day)"),
+        rows(
+            &mut session,
+            "select adddate('2024-01-31', interval 1 day), subdate('2024-02-01', interval 1 day)"
+        ),
         "s:2024-02-01|s:2024-01-31"
     );
 }

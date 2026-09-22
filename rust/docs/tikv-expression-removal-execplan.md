@@ -418,6 +418,28 @@ remain in the workspace.
       admitted constant length shapes were initially masked as contractions;
       the harness now routes them through Copying with positive row accounting,
       leaving only five exact lowerer-declined statements as contractions.
+- [x] Twenty-sixth physical-deletion tranche: delete the native
+      FROM_UNIXTIME and UNIX_TIMESTAMP session-zone kernels plus the complete
+      `time_fn/session_tz.rs` module (489 lines), including fixed/named-zone,
+      DST-gap/ambiguity and epoch conversion helpers. All four native runtime
+      boundaries fail closed with `native session temporal evaluation was
+      removed; TiKV engine required`. The former source tests retain their
+      names and independent values as explicit contractions. Constant-only
+      corpus rows use a 23-statement exact-SQL allowlist; integration replay
+      never masks this marker. Review found that pinned-engine UNIX_TIMESTAMP
+      cannot reproduce named-zone DST gap/ambiguity semantics, so that function
+      is admission-excluded rather than returning wrong values. FROM_UNIXTIME
+      typed-column shapes still execute in TiKV: the temporal extended receipt
+      records three rows and six engine rows (signatures 4/6088), with zero
+      fallback. Raw-TSO AS OF remains operational; DATETIME AS OF and
+      UNIX_TIMESTAMP partition bounds are explicit contractions. Library is
+      1169 / 99 ignored; external is 77; expression/query differential are 3/4;
+      session Copying is 334 / 4 carried failures and feature-off is 332 / the
+      same 4. Static/runtime gates pass at 211 admitted / 173 excluded and 320
+      fixtures / 2068 engine rows / 160 borrowed rows. Broad replay remains
+      intentionally red: Native 197/9781; Copying 178/10232 with 416220 engine
+      rows and zero borrowed rows. These numbers are contraction evidence, not
+      a compatibility claim.
 - [x] Twenty-fifth physical-deletion tranche: remove the excluded native
       CONVERT_TZ, FROM_DAYS, TIDB_PARSE_TSO and TIMESTAMPADD kernels, dispatch
       arms and exclusive helpers. The complete `convert_tz.rs` implementation is

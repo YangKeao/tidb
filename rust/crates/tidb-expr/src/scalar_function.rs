@@ -977,6 +977,11 @@ impl ScalarFunction {
                 "native temporal residual evaluation was removed; function unsupported",
             ));
         }
+        if crate::func::is_removed_native_temporal_session(self.func_name.lowercase()) {
+            return Err(EvalError::Unsupported(
+                "native session temporal evaluation was removed; TiKV engine required",
+            ));
+        }
         if crate::func::is_removed_native_temporal_tail(self.func_name.lowercase()) {
             return Err(EvalError::Unsupported(
                 "native temporal tail evaluation was removed; function unsupported",
@@ -2050,7 +2055,7 @@ impl ScalarFunction {
                 None,
             );
         }
-        if matches!(upper.as_str(), "STR_TO_DATE" | "FROM_UNIXTIME") {
+        if upper == "STR_TO_DATE" {
             let mut result = crate::time_fn::dispatch(&upper, &vals, ctx)
                 .expect("the native temporal family is registered")?;
             if upper == "STR_TO_DATE"

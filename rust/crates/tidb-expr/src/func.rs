@@ -221,6 +221,14 @@ pub(crate) fn is_removed_native_temporal_residual(name: &str) -> bool {
     )
 }
 
+/// Session-zone temporal kernels now execute only through the TiKV engine.
+pub(crate) fn is_removed_native_temporal_session(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "FROM_UNIXTIME" | "UNIX_TIMESTAMP"
+    )
+}
+
 /// Native temporal kernels with no admitted TiKV lowering were removed and
 /// are explicit contractions.
 pub(crate) fn is_removed_native_temporal_tail(name: &str) -> bool {
@@ -387,6 +395,11 @@ pub(crate) fn eval_func(
     if is_removed_native_temporal_residual(&name) {
         return Err(EvalError::Unsupported(
             "native temporal residual evaluation was removed; function unsupported",
+        ));
+    }
+    if is_removed_native_temporal_session(&name) {
+        return Err(EvalError::Unsupported(
+            "native session temporal evaluation was removed; TiKV engine required",
         ));
     }
     if is_removed_native_temporal_tail(&name) {
@@ -816,6 +829,11 @@ pub(crate) fn eval_func_values_in(
             "native temporal residual evaluation was removed; function unsupported",
         )));
     }
+    if is_removed_native_temporal_session(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native session temporal evaluation was removed; TiKV engine required",
+        )));
+    }
     if is_removed_native_temporal_tail(name) {
         return Some(Err(EvalError::Unsupported(
             "native temporal tail evaluation was removed; function unsupported",
@@ -929,6 +947,11 @@ pub(crate) fn eval_func_values(
     if is_removed_native_temporal_residual(name) {
         return Some(Err(EvalError::Unsupported(
             "native temporal residual evaluation was removed; function unsupported",
+        )));
+    }
+    if is_removed_native_temporal_session(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native session temporal evaluation was removed; TiKV engine required",
         )));
     }
     if is_removed_native_temporal_tail(name) {

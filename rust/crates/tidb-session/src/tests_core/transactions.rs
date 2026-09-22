@@ -430,7 +430,7 @@ fn as_of_timestamp_reads_the_stores_history() {
     for (sql, cause) in [
         (
             "SELECT count(*) FROM t AS OF TIMESTAMP 'invalid-date'",
-            "cannot parse AS OF TIMESTAMP expression as datetime or TSO",
+            "DATETIME AS OF TIMESTAMP is unsupported because native UNIX_TIMESTAMP evaluation was removed",
         ),
         (
             "SELECT count(*) FROM t AS OF TIMESTAMP NULL",
@@ -449,7 +449,9 @@ fn as_of_timestamp_reads_the_stores_history() {
         .run("SELECT a FROM t AS OF TIMESTAMP '2020-01-01 00:00:00'")
         .unwrap_err();
     assert!(
-        format!("{error:?}").contains("retained history"),
+        format!("{error:?}").contains(
+            "DATETIME AS OF TIMESTAMP is unsupported because native UNIX_TIMESTAMP evaluation was removed",
+        ),
         "got {error:?}"
     );
 }
@@ -528,7 +530,9 @@ fn start_transaction_as_of_timestamp_pins_the_transaction() {
         .run("START TRANSACTION READ ONLY AS OF TIMESTAMP '2020-01-01 00:00:00'")
         .unwrap_err();
     assert!(
-        format!("{error:?}").contains("retained history"),
+        format!("{error:?}").contains(
+            "DATETIME AS OF TIMESTAMP is unsupported because native UNIX_TIMESTAMP evaluation was removed",
+        ),
         "got {error:?}"
     );
     assert!(!session.in_transaction());
