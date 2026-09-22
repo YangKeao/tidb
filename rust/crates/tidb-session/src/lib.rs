@@ -602,7 +602,7 @@ pub struct Session {
     /// lazily opened cluster snapshot becomes visible inside the statement
     /// that opened it.
     current_tso: tidb_executor::CurrentTso,
-    /// Explicit local-expression opt-in and cumulative counters; native by default.
+    /// Engine-only local-expression backend and cumulative execution counters.
     #[cfg(feature = "tikv-expr")]
     tikv_expression: tikv_expression::State,
     /// The node's server-info syncer, when the deployment has one.

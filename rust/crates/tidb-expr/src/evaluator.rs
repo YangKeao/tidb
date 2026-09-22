@@ -175,14 +175,10 @@ fn eval_filter_row<C: Columns>(
 /// As in Go, the vector path preserves NULL from equality rewritten from IN
 /// until later conjuncts reject the row; ordinary NULL rejects it immediately.
 ///
-/// The expression model exposes Go's typed `VecEval*` only for the numeric
-/// comparisons, `NOT` over them and `IS NULL` over a column
-/// (`ScalarFunction::vec_eval_bool`). The vector evaluator
-/// nevertheless preserves the important vectorized contract: filters run
-/// filter-major, rejected rows are removed before the next filter, and direct
-/// column/constant expressions are materialized column-wise. Any other
-/// scalar-function node uses its row evaluator as the explicit fallback,
-/// without evaluating rows that an earlier filter already rejected.
+/// Every predicate executes through an [`EvaluatorSuite`] backed by TiKV.
+/// Filters remain filter-major and rejected rows are removed before the next
+/// filter, so a later expression never observes a row rejected earlier. A
+/// declined shape is a structured error; there is no row-evaluator fallback.
 pub fn vectorized_filter_consider_null<C: Columns>(
     ctx: &C,
     vec_enabled: bool,
@@ -251,24 +247,18 @@ fn filter_physical_rows<C: Columns>(
         return Ok((selected, nulls));
     }
 
-    // An engine request must enter the admission/diagnostics facade even for
-    // predicates for which native typed kernels happen to exist. In particular
-    // a required engine cannot silently execute user-variable effects here.
-    #[cfg(feature = "tikv-expr")]
-    let engine = ctx.tikv_expression_required() || ctx.tikv_expression_context().is_some();
-    #[cfg(not(feature = "tikv-expr"))]
-    let engine = false;
-    let owned_programs = (engine && programs.is_none()).then(|| {
+    // The demo has one execution path: every predicate enters the TiKV suite.
+    // A missing context or declined shape is a structured error, never a reason
+    // to execute the native scalar/vector kernels below this abstraction.
+    let owned_programs = programs.is_none().then(|| {
         filters
             .iter()
             .map(|expr| EvaluatorSuite::new(vec![expr.clone()], true))
             .collect::<Vec<_>>()
     });
-    let programs = if engine {
-        programs.or(owned_programs.as_deref())
-    } else {
-        None
-    };
+    let programs = programs
+        .or(owned_programs.as_deref())
+        .expect("owned programs exist when the caller supplied none");
 
     // Go falls back to rowBasedFilter when vectorization is disabled or any
     // filter is not vectorizable. Keep the same filter-major order and
@@ -282,10 +272,7 @@ fn filter_physical_rows<C: Columns>(
                 if !selected[row_index] {
                     continue;
                 }
-                let value = match programs {
-                    Some(programs) => eval_filter_row(&programs[position], ctx, input, row_index)?,
-                    None => filter.eval(ctx, input.physical_row(row_index))?,
-                };
+                let value = eval_filter_row(&programs[position], ctx, input, row_index)?;
                 let truth = crate::truthy_of(&value)?;
                 if truth.is_none() && int_type {
                     nulls[row_index] = true;
@@ -313,58 +300,22 @@ fn filter_physical_rows<C: Columns>(
         if sel.is_empty() {
             break;
         }
-        let column_wise = if let Some(programs) = programs {
-            is_zero.clear();
-            if !vec_enabled || !vectorizable(std::slice::from_ref(filter)) {
-                for &physical in &sel {
-                    is_zero.push(truth_code(&eval_filter_row(
-                        &programs[position],
-                        ctx,
-                        input,
-                        physical,
-                    )?)?);
-                }
-            } else {
-                for value in programs[position]
-                    .eval_selected_for_cast(ctx, input, &sel)
-                    .map_err(into_eval_error)?
-                {
-                    is_zero.push(truth_code(&value)?);
-                }
-            }
-            true
-        } else if !vec_enabled {
-            false
-        } else {
-            match filter {
-                // Go `Constant.VecEval*` reads parameters once per nonempty
-                // batch; a deferred expression keeps row evaluation.
-                Expression::Constant(constant) if constant.deferred_expr.is_none() => {
-                    let code = truth_code(&constant.eval_in(ctx)?)?;
-                    is_zero.clear();
-                    is_zero.resize(sel.len(), code);
-                    true
-                }
-                Expression::CorrelatedColumn(column) => {
-                    let code = truth_code(&column.eval())?;
-                    is_zero.clear();
-                    is_zero.resize(sel.len(), code);
-                    true
-                }
-                Expression::ScalarFunction(function) => {
-                    function.vec_eval_bool(input, &sel, &mut is_zero)?
-                }
-                Expression::Column(_) | Expression::Constant(_) => false,
-            }
-        };
-        if !column_wise {
-            // The scalar evaluator is the documented fallback for every
-            // other shape, over the live rows only.
-            is_zero.clear();
+        is_zero.clear();
+        if !vec_enabled || !vectorizable(std::slice::from_ref(filter)) {
             for &physical in &sel {
-                is_zero.push(truth_code(
-                    &filter.eval(ctx, input.physical_row(physical))?,
-                )?);
+                is_zero.push(truth_code(&eval_filter_row(
+                    &programs[position],
+                    ctx,
+                    input,
+                    physical,
+                )?)?);
+            }
+        } else {
+            for value in programs[position]
+                .eval_selected_for_cast(ctx, input, &sel)
+                .map_err(into_eval_error)?
+            {
+                is_zero.push(truth_code(&value)?);
             }
         }
         let mut kept = 0;
@@ -467,10 +418,9 @@ pub fn into_eval_error(error: EvaluatorError) -> EvalError {
 /// This is the seam for the per-row call sites outside projections: a row loop
 /// that already holds its chunk should evaluate the expression once for the
 /// whole chunk and index the result, which is what a projection does and what
-/// the loop cannot do for itself. The suite chooses the engine when the adapter
-/// admits the expression and the native evaluator otherwise, so the
-/// coexistence fallback and the post-removal structured error both come from
-/// the same path; the returned vector has one datum per input row.
+/// the loop cannot do for itself. The suite executes admitted expressions only
+/// in TiKV and returns a structured error for every decline; the returned vector
+/// has one datum per input row.
 ///
 /// Unlike [`eval_constant_row`] and [`eval_row_values`], this reads a chunk the
 /// caller already built, so it costs no per-call chunk construction and works
@@ -491,11 +441,8 @@ pub fn eval_chunk<C: Columns>(
 ///
 /// A row-at-a-time call site that has no input chunk -- the shape
 /// `expression.eval(ctx, dual.get_row(0))` over an empty one-row chunk -- can be
-/// re-pointed at the engine by calling this instead. The suite chooses the
-/// engine when the adapter admits the expression and the native evaluator
-/// otherwise, exactly as a projection does, so both the coexistence fallback
-/// and the post-removal structured error come from the same path the corpus
-/// exercises (`crates/tidb-expr/src/tests/mod.rs::engine_case`).
+/// re-pointed at the engine by calling this instead. The suite executes through
+/// TiKV or returns its structured decline; it never invokes the native evaluator.
 ///
 /// The compiled program is not cached: every call compiles the expression for
 /// the caller's engine context. That is what makes this suitable for the
@@ -516,9 +463,8 @@ pub fn eval_constant_row<C: Columns>(
 ///
 /// This is the row-at-a-time shape that has an input chunk
 /// (`expression.eval(ctx, row)` where the row carries the expression's
-/// dependencies). The suite runs the engine when the adapter admits the
-/// expression and the native evaluator otherwise, so the coexistence fallback
-/// is the suite's, not the caller's.
+/// dependencies). The suite runs TiKV for admitted expressions and returns a
+/// structured decline otherwise.
 ///
 /// Values retain their original positions, including unreferenced columns;
 /// sparse references are valid when their indexes exist in `values`. Empty
@@ -729,11 +675,9 @@ impl EvaluatorSuite {
         self.eval_single_input(ctx, input, Some(physical_rows), false)
     }
 
-    /// Evaluate values for a subsequent SQL/table cast. Native fallback values
-    /// retain their Datum kinds instead of round-tripping through a typed
-    /// output column (which erases e.g. BinaryLiteral's numeric semantics).
-    /// Engine admission, required-engine errors and no-error-replay rules are
-    /// identical to eval_selected; this is not new engine type support.
+    /// Evaluate TiKV values for a subsequent SQL/table cast. Admission,
+    /// structured declines and no-error-replay rules are identical to
+    /// `eval_selected`; this is not additional engine type support.
     pub fn eval_selected_for_cast(
         &self,
         ctx: &dyn Columns,
@@ -772,21 +716,10 @@ impl EvaluatorSuite {
         }
         let rows = selection.map_or_else(|| input.num_rows(), <[usize]>::len);
         let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), rows);
-        let mut native_datums = Vec::new();
-        self.evaluate_rows_selected_with_datums(
-            ctx,
-            input,
-            &mut output,
-            selection,
-            preserve_native_datums.then_some(&mut native_datums),
-        )?;
-        let values = if preserve_native_datums && native_datums.len() == rows {
-            native_datums
-        } else {
-            (0..rows)
-                .map(|row| output.get_row(row).get_datum(0, &ty))
-                .collect()
-        };
+        self.evaluate_rows_selected(ctx, input, &mut output, selection)?;
+        let values: Vec<Datum> = (0..rows)
+            .map(|row| output.get_row(row).get_datum(0, &ty))
+            .collect();
         // The hybrid flag describes the scalar value exposed to the caller,
         // even when a materialized/engine column stores the ENUM/SET carrier.
         // Projection APIs keep their existing typed-column representation.
@@ -814,192 +747,114 @@ impl EvaluatorSuite {
         self.evaluate_rows_selected(ctx, input, output, None)
     }
 
-    fn evaluate_rows_selected<C: Columns>(
-        &self,
-        ctx: &C,
-        input: &Chunk,
-        output: &mut Chunk,
-        selection: Option<&[usize]>,
-    ) -> Result<(), EvaluatorError> {
-        self.evaluate_rows_selected_with_datums(ctx, input, output, selection, None)
-    }
-
-    fn evaluate_rows_selected_with_datums(
+    fn evaluate_rows_selected(
         &self,
         ctx: &dyn Columns,
         input: &Chunk,
         output: &mut Chunk,
         selection: Option<&[usize]>,
-        mut native_datums: Option<&mut Vec<Datum>>,
     ) -> Result<(), EvaluatorError> {
-        debug_assert!(native_datums.is_none() || self.program.calculated.len() == 1);
         if let Some(selection) = selection {
             let physical_rows = input.physical_rows();
             if selection.iter().any(|&row| row >= physical_rows) {
                 return Err(EvaluatorError::Chunk("physical selection is out of bounds"));
             }
         }
-        let rows = selection.map_or_else(|| input.num_rows(), <[usize]>::len);
-        let row_at = |index| match selection {
-            Some(selected) => input.physical_row(selected[index]),
-            None => input.get_row(index),
-        };
-        let program = &self.program;
-        // A resolver with no engine context can only use the native evaluator.
-        // While both implementations coexist that is the default; a resolver
-        // that declares the native evaluator unavailable gets a structured
-        // error instead of a silent choice between implementations.
-        #[cfg(feature = "tikv-expr")]
-        if ctx.tikv_expression_context().is_none() && ctx.tikv_expression_required() {
-            return Err(EvalError::ExternalEngine {
-                code: 1105,
-                message: "this resolver requires the TiKV expression engine but has no context"
-                    .to_owned(),
-            }
+        // A direct-column-only projection moves columns in `run`; it has no
+        // expression to evaluate and therefore needs neither engine nor native code.
+        if self.program.calculated.is_empty() {
+            return Ok(());
+        }
+
+        #[cfg(not(feature = "tikv-expr"))]
+        {
+            let _ = (ctx, input, output, selection);
+            return Err(EvalError::Unsupported(
+                "the engine-only expression demo requires the tikv-expr feature",
+            )
             .into());
         }
-        // The row-major path below has no engine dispatch yet. Make that
-        // refusal observable and honor mandatory-engine contexts BEFORE any
-        // user-variable/sequence side effect can run natively.
+
         #[cfg(feature = "tikv-expr")]
-        if !program.vectorizable && ctx.tikv_expression_context().is_some() {
-            ctx.record_tikv_expression_fallback(crate::tikv::FallbackReason::NotAdmitted);
-            if ctx.tikv_expression_required() {
+        {
+            let context =
+                ctx.tikv_expression_context()
+                    .ok_or_else(|| EvalError::ExternalEngine {
+                        code: 1105,
+                        message:
+                            "the engine-only expression demo requires a TiKV expression context"
+                                .to_owned(),
+                    })?;
+            let program = &self.program;
+            if !program.vectorizable {
+                ctx.record_tikv_expression_fallback(crate::tikv::FallbackReason::NotAdmitted);
                 return Err(EvalError::ExternalEngine {
                     code: 1105,
                     message: "TiKV expression engine does not admit row-major programs".to_owned(),
                 }
                 .into());
             }
-        }
-        if program.vectorizable {
-            // Compile once per statement policy on the shared program, then
-            // drop the lock: the compiled programs are immutable and `Sync`, so
-            // projection workers evaluate without serializing on this cache.
-            #[cfg(feature = "tikv-expr")]
-            let tikv = if let Some(context) = ctx.tikv_expression_context() {
+
+            let programs = {
                 let mut cache = program.tikv.lock().map_err(|_| EvalError::ExternalEngine {
                     code: 1105,
                     message: "TiKV expression execution cache was poisoned".to_owned(),
                 })?;
-                Some(cache.prepare(&program.calculated, &context)?)
-            } else {
-                None
+                cache.prepare(&program.calculated, &context)?
             };
-            for (_expression_index, (output_index, expression)) in program
-                .calculated_output_indexes
-                .iter()
-                .zip(&program.calculated)
-                .enumerate()
+            for (expression_index, output_index) in
+                program.calculated_output_indexes.iter().enumerate()
             {
-                #[cfg(feature = "tikv-expr")]
-                if let Some(programs) = &tikv {
-                    // A resolver with no native evaluator cannot fall back, so
-                    // every refusal below is a structured error for it. While
-                    // both implementations coexist the resolver says so with
-                    // `tikv_expression_required() == false` and the native path
-                    // runs, which is the default.
-                    let declined = match programs.get(_expression_index) {
-                        Some(Ok(compiled)) => {
-                            let result = match selection {
-                                Some(selected) => crate::tikv::evaluate_shared_selected(
-                                    compiled,
-                                    ctx,
-                                    input,
-                                    Some(selected),
-                                    output,
-                                    *output_index,
-                                ),
-                                None => crate::tikv::evaluate_shared(
-                                    compiled,
-                                    ctx,
-                                    input,
-                                    output,
-                                    *output_index,
-                                ),
-                            };
-                            result?.inspect(|reason| ctx.record_tikv_expression_fallback(*reason))
+                let compiled = match programs.get(expression_index) {
+                    Some(Ok(compiled)) => compiled,
+                    Some(Err(reason)) => {
+                        ctx.record_tikv_expression_fallback(*reason);
+                        return Err(EvalError::ExternalEngine {
+                            code: 1105,
+                            message: format!(
+                                "TiKV expression engine declined the expression: {reason:?}"
+                            ),
                         }
-                        Some(Err(reason)) => {
-                            ctx.record_tikv_expression_fallback(*reason);
-                            Some(*reason)
-                        }
-                        None => {
-                            let reason = crate::tikv::FallbackReason::NotAdmitted;
-                            ctx.record_tikv_expression_fallback(reason);
-                            Some(reason)
-                        }
-                    };
-                    if let Some(reason) = declined {
-                        if ctx.tikv_expression_required() {
-                            return Err(EvalError::ExternalEngine {
-                                code: 1105,
-                                message: format!(
-                                    "this resolver requires the TiKV expression engine, which \
-                                     declined the expression: {reason:?}"
-                                ),
-                            }
-                            .into());
-                        }
-                    } else {
-                        continue;
+                        .into());
                     }
-                }
-                if let Expression::Constant(constant) = expression {
-                    // Go Constant.VecEval* broadcasts only non-deferred
-                    // constants. Deferred expressions still consume rows;
-                    // parameter values are read anew for every chunk.
-                    if constant.deferred_expr.is_none() {
-                        if rows != 0 {
-                            let value = constant.eval_in(ctx)?;
-                            for _ in 0..rows {
-                                if let Some(values) = native_datums.as_deref_mut() {
-                                    values.push(value.clone());
-                                } else {
-                                    output.append_datum(*output_index, &value);
-                                }
-                            }
+                    None => {
+                        let reason = crate::tikv::FallbackReason::NotAdmitted;
+                        ctx.record_tikv_expression_fallback(reason);
+                        return Err(EvalError::ExternalEngine {
+                            code: 1105,
+                            message: format!(
+                                "TiKV expression engine declined the expression: {reason:?}"
+                            ),
                         }
-                        continue;
+                        .into());
                     }
-                }
-                if let Expression::ScalarFunction(function) = expression {
-                    // Go's typed `VecEvalDecimal` for decimal arithmetic.
-                    // This native vector kernel reads input.sel(); explicit
-                    // physical selections instead use the scalar loop below.
-                    if native_datums.is_none()
-                        && selection.is_none()
-                        && function.vec_eval_decimal_arithmetic(input, output, *output_index)?
-                    {
-                        continue;
+                };
+                let declined = match selection {
+                    Some(selected) => crate::tikv::evaluate_shared_selected(
+                        compiled,
+                        ctx,
+                        input,
+                        Some(selected),
+                        output,
+                        *output_index,
+                    )?,
+                    None => {
+                        crate::tikv::evaluate_shared(compiled, ctx, input, output, *output_index)?
                     }
-                }
-                for row_index in 0..rows {
-                    let value = expression.eval(ctx, row_at(row_index))?;
-                    if let Some(values) = native_datums.as_deref_mut() {
-                        values.push(value);
-                    } else {
-                        output.append_datum(*output_index, &value);
+                };
+                if let Some(reason) = declined {
+                    ctx.record_tikv_expression_fallback(reason);
+                    return Err(EvalError::ExternalEngine {
+                        code: 1105,
+                        message: format!(
+                            "TiKV expression engine declined the expression: {reason:?}"
+                        ),
                     }
+                    .into());
                 }
             }
-        } else {
-            for row_index in 0..rows {
-                for (output_index, expression) in program
-                    .calculated_output_indexes
-                    .iter()
-                    .zip(&program.calculated)
-                {
-                    let value = expression.eval(ctx, row_at(row_index))?;
-                    if let Some(values) = native_datums.as_deref_mut() {
-                        values.push(value);
-                    } else {
-                        output.append_datum(*output_index, &value);
-                    }
-                }
-            }
+            Ok(())
         }
-        Ok(())
     }
 }
 

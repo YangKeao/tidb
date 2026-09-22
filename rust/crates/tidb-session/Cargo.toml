@@ -11,8 +11,8 @@ autotests = false
 build = "../../scripts/aggregate-tests.rs"
 
 [features]
-default = []
-# Explicit per-Session opt-in; enabling the feature does not change defaults.
+default = ["tikv-expr"]
+# Engine-only execution through the in-process TiKV evaluator.
 tikv-expr = ["dep:tidb-expr", "tidb-expr/tikv-expr", "tidb-executor/tikv-expr"]
 
 [dependencies]

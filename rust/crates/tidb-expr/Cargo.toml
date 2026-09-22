@@ -14,7 +14,8 @@ build = "../../scripts/aggregate-tests.rs"
 workspace = true
 
 [features]
-# Experimental in-process reuse; native evaluation remains the runtime default.
+default = ["tikv-expr"]
+# The engine-only demo always enables the in-process TiKV evaluator.
 tikv-expr = ["dep:tidb_query_expr", "dep:prost"]
 
 [dependencies]

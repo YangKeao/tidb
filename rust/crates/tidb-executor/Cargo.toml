@@ -11,7 +11,7 @@ autotests = false
 build = "../../scripts/aggregate-tests.rs"
 
 [features]
-default = []
+default = ["tikv-expr"]
 tikv-expr = ["tidb-expr/tikv-expr"]
 
 [dependencies]

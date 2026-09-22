@@ -418,6 +418,25 @@ remain in the workspace.
       admitted constant length shapes were initially masked as contractions;
       the harness now routes them through Copying with positive row accounting,
       leaving only five exact lowerer-declined statements as contractions.
+- [x] Engine-only demo cutover: `EvaluatorSuite` and predicate filtering now
+      have one production execution path. A TiKV context is mandatory, every
+      admitted expression executes in TiKV, and every compile/runtime decline
+      returns `ExternalEngine` immediately; the old constant, scalar loop and
+      native vector fallback branches are absent from the central evaluator.
+      New sessions default to the copying TiKV backend. Setting the backend to
+      `None` is retained only as a proof hook and returns `requires a TiKV
+      expression context` without changing the engine-row counter. The runnable
+      `tikv-expr` is now a default feature of `tidb-expr`, `tidb-executor` and
+      `tidb-session`, so an ordinary build remains usable. The runnable
+      `tidb-session` example executes projection plus predicate SQL, returns
+      rows `(1,42),(2,NULL)`, records five TiKV engine rows, then proves native
+      replay is refused. Exact command: `cd rust && cargo run -p tidb-session
+      --example engine_only_expression_demo --locked --offline -j1`. The focused two-test session gate passes. The broad
+      external session suite is deliberately not re-blessed: 271 pass and 67
+      fail because declined/row-major/session-owned shapes now surface the new
+      structured engine-only errors. Native kernel source is still present and
+      is the next deletion phase; this is a runnable architectural cutover demo,
+      not final physical removal or full compatibility.
 - [ ] Post-tranche-26 deletion frontier (2026-03-24): the remaining source
       inventory is intentionally measured before another cut, not counted as
       native-kernel LOC. `builtin_ext/json` has 2,932 production lines across

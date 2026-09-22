@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Explicit local-engine configuration; no environment or global default hook.
+//! Engine-only local execution. New sessions use the copying TiKV adapter.
 
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -23,29 +23,38 @@ pub use tidb_expr::tikv::Backend;
 
 use crate::Session;
 
-#[derive(Default)]
 pub(crate) struct State {
     backend: Option<Backend>,
     rows: Arc<AtomicU64>,
     borrowed_rows: Arc<AtomicU64>,
 }
 
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            backend: Some(Backend::Copying),
+            rows: Arc::new(AtomicU64::new(0)),
+            borrowed_rows: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
 impl Session {
-    /// Explicitly opts this session into a local TiKV expression adapter.
-    /// Unsupported expressions remain native; runtime errors are never replayed.
+    /// Selects a local TiKV expression adapter for this engine-only session.
+    /// Unsupported expressions return a structured error and are never replayed.
     #[must_use]
     pub fn with_tikv_expression_backend(mut self, backend: Backend) -> Self {
         self.set_tikv_expression_backend(Some(backend));
         self
     }
 
-    /// Selects an adapter, or restores native-only execution with `None`.
-    /// Existing cumulative counters are retained when the selection changes.
+    /// Selects an adapter. `None` deliberately removes the engine context so
+    /// evaluation proves that no native fallback remains. Existing counters are retained.
     pub fn set_tikv_expression_backend(&mut self, backend: Option<Backend>) {
         self.tikv_expression.backend = backend;
     }
 
-    /// The explicitly selected adapter; a newly created session returns `None`.
+    /// The selected adapter; a newly created session returns `Some(Copying)`.
     #[must_use]
     pub fn tikv_expression_backend(&self) -> Option<Backend> {
         self.tikv_expression.backend

@@ -24,57 +24,78 @@ fn fixture() -> Session {
     session
 }
 
-#[test]
-fn default_session_expression_semantics_remain_native() {
-    let mut session = fixture();
-    assert_eq!(
-        session.run("SELECT a+1 FROM t ORDER BY id").unwrap(),
-        StmtResult::Rows(vec![
-            vec![Datum::Int(42)],
-            vec![Datum::Null],
-            vec![Datum::Int(-1)]
-        ])
-    );
-    assert!(session.warnings().is_empty());
-    #[cfg(feature = "tikv-expr")]
-    {
-        assert_eq!(session.tikv_expression_backend(), None);
-        assert_eq!(session.tikv_expression_rows(), 0);
-        assert_eq!(session.tikv_borrowed_expression_rows(), 0);
-    }
+fn expected() -> StmtResult {
+    StmtResult::Rows(vec![
+        vec![Datum::Int(42)],
+        vec![Datum::Null],
+        vec![Datum::Int(-1)],
+    ])
 }
 
 #[cfg(feature = "tikv-expr")]
 #[test]
-fn session_opt_in_is_explicit_counted_and_can_be_disabled() {
+fn default_session_executes_expressions_in_tikv() {
     use tidb_session::TikvExpressionBackend;
+
+    let mut session = fixture();
+    let before = session.tikv_expression_rows();
+    assert_eq!(
+        session.tikv_expression_backend(),
+        Some(TikvExpressionBackend::Copying)
+    );
+    assert_eq!(
+        session.run("SELECT a+1 FROM t ORDER BY id").unwrap(),
+        expected()
+    );
+    assert!(
+        session.tikv_expression_rows() >= before + 3,
+        "default engine-only session silently bypassed TiKV"
+    );
+    assert_eq!(session.tikv_borrowed_expression_rows(), 0);
+    assert!(session.warnings().is_empty());
+}
+
+#[cfg(feature = "tikv-expr")]
+#[test]
+fn backend_selection_never_enables_native_fallback() {
+    use tidb_session::TikvExpressionBackend;
+
     let sql = "SELECT a+1 FROM t ORDER BY id";
-    let mut native = fixture();
-    let expected = native.run_with_columns(sql).unwrap();
     for backend in [
         TikvExpressionBackend::Copying,
         TikvExpressionBackend::Borrowed,
     ] {
         let mut session = fixture().with_tikv_expression_backend(backend);
-        assert_eq!(session.tikv_expression_backend(), Some(backend));
-        assert_eq!(session.run_with_columns(sql).unwrap(), expected);
-        let first = session.tikv_expression_rows();
-        assert!(first >= 3, "{backend:?} silently stayed native");
+        let before = session.tikv_expression_rows();
+        assert_eq!(session.run(sql).unwrap(), expected());
+        assert!(session.tikv_expression_rows() >= before + 3);
         if backend == TikvExpressionBackend::Borrowed {
             assert!(session.tikv_borrowed_expression_rows() >= 3);
         } else {
             assert_eq!(session.tikv_borrowed_expression_rows(), 0);
         }
-        assert_eq!(session.run_with_columns(sql).unwrap(), expected);
-        assert!(session.tikv_expression_rows() >= first + 3);
+
         let before_disable = session.tikv_expression_rows();
         session.set_tikv_expression_backend(None);
-        assert_eq!(session.run_with_columns(sql).unwrap(), expected);
-        assert_eq!(session.tikv_expression_rows(), before_disable);
         assert_eq!(
-            native.tikv_expression_rows(),
-            0,
-            "opt-in leaked to a peer session"
+            session.run("SELECT id FROM t ORDER BY id").unwrap(),
+            StmtResult::Rows(vec![
+                vec![Datum::Int(1)],
+                vec![Datum::Int(2)],
+                vec![Datum::Int(3)],
+            ]),
+            "direct-column movement requires no expression engine"
         );
+        assert_eq!(session.tikv_expression_rows(), before_disable);
+        let error = session
+            .run(sql)
+            .expect_err("engine-only execution must not fall back when disabled");
+        assert!(
+            error
+                .to_string()
+                .contains("requires a TiKV expression context"),
+            "{error}"
+        );
+        assert_eq!(session.tikv_expression_rows(), before_disable);
     }
 }

@@ -1,8 +1,9 @@
 # The native evaluator's call sites outside projections
 
-Milestone E deletes the native evaluator. Projections are routed through
-`EvaluatorSuite` + `EvaluatorProgram` (admission/native coexistence remains),
-so the remaining question is how
+Milestone E deletes the native evaluator. Projections and predicates are routed
+through the engine-only `EvaluatorSuite` + `EvaluatorProgram`; a decline is a
+structured error and the central suite has no native replay. The remaining
+question is how
 many call sites evaluate an expression *without* a projection, and what each
 kind needs. This is the measurement, and the method is repeatable:
 
