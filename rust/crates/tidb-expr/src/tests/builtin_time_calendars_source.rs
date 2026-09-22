@@ -59,6 +59,16 @@ fn assert_temporal_removed(name: &str, vals: &[Datum], former: Datum) {
     );
 }
 
+fn assert_temporal_tail_removed(name: &str, vals: &[Datum], former: Datum) {
+    assert_eq!(
+        crate::func::eval_func_values_in(name, vals, &NoColumns),
+        Some(Err(EvalError::Unsupported(
+            "native temporal tail evaluation was removed; function unsupported"
+        ))),
+        "{name}; former {former:?}"
+    );
+}
+
 fn dispatched(name: &str, vals: &[Datum], cols: &dyn Columns) -> Datum {
     dispatch(name, vals, cols)
         .expect("the name belongs to the time family")
@@ -724,25 +734,17 @@ fn time_format_hour_family_rows_match_master() {
         ),
         ("07:42:03.000001", "%f", "000001"),
     ] {
-        let got = dispatched(
+        assert_temporal_tail_removed(
             "TIME_FORMAT",
             &[Datum::new_string(time), Datum::new_string(format)],
-            &NoColumns,
-        );
-        assert_eq!(
-            got,
             Datum::new_string(want),
-            "TIME_FORMAT({time:?}, {format:?})"
         );
     }
     // SELECT TIME_FORMAT(null,'%H %k %h %I %l').
-    assert_eq!(
-        dispatched(
-            "TIME_FORMAT",
-            &[Datum::Null, Datum::new_string("%H %k %h %I %l")],
-            &NoColumns
-        ),
-        Datum::Null
+    assert_temporal_tail_removed(
+        "TIME_FORMAT",
+        &[Datum::Null, Datum::new_string("%H %k %h %I %l")],
+        Datum::Null,
     );
 }
 
@@ -844,10 +846,10 @@ fn tidb_parse_tso_logical_consecutive_tso_counters() {
         (404_411_537_129_996_289, 1),
         (404_411_537_129_996_290, 2),
     ] {
-        assert_eq!(
-            dispatched("TIDB_PARSE_TSO_LOGICAL", &[Datum::Int(tso)], &NoColumns),
+        assert_temporal_tail_removed(
+            "TIDB_PARSE_TSO_LOGICAL",
+            &[Datum::Int(tso)],
             Datum::Int(want),
-            "{tso}"
         );
     }
     for arg in [
@@ -856,10 +858,7 @@ fn tidb_parse_tso_logical_consecutive_tso_counters() {
         Datum::new_string("-1"),
         Datum::Null,
     ] {
-        assert_eq!(
-            dispatched("TIDB_PARSE_TSO_LOGICAL", &[arg], &NoColumns),
-            Datum::Null
-        );
+        assert_temporal_tail_removed("TIDB_PARSE_TSO_LOGICAL", &[arg], Datum::Null);
     }
 }
 

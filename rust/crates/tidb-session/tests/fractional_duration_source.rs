@@ -4,6 +4,19 @@
 
 use tidb_session::Session;
 
+fn assert_temporal_tail_removed(session: &mut Session, sql: &str, former_expected: &str) {
+    let Err(tidb_executor::DriverError::Exec(tidb_executor::ExecError::Eval(
+        tidb_executor::EvalError::Unsupported(message),
+    ))) = session.run(sql)
+    else {
+        panic!("{sql}: expected temporal-tail contraction; former {former_expected}")
+    };
+    assert_eq!(
+        message, "native temporal tail evaluation was removed; function unsupported",
+        "{sql}: former {former_expected}"
+    );
+}
+
 fn try_sql(session: &mut Session, sql: &str) -> String {
     match session.run(sql) {
         Ok(tidb_session::StmtResult::Rows(rows)) => rows
@@ -32,17 +45,24 @@ fn try_sql(session: &mut Session, sql: &str) -> String {
 fn microsecond_fields() {
     let mut session = Session::new();
 
-    assert_eq!(
-        try_sql(&mut session, "select time_format('10:20:30.123456', '%H %i %s %f')"),
-        "s:10 20 30 123456"
+    assert_temporal_tail_removed(
+        &mut session,
+        "select time_format('10:20:30.123456', '%H %i %s %f')",
+        "s:10 20 30 123456",
     );
 
-    // SEC_TO_TIME keeps the fractional part (fsp 1 = one decimal digit).
-    let kept = try_sql(&mut session, "select sec_to_time(3661.5)");
-    assert!(kept.contains("fsp: 1"), "{kept}");
+    // SEC_TO_TIME formerly kept the fractional part (fsp 1).
+    assert_temporal_tail_removed(
+        &mut session,
+        "select sec_to_time(3661.5)",
+        "duration 01:01:01.5 with fsp 1",
+    );
 
     assert_eq!(
-        try_sql(&mut session, "select extract(microsecond from '10:20:30.123456')"),
+        try_sql(
+            &mut session,
+            "select extract(microsecond from '10:20:30.123456')"
+        ),
         "i:123456"
     );
 }

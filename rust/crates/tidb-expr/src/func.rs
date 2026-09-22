@@ -190,6 +190,15 @@ pub(crate) fn is_removed_native_temporal_value(name: &str) -> bool {
     )
 }
 
+/// Native temporal kernels with no admitted TiKV lowering were removed and
+/// are explicit contractions.
+pub(crate) fn is_removed_native_temporal_tail(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "TIDB_PARSE_TSO_LOGICAL" | "GET_FORMAT" | "SEC_TO_TIME" | "TIME_FORMAT"
+    )
+}
+
 pub(crate) fn is_removed_native_misc(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
@@ -337,6 +346,11 @@ pub(crate) fn eval_func(
     if is_removed_native_temporal_value(&name) {
         return Err(EvalError::Unsupported(
             "native temporal value evaluation was removed; TiKV engine required",
+        ));
+    }
+    if is_removed_native_temporal_tail(&name) {
+        return Err(EvalError::Unsupported(
+            "native temporal tail evaluation was removed; function unsupported",
         ));
     }
     if is_removed_native_misc(&name) {
@@ -751,6 +765,11 @@ pub(crate) fn eval_func_values_in(
             "native temporal value evaluation was removed; TiKV engine required",
         )));
     }
+    if is_removed_native_temporal_tail(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native temporal tail evaluation was removed; function unsupported",
+        )));
+    }
     if is_removed_native_misc(name) {
         return Some(Err(EvalError::Unsupported(
             "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
@@ -849,6 +868,11 @@ pub(crate) fn eval_func_values(
     if is_removed_native_temporal_value(name) {
         return Some(Err(EvalError::Unsupported(
             "native temporal value evaluation was removed; TiKV engine required",
+        )));
+    }
+    if is_removed_native_temporal_tail(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native temporal tail evaluation was removed; function unsupported",
         )));
     }
     if is_removed_native_misc(name) {

@@ -24,6 +24,8 @@ pub const CALENDAR_COMPONENT_REMOVED: &str =
     "native calendar component evaluation was removed; TiKV engine required";
 pub const TEMPORAL_VALUE_REMOVED: &str =
     "native temporal value evaluation was removed; TiKV engine required";
+pub const TEMPORAL_TAIL_REMOVED: &str =
+    "native temporal tail evaluation was removed; function unsupported";
 pub const COMPARE2_REMOVED: &str =
     "native LEAST/GREATEST/INTERVAL evaluation was removed; TiKV engine required";
 pub const MISC_REMOVED: &str =
@@ -63,6 +65,10 @@ impl Visitor for FunctionCollector {
                     }
                     self.ordered_names.push(upper_name.clone());
                     self.names.insert(upper_name);
+                }
+                Expr::GetFormat { .. } => {
+                    self.ordered_names.push("GET_FORMAT".to_owned());
+                    self.names.insert("GET_FORMAT".to_owned());
                 }
                 Expr::Regexp { .. } => {
                     self.ordered_names.push("REGEXP".to_owned());
@@ -169,6 +175,20 @@ pub fn requires_calendar_component_engine(sql: &str) -> bool {
         "MONTHNAME",
         "DAYNAME",
         "LAST_DAY",
+    ]
+    .iter()
+    .any(|name| collector.names.contains(*name))
+}
+
+pub fn is_temporal_tail_contraction(sql: &str) -> bool {
+    let Some(collector) = collect_functions(sql) else {
+        return false;
+    };
+    [
+        "TIDB_PARSE_TSO_LOGICAL",
+        "GET_FORMAT",
+        "SEC_TO_TIME",
+        "TIME_FORMAT",
     ]
     .iter()
     .any(|name| collector.names.contains(*name))
@@ -390,6 +410,12 @@ pub fn is_string_aux_shape_contraction(sql: &str) -> bool {
 }
 
 fn removed_marker_for_name(name: &str, nonbinary_find_in_set: bool) -> Option<&'static str> {
+    if matches!(
+        name,
+        "TIDB_PARSE_TSO_LOGICAL" | "GET_FORMAT" | "SEC_TO_TIME" | "TIME_FORMAT"
+    ) {
+        return Some(TEMPORAL_TAIL_REMOVED);
+    }
     if matches!(
         name,
         "DATE"

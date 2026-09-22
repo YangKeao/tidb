@@ -418,6 +418,17 @@ remain in the workspace.
       admitted constant length shapes were initially masked as contractions;
       the harness now routes them through Copying with positive row accounting,
       leaving only five exact lowerer-declined statements as contractions.
+- [x] Twenty-third physical-deletion tranche: remove the excluded native
+      TIDB_PARSE_TSO_LOGICAL, GET_FORMAT, SEC_TO_TIME and TIME_FORMAT kernels,
+      dispatch arms and exclusive helpers (323 production lines). GET_FORMAT's
+      dedicated AST escape now refuses before child evaluation; stale scalar
+      typed and argument-cast seams are absent. These four have no admitted
+      TiKV signature and contract with the structured temporal-tail marker.
+      Library is 1167 / 99 ignored; external is 77; expression/query
+      differential are 3/4; session Copying is 334 / 4 carried failures and
+      feature-off is 332 / the same 4. Static/runtime gates pass. Broad replay
+      is Native 192/9825 and Copying 167/10253 with 416272 engine rows and zero
+      borrowed rows.
 - [x] Twenty-second physical-deletion tranche: remove the native DATE,
       MICROSECOND, TIME, YEARWEEK, TIME_TO_SEC, TIMEDIFF, MAKEDATE, MAKETIME,
       PERIOD_ADD and PERIOD_DIFF dispatch arms/kernels plus private TIMEDIFF

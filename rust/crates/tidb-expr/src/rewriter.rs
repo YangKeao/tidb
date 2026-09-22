@@ -3362,7 +3362,11 @@ mod builtin_type_tests {
             );
         }
         assert_eq!(
-            eval("time_format('23:00:00', '%H %k')"),
+            try_eval("time_format('23:00:00', '%H %k')"),
+            Err(EvalError::Unsupported(
+                "native temporal tail evaluation was removed; function unsupported"
+            )),
+            "former oracle: {:?}",
             text_datum("23 23")
         );
     }

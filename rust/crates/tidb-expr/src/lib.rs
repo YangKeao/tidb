@@ -398,7 +398,7 @@ pub use row::{compare_datums, compare_datums_with_collation};
 pub(crate) use tidb_datatype::{Datum, Decimal};
 pub use tidb_util::mathutil::MysqlRng;
 
-use tidb_ast::{CastStyle, Expr, GetFormatSelector, IsTarget};
+use tidb_ast::{CastStyle, Expr, IsTarget};
 
 use binary_literal::{bit_literal_value, hex_literal_value};
 
@@ -504,7 +504,7 @@ fn ast_binary_overflow_error(
     EvalError::DataOutOfRange { value, expression }
 }
 
-use coerce::{bool_int, coerce_str, coerce_str_bytes};
+use coerce::{bool_int, coerce_str_bytes};
 use func::{eval_func, eval_in_list, negate_if};
 use like::like_match;
 use ops::{
@@ -1006,24 +1006,11 @@ pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
             let vals = arg_eval_type::wrap_datetime_args("TIMESTAMPADD", vals, &[], cols)?;
             time_fn::add_sub::timestamp_add(&vals, cols)
         }
-        // `GET_FORMAT(<type>, location)` — the type is an AST selector (the
-        // parser already collapsed `TIMESTAMP` into `Datetime`), so only the
-        // location is evaluated; a NULL location yields NULL. Port of
-        // `builtinGetFormatSig.evalString` + `getFormat`.
-        Expr::GetFormat { selector, expr } => match coerce_str(&eval_in(expr, cols)?)? {
-            None => Ok(Datum::Null),
-            Some(location) => {
-                let format_type = match selector {
-                    GetFormatSelector::Date => "DATE",
-                    GetFormatSelector::Time => "TIME",
-                    GetFormatSelector::Datetime => "DATETIME",
-                };
-                Ok(Datum::new_string(time_fn::get_format(
-                    format_type,
-                    &location,
-                )))
-            }
-        },
+        // Native GET_FORMAT evaluation was removed. Refuse before evaluating
+        // the location child so an unsupported shape cannot produce effects.
+        Expr::GetFormat { .. } => Err(EvalError::Unsupported(
+            "native temporal tail evaluation was removed; function unsupported",
+        )),
         // `CAST`/`CONVERT(expr, type)` share one evaluator (see
         // `tidb_ast::Expr::Cast`'s own doc for why they share one AST node);
         // `NULL` maps to `NULL` for every target type, so it's handled once

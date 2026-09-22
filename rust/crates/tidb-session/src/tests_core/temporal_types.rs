@@ -125,26 +125,25 @@ fn date_constructors_return_native_dates() {
 #[test]
 fn duration_constructors_preserve_source_scale() {
     let mut session = Session::new();
-    let StmtOutput::Rows { columns, rows, .. } = session
-        .run_with_columns(
-            "SELECT SEC_TO_TIME(CAST(1.25 AS DECIMAL(10,2))), \
-                    MAKETIME(1, 2, CAST(3.456 AS DECIMAL(10,3)))",
-        )
-        .unwrap()
-    else {
-        panic!("duration constructors did not return rows")
-    };
-    for (index, flen, decimal, value) in [(0, 13, 2, "00:00:01.25"), (1, 14, 3, "01:02:03.456")] {
-        assert_eq!(
-            columns[index].1.code(),
-            tidb_datatype::FieldTypeCode::Duration
+    for (sql, marker, former) in [
+        (
+            "SELECT SEC_TO_TIME(CAST(1.25 AS DECIMAL(10,2)))",
+            "native temporal tail evaluation was removed; function unsupported",
+            "Duration 00:00:01.25, flen 13, decimal 2",
+        ),
+        (
+            "SELECT MAKETIME(1, 2, CAST(3.456 AS DECIMAL(10,3)))",
+            "native temporal value evaluation was removed; TiKV engine required",
+            "Duration 01:02:03.456, flen 14, decimal 3",
+        ),
+    ] {
+        let error = session
+            .run(sql)
+            .expect_err("native duration constructor is deleted");
+        assert!(
+            error.to_string().contains(marker),
+            "{error}; former {former}"
         );
-        assert_eq!(
-            (columns[index].1.flen(), columns[index].1.decimal()),
-            (flen, decimal)
-        );
-        assert!(matches!(rows[0][index], Datum::Duration(_)));
-        assert_eq!(rows[0][index].sql_string().unwrap(), value);
     }
 }
 

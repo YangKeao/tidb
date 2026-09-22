@@ -68,28 +68,20 @@ fn everyday_string_and_date_builtins() {
 #[test]
 fn get_format_reaches_the_sql_expression_path() {
     let mut session = Session::new();
-    let StmtOutput::Rows { columns, rows } = session
-        .run_with_columns(
+    let error = session
+        .run(
             "SELECT GET_FORMAT(DATE, 'USA'), \
                     GET_FORMAT(TIMESTAMP, 'eur'), \
                     GET_FORMAT(TIME, 'unknown'), \
                     GET_FORMAT(DATE, 1), \
                     GET_FORMAT(DATE, NULL)",
         )
-        .unwrap()
-    else {
-        panic!("GET_FORMAT must return rows")
-    };
-    assert!(columns.iter().all(|(_, field)| field.flen() == 17));
-    assert_eq!(
-        rows,
-        vec![vec![
-            Datum::new_string("%m.%d.%Y"),
-            Datum::new_string("%Y-%m-%d %H.%i.%s"),
-            Datum::new_string(""),
-            Datum::new_string(""),
-            Datum::Null,
-        ]]
+        .expect_err("native GET_FORMAT is deleted");
+    assert!(
+        error
+            .to_string()
+            .contains("native temporal tail evaluation was removed; function unsupported"),
+        "{error}; former values: %m.%d.%Y, %Y-%m-%d %H.%i.%s, '', '', NULL; former flen 17"
     );
 }
 

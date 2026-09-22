@@ -18,6 +18,19 @@ fn assert_temporal_value_removed(session: &mut Session, sql: &str, former_expect
     );
 }
 
+fn assert_temporal_tail_removed(session: &mut Session, sql: &str, former_expected: &str) {
+    let Err(tidb_executor::DriverError::Exec(tidb_executor::ExecError::Eval(
+        tidb_executor::EvalError::Unsupported(message),
+    ))) = session.run(sql)
+    else {
+        panic!("{sql}: expected temporal-tail contraction; former {former_expected}")
+    };
+    assert_eq!(
+        message, "native temporal tail evaluation was removed; function unsupported",
+        "{sql}: former {former_expected}"
+    );
+}
+
 fn try_sql(session: &mut Session, sql: &str) -> String {
     match session.run(sql) {
         Ok(tidb_session::StmtResult::Rows(rows)) => rows
@@ -48,9 +61,10 @@ fn duration_width_and_parts() {
 
     // Durations exceed the 24-hour wall clock.
     assert_eq!(try_sql(&mut session, "select hour('25:00:00')"), "i:25");
-    assert_eq!(
-        try_sql(&mut session, "select time_format('25:30:00', '%H %i')"),
-        "s:25 30"
+    assert_temporal_tail_removed(
+        &mut session,
+        "select time_format('25:30:00', '%H %i')",
+        "s:25 30",
     );
 
     // TIME() of a datetime extracts the clock part.

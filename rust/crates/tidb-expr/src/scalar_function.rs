@@ -967,6 +967,11 @@ impl ScalarFunction {
                 "native temporal value evaluation was removed; TiKV engine required",
             ));
         }
+        if crate::func::is_removed_native_temporal_tail(self.func_name.lowercase()) {
+            return Err(EvalError::Unsupported(
+                "native temporal tail evaluation was removed; function unsupported",
+            ));
+        }
         if crate::func::is_removed_native_misc(self.func_name.lowercase()) {
             return Err(EvalError::Unsupported(
                 "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
@@ -2058,7 +2063,6 @@ impl ScalarFunction {
                 | "CURRENT_TIME"
                 | "UTC_TIME"
                 | "FROM_DAYS"
-                | "SEC_TO_TIME"
                 | "STR_TO_DATE"
                 | "CONVERT_TZ"
                 | "FROM_UNIXTIME"

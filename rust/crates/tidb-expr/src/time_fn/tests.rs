@@ -66,6 +66,32 @@ removed_temporal_value_aliases!(
     period_diff,
 );
 
+fn removed_temporal_tail(_: &[Datum]) -> Result<Datum, EvalError> {
+    Err(EvalError::Unsupported(
+        "native temporal tail evaluation was removed; function unsupported",
+    ))
+}
+
+macro_rules! removed_temporal_tail_aliases {
+    ($($name:ident),+ $(,)?) => {
+        $(fn $name(vals: &[Datum]) -> Result<Datum, EvalError> {
+            removed_temporal_tail(vals)
+        })+
+    };
+}
+
+removed_temporal_tail_aliases!(tidb_parse_tso_logical, sec_to_time, time_format);
+
+fn assert_temporal_tail_removed(result: Result<Datum, EvalError>, former: Datum) {
+    assert_eq!(
+        result,
+        Err(EvalError::Unsupported(
+            "native temporal tail evaluation was removed; function unsupported"
+        )),
+        "former oracle: {former:?}"
+    );
+}
+
 fn assert_temporal_value_removed(result: Result<Datum, EvalError>, former: Datum) {
     assert_eq!(
         result,
@@ -109,27 +135,36 @@ fn datetime_str_arg(value: &str) -> Vec<Datum> {
 /// case-insensitive location, empty for unknown, TIMESTAMP shares DATETIME.
 #[test]
 fn get_format_table() {
-    assert_eq!(get_format("DATE", "USA"), "%m.%d.%Y");
-    assert_eq!(get_format("DATE", "JIS"), "%Y-%m-%d");
-    assert_eq!(get_format("DATE", "ISO"), "%Y-%m-%d");
-    assert_eq!(get_format("DATE", "EUR"), "%d.%m.%Y");
-    assert_eq!(get_format("DATE", "INTERNAL"), "%Y%m%d");
-    assert_eq!(get_format("DATETIME", "USA"), "%Y-%m-%d %H.%i.%s");
-    assert_eq!(get_format("DATETIME", "JIS"), "%Y-%m-%d %H:%i:%s");
-    assert_eq!(get_format("DATETIME", "ISO"), "%Y-%m-%d %H:%i:%s");
-    assert_eq!(get_format("DATETIME", "EUR"), "%Y-%m-%d %H.%i.%s");
-    assert_eq!(get_format("DATETIME", "INTERNAL"), "%Y%m%d%H%i%s");
-    assert_eq!(get_format("TIMESTAMP", "eur"), "%Y-%m-%d %H.%i.%s");
-    assert_eq!(get_format("TIME", "USA"), "%h:%i:%s %p");
-    assert_eq!(get_format("TIME", "JIS"), "%H:%i:%s");
-    assert_eq!(get_format("TIME", "ISO"), "%H:%i:%s");
-    assert_eq!(get_format("TIME", "EUR"), "%H.%i.%s");
-    assert_eq!(get_format("TIME", "INTERNAL"), "%H%i%s");
-    // Location is case-insensitive.
-    assert_eq!(get_format("TIME", "usa"), "%h:%i:%s %p");
-    // Unknown location / type -> empty.
-    assert_eq!(get_format("DATE", "unknown"), "");
-    assert_eq!(get_format("YEAR", "USA"), "");
+    for ((format_type, location), former) in [
+        (("DATE", "USA"), "%m.%d.%Y"),
+        (("DATE", "JIS"), "%Y-%m-%d"),
+        (("DATE", "ISO"), "%Y-%m-%d"),
+        (("DATE", "EUR"), "%d.%m.%Y"),
+        (("DATE", "INTERNAL"), "%Y%m%d"),
+        (("DATETIME", "USA"), "%Y-%m-%d %H.%i.%s"),
+        (("DATETIME", "JIS"), "%Y-%m-%d %H:%i:%s"),
+        (("DATETIME", "ISO"), "%Y-%m-%d %H:%i:%s"),
+        (("DATETIME", "EUR"), "%Y-%m-%d %H.%i.%s"),
+        (("DATETIME", "INTERNAL"), "%Y%m%d%H%i%s"),
+        (("TIMESTAMP", "eur"), "%Y-%m-%d %H.%i.%s"),
+        (("TIME", "USA"), "%h:%i:%s %p"),
+        (("TIME", "JIS"), "%H:%i:%s"),
+        (("TIME", "ISO"), "%H:%i:%s"),
+        (("TIME", "EUR"), "%H.%i.%s"),
+        (("TIME", "INTERNAL"), "%H%i%s"),
+        (("TIME", "usa"), "%h:%i:%s %p"),
+        (("DATE", "unknown"), ""),
+        (("YEAR", "USA"), ""),
+    ] {
+        let args = [string_datum(format_type), string_datum(location)];
+        assert_eq!(
+            crate::func::eval_func_values_in("GET_FORMAT", &args, &crate::NoColumns),
+            Some(Err(EvalError::Unsupported(
+                "native temporal tail evaluation was removed; function unsupported"
+            ))),
+            "former oracle: {former}"
+        );
+    }
 }
 
 /// Former `builtinWeekOfYearSig` value oracles now pin the deletion contract.
@@ -160,11 +195,7 @@ fn tidb_parse_tso_logical_vectors() {
         (Datum::Null, Datum::Null),
     ];
     for (arg, want) in cases {
-        assert_eq!(
-            tidb_parse_tso_logical(std::slice::from_ref(&arg)).unwrap(),
-            want,
-            "{arg:?}"
-        );
+        assert_temporal_tail_removed(tidb_parse_tso_logical(std::slice::from_ref(&arg)), want);
     }
 }
 
@@ -443,21 +474,21 @@ fn current_clock_null_fsp_follows_each_go_signature() {
 
 #[test]
 fn go_time_vectors_cover_duration_scale_and_clamp() {
-    assert_eq!(
-        sec_to_time(&[Datum::new_string("123.4".to_string())]).unwrap(),
-        Datum::new_string("00:02:03.400000".to_string())
+    assert_temporal_tail_removed(
+        sec_to_time(&[Datum::new_string("123.4".to_string())]),
+        Datum::new_string("00:02:03.400000".to_string()),
     );
     // Go's TestSecToTime pins this row with the constant's field type set
     // to DECIMAL 1 (`SetDecimal(1)`): an SQL literal 86401.4 IS a DECIMAL,
     // so the port represents it as one; a bare Real carries no scale and
     // answers Go's unspecified default of six digits.
-    assert_eq!(
-        sec_to_time(&[Datum::Decimal(crate::Decimal::from_literal("86401.4"))]).unwrap(),
-        Datum::new_string("24:00:01.4".to_string())
+    assert_temporal_tail_removed(
+        sec_to_time(&[Datum::Decimal(crate::Decimal::from_literal("86401.4"))]),
+        Datum::new_string("24:00:01.4".to_string()),
     );
-    assert_eq!(
-        sec_to_time(&[Datum::Real(86_401.543_21)]).unwrap(),
-        Datum::new_string("24:00:01.543210".to_string())
+    assert_temporal_tail_removed(
+        sec_to_time(&[Datum::Real(86_401.543_21)]),
+        Datum::new_string("24:00:01.543210".to_string()),
     );
     assert_temporal_value_removed(
         maketime(&[
@@ -467,21 +498,19 @@ fn go_time_vectors_cover_duration_scale_and_clamp() {
         ]),
         Datum::new_string("838:59:59.0".to_string()),
     );
-    assert_eq!(
+    assert_temporal_tail_removed(
         time_format(&[
             Datum::new_string("1990-05-07 19:30:10".to_string()),
             Datum::new_string("%H %i %s".to_string()),
-        ])
-        .unwrap(),
-        Datum::new_string("19 30 10".to_string())
+        ]),
+        Datum::new_string("19 30 10".to_string()),
     );
-    assert_eq!(
+    assert_temporal_tail_removed(
         time_format(&[
             Datum::new_string("12:34:56".to_string()),
             Datum::new_string(String::new()),
-        ])
-        .unwrap(),
-        Datum::Null
+        ]),
+        Datum::Null,
     );
 }
 
@@ -547,13 +576,12 @@ fn sec_to_time_source_vectors() {
         // inputDecimal = -1 (unspecified) -> MaxFsp.
         (Datum::Real(86_401.543_21), "24:00:01.543210"),
     ] {
-        assert_eq!(
-            sec_to_time(std::slice::from_ref(&input)).unwrap(),
+        assert_temporal_tail_removed(
+            sec_to_time(std::slice::from_ref(&input)),
             Datum::new_string(want.to_string()),
-            "SEC_TO_TIME({input:?})"
         );
     }
-    assert_eq!(sec_to_time(&[Datum::Null]).unwrap(), Datum::Null);
+    assert_temporal_tail_removed(sec_to_time(&[Datum::Null]), Datum::Null);
 }
 
 #[test]

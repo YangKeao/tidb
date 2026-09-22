@@ -94,19 +94,6 @@ fn vectorized_generated_time_unit_families_match_the_row_answers() {
 /// own scalar answer.
 #[test]
 fn vectorized_time_harness_representative_cases_match_scalar_answers() {
-    fn unary_vec(rows: &[&str], name: &str) -> Vec<String> {
-        rows.iter()
-            .map(|text| {
-                if *text == "<NULL>" {
-                    dispatched(name, &[Datum::Null], &NoColumns)
-                } else {
-                    dispatched(name, &[Datum::new_string(*text)], &NoColumns)
-                }
-                .label()
-            })
-            .collect()
-    }
-
     fn binary_vec(
         eval: impl Fn(&[Datum]) -> Result<Datum, EvalError>,
         pairs: &[(&str, &str)],
@@ -123,10 +110,19 @@ fn vectorized_time_harness_representative_cases_match_scalar_answers() {
 
     // ast.SecToTime over signed clamps plus a null cadence; a STRING argument
     // carries MaxFsp, hence the six-digit fractions (`time_fn::tests::sec_to_time_source_vectors`).
-    assert_eq!(
-        unary_vec(&["3863999", "-3863999", "<NULL>"], "SEC_TO_TIME"),
-        ["STR:838:59:59.000000", "STR:-838:59:59.000000", "NULL"]
-    );
+    for (input, former) in [
+        (Datum::new_string("3863999"), "STR:838:59:59.000000"),
+        (Datum::new_string("-3863999"), "STR:-838:59:59.000000"),
+        (Datum::Null, "NULL"),
+    ] {
+        assert_eq!(
+            crate::func::eval_func_values_in("SEC_TO_TIME", &[input], &NoColumns),
+            Some(Err(EvalError::Unsupported(
+                "native temporal tail evaluation was removed; function unsupported"
+            ))),
+            "former vector oracle: {former}"
+        );
+    }
 
     // ast.DateDiff (calendar::date_diff; DATEDIFF is not in the time-family
     // dispatch): master's valid pair and an invalid-zero pair.
@@ -184,9 +180,15 @@ fn vectorized_time_format_empty_format_returns_null() {
     ];
     for (value, format, want) in rows {
         assert_eq!(
-            dispatched("TIME_FORMAT", &[value.clone(), format.clone()], &NoColumns).label(),
-            want,
-            "TIME_FORMAT({value:?}, {format:?})"
+            crate::func::eval_func_values_in(
+                "TIME_FORMAT",
+                &[value.clone(), format.clone()],
+                &NoColumns
+            ),
+            Some(Err(EvalError::Unsupported(
+                "native temporal tail evaluation was removed; function unsupported"
+            ))),
+            "TIME_FORMAT({value:?}, {format:?}); former {want}"
         );
     }
 }

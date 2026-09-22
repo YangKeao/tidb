@@ -235,11 +235,8 @@ pub(crate) const fn int_arg_mask(name: &str) -> ArgMask {
         b"REGEXP_SUBSTR" => (1 << 2) | (1 << 3),
         b"REGEXP_INSTR" => (1 << 2) | (1 << 3) | (1 << 4),
         b"REGEXP_REPLACE" => (1 << 3) | (1 << 4),
-        // `builtin_time.go`'s TSO extractors both declare their only
-        // argument as `types.ETInt`. The physical extractor derives its
-        // RETURN eval type from the source argument, but its argument cast is
-        // still fixed to integer.
-        b"TIDB_PARSE_TSO" | b"TIDB_PARSE_TSO_LOGICAL" => 1 << 0,
+        // The retained physical TSO extractor declares its argument ETInt.
+        b"TIDB_PARSE_TSO" => 1 << 0,
         // `lockFunctionClass`: lock name is ETString and timeout is ETInt.
         b"GET_LOCK" => 1 << 1,
         // `getParamFunctionClass`: the parameter selector is the sole
@@ -367,9 +364,6 @@ const fn string_arg_mask(name: &str) -> ArgMask {
         | b"TIDB_DECODE_KEY"
         | b"TIDB_ENCODE_SQL_DIGEST"
         | b"VEC_FROM_TEXT" => 1 << 0,
-        // `getFormatFunctionClass`: the selector is lowered to a string
-        // constant and the location is the caller's ETString argument.
-        b"GET_FORMAT" => (1 << 0) | (1 << 1),
         // `builtin_string.go:2029` `types.ETString, types.ETString`
         // (lTrimFunctionClass) and `:2098` the same for `rTrimFunctionClass`.
         b"LTRIM" | b"RTRIM" => 1 << 0,

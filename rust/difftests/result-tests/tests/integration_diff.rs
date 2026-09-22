@@ -814,6 +814,7 @@ fn is_engine_shape_contraction(sql: &str) -> bool {
         || removed_native::is_string_aux_shape_contraction(sql)
         || removed_native::is_string_length_shape_contraction(sql)
         || removed_native::is_calendar_component_shape_contraction(sql)
+        || removed_native::is_temporal_tail_contraction(sql)
         || removed_native::is_temporal_value_shape_contraction(sql)
     {
         return true;
