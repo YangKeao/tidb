@@ -10,10 +10,10 @@ kind needs. This is the measurement, and the method is repeatable:
     cd rust/crates
     grep -rn "\.eval(" --include=*.rs . | grep -v '/tidb-expr/src/'
 
-## Current engine-only snapshot after tranche 36
+## Current engine-only snapshot after tranche 43
 
-The repeatable classifier still reports **39 raw / 23 syntactic `.eval`
-candidates / 4 production / 19 test-only**. These are lexical candidates across
+The repeatable classifier reports **35 raw / 19 syntactic `.eval` candidates /
+4 production / 15 test-only**. These are lexical candidates across
 unrelated facade types; they are not calls to a surviving native expression
 method. `Expression::eval`, `ScalarFunction::eval`, raw-AST `eval`/`eval_in`,
 `func.rs`, `time_fn`, `ops`, the JSON function dispatcher and the cast dispatcher
@@ -25,9 +25,9 @@ The central runtime proof is the default-feature SQL demo: projection and
 predicate produce `(1,42),(2,NULL)`, increment the TiKV engine counter by five,
 and a deliberate no-context replay probe returns a required-engine error with no
 counter change. The dedicated positive runtime gate passes **8 tests / 281
-fixtures / 1,834 engine rows / 160 borrowed rows / 0 native fallbacks**; it no
-longer compiles the intentionally contracted legacy aggregate test target. The
-static admission gate is **384 rows / 211 admitted / 173 excluded / 0 missing**.
+fixtures / 1,834 engine rows / 160 borrowed rows / 0 native fallbacks**. The
+retained library suite passes 211/211, aggregate external target 49/49 and
+standalone coverage target 18/18. The static admission gate is **384 rows / 211 admitted / 173 excluded / 0 missing**.
 The excluded-shape inventory is generated at
 `docs/tikv-expression-unsupported.md`. Candidate counts below are retained as
 historical audit snapshots, not evidence that native evaluators remain.

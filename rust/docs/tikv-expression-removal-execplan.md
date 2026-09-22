@@ -606,17 +606,27 @@ remain in the workspace.
       deleted `time_fn`/native dispatch. Library 211/211, standalone coverage
       18/18, runtime receipts and the SQL demo remain green with zero native
       fallback.
-- [ ] Post-tranche-43 deletion frontier (2026-03-24): the remaining source
-      inventory is intentionally measured before another cut, not counted as
+- [x] Engine-only demo completion checkpoint: production scalar execution has
+      one central TiKV path; `Expression::eval`, `ScalarFunction::eval`, raw-AST
+      evaluation, function/cast/operator/JSON/temporal dispatchers and fallback
+      APIs are physically absent. Missing context, row-major programs, admission
+      exclusions and adapter declines return structured errors without replay.
+      Locked compilation, library 211/211, aggregate external 49/49, standalone
+      coverage 18/18, focused session 2/2, static 211/173/0 and runtime
+      281-fixture gates pass. The end-to-end SQL demo records five TiKV engine
+      rows, zero borrowed rows and refuses the deliberate no-context probe. The
+      unsupported inventory and this ExecPlan are checked in, and every commit
+      was pushed only to the YangKeao fork.
+- [ ] Post-demo optional frontier (2026-03-24): the remaining source inventory
+      is intentionally measured before another cut, not counted as
       native-kernel LOC. `builtin_ext/json` is only a 128-line cast/type bridge
       and `time_fn`/`ops` are absent. The four core dispatch/bridge files total
       2,485 lines (`scalar_function.rs` 474, `evaluator.rs` 859, `cast.rs`
       663 and `lib.rs` 489); executor datum ordering is another 32 lines. The
       next physical cut should separate and delete the remaining generic
-      comparison/coercion helpers while retaining parser, result-type, transport
-      and TiKV lowering pieces. This snapshot prevents the outside-call-site
-      audit from being mistaken for completion: substantial bridge and retained
-      source classification work remains.
+      comparison/coercion bridges while retaining parser, result-type, transport
+      and TiKV lowering pieces. This is optional post-demo cleanup, not a native
+      evaluator or fallback path.
 - [x] Twenty-sixth physical-deletion tranche: delete the native
       FROM_UNIXTIME and UNIX_TIMESTAMP session-zone kernels plus the complete
       `time_fn/session_tz.rs` module (489 lines), including fixed/named-zone,
