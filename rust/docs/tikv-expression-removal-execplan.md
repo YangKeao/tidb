@@ -526,13 +526,24 @@ remain in the workspace.
       parsing used by comparison refinement. The tranche removes 1,405 lines;
       locked offline compilation, focused session tests and the SQL demo pass
       with five TiKV engine rows and refused no-context replay.
-- [ ] Post-tranche-34 deletion frontier (2026-03-24): the remaining source
+- [x] Thirty-fifth physical-deletion tranche: delete the complete native SQL
+      operator engine: `ops.rs` plus integer/real coercion and operand-shape
+      submodules (3,370 source lines, including their native tests). Executor
+      ordering now calls `Datum::compare` directly through a 32-line `row.rs`;
+      configured-write predicates compare the resulting `Ordering` instead of
+      replaying a binary expression. AVG state owns a narrow numeric add/sub
+      accumulator helper, separate from expression dispatch, and the old public
+      apply-binary/unary APIs are gone. The tranche is 82 insertions / 3,595
+      deletions; locked offline compilation, focused session tests and the SQL
+      demo pass with five TiKV engine rows and refused no-context replay.
+- [ ] Post-tranche-35 deletion frontier (2026-03-24): the remaining source
       inventory is intentionally measured before another cut, not counted as
       native-kernel LOC. `builtin_ext/json` is only a 128-line cast/type bridge
-      and `time_fn` is absent. The four core dispatch/bridge files total 5,064
-      lines (`scalar_function.rs` 1,647, `evaluator.rs` 2,227, `cast.rs` 663
-      and `lib.rs` 527). The next physical cut should separate and delete the
-      remaining generic cast/operator/coercion kernels while retaining parser,
+      and `time_fn`/`ops` are absent. The four core dispatch/bridge files total
+      5,033 lines (`scalar_function.rs` 1,647, `evaluator.rs` 2,227, `cast.rs`
+      663 and `lib.rs` 496); executor datum ordering is another 32 lines. The
+      next physical cut should separate and delete the remaining generic
+      comparison/coercion helpers while retaining parser,
       result-type, transport and TiKV lowering pieces. This snapshot prevents the outside-call-site
       audit from being mistaken for completion: substantial native expression
       implementation remains.

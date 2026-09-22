@@ -1167,19 +1167,17 @@ fn selection_matches_staged_row(
         };
         let left = operand(condition.lhs())?;
         let right = operand(condition.rhs())?;
-        let op = match condition.op() {
-            ComparisonOp::Lt => tidb_ast::BinaryOp::Lt,
-            ComparisonOp::Le => tidb_ast::BinaryOp::Le,
-            ComparisonOp::Gt => tidb_ast::BinaryOp::Gt,
-            ComparisonOp::Ge => tidb_ast::BinaryOp::Ge,
-            ComparisonOp::Eq => tidb_ast::BinaryOp::Eq,
-            ComparisonOp::Ne => tidb_ast::BinaryOp::Ne,
+        let ordering = tidb_expr::compare_datums(&left, &right)
+            .map_err(|error| ConfiguredWriteError::RowRead(format!("{error:?}")))?;
+        let matches = match condition.op() {
+            ComparisonOp::Lt => ordering.is_lt(),
+            ComparisonOp::Le => ordering.is_le(),
+            ComparisonOp::Gt => ordering.is_gt(),
+            ComparisonOp::Ge => ordering.is_ge(),
+            ComparisonOp::Eq => ordering.is_eq(),
+            ComparisonOp::Ne => !ordering.is_eq(),
         };
-        if !matches!(
-            tidb_expr::apply_binary(op, left, right)
-                .map_err(|error| ConfiguredWriteError::RowRead(format!("{error:?}")))?,
-            Datum::Int(1)
-        ) {
+        if !matches {
             return Ok(false);
         }
     }

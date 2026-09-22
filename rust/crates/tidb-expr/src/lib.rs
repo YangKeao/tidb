@@ -57,7 +57,6 @@ pub use new_function::{
     new_function_try_fold, new_function_with_init, scalar_funcs_to_exprs, type_infer_for_null,
     ScalarFunctionCallBack,
 };
-mod ops;
 pub mod pb_predicate;
 pub mod pushdown_catalog;
 pub mod ranger_context;
@@ -191,14 +190,6 @@ fn ast_binary_overflow_error(
     };
     EvalError::DataOutOfRange { value, expression }
 }
-
-use coerce::{bool_int, coerce_str_bytes};
-use like::like_match;
-use ops::{
-    effective_div_precision_increment, eval_binary, eval_binary_with_div_precision, eval_unary,
-    logic_and,
-};
-use row::row_compare;
 
 /// Mirrors Go `expression.IsValidCurrentTimestampExpr` from
 /// `pkg/expression/helper.go`.
@@ -412,34 +403,12 @@ pub fn eval_expression_once(
     crate::evaluator::eval_constant_row(expression, ctx).map_err(crate::evaluator::into_eval_error)
 }
 
-/// Applies a binary operator to already-evaluated operands. Exposed so callers
-/// that intercept some sub-expressions (e.g. aggregates during grouping) can
-/// still reuse the operator semantics.
-pub fn apply_binary(op: tidb_ast::BinaryOp, l: Datum, r: Datum) -> Result<Datum, EvalError> {
-    eval_binary(op, l, r)
-}
-
-/// Applies a binary operator with the current session's explicit
-/// `div_precision_increment`. Every table-backed scalar, grouped, and window
-/// division path calls this rather than relying on [`apply_binary`]'s
-/// context-free default.
-pub fn apply_binary_with_div_precision(
-    op: tidb_ast::BinaryOp,
-    l: Datum,
-    r: Datum,
-    div_precision_increment: u32,
-    ctx: &dyn crate::context::Columns,
-) -> Result<Datum, EvalError> {
-    eval_binary_with_div_precision(op, l, r, div_precision_increment, ctx)
-}
-
-/// Applies a unary operator to an already-evaluated operand.
-pub fn apply_unary(
-    op: tidb_ast::UnaryOp,
-    v: Datum,
-    ctx: &dyn crate::context::Columns,
-) -> Result<Datum, EvalError> {
-    eval_unary(op, v, ops::Operand::Literal, ctx)
+const fn effective_div_precision_increment(raw: u32) -> u32 {
+    if raw == 0 {
+        4
+    } else {
+        raw
+    }
 }
 
 /// `AVG`'s `SUM / COUNT`, exposed so `tidb-exec` can compute it without

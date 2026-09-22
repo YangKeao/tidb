@@ -14,11 +14,62 @@
 
 //! Canonical AVG partial state and its source float specialization.
 
-use tidb_ast::BinaryOp;
-use tidb_datatype::Datum;
-use tidb_expr::{apply_binary, avg_of_with_div_precision};
+use tidb_datatype::{Datum, DecimalCodecWarning};
+use tidb_expr::{avg_of_with_div_precision, EvalError};
 
 use crate::ExecError;
+
+fn combine_sum(left: Datum, right: &Datum, subtract: bool) -> Result<Datum, EvalError> {
+    match (&left, right) {
+        (Datum::Int(left), Datum::Int(right)) => {
+            let value = if subtract {
+                left.checked_sub(*right)
+            } else {
+                left.checked_add(*right)
+            }
+            .ok_or(EvalError::IntOverflow)?;
+            Ok(Datum::Int(value))
+        }
+        (Datum::UInt(left), Datum::UInt(right)) => {
+            let value = if subtract {
+                left.checked_sub(*right)
+            } else {
+                left.checked_add(*right)
+            }
+            .ok_or(EvalError::IntOverflow)?;
+            Ok(Datum::UInt(value))
+        }
+        (Datum::Real(left), Datum::Real(right)) => Ok(Datum::Real(if subtract {
+            left - right
+        } else {
+            left + right
+        })),
+        (Datum::Float32(left), Datum::Float32(right)) => Ok(Datum::Float32(if subtract {
+            left - right
+        } else {
+            left + right
+        })),
+        _ => {
+            let left = left
+                .to_decimal()
+                .map_err(|_| EvalError::Unsupported("AVG sum requires numeric input"))?
+                .value;
+            let right = right
+                .to_decimal()
+                .map_err(|_| EvalError::Unsupported("AVG sum requires numeric input"))?
+                .value;
+            let (value, warning) = if subtract {
+                left.sub_mysql(&right)
+            } else {
+                left.add_mysql(&right)
+            };
+            if warning == Some(DecimalCodecWarning::Overflow) {
+                return Err(EvalError::DecimalOverflow);
+            }
+            Ok(Datum::Decimal(value))
+        }
+    }
+}
 
 /// Source `partialResult4AvgFloat64`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -106,7 +157,7 @@ impl AvgState {
             return Ok(());
         }
         self.sum = Some(match self.sum.take() {
-            Some(sum) => apply_binary(BinaryOp::Plus, sum, value.clone())?,
+            Some(sum) => combine_sum(sum, value, false)?,
             None => value.clone(),
         });
         self.count = self.count.wrapping_add(1);
@@ -119,7 +170,7 @@ impl AvgState {
             return Ok(());
         };
         self.sum = Some(match self.sum.take() {
-            Some(sum) => apply_binary(BinaryOp::Plus, sum, source_sum.clone())?,
+            Some(sum) => combine_sum(sum, source_sum, false)?,
             None => source_sum.clone(),
         });
         self.count = self.count.wrapping_add(source.count);
@@ -137,7 +188,7 @@ impl AvgState {
                 continue;
             }
             let sum = self.sum.take().unwrap_or(Datum::Int(0));
-            self.sum = Some(apply_binary(BinaryOp::Minus, sum, value.clone())?);
+            self.sum = Some(combine_sum(sum, value, true)?);
             self.count = self.count.wrapping_sub(1);
         }
         Ok(())

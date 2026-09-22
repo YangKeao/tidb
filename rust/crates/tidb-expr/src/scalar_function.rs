@@ -602,7 +602,7 @@ impl ScalarFunction {
         self.ret_type
             .as_ref()
             .and_then(|ft| tidb_datatype::Collation::from_name(ft.collation_name()))
-            .unwrap_or(crate::ops::DERIVATION_FREE_COLLATION)
+            .unwrap_or(tidb_datatype::Collation::Utf8Mb4Bin)
     }
 }
 
