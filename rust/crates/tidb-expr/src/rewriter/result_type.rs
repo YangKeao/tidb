@@ -1962,8 +1962,8 @@ fn builtin_return_type_before_ret_tp(name: &str, args: &[Expression]) -> Option<
             ft
         }
         // Go `toSecondsFunctionClass`: datetime in, plain int out. It sits
-        // beside `TO_DAYS` in the int family above but arrives here because
-        // it takes the zero-date `calcDaynr` path in `time_fn::calendar`.
+        // beside `TO_DAYS` in the int family above but uses Go's zero-date
+        // `calcDaynr` result-type path.
         "to_seconds" if args.len() == 1 => int(),
         // `JSON_SEARCH` is typed `ETJson` by Go; it carries the same
         // JSON-as-canonical-text divergence documented for the JSON family

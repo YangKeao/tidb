@@ -1648,13 +1648,12 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
         }
         // `TIMESTAMPDIFF(unit, a, b)`'s unit is a dedicated AST field rather
         // than an argument expression (see `tidb_ast::Expr::TimestampDiff`),
-        // but the shared implementation `time_fn::dispatch` already takes the
-        // unit as its first VALUE — so the unit becomes a constant argument
-        // and the one implementation runs unchanged.
-        // TIMESTAMPADD has a dedicated AST shape; its native kernel is gone,
-        // so refuse before rewriting/folding either child.
+        // and TiKV's signature takes the unit as its first VALUE, so the unit
+        // becomes a constant argument before lowering.
+        // TIMESTAMPADD has a dedicated AST shape that is not admitted; refuse
+        // before rewriting/folding either child.
         Expr::TimestampAdd { .. } => Err(EvalError::Unsupported(
-            "native temporal residual evaluation was removed; function unsupported",
+            "TIMESTAMPADD is not admitted by the TiKV expression engine",
         )),
         Expr::TimestampDiff { unit, expr1, expr2 } => {
             let args = vec![
@@ -1763,8 +1762,8 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
             // argument loop below can rewrite. The unit is a build-time
             // choice exactly like a cast's target type, so it travels in the
             // FUNCTION NAME (`date_add_month`) and the node keeps two
-            // ordinary child expressions; `ScalarFunction::eval` then calls
-            // the same `time_fn::calendar::date_add` the row path uses.
+            // ordinary child expressions; admission/lowering then selects the
+            // matching TiKV engine signature or declines the shape.
             // `ADDDATE`/`SUBDATE` are the same shape and the same evaluation
             // (the parser already normalized their bare-number form to an
             // `INTERVAL n DAY`), so they map onto the same two names.
@@ -1775,11 +1774,9 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
                 if let [date, Expr::Interval { value, unit }] = args.as_slice() {
                     let subtract = lowered == "date_sub" || lowered == "subdate";
                     let unit = unit.to_ascii_uppercase();
-                    // Only the units `date_add` itself implements are built.
-                    // The composite units
-                    // (`HOUR_MINUTE`, `DAY_SECOND`, `YEAR_MONTH`, ...) ARE
-                    // built — `time_fn::calendar::date_add` handles them via
-                    // `composite_spec`.
+                    // Only units represented by the engine-lowering contract
+                    // are built. Composite units (`HOUR_MINUTE`, `DAY_SECOND`,
+                    // `YEAR_MONTH`, ...) retain their normalized unit name.
                     if !matches!(
                         unit.as_str(),
                         "DAY"

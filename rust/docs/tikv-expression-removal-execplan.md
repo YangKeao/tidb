@@ -597,7 +597,16 @@ remain in the workspace.
       runtime receipt subset remains 281 fixtures / 1,834 engine rows / 160
       borrowed / zero native fallback, and the SQL demo still records five
       engine rows with refused no-context replay.
-- [ ] Post-tranche-42 deletion frontier (2026-03-24): the remaining source
+- [x] Forty-third physical-deletion tranche: delete the final external raw-AST
+      evaluator tests (`benchmark_source.rs`, `info_metadata_source.rs`) and
+      eleven Copying/Borrowed/native-coexistence comparisons whose assumptions
+      were invalid after central cutover. This removes 789 lines and makes the
+      complete aggregate external target pass **49/49**. Stale rewriter comments
+      and TIMESTAMPADD's error now describe TiKV admission/decline rather than
+      deleted `time_fn`/native dispatch. Library 211/211, standalone coverage
+      18/18, runtime receipts and the SQL demo remain green with zero native
+      fallback.
+- [ ] Post-tranche-43 deletion frontier (2026-03-24): the remaining source
       inventory is intentionally measured before another cut, not counted as
       native-kernel LOC. `builtin_ext/json` is only a 128-line cast/type bridge
       and `time_fn`/`ops` are absent. The four core dispatch/bridge files total

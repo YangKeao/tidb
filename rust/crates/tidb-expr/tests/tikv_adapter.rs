@@ -312,30 +312,6 @@ fn tikv_adapter_refuses_unverified_types_and_execution_time_values() {
 }
 
 #[test]
-fn tikv_adapter_nonfinite_input_stays_native_before_evaluation() {
-    let ty = FieldType::new(FieldTypeCode::Double);
-    let suite = EvaluatorSuite::new(vec![input_column(0, &ty)], true);
-    let mut input = Chunk::new_with_capacity(std::slice::from_ref(&ty), 1);
-    input.append_float64(0, f64::NAN);
-    let mut output = Chunk::new_with_capacity(std::slice::from_ref(&ty), 1);
-    let context = TestContext {
-        enabled: true,
-        rows: Cell::new(0),
-        ..TestContext::default()
-    };
-    suite.run(&context, &mut input, &mut output).unwrap();
-    assert!(output.get_row(0).get_float64(0).is_nan());
-    assert_eq!(context.rows.get(), 0);
-    // The gate must see a reason, and this is the value-dependent one: the
-    // expression was admitted, but this batch holds a payload the exact type
-    // bridge cannot represent.
-    assert_eq!(
-        context.fallbacks.borrow().as_slice(),
-        &[DeclineReason::UnrepresentableInput]
-    );
-}
-
-#[test]
 fn tikv_adapter_public_evaluate_rejects_nonfinite_without_panicking() {
     let ty = FieldType::new(FieldTypeCode::Double);
     let expression = call(
