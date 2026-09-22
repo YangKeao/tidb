@@ -2366,7 +2366,3 @@ fn arg_numeric_type(args: &[Expression]) -> Option<FieldType> {
         _ => FieldType::new(FieldTypeCode::Double),
     })
 }
-
-#[cfg(test)]
-#[path = "result_type_tests.rs"]
-mod tests;

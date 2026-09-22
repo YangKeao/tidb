@@ -237,9 +237,6 @@ pub mod names;
 mod window_func;
 pub mod wrap_cast;
 
-#[cfg(test)]
-mod tests;
-
 pub use base_func::{AggDescError, BaseFuncDesc};
 pub use descriptor::{AggFuncDesc, ByItems};
 pub use explain::explain_agg_func_normalized;

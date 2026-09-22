@@ -145,9 +145,6 @@ pub mod push_not;
 pub mod substitute;
 pub mod traits;
 
-#[cfg(test)]
-mod tests;
-
 pub use explain_normalized::{
     column_explain_info_normalized, explain_normalized_info, explain_normalized_info_4_in_list,
     sorted_explain_normalized_expression_list, sorted_explain_normalized_scalar_func_list,

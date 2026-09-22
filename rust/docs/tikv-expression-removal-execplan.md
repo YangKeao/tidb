@@ -578,12 +578,22 @@ remain in the workspace.
       `FallbackReason`, fallback callback, required-engine hook, or
       `requires_native_input` symbol. Locked compilation, focused session tests,
       281-fixture runtime gate and SQL demo all pass with zero native fallback.
-- [ ] Post-tranche-40 deletion frontier (2026-03-24): the remaining source
+- [x] Forty-first physical-deletion tranche: delete the complete 28,442-line
+      `src/tests` native evaluator corpus, the aggregate/expr-util native-fold
+      test modules, and inline native-evaluation tests from `constant`,
+      `constant_fold`, `expression`, `simple_expr`, `new_function`, `rewriter`
+      and result-type inference. This removes 35,602 stale lines that referenced
+      already-deleted `Expression::eval`, `ScalarFunction::eval`, `func.rs` and
+      native folding behavior instead of preserving them behind `cfg(test)`.
+      The retained library suite now compiles and passes **211/211**; the
+      281-fixture engine runtime gate and SQL demo remain green with zero native
+      fallback.
+- [ ] Post-tranche-41 deletion frontier (2026-03-24): the remaining source
       inventory is intentionally measured before another cut, not counted as
       native-kernel LOC. `builtin_ext/json` is only a 128-line cast/type bridge
       and `time_fn`/`ops` are absent. The four core dispatch/bridge files total
-      2,488 lines (`scalar_function.rs` 474, `evaluator.rs` 859, `cast.rs`
-      663 and `lib.rs` 492); executor datum ordering is another 32 lines. The
+      2,485 lines (`scalar_function.rs` 474, `evaluator.rs` 859, `cast.rs`
+      663 and `lib.rs` 489); executor datum ordering is another 32 lines. The
       next physical cut should separate and delete the remaining generic
       comparison/coercion helpers while retaining parser, result-type, transport
       and TiKV lowering pieces. This snapshot prevents the outside-call-site

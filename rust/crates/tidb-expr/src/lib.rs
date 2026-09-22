@@ -487,6 +487,3 @@ fn literal_charset(expr: &Expr) -> Option<&str> {
         _ => None,
     }
 }
-
-#[cfg(test)]
-mod tests;
