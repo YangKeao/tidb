@@ -485,16 +485,27 @@ remain in the workspace.
       TiKV lowering inputs remain. The tranche is one insertion / 1,017
       deletions; `cargo check -p tidb-session` and the runnable SQL demo pass
       with five TiKV engine rows and an explicitly refused no-context probe.
-- [ ] Post-tranche-30 deletion frontier (2026-03-24): the remaining source
+- [x] Thirty-first physical-deletion tranche: delete the complete native JSON
+      dispatcher and all construct/merge/modify/path/predicate/report/search/text
+      kernels plus their native test module. `builtin_ext/json` contracts from
+      ten production files and 2,878 lines to a 128-line `CAST(... AS JSON)`
+      datum/type bridge in two files; no JSON SQL function dispatch remains.
+      The unused `jsonschema`/`fluent-uri` dependency chain is removed from the
+      workspace and lockfile, while `reqwest`'s independently required JSON
+      feature is made explicit. The code/dependency tranche is 40 insertions /
+      5,026 deletions before this ExecPlan entry. Locked offline
+      `cargo check -p tidb-session`, the two focused session tests and the SQL
+      demo pass with five TiKV engine rows and a refused no-context probe.
+- [ ] Post-tranche-31 deletion frontier (2026-03-24): the remaining source
       inventory is intentionally measured before another cut, not counted as
-      native-kernel LOC. `builtin_ext/json` has 2,878 production lines across
-      ten files (including parsing/value bridges that may survive); `time_fn`
-      has 3,832 across five files (`calendar.rs` 2,323, `duration_parse.rs` 611,
-      `add_sub.rs` 520, `extract.rs` 103 and dispatch 275); the four core
-      dispatch/bridge files total 6,985 lines (`scalar_function.rs` 1,647,
-      `evaluator.rs` 2,227, `cast.rs` 2,299 and `lib.rs` 812). The next physical cuts should start with isolated JSON merge/search
-      kernels and EXTRACT, while retaining only parser, result-type, transport
-      and TiKV-lowering pieces. This snapshot prevents the outside-call-site
+      native-kernel LOC. `builtin_ext/json` is now only a 128-line cast/type
+      bridge; `time_fn` still has 3,832 lines across five files (`calendar.rs`
+      2,323, `duration_parse.rs` 611, `add_sub.rs` 520, `extract.rs` 103 and
+      dispatch 275); the four core dispatch/bridge files total 6,985 lines
+      (`scalar_function.rs` 1,647, `evaluator.rs` 2,227, `cast.rs` 2,299 and
+      `lib.rs` 812). The next physical cut should remove the remaining temporal
+      dispatch/kernels while retaining parser, result-type, transport and TiKV
+      lowering pieces. This snapshot prevents the outside-call-site
       audit from being mistaken for completion: substantial native expression
       implementation remains.
 - [x] Twenty-sixth physical-deletion tranche: delete the native

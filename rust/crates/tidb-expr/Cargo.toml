@@ -43,9 +43,6 @@ chrono-tz = { workspace = true }
 regex = { workspace = true }
 sha2 = { workspace = true }
 serde_json = { workspace = true }
-jsonschema = { workspace = true }
-reqwest = { workspace = true }
-fluent-uri = { workspace = true }
 
 [dev-dependencies]
 flate2 = { workspace = true }

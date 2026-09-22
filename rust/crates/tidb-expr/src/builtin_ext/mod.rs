@@ -8,31 +8,12 @@
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Remaining family modules for builtin scalar functions. The JSON family
-//! exposes `dispatch(name, vals) -> Option<Result<Datum, EvalError>>`; `None`
-//! ultimately reaches `crate::func::eval_func`'s `Unsupported` error.
-//!
-//! These files are seed material until their complete upstream Go packages
-//! are transcreated. Every builtin must cite the Go function it was read from
-//! in `pkg/expression/builtin_*.go`.
-
-use crate::{Datum, EvalError};
+//! Type bridges retained for TiKV expression lowering.
 
 pub(crate) mod json;
 
-pub(crate) use json::{
-    cast_as_json, cast_as_json_typed, cast_as_json_value_typed,
-    dispatch_typed as json_dispatch_typed,
-};
-/// Tries each family in turn; `None` if no family implements `name`.
-///
-pub(crate) fn dispatch(
-    name: &str,
-    vals: &[Datum],
-    _ctx: &dyn crate::Columns,
-) -> Option<Result<Datum, EvalError>> {
-    json::dispatch(name, vals)
-}
+pub(crate) use json::cast_as_json;
