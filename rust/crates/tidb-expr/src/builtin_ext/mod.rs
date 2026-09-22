@@ -25,7 +25,7 @@ pub(crate) mod json;
 
 pub(crate) use json::{
     cast_as_json, cast_as_json_typed, cast_as_json_value_typed,
-    dispatch_typed as json_dispatch_typed, JsonSchemaCache,
+    dispatch_typed as json_dispatch_typed,
 };
 /// Tries each family in turn; `None` if no family implements `name`.
 ///

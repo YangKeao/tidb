@@ -903,18 +903,7 @@ fn rewrite_expr_resolved_inner(
         _ => resolver.fold_mode(),
     };
     resolver.fold_constant(&mut built, fold_mode);
-    prepare_in_string_hash_sets(&mut built);
     Ok(built)
-}
-
-fn prepare_in_string_hash_sets(expr: &mut Expression) {
-    let Expression::ScalarFunction(function) = expr else {
-        return;
-    };
-    for argument in &mut function.args {
-        prepare_in_string_hash_sets(argument);
-    }
-    function.prepare_in_string_hash_set();
 }
 
 /// Runs Go's collation derivation over a freshly built expression tree,

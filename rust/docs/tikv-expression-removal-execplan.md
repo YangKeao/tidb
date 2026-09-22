@@ -476,14 +476,23 @@ remain in the workspace.
       three central dispatcher cuts. The tranche is 34 insertions / 1,636
       deletions; `cargo check -p tidb-session` and the SQL demo pass with the
       same five TiKV engine rows and refused no-context probe.
-- [ ] Post-tranche-29 deletion frontier (2026-03-24): the remaining source
+- [x] Thirtieth physical-deletion tranche: remove 987 lines from
+      `scalar_function.rs`: native return coercion, integer/decimal comparison,
+      NOT filtering, decimal arithmetic, cast decoding, overflow rendering and
+      IN-string hash execution caches. The rewriter no longer prepares the
+      native IN cache, and the now-unreferenced JSON-schema evaluator cache is
+      removed as well. AST node metadata, grouping/hash identity, collation and
+      TiKV lowering inputs remain. The tranche is one insertion / 1,017
+      deletions; `cargo check -p tidb-session` and the runnable SQL demo pass
+      with five TiKV engine rows and an explicitly refused no-context probe.
+- [ ] Post-tranche-30 deletion frontier (2026-03-24): the remaining source
       inventory is intentionally measured before another cut, not counted as
-      native-kernel LOC. `builtin_ext/json` has 2,896 production lines across
+      native-kernel LOC. `builtin_ext/json` has 2,878 production lines across
       ten files (including parsing/value bridges that may survive); `time_fn`
       has 3,832 across five files (`calendar.rs` 2,323, `duration_parse.rs` 611,
       `add_sub.rs` 520, `extract.rs` 103 and dispatch 275); the four core
-      dispatch/bridge files total 7,974 lines (`scalar_function.rs` 2,634,
-      `evaluator.rs` 2,227, `cast.rs` 2,299 and `lib.rs` 814). The next physical cuts should start with isolated JSON merge/search
+      dispatch/bridge files total 6,985 lines (`scalar_function.rs` 1,647,
+      `evaluator.rs` 2,227, `cast.rs` 2,299 and `lib.rs` 812). The next physical cuts should start with isolated JSON merge/search
       kernels and EXTRACT, while retaining only parser, result-type, transport
       and TiKV-lowering pieces. This snapshot prevents the outside-call-site
       audit from being mistaken for completion: substantial native expression

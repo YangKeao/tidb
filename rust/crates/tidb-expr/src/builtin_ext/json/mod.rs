@@ -62,7 +62,6 @@ use text::json_pretty;
 use crate::{Datum, EvalError};
 use tidb_datatype::FieldType;
 
-pub(crate) use report::JsonSchemaCache;
 pub(crate) use value::{
     cast_as_json, cast_as_json_typed, cast_as_json_value_typed, parse_json_document_argument,
 };

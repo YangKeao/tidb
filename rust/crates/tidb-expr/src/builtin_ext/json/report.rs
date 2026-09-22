@@ -36,27 +36,10 @@ use super::value::{
 use crate::coerce::coerce_str;
 use crate::{Datum, EvalError, JsonError};
 
-/// Per-signature cache and lazy evaluator for `JSON_SCHEMA_VALID`.
-///
-/// Clone deliberately starts empty, matching Go's
-/// `builtinJSONSchemaValidSig.Clone`. Only strict constants are cached because
-/// Rust's evaluation context does not yet expose Go's `CtxID`; a context-only
-/// parameter must never leak its compiled schema into another execution.
-#[derive(Debug, Default)]
-pub(crate) struct JsonSchemaCache(
-    std::sync::OnceLock<Result<Option<PreparedJsonSchema>, EvalError>>,
-);
-
 #[derive(Debug)]
 struct PreparedJsonSchema {
     schema: Json,
     validator: std::sync::OnceLock<Result<jsonschema::Validator, EvalError>>,
-}
-
-impl Clone for JsonSchemaCache {
-    fn clone(&self) -> Self {
-        Self::default()
-    }
 }
 
 /// Parses and checks the schema argument without resolving external `$ref`s.
