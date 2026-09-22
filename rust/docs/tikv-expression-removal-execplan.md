@@ -418,6 +418,19 @@ remain in the workspace.
       admitted constant length shapes were initially masked as contractions;
       the harness now routes them through Copying with positive row accounting,
       leaving only five exact lowerer-declined statements as contractions.
+- [ ] Post-tranche-26 deletion frontier (2026-03-24): the remaining source
+      inventory is intentionally measured before another cut, not counted as
+      native-kernel LOC. `builtin_ext/json` has 2,932 production lines across
+      ten files (including parsing/value bridges that may survive); `time_fn`
+      has 3,832 across five files (`calendar.rs` 2,323, `duration_parse.rs` 611,
+      `add_sub.rs` 520, `extract.rs` 103 and dispatch 275); the five core
+      dispatch/bridge files total 11,337 lines (`scalar_function.rs` 3,838,
+      `evaluator.rs` 2,372, `cast.rs` 2,299, `func.rs` 1,619 and `lib.rs`
+      1,209). The next physical cuts should start with isolated JSON merge/search
+      kernels and EXTRACT, while retaining only parser, result-type, transport
+      and TiKV-lowering pieces. This snapshot prevents the outside-call-site
+      audit from being mistaken for completion: substantial native expression
+      implementation remains.
 - [x] Twenty-sixth physical-deletion tranche: delete the native
       FROM_UNIXTIME and UNIX_TIMESTAMP session-zone kernels plus the complete
       `time_fn/session_tz.rs` module (489 lines), including fixed/named-zone,
