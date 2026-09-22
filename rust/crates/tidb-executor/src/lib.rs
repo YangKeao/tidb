@@ -287,9 +287,19 @@ pub use tidb_expr::builtin_registry::builtin_list;
 pub use tidb_expr::infer_pushdown::{blacklist_name, blacklist_store_mask, ExprPushDownBlacklist};
 pub use tidb_expr::CurrentTso;
 pub use tidb_expr::{
-    eval_in, like_match_with_collation, truthy_of, BlockEncryptionMode, Columns, EvalError,
-    JsonError, MysqlRng, SessionTimeZone,
+    like_match_with_collation, truthy_of, BlockEncryptionMode, Columns, EvalError, JsonError,
+    MysqlRng, SessionTimeZone,
 };
+
+/// Lowers a parsed AST expression and evaluates it through the engine-only suite.
+pub fn eval_ast_in_engine(
+    expression: &tidb_ast::Expr,
+    columns: &dyn Columns,
+) -> Result<tidb_datatype::Datum, EvalError> {
+    let expression = tidb_expr::rewriter::rewrite_expr(expression)?;
+    tidb_expr::eval_expression_once(&expression, columns)
+}
+
 pub use topn::TopNExec;
 pub use view::{resolve_view_definition, run_create_view_in, run_drop_view_in, view_column_list};
 

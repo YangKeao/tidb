@@ -511,7 +511,7 @@ fn show_row_matches(
     row: &[Datum],
 ) -> Result<bool, DriverError> {
     let resolver = ShowRowResolver { columns, row };
-    let value = tidb_executor::eval_in(predicate, &resolver)
+    let value = tidb_executor::eval_ast_in_engine(predicate, &resolver)
         .map_err(|e| DriverError::Exec(tidb_executor::ExecError::Eval(e)))?;
     let truthy = tidb_executor::truthy_of(&value)
         .map_err(|e| DriverError::Exec(tidb_executor::ExecError::Eval(e)))?;

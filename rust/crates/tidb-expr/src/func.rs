@@ -17,10 +17,14 @@
 use tidb_ast::{BinaryOp, Expr};
 
 use crate::coerce::{bool_int, truthy_of};
-use crate::eval_in;
 use crate::row::row_compare;
 use crate::time_fn::calendar::{date_add, date_diff, date_format, date_part, time_part};
 use crate::{Columns, Datum, EvalError};
+
+fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
+    let expression = crate::rewriter::rewrite_expr(expr)?;
+    crate::eval_expression_once(&expression, cols)
+}
 
 /// Native math kernels were physically removed. Keep the names only as an
 /// execution-boundary refusal list so planners can still construct metadata
