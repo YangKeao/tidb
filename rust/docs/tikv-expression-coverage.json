@@ -6,8 +6,8 @@
     "tikv": "521ac7330208b7f74f2b182bc373882687967280"
   },
   "current_revisions": {
-    "tidb": "3f265acf6f0e6b2b1c3fcdac828fbacf1e518281",
-    "tikv": "0193236428f0f7013ee5d1d397885a61c930cf78"
+    "tidb": "1680f65c18f5a9deb7139f2dfcd78baf6eaeb784",
+    "tikv": "70592fc3695059855a3b05e79cfce825b2c6f773"
   },
   "source_sha256": {
     "tidb/pkg/expression/builtin.go": "496f0b345019f0af073dab6cf7b6608087135728ca96ffe1323708d4cba13b4e",

@@ -172,6 +172,24 @@ pub(crate) fn is_removed_native_calendar_component(name: &str) -> bool {
     )
 }
 
+/// Native standalone temporal value kernels were removed. Admitted shapes
+/// execute in TiKV; engine-inexpressible shapes fail closed here.
+pub(crate) fn is_removed_native_temporal_value(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "DATE"
+            | "MICROSECOND"
+            | "TIME"
+            | "YEARWEEK"
+            | "TIME_TO_SEC"
+            | "MAKEDATE"
+            | "MAKETIME"
+            | "PERIOD_ADD"
+            | "PERIOD_DIFF"
+            | "TIMEDIFF"
+    )
+}
+
 pub(crate) fn is_removed_native_misc(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
@@ -314,6 +332,11 @@ pub(crate) fn eval_func(
     if is_removed_native_calendar_component(&name) {
         return Err(EvalError::Unsupported(
             "native calendar component evaluation was removed; TiKV engine required",
+        ));
+    }
+    if is_removed_native_temporal_value(&name) {
+        return Err(EvalError::Unsupported(
+            "native temporal value evaluation was removed; TiKV engine required",
         ));
     }
     if is_removed_native_misc(&name) {
@@ -723,6 +746,11 @@ pub(crate) fn eval_func_values_in(
             "native calendar component evaluation was removed; TiKV engine required",
         )));
     }
+    if is_removed_native_temporal_value(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native temporal value evaluation was removed; TiKV engine required",
+        )));
+    }
     if is_removed_native_misc(name) {
         return Some(Err(EvalError::Unsupported(
             "native miscellaneous evaluation was removed; TiKV engine required or function unsupported",
@@ -816,6 +844,11 @@ pub(crate) fn eval_func_values(
     if is_removed_native_calendar_component(name) {
         return Some(Err(EvalError::Unsupported(
             "native calendar component evaluation was removed; TiKV engine required",
+        )));
+    }
+    if is_removed_native_temporal_value(name) {
+        return Some(Err(EvalError::Unsupported(
+            "native temporal value evaluation was removed; TiKV engine required",
         )));
     }
     if is_removed_native_misc(name) {

@@ -208,6 +208,30 @@ pub(super) fn assert_engine_string_length_value(expr: &str, expected: &str) {
     assert_string_length_refusal(expr, expected);
 }
 
+pub(super) const TEMPORAL_VALUE_REMOVED: &str =
+    "Unsupported(\"native temporal value evaluation was removed; TiKV engine required\")";
+
+pub(super) fn assert_temporal_value_refusal(expr: &str, former_expected: &str) {
+    assert_eq!(
+        e(expr),
+        TEMPORAL_VALUE_REMOVED,
+        "AST boundary: {expr}; former {former_expected}"
+    );
+    let chunk = chunk_case(expr, &NoColumns)
+        .map(|value| value.label())
+        .unwrap_or_else(|error| error);
+    assert_eq!(
+        chunk, TEMPORAL_VALUE_REMOVED,
+        "native chunk boundary: {expr}; former {former_expected}"
+    );
+}
+
+pub(super) fn assert_engine_temporal_value(expr: &str, expected: &str) {
+    #[cfg(feature = "tikv-expr")]
+    assert_eq!(engine_e(expr), expected, "TiKV engine: {expr}");
+    assert_temporal_value_refusal(expr, expected);
+}
+
 pub(super) const MISC_REMOVED: &str =
     "Unsupported(\"native miscellaneous evaluation was removed; TiKV engine required or function unsupported\")";
 

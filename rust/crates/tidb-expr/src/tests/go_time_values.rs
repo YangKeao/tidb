@@ -22,6 +22,16 @@ use crate::expression::Expression;
 use crate::scalar_function::ScalarFunction;
 use tidb_ast::CiString;
 
+fn assert_temporal_removed(name: &str, args: Vec<Datum>, former: &str) {
+    assert_eq!(
+        eval_named(name, args.clone()),
+        Err(EvalError::Unsupported(
+            "native temporal value evaluation was removed; TiKV engine required"
+        )),
+        "{name}{args:?}; former {former}"
+    );
+}
+
 fn const_arg(datum: Datum) -> Expression {
     let field_type = match &datum {
         Datum::Null => FieldType::new(C::Null),
@@ -82,18 +92,7 @@ fn go_test_makedate() {
         (vec![Datum::Null, Datum::Null], None),
     ];
     for (args, expected) in cases {
-        let value =
-            eval_named("makedate", args.clone()).unwrap_or_else(|e| panic!("{args:?}: {e:?}"));
-        match expected {
-            Some(text) => {
-                // The label prefixes the kind ("STR:"); strip it for the
-                // source-shaped comparison.
-                let label = value.label();
-                let rendered = label.strip_prefix("STR:").unwrap_or(&label);
-                assert_eq!(rendered, *text, "{args:?}")
-            }
-            None => assert!(value.is_null(), "{args:?}: {value:?}"),
-        }
+        assert_temporal_removed("makedate", args.clone(), expected.unwrap_or("NULL"));
     }
 }
 
@@ -132,18 +131,7 @@ fn go_test_maketime() {
         (vec![i(838), i(50), r(59.999)], Some("838:50:59.999000")),
     ];
     for (args, expected) in cases {
-        let value =
-            eval_named("maketime", args.clone()).unwrap_or_else(|e| panic!("{args:?}: {e:?}"));
-        match expected {
-            Some(text) => {
-                // The label prefixes the kind ("STR:"); strip it for the
-                // source-shaped comparison.
-                let label = value.label();
-                let rendered = label.strip_prefix("STR:").unwrap_or(&label);
-                assert_eq!(rendered, *text, "{args:?}")
-            }
-            None => assert!(value.is_null(), "{args:?}: {value:?}"),
-        }
+        assert_temporal_removed("maketime", args.clone(), expected.unwrap_or("NULL"));
     }
 }
 
@@ -160,18 +148,12 @@ fn go_test_maketime_float_seconds_and_unsigned_hour() {
         (vec![i(1000), i(1), r(59.1)], "838:59:59.000000"),
         (vec![i(-1000), i(1), r(1.23)], "-838:59:59.000000"),
     ] {
-        let value =
-            eval_named("maketime", args.clone()).unwrap_or_else(|e| panic!("{args:?}: {e:?}"));
-        let label = value.label();
-        assert_eq!(
-            label.strip_prefix("STR:").unwrap_or(&label),
-            expected,
-            "{args:?}"
-        );
+        assert_temporal_removed("maketime", args, expected);
     }
 
-    let value = eval_named("maketime", vec![Datum::UInt(u64::MAX), i(0), i(0)])
-        .expect("unsigned hour must evaluate");
-    let label = value.label();
-    assert_eq!(label.strip_prefix("STR:").unwrap_or(&label), "838:59:59");
+    assert_temporal_removed(
+        "maketime",
+        vec![Datum::UInt(u64::MAX), i(0), i(0)],
+        "838:59:59",
+    );
 }

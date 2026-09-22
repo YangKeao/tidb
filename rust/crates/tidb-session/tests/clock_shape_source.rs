@@ -18,6 +18,19 @@ fn assert_string_length_removed(session: &mut Session, sql: &str, former_expecte
     );
 }
 
+fn assert_temporal_value_removed(session: &mut Session, sql: &str, former_expected: &str) {
+    let Err(tidb_executor::DriverError::Exec(tidb_executor::ExecError::Eval(
+        tidb_executor::EvalError::Unsupported(message),
+    ))) = session.run(sql)
+    else {
+        panic!("{sql}: expected temporal contraction; former {former_expected}")
+    };
+    assert_eq!(
+        message, "native temporal value evaluation was removed; TiKV engine required",
+        "{sql}: former {former_expected}"
+    );
+}
+
 fn rows(session: &mut Session, sql: &str) -> String {
     match session.run(sql).unwrap() {
         tidb_session::StmtResult::Rows(rows) => rows
@@ -42,9 +55,10 @@ fn clock_shape_contracts() {
     // its own DATE() projection.
     let curdate = rows(&mut session, "select current_date");
     assert!(curdate.contains("kind: Date"), "{curdate}");
-    assert_eq!(
-        rows(&mut session, "select current_date = date(current_date())"),
-        "Int(1)"
+    assert_temporal_value_removed(
+        &mut session,
+        "select current_date = date(current_date())",
+        "Int(1)",
     );
 
     // Former clock-shape values remain the oracle; the removed outer length

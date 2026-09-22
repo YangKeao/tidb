@@ -49,6 +49,16 @@ impl Columns for UtcClock {
 
 /// Evaluates one builtin through the time family's dispatch seam and unwraps
 /// both the dispatch hit and the evaluation result.
+fn assert_temporal_removed(name: &str, vals: &[Datum], former: Datum) {
+    assert_eq!(
+        crate::func::eval_func_values_in(name, vals, &NoColumns),
+        Some(Err(EvalError::Unsupported(
+            "native temporal value evaluation was removed; TiKV engine required"
+        ))),
+        "{name}; former {former:?}"
+    );
+}
+
 fn dispatched(name: &str, vals: &[Datum], cols: &dyn Columns) -> Datum {
     dispatch(name, vals, cols)
         .expect("the name belongs to the time family")
@@ -91,26 +101,17 @@ fn utc_date_answers_the_utc_statement_date() {
 #[test]
 fn yearweek_source_rows_pin_zero_month_null_and_boundary_years() {
     let string_arg = |text: &str| Datum::new_string(text);
-    assert_eq!(
-        dispatched(
-            "YEARWEEK",
-            &[string_arg("1987-01-01"), Datum::Int(0)],
-            &NoColumns,
-        ),
-        Datum::Int(198_652)
+    assert_temporal_removed(
+        "YEARWEEK",
+        &[string_arg("1987-01-01"), Datum::Int(0)],
+        Datum::Int(198_652),
     );
-    assert_eq!(
-        dispatched(
-            "YEARWEEK",
-            &[string_arg("2000-01-01"), Datum::Int(0)],
-            &NoColumns
-        ),
+    assert_temporal_removed(
+        "YEARWEEK",
+        &[string_arg("2000-01-01"), Datum::Int(0)],
         Datum::Int(199_952),
     );
-    assert_eq!(
-        dispatched("YEARWEEK", &[string_arg("2016-00-05")], &NoColumns),
-        Datum::Null
-    );
+    assert_temporal_removed("YEARWEEK", &[string_arg("2016-00-05")], Datum::Null);
 }
 
 /// GO PORT of `builtin_time_test.go:2130 TestTimestampDiff`'s trailing flag
@@ -465,7 +466,7 @@ fn maketime_integer_second_master_rows_overflow_garbage_and_null_arguments() {
         ("maketime(1000, 1, 1)", "DUR:838:59:59"),
         ("maketime(1000, 59.5, 1)", "NULL"),
     ] {
-        assert_eq!(chunk_e(sql), want, "{sql}");
+        assert_temporal_value_refusal(sql, want);
     }
 }
 
@@ -696,34 +697,15 @@ fn period_invalid_period_reject_the_call() {
         ("PERIOD_DIFF", vec![Datum::Int(12_509), Datum::Int(12_323)]),
     ] {
         let (name, args) = name_args;
-        let error = dispatch(name, &args, &NoColumns)
-            .expect("period function must dispatch")
-            .expect_err("invalid period must fail");
-        let expected = match name {
-            "PERIOD_ADD" => "Incorrect arguments to period_add",
-            "PERIOD_DIFF" => "Incorrect arguments to period_diff",
-            _ => unreachable!("period test name"),
-        };
-        assert_eq!(
-            error,
-            EvalError::IncorrectArguments(expected.to_owned()),
-            "{name}({args:?}) must preserve Go's error text"
+        assert_temporal_removed(
+            name,
+            &args,
+            Datum::new_string("former incorrect-arguments error"),
         );
     }
-    // The nil blocks of TestPeriodAdd/TestPeriodDiff.
-    assert_eq!(
-        dispatched("PERIOD_DIFF", &[Datum::Null, Datum::Int(0)], &NoColumns),
-        Datum::Null
-    );
-    assert_eq!(
-        dispatched("PERIOD_DIFF", &[Datum::Int(0), Datum::Null], &NoColumns),
-        Datum::Null
-    );
-    assert_eq!(
-        dispatched("PERIOD_ADD", &[Datum::Int(0), Datum::Null], &NoColumns),
-        Datum::Null,
-        "both arguments evaluate before TiDB validates the period"
-    );
+    assert_temporal_removed("PERIOD_DIFF", &[Datum::Null, Datum::Int(0)], Datum::Null);
+    assert_temporal_removed("PERIOD_DIFF", &[Datum::Int(0), Datum::Null], Datum::Null);
+    assert_temporal_removed("PERIOD_ADD", &[Datum::Int(0), Datum::Null], Datum::Null);
 }
 
 /// GO PORT of `builtin_time_test.go:3071 TestTimeFormat`'s remaining table

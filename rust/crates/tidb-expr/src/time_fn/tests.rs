@@ -43,6 +43,39 @@ removed_calendar_aliases!(
     last_day,
 );
 
+fn removed_temporal_value(_: &[Datum]) -> Result<Datum, EvalError> {
+    Err(EvalError::Unsupported(
+        "native temporal value evaluation was removed; TiKV engine required",
+    ))
+}
+
+macro_rules! removed_temporal_value_aliases {
+    ($($name:ident),+ $(,)?) => {
+        $(fn $name(vals: &[Datum]) -> Result<Datum, EvalError> {
+            removed_temporal_value(vals)
+        })+
+    };
+}
+
+removed_temporal_value_aliases!(
+    yearweek,
+    time_to_sec,
+    time_diff,
+    maketime,
+    period_add,
+    period_diff,
+);
+
+fn assert_temporal_value_removed(result: Result<Datum, EvalError>, former: Datum) {
+    assert_eq!(
+        result,
+        Err(EvalError::Unsupported(
+            "native temporal value evaluation was removed; TiKV engine required"
+        )),
+        "former oracle: {former:?}"
+    );
+}
+
 fn assert_calendar_removed(result: Result<Datum, EvalError>, former: Datum) {
     assert_eq!(
         result,
@@ -426,14 +459,13 @@ fn go_time_vectors_cover_duration_scale_and_clamp() {
         sec_to_time(&[Datum::Real(86_401.543_21)]).unwrap(),
         Datum::new_string("24:00:01.543210".to_string())
     );
-    assert_eq!(
+    assert_temporal_value_removed(
         maketime(&[
             Datum::Int(1_000),
             Datum::Int(1),
             Datum::Decimal(crate::Decimal::from_literal("1.0")),
-        ])
-        .unwrap(),
-        Datum::new_string("838:59:59.0".to_string())
+        ]),
+        Datum::new_string("838:59:59.0".to_string()),
     );
     assert_eq!(
         time_format(&[
@@ -473,13 +505,9 @@ fn time_to_sec_source_vectors() {
         ("-02:00:05", -7_205),
         ("020005", 7_205),
     ] {
-        assert_eq!(
-            time_to_sec(&[string_datum(input)]).unwrap(),
-            Datum::Int(want),
-            "TIME_TO_SEC({input:?})"
-        );
+        assert_temporal_value_removed(time_to_sec(&[string_datum(input)]), Datum::Int(want));
     }
-    assert_eq!(time_to_sec(&[Datum::Null]).unwrap(), Datum::Null);
+    assert_temporal_value_removed(time_to_sec(&[Datum::Null]), Datum::Null);
 }
 
 /// Exact value-domain rows from `TestSecToTime` at
@@ -533,9 +561,9 @@ fn go_week_vectors_cover_year_boundaries() {
     assert_eq!(week_of_year(2008, 2, 20, 0, false), (2008, 7));
     assert_eq!(week_of_year(2008, 2, 20, 1, false), (2008, 8));
     assert_eq!(week_of_year(2020, 1, 1, 3, true), (2020, 1));
-    assert_eq!(
-        yearweek(&[Datum::new_string("2000-01-01".to_string()), Datum::Int(0)]).unwrap(),
-        Datum::Int(199_952)
+    assert_temporal_value_removed(
+        yearweek(&[Datum::new_string("2000-01-01".to_string()), Datum::Int(0)]),
+        Datum::Int(199_952),
     );
     assert_eq!(
         calendar::date_format(
@@ -1129,25 +1157,23 @@ fn time_diff_source_vectors() {
         (("10:10:10", "10:9:0"), "00:01:10"),
         (("00:00:00.000000", "00:00:00.000001"), "-00:00:00.000001"),
     ] {
-        assert_eq!(
-            time_diff(&[string_datum(left), string_datum(right)]).unwrap(),
+        assert_temporal_value_removed(
+            time_diff(&[string_datum(left), string_datum(right)]),
             Datum::new_string(want.to_string()),
-            "TIMEDIFF({left:?}, {right:?})"
         );
     }
     for (left, right) in [
         ("2016-12-00 12:00:00", "10:9:0"),
         ("2016-12-00 12:00:00", ""),
     ] {
-        assert_eq!(
-            time_diff(&[string_datum(left), string_datum(right)]).unwrap(),
+        assert_temporal_value_removed(
+            time_diff(&[string_datum(left), string_datum(right)]),
             Datum::Null,
-            "TIMEDIFF({left:?}, {right:?})"
         );
     }
-    assert_eq!(
-        time_diff(&[Datum::Null, string_datum("00:00:00")]).unwrap(),
-        Datum::Null
+    assert_temporal_value_removed(
+        time_diff(&[Datum::Null, string_datum("00:00:00")]),
+        Datum::Null,
     );
 }
 
@@ -1253,17 +1279,16 @@ fn period_arithmetic_matches_go_vectors_and_null_ordering() {
         ((7011, 3), 197102),
     ];
     for ((period, months), want) in add_cases {
-        assert_eq!(
-            period_add(&[Datum::Int(period), Datum::Int(months)]).unwrap(),
-            Datum::Int(want)
+        assert_temporal_value_removed(
+            period_add(&[Datum::Int(period), Datum::Int(months)]),
+            Datum::Int(want),
         );
     }
-    assert!(period_add(&[Datum::Int(0), Datum::Int(3)]).is_err());
-    assert_eq!(
-        period_add(&[Datum::Int(0), Datum::Null]).unwrap(),
-        Datum::Null,
-        "both arguments are evaluated before TiDB validates the period"
+    assert_temporal_value_removed(
+        period_add(&[Datum::Int(0), Datum::Int(3)]),
+        string_datum("former incorrect-arguments error"),
     );
+    assert_temporal_value_removed(period_add(&[Datum::Int(0), Datum::Null]), Datum::Null);
 
     let diff_cases = [
         ((201611, 201611), 0),
@@ -1275,28 +1300,28 @@ fn period_arithmetic_matches_go_vectors_and_null_ordering() {
         ((197102, 7011), 3),
     ];
     for ((period1, period2), want) in diff_cases {
-        assert_eq!(
-            period_diff(&[Datum::Int(period1), Datum::Int(period2)]).unwrap(),
-            Datum::Int(want)
+        assert_temporal_value_removed(
+            period_diff(&[Datum::Int(period1), Datum::Int(period2)]),
+            Datum::Int(want),
         );
     }
-    assert!(period_diff(&[Datum::Int(0), Datum::Int(201611)]).is_err());
-    assert_eq!(
-        period_diff(&[Datum::Null, Datum::Int(201611)]).unwrap(),
-        Datum::Null
+    assert_temporal_value_removed(
+        period_diff(&[Datum::Int(0), Datum::Int(201611)]),
+        string_datum("former incorrect-arguments error"),
     );
+    assert_temporal_value_removed(period_diff(&[Datum::Null, Datum::Int(201611)]), Datum::Null);
 }
 
 #[test]
 fn period_arithmetic_retains_go_unsigned_wrapping() {
     // Direct `goeval` probes for the Go uint64 helper / int64 conversion
     // boundary in `builtinPeriodAddSig` and `builtinPeriodDiffSig`.
-    assert_eq!(
-        period_add(&[Datum::Int(i64::MAX), Datum::Int(1)]).unwrap(),
-        Datum::Int(i64::MIN)
+    assert_temporal_value_removed(
+        period_add(&[Datum::Int(i64::MAX), Datum::Int(1)]),
+        Datum::Int(i64::MIN),
     );
-    assert_eq!(
-        period_diff(&[Datum::Int(i64::MAX), Datum::Int(197001)]).unwrap(),
-        Datum::Int(1_106_804_644_422_549_462)
+    assert_temporal_value_removed(
+        period_diff(&[Datum::Int(i64::MAX), Datum::Int(197001)]),
+        Datum::Int(1_106_804_644_422_549_462),
     );
 }

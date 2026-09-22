@@ -803,6 +803,7 @@ fn requires_engine_statement(sql: &str) -> bool {
             || removed_native::requires_string2_engine(sql)
             || removed_native::requires_string_length_engine(sql)
             || removed_native::requires_calendar_component_engine(sql)
+            || removed_native::requires_temporal_value_engine(sql)
             || removed_native::requires_inet_engine(sql)
             || removed_native::requires_radix_engine(sql)
             || removed_native::requires_string_aux_engine(sql))
@@ -813,6 +814,7 @@ fn is_engine_shape_contraction(sql: &str) -> bool {
         || removed_native::is_string_aux_shape_contraction(sql)
         || removed_native::is_string_length_shape_contraction(sql)
         || removed_native::is_calendar_component_shape_contraction(sql)
+        || removed_native::is_temporal_value_shape_contraction(sql)
     {
         return true;
     }
@@ -949,6 +951,38 @@ fn admitted_calendar_components_execute_tikv_rows_with_independent_values() {
             ),
             Datum::Int(11),
         ]]
+    );
+    assert!(session.tikv_expression_rows() > before);
+}
+
+#[test]
+fn admitted_temporal_values_execute_tikv_rows_with_independent_values() {
+    let mut session = Session::new();
+    session.set_tikv_expression_backend(Some(tidb_session::TikvExpressionBackend::Copying));
+    let sql = "select date('2024-03-15 12:34:56'), microsecond('10:10:10.123456'), time('2003-12-31 01:02:03'), yearweek('2000-01-01',0), time_to_sec('22:23:00'), makedate(71,1), maketime(12,15,30), period_add(201611,2), period_diff(201701,201611), timediff('10:10:10','10:09:00')";
+    assert!(requires_engine_statement(sql));
+    let before = session.tikv_expression_rows();
+    let result = session
+        .run(sql)
+        .unwrap_or_else(|error| panic!("required temporal statement failed: {error:?}"));
+    let tidb_session::StmtResult::Rows(rows) = result else {
+        panic!("required temporal statement returned no rows")
+    };
+    let labels = rows[0].iter().map(Datum::label).collect::<Vec<_>>();
+    assert_eq!(
+        labels,
+        [
+            "STR:2024-03-15",
+            "INT:123456",
+            "DUR:01:02:03",
+            "INT:199952",
+            "INT:80580",
+            "STR:1971-01-01",
+            "DUR:12:15:30",
+            "INT:201701",
+            "INT:2",
+            "DUR:00:01:10",
+        ]
     );
     assert!(session.tikv_expression_rows() > before);
 }

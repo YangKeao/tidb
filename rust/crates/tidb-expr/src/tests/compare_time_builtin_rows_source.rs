@@ -188,22 +188,19 @@ fn test_compare_builtin_row_constructor_rows() {
 fn test_time_builtin_date_year_makedate_literal_rows() {
     // integration_test.go:2902-2904 -- DATE keeps the calendar prefix only,
     // zero dates and garbage go NULL.
-    assert_eq!(
-        eval_row(
-            r#"date("2019-09-12"), date("2019-09-12 12:12:09"), date("2019-09-12 12:12:09.121212")"#
-        ),
-        "STR:2019-09-12 STR:2019-09-12 STR:2019-09-12"
-    );
-    assert_eq!(
-        eval_row(
-            r#"date("0000-00-00"), date("0000-00-00 12:12:09"), date("0000-00-00 00:00:00.121212")"#
-        ),
-        "NULL NULL NULL"
-    );
-    assert_eq!(
-        eval_row(r#"date("aa"), date(12.1), date("")"#),
-        "NULL NULL NULL"
-    );
+    for (expr, former) in [
+        (r#"date("2019-09-12")"#, "STR:2019-09-12"),
+        (r#"date("2019-09-12 12:12:09")"#, "STR:2019-09-12"),
+        (r#"date("2019-09-12 12:12:09.121212")"#, "STR:2019-09-12"),
+        (r#"date("0000-00-00")"#, "NULL"),
+        (r#"date("0000-00-00 12:12:09")"#, "NULL"),
+        (r#"date("0000-00-00 00:00:00.121212")"#, "NULL"),
+        (r#"date("aa")"#, "NULL"),
+        ("date(12.1)", "NULL"),
+        (r#"date("")"#, "NULL"),
+    ] {
+        assert_temporal_value_refusal(expr, former);
+    }
 
     // integration_test.go:2907-2912 -- YEAR extraction; zero months/days keep
     // the year, overflow lengths answer NULL.
@@ -222,7 +219,11 @@ fn test_time_builtin_date_year_makedate_literal_rows() {
 
     // integration_test.go:2897-2899 -- MAKEDATE(year, dayofyear); day 1 lands
     // on Jan 1 and years 1..69 read as 2001..2069 per MySQL.
-    assert_eq!(chunk_e("makedate(1, 1)"), "STR:2001-01-01");
-    assert_eq!(chunk_e("makedate(2011, 41)"), "STR:2011-02-10");
-    assert_eq!(chunk_e("makedate(null, null)"), "NULL");
+    for (expr, former) in [
+        ("makedate(1, 1)", "STR:2001-01-01"),
+        ("makedate(2011, 41)", "STR:2011-02-10"),
+        ("makedate(null, null)", "NULL"),
+    ] {
+        assert_temporal_value_refusal(expr, former);
+    }
 }

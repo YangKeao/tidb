@@ -368,7 +368,7 @@ mod time_source_tests {
         Expression::Constant(Constant::new(Datum::new_string(value.to_owned()), ft))
     }
 
-    fn chunk_time(value: &str) -> Datum {
+    fn chunk_time(value: &str) -> Result<Datum, EvalError> {
         let expression = Expr::Func {
             name: "time".to_owned(),
             args: vec![Expr::String(value.to_owned())],
@@ -377,7 +377,7 @@ mod time_source_tests {
         let rewritten = crate::rewriter::rewrite_expr(&expression).unwrap();
         let mut chunk = Chunk::new_empty(&[]);
         chunk.set_num_virtual_rows(1);
-        rewritten.eval(&NoColumns, chunk.get_row(0)).unwrap()
+        rewritten.eval(&NoColumns, chunk.get_row(0))
     }
 
     /// Exact metadata half of Go `TestTime`: the four positive spellings,
@@ -398,13 +398,16 @@ mod time_source_tests {
             assert!(result.has_flag(tidb_datatype::FieldTypeFlags::BINARY));
             assert_eq!(result.decimal(), fsp);
             assert_eq!(result.flen(), flen);
-            let Datum::Duration(duration) = chunk_time(value) else {
-                panic!("TIME must evaluate into its declared duration domain")
-            };
-            let expected = value
+            let former = value
                 .split_once(char::is_whitespace)
                 .map_or(value, |(_, time)| time);
-            assert_eq!(duration.to_string(), expected);
+            assert_eq!(
+                chunk_time(value),
+                Err(EvalError::Unsupported(
+                    "native temporal value evaluation was removed; TiKV engine required"
+                )),
+                "former duration oracle: {former}"
+            );
         }
 
         let zero = Expression::Constant(Constant::new(

@@ -22,6 +22,8 @@ pub const STRING_LENGTH_REMOVED: &str =
     "native string length evaluation was removed; TiKV engine required";
 pub const CALENDAR_COMPONENT_REMOVED: &str =
     "native calendar component evaluation was removed; TiKV engine required";
+pub const TEMPORAL_VALUE_REMOVED: &str =
+    "native temporal value evaluation was removed; TiKV engine required";
 pub const COMPARE2_REMOVED: &str =
     "native LEAST/GREATEST/INTERVAL evaluation was removed; TiKV engine required";
 pub const MISC_REMOVED: &str =
@@ -167,6 +169,36 @@ pub fn requires_calendar_component_engine(sql: &str) -> bool {
         "MONTHNAME",
         "DAYNAME",
         "LAST_DAY",
+    ]
+    .iter()
+    .any(|name| collector.names.contains(*name))
+}
+
+pub fn is_temporal_value_shape_contraction(sql: &str) -> bool {
+    matches!(
+        sql.trim().to_ascii_lowercase().as_str(),
+        "period_add(9223372036854775807,1)" | "select period_add(9223372036854775807,1)"
+    )
+}
+
+pub fn requires_temporal_value_engine(sql: &str) -> bool {
+    if is_temporal_value_shape_contraction(sql) {
+        return false;
+    }
+    let Some(collector) = collect_functions(sql) else {
+        return false;
+    };
+    [
+        "DATE",
+        "MICROSECOND",
+        "TIME",
+        "YEARWEEK",
+        "TIME_TO_SEC",
+        "MAKEDATE",
+        "MAKETIME",
+        "PERIOD_ADD",
+        "PERIOD_DIFF",
+        "TIMEDIFF",
     ]
     .iter()
     .any(|name| collector.names.contains(*name))
@@ -358,6 +390,21 @@ pub fn is_string_aux_shape_contraction(sql: &str) -> bool {
 }
 
 fn removed_marker_for_name(name: &str, nonbinary_find_in_set: bool) -> Option<&'static str> {
+    if matches!(
+        name,
+        "DATE"
+            | "MICROSECOND"
+            | "TIME"
+            | "YEARWEEK"
+            | "TIME_TO_SEC"
+            | "MAKEDATE"
+            | "MAKETIME"
+            | "PERIOD_ADD"
+            | "PERIOD_DIFF"
+            | "TIMEDIFF"
+    ) {
+        return Some(TEMPORAL_VALUE_REMOVED);
+    }
     if matches!(
         name,
         "MONTH"

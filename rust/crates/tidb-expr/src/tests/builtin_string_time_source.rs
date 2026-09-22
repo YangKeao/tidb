@@ -1655,7 +1655,7 @@ fn test_date_delimiter_table() {
             '\\' => r"date('2011\\12\\13')".to_string(),
             other => format!("date('2011{other}12{other}13')"),
         };
-        assert_eq!(e(&expr), "STR:2011-12-13", "{expr}");
+        assert_temporal_value_refusal(&expr, "STR:2011-12-13");
     }
     for (expr, want) in [
         ("date('20111213')", "STR:2011-12-13"),
@@ -1673,8 +1673,7 @@ fn test_date_delimiter_table() {
         ("date('2011T12T13')", "NULL"),
         ("date(NULL)", "NULL"),
     ] {
-        assert_eq!(chunk_e(expr), want, "{expr}");
-        assert_eq!(e(expr), want, "{expr}");
+        assert_temporal_value_refusal(expr, want);
     }
 }
 
@@ -1733,17 +1732,18 @@ fn test_date_zero_value_mode_rows() {
         "2007-00-03",
         "2007-02-00",
     ] {
+        let former = format!(
+            "STR:{}",
+            if input.len() > 10 {
+                &input[..10]
+            } else {
+                input
+            }
+        );
         assert_eq!(
             chunk_e_with(&format!("date('{input}')"), &relaxed),
-            format!(
-                "STR:{}",
-                if input.len() > 10 {
-                    &input[..10]
-                } else {
-                    input
-                }
-            ),
-            "DATE({input:?}) with zero-date modes disabled"
+            TEMPORAL_VALUE_REMOVED,
+            "DATE({input:?}) with zero-date modes disabled; former {former}"
         );
     }
 
@@ -1751,7 +1751,7 @@ fn test_date_zero_value_mode_rows() {
     for input in ["0000-00-00", "0000-00-00 00:00:00"] {
         assert_eq!(
             chunk_e_with(&format!("date('{input}')"), &no_zero_date),
-            "NULL",
+            TEMPORAL_VALUE_REMOVED,
             "DATE({input:?}) with zero-date modes enabled"
         );
     }
@@ -1760,28 +1760,18 @@ fn test_date_zero_value_mode_rows() {
     for input in ["2007-00-03", "2007-02-00"] {
         assert_eq!(
             chunk_e_with(&format!("date('{input}')"), &no_zero_in_date),
-            "NULL",
+            TEMPORAL_VALUE_REMOVED,
             "DATE({input:?}) with no-zero-in-date enabled"
         );
     }
     assert!(
-        no_zero_date
-            .warnings
-            .borrow()
-            .iter()
-            .all(|(code, _)| *code == 1292),
-        "NO_ZERO_DATE should report temporal truncation as warning"
+        no_zero_date.warnings.borrow().is_empty(),
+        "fail-closed DATE must not partially emit former warnings"
     );
-    assert_eq!(no_zero_date.warnings.borrow().len(), 2);
     assert!(
-        no_zero_in_date
-            .warnings
-            .borrow()
-            .iter()
-            .all(|(code, _)| *code == 1292),
-        "NO_ZERO_IN_DATE should report temporal truncation as warning"
+        no_zero_in_date.warnings.borrow().is_empty(),
+        "fail-closed DATE must not partially emit former warnings"
     );
-    assert_eq!(no_zero_in_date.warnings.borrow().len(), 2);
 }
 
 /// Go `pkg/expression/builtin_time_test.go:650 TestClock`. HOUR, MINUTE,
@@ -1799,39 +1789,36 @@ fn test_clock_parts_and_invalid_time_warning() {
         assert_eq!(e(&format!("hour({text})")), format!("INT:{hour}"));
         assert_eq!(e(&format!("minute({text})")), format!("INT:{minute}"));
         assert_eq!(e(&format!("second({text})")), format!("INT:{second}"));
-        assert_eq!(e(&format!("microsecond({text})")), format!("INT:{micros}"));
-        // TIME keeps the duration PART only, so a datetime-prefixed input
-        // loses its date side in both tiers.
+        assert_temporal_value_refusal(&format!("microsecond({text})"), &format!("INT:{micros}"));
         let dur_part = input.rsplit(' ').next().expect("nonempty");
-        assert_eq!(e(&format!("time({text})")), format!("STR:{dur_part}"));
-        assert_eq!(chunk_e(&format!("time({text})")), format!("DUR:{dur_part}"));
+        assert_temporal_value_refusal(&format!("time({text})"), &format!("DUR:{dur_part}"));
     }
-    for func in ["hour", "minute", "second", "microsecond", "time"] {
+    for func in ["hour", "minute", "second"] {
         assert_eq!(e(&format!("{func}(NULL)")), "NULL");
+    }
+    for func in ["microsecond", "time"] {
+        assert_temporal_value_refusal(&format!("{func}(NULL)"), "NULL");
     }
     // The single errTbl entry: hour-family members surface no error datum and
     // TIME additionally bumps the statement warning count by exactly one.
     let broken = "'2011-11-11 10:10:10.11.12'";
-    for func in ["hour", "minute", "second", "microsecond"] {
+    for func in ["hour", "minute", "second"] {
         assert_eq!(e(&format!("{func}({broken})")), "NULL");
     }
+    assert_temporal_value_refusal(&format!("microsecond({broken})"), "NULL");
     let clock = UtcClockCtx::new(0);
-    let got = time_fn::dispatch(
-        "TIME",
-        &[Datum::new_string("2011-11-11 10:10:10.11.12")],
-        &clock,
-    )
-    .unwrap()
-    .unwrap();
-    // The source leaves the zero value standing under truncate-as-warning.
-    assert_eq!(got_text(&got), "00:00:00");
-    let drained = clock.drain();
     assert_eq!(
-        drained.len(),
-        1,
-        "TIME must record exactly one truncation warning"
+        crate::func::eval_func_values_in(
+            "TIME",
+            &[Datum::new_string("2011-11-11 10:10:10.11.12")],
+            &clock,
+        ),
+        Some(Err(EvalError::Unsupported(
+            "native temporal value evaluation was removed; TiKV engine required"
+        ))),
+        "former STR:00:00:00 plus warning 1292"
     );
-    assert_eq!(drained[0].0, 1292_u16);
+    assert!(clock.drain().is_empty());
 }
 
 /// Go `pkg/expression/builtin_time_test.go:828 TestTime`. The five value rows
@@ -1866,8 +1853,7 @@ fn test_time_values_and_result_type() {
         } else {
             panic!("{sql} must rewrite to a scalar function");
         }
-        assert_eq!(chunk_e(&sql), format!("DUR:{want}"), "{sql}");
-        assert_eq!(e(&sql), format!("STR:{want}"), "{sql}");
+        assert_temporal_value_refusal(&sql, &format!("DUR:{want}"));
     }
 }
 

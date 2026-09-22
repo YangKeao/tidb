@@ -2376,12 +2376,15 @@ mod tests {
             .unwrap();
             assert!(compiled.static_type().is_some(), "outer metadata: {sql}");
             for replay_context in [&context, &PreparedValues(replay)] {
+                let removed = if sql.starts_with("TIME(") {
+                    "native temporal value evaluation was removed; TiKV engine required"
+                } else {
+                    "native packet-limited string evaluation was removed; function unsupported"
+                };
                 assert_eq!(
                     crate::eval_expression_once(&compiled, replay_context),
-                    Err(EvalError::Unsupported(
-                        "native packet-limited string evaluation was removed; function unsupported"
-                    )),
-                    "deleted CONCAT must refuse both prepare and replay: {sql}"
+                    Err(EvalError::Unsupported(removed)),
+                    "deleted outer family must refuse both prepare and replay: {sql}"
                 );
             }
         }

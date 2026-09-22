@@ -418,6 +418,17 @@ remain in the workspace.
       admitted constant length shapes were initially masked as contractions;
       the harness now routes them through Copying with positive row accounting,
       leaving only five exact lowerer-declined statements as contractions.
+- [x] Twenty-second physical-deletion tranche: remove the native DATE,
+      MICROSECOND, TIME, YEARWEEK, TIME_TO_SEC, TIMEDIFF, MAKEDATE, MAKETIME,
+      PERIOD_ADD and PERIOD_DIFF dispatch arms/kernels plus private TIMEDIFF
+      and period helpers (401 production lines removed). A single independent
+      Copying receipt proves all ten values and positive TiKV rows. The exact
+      `period_add(9223372036854775807,1)` shape contracts because TiDB's former
+      result is `i64::MIN` while TiKV returns 27201459512. Library is 1167 / 99
+      ignored; external is 77; expression/query differential are 3/4; session
+      Copying is 334 / 4 carried failures and feature-off is 332 / the same 4.
+      Static/runtime and lint pass. Broad replay is Native 192/9824 and Copying
+      167/10253 with 416271 engine rows and zero borrowed rows.
 - [x] Twenty-first physical-deletion tranche: remove the native MONTH,
       DAY/DAYOFMONTH, DAYOFWEEK, DAYOFYEAR, WEEKDAY, QUARTER, WEEKOFYEAR,
       MONTHNAME, DAYNAME and LAST_DAY dispatch arms, kernels and private

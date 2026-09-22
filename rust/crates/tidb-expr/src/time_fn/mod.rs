@@ -30,7 +30,7 @@ pub(crate) mod duration_parse;
 pub(crate) mod extract;
 mod session_tz;
 
-use self::calendar::{civil_from_days, days_from_civil, parse_date_ymd, week_of_year};
+use self::calendar::{civil_from_days, parse_date_ymd, week_of_year};
 use crate::coerce::coerce_str;
 use crate::{Columns, Datum, EvalError};
 
@@ -54,25 +54,15 @@ pub(crate) fn dispatch(
         "CURTIME" => current_time(vals, "curtime", cols),
         "CURRENT_TIME" => current_time(vals, "current_time", cols),
         "UTC_TIME" => utc_time(vals, cols),
-        "DATE" => date(vals, cols),
-        "MICROSECOND" => microsecond(vals),
-        "TIME" => time(vals, cols),
         "WEEK" => week(vals, cols.default_week_format()),
         "TIDB_PARSE_TSO_LOGICAL" => tidb_parse_tso_logical(vals),
         "TIDB_BOUNDED_STALENESS" => tidb_bounded_staleness(vals, cols),
         "TIDB_CURRENT_TSO" => current_tso(vals, cols),
         "GET_FORMAT" => get_format_value(vals),
-        "YEARWEEK" => yearweek(vals),
-        "TIME_TO_SEC" => time_to_sec(vals),
         "SEC_TO_TIME" => sec_to_time(vals),
-        "MAKEDATE" => makedate(vals),
-        "MAKETIME" => maketime(vals),
-        "PERIOD_ADD" => period_add(vals),
-        "PERIOD_DIFF" => period_diff(vals),
         "TIME_FORMAT" => time_format(vals),
         "STR_TO_DATE" => calendar::str_to_date(vals, cols),
         "FROM_DAYS" => calendar::from_days(vals),
-        "TIMEDIFF" => time_diff(vals),
         "CONVERT_TZ" => convert_tz::convert_tz(vals),
         "FROM_UNIXTIME" => session_tz::from_unixtime(vals, cols),
         "UNIX_TIMESTAMP" => session_tz::unix_timestamp(vals, cols),
@@ -154,45 +144,6 @@ fn tidb_bounded_staleness(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, E
         .set_fsp(3)
         .map_err(|_| EvalError::Unsupported("invalid bounded-staleness result precision"))?;
     Ok(Datum::Time(result))
-}
-
-/// `DATE(expr)`, after Go's declared `ETDatetime` argument cast has produced
-/// a typed temporal value. The function applies its own zero-date SQL-mode
-/// checks, clears the clock, and changes the result domain to `DATE`.
-fn date(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    let Datum::Time(mut value) = value else {
-        return if matches!(value, Datum::Null) {
-            Ok(Datum::Null)
-        } else {
-            Err(EvalError::Unsupported(
-                "DATE argument reached the signature without its ETDatetime cast",
-            ))
-        };
-    };
-
-    let modes = cols.date_modes();
-    if (value.is_zero() && modes.no_zero_date)
-        || (!value.is_zero() && value.invalid_zero() && modes.no_zero_in_date)
-    {
-        cols.handle_truncate(&format!("Incorrect datetime value: '{value}'"))?;
-        return Ok(Datum::Null);
-    }
-
-    let core = value.core_time();
-    value.set_core_time(tidb_datatype::CoreTime::from_date(
-        u16::try_from(core.year()).expect("a typed temporal value has a nonnegative year"),
-        core.month(),
-        core.day(),
-        0,
-        0,
-        0,
-        0,
-    ));
-    value.set_kind(tidb_datatype::TimeType::Date);
-    Ok(Datum::Time(value))
 }
 
 /// `builtinNowWithArgSig` / `builtinNowWithoutArgSig`: local
@@ -281,47 +232,6 @@ fn utc_time(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
         fsp.unwrap_or(0),
         fsp.is_some(),
     )))
-}
-
-/// `builtinMicroSecondSig.evalInt`: read the fractional component of the
-/// ETDuration argument. Go deliberately suppresses a duration-cast error and
-/// returns NULL, unlike `TIME()` which reports the same truncation through the
-/// statement context.
-fn microsecond(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(value) = coerce_str(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    let fsp = duration_parse::get_fsp(&value);
-    Ok(match duration_parse::parse_duration(&value, fsp) {
-        Ok(duration) => Datum::Int(duration.micro_second()),
-        Err(_) => Datum::Null,
-    })
-}
-
-/// `builtinTimeSig.evalDuration`: parse the string as a TiDB duration while
-/// preserving its written FSP. `ErrTruncatedWrongVal` is a statement warning
-/// for a SELECT and leaves Go's zero-value duration as the result.
-fn time(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(value) = coerce_str(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    let fsp = duration_parse::get_fsp(&value);
-    match duration_parse::parse_duration(&value, fsp) {
-        Ok(duration) => Ok(Datum::new_string(duration.format())),
-        Err(_) => {
-            cols.handle_truncate(&format!(
-                "Truncated incorrect time value: '{}'",
-                tidb_datatype::warning_subject_byte_cap(&value)
-            ))?;
-            Ok(Datum::new_string("00:00:00".to_owned()))
-        }
-    }
 }
 
 fn no_clock_err() -> EvalError {
@@ -525,29 +435,6 @@ pub(crate) fn week(vals: &[Datum], default_week_format: i64) -> Result<Datum, Ev
     ))
 }
 
-/// `builtinYearWeekWithModeSig` / `builtinYearWeekWithoutModeSig` in
-/// `pkg/expression/builtin_time.go`.
-fn yearweek(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if !(1..=2).contains(&vals.len()) {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(date) = coerce_str(&vals[0])?.and_then(|s| parse_date_ymd(&s)) else {
-        return Ok(Datum::Null);
-    };
-    let mode = if vals.len() == 2 {
-        int_arg(&vals[1])?.unwrap_or(0)
-    } else {
-        0
-    };
-    let (year, number) = week_of_year(date.0, date.1, date.2, mode, true);
-    let result = year * 100 + number;
-    Ok(Datum::Int(if result < 0 {
-        i64::from(u32::MAX)
-    } else {
-        result
-    }))
-}
-
 /// Go `RoundFloat` + the int cast (`pkg/types/helper.go:30`,
 /// `convert.go:109-122`): round half-to-even, then truncate the (already
 /// integral) value.
@@ -690,134 +577,8 @@ fn duration(value: &Datum) -> Result<Option<(i64, String)>, EvalError> {
     )))
 }
 
-enum TimeDiffValue {
-    DateTime { micros: i64, fsp: usize },
-    Duration { micros: i64, fsp: usize },
-}
-
-/// `TIMEDIFF(expr1, expr2)`, covering the string-valued signatures exercised
-/// by `builtin_time_test.go`.  Go selects among typed Time/Duration
-/// signatures before evaluation; this value-only port keeps that distinction
-/// by rejecting a mixed date-time/duration pair, while returning the canonical
-/// duration string for matching pairs.  Zero month/day components are
-/// accepted for the same `IgnoreZeroInDate` source rows and are interpreted
-/// by the source-compatible `calcDaynr` arithmetic.
-fn time_diff(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 2 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(left) = parse_time_diff_value(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    let Some(right) = parse_time_diff_value(&vals[1])? else {
-        return Ok(Datum::Null);
-    };
-    let (left_micros, right_micros, fsp) = match (left, right) {
-        (
-            TimeDiffValue::DateTime {
-                micros: left,
-                fsp: left_fsp,
-            },
-            TimeDiffValue::DateTime {
-                micros: right,
-                fsp: right_fsp,
-            },
-        )
-        | (
-            TimeDiffValue::Duration {
-                micros: left,
-                fsp: left_fsp,
-            },
-            TimeDiffValue::Duration {
-                micros: right,
-                fsp: right_fsp,
-            },
-        ) => (left, right, left_fsp.max(right_fsp)),
-        _ => return Ok(Datum::Null),
-    };
-    Ok(Datum::new_string(format_time_diff(
-        truncate_time_diff(left_micros.saturating_sub(right_micros)),
-        fsp,
-    )))
-}
-
-fn parse_time_diff_value(value: &Datum) -> Result<Option<TimeDiffValue>, EvalError> {
-    let Some(text) = coerce_str(value)? else {
-        return Ok(None);
-    };
-    let text = text.trim();
-    if text.is_empty() {
-        return Ok(None);
-    }
-    if let Some((date, time)) = text.split_once(char::is_whitespace) {
-        return Ok(parse_datetime_diff_value(date, time.trim()));
-    }
-    if text.contains(':') {
-        return Ok(parse_duration_diff_value(text));
-    }
-    // A date-only value is a datetime at midnight.  Do not mistake a
-    // colon-separated duration for a date (`10:9:0` was handled above).
-    Ok(parse_datetime_diff_value(text, "00:00:00"))
-}
-
-fn parse_datetime_diff_value(date: &str, time: &str) -> Option<TimeDiffValue> {
-    let parts = calendar::split_numeric_components_for_time_diff(date)?;
-    let year = calendar::expand_year_for_time_diff(parts[0].0, parts[0].1);
-    let month = parts[1].0;
-    let day = parts[2].0;
-    if month > 12 || day > 31 {
-        return None;
-    }
-    if month != 0 && day > calendar::days_in_month_for_time_diff(year, month) {
-        return None;
-    }
-    let (hour, minute, second, fraction) = calendar::parse_time_with_fraction(time)?;
-    let fsp = fraction.len();
-    let microsecond = fraction.parse::<u32>().ok().unwrap_or(0) * 10u32.pow(6 - fsp as u32);
-    let micros = calendar::time_diff_daynr(year, month, day)
-        .checked_mul(86_400_000_000)?
-        .checked_add(i64::from(hour) * 3_600_000_000)?
-        .checked_add(i64::from(minute) * 60_000_000)?
-        .checked_add(i64::from(second) * 1_000_000)?
-        .checked_add(i64::from(microsecond))?;
-    Some(TimeDiffValue::DateTime { micros, fsp })
-}
-
-const MAX_TIME_DIFF_MICROS: i64 = (838 * 3_600 + 59 * 60 + 59) * 1_000_000;
-
-fn truncate_time_diff(micros: i64) -> i64 {
-    micros.clamp(-MAX_TIME_DIFF_MICROS, MAX_TIME_DIFF_MICROS)
-}
-
-fn parse_duration_diff_value(text: &str) -> Option<TimeDiffValue> {
-    let (negative, text) = text
-        .strip_prefix('-')
-        .map_or((false, text), |text| (true, text));
-    let mut fields = text.splitn(3, ':');
-    let hour = fields.next()?.parse::<i64>().ok()?;
-    let minute = fields.next()?.parse::<u32>().ok()?;
-    let second_part = fields.next()?;
-    let (second_part, fraction) = second_part.split_once('.').unwrap_or((second_part, ""));
-    let second = second_part.parse::<u32>().ok()?;
-    if minute > 59 || second > 59 || fraction.len() > 6 || !fraction.is_ascii() {
-        return None;
-    }
-    let microsecond = if fraction.is_empty() {
-        0
-    } else {
-        fraction.parse::<u32>().ok()? * 10u32.pow(6 - fraction.len() as u32)
-    };
-    let micros = hour
-        .checked_mul(3_600_000_000)?
-        .checked_add(i64::from(minute) * 60_000_000)?
-        .checked_add(i64::from(second) * 1_000_000)?
-        .checked_add(i64::from(microsecond))?;
-    Some(TimeDiffValue::Duration {
-        micros: if negative { -micros } else { micros },
-        fsp: fraction.len(),
-    })
-}
-
+/// Canonical duration rendering shared by the datatype bridge and retained
+/// temporal functions; this does not dispatch a SQL builtin.
 fn format_time_diff(micros: i64, fsp: usize) -> String {
     let sign = if micros < 0 { "-" } else { "" };
     let absolute = micros.unsigned_abs();
@@ -833,14 +594,6 @@ fn format_time_diff(micros: i64, fsp: usize) -> String {
         "{sign}{hours:02}:{minutes:02}:{seconds:02}.{fraction:0width$}",
         width = fsp
     )
-}
-
-/// `builtinTimeToSecSig` in `pkg/expression/builtin_time.go`.
-fn time_to_sec(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    Ok(duration(&vals[0])?.map_or(Datum::Null, |(seconds, _)| Datum::Int(seconds)))
 }
 
 /// `builtinSecToTimeSig` in `pkg/expression/builtin_time.go`.
@@ -937,157 +690,6 @@ fn format_duration(seconds: f64, fsp: usize) -> String {
         }
     }
     format!("{sign}{hour:02}:{minute:02}:{second:02}.{fraction:0fsp$}")
-}
-
-/// `builtinMakeDateSig` in `pkg/expression/builtin_time.go`.
-fn makedate(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 2 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let (Some(mut year), Some(day)) = (int_arg(&vals[0])?, int_arg(&vals[1])?) else {
-        return Ok(Datum::Null);
-    };
-    if day <= 0 || !(0..=9999).contains(&year) {
-        return Ok(Datum::Null);
-    }
-    if year < 70 {
-        year += 2000;
-    } else if year < 100 {
-        year += 1900;
-    }
-    let (result_y, result_m, result_d) = civil_from_days(days_from_civil(year, 1, 1) + day - 1);
-    if !(1..=9999).contains(&result_y) {
-        return Ok(Datum::Null);
-    }
-    Ok(Datum::new_string(format!(
-        "{result_y:04}-{result_m:02}-{result_d:02}"
-    )))
-}
-
-/// `builtinMakeTimeSig` in `pkg/expression/builtin_time.go`.
-fn maketime(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 3 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let (Some(mut hour), Some(minute), Some(second)) = (
-        int_arg(&vals[0])?,
-        int_arg(&vals[1])?,
-        number_arg(&vals[2])?,
-    ) else {
-        return Ok(Datum::Null);
-    };
-    if !(0..60).contains(&minute) || !(0.0..60.0).contains(&second) {
-        return Ok(Datum::Null);
-    }
-    // Go's `makeTime` checks the argument FieldType's UnsignedFlag before it
-    // interprets the signed value.  A UInt datum carrying a wrapped negative
-    // hour (for example `CAST(-1 AS UNSIGNED)`) therefore clamps to the
-    // positive TIME limit instead of producing a negative duration.  The
-    // value-level evaluator has no separate FieldType parameter, so Datum::UInt
-    // is the equivalent type signal here.
-    let hour_unsigned = matches!(vals[0], Datum::UInt(_));
-    let mut overflow = false;
-    if hour < 0 && hour_unsigned {
-        hour = 838;
-        overflow = true;
-    }
-    let negative = hour < 0;
-    let hour_abs = hour.unsigned_abs();
-    if hour_abs > 838 || (hour_abs == 838 && minute == 59 && second > 59.0) {
-        overflow = true;
-    }
-    let total = if overflow {
-        838.0 * 3600.0 + 59.0 * 60.0 + 59.0
-    } else {
-        hour_abs as f64 * 3600.0 + minute as f64 * 60.0 + second
-    };
-    Ok(Datum::new_string(format_duration(
-        if negative { -total } else { total },
-        duration_precision(&vals[2])?,
-    )))
-}
-
-/// `PERIOD_ADD(period, months)`, ported from `builtinPeriodAddSig.evalInt`
-/// in `pkg/expression/builtin_time.go`.
-///
-/// A period is an integer `YYMM` or `YYYYMM`, not a date.  TiDB evaluates
-/// both ETInt arguments before it validates the period: consequently an
-/// invalid period paired with `NULL` months is `NULL`, not an error.  Keep
-/// that ordering rather than validating the first argument eagerly.  The Go
-/// helpers operate on `uint64`, so their arithmetic (including conversion
-/// back through `int64`) deliberately wraps; the wrapping methods below are
-/// the structural Rust translation, not overflow recovery.
-fn period_add(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 2 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let (Some(period), Some(months)) = (int_arg(&vals[0])?, int_arg(&vals[1])?) else {
-        return Ok(Datum::Null);
-    };
-    if !valid_period(period) {
-        // TiDB returns ER_WRONG_ARGUMENTS (1210). EvalError carries the
-        // source-facing message but not the server code prefix.
-        return Err(EvalError::IncorrectArguments(
-            "Incorrect arguments to period_add".to_owned(),
-        ));
-    }
-    let sum = (period_to_month(period as u64) as i64).wrapping_add(months);
-    Ok(Datum::Int(month_to_period(sum as u64) as i64))
-}
-
-/// `PERIOD_DIFF(period1, period2)`, ported from
-/// `builtinPeriodDiffSig.evalInt` in `pkg/expression/builtin_time.go`.
-fn period_diff(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 2 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let (Some(period1), Some(period2)) = (int_arg(&vals[0])?, int_arg(&vals[1])?) else {
-        return Ok(Datum::Null);
-    };
-    if !valid_period(period1) || !valid_period(period2) {
-        return Err(EvalError::IncorrectArguments(
-            "Incorrect arguments to period_diff".to_owned(),
-        ));
-    }
-    // Go subtracts the uint64 month totals before converting to int64.
-    Ok(Datum::Int(
-        period_to_month(period1 as u64).wrapping_sub(period_to_month(period2 as u64)) as i64,
-    ))
-}
-
-fn valid_period(period: i64) -> bool {
-    period >= 0 && period % 100 != 0 && period % 100 <= 12
-}
-
-/// Exact `period2Month` from `pkg/expression/builtin_time.go`.
-fn period_to_month(period: u64) -> u64 {
-    if period == 0 {
-        return 0;
-    }
-    let mut year = period / 100;
-    let month = period % 100;
-    if year < 70 {
-        year += 2_000;
-    } else if year < 100 {
-        year += 1_900;
-    }
-    year.wrapping_mul(12).wrapping_add(month).wrapping_sub(1)
-}
-
-/// Exact `month2Period` from `pkg/expression/builtin_time.go`.
-fn month_to_period(month: u64) -> u64 {
-    if month == 0 {
-        return 0;
-    }
-    let mut year = month / 12;
-    if year < 70 {
-        year += 2_000;
-    } else if year < 100 {
-        year += 1_900;
-    }
-    year.wrapping_mul(100)
-        .wrapping_add(month % 12)
-        .wrapping_add(1)
 }
 
 /// `builtinTimeFormatSig` in `pkg/expression/builtin_time.go`; shares the
@@ -1221,37 +823,48 @@ mod clock_source_tests {
                 source_eval("SECOND", &args, &ctx).unwrap(),
                 Datum::Int(second)
             );
-            assert_eq!(
-                source_eval("MICROSECOND", &args, &ctx).unwrap(),
-                Datum::Int(micros)
-            );
-            assert_eq!(source_eval("TIME", &args, &ctx).unwrap(), string(time));
+            for (name, former) in [("MICROSECOND", Datum::Int(micros)), ("TIME", string(time))] {
+                assert_eq!(
+                    source_eval(name, &args, &ctx),
+                    Err(EvalError::Unsupported(
+                        "native temporal value evaluation was removed; TiKV engine required"
+                    )),
+                    "former oracle: {former:?}"
+                );
+            }
         }
 
-        for name in ["HOUR", "MINUTE", "SECOND", "MICROSECOND", "TIME"] {
+        for name in ["HOUR", "MINUTE", "SECOND"] {
             assert_eq!(
                 source_eval(name, &[Datum::Null], &ctx).unwrap(),
                 Datum::Null
             );
         }
+        for name in ["MICROSECOND", "TIME"] {
+            assert_eq!(
+                source_eval(name, &[Datum::Null], &ctx),
+                Err(EvalError::Unsupported(
+                    "native temporal value evaluation was removed; TiKV engine required"
+                )),
+                "former oracle: NULL"
+            );
+        }
 
         let malformed = [string("2011-11-11 10:10:10.11.12")];
-        for name in ["HOUR", "MINUTE", "SECOND", "MICROSECOND"] {
+        for name in ["HOUR", "MINUTE", "SECOND"] {
             assert_eq!(source_eval(name, &malformed, &ctx).unwrap(), Datum::Null);
         }
         let warning_count = ctx.warnings.borrow().len();
-        assert_eq!(
-            source_eval("TIME", &malformed, &ctx).unwrap(),
-            string("00:00:00")
-        );
-        assert_eq!(ctx.warnings.borrow().len(), warning_count + 1);
-        assert_eq!(
-            ctx.warnings.borrow().last(),
-            Some(&(
-                1292,
-                "Truncated incorrect time value: '2011-11-11 10:10:10.11.12'".to_owned()
-            ))
-        );
+        for (name, former) in [("MICROSECOND", Datum::Null), ("TIME", string("00:00:00"))] {
+            assert_eq!(
+                source_eval(name, &malformed, &ctx),
+                Err(EvalError::Unsupported(
+                    "native temporal value evaluation was removed; TiKV engine required"
+                )),
+                "former oracle: {former:?}"
+            );
+        }
+        assert_eq!(ctx.warnings.borrow().len(), warning_count);
     }
 }
 

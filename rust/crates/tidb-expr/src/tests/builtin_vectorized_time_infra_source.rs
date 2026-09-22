@@ -141,18 +141,27 @@ fn vectorized_time_harness_representative_cases_match_scalar_answers() {
         ["INT:140", "NULL"]
     );
 
-    // ast.TimeDiff pairs, including the INVALID pair that is NULL.
-    assert_eq!(
-        binary_vec(
-            |args| dispatch("TIMEDIFF", args, &NoColumns).unwrap(),
-            &[
-                ("2008-12-31 23:59:59.000001", "2008-12-30 01:01:01.000002",),
-                ("2016-12-00 12:00:00", "2016-12-01 12:00:00"),
-                ("2016-12-00 12:00:00", "10:9:0"),
-            ],
+    // The former TIMEDIFF vector values remain pinned while native execution refuses.
+    for ((left, right), former) in [
+        (
+            ("2008-12-31 23:59:59.000001", "2008-12-30 01:01:01.000002"),
+            "STR:46:58:57.999999",
         ),
-        ["STR:46:58:57.999999", "STR:-24:00:00", "NULL"]
-    );
+        (
+            ("2016-12-00 12:00:00", "2016-12-01 12:00:00"),
+            "STR:-24:00:00",
+        ),
+        (("2016-12-00 12:00:00", "10:9:0"), "NULL"),
+    ] {
+        let args = [Datum::new_string(left), Datum::new_string(right)];
+        assert_eq!(
+            crate::func::eval_func_values_in("TIMEDIFF", &args, &NoColumns),
+            Some(Err(EvalError::Unsupported(
+                "native temporal value evaluation was removed; TiKV engine required"
+            ))),
+            "former vector oracle: {former}"
+        );
+    }
 }
 
 /// GO PORT of `pkg/expression/builtin_time_vec_test.go:575

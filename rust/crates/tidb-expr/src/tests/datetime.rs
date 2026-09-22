@@ -1360,7 +1360,11 @@ fn an_etdatetime_argument_is_cast_before_the_signature_runs() {
     // Captured `RS:739325`.
     assert_eq!(e("to_days(20240315123045)"), "INT:739325");
     assert_eq!(e("to_seconds(20240315123045)"), "INT:63877725045");
-    assert_eq!(e("date(20240315123045)"), "STR:2024-03-15");
+    assert_eq!(
+        e("date(20240315123045)"),
+        TEMPORAL_VALUE_REMOVED,
+        "former STR:2024-03-15"
+    );
     assert_eq!(e("datediff(20240315123045,'2024-03-01')"), "INT:14");
 
     // These classes declare the same `ETDatetime` argument and must not
@@ -1454,7 +1458,12 @@ fn an_etdatetime_argument_is_cast_before_the_signature_runs() {
             "STR:2024-03-15 13:30:45",
         ),
     ] {
-        if [
+        if expr.starts_with("date(") {
+            let native = chunk_case(expr, &NoColumns)
+                .map(|datum| datum.label())
+                .unwrap_or_else(|error| error);
+            assert_eq!(native, TEMPORAL_VALUE_REMOVED, "{expr}; former {want}");
+        } else if [
             "month(",
             "day(",
             "quarter(",
