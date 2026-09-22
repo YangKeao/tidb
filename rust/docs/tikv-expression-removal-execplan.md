@@ -562,11 +562,18 @@ remain in the workspace.
       naming helpers. The tranche is five insertions / 1,178 deletions; locked
       compilation, focused session tests, 281-fixture runtime gate and SQL demo
       all pass with zero native fallback.
-- [ ] Post-tranche-38 deletion frontier (2026-03-24): the remaining source
+- [x] Thirty-ninth physical-deletion tranche: contract `evaluator.rs` from
+      2,227 to 859 lines by physically deleting the 1,368-line legacy/native
+      evaluator test corpus. The retained production code is the central
+      engine-only suite/program, chunk ownership transfer, predicate ordering
+      and TiKV result/error bridge; it contains no scalar-function dispatch.
+      Locked compilation, focused session tests, the 281-fixture runtime gate
+      and SQL demo all pass with zero native fallback.
+- [ ] Post-tranche-39 deletion frontier (2026-03-24): the remaining source
       inventory is intentionally measured before another cut, not counted as
       native-kernel LOC. `builtin_ext/json` is only a 128-line cast/type bridge
       and `time_fn`/`ops` are absent. The four core dispatch/bridge files total
-      3,856 lines (`scalar_function.rs` 474, `evaluator.rs` 2,227, `cast.rs`
+      2,488 lines (`scalar_function.rs` 474, `evaluator.rs` 859, `cast.rs`
       663 and `lib.rs` 492); executor datum ordering is another 32 lines. The
       next physical cut should separate and delete the remaining generic
       comparison/coercion helpers while retaining parser, result-type, transport
