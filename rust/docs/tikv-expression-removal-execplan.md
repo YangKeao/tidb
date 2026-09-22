@@ -496,16 +496,25 @@ remain in the workspace.
       5,026 deletions before this ExecPlan entry. Locked offline
       `cargo check -p tidb-session`, the two focused session tests and the SQL
       demo pass with five TiKV engine rows and a refused no-context probe.
-- [ ] Post-tranche-31 deletion frontier (2026-03-24): the remaining source
+- [x] Thirty-second physical-deletion tranche: delete `time_fn` completely:
+      calendar/date arithmetic, duration parsing, add/subtract, extract and
+      dispatch kernels (3,832 production lines) plus 1,902 lines of native
+      temporal tests. The only production dependencies exposed by compilation
+      were type-shaping helpers: DATE cast parsing is retained locally in
+      `cast.rs`, and DATE_ADD result-FSP inference locally in
+      `rewriter/result_type.rs`; neither evaluates a SQL function. The stale
+      crate-level native-evaluator documentation and unused public interval
+      helper are removed. The tranche is 112 insertions / 6,023 deletions;
+      locked offline `cargo check -p tidb-session`, the focused session tests
+      and the SQL demo pass with five TiKV engine rows and refused native replay.
+- [ ] Post-tranche-32 deletion frontier (2026-03-24): the remaining source
       inventory is intentionally measured before another cut, not counted as
-      native-kernel LOC. `builtin_ext/json` is now only a 128-line cast/type
-      bridge; `time_fn` still has 3,832 lines across five files (`calendar.rs`
-      2,323, `duration_parse.rs` 611, `add_sub.rs` 520, `extract.rs` 103 and
-      dispatch 275); the four core dispatch/bridge files total 6,985 lines
-      (`scalar_function.rs` 1,647, `evaluator.rs` 2,227, `cast.rs` 2,299 and
-      `lib.rs` 812). The next physical cut should remove the remaining temporal
-      dispatch/kernels while retaining parser, result-type, transport and TiKV
-      lowering pieces. This snapshot prevents the outside-call-site
+      native-kernel LOC. `builtin_ext/json` is only a 128-line cast/type bridge
+      and `time_fn` is absent. The four core dispatch/bridge files total 6,770
+      lines (`scalar_function.rs` 1,647, `evaluator.rs` 2,227, `cast.rs` 2,367
+      and `lib.rs` 529). The next physical cut should separate and delete the
+      remaining generic cast/operator/coercion kernels while retaining parser,
+      result-type, transport and TiKV lowering pieces. This snapshot prevents the outside-call-site
       audit from being mistaken for completion: substantial native expression
       implementation remains.
 - [x] Twenty-sixth physical-deletion tranche: delete the native

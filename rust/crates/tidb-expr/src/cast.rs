@@ -24,7 +24,6 @@
 //! assumed — see each function's own doc for the specific probe.
 
 use crate::coerce::coerce_str;
-use crate::time_fn::calendar::parse_date_ymd;
 use crate::Decimal;
 use crate::{Datum, EvalError};
 use tidb_ast::CastType;
@@ -41,6 +40,75 @@ use tidb_datatype::{
 /// source value; mapping `-1` to the ordinary `0` scale would round every
 /// fractional value to an integer before Go's constant-refinement step.
 pub(crate) const UNSPECIFIED_CAST_SCALE: u32 = u32::MAX;
+
+fn parse_date_ymd(input: &str) -> Option<(i64, u32, u32)> {
+    let input = input.trim();
+    let date = input
+        .split_once(char::is_whitespace)
+        .map_or(input, |(date, _)| date);
+    let bare = matches!(date.len(), 6 | 8) && date.bytes().all(|byte| byte.is_ascii_digit());
+    let (year, month, day) = if bare {
+        let year_digits = date.len() - 4;
+        let (year, rest) = date.split_at(year_digits);
+        let (month, day) = rest.split_at(2);
+        (
+            expand_date_year(year.parse().ok()?, year_digits),
+            month.parse().ok()?,
+            day.parse().ok()?,
+        )
+    } else {
+        let parts = split_date_components(date)?;
+        let [(year, year_digits), (month, _), (day, _)] = parts.as_slice() else {
+            return None;
+        };
+        (expand_date_year(*year, *year_digits), *month, *day)
+    };
+    if !(1..=12).contains(&month) || day == 0 || day > days_in_date_month(year, month) {
+        return None;
+    }
+    Some((year, month, day))
+}
+
+fn split_date_components(input: &str) -> Option<Vec<(u32, usize)>> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    for character in input.chars() {
+        if character.is_ascii_digit() {
+            current.push(character);
+        } else {
+            if current.is_empty() {
+                return None;
+            }
+            parts.push((current.parse().ok()?, current.len()));
+            current.clear();
+        }
+    }
+    if current.is_empty() {
+        return None;
+    }
+    parts.push((current.parse().ok()?, current.len()));
+    (parts.len() == 3).then_some(parts)
+}
+
+fn expand_date_year(value: u32, digits: usize) -> i64 {
+    if digits > 2 {
+        i64::from(value)
+    } else if value <= 69 {
+        2000 + i64::from(value)
+    } else {
+        1900 + i64::from(value)
+    }
+}
+
+fn days_in_date_month(year: i64, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
 
 /// Evaluates a [`CastType`] against an already-evaluated, non-`NULL`
 /// operand (`NULL` is handled by the caller — every target type maps

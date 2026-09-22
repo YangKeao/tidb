@@ -36,6 +36,44 @@ use crate::EvalError;
 mod crypto;
 pub(super) use crypto::returns_binary_string;
 
+fn date_add_result_fsp(
+    unit: &str,
+    date_type: Option<&FieldType>,
+    amount_type: Option<&FieldType>,
+) -> Option<u32> {
+    use tidb_datatype::EvalType;
+
+    let date_type = date_type?;
+    if !matches!(
+        date_type.eval_type(),
+        EvalType::Datetime | EvalType::Timestamp | EvalType::Duration
+    ) {
+        return None;
+    }
+    let field_fsp =
+        |field_type: &FieldType| u32::try_from(field_type.decimal().clamp(0, 6)).unwrap_or(0);
+    if matches!(
+        unit.to_ascii_uppercase().as_str(),
+        "MICROSECOND"
+            | "SECOND_MICROSECOND"
+            | "MINUTE_MICROSECOND"
+            | "HOUR_MICROSECOND"
+            | "DAY_MICROSECOND"
+    ) {
+        return Some(6);
+    }
+    let interval_fsp = if unit.eq_ignore_ascii_case("SECOND") {
+        match amount_type.map(FieldType::eval_type) {
+            Some(EvalType::String | EvalType::Real | EvalType::Json) => 6,
+            Some(EvalType::Decimal) => amount_type.map_or(0, field_fsp),
+            _ => 0,
+        }
+    } else {
+        0
+    };
+    Some(field_fsp(date_type).max(interval_fsp))
+}
+
 pub(super) fn restore_char_result_charset(func: &mut ScalarFunction) -> Result<(), EvalError> {
     if func.func_name.lowercase() != "char_func" {
         return Ok(());
@@ -1035,7 +1073,7 @@ fn date_add_return_type(name: &str, args: &[Expression]) -> Option<FieldType> {
             result.set_decimal(0);
         }
         FieldTypeCode::Datetime | FieldTypeCode::Duration => {
-            let fsp = i64::from(crate::time_fn::calendar::date_add_result_fsp(
+            let fsp = i64::from(date_add_result_fsp(
                 unit,
                 Some(date_type),
                 amount.static_type(),
