@@ -517,11 +517,20 @@ remain in the workspace.
       is eight insertions / 1,277 deletions. Locked offline compilation, the
       focused session tests and SQL demo pass with five TiKV engine rows and a
       refused no-context replay probe.
-- [ ] Post-tranche-33 deletion frontier (2026-03-24): the remaining source
+- [x] Thirty-fourth physical-deletion tranche: contract `cast.rs` from 2,068
+      to 663 lines by deleting every helper left orphaned by `eval_cast`, all
+      unsigned/decimal/real/string/YEAR output kernels, the unused runtime cast
+      wrappers and the remaining in-file native cast tests. The retained code is
+      limited to executor/planner bridges still proven live by compilation:
+      integer-prefix conversion/diagnostics, duration coercion and computed-time
+      parsing used by comparison refinement. The tranche removes 1,405 lines;
+      locked offline compilation, focused session tests and the SQL demo pass
+      with five TiKV engine rows and refused no-context replay.
+- [ ] Post-tranche-34 deletion frontier (2026-03-24): the remaining source
       inventory is intentionally measured before another cut, not counted as
       native-kernel LOC. `builtin_ext/json` is only a 128-line cast/type bridge
-      and `time_fn` is absent. The four core dispatch/bridge files total 6,469
-      lines (`scalar_function.rs` 1,647, `evaluator.rs` 2,227, `cast.rs` 2,068
+      and `time_fn` is absent. The four core dispatch/bridge files total 5,064
+      lines (`scalar_function.rs` 1,647, `evaluator.rs` 2,227, `cast.rs` 663
       and `lib.rs` 527). The next physical cut should separate and delete the
       remaining generic cast/operator/coercion kernels while retaining parser,
       result-type, transport and TiKV lowering pieces. This snapshot prevents the outside-call-site
