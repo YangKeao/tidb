@@ -19,7 +19,6 @@
 
 pub mod aggregation;
 mod arg_eval_type;
-mod binary_literal;
 pub mod builtin_arithmetic;
 pub mod builtin_compare;
 mod builtin_ext;
@@ -66,7 +65,6 @@ pub mod scalar_function;
 pub mod schema;
 pub mod sessionexpr;
 pub mod simple_expr;
-mod string_signature;
 #[cfg(feature = "tikv-expr")]
 pub mod tikv;
 mod time_literal;
@@ -86,8 +84,6 @@ pub(crate) use tidb_datatype::{Datum, Decimal};
 pub use tidb_util::mathutil::MysqlRng;
 
 use tidb_ast::{CastStyle, Expr, IsTarget};
-
-use binary_literal::{bit_literal_value, hex_literal_value};
 
 /// Whether this AST node is a BIT literal, whose `types.DefaultTypeForValue`
 /// arm is the one that does NOT add `mysql.UnsignedFlag` -- the AST tier's

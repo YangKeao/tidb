@@ -12,126 +12,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Shared scalar coercion helpers.
-//!
-//! Representation remains owned exclusively by `tidb-datatype`; this module
-//! owns only evaluator operations over that representation.
+//! Scalar datum conversions retained by executor/planner bridges.
 
-use std::cmp::Ordering;
-
-use tidb_datatype::{BinaryLiteralIntOutcome, Datum, Decimal, StringDatum};
+use tidb_datatype::{Datum, StringDatum};
 
 use crate::context::EvalError;
 
-/// The integral portion of a datum, retaining signedness.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Integer {
-    Signed(i64),
-    Unsigned(u64),
-}
-
-pub(crate) fn integer_of(value: &Datum) -> Result<Option<Integer>, EvalError> {
-    Ok(match value {
-        Datum::Int(value) => Some(Integer::Signed(*value)),
-        Datum::UInt(value) => Some(Integer::Unsigned(*value)),
-        Datum::BinaryLiteral(value) | Datum::Bit(value) => {
-            Some(Integer::Unsigned(binary_literal_value(value)))
-        }
-        Datum::Enum(value, _) => Some(Integer::Unsigned(value.value())),
-        Datum::Set(value, _) => Some(Integer::Unsigned(value.value())),
-        Datum::String(_)
-        | Datum::Bytes(_)
-        | Datum::Decimal(_)
-        | Datum::Real(_)
-        | Datum::Float32(_)
-        | Datum::Duration(_)
-        | Datum::Time(_)
-        | Datum::Json(_)
-        | Datum::Raw(_)
-        | Datum::VectorFloat32(_)
-        | Datum::Null => None,
-        Datum::MinNotNull | Datum::MaxValue => {
-            return Err(EvalError::Unsupported("range sentinel integer coercion"));
-        }
-    })
-}
-
-pub(crate) fn integer_cmp(lhs: Integer, rhs: Integer) -> Ordering {
-    match (lhs, rhs) {
-        (Integer::Signed(a), Integer::Signed(b)) => a.cmp(&b),
-        (Integer::Unsigned(a), Integer::Unsigned(b)) => a.cmp(&b),
-        (Integer::Signed(a), Integer::Unsigned(_)) if a < 0 => Ordering::Less,
-        (Integer::Signed(a), Integer::Unsigned(b)) => (a as u64).cmp(&b),
-        (Integer::Unsigned(_), Integer::Signed(b)) if b < 0 => Ordering::Greater,
-        (Integer::Unsigned(a), Integer::Signed(b)) => a.cmp(&(b as u64)),
-    }
-}
-
-pub(crate) fn integer_bits(value: Integer) -> u64 {
-    match value {
-        Integer::Signed(value) => value as u64,
-        Integer::Unsigned(value) => value,
-    }
-}
-
-pub(crate) fn integer_to_decimal(value: Integer) -> Decimal {
-    match value {
-        Integer::Signed(value) => Decimal::from_int(value),
-        Integer::Unsigned(value) => Decimal::from_uint(value),
-    }
-}
-
-pub(crate) fn integer_to_f64(value: Integer) -> f64 {
-    match value {
-        Integer::Signed(value) => value as f64,
-        Integer::Unsigned(value) => value as f64,
-    }
-}
-
-pub(crate) fn bool_int(value: bool) -> Datum {
-    Datum::Int(i64::from(value))
-}
-
-/// A value's truth in SQL boolean context: source `Datum.ToBool`, which is the
-/// single conversion `expression.EvalBool` applies to every `WHERE`/`ON`/`IF`
-/// condition.
-///
-/// `NULL` is the only unknown ([`None`]); every other kind converts, including
-/// the ones a type-native reading would call "not a number":
-///
-/// * a string or byte string takes MySQL's numeric prefix, so `'1abc'` and
-///   `'.5'` are true while `'abc'`, `''` and `'0.0'` are false -- a reading
-///   that returned "unknown" here dropped every row a `WHERE varchar_col`
-///   should have returned;
-/// * a JSON value compares against JSON `0` (Go `BinaryJSON.IsZero`), so JSON
-///   `false`, `[]` and `null` are all *true*;
-/// * a float32 vector is true unless it is the zero vector.
-///
-/// The conversion's truncation disposition (`str_to_float`'s event) is
-/// DEFERRED here: Go's `EvalBool` hands the event to the statement context,
-/// which raises warning 1292 for `WHERE '1abc'`. The truth VALUE is
-/// unaffected, and no caller of this function carries a statement context.
 pub fn truthy_of(value: &Datum) -> Result<Option<bool>, EvalError> {
     if matches!(value, Datum::Null) {
         return Ok(None);
     }
-    match value.to_bool() {
-        Ok(converted) => Ok(Some(converted.value != 0)),
-        // `Datum::Raw` and the range sentinels have no Go `Datum` kind, so
-        // Go's own `default` arm errors on them too rather than guessing a
-        // truth value that would silently keep or drop a row.
-        Err(_) => Err(EvalError::Unsupported("truth coercion of a non-SQL datum")),
-    }
+    value
+        .to_bool()
+        .map(|converted| Some(converted.value != 0))
+        .map_err(|_| EvalError::Unsupported("truth coercion of a non-SQL datum"))
 }
 
-/// Returns a string datum's UTF-8 text without replacement.
-pub(crate) fn string_text(value: &StringDatum) -> Result<&str, EvalError> {
+fn string_text(value: &StringDatum) -> Result<&str, EvalError> {
     value
         .as_utf8()
         .map_err(|_| EvalError::Unsupported("invalid UTF-8 string datum"))
 }
 
-/// Coerces a scalar to text, preserving NULL and rejecting invalid UTF-8.
 pub(crate) fn coerce_str(value: &Datum) -> Result<Option<String>, EvalError> {
     match value {
         Datum::String(value) => Ok(Some(string_text(value)?.to_string())),
@@ -166,46 +68,6 @@ pub(crate) fn coerce_str(value: &Datum) -> Result<Option<String>, EvalError> {
         Datum::Null => Ok(None),
         Datum::MinNotNull | Datum::MaxValue => {
             Err(EvalError::Unsupported("range sentinel string coercion"))
-        }
-    }
-}
-
-/// Coerces a scalar through Go TiDB's `EvalString` byte boundary.
-///
-/// `CONCAT` and `CONCAT_WS` operate on Go strings, which are byte sequences
-/// rather than UTF-8 values.  Their source signatures therefore preserve an
-/// invalid UTF-8 suffix from a binary argument instead of raising the checked
-/// decoding error used by character-semantic functions.  Keep this helper
-/// separate from [`coerce_str`] so callers that actually need Unicode text do
-/// not silently acquire replacement or lossy-decoding behavior.
-pub(crate) fn coerce_str_bytes(value: &Datum) -> Result<Option<Vec<u8>>, EvalError> {
-    Ok(match value {
-        Datum::String(value) => Some(value.bytes().to_vec()),
-        Datum::Bytes(value) => Some(value.clone()),
-        Datum::Int(value) => Some(value.to_string().into_bytes()),
-        Datum::UInt(value) => Some(value.to_string().into_bytes()),
-        Datum::Decimal(value) => Some(value.to_string().into_bytes()),
-        Datum::Real(value) => Some(value.to_string().into_bytes()),
-        Datum::Float32(value) => Some((*value as f32).to_string().into_bytes()),
-        Datum::BinaryLiteral(value) | Datum::Bit(value) => Some(value.as_bytes().to_vec()),
-        Datum::Duration(value) => Some(value.to_string().into_bytes()),
-        Datum::Enum(value, _) => Some(value.name_bytes().to_vec()),
-        Datum::Set(value, _) => Some(value.name_bytes().to_vec()),
-        Datum::Time(value) => Some(value.to_string().into_bytes()),
-        Datum::Json(value) => Some(value.to_string().into_bytes()),
-        Datum::Raw(value) => Some(value.clone()),
-        Datum::VectorFloat32(value) => Some(value.to_string().into_bytes()),
-        Datum::Null => None,
-        Datum::MinNotNull | Datum::MaxValue => {
-            return Err(EvalError::Unsupported("range sentinel byte coercion"));
-        }
-    })
-}
-
-pub(crate) fn binary_literal_value(value: &tidb_datatype::BinaryLiteral) -> u64 {
-    match value.to_int() {
-        BinaryLiteralIntOutcome::Exact(value) | BinaryLiteralIntOutcome::Truncated { value } => {
-            value
         }
     }
 }

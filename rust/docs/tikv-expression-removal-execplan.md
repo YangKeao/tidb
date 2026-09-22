@@ -536,12 +536,20 @@ remain in the workspace.
       apply-binary/unary APIs are gone. The tranche is 82 insertions / 3,595
       deletions; locked offline compilation, focused session tests and the SQL
       demo pass with five TiKV engine rows and refused no-context replay.
-- [ ] Post-tranche-35 deletion frontier (2026-03-24): the remaining source
+- [x] Thirty-sixth physical-deletion tranche: delete the orphaned
+      `binary_literal.rs` and `string_signature.rs` native helper modules,
+      contract `coerce.rs` from 211 to 73 lines (only executor truthiness and
+      temporal-parse string bridges remain), and remove 410 lines of native
+      comparison tests while retaining the planner's comparison type/refinement
+      implementation. The tranche is seven insertions / 990 deletions; locked
+      offline compilation, focused session tests and the SQL demo pass with five
+      TiKV engine rows and refused no-context replay.
+- [ ] Post-tranche-36 deletion frontier (2026-03-24): the remaining source
       inventory is intentionally measured before another cut, not counted as
       native-kernel LOC. `builtin_ext/json` is only a 128-line cast/type bridge
       and `time_fn`/`ops` are absent. The four core dispatch/bridge files total
-      5,033 lines (`scalar_function.rs` 1,647, `evaluator.rs` 2,227, `cast.rs`
-      663 and `lib.rs` 496); executor datum ordering is another 32 lines. The
+      5,029 lines (`scalar_function.rs` 1,647, `evaluator.rs` 2,227, `cast.rs`
+      663 and `lib.rs` 492); executor datum ordering is another 32 lines. The
       next physical cut should separate and delete the remaining generic
       comparison/coercion helpers while retaining parser,
       result-type, transport and TiKV lowering pieces. This snapshot prevents the outside-call-site
