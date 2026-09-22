@@ -19,15 +19,16 @@ names have no native fallback; `ANY_VALUE` remains admitted and is proven
 TiKV-only. Planner `TIDB_SHARD` generated-column synthesis declines. Therefore
 the raw/candidate counts below remain the historical outside-expression-core
 inventory and must not be used to infer that those deleted owners survive.
-Current gates are runtime 30 tests / 323 receipts / 2072 engine rows / 160
-borrowed rows / zero native fallbacks and static 384/216/168/0.
+Current gates after the twenty-sixth deletion tranche are runtime 320 fixtures /
+2068 engine rows / 160 borrowed rows and static 384/211/173/0.
 
-## Current snapshot after INSERT and scalar-helper routing
+## Current snapshot after session-temporal deletion
 
-Classifier: **38 raw / 22 candidates / 4 production / 18 test-only**. The four
-production candidates are two unlinked duplicate calls and two routed DML
-wrapper calls. Thus this narrow outside-expression-core `.eval` inventory has
-no remaining direct live native call. This is NOT native removal: expression
+The repeatable classifier reports **39 raw / 23 evaluator candidates / 4
+production / 19 test-only**. The four production candidates are the two known
+unlinked `stream_agg.rs` duplicate calls and the routed DML wrapper calls at
+`driver/dml.rs:3459,4035`. Thus this narrow outside-expression-core `.eval`
+inventory has no remaining direct live native call. This is NOT native removal: expression
 internals, forwarding helpers, native conversions, optional fallback and the
 feature/default switch still require work.
 
