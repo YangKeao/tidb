@@ -553,11 +553,20 @@ remain in the workspace.
       1,834 engine rows / 160 borrowed rows / 0 native fallbacks. The default
       SQL demo independently records five engine rows and refuses its deliberate
       no-context replay probe.
-- [ ] Post-tranche-37 deletion frontier (2026-03-24): the remaining source
+- [x] Thirty-eighth physical-deletion tranche: contract
+      `scalar_function.rs` from 1,647 to 474 lines by deleting its 1,039-line
+      native evaluator test corpus and every runtime-only helper that became
+      orphaned when scalar dispatch was removed (advisory-lock coercion,
+      datum-family coercion and name-to-operator routers). The retained file is
+      now only the AST node, structural/hash/const-level metadata and planner
+      naming helpers. The tranche is five insertions / 1,178 deletions; locked
+      compilation, focused session tests, 281-fixture runtime gate and SQL demo
+      all pass with zero native fallback.
+- [ ] Post-tranche-38 deletion frontier (2026-03-24): the remaining source
       inventory is intentionally measured before another cut, not counted as
       native-kernel LOC. `builtin_ext/json` is only a 128-line cast/type bridge
       and `time_fn`/`ops` are absent. The four core dispatch/bridge files total
-      5,029 lines (`scalar_function.rs` 1,647, `evaluator.rs` 2,227, `cast.rs`
+      3,856 lines (`scalar_function.rs` 474, `evaluator.rs` 2,227, `cast.rs`
       663 and `lib.rs` 492); executor datum ordering is another 32 lines. The
       next physical cut should separate and delete the remaining generic
       comparison/coercion helpers while retaining parser, result-type, transport
