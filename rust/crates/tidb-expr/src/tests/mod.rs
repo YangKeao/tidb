@@ -363,7 +363,7 @@ fn engine_case_with_backend(
         fn tikv_expression_backend(&self) -> crate::tikv::Backend {
             self.backend
         }
-        fn record_tikv_expression_fallback(&self, _: crate::tikv::FallbackReason) {
+        fn record_tikv_expression_decline(&self, _: crate::tikv::DeclineReason) {
             self.fallback.set(true)
         }
     }

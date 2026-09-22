@@ -490,8 +490,8 @@ impl BlockEncryptionMode {
 
 /// Resolves column and session state during evaluation.
 pub trait Columns {
-    /// Explicit opt-in and statement settings for local TiKV expression evaluation.
-    /// A missing context always keeps the native evaluator, even in feature builds.
+    /// Statement settings for local TiKV expression evaluation. A missing
+    /// context is a structured engine-required error; there is no local replay.
     #[cfg(feature = "tikv-expr")]
     fn tikv_expression_context(&self) -> Option<crate::tikv::Context> {
         None
@@ -507,35 +507,15 @@ pub trait Columns {
         crate::tikv::Backend::Copying
     }
 
-    /// Counts only successful borrowed executions, excluding copying fallback.
+    /// Counts only successful borrowed executions, excluding the copying backend.
     #[cfg(feature = "tikv-expr")]
     fn record_tikv_borrowed_expression_rows(&self, _rows: usize) {}
 
-    /// Reports that an expression which had an engine context still ran
-    /// natively, with the reason the adapter declined it.
-    ///
-    /// Production resolvers ignore this. Tests and the removal gate implement
-    /// it to fail on a reason that is not an explicitly listed exclusion, so an
-    /// expression cannot silently stop using the engine. Reasons are stable
-    /// identifiers, not user-facing text.
+    /// Records why the engine declined before producing a result. Production
+    /// resolvers expose this as telemetry; gates reject unexpected reasons.
+    /// Reasons are stable identifiers, not user-facing text.
     #[cfg(feature = "tikv-expr")]
-    fn record_tikv_expression_fallback(&self, _reason: crate::tikv::FallbackReason) {}
-
-    /// Whether this resolver has no native evaluator available and therefore
-    /// *requires* the engine.
-    ///
-    /// Once the native evaluator is deleted this is how a planning-time or
-    /// test call site reports a missing engine: evaluation fails with a
-    /// structured error instead of silently choosing the other implementation.
-    /// It covers both ways the engine can be unavailable -- no engine context
-    /// at all, and a context whose adapter *declines* this expression -- because
-    /// neither has a native evaluator behind it any more. It stays `false`
-    /// while both implementations coexist, so the default native path is
-    /// unchanged.
-    #[cfg(feature = "tikv-expr")]
-    fn tikv_expression_required(&self) -> bool {
-        false
-    }
+    fn record_tikv_expression_decline(&self, _reason: crate::tikv::DeclineReason) {}
 
     /// Returns the referenced column, matched by its final name segment.
     fn get(&self, path: &[String]) -> Option<Datum>;

@@ -67,9 +67,8 @@ pub struct TikvExpression {
 
 /// Whether to print the stage at which an expression was declined.
 ///
-/// `FallbackReason::NotAdmitted` covers four different adapter stages plus an
-/// engine compile refusal, so a silent fallback hides which of them the
-/// remaining removal work is in. `TIKV_EXPR_DEBUG_COMPILE` is a diagnostic
+/// `DeclineReason::NotAdmitted` covers four different adapter stages plus an
+/// engine compile refusal, so a generic decline hides which stage rejected it. `TIKV_EXPR_DEBUG_COMPILE` is a diagnostic
 /// only: the decision, and therefore SQL behaviour, is unchanged.
 pub(super) fn debug_declines() -> bool {
     std::env::var_os("TIKV_EXPR_DEBUG_COMPILE").is_some()
@@ -80,11 +79,11 @@ pub(super) fn debug_declines() -> bool {
 fn declined(
     stage: &str,
     expression: &Expression,
-) -> Result<Result<TikvExpression, FallbackReason>, EvalError> {
+) -> Result<Result<TikvExpression, DeclineReason>, EvalError> {
     if debug_declines() {
         eprintln!("TIKV-EXPR-DECLINE [{stage}] {expression:?}");
     }
-    Ok(Err(FallbackReason::NotAdmitted))
+    Ok(Err(DeclineReason::NotAdmitted))
 }
 
 impl TikvExpression {
@@ -102,7 +101,7 @@ impl TikvExpression {
     pub fn compile_detailed(
         expression: &Expression,
         context: Context,
-    ) -> Result<Result<Self, FallbackReason>, EvalError> {
+    ) -> Result<Result<Self, DeclineReason>, EvalError> {
         if !admitted(expression, &context) {
             return declined("admission", expression);
         }
@@ -172,7 +171,7 @@ impl TikvExpression {
                 if debug_declines() {
                     eprintln!("TIKV-EXPR-DECLINE [engine-compile: {error:?}] {expression:?}");
                 }
-                return Ok(Err(FallbackReason::NotAdmitted));
+                return Ok(Err(DeclineReason::NotAdmitted));
             }
         };
         // A successful compile says nothing about laziness: an eager kernel and
@@ -185,7 +184,7 @@ impl TikvExpression {
         // per-node shape rules remain the first gate; this is the
         // engine-enforced one.
         if prepared.has_lazy_nodes() && !prepared.eager_lazy_risk().is_empty() {
-            return Ok(Err(FallbackReason::LazyRisk));
+            return Ok(Err(DeclineReason::LazyRisk));
         }
         Ok(Ok(Self {
             prepared,
@@ -205,7 +204,7 @@ impl TikvExpression {
         &self.wire_signatures
     }
 
-    fn requires_native_input(&self, input: &Chunk, selection: Option<&[usize]>) -> bool {
+    fn has_unrepresentable_input(&self, input: &Chunk, selection: Option<&[usize]>) -> bool {
         self.inputs
             .iter()
             .any(|(index, ty)| bridge::requires_native_selected(input, selection, *index, ty))
@@ -493,11 +492,11 @@ pub(crate) fn remap_columns(
     }
 }
 
-/// Why an expression with an engine context still ran natively.
+/// Why the engine declined an expression before producing a result.
 ///
-/// These are stable identifiers used by the removal gate, not diagnostics.
+/// These are stable identifiers used by the engine-only gate, not diagnostics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FallbackReason {
+pub enum DeclineReason {
     /// The admission table excludes this name, or this particular shape did
     /// not lower. Either way the decision was made before any kernel ran.
     NotAdmitted,
@@ -510,7 +509,7 @@ pub enum FallbackReason {
     UnrepresentableInput,
 }
 
-impl FallbackReason {
+impl DeclineReason {
     /// The stable identifier a gate compares against its exclusion list.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -528,7 +527,7 @@ impl FallbackReason {
 #[derive(Default)]
 pub(crate) struct ProjectionCache {
     context: Option<Context>,
-    programs: Arc<Vec<Result<Arc<TikvExpression>, FallbackReason>>>,
+    programs: Arc<Vec<Result<Arc<TikvExpression>, DeclineReason>>>,
     /// How many times this cache has actually compiled. Stays at one for a
     /// fixed statement policy no matter how many suites or workers share it.
     compilations: u64,
@@ -542,7 +541,7 @@ impl ProjectionCache {
         &mut self,
         expressions: &[Expression],
         context: &Context,
-    ) -> Result<Arc<Vec<Result<Arc<TikvExpression>, FallbackReason>>>, EvalError> {
+    ) -> Result<Arc<Vec<Result<Arc<TikvExpression>, DeclineReason>>>, EvalError> {
         if self.context.as_ref() != Some(context) {
             let programs = expressions
                 .iter()
@@ -574,15 +573,15 @@ fn validate_selection(input: &Chunk, selection: Option<&[usize]>) -> Result<(), 
 /// Run one already-compiled expression against a batch.
 ///
 /// `Ok(None)` means the engine produced this expression's column.
-/// `Ok(Some(reason))` means the caller must use the native evaluator, and
-/// reports that decision so a gate can reject unlisted reasons.
+/// `Ok(Some(reason))` means the engine declined before execution; the caller
+/// reports a structured error and never replays the expression locally.
 pub(crate) fn evaluate_shared<C: Columns + ?Sized>(
     program: &TikvExpression,
     context: &C,
     input: &Chunk,
     output: &mut Chunk,
     output_index: usize,
-) -> Result<Option<FallbackReason>, EvalError> {
+) -> Result<Option<DeclineReason>, EvalError> {
     evaluate_shared_selected(program, context, input, input.sel(), output, output_index)
 }
 
@@ -595,12 +594,12 @@ pub(crate) fn evaluate_shared_selected<C: Columns + ?Sized>(
     selection: Option<&[usize]>,
     output: &mut Chunk,
     output_index: usize,
-) -> Result<Option<FallbackReason>, EvalError> {
+) -> Result<Option<DeclineReason>, EvalError> {
     validate_selection(input, selection)?;
     // Both adapters decline unrepresentable payloads BEFORE executing kernels
     // (nonfinite reals/vectors, temporal JSON and other exact-bridge limits).
-    if program.requires_native_input(input, selection) {
-        return Ok(Some(FallbackReason::UnrepresentableInput));
+    if program.has_unrepresentable_input(input, selection) {
+        return Ok(Some(DeclineReason::UnrepresentableInput));
     }
     match context.tikv_expression_backend() {
         Backend::Borrowed if output.column(output_index).rows() == 0 => {

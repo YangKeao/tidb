@@ -839,7 +839,7 @@ mod tests {
                             );
                         }
                         assert_eq!(ctx.tikv_expression_rows(), if engine { 3 } else { 0 });
-                        assert_eq!(ctx.tikv_not_admitted_fallbacks(), 0);
+                        assert_eq!(ctx.tikv_not_admitted_declines(), 0);
                     }
                 }
             }

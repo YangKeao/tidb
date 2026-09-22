@@ -569,7 +569,16 @@ remain in the workspace.
       and TiKV result/error bridge; it contains no scalar-function dispatch.
       Locked compilation, focused session tests, the 281-fixture runtime gate
       and SQL demo all pass with zero native fallback.
-- [ ] Post-tranche-39 deletion frontier (2026-03-24): the remaining source
+- [x] Fortieth contract-cleanup tranche: remove the obsolete
+      `tikv_expression_required` coexistence hook and replace the remaining
+      `FallbackReason`/fallback-recording API with `DeclineReason` and structured
+      decline telemetry. Adapter payload checks are now named
+      `has_unrepresentable_input`; their result is an error/decline, never an
+      instruction to run a native evaluator. A source audit finds no remaining
+      `FallbackReason`, fallback callback, required-engine hook, or
+      `requires_native_input` symbol. Locked compilation, focused session tests,
+      281-fixture runtime gate and SQL demo all pass with zero native fallback.
+- [ ] Post-tranche-40 deletion frontier (2026-03-24): the remaining source
       inventory is intentionally measured before another cut, not counted as
       native-kernel LOC. `builtin_ext/json` is only a 128-line cast/type bridge
       and `time_fn`/`ops` are absent. The four core dispatch/bridge files total

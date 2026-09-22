@@ -22,20 +22,20 @@ use tidb_expr::column::Column;
 use tidb_expr::constant::{Constant, ParamMarker};
 use tidb_expr::evaluator::EvaluatorSuite;
 use tidb_expr::expression::{Expression, ScalarFunction};
-use tidb_expr::tikv::{Context, FallbackReason, TikvExpression};
+use tidb_expr::tikv::{Context, DeclineReason, TikvExpression};
 use tidb_expr::Columns;
 
 #[derive(Default)]
 struct TestContext {
     enabled: bool,
     rows: Cell<usize>,
-    fallbacks: RefCell<Vec<FallbackReason>>,
+    fallbacks: RefCell<Vec<DeclineReason>>,
 }
 impl Columns for TestContext {
     fn get(&self, _: &[String]) -> Option<Datum> {
         None
     }
-    fn record_tikv_expression_fallback(&self, reason: FallbackReason) {
+    fn record_tikv_expression_decline(&self, reason: DeclineReason) {
         self.fallbacks.borrow_mut().push(reason);
     }
     fn tikv_expression_context(&self) -> Option<Context> {
@@ -331,7 +331,7 @@ fn tikv_adapter_nonfinite_input_stays_native_before_evaluation() {
     // bridge cannot represent.
     assert_eq!(
         context.fallbacks.borrow().as_slice(),
-        &[FallbackReason::UnrepresentableInput]
+        &[DeclineReason::UnrepresentableInput]
     );
 }
 

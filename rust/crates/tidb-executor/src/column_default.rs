@@ -987,8 +987,8 @@ mod tests {
                     Datum::Null
                 );
                 assert_eq!(ctx.tikv_expression_rows(), if engine { 3 } else { 0 });
-                assert_eq!(ctx.tikv_not_admitted_fallbacks(), 0);
-                assert_eq!(ctx.tikv_unrepresentable_input_fallbacks(), 0);
+                assert_eq!(ctx.tikv_not_admitted_declines(), 0);
+                assert_eq!(ctx.tikv_unrepresentable_input_declines(), 0);
 
                 let error = eval(&default, &long(), &ctx, input.physical_row(1)).unwrap_err();
                 if engine {
@@ -1027,8 +1027,8 @@ mod tests {
                     );
                 }
                 assert_eq!(ctx.tikv_expression_rows(), if engine { 2 } else { 0 });
-                assert_eq!(ctx.tikv_not_admitted_fallbacks(), 0);
-                assert_eq!(ctx.tikv_unrepresentable_input_fallbacks(), 0);
+                assert_eq!(ctx.tikv_not_admitted_declines(), 0);
+                assert_eq!(ctx.tikv_unrepresentable_input_declines(), 0);
                 assert_eq!(
                     eval(
                         &ColumnDefault::Value(Datum::Int(7)),
@@ -1099,7 +1099,7 @@ mod tests {
                     // admission, so they are neither engine rows nor native
                     // fallback attempts.
                     assert_eq!(ctx.tikv_expression_rows(), 0);
-                    assert_eq!(ctx.tikv_not_admitted_fallbacks(), 0);
+                    assert_eq!(ctx.tikv_not_admitted_declines(), 0);
                 }
             }
         }

@@ -787,7 +787,7 @@ impl EvaluatorSuite {
                     })?;
             let program = &self.program;
             if !program.vectorizable {
-                ctx.record_tikv_expression_fallback(crate::tikv::FallbackReason::NotAdmitted);
+                ctx.record_tikv_expression_decline(crate::tikv::DeclineReason::NotAdmitted);
                 return Err(EvalError::ExternalEngine {
                     code: 1105,
                     message: "TiKV expression engine does not admit row-major programs".to_owned(),
@@ -808,7 +808,7 @@ impl EvaluatorSuite {
                 let compiled = match programs.get(expression_index) {
                     Some(Ok(compiled)) => compiled,
                     Some(Err(reason)) => {
-                        ctx.record_tikv_expression_fallback(*reason);
+                        ctx.record_tikv_expression_decline(*reason);
                         return Err(EvalError::ExternalEngine {
                             code: 1105,
                             message: format!(
@@ -818,8 +818,8 @@ impl EvaluatorSuite {
                         .into());
                     }
                     None => {
-                        let reason = crate::tikv::FallbackReason::NotAdmitted;
-                        ctx.record_tikv_expression_fallback(reason);
+                        let reason = crate::tikv::DeclineReason::NotAdmitted;
+                        ctx.record_tikv_expression_decline(reason);
                         return Err(EvalError::ExternalEngine {
                             code: 1105,
                             message: format!(
@@ -843,7 +843,7 @@ impl EvaluatorSuite {
                     }
                 };
                 if let Some(reason) = declined {
-                    ctx.record_tikv_expression_fallback(reason);
+                    ctx.record_tikv_expression_decline(reason);
                     return Err(EvalError::ExternalEngine {
                         code: 1105,
                         message: format!(

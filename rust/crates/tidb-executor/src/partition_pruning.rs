@@ -2525,9 +2525,6 @@ mod tests {
             fn get(&self, _: &[String]) -> Option<Datum> {
                 unreachable!("resolved columns read the input chunk")
             }
-            fn tikv_expression_required(&self) -> bool {
-                true
-            }
         }
         let expr = pruning_test_expression(2);
         assert!(matches!(

@@ -3472,9 +3472,6 @@ mod tests {
                 fn get(&self, _: &[String]) -> Option<Datum> {
                     None
                 }
-                fn tikv_expression_required(&self) -> bool {
-                    true
-                }
             }
             assert_eq!(evaluator.matches(&Datum::Int(1), &Required), None);
         }

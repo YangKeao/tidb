@@ -62,12 +62,12 @@ fn compare_sql(
             // The removal gate: an engine-context projection that executed in
             // the engine must not also report a declined expression.
             assert_eq!(
-                statement.tikv_not_admitted_fallbacks(),
+                statement.tikv_not_admitted_declines(),
                 0,
                 "{backend:?} admitted projection reported a declined expression: {sql}"
             );
             assert_eq!(
-                statement.tikv_unrepresentable_input_fallbacks(),
+                statement.tikv_unrepresentable_input_declines(),
                 0,
                 "{backend:?} admitted projection declined an input: {sql}"
             );
@@ -81,8 +81,8 @@ fn compare_sql(
             // Staying native is only allowed with a recorded reason, so a
             // silent fallback cannot pass as an intentional exclusion.
             assert!(
-                statement.tikv_not_admitted_fallbacks()
-                    + statement.tikv_unrepresentable_input_fallbacks()
+                statement.tikv_not_admitted_declines()
+                    + statement.tikv_unrepresentable_input_declines()
                     > 0,
                 "{backend:?} stayed native without recording a reason: {sql}"
             );

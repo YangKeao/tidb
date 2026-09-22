@@ -214,9 +214,6 @@ impl Columns for EngineOnly {
             ..Context::default()
         })
     }
-    fn tikv_expression_required(&self) -> bool {
-        true
-    }
 }
 
 /// Every expression that still falls back to native must fail *cleanly* once

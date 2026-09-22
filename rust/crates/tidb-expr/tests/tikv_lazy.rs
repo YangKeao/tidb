@@ -31,7 +31,7 @@ use tidb_datatype::{Datum, FieldType, FieldTypeCode, SessionTimeZone};
 use tidb_expr::constant::Constant;
 use tidb_expr::evaluator::EvaluatorSuite;
 use tidb_expr::expression::{Expression, ScalarFunction};
-use tidb_expr::tikv::{Backend, Context, FallbackReason};
+use tidb_expr::tikv::{Backend, Context, DeclineReason};
 use tidb_expr::Columns;
 
 #[derive(Default)]
@@ -41,7 +41,7 @@ struct LazyContext {
     /// recompile.
     div_precision_increment: u8,
     rows: Cell<usize>,
-    fallbacks: RefCell<Vec<FallbackReason>>,
+    fallbacks: RefCell<Vec<DeclineReason>>,
     warnings: RefCell<Vec<u16>>,
 }
 impl Columns for LazyContext {
@@ -65,7 +65,7 @@ impl Columns for LazyContext {
     fn record_tikv_expression_rows(&self, rows: usize) {
         self.rows.set(self.rows.get() + rows);
     }
-    fn record_tikv_expression_fallback(&self, reason: FallbackReason) {
+    fn record_tikv_expression_decline(&self, reason: DeclineReason) {
         self.fallbacks.borrow_mut().push(reason);
     }
     fn append_warning(&self, code: u16, _: &str) {
@@ -104,7 +104,7 @@ fn erroring_add(ty: &FieldType) -> Expression {
 struct Outcome {
     values: Vec<Datum>,
     engine_ran: bool,
-    fallbacks: Vec<FallbackReason>,
+    fallbacks: Vec<DeclineReason>,
     warnings: Vec<u16>,
 }
 

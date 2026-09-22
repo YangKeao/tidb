@@ -392,11 +392,11 @@ pub struct StmtContextData {
     /// not an error: the removal gate compares these counts against its
     /// exclusion table so an expression cannot silently stop using the engine.
     #[cfg(feature = "tikv-expr")]
-    tikv_not_admitted_fallbacks: Arc<AtomicU64>,
+    tikv_not_admitted_declines: Arc<AtomicU64>,
     /// Engine-context expressions declined by the exact type bridge for this
     /// batch (non-finite real/vector, temporal JSON, ...).
     #[cfg(feature = "tikv-expr")]
-    tikv_unrepresentable_input_fallbacks: Arc<AtomicU64>,
+    tikv_unrepresentable_input_declines: Arc<AtomicU64>,
     /// Go's `StaticWarnHandler` entries: a LEVEL, a code and a message.
     ///
     /// The level is not decoration. Go reaches this one buffer through three
@@ -1736,8 +1736,8 @@ impl StmtContext {
     /// silent fallback; the removal gate fails on an unlisted one.
     #[cfg(feature = "tikv-expr")]
     #[must_use]
-    pub fn tikv_not_admitted_fallbacks(&self) -> u64 {
-        self.tikv_not_admitted_fallbacks.load(Ordering::Relaxed)
+    pub fn tikv_not_admitted_declines(&self) -> u64 {
+        self.tikv_not_admitted_declines.load(Ordering::Relaxed)
     }
 
     /// Expressions declined because this batch held a payload the exact type
@@ -1745,8 +1745,8 @@ impl StmtContext {
     /// between otherwise identical batches.
     #[cfg(feature = "tikv-expr")]
     #[must_use]
-    pub fn tikv_unrepresentable_input_fallbacks(&self) -> u64 {
-        self.tikv_unrepresentable_input_fallbacks
+    pub fn tikv_unrepresentable_input_declines(&self) -> u64 {
+        self.tikv_unrepresentable_input_declines
             .load(Ordering::Relaxed)
     }
 
@@ -1778,9 +1778,9 @@ impl StmtContext {
             #[cfg(feature = "tikv-expr")]
             tikv_expression_rows: Arc::default(),
             #[cfg(feature = "tikv-expr")]
-            tikv_not_admitted_fallbacks: Arc::default(),
+            tikv_not_admitted_declines: Arc::default(),
             #[cfg(feature = "tikv-expr")]
-            tikv_unrepresentable_input_fallbacks: Arc::default(),
+            tikv_unrepresentable_input_declines: Arc::default(),
             warnings: Arc::default(),
             message: Arc::default(),
             cop_batch_warnings: Arc::default(),
@@ -3727,12 +3727,12 @@ impl Columns for StmtContext {
     }
 
     #[cfg(feature = "tikv-expr")]
-    fn record_tikv_expression_fallback(&self, reason: tidb_expr::tikv::FallbackReason) {
+    fn record_tikv_expression_decline(&self, reason: tidb_expr::tikv::DeclineReason) {
         let counter = match reason {
-            tidb_expr::tikv::FallbackReason::NotAdmitted
-            | tidb_expr::tikv::FallbackReason::LazyRisk => &self.tikv_not_admitted_fallbacks,
-            tidb_expr::tikv::FallbackReason::UnrepresentableInput => {
-                &self.tikv_unrepresentable_input_fallbacks
+            tidb_expr::tikv::DeclineReason::NotAdmitted
+            | tidb_expr::tikv::DeclineReason::LazyRisk => &self.tikv_not_admitted_declines,
+            tidb_expr::tikv::DeclineReason::UnrepresentableInput => {
+                &self.tikv_unrepresentable_input_declines
             }
         };
         counter.fetch_add(1, Ordering::Relaxed);

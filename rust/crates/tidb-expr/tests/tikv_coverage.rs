@@ -27,18 +27,17 @@ use tidb_expr::column::Column;
 use tidb_expr::constant::Constant;
 use tidb_expr::evaluator::{EvaluatorProgram, EvaluatorSuite};
 use tidb_expr::expression::{Expression, ScalarFunction};
-use tidb_expr::tikv::{Backend, Context, FallbackReason, TikvExpression};
+use tidb_expr::tikv::{Backend, Context, DeclineReason, TikvExpression};
 use tidb_expr::Columns;
 
 #[derive(Default)]
 struct TestContext {
     backend: Option<Backend>,
     /// Simulates a resolver built after the native evaluator is deleted.
-    engine_required: bool,
     rows: Cell<usize>,
     borrowed: Cell<usize>,
     warnings: RefCell<Vec<u16>>,
-    fallbacks: RefCell<Vec<FallbackReason>>,
+    fallbacks: RefCell<Vec<DeclineReason>>,
 }
 impl Columns for TestContext {
     fn get(&self, _: &[String]) -> Option<Datum> {
@@ -50,9 +49,6 @@ impl Columns for TestContext {
             ..Context::default()
         })
     }
-    fn tikv_expression_required(&self) -> bool {
-        self.engine_required
-    }
     fn tikv_expression_backend(&self) -> Backend {
         self.backend.unwrap_or_default()
     }
@@ -62,7 +58,7 @@ impl Columns for TestContext {
     fn record_tikv_borrowed_expression_rows(&self, rows: usize) {
         self.borrowed.set(self.borrowed.get() + rows);
     }
-    fn record_tikv_expression_fallback(&self, reason: FallbackReason) {
+    fn record_tikv_expression_decline(&self, reason: DeclineReason) {
         self.fallbacks.borrow_mut().push(reason);
     }
     fn append_warning(&self, code: u16, _: &str) {
@@ -208,7 +204,6 @@ fn check(
     for backend in [Some(Backend::Copying), Some(Backend::Borrowed)] {
         let context = TestContext {
             backend,
-            engine_required: true,
             ..TestContext::default()
         };
         let suite = EvaluatorSuite::new(vec![expression.clone()], true);
@@ -294,7 +289,6 @@ fn check_expected(
 ) -> Result<(), String> {
     let context = TestContext {
         backend: Some(Backend::Copying),
-        engine_required: true,
         ..TestContext::default()
     };
     let suite = EvaluatorSuite::new(vec![expression.clone()], true);
@@ -834,7 +828,6 @@ fn canonical_bit_roots_preserve_width_and_datum_kind() {
             for backend in [None, Some(Backend::Copying), Some(Backend::Borrowed)] {
                 let ctx = TestContext {
                     backend,
-                    engine_required: backend.is_some(),
                     ..TestContext::default()
                 };
                 let suite = EvaluatorSuite::from_program(Arc::clone(&program));
@@ -957,7 +950,6 @@ fn binary_literal_integer_casts_use_engine_with_exact_numeric_kind() {
             for backend in [None, Some(Backend::Copying), Some(Backend::Borrowed)] {
                 let ctx = TestContext {
                     backend,
-                    engine_required: backend.is_some(),
                     ..TestContext::default()
                 };
                 let suite = EvaluatorSuite::from_program(Arc::clone(&program));
@@ -1123,7 +1115,6 @@ fn bounded_binary_text_integer_casts_use_text_not_literal_semantics() {
                 for backend in [None, Some(Backend::Copying), Some(Backend::Borrowed)] {
                     let ctx = TestContext {
                         backend,
-                        engine_required: backend.is_some(),
                         ..TestContext::default()
                     };
                     let suite = EvaluatorSuite::from_program(Arc::clone(&program));
@@ -1290,9 +1281,6 @@ fn temporal_constant_shapes_execute_without_fallback() {
         fn tikv_expression_context(&self) -> Option<Context> {
             Some(self.config.clone())
         }
-        fn tikv_expression_required(&self) -> bool {
-            true
-        }
         fn tikv_expression_backend(&self) -> Backend {
             self.backend
         }
@@ -1370,7 +1358,6 @@ fn temporal_constant_shapes_execute_without_fallback() {
 fn zero_temporal_constants_require_warning_free_compilation() {
     struct ZeroContext {
         config: Context,
-        required: bool,
         rows: Cell<usize>,
         fallbacks: Cell<usize>,
     }
@@ -1381,13 +1368,10 @@ fn zero_temporal_constants_require_warning_free_compilation() {
         fn tikv_expression_context(&self) -> Option<Context> {
             Some(self.config.clone())
         }
-        fn tikv_expression_required(&self) -> bool {
-            self.required
-        }
         fn record_tikv_expression_rows(&self, rows: usize) {
             self.rows.set(self.rows.get() + rows);
         }
-        fn record_tikv_expression_fallback(&self, _: FallbackReason) {
+        fn record_tikv_expression_decline(&self, _: DeclineReason) {
             self.fallbacks.set(self.fallbacks.get() + 1);
         }
         fn append_warning(&self, code: u16, message: &str) {
@@ -1431,7 +1415,6 @@ fn zero_temporal_constants_require_warning_free_compilation() {
                         max_warning_count,
                         ..Context::default()
                     },
-                    required,
                     rows: Cell::new(0),
                     fallbacks: Cell::new(0),
                 };
@@ -1460,7 +1443,6 @@ fn zero_temporal_constants_require_warning_free_compilation() {
 fn timestamp_literals_preserve_fixed_offset_wall_fields() {
     struct TimestampContext {
         config: Context,
-        required: bool,
         backend: Backend,
         rows: Cell<usize>,
     }
@@ -1473,9 +1455,6 @@ fn timestamp_literals_preserve_fixed_offset_wall_fields() {
         }
         fn tikv_expression_context(&self) -> Option<Context> {
             Some(self.config.clone())
-        }
-        fn tikv_expression_required(&self) -> bool {
-            self.required
         }
         fn record_tikv_expression_rows(&self, rows: usize) {
             self.rows.set(self.rows.get() + rows);
@@ -1547,7 +1526,6 @@ fn timestamp_literals_preserve_fixed_offset_wall_fields() {
                         time_zone_offset: offset,
                         ..Context::default()
                     },
-                    required,
                     backend,
                     rows: Cell::new(0),
                 };
@@ -1924,7 +1902,6 @@ fn tikv_coverage_missing_engine_context_is_a_structured_error_when_required() {
     let mut input = fixture(std::slice::from_ref(&ty), &[vec![Datum::Int(41)]]);
 
     let context = TestContext {
-        engine_required: true,
         ..TestContext::default()
     };
     let suite = EvaluatorSuite::new(vec![expression.clone()], true);
@@ -1968,7 +1945,6 @@ fn tikv_coverage_declined_expression_is_a_structured_error_when_required() {
     let mut input = fixture(std::slice::from_ref(&ty), &[vec![string("abc")]]);
 
     let context = TestContext {
-        engine_required: true,
         backend: Some(Backend::Copying),
         ..TestContext::default()
     };
@@ -3410,7 +3386,6 @@ fn scalar_row_helpers_handle_empty_values_and_required_context() {
         assert_eq!(eval_row_values(&binary, &ctx, &[]).unwrap(), Some(value));
     }
     let required = TestContext {
-        engine_required: true,
         ..TestContext::default()
     };
     for result in [
@@ -3478,7 +3453,6 @@ fn eval_chunk_matches_native_row_by_row_and_leaves_the_input_alone() {
     // answer, when the adapter declines: `now` has no engine path.
     let required = TestContext {
         backend: Some(Backend::Copying),
-        engine_required: true,
         ..TestContext::default()
     };
     let declined = call("now", &ty, Vec::new());
