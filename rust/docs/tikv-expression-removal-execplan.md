@@ -466,15 +466,24 @@ remain in the workspace.
       engine-only SQL demo pass unchanged with five TiKV engine rows and a
       refused no-context probe. `SHOW ... WHERE` is currently an explicit demo
       contraction until its virtual-row resolver carries statement TiKV state.
-- [ ] Post-tranche-28 deletion frontier (2026-03-24): the remaining source
+- [x] Twenty-ninth physical-deletion tranche: delete `func.rs` in full (1,623
+      lines), removing the unreachable value-list/AST builtin router, its native
+      control/string/date/row kernels and every family-specific runtime guard.
+      Rewriter-only crypto and temporal-residual refusal predicates, plus the
+      sequence path separator, are retained locally as construction metadata;
+      no evaluator implementation moved with them. Production compiles without
+      the module, proving the router had no remaining runtime caller after the
+      three central dispatcher cuts. The tranche is 34 insertions / 1,636
+      deletions; `cargo check -p tidb-session` and the SQL demo pass with the
+      same five TiKV engine rows and refused no-context probe.
+- [ ] Post-tranche-29 deletion frontier (2026-03-24): the remaining source
       inventory is intentionally measured before another cut, not counted as
       native-kernel LOC. `builtin_ext/json` has 2,896 production lines across
       ten files (including parsing/value bridges that may survive); `time_fn`
       has 3,832 across five files (`calendar.rs` 2,323, `duration_parse.rs` 611,
-      `add_sub.rs` 520, `extract.rs` 103 and dispatch 275); the five core
-      dispatch/bridge files total 9,600 lines (`scalar_function.rs` 2,637,
-      `evaluator.rs` 2,227, `cast.rs` 2,299, `func.rs` 1,623 and `lib.rs`
-      814). The next physical cuts should start with isolated JSON merge/search
+      `add_sub.rs` 520, `extract.rs` 103 and dispatch 275); the four core
+      dispatch/bridge files total 7,974 lines (`scalar_function.rs` 2,634,
+      `evaluator.rs` 2,227, `cast.rs` 2,299 and `lib.rs` 814). The next physical cuts should start with isolated JSON merge/search
       kernels and EXTRACT, while retaining only parser, result-type, transport
       and TiKV-lowering pieces. This snapshot prevents the outside-call-site
       audit from being mistaken for completion: substantial native expression

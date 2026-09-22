@@ -1216,9 +1216,6 @@ impl ScalarFunction {
         is_zero: &mut Vec<i8>,
     ) -> Result<bool, EvalError> {
         let name = self.func_name.lowercase();
-        if crate::func::is_removed_native_misc(name) {
-            return Ok(false);
-        }
         if name != "not" {
             return self.vec_eval_numeric_compare(input, sel, is_zero);
         }

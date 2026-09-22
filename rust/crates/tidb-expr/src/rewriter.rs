@@ -34,6 +34,35 @@ use tidb_datatype::{
 /// literal too large for a `MyDecimal` saturates to.
 const DEFAULT_DECIMAL_LITERAL: &str =
     "99999999999999999999999999999999999999999999999999999999999999999";
+const SEQUENCE_PATH_SEPARATOR: char = '.';
+
+fn is_removed_native_crypto(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "MD5"
+            | "SHA"
+            | "SHA1"
+            | "SHA2"
+            | "SM3"
+            | "RANDOM_BYTES"
+            | "PASSWORD"
+            | "VALIDATE_PASSWORD_STRENGTH"
+            | "ENCODE"
+            | "DECODE"
+            | "COMPRESS"
+            | "AES_ENCRYPT"
+            | "AES_DECRYPT"
+            | "UNCOMPRESS"
+            | "UNCOMPRESSED_LENGTH"
+    )
+}
+
+fn is_removed_native_temporal_residual(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "CONVERT_TZ" | "FROM_DAYS" | "TIDB_PARSE_TSO" | "TIMESTAMPADD"
+    )
+}
 
 pub(crate) mod control_type;
 mod fold_mode;
@@ -1658,7 +1687,7 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
             // contracted. Refuse before arity validation or recursive child
             // rewriting/folding so unreachable child failures/effects cannot
             // leak through a function that will never execute.
-            if crate::func::is_removed_native_crypto(&lowered) {
+            if is_removed_native_crypto(&lowered) {
                 return Err(EvalError::Unsupported(
                     "native crypto evaluation was removed; TiKV engine required",
                 ));
@@ -1681,7 +1710,7 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
             // These excluded temporal functions have no native kernel. Refuse
             // before recursive child rewriting/folding so unreachable child
             // failures cannot escape through a function that cannot execute.
-            if crate::func::is_removed_native_temporal_residual(&lowered) {
+            if is_removed_native_temporal_residual(&lowered) {
                 return Err(EvalError::Unsupported(
                     "native temporal residual evaluation was removed; function unsupported",
                 ));
@@ -1723,10 +1752,7 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
             if matches!(lowered.as_str(), "nextval" | "lastval" | "setval") {
                 if let Some(Expr::Column(path)) = args.first() {
                     let mut rewritten = vec![Expression::Constant(crate::constant::Constant::new(
-                        Datum::Bytes(
-                            path.join(&crate::func::SEQUENCE_PATH_SEPARATOR.to_string())
-                                .into_bytes(),
-                        ),
+                        Datum::Bytes(path.join(&SEQUENCE_PATH_SEPARATOR.to_string()).into_bytes()),
                         tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString),
                     ))];
                     for arg in &args[1..] {
@@ -2434,7 +2460,7 @@ mod tests {
         };
         let flen = |expr: &Expr| {
             let expression = match expr {
-                Expr::Func { name, .. } if crate::func::is_removed_native_crypto(name) => {
+                Expr::Func { name, .. } if is_removed_native_crypto(name) => {
                     removed_crypto_metadata_for_test(expr)
                 }
                 _ => rewrite_expr(expr).unwrap(),
@@ -3051,7 +3077,7 @@ mod builtin_type_tests {
     fn rewrite(sql_expr: &str) -> Expression {
         let expr = parse_expr(sql_expr);
         match &expr {
-            Expr::Func { name, .. } if crate::func::is_removed_native_crypto(name) => {
+            Expr::Func { name, .. } if is_removed_native_crypto(name) => {
                 removed_crypto_metadata_for_test(&expr)
             }
             _ => rewrite_expr_resolved(&expr, &NoResolver).expect("rewrites"),

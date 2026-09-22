@@ -314,7 +314,6 @@ pub mod expropt;
 pub mod exprstatic;
 mod field_name;
 pub mod fts;
-mod func;
 mod grouping;
 pub mod infer_pushdown;
 mod like;
@@ -462,7 +461,6 @@ fn ast_binary_overflow_error(
 }
 
 use coerce::{bool_int, coerce_str_bytes};
-use func::{eval_func, eval_in_list, negate_if};
 use like::like_match;
 use ops::{
     effective_div_precision_increment, eval_binary, eval_binary_with_div_precision, eval_unary,
