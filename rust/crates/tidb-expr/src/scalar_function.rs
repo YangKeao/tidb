@@ -2052,7 +2052,6 @@ impl ScalarFunction {
                 | "CURTIME"
                 | "CURRENT_TIME"
                 | "UTC_TIME"
-                | "LAST_DAY"
                 | "MAKEDATE"
                 | "FROM_DAYS"
                 | "SEC_TO_TIME"
