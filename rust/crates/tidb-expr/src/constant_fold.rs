@@ -289,16 +289,9 @@ fn fold_value(expr: &mut Expression) -> Option<Datum> {
     if !all_const_arg {
         return None;
     }
-    // A constant tree reads no row and no session state, so Go's empty
-    // `chunk.Row{}` over a resolver that answers nothing is the whole input.
-    let chunk = {
-        let mut chunk = tidb_chunk::chunk::Chunk::new_empty(&[]);
-        chunk.set_num_virtual_rows(1);
-        chunk
-    };
-    let value = expr
-        .eval(&crate::context::NoColumns, chunk.get_row(0))
-        .ok()?;
+    // Engine-only folding has no native escape hatch. A resolver without a
+    // TiKV context simply leaves the tree unfolded.
+    let value = crate::eval_expression_once(expr, &crate::context::NoColumns).ok()?;
     if !has_null_arg {
         let Expression::ScalarFunction(func) = expr else {
             unreachable!("matched as a scalar function above")
@@ -359,9 +352,7 @@ pub(crate) fn folded_value(expr: &Expression) -> Option<Datum> {
     if !folds_to_constant(expr) {
         return None;
     }
-    let mut chunk = tidb_chunk::chunk::Chunk::new_empty(&[]);
-    chunk.set_num_virtual_rows(1);
-    expr.eval(&crate::context::NoColumns, chunk.get_row(0)).ok()
+    crate::eval_expression_once(expr, &crate::context::NoColumns).ok()
 }
 
 /// Go `unFoldableFunctions` (`pkg/expression/function_traits.go`): the

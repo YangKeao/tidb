@@ -683,9 +683,7 @@ pub fn eval_expression_once(
     expression: &expression::Expression,
     ctx: &dyn Columns,
 ) -> Result<Datum, EvalError> {
-    let mut dual = tidb_chunk::chunk::Chunk::new_empty(&[]);
-    dual.set_num_virtual_rows(1);
-    expression.eval(ctx, dual.get_row(0))
+    crate::evaluator::eval_constant_row(expression, ctx).map_err(crate::evaluator::into_eval_error)
 }
 
 /// Applies a binary operator to already-evaluated operands. Exposed so callers

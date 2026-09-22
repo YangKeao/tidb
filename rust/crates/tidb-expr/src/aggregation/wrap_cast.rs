@@ -212,7 +212,7 @@ pub fn wrap_with_cast_as_decimal(expr: Expression) -> Result<Expression, EvalErr
     // any warning-bearing/non-constant expression is left untouched.
     if strict_constant {
         if let Ok(tidb_datatype::Datum::Decimal(value)) =
-            cast_expr.eval(&crate::NoColumns, tidb_chunk::row::Row::empty())
+            crate::eval_expression_once(&cast_expr, &crate::NoColumns)
         {
             let (precision, frac) = value.precision_and_frac();
             if let Some(field_type) = ret_type_mut(&mut cast_expr) {

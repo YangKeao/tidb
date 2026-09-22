@@ -428,9 +428,9 @@ pub fn into_eval_error(error: EvaluatorError) -> EvalError {
 /// compiled program is still not cached: a loop that evaluates the same
 /// expression for many chunks should retain an [`EvaluatorSuite`] and call its
 /// [`EvaluatorSuite::eval_chunk`] method instead.
-pub fn eval_chunk<C: Columns>(
+pub fn eval_chunk(
     expression: &Expression,
-    ctx: &C,
+    ctx: &dyn Columns,
     input: &Chunk,
 ) -> Result<Vec<Datum>, EvaluatorError> {
     EvaluatorSuite::new(vec![expression.clone()], true).eval_chunk(ctx, input)
@@ -449,9 +449,9 @@ pub fn eval_chunk<C: Columns>(
 /// once-per-statement call sites (DDL partition values, defaults, pruning
 /// bounds) and unsuitable for a per-row loop, which should move the evaluation
 /// out of the loop instead.
-pub fn eval_constant_row<C: Columns>(
+pub fn eval_constant_row(
     expression: &Expression,
-    ctx: &C,
+    ctx: &dyn Columns,
 ) -> Result<Datum, EvaluatorError> {
     let mut input = Chunk::new_empty(&[]);
     input.set_num_virtual_rows(1);
@@ -477,9 +477,9 @@ pub fn eval_constant_row<C: Columns>(
 /// this helper no longer asks callers to perform their own native fallback.
 ///
 /// Like [`eval_constant_row`], the compiled program is not cached.
-pub fn eval_row_values<C: Columns>(
+pub fn eval_row_values(
     expression: &Expression,
-    ctx: &C,
+    ctx: &dyn Columns,
     values: &[Datum],
 ) -> Result<Option<Datum>, EvaluatorError> {
     if values.is_empty() {
@@ -493,9 +493,9 @@ pub fn eval_row_values<C: Columns>(
     eval_scalar_row(expression, ctx, chunk).map(Some)
 }
 
-fn eval_scalar_row<C: Columns>(
+fn eval_scalar_row(
     expression: &Expression,
-    ctx: &C,
+    ctx: &dyn Columns,
     input: &Chunk,
 ) -> Result<Datum, EvaluatorError> {
     EvaluatorSuite::new(vec![expression.clone()], true)
@@ -654,9 +654,9 @@ impl EvaluatorSuite {
     /// Suites with a direct-column ownership transfer, or with any output shape
     /// other than one calculated expression, are rejected rather than silently
     /// omitting an output.
-    pub fn eval_chunk<C: Columns>(
+    pub fn eval_chunk(
         &self,
-        ctx: &C,
+        ctx: &dyn Columns,
         input: &Chunk,
     ) -> Result<Vec<Datum>, EvaluatorError> {
         self.eval_single_input(ctx, input, None, false)
@@ -666,9 +666,9 @@ impl EvaluatorSuite {
     /// Ignores `input.sel()` without mutating/copying the input chunk. Repeats
     /// and reordering are preserved; the shared program retains its engine
     /// cache. Invalid indices are rejected before any expression is evaluated.
-    pub fn eval_selected<C: Columns>(
+    pub fn eval_selected(
         &self,
-        ctx: &C,
+        ctx: &dyn Columns,
         input: &Chunk,
         physical_rows: &[usize],
     ) -> Result<Vec<Datum>, EvaluatorError> {

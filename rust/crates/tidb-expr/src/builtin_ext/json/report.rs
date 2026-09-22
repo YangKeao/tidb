@@ -34,9 +34,7 @@ use super::value::{
     json_document_string, json_sql_string, parse_json, parse_json_document_argument,
 };
 use crate::coerce::coerce_str;
-use crate::expression::{ConstLevel, Expression};
-use crate::{Columns, Datum, EvalError, JsonError};
-use tidb_chunk::row::Row;
+use crate::{Datum, EvalError, JsonError};
 
 /// Per-signature cache and lazy evaluator for `JSON_SCHEMA_VALID`.
 ///
@@ -58,38 +56,6 @@ struct PreparedJsonSchema {
 impl Clone for JsonSchemaCache {
     fn clone(&self) -> Self {
         Self::default()
-    }
-}
-
-impl JsonSchemaCache {
-    pub(crate) fn eval(
-        &self,
-        args: &[Expression],
-        ctx: &dyn Columns,
-        row: Row<'_>,
-    ) -> Result<Datum, EvalError> {
-        let [schema_arg, document_arg] = args else {
-            return Err(EvalError::WrongParameterCount("json_schema_valid"));
-        };
-        let schema_value = schema_arg.eval(ctx, row)?;
-        if schema_value.is_null() {
-            return Ok(Datum::Null);
-        }
-
-        if schema_arg.const_level() == ConstLevel::STRICT {
-            let schema = match self.0.get_or_init(|| prepare_json_schema(&schema_value)) {
-                Ok(Some(schema)) => schema,
-                Ok(None) => return Ok(Datum::Null),
-                Err(error) => return Err(error.clone()),
-            };
-            return validate_json_schema(schema, &document_arg.eval(ctx, row)?);
-        }
-
-        let schema = prepare_json_schema(&schema_value)?;
-        let Some(schema) = schema.as_ref() else {
-            return Ok(Datum::Null);
-        };
-        validate_json_schema(schema, &document_arg.eval(ctx, row)?)
     }
 }
 

@@ -152,16 +152,6 @@ impl Constant {
         })
     }
 
-    /// Runtime evaluation keeps the caller's row, as Go `getLazyDatum` does.
-    /// It must not construct a new empty chunk at every deferred node.
-    pub(crate) fn eval_on_row(
-        &self,
-        ctx: &dyn crate::Columns,
-        row: tidb_chunk::row::Row<'_>,
-    ) -> Result<Datum, EvalError> {
-        self.eval_lazy_in(ctx, |expression| expression.eval(ctx, row))
-    }
-
     fn eval_lazy_in(
         &self,
         ctx: &dyn crate::Columns,

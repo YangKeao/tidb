@@ -735,12 +735,9 @@ impl std::fmt::Display for SubstituteError {
 
 impl std::error::Error for SubstituteError {}
 
-/// Go `expr.Eval(ctx.GetEvalCtx(), chunk.Row{})`: evaluating against the empty
-/// row, which is what a wholly constant subtree needs.
+/// Evaluates a wholly constant subtree through the engine-only suite.
 pub(super) fn eval_once(expr: &Expression, ctx: &impl Columns) -> Result<Datum, EvalError> {
-    let mut chunk = tidb_chunk::chunk::Chunk::new_empty(&[]);
-    chunk.set_num_virtual_rows(1);
-    expr.eval(ctx, chunk.get_row(0))
+    crate::eval_expression_once(expr, ctx)
 }
 
 /// The `collationInfo` of whichever node kind `expr` is, for the

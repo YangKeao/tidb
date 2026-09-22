@@ -437,15 +437,31 @@ remain in the workspace.
       structured engine-only errors. Native kernel source is still present and
       is the next deletion phase; this is a runnable architectural cutover demo,
       not final physical removal or full compatibility.
-- [ ] Post-tranche-26 deletion frontier (2026-03-24): the remaining source
+- [x] Twenty-seventh physical-deletion tranche: remove the complete
+      `Expression::eval` dispatcher and `ScalarFunction::eval` implementation,
+      including its native signature ladder, child-recursive evaluation,
+      integer fast path, direct cast/time/JSON/function dispatch and family
+      guards. The deleted scalar block was 1,201 lines; the tranche is 21
+      insertions / 1,316 deletions overall. The nine remaining production
+      callers now use `EvaluatorSuite` through `eval_expression_once`, or were
+      deleted when they existed only to serve the native dispatcher (deferred
+      row evaluation and JSON schema cache evaluation). Constant-folding with a
+      resolver that lacks a TiKV context now leaves the tree unfolded instead
+      of invoking native code. `cargo check -p tidb-session` passes; the focused
+      two-test engine-only session gate passes; the runnable SQL demo still
+      reports five TiKV engine rows and refuses the no-context replay probe.
+      Native helper/kernel modules still remain and must be deleted next; this
+      tranche removes the two central native dispatchers, not the whole source
+      inventory.
+- [ ] Post-tranche-27 deletion frontier (2026-03-24): the remaining source
       inventory is intentionally measured before another cut, not counted as
-      native-kernel LOC. `builtin_ext/json` has 2,932 production lines across
+      native-kernel LOC. `builtin_ext/json` has 2,896 production lines across
       ten files (including parsing/value bridges that may survive); `time_fn`
       has 3,832 across five files (`calendar.rs` 2,323, `duration_parse.rs` 611,
       `add_sub.rs` 520, `extract.rs` 103 and dispatch 275); the five core
-      dispatch/bridge files total 11,337 lines (`scalar_function.rs` 3,838,
-      `evaluator.rs` 2,372, `cast.rs` 2,299, `func.rs` 1,619 and `lib.rs`
-      1,209). The next physical cuts should start with isolated JSON merge/search
+      dispatch/bridge files total 9,987 lines (`scalar_function.rs` 2,637,
+      `evaluator.rs` 2,227, `cast.rs` 2,299, `func.rs` 1,619 and `lib.rs`
+      1,205). The next physical cuts should start with isolated JSON merge/search
       kernels and EXTRACT, while retaining only parser, result-type, transport
       and TiKV-lowering pieces. This snapshot prevents the outside-call-site
       audit from being mistaken for completion: substantial native expression
