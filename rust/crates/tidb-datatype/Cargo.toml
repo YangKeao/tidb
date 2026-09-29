@@ -24,6 +24,8 @@ tidb-error = { path = "../tidb-error" }
 tidb-hack = { path = "../tidb-hack" }
 tidb-kvcache = { path = "../tidb-kvcache" }
 tidb-mysql = { path = "../tidb-mysql" }
+tidb_query_datatype.workspace = true
+tipb.workspace = true
 unicode-general-category.workspace = true
 
 [dev-dependencies]

@@ -15,55 +15,26 @@
 //! default), with both binary and source-registered collation matching.
 //! Called directly from `crate::eval_in`'s `Expr::Like` arm.
 
-use std::cmp::Ordering;
-
-use tidb_datatype::Collation;
-use tidb_util::stringutil::{
-    compile_pattern, do_match_customized, lower_one_string, lower_one_string_excluding_escape_char,
-    PatternType,
-};
+use tidb_datatype::{Collation, Collator, WildcardPattern};
+use tidb_util::stringutil::{lower_one_string, lower_one_string_excluding_escape_char};
 
 /// Go `collate.WildcardPattern`, retained by `builtinLikeSig.patternCache`.
 /// The compiled wildcard tokens are immutable and safe to share across rows
 /// in one statement context.
 #[derive(Clone, Debug)]
 pub(crate) struct CompiledLikePattern {
-    collation: Collation,
-    pattern: Vec<u8>,
-    escape: u8,
-    weights: Vec<char>,
-    types: Vec<PatternType>,
+    pattern: WildcardPattern,
 }
 
 impl CompiledLikePattern {
     pub(crate) fn new(pattern: &[u8], escape: u8, collation: Collation) -> Self {
-        let (weights, types) = compile_pattern(pattern, escape);
         Self {
-            collation,
-            pattern: pattern.to_vec(),
-            escape,
-            weights,
-            types,
+            pattern: collation.pattern(pattern, escape),
         }
     }
 
     pub(crate) fn is_match(&self, text: &[u8]) -> bool {
-        if self.collation == Collation::Binary
-            || (text.is_ascii()
-                && self.pattern.is_ascii()
-                && matches!(
-                    self.collation,
-                    Collation::AsciiBin
-                        | Collation::Latin1Bin
-                        | Collation::Utf8Bin
-                        | Collation::Utf8Mb4Bin
-                ))
-        {
-            return do_match_binary_pattern(text, &self.pattern, self.escape);
-        }
-        do_match_customized(text, &self.weights, &self.types, |left, right| {
-            collation_char_equal(left, right, self.collation)
-        })
+        self.pattern.is_match(text)
     }
 }
 
@@ -113,13 +84,11 @@ pub(crate) fn like_match(
 /// Matches a pattern using one of the collations translated into
 /// `tidb-datatype`.
 ///
-/// Go's `Collator.Pattern().DoMatch` compares one decoded rune at a time;
-/// `%` and `_` retain their binary wildcard meaning while literal runes use
-/// the collation's weight table. This is deliberately a separate entry point
-/// from [`like_match`]: the expression evaluator's current default remains
-/// `utf8mb4_bin`, while source-shaped tests can exercise the explicit
-/// `utf8mb4_general_ci` and `utf8mb4_unicode_ci` collator contracts without
-/// inventing session metadata in the value-only evaluator.
+/// The datatype facade selects byte, rune-identity, or collation-weight
+/// matching. Dynamic and statement-cached calls share the TiKV kernel, without
+/// applying PAD SPACE preprocessing to literal characters. The default of
+/// [`like_match`] remains `utf8mb4_bin`; this entry point takes an explicit
+/// collation without inventing or re-reading session metadata.
 pub fn like_match_with_collation(
     text: impl AsRef<[u8]>,
     pattern: impl AsRef<[u8]>,
@@ -128,114 +97,7 @@ pub fn like_match_with_collation(
 ) -> bool {
     let text = text.as_ref();
     let pattern = pattern.as_ref();
-    let escape = escape.unwrap_or(b'\\');
-    if collation == Collation::Binary
-        || (text.is_ascii()
-            && pattern.is_ascii()
-            && matches!(
-                collation,
-                Collation::AsciiBin
-                    | Collation::Latin1Bin
-                    | Collation::Utf8Bin
-                    | Collation::Utf8Mb4Bin
-            ))
-    {
-        return do_match_binary_pattern(text, pattern, escape);
-    }
-    let (weights, types) = compile_pattern(pattern, escape);
-    do_match_customized(text, &weights, &types, |left, right| {
-        collation_char_equal(left, right, collation)
-    })
-}
-
-/// Matches a binary LIKE pattern without allocating compiled token vectors.
-///
-/// The evaluator invokes LIKE once per input row. Go compiles a constant
-/// pattern once, while this value-only seam receives the pattern as bytes on
-/// every call. Keeping the standard greedy `%` backtracking state on the
-/// stack reproduces `compile_pattern_binary`/`do_match_binary` for byte
-/// collations and removes that per-row allocation from large scans.
-fn do_match_binary_pattern(input: &[u8], pattern: &[u8], escape: u8) -> bool {
-    let (mut input_index, mut pattern_index) = (0usize, 0usize);
-    let (mut star, mut star_input) = (None, 0usize);
-    while input_index < input.len() {
-        if pattern_index < pattern.len() {
-            let current = pattern[pattern_index];
-            if current == escape {
-                let literal = pattern.get(pattern_index + 1).copied().unwrap_or(escape);
-                let width = if pattern_index + 1 < pattern.len() {
-                    2
-                } else {
-                    1
-                };
-                if input[input_index] == literal {
-                    input_index += 1;
-                    pattern_index += width;
-                    continue;
-                }
-            } else if current == b'_' {
-                input_index += 1;
-                pattern_index += 1;
-                continue;
-            } else if current == b'%' {
-                star = Some(pattern_index);
-                star_input = input_index;
-                pattern_index += 1;
-                continue;
-            } else if input[input_index] == current {
-                input_index += 1;
-                pattern_index += 1;
-                continue;
-            }
-        }
-        let Some(star_index) = star else {
-            return false;
-        };
-        if star_input == input.len() {
-            return false;
-        }
-        star_input += 1;
-        input_index = star_input;
-        pattern_index = star_index + 1;
-    }
-    while pattern_index < pattern.len() && pattern[pattern_index] == b'%' {
-        pattern_index += 1;
-    }
-    pattern_index == pattern.len()
-}
-
-/// Compares one source rune under a TiDB collation.
-///
-/// The Go general-CI table maps every rune above U+FFFF to one replacement
-/// weight, but the Unicode-CI wildcard callback intentionally keeps all
-/// supplementary-plane runes distinct; handling that boundary before the
-/// byte-level collation helper preserves both source contracts. For the
-/// remaining BMP runes, the generated `Collation::compare` tables are the
-/// same weights consumed by Go's wildcard callback.
-fn collation_char_equal(left: char, right: char, collation: Collation) -> bool {
-    if left == right {
-        return true;
-    }
-    if matches!(
-        collation,
-        Collation::Binary
-            | Collation::AsciiBin
-            | Collation::Latin1Bin
-            | Collation::Utf8Bin
-            | Collation::Utf8Mb4Bin
-    ) {
-        return false;
-    }
-    if matches!(
-        collation,
-        Collation::Utf8UnicodeCi | Collation::Utf8Mb4UnicodeCi
-    ) && ((left as u32) > 0xFFFF || (right as u32) > 0xFFFF)
-    {
-        return false;
-    }
-    let left = left.to_string();
-    let right = right.to_string();
-    collation.compare(left.as_bytes(), right.as_bytes()) == Ordering::Equal
+    Collator::New(collation).like_match(text, pattern, escape.unwrap_or(b'\\'))
 }
 
 /// Matches TiDB's `ILIKE` semantics: ASCII letters compare without case,
@@ -291,7 +153,80 @@ fn lower_ascii_excluding_escape(value: &[u8], escape: u8) -> (Vec<u8>, u8) {
 mod tests {
     use tidb_datatype::Collation;
 
-    use super::{ilike_match, like_match, like_match_with_collation};
+    use super::{ilike_match, like_match, like_match_with_collation, CompiledLikePattern};
+
+    fn assert_shared_like_regression_cases(cases: &[(&str, &str, u8, Collation, bool)]) {
+        let mut mismatches = Vec::new();
+        for &(text, pattern, escape, collation, expected) in cases {
+            let uncached = like_match_with_collation(text, pattern, Some(escape), collation);
+            let cached = CompiledLikePattern::new(pattern.as_bytes(), escape, collation)
+                .is_match(text.as_bytes());
+            if (uncached, cached) != (expected, expected) {
+                mismatches.push(format!(
+                    "text={text:?}, pattern={pattern:?}, escape={escape:?}, collation={collation:?}: \
+                     uncached={uncached}, cached={cached}, expected={expected}"
+                ));
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "LIKE disagrees with the collator pattern contract:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
+    fn shared_like_regression_wildcard_escape_at_end() {
+        // Escape takes precedence over '%' even after the target is exhausted.
+        assert_shared_like_regression_cases(&[
+            ("", "%", b'%', Collation::Binary, false),
+            ("a", "a%", b'%', Collation::Binary, false),
+            ("%", "%", b'%', Collation::Binary, true),
+            ("a%", "a%", b'%', Collation::Binary, true),
+            ("", "%", b'%', Collation::Utf8Mb4Bin, false),
+            ("a", "a%", b'%', Collation::Utf8Mb4Bin, false),
+            ("%", "%", b'%', Collation::Utf8Mb4Bin, true),
+            ("a%", "a%", b'%', Collation::Utf8Mb4Bin, true),
+        ]);
+    }
+
+    #[test]
+    fn shared_like_regression_unicode_literal_spaces() {
+        // Go's unicodePattern compares rune weights without PAD preprocessing:
+        // fullwidth space has the ASCII space weight, while NUL is ignorable.
+        assert_shared_like_regression_cases(&[
+            ("\u{3000}", " ", b'\\', Collation::Utf8UnicodeCi, true),
+            (" ", "\u{3000}", b'\\', Collation::Utf8UnicodeCi, true),
+            (" ", "\0", b'\\', Collation::Utf8UnicodeCi, false),
+            ("\0", " ", b'\\', Collation::Utf8UnicodeCi, false),
+            ("\u{3000}", " ", b'\\', Collation::Utf8Mb4UnicodeCi, true),
+            (" ", "\u{3000}", b'\\', Collation::Utf8Mb4UnicodeCi, true),
+            (" ", "\0", b'\\', Collation::Utf8Mb4UnicodeCi, false),
+            ("\0", " ", b'\\', Collation::Utf8Mb4UnicodeCi, false),
+        ]);
+    }
+
+    #[test]
+    fn shared_like_regression_gbk_binary_rune_identity() {
+        // gbkBinPattern embeds derivedBinPattern: unencodable runes remain
+        // distinct even when both GBK sort keys are the replacement byte '?'.
+        assert_shared_like_regression_cases(&[
+            ("😀", "😁", b'\\', Collation::GbkBin, false),
+            ("😀", "😀", b'\\', Collation::GbkBin, true),
+            ("中", "_", b'\\', Collation::GbkBin, true),
+        ]);
+    }
+
+    #[test]
+    fn shared_like_regression_gb18030_binary_byte_units() {
+        // gb18030BinPattern embeds binPattern, unlike gbkBinPattern. Both '_'
+        // and '%' backtracking count bytes of the stored UTF-8 text.
+        assert_shared_like_regression_cases(&[
+            ("中", "_", b'\\', Collation::Gb18030Bin, false),
+            ("中", "___", b'\\', Collation::Gb18030Bin, true),
+            ("中X", "%__X", b'\\', Collation::Gb18030Bin, true),
+        ]);
+    }
 
     #[test]
     fn binary_like_fast_path_matches_wildcards_and_escapes() {

@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Compare and key authority for the collations needed by the scalar domain.
+//! TiDB's registry/mode facade over the shared TiKV collation kernels.
 //!
-//! The generated images are exact little-endian conversions of TiDB's Go
-//! tables. Runtime keys remain the source-defined big-endian weight stream.
+//! GB key/compare encoding remains an explicit compatibility residual; its
+//! generated images are exact conversions of the original Go authorities.
+//! All LIKE matching and migrated binary/General/UCA operations are shared.
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -28,6 +29,73 @@ use crate::charset::{
     get_supported_collations as charset_supported_collations, set_new_collation_defaults,
 };
 use crate::{CharsetError, Collation, CollationInfo, Encoding, TransformOp};
+use tidb_query_datatype::codec::collation::{
+    self as shared, collator::*, Collator as SharedCollator, KeyOptions, LikePatternMode,
+};
+
+/// Shared wildcard primitives used by the source-compatible string utilities.
+/// No registry, protobuf, or evaluator types cross this narrow facade.
+pub mod wildcard {
+    pub use tidb_query_datatype::codec::collation::decode_utf8_rune_strict;
+    pub use tidb_query_datatype::codec::collation::pattern::{
+        compile_bytes, compile_runes, matches_compiled_bytes, matches_compiled_runes_with,
+        matches_runes, MatchOptions, PatternType, TrailingEscape,
+    };
+}
+
+// Map concrete registry identities explicitly. Registry IDs are positive;
+// TiKV wire IDs are signed and must never be normalized with abs().
+macro_rules! with_shared_collator {
+    ($collation:expr, $C:ident, $body:expr) => {{
+        match $collation {
+            Collation::Binary => {
+                type $C = CollatorBinary;
+                $body
+            }
+            Collation::AsciiBin | Collation::Utf8Bin | Collation::Utf8Mb4Bin => {
+                type $C = CollatorUtf8Mb4Bin;
+                $body
+            }
+            Collation::Latin1Bin => {
+                type $C = CollatorLatin1Bin;
+                $body
+            }
+            Collation::Utf8Mb40900Bin => {
+                type $C = CollatorUtf8Mb4BinNoPadding;
+                $body
+            }
+            Collation::Utf8GeneralCi | Collation::Utf8Mb4GeneralCi => {
+                type $C = CollatorUtf8Mb4GeneralCi;
+                $body
+            }
+            Collation::Utf8UnicodeCi | Collation::Utf8Mb4UnicodeCi => {
+                type $C = CollatorUtf8Mb4UnicodeCi;
+                $body
+            }
+            Collation::Utf8Mb40900AiCi => {
+                type $C = CollatorUtf8Mb40900AiCi;
+                $body
+            }
+            Collation::GbkBin => {
+                type $C = CollatorGbkBin;
+                $body
+            }
+            Collation::GbkChineseCi => {
+                type $C = CollatorGbkChineseCi;
+                $body
+            }
+            Collation::Gb18030Bin => {
+                type $C = CollatorGb18030Bin;
+                $body
+            }
+            Collation::Gb18030ChineseCi => {
+                type $C = CollatorGb18030ChineseCi;
+                $body
+            }
+            Collation::Utf8Mb4ZhPinyinTiDbAsCs => panic!("implement me"),
+        }
+    }};
+}
 
 // Go initializes this to enabled in `pkg/util/collate.init`; bootstrap later
 // replaces it with the cluster's persisted compatibility setting.
@@ -94,7 +162,8 @@ impl Collator {
     pub fn compare(self, left: &[u8], right: &[u8]) -> Ordering {
         match self {
             Self::New(collation) => collation.compare(left, right),
-            Self::DerivedBinary => left.cmp(right),
+            Self::DerivedBinary => CollatorUtf8Mb4BinNoPadding::sort_compare(left, right, false)
+                .expect("raw binary comparison cannot fail"),
         }
     }
 
@@ -102,7 +171,8 @@ impl Collator {
     pub fn key(self, value: &[u8]) -> Vec<u8> {
         match self {
             Self::New(collation) => collation.key(value),
-            Self::DerivedBinary => value.to_vec(),
+            Self::DerivedBinary => CollatorUtf8Mb4BinNoPadding::sort_key(value)
+                .expect("raw binary key into Vec cannot fail"),
         }
     }
 
@@ -110,7 +180,10 @@ impl Collator {
     pub fn immutable_key<'a>(self, value: &'a [u8]) -> Cow<'a, [u8]> {
         match self {
             Self::New(collation) => collation.immutable_key(value),
-            Self::DerivedBinary => Cow::Borrowed(value),
+            Self::DerivedBinary => {
+                CollatorUtf8Mb4BinNoPadding::sort_key_cow(value, KeyOptions::Default)
+                    .expect("raw binary key cannot fail")
+            }
         }
     }
 
@@ -118,7 +191,8 @@ impl Collator {
     pub fn key_without_trim_right_space(self, value: &[u8]) -> Vec<u8> {
         match self {
             Self::New(collation) => collation.key_without_trim_right_space(value),
-            Self::DerivedBinary => value.to_vec(),
+            Self::DerivedBinary => CollatorUtf8Mb4BinNoPadding::sort_key(value)
+                .expect("raw binary key into Vec cannot fail"),
         }
     }
 
@@ -126,7 +200,7 @@ impl Collator {
     pub fn max_key_len(self, value: &[u8]) -> usize {
         match self {
             Self::New(collation) => collation.max_key_len(value),
-            Self::DerivedBinary => value.len(),
+            Self::DerivedBinary => CollatorUtf8Mb4BinNoPadding::max_sort_key_len(value),
         }
     }
 
@@ -134,21 +208,35 @@ impl Collator {
     pub fn pattern(self, pattern: impl AsRef<[u8]>, escape: u8) -> WildcardPattern {
         let pattern = pattern.as_ref();
         match self {
-            Self::DerivedBinary => WildcardPattern::unicode(pattern, escape, PatternMatcher::Exact),
+            Self::DerivedBinary => {
+                compile_shared_pattern::<CollatorUtf8Mb4BinNoPadding>(pattern, escape)
+            }
             Self::New(collation) => collation.pattern(pattern, escape),
+        }
+    }
+
+    /// Matches a dynamic pattern without compiling or allocating target runes.
+    pub fn like_match(self, value: &[u8], pattern: &[u8], escape: u8) -> bool {
+        match self {
+            Self::DerivedBinary => {
+                match_shared_pattern::<CollatorUtf8Mb4BinNoPadding>(value, pattern, escape)
+            }
+            Self::New(collation) => with_shared_collator!(
+                collation,
+                C,
+                match_shared_pattern::<C>(value, pattern, escape)
+            ),
         }
     }
 
     /// Whether the source implementation can use the raw input as its key.
     pub const fn can_use_raw_mem_as_key(self) -> bool {
-        // Go asks `*binCollator` (binary) or `*derivedBinCollator`, and
-        // utf8mb4_0900_bin is registered as a `derivedBinCollator`.
-        matches!(
-            self,
-            Self::DerivedBinary
-                | Self::New(Collation::Binary)
-                | Self::New(Collation::Utf8Mb40900Bin)
-        )
+        match self {
+            Self::DerivedBinary => CollatorUtf8Mb4BinNoPadding::CAN_USE_RAW_MEM_AS_KEY,
+            // Keep the preexisting Pinyin capability query non-panicking.
+            Self::New(Collation::Utf8Mb4ZhPinyinTiDbAsCs) => false,
+            Self::New(collation) => with_shared_collator!(collation, C, C::CAN_USE_RAW_MEM_AS_KEY),
+        }
     }
 }
 
@@ -380,330 +468,140 @@ pub fn proto_to_collation(id: i32) -> String {
     collation_id_to_name(restore_collation_id_if_needed(id))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PatternType {
-    Match,
-    One,
-    Any,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum PatternMatcher {
-    Exact,
-    GeneralCi,
-    Unicode0400,
-    Unicode0900,
-    GbkChineseCi,
-    Gb18030ChineseCi,
-}
-
 /// A compiled collation-aware SQL LIKE wildcard pattern.
 #[derive(Debug, Clone)]
-pub struct WildcardPattern {
-    pattern: Vec<u32>,
-    types: Vec<PatternType>,
-    binary: bool,
-    matcher: PatternMatcher,
-}
+pub struct WildcardPattern(shared::pattern::CompiledPattern);
 
 impl WildcardPattern {
-    fn binary(pattern: &[u8], escape: u8) -> Self {
-        let units: Vec<_> = pattern.iter().copied().map(u32::from).collect();
-        let (pattern, types) = compile_pattern(units, u32::from(escape));
-        Self {
-            pattern,
-            types,
-            binary: true,
-            matcher: PatternMatcher::Exact,
-        }
-    }
-
-    fn unicode(pattern: &[u8], escape: u8, matcher: PatternMatcher) -> Self {
-        let units = go_runes(pattern);
-        let (pattern, types) = compile_pattern(units, u32::from(escape));
-        Self {
-            pattern,
-            types,
-            binary: false,
-            matcher,
-        }
-    }
-
     /// Matches arbitrary Go-string bytes against the compiled pattern.
     pub fn is_match(&self, value: &[u8]) -> bool {
-        let chars = if self.binary {
-            value.iter().copied().map(u32::from).collect()
-        } else {
-            go_runes(value)
-        };
-        wildcard_match(&chars, &self.pattern, &self.types, |left, right| {
-            self.matcher.matches(left, right)
-        })
+        self.0
+            .is_match(value)
+            .expect("raw supported LIKE comparison cannot fail")
     }
 }
 
-impl PatternMatcher {
-    fn matches(self, left: u32, right: u32) -> bool {
-        match self {
-            Self::Exact => left == right,
-            Self::GeneralCi => general_weight(left) == general_weight(right),
-            Self::Unicode0400 => {
-                if left > 0xFFFF || right > 0xFFFF {
-                    return left == right;
-                }
-                let left_weight = uca_weight(left);
-                let right_weight = uca_weight(right);
-                left_weight == right_weight && (left_weight.0 != 0xFFFD || left == right)
-            }
-            Self::Unicode0900 => uca_0900_weight(left) == uca_0900_weight(right),
-            Self::GbkChineseCi => gbk_chinese_ci_weight(left) == gbk_chinese_ci_weight(right),
-            Self::Gb18030ChineseCi => {
-                gb18030_chinese_ci_weight(left) == gb18030_chinese_ci_weight(right)
-            }
+fn pattern_options(escape: u8) -> wildcard::MatchOptions {
+    wildcard::MatchOptions {
+        escape: u32::from(escape),
+        trailing_escape: wildcard::TrailingEscape::Literal,
+    }
+}
+
+fn compile_shared_pattern<C: SharedCollator>(pattern: &[u8], escape: u8) -> WildcardPattern {
+    let options = pattern_options(escape);
+    let compiled = match C::LIKE_PATTERN_MODE {
+        LikePatternMode::Bytes => shared::pattern::compile::<
+            CollatorBinary,
+            <CollatorBinary as SharedCollator>::Charset,
+        >(pattern, options),
+        LikePatternMode::BinaryRunes => shared::pattern::compile::<
+            CollatorUtf8Mb4BinNoPadding,
+            <CollatorUtf8Mb4BinNoPadding as SharedCollator>::Charset,
+        >(pattern, options),
+        LikePatternMode::CollatorDefined => {
+            shared::pattern::compile::<C, C::Charset>(pattern, options)
+        }
+    };
+    WildcardPattern(compiled)
+}
+
+fn match_shared_pattern<C: SharedCollator>(value: &[u8], pattern: &[u8], escape: u8) -> bool {
+    let options = pattern_options(escape);
+    match C::LIKE_PATTERN_MODE {
+        LikePatternMode::Bytes => shared::pattern::matches_raw::<
+            CollatorBinary,
+            <CollatorBinary as SharedCollator>::Charset,
+        >(value, pattern, options),
+        LikePatternMode::BinaryRunes => shared::pattern::matches_raw::<
+            CollatorUtf8Mb4BinNoPadding,
+            <CollatorUtf8Mb4BinNoPadding as SharedCollator>::Charset,
+        >(value, pattern, options),
+        LikePatternMode::CollatorDefined => {
+            shared::pattern::matches_raw::<C, C::Charset>(value, pattern, options)
         }
     }
+    .expect("raw supported LIKE comparison cannot fail")
 }
 
-fn compile_pattern(units: Vec<u32>, escape: u32) -> (Vec<u32>, Vec<PatternType>) {
-    let mut pattern = Vec::with_capacity(units.len());
-    let mut types = Vec::with_capacity(units.len());
-    let mut index = 0;
-    while index < units.len() {
-        let mut unit = units[index];
-        let pattern_type = match unit {
-            value if value == escape => {
-                if index + 1 < units.len() {
-                    index += 1;
-                    unit = units[index];
-                }
-                PatternType::Match
-            }
-            value if value == u32::from(b'_') => {
-                if types.last() == Some(&PatternType::Any) {
-                    *pattern.last_mut().expect("Any has a pattern unit") = u32::from(b'_');
-                    *types.last_mut().expect("Any has a pattern type") = PatternType::One;
-                    unit = u32::from(b'%');
-                    PatternType::Any
-                } else {
-                    PatternType::One
-                }
-            }
-            value if value == u32::from(b'%') => {
-                if types.last() == Some(&PatternType::Any) {
-                    index += 1;
-                    continue;
-                }
-                PatternType::Any
-            }
-            _ => PatternType::Match,
-        };
-        pattern.push(unit);
-        types.push(pattern_type);
-        index += 1;
-    }
-    (pattern, types)
-}
-
-fn wildcard_match(
-    chars: &[u32],
-    pattern: &[u32],
-    types: &[PatternType],
-    matcher: impl Fn(u32, u32) -> bool,
-) -> bool {
-    let (mut char_index, mut pattern_index) = (0, 0);
-    let (mut next_char_index, mut next_pattern_index) = (0, 0);
-    while pattern_index < pattern.len() || char_index < chars.len() {
-        if pattern_index < pattern.len() {
-            match types[pattern_index] {
-                PatternType::Match
-                    if char_index < chars.len()
-                        && matcher(chars[char_index], pattern[pattern_index]) =>
-                {
-                    pattern_index += 1;
-                    char_index += 1;
-                    continue;
-                }
-                PatternType::One if char_index < chars.len() => {
-                    pattern_index += 1;
-                    char_index += 1;
-                    continue;
-                }
-                PatternType::Any => {
-                    next_pattern_index = pattern_index;
-                    next_char_index = char_index + 1;
-                    pattern_index += 1;
-                    continue;
-                }
-                PatternType::Match | PatternType::One => {}
-            }
-        }
-        if next_char_index > 0 && next_char_index <= chars.len() {
-            pattern_index = next_pattern_index;
-            char_index = next_char_index;
-            continue;
-        }
-        return false;
-    }
-    true
-}
-
-fn go_runes(value: &[u8]) -> Vec<u32> {
-    let mut result = Vec::with_capacity(value.len());
-    let mut index = 0;
-    while index < value.len() {
-        match decode_rune(&value[index..]) {
-            Ok((codepoint, width)) => {
-                result.push(codepoint);
-                index += width;
-            }
-            Err(()) => {
-                result.push(0xFFFD);
-                index += 1;
-            }
-        }
-    }
-    result
-}
-
-const GENERAL_CI: &[u8; 65_536 * 2] = include_bytes!("collation_data/general_ci_u16_le.bin");
-const UNICODE_0400: &[u8; 65_536 * 8] = include_bytes!("collation_data/unicode_0400_u64_le.bin");
-const UNICODE_0400_LONG: &[u8; 22 * 20] =
-    include_bytes!("collation_data/unicode_0400_long_u64_le.bin");
-const UNICODE_0900: &[u8; 183_969 * 8] = include_bytes!("collation_data/unicode_0900_u64_le.bin");
-const UNICODE_0900_LONG: &[u8; 27 * 20] =
-    include_bytes!("collation_data/unicode_0900_long_u64_le.bin");
+// Explicit compatibility residuals: GB key/compare encoding is not yet shared.
+// In particular GB18030 PUA keys differ in mapping and trailing NUL behavior.
 const GBK_CHINESE_CI: &[u8; 65_536 * 2] =
     include_bytes!("collation_data/gbk_chinese_ci_u16_le.bin");
 const GB18030_CHINESE_CI: &[u8; 0x11_0000 * 4] =
     include_bytes!("collation_data/gb18030_chinese_ci_u32_le.bin");
 
 impl Collation {
-    /// Compiles this collation's wildcard matcher.
+    /// Compiles this explicit new-collation wildcard matcher.
     pub fn pattern(self, pattern: impl AsRef<[u8]>, escape: u8) -> WildcardPattern {
-        let pattern = pattern.as_ref();
-        match self {
-            Self::Binary | Self::Gb18030Bin => WildcardPattern::binary(pattern, escape),
-            // `gbkBinPattern` embeds `derivedBinPattern`, so gbk_bin matches by
-            // rune; only `gb18030BinPattern` embeds the byte-wise `binPattern`.
-            Self::AsciiBin
-            | Self::Latin1Bin
-            | Self::Utf8Bin
-            | Self::Utf8Mb4Bin
-            | Self::Utf8Mb40900Bin
-            | Self::GbkBin => WildcardPattern::unicode(pattern, escape, PatternMatcher::Exact),
-            Self::Utf8GeneralCi | Self::Utf8Mb4GeneralCi => {
-                WildcardPattern::unicode(pattern, escape, PatternMatcher::GeneralCi)
-            }
-            Self::Utf8UnicodeCi | Self::Utf8Mb4UnicodeCi => {
-                WildcardPattern::unicode(pattern, escape, PatternMatcher::Unicode0400)
-            }
-            Self::Utf8Mb40900AiCi => {
-                WildcardPattern::unicode(pattern, escape, PatternMatcher::Unicode0900)
-            }
-            Self::GbkChineseCi => {
-                WildcardPattern::unicode(pattern, escape, PatternMatcher::GbkChineseCi)
-            }
-            Self::Gb18030ChineseCi => {
-                WildcardPattern::unicode(pattern, escape, PatternMatcher::Gb18030ChineseCi)
-            }
-            Self::Utf8Mb4ZhPinyinTiDbAsCs => {
-                panic!("implement me")
-            }
-        }
+        with_shared_collator!(
+            self,
+            C,
+            compile_shared_pattern::<C>(pattern.as_ref(), escape)
+        )
     }
 
     /// Compares arbitrary Go-string bytes using TiDB's source semantics.
     pub fn compare(self, left: &[u8], right: &[u8]) -> Ordering {
         match self {
-            Self::Binary | Self::Utf8Mb40900Bin => left.cmp(right),
-            Self::AsciiBin | Self::Latin1Bin | Self::Utf8Bin | Self::Utf8Mb4Bin => {
-                trim_trailing_spaces(left).cmp(trim_trailing_spaces(right))
-            }
             Self::GbkBin => encoded_binary_compare(Encoding::Gbk, left, right),
             Self::Gb18030Bin => encoded_binary_compare(Encoding::Gb18030, left, right),
-            Self::Utf8GeneralCi | Self::Utf8Mb4GeneralCi => general_ci_compare(left, right),
-            Self::Utf8UnicodeCi | Self::Utf8Mb4UnicodeCi => unicode_0400_compare(left, right),
-            Self::Utf8Mb40900AiCi => unicode_0900_compare(left, right),
             Self::GbkChineseCi => chinese_ci_compare(left, right, gbk_chinese_ci_weight),
             Self::Gb18030ChineseCi => chinese_ci_compare(left, right, gb18030_chinese_ci_weight),
-            Self::Utf8Mb4ZhPinyinTiDbAsCs => {
-                panic!("implement me")
-            }
+            _ => with_shared_collator!(
+                self,
+                C,
+                C::sort_compare(left, right, false)
+                    .expect("raw supported collation comparison cannot fail")
+            ),
         }
     }
 
     /// Returns TiDB's sort key for arbitrary Go-string bytes.
     pub fn key(self, value: &[u8]) -> Vec<u8> {
+        self.key_with_options(value, KeyOptions::Default)
+    }
+
+    fn key_with_options(self, value: &[u8], options: KeyOptions) -> Vec<u8> {
+        let trim = options == KeyOptions::Default;
         match self {
-            Self::Binary | Self::Utf8Mb40900Bin => value.to_vec(),
-            Self::AsciiBin | Self::Latin1Bin | Self::Utf8Bin | Self::Utf8Mb4Bin => {
-                trim_trailing_spaces(value).to_vec()
-            }
-            Self::GbkBin => encoded_binary_key(Encoding::Gbk, value, true),
-            Self::Gb18030Bin => gb18030_bin_key(value, true),
-            Self::Utf8GeneralCi | Self::Utf8Mb4GeneralCi => general_ci_key(value, true),
-            Self::Utf8UnicodeCi | Self::Utf8Mb4UnicodeCi => unicode_0400_key(value, true),
-            Self::Utf8Mb40900AiCi => unicode_0900_key(value),
-            Self::GbkChineseCi => chinese_ci_key(value, true, gbk_chinese_ci_weight),
-            Self::Gb18030ChineseCi => chinese_ci_key(value, true, gb18030_chinese_ci_weight),
-            Self::Utf8Mb4ZhPinyinTiDbAsCs => {
-                panic!("implement me")
-            }
+            Self::GbkBin => encoded_binary_key(Encoding::Gbk, value, trim),
+            Self::Gb18030Bin => gb18030_bin_key(value, trim),
+            Self::GbkChineseCi => chinese_ci_key(value, trim, gbk_chinese_ci_weight),
+            Self::Gb18030ChineseCi => chinese_ci_key(value, trim, gb18030_chinese_ci_weight),
+            _ => with_shared_collator!(
+                self,
+                C,
+                C::sort_key_with_options(value, options)
+                    .expect("raw supported collation key into Vec cannot fail")
+            ),
         }
     }
 
     /// Go's allocation-aware `ImmutableKey`; binary collators borrow input.
     pub fn immutable_key<'a>(self, value: &'a [u8]) -> Cow<'a, [u8]> {
         match self {
-            Self::Binary | Self::Utf8Mb40900Bin => Cow::Borrowed(value),
-            Self::AsciiBin | Self::Latin1Bin | Self::Utf8Bin | Self::Utf8Mb4Bin => {
-                Cow::Borrowed(trim_trailing_spaces(value))
+            Self::GbkBin | Self::Gb18030Bin | Self::GbkChineseCi | Self::Gb18030ChineseCi => {
+                Cow::Owned(self.key(value))
             }
-            _ => Cow::Owned(self.key(value)),
+            _ => with_shared_collator!(
+                self,
+                C,
+                C::sort_key_cow(value, KeyOptions::Default)
+                    .expect("raw supported collation key cannot fail")
+            ),
         }
     }
 
     /// Returns the source key without the collation's PAD SPACE preprocessing.
     pub fn key_without_trim_right_space(self, value: &[u8]) -> Vec<u8> {
-        match self {
-            Self::Binary
-            | Self::AsciiBin
-            | Self::Latin1Bin
-            | Self::Utf8Bin
-            | Self::Utf8Mb4Bin
-            | Self::Utf8Mb40900Bin => value.to_vec(),
-            Self::GbkBin => encoded_binary_key(Encoding::Gbk, value, false),
-            Self::Gb18030Bin => gb18030_bin_key(value, false),
-            Self::Utf8GeneralCi | Self::Utf8Mb4GeneralCi => general_ci_key(value, false),
-            Self::Utf8UnicodeCi | Self::Utf8Mb4UnicodeCi => unicode_0400_key(value, false),
-            Self::Utf8Mb40900AiCi => unicode_0900_key(value),
-            Self::GbkChineseCi => chinese_ci_key(value, false, gbk_chinese_ci_weight),
-            Self::Gb18030ChineseCi => chinese_ci_key(value, false, gb18030_chinese_ci_weight),
-            Self::Utf8Mb4ZhPinyinTiDbAsCs => {
-                panic!("implement me")
-            }
-        }
+        self.key_with_options(value, KeyOptions::NoPad)
     }
 
-    /// Returns the exact upper bound exposed by the corresponding Go collator.
+    /// Returns the allocation estimate exposed by the corresponding Go collator.
+    /// The deferred GB18030 PUA encoding can exceed this historical estimate.
     pub fn max_key_len(self, value: &[u8]) -> usize {
-        match self {
-            Self::Binary
-            | Self::AsciiBin
-            | Self::Latin1Bin
-            | Self::Utf8Bin
-            | Self::Utf8Mb4Bin
-            | Self::Utf8Mb40900Bin => value.len(),
-            Self::GbkBin | Self::GbkChineseCi => go_rune_count(value) * 2,
-            Self::Gb18030Bin | Self::Gb18030ChineseCi => go_rune_count(value) * 4,
-            Self::Utf8GeneralCi | Self::Utf8Mb4GeneralCi => go_rune_count(value) * 2,
-            Self::Utf8UnicodeCi | Self::Utf8Mb4UnicodeCi | Self::Utf8Mb40900AiCi => {
-                go_rune_count(value) * 16
-            }
-            Self::Utf8Mb4ZhPinyinTiDbAsCs => {
-                panic!("implement me")
-            }
-        }
+        with_shared_collator!(self, C, C::max_sort_key_len(value))
     }
 }
 
@@ -789,33 +687,13 @@ fn trim_trailing_spaces(mut value: &[u8]) -> &[u8] {
 }
 
 pub(crate) fn decode_rune(value: &[u8]) -> Result<(u32, usize), ()> {
-    let first = *value.first().ok_or(())?;
-    if first < 0x80 {
-        return Ok((u32::from(first), 1));
-    }
-    let width = match first {
-        0xC2..=0xDF => 2,
-        0xE0..=0xEF => 3,
-        0xF0..=0xF4 => 4,
-        _ => return Err(()),
-    };
-    let bytes = value.get(..width).ok_or(())?;
-    let character = std::str::from_utf8(bytes)
-        .map_err(|_| ())?
-        .chars()
-        .next()
-        .ok_or(())?;
-    Ok((character as u32, width))
+    shared::decode_utf8_rune_strict(value)
+        .map(|(ch, width)| (ch as u32, width))
+        .ok_or(())
 }
 
 pub(crate) fn go_rune_count(value: &[u8]) -> usize {
-    let mut index = 0;
-    let mut count = 0;
-    while index < value.len() {
-        index += rune_width(&value[index..]);
-        count += 1;
-    }
-    count
+    shared::utf8_rune_count(value)
 }
 
 /// The width in bytes of the rune starting at `value`, Go's `DecodeRune`
@@ -823,56 +701,6 @@ pub(crate) fn go_rune_count(value: &[u8]) -> usize {
 /// wide, never an error.
 pub(crate) fn rune_width(value: &[u8]) -> usize {
     decode_rune(value).map_or(1, |(_, width)| width)
-}
-
-fn general_weight(codepoint: u32) -> u16 {
-    let codepoint = codepoint as usize;
-    if codepoint > 0xFFFF {
-        return 0xFFFD;
-    }
-    let offset = codepoint * 2;
-    u16::from_le_bytes([GENERAL_CI[offset], GENERAL_CI[offset + 1]])
-}
-
-fn general_ci_compare(left: &[u8], right: &[u8]) -> Ordering {
-    let (left, right) = (trim_trailing_spaces(left), trim_trailing_spaces(right));
-    let (mut left_index, mut right_index) = (0, 0);
-    while left_index < left.len() && right_index < right.len() {
-        let (left_rune, left_width) = match decode_rune(&left[left_index..]) {
-            Ok(decoded) => decoded,
-            Err(()) => return Ordering::Equal,
-        };
-        let (right_rune, right_width) = match decode_rune(&right[right_index..]) {
-            Ok(decoded) => decoded,
-            Err(()) => return Ordering::Equal,
-        };
-        left_index += left_width;
-        right_index += right_width;
-        let ordering = general_weight(left_rune).cmp(&general_weight(right_rune));
-        if !ordering.is_eq() {
-            return ordering;
-        }
-    }
-    (left.len() - left_index).cmp(&(right.len() - right_index))
-}
-
-fn general_ci_key(value: &[u8], trim: bool) -> Vec<u8> {
-    let value = if trim {
-        trim_trailing_spaces(value)
-    } else {
-        value
-    };
-    let mut key = Vec::with_capacity(value.len());
-    let mut index = 0;
-    while index < value.len() {
-        let (codepoint, width) = match decode_rune(&value[index..]) {
-            Ok(decoded) => decoded,
-            Err(()) => break,
-        };
-        index += width;
-        key.extend_from_slice(&general_weight(codepoint).to_be_bytes());
-    }
-    key
 }
 
 fn chinese_ci_compare(left: &[u8], right: &[u8], weight: fn(u32) -> u32) -> Ordering {
@@ -947,266 +775,73 @@ fn gb18030_chinese_ci_weight(codepoint: u32) -> u32 {
     )
 }
 
-fn uca_weight(codepoint: u32) -> (u64, u64) {
-    let codepoint = codepoint as usize;
-    if codepoint > 0xFFFF {
-        return (0xFFFD, 0);
-    }
-    let offset = codepoint * 8;
-    let first = u64::from_le_bytes(
-        UNICODE_0400[offset..offset + 8]
-            .try_into()
-            .expect("fixed UCA table width"),
-    );
-    if first != 0xFFFD {
-        return (first, 0);
-    }
-    long_uca_weight(codepoint as u32)
-        .expect("generated UCA 4.0 long-rune marker must have an expansion record")
-}
-
-fn uca_0900_weight(codepoint: u32) -> (u64, u64) {
-    let Ok(index) = usize::try_from(codepoint) else {
-        return (0xFFFD, 0);
-    };
-    if index > 183_969 {
-        return (
-            u64::from(codepoint >> 15) + 0xFBC0 + (u64::from((codepoint & 0x7FFF) | 0x8000) << 16),
-            0,
-        );
-    }
-    if index == 183_969 {
-        panic!("source UCA 9.0 table index is out of range");
-    }
-    let offset = index * 8;
-    let first = u64::from_le_bytes(
-        UNICODE_0900[offset..offset + 8]
-            .try_into()
-            .expect("fixed UCA 9.0 table width"),
-    );
-    if first != 0xFFFD {
-        return (first, 0);
-    }
-    // Go's map lookup returns the zero value for the surrogate entries whose
-    // generated table contains the marker but whose long-rune map has no row.
-    long_weight(UNICODE_0900_LONG, 27, codepoint).unwrap_or((0, 0))
-}
-
-fn long_uca_weight(codepoint: u32) -> Option<(u64, u64)> {
-    long_weight(UNICODE_0400_LONG, 22, codepoint)
-}
-
-fn long_weight(table: &[u8], row_count: usize, codepoint: u32) -> Option<(u64, u64)> {
-    let rune_at = |index: usize| {
-        let offset = index * 20;
-        u32::from_le_bytes(
-            table[offset..offset + 4]
-                .try_into()
-                .expect("fixed long-rune record width"),
-        )
-    };
-    let (mut low, mut high) = (0_usize, row_count);
-    while low < high {
-        let middle = low + (high - low) / 2;
-        match rune_at(middle).cmp(&codepoint) {
-            Ordering::Less => low = middle + 1,
-            Ordering::Greater => high = middle,
-            Ordering::Equal => {
-                low = middle;
-                break;
-            }
-        }
-    }
-    (low < row_count && rune_at(low) == codepoint).then(|| {
-        let index = low;
-        let offset = index * 20 + 4;
-        let first = u64::from_le_bytes(
-            table[offset..offset + 8]
-                .try_into()
-                .expect("fixed long-rune first weight"),
-        );
-        let second = u64::from_le_bytes(
-            table[offset + 8..offset + 16]
-                .try_into()
-                .expect("fixed long-rune second weight"),
-        );
-        (first, second)
-    })
-}
-
-struct UcaCursor<'a> {
-    bytes: &'a [u8],
-    byte_index: usize,
-    pending: [u16; 8],
-    pending_index: usize,
-    pending_len: usize,
-    weight: fn(u32) -> (u64, u64),
-}
-
-impl<'a> UcaCursor<'a> {
-    fn new(bytes: &'a [u8], weight: fn(u32) -> (u64, u64)) -> Self {
-        Self {
-            bytes,
-            byte_index: 0,
-            pending: [0; 8],
-            pending_index: 0,
-            pending_len: 0,
-            weight,
-        }
-    }
-
-    fn next_weight(&mut self) -> Result<Option<u16>, ()> {
-        loop {
-            if self.pending_index < self.pending_len {
-                let weight = self.pending[self.pending_index];
-                self.pending_index += 1;
-                return Ok(Some(weight));
-            }
-            if self.byte_index == self.bytes.len() {
-                return Ok(None);
-            }
-            let (codepoint, width) = decode_rune(&self.bytes[self.byte_index..])?;
-            self.byte_index += width;
-            self.pending_index = 0;
-            self.pending_len = 0;
-            let (first, second) = (self.weight)(codepoint);
-            self.append_packed(first);
-            self.append_packed(second);
-        }
-    }
-
-    fn append_packed(&mut self, mut packed: u64) {
-        while packed != 0 {
-            self.pending[self.pending_len] = packed as u16;
-            self.pending_len += 1;
-            packed >>= 16;
-        }
-    }
-}
-
-fn unicode_0400_compare(left: &[u8], right: &[u8]) -> Ordering {
-    weighted_compare(
-        trim_trailing_spaces(left),
-        trim_trailing_spaces(right),
-        uca_weight,
-    )
-}
-
-fn unicode_0900_compare(left: &[u8], right: &[u8]) -> Ordering {
-    weighted_compare(left, right, uca_0900_weight)
-}
-
-fn weighted_compare(left: &[u8], right: &[u8], weight: fn(u32) -> (u64, u64)) -> Ordering {
-    let mut left = UcaCursor::new(left, weight);
-    let mut right = UcaCursor::new(right, weight);
-    loop {
-        let left_weight = match left.next_weight() {
-            Ok(weight) => weight,
-            Err(()) => return Ordering::Equal,
-        };
-        let right_weight = match right.next_weight() {
-            Ok(weight) => weight,
-            Err(()) => return Ordering::Equal,
-        };
-        match (left_weight, right_weight) {
-            (Some(left), Some(right)) => {
-                let ordering = left.cmp(&right);
-                if !ordering.is_eq() {
-                    return ordering;
-                }
-            }
-            (None, None) => return Ordering::Equal,
-            (None, Some(_)) => return Ordering::Less,
-            (Some(_), None) => return Ordering::Greater,
-        }
-    }
-}
-
-fn unicode_0400_key(value: &[u8], trim: bool) -> Vec<u8> {
-    let value = if trim {
-        trim_trailing_spaces(value)
-    } else {
-        value
-    };
-    weighted_key(value, uca_weight)
-}
-
-fn unicode_0900_key(value: &[u8]) -> Vec<u8> {
-    weighted_key(value, uca_0900_weight)
-}
-
-fn weighted_key(value: &[u8], weight: fn(u32) -> (u64, u64)) -> Vec<u8> {
-    let mut key = Vec::with_capacity(value.len() * 2);
-    let mut cursor = UcaCursor::new(value, weight);
-    while let Ok(Some(weight)) = cursor.next_weight() {
-        key.extend_from_slice(&weight.to_be_bytes());
-    }
-    key
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, path::Path, process::Command};
+    use std::{collections::HashSet, path::Path, process::Command, sync::OnceLock};
 
     use sha2::{Digest, Sha256};
 
     use super::{
-        Collation, GB18030_CHINESE_CI, GBK_CHINESE_CI, GENERAL_CI, UNICODE_0400, UNICODE_0400_LONG,
-        UNICODE_0900, UNICODE_0900_LONG,
+        Collation, CollatorUtf8Mb40900AiCi, CollatorUtf8Mb4UnicodeCi, SharedCollator,
+        GB18030_CHINESE_CI, GBK_CHINESE_CI,
     };
+
+    // Original Go long-map rune inventory; values now come only from TiKV.
+    const LONG_0400: [char; 22] = [
+        '\u{321d}', '\u{321e}', '\u{327c}', '\u{3307}', '\u{3315}', '\u{3316}', '\u{3317}',
+        '\u{3319}', '\u{331a}', '\u{3320}', '\u{332b}', '\u{332e}', '\u{3332}', '\u{3334}',
+        '\u{3336}', '\u{3347}', '\u{334a}', '\u{3356}', '\u{337f}', '\u{33ae}', '\u{33af}',
+        '\u{fdfb}',
+    ];
+
+    fn long_0900() -> impl Iterator<Item = char> {
+        LONG_0400.into_iter().chain([
+            '\u{fdfa}',
+            '\u{fffd}',
+            '\u{1f19c}',
+            '\u{1f1a8}',
+            '\u{1f1a9}',
+        ])
+    }
 
     fn digest(bytes: &[u8]) -> String {
         format!("{:x}", Sha256::digest(bytes))
     }
 
+    fn verify_source_contracts() {
+        static CHECKED: OnceLock<()> = OnceLock::new();
+        CHECKED.get_or_init(|| {
+            let script =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/generate_collation_data.py");
+            let output = Command::new("python3")
+                .arg("-B")
+                .arg(script)
+                .arg("--check")
+                .output()
+                .expect("run shared collation source check");
+            assert!(
+                output.status.success(),
+                "collation source check failed\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        });
+    }
+
     /// `pkg/util/collate/ucadata/unicode_ci_data_test.go::TestUnicode0400IsTheSame`.
     #[test]
     fn test_unicode_0400_is_the_same() {
-        let script =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/generate_collation_data.py");
-        let output = Command::new("python3")
-            .arg(script)
-            .arg("--check")
-            .output()
-            .expect("run collation data source check");
-
-        assert!(
-            output.status.success(),
-            "collation source check failed\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        verify_source_contracts();
     }
 
     #[test]
     fn generated_images_have_source_pinned_lengths_and_hashes() {
-        assert_eq!(GENERAL_CI.len(), 131_072);
-        assert_eq!(UNICODE_0400.len(), 524_288);
-        assert_eq!(UNICODE_0400_LONG.len(), 440);
-        assert_eq!(UNICODE_0900.len(), 1_471_752);
-        assert_eq!(UNICODE_0900_LONG.len(), 540);
+        // The source checker hashes all five migrated General/UCA authority
+        // images incrementally and compares shared tables to those sources.
+        // No second production copy of those weights is needed for this gate.
+        verify_source_contracts();
         assert_eq!(GBK_CHINESE_CI.len(), 131_072);
         assert_eq!(GB18030_CHINESE_CI.len(), 4_456_448);
-        assert_eq!(
-            digest(GENERAL_CI),
-            "787ea411c0600e485ae7dd52ce4b609848b5b832c179f2aed6deaf1e3a173d61"
-        );
-        assert_eq!(
-            digest(UNICODE_0400),
-            "87fbb2751d6afe9ff48b4f19136204846e778dd88a1ba8ef8b2d5398354852b6"
-        );
-        assert_eq!(
-            digest(UNICODE_0400_LONG),
-            "fc2ea60aa8caa70d615fcdffaf1d8e1d3d2438eae11847d719266be88bb5d776"
-        );
-        assert_eq!(
-            digest(UNICODE_0900),
-            "5ff4831e13e7485cff183e4e9971fd17e2719da0d675f8b38db8f02e89aaee7b"
-        );
-        assert_eq!(
-            digest(UNICODE_0900_LONG),
-            "8329421bd84ef04ad3ff5650e6b946d2cb22934d1fded231b7938bb094155c6f"
-        );
         assert_eq!(
             digest(GBK_CHINESE_CI),
             "f6f63c33fa57eeaffa5d46841694adab58bd9cddfac3f92389dec4564a6036d6"
@@ -1220,9 +855,10 @@ mod tests {
     /// The UCA 4.0 half of `TestAllItemInLongRUneMapIsUnique`.
     #[test]
     fn all_uca_0400_long_rune_weights_are_unique() {
-        let rows: Vec<_> = UNICODE_0400_LONG
-            .chunks_exact(20)
-            .map(|row| (&row[4..12], &row[12..20]))
+        verify_source_contracts();
+        let rows: Vec<_> = LONG_0400
+            .into_iter()
+            .map(CollatorUtf8Mb4UnicodeCi::char_weight)
             .collect();
         assert_eq!(rows.len(), 22);
         assert_eq!(rows.iter().copied().collect::<HashSet<_>>().len(), 22);
@@ -1231,9 +867,9 @@ mod tests {
     /// The UCA 9.0 half of `TestAllItemInLongRUneMapIsUnique`.
     #[test]
     fn all_uca_0900_long_rune_weights_are_unique() {
-        let rows: Vec<_> = UNICODE_0900_LONG
-            .chunks_exact(20)
-            .map(|row| (&row[4..12], &row[12..20]))
+        verify_source_contracts();
+        let rows: Vec<_> = long_0900()
+            .map(CollatorUtf8Mb40900AiCi::char_weight)
             .collect();
         assert_eq!(rows.len(), 27);
         assert_eq!(rows.iter().copied().collect::<HashSet<_>>().len(), 27);
@@ -1242,50 +878,41 @@ mod tests {
     /// `TestHangulJamoHasOnlyOneWeight`.
     #[test]
     fn uca_0900_hangul_jamo_has_only_one_weight() {
+        verify_source_contracts();
         for codepoint in 0x1100..0x11FF {
-            let offset = codepoint * 8;
-            let weight = u64::from_le_bytes(
-                UNICODE_0900[offset..offset + 8]
-                    .try_into()
-                    .expect("fixed UCA 9.0 weight"),
-            );
-            assert_eq!(weight & 0xFFFF_FFFF_FFFF_0000, 0);
+            let weight = CollatorUtf8Mb40900AiCi::char_weight(char::from_u32(codepoint).unwrap());
+            assert_eq!(weight >> 16, 0);
         }
     }
 
     /// `TestFirstIsNotZero`.
     #[test]
     fn every_uca_0900_long_weight_starts_nonzero() {
-        for row in UNICODE_0900_LONG.chunks_exact(20) {
-            assert_ne!(
-                u64::from_le_bytes(row[4..12].try_into().expect("first long weight")),
-                0
-            );
+        verify_source_contracts();
+        for rune in long_0900() {
+            assert_ne!(CollatorUtf8Mb40900AiCi::char_weight(rune) as u64, 0);
         }
     }
 
     #[test]
     fn uca_0900_surrogate_marker_uses_go_map_zero_value() {
-        assert_eq!(super::uca_0900_weight(0xD800), (0, 0));
-        assert_eq!(super::uca_0900_weight(0xDFFF), (0, 0));
+        // The checker preserves Go's missing-map zero value for all 2048
+        // surrogate slots. TiKV's different fallback is unreachable for char;
+        // do not add a non-scalar product API merely to inspect table metadata.
+        verify_source_contracts();
+        assert_eq!(char::from_u32(0xD800), None);
+        assert_eq!(char::from_u32(0xDFFF), None);
     }
 
     #[test]
     fn every_uca_0400_long_marker_has_exactly_one_expansion() {
-        let markers: HashSet<_> = UNICODE_0400
-            .chunks_exact(8)
-            .enumerate()
-            .filter_map(|(codepoint, bytes)| {
-                (u64::from_le_bytes(bytes.try_into().expect("fixed UCA weight")) == 0xFFFD)
-                    .then_some(codepoint as u32)
-            })
-            .collect();
-        let expansions: HashSet<_> = UNICODE_0400_LONG
-            .chunks_exact(20)
-            .map(|row| u32::from_le_bytes(row[..4].try_into().expect("fixed long-rune key")))
-            .collect();
-        assert_eq!(markers.len(), 22);
-        assert_eq!(markers, expansions);
+        // Source checker compares the complete marker and explicit-map sets,
+        // including source slots that cannot be passed as a Rust char.
+        verify_source_contracts();
+        assert_eq!(LONG_0400.into_iter().collect::<HashSet<_>>().len(), 22);
+        for rune in LONG_0400 {
+            assert_ne!(CollatorUtf8Mb4UnicodeCi::char_weight(rune), 0xFFFD);
+        }
     }
 
     #[test]

@@ -22,6 +22,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 
+use tidb_datatype::wildcard;
 pub use tidb_hack::{go_to_lower, go_to_upper};
 use tidb_mysql::SqlMode;
 
@@ -95,17 +96,11 @@ fn decode_utf8_prefix(input: &[u8]) -> Option<(char, usize)> {
 fn decode_go_runes(input: &[u8]) -> Vec<char> {
     let mut runes = Vec::with_capacity(input.len());
     let mut input = input;
-    while let Some((&first, _)) = input.split_first() {
-        if first < 0x80 {
-            runes.push(char::from(first));
-            input = &input[1..];
-        } else if let Some((character, width)) = decode_utf8_prefix(input) {
-            runes.push(character);
-            input = &input[width..];
-        } else {
-            runes.push(char::REPLACEMENT_CHARACTER);
-            input = &input[1..];
-        }
+    while !input.is_empty() {
+        let (character, width) =
+            wildcard::decode_utf8_rune_strict(input).unwrap_or((char::REPLACEMENT_CHARACTER, 1));
+        runes.push(character);
+        input = &input[width..];
     }
     runes
 }
@@ -133,16 +128,8 @@ pub fn unquote(input: &[u8]) -> Result<Vec<u8>, UnquoteError> {
     Ok(result)
 }
 
-/// One compiled wildcard-pattern token.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PatternType {
-    /// A literal character.
-    Match,
-    /// `_`, matching exactly one character.
-    One,
-    /// `%`, matching zero or more characters.
-    Any,
-}
+/// One compiled wildcard-pattern token from the shared matcher.
+pub use tidb_datatype::wildcard::PatternType;
 
 /// Compiles a Unicode wildcard pattern using `escape` as the escape byte.
 pub fn compile_pattern(pattern: impl AsRef<[u8]>, escape: u8) -> (Vec<char>, Vec<PatternType>) {
@@ -154,48 +141,7 @@ pub fn compile_pattern_inner(
     pattern: impl AsRef<[u8]>,
     escape: u8,
 ) -> (Vec<char>, Vec<PatternType>) {
-    compile_pattern_units(decode_go_runes(pattern.as_ref()), Some(char::from(escape)))
-}
-
-fn compile_pattern_units<T: Copy + PartialEq + From<u8>>(
-    units: impl IntoIterator<Item = T>,
-    escape: Option<T>,
-) -> (Vec<T>, Vec<PatternType>) {
-    let units = units.into_iter().collect::<Vec<_>>();
-    let mut weights = Vec::with_capacity(units.len());
-    let mut types = Vec::with_capacity(units.len());
-    let mut index = 0;
-    while index < units.len() {
-        let mut unit = units[index];
-        let kind = if Some(unit) == escape {
-            if index + 1 < units.len() {
-                index += 1;
-                unit = units[index];
-            }
-            PatternType::Match
-        } else if unit == T::from(b'_') {
-            if types.last() == Some(&PatternType::Any) {
-                *weights.last_mut().expect("Any has a weight") = T::from(b'_');
-                *types.last_mut().expect("Any has a type") = PatternType::One;
-                unit = T::from(b'%');
-                PatternType::Any
-            } else {
-                PatternType::One
-            }
-        } else if unit == T::from(b'%') {
-            if types.last() == Some(&PatternType::Any) {
-                index += 1;
-                continue;
-            }
-            PatternType::Any
-        } else {
-            PatternType::Match
-        };
-        weights.push(unit);
-        types.push(kind);
-        index += 1;
-    }
-    (weights, types)
+    wildcard::compile_runes(pattern.as_ref(), escape)
 }
 
 /// Compiles a binary wildcard pattern.
@@ -205,7 +151,7 @@ pub fn compile_pattern_binary(pattern: &[u8], escape: u8) -> (Vec<u8>, Vec<Patte
 
 /// Handles escapes and wildcards in a binary pattern.
 pub fn compile_pattern_inner_binary(pattern: &[u8], escape: u8) -> (Vec<u8>, Vec<PatternType>) {
-    compile_pattern_units(pattern.iter().copied(), Some(escape))
+    wildcard::compile_bytes(pattern, escape)
 }
 
 /// Converts a TiDB `LIKE` pattern to an anchored regular expression using the
@@ -247,7 +193,7 @@ pub fn compile_like_to_regexp(pattern: impl AsRef<[u8]>, escape: u8) -> String {
 
 /// Matches a binary string against a compiled binary wildcard pattern.
 pub fn do_match_binary(input: &[u8], weights: &[u8], types: &[PatternType]) -> bool {
-    do_match_units(input, weights, types, |left, right| left == right)
+    wildcard::matches_compiled_bytes(input, weights, types)
 }
 
 /// Matches a Unicode string against a compiled Unicode wildcard pattern.
@@ -262,52 +208,7 @@ pub fn do_match_customized(
     types: &[PatternType],
     matcher: impl Fn(char, char) -> bool,
 ) -> bool {
-    let input = decode_go_runes(input.as_ref());
-    do_match_units(&input, weights, types, matcher)
-}
-
-fn do_match_units<T: Copy>(
-    input: &[T],
-    weights: &[T],
-    types: &[PatternType],
-    matcher: impl Fn(T, T) -> bool,
-) -> bool {
-    debug_assert_eq!(weights.len(), types.len());
-    let (mut char_index, mut pattern_index) = (0, 0);
-    let (mut next_char_index, mut next_pattern_index) = (0, 0);
-    while pattern_index < weights.len() || char_index < input.len() {
-        if pattern_index < weights.len() {
-            match types[pattern_index] {
-                PatternType::Match
-                    if char_index < input.len()
-                        && matcher(input[char_index], weights[pattern_index]) =>
-                {
-                    pattern_index += 1;
-                    char_index += 1;
-                    continue;
-                }
-                PatternType::One if char_index < input.len() => {
-                    pattern_index += 1;
-                    char_index += 1;
-                    continue;
-                }
-                PatternType::Any => {
-                    next_pattern_index = pattern_index;
-                    next_char_index = char_index + 1;
-                    pattern_index += 1;
-                    continue;
-                }
-                PatternType::Match | PatternType::One => {}
-            }
-        }
-        if next_char_index > 0 && next_char_index <= input.len() {
-            pattern_index = next_pattern_index;
-            char_index = next_char_index;
-            continue;
-        }
-        return false;
-    }
-    true
+    wildcard::matches_compiled_runes_with(input.as_ref(), weights, types, matcher)
 }
 
 /// Whether a compiled pattern contains no wildcard token.
@@ -609,6 +510,124 @@ mod tests {
     }
 
     #[test]
+    fn shared_pattern_rune_and_binary_units() {
+        let rows: &[(&[u8], &[u8], bool, bool)] = &[
+            (b"\xe4", b"\xaa", true, false),
+            (b"\xff", "\u{fffd}".as_bytes(), true, false),
+            (b"_", "中".as_bytes(), true, false),
+            (b"___", "中".as_bytes(), false, true),
+            (b"__", b"\xc3(", true, true),
+            (b"_", b"\xc3(", false, false),
+            (b"%_\xff", b"x\xc3(\xff", true, true),
+            (b"%_\xff", b"x\xc3(\xaa", true, false),
+            (b"%\xff_", b"abc\xaaX", true, false),
+        ];
+        for &(pattern, input, rune_match, binary_match) in rows {
+            let (weights, types) = compile_pattern(pattern, b'\\');
+            assert_eq!(
+                do_match(input, &weights, &types),
+                rune_match,
+                "runes pattern={pattern:?}, input={input:?}"
+            );
+            let (weights, types) = compile_pattern_binary(pattern, b'\\');
+            assert_eq!(
+                do_match_binary(input, &weights, &types),
+                binary_match,
+                "bytes pattern={pattern:?}, input={input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shared_pattern_escape_precedence_and_trailing_literal() {
+        let rows: &[(&[u8], &[u8], u8, bool)] = &[
+            (b"\\", b"\\", b'\\', true),
+            (b"\\", b"", b'\\', false),
+            (b"a\\", b"a\\", b'\\', true),
+            (b"a\\", b"a", b'\\', false),
+            (b"%", b"%", b'%', true),
+            (b"%", b"", b'%', false),
+            (b"a%", b"a", b'%', false),
+            (b"a%", b"a%", b'%', true),
+            (b"_", b"_", b'_', true),
+            (b"_", b"", b'_', false),
+            (b"_", b"abc", b'_', false),
+            (b"\\%", b"%", b'\\', true),
+            (b"\0%", b"%", 0, true),
+            (b"\0%", b"x", 0, false),
+            (b"\0_", b"_", 0, true),
+            (b"\0", b"\0", 0, true),
+            (b"\0", b"", 0, false),
+            (b"\0\0", b"\0", 0, true),
+        ];
+        for &(pattern, input, escape, expected) in rows {
+            let (weights, types) = compile_pattern(pattern, escape);
+            assert_eq!(
+                do_match(input, &weights, &types),
+                expected,
+                "runes pattern={pattern:?}, input={input:?}, escape={escape}"
+            );
+            let (weights, types) = compile_pattern_binary(pattern, escape);
+            assert_eq!(
+                do_match_binary(input, &weights, &types),
+                expected,
+                "bytes pattern={pattern:?}, input={input:?}, escape={escape}"
+            );
+        }
+    }
+
+    #[test]
+    fn shared_pattern_compilation_normalizes_tokens() {
+        use PatternType::{Any, Match, One};
+
+        for (pattern, expected, types) in [
+            ("%%_", "_%", vec![One, Any]),
+            ("%_%_aA", "__%aA", vec![One, One, Any, Match, Match]),
+            (r"\%_", "%_", vec![Match, One]),
+        ] {
+            let compiled = compile_pattern(pattern, b'\\');
+            assert_eq!(
+                compiled,
+                (expected.chars().collect::<Vec<_>>(), types.clone())
+            );
+            assert_eq!(compiled, compile_pattern_inner(pattern, b'\\'));
+            let compiled = compile_pattern_binary(pattern.as_bytes(), b'\\');
+            assert_eq!(compiled, (expected.as_bytes().to_vec(), types));
+            assert_eq!(
+                compiled,
+                compile_pattern_inner_binary(pattern.as_bytes(), b'\\')
+            );
+        }
+    }
+
+    #[test]
+    fn shared_pattern_custom_literal_equality() {
+        let (weights, types) = compile_pattern("A", b'\\');
+        assert!(!do_match("a", &weights, &types));
+        assert!(do_match_customized(
+            "a",
+            &weights,
+            &types,
+            |input, pattern| { input == 'a' && pattern == 'A' }
+        ));
+
+        let (weights, types) = compile_pattern("%É_", b'\\');
+        assert!(!do_match("preéZ", &weights, &types));
+        assert!(do_match_customized(
+            "preéZ",
+            &weights,
+            &types,
+            |input, pattern| { input == pattern || (input == 'é' && pattern == 'É') }
+        ));
+
+        let (weights, types) = compile_pattern("_", b'\\');
+        assert!(do_match_customized("中", &weights, &types, |_, _| {
+            panic!("wildcards must not call the literal matcher")
+        }));
+        assert!(!do_match_customized("ab", &weights, &types, |_, _| true));
+    }
+
+    #[test]
     fn test_compile_like_to_regexp() {
         let regex_rows = [
             ("", "^$"),
@@ -688,6 +707,16 @@ mod tests {
         assert_eq!(escape_glob_question_mark("12*3"), "12*3");
         assert_eq!(escape_glob_question_mark("12?"), r"12\?");
         assert_eq!(escape_glob_question_mark("[1-2]"), "[1-2]");
+        assert_eq!(escape_glob_question_mark("中?🙂"), "中\\?🙂");
+        assert_eq!(escape_glob_question_mark("\u{fffd}?"), "\u{fffd}\\?");
+        assert_eq!(
+            escape_glob_question_mark(b"\xe4\xb8?\xff"),
+            "\u{fffd}\u{fffd}\\?\u{fffd}"
+        );
+        assert_eq!(
+            escape_glob_question_mark(b"\xf0\x80\x80\x80?"),
+            "\u{fffd}\u{fffd}\u{fffd}\u{fffd}\\?"
+        );
     }
 
     #[test]

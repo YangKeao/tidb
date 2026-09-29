@@ -61,9 +61,16 @@ pub struct Constant {
 
     /// Go embedded `collationInfo`.
     pub collation: CollationInfo,
+
+    /// Shallow provenance captured at real PB ingestion, not a reconstructed Expr.
+    pub(crate) pb_origin: Option<std::sync::Arc<crate::distsql_builtin::PbOrigin>>,
 }
 
 impl Constant {
+    pub(crate) fn pb_origin(&self) -> Option<&std::sync::Arc<crate::distsql_builtin::PbOrigin>> {
+        self.pb_origin.as_ref()
+    }
+
     /// Go `cap(c.hashcode)`, for `MemoryUsage`.
     pub(crate) fn hashcode_capacity(&self) -> usize {
         self.hashcode.capacity()

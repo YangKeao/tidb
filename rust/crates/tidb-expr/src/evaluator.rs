@@ -25,6 +25,9 @@ use tidb_datatype::Datum;
 use crate::context::{Columns, EvalError};
 use crate::expression::Expression;
 
+// Private consumer checkpoint; the public suite still selects Native below.
+pub(crate) mod numeric_batch;
+
 /// Go `HasGetSetVarFunc`: whether an expression contains a user-variable read
 /// or assignment at any depth.
 #[must_use]
@@ -355,6 +358,67 @@ pub struct EvaluatorSuite {
     column_swap_helper: Option<ColumnSwapHelper>,
 }
 
+// Minted only inside the real column-major/global-enabled/native-eligible
+// branch below. No Clone, public constructor, caller-supplied selection or
+// cached boolean replaces this invocation's provenance.
+struct NumericBatchInvocation<'a> {
+    program: &'a Arc<EvaluatorProgram>,
+    calculated_slot: usize,
+    output_index: usize,
+    input: &'a Chunk,
+    candidate: crate::scalar_function::EligibleNumericBatch<'a>,
+}
+
+trait NumericBatchConsumer {
+    type Error: From<EvalError> + From<EvaluatorError>;
+
+    fn before_run(
+        &mut self,
+        suite: &EvaluatorSuite,
+        input: &Chunk,
+        output: &Chunk,
+    ) -> Result<(), Self::Error>;
+
+    fn consume(
+        &mut self,
+        invocation: NumericBatchInvocation<'_>,
+        ctx: &dyn Columns,
+    ) -> Result<Vec<Datum>, Self::Error>;
+
+    // Native keeps its exact row fallback; mandatory private consumers refuse
+    // before constants/rows/owner moves rather than substituting that route.
+    fn row_route(&mut self) -> Result<(), Self::Error>;
+}
+
+struct NativeNumericConsumer;
+impl NumericBatchConsumer for NativeNumericConsumer {
+    type Error = EvaluatorError;
+
+    fn before_run(
+        &mut self,
+        _suite: &EvaluatorSuite,
+        _input: &Chunk,
+        _output: &Chunk,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn consume(
+        &mut self,
+        invocation: NumericBatchInvocation<'_>,
+        ctx: &dyn Columns,
+    ) -> Result<Vec<Datum>, Self::Error> {
+        invocation
+            .candidate
+            .eval_native(ctx, invocation.input)
+            .map_err(Into::into)
+    }
+
+    fn row_route(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
 impl EvaluatorSuite {
     /// Go `NewEvaluatorSuite`: compile and instantiate a fresh program.
     #[must_use]
@@ -395,13 +459,27 @@ impl EvaluatorSuite {
         input: &mut Chunk,
         output: &mut Chunk,
     ) -> Result<(), EvaluatorError> {
+        self.run_with_consumer(ctx, input, output, &mut NativeNumericConsumer)
+    }
+
+    fn run_with_consumer<C: Columns, B: NumericBatchConsumer>(
+        &self,
+        ctx: &C,
+        input: &mut Chunk,
+        output: &mut Chunk,
+        consumer: &mut B,
+    ) -> Result<(), B::Error> {
+        // Native is a no-op. A mandatory consumer must refuse unsupported
+        // sources/bindings BEFORE the earlier Decimal worker can do any work.
+        consumer.before_run(self, input, output)?;
         let rows = input.num_rows();
         let program = &self.program;
         if program.vectorizable {
-            for (output_index, expression) in program
+            for (calculated_slot, (output_index, expression)) in program
                 .calculated_output_indexes
                 .iter()
                 .zip(&program.calculated)
+                .enumerate()
             {
                 if let Expression::ScalarFunction(function) = expression {
                     // Go's typed `VecEvalDecimal` for decimal arithmetic.
@@ -409,16 +487,29 @@ impl EvaluatorSuite {
                         continue;
                     }
                 }
+                // Preserve the current getter's exact point and once-only
+                // observation, after Decimal priority and before admission.
                 if ctx.enable_vectorized_expression() {
-                    if let Some(values) =
-                        crate::scalar_function::try_eval_numeric_batch(expression, ctx, input)?
+                    if let Some(candidate) =
+                        crate::scalar_function::numeric_batch_candidate(expression, ctx)?
                     {
+                        let values = consumer.consume(
+                            NumericBatchInvocation {
+                                program,
+                                calculated_slot,
+                                output_index: *output_index,
+                                input,
+                                candidate,
+                            },
+                            ctx,
+                        )?;
                         for value in values {
                             output.append_datum(*output_index, &value);
                         }
                         continue;
                     }
                 }
+                consumer.row_route()?;
                 if let Expression::Constant(constant) = expression {
                     // Go Constant.VecEval* broadcasts only non-deferred
                     // constants. Deferred expressions still consume rows;
@@ -439,6 +530,7 @@ impl EvaluatorSuite {
                 }
             }
         } else {
+            consumer.row_route()?;
             for row_index in 0..rows {
                 for (output_index, expression) in program
                     .calculated_output_indexes

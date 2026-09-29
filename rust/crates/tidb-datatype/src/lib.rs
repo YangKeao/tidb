@@ -60,6 +60,8 @@ mod parser_types_errors;
 mod session_time_zone;
 mod source_string;
 mod str_to_date;
+#[doc(hidden)]
+pub mod tikv_compat;
 mod time_parse;
 mod truncate;
 pub mod utf8_encoding;
@@ -121,8 +123,8 @@ pub use collation::{
     is_bin_collation, is_ci_collation, is_default_collation_for_utf8mb4, is_pad_space_collation,
     new_collation_enabled, proto_to_collation, restore_collation_id_if_needed,
     rewrite_new_collation_id_if_needed, set_new_collation_enabled,
-    substitute_missing_collation_to_default, supported_collations, CollationError, Collator,
-    WildcardPattern, DEFAULT_LEN,
+    substitute_missing_collation_to_default, supported_collations, wildcard, CollationError,
+    Collator, WildcardPattern, DEFAULT_LEN,
 };
 pub use compare::{compare_int, vec_compare_ii, vec_compare_iu, vec_compare_ui, vec_compare_uu};
 pub use conversion_context::{

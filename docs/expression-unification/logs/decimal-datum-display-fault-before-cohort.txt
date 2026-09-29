@@ -1,0 +1,10 @@
+rustc 1.95.0-nightly (842bd5be2 2026-01-29)
+binary: rustc
+commit-hash: 842bd5be253e17831e318fdbd9d01d716557cc75
+commit-date: 2026-01-29
+host: x86_64-unknown-linux-gnu
+release: 1.95.0-nightly
+LLVM version: 22.1.0
+e63c85fef7979adc73b165a2fda92451bc0e584ffa360633b38fe6d15b2ab04b  /home/agent/tidb/expression-unification/tools/decimal-datum-display-fault-probe.rs
+e806f5107170f28b658bd8fcc06eb3265cb926a0a16f0229f168a0e13a0f9ff3  /home/agent/tidb/expression-unification/target-tikv/debug/deps/libtidb_query_datatype-c654d7c6d7b1484d.rlib
+6beaf89b7aa697b7d8ff8b0716ea6c8575bc0d1ea4f7a3df9fad7b101e3d1adf  /home/agent/tidb/expression-reuse/rustup-home/toolchains/nightly-2026-01-30-x86_64-unknown-linux-gnu/bin/rustc

@@ -39,7 +39,12 @@ const DEFAULT_DECIMAL_LITERAL: &str =
 
 pub(crate) mod control_type;
 mod fold_mode;
+pub(crate) mod preparation;
+#[cfg(test)]
+mod preparation_tests;
 pub(crate) mod result_type;
+
+use preparation::{PreparationPurpose, StructuralExpression, StructuralLimits};
 
 pub use control_type::{infer_type4_control_funcs, set_numeric_len_from_args};
 use fold_mode::FoldModeResolver;
@@ -377,8 +382,12 @@ impl ColumnResolver for NoResolver {
 /// ODBC spelling `{ts <expr>}` accepts a full expression, so the argument is
 /// rewritten and folded first; anything that does not fold to a constant is a
 /// boundary this tier reports instead of crashing on.
-fn literal_text(expr: &Expr, resolver: &impl ColumnResolver) -> Result<String, EvalError> {
-    let built = rewrite_expr_resolved(expr, resolver)?;
+fn literal_text(
+    expr: &Expr,
+    resolver: &impl ColumnResolver,
+    purpose: PreparationPurpose,
+) -> Result<String, EvalError> {
+    let built = rewrite_expr_resolved_with_purpose(expr, resolver, purpose)?;
     let Expression::Constant(constant) = built else {
         return Err(EvalError::Unsupported(
             "a temporal literal whose argument is not constant",
@@ -485,6 +494,7 @@ fn wrap_power_arguments(
     name: &str,
     args: Vec<Expression>,
     resolver: &impl ColumnResolver,
+    purpose: PreparationPurpose,
 ) -> Result<Vec<Expression>, EvalError> {
     if !matches!(name, "pow" | "power") {
         return Ok(args);
@@ -525,7 +535,7 @@ fn wrap_power_arguments(
             // newly constructed cast even under a try/disabled-fold parent.
             // Parameter results keep their deferred expression for rebinding.
             derive_tree_collation_with_connection(&mut cast, resolver.connection_charset_info())?;
-            resolver.fold_constant(&mut cast, ConstantFoldMode::Normal);
+            purpose.fold(resolver, &mut cast, ConstantFoldMode::Normal);
             Ok(cast)
         })
         .collect()
@@ -581,8 +591,16 @@ fn binary_expression(
     left: Expression,
     right: Expression,
     resolver: &impl ColumnResolver,
+    purpose: PreparationPurpose,
 ) -> Result<Expression, EvalError> {
     let name = binary_op_name(op);
+    if purpose == PreparationPurpose::StructuralOnly {
+        if !matches!(op, BinaryOp::LogicAnd | BinaryOp::LogicOr) {
+            return Err(EvalError::Unsupported("StructuralOnly: binary operator"));
+        }
+        preparation::require_bigint(&left)?;
+        preparation::require_bigint(&right)?;
+    }
     let ret_type = crate::builtin_arithmetic::infer_arithmetic_type_with_context(
         name,
         &left,
@@ -632,7 +650,7 @@ fn binary_expression(
                             // boundary; a wrap that early-returned leaves the
                             // argument untouched and needs no fold.
                             if is_newly_built_cast(argument) {
-                                resolver.fold_constant(argument, ConstantFoldMode::Normal);
+                                purpose.fold(resolver, argument, ConstantFoldMode::Normal);
                             }
                         }
                     }
@@ -648,7 +666,7 @@ fn binary_expression(
                                 ),
                             )?;
                             if is_newly_built_cast(argument) {
-                                resolver.fold_constant(argument, ConstantFoldMode::Normal);
+                                purpose.fold(resolver, argument, ConstantFoldMode::Normal);
                             }
                         }
                     }
@@ -665,7 +683,7 @@ fn binary_expression(
                                 None,
                             )?;
                             if is_newly_built_cast(argument) {
-                                resolver.fold_constant(argument, ConstantFoldMode::Normal);
+                                purpose.fold(resolver, argument, ConstantFoldMode::Normal);
                             }
                         }
                     }
@@ -707,7 +725,7 @@ fn binary_expression(
                             crate::expr_util::builder::double_field_type(),
                             false,
                         )?;
-                        resolver.fold_constant(&mut cast, ConstantFoldMode::Normal);
+                        purpose.fold(resolver, &mut cast, ConstantFoldMode::Normal);
                         cast
                     } else {
                         std::mem::replace(argument, Expression::Constant(Constant::new_null()))
@@ -717,10 +735,12 @@ fn binary_expression(
                         crate::expr_util::builder::tiny_int_type(),
                         vec![wrapped],
                     ));
-                    resolver.fold_constant(argument, ConstantFoldMode::Normal);
+                    purpose.fold(resolver, argument, ConstantFoldMode::Normal);
                 }
             }
-            if crate::builtin_compare::infer_compare_type(name).is_some() {
+            if purpose == PreparationPurpose::SqlBuild
+                && crate::builtin_compare::infer_compare_type(name).is_some()
+            {
                 if let Some(ctx) = resolver.comparison_context() {
                     let mut expression = Expression::ScalarFunction(ScalarFunction::new(
                         CiString::new(name),
@@ -736,13 +756,15 @@ fn binary_expression(
                 crate::builtin_compare::wrap_comparison_arguments_with_fold(
                     &mut args,
                     resolver.connection_charset_info(),
-                    |argument| resolver.fold_constant(argument, ConstantFoldMode::Normal),
+                    |argument| purpose.fold(resolver, argument, ConstantFoldMode::Normal),
                 )?;
             }
             let mut function = ScalarFunction::new(CiString::new(name), ret_type, args);
-            function.prepare_numeric_arguments(
-                resolver.comparison_context().unwrap_or(&crate::NoColumns),
-            );
+            if purpose == PreparationPurpose::SqlBuild {
+                function.prepare_numeric_arguments(
+                    resolver.comparison_context().unwrap_or(&crate::NoColumns),
+                );
+            }
             Ok(Expression::ScalarFunction(function))
         }
         None => Ok(scalar(name, vec![left, right])),
@@ -900,16 +922,20 @@ fn rewrite_comparison(
     left: &Expr,
     right: &Expr,
     resolver: &impl ColumnResolver,
+    purpose: PreparationPurpose,
 ) -> Result<Expression, EvalError> {
     match (left, right) {
-        (Expr::Row(left), Expr::Row(right)) => rewrite_row_comparison(op, left, right, resolver),
+        (Expr::Row(left), Expr::Row(right)) => {
+            rewrite_row_comparison(op, left, right, resolver, purpose)
+        }
         (Expr::Row(left), _) => Err(EvalError::OperandColumns(left.len())),
         (_, Expr::Row(_)) => Err(EvalError::OperandColumns(1)),
         _ => binary_expression(
             op,
-            rewrite_expr_resolved(left, resolver)?,
-            rewrite_expr_resolved(right, resolver)?,
+            rewrite_expr_resolved_with_purpose(left, resolver, purpose)?,
+            rewrite_expr_resolved_with_purpose(right, resolver, purpose)?,
             resolver,
+            purpose,
         ),
     }
 }
@@ -918,13 +944,14 @@ fn compose_comparisons(
     join: BinaryOp,
     comparisons: impl IntoIterator<Item = Result<Expression, EvalError>>,
     resolver: &impl ColumnResolver,
+    purpose: PreparationPurpose,
 ) -> Result<Expression, EvalError> {
     let mut comparisons = comparisons.into_iter();
     let first = comparisons
         .next()
         .ok_or(EvalError::Unsupported("a row expression with no columns"))??;
     comparisons.try_fold(first, |condition, comparison| {
-        binary_expression(join, condition, comparison?, resolver)
+        binary_expression(join, condition, comparison?, resolver, purpose)
     })
 }
 
@@ -935,6 +962,7 @@ fn rewrite_row_comparison(
     left: &[Expr],
     right: &[Expr],
     resolver: &impl ColumnResolver,
+    purpose: PreparationPurpose,
 ) -> Result<Expression, EvalError> {
     if left.len() != right.len() {
         return Err(EvalError::OperandColumns(left.len()));
@@ -949,14 +977,23 @@ fn rewrite_row_comparison(
             join,
             left.iter()
                 .zip(right)
-                .map(|(left, right)| rewrite_comparison(op, left, right, resolver)),
+                .map(|(left, right)| rewrite_comparison(op, left, right, resolver, purpose)),
             resolver,
+            purpose,
         );
     }
 
     let comparisons = (0..left.len()).map(|index| {
         let mut prefix = (0..index)
-            .map(|prefix| rewrite_comparison(BinaryOp::Eq, &left[prefix], &right[prefix], resolver))
+            .map(|prefix| {
+                rewrite_comparison(
+                    BinaryOp::Eq,
+                    &left[prefix],
+                    &right[prefix],
+                    resolver,
+                    purpose,
+                )
+            })
             .collect::<Vec<_>>();
         let current_op = if index + 1 < left.len() {
             match op {
@@ -972,10 +1009,11 @@ fn rewrite_row_comparison(
             &left[index],
             &right[index],
             resolver,
+            purpose,
         ));
-        compose_comparisons(BinaryOp::LogicAnd, prefix, resolver)
+        compose_comparisons(BinaryOp::LogicAnd, prefix, resolver, purpose)
     });
-    compose_comparisons(BinaryOp::LogicOr, comparisons, resolver)
+    compose_comparisons(BinaryOp::LogicOr, comparisons, resolver, purpose)
 }
 
 /// Rewrites a parsed AST expression without a column scope.
@@ -989,6 +1027,27 @@ pub fn rewrite_expr_resolved(
     expr: &Expr,
     resolver: &impl ColumnResolver,
 ) -> Result<Expression, EvalError> {
+    rewrite_expr_resolved_with_purpose(expr, resolver, PreparationPurpose::SqlBuild)
+}
+
+/// Private preparation seed, not a public evaluator or a fully folded SQL type.
+#[allow(dead_code)]
+pub(crate) fn rewrite_expr_structural(
+    expr: &Expr,
+    resolver: &impl ColumnResolver,
+    limits: StructuralLimits,
+) -> Result<StructuralExpression, EvalError> {
+    preparation::check_ast(expr, limits)?;
+    let root =
+        rewrite_expr_resolved_with_purpose(expr, resolver, PreparationPurpose::StructuralOnly)?;
+    StructuralExpression::checked(root, limits)
+}
+
+fn rewrite_expr_resolved_with_purpose(
+    expr: &Expr,
+    resolver: &impl ColumnResolver,
+    purpose: PreparationPurpose,
+) -> Result<Expression, EvalError> {
     // Go's rewriter walks arbitrarily nested expressions because a
     // goroutine's stack grows on demand. This is that semantics for a Rust
     // thread: when fewer than 128 KB remain, the walk continues on a fresh
@@ -997,14 +1056,26 @@ pub fn rewrite_expr_resolved(
     // under ~30 KB in a debug build); the check itself is a few instructions
     // on the non-growing path.
     stacker::maybe_grow(128 * 1024, 4 * 1024 * 1024, || {
-        rewrite_expr_resolved_inner(expr, resolver)
+        rewrite_expr_resolved_inner(expr, resolver, purpose)
     })
 }
 
 fn rewrite_expr_resolved_inner(
     expr: &Expr,
     resolver: &impl ColumnResolver,
+    purpose: PreparationPurpose,
 ) -> Result<Expression, EvalError> {
+    if purpose == PreparationPurpose::StructuralOnly {
+        if let Expr::Column(path) = expr {
+            // Complete schema metadata, never a value or evaluated planner leaf.
+            let column = resolver.resolve_column(path).ok_or_else(|| {
+                EvalError::UnknownColumnInClause(path.join("."), resolver.clause_message())
+            })?;
+            let expression = Expression::Column(column);
+            preparation::check_node(&expression)?;
+            return Ok(expression);
+        }
+    }
     if let Expr::Default(Some(path)) = expr {
         return resolver
             .resolve_default(path)
@@ -1018,7 +1089,10 @@ fn rewrite_expr_resolved_inner(
             EvalError::UnknownColumnInClause(path.join("."), resolver.clause_message())
         });
     }
-    let mut built = rewrite_leaf(expr, resolver)?;
+    let mut built = rewrite_leaf(expr, resolver, purpose)?;
+    if purpose == PreparationPurpose::StructuralOnly {
+        preparation::check_node(&built)?;
+    }
     derive_tree_collation_with_connection(&mut built, resolver.connection_charset_info())?;
     // Go FuncCastExpr calls BuildCastFunctionWithCheck directly, outside
     // newFunctionWithInit's try/disabled-fold counters. JSON casts alone
@@ -1030,8 +1104,10 @@ fn rewrite_expr_resolved_inner(
         Expr::Cast(_) => ConstantFoldMode::Normal,
         _ => resolver.fold_mode(),
     };
-    resolver.fold_constant(&mut built, fold_mode);
-    prepare_in_string_hash_sets(&mut built);
+    purpose.fold(resolver, &mut built, fold_mode);
+    if purpose == PreparationPurpose::SqlBuild {
+        prepare_in_string_hash_sets(&mut built);
+    }
     Ok(built)
 }
 
@@ -1104,9 +1180,13 @@ fn derive_tree_collation_with_connection(
 /// planner walks an arbitrarily nested expression. Anything that shrinks
 /// these frames therefore moves this tier toward Go rather than merely
 /// tuning it.
-fn rewrite_leaf(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expression, EvalError> {
+fn rewrite_leaf(
+    expr: &Expr,
+    resolver: &impl ColumnResolver,
+    purpose: PreparationPurpose,
+) -> Result<Expression, EvalError> {
     match expr {
-        Expr::Paren(inner) => rewrite_expr_resolved(inner, resolver),
+        Expr::Paren(inner) => rewrite_expr_resolved_with_purpose(inner, resolver, purpose),
         Expr::Binary(op, lhs, rhs) => {
             if matches!(
                 op,
@@ -1119,7 +1199,7 @@ fn rewrite_leaf(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expressio
                     | BinaryOp::Ge
             ) && (matches!(lhs.as_ref(), Expr::Row(_)) || matches!(rhs.as_ref(), Expr::Row(_)))
             {
-                return rewrite_comparison(*op, lhs, rhs, resolver);
+                return rewrite_comparison(*op, lhs, rhs, resolver, purpose);
             }
             let mode = if matches!(op, BinaryOp::LogicAnd | BinaryOp::LogicOr) {
                 ConstantFoldMode::Try
@@ -1128,14 +1208,14 @@ fn rewrite_leaf(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expressio
             };
             let child_resolver = FoldModeResolver::new(resolver, mode);
             let resolver = &child_resolver;
-            let left = rewrite_expr_resolved(lhs, resolver)?;
-            let right = rewrite_expr_resolved(rhs, resolver)?;
+            let left = rewrite_expr_resolved_with_purpose(lhs, resolver, purpose)?;
+            let right = rewrite_expr_resolved_with_purpose(rhs, resolver, purpose)?;
             // Result types come from the transcreated function classes:
             // builtin_arithmetic (plus/minus/mul/div/intdiv/mod),
             // builtin_compare (eq/nulleq/ne/lt/le/gt/ge) and builtin_op
             // (logic and bit operators). Anything still uncovered keeps the
             // LongLong placeholder.
-            let built = binary_expression(*op, left, right, resolver)?;
+            let built = binary_expression(*op, left, right, resolver, purpose)?;
             if std::env::var_os("TIDB_DEBUG_SEL").is_some() && matches!(op, BinaryOp::LogicOr) {
                 eprintln!("[ORBUILD] built={built:?}");
             }
@@ -1153,7 +1233,7 @@ fn rewrite_leaf(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expressio
         | Expr::CharsetBinary { .. }
         | Expr::Assign { .. }
         | Expr::Collate { .. }
-        | Expr::CharsetString { .. } => rewrite_leaf_literal(expr, resolver),
+        | Expr::CharsetString { .. } => rewrite_leaf_literal(expr, resolver, purpose),
         Expr::In { .. }
         | Expr::Between { .. }
         | Expr::Like { .. }
@@ -1161,8 +1241,8 @@ fn rewrite_leaf(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expressio
         | Expr::Case { .. }
         | Expr::MemberOf { .. }
         | Expr::Is { .. }
-        | Expr::Unary(..) => rewrite_leaf_compound(expr, resolver),
-        _ => rewrite_leaf_call(expr, resolver),
+        | Expr::Unary(..) => rewrite_leaf_compound(expr, resolver, purpose),
+        _ => rewrite_leaf_call(expr, resolver, purpose),
     }
 }
 
@@ -1178,6 +1258,7 @@ fn rewrite_leaf(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expressio
 fn rewrite_leaf_literal(
     expr: &Expr,
     resolver: &impl ColumnResolver,
+    purpose: PreparationPurpose,
 ) -> Result<Expression, EvalError> {
     match expr {
         Expr::ParamMarker {
@@ -1306,7 +1387,7 @@ fn rewrite_leaf_literal(
         // expression consumers still see the explicit charset/collation and
         // UnderScoreCharset/Binary flags.
         Expr::CharsetBinary { charset, value } => {
-            let mut rewritten = rewrite_leaf(value, resolver)?;
+            let mut rewritten = rewrite_leaf(value, resolver, purpose)?;
             let lower = charset.to_ascii_lowercase();
             let collation = tidb_datatype::get_default_collation(&lower)
                 .map_err(|_| EvalError::Unsupported("unknown character introducer"))?;
@@ -1340,7 +1421,7 @@ fn rewrite_leaf_literal(
         Expr::Assign { name, value } => {
             let args = vec![
                 constant_string(name),
-                rewrite_expr_resolved(value, resolver)?,
+                rewrite_expr_resolved_with_purpose(value, resolver, purpose)?,
             ];
             let ret_type = builtin_return_type("setvar", &args)
                 .ok_or(EvalError::Unsupported("setvar has no result type"))?;
@@ -1357,7 +1438,7 @@ fn rewrite_leaf_literal(
         // belong to the value's charset is error 1253, which is what makes
         // `SELECT 'a' COLLATE latin1_bin` fail (a bare literal is utf8mb4).
         Expr::Collate { expr, collation } => {
-            let mut arg = rewrite_expr_resolved(expr, resolver)?;
+            let mut arg = rewrite_expr_resolved_with_purpose(expr, resolver, purpose)?;
             let name = collation.to_ascii_lowercase();
             let Some(collation) = tidb_datatype::Collation::from_name(&name) else {
                 return Err(EvalError::UnknownCollation(name));
@@ -1423,6 +1504,7 @@ fn rewrite_leaf_literal(
 fn rewrite_leaf_compound(
     expr: &Expr,
     resolver: &impl ColumnResolver,
+    purpose: PreparationPurpose,
 ) -> Result<Expression, EvalError> {
     match expr {
         // Go's `in` builtin takes the tested value as args[0] and the list as
@@ -1441,13 +1523,13 @@ fn rewrite_leaf_compound(
                     let Expr::Row(right) = right else {
                         return Err(EvalError::OperandColumns(left.len()));
                     };
-                    rewrite_row_comparison(BinaryOp::Eq, left, right, resolver)
+                    rewrite_row_comparison(BinaryOp::Eq, left, right, resolver, purpose)
                 });
                 let first = comparisons.next().ok_or(EvalError::Unsupported(
                     "an IN expression with no candidates",
                 ))??;
                 let call = comparisons.try_fold(first, |condition, comparison| {
-                    binary_expression(BinaryOp::LogicOr, condition, comparison?, resolver)
+                    binary_expression(BinaryOp::LogicOr, condition, comparison?, resolver, purpose)
                 })?;
                 if *not {
                     let ret_type = call
@@ -1463,9 +1545,9 @@ fn rewrite_leaf_compound(
                 return Ok(call);
             }
             let mut args = Vec::with_capacity(list.len() + 1);
-            args.push(rewrite_expr_resolved(expr, resolver)?);
+            args.push(rewrite_expr_resolved_with_purpose(expr, resolver, purpose)?);
             for item in list {
-                args.push(rewrite_expr_resolved(item, resolver)?);
+                args.push(rewrite_expr_resolved_with_purpose(item, resolver, purpose)?);
             }
             let ctx = resolver.comparison_context().unwrap_or(&crate::NoColumns);
             crate::builtin_compare::refine_integer_in_arguments(&mut args, ctx)?;
@@ -1500,6 +1582,7 @@ fn rewrite_leaf_compound(
                         left.clone(),
                         right.clone(),
                         resolver,
+                        purpose,
                     )?);
                 }
                 let call = crate::simple_expr::compose_dnf_condition(equalities).ok_or(
@@ -1629,9 +1712,9 @@ fn rewrite_leaf_compound(
             high,
             not,
         } => {
-            let value = rewrite_expr_resolved(expr, resolver)?;
-            let low = rewrite_expr_resolved(low, resolver)?;
-            let high = rewrite_expr_resolved(high, resolver)?;
+            let value = rewrite_expr_resolved_with_purpose(expr, resolver, purpose)?;
+            let low = rewrite_expr_resolved_with_purpose(low, resolver, purpose)?;
+            let high = rewrite_expr_resolved_with_purpose(high, resolver, purpose)?;
             let [value, low, high] = wrap_between_arguments(
                 [&value, &low, &high],
                 resolve_type4_between([&value, &low, &high]),
@@ -1643,8 +1726,8 @@ fn rewrite_leaf_compound(
                 (BinaryOp::Ge, BinaryOp::Le, "and")
             };
             let compare = binary_expression;
-            let lower = compare(lower_op, value.clone(), low, resolver)?;
-            let upper = compare(upper_op, value, high, resolver)?;
+            let lower = compare(lower_op, value.clone(), low, resolver, purpose)?;
+            let upper = compare(upper_op, value, high, resolver, purpose)?;
             // The joining `AND`/`OR` is a `booleanFunctions` name, so the whole
             // `BETWEEN` result is boolean-flagged: `JSON_ARRAY(x BETWEEN l AND h)`
             // is `[true]`/`[false]`, not `[1]`/`[0]`.
@@ -1668,8 +1751,8 @@ fn rewrite_leaf_compound(
         } => {
             let name = if *ilike { "ilike" } else { "like" };
             let args = vec![
-                rewrite_expr_resolved(expr, resolver)?,
-                rewrite_expr_resolved(pattern, resolver)?,
+                rewrite_expr_resolved_with_purpose(expr, resolver, purpose)?,
+                rewrite_expr_resolved_with_purpose(pattern, resolver, purpose)?,
                 // Go supplies the session-selected implicit escape when none
                 // was written. Explicit `ESCAPE` always wins.
                 constant(
@@ -1699,8 +1782,8 @@ fn rewrite_leaf_compound(
         // it in a unary NOT, the same shape `Expr::Like` above builds.
         Expr::Regexp { expr, pattern, not } => {
             let args = vec![
-                rewrite_expr_resolved(expr, resolver)?,
-                rewrite_expr_resolved(pattern, resolver)?,
+                rewrite_expr_resolved_with_purpose(expr, resolver, purpose)?,
+                rewrite_expr_resolved_with_purpose(pattern, resolver, purpose)?,
             ];
             let ret_type = builtin_return_type("regexp", &args)
                 .expect("the regexp builtin has a fixed result type");
@@ -1728,12 +1811,17 @@ fn rewrite_leaf_compound(
         } => {
             let child_resolver = FoldModeResolver::new(resolver, ConstantFoldMode::Try);
             let compare_value = match value {
-                Some(value) => Some(rewrite_expr_resolved(value, &child_resolver)?),
+                Some(value) => Some(rewrite_expr_resolved_with_purpose(
+                    value,
+                    &child_resolver,
+                    purpose,
+                )?),
                 None => None,
             };
             let mut args = Vec::with_capacity(when_clauses.len() * 2 + 1);
             for (condition, result) in when_clauses {
-                let condition = rewrite_expr_resolved(condition, &child_resolver)?;
+                let condition =
+                    rewrite_expr_resolved_with_purpose(condition, &child_resolver, purpose)?;
                 let condition = match &compare_value {
                     Some(value) => {
                         let name = binary_op_name(BinaryOp::Eq);
@@ -1748,10 +1836,21 @@ fn rewrite_leaf_compound(
                     None => condition,
                 };
                 args.push(condition);
-                args.push(rewrite_expr_resolved(result, &child_resolver)?);
+                args.push(rewrite_expr_resolved_with_purpose(
+                    result,
+                    &child_resolver,
+                    purpose,
+                )?);
             }
             if let Some(else_clause) = else_clause {
-                args.push(rewrite_expr_resolved(else_clause, &child_resolver)?);
+                args.push(rewrite_expr_resolved_with_purpose(
+                    else_clause,
+                    &child_resolver,
+                    purpose,
+                )?);
+            }
+            if purpose == PreparationPurpose::StructuralOnly {
+                preparation::check_control("case", &args)?;
             }
             // The result type comes from the branches, which are every other
             // argument plus the trailing ELSE.
@@ -1787,12 +1886,14 @@ fn rewrite_leaf_compound(
                 // (`0.0000`). Rust's builders defer that fold so conversion
                 // diagnostics stay with the live statement context; this is
                 // that context, and a non-constant branch is untouched.
-                if let Some(context) = resolver.comparison_context() {
-                    crate::constant_fold::fold_constant_in_mode(
-                        &mut wrapped,
-                        context,
-                        ConstantFoldMode::Normal,
-                    );
+                if purpose == PreparationPurpose::SqlBuild {
+                    if let Some(context) = resolver.comparison_context() {
+                        crate::constant_fold::fold_constant_in_mode(
+                            &mut wrapped,
+                            context,
+                            ConstantFoldMode::Normal,
+                        );
+                    }
                 }
                 args[index] = wrapped;
             }
@@ -1806,8 +1907,8 @@ fn rewrite_leaf_compound(
         // two-argument JSON_MEMBER_OF call; only the restore syntax is infix.
         Expr::MemberOf { expr, array } => {
             let args = vec![
-                rewrite_expr_resolved(expr, resolver)?,
-                rewrite_expr_resolved(array, resolver)?,
+                rewrite_expr_resolved_with_purpose(expr, resolver, purpose)?,
+                rewrite_expr_resolved_with_purpose(array, resolver, purpose)?,
             ];
             let ret_type =
                 builtin_return_type("json_member_of", &args).expect("JSON_MEMBER_OF is registered");
@@ -1821,7 +1922,7 @@ fn rewrite_leaf_compound(
         // wrapping `IS NOT` in a unary NOT. These return 0/1 and never NULL,
         // so the wrapping NOT is exact.
         Expr::Is { expr, target, not } => {
-            let arg = rewrite_expr_resolved(expr, resolver)?;
+            let arg = rewrite_expr_resolved_with_purpose(expr, resolver, purpose)?;
             let name = match target {
                 // `IS UNKNOWN` is `IS NULL` (Go maps both to isnull).
                 IsTarget::Null | IsTarget::Unknown => "isnull",
@@ -1850,7 +1951,7 @@ fn rewrite_leaf_compound(
             Ok(call)
         }
         Expr::Unary(op, inner) => {
-            let arg = rewrite_expr_resolved(inner, resolver)?;
+            let arg = rewrite_expr_resolved_with_purpose(inner, resolver, purpose)?;
             // Go `unaryOpToExpression`: `case opcode.Plus: return` -- the
             // expression `(+ a)` IS `a`, so no function is built at all. That
             // is also the only reason `+ a` needs no return-type rule: there
@@ -1884,7 +1985,11 @@ fn rewrite_leaf_compound(
 /// stack while planning. Each group pays only its own arms now, and the
 /// dispatcher that recurses pays almost nothing.
 #[inline(never)]
-fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expression, EvalError> {
+fn rewrite_leaf_call(
+    expr: &Expr,
+    resolver: &impl ColumnResolver,
+    purpose: PreparationPurpose,
+) -> Result<Expression, EvalError> {
     match expr {
         // Go's parser keeps `EXTRACT(unit FROM value)` as a two-argument
         // `extract` call: `parseExtractFunc` builds `FuncCallExpr{FnName:
@@ -1894,7 +1999,7 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
         // from this unit and the second argument's static type.
         Expr::Extract { unit, value } => {
             let unit = constant(Datum::new_string(unit.clone()), FieldTypeCode::VarString);
-            let value = rewrite_expr_resolved(value, resolver)?;
+            let value = rewrite_expr_resolved_with_purpose(value, resolver, purpose)?;
             Ok(scalar("extract", vec![unit, value]))
         }
         // The first GET_FORMAT argument is grammar, not an expression. Go's
@@ -1908,7 +2013,7 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
             };
             let args = vec![
                 constant_string(selector),
-                rewrite_expr_resolved(expr, resolver)?,
+                rewrite_expr_resolved_with_purpose(expr, resolver, purpose)?,
             ];
             let ret_type = builtin_return_type("get_format", &args).ok_or(
                 EvalError::Unsupported("this builtin is not yet built for chunk evaluation"),
@@ -1923,8 +2028,8 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
         // builds the ordinary two-argument `locateFunctionClass`.
         Expr::Position { substr, str } => {
             let args = vec![
-                rewrite_expr_resolved(substr, resolver)?,
-                rewrite_expr_resolved(str, resolver)?,
+                rewrite_expr_resolved_with_purpose(substr, resolver, purpose)?,
+                rewrite_expr_resolved_with_purpose(str, resolver, purpose)?,
             ];
             let ret_type = builtin_return_type("locate", &args).expect("LOCATE is registered");
             Ok(Expression::ScalarFunction(ScalarFunction::new(
@@ -1950,8 +2055,8 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
         } => {
             let args = vec![
                 constant_string(unit),
-                rewrite_expr_resolved(interval, resolver)?,
-                rewrite_expr_resolved(expr, resolver)?,
+                rewrite_expr_resolved_with_purpose(interval, resolver, purpose)?,
+                rewrite_expr_resolved_with_purpose(expr, resolver, purpose)?,
             ];
             let ret_type = builtin_return_type("timestampadd", &args).ok_or(
                 EvalError::Unsupported("this builtin is not yet built for chunk evaluation"),
@@ -1965,8 +2070,8 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
         Expr::TimestampDiff { unit, expr1, expr2 } => {
             let args = vec![
                 constant_string(unit),
-                rewrite_expr_resolved(expr1, resolver)?,
-                rewrite_expr_resolved(expr2, resolver)?,
+                rewrite_expr_resolved_with_purpose(expr1, resolver, purpose)?,
+                rewrite_expr_resolved_with_purpose(expr2, resolver, purpose)?,
             ];
             Ok(Expression::ScalarFunction(ScalarFunction::new(
                 CiString::new("timestampdiff"),
@@ -1981,7 +2086,7 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
             if lowered == "grouping" {
                 let args = args
                     .iter()
-                    .map(|arg| rewrite_expr_resolved(arg, resolver))
+                    .map(|arg| rewrite_expr_resolved_with_purpose(arg, resolver, purpose))
                     .collect::<Result<Vec<_>, _>>()?;
                 return resolver.rewrite_grouping(&args);
             }
@@ -2145,7 +2250,11 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
                         tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString),
                     ))];
                     for arg in &args[1..] {
-                        rewritten.push(rewrite_expr_resolved(arg, &child_resolver)?);
+                        rewritten.push(rewrite_expr_resolved_with_purpose(
+                            arg,
+                            &child_resolver,
+                            purpose,
+                        )?);
                     }
                     let ret_type =
                         builtin_return_type(&lowered, &rewritten).ok_or(EvalError::Unsupported(
@@ -2213,8 +2322,8 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
                         unit.to_ascii_lowercase()
                     );
                     let args = vec![
-                        rewrite_expr_resolved(date, &child_resolver)?,
-                        rewrite_expr_resolved(value, &child_resolver)?,
+                        rewrite_expr_resolved_with_purpose(date, &child_resolver, purpose)?,
+                        rewrite_expr_resolved_with_purpose(value, &child_resolver, purpose)?,
                     ];
                     let ret_type =
                         builtin_return_type(&name, &args).ok_or(EvalError::Unsupported(
@@ -2236,7 +2345,7 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
                     .enumerate()
                     .map(|(index, arg)| match (index + 1 == args.len(), arg) {
                         (true, Expr::RawString(charset)) => Ok(constant_string(charset)),
-                        _ => rewrite_expr_resolved(arg, &child_resolver),
+                        _ => rewrite_expr_resolved_with_purpose(arg, &child_resolver, purpose),
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 // go's charFunctionClass.getFunction validates the charset
@@ -2287,9 +2396,12 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
             }
             let rewritten: Vec<Expression> = args
                 .iter()
-                .map(|arg| rewrite_expr_resolved(arg, &child_resolver))
+                .map(|arg| rewrite_expr_resolved_with_purpose(arg, &child_resolver, purpose))
                 .collect::<Result<_, _>>()?;
-            let rewritten = wrap_power_arguments(&lowered, rewritten, resolver)?;
+            if purpose == PreparationPurpose::StructuralOnly {
+                preparation::check_control(&lowered, &rewritten)?;
+            }
+            let rewritten = wrap_power_arguments(&lowered, rewritten, resolver, purpose)?;
             let mut ret_type = builtin_return_type(&lowered, &rewritten).ok_or_else(|| {
                 crate::builtin_registry::unresolved_error(&lowered, resolver.current_database())
             })?;
@@ -2314,7 +2426,7 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
             ret_type.set_collation_name(derived.collation);
             let rewritten =
                 wrap_binary_literals(&lowered, ret_type.charset_name(), rewritten, |expression| {
-                    resolver.fold_constant(expression, ConstantFoldMode::Normal)
+                    purpose.fold(resolver, expression, ConstantFoldMode::Normal)
                 });
             Ok(Expression::ScalarFunction(ScalarFunction::new(
                 CiString::new(&lowered),
@@ -2338,7 +2450,7 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
                 tidb_ast::CastStyle::DateLiteral | tidb_ast::CastStyle::TimestampLiteral
             ) =>
         {
-            let text = literal_text(&cast.expr, resolver)?;
+            let text = literal_text(&cast.expr, resolver, purpose)?;
             let zone = resolver.time_zone();
             let modes = resolver.date_modes();
             let (time, ret_type) = match cast.style {
@@ -2391,13 +2503,13 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
                     }
                 }
             }
-            let arg = rewrite_expr_resolved(&cast.expr, resolver)?;
+            let arg = rewrite_expr_resolved_with_purpose(&cast.expr, resolver, purpose)?;
             // `CAST(x AS BINARY)` is Go's `funcPropAuto` binary-result arm:
             // a gbk-charset argument transcodes on the way in, which is why
             // `HEX(CAST(gbk_col AS BINARY))` reports the GBK bytes.
             let args =
                 wrap_binary_literals("cast", ret_type.charset_name(), vec![arg], |expression| {
-                    resolver.fold_constant(expression, ConstantFoldMode::Normal)
+                    purpose.fold(resolver, expression, ConstantFoldMode::Normal)
                 });
             let charset_name = ret_type.charset_name().to_owned();
             let collation_name = ret_type.collation_name().to_owned();
@@ -2446,7 +2558,7 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
                 ret_type.set_collation_name(target.default_collation().name());
             }
             let args = vec![
-                rewrite_expr_resolved(expr, resolver)?,
+                rewrite_expr_resolved_with_purpose(expr, resolver, purpose)?,
                 constant_string(&charset),
             ];
             let charset_name = ret_type.charset_name().to_owned();
@@ -2481,7 +2593,7 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
         // spellings are rebuilt here as those constants so one evaluator arm
         // reads them.
         Expr::WeightString { expr, as_type } => {
-            let mut args = vec![rewrite_expr_resolved(expr, resolver)?];
+            let mut args = vec![rewrite_expr_resolved_with_purpose(expr, resolver, purpose)?];
             if let Some((kind, length)) = as_type {
                 args.push(constant_string(match kind {
                     tidb_ast::WeightStringType::Char => "CHAR",
@@ -2513,9 +2625,11 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
                 tidb_ast::TrimDirection::Leading => "ltrim_with",
                 tidb_ast::TrimDirection::Trailing => "rtrim_with",
             };
-            let mut args = vec![rewrite_expr_resolved(expr, resolver)?];
+            let mut args = vec![rewrite_expr_resolved_with_purpose(expr, resolver, purpose)?];
             match remstr {
-                Some(remstr) => args.push(rewrite_expr_resolved(remstr, resolver)?),
+                Some(remstr) => args.push(rewrite_expr_resolved_with_purpose(
+                    remstr, resolver, purpose,
+                )?),
                 None => args.push(constant_string(" ")),
             }
             let mut ret_type = FieldType::new(FieldTypeCode::VarString);
@@ -2529,7 +2643,7 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
         Expr::Row(items) => {
             let args = items
                 .iter()
-                .map(|item| rewrite_expr_resolved(item, resolver))
+                .map(|item| rewrite_expr_resolved_with_purpose(item, resolver, purpose))
                 .collect::<Result<Vec<_>, _>>()?;
             // Go rowToScalarFunc uses the first element's type. The planner
             // expands this row constructor when comparing subquery operands.

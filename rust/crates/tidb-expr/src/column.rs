@@ -74,9 +74,16 @@ pub struct Column {
 
     /// Go `CorrelatedColUniqueID`.
     pub correlated_col_unique_id: i64,
+
+    /// Original wire metadata, independent of the effective scan-schema type.
+    pub(crate) pb_origin: Option<Arc<crate::distsql_builtin::PbOrigin>>,
 }
 
 impl Column {
+    pub(crate) fn pb_origin(&self) -> Option<&Arc<crate::distsql_builtin::PbOrigin>> {
+        self.pb_origin.as_ref()
+    }
+
     /// Go `cap(col.hashcode)`, for `MemoryUsage`.
     pub(crate) fn hashcode_capacity(&self) -> usize {
         self.hashcode.capacity()

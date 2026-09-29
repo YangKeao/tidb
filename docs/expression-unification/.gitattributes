@@ -1,0 +1,4 @@
+# Preserve byte-for-byte historical receipts and contract snapshots.
+# Product-source whitespace checks are unaffected.
+logs/** -whitespace
+evidence/*.md whitespace=-blank-at-eof

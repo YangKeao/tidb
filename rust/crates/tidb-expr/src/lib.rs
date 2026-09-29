@@ -368,8 +368,8 @@ pub use new_function::{
     new_function_try_fold, new_function_with_init, scalar_funcs_to_exprs, type_infer_for_null,
     ScalarFunctionCallBack,
 };
-mod ops;
 pub mod distsql_builtin;
+mod ops;
 pub mod pb_predicate;
 pub mod pushdown_catalog;
 pub mod ranger_context;
@@ -383,6 +383,7 @@ pub mod simple_expr;
 mod string_fn;
 mod string_packet;
 mod string_signature;
+mod tikv;
 mod time_fn;
 mod time_literal;
 pub mod user_vars;

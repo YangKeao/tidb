@@ -1,0 +1,709 @@
+warning: unused macro definition: `word_cnt`
+   --> components/tidb_query_datatype/src/codec/mysql/decimal.rs:468:14
+    |
+468 | macro_rules! word_cnt {
+    |              ^^^^^^^^
+    |
+    = note: `#[warn(unused_macros)]` (part of `#[warn(unused)]`) on by default
+
+warning: variant `Mysql` is never constructed
+   --> components/tidb_query_datatype/src/codec/mysql/decimal.rs:185:5
+    |
+183 | enum DecimalParsePolicy {
+    |      ------------------ variant in this enum
+184 |     Legacy(usize),
+185 |     Mysql(usize),
+    |     ^^^^^
+    |
+    = note: `DecimalParsePolicy` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variant `RetainedQuotient` is never constructed
+   --> components/tidb_query_datatype/src/codec/mysql/decimal.rs:988:5
+    |
+986 | enum DivisionRequest {
+    |      --------------- variant in this enum
+987 |     MysqlQuotient { frac_incr: usize },
+988 |     RetainedQuotient { frac_words: usize },
+    |     ^^^^^^^^^^^^^^^^
+    |
+    = note: `DivisionRequest` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: multiple associated items are never used
+    --> components/tidb_query_datatype/src/codec/mysql/decimal.rs:1678:8
+     |
+1658 | impl Decimal {
+     | ------------ associated items in this implementation
+...
+1678 |     fn try_from_words(parts: DecimalWordsRef<'_>) -> Result<Self> {
+     |        ^^^^^^^^^^^^^^
+...
+1984 |     fn try_add_exact(&self, rhs: &Self) -> Result<Self> {
+     |        ^^^^^^^^^^^^^
+...
+1993 |     fn try_sub_exact(&self, rhs: &Self) -> Result<Self> {
+     |        ^^^^^^^^^^^^^
+...
+2002 |     fn try_mul_exact(&self, rhs: &Self) -> Result<Self> {
+     |        ^^^^^^^^^^^^^
+...
+2008 |     fn try_div_rem_exact(&self, rhs: &Self) -> Result<Option<(Self, Self)>> {
+     |        ^^^^^^^^^^^^^^^^^
+...
+2031 |     fn try_div_round_exact(&self, count: i64, result_scale: u32) -> Result<Option<Self>> {
+     |        ^^^^^^^^^^^^^^^^^^^
+...
+3068 |     fn parse_mysql(s: &[u8]) -> Result<DecimalParseOutcome> {
+     |        ^^^^^^^^^^^
+...
+3072 |     fn try_from_literal(text: &str) -> Result<Self> {
+     |        ^^^^^^^^^^^^^^^^
+
+warning: `tidb_query_datatype` (lib) generated 4 warnings
+   Compiling tidb_query_expr v0.0.1 (/home/agent/tidb/expression-unification/tikv/components/tidb_query_expr)
+    Finished `test` profile [unoptimized] target(s) in 7.95s
+warning: the following packages contain code that will be rejected by a future version of Rust: nom v2.2.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+     Running unittests src/lib.rs (/home/agent/tidb/expression-unification/target-tikv/debug/deps/tidb_query_expr-2fb5ca40caa6777b)
+
+running 637 tests
+test impl_arithmetic::tests::test_decimal_divide ... ok
+test impl_arithmetic::tests::test_decimal_mod_div_lazy_bounded_compatibility ... ok
+test impl_arithmetic::tests::test_divide_by_zero ... ok
+test impl_arithmetic::tests::test_int_divide_decimal ... ok
+test impl_arithmetic::tests::test_int_divide_decimal_overflow ... ok
+test impl_arithmetic::tests::test_int_divide_decimal_unsigned_overflow ... ok
+test impl_arithmetic::tests::test_int_divide_int ... ok
+test impl_arithmetic::tests::test_int_divide_int_overflow ... ok
+test impl_arithmetic::tests::test_int_multiply ... ok
+test impl_arithmetic::tests::test_int_uint_multiply ... ok
+test impl_arithmetic::tests::test_minus_decimal ... ok
+test impl_arithmetic::tests::test_minus_int ... ok
+test impl_arithmetic::tests::test_minus_real ... ok
+test impl_arithmetic::tests::test_mod_decimal ... ok
+test impl_arithmetic::tests::test_mod_int ... ok
+test impl_arithmetic::tests::test_mod_int_unsigned ... ok
+test impl_arithmetic::tests::test_mod_real ... ok
+test impl_arithmetic::tests::test_multiply_decimal ... ok
+test impl_arithmetic::tests::test_plus_decimal ... ok
+test impl_arithmetic::tests::test_plus_int ... ok
+test impl_arithmetic::tests::test_plus_real ... ok
+test impl_arithmetic::tests::test_real_divide ... ok
+test impl_arithmetic::tests::test_real_multiply ... ok
+test impl_arithmetic::tests::test_uint_uint_multiply ... ok
+test impl_cast::tests::test_bool_as_json ... ok
+test impl_cast::tests::test_bytes_as_duration ... ok
+test impl_cast::tests::test_cast_decimal_as_time ... ok
+test impl_cast::tests::test_cast_duration_as_time ... ok
+test impl_cast::tests::test_cast_enum_as_decimal ... ok
+test impl_cast::tests::test_cast_enum_as_duration ... ok
+test impl_cast::tests::test_cast_enum_as_time ... ok
+test impl_cast::tests::test_cast_int_as_time ... ok
+test impl_cast::tests::test_cast_real_time ... ok
+test impl_cast::tests::test_cast_string_as_int ... ok
+test impl_cast::tests::test_cast_string_as_real ... ok
+test impl_cast::tests::test_cast_string_as_time ... ok
+test impl_cast::tests::test_cast_year_as_time ... ok
+test impl_cast::tests::test_decimal_as_duration ... ok
+test impl_cast::tests::test_decimal_as_int ... ok
+test impl_cast::tests::test_decimal_as_json ... ok
+test impl_cast::tests::test_decimal_as_signed_decimal ... ok
+test impl_cast::tests::test_decimal_as_signed_real ... ok
+test impl_cast::tests::test_decimal_as_string ... ok
+test impl_cast::tests::test_decimal_as_uint ... ok
+test impl_cast::tests::test_decimal_as_unsigned_decimal ... ok
+test impl_cast::tests::test_decimal_as_unsigned_real ... ok
+test impl_cast::tests::test_double_real_as_string ... ok
+test impl_cast::tests::test_duration_as_decimal ... ok
+test impl_cast::tests::test_duration_as_duration ... ok
+test impl_cast::tests::test_duration_as_int ... ok
+test impl_cast::tests::test_duration_as_json ... ok
+test impl_cast::tests::test_duration_as_real ... ok
+test impl_cast::tests::test_duration_as_string ... ok
+test impl_cast::tests::test_enum_as_bytes ... ok
+test impl_cast::tests::test_enum_as_int ... ok
+test impl_cast::tests::test_enum_as_json ... ok
+test impl_cast::tests::test_enum_as_real ... ok
+test impl_cast::tests::test_float_real_as_string ... ok
+test impl_cast::tests::test_from_binary ... ok
+test impl_cast::tests::test_int_as_duration ... ok
+test impl_cast::tests::test_int_as_int_others ... ok
+test impl_cast::tests::test_int_as_json ... ok
+test impl_cast::tests::test_int_as_string ... ok
+test impl_cast::tests::test_json_as_decimal ... ok
+test impl_cast::tests::test_json_as_duration ... ok
+test impl_cast::tests::test_json_as_duration_truncate_wrong_value ... ok
+test impl_cast::tests::test_json_as_int ... ok
+test impl_cast::tests::test_json_as_json ... ok
+test impl_cast::tests::test_json_as_real ... ok
+test impl_cast::tests::test_json_as_string ... ok
+test impl_cast::tests::test_json_as_time ... ok
+test impl_cast::tests::test_json_as_uint ... ok
+test impl_cast::tests::test_real_as_decimal ... ok
+test impl_cast::tests::test_real_as_duration ... ok
+test impl_cast::tests::test_real_as_int ... ok
+test impl_cast::tests::test_real_as_json ... ok
+test impl_cast::tests::test_real_as_signed_real ... ok
+test impl_cast::tests::test_real_as_uint ... ok
+test impl_cast::tests::test_real_as_unsigned_real ... ok
+test impl_cast::tests::test_set_as_int ... ok
+test impl_cast::tests::test_signed_int_as_signed_decimal ... ok
+test impl_cast::tests::test_signed_int_as_signed_real ... ok
+test impl_cast::tests::test_signed_int_as_unsigned_decimal ... ok
+test impl_cast::tests::test_signed_int_as_unsigned_int ... ok
+test impl_cast::tests::test_signed_int_as_unsigned_real ... ok
+test impl_cast::tests::test_string_as_json ... ok
+test impl_cast::tests::test_string_as_signed_decimal ... ok
+test impl_cast::tests::test_string_as_string ... ok
+test impl_cast::tests::test_string_as_unsigned_decimal ... ok
+test impl_cast::tests::test_time_as_decimal ... ok
+test impl_cast::tests::test_time_as_duration ... ok
+test impl_cast::tests::test_time_as_int_and_uint ... ok
+test impl_cast::tests::test_time_as_json ... ok
+test impl_cast::tests::test_time_as_real ... ok
+test impl_cast::tests::test_time_as_string ... ok
+test impl_cast::tests::test_time_as_time ... ok
+test impl_cast::tests::test_to_binary ... ok
+test impl_cast::tests::test_truncate_when_cast_json_object_or_array_as_decimal ... ok
+test impl_cast::tests::test_uint_as_json ... ok
+test impl_cast::tests::test_uint_as_string ... ok
+test impl_cast::tests::test_unsigned_int_as_signed_or_unsigned_decimal ... ok
+test impl_cast::tests::test_unsigned_int_as_signed_or_unsigned_real ... ok
+test impl_cast::tests::test_year_as_string ... ok
+test impl_compare::tests::test_coalesce ... ok
+test impl_compare::tests::test_compare_decimal ... ok
+test impl_compare::tests::test_compare_duration ... ok
+test impl_compare::tests::test_compare_int_2 ... ok
+test impl_compare::tests::test_compare_real ... ok
+test impl_compare::tests::test_compare_signed_int ... ok
+test impl_compare::tests::test_compare_string ... ok
+test impl_compare::tests::test_do_get_extrenum ... ok
+test impl_compare::tests::test_greatest_cmp_string_as_date ... ok
+test impl_compare::tests::test_greatest_cmp_string_as_time ... ok
+test impl_compare::tests::test_greatest_date ... ok
+test impl_compare::tests::test_greatest_duration ... ok
+test impl_compare::tests::test_greatest_int ... ok
+test impl_compare::tests::test_greatest_real ... ok
+test impl_compare::tests::test_greatest_string ... ok
+test impl_compare::tests::test_greatest_time ... ok
+test impl_compare::tests::test_interval_int ... ok
+test impl_compare::tests::test_interval_real ... ok
+test impl_compare::tests::test_least_cmp_string_as_date ... ok
+test impl_compare::tests::test_least_cmp_string_as_time ... ok
+test impl_compare::tests::test_least_date ... ok
+test impl_compare::tests::test_least_duration ... ok
+test impl_compare::tests::test_least_int ... ok
+test impl_compare::tests::test_least_real ... ok
+test impl_compare::tests::test_least_string ... ok
+test impl_compare::tests::test_least_time ... ok
+test impl_compare_in::tests::bench_compare_in ... ok
+test impl_compare_in::tests::test_enum ... ok
+test impl_compare_in::tests::test_in_complex ... ok
+test impl_compare_in::tests::test_in_constant ... ok
+test impl_compare_in::tests::test_in_string ... ok
+test impl_compare_in::tests::test_unsigned_signed_int ... ok
+test impl_control::tests::test_case_when ... ok
+test impl_control::tests::test_case_when_bytes ... ok
+test impl_control::tests::test_if ... ok
+test impl_control::tests::test_if_null ... ok
+test impl_encryption::tests::test_compress ... ok
+test impl_encryption::tests::test_md5 ... ok
+test impl_encryption::tests::test_password ... ok
+test impl_encryption::tests::test_random_bytes ... ok
+test impl_encryption::tests::test_sha1 ... ok
+test impl_encryption::tests::test_sha2 ... ok
+test impl_encryption::tests::test_uncompress ... ok
+test impl_encryption::tests::test_uncompressed_length ... ok
+test impl_json::tests::test_json_array ... ok
+test impl_json::tests::test_json_array_append ... ok
+test impl_json::tests::test_json_contains ... ok
+test impl_json::tests::test_json_depth ... ok
+test impl_json::tests::test_json_extract ... ok
+test impl_json::tests::test_json_keys ... ok
+test impl_json::tests::test_json_length ... ok
+test impl_json::tests::test_json_member_of ... ok
+test impl_json::tests::test_json_merge ... ok
+test impl_json::tests::test_json_merge_patch ... ok
+test impl_json::tests::test_json_modify ... ok
+test impl_json::tests::test_json_object ... ok
+test impl_json::tests::test_json_quote ... ok
+test impl_json::tests::test_json_remove ... ok
+test impl_json::tests::test_json_type ... ok
+test impl_json::tests::test_json_unquote ... ok
+test impl_json::tests::test_json_valid ... ok
+test impl_like::tests::test_like ... ok
+test impl_like::tests::test_like_invalid_utf8 ... ok
+test impl_like::tests::test_like_pattern_modes ... ok
+test impl_like::tests::test_like_wide_character ... ok
+test impl_math::tests::test_abs_decimal ... ok
+test impl_math::tests::test_abs_int ... ok
+test impl_math::tests::test_abs_real ... ok
+test impl_math::tests::test_acos ... ok
+test impl_math::tests::test_asin ... ok
+test impl_math::tests::test_atan_1_arg ... ok
+test impl_math::tests::test_atan_2_args ... ok
+test impl_math::tests::test_ceil_dec_to_dec ... ok
+test impl_math::tests::test_ceil_dec_to_int ... ok
+test impl_math::tests::test_ceil_int_to_dec ... ok
+test impl_math::tests::test_ceil_int_to_int ... ok
+test impl_math::tests::test_ceil_real ... ok
+test impl_math::tests::test_conv ... ok
+test impl_math::tests::test_cos ... ok
+test impl_math::tests::test_cot ... ok
+test impl_math::tests::test_crc32 ... ok
+test impl_math::tests::test_degrees ... ok
+test impl_math::tests::test_exp ... ok
+test impl_math::tests::test_floor_dec_to_dec ... ok
+test impl_math::tests::test_floor_dec_to_int ... ok
+test impl_math::tests::test_floor_int_to_dec ... ok
+test impl_math::tests::test_floor_int_to_int ... ok
+test impl_math::tests::test_floor_real ... ok
+test impl_math::tests::test_log10 ... ok
+test impl_math::tests::test_log2 ... ok
+test impl_math::tests::test_log_1_arg ... ok
+test impl_math::tests::test_log_2_arg ... ok
+test impl_math::tests::test_pi ... ok
+test impl_math::tests::test_pow ... ok
+test impl_math::tests::test_radians ... ok
+test impl_math::tests::test_rand ... ok
+test impl_math::tests::test_rand_new ... ok
+test impl_math::tests::test_rand_new_with_seed ... ok
+test impl_math::tests::test_rand_with_seed_first_gen ... ok
+test impl_math::tests::test_round_dec ... ok
+test impl_math::tests::test_round_frac ... ok
+test impl_math::tests::test_round_int ... ok
+test impl_math::tests::test_round_real ... ok
+test impl_math::tests::test_sign ... ok
+test impl_math::tests::test_sin ... ok
+test impl_math::tests::test_sqrt ... ok
+test impl_math::tests::test_tan ... ok
+test impl_math::tests::test_truncate_decimal ... ok
+test impl_math::tests::test_truncate_int ... ok
+test impl_math::tests::test_truncate_real ... ok
+test impl_math::tests::test_truncate_uint ... ok
+test impl_miscellaneous::tests::test_decimal_any_value ... ok
+test impl_miscellaneous::tests::test_duration_any_value ... ok
+test impl_miscellaneous::tests::test_inet6_aton ... ok
+test impl_miscellaneous::tests::test_inet6_ntoa ... ok
+test impl_miscellaneous::tests::test_inet_aton ... ok
+test impl_miscellaneous::tests::test_inet_ntoa ... ok
+test impl_miscellaneous::tests::test_int_any_value ... ok
+test impl_miscellaneous::tests::test_is_ipv4 ... ok
+test impl_miscellaneous::tests::test_is_ipv4_compat ... ok
+test impl_miscellaneous::tests::test_is_ipv4_mapped ... ok
+test impl_miscellaneous::tests::test_is_ipv6 ... ok
+test impl_miscellaneous::tests::test_json_any_value ... ok
+test impl_miscellaneous::tests::test_real_any_value ... ok
+test impl_miscellaneous::tests::test_string_any_value ... ok
+test impl_miscellaneous::tests::test_time_any_value ... ok
+test impl_miscellaneous::tests::test_uuid ... ok
+test impl_miscellaneous::tests::test_uuid_timestamp ... ok
+test impl_miscellaneous::tests::test_uuid_version ... ok
+test impl_op::tests::test_bit_and ... ok
+test impl_op::tests::test_bit_neg ... ok
+test impl_op::tests::test_bit_or ... ok
+test impl_op::tests::test_bit_xor ... ok
+test impl_op::tests::test_is_false ... ok
+test impl_op::tests::test_is_null ... ok
+test impl_op::tests::test_is_true ... ok
+test impl_op::tests::test_left_shift ... ok
+test impl_op::tests::test_logical_accumulator_accounts_for_retained_capacity ... ok
+test impl_op::tests::test_logical_accumulator_exact_retained_capacity ... ok
+test impl_op::tests::test_logical_accumulator_merges_pending_output_positions ... ok
+test impl_op::tests::test_logical_accumulator_scalar_truth_tables ... ok
+test impl_op::tests::test_logical_and ... ok
+test impl_op::tests::test_logical_or ... ok
+test impl_op::tests::test_logical_short_circuit_accepts_generated_enum_vector ... ok
+test impl_op::tests::test_logical_short_circuit_rejects_non_int_column ... ok
+test impl_op::tests::test_logical_short_circuit_rejects_non_int_generated_vector ... ok
+test impl_op::tests::test_logical_short_circuit_rejects_non_int_scalar ... ok
+test impl_op::tests::test_logical_xor ... ok
+test impl_op::tests::test_right_shift ... ok
+test impl_op::tests::test_unary_minus_decimal ... ok
+test impl_op::tests::test_unary_minus_int ... ok
+test impl_op::tests::test_unary_minus_real ... ok
+test impl_op::tests::test_unary_not_decimal ... ok
+test impl_op::tests::test_unary_not_int ... ok
+test impl_op::tests::test_unary_not_json ... ok
+test impl_op::tests::test_unary_not_real ... ok
+test impl_other::tests::test_bit_count ... ok
+test impl_regexp::tests::test_regexp_instr ... ok
+test impl_regexp::tests::test_regexp_like ... ok
+test impl_regexp::tests::test_regexp_replace ... ok
+test impl_regexp::tests::test_regexp_substr ... ok
+test impl_string::tests::test_ascii ... ok
+test impl_string::tests::test_bin ... ok
+test impl_string::tests::test_bit_length ... ok
+test impl_string::tests::test_char_length ... ok
+test impl_string::tests::test_char_length_utf8 ... ok
+test impl_string::tests::test_concat ... ok
+test impl_string::tests::test_concat_ws ... ok
+test impl_string::tests::test_elt ... ok
+test impl_string::tests::test_field_int ... ok
+test impl_string::tests::test_field_real ... ok
+test impl_string::tests::test_field_string ... ok
+test impl_string::tests::test_find_in_set ... ok
+test impl_string::tests::test_from_base64 ... ok
+test impl_string::tests::test_gb18030_lower_upper ... ok
+test impl_string::tests::test_gbk_lower_upper ... ok
+test impl_string::tests::test_get_utf8_byte_index ... ok
+test impl_string::tests::test_hex_int_arg ... ok
+test impl_string::tests::test_hex_str_arg ... ok
+test impl_string::tests::test_insert ... ok
+test impl_string::tests::test_insert_utf8 ... ok
+test impl_string::tests::test_instr ... ok
+test impl_string::tests::test_instr_utf8 ... ok
+test impl_string::tests::test_left ... ok
+test impl_string::tests::test_left_utf8 ... ok
+test impl_string::tests::test_length ... ok
+test impl_string::tests::test_locate_2_args ... ok
+test impl_string::tests::test_locate_2_args_utf8 ... ok
+test impl_string::tests::test_locate_3_args ... ok
+test impl_string::tests::test_locate_3_args_utf8 ... ok
+test impl_string::tests::test_lower ... ok
+test impl_string::tests::test_lower_utf8 ... ok
+test impl_string::tests::test_lpad ... ok
+test impl_string::tests::test_lpad_utf8 ... ok
+test impl_string::tests::test_ltrim ... ok
+test impl_string::tests::test_make_set ... ok
+test impl_string::tests::test_oct_int ... ok
+test impl_string::tests::test_oct_string ... ok
+test impl_string::tests::test_ord ... ok
+test impl_string::tests::test_quote ... ok
+test impl_string::tests::test_repeat ... ok
+test impl_string::tests::test_replace ... ok
+test impl_string::tests::test_reverse ... ok
+test impl_string::tests::test_reverse_utf8 ... ok
+test impl_string::tests::test_right ... ok
+test impl_string::tests::test_right_utf8 ... ok
+test impl_string::tests::test_rpad ... ok
+test impl_string::tests::test_rpad_utf8 ... ok
+test impl_string::tests::test_rtrim ... ok
+test impl_string::tests::test_space ... ok
+test impl_string::tests::test_strcmp ... ok
+test impl_string::tests::test_substring_2_args ... ok
+test impl_string::tests::test_substring_2_args_utf8 ... ok
+test impl_string::tests::test_substring_3_args ... ok
+test impl_string::tests::test_substring_3_args_utf8 ... ok
+test impl_string::tests::test_substring_index ... ok
+test impl_string::tests::test_to_base64 ... ok
+test impl_string::tests::test_trim_1_arg ... ok
+test impl_string::tests::test_trim_2_args ... ok
+test impl_string::tests::test_trim_3_args ... ok
+test impl_string::tests::test_unhex ... ok
+test impl_string::tests::test_upper ... ok
+test impl_string::tests::test_upper_utf8 ... ok
+test impl_string::tests::test_validate_target_len_for_pad ... ok
+test impl_time::tests::test_add_date_and_string ... ok
+test impl_time::tests::test_add_datetime_and_duration ... ok
+test impl_time::tests::test_add_datetime_and_string ... ok
+test impl_time::tests::test_add_duration_and_duration ... ok
+test impl_time::tests::test_add_duration_and_string ... ok
+test impl_time::tests::test_add_sub_date ... ok
+test impl_time::tests::test_add_sub_string_and_duration ... ok
+test impl_time::tests::test_add_time_result_null ... ok
+test impl_time::tests::test_date ... ok
+test impl_time::tests::test_date_diff ... ok
+test impl_time::tests::test_date_format ... ok
+test impl_time::tests::test_day_name ... ok
+test impl_time::tests::test_day_of_month ... ok
+test impl_time::tests::test_day_of_week ... ok
+test impl_time::tests::test_day_of_year ... ok
+test impl_time::tests::test_duration_duration_time_diff ... ok
+test impl_time::tests::test_duration_string_time_diff ... ok
+test impl_time::tests::test_from_days ... ok
+test impl_time::tests::test_from_unixtime_1_arg ... ok
+test impl_time::tests::test_from_unixtime_2_arg ... ok
+test impl_time::tests::test_hour_min_sec_micro_sec ... ok
+test impl_time::tests::test_last_day ... ok
+test impl_time::tests::test_make_date ... ok
+test impl_time::tests::test_make_time ... ok
+test impl_time::tests::test_month ... ok
+test impl_time::tests::test_month_name ... ok
+test impl_time::tests::test_null_time_diff ... ok
+test impl_time::tests::test_period_add ... ok
+test impl_time::tests::test_period_diff ... ok
+test impl_time::tests::test_quarter ... ok
+test impl_time::tests::test_str_to_date ... ok
+test impl_time::tests::test_string_duration_time_diff ... ok
+test impl_time::tests::test_string_string_time_diff ... ok
+test impl_time::tests::test_sub_datetime_and_duration ... ok
+test impl_time::tests::test_sub_datetime_and_string ... ok
+test impl_time::tests::test_sub_duration_and_duration ... ok
+test impl_time::tests::test_sub_duration_and_string ... ok
+test impl_time::tests::test_time_to_sec ... ok
+test impl_time::tests::test_timestamp_diff ... ok
+test impl_time::tests::test_to_days ... ok
+test impl_time::tests::test_to_seconds ... ok
+test impl_time::tests::test_unixtime_decimal ... ok
+test impl_time::tests::test_unixtime_int ... ok
+test impl_time::tests::test_week_day ... ok
+test impl_time::tests::test_week_of_year ... ok
+test impl_time::tests::test_week_with_mode ... ok
+test impl_time::tests::test_week_without_mode ... ok
+test impl_time::tests::test_year ... ok
+test impl_time::tests::test_year_week_with_mode ... ok
+test impl_time::tests::test_year_week_without_mode ... ok
+test impl_vec::tests::test_cosine_distance ... ok
+test impl_vec::tests::test_dims ... ok
+test impl_vec::tests::test_l1_distance ... ok
+test impl_vec::tests::test_l2_distance ... ok
+test impl_vec::tests::test_l2_norm ... ok
+test impl_vec::tests::test_negative_inner_product ... ok
+test local::batch::evaluated_ascii_tests::test_evaluated_ascii_caught_unwind_keeps_sticky_poison ... ok
+test local::batch::evaluated_ascii_tests::test_evaluated_ascii_config_seal_and_exclusive_arc ... ok
+test local::batch::evaluated_ascii_tests::test_evaluated_ascii_count_only_warning_poison_is_not_reset ... ok
+test local::batch::evaluated_ascii_tests::test_evaluated_ascii_detail_only_warning_poison_is_not_reset ... ok
+test local::batch::evaluated_ascii_tests::test_evaluated_ascii_empty_ready_buffer_charges_capacity ... ok
+test local::batch::evaluated_ascii_tests::test_evaluated_ascii_factory_fully_prewarms_without_invocation ... ok
+test local::batch::evaluated_ascii_tests::test_evaluated_ascii_idle_slots_and_active_owner_charged_once ... ok
+test local::batch::evaluated_ascii_tests::test_evaluated_ascii_observer_does_not_warm_a_cold_cache ... ok
+test local::batch::evaluated_ascii_tests::test_evaluated_ascii_observer_measures_actual_spare_capacities ... ok
+test local::batch::evaluated_ascii_tests::test_evaluated_ascii_owner_growth_refused_even_below_maximum ... ok
+test local::batch::evaluated_ascii_tests::test_evaluated_ascii_owner_limit_is_separate_from_execution ... ok
+test local::batch::evaluated_ascii_tests::test_evaluated_ascii_postflight_preserves_owned_primary_error ... ok
+test local::batch::evaluated_ascii_tests::test_evaluated_ascii_reuses_program_context_and_computed_identity ... ok
+test local::batch::evaluated_ascii_tests::test_evaluated_ascii_storage_checked_overflow_without_allocations ... ok
+test local::batch::evaluated_ascii_tests::test_evaluated_ascii_worker_ownership_traits ... ok
+test local::batch::evaluated_ascii_tests::test_evaluated_ascii_wrapper_body_origin_isolated ... ignored, global body delta: run this exact test alone, never with other ASCII tests
+test local::batch::evaluated_ascii_tests::test_evaluated_ascii_wrong_compiled_entry_refused_before_invocation ... ok
+test local::compile::evaluated_ascii_compile_tests::evaluated_ascii_does_not_open_existing_local_domains ... ok
+test local::compile::evaluated_ascii_compile_tests::evaluated_ascii_factory_obeys_current_two_node_depth_limits ... ok
+test local::compile::evaluated_ascii_compile_tests::evaluated_ascii_factory_uses_canonical_two_node_rpn_and_own_entry ... ok
+test local::compile::evaluated_ascii_compile_tests::evaluated_ascii_private_mode_rejects_other_sources_and_complete_types ... ok
+test local::compile::lineage_compile_tests::compile_legacy_and_profiled_modes_remain_unannotated ... ok
+test local::compile::lineage_compile_tests::compile_lineage_attaches_visit_flow_to_every_actual_subprogram ... ok
+test local::compile::numeric_batch_compile_tests::compile_leaf_entry_tags_distinguish_rows_lineage_and_numeric_batch ... ok
+test local::compile::numeric_batch_compile_tests::compile_numeric_batch_retains_every_call_ordinal_without_lineage_flow ... ok
+test local::compile::numeric_batch_compile_tests::compile_numeric_batch_revalidates_source_schema_and_current_limits ... ok
+test local::control_tests::local_binding_errors_retain_their_variants ... ok
+test local::control_tests::local_binding_preflight_and_result_validation_precede_loaders ... ok
+test local::control_tests::local_branch_controls_leave_dead_bindings_unread ... ok
+test local::control_tests::local_controls_validate_arity_before_execution ... ok
+test local::control_tests::local_decoded_controls_use_the_same_official_driver ... ok
+test local::control_tests::local_deep_controls_never_fall_back_to_eager_evaluation ... ok
+test local::control_tests::local_demand_rows_keep_occurrences_and_cross_the_batch_boundary ... ok
+test local::control_tests::local_execution_defaults_and_small_refusals_are_explicit ... ok
+test local::control_tests::local_logical_controls_cover_three_valued_truth_and_demand ... ok
+test local::control_tests::local_malformed_binding_keeps_already_emitted_diagnostics ... ok
+test local::control_tests::local_ordinary_calls_remain_eager_on_null_inputs ... ok
+test local::control_tests::local_parent_error_precedes_later_rows_and_preserves_warning_prefix ... ok
+test local::control_tests::local_work_limit_is_shared_across_occurrences_and_state_reusable ... ok
+test local::diagnostic_tests::diagnostic_capture_and_getters_never_render_a_storage_error ... ok
+test local::diagnostic_tests::diagnostic_code_getter_uses_typed_codes_and_unsited_stage_classes ... ok
+test local::diagnostic_tests::diagnostic_first_capture_wins_without_changing_the_error ... ok
+test local::diagnostic_tests::diagnostic_owned_error_display_source_and_box_identity_are_preserved ... ok
+test local::diagnostic_tests::reported_deep_failure_and_owned_receipt_drop_remain_iterative ... ok
+test local::diagnostic_tests::reported_duplicate_physical_rows_keep_distinct_occurrence_sites ... ok
+test local::diagnostic_tests::reported_host_refusal_follows_schema_selection_and_precedes_the_hook ... ok
+test local::diagnostic_tests::reported_kernel_site_requires_an_actual_err_not_entry_or_prior_success ... ok
+test local::diagnostic_tests::reported_legacy_eager_error_stays_unattributed_and_controls_still_work ... ok
+test local::diagnostic_tests::reported_nested_and_root_kernel_errors_keep_exact_owned_call_records ... ok
+test local::diagnostic_tests::reported_null_rhs_and_unselected_rows_have_no_effects_or_reports ... ok
+test local::diagnostic_tests::reported_preflight_and_budget_errors_never_invent_operation_sites ... ok
+test local::diagnostic_tests::reported_retry_empty_and_panic_do_not_leave_stale_sites ... ok
+test local::diagnostic_tests::reported_root_input_fast_path_preserves_every_callback_error_variant ... ok
+test local::diagnostic_tests::reported_shared_binding_is_not_a_leaf_ordinal_or_nearest_call ... ok
+test local::diagnostic_tests::reported_successful_bad_input_reply_is_unsited_validation ... ok
+test local::diagnostic_tests::reported_warning_endpoints_preserve_live_count_and_actual_receiver_cap ... ok
+test local::host::tests::catalog_identity_is_not_signature_identity ... ok
+test local::host::tests::catalog_key_exhaustion_does_not_wrap ... ok
+test local::host::tests::catalog_keys_are_unique_across_threads ... ok
+test local::host::tests::catalog_rejects_non_signed_longlong_signatures ... ok
+test local::host::tests::catalog_slot_bounds_are_checked ... ok
+test local::host::tests::existing_input_services_need_no_host_implementation ... ok
+test local::host::tests::preparation_checks_catalog_and_complete_signature ... ok
+test local::host::tests::prepared_call_keeps_its_catalog_alive ... ok
+test local::host::tests::task_budget_reserves_before_start ... ok
+test local::host::tests::task_generation_zero_is_a_contract_error ... ok
+test local::host_tests::bad_request_and_zero_generation_cancel_the_known_task ... ok
+test local::host_tests::benchmark_count_controls_fresh_body_demand ... ok
+test local::host_tests::child_errors_keep_primary_variant_warning_prefix_and_inner_first_cleanup ... ok
+test local::host_tests::contract_breaking_provider_cannot_claim_unreachable_task_cleanup ... ok
+test local::host_tests::d1_compatibility_and_host_free_optional_hook_is_unused ... ok
+test local::host_tests::deep_host_relays_use_heap_frames_and_release_all_tasks ... ok
+test local::host_tests::duplicate_live_token_is_canceled_only_once ... ok
+test local::host_tests::failed_fresh_discards_cached_success_and_cancels_new_descendants ... ok
+test local::host_tests::failed_start_cleans_its_own_unpublished_state ... ok
+test local::host_tests::fresh_and_reuse_cache_only_this_invocation ... ok
+test local::host_tests::healthy_provider_cancels_known_tasks_during_input_unwind ... ok
+test local::host_tests::host_capability_and_schema_fail_before_effects ... ok
+test local::host_tests::host_compilation_requires_registration_and_checks_undemanded_children ... ok
+test local::host_tests::host_rows_preserve_empty_large_and_repeated_selections ... ok
+test local::host_tests::kernel_error_precedes_later_rows_and_resume_error_keeps_its_primary ... ok
+test local::host_tests::malformed_ready_has_only_the_cleanup_ownership_it_established ... ok
+test local::host_tests::reuse_caches_successful_null_without_reimporting ... ok
+test local::host_tests::same_task_slot_with_different_generations_remains_distinct ... ok
+test local::host_tests::task_frame_and_initial_work_limits_precede_the_next_effect ... ok
+test local::host_tests::unused_trailing_arguments_and_host_ordinary_host_composition ... ok
+test local::host_tests::work_budget_meters_resume_and_cached_reuse_requests ... ok
+test local::lineage_tests::lineage_boolean_results_and_outer_selections_keep_current_computed_id ... ok
+test local::lineage_tests::lineage_closed_positive_signature_and_seven_bytes_type_matrix ... ok
+test local::lineage_tests::lineage_controls_demand_each_predicate_once_and_skip_poisoned_values ... ok
+test local::lineage_tests::lineage_deep_facts_compile_eval_metadata_and_drop_remain_iterative ... ok
+test local::lineage_tests::lineage_demanded_contract_errors_keep_input_site_and_warning_prefix ... ok
+test local::lineage_tests::lineage_empty_and_null_bytes_still_charge_offsets_bitmap_and_id_capacity ... ok
+test local::lineage_tests::lineage_empty_bytes_sentinel_and_fixed_scaffolding_obey_resource_limits ... ok
+test local::lineage_tests::lineage_identical_raw_bytes_keep_selected_records_and_declared_type_separate ... ok
+test local::lineage_tests::lineage_limits_recheck_current_tree_and_official_ids_do_not_prove_pb ... ok
+test local::lineage_tests::lineage_literals_require_exact_carrier_and_non_binary_provenance ... ok
+test local::lineage_tests::lineage_output_payload_growth_stops_later_occurrences_and_final_publication ... ok
+test local::lineage_tests::lineage_oversized_provider_capacity_is_rejected_after_that_read_not_before ... ok
+test local::lineage_tests::lineage_predicate_signedness_reaches_every_potential_selected_producer ... ok
+test local::lineage_tests::lineage_public_ids_producers_and_sparse_preorder_flow_are_exact ... ok
+test local::lineage_tests::lineage_raw_known_flags_and_complete_fields_are_retained_not_truncated ... ok
+test local::lineage_tests::lineage_rejects_arity_metadata_other_functions_hosts_and_dead_type_errors ... ok
+test local::lineage_tests::lineage_rejects_missing_extra_unordered_duplicate_foreign_or_wrong_producers ... ok
+test local::lineage_tests::lineage_selected_and_generated_null_ids_are_distinct_for_both_carriers ... ok
+test local::lineage_tests::lineage_selection_occurrences_align_ids_without_physical_row_memoization ... ok
+test local::lineage_tests::lineage_snapshot_rejects_changed_payload_null_kind_signature_slot_or_order ... ok
+test local::lineage_tests::lineage_successful_malformed_replies_and_preflight_failures_are_unsited ... ok
+test local::lineage_tests::lineage_uint_bits_selected_under_signed_result_keep_source_id ... ok
+test local::lineage_tests::lineage_unselected_large_constant_is_not_materialized_or_reinterpreted ... ok
+test local::profile_tests::numeric_batch_deep_snapshots_compile_execution_and_drop_are_iterative ... ok
+test local::profile_tests::numeric_batch_equal_source_ids_do_not_merge_distinct_subtree_occurrences ... ok
+test local::profile_tests::numeric_batch_fact_capture_revalidation_and_compile_obey_exact_limits ... ok
+test local::profile_tests::numeric_batch_facts_cover_all_node_ordinals_without_source_id_allocation ... ok
+test local::profile_tests::numeric_batch_finishes_both_operand_phases_in_occurrence_order ... ok
+test local::profile_tests::numeric_batch_input_errors_and_malformed_successes_preserve_warning_prefixes ... ok
+test local::profile_tests::numeric_batch_input_unwind_does_not_poison_reused_program_state_or_reports ... ok
+test local::profile_tests::numeric_batch_labels_cannot_enter_the_old_row_consumer_or_child_route ... ok
+test local::profile_tests::numeric_batch_late_right_child_error_beats_early_parent_overflow ... ok
+test local::profile_tests::numeric_batch_later_left_child_error_precedes_every_right_child_effect ... ok
+test local::profile_tests::numeric_batch_leaf_and_call_roots_cover_empty_one_1024_and_reject_1025 ... ok
+test local::profile_tests::numeric_batch_leaf_dispatch_rejects_old_row_entries_even_when_empty ... ok
+test local::profile_tests::numeric_batch_null_left_demands_right_even_for_one_occurrence ... ok
+test local::profile_tests::numeric_batch_null_left_does_not_hide_a_nested_right_kernel_error ... ok
+test local::profile_tests::numeric_batch_only_admits_exact_203_arity_metadata_and_typed_int_literals ... ok
+test local::profile_tests::numeric_batch_owned_program_rebinds_without_retaining_source_or_values ... ok
+test local::profile_tests::numeric_batch_parent_kernel_error_follows_all_reads_without_replay ... ok
+test local::profile_tests::numeric_batch_preserves_documented_raw_flags_without_narrowing_old_row_policy ... ok
+test local::profile_tests::numeric_batch_provider_spare_capacity_is_charged_after_read_before_next_effect ... ok
+test local::profile_tests::numeric_batch_repeated_input_error_has_exact_coordinates_and_no_stale_site ... ok
+test local::profile_tests::numeric_batch_repeated_selection_kernel_site_keeps_occurrence_and_physical_row ... ok
+test local::profile_tests::numeric_batch_schema_and_selection_preflight_stays_effect_free_when_empty ... ok
+test local::profile_tests::numeric_batch_sites_reject_missing_extra_unsorted_duplicate_and_row_labels ... ok
+test local::profile_tests::numeric_batch_snapshot_rejects_changed_values_slots_shape_and_full_types ... ok
+test local::profile_tests::numeric_batch_strict_raw_type_gate_covers_nodes_and_unused_schema ... ok
+test local::profile_tests::numeric_batch_work_budget_is_shared_across_occurrences_and_fresh_per_invocation ... ok
+test local::profile_tests::numeric_batch_zero_limits_precede_reads_and_no_host_task_reservation_is_needed ... ok
+test local::profile_tests::profile_admission_is_exact_signed_longlong_typed_int_and_203 ... ok
+test local::profile_tests::profile_leaf_roots_need_no_sites_but_still_require_an_admitted_consumer ... ok
+test local::profile_tests::profile_new_and_validate_obey_exact_node_and_depth_limits ... ok
+test local::profile_tests::profile_ordinals_count_all_nodes_and_preserve_mixed_sources ... ok
+test local::profile_tests::profile_rejects_incomplete_unsorted_duplicate_or_mismatched_sites ... ok
+test local::profile_tests::profile_snapshot_rejects_stale_values_slots_shape_types_and_full_schema ... ok
+test local::profile_tests::profiled_203_null_stops_while_legacy_222_stays_eager ... ok
+test local::profile_tests::profiled_batch_preflight_remains_effect_free_even_for_empty_selection ... ok
+test local::profile_tests::profiled_child_errors_keep_primary_variant_and_warning_prefix ... ok
+test local::profile_tests::profiled_deep_execution_snapshot_metadata_and_drop_are_iterative ... ok
+test local::profile_tests::profiled_input_unwind_does_not_poison_the_next_invocation ... ok
+test local::profile_tests::profiled_kernel_error_stops_later_rows_without_replaying_operands ... ok
+test local::profile_tests::profiled_limits_precede_reads_and_do_not_reserve_host_tasks ... ok
+test local::profile_tests::profiled_mixed_origins_demand_nested_calls_independently ... ok
+test local::profile_tests::profiled_selection_and_owned_plan_survive_rebinding_without_cache ... ok
+test local::profile_tests::profiled_work_budget_meters_requests_accepts_null_finish_and_kernel ... ok
+test local::runtime::tests::test_conservative_budget_and_storage_overflow_policy_are_unchanged ... ok
+test local::runtime::tests::test_lineaged_budget_checks_replacement_before_setting_output ... ok
+test local::runtime::tests::test_minimum_storage_layouts_are_checked_not_capacity_predictions ... ok
+test local::runtime::tests::test_storage_modes_preserve_conservative_and_measure_lineage ... ok
+test local::spec::tests::test_binding_contract_error_display ... ok
+test local::spec::tests::test_deep_host_spec_drop_on_small_stack ... ok
+test local::spec::tests::test_deep_local_spec_drop_after_compile_rejection ... ok
+test local::spec::tests::test_deep_local_spec_drop_after_successful_compile ... ok
+test local::spec::tests::test_host_contract_error_display ... ok
+test local::tests::common_preparation_preserves_wire_in_retained_order ... ok
+test local::tests::common_selector_rejects_missing_arguments_without_indexing ... ok
+test local::tests::local_batch_validation_precedes_execution ... ok
+test local::tests::local_bounds_descriptors_before_examining_payloads ... ok
+test local::tests::local_compile_eager_slice_and_rebinding ... ok
+test local::tests::local_limits_are_errors_not_alternate_execution ... ok
+test local::tests::local_output_shapes_and_selections ... ok
+test local::tests::local_registered_id_without_tipb ... ok
+test local::tests::local_rejects_bad_spec_and_unadmitted_domains ... ok
+test local::tests::local_worker_instances_share_only_specification ... ok
+test types::expr::tests::test_cached_metadata_is_deduplicated_and_invalidated_by_mutation ... ok
+test types::expr::tests::test_control_metadata_counts_only_logical_chains_as_binary_work ... ok
+test types::expr::tests::test_deep_host_metadata_and_drop_on_small_stack ... ok
+test types::expr::tests::test_deep_metadata_and_drop_on_small_stack ... ok
+test types::expr::tests::test_deep_ordinary_metadata_and_drop_on_small_stack ... ok
+test types::expr::tests::test_deep_result_flow_metadata_and_drop_on_small_stack ... ok
+test types::expr::tests::test_host_into_inner_drops_child_metadata_once ... ok
+test types::expr::tests::test_host_metadata_counts_one_call_plus_children ... ok
+test types::expr::tests::test_into_inner_retains_nested_metadata_until_nodes_drop ... ok
+test types::expr::tests::test_ordinary_into_inner_drops_mixed_child_metadata_once ... ok
+test types::expr::tests::test_ordinary_metadata_counts_one_call_for_each_argument_shape ... ok
+test types::expr::tests::test_ordinary_metadata_retains_exact_prepared_type_and_site ... ok
+test types::expr::tests::test_result_flow_attachment_preserves_counts_and_child_annotations ... ok
+test types::expr::tests::test_result_flow_defaults_none_for_raw_and_wire_construction ... ok
+test types::expr::tests::test_result_flow_into_inner_discards_root_not_intact_children ... ok
+test types::expr::tests::test_result_flow_mutable_seams_invalidate_attachment_and_cache ... ok
+test types::expr::tests::test_result_flow_requires_one_root_node ... ok
+test types::expr::tests::test_retained_metadata_observer_counts_offset_capacity_and_is_stable ... ok
+test types::expr::tests::test_retained_metadata_observer_counts_warm_box_with_no_offsets ... ok
+test types::expr::tests::test_retained_metadata_observer_stays_cold_and_excludes_node_capacity ... ok
+test types::expr_builder::tests::test_adjacent_short_circuit_calls_are_flattened ... ok
+test types::expr_builder::tests::test_append_rpn_nodes_recursively ... ok
+test types::expr_builder::tests::test_extract_scalar_value_uint64_from_bits ... ok
+test types::expr_builder::tests::test_flattened_calls_do_not_consume_nesting_budget ... ok
+test types::expr_builder::tests::test_flattened_chain_preserves_logical_work_count ... ok
+test types::expr_builder::tests::test_left_deep_short_circuit_chains_build_to_one_root_call ... ok
+test types::expr_builder::tests::test_max_columns_check ... ok
+test types::expr_builder::tests::test_short_circuit_call_is_embedded_in_parent_rpn ... ok
+test types::expr_builder::tests::test_short_circuit_depth_limit_stress_on_small_stack ... ok
+test types::expr_builder::tests::test_simple_logical_call_uses_regular_rpn ... ok
+test types::expr_builder::tests::test_validator_fixed_args_fn ... ok
+test types::expr_builder::tests::test_validator_raw_vargs_fn_with_min_args ... ok
+test types::expr_builder::tests::test_validator_vargs_fn ... ok
+test types::expr_builder::tests::test_validator_vargs_fn_with_min_args ... ok
+test types::expr_eval::benches::bench_bytes_eval ... ok
+test types::expr_eval::benches::bench_int_eval ... ok
+test types::expr_eval::tests::bench_eval_compare_1024_rows ... ok
+test types::expr_eval::tests::bench_eval_compare_5_rows ... ok
+test types::expr_eval::tests::bench_eval_plus_1024_rows ... ok
+test types::expr_eval::tests::test_constant_short_circuit_skips_all_rhs_rows ... ok
+test types::expr_eval::tests::test_constant_short_circuit_without_logical_rows ... ok
+test types::expr_eval::tests::test_control_return_refreshes_storage_before_next_input_effect ... ok
+test types::expr_eval::tests::test_control_return_stack_storage_is_charged_before_success ... ok
+test types::expr_eval::tests::test_eval_binary_function_raw_column ... ok
+test types::expr_eval::tests::test_eval_binary_function_scalar_scalar ... ok
+test types::expr_eval::tests::test_eval_binary_function_scalar_vector ... ok
+test types::expr_eval::tests::test_eval_binary_function_vector_scalar ... ok
+test types::expr_eval::tests::test_eval_binary_function_vector_vector ... ok
+test types::expr_eval::tests::test_eval_comprehensive ... ok
+test types::expr_eval::tests::test_eval_fail_1 ... ok
+test types::expr_eval::tests::test_eval_fail_2 ... ok
+test types::expr_eval::tests::test_eval_fail_3 ... ok
+test types::expr_eval::tests::test_eval_single_column_node_mismatch_rows ... ok
+test types::expr_eval::tests::test_eval_single_column_node_normal ... ok
+test types::expr_eval::tests::test_eval_single_constant_node ... ok
+test types::expr_eval::tests::test_eval_single_fn_call_node ... ok
+test types::expr_eval::tests::test_eval_ternary_function ... ok
+test types::expr_eval::tests::test_eval_unary_function_raw_column ... ok
+test types::expr_eval::tests::test_eval_unary_function_scalar ... ok
+test types::expr_eval::tests::test_eval_unary_function_vector ... ok
+test types::expr_eval::tests::test_evaluated_ascii_input_domain_rejects_old_entries_and_leaf_shortcuts ... ok
+test types::expr_eval::tests::test_evaluated_ascii_ready_capacity_stands_outside_scalar_and_host_ledger ... ok
+test types::expr_eval::tests::test_evaluated_ascii_requires_official_recipe_without_restricting_legacy_rpn ... ok
+test types::expr_eval::tests::test_evaluated_ascii_witness_overflow_and_actual_wrapper_error ... ok
+test types::expr_eval::tests::test_evaluated_ascii_wrapper_dispatches_null_empty_and_raw_ready_values ... ok
+test types::expr_eval::tests::test_flattened_short_circuit_call ... ok
+test types::expr_eval::tests::test_flattened_short_circuit_multiple_partial_compactions ... ok
+test types::expr_eval::tests::test_host_ledger_and_reply_storage_precede_later_effects ... ok
+test types::expr_eval::tests::test_lineage_frame_layout_storage_is_actual ... ok
+test types::expr_eval::tests::test_lineage_selected_owner_is_counted_through_control_and_program ... ok
+test types::expr_eval::tests::test_logical_short_circuit_skips_rhs_rows ... ok
+test types::expr_eval::tests::test_merge_nulls_constant ... ok
+test types::expr_eval::tests::test_merge_nulls_constant_null ... ok
+test types::expr_eval::tests::test_nested_mixed_short_circuit_calls ... ok
+test types::expr_eval::tests::test_normal_parent_consumes_short_circuit_result ... ok
+test types::expr_eval::tests::test_numeric_execution_and_lineage_are_not_accounting_flags ... ok
+test types::expr_eval::tests::test_numeric_import_charges_suspended_base_and_actual_reply ... ok
+test types::expr_eval::tests::test_ordinary_operands_stay_charged_before_right_and_kernel ... ok
+test types::expr_eval::tests::test_parse_and_eval ... ok
+test types::expr_eval::tests::test_rpn_fn_data ... ok
+test types::expr_eval::tests::test_short_circuit_suppresses_cast_warning ... ok
+test types::expr_eval::tests::test_take_vector_value ... ok
+
+test result: ok. 636 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.95s
+

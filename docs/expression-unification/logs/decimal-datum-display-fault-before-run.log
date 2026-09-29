@@ -1,0 +1,14 @@
+BEGIN bounded Datum12.34 synthetic one-shot experiment; physical OOM is NOT exercised
+child inject=false nonarmed=12.34 owner=Shape { precision_and_storage: (4, 2), storage: 2, visible: 2, negative: false, cell: [2, 2, 2, 0, 12, 0, 0, 0, 0, 253, 67, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] }
+context=N/A: inherent Datum::to_string has no EvalContext argument
+controls empty=0 malloc/calloc/realloc/aligned=one expected request each; no refusal
+observer actual=12.34 first_malloc=8 requests=1 owner_unchanged=true
+persistent receipt inject=false status=ExitStatus(unix_wait_status(0)) events=[Event { tag: 1, phase: 2, kind: 1, ordinal: 1, size: 64, extra: 0 }, Event { tag: 1, phase: 4, kind: 3, ordinal: 1, size: 128, extra: 0 }, Event { tag: 1, phase: 3, kind: 2, ordinal: 1, size: 64, extra: 1 }, Event { tag: 1, phase: 5, kind: 4, ordinal: 1, size: 128, extra: 64 }, Event { tag: 1, phase: 6, kind: 1, ordinal: 1, size: 8, extra: 0 }, Event { tag: 5, phase: 6, kind: 0, ordinal: 0, size: 0, extra: 0 }, Event { tag: 4, phase: 6, kind: 1, ordinal: 0, size: 8, extra: 0 }]
+verified request malloc(8); launching fresh isolated injected child
+child inject=true nonarmed=12.34 owner=Shape { precision_and_storage: (4, 2), storage: 2, visible: 2, negative: false, cell: [2, 2, 2, 0, 12, 0, 0, 0, 0, 253, 67, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] }
+context=N/A: inherent Datum::to_string has no EvalContext argument
+controls empty=0 malloc/calloc/realloc/aligned=one expected request each; no refusal
+memory allocation of 8 bytes failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+persistent receipt inject=true status=ExitStatus(unix_wait_status(6)) events=[Event { tag: 1, phase: 2, kind: 1, ordinal: 1, size: 64, extra: 0 }, Event { tag: 1, phase: 4, kind: 3, ordinal: 1, size: 128, extra: 0 }, Event { tag: 1, phase: 3, kind: 2, ordinal: 1, size: 64, extra: 1 }, Event { tag: 1, phase: 5, kind: 4, ordinal: 1, size: 128, extra: 64 }, Event { tag: 1, phase: 6, kind: 1, ordinal: 1, size: 8, extra: 0 }, Event { tag: 2, phase: 6, kind: 1, ordinal: 1, size: 8, extra: 0 }]
+RED verified small refusal + expected allocation-abort SIGABRT; actual Datum outer Err absent

@@ -90,7 +90,7 @@ fn logic_truthy(value: &Datum, ctx: &dyn Columns) -> Result<Option<bool>, EvalEr
     }
 }
 
-fn binary_op_for_name(name: &str) -> Option<BinaryOp> {
+pub(crate) fn binary_op_for_name(name: &str) -> Option<BinaryOp> {
     Some(match name {
         "plus" => BinaryOp::Plus,
         "minus" => BinaryOp::Minus,
@@ -287,6 +287,8 @@ pub struct ScalarFunction {
     values_offset: Option<usize>,
     /// Go Function: a protobuf-selected builtin, independent of FuncName.
     pb_builtin: Option<PbBuiltin>,
+    /// Shallow wire provenance; clones retain identity without cloning children.
+    pub(crate) pb_origin: Option<std::sync::Arc<crate::distsql_builtin::PbOrigin>>,
     /// Lazily-filled `HashCode` cache (Go `hashcode`).
     hashcode: Vec<u8>,
     /// Go `BuiltinGroupingImplSig` metadata installed by `SetMetadata`.
@@ -316,7 +318,7 @@ pub struct ScalarFunction {
     ilike_pattern_cache: crate::builtin_ext::BuiltinFuncCache<crate::like::CompiledIlikePattern>,
 }
 
-fn arithmetic_symbol(op: tidb_ast::BinaryOp) -> Option<&'static str> {
+pub(crate) fn arithmetic_symbol(op: tidb_ast::BinaryOp) -> Option<&'static str> {
     Some(match op {
         tidb_ast::BinaryOp::Plus => "+",
         tidb_ast::BinaryOp::Minus => "-",
@@ -676,6 +678,14 @@ impl ScalarFunction {
             pb_builtin: Some(builtin),
             ..Default::default()
         }
+    }
+
+    pub(crate) fn pb_origin(&self) -> Option<&std::sync::Arc<crate::distsql_builtin::PbOrigin>> {
+        self.pb_origin.as_ref()
+    }
+
+    pub(crate) fn has_values_offset(&self) -> bool {
+        self.values_offset.is_some()
     }
 
     /// The signature selected by protobuf decoding, preserved by Clone.
@@ -4189,6 +4199,49 @@ pub fn try_eval_numeric_batch(
     ctx: &dyn Columns,
     input: &Chunk,
 ) -> Result<Option<Vec<Datum>>, EvalError> {
+    match numeric_batch_candidate(expression, ctx)? {
+        Some(candidate) => candidate.eval_native(ctx, input).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// The result of the existing native eligibility pass, not evidence that a
+/// projection suite selected this route. Only the suite can supply that seal.
+/// No Clone or public constructor permits a consumer to replay this candidate.
+pub(crate) struct EligibleNumericBatch<'a> {
+    expression: &'a Expression,
+    target: EvalType,
+}
+
+impl EligibleNumericBatch<'_> {
+    pub(crate) fn expression(&self) -> &Expression {
+        self.expression
+    }
+
+    pub(crate) fn target(&self) -> EvalType {
+        self.target
+    }
+
+    pub(crate) fn eval_native(
+        self,
+        ctx: &dyn Columns,
+        input: &Chunk,
+    ) -> Result<Vec<Datum>, EvalError> {
+        // Keep the original empty guard AFTER native eligibility/get_type.
+        if input.num_rows() == 0 {
+            return Ok(Vec::new());
+        }
+        eval_numeric_batch_values(self.expression, ctx, input, self.target)
+    }
+}
+
+/// Admission only, factored without changing the native rule/order. This may
+/// read deferred-wrapper type context; callers must not assume it is a generic
+/// effect-free expression predicate. It never invokes a numeric value worker.
+pub(crate) fn numeric_batch_candidate<'a>(
+    expression: &'a Expression,
+    ctx: &dyn Columns,
+) -> Result<Option<EligibleNumericBatch<'a>>, EvalError> {
     let mut source = expression;
     while let Expression::Constant(constant) = source {
         let Some(child) = constant.deferred_expr.as_deref() else {
@@ -4209,10 +4262,7 @@ pub fn try_eval_numeric_batch(
     if !numeric_batch_supported(expression, target) {
         return Ok(None);
     }
-    if input.num_rows() == 0 {
-        return Ok(Some(Vec::new()));
-    }
-    eval_numeric_batch_values(expression, ctx, input, target).map(Some)
+    Ok(Some(EligibleNumericBatch { expression, target }))
 }
 
 /// Go `VecEvalDecimal` over one expression node, restricted to the shapes

@@ -16,6 +16,45 @@ use tidb_ast::CiString;
 use tidb_datatype::{Datum, FieldType, FieldTypeCode};
 use tidb_proto::tipb;
 
+/// Node-local protocol provenance. There are deliberately no child expressions:
+/// capturing a decoded tree is linear, not a whole-subtree clone at every node.
+/// Optional wire fields retain presence/sign independently of SQL defaults.
+#[derive(Debug)]
+pub(crate) struct PbOrigin {
+    pub(crate) expr_type: Option<i32>,
+    pub(crate) signature: Option<i32>,
+    pub(crate) field_type: Option<tipb::FieldType>,
+    pub(crate) val: Option<Vec<u8>>,
+    pub(crate) child_count: usize,
+    /// Detached baseline, used to reject stale provenance after type rewrites.
+    /// Keep private: FieldType clones and element accessors share mutable backing.
+    effective_type: Option<FieldType>,
+}
+
+impl PbOrigin {
+    pub(crate) fn matches_effective_type(&self, sql: &FieldType) -> bool {
+        self.effective_type.as_ref() == Some(sql)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn effective_type_snapshot(&self) -> Option<FieldType> {
+        self.effective_type
+            .as_ref()
+            .map(FieldType::deep_copy_like_go)
+    }
+
+    fn capture(expr: &tipb::Expr, effective_type: Option<&FieldType>) -> Self {
+        Self {
+            expr_type: expr.tp,
+            signature: expr.sig,
+            field_type: expr.field_type.clone(),
+            val: expr.val.clone(),
+            child_count: expr.children.len(),
+            effective_type: effective_type.map(FieldType::deep_copy_like_go),
+        }
+    }
+}
+
 /// Go `PbTypeToFieldType`.
 #[must_use]
 pub fn pb_type_to_field_type(tp: &tipb::FieldType) -> FieldType {
@@ -152,6 +191,32 @@ fn pb_column(expr: &tipb::Expr, column_types: &[FieldType]) -> Result<Expression
 /// A malformed literal, an out-of-range column, or a signature TiDB does not
 /// push (Go `getSignatureByPB`'s `default:` arm).
 pub fn pb_to_expr(expr: &tipb::Expr, column_types: &[FieldType]) -> Result<Expression, String> {
+    let mut decoded = decode_pb_node(expr, column_types)?;
+    match &mut decoded {
+        Expression::Constant(node) => {
+            node.pb_origin = Some(std::sync::Arc::new(PbOrigin::capture(
+                expr,
+                node.ret_type.as_ref(),
+            )));
+        }
+        Expression::Column(node) => {
+            node.pb_origin = Some(std::sync::Arc::new(PbOrigin::capture(
+                expr,
+                node.ret_type.as_ref(),
+            )));
+        }
+        Expression::ScalarFunction(node) => {
+            node.pb_origin = Some(std::sync::Arc::new(PbOrigin::capture(
+                expr,
+                node.ret_type.as_ref(),
+            )));
+        }
+        Expression::CorrelatedColumn(_) => unreachable!("PB decoding does not bind correlations"),
+    }
+    Ok(decoded)
+}
+
+fn decode_pb_node(expr: &tipb::Expr, column_types: &[FieldType]) -> Result<Expression, String> {
     if expr.tp() == tipb::ExprType::ColumnRef {
         return pb_column(expr, column_types);
     }

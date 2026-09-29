@@ -555,68 +555,38 @@ fn walk_value(
     Ok(())
 }
 
-/// MySQL `LIKE` over chars: `%` any run, `_` any one, `escape` quotes the
-/// next pattern char. Case handling is the caller's (fold for `_ci`
-/// collations); this matcher is the wildcard state machine itself.
+/// Exact rune LIKE used by JSON search. Unlike normal SQL LIKE, a dangling
+/// escape cannot match; preserve that policy while sharing the matching loop.
 pub fn like_matches(text: &str, pattern: &str, escape: char) -> bool {
-    let text = text.chars().collect::<Vec<_>>();
-    let pattern = pattern.chars().collect::<Vec<_>>();
-    let mut memo = std::collections::HashMap::new();
-    like_matches_from(&text, &pattern, escape, 0, 0, &mut memo)
+    crate::wildcard::matches_runes(
+        text.as_bytes(),
+        pattern.as_bytes(),
+        crate::wildcard::MatchOptions {
+            escape: escape as u32,
+            trailing_escape: crate::wildcard::TrailingEscape::Reject,
+        },
+    )
 }
 
-fn like_matches_from(
-    text: &[char],
-    pattern: &[char],
-    escape: char,
-    text_index: usize,
-    pattern_index: usize,
-    memo: &mut std::collections::HashMap<(usize, usize), bool>,
-) -> bool {
-    if let Some(result) = memo.get(&(text_index, pattern_index)) {
-        return *result;
+#[cfg(test)]
+#[test]
+fn shared_like_json_trailing_escape_policy() {
+    for (text, pattern, escape, expected) in [
+        ("\\", "\\", '\\', false),
+        ("a%b", "a\\%b", '\\', true),
+        ("a", "a\\", '\\', false),
+        ("é", "é", 'é', false),
+        ("a_b", "aé_b", 'é', true),
+        ("", "%", '%', false),
+        ("中", "_", '\\', true),
+        ("a_", "a\0_", '\0', true),
+    ] {
+        assert_eq!(
+            like_matches(text, pattern, escape),
+            expected,
+            "text={text:?}, pattern={pattern:?}, escape={escape:?}"
+        );
     }
-    let result = if pattern_index == pattern.len() {
-        text_index == text.len()
-    } else if pattern[pattern_index] == escape {
-        pattern.get(pattern_index + 1).is_some_and(|literal| {
-            text.get(text_index) == Some(literal)
-                && like_matches_from(
-                    text,
-                    pattern,
-                    escape,
-                    text_index + 1,
-                    pattern_index + 2,
-                    memo,
-                )
-        })
-    } else if pattern[pattern_index] == '%' {
-        like_matches_from(text, pattern, escape, text_index, pattern_index + 1, memo)
-            || (text_index < text.len()
-                && like_matches_from(text, pattern, escape, text_index + 1, pattern_index, memo))
-    } else if pattern[pattern_index] == '_' {
-        text_index < text.len()
-            && like_matches_from(
-                text,
-                pattern,
-                escape,
-                text_index + 1,
-                pattern_index + 1,
-                memo,
-            )
-    } else {
-        text.get(text_index) == pattern.get(pattern_index)
-            && like_matches_from(
-                text,
-                pattern,
-                escape,
-                text_index + 1,
-                pattern_index + 1,
-                memo,
-            )
-    };
-    memo.insert((text_index, pattern_index), result);
-    result
 }
 
 fn selected_indices(selection: &JSONPathArraySelection, length: usize) -> Vec<usize> {

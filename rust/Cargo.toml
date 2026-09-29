@@ -139,6 +139,14 @@ tonic-prost-build = "0.14"
 # fork of the official tikv/client-rust), re-synced by
 # scripts/sync-tikv-client-rs.sh. See docs/client-rust-migration-execplan.md.
 tikv-client = { path = "third_party/tikv-client-rs" }
+# Local expression-sharing experiment: the sibling TiKV checkout is pinned in
+# /home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md. Cargo.lock pins the transitive
+# protocol/runtime Git revisions; no TiKV server or storage RPC is involved.
+tidb_query_datatype = { path = "../../tikv/components/tidb_query_datatype" }
+tidb_query_expr = { path = "../../tikv/components/tidb_query_expr" }
+tipb = { git = "https://github.com/pingcap/tipb.git" }
+# Match the generated TiKV enum's trait, separately from TiDB's prost messages.
+protobuf = "=2.8.0"
 # Go TiDB reaches etcd directly (go.mod depends on go.etcd.io/etcd/client/v3,
 # not through client-go) for DDL schema-version/privilege/sysvar notification
 # on PD's embedded etcd server; this is that same direct dependency's Rust
@@ -246,6 +254,19 @@ rustls-pemfile = "2"
 # Default features drag in `x509-parser` (for reading an existing CA) which
 # this node never does: it only emits one self-signed leaf.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+
+# Dependency workspaces do not propagate their patches to this caller. Mirror
+# only TiKV patches reached by tidb_query_{datatype,expr}; Cargo.lock keeps the
+# same reviewed commits as the sibling TiKV baseline. In particular, crates.io
+# protobuf 2.8 is not interchangeable with PingCAP's fork of that version.
+[patch.crates-io]
+raft = { git = "https://github.com/tikv/raft-rs", branch = "master" }
+raft-proto = { git = "https://github.com/tikv/raft-rs", branch = "master" }
+protobuf = { git = "https://github.com/pingcap/rust-protobuf", branch = "v2.8" }
+protobuf-codegen = { git = "https://github.com/pingcap/rust-protobuf", branch = "v2.8" }
+fs2 = { git = "https://github.com/tikv/fs2-rs", branch = "tikv" }
+cmake = { git = "https://github.com/rust-lang/cmake-rs" }
+sysinfo = { git = "https://github.com/tikv/sysinfo", branch = "0.26-fix-cpu" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"        # Phase 0 is safe Rust end-to-end.

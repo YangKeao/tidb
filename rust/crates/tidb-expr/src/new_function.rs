@@ -122,6 +122,9 @@
 use crate::builtin_registry::verify_args_by_count;
 use crate::constant_fold::{fold_constant_in_mode, ConstantFoldMode};
 use crate::expression::Expression;
+use crate::rewriter::preparation::{
+    self, PreparationPurpose, StructuralExpression, StructuralLimits,
+};
 use crate::scalar_function::ScalarFunction;
 use crate::{Columns, EvalError};
 use tidb_ast::CiString;
@@ -258,6 +261,60 @@ pub fn new_function_impl(
     check_or_init: Option<ScalarFunctionCallBack<'_>>,
     args: Vec<Expression>,
 ) -> Result<Expression, EvalError> {
+    new_function_impl_with_purpose(
+        ctx,
+        PreparationPurpose::SqlBuild,
+        fold,
+        func_name,
+        ret_type,
+        check_or_init,
+        args,
+    )
+}
+
+/// Explicit preparation only; no automatic execution route or native retry.
+#[allow(dead_code)]
+pub(crate) fn new_function_structural(
+    ctx: &dyn Columns,
+    func_name: &str,
+    ret_type: FieldType,
+    args: Vec<Expression>,
+    limits: StructuralLimits,
+) -> Result<StructuralExpression, EvalError> {
+    let name = func_name.to_ascii_lowercase();
+    preparation::check_arguments(&name, &args, limits)?;
+    let root = new_function_impl_with_purpose(
+        ctx,
+        PreparationPurpose::StructuralOnly,
+        ConstantFoldMode::Disabled,
+        &name,
+        ret_type,
+        None,
+        args,
+    )?;
+    StructuralExpression::checked(root, limits)
+}
+
+/// Shared body. Structural callers use `new_function_structural` for the
+/// bounded whole-tree preflight and checked finish; this seam also tests the
+/// callback veto without supplying an effectful callback to that entrypoint.
+pub(crate) fn new_function_impl_with_purpose(
+    ctx: &dyn Columns,
+    purpose: PreparationPurpose,
+    fold: ConstantFoldMode,
+    func_name: &str,
+    ret_type: FieldType,
+    check_or_init: Option<ScalarFunctionCallBack<'_>>,
+    args: Vec<Expression>,
+) -> Result<Expression, EvalError> {
+    if purpose == PreparationPurpose::StructuralOnly {
+        if check_or_init.is_some() {
+            return Err(EvalError::Unsupported(
+                "StructuralOnly: construction callback",
+            ));
+        }
+        preparation::check_control(func_name, &args)?;
+    }
     if let Some(refusal) = dedicated_builder_refusal(func_name) {
         return Err(refusal);
     }
@@ -347,7 +404,9 @@ pub fn new_function_impl(
     // Go getFunction refines comparison arguments before collation, the
     // construction callback and the selected constant-folding mode.
     let mut expression = Expression::ScalarFunction(function);
-    crate::builtin_compare::refine_comparison_dyn(&mut expression, ctx)?;
+    if purpose == PreparationPurpose::SqlBuild {
+        crate::builtin_compare::refine_comparison_dyn(&mut expression, ctx)?;
+    }
     let Expression::ScalarFunction(mut function) = expression else {
         unreachable!("comparison refinement preserves the function node")
     };
@@ -380,10 +439,16 @@ pub fn new_function_impl(
             func_name,
             &derived.charset,
             std::mem::take(&mut function.args),
-            |expression| fold_constant_in_mode(expression, ctx, ConstantFoldMode::Normal),
+            |expression| {
+                if purpose == PreparationPurpose::SqlBuild {
+                    fold_constant_in_mode(expression, ctx, ConstantFoldMode::Normal);
+                }
+            },
         );
     }
-    function.prepare_numeric_arguments(ctx);
+    if purpose == PreparationPurpose::SqlBuild {
+        function.prepare_numeric_arguments(ctx);
+    }
 
     // Go's grouping signature marks its result as an unsigned BIGINT because
     // the returned bits encode multiple grouping flags.
@@ -403,7 +468,9 @@ pub fn new_function_impl(
         };
         expr = Expression::ScalarFunction(callback(function)?);
     }
-    fold_constant_in_mode(&mut expr, ctx, fold);
+    if purpose == PreparationPurpose::SqlBuild {
+        fold_constant_in_mode(&mut expr, ctx, fold);
+    }
     Ok(expr)
 }
 

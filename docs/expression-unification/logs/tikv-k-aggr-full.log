@@ -1,0 +1,135 @@
+   Compiling tidb_query_datatype v0.0.1 (/home/agent/tidb/expression-unification/tikv/components/tidb_query_datatype)
+warning: unused macro definition: `word_cnt`
+   --> components/tidb_query_datatype/src/codec/mysql/decimal.rs:468:14
+    |
+468 | macro_rules! word_cnt {
+    |              ^^^^^^^^
+    |
+    = note: `#[warn(unused_macros)]` (part of `#[warn(unused)]`) on by default
+
+warning: variant `Mysql` is never constructed
+   --> components/tidb_query_datatype/src/codec/mysql/decimal.rs:185:5
+    |
+183 | enum DecimalParsePolicy {
+    |      ------------------ variant in this enum
+184 |     Legacy(usize),
+185 |     Mysql(usize),
+    |     ^^^^^
+    |
+    = note: `DecimalParsePolicy` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variant `RetainedQuotient` is never constructed
+   --> components/tidb_query_datatype/src/codec/mysql/decimal.rs:988:5
+    |
+986 | enum DivisionRequest {
+    |      --------------- variant in this enum
+987 |     MysqlQuotient { frac_incr: usize },
+988 |     RetainedQuotient { frac_words: usize },
+    |     ^^^^^^^^^^^^^^^^
+    |
+    = note: `DivisionRequest` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: multiple associated items are never used
+    --> components/tidb_query_datatype/src/codec/mysql/decimal.rs:1678:8
+     |
+1658 | impl Decimal {
+     | ------------ associated items in this implementation
+...
+1678 |     fn try_from_words(parts: DecimalWordsRef<'_>) -> Result<Self> {
+     |        ^^^^^^^^^^^^^^
+...
+1984 |     fn try_add_exact(&self, rhs: &Self) -> Result<Self> {
+     |        ^^^^^^^^^^^^^
+...
+1993 |     fn try_sub_exact(&self, rhs: &Self) -> Result<Self> {
+     |        ^^^^^^^^^^^^^
+...
+2002 |     fn try_mul_exact(&self, rhs: &Self) -> Result<Self> {
+     |        ^^^^^^^^^^^^^
+...
+2008 |     fn try_div_rem_exact(&self, rhs: &Self) -> Result<Option<(Self, Self)>> {
+     |        ^^^^^^^^^^^^^^^^^
+...
+2031 |     fn try_div_round_exact(&self, count: i64, result_scale: u32) -> Result<Option<Self>> {
+     |        ^^^^^^^^^^^^^^^^^^^
+...
+3068 |     fn parse_mysql(s: &[u8]) -> Result<DecimalParseOutcome> {
+     |        ^^^^^^^^^^^
+...
+3072 |     fn try_from_literal(text: &str) -> Result<Self> {
+     |        ^^^^^^^^^^^^^^^^
+
+   Compiling tidb_query_expr v0.0.1 (/home/agent/tidb/expression-unification/tikv/components/tidb_query_expr)
+   Compiling tipb_helper v0.0.1 (/home/agent/tidb/expression-unification/tikv/components/tipb_helper)
+warning: `tidb_query_datatype` (lib) generated 4 warnings
+warning: unused import: `Expr`
+  --> components/tidb_query_expr/src/impl_compare_in.rs:20:12
+   |
+20 | use tipb::{Expr, ExprType, FieldType};
+   |            ^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `output_bytes` is never used
+   --> components/tidb_query_expr/src/local/runtime.rs:202:19
+    |
+157 | impl EvalBudget {
+    | --------------- method in this implementation
+...
+202 |     pub(crate) fn output_bytes(&self) -> usize {
+    |                   ^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `tidb_query_expr` (lib) generated 2 warnings (run `cargo fix --lib -p tidb_query_expr` to apply 1 suggestion)
+   Compiling tidb_query_aggr v0.0.1 (/home/agent/tidb/expression-unification/tikv/components/tidb_query_aggr)
+    Finished `test` profile [unoptimized] target(s) in 4.63s
+warning: the following packages contain code that will be rejected by a future version of Rust: nom v2.2.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+     Running unittests src/lib.rs (/home/agent/tidb/expression-unification/target-tikv/debug/deps/tidb_query_aggr-05991d293fe033e2)
+
+running 40 tests
+test impl_avg::tests::test_illegal_request ... ok
+test impl_avg::tests::test_integration ... ok
+test impl_avg::tests::test_update ... ok
+test impl_avg::tests::test_update_enum ... ok
+test impl_avg::tests::test_update_set ... ok
+test impl_bit_op::tests::test_bit_and ... ok
+test impl_bit_op::tests::test_bit_or ... ok
+test impl_bit_op::tests::test_bit_xor ... ok
+test impl_bit_op::tests::test_integration ... ok
+test impl_count::tests::test_update ... ok
+test impl_count::tests::test_update_enum ... ok
+test impl_count::tests::test_update_set ... ok
+test impl_first::tests::test_illegal_request ... ok
+test impl_first::tests::test_update ... ok
+test impl_first::tests::test_update_enum ... ok
+test impl_first::tests::test_update_repeat ... ok
+test impl_first::tests::test_update_set ... ok
+test impl_first::tests::test_update_vector ... ok
+test impl_max_min::tests::test_aggr_unsigned_signed_int ... ok
+test impl_max_min::tests::test_collation ... ok
+test impl_max_min::tests::test_illegal_request ... ok
+test impl_max_min::tests::test_integration ... ok
+test impl_max_min::tests::test_max ... ok
+test impl_max_min::tests::test_max_enum ... ok
+test impl_max_min::tests::test_max_set ... ok
+test impl_max_min::tests::test_min ... ok
+test impl_sum::tests::test_illegal_request ... ok
+test impl_sum::tests::test_integration ... ok
+test impl_sum::tests::test_sum_enum ... ok
+test impl_sum::tests::test_sum_set ... ok
+test impl_sum_int::tests::test_sum_int_illegal_request ... ok
+test impl_sum_int::tests::test_sum_int_signed_integration ... ok
+test impl_sum_int::tests::test_sum_int_signed_overflow ... ok
+test impl_sum_int::tests::test_sum_int_unsigned_integration ... ok
+test impl_sum_int::tests::test_sum_int_unsigned_overflow ... ok
+test impl_variance::tests::test_illegal_request ... ok
+test impl_variance::tests::test_integration ... ok
+test impl_variance::tests::test_variance_enum ... ok
+test impl_variance::tests::test_variance_set ... ok
+test tests::test_type_match ... ok
+
+test result: ok. 40 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

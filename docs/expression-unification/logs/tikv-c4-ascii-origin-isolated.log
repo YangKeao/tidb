@@ -1,0 +1,72 @@
+warning: unused macro definition: `word_cnt`
+   --> components/tidb_query_datatype/src/codec/mysql/decimal.rs:468:14
+    |
+468 | macro_rules! word_cnt {
+    |              ^^^^^^^^
+    |
+    = note: `#[warn(unused_macros)]` (part of `#[warn(unused)]`) on by default
+
+warning: variant `Mysql` is never constructed
+   --> components/tidb_query_datatype/src/codec/mysql/decimal.rs:185:5
+    |
+183 | enum DecimalParsePolicy {
+    |      ------------------ variant in this enum
+184 |     Legacy(usize),
+185 |     Mysql(usize),
+    |     ^^^^^
+    |
+    = note: `DecimalParsePolicy` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variant `RetainedQuotient` is never constructed
+   --> components/tidb_query_datatype/src/codec/mysql/decimal.rs:988:5
+    |
+986 | enum DivisionRequest {
+    |      --------------- variant in this enum
+987 |     MysqlQuotient { frac_incr: usize },
+988 |     RetainedQuotient { frac_words: usize },
+    |     ^^^^^^^^^^^^^^^^
+    |
+    = note: `DivisionRequest` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: multiple associated items are never used
+    --> components/tidb_query_datatype/src/codec/mysql/decimal.rs:1678:8
+     |
+1658 | impl Decimal {
+     | ------------ associated items in this implementation
+...
+1678 |     fn try_from_words(parts: DecimalWordsRef<'_>) -> Result<Self> {
+     |        ^^^^^^^^^^^^^^
+...
+1984 |     fn try_add_exact(&self, rhs: &Self) -> Result<Self> {
+     |        ^^^^^^^^^^^^^
+...
+1993 |     fn try_sub_exact(&self, rhs: &Self) -> Result<Self> {
+     |        ^^^^^^^^^^^^^
+...
+2002 |     fn try_mul_exact(&self, rhs: &Self) -> Result<Self> {
+     |        ^^^^^^^^^^^^^
+...
+2008 |     fn try_div_rem_exact(&self, rhs: &Self) -> Result<Option<(Self, Self)>> {
+     |        ^^^^^^^^^^^^^^^^^
+...
+2031 |     fn try_div_round_exact(&self, count: i64, result_scale: u32) -> Result<Option<Self>> {
+     |        ^^^^^^^^^^^^^^^^^^^
+...
+3068 |     fn parse_mysql(s: &[u8]) -> Result<DecimalParseOutcome> {
+     |        ^^^^^^^^^^^
+...
+3072 |     fn try_from_literal(text: &str) -> Result<Self> {
+     |        ^^^^^^^^^^^^^^^^
+
+warning: `tidb_query_datatype` (lib) generated 4 warnings
+    Finished `test` profile [unoptimized] target(s) in 0.12s
+warning: the following packages contain code that will be rejected by a future version of Rust: nom v2.2.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+     Running unittests src/lib.rs (/home/agent/tidb/expression-unification/target-tikv/debug/deps/tidb_query_expr-2fb5ca40caa6777b)
+
+running 1 test
+test local::batch::evaluated_ascii_tests::test_evaluated_ascii_wrapper_body_origin_isolated ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 636 filtered out; finished in 0.00s
+

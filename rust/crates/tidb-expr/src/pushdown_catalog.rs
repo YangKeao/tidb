@@ -2273,7 +2273,28 @@ fn resolve_conditional(name: &str, args: &[PbScalar]) -> Option<&'static Builtin
         ("ifnull", 2) => {}
         _ => return None,
     }
-    let suffix = match args[1].eval_type() {
+    let sig = conditional_signature(name, args.len(), args[1].eval_type())?;
+    CATALOG
+        .iter()
+        .find(|candidate| candidate.name == name && candidate.sig == sig)
+}
+
+/// Pure signature facts over an already inferred result type. This performs no
+/// value binding, implicit cast, remote admission or kernel selection. The remote
+/// resolver keeps its existing first-branch approximation and admission above;
+/// local callers supply the actual SQL builder's merged return type instead.
+pub(crate) fn conditional_signature(
+    name: &str,
+    arity: usize,
+    result_type: EvalType,
+) -> Option<ScalarFuncSig> {
+    match (name, arity) {
+        ("case", n) if n >= 2 => {}
+        ("if", 3) | ("ifnull", 2) => {}
+        ("coalesce", n) if n >= 1 => {}
+        _ => return None,
+    }
+    let suffix = match result_type {
         EvalType::Int => "Int",
         EvalType::Real => "Real",
         EvalType::Decimal => "Decimal",
@@ -2305,11 +2326,16 @@ fn resolve_conditional(name: &str, args: &[PbScalar]) -> Option<&'static Builtin
         ("ifnull", "Time") => ScalarFuncSig::IfNullTime,
         ("ifnull", "Duration") => ScalarFuncSig::IfNullDuration,
         ("ifnull", "Json") => ScalarFuncSig::IfNullJson,
+        ("coalesce", "Int") => ScalarFuncSig::CoalesceInt,
+        ("coalesce", "Real") => ScalarFuncSig::CoalesceReal,
+        ("coalesce", "Decimal") => ScalarFuncSig::CoalesceDecimal,
+        ("coalesce", "String") => ScalarFuncSig::CoalesceString,
+        ("coalesce", "Time") => ScalarFuncSig::CoalesceTime,
+        ("coalesce", "Duration") => ScalarFuncSig::CoalesceDuration,
+        ("coalesce", "Json") => ScalarFuncSig::CoalesceJson,
         _ => return None,
     };
-    CATALOG
-        .iter()
-        .find(|candidate| candidate.name == name && candidate.sig == sig)
+    Some(sig)
 }
 
 /// The catalog row for a call of `name` over `args`, when TiKV evaluates it.
