@@ -1,0 +1,53 @@
+gcc-14 (Gentoo 14.4.1_p20260716 p6) 14.4.1 20260716
+Copyright (C) 2024 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+
+Dynamic section at offset 0x6db0 contains 26 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x000000000000000c (INIT)               0x1000
+ 0x000000000000000d (FINI)               0x4f90
+ 0x0000000000000019 (INIT_ARRAY)         0x6ca0
+ 0x000000000000001b (INIT_ARRAYSZ)       16 (bytes)
+ 0x000000000000001a (FINI_ARRAY)         0x6cb0
+ 0x000000000000001c (FINI_ARRAYSZ)       16 (bytes)
+ 0x000000006ffffef5 (GNU_HASH)           0x308
+ 0x0000000000000005 (STRTAB)             0x4f8
+ 0x0000000000000006 (SYMTAB)             0x348
+ 0x000000000000000a (STRSZ)              223 (bytes)
+ 0x000000000000000b (SYMENT)             24 (bytes)
+ 0x0000000000000003 (PLTGOT)             0x6f90
+ 0x0000000000000002 (PLTRELSZ)           144 (bytes)
+ 0x0000000000000014 (PLTREL)             RELA
+ 0x0000000000000017 (JMPREL)             0x980
+ 0x0000000000000007 (RELA)               0x620
+ 0x0000000000000008 (RELASZ)             864 (bytes)
+ 0x0000000000000009 (RELAENT)            24 (bytes)
+ 0x000000000000001e (FLAGS)              BIND_NOW STATIC_TLS
+ 0x000000006ffffffb (FLAGS_1)            Flags: NOW
+ 0x000000006ffffffe (VERNEED)            0x600
+ 0x000000006fffffff (VERNEEDNUM)         1
+ 0x000000006ffffff0 (VERSYM)             0x5d8
+ 0x000000006ffffff9 (RELACOUNT)          31
+ 0x0000000000000000 (NULL)               0x0
+                 w __cxa_finalize@GLIBC_2.2.5
+                 U __errno_location@GLIBC_2.2.5
+                 w __gmon_start__
+                 w _ITM_deregisterTMCloneTable
+                 w _ITM_registerTMCloneTable
+                 U __libc_calloc@GLIBC_2.2.5
+                 U __libc_free@GLIBC_2.2.5
+                 U __libc_malloc@GLIBC_2.2.5
+                 U __libc_memalign@GLIBC_2.2.5
+                 U __libc_realloc@GLIBC_2.2.5
+	linux-vdso.so.1 (0x00007fdeffe4d000)
+	libc.so.6 => /usr/lib64/libc.so.6 (0x00007fdeffc3e000)
+	/lib64/ld-linux-x86-64.so.2 (0x00007fdeffe4f000)
+	linux-vdso.so.1 (0x00007f6d770b8000)
+	libstdc++.so.6 => /usr/lib/gcc/x86_64-pc-linux-gnu/16/libstdc++.so.6 (0x00007f6d70200000)
+	libgcc_s.so.1 => /usr/lib/gcc/x86_64-pc-linux-gnu/16/libgcc_s.so.1 (0x00007f6d77057000)
+	libm.so.6 => /usr/lib64/libm.so.6 (0x00007f6d7052a000)
+	libc.so.6 => /usr/lib64/libc.so.6 (0x00007f6d7002d000)
+	/lib64/ld-linux-x86-64.so.2 (0x00007f6d770ba000)

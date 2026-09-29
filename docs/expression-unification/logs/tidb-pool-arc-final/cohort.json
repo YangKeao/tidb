@@ -1,0 +1,44 @@
+{
+  "rust_profile": "TEST",
+  "rust_pin": "nightly-2026-08-22",
+  "observer_compile": [
+    "/usr/bin/gcc-14",
+    "-std=gnu11",
+    "-O2",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "-fPIC",
+    "-shared",
+    "-fno-builtin",
+    "-fno-stack-protector",
+    "-ftls-model=initial-exec",
+    "-U_FORTIFY_SOURCE",
+    "-D_FORTIFY_SOURCE=0",
+    "-Wl,-z,now",
+    "-Wl,-z,defs",
+    "-o",
+    "tools/pool-arc-observer.so",
+    "tools/pool-arc-observer.c"
+  ],
+  "sources": {
+    "/home/agent/tidb/expression-unification/tools/pool-arc-observer.c": "eff83df6af640b0ce21789f2ff4d2c86b61151d0e898f5ec8e428fad1deee18e",
+    "/home/agent/tidb/expression-unification/tools/pool-arc-runner.py": "5b37f8187a73304baecac5cd1186461a98b7d9e359e370096e967423d5b1ce8e",
+    "/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-expr/src/tikv/mod.rs": "5351acf006a8d1fa60c613e8c0fc47e5729b301de282e5f9cdf85c4db889933e",
+    "/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-expr/src/tikv/evaluated_ascii.rs": "f7287aa20b1beaa035aeee333711718244c82950465696dab4d3b9a1d7278087",
+    "/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-expr/src/tikv/evaluated_ascii_tests.rs": "7ea2227e8e132dcef1b973e424b6c7ed31159b2f298b24a97b42185244225ee3",
+    "/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-expr/src/tikv/runtime_failure.rs": "60d39ae5da5146f958303d4d38399ca1c2d9a5827b5ec09e3e0aaead2378f1a8"
+  },
+  "resolved_dynamic_libraries": {
+    "/usr/lib/gcc/x86_64-pc-linux-gnu/16/libgcc_s.so.1": "5c7dfbd826810c0eae6dddba88e988d653591d57c7be993d162a45de9f63daa4",
+    "/usr/lib/gcc/x86_64-pc-linux-gnu/16/libstdc++.so.6.0.36": "693ff4c0d60fc7ae8c241ded4dfca7b7de65c1e67ce301a1a5fadc87c25614e2",
+    "/usr/lib64/ld-linux-x86-64.so.2": "7690566ac6439196b9303bd64f0affbccc6787224dcd262dde05d3188bfd2eca",
+    "/usr/lib64/libc.so.6": "41667b49e3eadc0b032eaefe365cd74955263bd493e301eaa8774bd51f98bda5",
+    "/usr/lib64/libm.so.6": "2d5f9e07c572cb088746d968297de6fe9d97a8585b0a7bb2a0a86b31acb05b29"
+  },
+  "artifacts": {
+    "/home/agent/tidb/expression-unification/target-tidb/debug/build/tidb-expr/1a66296e036585b2/out/tidb_expr-1a66296e036585b2": "ddb196e81f054e5fff33659c7d0a0e135bf8e37fe94f11ddafb5bc62c54b7a9b",
+    "/home/agent/tidb/expression-unification/tools/pool-arc-observer.so": "e6fd53441eaac42c80c2927617150e2da882797276c2eaf514fd65f72f5705d7",
+    "/home/agent/tidb/expression-unification/tools/pool-arc-runner.py": "5b37f8187a73304baecac5cd1186461a98b7d9e359e370096e967423d5b1ce8e"
+  }
+}

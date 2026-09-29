@@ -23,9 +23,13 @@
 mod batch;
 mod catalog;
 mod context;
+// Explicit private value-boundary prototype; no SQL dispatcher/public hook.
+mod evaluated_ascii;
 mod lineage;
 mod lower;
 mod ordinary;
+// Opaque native error carrier only; no public EvalError/SQL mapping yet.
+mod runtime_failure;
 #[cfg(test)]
 mod tests;
 

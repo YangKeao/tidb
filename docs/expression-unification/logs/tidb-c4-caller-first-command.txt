@@ -1,0 +1,17 @@
+Round7 first compiled caller cohort; historical, before the two newly identified concurrency regressions/fixes.
+CWD: /home/agent/tidb/expression-unification/tidb/rust
+Compiler wrapper: /home/agent/tidb/expression-unification/tools/cargo-tidb (nightly-2026-08-22)
+
+/home/agent/tidb/expression-unification/tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii::tests:: -- --test-threads=1
+  log: tidb-c4-caller-first.log
+  actual exit0: 28 passed, 1 ignored, 1407 filtered
+/home/agent/tidb/expression-unification/tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+  log: tidb-c4-caller-full.log
+  actual exit101: 1338 passed, 4 registered failures, 94 ignored
+  parent compared complete failure bodies to tidb-k-expr-full-corrected-workdir.log, normalizing only numeric thread IDs: identical
+/home/agent/tidb/expression-unification/tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii::tests::parent_external_observer_actual_pool_owner_arc_new_fixture -- --ignored --exact --nocapture --test-threads=1
+  log: tidb-pool-arc-fixture-unobserved.log
+  actual exit0: 1 passed, 1435 filtered
+  NO allocator observer loaded: fixture execution/layout output is NOT a measurement
+
+Formatted source cohort is tidb-c4-caller-formatted.sha256. Independent review subsequently found (1) an epoch/uncertain torn observation and (2) cached-lease reuse before std Mutex poison reaches the separate atomic flag. Therefore these passing tests did NOT accept the full caller gate. No public dispatcher/family migration is claimed.

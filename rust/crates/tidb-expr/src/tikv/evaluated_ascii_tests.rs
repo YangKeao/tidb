@@ -1,0 +1,2565 @@
+// Copyright 2026 PingCAP, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! First-private-cut tests only: explicit scopes and actual C4 workers. These
+//! do not activate SQL dispatch, add Columns capabilities, or prove allocator
+//! requests, factory construction peaks, or integrated return coercion.
+
+use super::*;
+use crate::constant::Constant;
+use crate::context::{BlockEncryptionMode, ErrorLevel, EvalError};
+use crate::Columns;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, BTreeSet};
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::{Arc, Barrier};
+use std::thread;
+use std::time::Duration;
+use tidb_datatype::{
+    ConversionFlags, CoreTime, DateModes, Datum, FieldType, FieldTypeCode, SessionTimeZone, Time,
+    TimeType,
+};
+
+// Test-thread-local timing seam only: no swappable worker/backend, no global
+// callback, and no cfg(test) field in the production PoolCore payload. The
+// callback is removed and the RefCell borrow released before it can block.
+std::thread_local! {
+    static AFTER_EPOCH_READ_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
+        const { RefCell::new(None) };
+    static EVAL_ONE_OBSERVATION: RefCell<Option<EvalOneObservation>> =
+        const { RefCell::new(None) };
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EvalOneObservation {
+    // Counts adapter entry into eval_one, NOT official fn_ptr invocations.
+    facade_entries: usize,
+    // Actual C4 getter values, only when the real eval_one call is reached.
+    // None after a refused/disposed call is not a fabricated zero counter.
+    before_kernel_invocations: Option<u64>,
+    after_kernel_invocations: Option<u64>,
+}
+
+fn arm_eval_one_observation() {
+    EVAL_ONE_OBSERVATION.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        assert!(
+            slot.is_none(),
+            "only one observation may be armed on this thread"
+        );
+        *slot = Some(EvalOneObservation {
+            facade_entries: 0,
+            before_kernel_invocations: None,
+            after_kernel_invocations: None,
+        });
+    });
+}
+
+fn take_eval_one_observation() -> EvalOneObservation {
+    EVAL_ONE_OBSERVATION.with(|slot| slot.borrow_mut().take().expect("observation was armed"))
+}
+
+pub(super) fn before_eval_one_for_test(actual_kernel_invocations: u64) {
+    EVAL_ONE_OBSERVATION.with(|slot| {
+        if let Some(observation) = slot.borrow_mut().as_mut() {
+            observation.facade_entries = observation
+                .facade_entries
+                .checked_add(1)
+                .expect("test facade-entry counter overflow");
+            observation
+                .before_kernel_invocations
+                .get_or_insert(actual_kernel_invocations);
+        }
+    });
+}
+
+pub(super) fn after_eval_one_for_test(actual_kernel_invocations: u64) {
+    EVAL_ONE_OBSERVATION.with(|slot| {
+        if let Some(observation) = slot.borrow_mut().as_mut() {
+            observation.after_kernel_invocations = Some(actual_kernel_invocations);
+        }
+    });
+}
+
+fn set_after_epoch_read_hook(hook: impl FnOnce() + 'static) {
+    AFTER_EPOCH_READ_HOOK.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        assert!(
+            slot.is_none(),
+            "epoch-read hook is one-shot per test thread"
+        );
+        *slot = Some(Box::new(hook));
+    });
+}
+
+pub(super) fn after_epoch_read_for_test() {
+    let hook = AFTER_EPOCH_READ_HOOK.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+// Deliberately explicit TEST policies, not proposed product defaults. The
+// creation reservation is a ledger allowance, NOT a measured factory peak.
+const TEST_WORKER_CAP: usize = 1 << 20;
+const TEST_CREATION_RESERVATION: usize = 2 << 20;
+const TEST_POOL_BYTES: usize = 16 << 20;
+const TEST_CALL_BYTES: usize = 1 << 16;
+
+fn test_policy(max_workers: usize, max_creating: usize) -> AsciiPoolPolicy {
+    AsciiPoolPolicy::checked(
+        max_workers,
+        max_creating,
+        TEST_POOL_BYTES,
+        TEST_WORKER_CAP,
+        TEST_CREATION_RESERVATION,
+        64,
+        8,
+        TEST_CALL_BYTES,
+    )
+    .unwrap()
+}
+
+const COLUMNS_METHODS: [&str; 63] = [
+    "get",
+    "context_id",
+    "use_plan_cache",
+    "skip_plan_cache_for_comparison",
+    "enable_vectorized_expression",
+    "param_value",
+    "current_insert_value",
+    "get_param_value",
+    "bounded_staleness_safe_time",
+    "connection_charset_info",
+    "no_unsigned_subtraction",
+    "now",
+    "cast_time_to_year_through_concat",
+    "sysdate_is_now",
+    "current_database",
+    "current_user",
+    "login_user",
+    "current_role",
+    "current_resource_group",
+    "connection_id",
+    "tidb_decode_key",
+    "acquire_advisory_lock",
+    "advisory_lock_owner",
+    "release_advisory_lock",
+    "release_all_advisory_locks",
+    "found_rows",
+    "current_tso",
+    "ddl_owner_info",
+    "sysvar",
+    "tidb_info",
+    "block_encryption_mode",
+    "division_by_zero_level",
+    "truncate_level",
+    "type_flags",
+    "strict_sql_mode",
+    "handle_truncate",
+    "handle_group_concat_cut",
+    "handle_sleep_incorrect_argument",
+    "sleep_for",
+    "append_warning",
+    "append_note",
+    "warning_count",
+    "truncate_warnings",
+    "take_warnings_since",
+    "max_allowed_packet",
+    "handle_allowed_packet_overflowed",
+    "date_modes",
+    "handle_division_by_zero",
+    "get_uservar",
+    "set_uservar",
+    "row_count",
+    "last_insert_id",
+    "set_last_insert_id",
+    "time_zone",
+    "like_default_escape",
+    "default_week_format",
+    "windowing_use_high_precision",
+    "div_precision_increment",
+    "rand_next",
+    "rand_seeded_next",
+    "sequence_nextval",
+    "sequence_lastval",
+    "sequence_setval",
+];
+
+// A deliberately small source drift check, not a Rust parser. These specific
+// source blocks have unindented closing braces and one method per declaration.
+// A shape change fails loudly instead of silently excluding the new methods.
+fn declared_methods<'a>(source: &'a str, marker: &str) -> Vec<&'a str> {
+    let header = source
+        .lines()
+        .find(|line| {
+            let line = line.trim_start();
+            (line.starts_with("impl ")
+                || line.starts_with("impl<")
+                || line.starts_with("pub trait "))
+                && line.contains(marker)
+        })
+        .expect("source inventory declaration exists, not merely its marker string");
+    let start = source.find(header).expect("declaration belongs to source");
+    let (_, body) = source[start..].split_once('{').expect("source block opens");
+    let (body, _) = body.split_once("\n}").expect("source block closes");
+    body.lines()
+        .filter_map(|line| line.trim_start().strip_prefix("fn "))
+        .map(|declaration| {
+            declaration
+                .split(['(', '<'])
+                .next()
+                .expect("method has a name")
+                .trim()
+        })
+        .collect()
+}
+
+#[test]
+fn columns_method_sets_have_no_unreviewed_forwarding_drift() {
+    let expected = BTreeSet::from(COLUMNS_METHODS);
+    assert_eq!(expected.len(), 63, "inventory must not hide duplicates");
+    for (source, marker) in [
+        (include_str!("../context.rs"), "pub trait Columns"),
+        (
+            include_str!("evaluated_ascii.rs"),
+            "Columns for ScopedAsciiColumns",
+        ),
+        (
+            include_str!("evaluated_ascii_tests.rs"),
+            "impl Columns for ForwardingSentinel<'_>",
+        ),
+    ] {
+        let methods = declared_methods(source, marker);
+        assert_eq!(methods.len(), 63, "method declaration count: {marker}");
+        assert_eq!(
+            methods.into_iter().collect::<BTreeSet<_>>(),
+            expected,
+            "review forwarding and behavioral coverage when Columns changes: {marker}"
+        );
+    }
+    // These are the three concrete sessionless overrides at the frozen source
+    // checkpoint, NOT three additional Columns trait methods.
+    assert_eq!(
+        declared_methods(include_str!("../context.rs"), "impl Columns for NoColumns"),
+        ["get"]
+    );
+    assert_eq!(
+        declared_methods(
+            include_str!("../context.rs"),
+            "impl Columns for ZonedNoColumns"
+        ),
+        ["get", "time_zone"]
+    );
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeCall {
+    method: &'static str,
+    arguments: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct NativeEffects {
+    warnings: Vec<(u16, String)>,
+    notes: Vec<(u16, String)>,
+    uservars: BTreeMap<String, Datum>,
+    locks: BTreeMap<String, usize>,
+    skips: Vec<(usize, String)>,
+    rng: u64,
+    seeded: BTreeMap<(usize, i64), u64>,
+    sequence: i64,
+    last_insert_id: u64,
+}
+
+// A native Columns sentinel, never a substitute worker or backend. Every
+// method overrides the method itself, especially defaults whose implementation
+// would otherwise call another policy method and mask an omitted delegation.
+struct ForwardingSentinel<'a> {
+    calls: RefCell<Vec<NativeCall>>,
+    effects: RefCell<NativeEffects>,
+    fail: bool,
+    probe: Option<&'a dyn Fn()>,
+}
+
+impl<'a> ForwardingSentinel<'a> {
+    fn new(fail: bool, probe: Option<&'a dyn Fn()>) -> Self {
+        Self {
+            calls: RefCell::new(Vec::new()),
+            effects: RefCell::new(NativeEffects {
+                warnings: vec![(42000, "preexisting warning".into())],
+                notes: Vec::new(),
+                uservars: BTreeMap::from([("existing".into(), Datum::Int(-601))]),
+                locks: BTreeMap::new(),
+                skips: Vec::new(),
+                rng: 23,
+                seeded: BTreeMap::new(),
+                sequence: 7001,
+                last_insert_id: 9001,
+            }),
+            fail,
+            probe,
+        }
+    }
+
+    fn record(&self, method: &'static str, arguments: String) {
+        if let Some(probe) = self.probe {
+            probe();
+        }
+        self.calls
+            .borrow_mut()
+            .push(NativeCall { method, arguments });
+    }
+
+    fn answer<T>(&self, method: &'static str, value: T) -> Result<T, EvalError> {
+        if self.fail {
+            Err(EvalError::UnknownColumn(format!(
+                "sentinel original error: {method}"
+            )))
+        } else {
+            Ok(value)
+        }
+    }
+}
+
+impl Columns for ForwardingSentinel<'_> {
+    fn get(&self, path: &[String]) -> Option<Datum> {
+        self.record("get", format!("{:p}:{path:?}", path.as_ptr()));
+        Some(Datum::Bytes(vec![0xff, 0, 17]))
+    }
+
+    fn context_id(&self) -> u64 {
+        self.record("context_id", String::new());
+        1701
+    }
+
+    fn use_plan_cache(&self) -> bool {
+        self.record("use_plan_cache", String::new());
+        true
+    }
+
+    fn skip_plan_cache_for_comparison(&self, constant: &Constant, target: &str) {
+        self.record(
+            "skip_plan_cache_for_comparison",
+            format!(
+                "{constant:p}:{:?}:{:p}:{target:?}",
+                constant.value,
+                target.as_ptr()
+            ),
+        );
+        self.effects
+            .borrow_mut()
+            .skips
+            .push((constant as *const Constant as usize, target.into()));
+    }
+
+    fn enable_vectorized_expression(&self) -> bool {
+        self.record("enable_vectorized_expression", String::new());
+        false
+    }
+
+    fn param_value(&self, order: usize) -> Result<Datum, EvalError> {
+        self.record("param_value", format!("{order}"));
+        self.answer("param_value", Datum::UInt(order as u64 + 2000))
+    }
+
+    fn current_insert_value(&self, offset: usize) -> Result<Option<Datum>, EvalError> {
+        self.record("current_insert_value", format!("{offset}"));
+        self.answer(
+            "current_insert_value",
+            Some(Datum::Int(offset as i64 + 3000)),
+        )
+    }
+
+    fn get_param_value(&self, idx: usize) -> Result<Datum, EvalError> {
+        self.record("get_param_value", format!("{idx}"));
+        self.answer("get_param_value", Datum::Int(idx as i64 + 4000))
+    }
+
+    fn bounded_staleness_safe_time(&self) -> Option<Time> {
+        self.record("bounded_staleness_safe_time", String::new());
+        Some(
+            Time::new(
+                CoreTime::from_date(2024, 3, 15, 17, 18, 19, 123456),
+                TimeType::DateTime,
+                6,
+            )
+            .unwrap(),
+        )
+    }
+
+    fn connection_charset_info(&self) -> (&str, &str) {
+        self.record("connection_charset_info", String::new());
+        ("gb18030", "gb18030_chinese_ci")
+    }
+
+    fn no_unsigned_subtraction(&self) -> bool {
+        self.record("no_unsigned_subtraction", String::new());
+        true
+    }
+
+    fn now(&self) -> Option<(i64, u32, i32)> {
+        self.record("now", String::new());
+        Some((1_713_333_333, 987_654_321, -7 * 3600))
+    }
+
+    fn cast_time_to_year_through_concat(&self) -> bool {
+        self.record("cast_time_to_year_through_concat", String::new());
+        true
+    }
+
+    fn sysdate_is_now(&self) -> bool {
+        self.record("sysdate_is_now", String::new());
+        true
+    }
+
+    fn current_database(&self) -> Option<String> {
+        self.record("current_database", String::new());
+        Some("sentinel_db".into())
+    }
+
+    fn current_user(&self) -> Option<String> {
+        self.record("current_user", String::new());
+        Some("grant@sentinel".into())
+    }
+
+    fn login_user(&self) -> Option<String> {
+        self.record("login_user", String::new());
+        Some("login@sentinel".into())
+    }
+
+    fn current_role(&self) -> Option<String> {
+        self.record("current_role", String::new());
+        Some("`sentinel_role`@`host`".into())
+    }
+
+    fn current_resource_group(&self) -> Option<String> {
+        self.record("current_resource_group", String::new());
+        Some("sentinel_group".into())
+    }
+
+    fn connection_id(&self) -> Option<u64> {
+        self.record("connection_id", String::new());
+        Some(8123)
+    }
+
+    fn tidb_decode_key(&self, input: &[u8]) -> Vec<u8> {
+        self.record("tidb_decode_key", format!("{:p}:{input:?}", input.as_ptr()));
+        let mut decoded = vec![0xfe, 0];
+        decoded.extend_from_slice(input);
+        decoded
+    }
+
+    fn acquire_advisory_lock(&self, name: &str, timeout: Duration) -> Result<bool, EvalError> {
+        self.record(
+            "acquire_advisory_lock",
+            format!("{:p}:{name:?}:{timeout:?}", name.as_ptr()),
+        );
+        self.answer("acquire_advisory_lock", ())?;
+        *self
+            .effects
+            .borrow_mut()
+            .locks
+            .entry(name.into())
+            .or_default() += 1;
+        Ok(true)
+    }
+
+    fn advisory_lock_owner(&self, name: &str) -> Result<Option<u64>, EvalError> {
+        self.record(
+            "advisory_lock_owner",
+            format!("{:p}:{name:?}", name.as_ptr()),
+        );
+        self.answer("advisory_lock_owner", Some(8123))
+    }
+
+    fn release_advisory_lock(&self, name: &str) -> Result<bool, EvalError> {
+        self.record(
+            "release_advisory_lock",
+            format!("{:p}:{name:?}", name.as_ptr()),
+        );
+        self.answer("release_advisory_lock", ())?;
+        let mut state = self.effects.borrow_mut();
+        if let Some(references) = state.locks.get_mut(name) {
+            *references -= 1;
+            if *references == 0 {
+                state.locks.remove(name);
+            }
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn release_all_advisory_locks(&self) -> Result<usize, EvalError> {
+        self.record("release_all_advisory_locks", String::new());
+        self.answer("release_all_advisory_locks", ())?;
+        let mut state = self.effects.borrow_mut();
+        let count = state.locks.values().sum();
+        state.locks.clear();
+        Ok(count)
+    }
+
+    fn found_rows(&self) -> Option<u64> {
+        self.record("found_rows", String::new());
+        Some(888)
+    }
+
+    fn current_tso(&self) -> i64 {
+        self.record("current_tso", String::new());
+        9123456
+    }
+
+    fn ddl_owner_info(&self) -> Result<bool, EvalError> {
+        self.record("ddl_owner_info", String::new());
+        self.answer("ddl_owner_info", true)
+    }
+
+    fn sysvar(&self, scope: Option<tidb_ast::SysVarScope>, name: &str) -> Option<Datum> {
+        self.record("sysvar", format!("{scope:?}:{:p}:{name:?}", name.as_ptr()));
+        Some(Datum::Bytes(
+            format!("sentinel:{scope:?}:{name}").into_bytes(),
+        ))
+    }
+
+    fn tidb_info(&self) -> String {
+        self.record("tidb_info", String::new());
+        "sentinel process identity, not the default printer".into()
+    }
+
+    fn block_encryption_mode(&self) -> BlockEncryptionMode {
+        self.record("block_encryption_mode", String::new());
+        BlockEncryptionMode::Aes256Cfb
+    }
+
+    fn division_by_zero_level(&self) -> ErrorLevel {
+        self.record("division_by_zero_level", String::new());
+        ErrorLevel::Error
+    }
+
+    fn truncate_level(&self) -> ErrorLevel {
+        self.record("truncate_level", String::new());
+        ErrorLevel::Ignore
+    }
+
+    fn type_flags(&self) -> ConversionFlags {
+        self.record("type_flags", String::new());
+        // Intentionally disagrees with truncate_level/date_modes. Delegating
+        // their defaults instead of THIS override must be observable.
+        tidb_datatype::DEFAULT_STATEMENT_FLAGS
+            .with_ignore_truncate_err(false)
+            .with_truncate_as_warning(false)
+            .with_ignore_zero_in_date_err(false)
+            .with_ignore_invalid_date_err(false)
+    }
+
+    fn strict_sql_mode(&self) -> bool {
+        self.record("strict_sql_mode", String::new());
+        false
+    }
+
+    fn handle_truncate(&self, message: &str) -> Result<(), EvalError> {
+        self.record(
+            "handle_truncate",
+            format!("{:p}:{message:?}", message.as_ptr()),
+        );
+        self.effects
+            .borrow_mut()
+            .warnings
+            .push((42101, format!("truncate:{message}")));
+        self.answer("handle_truncate", ())
+    }
+
+    fn handle_group_concat_cut(&self, message: &str) -> Result<(), EvalError> {
+        self.record(
+            "handle_group_concat_cut",
+            format!("{:p}:{message:?}", message.as_ptr()),
+        );
+        self.effects
+            .borrow_mut()
+            .warnings
+            .push((42102, format!("group:{message}")));
+        self.answer("handle_group_concat_cut", ())
+    }
+
+    fn handle_sleep_incorrect_argument(&self) -> Result<(), EvalError> {
+        self.record("handle_sleep_incorrect_argument", String::new());
+        self.answer("handle_sleep_incorrect_argument", ())
+    }
+
+    fn sleep_for(&self, duration: Duration) -> bool {
+        self.record("sleep_for", format!("{duration:?}"));
+        // No sleeping: return the nondefault killed/interrupted result.
+        true
+    }
+
+    fn append_warning(&self, code: u16, message: &str) {
+        self.record(
+            "append_warning",
+            format!("{code}:{:p}:{message:?}", message.as_ptr()),
+        );
+        self.effects
+            .borrow_mut()
+            .warnings
+            .push((code, message.into()));
+    }
+
+    fn append_note(&self, code: u16, message: &str) {
+        self.record(
+            "append_note",
+            format!("{code}:{:p}:{message:?}", message.as_ptr()),
+        );
+        self.effects.borrow_mut().notes.push((code, message.into()));
+    }
+
+    fn warning_count(&self) -> usize {
+        self.record("warning_count", String::new());
+        self.effects.borrow().warnings.len()
+    }
+
+    fn truncate_warnings(&self, bookmark: usize) {
+        self.record("truncate_warnings", format!("{bookmark}"));
+        self.effects.borrow_mut().warnings.truncate(bookmark);
+    }
+
+    fn take_warnings_since(&self, bookmark: usize) -> Vec<(u16, String)> {
+        self.record("take_warnings_since", format!("{bookmark}"));
+        let mut state = self.effects.borrow_mut();
+        let at = bookmark.min(state.warnings.len());
+        state.warnings.split_off(at)
+    }
+
+    fn max_allowed_packet(&self) -> u64 {
+        self.record("max_allowed_packet", String::new());
+        713
+    }
+
+    fn handle_allowed_packet_overflowed(&self, expr_name: &str) -> Result<(), EvalError> {
+        self.record(
+            "handle_allowed_packet_overflowed",
+            format!("{:p}:{expr_name:?}", expr_name.as_ptr()),
+        );
+        self.effects
+            .borrow_mut()
+            .warnings
+            .push((42103, format!("packet:{expr_name}")));
+        self.answer("handle_allowed_packet_overflowed", ())
+    }
+
+    fn date_modes(&self) -> DateModes {
+        self.record("date_modes", String::new());
+        DateModes {
+            no_zero_date: false,
+            no_zero_in_date: false,
+            allow_invalid_dates: true,
+        }
+    }
+
+    fn handle_division_by_zero(&self) -> Result<(), EvalError> {
+        self.record("handle_division_by_zero", String::new());
+        self.effects
+            .borrow_mut()
+            .warnings
+            .push((42104, "sentinel division".into()));
+        self.answer("handle_division_by_zero", ())
+    }
+
+    fn get_uservar(&self, name: &str) -> Option<Datum> {
+        self.record("get_uservar", format!("{:p}:{name:?}", name.as_ptr()));
+        self.effects.borrow().uservars.get(name).cloned()
+    }
+
+    fn set_uservar(&self, name: &str, value: Datum) {
+        self.record(
+            "set_uservar",
+            format!("{:p}:{name:?}:{value:?}", name.as_ptr()),
+        );
+        self.effects
+            .borrow_mut()
+            .uservars
+            .insert(name.into(), value);
+    }
+
+    fn row_count(&self) -> Option<i64> {
+        self.record("row_count", String::new());
+        Some(-43)
+    }
+
+    fn last_insert_id(&self) -> Option<u64> {
+        self.record("last_insert_id", String::new());
+        Some(self.effects.borrow().last_insert_id)
+    }
+
+    fn set_last_insert_id(&self, value: u64) {
+        self.record("set_last_insert_id", format!("{value}"));
+        self.effects.borrow_mut().last_insert_id = value;
+    }
+
+    fn time_zone(&self) -> SessionTimeZone {
+        self.record("time_zone", String::new());
+        SessionTimeZone::Fixed {
+            name: "sentinel UTC-07".into(),
+            offset_secs: -7 * 3600,
+        }
+    }
+
+    fn like_default_escape(&self) -> u8 {
+        self.record("like_default_escape", String::new());
+        b'!'
+    }
+
+    fn default_week_format(&self) -> i64 {
+        self.record("default_week_format", String::new());
+        5
+    }
+
+    fn windowing_use_high_precision(&self) -> bool {
+        self.record("windowing_use_high_precision", String::new());
+        false
+    }
+
+    fn div_precision_increment(&self) -> u32 {
+        self.record("div_precision_increment", String::new());
+        13
+    }
+
+    fn rand_next(&self) -> Option<f64> {
+        self.record("rand_next", String::new());
+        let mut state = self.effects.borrow_mut();
+        state.rng += 1;
+        Some(state.rng as f64 / 1024.0)
+    }
+
+    fn rand_seeded_next(&self, key: usize, seed: i64) -> Option<f64> {
+        self.record("rand_seeded_next", format!("{key}:{seed}"));
+        let mut state = self.effects.borrow_mut();
+        let next = state.seeded.entry((key, seed)).or_insert(40);
+        *next += 1;
+        Some(*next as f64 / 1024.0)
+    }
+
+    fn sequence_nextval(&self, path: &[String]) -> Result<Datum, EvalError> {
+        self.record("sequence_nextval", format!("{:p}:{path:?}", path.as_ptr()));
+        self.answer("sequence_nextval", ())?;
+        let mut state = self.effects.borrow_mut();
+        state.sequence += 1;
+        Ok(Datum::Int(state.sequence))
+    }
+
+    fn sequence_lastval(&self, path: &[String]) -> Result<Datum, EvalError> {
+        self.record("sequence_lastval", format!("{:p}:{path:?}", path.as_ptr()));
+        self.answer(
+            "sequence_lastval",
+            Datum::Int(self.effects.borrow().sequence),
+        )
+    }
+
+    fn sequence_setval(&self, path: &[String], value: i64) -> Result<Datum, EvalError> {
+        self.record(
+            "sequence_setval",
+            format!("{:p}:{path:?}:{value}", path.as_ptr()),
+        );
+        self.answer("sequence_setval", ())?;
+        self.effects.borrow_mut().sequence = value;
+        Ok(Datum::Int(value))
+    }
+}
+
+struct NativeInputs {
+    path: Vec<String>,
+    constant: Constant,
+    target: String,
+    name: String,
+    message: String,
+    key: Vec<u8>,
+}
+
+impl NativeInputs {
+    fn new() -> Self {
+        Self {
+            path: vec!["Db.Mixed".into(), "table".into(), "Column".into()],
+            constant: Constant::new(Datum::UInt(205), FieldType::new(FieldTypeCode::LongLong)),
+            target: "decimal(17,3)".into(),
+            name: "MixedCase\0native".into(),
+            message: "native sentinel message \0 raw boundary".into(),
+            key: vec![0, 0xff, 7, 0xfe],
+        }
+    }
+}
+
+// Debug rendering is used only to put heterogeneous native RETURN values in
+// one comparison transcript, never to classify/map an engine error. The
+// sentinel's invocation transcript separately checks argument identity/order,
+// and NativeEffects compares all mutations, including mutations before Err.
+fn exercise_columns(columns: &dyn Columns, input: &NativeInputs) -> Vec<(&'static str, String)> {
+    let mut returned = Vec::new();
+    macro_rules! observe {
+        ($method:ident($($argument:expr),* $(,)?)) => {
+            returned.push((stringify!($method), format!("{:?}", columns.$method($($argument),*))));
+        };
+    }
+    observe!(get(&input.path));
+    observe!(context_id());
+    observe!(use_plan_cache());
+    observe!(skip_plan_cache_for_comparison(
+        &input.constant,
+        &input.target
+    ));
+    observe!(enable_vectorized_expression());
+    observe!(param_value(19));
+    observe!(param_value(2));
+    observe!(current_insert_value(11));
+    observe!(get_param_value(7));
+    observe!(bounded_staleness_safe_time());
+    observe!(connection_charset_info());
+    observe!(no_unsigned_subtraction());
+    observe!(now());
+    observe!(cast_time_to_year_through_concat());
+    observe!(sysdate_is_now());
+    observe!(current_database());
+    observe!(current_user());
+    observe!(login_user());
+    observe!(current_role());
+    observe!(current_resource_group());
+    observe!(connection_id());
+    observe!(tidb_decode_key(&input.key));
+    observe!(acquire_advisory_lock(
+        &input.name,
+        Duration::from_nanos(123456789)
+    ));
+    observe!(acquire_advisory_lock(&input.name, Duration::ZERO));
+    observe!(advisory_lock_owner(&input.name));
+    observe!(release_advisory_lock(&input.name));
+    observe!(release_all_advisory_locks());
+    observe!(release_advisory_lock(&input.name));
+    observe!(found_rows());
+    observe!(current_tso());
+    observe!(ddl_owner_info());
+    observe!(sysvar(None, &input.name));
+    observe!(sysvar(Some(tidb_ast::SysVarScope::Global), &input.name));
+    observe!(tidb_info());
+    observe!(block_encryption_mode());
+    observe!(division_by_zero_level());
+    observe!(truncate_level());
+    observe!(type_flags());
+    observe!(strict_sql_mode());
+    observe!(handle_truncate(&input.message));
+    observe!(handle_group_concat_cut(&input.message));
+    observe!(handle_sleep_incorrect_argument());
+    // Never request real waiting, even if a broken forwarder used the default.
+    observe!(sleep_for(Duration::ZERO));
+    observe!(warning_count());
+    observe!(append_warning(43001, &input.message));
+    observe!(append_note(43002, &input.message));
+    observe!(warning_count());
+    observe!(truncate_warnings(2));
+    observe!(warning_count());
+    observe!(append_warning(43003, &input.target));
+    observe!(take_warnings_since(1));
+    observe!(warning_count());
+    observe!(take_warnings_since(99));
+    observe!(max_allowed_packet());
+    observe!(handle_allowed_packet_overflowed(&input.name));
+    observe!(date_modes());
+    observe!(handle_division_by_zero());
+    observe!(get_uservar("existing"));
+    observe!(get_uservar(&input.name));
+    observe!(set_uservar(&input.name, Datum::Bytes(vec![0, 0xfe, 31])));
+    observe!(get_uservar(&input.name));
+    observe!(row_count());
+    observe!(last_insert_id());
+    observe!(set_last_insert_id(0xfedc_ba98_7654_3210));
+    observe!(last_insert_id());
+    observe!(time_zone());
+    observe!(like_default_escape());
+    observe!(default_week_format());
+    observe!(windowing_use_high_precision());
+    observe!(div_precision_increment());
+    observe!(rand_next());
+    observe!(rand_next());
+    observe!(rand_seeded_next(37, -981));
+    observe!(rand_seeded_next(37, -981));
+    observe!(rand_seeded_next(38, -981));
+    observe!(sequence_nextval(&input.path));
+    observe!(sequence_lastval(&input.path));
+    observe!(sequence_setval(&input.path, -810));
+    observe!(sequence_nextval(&input.path));
+    observe!(sequence_lastval(&input.path));
+    assert_eq!(
+        returned
+            .iter()
+            .map(|(method, _)| *method)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(COLUMNS_METHODS),
+        "each inventoried method needs a behavioral observation"
+    );
+    returned
+}
+
+#[test]
+fn all_columns_methods_forward_arguments_returns_errors_and_effects_through_nested_wrappers() {
+    let input = NativeInputs::new();
+    let owner = AsciiPoolOwner::new(test_policy(2, 2)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let outer = execution.scope();
+    let inner = execution.scope();
+    for fail in [false, true] {
+        let bare = ForwardingSentinel::new(fail, None);
+        let expected = exercise_columns(&bare, &input);
+        assert_eq!(
+            bare.calls
+                .borrow()
+                .iter()
+                .map(|call| call.method)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(COLUMNS_METHODS),
+            "the native sentinel itself must override every policy default"
+        );
+        for nested in [false, true] {
+            let wrapped = ForwardingSentinel::new(fail, None);
+            let actual = outer.with_columns(&wrapped, |first| {
+                if nested {
+                    inner.with_columns(first, |second| {
+                        outer.with_columns(second, |third| exercise_columns(third, &input))
+                    })
+                } else {
+                    exercise_columns(first, &input)
+                }
+            });
+            assert_eq!(
+                actual, expected,
+                "returned values/errors, fail={fail}, nested={nested}"
+            );
+            assert_eq!(
+                *wrapped.calls.borrow(),
+                *bare.calls.borrow(),
+                "argument identity and native effect order, fail={fail}, nested={nested}"
+            );
+            assert_eq!(
+                *wrapped.effects.borrow(),
+                *bare.effects.borrow(),
+                "native mutations, fail={fail}, nested={nested}"
+            );
+        }
+    }
+    assert!(outer.lease.borrow().is_none());
+    assert!(inner.lease.borrow().is_none());
+    assert!(!outer.busy.get());
+    assert!(!inner.busy.get());
+}
+
+// The pointer is an identity witness for the unique Box body, not an allocation
+// size measurement. Storage below is the actual C4 nonmutating observation.
+fn scope_worker_observation(scope: &AsciiScope) -> (usize, u64, usize, usize, usize) {
+    let parked = scope.lease.borrow();
+    let worker = parked.as_ref().unwrap().worker.as_ref().unwrap();
+    let storage = worker.retained_storage().unwrap();
+    assert!(worker.is_healthy());
+    (
+        worker.as_ref() as *const _ as usize,
+        worker.kernel_invocations(),
+        storage.inline_bytes(),
+        storage.owned_heap_bytes(),
+        storage.total_bytes(),
+    )
+}
+
+#[test]
+fn actual_ready_values_include_null_raw_bytes_and_original_numeric_coercion() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let cases = [
+        (Datum::Null, Datum::Null),
+        (Datum::Bytes(vec![]), Datum::Int(0)),
+        (Datum::Raw(vec![0xff, 0xfe]), Datum::Int(255)),
+        (Datum::Bytes(vec![0, b'x']), Datum::Int(0)),
+        (Datum::Bytes(vec![b'x', 0, b'z']), Datum::Int(120)),
+        (Datum::Int(2), Datum::Int(50)),
+        (Datum::Bytes(vec![b'a'; 1]), Datum::Int(97)),
+        (Datum::Bytes(vec![b'b'; 64]), Datum::Int(98)),
+        (Datum::Bytes(vec![b'c'; 4096]), Datum::Int(99)),
+        (Datum::new_string("你好"), Datum::Int(228)),
+        (Datum::Null, Datum::Null),
+        (Datum::Bytes(vec![]), Datum::Int(0)),
+    ];
+    assert!(scope.lease.borrow().is_none());
+    let mut published_storage = None;
+    for (index, (input, expected)) in cases.into_iter().enumerate() {
+        let ready = coerce_ready(&input).unwrap();
+        let computed = eval_ready(&scope, ready).unwrap();
+        assert!(
+            !scope.busy.get(),
+            "materialization follows the short worker borrow"
+        );
+        assert_eq!(computed.metadata.kind, DatumKind::Int);
+        assert!(computed.metadata.string_collation.is_none());
+        assert!(computed.metadata.decimal_declared_shape.is_none());
+        assert_eq!(computed.into_datum().unwrap(), expected);
+        let (address, invocations, inline, heap, total) = scope_worker_observation(&scope);
+        assert_eq!(
+            invocations,
+            index as u64 + 1,
+            "NULL also enters the real fn_ptr wrapper"
+        );
+        assert_eq!(inline + heap, total);
+        assert!(total <= TEST_WORKER_CAP);
+        let current = (address, inline, heap, total);
+        if let Some(first) = published_storage {
+            assert_eq!(
+                current, first,
+                "no stale operand or per-call retained buffer"
+            );
+        } else {
+            published_storage = Some(current);
+        }
+    }
+}
+
+#[test]
+fn nested_ready_calls_are_sequential_and_repeated_scopes_reuse_the_actual_worker() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let input = NativeInputs::new();
+    let mut previous = None;
+    for round in 0..8 {
+        let scope = execution.scope();
+        assert!(
+            scope.lease.borrow().is_none(),
+            "a new scope does not eagerly check out"
+        );
+        let native = ForwardingSentinel::new(false, None);
+        let result = scope.with_columns(&native, |columns| {
+            columns.append_note(44000, &input.message);
+            let inner = evaluate_ascii_value(&scope, &Datum::Int(2)).unwrap();
+            assert_eq!(inner, Datum::Int(50));
+            assert!(!scope.busy.get());
+            columns.append_warning(44001, &input.message);
+            let outer = evaluate_ascii_value(&scope, &inner).unwrap();
+            assert!(!scope.busy.get());
+            columns.set_uservar(&input.name, outer.clone());
+            outer
+        });
+        assert_eq!(result, Datum::Int(53));
+        let observation = scope_worker_observation(&scope);
+        assert_eq!(observation.1, (round + 1) * 2);
+        if let Some((address, inline, heap, total)) = previous {
+            assert_eq!(
+                (observation.0, observation.2, observation.3, observation.4),
+                (address, inline, heap, total)
+            );
+        }
+        previous = Some((observation.0, observation.2, observation.3, observation.4));
+        assert_eq!(
+            native.effects.borrow().uservars.get(&input.name),
+            Some(&Datum::Int(53))
+        );
+        drop(scope);
+        let idle = owner.snapshot().unwrap();
+        assert_eq!((idle.factory_attempts, idle.factory_successes), (1, 1));
+        assert_eq!((idle.live, idle.idle, idle.creating), (0, 1, 0));
+    }
+}
+
+#[test]
+fn normal_native_error_after_real_kernel_preserves_error_and_healthy_scope() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let native = ForwardingSentinel::new(true, None);
+    let first = EvalError::UnknownColumn("sentinel original error: param_value".into());
+    let result = scope.with_columns(&native, |columns| -> Result<Datum, EvalError> {
+        assert_eq!(
+            evaluate_ascii_value(&scope, &Datum::Int(2)).unwrap(),
+            Datum::Int(50)
+        );
+        columns.param_value(39)
+    });
+    assert_eq!(result, Err(first));
+    assert!(!scope.poisoned.get());
+    assert!(!scope.busy.get());
+    assert_eq!(scope_worker_observation(&scope).1, 1);
+    assert_eq!(
+        evaluate_ascii_value(&scope, &Datum::Null).unwrap(),
+        Datum::Null
+    );
+    assert_eq!(scope_worker_observation(&scope).1, 2);
+}
+
+#[test]
+fn actual_worker_owner_and_scope_traits_are_checked_without_unsafe_impls() {
+    fn require_send<T: Send>() {}
+    fn require_send_sync<T: Send + Sync>() {}
+    require_send_sync::<AsciiPoolOwner>();
+    require_send_sync::<AsciiExecution>();
+    require_send::<AsciiLease>();
+    require_send::<AsciiScope>();
+    require_send::<EvaluatedAsciiWorker>();
+
+    // Dependency-free negative assertions: if a type implements the forbidden
+    // trait, the placeholder has two applicable implementations and the test
+    // fails to compile. These do not supply any Send/Sync implementation.
+    trait AmbiguousIfSync<A> {
+        fn check() {}
+    }
+    impl<T: ?Sized> AmbiguousIfSync<()> for T {}
+    struct SyncMarker;
+    impl<T: ?Sized + Sync> AmbiguousIfSync<SyncMarker> for T {}
+    let _ = <AsciiLease as AmbiguousIfSync<_>>::check;
+    let _ = <AsciiScope as AmbiguousIfSync<_>>::check;
+    let _ = <EvaluatedAsciiWorker as AmbiguousIfSync<_>>::check;
+
+    trait AmbiguousIfClone<A> {
+        fn check() {}
+    }
+    impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+    struct CloneMarker;
+    impl<T: ?Sized + Clone> AmbiguousIfClone<CloneMarker> for T {}
+    let _ = <AsciiLease as AmbiguousIfClone<_>>::check;
+    let _ = <AsciiScope as AmbiguousIfClone<_>>::check;
+    let _ = <EvaluatedAsciiWorker as AmbiguousIfClone<_>>::check;
+}
+
+#[test]
+fn skipped_native_work_and_original_coercion_refusal_do_not_reserve_or_prepare() {
+    for (workers, creating) in [(0, 0), (1, 0)] {
+        let owner = AsciiPoolOwner::new(test_policy(workers, creating)).unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        let before = owner.snapshot().unwrap();
+        let native = ForwardingSentinel::new(true, None);
+        let native_error = scope.with_columns(&native, |columns| columns.param_value(1));
+        assert_eq!(
+            native_error,
+            Err(EvalError::UnknownColumn(
+                "sentinel original error: param_value".into()
+            ))
+        );
+        for value in [Datum::MinNotNull, Datum::MaxValue] {
+            match evaluate_ascii_value(&scope, &value) {
+                Err(AsciiBoundaryError::Frontend(error)) => assert_eq!(
+                    error,
+                    EvalError::Unsupported("range sentinel byte coercion")
+                ),
+                other => panic!("original coercion error must precede admission: {other:?}"),
+            }
+        }
+        assert_eq!(owner.snapshot().unwrap(), before);
+        assert!(scope.lease.borrow().is_none());
+        assert!(!scope.poisoned.get());
+        assert!(matches!(
+            evaluate_ascii_value(&scope, &Datum::Null),
+            Err(AsciiBoundaryError::Owner(AsciiOwnerError {
+                kind: OwnerErrorKind::Resource,
+                ..
+            }))
+        ));
+        assert_eq!(owner.snapshot().unwrap(), before);
+    }
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let occupied = execution.scope();
+    assert_eq!(
+        evaluate_ascii_value(&occupied, &Datum::Int(2)).unwrap(),
+        Datum::Int(50)
+    );
+    let dormant = execution.scope();
+    let before = owner.snapshot().unwrap();
+    for scope in [&occupied, &dormant] {
+        assert!(matches!(
+            evaluate_ascii_value(scope, &Datum::MinNotNull),
+            Err(AsciiBoundaryError::Frontend(EvalError::Unsupported(
+                "range sentinel byte coercion"
+            )))
+        ));
+    }
+    assert_eq!(owner.snapshot().unwrap(), before);
+    assert_eq!(scope_worker_observation(&occupied).1, 1);
+    assert!(dormant.lease.borrow().is_none());
+}
+
+#[test]
+fn all_native_callbacks_run_outside_busy_cell_borrow_and_pool_mutex() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let probes = Cell::new(0);
+    let probe = || {
+        assert!(!scope.busy.get());
+        assert!(
+            scope.lease.try_borrow_mut().is_ok(),
+            "native callback cannot inherit a cell borrow"
+        );
+        assert!(
+            owner.core.state.try_lock().is_ok(),
+            "native callback cannot inherit the root mutex"
+        );
+        probes.set(probes.get() + 1);
+    };
+    let native = ForwardingSentinel::new(false, Some(&probe));
+    let input = NativeInputs::new();
+    scope.with_columns(&native, |columns| {
+        exercise_columns(columns, &input);
+        assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+        assert!(scope.lease.borrow().is_none());
+        assert_eq!(
+            evaluate_ascii_value(&scope, &Datum::Int(2)).unwrap(),
+            Datum::Int(50)
+        );
+        assert_eq!(owner.snapshot().unwrap().factory_attempts, 1);
+        exercise_columns(columns, &input);
+    });
+    assert_eq!(probes.get(), native.calls.borrow().len());
+    assert!(probes.get() >= 2 * COLUMNS_METHODS.len());
+    assert_eq!(scope_worker_observation(&scope).1, 1);
+}
+
+#[test]
+fn real_call_budget_errors_keep_original_kernel_error_and_do_not_reprepare() {
+    // Frozen C4's two-node path enters eval_frames: push_frame checks depth(1)
+    // and nonzero frame storage, then the loop charges BEFORE the first node.
+    // The witness advances later, only in eval_prepared_kernel at fn_ptr.
+    // ResourceLimit with clean postflight is reusable in finish_invocation.
+    for (steps, depth, retained) in [
+        (0, 8, TEST_CALL_BYTES),
+        (64, 0, TEST_CALL_BYTES),
+        (64, 8, 0),
+    ] {
+        let policy = AsciiPoolPolicy::checked(
+            1,
+            1,
+            TEST_POOL_BYTES,
+            TEST_WORKER_CAP,
+            TEST_CREATION_RESERVATION,
+            steps,
+            depth,
+            retained,
+        )
+        .unwrap();
+        let owner = AsciiPoolOwner::new(policy).unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        for value in [Datum::Int(2), Datum::Null, Datum::Bytes(vec![])] {
+            assert!(matches!(
+                evaluate_ascii_value(&scope, &value),
+                Err(AsciiBoundaryError::Kernel(LocalError::ResourceLimit(_)))
+            ));
+            assert_eq!(scope_worker_observation(&scope).1, 0);
+            assert!(!scope.poisoned.get());
+            assert!(!scope.busy.get());
+            let snapshot = owner.snapshot().unwrap();
+            assert_eq!(
+                (snapshot.factory_attempts, snapshot.factory_successes),
+                (1, 1)
+            );
+            assert_eq!((snapshot.live, snapshot.idle, snapshot.creating), (1, 0, 0));
+            assert_eq!(
+                snapshot.reserved_bytes,
+                snapshot.base_bytes + TEST_WORKER_CAP
+            );
+        }
+        drop(scope);
+        assert_eq!(owner.snapshot().unwrap().idle, 1);
+    }
+}
+
+#[test]
+fn ready_empty_vec_capacity_is_charged_and_not_retained_after_real_refusal() {
+    let bytes = Vec::<u8>::with_capacity(4096);
+    assert!(bytes.is_empty());
+    let policy = AsciiPoolPolicy::checked(
+        1,
+        1,
+        TEST_POOL_BYTES,
+        TEST_WORKER_CAP,
+        TEST_CREATION_RESERVATION,
+        64,
+        8,
+        bytes.capacity() - 1,
+    )
+    .unwrap();
+    let owner = AsciiPoolOwner::new(policy).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    assert!(matches!(
+        eval_ready(&scope, ReadyAsciiBytes(Some(bytes))),
+        Err(AsciiBoundaryError::Kernel(LocalError::ResourceLimit(_)))
+    ));
+    let refused = scope_worker_observation(&scope);
+    assert_eq!(refused.1, 0);
+    assert_eq!(
+        evaluate_ascii_value(&scope, &Datum::Bytes(vec![])).unwrap(),
+        Datum::Int(0)
+    );
+    let accepted = scope_worker_observation(&scope);
+    assert_eq!(accepted.1, 1);
+    assert_eq!(
+        (accepted.0, accepted.2, accepted.3, accepted.4),
+        (refused.0, refused.2, refused.3, refused.4)
+    );
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 1);
+}
+
+#[test]
+fn real_factory_low_worker_budget_releases_full_creating_reservation() {
+    let policy = AsciiPoolPolicy::checked(
+        1,
+        1,
+        TEST_POOL_BYTES,
+        1,
+        TEST_CREATION_RESERVATION,
+        64,
+        8,
+        TEST_CALL_BYTES,
+    )
+    .unwrap();
+    let owner = AsciiPoolOwner::new(policy).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    for attempts in 1..=2 {
+        assert!(matches!(
+            evaluate_ascii_value(&scope, &Datum::Int(2)),
+            Err(AsciiBoundaryError::Kernel(LocalError::ResourceLimit(_)))
+        ));
+        let snapshot = owner.snapshot().unwrap();
+        assert_eq!(snapshot.factory_attempts, attempts);
+        assert_eq!(snapshot.factory_successes, 0);
+        assert_eq!(
+            (
+                snapshot.live,
+                snapshot.idle,
+                snapshot.creating,
+                snapshot.retiring
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(snapshot.reserved_bytes, snapshot.base_bytes);
+        assert!(scope.lease.borrow().is_none());
+        assert!(!scope.poisoned.get());
+    }
+}
+
+#[test]
+fn cold_real_factory_is_prewarmed_without_invoking_and_idle_observation_counts_box_body_once() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let creation = match execution.checkout().unwrap() {
+        Checkout::Create(creation) => creation,
+        Checkout::Idle(_) => panic!("fresh root has no worker"),
+    };
+    let reserved = owner.snapshot().unwrap();
+    assert_eq!(reserved.creating, 1);
+    assert_eq!(
+        reserved.reserved_bytes,
+        reserved.base_bytes + TEST_CREATION_RESERVATION
+    );
+    assert_eq!(reserved.factory_attempts, 0);
+    let lease = creation.prepare().unwrap();
+    let worker = lease.worker.as_ref().unwrap();
+    let cold = worker.retained_storage().unwrap();
+    assert_eq!(worker.kernel_invocations(), 0);
+    assert_eq!(worker.retained_storage().unwrap(), cold);
+    assert_eq!(
+        cold.inline_bytes(),
+        std::mem::size_of::<EvaluatedAsciiWorker>()
+    );
+    assert_eq!(
+        cold.total_bytes(),
+        cold.inline_bytes() + cold.owned_heap_bytes()
+    );
+    assert!(cold.total_bytes() < TEST_WORKER_CAP);
+    lease.return_to_pool();
+    let idle = owner.snapshot().unwrap();
+    assert_eq!((idle.live, idle.idle, idle.creating), (0, 1, 0));
+    assert_eq!((idle.factory_attempts, idle.factory_successes), (1, 1));
+    assert_eq!(idle.idle_observed_bytes, cold.total_bytes());
+    assert_eq!(idle.reserved_bytes, idle.base_bytes + TEST_WORKER_CAP);
+    // This is reservation/observation algebra only. No proxy=size_of(proxy)
+    // assertion is offered as an actual Arc allocation measurement.
+    assert!(idle.caller_arc_measurement_required);
+    execution.close();
+    let closed = owner.snapshot().unwrap();
+    assert_eq!(closed.idle_observed_bytes, 0);
+    assert_eq!(closed.reserved_bytes, closed.base_bytes);
+    assert_eq!(closed.retired, 1);
+}
+
+#[test]
+fn checked_reentry_and_cell_conflict_return_errors_without_refcell_panics_or_new_workers() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    assert_eq!(
+        evaluate_ascii_value(&scope, &Datum::Int(2)).unwrap(),
+        Datum::Int(50)
+    );
+    let mut invocation = Invocation::enter(&scope).unwrap();
+    assert!(scope.busy.get());
+    assert!(
+        scope.lease.try_borrow_mut().is_ok(),
+        "the busy invocation owns its lease outside the cell"
+    );
+    let reentry = catch_unwind(AssertUnwindSafe(|| {
+        evaluate_ascii_value(&scope, &Datum::Null)
+    }));
+    assert!(matches!(
+        reentry,
+        Ok(Err(AsciiBoundaryError::Scope(
+            "reentrant ASCII runtime borrow"
+        )))
+    ));
+    assert_eq!(
+        invocation
+            .lease
+            .as_ref()
+            .unwrap()
+            .worker
+            .as_ref()
+            .unwrap()
+            .kernel_invocations(),
+        1
+    );
+    let result = invocation.run(coerce_ready(&Datum::Null).unwrap());
+    assert_eq!(invocation.finish(result).unwrap().value(), None);
+    assert!(!scope.busy.get());
+    assert_eq!(scope_worker_observation(&scope).1, 2);
+
+    let held = scope.lease.borrow_mut();
+    let conflict = catch_unwind(AssertUnwindSafe(|| {
+        evaluate_ascii_value(&scope, &Datum::Null)
+    }));
+    assert!(matches!(
+        conflict,
+        Ok(Err(AsciiBoundaryError::Scope(
+            "ASCII scope cell is already borrowed"
+        )))
+    ));
+    drop(held);
+    assert!(!scope.poisoned.get());
+    assert_eq!(scope_worker_observation(&scope).1, 2);
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 1);
+}
+
+fn new_creation(execution: &AsciiExecution) -> Creation {
+    match execution.checkout().unwrap() {
+        Checkout::Create(creation) => creation,
+        Checkout::Idle(_) => panic!("this test requires an actual creation, not idle reuse"),
+    }
+}
+
+#[test]
+fn committed_creation_blocks_concurrent_miss_by_creating_limit_and_full_byte_reservation() {
+    let one_creation_bytes = base_charge(2).unwrap() + TEST_CREATION_RESERVATION;
+    for (policy, reason) in [
+        (test_policy(2, 1), "ASCII creating-worker limit exceeded"),
+        (
+            AsciiPoolPolicy::checked(
+                2,
+                2,
+                one_creation_bytes,
+                TEST_WORKER_CAP,
+                TEST_CREATION_RESERVATION,
+                64,
+                8,
+                TEST_CALL_BYTES,
+            )
+            .unwrap(),
+            "ASCII owner reservation budget exceeded",
+        ),
+    ] {
+        let owner = AsciiPoolOwner::new(policy).unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let committed = Barrier::new(2);
+        let proceed = Barrier::new(2);
+        let (before, refused, after, joined) = thread::scope(|threads| {
+            let worker = threads.spawn(|| {
+                let reserved = execution.checkout();
+                committed.wait();
+                proceed.wait();
+                let mut lease = reserved.unwrap().ready().unwrap();
+                assert_eq!(
+                    lease
+                        .worker
+                        .as_mut()
+                        .unwrap()
+                        .eval_one(Some(vec![0xff]))
+                        .unwrap()
+                        .value(),
+                    Some(255)
+                );
+                assert_eq!(lease.worker.as_ref().unwrap().kernel_invocations(), 1);
+                lease.return_to_pool();
+            });
+            committed.wait();
+            // Capture first, release the other thread, THEN assert, so an
+            // assertion failure cannot strand a thread at the second barrier.
+            let before = owner.snapshot();
+            let refused = execution.checkout();
+            let after = owner.snapshot();
+            proceed.wait();
+            (before, refused, after, worker.join())
+        });
+        joined.unwrap();
+        let before = before.unwrap();
+        assert_eq!(
+            before,
+            after.unwrap(),
+            "refusal must not partially mutate accounting"
+        );
+        assert_eq!(
+            (before.live, before.creating, before.factory_attempts),
+            (0, 1, 0)
+        );
+        assert_eq!(
+            before.reserved_bytes,
+            before.base_bytes + TEST_CREATION_RESERVATION
+        );
+        match refused {
+            Err(error) => {
+                assert_eq!(error.kind, OwnerErrorKind::Resource);
+                assert_eq!(error.message, reason);
+            }
+            Ok(_) => panic!("a concurrently committed creation must consume its full limit"),
+        }
+        let final_state = owner.snapshot().unwrap();
+        assert_eq!(
+            (final_state.live, final_state.idle, final_state.creating),
+            (0, 1, 0)
+        );
+        assert_eq!(
+            (final_state.factory_attempts, final_state.factory_successes),
+            (1, 1)
+        );
+        assert_eq!(
+            final_state.reserved_bytes,
+            final_state.base_bytes + TEST_WORKER_CAP
+        );
+    }
+}
+
+#[test]
+fn live_real_worker_plus_concurrent_creating_worker_exhaust_total_slot_cap() {
+    let owner = AsciiPoolOwner::new(test_policy(2, 2)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let mut live = new_creation(&execution).prepare().unwrap();
+    assert_eq!(
+        live.worker
+            .as_mut()
+            .unwrap()
+            .eval_one(None)
+            .unwrap()
+            .value(),
+        None
+    );
+    let committed = Barrier::new(2);
+    let proceed = Barrier::new(2);
+    let (before, refused, after, joined) = thread::scope(|threads| {
+        let worker = threads.spawn(|| {
+            let reserved = execution.checkout();
+            committed.wait();
+            proceed.wait();
+            let mut lease = reserved.unwrap().ready().unwrap();
+            assert_eq!(
+                lease
+                    .worker
+                    .as_mut()
+                    .unwrap()
+                    .eval_one(Some(vec![b'A']))
+                    .unwrap()
+                    .value(),
+                Some(65)
+            );
+            lease.return_to_pool();
+        });
+        committed.wait();
+        let before = owner.snapshot();
+        let refused = execution.checkout();
+        let after = owner.snapshot();
+        proceed.wait();
+        (before, refused, after, worker.join())
+    });
+    joined.unwrap();
+    let before = before.unwrap();
+    assert_eq!(before, after.unwrap());
+    assert_eq!((before.live, before.creating), (1, 1));
+    assert_eq!(
+        before.reserved_bytes,
+        before.base_bytes + TEST_WORKER_CAP + TEST_CREATION_RESERVATION
+    );
+    assert!(matches!(
+        refused,
+        Err(AsciiOwnerError {
+            kind: OwnerErrorKind::Resource,
+            message: "ASCII worker-slot limit exceeded"
+        })
+    ));
+    live.return_to_pool();
+    let after = owner.snapshot().unwrap();
+    assert_eq!((after.live, after.idle, after.creating), (0, 2, 0));
+    assert_eq!((after.factory_attempts, after.factory_successes), (2, 2));
+    assert_eq!(after.reserved_bytes, after.base_bytes + 2 * TEST_WORKER_CAP);
+}
+
+#[test]
+fn creation_drop_and_caller_unwind_release_only_after_actual_prepared_worker_drops() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let unbuilt = new_creation(&execution);
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(unbuilt);
+    let empty = owner.snapshot().unwrap();
+    assert_eq!(empty.reserved_bytes, empty.base_bytes);
+    assert_eq!(empty.retired, 0);
+
+    let mut built = new_creation(&execution);
+    built.build_worker().unwrap();
+    assert_eq!(built.worker.as_ref().unwrap().kernel_invocations(), 0);
+    assert!(built.worker.as_ref().unwrap().is_healthy());
+    let creating = owner.snapshot().unwrap();
+    assert_eq!((creating.creating, creating.live, creating.idle), (1, 0, 0));
+    assert_eq!(
+        (creating.factory_attempts, creating.factory_successes),
+        (1, 1)
+    );
+    assert_eq!(
+        creating.reserved_bytes,
+        creating.base_bytes + TEST_CREATION_RESERVATION
+    );
+    drop(built);
+    let dropped = owner.snapshot().unwrap();
+    assert_eq!(dropped.reserved_bytes, dropped.base_bytes);
+    assert_eq!((dropped.creating, dropped.retired), (0, 1));
+
+    // A caller unwind while a REAL prepared worker is still Creating. This is
+    // not a claim that a panic was injected into C4's factory implementation.
+    let panic = catch_unwind(AssertUnwindSafe(|| {
+        let mut creating = new_creation(&execution);
+        creating.build_worker().unwrap();
+        assert_eq!(
+            owner.snapshot().unwrap().reserved_bytes,
+            empty.base_bytes + TEST_CREATION_RESERVATION
+        );
+        panic!("caller unwind before creation publication");
+    }));
+    assert!(panic.is_err());
+    let after = owner.snapshot().unwrap();
+    assert_eq!(after.reserved_bytes, after.base_bytes);
+    assert_eq!(
+        (after.creating, after.live, after.idle, after.retired),
+        (0, 0, 0, 2)
+    );
+    assert_eq!((after.factory_attempts, after.factory_successes), (2, 2));
+}
+
+#[test]
+fn close_before_factory_releases_reservation_without_a_factory_attempt() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let creating = new_creation(&execution);
+    execution.close();
+    let pending = owner.snapshot().unwrap();
+    assert_eq!(pending.creating, 1);
+    assert_eq!(
+        pending.reserved_bytes,
+        pending.base_bytes + TEST_CREATION_RESERVATION
+    );
+    assert!(matches!(
+        creating.prepare(),
+        Err(AsciiBoundaryError::Owner(AsciiOwnerError {
+            kind: OwnerErrorKind::Closed,
+            ..
+        }))
+    ));
+    let after = owner.snapshot().unwrap();
+    assert_eq!(
+        (
+            after.creating,
+            after.factory_attempts,
+            after.factory_successes
+        ),
+        (0, 0, 0)
+    );
+    assert_eq!(after.reserved_bytes, after.base_bytes);
+}
+
+#[test]
+fn close_or_reset_after_real_factory_prevents_publication_and_preserves_full_f_until_drop() {
+    for reset in [false, true] {
+        let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+        let old = owner.begin_execution().unwrap();
+        let prepared = Barrier::new(2);
+        let proceed = Barrier::new(2);
+        let (pending, invalidated, newer, joined) = thread::scope(|threads| {
+            let worker = threads.spawn(|| {
+                let mut reserved = old.checkout();
+                let built = match &mut reserved {
+                    Ok(Checkout::Create(creating)) => Some(creating.build_worker()),
+                    _ => None,
+                };
+                prepared.wait();
+                proceed.wait();
+                // Both rendezvous complete before any Result assertion, so a
+                // checkout/build refusal cannot strand the parent at a barrier.
+                let creating = match reserved.unwrap() {
+                    Checkout::Create(creating) => creating,
+                    Checkout::Idle(_) => panic!("fresh root must reserve a creation"),
+                };
+                built
+                    .expect("creation must attempt the actual factory")
+                    .unwrap();
+                assert_eq!(creating.worker.as_ref().unwrap().kernel_invocations(), 0);
+                match creating.publish() {
+                    Err(AsciiBoundaryError::Owner(error)) => {
+                        assert_eq!(error.kind, OwnerErrorKind::Closed)
+                    }
+                    Err(error) => panic!("expected post-factory epoch refusal: {error:?}"),
+                    Ok(_) => panic!("old creation must not publish after close/reset"),
+                }
+            });
+            prepared.wait();
+            let pending = owner.snapshot();
+            let newer = if reset {
+                Some(owner.begin_execution())
+            } else {
+                old.close();
+                None
+            };
+            let invalidated = owner.snapshot();
+            proceed.wait();
+            (pending, invalidated, newer, worker.join())
+        });
+        joined.unwrap();
+        let pending = pending.unwrap();
+        assert_eq!(pending, invalidated.unwrap());
+        assert_eq!(
+            (
+                pending.creating,
+                pending.factory_attempts,
+                pending.factory_successes
+            ),
+            (1, 1, 1)
+        );
+        assert_eq!(
+            pending.reserved_bytes,
+            pending.base_bytes + TEST_CREATION_RESERVATION
+        );
+        let disposed = owner.snapshot().unwrap();
+        assert_eq!(
+            (
+                disposed.live,
+                disposed.idle,
+                disposed.creating,
+                disposed.retired
+            ),
+            (0, 0, 0, 1)
+        );
+        assert_eq!(disposed.reserved_bytes, disposed.base_bytes);
+        if let Some(newer) = newer {
+            let newer = newer.unwrap();
+            old.close();
+            let scope = newer.scope();
+            assert_eq!(
+                evaluate_ascii_value(&scope, &Datum::Int(2)).unwrap(),
+                Datum::Int(50)
+            );
+            assert_eq!(owner.snapshot().unwrap().factory_successes, 2);
+        }
+    }
+}
+
+#[test]
+fn retirement_barrier_holds_slot_and_byte_debt_across_epoch_rotation_until_actual_drop() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let old = owner.begin_execution().unwrap();
+    let mut lease = new_creation(&old).prepare().unwrap();
+    assert_eq!(
+        lease
+            .worker
+            .as_mut()
+            .unwrap()
+            .eval_one(Some(vec![b'R']))
+            .unwrap()
+            .value(),
+        Some(82)
+    );
+    let retired = Barrier::new(2);
+    let dispose = Barrier::new(2);
+    let (pending, newer, rotated, refused, joined) = thread::scope(|threads| {
+        let worker = threads.spawn(|| {
+            let debt = lease.into_retirement();
+            retired.wait();
+            dispose.wait();
+            assert_eq!(debt.worker.as_ref().unwrap().kernel_invocations(), 1);
+            assert!(owner.core.state.try_lock().is_ok());
+            drop(debt);
+        });
+        retired.wait();
+        let pending = owner.snapshot();
+        let newer = owner.begin_execution();
+        old.close();
+        let rotated = owner.snapshot();
+        let refused = match newer.as_ref() {
+            Ok(execution) => execution.checkout(),
+            Err(error) => Err(error.clone()),
+        };
+        dispose.wait();
+        (pending, newer, rotated, refused, worker.join())
+    });
+    joined.unwrap();
+    let pending = pending.unwrap();
+    assert_eq!(pending, rotated.unwrap());
+    assert_eq!(
+        (
+            pending.live,
+            pending.idle,
+            pending.creating,
+            pending.retiring
+        ),
+        (0, 0, 0, 1)
+    );
+    assert_eq!(pending.reserved_bytes, pending.base_bytes + TEST_WORKER_CAP);
+    assert_eq!(pending.retired, 0);
+    assert!(matches!(
+        refused,
+        Err(AsciiOwnerError {
+            kind: OwnerErrorKind::Resource,
+            ..
+        })
+    ));
+    let newer = newer.unwrap();
+    let disposed = owner.snapshot().unwrap();
+    assert_eq!((disposed.retiring, disposed.retired), (0, 1));
+    assert_eq!(disposed.reserved_bytes, disposed.base_bytes);
+    let scope = newer.scope();
+    assert_eq!(
+        evaluate_ascii_value(&scope, &Datum::Null).unwrap(),
+        Datum::Null
+    );
+    assert_eq!(owner.snapshot().unwrap().factory_successes, 2);
+}
+
+#[test]
+fn closing_live_epoch_keeps_old_worker_charged_until_disposal_and_cannot_fill_new_epoch() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let old = owner.begin_execution().unwrap();
+    let old_scope = old.scope();
+    assert_eq!(
+        evaluate_ascii_value(&old_scope, &Datum::Int(2)).unwrap(),
+        Datum::Int(50)
+    );
+    old.close();
+    let closed = owner.snapshot().unwrap();
+    assert_eq!((closed.live, closed.idle, closed.retired), (1, 0, 0));
+    assert_eq!(closed.reserved_bytes, closed.base_bytes + TEST_WORKER_CAP);
+    let newer = owner.begin_execution().unwrap();
+    let newer_scope = newer.scope();
+    assert!(matches!(
+        evaluate_ascii_value(&newer_scope, &Datum::Null),
+        Err(AsciiBoundaryError::Owner(AsciiOwnerError {
+            kind: OwnerErrorKind::Resource,
+            ..
+        }))
+    ));
+    assert_eq!(owner.snapshot().unwrap().factory_successes, 1);
+    drop(old_scope);
+    let disposed = owner.snapshot().unwrap();
+    assert_eq!((disposed.live, disposed.idle, disposed.retired), (0, 0, 1));
+    assert_eq!(disposed.reserved_bytes, disposed.base_bytes);
+    assert_eq!(
+        evaluate_ascii_value(&newer_scope, &Datum::Null).unwrap(),
+        Datum::Null
+    );
+    assert_eq!(scope_worker_observation(&newer_scope).1, 1);
+    assert_eq!(owner.snapshot().unwrap().factory_successes, 2);
+    old.close();
+    assert_eq!(
+        evaluate_ascii_value(&newer_scope, &Datum::Int(2)).unwrap(),
+        Datum::Int(50)
+    );
+    let stale = old.scope();
+    assert!(matches!(
+        evaluate_ascii_value(&stale, &Datum::Null),
+        Err(AsciiBoundaryError::Owner(AsciiOwnerError {
+            kind: OwnerErrorKind::Closed,
+            ..
+        }))
+    ));
+}
+
+#[test]
+fn reset_retires_idle_workers_and_stale_close_or_handle_drop_cannot_close_new_epoch() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let old = owner.begin_execution().unwrap();
+    let old_clone = old.clone();
+    drop(old.clone());
+    {
+        let scope = old.scope();
+        assert_eq!(
+            evaluate_ascii_value(&scope, &Datum::Null).unwrap(),
+            Datum::Null
+        );
+    }
+    assert_eq!(owner.snapshot().unwrap().idle, 1);
+    let newer = owner.begin_execution().unwrap();
+    let reset = owner.snapshot().unwrap();
+    assert_eq!((reset.idle, reset.live, reset.retired), (0, 0, 1));
+    assert_eq!(reset.reserved_bytes, reset.base_bytes);
+    {
+        let scope = newer.scope();
+        assert_eq!(
+            evaluate_ascii_value(&scope, &Datum::Int(2)).unwrap(),
+            Datum::Int(50)
+        );
+    }
+    let idle = owner.snapshot().unwrap();
+    assert_eq!(idle.idle, 1);
+    old.close();
+    old_clone.close();
+    drop(newer.clone());
+    assert_eq!(owner.snapshot().unwrap(), idle);
+    {
+        let scope = newer.scope();
+        assert_eq!(
+            evaluate_ascii_value(&scope, &Datum::Null).unwrap(),
+            Datum::Null
+        );
+        assert_eq!(scope_worker_observation(&scope).1, 2);
+    }
+    assert_eq!(owner.snapshot().unwrap().factory_successes, 2);
+    newer.close();
+    newer.close();
+    let closed = owner.snapshot().unwrap();
+    assert_eq!(
+        (closed.idle, closed.live, closed.retiring, closed.retired),
+        (0, 0, 0, 2)
+    );
+    assert_eq!(closed.reserved_bytes, closed.base_bytes);
+}
+
+#[test]
+fn post_kernel_epoch_check_is_the_success_publication_boundary() {
+    for close_before_finish in [true, false] {
+        let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        let mut invocation = Invocation::enter(&scope).unwrap();
+        let result = invocation.run(ReadyAsciiBytes(Some(vec![b'A'])));
+        assert_eq!(result.as_ref().unwrap().value(), Some(65));
+        assert_eq!(
+            invocation
+                .lease
+                .as_ref()
+                .unwrap()
+                .worker
+                .as_ref()
+                .unwrap()
+                .kernel_invocations(),
+            1
+        );
+        if close_before_finish {
+            execution.close();
+        }
+        let publication = invocation.finish(result);
+        if close_before_finish {
+            assert!(matches!(
+                publication,
+                Err(AsciiBoundaryError::Owner(AsciiOwnerError {
+                    kind: OwnerErrorKind::Closed,
+                    ..
+                }))
+            ));
+            assert!(scope.poisoned.get());
+            assert!(scope.lease.borrow().is_none());
+        } else {
+            let published = publication.unwrap();
+            execution.close();
+            assert_eq!(
+                published.value(),
+                Some(65),
+                "close cannot retract an already published scalar"
+            );
+            assert_eq!(owner.snapshot().unwrap().live, 1);
+        }
+        drop(scope);
+        let after = owner.snapshot().unwrap();
+        assert_eq!(
+            (after.live, after.idle, after.retiring, after.retired),
+            (0, 0, 0, 1)
+        );
+        assert_eq!(after.reserved_bytes, after.base_bytes);
+    }
+}
+
+#[test]
+fn original_owned_kernel_error_survives_a_simultaneous_close_cleanup_error() {
+    let policy = AsciiPoolPolicy::checked(
+        1,
+        1,
+        TEST_POOL_BYTES,
+        TEST_WORKER_CAP,
+        TEST_CREATION_RESERVATION,
+        0,
+        8,
+        TEST_CALL_BYTES,
+    )
+    .unwrap();
+    let owner = AsciiPoolOwner::new(policy).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let mut invocation = Invocation::enter(&scope).unwrap();
+    let primary = invocation.run(coerce_ready(&Datum::Null).unwrap());
+    let original_message_allocation = match &primary {
+        Err(AsciiBoundaryError::Kernel(LocalError::ResourceLimit(message))) => message.as_ptr(),
+        other => panic!("expected a real C4 work-budget error, got {other:?}"),
+    };
+    assert_eq!(
+        invocation
+            .lease
+            .as_ref()
+            .unwrap()
+            .worker
+            .as_ref()
+            .unwrap()
+            .kernel_invocations(),
+        0
+    );
+    execution.close();
+    match invocation.finish(primary) {
+        Err(AsciiBoundaryError::Kernel(LocalError::ResourceLimit(message))) => {
+            // Even the original owned error payload survives; no string mapping
+            // to a new error and no replacement with the cleanup Closed error.
+            assert_eq!(message.as_ptr(), original_message_allocation);
+        }
+        other => panic!("cleanup must preserve the primary engine error: {other:?}"),
+    }
+    assert!(scope.poisoned.get());
+    assert!(scope.lease.borrow().is_none());
+    let after = owner.snapshot().unwrap();
+    assert_eq!(
+        (
+            after.factory_attempts,
+            after.factory_successes,
+            after.retired
+        ),
+        (1, 1, 1)
+    );
+    assert_eq!(after.reserved_bytes, after.base_bytes);
+}
+
+#[test]
+fn caught_native_panics_before_next_kernel_after_kernel_and_during_return_poison_surviving_scope() {
+    for phase in 0_usize..3 {
+        let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        assert_eq!(
+            evaluate_ascii_value(&scope, &Datum::Int(2)).unwrap(),
+            Datum::Int(50)
+        );
+        assert_eq!(scope_worker_observation(&scope).1, 1);
+        let native = ForwardingSentinel::new(false, None);
+        // The catcher is OUTSIDE the guard while the scope survives outside
+        // both. Thread exit or late Scope::drop alone cannot pass this test.
+        let panic = catch_unwind(AssertUnwindSafe(|| {
+            scope.with_columns(&native, |columns| -> Datum {
+                columns.append_warning(45000, "native child effect before possible panic");
+                if phase == 0 {
+                    std::panic::panic_any(phase);
+                }
+                let value = evaluate_ascii_value(&scope, &Datum::Bytes(vec![b'Q'])).unwrap();
+                assert_eq!(value, Datum::Int(81));
+                assert_eq!(scope_worker_observation(&scope).1, 2);
+                if phase == 1 {
+                    std::panic::panic_any(phase);
+                }
+                // Native return-processing stand-in, not an assertion about
+                // integrated ScalarFunction::coerce_to_ret_type dispatch.
+                let native_return = || -> Datum {
+                    assert!(!scope.busy.get());
+                    columns
+                        .handle_truncate("native return-processing stand-in")
+                        .unwrap();
+                    std::panic::panic_any(phase);
+                };
+                native_return()
+            })
+        }))
+        .err()
+        .expect("the original native panic must escape the lexical guard");
+        assert_eq!(panic.downcast_ref::<usize>(), Some(&phase));
+        assert!(scope.poisoned.get());
+        assert!(!scope.busy.get());
+        assert!(scope.lease.borrow().is_none());
+        assert!(
+            native.effects.borrow().warnings.len() >= 2,
+            "native diagnostics are not reset"
+        );
+        let disposed = owner.snapshot().unwrap();
+        assert_eq!(
+            (
+                disposed.live,
+                disposed.idle,
+                disposed.retiring,
+                disposed.retired
+            ),
+            (0, 0, 0, 1)
+        );
+        assert_eq!(disposed.reserved_bytes, disposed.base_bytes);
+        assert!(matches!(
+            evaluate_ascii_value(&scope, &Datum::Null),
+            Err(AsciiBoundaryError::Scope("ASCII scope is poisoned"))
+        ));
+        assert_eq!(
+            owner.snapshot().unwrap(),
+            disposed,
+            "sticky poison cannot silently prepare a replacement"
+        );
+    }
+}
+
+#[test]
+fn caught_invocation_guard_unwind_retires_a_real_used_worker_before_recovery() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    assert_eq!(
+        evaluate_ascii_value(&scope, &Datum::Int(2)).unwrap(),
+        Datum::Int(50)
+    );
+    let panic = catch_unwind(AssertUnwindSafe(|| {
+        let mut invocation = Invocation::enter(&scope).unwrap();
+        assert_eq!(
+            invocation
+                .run(coerce_ready(&Datum::Null).unwrap())
+                .unwrap()
+                .value(),
+            None
+        );
+        assert_eq!(
+            invocation
+                .lease
+                .as_ref()
+                .unwrap()
+                .worker
+                .as_ref()
+                .unwrap()
+                .kernel_invocations(),
+            2
+        );
+        // The TiDB guard is interrupted after an actual C4 call, before finish.
+        // This does not pretend to inject an unwind inside the sealed KV driver.
+        panic!("interrupted TiDB invocation finish");
+    }));
+    assert!(panic.is_err());
+    assert!(scope.poisoned.get());
+    assert!(!scope.busy.get());
+    assert!(scope.lease.borrow().is_none());
+    let after = owner.snapshot().unwrap();
+    assert_eq!((after.live, after.idle, after.retired), (0, 0, 1));
+    assert_eq!(after.reserved_bytes, after.base_bytes);
+}
+
+#[test]
+fn structural_validate_rejects_epoch_and_uncertainty_from_different_instants() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let mut lease = new_creation(&execution).prepare().unwrap();
+    assert_eq!(
+        lease
+            .worker
+            .as_mut()
+            .unwrap()
+            .eval_one(None)
+            .unwrap()
+            .value(),
+        None
+    );
+    assert!(lease.validate().is_ok());
+    assert_eq!(lease.worker.as_ref().unwrap().kernel_invocations(), 1);
+
+    // STRUCTURAL concurrent-ledger regression, not a natural dirty-C4-context
+    // observation. The worker and validate call are real; only retirement-debt
+    // state is synthesized. Before the target validate starts, (epoch E, debt 1)
+    // is already installed under the bookkeeping lock.
+    {
+        let _state = owner.core.state.lock().unwrap();
+        assert_eq!(owner.core.epoch.load(Ordering::SeqCst), execution.epoch);
+        owner.core.uncertain.store(1, Ordering::SeqCst);
+    }
+    let (epoch_read_tx, epoch_read_rx) = std::sync::mpsc::channel();
+    let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+    let (joined, transition) = thread::scope(|threads| {
+        let validator = threads.spawn(move || {
+            // Install only after the real lease was prepared and used. Pause
+            // the ACTUAL check_epoch path after its epoch read, before debt.
+            set_after_epoch_read_hook(move || {
+                epoch_read_tx.send(()).unwrap();
+                resume_rx.recv().unwrap();
+            });
+            let accepted = lease.validate().is_ok();
+            (lease, accepted)
+        });
+        epoch_read_rx
+            .recv()
+            .expect("validate must reach the epoch-read rendezvous");
+        let transition = match owner.core.state.try_lock() {
+            Ok(_state) => {
+                // Model close, then acknowledgement of outstanding retirement:
+                // (E,1) -> (0,1) -> (0,0). There is NO (E,0) instant in this
+                // validation interval, even though two independent loads can
+                // incorrectly assemble it. Do not call a locking close here.
+                owner.core.epoch.store(0, Ordering::SeqCst);
+                owner.core.uncertain.store(0, Ordering::SeqCst);
+                Ok(true)
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                // Also safe if a later fix locks validate: let it observe the
+                // original debt=1 and reject before normal cleanup. An atomic
+                // double-epoch-read fix still follows the mutation arm above.
+                Ok(false)
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                Err("unexpected poisoned accounting mutex at rendezvous")
+            }
+        };
+        // Always release the paused validator before inspecting a transition
+        // error. A regression must fail an assertion, not strand a test thread.
+        resume_tx.send(()).unwrap();
+        (validator.join(), transition)
+    });
+    let (lease, accepted) = joined.unwrap();
+
+    // Clear only the synthesized debt, after validation has returned and any
+    // future validation lock is gone. Use the normal close/lease-drop cleanup
+    // before the regression assertion, including on the intentionally RED path.
+    {
+        let _state = owner.core.state.lock().unwrap();
+        owner.core.uncertain.store(0, Ordering::SeqCst);
+    }
+    execution.close();
+    drop(lease);
+    let after = owner.snapshot().unwrap();
+    assert_eq!(
+        (after.live, after.idle, after.retiring, after.uncertain),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(after.reserved_bytes, after.base_bytes);
+    assert_eq!(after.retired, 1);
+    let mutated_while_paused = transition.expect("rendezvous must not poison the owner");
+    assert!(
+        !accepted,
+        "validate accepted an epoch/debt pair with no common valid instant; \
+         mutated_while_paused={mutated_while_paused}"
+    );
+}
+
+#[test]
+fn structurally_marked_uncertain_retirement_freezes_new_epochs_until_actual_worker_disposal() {
+    let owner = AsciiPoolOwner::new(test_policy(2, 2)).unwrap();
+    let old = owner.begin_execution().unwrap();
+    let mut lease = new_creation(&old).prepare().unwrap();
+    assert_eq!(
+        lease
+            .worker
+            .as_mut()
+            .unwrap()
+            .eval_one(None)
+            .unwrap()
+            .value(),
+        None
+    );
+    assert!(lease.worker.as_ref().unwrap().is_healthy());
+    // STRUCTURAL caller-ledger test: classify a REAL healthy worker's
+    // retirement as uncertain. No fake C4 observer/dirty-warning behavior is
+    // inferred; those sealed-context failure cases belong to C4's own tests.
+    let worker = lease.worker.take();
+    let token = lease.token;
+    assert!(owner.core.start_retirement(token, true));
+    let debt = Retirement {
+        core: Arc::clone(&owner.core),
+        token,
+        worker,
+        recorded: true,
+    };
+    drop(lease);
+    let frozen = owner.snapshot().unwrap();
+    assert_eq!((frozen.retiring, frozen.uncertain), (1, 1));
+    assert_eq!(frozen.reserved_bytes, frozen.base_bytes + TEST_WORKER_CAP);
+    let newer = owner.begin_execution().unwrap();
+    old.close();
+    assert!(matches!(
+        newer.checkout(),
+        Err(AsciiOwnerError {
+            kind: OwnerErrorKind::Resource,
+            message: "ASCII uncertain retirement debt remains"
+        })
+    ));
+    assert_eq!(owner.snapshot().unwrap(), frozen);
+    drop(debt);
+    let disposed = owner.snapshot().unwrap();
+    assert_eq!(
+        (disposed.retiring, disposed.uncertain, disposed.retired),
+        (0, 0, 1)
+    );
+    assert_eq!(disposed.reserved_bytes, disposed.base_bytes);
+    let scope = newer.scope();
+    assert_eq!(
+        evaluate_ascii_value(&scope, &Datum::Null).unwrap(),
+        Datum::Null
+    );
+}
+
+#[test]
+fn checked_policy_and_reservation_overflow_refuse_before_allocating_or_mutating_slots() {
+    assert!(matches!(
+        AsciiPoolPolicy::checked(
+            1,
+            2,
+            TEST_POOL_BYTES,
+            TEST_WORKER_CAP,
+            TEST_CREATION_RESERVATION,
+            64,
+            8,
+            TEST_CALL_BYTES
+        ),
+        Err(AsciiOwnerError {
+            kind: OwnerErrorKind::Policy,
+            ..
+        })
+    ));
+    assert!(matches!(
+        AsciiPoolPolicy::checked(1, 1, TEST_POOL_BYTES, 2, 1, 64, 8, TEST_CALL_BYTES),
+        Err(AsciiOwnerError {
+            kind: OwnerErrorKind::Policy,
+            ..
+        })
+    ));
+    assert!(base_charge(usize::MAX).is_err());
+    assert!(
+        AsciiPoolPolicy::checked(usize::MAX, 0, usize::MAX, 0, 0, 64, 8, TEST_CALL_BYTES).is_err()
+    );
+    assert!(AsciiPoolPolicy::checked(0, 0, 0, 0, 0, 64, 8, TEST_CALL_BYTES).is_err());
+    let policy = AsciiPoolPolicy::checked(
+        1,
+        1,
+        usize::MAX,
+        TEST_WORKER_CAP,
+        usize::MAX,
+        64,
+        8,
+        TEST_CALL_BYTES,
+    )
+    .unwrap();
+    let owner = AsciiPoolOwner::new(policy).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let before = owner.snapshot().unwrap();
+    assert!(matches!(
+        execution.checkout(),
+        Err(AsciiOwnerError {
+            kind: OwnerErrorKind::Resource,
+            ..
+        })
+    ));
+    assert_eq!(owner.snapshot().unwrap(), before);
+}
+
+#[test]
+fn structural_mutex_poison_refuses_cached_ready_call_without_snapshot_or_kernel_entry() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    assert_eq!(
+        evaluate_ascii_value(&scope, &Datum::Null).unwrap(),
+        Datum::Null
+    );
+    let before = scope
+        .lease
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .worker
+        .as_ref()
+        .unwrap()
+        .kernel_invocations();
+    assert_eq!(
+        before, 1,
+        "warm the actual nullable C4 wrapper and cache its lease"
+    );
+
+    // STRUCTURAL bookkeeping panic, not a naturally failing/dirty C4 worker.
+    // Do not surround this with with_columns: its guard would correctly poison
+    // the scope already, masking the separate unobserved std::Mutex poison bug.
+    arm_eval_one_observation();
+    let panic = catch_unwind(AssertUnwindSafe(|| {
+        let _state = owner.core.state.lock().unwrap();
+        panic!("structural accounting-mutex panic with a cached healthy C4 lease");
+    }));
+    // Deliberately NO snapshot/checkout/close/drop/PoolCore::lock between the
+    // caught mutex panic and this hot cached call. A prior lock would copy the
+    // std poison marker into core.poisoned and hide the defect.
+    let result = evaluate_ascii_value(&scope, &Datum::Null);
+    let observation = take_eval_one_observation();
+
+    // Capture observation before any disposal. A correct refusal may already
+    // have destroyed the worker, so do not invent a post-drop getter value.
+    // Normal cleanup happens before the deliberately RED assertion as well.
+    drop(scope);
+    assert!(panic.is_err());
+    assert!(
+        matches!(
+            &result,
+            Err(AsciiBoundaryError::Owner(AsciiOwnerError {
+                kind: OwnerErrorKind::Poisoned,
+                ..
+            }))
+        ) && observation.facade_entries == 0,
+        "cached call must reject std::Mutex poison before eval_one; \
+         result={result:?}, observation={observation:?}, warm_actual_counter={before}"
+    );
+    assert!(observation.before_kernel_invocations.is_none());
+    assert!(observation.after_kernel_invocations.is_none());
+}
+
+#[test]
+fn structural_epoch_serial_overflow_and_mutex_poison_fail_closed_without_reuse() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    owner.core.state.lock().unwrap().next_serial = u64::MAX;
+    let before = owner.snapshot().unwrap();
+    assert!(matches!(
+        execution.checkout(),
+        Err(AsciiOwnerError {
+            kind: OwnerErrorKind::Resource,
+            ..
+        })
+    ));
+    assert_eq!(owner.snapshot().unwrap(), before);
+    owner.core.state.lock().unwrap().next_epoch = u64::MAX;
+    assert!(matches!(
+        owner.begin_execution(),
+        Err(AsciiOwnerError {
+            kind: OwnerErrorKind::Contract,
+            ..
+        })
+    ));
+    assert!(matches!(
+        execution.checkout(),
+        Err(AsciiOwnerError {
+            kind: OwnerErrorKind::Poisoned,
+            ..
+        })
+    ));
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    assert_eq!(
+        evaluate_ascii_value(&scope, &Datum::Null).unwrap(),
+        Datum::Null
+    );
+    let panic = catch_unwind(AssertUnwindSafe(|| {
+        let _locked = owner.core.state.lock().unwrap();
+        panic!("structural mutex poison after actual worker use");
+    }));
+    assert!(panic.is_err());
+    assert!(matches!(
+        owner.snapshot(),
+        Err(AsciiOwnerError {
+            kind: OwnerErrorKind::Poisoned,
+            ..
+        })
+    ));
+    drop(scope);
+    assert!(matches!(
+        owner.begin_execution(),
+        Err(AsciiOwnerError {
+            kind: OwnerErrorKind::Poisoned,
+            ..
+        })
+    ));
+    // Disposal-only recovery may inspect/drain poisoned bookkeeping; it must
+    // never clear the poison and admit another worker.
+    let state = match owner.core.state.lock() {
+        Err(error) => error.into_inner(),
+        Ok(_) => panic!("the poisoned root must not silently recover"),
+    };
+    assert!(state.slots.iter().all(|slot| matches!(slot, Slot::Empty)));
+    assert_eq!(state.reserved_bytes, state.base_bytes);
+    assert_eq!(state.retired, 1);
+}
+
+#[test]
+#[ignore = "parent external allocation observation only; not a measurement"]
+fn parent_external_observer_actual_pool_owner_arc_new_fixture() {
+    // Safe APIs exercise the inherited Rust allocator, not an observer's own
+    // C allocation calls. The external observer validates the actual routes;
+    // these Rust capacities/layouts alone are not allocation evidence.
+    fn positive_controls() {
+        let mut bytes = Vec::<u8>::with_capacity(std::hint::black_box(73));
+        bytes.resize(73, 7);
+        std::hint::black_box(bytes.as_ptr());
+        bytes.reserve_exact(149 - bytes.len());
+        std::hint::black_box(bytes.as_ptr());
+        drop(bytes);
+        let zeros = vec![0u8; std::hint::black_box(91)];
+        std::hint::black_box(zeros.as_slice());
+        drop(zeros);
+        #[repr(align(64))]
+        struct Aligned([u8; 257]);
+        // Padding makes the requested layout 320 bytes, not 257.
+        let aligned = Box::new(std::hint::black_box(Aligned([7; 257])));
+        std::hint::black_box(&aligned.0);
+        drop(aligned);
+    }
+
+    // The parent supplies an independent process-level allocator observer. No
+    // allocator replacement, new_in path, portable Arc ABI, or measured-byte
+    // assertion is introduced here. All diagnostic initialization, policy
+    // construction and candidate-layout printing precede the marked phases.
+    // Zero slots means no Vec allocation and no C4 worker; the snapshot's
+    // caller_arc_measurement_required remains true regardless of this fixture.
+    eprintln!("ASCII_POOL_EXTERNAL_OBSERVER DIAGNOSTIC_WARMUP NOT A MEASUREMENT");
+    let policy = test_policy(0, 0);
+    eprintln!(
+        "ASCII_POOL_EXTERNAL_OBSERVER candidate PoolArcAllocation size={} align={}; actual PoolCore size={} align={}; NOT A MEASUREMENT",
+        std::mem::size_of::<PoolArcAllocation>(),
+        std::mem::align_of::<PoolArcAllocation>(),
+        std::mem::size_of::<PoolCore>(),
+        std::mem::align_of::<PoolCore>(),
+    );
+    eprintln!("ASCII_POOL_EXTERNAL_OBSERVER CONTROL_PRE_BEGIN");
+    positive_controls();
+    eprintln!("ASCII_POOL_EXTERNAL_OBSERVER CONTROL_PRE_END");
+    eprintln!("ASCII_POOL_EXTERNAL_OBSERVER EMPTY_PRE_BEGIN");
+    eprintln!("ASCII_POOL_EXTERNAL_OBSERVER EMPTY_PRE_END");
+    eprintln!("ASCII_POOL_EXTERNAL_OBSERVER OWNER_NEW_BEGIN");
+    let owner = AsciiPoolOwner::new(policy).unwrap();
+    std::hint::black_box(&owner);
+    eprintln!("ASCII_POOL_EXTERNAL_OBSERVER OWNER_NEW_END");
+    eprintln!("ASCII_POOL_EXTERNAL_OBSERVER STACK_CLONES_BEGIN");
+    let clones: [AsciiPoolOwner; 64] = std::array::from_fn(|_| std::hint::black_box(owner.clone()));
+    std::hint::black_box(&clones);
+    drop(clones);
+    eprintln!("ASCII_POOL_EXTERNAL_OBSERVER STACK_CLONES_END");
+    eprintln!("ASCII_POOL_EXTERNAL_OBSERVER OWNER_DROP_BEGIN");
+    std::hint::black_box(&owner);
+    drop(owner);
+    eprintln!("ASCII_POOL_EXTERNAL_OBSERVER OWNER_DROP_END");
+    eprintln!("ASCII_POOL_EXTERNAL_OBSERVER EMPTY_POST_BEGIN");
+    eprintln!("ASCII_POOL_EXTERNAL_OBSERVER EMPTY_POST_END");
+    eprintln!("ASCII_POOL_EXTERNAL_OBSERVER CONTROL_POST_BEGIN");
+    positive_controls();
+    eprintln!("ASCII_POOL_EXTERNAL_OBSERVER CONTROL_POST_END");
+}

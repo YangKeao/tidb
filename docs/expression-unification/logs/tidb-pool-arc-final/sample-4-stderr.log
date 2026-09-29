@@ -1,0 +1,41 @@
+ASCII_POOL_OBSERVER loaded=v1 target=linux-x86_64-glibc request-only controls=SAFE_RUST
+ASCII_POOL_EXTERNAL_OBSERVER DIAGNOSTIC_WARMUP NOT A MEASUREMENT
+ASCII_POOL_EXTERNAL_OBSERVER candidate PoolArcAllocation size=192 align=8; actual PoolCore size=176 align=8; NOT A MEASUREMENT
+ASCII_POOL_EXTERNAL_OBSERVER CONTROL_PRE_BEGIN
+ASCII_POOL_EXTERNAL_OBSERVER CONTROL_PRE_END
+ASCII_POOL_EXTERNAL_OBSERVER EMPTY_PRE_BEGIN
+ASCII_POOL_EXTERNAL_OBSERVER EMPTY_PRE_END
+ASCII_POOL_EXTERNAL_OBSERVER OWNER_NEW_BEGIN
+ASCII_POOL_EXTERNAL_OBSERVER OWNER_NEW_END
+ASCII_POOL_EXTERNAL_OBSERVER STACK_CLONES_BEGIN
+ASCII_POOL_EXTERNAL_OBSERVER STACK_CLONES_END
+ASCII_POOL_EXTERNAL_OBSERVER OWNER_DROP_BEGIN
+ASCII_POOL_EXTERNAL_OBSERVER OWNER_DROP_END
+ASCII_POOL_EXTERNAL_OBSERVER EMPTY_POST_BEGIN
+ASCII_POOL_EXTERNAL_OBSERVER EMPTY_POST_END
+ASCII_POOL_EXTERNAL_OBSERVER CONTROL_POST_BEGIN
+ASCII_POOL_EXTERNAL_OBSERVER CONTROL_POST_END
+ASCII_POOL_OBSERVER window phase=CONTROL_PRE events=7 complete=1
+ASCII_POOL_OBSERVER window phase=EMPTY_PRE events=0 complete=1
+ASCII_POOL_OBSERVER window phase=OWNER_NEW events=1 complete=1
+ASCII_POOL_OBSERVER window phase=STACK_CLONES events=0 complete=1
+ASCII_POOL_OBSERVER window phase=OWNER_DROP events=1 complete=1
+ASCII_POOL_OBSERVER window phase=EMPTY_POST events=0 complete=1
+ASCII_POOL_OBSERVER window phase=CONTROL_POST events=7 complete=1
+ASCII_POOL_OBSERVER event index=0 phase=CONTROL_PRE route=malloc tid=31 requested_bytes=73 size_known=1 arg_a=73 arg_b=0 alignment_arg=UNSPECIFIED old=0x0 new=0x7f915c000d20 ptr_mod8=0 ptr_mod16=0 status=0 backend_errno=0
+ASCII_POOL_OBSERVER event index=1 phase=CONTROL_PRE route=realloc tid=31 requested_bytes=149 size_known=1 arg_a=149 arg_b=0 alignment_arg=UNSPECIFIED old=0x7f915c000d20 new=0x7f915c000d20 ptr_mod8=0 ptr_mod16=0 status=0 backend_errno=0
+ASCII_POOL_OBSERVER event index=2 phase=CONTROL_PRE route=free tid=31 requested_bytes=0 size_known=1 arg_a=0 arg_b=0 alignment_arg=UNSPECIFIED old=0x7f915c000d20 new=0x0 ptr_mod8=0 ptr_mod16=0 status=0 backend_errno=0
+ASCII_POOL_OBSERVER event index=3 phase=CONTROL_PRE route=calloc tid=31 requested_bytes=91 size_known=1 arg_a=91 arg_b=1 alignment_arg=UNSPECIFIED old=0x0 new=0x7f915c000dc0 ptr_mod8=0 ptr_mod16=0 status=0 backend_errno=0
+ASCII_POOL_OBSERVER event index=4 phase=CONTROL_PRE route=free tid=31 requested_bytes=0 size_known=1 arg_a=0 arg_b=0 alignment_arg=UNSPECIFIED old=0x7f915c000dc0 new=0x0 ptr_mod8=0 ptr_mod16=0 status=0 backend_errno=0
+ASCII_POOL_OBSERVER event index=5 phase=CONTROL_PRE route=posix_memalign tid=31 requested_bytes=320 size_known=1 arg_a=64 arg_b=320 alignment_arg=64 old=0x0 new=0x7f915c000e80 ptr_mod8=0 ptr_mod16=0 status=0 backend_errno=0
+ASCII_POOL_OBSERVER event index=6 phase=CONTROL_PRE route=free tid=31 requested_bytes=0 size_known=1 arg_a=0 arg_b=0 alignment_arg=UNSPECIFIED old=0x7f915c000e80 new=0x0 ptr_mod8=0 ptr_mod16=0 status=0 backend_errno=0
+ASCII_POOL_OBSERVER event index=7 phase=OWNER_NEW route=malloc tid=31 requested_bytes=192 size_known=1 arg_a=192 arg_b=0 alignment_arg=UNSPECIFIED old=0x0 new=0x7f915c000fd0 ptr_mod8=0 ptr_mod16=0 status=0 backend_errno=0
+ASCII_POOL_OBSERVER event index=8 phase=OWNER_DROP route=free tid=31 requested_bytes=0 size_known=1 arg_a=0 arg_b=0 alignment_arg=UNSPECIFIED old=0x7f915c000fd0 new=0x0 ptr_mod8=0 ptr_mod16=0 status=0 backend_errno=0
+ASCII_POOL_OBSERVER event index=9 phase=CONTROL_POST route=malloc tid=31 requested_bytes=73 size_known=1 arg_a=73 arg_b=0 alignment_arg=UNSPECIFIED old=0x0 new=0x7f915c0010a0 ptr_mod8=0 ptr_mod16=0 status=0 backend_errno=0
+ASCII_POOL_OBSERVER event index=10 phase=CONTROL_POST route=realloc tid=31 requested_bytes=149 size_known=1 arg_a=149 arg_b=0 alignment_arg=UNSPECIFIED old=0x7f915c0010a0 new=0x7f915c0010a0 ptr_mod8=0 ptr_mod16=0 status=0 backend_errno=0
+ASCII_POOL_OBSERVER event index=11 phase=CONTROL_POST route=free tid=31 requested_bytes=0 size_known=1 arg_a=0 arg_b=0 alignment_arg=UNSPECIFIED old=0x7f915c0010a0 new=0x0 ptr_mod8=0 ptr_mod16=0 status=0 backend_errno=0
+ASCII_POOL_OBSERVER event index=12 phase=CONTROL_POST route=calloc tid=31 requested_bytes=91 size_known=1 arg_a=91 arg_b=1 alignment_arg=UNSPECIFIED old=0x0 new=0x7f915c000dc0 ptr_mod8=0 ptr_mod16=0 status=0 backend_errno=0
+ASCII_POOL_OBSERVER event index=13 phase=CONTROL_POST route=free tid=31 requested_bytes=0 size_known=1 arg_a=0 arg_b=0 alignment_arg=UNSPECIFIED old=0x7f915c000dc0 new=0x0 ptr_mod8=0 ptr_mod16=0 status=0 backend_errno=0
+ASCII_POOL_OBSERVER event index=14 phase=CONTROL_POST route=posix_memalign tid=31 requested_bytes=320 size_known=1 arg_a=64 arg_b=320 alignment_arg=64 old=0x0 new=0x7f915c000e80 ptr_mod8=0 ptr_mod16=0 status=0 backend_errno=0
+ASCII_POOL_OBSERVER event index=15 phase=CONTROL_POST route=free tid=31 requested_bytes=0 size_known=1 arg_a=0 arg_b=0 alignment_arg=UNSPECIFIED old=0x7f915c000e80 new=0x0 ptr_mod8=0 ptr_mod16=0 status=0 backend_errno=0
+ASCII_POOL_OBSERVER PASS faults=0 markers=14 events=16 marker_tid=31 gap_events=0 foreign_observations=0 first_foreign_tid=0 actual_owner_requested_bytes=192 owner_alignment_arg=UNSPECIFIED owner_ptr=0x7f915c000fd0 matching_final_free=true extent=request-not-usable-not-peak-not-general-heap

@@ -1,0 +1,261 @@
+{
+  "timeout_seconds": 20,
+  "separate_process_group": true,
+  "timeout_classification": "inconclusive, killed and reaped",
+  "LD_PRELOAD": "/home/agent/tidb/expression-unification/tools/pool-arc-observer.so",
+  "cohort": {
+    "/home/agent/tidb/expression-unification/target-tidb/debug/build/tidb-expr/1a66296e036585b2/out/tidb_expr-1a66296e036585b2": "ddb196e81f054e5fff33659c7d0a0e135bf8e37fe94f11ddafb5bc62c54b7a9b",
+    "/home/agent/tidb/expression-unification/tools/pool-arc-observer.so": "e6fd53441eaac42c80c2927617150e2da882797276c2eaf514fd65f72f5705d7",
+    "/home/agent/tidb/expression-unification/tools/pool-arc-runner.py": "5b37f8187a73304baecac5cd1186461a98b7d9e359e370096e967423d5b1ce8e"
+  },
+  "cohort_unchanged": true,
+  "results": [
+    {
+      "label": "sample-1",
+      "command": [
+        "/home/agent/tidb/expression-unification/target-tidb/debug/build/tidb-expr/1a66296e036585b2/out/tidb_expr-1a66296e036585b2",
+        "tikv::evaluated_ascii::tests::parent_external_observer_actual_pool_owner_arc_new_fixture",
+        "--ignored",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit": 0,
+      "timeout": false,
+      "native_one_passed": true,
+      "observer": {
+        "faults": "0",
+        "markers": "14",
+        "events": "16",
+        "marker_tid": "25",
+        "gap_events": "0",
+        "foreign_observations": "0",
+        "first_foreign_tid": "0",
+        "actual_owner_requested_bytes": "192",
+        "owner_alignment_arg": "UNSPECIFIED",
+        "owner_ptr": "0x7f489c000fd0",
+        "matching_final_free": "true",
+        "extent": "request-not-usable-not-peak-not-general-heap"
+      },
+      "accepted": true
+    },
+    {
+      "label": "sample-2",
+      "command": [
+        "/home/agent/tidb/expression-unification/target-tidb/debug/build/tidb-expr/1a66296e036585b2/out/tidb_expr-1a66296e036585b2",
+        "tikv::evaluated_ascii::tests::parent_external_observer_actual_pool_owner_arc_new_fixture",
+        "--ignored",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit": 0,
+      "timeout": false,
+      "native_one_passed": true,
+      "observer": {
+        "faults": "0",
+        "markers": "14",
+        "events": "16",
+        "marker_tid": "27",
+        "gap_events": "0",
+        "foreign_observations": "0",
+        "first_foreign_tid": "0",
+        "actual_owner_requested_bytes": "192",
+        "owner_alignment_arg": "UNSPECIFIED",
+        "owner_ptr": "0x7f3b5c000fd0",
+        "matching_final_free": "true",
+        "extent": "request-not-usable-not-peak-not-general-heap"
+      },
+      "accepted": true
+    },
+    {
+      "label": "sample-3",
+      "command": [
+        "/home/agent/tidb/expression-unification/target-tidb/debug/build/tidb-expr/1a66296e036585b2/out/tidb_expr-1a66296e036585b2",
+        "tikv::evaluated_ascii::tests::parent_external_observer_actual_pool_owner_arc_new_fixture",
+        "--ignored",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit": 0,
+      "timeout": false,
+      "native_one_passed": true,
+      "observer": {
+        "faults": "0",
+        "markers": "14",
+        "events": "16",
+        "marker_tid": "29",
+        "gap_events": "0",
+        "foreign_observations": "0",
+        "first_foreign_tid": "0",
+        "actual_owner_requested_bytes": "192",
+        "owner_alignment_arg": "UNSPECIFIED",
+        "owner_ptr": "0x7f87a0000fd0",
+        "matching_final_free": "true",
+        "extent": "request-not-usable-not-peak-not-general-heap"
+      },
+      "accepted": true
+    },
+    {
+      "label": "sample-4",
+      "command": [
+        "/home/agent/tidb/expression-unification/target-tidb/debug/build/tidb-expr/1a66296e036585b2/out/tidb_expr-1a66296e036585b2",
+        "tikv::evaluated_ascii::tests::parent_external_observer_actual_pool_owner_arc_new_fixture",
+        "--ignored",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit": 0,
+      "timeout": false,
+      "native_one_passed": true,
+      "observer": {
+        "faults": "0",
+        "markers": "14",
+        "events": "16",
+        "marker_tid": "31",
+        "gap_events": "0",
+        "foreign_observations": "0",
+        "first_foreign_tid": "0",
+        "actual_owner_requested_bytes": "192",
+        "owner_alignment_arg": "UNSPECIFIED",
+        "owner_ptr": "0x7f915c000fd0",
+        "matching_final_free": "true",
+        "extent": "request-not-usable-not-peak-not-general-heap"
+      },
+      "accepted": true
+    },
+    {
+      "label": "sample-5",
+      "command": [
+        "/home/agent/tidb/expression-unification/target-tidb/debug/build/tidb-expr/1a66296e036585b2/out/tidb_expr-1a66296e036585b2",
+        "tikv::evaluated_ascii::tests::parent_external_observer_actual_pool_owner_arc_new_fixture",
+        "--ignored",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit": 0,
+      "timeout": false,
+      "native_one_passed": true,
+      "observer": {
+        "faults": "0",
+        "markers": "14",
+        "events": "16",
+        "marker_tid": "33",
+        "gap_events": "0",
+        "foreign_observations": "0",
+        "first_foreign_tid": "0",
+        "actual_owner_requested_bytes": "192",
+        "owner_alignment_arg": "UNSPECIFIED",
+        "owner_ptr": "0x7fc3d4000fd0",
+        "matching_final_free": "true",
+        "extent": "request-not-usable-not-peak-not-general-heap"
+      },
+      "accepted": true
+    },
+    {
+      "label": "sample-6",
+      "command": [
+        "/home/agent/tidb/expression-unification/target-tidb/debug/build/tidb-expr/1a66296e036585b2/out/tidb_expr-1a66296e036585b2",
+        "tikv::evaluated_ascii::tests::parent_external_observer_actual_pool_owner_arc_new_fixture",
+        "--ignored",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit": 0,
+      "timeout": false,
+      "native_one_passed": true,
+      "observer": {
+        "faults": "0",
+        "markers": "14",
+        "events": "16",
+        "marker_tid": "35",
+        "gap_events": "0",
+        "foreign_observations": "0",
+        "first_foreign_tid": "0",
+        "actual_owner_requested_bytes": "192",
+        "owner_alignment_arg": "UNSPECIFIED",
+        "owner_ptr": "0x7f1648000fd0",
+        "matching_final_free": "true",
+        "extent": "request-not-usable-not-peak-not-general-heap"
+      },
+      "accepted": true
+    },
+    {
+      "label": "sample-7",
+      "command": [
+        "/home/agent/tidb/expression-unification/target-tidb/debug/build/tidb-expr/1a66296e036585b2/out/tidb_expr-1a66296e036585b2",
+        "tikv::evaluated_ascii::tests::parent_external_observer_actual_pool_owner_arc_new_fixture",
+        "--ignored",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit": 0,
+      "timeout": false,
+      "native_one_passed": true,
+      "observer": {
+        "faults": "0",
+        "markers": "14",
+        "events": "16",
+        "marker_tid": "37",
+        "gap_events": "0",
+        "foreign_observations": "0",
+        "first_foreign_tid": "0",
+        "actual_owner_requested_bytes": "192",
+        "owner_alignment_arg": "UNSPECIFIED",
+        "owner_ptr": "0x7fdacc000fd0",
+        "matching_final_free": "true",
+        "extent": "request-not-usable-not-peak-not-general-heap"
+      },
+      "accepted": true
+    },
+    {
+      "label": "sample-8",
+      "command": [
+        "/home/agent/tidb/expression-unification/target-tidb/debug/build/tidb-expr/1a66296e036585b2/out/tidb_expr-1a66296e036585b2",
+        "tikv::evaluated_ascii::tests::parent_external_observer_actual_pool_owner_arc_new_fixture",
+        "--ignored",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit": 0,
+      "timeout": false,
+      "native_one_passed": true,
+      "observer": {
+        "faults": "0",
+        "markers": "14",
+        "events": "16",
+        "marker_tid": "39",
+        "gap_events": "0",
+        "foreign_observations": "0",
+        "first_foreign_tid": "0",
+        "actual_owner_requested_bytes": "192",
+        "owner_alignment_arg": "UNSPECIFIED",
+        "owner_ptr": "0x7fe834000fd0",
+        "matching_final_free": "true",
+        "extent": "request-not-usable-not-peak-not-general-heap"
+      },
+      "accepted": true
+    },
+    {
+      "label": "missing-markers-negative",
+      "command": [
+        "/home/agent/tidb/expression-unification/target-tidb/debug/build/tidb-expr/1a66296e036585b2/out/tidb_expr-1a66296e036585b2",
+        "tikv::runtime_failure::tests::six_outer_variants_keep_distinct_classes_and_fixed_messages",
+        "--include-ignored",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit": 86,
+      "timeout": false,
+      "native_one_passed": true,
+      "accepted": true
+    }
+  ]
+}
