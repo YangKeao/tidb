@@ -16,6 +16,7 @@ use tidb_chunk::chunk::Chunk;
 use tidb_datatype::FieldType;
 use tidb_executor::{driver::QueryRecordSet, DriverError, StmtContext};
 
+use crate::ascii_runtime::{AsciiStatementCloser, AsciiStatementEntry};
 use crate::{Session, StmtOutput};
 
 /// A statement either returns an opened query or has already executed.
@@ -30,11 +31,12 @@ impl Session {
     pub(crate) fn return_opened_record_set(
         &mut self,
         result: Result<PendingExecution, DriverError>,
+        runtime: &mut AsciiStatementEntry,
     ) -> Result<OpenedStatement, DriverError> {
         match result {
-            Ok(PendingExecution::Query(query)) => {
-                Ok(OpenedStatement::Rows(StatementRecordSet::new(query)))
-            }
+            Ok(PendingExecution::Query(query)) => Ok(OpenedStatement::Rows(
+                StatementRecordSet::new(query, runtime.take_closer()),
+            )),
             Ok(PendingExecution::Complete(output)) => self
                 .finish_statement_execution(Ok(output))
                 .map(OpenedStatement::Complete),
@@ -139,6 +141,9 @@ impl PendingQuery {
 /// It contains no borrow into the session, so the outer owner can also finish
 /// the transaction and snapshot without a self-reference.
 pub struct StatementRecordSet {
+    // First field: detached Drop invalidates before the native query is dropped.
+    // A nested/borrowed result has no close authority or lexical marker here.
+    ascii_closer: Option<AsciiStatementCloser>,
     query: PendingQuery,
     retained: Option<std::collections::VecDeque<Chunk>>,
     retained_offset: usize,
@@ -150,8 +155,9 @@ pub struct StatementRecordSet {
 }
 
 impl StatementRecordSet {
-    pub(crate) fn new(query: PendingQuery) -> Self {
+    pub(crate) fn new(query: PendingQuery, ascii_closer: Option<AsciiStatementCloser>) -> Self {
         Self {
+            ascii_closer,
             query,
             retained: None,
             retained_offset: 0,
@@ -173,6 +179,11 @@ impl StatementRecordSet {
         self.query.record_set.new_chunk()
     }
 
+    #[cfg(test)]
+    pub(crate) fn context_for_test(&self) -> &StmtContext {
+        &self.query.context
+    }
+
     /// Retains a failure from an outer transaction's Finish for CloseRecordSet.
     pub fn record_error(&mut self, error: DriverError) {
         self.last_error.get_or_insert(error);
@@ -180,6 +191,10 @@ impl StatementRecordSet {
 
     /// Fills a reusable chunk and transfers warnings from this execution.
     pub fn next(&mut self, session: &mut Session, req: &mut Chunk) -> Result<(), DriverError> {
+        let _unwind = self
+            .ascii_closer
+            .as_ref()
+            .map(AsciiStatementCloser::unwind_guard);
         let retained = self.retained.is_some();
         let result = if self.finished {
             Err(DriverError::Mysql(tidb_executor::MysqlError::new(
@@ -201,7 +216,10 @@ impl StatementRecordSet {
             }
             Ok(())
         } else {
-            self.query.record_set.next(req)
+            let result = self.query.record_set.next(req);
+            #[cfg(test)]
+            native_epilogue_for_test(NativeEpilogue::Next);
+            result
         };
         session.drain_eval_warnings(&self.query.context);
         match &result {
@@ -222,6 +240,7 @@ impl StatementRecordSet {
     /// Go runPessimisticSelectForUpdate retains chunks before locks/retries
     /// complete. Do not publish rows to a client from inside a replayable attempt.
     pub fn retain_chunks(&mut self, session: &mut Session) -> Result<(), DriverError> {
+        let _closer = self.ascii_closer.take();
         let mut chunks = std::collections::VecDeque::new();
         let mut req = self.new_chunk();
         let result = (|| {
@@ -233,7 +252,10 @@ impl StatementRecordSet {
                 let next = req.renew(req.required_rows());
                 chunks.push_back(std::mem::replace(&mut req, next));
             }
-            self.query.record_set.finish()
+            let result = self.query.record_set.finish();
+            #[cfg(test)]
+            native_epilogue_for_test(NativeEpilogue::Retain);
+            result
         })();
         session.drain_eval_warnings(&self.query.context);
         if let Err(error) = &result {
@@ -246,11 +268,16 @@ impl StatementRecordSet {
 
     /// Finishes execution before the writer emits its terminal packet.
     pub fn finish(&mut self, session: &mut Session) -> Result<(), DriverError> {
+        // Take before the fast path, flag mutation, and every native operation.
+        // In particular, an unwind after finished=true cannot strand a closer.
+        let _closer = self.ascii_closer.take();
         if self.finished {
             return Ok(());
         }
         self.finished = true;
         let result = self.query.finish(session);
+        #[cfg(test)]
+        native_epilogue_for_test(NativeEpilogue::Finish);
         if let Err(error) = &result {
             self.last_error.get_or_insert_with(|| error.clone());
         }
@@ -347,6 +374,50 @@ impl From<&StmtOutput> for StatementCompletion {
             StmtOutput::Affected(rows) => Self::Affected(*rows),
             StmtOutput::Done(_) => Self::Done,
         }
+    }
+}
+
+// This one-shot probe runs only AFTER the real native operation has returned.
+// It proves native-epilogue unwind cleanup, not an executor panic escaping the
+// existing inner recovery wrappers. Take the hook before invoking user code.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeEpilogue {
+    Next,
+    Finish,
+    Retain,
+}
+
+#[cfg(test)]
+thread_local! {
+    static NATIVE_EPILOGUE_HOOK: std::cell::RefCell<Option<(NativeEpilogue, Box<dyn FnOnce()>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_native_epilogue_for_test(phase: NativeEpilogue, hook: impl FnOnce() + 'static) {
+    NATIVE_EPILOGUE_HOOK.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        assert!(slot.is_none(), "native epilogue hook was not consumed");
+        *slot = Some((phase, Box::new(hook)));
+    });
+}
+
+#[cfg(test)]
+fn native_epilogue_for_test(phase: NativeEpilogue) {
+    let hook = NATIVE_EPILOGUE_HOOK.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot
+            .as_ref()
+            .is_some_and(|(expected, _)| *expected == phase)
+        {
+            slot.take().map(|(_, hook)| hook)
+        } else {
+            None
+        }
+    });
+    if let Some(hook) = hook {
+        hook();
     }
 }
 

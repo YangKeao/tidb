@@ -1327,6 +1327,9 @@ impl Session {
                 if let Some(parameters) = &self.prepared_params {
                     let _ = ctx.with_prepared_params(Arc::clone(parameters));
                 }
+                if let Some(execution) = self.evaluated_ascii_runtime.execution() {
+                    let _ = ctx.with_evaluated_ascii_execution(execution.clone());
+                }
             });
         }
         let (increment, offset) = self.auto_increment_step();
@@ -1465,6 +1468,9 @@ impl Session {
             }
             if let Some(latest_index_schema) = latest_index_schema {
                 let _ = ctx.with_latest_index_schema(latest_index_schema);
+            }
+            if let Some(execution) = self.evaluated_ascii_runtime.execution() {
+                let _ = ctx.with_evaluated_ascii_execution(execution.clone());
             }
         })
     }
@@ -1605,11 +1611,9 @@ mod tests {
     #[test]
     fn adaptive_limit_scan_uses_the_session_statement_snapshot() {
         let mut session = Session::new();
-        assert!(
-            !session
-                .statement_context(false)
-                .enable_adaptive_limit_scan()
-        );
+        assert!(!session
+            .statement_context(false)
+            .enable_adaptive_limit_scan());
         session
             .run("SET tidb_enable_adaptive_limit_scan = ON")
             .unwrap();
@@ -1621,11 +1625,9 @@ mod tests {
         session
             .run("SET tidb_enable_adaptive_limit_scan = OFF")
             .unwrap();
-        assert!(
-            !session
-                .statement_context(false)
-                .enable_adaptive_limit_scan()
-        );
+        assert!(!session
+            .statement_context(false)
+            .enable_adaptive_limit_scan());
         assert!(query.enable_adaptive_limit_scan());
     }
 
@@ -1638,44 +1640,34 @@ mod tests {
             .run("SET tidb_enable_collect_execution_info = ON")
             .unwrap();
         session.set_session_index_usage_collector(global.spawn_session_collector());
-        assert!(
-            session
-                .statement_context(false)
-                .index_usage_collector()
-                .is_some()
-        );
-        assert!(
-            session
-                .statement_context(false)
-                .executor_runtime_stats_source()
-                .is_some()
-        );
+        assert!(session
+            .statement_context(false)
+            .index_usage_collector()
+            .is_some());
+        assert!(session
+            .statement_context(false)
+            .executor_runtime_stats_source()
+            .is_some());
 
         session
             .run("SET tidb_enable_collect_execution_info = OFF")
             .unwrap();
-        assert!(
-            session
-                .statement_context(false)
-                .index_usage_collector()
-                .is_none()
-        );
-        assert!(
-            session
-                .statement_context(false)
-                .executor_runtime_stats_source()
-                .is_none()
-        );
+        assert!(session
+            .statement_context(false)
+            .index_usage_collector()
+            .is_none());
+        assert!(session
+            .statement_context(false)
+            .executor_runtime_stats_source()
+            .is_none());
 
         session
             .run("SET tidb_enable_collect_execution_info = ON")
             .unwrap();
-        assert!(
-            session
-                .statement_context(false)
-                .index_usage_collector()
-                .is_some()
-        );
+        assert!(session
+            .statement_context(false)
+            .index_usage_collector()
+            .is_some());
 
         drop(session);
         global.close();
@@ -1711,8 +1703,15 @@ mod tests {
         let mut session = Session::new();
         session.run("SET time_zone = '+00:00'").unwrap();
         let original = session.statement_context(false);
-        let original_options = original.optimizer_cost_env().session.estimator_options.clone();
-        assert_eq!(original_options.time_zone.as_ref(), &session.session_time_zone());
+        let original_options = original
+            .optimizer_cost_env()
+            .session
+            .estimator_options
+            .clone();
+        assert_eq!(
+            original_options.time_zone.as_ref(),
+            &session.session_time_zone()
+        );
         assert_eq!(original_options.risk_eq_skew_ratio, 0.0);
         assert_eq!(original_options.risk_range_skew_ratio, 0.0);
         assert!(original_options.allow_use_modify_count);
@@ -1732,7 +1731,8 @@ mod tests {
             .statement_context(false)
             .optimizer_cost_env()
             .session
-            .estimator_options.clone();
+            .estimator_options
+            .clone();
         assert_eq!(options.time_zone.as_ref(), &session.session_time_zone());
         assert_ne!(options.time_zone, original_options.time_zone);
         assert_eq!(options.risk_eq_skew_ratio, 0.25);
@@ -1756,12 +1756,17 @@ mod tests {
         session
             .run("SET tidb_opt_group_ndv_skew_ratio = 0.4")
             .unwrap();
-        session.run("SET tidb_opt_scale_ndv_skew_ratio = 0.6").unwrap();
+        session
+            .run("SET tidb_opt_scale_ndv_skew_ratio = 0.6")
+            .unwrap();
         let current_context = session.statement_context(false);
         let current = current_context.optimizer_cost_env();
         assert_eq!(current.session.group_ndv_skew_ratio, 0.4);
         assert_eq!(current.session.scale_ndv_skew_ratio, 0.6);
-        assert_eq!(original.optimizer_cost_env().session.scale_ndv_skew_ratio, 1.0);
+        assert_eq!(
+            original.optimizer_cost_env().session.scale_ndv_skew_ratio,
+            1.0
+        );
         assert_eq!(current.session.shuffle_options.group_ndv_skew_ratio, 0.4);
         assert_eq!(
             original.optimizer_cost_env().session.group_ndv_skew_ratio,
@@ -1842,12 +1847,10 @@ mod tests {
         use tidb_executor::{Executor, ExecutorMeta, TableDualExec};
 
         let mut session = Session::new();
-        assert!(
-            session
-                .statement_context(false)
-                .selected_lock_keys()
-                .is_none()
-        );
+        assert!(session
+            .statement_context(false)
+            .selected_lock_keys()
+            .is_none());
         session.set_selected_lock_keys(Some(SelectedLockKeys::default()));
         for is_dml in [false, true] {
             let context = session.statement_context(is_dml);
@@ -1872,31 +1875,25 @@ mod tests {
             exec.close().unwrap();
         }
         session.set_selected_lock_keys(None);
-        assert!(
-            session
-                .statement_context(false)
-                .selected_lock_keys()
-                .is_none()
-        );
+        assert!(session
+            .statement_context(false)
+            .selected_lock_keys()
+            .is_none());
         assert!(session.take_selected_lock_keys().is_empty());
     }
 
     #[test]
     fn no_decorrelate_in_select_reaches_the_statement_context() {
         let mut session = Session::new();
-        assert!(
-            !session
-                .statement_context(false)
-                .enable_no_decorrelate_in_select()
-        );
+        assert!(!session
+            .statement_context(false)
+            .enable_no_decorrelate_in_select());
         session
             .run("set tidb_opt_enable_no_decorrelate_in_select = on")
             .unwrap();
-        assert!(
-            session
-                .statement_context(false)
-                .enable_no_decorrelate_in_select()
-        );
+        assert!(session
+            .statement_context(false)
+            .enable_no_decorrelate_in_select());
     }
 
     /// Go `ResetContextOfStmt` sets `sc.Priority` from the statement's own

@@ -213,6 +213,19 @@ impl fmt::Debug for ExpressionAdapterFailure {
     }
 }
 
+impl AsciiOwnerError {
+    /// Retains this native lifecycle/configuration cause for evaluation diagnostics.
+    ///
+    /// This explicit conversion accepts only the opaque native owner error, not
+    /// backend or bridge errors, and does not change generic error inference via
+    /// a new From implementation. It never creates SQL arithmetic status. Its
+    /// Arc allocation is outside the pool ledger, as with other adapter captures.
+    #[must_use]
+    pub fn into_eval_error(self) -> crate::EvalError {
+        crate::EvalError::ExpressionAdapterFailure(ExpressionAdapterFailure::from_owner(self))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::mem;
@@ -227,6 +240,28 @@ mod tests {
         ExpressionAdapterFailureClass as Class, ExpressionAdapterFailureOrigin as Origin,
         OwnerErrorKind, ScopeFailureKind,
     };
+
+    #[test]
+    fn public_owner_error_conversion_retains_the_native_cause() {
+        let cause =
+            AsciiPoolPolicy::checked(0, 1, usize::MAX, 1, 1, 64, 16, usize::MAX).unwrap_err();
+        let expected = cause.clone();
+        let native = cause.into_eval_error();
+        let crate::EvalError::ExpressionAdapterFailure(failure) = native else {
+            panic!("native owner error must retain its adapter origin");
+        };
+        assert_eq!(failure.class(), Class::PoolPolicy);
+        assert_eq!(failure.origin(), Origin::Pool);
+        let AdapterFailureCause::Owner(original) = failure.cause.as_ref() else {
+            panic!("native conversion changed the cause variant");
+        };
+        assert_eq!(original, &expected);
+        assert_eq!(failure.clone(), failure);
+        assert_eq!(
+            failure.client_message(),
+            "Expression runtime pool policy failure"
+        );
+    }
 
     #[test]
     fn all_owner_kinds_have_distinct_native_classes_and_fixed_messages() {

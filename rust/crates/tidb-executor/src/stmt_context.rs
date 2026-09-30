@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use tidb_datatype::Datum;
 use tidb_distsql::{ReplicaReadType, WarningCollector, WarningLevel};
-use tidb_expr::{Columns, CurrentTso, ErrorLevel, MysqlRng};
+use tidb_expr::{AsciiExecution, Columns, CurrentTso, ErrorLevel, MysqlRng};
 
 const MAX_WARNING_COUNT: usize = u16::MAX as usize;
 /// Go `vardef.DefDistSQLScanConcurrency`, the value a context built without
@@ -389,6 +389,11 @@ impl Default for StmtContextSessionState {
 pub struct StmtContextData {
     /// Go `StatementContext.CtxID`, unique for each newly created statement.
     context_id: u64,
+    /// Explicitly supplied execution capability, unrelated to `context_id`.
+    /// COW retains the same pool and epoch; context creation, cloning and drop
+    /// do not begin or close an execution. The external lifecycle owner does.
+    /// An affine, non-Sync `AsciiScope` must never live in this shared payload.
+    evaluated_ascii_execution: Option<AsciiExecution>,
     /// Go's `StaticWarnHandler` entries: a LEVEL, a code and a message.
     ///
     /// The level is not decoration. Go reaches this one buffer through three
@@ -976,6 +981,15 @@ macro_rules! context_configuration {
 }
 
 context_configuration! {
+    /// Attaches an already-created execution without beginning or closing one.
+    /// Context clones and COW configuration retain this same pool/epoch; this
+    /// neither supplies a default policy nor installs an operation scope.
+    #[must_use]
+    pub fn with_evaluated_ascii_execution(mut self, execution: AsciiExecution) -> Self {
+        self.evaluated_ascii_execution = Some(execution);
+        self
+    }
+
     /// Binds the transaction owner's selected-row channel for this attempt.
     #[must_use]
     pub fn with_selected_lock_keys(
@@ -1821,6 +1835,14 @@ impl Default for ExecutorChunkSizes {
 pub use crate::driver::SequenceSnapshot;
 
 impl StmtContext {
+    /// Borrows the supplied execution capability without opening a scope.
+    /// The external lifecycle owner remains responsible for closing its captured
+    /// epoch; a context clone is neither a new execution nor a close owner.
+    #[must_use]
+    pub fn evaluated_ascii_execution(&self) -> Option<&AsciiExecution> {
+        self.0.evaluated_ascii_execution.as_ref()
+    }
+
     /// Applies one setup batch, detaching shared configuration at most once.
     /// Statement effects keep their existing shared owners, as for with_* calls.
     #[must_use]
@@ -1843,6 +1865,7 @@ impl StmtContext {
             client_error_count: 0,
             client_warning_count: 0,
             context_id: NEXT_STATEMENT_CONTEXT_ID.fetch_add(1, Ordering::Relaxed),
+            evaluated_ascii_execution: None,
             warnings: Arc::default(),
             extra_warnings: Arc::default(),
             message: Arc::default(),
@@ -4039,6 +4062,10 @@ fn resolve_statement_clock(
 }
 
 impl Columns for StmtContext {
+    fn evaluated_ascii_execution(&self) -> Option<&AsciiExecution> {
+        StmtContext::evaluated_ascii_execution(self)
+    }
+
     fn context_id(&self) -> u64 {
         if self.context_id != 0 {
             self.context_id
@@ -4576,6 +4603,183 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn evaluated_ascii_execution_is_absent_from_all_context_constructors() {
+        assert!(StmtContextData::default()
+            .evaluated_ascii_execution
+            .is_none());
+        for context in [
+            StmtContext::default(),
+            StmtContext::for_query(),
+            StmtContext::for_query_with_memory(StatementMemory::default()),
+            StmtContext::for_query_with_session(
+                StatementMemory::default(),
+                StmtContextSessionState::default(),
+            ),
+            StmtContext::for_dml(true, true, false),
+            StmtContext::for_dml_with_memory(true, true, false, StatementMemory::default()),
+            StmtContext::for_dml_with_session(
+                true,
+                true,
+                false,
+                StatementMemory::default(),
+                StmtContextSessionState::default(),
+            ),
+        ] {
+            assert!(context.evaluated_ascii_execution().is_none());
+            let columns: &dyn Columns = &context;
+            assert!(columns.evaluated_ascii_execution().is_none());
+            assert!(columns.evaluated_ascii_scope().is_none());
+        }
+    }
+
+    #[test]
+    fn evaluated_ascii_execution_clones_and_cow_keep_the_captured_epoch() {
+        // Explicit test-only limits, never production defaults or a test factory.
+        let policy =
+            crate::AsciiPoolPolicy::checked(1, 1, usize::MAX, 1 << 20, 1 << 20, 64, 16, 1 << 20)
+                .unwrap();
+        let owner = crate::AsciiPoolOwner::new(policy).unwrap();
+        let execution: crate::AsciiExecution = owner.begin_execution().unwrap();
+        let unbound = StmtContext::for_query();
+        let context = unbound
+            .clone()
+            .with_evaluated_ascii_execution(execution.clone());
+        assert!(unbound.evaluated_ascii_execution().is_none());
+        assert!(!Arc::ptr_eq(&unbound.0, &context.0));
+
+        let clone = context.clone();
+        assert!(Arc::ptr_eq(&context.0, &clone.0));
+        let old_chunks = context.executor_chunk_sizes();
+        let cow = context.clone().with_executor_chunk_sizes(7, 23);
+        let configured = context.clone().configure(|config| {
+            let _ = config.with_max_allowed_packet(128);
+        });
+        let deref_cow = context.clone().with_resource_group_name("ascii-cow");
+        for detached in [&cow, &configured, &deref_cow] {
+            assert!(!Arc::ptr_eq(&context.0, &detached.0));
+        }
+        assert_eq!(context.executor_chunk_sizes(), old_chunks);
+        assert_eq!(cow.executor_chunk_sizes(), (7, 23));
+        assert_eq!(Columns::max_allowed_packet(&configured), 128);
+        assert_eq!(deref_cow.resource_group_name(), "ascii-cow");
+        assert_ne!(context.resource_group_name(), "ascii-cow");
+
+        let value = Datum::new_string(b"Az".to_vec());
+        for view in [&context, &clone, &cow, &configured, &deref_cow] {
+            let columns: &dyn Columns = view;
+            let borrowed = columns.evaluated_ascii_execution().unwrap();
+            assert!(std::ptr::eq(
+                view.evaluated_ascii_execution().unwrap(),
+                borrowed,
+            ));
+            assert!(columns.evaluated_ascii_scope().is_none());
+            // Each affine scope is local to this operation and drops before
+            // the next context demands the single real worker.
+            let scope = borrowed.scope();
+            assert_eq!(scope.evaluate_value(&value).unwrap(), Datum::Int(65));
+        }
+
+        execution.close();
+        for view in [&context, &clone, &cow, &configured, &deref_cow] {
+            let error = view
+                .evaluated_ascii_execution()
+                .unwrap()
+                .scope()
+                .evaluate_value(&value)
+                .expect_err("closing the captured epoch must invalidate every context view");
+            let crate::EvalError::ExpressionAdapterFailure(failure) = error else {
+                panic!("closed native execution must stay an adapter failure");
+            };
+            assert_eq!(
+                failure.class(),
+                crate::ExpressionAdapterFailureClass::PoolClosed
+            );
+            assert_eq!(
+                failure.origin(),
+                crate::ExpressionAdapterFailureOrigin::Pool
+            );
+        }
+
+        let successor = owner.begin_execution().unwrap();
+        let successor_context = context
+            .clone()
+            .with_evaluated_ascii_execution(successor.clone());
+        execution.close(); // A stale captured close must not close the successor.
+        for view in [&context, &clone, &cow, &configured, &deref_cow] {
+            assert!(matches!(
+                Columns::evaluated_ascii_execution(view)
+                    .unwrap()
+                    .scope()
+                    .evaluate_value(&value),
+                Err(crate::EvalError::ExpressionAdapterFailure(failure))
+                    if failure.class() == crate::ExpressionAdapterFailureClass::PoolClosed
+                        && failure.origin() == crate::ExpressionAdapterFailureOrigin::Pool
+            ));
+        }
+        assert_eq!(
+            successor_context
+                .evaluated_ascii_execution()
+                .unwrap()
+                .scope()
+                .evaluate_value(&value)
+                .unwrap(),
+            Datum::Int(65)
+        );
+        drop(successor_context); // A carrier is not a lifecycle close owner.
+        assert_eq!(
+            successor.scope().evaluate_value(&value).unwrap(),
+            Datum::Int(65)
+        );
+        successor.close();
+    }
+
+    #[test]
+    fn evaluated_ascii_execution_configure_binding_is_lazy_and_non_owning() {
+        // A zero-slot policy is legal: binding a context must not demand a worker.
+        let policy =
+            crate::AsciiPoolPolicy::checked(0, 0, usize::MAX, 1, 1, 64, 16, 1 << 20).unwrap();
+        let owner = crate::AsciiPoolOwner::new(policy).unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let unbound = StmtContext::for_query();
+        let bound = unbound.clone().configure(|config| {
+            let _ = config.with_evaluated_ascii_execution(execution.clone());
+        });
+        assert!(unbound.evaluated_ascii_execution().is_none());
+        let columns: &dyn Columns = &bound;
+        assert!(std::ptr::eq(
+            bound.evaluated_ascii_execution().unwrap(),
+            columns.evaluated_ascii_execution().unwrap(),
+        ));
+        assert!(columns.evaluated_ascii_scope().is_none());
+        drop(bound);
+
+        let error = execution
+            .scope()
+            .evaluate_value(&Datum::Int(65))
+            .expect_err("the original live epoch still has a zero-slot pool");
+        let crate::EvalError::ExpressionAdapterFailure(failure) = error else {
+            panic!("native pool refusal must not become a backend error");
+        };
+        assert_eq!(
+            failure.class(),
+            crate::ExpressionAdapterFailureClass::PoolResource
+        );
+        assert_eq!(
+            failure.origin(),
+            crate::ExpressionAdapterFailureOrigin::Pool
+        );
+        execution.close();
+    }
+
+    #[test]
+    fn evaluated_ascii_execution_carrier_keeps_statement_context_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<crate::AsciiExecution>();
+        assert_send_sync::<StmtContextData>();
+        assert_send_sync::<StmtContext>();
+    }
 
     #[test]
     fn stats_load_wait_is_capped_and_failure_state_is_shared_by_clones() {

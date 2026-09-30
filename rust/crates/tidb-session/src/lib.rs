@@ -455,6 +455,8 @@ pub struct Session {
     /// fresh child below these roots, so an open cursor remains counted when
     /// the client starts its next command.
     session_memory: tidb_executor::SessionMemory,
+    /// Explicit, dormant ASCII ownership; no pool exists until installation.
+    evaluated_ascii_runtime: ascii_runtime::SessionAsciiRuntime,
     /// The current statement's actual result-retention authority.
     ///
     /// Go retains `SessionVars.StmtCtx` until the next statement reset and a
@@ -850,6 +852,7 @@ impl Session {
                 tidb_executor::OomAction::Cancel,
                 0,
             ),
+            evaluated_ascii_runtime: ascii_runtime::SessionAsciiRuntime::default(),
             statement_result_authority: std::cell::RefCell::new(None),
             current_sql_digest_key: String::new(),
             statement_normalized_sql: None,
@@ -937,6 +940,34 @@ impl Session {
         }
     }
 
+    /// Installs an explicit experimental ASCII pool policy exactly once.
+    ///
+    /// `Ok(false)` means a policy is already installed or a lexical statement
+    /// operation is active, including an operation without an installed pool.
+    /// Rejection occurs before constructing a pool and leaves the existing root
+    /// unchanged. The session creates and retains its own root; callers cannot
+    /// install a shared owner or reconfigure away outstanding worker debt.
+    ///
+    /// This supplies no default policy and does not activate SQL ASCII dispatch.
+    /// Contexts only carry executions admitted by the statement entrypoints;
+    /// parameter binding and metadata-only planning remain pre-admission work.
+    /// The pool's fixed-pin conditional accounting still excludes caller handles,
+    /// session ownership bookkeeping, native coercion and error-carrier storage.
+    pub fn try_install_evaluated_ascii_policy(
+        &mut self,
+        policy: tidb_executor::AsciiPoolPolicy,
+    ) -> Result<bool, tidb_executor::AsciiOwnerError> {
+        self.evaluated_ascii_runtime.try_install(policy)
+    }
+
+    fn enter_evaluated_ascii_statement(
+        &mut self,
+    ) -> Result<ascii_runtime::AsciiStatementEntry, DriverError> {
+        self.evaluated_ascii_runtime.enter().map_err(|error| {
+            DriverError::from(tidb_executor::ExecError::from(error.into_eval_error()))
+        })
+    }
+
     fn breakpoint_notify_func(&self) -> Option<Arc<dyn Fn(String) + Send + Sync + 'static>> {
         self.context_values
             .get(tidb_util::breakpoint::NOTIFY_BREAK_POINT_FUNC_KEY)
@@ -1012,6 +1043,8 @@ impl Default for Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
+        // Invalidate first, before any other teardown that could unwind.
+        self.evaluated_ascii_runtime.shutdown();
         if let Some(collector) = &self.session_index_usage_collector {
             collector
                 .lock()
@@ -1038,6 +1071,7 @@ mod account;
 mod account_password;
 mod admin_check_arm;
 mod analyze_arm;
+mod ascii_runtime;
 pub mod binding;
 mod binding_arm;
 pub mod binding_cache;
@@ -2041,6 +2075,7 @@ impl Session {
         execute: impl FnOnce(&mut Self) -> Result<StmtOutput, DriverError>,
     ) -> Result<(StmtOutput, Option<ResultMaterializationAuthority>), DriverError> {
         self.begin_statement_execution(sql)?;
+        let _runtime = self.enter_evaluated_ascii_statement()?;
         let table_delta_savepoint = self.table_delta_savepoint();
         let result = execute(self);
         if result.is_err() {

@@ -475,3 +475,712 @@ fn update_and_delete_through_the_session() {
         StmtKind::Write
     );
 }
+
+// Explicit test limits, not production defaults. These tests exercise the real
+// already-evaluated value API; they make no SQL-kernel migration claim.
+fn ascii_session_policy(workers: usize) -> tidb_executor::AsciiPoolPolicy {
+    tidb_executor::AsciiPoolPolicy::checked(
+        workers,
+        workers.min(1),
+        1 << 24,
+        1 << 20,
+        1 << 20,
+        64,
+        16,
+        1 << 20,
+    )
+    .unwrap()
+}
+
+fn ascii_session_execution(context: &tidb_executor::StmtContext) -> tidb_executor::AsciiExecution {
+    context.evaluated_ascii_execution().unwrap().clone()
+}
+
+fn ascii_session_rows(session: &mut Session, sql: &str) -> StatementRecordSet {
+    let statement = session.parse_statement(sql).unwrap();
+    match session.open_record_set_parsed(statement, sql).unwrap() {
+        OpenedStatement::Rows(rows) => rows,
+        OpenedStatement::Complete(_) => panic!("expected a real opened query"),
+    }
+}
+
+fn assert_ascii_session_failure(
+    execution: &tidb_executor::AsciiExecution,
+    expected: tidb_executor::ExpressionAdapterFailureClass,
+) {
+    // Never probe an old held worker for staleness: doing so would actively
+    // dispose of its cached worker and invalidate the late-debt experiment.
+    match execution.scope().evaluate_value(&Datum::Null) {
+        Err(tidb_executor::EvalError::ExpressionAdapterFailure(failure)) => {
+            assert_eq!(failure.class(), expected);
+            assert_eq!(
+                failure.origin(),
+                tidb_executor::ExpressionAdapterFailureOrigin::Pool
+            );
+        }
+        other => panic!("expected a typed pool failure, got {other:?}"),
+    }
+}
+
+fn assert_ascii_session_live(execution: &tidb_executor::AsciiExecution) {
+    assert_eq!(
+        execution.scope().evaluate_value(&Datum::Null).unwrap(),
+        Datum::Null
+    );
+}
+
+#[test]
+fn evaluated_ascii_session_installation_is_explicit_busy_safe_and_dormant() {
+    let mut session = Session::new();
+    for is_dml in [false, true] {
+        assert!(session
+            .statement_context(is_dml)
+            .evaluated_ascii_execution()
+            .is_none());
+    }
+    session
+        .run("CREATE TABLE ascii_dormant (id INT, v VARBINARY(8))")
+        .unwrap();
+    session
+        .run("INSERT INTO ascii_dormant VALUES (1,'A'),(2,NULL),(3,'')")
+        .unwrap();
+    session
+        .run_with_columns_using("SELECT 1", false, |session| {
+            assert!(!session
+                .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+                .unwrap());
+            for is_dml in [false, true] {
+                assert!(session
+                    .statement_context(is_dml)
+                    .evaluated_ascii_execution()
+                    .is_none());
+            }
+            session.execute_statement("SELECT 1")
+        })
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    assert!(!session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    assert!(session
+        .evaluated_ascii_runtime
+        .latest_execution_for_test()
+        .is_none());
+
+    let sql = "SELECT ASCII(v) FROM ascii_dormant ORDER BY id";
+    let (output, _) = session
+        .run_with_columns_using(sql, false, |session| {
+            for is_dml in [false, true] {
+                let context = session.statement_context(is_dml);
+                assert_ascii_session_failure(
+                    context.evaluated_ascii_execution().unwrap(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource,
+                );
+            }
+            // A non-folded SQL column still takes the existing native dispatcher.
+            session.execute_statement(sql)
+        })
+        .unwrap();
+    let StmtOutput::Rows { rows, .. } = output else {
+        panic!("expected rows")
+    };
+    assert_eq!(
+        rows,
+        vec![vec![Datum::Int(65)], vec![Datum::Null], vec![Datum::Int(0)]]
+    );
+    assert!(session
+        .statement_context(false)
+        .evaluated_ascii_execution()
+        .is_none());
+    assert_ascii_session_failure(
+        session
+            .evaluated_ascii_runtime
+            .latest_execution_for_test()
+            .unwrap(),
+        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+    );
+}
+
+#[test]
+fn evaluated_ascii_session_contexts_and_cow_borrow_one_live_execution() {
+    let mut session = Session::new();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let mut saved = Vec::new();
+    session
+        .run_with_columns_using("SELECT 1", false, |session| {
+            let query = session.statement_context(false);
+            let dml = session.statement_context(true);
+            let original_sizes = query.executor_chunk_sizes();
+            let cow = query.clone().with_executor_chunk_sizes(7, 23);
+            let configured = query.clone().configure(|context| {
+                let _ = context.with_max_allowed_packet(128);
+            });
+            let held = query.evaluated_ascii_execution().unwrap().scope();
+            assert_eq!(
+                held.evaluate_value(&Datum::Bytes(b"A".to_vec())).unwrap(),
+                Datum::Int(65)
+            );
+            let repeated = session.statement_context(false);
+            drop(session.statement_context(true));
+            assert_eq!(held.evaluate_value(&Datum::Null).unwrap(), Datum::Null);
+            drop(held);
+            assert_eq!(query.executor_chunk_sizes(), original_sizes);
+            assert_eq!(cow.executor_chunk_sizes(), (7, 23));
+            for context in [query.clone(), query, dml, cow, configured, repeated] {
+                let columns: &dyn tidb_executor::Columns = &context;
+                assert!(columns.evaluated_ascii_scope().is_none());
+                assert!(std::ptr::eq(
+                    columns.evaluated_ascii_execution().unwrap(),
+                    context.evaluated_ascii_execution().unwrap()
+                ));
+                let scope = context.evaluated_ascii_execution().unwrap().scope();
+                assert_eq!(scope.evaluate_value(&Datum::Null).unwrap(), Datum::Null);
+                assert_eq!(
+                    scope.evaluate_value(&Datum::Bytes(vec![255])).unwrap(),
+                    Datum::Int(255)
+                );
+                saved.push(context);
+            }
+            session.execute_statement("SELECT 1")
+        })
+        .unwrap();
+    for context in saved {
+        assert_ascii_session_failure(
+            context.evaluated_ascii_execution().unwrap(),
+            tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+        );
+    }
+}
+
+#[test]
+fn evaluated_ascii_real_execute_and_import_borrow_the_outer_epoch() {
+    let mut session = Session::new();
+    session
+        .run("CREATE TABLE ascii_updates (id INT PRIMARY KEY, v INT)")
+        .unwrap();
+    session
+        .run("INSERT INTO ascii_updates VALUES (1,10),(2,20)")
+        .unwrap();
+    session
+        .run("CREATE TABLE ascii_imported (id INT PRIMARY KEY, v INT)")
+        .unwrap();
+    session
+        .run("PREPARE ascii_update FROM 'UPDATE ascii_updates SET v=? WHERE id=?'")
+        .unwrap();
+    session.run("SET @v=11, @id=1").unwrap();
+    session.run("EXECUTE ascii_update USING @v,@id").unwrap();
+    session.run("SET @v=22, @id=2").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    for (sql, affected) in [
+        ("EXECUTE ascii_update USING @v,@id", 1),
+        (
+            "IMPORT INTO ascii_imported FROM SELECT * FROM ascii_updates",
+            2,
+        ),
+    ] {
+        let mut captured = None;
+        let (output, _) = session
+            .run_with_columns_using(sql, false, |session| {
+                let execution = ascii_session_execution(&session.statement_context(false));
+                let held = execution.scope();
+                assert_eq!(held.evaluate_value(&Datum::Null).unwrap(), Datum::Null);
+                let output = session.execute_statement(sql)?;
+                if sql.starts_with("EXECUTE") {
+                    assert!(
+                        session.found_in_plan_cache,
+                        "exercise the cached UPDATE branch"
+                    );
+                }
+                // IMPORT executes both its COUNT precheck and INSERT SELECT through
+                // self.run; none of those inner reset/finish calls owns this epoch.
+                assert_eq!(
+                    held.evaluate_value(&Datum::Bytes(b"Z".to_vec())).unwrap(),
+                    Datum::Int(90)
+                );
+                captured = Some(execution);
+                Ok(output)
+            })
+            .unwrap();
+        assert!(matches!(output, StmtOutput::Affected(count) if count == affected));
+        assert_ascii_session_failure(
+            &captured.unwrap(),
+            tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+        );
+    }
+    assert_eq!(
+        row_text(session.run("SELECT id,v FROM ascii_imported ORDER BY id")),
+        [["1", "11"], ["2", "22"]]
+    );
+}
+
+#[test]
+fn evaluated_ascii_stream_next_eof_and_cancellation_do_not_close() {
+    let mut session = Session::new();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let mut rows = ascii_session_rows(&mut session, "SELECT 1");
+    let execution = ascii_session_execution(rows.context_for_test());
+    let mut chunk = rows.new_chunk();
+    rows.next(&mut session, &mut chunk).unwrap();
+    assert_eq!(chunk.num_rows(), 1);
+    assert_ascii_session_live(&execution);
+    rows.next(&mut session, &mut chunk).unwrap();
+    assert_eq!(chunk.num_rows(), 0);
+    assert_ascii_session_live(&execution);
+    let cancellation = session.begin_query_cancellation();
+    cancellation.cancel();
+    // The record set is NOT finished: this is the real native cancellation
+    // error, not Next's separate post-finish 1317 fast path.
+    assert_eq!(
+        rows.next(&mut session, &mut chunk)
+            .unwrap_err()
+            .to_mysql_error()
+            .code,
+        1317
+    );
+    assert_ascii_session_live(&execution);
+    drop(cancellation);
+    rows.finish(&mut session).unwrap();
+    assert_ascii_session_failure(
+        &execution,
+        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+    );
+    rows.finish(&mut session).unwrap();
+    rows.close(&mut session).unwrap();
+    rows.close(&mut session).unwrap();
+}
+
+#[test]
+fn evaluated_ascii_retain_and_finish_native_errors_still_close() {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    let mut session = Session::new();
+    session
+        .run("CREATE TABLE ascii_finish_error (id INT)")
+        .unwrap();
+    session
+        .run("INSERT INTO ascii_finish_error VALUES (1)")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let mut rows = ascii_session_rows(&mut session, "SELECT id FROM ascii_finish_error");
+    let execution = ascii_session_execution(rows.context_for_test());
+    assert_ascii_session_live(&execution);
+    let cancellation = session.begin_query_cancellation();
+    cancellation.cancel();
+    assert_eq!(
+        rows.retain_chunks(&mut session)
+            .unwrap_err()
+            .to_mysql_error()
+            .code,
+        1317
+    );
+    assert_ascii_session_failure(
+        &execution,
+        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+    );
+    drop(cancellation);
+    rows.close(&mut session).unwrap();
+
+    let mut rows = ascii_session_rows(&mut session, "SELECT id FROM ascii_finish_error");
+    let execution = ascii_session_execution(rows.context_for_test());
+    assert_ascii_session_live(&execution);
+    // A real native transaction-finish error, not a substituted RS or C4
+    // factory: AutocommitRead cannot acquire this deliberately poisoned catalog.
+    let catalog = session.shared_catalog();
+    assert!(catch_unwind(AssertUnwindSafe(|| {
+        let _lock = catalog.lock().unwrap();
+        panic!("native catalog poison");
+    }))
+    .is_err());
+    assert!(matches!(
+        rows.finish(&mut session),
+        Err(DriverError::CatalogPoisoned)
+    ));
+    assert_ascii_session_failure(
+        &execution,
+        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+    );
+    rows.finish(&mut session).unwrap();
+    drop(rows);
+}
+
+#[test]
+fn evaluated_ascii_detached_old_close_preserves_new_epoch_and_late_worker_debt() {
+    let mut session = Session::new();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let mut old_rows = ascii_session_rows(&mut session, "SELECT 1");
+    let old_execution = ascii_session_execution(old_rows.context_for_test());
+    let held = old_execution.scope();
+    assert_eq!(held.evaluate_value(&Datum::Null).unwrap(), Datum::Null);
+    let mut new_rows = ascii_session_rows(&mut session, "SELECT 2");
+    let new_execution = ascii_session_execution(new_rows.context_for_test());
+    assert_ascii_session_failure(
+        &old_execution,
+        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+    );
+    assert_ascii_session_failure(
+        &new_execution,
+        tidb_executor::ExpressionAdapterFailureClass::PoolResource,
+    );
+    old_rows.close(&mut session).unwrap();
+    assert_ascii_session_failure(
+        &new_execution,
+        tidb_executor::ExpressionAdapterFailureClass::PoolResource,
+    );
+    // Closing E1 cannot release a worker still owned by a late affine scope.
+    drop(held);
+    assert_ascii_session_live(&new_execution);
+    drop(old_rows);
+    assert_ascii_session_live(&new_execution);
+    new_rows.close(&mut session).unwrap();
+    assert_ascii_session_failure(
+        &new_execution,
+        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+    );
+}
+
+#[test]
+fn evaluated_ascii_attached_detached_and_session_drop_close_captured_epochs() {
+    let mut session = Session::new();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let rows = ascii_session_rows(&mut session, "SELECT 1");
+    let execution = ascii_session_execution(rows.context_for_test());
+    assert_ascii_session_live(&execution);
+    drop(OpenedStatement::Rows(rows).attach(&mut session));
+    assert_ascii_session_failure(
+        &execution,
+        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+    );
+    let rows = ascii_session_rows(&mut session, "SELECT 2");
+    let execution = ascii_session_execution(rows.context_for_test());
+    assert_ascii_session_live(&execution);
+    drop(rows);
+    assert_ascii_session_failure(
+        &execution,
+        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+    );
+    let rows = ascii_session_rows(&mut session, "SELECT 3");
+    let context = rows.context_for_test().clone();
+    let execution = ascii_session_execution(&context);
+    assert_ascii_session_live(&execution);
+    drop(session);
+    assert_ascii_session_failure(
+        &execution,
+        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+    );
+    assert_ascii_session_failure(
+        context.evaluated_ascii_execution().unwrap(),
+        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+    );
+    drop(rows);
+}
+
+#[test]
+fn evaluated_ascii_real_point_get_none_fallback_closes_its_attempt() {
+    let mut session = Session::new();
+    session
+        .run("CREATE TABLE ascii_point (id INT PRIMARY KEY, v INT)")
+        .unwrap();
+    session.run("INSERT INTO ascii_point VALUES (1,9)").unwrap();
+    let sql = "SELECT v FROM ascii_point WHERE id=?";
+    let prepared = session.prepare_ast(sql).unwrap();
+    let plan = prepared.point_get_plan().unwrap();
+    let execution = session
+        .bind_cached_prepared_point_get(&plan, &[Datum::Int(1)])
+        .unwrap();
+    session
+        .run("ALTER TABLE ascii_point ADD COLUMN added INT")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    assert!(session
+        .open_prepared_point_get(execution, prepared.statement(), sql)
+        .unwrap()
+        .is_none());
+    assert_ascii_session_failure(
+        session
+            .evaluated_ascii_runtime
+            .latest_execution_for_test()
+            .unwrap(),
+        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+    );
+    let output = session.run_with_params(sql, &[Datum::Int(1)]).unwrap();
+    let StmtOutput::Rows { rows, .. } = output else {
+        panic!("expected fallback rows")
+    };
+    assert_eq!(rows, vec![vec![Datum::Int(9)]]);
+    assert_ascii_session_failure(
+        session
+            .evaluated_ascii_runtime
+            .latest_execution_for_test()
+            .unwrap(),
+        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+    );
+}
+
+#[test]
+fn evaluated_ascii_pre_admission_rejections_preserve_detached_epoch() {
+    let mut session = Session::new();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let rows = ascii_session_rows(&mut session, "SELECT 1");
+    let execution = ascii_session_execution(rows.context_for_test());
+    assert_ascii_session_live(&execution);
+    let metadata_statement = session.parse_statement("SELECT 9").unwrap();
+    assert_eq!(
+        session
+            .plan_bound_prepared_columns(metadata_statement)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_ascii_session_live(&execution);
+    assert!(session.run_with_params("SELECT ?", &[]).is_err());
+    assert_ascii_session_live(&execution);
+    session.enable_sandbox_mode();
+    assert_eq!(
+        session.run("SELECT 1").unwrap_err().to_mysql_error().code,
+        1820
+    );
+    assert_ascii_session_live(&execution);
+    // Syntax parsing is post-admission (sandbox lets syntax errors through).
+    assert!(session.run("SELECT (").is_err());
+    assert_ascii_session_failure(
+        &execution,
+        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+    );
+    assert_ascii_session_failure(
+        session
+            .evaluated_ascii_runtime
+            .latest_execution_for_test()
+            .unwrap(),
+        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+    );
+    drop(rows);
+}
+
+#[test]
+fn evaluated_ascii_materialization_closes_live_epoch_before_retained_replay() {
+    let mut session = Session::new();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let mut old_rows = ascii_session_rows(&mut session, "SELECT 7");
+    let execution = ascii_session_execution(old_rows.context_for_test());
+    let authority = session.result_materialization_authority();
+    assert_ascii_session_live(&execution);
+    old_rows.retain_chunks(&mut session).unwrap();
+    assert_ascii_session_failure(
+        &execution,
+        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+    );
+    let mut new_rows = ascii_session_rows(&mut session, "SELECT 8");
+    let new_execution = ascii_session_execution(new_rows.context_for_test());
+    let mut chunk = old_rows.new_chunk();
+    old_rows.next(&mut session, &mut chunk).unwrap();
+    assert_eq!(chunk.num_rows(), 1);
+    old_rows.next(&mut session, &mut chunk).unwrap();
+    assert_eq!(chunk.num_rows(), 0);
+    assert_ascii_session_live(&new_execution);
+    old_rows.close(&mut session).unwrap();
+    drop(old_rows);
+    drop(authority);
+    assert_ascii_session_live(&new_execution);
+    new_rows.close(&mut session).unwrap();
+}
+
+#[test]
+fn evaluated_ascii_native_epilogue_unwinds_close_live_owning_results() {
+    use crate::record_set::{set_native_epilogue_for_test, NativeEpilogue};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    let mut session = Session::new();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    for phase in [
+        NativeEpilogue::Next,
+        NativeEpilogue::Finish,
+        NativeEpilogue::Retain,
+    ] {
+        let mut rows = ascii_session_rows(&mut session, "SELECT 1");
+        let execution = ascii_session_execution(rows.context_for_test());
+        assert_ascii_session_live(&execution);
+        let probe = execution.clone();
+        set_native_epilogue_for_test(phase, move || {
+            // The real native operation has returned; its epilogue can still
+            // use the live C4 capability before unwinding through our guard.
+            assert_ascii_session_live(&probe);
+            panic!("ASCII native epilogue");
+        });
+        let outcome = catch_unwind(AssertUnwindSafe(|| match phase {
+            NativeEpilogue::Next => {
+                let mut chunk = rows.new_chunk();
+                let _ = rows.next(&mut session, &mut chunk);
+            }
+            NativeEpilogue::Finish => {
+                let _ = rows.finish(&mut session);
+            }
+            NativeEpilogue::Retain => {
+                let _ = rows.retain_chunks(&mut session);
+            }
+        }));
+        let payload = outcome.unwrap_err();
+        assert_eq!(
+            payload.downcast_ref::<&str>().copied(),
+            Some("ASCII native epilogue")
+        );
+        // The result object is deliberately still alive after the catcher.
+        assert_ascii_session_failure(
+            &execution,
+            tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+        );
+        rows.finish(&mut session).unwrap();
+        rows.close(&mut session).unwrap();
+    }
+}
+
+#[test]
+fn evaluated_ascii_borrowed_result_panic_and_close_do_not_own_outer_epoch() {
+    use crate::record_set::{set_native_epilogue_for_test, NativeEpilogue};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    let mut session = Session::new();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let mut captured = None;
+    session
+        .run_with_columns_using("SELECT 1", false, |session| {
+            let execution = ascii_session_execution(&session.statement_context(false));
+            let held = execution.scope();
+            assert_eq!(held.evaluate_value(&Datum::Null).unwrap(), Datum::Null);
+            let mut rows = ascii_session_rows(session, "SELECT 1");
+            set_native_epilogue_for_test(NativeEpilogue::Next, || {
+                panic!("borrowed native epilogue")
+            });
+            let mut chunk = rows.new_chunk();
+            let payload = catch_unwind(AssertUnwindSafe(|| {
+                let _ = rows.next(session, &mut chunk);
+            }))
+            .unwrap_err();
+            assert_eq!(
+                payload.downcast_ref::<&str>().copied(),
+                Some("borrowed native epilogue")
+            );
+            assert_eq!(held.evaluate_value(&Datum::Null).unwrap(), Datum::Null);
+            rows.finish(session).unwrap();
+            rows.close(session).unwrap();
+            drop(rows);
+            assert_eq!(held.evaluate_value(&Datum::Null).unwrap(), Datum::Null);
+            captured = Some(execution);
+            Ok(StmtOutput::Done(true))
+        })
+        .unwrap();
+    assert_ascii_session_failure(
+        &captured.unwrap(),
+        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+    );
+}
+
+#[test]
+fn evaluated_ascii_outer_unwind_resets_marker_and_session_roots_are_isolated() {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    let mut session = Session::new();
+    let payload = catch_unwind(AssertUnwindSafe(|| {
+        let _ = session.run_with_columns_using("SELECT 1", false, |session| {
+            assert!(!session
+                .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+                .unwrap());
+            panic!("unconfigured lexical unwind");
+        });
+    }))
+    .unwrap_err();
+    assert_eq!(
+        payload.downcast_ref::<&str>().copied(),
+        Some("unconfigured lexical unwind")
+    );
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // Independent sessions must not share a root even with identical policy.
+    let mut peer = Session::new();
+    assert!(peer
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let peer_rows = ascii_session_rows(&mut peer, "SELECT 2");
+    let peer_execution = ascii_session_execution(peer_rows.context_for_test());
+    let peer_scope = peer_execution.scope();
+    assert_eq!(
+        peer_scope.evaluate_value(&Datum::Null).unwrap(),
+        Datum::Null
+    );
+    let payload = catch_unwind(AssertUnwindSafe(|| {
+        let _ = session.run_with_columns_using("SELECT 1", false, |session| {
+            assert_ascii_session_live(&ascii_session_execution(&session.statement_context(false)));
+            panic!("configured lexical unwind");
+        });
+    }))
+    .unwrap_err();
+    assert_eq!(
+        payload.downcast_ref::<&str>().copied(),
+        Some("configured lexical unwind")
+    );
+    assert_ascii_session_failure(
+        session
+            .evaluated_ascii_runtime
+            .latest_execution_for_test()
+            .unwrap(),
+        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+    );
+    let rows = ascii_session_rows(&mut session, "SELECT 3");
+    let execution = ascii_session_execution(rows.context_for_test());
+    assert_ascii_session_live(&execution); // stale true marker would borrow the closed epoch
+    drop(rows);
+    drop(session);
+    assert_eq!(
+        peer_scope.evaluate_value(&Datum::Null).unwrap(),
+        Datum::Null
+    );
+    drop(peer_scope);
+    drop(peer_rows);
+}
+
+#[test]
+fn evaluated_ascii_unwrapped_public_execute_statement_owns_its_epoch() {
+    let mut session = Session::new();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    assert!(matches!(
+        session.execute_statement("SELECT 1").unwrap(),
+        StmtOutput::Rows { .. }
+    ));
+    assert_ascii_session_failure(
+        session
+            .evaluated_ascii_runtime
+            .latest_execution_for_test()
+            .unwrap(),
+        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+    );
+    assert!(session.execute_statement("SELECT (").is_err());
+    assert_ascii_session_failure(
+        session
+            .evaluated_ascii_runtime
+            .latest_execution_for_test()
+            .unwrap(),
+        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+    );
+}

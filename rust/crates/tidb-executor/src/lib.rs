@@ -297,8 +297,17 @@ pub use tidb_expr::{
     eval_in, like_match_with_collation, truthy_of, BlockEncryptionMode, Columns, EvalError,
     JsonError, MysqlRng, SessionTimeZone,
 };
+/// Explicit native runtime capabilities and adapter diagnostics for session
+/// lifecycle ownership; reexporting them installs no default runtime or scope.
+pub use tidb_expr::{
+    AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy,
+    ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,
+};
 pub use topn::TopNExec;
-pub use view::{resolve_view_definition, run_alter_view_in, run_create_view_in, run_drop_view_in, view_column_list};
+pub use view::{
+    resolve_view_definition, run_alter_view_in, run_create_view_in, run_drop_view_in,
+    view_column_list,
+};
 
 #[cfg(test)]
 mod tests_admin_check_admintest_source;
