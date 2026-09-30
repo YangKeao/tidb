@@ -14,8 +14,8 @@
 
 //! Opaque ownership of a C4 failure at the TiDB boundary.
 //!
-//! This module does not register a caller or change `EvalError`. A future native
-//! error variant can retain this payload while keeping its existing
+//! This module does not register an evaluator caller. The native `EvalError`
+//! variant retains this payload while keeping its existing
 //! `Debug + Clone + PartialEq + Eq` contract. The backend error is moved once,
 //! never cloned, parsed, rendered into a replacement cause, or re-evaluated.
 //!
@@ -140,9 +140,9 @@ impl ExpressionRuntimeFailure {
 
     /// Returns the fixed native class text, never a rendered backend cause.
     ///
-    /// Future SQL wiring must use the existing `MysqlError::unknown` 1105/HY000
-    /// route and preserve the existing Eval `from_evaluation` handling. This
-    /// accessor does not itself build a SQL error or override native wrappers.
+    /// The executor's terminal renderer uses the existing `MysqlError::unknown`
+    /// 1105/HY000 route and the Eval `from_evaluation` handling. This accessor
+    /// does not itself build a SQL error or override native wrappers.
     #[must_use]
     pub fn client_message(&self) -> &'static str {
         self.class().client_message()
@@ -190,6 +190,38 @@ mod tests {
         ExpressionRuntimeFailure, ExpressionRuntimeFailureClass as Class,
         ExpressionRuntimeFailurePhase as Phase, LocalError,
     };
+
+    #[test]
+    fn native_eval_error_keeps_owned_cause_identity_and_redaction() {
+        fn native_traits<T: Clone + Eq + std::fmt::Debug + Send + Sync>() {}
+        native_traits::<crate::EvalError>();
+        let cause = LocalError::ResourceLimit("private backend reason 1690".to_owned());
+        let failure = ExpressionRuntimeFailure::from_ascii_local(cause, Some(Phase::Invoke));
+        let original = failure.clone();
+        let native = crate::EvalError::ExpressionRuntimeFailure(failure);
+        let cloned = native.clone();
+        assert_eq!(native, cloned);
+        assert_ne!(
+            native,
+            crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+                LocalError::ResourceLimit("private backend reason 1690".to_owned()),
+                Some(Phase::Invoke),
+            ))
+        );
+        drop(native);
+        let crate::EvalError::ExpressionRuntimeFailure(retained) = cloned else {
+            panic!("native error changed its variant");
+        };
+        assert!(ptr::eq(retained.local_error(), original.local_error()));
+        assert_eq!(retained.phase(), Some(Phase::Invoke));
+        assert_eq!(retained.class(), Class::ResourceLimit);
+        let rendered_debug = format!("{:?}", crate::EvalError::ExpressionRuntimeFailure(retained));
+        assert!(rendered_debug.contains("ResourceLimit"));
+        assert!(!rendered_debug.contains("private backend reason"));
+        assert!(!rendered_debug.contains("1690"));
+        // This tests the real native envelope, not a SQL renderer or a public
+        // producer; those boundaries have separate integration obligations.
+    }
 
     #[test]
     fn six_outer_variants_keep_distinct_classes_and_fixed_messages() {

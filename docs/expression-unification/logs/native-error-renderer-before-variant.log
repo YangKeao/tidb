@@ -1,0 +1,3420 @@
+warning: feature `core_intrinsics` is declared but not used
+  --> /home/agent/tidb/expression-unification/tikv/components/tikv_alloc/src/lib.rs:88:12
+   |
+88 | #![feature(core_intrinsics)]
+   |            ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_features)]` (part of `#[warn(unused)]`) on by default
+
+warning: `tikv_alloc` (lib) generated 1 warning
+warning: use of deprecated macro `::slog::slog_debug`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:77:5
+    |
+ 77 |     ::slog_global::debug!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/codec/bytes.rs:112:13
+    |
+112 |             debug!("failed to decode bytes' length: {:?}", e);
+    |             ------------------------------------------------- in this macro invocation
+    |
+    = note: `#[warn(deprecated)]` on by default
+    = note: this warning originates in the macro `::slog_global::debug` which comes from the expansion of the macro `debug` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+    --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:71:5
+     |
+  71 |     ::slog_global::info!($($args)+)
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/config.rs:1050:9
+     |
+1050 |         info!("kernel parameters"; "param" => param, "value" => got);
+     |         ------------------------------------------------------------ in this macro invocation
+     |
+     = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+    --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:71:5
+     |
+  71 |     ::slog_global::info!($($args)+)
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/config.rs:1237:9
+     |
+1237 |         info!("data dir"; "data_path" => data_path, "mount_fs" => ?fs_info);
+     |         ------------------------------------------------------------------- in this macro invocation
+     |
+     = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+    --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+     |
+  65 |     ::slog_global::warn!($($args)+)
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/config.rs:1240:13
+     |
+1240 |             warn!("not on SSD device"; "data_path" => data_path);
+     |             ---------------------------------------------------- in this macro invocation
+     |
+     = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+    --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+     |
+  65 |       ::slog_global::warn!($($args)+)
+     |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/config.rs:1494:21
+     |
+1494 | /                     slow_log!(
+1495 | |                         t.saturating_elapsed(),
+1496 | |                         "{} tracker get updated value",
+1497 | |                         self.tag
+1498 | |                     );
+     | |_____________________- in this macro invocation
+     |
+     = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `slow_log` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+    --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:71:5
+     |
+  71 |     ::slog_global::info!($($args)+)
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/config.rs:1897:17
+     |
+1897 |                 info!("Removing directory"; "path" => %path.display());
+     |                 ------------------------------------------------------ in this macro invocation
+     |
+     = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+    --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:71:5
+     |
+  71 |     ::slog_global::info!($($args)+)
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/config.rs:1902:17
+     |
+1902 |                 info!("Removing file"; "path" => %path.display());
+     |                 ------------------------------------------------- in this macro invocation
+     |
+     = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+    --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:71:5
+     |
+  71 |     ::slog_global::info!($($args)+)
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/config.rs:1912:13
+     |
+1912 |             info!("Path not exists"; "path" => %remove_path.display());
+     |             ---------------------------------------------------------- in this macro invocation
+     |
+     = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+    --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:71:5
+     |
+  71 |     ::slog_global::info!($($args)+)
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/config.rs:1916:13
+     |
+1916 |             info!("Path is not a directory, so remove directly"; "path" => %remove_path.display());
+     |             -------------------------------------------------------------------------------------- in this macro invocation
+     |
+     = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+    --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:71:5
+     |
+  71 |     ::slog_global::info!($($args)+)
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/config.rs:1921:13
+     |
+1921 | ...   info!("Removing directory as retain path is not under remove path"; "retain path" => %retain_path.display(), "remove path" => %remove_path.display());
+     |       ----------------------------------------------------------------------------------------------------------------------------------------------------- in this macro invocation
+     |
+     = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+  --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+   |
+65 |     ::slog_global::warn!($($args)+)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+  ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/future.rs:34:13
+   |
+34 |             warn!("paired_future_callback: Failed to send result to the future rx, discarded.");
+   |             ----------------------------------------------------------------------------------- in this macro invocation
+   |
+   = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+  --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+   |
+65 |     ::slog_global::warn!($($args)+)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+  ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/future.rs:51:17
+   |
+51 |                 warn!("paired_future_callback: Failed to send result to the future rx, discarded.");
+   |                 ----------------------------------------------------------------------------------- in this macro invocation
+   |
+   = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+  --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+   |
+65 |     ::slog_global::warn!($($args)+)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+  ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/future.rs:77:22
+   |
+77 |         .map_err(|e| warn!("stream with buffer send error"; "error" => %e))
+   |                      ----------------------------------------------------- in this macro invocation
+   |
+   = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_error`: Use fully qualified macro slog::crit!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:35:9
+    |
+ 35 |         ::slog_global::error!($($args)+)
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/logger/file_log.rs:294:37
+    |
+294 |                 .unwrap_or_else(|e| error!("achieve log: {:?} failed, err: {}", log.f.path(), e));
+    |                                     ------------------------------------------------------------ in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::error` which comes from the expansion of the macro `error` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `slog_o`: Use fully qualified macro slog::o!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/logger/mod.rs:109:36
+    |
+109 |         (slog::Logger::root(drain, slog_o!()), Some(guard))
+    |                                    ^^^^^^
+
+warning: use of deprecated macro `slog_o`: Use fully qualified macro slog::o!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/logger/mod.rs:113:36
+    |
+113 |         (slog::Logger::root(drain, slog_o!()), None)
+    |                                    ^^^^^^
+
+warning: use of deprecated macro `slog_o`: Use fully qualified macro slog::o!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/logger/mod.rs:237:24
+    |
+237 |         .add_key_value(slog_o!(
+    |                        ^^^^^^
+
+warning: use of deprecated macro `slog_o`: Use fully qualified macro slog::o!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/logger/mod.rs:251:31
+    |
+251 |         builder.add_key_value(slog_o!("time" => FnValue(|_| chrono::Local::now().format(TIMESTAMP_FORMAT).to_string()),)).build()
+    |                               ^^^^^^
+
+warning: use of deprecated macro `slog::slog_crit`: Use fully qualified macro slog::crit!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/logger/mod.rs:452:13
+    |
+452 |             slog::slog_crit!(
+    |             ^^^^^^^^^^^^^^^
+
+warning: use of deprecated macro `slog_o`: Use fully qualified macro slog::o!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/logger/mod.rs:451:66
+    |
+451 |             let fatal_logger = slog::Logger::root(fatal_drainer, slog_o!());
+    |                                                                  ^^^^^^
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |     ::slog_global::warn!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/memory.rs:286:13
+    |
+286 |             warn!("bytes size exceeds the max memory alloc size, force alloc is ignored"; "bytes" => bytes);
+    |             ----------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |     ::slog_global::warn!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/memory.rs:311:13
+    |
+311 |             warn!("bytes size exceeds the max memory alloc size, free is ignored"; "bytes" => bytes);
+    |             ---------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+  --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+   |
+65 |     ::slog_global::warn!($($args)+)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+  ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/metrics/mod.rs:50:13
+   |
+50 |             warn!("prometheus encoding error"; "err" => ?e);
+   |             ----------------------------------------------- in this macro invocation
+   |
+   = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+  --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+   |
+65 |     ::slog_global::warn!($($args)+)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+  ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/metrics/mod.rs:68:17
+   |
+68 |                 warn!("prometheus encoding error"; "err" => ?e);
+   |                 ----------------------------------------------- in this macro invocation
+   |
+   = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_error`: Use fully qualified macro slog::crit!(...) instead
+  --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:35:9
+   |
+35 |         ::slog_global::error!($($args)+)
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+  ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/resizable_threadpool.rs:52:17
+   |
+52 |                 error!("Daemon runtime has been dropped. Task will be ignored.");
+   |                 ---------------------------------------------------------------- in this macro invocation
+   |
+   = note: this warning originates in the macro `::slog_global::error` which comes from the expansion of the macro `error` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_error`: Use fully qualified macro slog::crit!(...) instead
+  --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:35:9
+   |
+35 |         ::slog_global::error!($($args)+)
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+  ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/resizable_threadpool.rs:76:17
+   |
+76 |                 error!("Daemon runtime has been dropped. Task will be ignored.");
+   |                 ---------------------------------------------------------------- in this macro invocation
+   |
+   = note: this warning originates in the macro `::slog_global::error` which comes from the expansion of the macro `error` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:71:5
+    |
+ 71 |       ::slog_global::info!($($args)+)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/resizable_threadpool.rs:191:9
+    |
+191 | /         info!(
+192 | |             "Resizing thread pool";
+193 | |             "thread_name" => &thread_name,
+194 | |             "new_size" => new_size
+195 | |         );
+    | |_________- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |     ::slog_global::warn!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/cgroup.rs:103:17
+    |
+103 |                 warn!("cgroup memory controller found but not mounted.");
+    |                 -------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |     ::slog_global::warn!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/cgroup.rs:120:17
+    |
+120 |                 warn!("cgroup cpuset controller found but not mounted.");
+    |                 -------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |     ::slog_global::warn!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/cgroup.rs:148:17
+    |
+148 |                 warn!("cgroup cpu controller found but not mounted.");
+    |                 ----------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |     ::slog_global::warn!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/cgroup.rs:204:9
+    |
+204 |         warn!("fail to parse cgroup v1: {}", line);
+    |         ------------------------------------------ in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |       ::slog_global::warn!($($args)+)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/cgroup.rs:214:9
+    |
+214 | /         warn!(
+215 | |             "cgroup v2 should only have one subsystem, got {}",
+216 | |             subsystems.len()
+217 | |         );
+    | |_________- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |       ::slog_global::warn!($($args)+)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/cgroup.rs:219:9
+    |
+219 | /         warn!(
+220 | |             "unexpected cgroup v2 subsystem name: {}",
+221 | |             subsystems.keys().next().unwrap()
+222 | |         );
+    | |_________- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |     ::slog_global::warn!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/cgroup.rs:231:13
+    |
+231 |             warn!("fail to get mountinfo: {}", e);
+    |             ------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |     ::slog_global::warn!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/cgroup.rs:255:13
+    |
+255 |             warn!("fail to get mountinfo: {}", e);
+    |             ------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |       ::slog_global::warn!($($args)+)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/cgroup.rs:268:13
+    |
+268 | /             warn!(
+269 | |                 "Found multiple cgroup2 mountinfos, dropping {} {}",
+270 | |                 root,
+271 | |                 mount_point.display()
+272 | |             );
+    | |_____________- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |       ::slog_global::warn!($($args)+)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/cgroup.rs:291:5
+    |
+291 | /     warn!(
+292 | |         "fail to build cgroup path";
+293 | |         "path" => %path,
+294 | |         "root" => %root,
+295 | |         "mount_point" => %mount_point.display()
+296 | |     );
+    | |_____- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |     ::slog_global::warn!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/cgroup.rs:303:26
+    |
+303 |             .map_err(|e| warn!("fail to parse memory max"; "line" => %line, "err" => %e))
+    |                          --------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |     ::slog_global::warn!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/cgroup.rs:333:9
+    |
+333 |         warn!("fail to parse cpu cores: {}", v);
+    |         --------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |     ::slog_global::warn!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/cgroup.rs:350:9
+    |
+350 |         warn!("fail to parse cpu quota v2: {}", line);
+    |         --------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |     ::slog_global::warn!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/cgroup.rs:367:5
+    |
+367 |     warn!("fail to parse cpu quota v1: {}, {}", line1, line2);
+    |     --------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_error`: Use fully qualified macro slog::crit!(...) instead
+  --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:35:9
+   |
+35 |         ::slog_global::error!($($args)+)
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+  ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/thread.rs:97:25
+   |
+97 |                         error!("read task failed"; "pid" => pid, "err" => ?e);
+   |                         ----------------------------------------------------- in this macro invocation
+   |
+   = note: this warning originates in the macro `::slog_global::error` which comes from the expansion of the macro `error` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_error`: Use fully qualified macro slog::crit!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:35:9
+    |
+ 35 |         ::slog_global::error!($($args)+)
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/thread.rs:106:29
+    |
+106 | ...                   error!("read task failed"; "pid" => pid, "err" => ?e);
+    |                       ----------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::error` which comes from the expansion of the macro `error` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_error`: Use fully qualified macro slog::crit!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:35:9
+    |
+ 35 |         ::slog_global::error!($($args)+)
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/thread.rs:111:25
+    |
+111 |                         error!("read task failed"; "pid" => pid);
+    |                         ---------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::error` which comes from the expansion of the macro `error` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_debug`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:77:5
+    |
+ 77 |     ::slog_global::debug!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/thread.rs:415:9
+    |
+415 |         debug!("tid {} thread name is {}", tid, name);
+    |         --------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::debug` which comes from the expansion of the macro `debug` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:71:5
+    |
+ 71 |       ::slog_global::info!($($args)+)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/mod.rs:125:9
+    |
+125 | /         info!(
+126 | |             "cgroup quota: memory={:?}, cpu={:?}, cores={:?}",
+127 | |             SELF_CGROUP.memory_limit_in_bytes(),
+128 | |             SELF_CGROUP.cpu_quota(),
+129 | |             SELF_CGROUP.cpuset_cores(),
+130 | |         );
+    | |_________- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:71:5
+    |
+ 71 |       ::slog_global::info!($($args)+)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/mod.rs:132:9
+    |
+132 | /         info!(
+133 | |             "memory limit in bytes: {}, cpu cores quota: {}",
+134 | |             Self::memory_limit_in_bytes(),
+135 | |             Self::cpu_cores_quota()
+136 | |         );
+    | |_________- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |     ::slog_global::warn!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/mod.rs:254:13
+    |
+254 |             warn!("Get mount point error for path {}, {}", path1.display(), e1);
+    |             ------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |     ::slog_global::warn!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/mod.rs:258:13
+    |
+258 |             warn!("Get mount point error for path {}, {}", path2.display(), e2);
+    |             ------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |     ::slog_global::warn!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/mod.rs:262:13
+    |
+262 |             warn!("No mount point for {}", path1.display());
+    |             ----------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |     ::slog_global::warn!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/mod.rs:266:13
+    |
+266 |             warn!("No mount point for {}", path2.display());
+    |             ----------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |     ::slog_global::warn!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/sys/mod.rs:287:17
+    |
+287 |                 warn!("fail to read mounts line, error {}", e);
+    |                 ---------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_error`: Use fully qualified macro slog::crit!(...) instead
+  --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:35:9
+   |
+35 |         ::slog_global::error!($($args)+)
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+  ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/thread_group.rs:50:13
+   |
+50 |             safe_panic!("group properties is not set");
+   |             ------------------------------------------ in this macro invocation
+   |
+   = note: this warning originates in the macro `::slog_global::error` which comes from the expansion of the macro `safe_panic` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_error`: Use fully qualified macro slog::crit!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:35:9
+    |
+ 35 |           ::slog_global::error!($($args)+)
+    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/time.rs:249:25
+    |
+249 | /                         error!(
+250 | |                             "system time jumped back";
+251 | |                             "before" => ?before,
+252 | |                             "after" => ?after,
+253 | |                             "err" => ?e,
+254 | |                         );
+    | |_________________________- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::error` which comes from the expansion of the macro `error` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_error`: Use fully qualified macro slog::crit!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:35:9
+    |
+ 35 |         ::slog_global::error!($($args)+)
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/time.rs:282:13
+    |
+282 |             error!("send quit message for time monitor worker failed"; "err" => ?e);
+    |             ----------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::error` which comes from the expansion of the macro `error` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_error`: Use fully qualified macro slog::crit!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:35:9
+    |
+ 35 |         ::slog_global::error!($($args)+)
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/time.rs:287:13
+    |
+287 |             error!("join time monitor worker failed"; "err" => ?e);
+    |             ------------------------------------------------------ in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::error` which comes from the expansion of the macro `error` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_error`: Use fully qualified macro slog::crit!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:35:9
+    |
+ 35 |           ::slog_global::error!($($args)+)
+    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/time.rs:461:13
+    |
+461 | /             error!(
+462 | |                 "monotonic time jumped back, {:.3} -> {:.3}",
+463 | |                 earlier.sec as f64 + f64::from(earlier.nsec) / NANOSECONDS_PER_SECOND as f64,
+464 | |                 later.sec as f64 + f64::from(later.nsec) / NANOSECONDS_PER_SECOND as f64
+465 | |             );
+    | |_____________- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::error` which comes from the expansion of the macro `error` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_debug`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:77:5
+    |
+ 77 |       ::slog_global::debug!($($args)+)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/time.rs:487:13
+    |
+487 | /             debug!(
+488 | |                 "coarse time jumped back, {:.3} -> {:.3}",
+489 | |                 earlier.sec as f64 + f64::from(earlier.nsec) / NANOSECONDS_PER_SECOND as f64,
+490 | |                 later.sec as f64 + f64::from(later.nsec) / NANOSECONDS_PER_SECOND as f64
+491 | |             );
+    | |_____________- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::debug` which comes from the expansion of the macro `debug` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_debug`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:77:5
+    |
+ 77 |       ::slog_global::debug!($($args)+)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/time.rs:645:9
+    |
+645 | /         debug!("setup duration for spinning one round: {}ns", unsafe {
+646 | |             DEFAULT_DURATION_SPIN_ONE_ROUND
+647 | |         });
+    | |__________- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::debug` which comes from the expansion of the macro `debug` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_debug`: Use fully qualified macro slog::warn!(...) instead
+  --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:77:5
+   |
+77 |     ::slog_global::debug!($($args)+)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+  ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/worker/future.rs:72:9
+   |
+72 |         debug!("scheduling task {}", task);
+   |         ---------------------------------- in this macro invocation
+   |
+   = note: this warning originates in the macro `::slog_global::debug` which comes from the expansion of the macro `debug` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:71:5
+    |
+ 71 |     ::slog_global::info!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/worker/future.rs:148:9
+    |
+148 |         info!("starting working thread"; "worker" => &self.scheduler.name);
+    |         ------------------------------------------------------------------ in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |     ::slog_global::warn!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/worker/future.rs:150:13
+    |
+150 |             warn!("worker has been started"; "worker" => &self.scheduler.name);
+    |             ------------------------------------------------------------------ in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:71:5
+    |
+ 71 |     ::slog_global::info!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/worker/future.rs:191:9
+    |
+191 |         info!("stoping worker"; "worker" => &self.scheduler.name);
+    |         --------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |     ::slog_global::warn!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/worker/future.rs:194:13
+    |
+194 |             warn!("failed to stop worker thread"; "err" => ?e);
+    |             -------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_debug`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:77:5
+    |
+ 77 |     ::slog_global::debug!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/worker/pool.rs:146:9
+    |
+146 |         debug!("scheduling task {}", task);
+    |         ---------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::debug` which comes from the expansion of the macro `debug` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_error`: Use fully qualified macro slog::crit!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:35:9
+    |
+ 35 |         ::slog_global::error!($($args)+)
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/lib.rs:458:13
+    |
+458 |             safe_panic!("resource leak detected: {}.", self.tag);
+    |             ---------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::error` which comes from the expansion of the macro `safe_panic` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_crit`: Use fully qualified macro slog::crit!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:6:5
+    |
+  6 |       ::slog_global::crit!($($args)+)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/lib.rs:563:13
+    |
+563 | /             crit!("{}", msg;
+564 | |                 "thread_name" => name,
+565 | |                 "location" => loc.unwrap_or_else(|| "<unknown>".to_owned()),
+566 | |                 "backtrace" => format_args!("{:?}", bt),
+567 | |             );
+    | |_____________- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::crit` which comes from the expansion of the macro `crit` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_crit`: Use fully qualified macro slog::crit!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:6:5
+    |
+  6 |       ::slog_global::crit!($($args)+)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/lib.rs:569:13
+    |
+569 | /             crit!("{}", msg;
+570 | |                 "thread_name" => name,
+571 | |                 "location" => loc.unwrap_or_else(|| "<unknown>".to_owned()),
+572 | |                 "backtrace" => format_args!("{:?}", bt),
+573 | |                 "context" => context,
+574 | |             );
+    | |_____________- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::crit` which comes from the expansion of the macro `crit` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:65:5
+    |
+ 65 |     ::slog_global::warn!($($args)+)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/lib.rs:619:9
+    |
+619 |         warn!("environment variable `TZ` is missing, using `/etc/localtime`");
+    |         --------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:71:5
+    |
+ 71 |       ::slog_global::info!($($args)+)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/lib.rs:623:9
+    |
+623 | /         info!(
+624 | |             "environment variable is present";
+625 | |             "GRPC_POLL_STRATEGY" => var
+626 | |         );
+    | |_________- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/log.rs:71:5
+    |
+ 71 |       ::slog_global::info!($($args)+)
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/lib.rs:631:13
+    |
+631 | /             info!("environment variable is present";
+632 | |                 *proxy => var
+633 | |             );
+    | |_____________- in this macro invocation
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `slog::slog_o`: Use fully qualified macro slog::o!(...) instead
+  --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/logger/mod.rs:20:77
+   |
+20 | use slog::{self, Drain, FnValue, KV, Key, OwnedKVList, PushFnValue, Record, slog_o};
+   |                                                                             ^^^^^^
+
+warning: feature `box_patterns` is declared but not used
+ --> /home/agent/tidb/expression-unification/tikv/components/tikv_util/src/lib.rs:5:12
+  |
+5 | #![feature(box_patterns)]
+  |            ^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_features)]` (part of `#[warn(unused)]`) on by default
+
+warning: `tikv_util` (lib) generated 73 warnings
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+  --> /home/agent/tidb/expression-unification/tikv/components/crypto/src/fips.rs:32:9
+   |
+32 |         slog_global::warn!("OpenSSL FIPS mode is disabled unexpectedly");
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+   = note: this warning originates in the macro `slog_global::warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+  --> /home/agent/tidb/expression-unification/tikv/components/crypto/src/fips.rs:45:9
+   |
+45 |         slog_global::info!("OpenSSL FIPS mode is disabled");
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this warning originates in the macro `slog_global::info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+  --> /home/agent/tidb/expression-unification/tikv/components/crypto/src/fips.rs:47:9
+   |
+47 |         slog_global::info!("OpenSSL FIPS mode is enabled"; "openssl_major_version" => ver);
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this warning originates in the macro `slog_global::info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `crypto` (lib) generated 3 warnings
+warning: feature `test` is declared but not used
+ --> /home/agent/tidb/expression-unification/tikv/components/cloud/src/lib.rs:6:12
+  |
+6 | #![feature(test)]
+  |            ^^^^
+  |
+  = note: `#[warn(unused_features)]` (part of `#[warn(unused)]`) on by default
+
+warning: feature `test` is declared but not used
+ --> /home/agent/tidb/expression-unification/tikv/components/file_system/src/lib.rs:3:12
+  |
+3 | #![feature(test)]
+  |            ^^^^
+  |
+  = note: `#[warn(unused_features)]` (part of `#[warn(unused)]`) on by default
+
+warning: `cloud` (lib) generated 1 warning
+warning: `file_system` (lib) generated 1 warning
+warning: use of deprecated macro `::slog::slog_error`: Use fully qualified macro slog::crit!(...) instead
+  --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/encrypted_file/mod.rs:75:17
+   |
+75 | /                 error!(
+76 | |                     "EncryptedFile::write open failed";
+77 | |                     "path" => %tmp_path.display(),
+78 | |                     "error" => %e,
+79 | |                 );
+   | |_________________^
+   |
+   = note: `#[warn(deprecated)]` on by default
+   = note: this warning originates in the macro `error` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/file_dict_file.rs:143:13
+    |
+143 | /             info!(
+144 | |                 "installing new dictionary file";
+145 | |                 "name" => tmp_path.display(),
+146 | |                 "old_size" => self.file_size,
+147 | |                 "new_size" => new_size,
+148 | |             );
+    | |_____________^
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/file_dict_file.rs:208:29
+    |
+208 | / ...                   warn!(
+209 | | ...                       "{:?} occurred and the last complete filename is {}",
+210 | | ...                       e, last_record_name
+211 | | ...                   );
+    | |_______________________^
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/file_dict_file.rs:336:13
+    |
+336 | /             warn!(
+337 | |                 "file corrupted! record header size is too small, discarded the tail record";
+338 | |                 "size" => remained.len(),
+339 | |             );
+    | |_____________^
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/file_dict_file.rs:350:13
+    |
+350 | /             warn!(
+351 | |                 "file corrupted! record content size is too small, discarded the tail record";
+352 | |                 "content_size" => remained.len(),
+353 | |                 "expected_name_length" => name_len,
+354 | |                 "expected_content_length" =>info_len,
+355 | |             );
+    | |_____________^
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/file_dict_file.rs:367:17
+    |
+367 | /                 warn!(
+368 | |                     "file corrupted! crc32 mismatch, discarded the tail record";
+369 | |                     "expected_crc32" => crc32,
+370 | |                     "checksum_crc32" => crc32_checksum,
+371 | |                 );
+    | |_________________^
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:107:17
+    |
+107 |                 info!("encryption: found both of key dictionary and file dictionary.");
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:130:17
+    |
+130 |                 info!("encryption: none of key dictionary and file dictionary are found.");
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:137:17
+    |
+137 |                 info!("encryption: file dict is empty and none of key dictionary are found.");
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_error`: Use fully qualified macro slog::crit!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:143:21
+    |
+143 |                     error!("encryption: failed to load key dictionary.");
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::error` which comes from the expansion of the macro `error` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_error`: Use fully qualified macro slog::crit!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:146:21
+    |
+146 |                     error!("encryption: failed to load file dictionary.");
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::error` which comes from the expansion of the macro `error` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_debug`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:224:13
+    |
+224 | /             debug!("new encrypted file";
+225 | |                   "fname" => fname,
+226 | |                   "method" => format!("{:?}", method),
+227 | |                   "iv" => hex::encode(iv.as_slice()));
+    | |_____________________________________________________^
+    |
+    = note: this warning originates in the macro `::slog_global::debug` which comes from the expansion of the macro `debug` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_debug`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:229:13
+    |
+229 |             debug!("new plaintext file"; "fname" => fname);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::debug` which comes from the expansion of the macro `debug` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:248:21
+    |
+248 |                     info!("delete untracked plaintext file"; "fname" => fname);
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_debug`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:257:13
+    |
+257 |             debug!("delete encrypted file"; "fname" => fname);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::debug` which comes from the expansion of the macro `debug` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_debug`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:259:13
+    |
+259 |             debug!("delete plaintext file"; "fname" => fname);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::debug` which comes from the expansion of the macro `debug` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:272:21
+    |
+272 |                     info!("link untracked plaintext file"; "src" => src_fname, "dst" => dst_fname);
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:289:13
+    |
+289 |             info!("link encrypted file"; "src" => src_fname, "dst" => dst_fname);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:291:13
+    |
+291 |             info!("link plaintext file"; "src" => src_fname, "dst" => dst_fname);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:297:9
+    |
+297 |         info!("encryption: rotate data key."; "key_id" => key_id);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_debug`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:334:29
+    |
+334 | / ...                   debug!("current data key creation time is within rotation period";
+335 | | ...                       "now" => ?now, "creation_time" => ?creation_time);
+    | |___________________________________________________________________________^
+    |
+    = note: this warning originates in the macro `::slog_global::debug` which comes from the expansion of the macro `debug` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:340:25
+    |
+340 | /                         warn!("data key rotate duraion overflow, generate a new data key";
+341 | |                             "now" => ?now, "creation_time" => ?creation_time, "error" => ?e);
+    | |____________________________________________________________________________________________^
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:393:9
+    |
+393 | /         info!(
+394 | |             "Clean stale file information in file dictionary: {:?}",
+395 | |             fname
+396 | |         );
+    | |_________^
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:422:17
+    |
+422 |                 info!("Try to rotate data key, current method:{:?}", method);
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:429:25
+    |
+429 |                         info!("Key rotate worker has been cancelled.");
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:549:17
+    |
+549 |                 info!("encryption is disabled.");
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:554:17
+    |
+554 |                 info!("encryption is being enabled. method = {:?}", args.method);
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:564:17
+    |
+564 |                 info!("encryption is enabled. method = {:?}", args.method);
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:581:9
+    |
+581 | /         warn!(
+582 | |             "failed to open encryption metadata using master key. \
+583 | |                 could be master key being rotated. \
+584 | |                 current master key: {:?}, previous master key: {:?}",
+585 | |             master_key, previous_master_key
+586 | |         );
+    | |_________^
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:609:9
+    |
+609 |         info!("encryption: persisted result after replace master key.");
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:852:13
+    |
+852 |             info!("failed to terminate background rotation, are we shutting down?"; "err" => %e);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:855:13
+    |
+855 |             info!("failed to join background rotation, are we shutting down?"; "err" => ?e);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:961:13
+    |
+961 |             warn!("fail to remove encryption metadata after renaming file"; "err" => ?e);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+    --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:1025:25
+     |
+1025 |                         info!("generate new ID for imported key"; "id" => id, "fname" => fname);
+     |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+    --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:1054:21
+     |
+1054 |                     warn!("overwriting existing unused encryption key"; "fname" => fname);
+     |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+    --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:1087:13
+     |
+1087 |             info!("rollback imported file encryption info"; "sample_fname" => fname);
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+    --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:1103:17
+     |
+1103 |                 info!("rollback one imported data key"; "key_id" => key_id);
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this warning originates in the macro `::slog_global::info` which comes from the expansion of the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+    --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/manager/mod.rs:1126:13
+     |
+1126 |             warn!("failed to rollback imported data keys"; "err" => ?e);
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_error`: Use fully qualified macro slog::crit!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/encryption/src/master_key/mod.rs:245:5
+    |
+245 |     error!("{}", err_msg);
+    |     ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this warning originates in the macro `::slog_global::error` which comes from the expansion of the macro `error` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: feature `box_patterns` is declared but not used
+ --> /home/agent/tidb/expression-unification/tikv/components/txn_types/src/lib.rs:3:12
+  |
+3 | #![feature(box_patterns)]
+  |            ^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_features)]` (part of `#[warn(unused)]`) on by default
+
+warning: `encryption` (lib) generated 39 warnings
+warning: `txn_types` (lib) generated 1 warning
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/engine_traits/src/flush.rs:240:13
+    |
+240 | /             warn!(
+241 | |                 "heavy work in on_memtable_sealed, the code should be reviewed";
+242 | |             );
+    | |_____________^
+    |
+    = note: `#[warn(deprecated)]` on by default
+    = note: this warning originates in the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_info`: Use fully qualified macro slog::info!(...) instead
+   --> /home/agent/tidb/expression-unification/tikv/components/engine_traits/src/flush.rs:260:17
+    |
+260 | /                 info!(
+261 | |                     "flush complete reorder found";
+262 | |                     "flushed" => flushed,
+263 | |                     "largest_seqno" => largest_seqno,
+264 | |                     "file_no" => file_no,
+265 | |                     "cf" => cf
+266 | |                 );
+    | |_________________^
+    |
+    = note: this warning originates in the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `engine_traits` (lib) generated 2 warnings
+warning: unused macro definition: `word_cnt`
+   --> /home/agent/tidb/expression-unification/tikv/components/tidb_query_datatype/src/codec/mysql/decimal.rs:468:14
+    |
+468 | macro_rules! word_cnt {
+    |              ^^^^^^^^
+    |
+    = note: `#[warn(unused_macros)]` (part of `#[warn(unused)]`) on by default
+
+warning: use of deprecated macro `::slog::slog_error`: Use fully qualified macro slog::crit!(...) instead
+    --> /home/agent/tidb/expression-unification/tikv/components/tidb_query_datatype/src/codec/mysql/decimal.rs:3612:13
+     |
+3612 | /             error!(
+3613 | |                 "encode decimal overflow";
+3614 | |                 "source_int_digits" => d.int_cnt,
+3615 | |                 "source_storage_frac" => d.frac_cnt,
+...    |
+3620 | |                 "frac" => frac,
+3621 | |             );
+     | |_____________^
+     |
+     = note: `#[warn(deprecated)]` on by default
+     = note: this warning originates in the macro `::slog_global::error` which comes from the expansion of the macro `error` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated macro `::slog::slog_warn`: Use fully qualified macro slog::warn!(...) instead
+    --> /home/agent/tidb/expression-unification/tikv/components/tidb_query_datatype/src/codec/mysql/decimal.rs:3632:13
+     |
+3632 | /             warn!(
+3633 | |                 "encode decimal truncated";
+3634 | |                 "source_int_digits" => d.int_cnt,
+3635 | |                 "source_storage_frac" => d.frac_cnt,
+...    |
+3640 | |                 "frac" => frac,
+3641 | |             );
+     | |_____________^
+     |
+     = note: this warning originates in the macro `::slog_global::warn` which comes from the expansion of the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated constant `std::f64::EPSILON`: replaced by the `EPSILON` associated constant on `f64`
+  --> /home/agent/tidb/expression-unification/tikv/components/tidb_query_datatype/src/codec/mysql/json/comparison.rs:24:29
+   |
+24 |     if (x - y).abs() < f64::EPSILON {
+   |                             ^^^^^^^
+
+warning: the feature `bool_to_result` has been stable since 1.98.0 and no longer requires an attribute to enable
+  --> /home/agent/tidb/expression-unification/tikv/components/tidb_query_datatype/src/lib.rs:11:12
+   |
+11 | #![feature(bool_to_result)]
+   |            ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(stable_features)]` on by default
+
+warning: variant `Mysql` is never constructed
+   --> /home/agent/tidb/expression-unification/tikv/components/tidb_query_datatype/src/codec/mysql/decimal.rs:185:5
+    |
+183 | enum DecimalParsePolicy {
+    |      ------------------ variant in this enum
+184 |     Legacy(usize),
+185 |     Mysql(usize),
+    |     ^^^^^
+    |
+    = note: `DecimalParsePolicy` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variant `RetainedQuotient` is never constructed
+   --> /home/agent/tidb/expression-unification/tikv/components/tidb_query_datatype/src/codec/mysql/decimal.rs:988:5
+    |
+986 | enum DivisionRequest {
+    |      --------------- variant in this enum
+987 |     MysqlQuotient { frac_incr: usize },
+988 |     RetainedQuotient { frac_words: usize },
+    |     ^^^^^^^^^^^^^^^^
+    |
+    = note: `DivisionRequest` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: multiple associated items are never used
+    --> /home/agent/tidb/expression-unification/tikv/components/tidb_query_datatype/src/codec/mysql/decimal.rs:1678:8
+     |
+1658 | impl Decimal {
+     | ------------ associated items in this implementation
+...
+1678 |     fn try_from_words(parts: DecimalWordsRef<'_>) -> Result<Self> {
+     |        ^^^^^^^^^^^^^^
+...
+1984 |     fn try_add_exact(&self, rhs: &Self) -> Result<Self> {
+     |        ^^^^^^^^^^^^^
+...
+1993 |     fn try_sub_exact(&self, rhs: &Self) -> Result<Self> {
+     |        ^^^^^^^^^^^^^
+...
+2002 |     fn try_mul_exact(&self, rhs: &Self) -> Result<Self> {
+     |        ^^^^^^^^^^^^^
+...
+2008 |     fn try_div_rem_exact(&self, rhs: &Self) -> Result<Option<(Self, Self)>> {
+     |        ^^^^^^^^^^^^^^^^^
+...
+2031 |     fn try_div_round_exact(&self, count: i64, result_scale: u32) -> Result<Option<Self>> {
+     |        ^^^^^^^^^^^^^^^^^^^
+...
+3068 |     fn parse_mysql(s: &[u8]) -> Result<DecimalParseOutcome> {
+     |        ^^^^^^^^^^^
+...
+3072 |     fn try_from_literal(text: &str) -> Result<Self> {
+     |        ^^^^^^^^^^^^^^^^
+
+warning: feature `proc_macro_hygiene` is declared but not used
+ --> /home/agent/tidb/expression-unification/tikv/components/tidb_query_datatype/src/lib.rs:5:12
+  |
+5 | #![feature(proc_macro_hygiene)]
+  |            ^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_features)]` (part of `#[warn(unused)]`) on by default
+
+warning: feature `test` is declared but not used
+ --> /home/agent/tidb/expression-unification/tikv/components/tidb_query_datatype/src/lib.rs:7:12
+  |
+7 | #![feature(test)]
+  |            ^^^^
+
+warning: feature `str_internals` is declared but not used
+ --> /home/agent/tidb/expression-unification/tikv/components/tidb_query_datatype/src/lib.rs:9:12
+  |
+9 | #![feature(str_internals)]
+  |            ^^^^^^^^^^^^^
+
+warning: `tidb_query_datatype` (lib) generated 11 warnings
+warning: missing documentation for a method
+   --> crates/tidb-datatype/src/decimal/mod.rs:596:5
+    |
+596 |     pub fn coefficient_i128(&self) -> Option<(i128, u32)> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W missing-docs`
+
+warning: missing documentation for a function
+   --> crates/tidb-datatype/src/charset.rs:692:1
+    |
+692 | pub fn get_charset_info(charset: &str) -> Result<CharsetInfo, CharsetError> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `tidb-datatype` (lib) generated 2 warnings
+warning: unused import: `restore_cast_type_kw`
+  --> crates/tidb-ast/src/expr/restore.rs:18:38
+   |
+18 | use super::cast::{restore_cast_type, restore_cast_type_kw, restore_typed_literal};
+   |                                      ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates/tidb-ast/src/expr/cast.rs:304:9
+    |
+304 |     let mut kw = |name: &str, out: &mut String| {
+    |         ----^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: missing documentation for a variant
+   --> crates/tidb-ast/src/stmt/ddl.rs:190:5
+    |
+190 |     AlterView(Box<crate::ddl::AlterViewStmt>),
+    |     ^^^^^^^^^
+    |
+    = note: requested on the command line with `-W missing-docs`
+
+warning: `tidb-ast` (lib) generated 3 warnings (run `cargo fix --lib -p tidb-ast` to apply 2 suggestions)
+warning: unused import: `crate::parse`
+    --> crates/tidb-parser/src/pipes_probe_test.rs:2:5
+     |
+   2 | use crate::parse;
+     |     ^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-parser/src/lib.rs:1813:1
+     |
+1813 | mod pipes_probe_test;
+     | ^^^^^^^^^^^^^^^^^^^^^
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Stmt`
+    --> crates/tidb-parser/src/pipes_probe_test.rs:3:22
+     |
+   3 | use tidb_ast::{Expr, Stmt};
+     |                      ^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-parser/src/lib.rs:1813:1
+     |
+1813 | mod pipes_probe_test;
+     | ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `is_alias_excluded_keyword` is never used
+    --> crates/tidb-parser/src/select.rs:1326:4
+     |
+1326 | fn is_alias_excluded_keyword(name: &str) -> bool {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `shape` is never used
+ --> crates/tidb-parser/src/pipes_probe_test.rs:5:4
+  |
+5 | fn shape(expr: &Expr) -> String {
+  |    ^^^^^
+
+warning: `tidb-parser` (lib) generated 4 warnings (run `cargo fix --lib -p tidb-parser` to apply 2 suggestions)
+warning: variable does not need to be mutable
+   --> crates/tidb-model/src/placement.rs:152:13
+    |
+152 |         let mut push_string = |out: &mut String, item: &str, value: &str| {
+    |             ----^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates/tidb-model/src/placement.rs:166:13
+    |
+166 |         let mut push_int = |out: &mut String, item: &str, value: u64| {
+    |             ----^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: `tidb-model` (lib) generated 2 warnings (run `cargo fix --lib -p tidb-model` to apply 2 suggestions)
+warning: trait `RegionRetryState` is more private than the item `PlanBuilder<PdC, RetryableMultiRegion<P, PdC, R>, Targetted>`
+   --> third_party/tikv-client-rs/src/request/plan_builder.rs:969:1
+    |
+969 | / impl<PdC, P, R> PlanBuilder<PdC, RetryableMultiRegion<P, PdC, R>, Targetted>
+970 | | where
+971 | |     PdC: PdClient,
+972 | |     P: Plan + Shardable,
+973 | |     P::Result: HasKeyErrors + HasRegionError,
+974 | |     R: RegionRetryState,
+    | |________________________^ implementation `PlanBuilder<PdC, RetryableMultiRegion<P, PdC, R>, Targetted>` is reachable at visibility `pub`
+    |
+note: but trait `RegionRetryState` is only usable at visibility `pub(crate)`
+   --> third_party/tikv-client-rs/src/request/plan.rs:686:1
+    |
+686 | pub(crate) trait RegionRetryState: Clone + Send + Sync + 'static {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: `#[warn(private_bounds)]` on by default
+
+warning: `tikv-client` (lib) generated 1 warning
+warning: missing documentation for a struct field
+  --> crates/tidb-codec/src/join_keys.rs:50:13
+   |
+50 |     Fixed { data: &'a [u8], width: usize },
+   |             ^^^^^^^^^^^^^^
+   |
+   = note: requested on the command line with `-W missing-docs`
+
+warning: missing documentation for a struct field
+  --> crates/tidb-codec/src/join_keys.rs:50:29
+   |
+50 |     Fixed { data: &'a [u8], width: usize },
+   |                             ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/tidb-codec/src/join_keys.rs:52:16
+   |
+52 |     Variable { data: &'a [u8], offsets: &'a [i64] },
+   |                ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/tidb-codec/src/join_keys.rs:52:32
+   |
+52 |     Variable { data: &'a [u8], offsets: &'a [i64] },
+   |                                ^^^^^^^^^^^^^^^^^^
+
+warning: `tidb-codec` (lib) generated 4 warnings
+warning: missing documentation for a constant
+    --> crates/tidb-vardef/src/tidb_vars.rs:1091:1
+     |
+1091 | pub const TIDB_MERGE_PARTITION_STATS_CONCURRENCY: &str = "tidb_merge_partition_stats_concurrency";
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: requested on the command line with `-W missing-docs`
+
+warning: `tidb-vardef` (lib) generated 1 warning
+   Compiling tidb-util v0.0.0 (/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-util)
+warning: unused import: `SystemTime`
+  --> crates/tidb-log/src/log.rs:19:36
+   |
+19 | use std::time::{Duration, Instant, SystemTime};
+   |                                    ^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `tidb-log` (lib) generated 1 warning (run `cargo fix --lib -p tidb-log` to apply 1 suggestion)
+warning: unreachable expression
+   --> crates/tidb-pd-client/src/client/worker.rs:494:5
+    |
+400 | /     loop {
+401 | |         let snapshot = state.read().expect("PD state lock poisoned").clone();
+402 | |         let leader = snapshot.members.leader_url;
+403 | |         if stream
+...   |
+493 | |     }
+    | |_____- any code following this expression is unreachable
+494 |       Err(last_error.expect("bounded TSO retry loop records every failure"))
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unreachable expression
+    |
+    = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable `last_error` is assigned to, but never used
+   --> crates/tidb-pd-client/src/client/worker.rs:395:9
+    |
+395 |     let mut last_error = None;
+    |         ^^^^^^^^^^^^^^
+    |
+    = note: consider using `_last_error` instead
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `last_error` is never read
+   --> crates/tidb-pd-client/src/client/worker.rs:461:17
+    |
+461 |                 last_error = Some(error);
+    |                 ^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `MAX_TSO_RETRIES` is never used
+  --> crates/tidb-pd-client/src/tso.rs:24:18
+   |
+24 | pub(crate) const MAX_TSO_RETRIES: usize = 20;
+   |                  ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `tidb-pd-client` (lib) generated 4 warnings
+warning: feature `proc_macro_diagnostic` is declared but not used
+  --> /home/agent/tidb/expression-unification/tikv/components/tidb_query_codegen/src/lib.rs:14:12
+   |
+14 | #![feature(proc_macro_diagnostic)]
+   |            ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_features)]` (part of `#[warn(unused)]`) on by default
+
+warning: feature `iter_order_by` is declared but not used
+  --> /home/agent/tidb/expression-unification/tikv/components/tidb_query_codegen/src/lib.rs:15:12
+   |
+15 | #![feature(iter_order_by)]
+   |            ^^^^^^^^^^^^^
+
+warning: `tidb_query_codegen` (lib) generated 2 warnings
+   Compiling tidb-txnkv v0.0.0 (/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-txnkv)
+warning: unused import: `Expr`
+  --> /home/agent/tidb/expression-unification/tikv/components/tidb_query_expr/src/impl_compare_in.rs:20:12
+   |
+20 | use tipb::{Expr, ExprType, FieldType};
+   |            ^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: use of deprecated method `std::sync::atomic::Atomic::<u64>::fetch_update`: renamed to `try_update` for consistency
+  --> /home/agent/tidb/expression-unification/tikv/components/tidb_query_expr/src/local/host.rs:21:10
+   |
+21 |     next.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+   |          ^^^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+   |
+21 -     next.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+21 +     next.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+   |
+
+warning: method `output_bytes` is never used
+   --> /home/agent/tidb/expression-unification/tikv/components/tidb_query_expr/src/local/runtime.rs:202:19
+    |
+157 | impl EvalBudget {
+    | --------------- method in this implementation
+...
+202 |     pub(crate) fn output_bytes(&self) -> usize {
+    |                   ^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: feature `proc_macro_hygiene` is declared but not used
+  --> /home/agent/tidb/expression-unification/tikv/components/tidb_query_expr/src/lib.rs:13:12
+   |
+13 | #![feature(proc_macro_hygiene)]
+   |            ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_features)]` (part of `#[warn(unused)]`) on by default
+
+warning: feature `test` is declared but not used
+  --> /home/agent/tidb/expression-unification/tikv/components/tidb_query_expr/src/lib.rs:15:12
+   |
+15 | #![feature(test)]
+   |            ^^^^
+
+warning: `tidb_query_expr` (lib) generated 5 warnings (run `cargo fix --lib -p tidb_query_expr` to apply 2 suggestions)
+   Compiling tidb-stats-handle-usage-indexusage v0.0.0 (/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-stats-handle-usage-indexusage)
+   Compiling tidb-hint v0.0.0 (/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-hint)
+warning: unused imports: `Gauge` and `Registry`
+  --> crates/tidb-txnkv/src/client_go_metrics.rs:33:26
+   |
+33 |     Counter, CounterVec, Gauge, GaugeVec, HistogramOpts, HistogramVec, Opts, Registry,
+   |                          ^^^^^                                               ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `tikv_client::metrics::ClientGoMetrics`
+  --> crates/tidb-txnkv/src/client_go_metrics.rs:35:5
+   |
+35 | use tikv_client::metrics::ClientGoMetrics;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::time::Duration`
+  --> crates/tidb-txnkv/src/transaction/command_client.rs:28:5
+   |
+28 | use std::time::Duration;
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `Counter`
+  --> crates/tidb-util/src/memory_metrics.rs:26:18
+   |
+26 | use prometheus::{Counter, CounterVec, Gauge, GaugeVec, HistogramOpts, HistogramVec, Opts};
+   |                  ^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling tidb-stats-handle-usage v0.0.0 (/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-stats-handle-usage)
+warning: variable does not need to be mutable
+  --> crates/tidb-txnkv/src/transaction/coordinator/commit.rs:63:9
+   |
+63 |         mut self,
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `INTERNAL_TXN_MVIEW_MAINTENANCE` is never used
+   --> crates/tidb-txnkv/src/option.rs:205:11
+    |
+205 | pub const INTERNAL_TXN_MVIEW_MAINTENANCE: &str = "mview_maintain";
+    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: missing documentation for an associated function
+   --> crates/tidb-txnkv/src/transaction/coordinator/opener.rs:167:5
+    |
+167 | /     pub fn from_capabilities(
+168 | |         opener: crate::SharedReadOpener<C, L>,
+169 | |         pd: P,
+170 | |         timeout: Duration,
+171 | |         gc_state: TxnSafePointRefresher,
+172 | |     ) -> Result<Self, OptimisticCoordinatorError> {
+    | |_________________________________________________^
+    |
+    = note: requested on the command line with `-W missing-docs`
+
+warning: missing documentation for a static
+   --> crates/tidb-util/src/memory_metrics.rs:125:1
+    |
+125 | pub static MEMORY_ARBITRATION_DURATION: LazyLock<HistogramVec> = LazyLock::new(|| {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W missing-docs`
+
+   Compiling tidb-tablecodec v0.0.0 (/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-tablecodec)
+   Compiling tidb-chunk v0.0.0 (/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-chunk)
+   Compiling tidb-sqlexec v0.0.0 (/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-sqlexec)
+   Compiling tidb-syssession v0.0.0 (/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-syssession)
+   Compiling tidb-sqlexec-mock v0.0.0 (/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-sqlexec-mock)
+   Compiling tidb-expr v0.0.0 (/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-expr)
+   Compiling tidb-stats-handle-util v0.0.0 (/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-stats-handle-util)
+warning: unused import: `std::io::Write`
+  --> crates/tidb-expr/src/builtin_ext/crypto.rs:31:5
+   |
+31 | use std::io::Write;
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `flate2::write::ZlibEncoder`
+  --> crates/tidb-expr/src/builtin_ext/crypto.rs:33:5
+   |
+33 | use flate2::write::ZlibEncoder;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `Compression`
+  --> crates/tidb-expr/src/builtin_ext/crypto.rs:34:14
+   |
+34 | use flate2::{Compression, Decompress, FlushDecompress, Status};
+   |              ^^^^^^^^^^^
+
+warning: unused import: `super::text::format_json`
+  --> crates/tidb-expr/src/builtin_ext/json/construct.rs:29:5
+   |
+29 | use super::text::format_json;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused doc comment
+   --> crates/tidb-expr/src/constant_fold.rs:794:1
+    |
+794 | / /// Warnings the constant-fold evaluation raised, stashed for the caller that
+795 | | /// owns the statement's warning buffer. The fold evaluates column-free
+796 | | /// expressions against a sessionless context whose `append_warning` would
+797 | | /// otherwise drop go's per-statement warnings (`ADDDATE('abc', INTERVAL 1
+798 | | /// DAY)` warns `Incorrect datetime value: 'abc'` on an empty table).
+    | |_--------------------------------------------------------------------^
+    |   |
+    |   rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+    = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unnecessary parentheses around index expression
+   --> crates/tidb-expr/src/go_flate.rs:996:46
+    |
+996 |                 let hh = &mut self.hash_head[(hash as usize & HASH_MASK)];
+    |                                              ^                         ^
+    |
+    = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+    |
+996 -                 let hh = &mut self.hash_head[(hash as usize & HASH_MASK)];
+996 +                 let hh = &mut self.hash_head[hash as usize & HASH_MASK];
+    |
+
+warning: unnecessary parentheses around index expression
+    --> crates/tidb-expr/src/go_flate.rs:1036:54
+     |
+1036 |                         let hh = &mut self.hash_head[(hash as usize & HASH_MASK)];
+     |                                                      ^                         ^
+     |
+help: remove these parentheses
+     |
+1036 -                         let hh = &mut self.hash_head[(hash as usize & HASH_MASK)];
+1036 +                         let hh = &mut self.hash_head[hash as usize & HASH_MASK];
+     |
+
+warning: unused imports: `FieldTypeValue`, `TimeType`, and `default_field_type_for_value`
+  --> crates/tidb-expr/src/rewriter.rs:31:5
+   |
+31 |     default_field_type_for_value, Datum, EvalType, FieldType, FieldTypeCode, FieldTypeValue,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^                                             ^^^^^^^^^^^^^^
+32 |     TimeType,
+   |     ^^^^^^^^
+
+warning: `tidb-txnkv` (lib) generated 6 warnings (run `cargo fix --lib -p tidb-txnkv` to apply 4 suggestions)
+   Compiling tidb-ddl-session v0.0.0 (/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-ddl-session)
+warning: unused imports: `Counter` and `Gauge`
+  --> crates/tidb-ddl-session/src/metrics.rs:26:18
+   |
+26 | use prometheus::{Counter, CounterVec, Gauge, GaugeVec, HistogramOpts, HistogramVec, Opts};
+   |                  ^^^^^^^              ^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: missing documentation for a static
+  --> crates/tidb-ddl-session/src/metrics.rs:74:1
+   |
+74 | pub static DDL_HANDLE_JOB_DURATION: LazyLock<HistogramVec> = LazyLock::new(|| {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: requested on the command line with `-W missing-docs`
+
+warning: missing documentation for a static
+  --> crates/tidb-ddl-session/src/metrics.rs:85:1
+   |
+85 | pub static DDL_JOB_TABLE_DURATION: LazyLock<HistogramVec> = LazyLock::new(|| {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a static
+  --> crates/tidb-ddl-session/src/metrics.rs:96:1
+   |
+96 | pub static DDL_WORKER_OPERATION_DURATION: LazyLock<HistogramVec> = LazyLock::new(|| {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+   Compiling tidb-stats v0.0.0 (/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-stats)
+warning: `tidb-ddl-session` (lib) generated 4 warnings (run `cargo fix --lib -p tidb-ddl-session` to apply 1 suggestion)
+   Compiling tidb-distsql v0.0.0 (/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-distsql)
+warning: unused imports: `Counter`, `GaugeVec`, and `Gauge`
+  --> crates/tidb-distsql/src/metrics.rs:26:18
+   |
+26 | use prometheus::{Counter, CounterVec, Gauge, GaugeVec, HistogramOpts, HistogramVec, Opts};
+   |                  ^^^^^^^              ^^^^^  ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `tidb-util` (lib) generated 2 warnings (run `cargo fix --lib -p tidb-util` to apply 1 suggestion)
+warning: unused import: `crate::context::Columns`
+  --> crates/tidb-expr/src/expr_util/fold.rs:49:5
+   |
+49 | use crate::context::Columns;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a static
+  --> crates/tidb-distsql/src/metrics.rs:68:1
+   |
+68 | pub static DISTSQL_QUERY: LazyLock<HistogramVec> = LazyLock::new(|| {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: requested on the command line with `-W missing-docs`
+
+warning: missing documentation for a static
+  --> crates/tidb-distsql/src/metrics.rs:79:1
+   |
+79 | pub static DISTSQL_SCAN_KEYS_NUM: LazyLock<HistogramVec> = LazyLock::new(|| {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a static
+  --> crates/tidb-distsql/src/metrics.rs:90:1
+   |
+90 | pub static DISTSQL_PARTIAL_NUM: LazyLock<HistogramVec> = LazyLock::new(|| {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a static
+   --> crates/tidb-distsql/src/metrics.rs:101:1
+    |
+101 | pub static DISTSQL_SCAN_KEYS_PARTIAL_NUM: LazyLock<HistogramVec> = LazyLock::new(|| {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a static
+   --> crates/tidb-distsql/src/metrics.rs:112:1
+    |
+112 | pub static DISTSQL_COPR_RESP_SIZE: LazyLock<HistogramVec> = LazyLock::new(|| {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> crates/tidb-distsql/src/response_channel.rs:782:5
+    |
+782 | /     pub fn from_query_response(
+783 | |         response: Box<dyn QueryResponse + Send>,
+784 | |         final_field_types: Vec<FieldType>,
+785 | |         intermediate_output_types: Vec<Vec<FieldType>>,
+...   |
+789 | |         runtime_stats_collector_enabled: Option<bool>,
+790 | |     ) -> Self {
+    | |_____________^
+
+warning: variable `n` is assigned to, but never used
+   --> crates/tidb-expr/src/go_flate.rs:432:13
+    |
+432 |         let mut n = self.out.len();
+    |             ^^^^^
+    |
+    = note: consider using `_n` instead
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `n` is never read
+   --> crates/tidb-expr/src/go_flate.rs:442:13
+    |
+442 |             n += 1;
+    |             ^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `fixed_constant`
+    --> crates/tidb-expr/src/rewriter.rs:1615:21
+     |
+1615 |                 let fixed_constant = matches!(&argument, Expression::Constant(constant)
+     |                     ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_fixed_constant`
+
+warning: unreachable pattern
+   --> crates/tidb-expr/src/rewriter.rs:657:21
+    |
+618 |                     tidb_datatype::EvalType::Decimal => {
+    |                     -------------------------------- matches all the relevant values
+...
+657 |                     tidb_datatype::EvalType::Decimal => {
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no value can reach this
+    |
+    = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates/tidb-expr/src/ops.rs:231:5
+    |
+231 |     mut l: Datum,
+    |     ----^
+    |     |
+    |     help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates/tidb-expr/src/ops.rs:232:5
+    |
+232 |     mut r: Datum,
+    |     ----^
+    |     |
+    |     help: remove this `mut`
+
+warning: function `refine_comparison` is never used
+   --> crates/tidb-expr/src/builtin_compare.rs:585:15
+    |
+585 | pub(crate) fn refine_comparison<C: Columns>(
+    |               ^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `bit_count` is never read
+   --> crates/tidb-expr/src/go_flate.rs:184:5
+    |
+182 | struct HuffmanEncoder {
+    |        -------------- field in this struct
+183 |     codes: Vec<Hcode>,
+184 |     bit_count: [i32; 17],
+    |     ^^^^^^^^^
+
+warning: field `level` is never read
+   --> crates/tidb-expr/src/go_flate.rs:359:5
+    |
+358 | struct LevelInfo {
+    |        --------- field in this struct
+359 |     level: i32,
+    |     ^^^^^
+    |
+    = note: `LevelInfo` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: constant `BUFFER_FLUSH_SIZE` is never used
+   --> crates/tidb-expr/src/go_flate.rs:412:7
+    |
+412 | const BUFFER_FLUSH_SIZE: usize = 240;
+    |       ^^^^^^^^^^^^^^^^^
+
+warning: fields `fast_skip_hashing` and `scratch` are never read
+   --> crates/tidb-expr/src/go_flate.rs:777:5
+    |
+770 | struct Compressor {
+    |        ---------- fields in this struct
+...
+777 |     fast_skip_hashing: i32,
+    |     ^^^^^^^^^^^^^^^^^
+...
+792 |     scratch: Vec<LiteralNode>,
+    |     ^^^^^^^
+
+warning: constant `HASH_MATCH_LEN` is never used
+   --> crates/tidb-expr/src/go_flate.rs:795:7
+    |
+795 | const HASH_MATCH_LEN: usize = MAX_MATCH_LENGTH - 1;
+    |       ^^^^^^^^^^^^^^
+
+warning: method `fill_window` is never used
+   --> crates/tidb-expr/src/go_flate.rs:880:8
+    |
+797 | impl Compressor {
+    | --------------- method in this implementation
+...
+880 |     fn fill_window(&mut self, b: &[u8]) {
+    |        ^^^^^^^^^^^
+
+warning: function `bulk_hash4` is never used
+    --> crates/tidb-expr/src/go_flate.rs:1088:4
+     |
+1088 | fn bulk_hash4(b: &[u8], dst: &mut [u32]) {
+     |    ^^^^^^^^^^
+
+warning: fields `program`, `calculated_slot`, and `output_index` are never read
+   --> crates/tidb-expr/src/evaluator.rs:365:5
+    |
+364 | struct NumericBatchInvocation<'a> {
+    |        ---------------------- fields in this struct
+365 |     program: &'a Arc<EvaluatorProgram>,
+    |     ^^^^^^^
+366 |     calculated_slot: usize,
+    |     ^^^^^^^^^^^^^^^
+367 |     output_index: usize,
+    |     ^^^^^^^^^^^^
+
+warning: struct `NumericSourceLimits` is never constructed
+  --> crates/tidb-expr/src/evaluator/numeric_batch.rs:56:19
+   |
+56 | pub(crate) struct NumericSourceLimits {
+   |                   ^^^^^^^^^^^^^^^^^^^
+
+warning: enum `FailureKind` is never used
+  --> crates/tidb-expr/src/evaluator/numeric_batch.rs:64:6
+   |
+64 | enum FailureKind {
+   |      ^^^^^^^^^^^
+
+warning: struct `NumericBatchFailure` is never constructed
+  --> crates/tidb-expr/src/evaluator/numeric_batch.rs:78:19
+   |
+78 | pub(crate) struct NumericBatchFailure {
+   |                   ^^^^^^^^^^^^^^^^^^^
+
+warning: associated items `admission`, `reported`, `local_error`, `site`, `source_ordinal`, and `into_raw` are never used
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:82:8
+    |
+ 81 | impl NumericBatchFailure {
+    | ------------------------ associated items in this implementation
+ 82 |     fn admission(message: &'static str) -> Self {
+    |        ^^^^^^^^^
+...
+ 87 |     fn reported(failure: ReportedLocalFailure, source: Arc<NumericSource>) -> Self {
+    |        ^^^^^^^^
+...
+ 92 |     pub(crate) fn local_error(&self) -> Option<&LocalError> {
+    |                   ^^^^^^^^^^^
+...
+ 99 |     pub(crate) fn site(&self) -> Option<&LocalFailureSite> {
+    |                   ^^^^
+...
+105 |     pub(crate) fn source_ordinal(&self) -> Option<usize> {
+    |                   ^^^^^^^^^^^^^^
+...
+119 |     pub(crate) fn into_raw(self) -> Self {
+    |                   ^^^^^^^^
+
+warning: type alias `Result` is never used
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:152:6
+    |
+152 | type Result<T> = std::result::Result<T, NumericBatchFailure>;
+    |      ^^^^^^
+
+warning: function `resource` is never used
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:154:4
+    |
+154 | fn resource(message: &'static str) -> LocalError {
+    |    ^^^^^^^^
+
+warning: function `binding` is never used
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:157:4
+    |
+157 | fn binding(message: &'static str) -> LocalError {
+    |    ^^^^^^^
+
+warning: function `array_bytes` is never used
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:160:4
+    |
+160 | fn array_bytes<T>(count: usize) -> LocalResult<usize> {
+    |    ^^^^^^^^^^^
+
+warning: function `reserve` is never used
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:165:4
+    |
+165 | fn reserve<T>(values: &mut Vec<T>, count: usize) -> LocalResult<()> {
+    |    ^^^^^^^
+
+warning: struct `CollationRecord` is never constructed
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:172:8
+    |
+172 | struct CollationRecord {
+    |        ^^^^^^^^^^^^^^^
+
+warning: associated items `capture` and `matches` are never used
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:181:8
+    |
+180 | impl CollationRecord {
+    | -------------------- associated items in this implementation
+181 |     fn capture(source: &CollationInfo) -> Self {
+    |        ^^^^^^^
+...
+192 |     fn matches(&self, source: &CollationInfo) -> bool {
+    |        ^^^^^^^
+
+warning: enum `SourceKind` is never used
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:204:6
+    |
+204 | enum SourceKind {
+    |      ^^^^^^^^^^
+
+warning: associated items `capture` and `matches` are never used
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:223:8
+    |
+222 | impl SourceKind {
+    | --------------- associated items in this implementation
+223 |     fn capture(node: &Expression) -> Result<Self> {
+    |        ^^^^^^^
+...
+250 |     fn matches(&self, node: &Expression) -> bool {
+    |        ^^^^^^^
+
+warning: struct `NodeRecord` is never constructed
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:290:8
+    |
+290 | struct NodeRecord {
+    |        ^^^^^^^^^^
+
+warning: struct `NumericSource` is never constructed
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:296:8
+    |
+296 | struct NumericSource {
+    |        ^^^^^^^^^^^^^
+
+warning: struct `CheckedNode` is never constructed
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:320:8
+    |
+320 | struct CheckedNode<'a> {
+    |        ^^^^^^^^^^^
+
+warning: struct `Budget` is never constructed
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:325:8
+    |
+325 | struct Budget {
+    |        ^^^^^^
+
+warning: methods `add`, `array`, and `field` are never used
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:330:8
+    |
+329 | impl Budget {
+    | ----------- methods in this implementation
+330 |     fn add(&mut self, bytes: usize) -> LocalResult<()> {
+    |        ^^^
+...
+338 |     fn array<T>(&mut self, count: usize) -> LocalResult<()> {
+    |        ^^^^^
+...
+341 |     fn field(&mut self, field: &FieldType, copies: usize) -> LocalResult<()> {
+    |        ^^^^^
+
+warning: function `check_type` is never used
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:351:4
+    |
+351 | fn check_type(sql: &FieldType) -> Result<()> {
+    |    ^^^^^^^^^^
+
+warning: function `strict_literal` is never used
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:370:4
+    |
+370 | fn strict_literal(value: &Datum) -> Result<Option<i64>> {
+    |    ^^^^^^^^^^^^^^
+
+warning: function `parts` is never used
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:379:4
+    |
+379 | fn parts(node: &Expression) -> Result<(&FieldType, &CollationInfo)> {
+    |    ^^^^^
+
+warning: function `check_plus` is never used
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:410:4
+    |
+410 | fn check_plus(function: &ScalarFunction) -> Result<()> {
+    |    ^^^^^^^^^^
+
+warning: function `plus_fact` is never used
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:424:4
+    |
+424 | fn plus_fact() -> Result<FunctionRef> {
+    |    ^^^^^^^^^
+
+warning: function `projected` is never used
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:450:4
+    |
+450 | fn projected(sql: &FieldType, new_collation: bool) -> Result<tipb::FieldType> {
+    |    ^^^^^^^^^
+
+warning: function `preflight` is never used
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:471:4
+    |
+471 | fn preflight<'a>(
+    |    ^^^^^^^^^
+
+warning: function `suite_shape` is never used
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:572:4
+    |
+572 | fn suite_shape(suite: &EvaluatorSuite) -> Result<&Expression> {
+    |    ^^^^^^^^^^^
+
+warning: enum `BuildKind` is never used
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:586:6
+    |
+586 | enum BuildKind {
+    |      ^^^^^^^^^
+
+warning: struct `BuildNode` is never constructed
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:591:8
+    |
+591 | struct BuildNode {
+    |        ^^^^^^^^^
+
+warning: function `lower` is never used
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:596:4
+    |
+596 | fn lower(
+    |    ^^^^^
+
+warning: struct `PreparedNumericBatch` is never constructed
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:709:19
+    |
+709 | pub(crate) struct PreparedNumericBatch {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+
+warning: associated items `compile`, `declared_type_snapshot`, `validate_invocation`, `accept_retained`, and `materialize` are never used
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:716:19
+    |
+715 | impl PreparedNumericBatch {
+    | ------------------------- associated items in this implementation
+716 |     pub(crate) fn compile(
+    |                   ^^^^^^^
+...
+741 |     pub(crate) fn declared_type_snapshot(&self) -> FieldType {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+...
+745 |     fn validate_invocation(
+    |        ^^^^^^^^^^^^^^^^^^^
+...
+829 |     fn accept_retained(&self, bytes: usize) -> LocalResult<()> {
+    |        ^^^^^^^^^^^^^^^
+...
+838 |     fn materialize(&self, values: VectorValue, selection: &Vec<usize>) -> Result<Vec<Datum>> {
+    |        ^^^^^^^^^^^
+
+warning: trait `NativeDatumSource` is never used
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:885:7
+    |
+885 | trait NativeDatumSource {
+    |       ^^^^^^^^^^^^^^^^^
+
+warning: struct `NativeChunk` is never constructed
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:895:8
+    |
+895 | struct NativeChunk<'a> {
+    |        ^^^^^^^^^^^
+
+warning: struct `CheckedInputs` is never constructed
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:933:8
+    |
+933 | struct CheckedInputs<'a> {
+    |        ^^^^^^^^^^^^^
+
+warning: struct `Consumer` is never constructed
+   --> crates/tidb-expr/src/evaluator/numeric_batch.rs:959:8
+    |
+959 | struct Consumer<'a> {
+    |        ^^^^^^^^
+
+warning: methods `run_numeric_batch_reported` and `run_numeric_batch_raw` are never used
+    --> crates/tidb-expr/src/evaluator/numeric_batch.rs:1032:19
+     |
+1031 | impl EvaluatorSuite {
+     | ------------------- methods in this implementation
+1032 |     pub(crate) fn run_numeric_batch_reported<C: Columns>(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1055 |     pub(crate) fn run_numeric_batch_raw<C: Columns>(
+     |                   ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `implicit_cast_signatures` is never used
+    --> crates/tidb-expr/src/pushdown_catalog.rs:2018:15
+     |
+2018 | pub(crate) fn implicit_cast_signatures() -> impl Iterator<Item = ScalarFuncSig> {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `expression` and `target` are never used
+    --> crates/tidb-expr/src/scalar_function.rs:4217:19
+     |
+4216 | impl EligibleNumericBatch<'_> {
+     | ----------------------------- methods in this implementation
+4217 |     pub(crate) fn expression(&self) -> &Expression {
+     |                   ^^^^^^^^^^
+...
+4221 |     pub(crate) fn target(&self) -> EvalType {
+     |                   ^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/tidb-expr/src/context.rs:139:33
+    |
+139 |     ConstantFloatCastOverflow { value: String },
+    |                                 ^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W missing-docs`
+
+warning: `tidb-distsql` (lib) generated 7 warnings (run `cargo fix --lib -p tidb-distsql` to apply 1 suggestion)
+   Compiling tidb-funcdep v0.0.0 (/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-funcdep)
+   Compiling tidb-planner v0.0.0 (/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-planner)
+warning: unused import: `crate::physical_property::ColumnSortItem`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:23:5
+     |
+  23 | use crate::physical_property::ColumnSortItem;
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `EvalType`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:25:28
+     |
+  25 | use tidb_datatype::{Datum, EvalType, FieldType, FieldTypeCode};
+     |                            ^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `AGG_FUNC_FIRST_ROW`, `AGG_FUNC_MAX`, `LogicalAggregation`, `agg_func_result_matches_arg_for_non_empty_group`, and `max_sort_prefix_len`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:34:5
+     |
+  34 |     agg_func_result_matches_arg_for_non_empty_group, max_sort_prefix_len, LogicalAggregation,
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^
+  35 |     AGG_FUNC_FIRST_ROW, AGG_FUNC_MAX,
+     |     ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `find_child_full_schema`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:37:20
+     |
+  37 | use super::apply::{find_child_full_schema, LogicalApply};
+     |                    ^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `CtePredicatePushDown`, `LogicalCTETable`, `extract_correlated_cols_for_plan`, and `get_has_tiflash`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:39:5
+     |
+  39 |     extract_correlated_cols_for_plan, get_has_tiflash, CteClass, CtePredicatePushDown, LogicalCTE,
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^            ^^^^^^^^^^^^^^^^^^^^
+  40 |     LogicalCTETable,
+     |     ^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `DataSourceColumn` and `DataSource`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:42:26
+     |
+  42 | use super::data_source::{DataSource, DataSourceColumn};
+     |                          ^^^^^^^^^^  ^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `GroupingMode` and `RollupGroupingSet`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:43:21
+     |
+  43 | use super::expand::{GroupingMode, LogicalExpand, RollupGroupingSet};
+     |                     ^^^^^^^^^^^^                 ^^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `LogicalIndexScan` and `matches_indices_prop`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:44:25
+     |
+  44 | use super::index_scan::{matches_indices_prop, LogicalIndexScan};
+     |                         ^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `LogicalJoin`, `OnConditionSplit`, and `is_eq_cond_from_in`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:45:19
+     |
+  45 | use super::join::{is_eq_cond_from_in, LogicalJoin, OnConditionSplit};
+     |                   ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^  ^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `super::limit::LogicalLimit`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:46:5
+     |
+  46 | use super::limit::LogicalLimit;
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `LogicalLock`, `SelectLockType`, `is_select_for_share_lock_type`, `is_select_for_update_lock_type`, and `is_supported_select_lock_type`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:48:5
+     |
+  48 |     is_select_for_share_lock_type, is_select_for_update_lock_type, is_supported_select_lock_type,
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  49 |     LogicalLock, SelectLockType,
+     |     ^^^^^^^^^^^  ^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `super::max_one_row::LogicalMaxOneRow`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:51:5
+     |
+  51 | use super::max_one_row::LogicalMaxOneRow;
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `CLUSTER_TABLE_SLOW_LOG`, `MemTableColumn`, `MemTableTopNHints`, `SLOW_LOG_TIME_STR`, and `TABLE_SLOW_QUERY`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:53:22
+     |
+  53 |     LogicalMemTable, MemTableColumn, MemTableTopNHints, CLUSTER_TABLE_SLOW_LOG, SLOW_LOG_TIME_STR,
+     |                      ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^
+  54 |     TABLE_SLOW_QUERY,
+     |     ^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `super::projection::LogicalProjection`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:56:5
+     |
+  56 | use super::projection::LogicalProjection;
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `super::schema_producer`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:57:5
+     |
+  57 | use super::schema_producer;
+     |     ^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `LogicalSelection`, `SELECTION_FACTOR`, and `is_valid_compare_constant_predicate`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:58:24
+     |
+  58 | use super::selection::{is_valid_compare_constant_predicate, LogicalSelection, SELECTION_FACTOR};
+     |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `super::sequence::LogicalSequence`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:59:5
+     |
+  59 | use super::sequence::LogicalSequence;
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `extract_stats_meta_filter_values`, `extract_stats_meta_filters`, `find_show_column_ids`, and `get_string_value_from_constant`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:61:5
+     |
+  61 |     extract_stats_meta_filter_values, extract_stats_meta_filters, find_show_column_ids,
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^
+  62 |     get_string_value_from_constant, LogicalShow, ShowContents,
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `super::show_ddl_jobs::LogicalShowDDLJobs`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:64:5
+     |
+  64 | use super::show_ddl_jobs::LogicalShowDDLJobs;
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `LogicalSort`, `SortTopNPushDown`, `get_possible_property_from_by_items`, and `prune_by_items`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:66:5
+     |
+  66 |     get_possible_property_from_by_items, prune_by_items, LogicalSort, SortTopNPushDown,
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^  ^^^^^^^^^^^  ^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `super::table_dual::LogicalTableDual`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:68:5
+     |
+  68 | use super::table_dual::LogicalTableDual;
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `super::table_scan::LogicalTableScan`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:69:5
+     |
+  69 | use super::table_scan::LogicalTableScan;
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `super::tikv_single_gather::TiKVSingleGather`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:70:5
+     |
+  70 | use super::tikv_single_gather::TiKVSingleGather;
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `super::topn::LogicalTopN`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:71:5
+     |
+  71 | use super::topn::LogicalTopN;
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `LogicalPartitionUnionAll` and `LogicalUnionAll`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:72:24
+     |
+  72 | use super::union_all::{LogicalPartitionUnionAll, LogicalUnionAll};
+     |                        ^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `EXTRA_PHYS_TBL_ID`, `LogicalUnionScan`, and `contains_virtual_column`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:73:25
+     |
+  73 | use super::union_scan::{contains_virtual_column, LogicalUnionScan, EXTRA_PHYS_TBL_ID};
+     |                         ^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `BoundType`, `FrameBound`, `FrameType`, `RangeCmpDataType`, and `WindowFrame`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:75:5
+     |
+  75 |     BoundType, FrameBound, FrameType, LogicalWindow, RangeCmpDataType, WindowFrame,
+     |     ^^^^^^^^^  ^^^^^^^^^^  ^^^^^^^^^                 ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `LogicalPlan`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:77:30
+     |
+  77 | use super::{BaseLogicalPlan, LogicalPlan};
+     |                              ^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `PlanIdAllocator` and `PossiblePropertiesInfo`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:79:24
+     |
+  79 | use crate::plan_base::{PlanIdAllocator, PossiblePropertiesInfo};
+     |                        ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::stats_info::StatsInfo`
+    --> crates/tidb-planner/src/logical/operator_tests.rs:80:5
+     |
+  80 | use crate::stats_info::StatsInfo;
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: if this is a test module, consider adding a `#[cfg(test)]` to the containing module
+    --> crates/tidb-planner/src/logical/mod.rs:1493:1
+     |
+1493 | mod operator_tests;
+     | ^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `OP_EQ`, `OP_GE`, `OP_GT`, `OP_LE`, `OP_LT`, `OP_NE`, and `OP_NULL_EQ`
+   --> crates/tidb-planner/src/ranger/detacher.rs:245:64
+    |
+245 |     range_point_cmp, ExpressionEvaluator, Point, PointBuilder, OP_EQ, OP_GE, OP_GT, OP_LE, OP_LT,
+    |                                                                ^^^^^  ^^^^^  ^^^^^  ^^^^^  ^^^^^
+246 |     OP_NE, OP_NULL_EQ,
+    |     ^^^^^  ^^^^^^^^^^
+
+warning: unused import: `PhysicalIndexJoin`
+  --> crates/tidb-planner/src/storage_engine_usage.rs:23:36
+   |
+23 | use crate::physical::{PhysicalCTE, PhysicalIndexJoin, PhysicalPlan};
+   |                                    ^^^^^^^^^^^^^^^^^
+
+warning: `tidb-expr` (lib) generated 63 warnings (run `cargo fix --lib -p tidb-expr` to apply 10 suggestions)
+warning: unused variable: `constant`
+   --> crates/tidb-planner/src/ranger/points.rs:707:17
+    |
+707 |             let constant = &scalar.args[0];
+    |                 ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_constant`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `names`
+    --> crates/tidb-planner/src/plan_builder.rs:3508:30
+     |
+3508 |                 let (schema, names) = snapshot_schema_and_names(&plan);
+     |                              ^^^^^ help: if this is intentional, prefix it with an underscore: `_names`
+
+warning: unused variable: `hint_flags`
+    --> crates/tidb-planner/src/plan_builder.rs:2130:29
+     |
+2130 |                 let (inner, hint_flags) =
+     |                             ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_hint_flags`
+
+warning: unused variable: `inner`
+   --> crates/tidb-planner/src/logical/rewrite.rs:533:22
+    |
+533 |             ("not", [inner @ Expression::ScalarFunction(negated)]) => {
+    |                      ^^^^^ help: if this is intentional, prefix it with an underscore: `_inner`
+
+warning: variable does not need to be mutable
+    --> crates/tidb-planner/src/logical/rewrite.rs:2038:44
+     |
+2038 |             PendingPredicates::AttachBelow(mut extra) => {
+     |                                            ----^^^^^
+     |                                            |
+     |                                            help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates/tidb-planner/src/logical/rewrite.rs:744:9
+    |
+744 |     let mut low = prefix.as_bytes().to_vec();
+    |         ----^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> crates/tidb-planner/src/joinorder.rs:1876:5
+     |
+1876 |     mut plan: LogicalPlan,
+     |     ----^^^^
+     |     |
+     |     help: remove this `mut`
+
+warning: unused variable: `names`
+    --> crates/tidb-planner/src/plan_builder.rs:3723:22
+     |
+3723 |         let (schema, names) = snapshot_schema_and_names(&plan);
+     |                      ^^^^^ help: if this is intentional, prefix it with an underscore: `_names`
+
+warning: unused variable: `source_schema`
+    --> crates/tidb-planner/src/plan_builder.rs:4079:14
+     |
+4079 |         let (source_schema, source_names) = snapshot_schema_and_names(&plan);
+     |              ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_source_schema`
+
+warning: missing documentation for a method
+   --> crates/tidb-planner/src/find_best_task/dispatch.rs:445:5
+    |
+445 |     pub const fn with_hash_join_concurrency(mut self, concurrency: usize) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W missing-docs`
+
+warning: missing documentation for a function
+    --> crates/tidb-planner/src/logical/data_source.rs:1038:1
+     |
+1038 | / pub fn index_covers_condition(
+1039 | |     ds: &crate::logical::DataSource,
+1040 | |     index: &crate::plan_builder::catalog::SourceIndex,
+1041 | |     condition: &tidb_expr::expression::Expression,
+1042 | |     opt_prefix_index_single_scan: bool,
+1043 | | ) -> bool {
+     | |_________^
+
+warning: missing documentation for a method
+   --> crates/tidb-planner/src/logical/join.rs:457:5
+    |
+457 | /     pub fn extract_on_condition(
+458 | |         &mut self,
+459 | |         conditions: &[Expression],
+460 | |         left_schema: &Schema,
+...   |
+464 | |         opts: &SubstituteOptions<'_>,
+465 | |     ) -> OnConditionSplit {
+    | |_________________________^
+
+warning: field `count_after_access` is never read
+  --> crates/tidb-planner/src/access_path/index_merge.rs:85:16
+   |
+83 | pub struct UnionIndexMergePath {
+   |            ------------------- field in this struct
+84 |     pub(crate) alternatives: Vec<Vec<Partial>>,
+85 |     pub(crate) count_after_access: f64,
+   |                ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `UnionIndexMergePath` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `is_eq_or_in_on_column` is never used
+    --> crates/tidb-planner/src/find_best_task/dispatch.rs:1583:4
+     |
+1583 | fn is_eq_or_in_on_column(condition: &tidb_expr::expression::Expression, unique_id: i64) -> bool {
+     |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `histogram_prefix_selectivity` is never used
+   --> crates/tidb-planner/src/logical/rewrite.rs:785:4
+    |
+785 | fn histogram_prefix_selectivity(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `cte_table_preds` is never read
+    --> crates/tidb-planner/src/logical/rewrite.rs:1676:5
+     |
+1670 | struct PredicatePushDown<'a, 'ctx> {
+     |        ----------------- field in this struct
+...
+1676 |     cte_table_preds: Vec<(i32, Vec<Expression>)>,
+     |     ^^^^^^^^^^^^^^^
+
+warning: function `column` is never used
+  --> crates/tidb-planner/src/logical/operator_tests.rs:82:4
+   |
+82 | fn column(unique_id: i64) -> Column {
+   |    ^^^^^^
+
+warning: function `col_expr` is never used
+  --> crates/tidb-planner/src/logical/operator_tests.rs:86:4
+   |
+86 | fn col_expr(unique_id: i64) -> Expression {
+   |    ^^^^^^^^
+
+warning: function `schema` is never used
+  --> crates/tidb-planner/src/logical/operator_tests.rs:90:4
+   |
+90 | fn schema(ids: &[i64]) -> Schema {
+   |    ^^^^^^
+
+warning: function `tiny` is never used
+  --> crates/tidb-planner/src/logical/operator_tests.rs:94:4
+   |
+94 | fn tiny() -> FieldType {
+   |    ^^^^
+
+warning: function `call` is never used
+  --> crates/tidb-planner/src/logical/operator_tests.rs:98:4
+   |
+98 | fn call(name: &str, args: Vec<Expression>) -> ScalarFunction {
+   |    ^^^^
+
+warning: function `eq` is never used
+   --> crates/tidb-planner/src/logical/operator_tests.rs:102:4
+    |
+102 | fn eq(left: Expression, right: Expression) -> Expression {
+    |    ^^
+
+warning: function `one` is never used
+   --> crates/tidb-planner/src/logical/operator_tests.rs:106:4
+    |
+106 | fn one() -> Expression {
+    |    ^^^
+
+warning: function `agg` is never used
+   --> crates/tidb-planner/src/logical/operator_tests.rs:110:4
+    |
+110 | fn agg(name: &str, args: Vec<Expression>) -> AggFuncDesc {
+    |    ^^^
+
+warning: function `by` is never used
+    --> crates/tidb-planner/src/logical/operator_tests.rs:1402:4
+     |
+1402 | fn by(expr: Expression, desc: bool) -> ByItems {
+     |    ^^
+
+warning: function `apply` is never used
+    --> crates/tidb-planner/src/logical/operator_tests.rs:1911:4
+     |
+1911 | fn apply(join_type: LogicalJoinType) -> LogicalApply {
+     |    ^^^^^
+
+warning: function `cor` is never used
+    --> crates/tidb-planner/src/logical/operator_tests.rs:1918:4
+     |
+1918 | fn cor(unique_id: i64) -> tidb_expr::column::CorrelatedColumn {
+     |    ^^^
+
+warning: function `window_desc` is never used
+    --> crates/tidb-planner/src/logical/operator_tests.rs:2234:4
+     |
+2234 | fn window_desc(args: Vec<Expression>) -> tidb_expr::aggregation::WindowFuncDesc {
+     |    ^^^^^^^^^^^
+
+warning: function `window` is never used
+    --> crates/tidb-planner/src/logical/operator_tests.rs:2244:4
+     |
+2244 | fn window(descs: usize) -> LogicalWindow {
+     |    ^^^^^^
+
+warning: function `cte_class` is never used
+    --> crates/tidb-planner/src/logical/operator_tests.rs:2625:4
+     |
+2625 | fn cte_class(build: impl FnOnce(&mut CteClass)) -> std::rc::Rc<std::cell::RefCell<CteClass>> {
+     |    ^^^^^^^^^
+
+warning: function `cte` is never used
+    --> crates/tidb-planner/src/logical/operator_tests.rs:2634:4
+     |
+2634 | fn cte(class: std::rc::Rc<std::cell::RefCell<CteClass>>) -> LogicalCTE {
+     |    ^^^
+
+warning: function `cor_expr` is never used
+    --> crates/tidb-planner/src/logical/operator_tests.rs:2638:4
+     |
+2638 | fn cor_expr(unique_id: i64) -> Expression {
+     |    ^^^^^^^^
+
+warning: function `expand` is never used
+    --> crates/tidb-planner/src/logical/operator_tests.rs:3363:4
+     |
+3363 | fn expand(distinct_group_by_ids: &[i64]) -> LogicalExpand {
+     |    ^^^^^^
+
+warning: function `mem_table` is never used
+    --> crates/tidb-planner/src/logical/operator_tests.rs:3679:4
+     |
+3679 | fn mem_table(table_name: &str) -> LogicalMemTable {
+     |    ^^^^^^^^^
+
+warning: function `field_name` is never used
+    --> crates/tidb-planner/src/logical/operator_tests.rs:3855:4
+     |
+3855 | fn field_name(column_name: &str) -> tidb_datatype::FieldName {
+     |    ^^^^^^^^^^
+
+warning: function `string_const` is never used
+    --> crates/tidb-planner/src/logical/operator_tests.rs:3862:4
+     |
+3862 | fn string_const(value: &str) -> Expression {
+     |    ^^^^^^^^^^^^
+
+warning: function `show` is never used
+    --> crates/tidb-planner/src/logical/operator_tests.rs:3872:4
+     |
+3872 | fn show(is_stats_meta: bool) -> LogicalShow {
+     |    ^^^^
+
+warning: missing documentation for a struct field
+  --> crates/tidb-planner/src/task.rs:57:5
+   |
+57 |     pub estimator_options: crate::cardinality::row_count_estimator::EstimatorOptions,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/tidb-planner/src/task.rs:58:5
+   |
+58 |     pub scale_ndv_skew_ratio: f64,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates/tidb-planner/src/task.rs:804:5
+    |
+804 | /     pub fn convert_to_root_task_impl(
+805 | |         self,
+806 | |         allocator: &crate::plan_base::PlanIdAllocator,
+807 | |     ) -> Result<Task, PlanError> {
+    | |________________________________^
+
+warning: missing documentation for a struct field
+   --> crates/tidb-planner/src/plan_base.rs:336:24
+    |
+336 |     IllegalReference { name: String, reason: &'static str },
+    |                        ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/tidb-planner/src/plan_base.rs:336:38
+    |
+336 |     IllegalReference { name: String, reason: &'static str },
+    |                                      ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/tidb-planner/src/plan_base.rs:352:9
+    |
+352 |         code: u16,
+    |         ^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/tidb-planner/src/plan_base.rs:353:9
+    |
+353 |         name: String,
+    |         ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/tidb-planner/src/plan_base.rs:354:9
+    |
+354 |         base: String,
+    |         ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/tidb-planner/src/plan_base.rs:358:21
+    |
+358 |     InternalCoded { message: String },
+    |                     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/tidb-planner/src/plan_base.rs:360:23
+    |
+360 |     UnsupportedType { message: String },
+    |                       ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/tidb-planner/src/plan_base.rs:362:19
+    |
+362 |     WindowFrame { code: u16, window: String },
+    |                   ^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/tidb-planner/src/plan_base.rs:362:30
+    |
+362 |     WindowFrame { code: u16, window: String },
+    |                              ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> crates/tidb-planner/src/plan_builder.rs:581:1
+    |
+581 | pub struct PlanBuilder<'a, S: TableSource, C: Columns> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/tidb-planner/src/physical_property.rs:136:5
+    |
+136 |     pub col: tidb_expr::column::Column,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/tidb-planner/src/physical_property.rs:137:5
+    |
+137 |     pub desc: bool,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> crates/tidb-planner/src/physical_property.rs:142:5
+    |
+142 |     pub const fn new(col: tidb_expr::column::Column, desc: bool) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates/tidb-planner/src/physical_property.rs:301:5
+    |
+301 |     pub fn other_conditions(&self) -> &[tidb_expr::expression::Expression] {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates/tidb-planner/src/physical_property.rs:304:5
+    |
+304 |     pub fn outer_join_keys(&self) -> &[tidb_expr::column::Column] {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates/tidb-planner/src/physical_property.rs:307:5
+    |
+307 |     pub fn inner_join_keys(&self) -> &[tidb_expr::column::Column] {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates/tidb-planner/src/physical_property.rs:310:5
+    |
+310 |     pub fn avg_inner_row_count(&self) -> f64 {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates/tidb-planner/src/physical_property.rs:313:5
+    |
+313 |     pub fn table_range_scan(&self) -> bool {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `tidb-planner` (lib) generated 90 warnings (run `cargo fix --lib -p tidb-planner` to apply 41 suggestions)
+   Compiling tidb-executor v0.0.0 (/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-executor)
+warning: unused import: `tidb_chunk::row::Row`
+  --> crates/tidb-executor/src/row_table_builder.rs:55:5
+   |
+55 | use tidb_chunk::row::Row;
+   |     ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `GoShared` and `MaterializedViewInfo`
+   --> crates/tidb-executor/src/ddl/mview_helpers.rs:326:22
+    |
+326 |     use tidb_model::{GoShared, MViewInitBuildState, MaterializedViewInfo};
+    |                      ^^^^^^^^                       ^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `smallvec`
+  --> crates/tidb-executor/src/hash_agg/parallel.rs:98:16
+   |
+98 | use smallvec::{smallvec, SmallVec};
+   |                ^^^^^^^^
+
+warning: unused imports: `Counter` and `Gauge`
+  --> crates/tidb-executor/src/metrics.rs:26:18
+   |
+26 | use prometheus::{Counter, CounterVec, Gauge, GaugeVec, HistogramOpts, HistogramVec, Opts};
+   |                  ^^^^^^^              ^^^^^
+
+error[E0063]: missing field `clause_message` in initializer of `driver::catalog::TableResolver<'_>`
+  --> crates/tidb-executor/src/index_range/tests/prepared.rs:37:24
+   |
+37 |         let resolver = crate::driver::TableResolver {
+   |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `clause_message`
+
+error[E0063]: missing field `clause_message` in initializer of `driver::catalog::TableResolver<'_>`
+   --> crates/tidb-executor/src/index_range/tests/prepared.rs:141:24
+    |
+141 |         let resolver = crate::driver::TableResolver {
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `clause_message`
+
+error[E0063]: missing field `clause_message` in initializer of `driver::catalog::TableResolver<'_>`
+   --> crates/tidb-executor/src/index_range/tests/prepared.rs:203:24
+    |
+203 |         let resolver = crate::driver::TableResolver {
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `clause_message`
+
+error[E0063]: missing field `clause_message` in initializer of `driver::catalog::TableResolver<'_>`
+   --> crates/tidb-executor/src/index_range/tests/prepared.rs:253:24
+    |
+253 |         let resolver = crate::driver::TableResolver {
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `clause_message`
+
+error[E0063]: missing field `clause_message` in initializer of `driver::catalog::TableResolver<'_>`
+   --> crates/tidb-executor/src/index_range/tests/prepared.rs:299:20
+    |
+299 |     let resolver = crate::driver::TableResolver {
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `clause_message`
+
+error[E0063]: missing field `clause_message` in initializer of `driver::catalog::TableResolver<'_>`
+   --> crates/tidb-executor/src/index_range/tests/prepared.rs:336:20
+    |
+336 |     let resolver = crate::driver::TableResolver {
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `clause_message`
+
+error[E0063]: missing field `clause_message` in initializer of `driver::catalog::TableResolver<'_>`
+   --> crates/tidb-executor/src/index_range/tests/prepared.rs:387:24
+    |
+387 |         let resolver = crate::driver::TableResolver {
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `clause_message`
+
+warning: use of deprecated method `std::sync::atomic::Atomic::<u64>::fetch_update`: renamed to `try_update` for consistency
+  --> crates/tidb-executor/src/driver/catalog.rs:36:10
+   |
+36 |     NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |version| {
+   |          ^^^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+   |
+36 -     NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |version| {
+36 +     NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |version| {
+   |
+
+warning: variable does not need to be mutable
+   --> crates/tidb-executor/src/tests_executor_suite_statements_source.rs:674:9
+    |
+674 |     let mut sorted = |sql: &str| -> Vec<Vec<String>> {
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates/tidb-executor/src/tests_analyze_suite_source.rs:372:9
+    |
+372 |     let mut table = kv_table_of(&catalog, "t");
+    |         ----^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> crates/tidb-executor/src/remote_scan.rs:3152:13
+     |
+3152 |         let mut catalog = catalog_of(fixture.table);
+     |             ----^^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: unreachable pattern
+   --> crates/tidb-executor/src/remote_scan.rs:260:13
+    |
+260 |             _ => {}
+    |             ^ no value can reach this
+    |
+note: multiple earlier patterns match some of the same values
+   --> crates/tidb-executor/src/remote_scan.rs:260:13
+    |
+244 |             Self::Grouped { functions, .. } => {
+    |             ------------------------------- matches some of the same values
+...
+252 |             Self::Global { functions, .. } => {
+    |             ------------------------------ matches some of the same values
+...
+260 |             _ => {}
+    |             ^ collectively making this unreachable
+    = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates/tidb-executor/src/tests_prepared_param_types_source.rs:108:9
+    |
+108 |     let mut catalog = catalog;
+    |         ----^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> crates/tidb-executor/src/tests_prepared_parameter_pushdown_source.rs:84:9
+   |
+84 |     let mut catalog = catalog;
+   |         ----^^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> crates/tidb-executor/src/load_stats.rs:1190:13
+     |
+1190 |         let mut coll = HistColl::new(41, 9, 2, 1, 1);
+     |             ----^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: unused variable: `scan`
+    --> crates/tidb-executor/src/explain.rs:2993:13
+     |
+2993 |         let scan = PhysicalTableScan::default();
+     |             ^^^^ help: if this is intentional, prefix it with an underscore: `_scan`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `catalog`
+    --> crates/tidb-executor/src/explain.rs:2994:13
+     |
+2994 |         let catalog = Catalog::default();
+     |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_catalog`
+
+warning: unreachable pattern
+   --> crates/tidb-executor/src/driver/errors/exec.rs:252:9
+    |
+133 | /         EvalError::WrongValueForType {
+134 | |             value_class,
+135 | |             value,
+136 | |             function,
+137 | |         } => MysqlError::new(
+    | |_________- matches all the relevant values
+...
+252 | /         EvalError::WrongValueForType {
+253 | |             value_class,
+254 | |             value,
+255 | |             function,
+256 | |         } => MysqlError::new(
+    | |_________^ no value can reach this
+
+For more information about this error, try `rustc --explain E0063`.
+warning: `tidb-executor` (lib test) generated 15 warnings
+error: could not compile `tidb-executor` (lib test) due to 7 previous errors; 15 warnings emitted

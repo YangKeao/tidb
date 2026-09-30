@@ -1,0 +1,9 @@
+ASCII_POOL_OBSERVER loaded=v1 target=linux-x86_64-glibc request-only controls=SAFE_RUST
+ASCII_POOL_OBSERVER window phase=CONTROL_PRE events=0 complete=0
+ASCII_POOL_OBSERVER window phase=EMPTY_PRE events=0 complete=0
+ASCII_POOL_OBSERVER window phase=OWNER_NEW events=0 complete=0
+ASCII_POOL_OBSERVER window phase=STACK_CLONES events=0 complete=0
+ASCII_POOL_OBSERVER window phase=OWNER_DROP events=0 complete=0
+ASCII_POOL_OBSERVER window phase=EMPTY_POST events=0 complete=0
+ASCII_POOL_OBSERVER window phase=CONTROL_POST events=0 complete=0
+ASCII_POOL_OBSERVER INVALID faults=3584 markers=0 events=0 marker_tid=0 gap_events=0 foreign_observations=0 first_foreign_tid=0 actual_owner_requested_bytes=0 owner_alignment_arg=UNSPECIFIED owner_ptr=0x0 matching_final_free=UNPROVEN extent=request-not-usable-not-peak-not-general-heap

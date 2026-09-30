@@ -1,0 +1,49 @@
+{
+  "rust_profile": "TEST",
+  "rust_pin": "nightly-2026-08-22",
+  "observer_compile": [
+    "/usr/bin/gcc-14",
+    "-std=gnu11",
+    "-O2",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "-fPIC",
+    "-shared",
+    "-fno-builtin",
+    "-fno-stack-protector",
+    "-ftls-model=initial-exec",
+    "-U_FORTIFY_SOURCE",
+    "-D_FORTIFY_SOURCE=0",
+    "-Wl,-z,now",
+    "-Wl,-z,defs",
+    "-o",
+    "tools/pool-arc-observer.so",
+    "tools/pool-arc-observer.c"
+  ],
+  "sources": {
+    "/home/agent/tidb/expression-unification/tools/pool-arc-observer.c": "eff83df6af640b0ce21789f2ff4d2c86b61151d0e898f5ec8e428fad1deee18e",
+    "/home/agent/tidb/expression-unification/tools/pool-arc-runner.py": "5b37f8187a73304baecac5cd1186461a98b7d9e359e370096e967423d5b1ce8e",
+    "/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-expr/src/tikv/mod.rs": "e406f109f2ad7fa535baaf16bcefded93ec6e187b2dad97acd1908de29aa87e1",
+    "/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-expr/src/tikv/evaluated_ascii.rs": "f7287aa20b1beaa035aeee333711718244c82950465696dab4d3b9a1d7278087",
+    "/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-expr/src/tikv/evaluated_ascii_tests.rs": "7ea2227e8e132dcef1b973e424b6c7ed31159b2f298b24a97b42185244225ee3",
+    "/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-expr/src/tikv/runtime_failure.rs": "c112625fd82ad491cb1d8a0b992e6b6f7c97221b6db570fc7b67ee2593f0db0b",
+    "/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-expr/src/lib.rs": "c22b61392069474ef5c0a76df0ca8e3ca49b95dd51d212eccf66eca56b78f3ef",
+    "/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-expr/src/context.rs": "123432c7c3711f1986a761f98017dd9ac62080484c5c770ef757075e1e81af15",
+    "/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-executor/src/driver/errors/exec.rs": "45a9bbfed00d7c74f0bf1ac27121678804a012fdc16bf28ef78ef6fd1c8c7b6b",
+    "/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-executor/src/index_range/tests/prepared.rs": "6d2f067016b29b1f64b140023e955ce8ce41d5bdd182b4549c66cd478fa82bb7"
+  },
+  "resolved_dynamic_libraries": {
+    "/usr/lib/gcc/x86_64-pc-linux-gnu/16/libgcc_s.so.1": "5c7dfbd826810c0eae6dddba88e988d653591d57c7be993d162a45de9f63daa4",
+    "/usr/lib/gcc/x86_64-pc-linux-gnu/16/libstdc++.so.6.0.36": "693ff4c0d60fc7ae8c241ded4dfca7b7de65c1e67ce301a1a5fadc87c25614e2",
+    "/usr/lib64/ld-linux-x86-64.so.2": "7690566ac6439196b9303bd64f0affbccc6787224dcd262dde05d3188bfd2eca",
+    "/usr/lib64/libc.so.6": "41667b49e3eadc0b032eaefe365cd74955263bd493e301eaa8774bd51f98bda5",
+    "/usr/lib64/libm.so.6": "2d5f9e07c572cb088746d968297de6fe9d97a8585b0a7bb2a0a86b31acb05b29"
+  },
+  "artifacts": {
+    "/home/agent/tidb/expression-unification/target-tidb/debug/build/tidb-expr/1a66296e036585b2/out/tidb_expr-1a66296e036585b2": "b5d49459c8f4a7486b462289b38e1336a2f44fcb0ffc3fd9869de6e676872cf4",
+    "/home/agent/tidb/expression-unification/tools/pool-arc-observer.so": "e6fd53441eaac42c80c2927617150e2da882797276c2eaf514fd65f72f5705d7",
+    "/home/agent/tidb/expression-unification/tools/pool-arc-runner.py": "5b37f8187a73304baecac5cd1186461a98b7d9e359e370096e967423d5b1ce8e"
+  },
+  "observer_reused_from_checkpoint": "caller-private-pool-02; unchanged source and SO hashes"
+}

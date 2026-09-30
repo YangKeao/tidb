@@ -28,8 +28,11 @@ mod evaluated_ascii;
 mod lineage;
 mod lower;
 mod ordinary;
-// Opaque native error carrier only; no public EvalError/SQL mapping yet.
+// Only native opaque types cross the crate boundary, never LocalError itself.
 mod runtime_failure;
+pub use runtime_failure::{
+    ExpressionRuntimeFailure, ExpressionRuntimeFailureClass, ExpressionRuntimeFailurePhase,
+};
 #[cfg(test)]
 mod tests;
 

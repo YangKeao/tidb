@@ -41,6 +41,7 @@ fn prepared_range_endpoints_use_current_typed_parameters() {
             no_unsigned_subtraction: false,
             div_precision_increment: 4,
             constant_context: ctx,
+            clause_message: "expression",
         };
         let ranges = detach_cond_and_build_range_for_index(&index, predicate, &resolver)
             .expect("prepared conditions must produce current access ranges");
@@ -145,6 +146,7 @@ fn prepared_range_shapes_preserve_current_values_and_residuals() {
             no_unsigned_subtraction: false,
             div_precision_increment: 4,
             constant_context: ctx,
+            clause_message: "expression",
         };
         let ranges = detach_cond_and_build_range_for_index(&index, predicate, &resolver)
             .expect("prepared range shape");
@@ -207,6 +209,7 @@ fn range_constant_evaluation_preserves_context_and_rejects_row_values() {
             no_unsigned_subtraction: false,
             div_precision_increment: 4,
             constant_context: ctx,
+            clause_message: "expression",
         };
         for (text, expected) in [
             (
@@ -257,6 +260,7 @@ fn statistics_ranges_use_current_prepared_parameters() {
             no_unsigned_subtraction: false,
             div_precision_increment: 4,
             constant_context: ctx,
+            clause_message: "expression",
         };
         let (built, _, _) = detach_conjuncts_and_build_range_for_index_with_context(
             &index,
@@ -303,6 +307,7 @@ fn column_statistics_ranges_preserve_conversion_errors() {
         no_unsigned_subtraction: false,
         div_precision_increment: 4,
         constant_context: ctx,
+        clause_message: "expression",
     };
 
     let error = detach_conds_for_column_with_context(
@@ -340,6 +345,7 @@ fn column_statistics_like_ranges_use_go_collation_keys() {
         no_unsigned_subtraction: false,
         div_precision_increment: 4,
         constant_context: ctx,
+        clause_message: "expression",
     };
 
     let (built, _) = detach_conds_for_column_with_context(
@@ -391,6 +397,7 @@ fn column_statistics_range_preserves_go_in_evaluation_error_policy() {
             no_unsigned_subtraction: false,
             div_precision_increment: 4,
             constant_context: ctx,
+            clause_message: "expression",
         };
         let result = detach_conds_for_column_with_context(
             &column,

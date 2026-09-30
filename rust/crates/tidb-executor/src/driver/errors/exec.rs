@@ -280,6 +280,11 @@ fn eval_to_mysql_error(error: EvalError) -> MysqlError {
         EvalError::ParamIndexExceedParamCounts => {
             MysqlError::unknown("Param index exceed param counts")
         }
+        // Runtime failures use fixed native class text, not a backend code,
+        // raw cause or Debug rendering. The outer Eval path owns the origin bit.
+        EvalError::ExpressionRuntimeFailure(failure) => {
+            MysqlError::unknown(failure.client_message())
+        }
     }
 }
 
@@ -452,5 +457,35 @@ mod tests {
         let message = tidb_util::spill_storage::LOCAL_TEMPORARY_SPACE_QUOTA_ERROR;
         let mysql = rendered(ExecError::SpillFailed(message.to_owned()));
         assert_eq!(mysql, MysqlError::new(1105, message));
+    }
+
+    #[test]
+    fn generic_native_eval_and_executor_errors_keep_distinct_origin_markers() {
+        // Existing constructible native paths only: this is not evidence that
+        // an opaque runtime failure has crossed the private caller boundary.
+        let eval = rendered(ExecError::Eval(EvalError::ParamIndexExceedParamCounts));
+        assert_eq!(eval.code, 1105);
+        assert_eq!(eval.state, *b"HY000");
+        assert_eq!(eval.message, "Param index exceed param counts");
+        assert!(eval.is_from_evaluation());
+
+        let executor = rendered(ExecError::internal("chunk invariant failed"));
+        assert_eq!(executor.code, 1105);
+        assert_eq!(executor.state, *b"HY000");
+        assert_eq!(executor.message, "chunk invariant failed");
+        assert!(!executor.is_from_evaluation());
+    }
+
+    #[test]
+    fn unknown_charset_build_error_keeps_the_existing_origin_exception() {
+        // Native CHAR construction uses this Unsupported shape. Preserve its
+        // statement-level origin rather than marking every Eval as evaluation.
+        let mysql = rendered(ExecError::Eval(EvalError::Unsupported(
+            "Unknown charset nosuch",
+        )));
+        assert_eq!(mysql.code, 1105);
+        assert_eq!(mysql.state, *b"HY000");
+        assert_eq!(mysql.message, "Unknown charset nosuch");
+        assert!(!mysql.is_from_evaluation());
     }
 }

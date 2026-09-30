@@ -225,6 +225,11 @@ pub enum EvalError {
         /// The value's own character set.
         charset: String,
     },
+    /// A runtime contract, resource, or backend failure whose original cause
+    /// remains owned behind a native opaque handle, not a builtin SQL condition.
+    /// Clones share the cause and compare by cause identity; public diagnostics
+    /// expose only the native class and explicitly known phase.
+    ExpressionRuntimeFailure(crate::ExpressionRuntimeFailure),
 }
 
 /// Why a sequence builtin failed, with the code and message TiDB reports.
