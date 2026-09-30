@@ -35,7 +35,11 @@ pub(crate) fn dispatch(
         ("LEAST", _) => Some(extremum(vals, Ordering::Less, ctx)),
         ("GREATEST", _) => Some(extremum(vals, Ordering::Greater, ctx)),
         ("INTERVAL", n) if n >= 2 => Some(interval(vals, ctx)),
-        ("ISNULL", 1) => Some(Ok(Datum::Int(i64::from(matches!(vals[0], Datum::Null))))),
+        ("ISNULL", 1) => Some(crate::eval_boolean_ready_in(
+            crate::BooleanFunction::IsNull,
+            (!vals[0].is_null()).then_some(false),
+            ctx,
+        )),
         ("INET_ATON", 1) => Some(inet_aton(&vals[0])),
         ("INET_NTOA", 1) => Some(inet_ntoa(&vals[0], ctx)),
         ("INET6_ATON", 1) => Some(inet6_aton(&vals[0])),

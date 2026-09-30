@@ -1680,21 +1680,18 @@ impl ScalarFunction {
             }
             let operand = self.args[0].eval(ctx, row)?;
             let truthy = crate::truthy_of(&operand)?;
-            if name == "istrue_with_null" {
-                return Ok(match truthy {
-                    Some(value) => Datum::Int(i64::from(value)),
-                    None => Datum::Null,
-                });
-            }
-            let result = match name {
-                "istrue" => truthy == Some(true),
-                "isnottrue" => truthy != Some(true),
-                "isfalse" => truthy == Some(false),
-                "isnotfalse" => truthy != Some(false),
-                "isunknown" => truthy.is_none(),
-                _ => truthy.is_some(),
+            let function = match name {
+                "istrue" => crate::BooleanFunction::IsTrue,
+                "istrue_with_null" => crate::BooleanFunction::IsTrueWithNull,
+                "isnottrue" => crate::BooleanFunction::IsNotTrue,
+                "isfalse" => crate::BooleanFunction::IsFalse,
+                "isnotfalse" => crate::BooleanFunction::IsNotFalse,
+                "isunknown" => crate::BooleanFunction::IsNull,
+                _ => crate::BooleanFunction::IsNotNull,
             };
-            return Ok(Datum::Int(i64::from(result)));
+            // Even UNKNOWN aliases keep the existing truth-coercion validation
+            // above; unlike AST IS NULL, these typed entries can reject a datum.
+            return crate::eval_boolean_ready_in(function, truthy, ctx);
         }
         if let [arg] = self.args.as_slice() {
             if let Some(value) = crate::collation_derive::info_metadata_value(name, arg) {
@@ -3357,64 +3354,20 @@ impl ScalarFunction {
         Ok(true)
     }
 
-    /// Go `VecEvalBool`'s column-wise leg over one filter node: the numeric
-    /// comparisons of [`Self::vec_eval_numeric_compare`], `NOT` over a node
-    /// this kernel covers (`builtinUnaryNotIntSig.vecEvalInt`: NULL stays
-    /// NULL, zero becomes one, anything else zero) and `IS NULL` over a
-    /// chunk column (`builtin*IsNullSig.vecEvalInt`: the column's null
-    /// bitmap, never NULL itself). `is_zero` and the `Ok(false)` contract are
-    /// those of the comparison kernel; the covered shapes produce what
-    /// [`Self::eval`] produces row by row (`ops::eval_unary`'s three-valued
-    /// NOT and the `ISNULL` value dispatch).
+    /// The remaining column-wise numeric-comparison leg of `VecEvalBool`.
+    /// NOT and IS NULL decline before evaluating any child: the caller's
+    /// context-aware row route owns their shared boolean-driver invocation.
+    /// `is_zero` remains untouched when this fast path declines.
     pub(crate) fn vec_eval_bool(
         &self,
         input: &Chunk,
         sel: &[usize],
         is_zero: &mut Vec<i8>,
     ) -> Result<bool, EvalError> {
-        let name = self.func_name.lowercase();
-        if name != "not" && name != "isnull" {
-            return self.vec_eval_numeric_compare(input, sel, is_zero);
-        }
-        // `coerce_to_ret_type` leaves an integer alone only for an integer
-        // result type that is not BIT.
-        let Some(ret_type) = self.get_static_type() else {
-            return Ok(false);
-        };
-        if ret_type.eval_type() != EvalType::Int
-            || ret_type.code() == tidb_datatype::FieldTypeCode::Bit
-        {
+        if matches!(self.func_name.lowercase(), "not" | "isnull") {
             return Ok(false);
         }
-        match (name, self.args.as_slice()) {
-            ("not", [Expression::ScalarFunction(argument)]) => {
-                if !argument.vec_eval_bool(input, sel, is_zero)? {
-                    return Ok(false);
-                }
-                for code in is_zero.iter_mut() {
-                    if *code >= 0 {
-                        *code = i8::from(*code == 0);
-                    }
-                }
-                Ok(true)
-            }
-            ("isnull", [Expression::Column(column)]) => {
-                let Some(index) = usize::try_from(column.index)
-                    .ok()
-                    .filter(|&index| index < input.num_cols())
-                else {
-                    return Ok(false);
-                };
-                let column = input.column(index);
-                is_zero.clear();
-                is_zero.extend(
-                    sel.iter()
-                        .map(|&physical| i8::from(column.is_null(physical))),
-                );
-                Ok(true)
-            }
-            _ => Ok(false),
-        }
+        self.vec_eval_numeric_compare(input, sel, is_zero)
     }
 }
 

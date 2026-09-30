@@ -1828,3 +1828,139 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_bitwise_sql_columns() {
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_predicate_sql_values_and_null_truth_table() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE shared_pred_ops (id INT PRIMARY KEY, v BIGINT)")
+        .unwrap();
+    session
+        .run("INSERT INTO shared_pred_ops VALUES (1,NULL),(2,0),(3,2),(4,-3)")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    // IS [NOT] UNKNOWN is already parsed as IS [NOT] NULL. The internal
+    // ISTRUE_WITH_NULL name has no ordinary SQL return-type arm, so its direct
+    // entry remains a native/PB test responsibility rather than a new spelling.
+    let cases: [(&str, [Option<i64>; 4]); 13] = [
+        ("NOT v", [None, Some(1), Some(0), Some(0)]),
+        ("!v", [None, Some(1), Some(0), Some(0)]),
+        ("ISNULL(v)", [Some(1), Some(0), Some(0), Some(0)]),
+        ("v IS NULL", [Some(1), Some(0), Some(0), Some(0)]),
+        ("v IS NOT NULL", [Some(0), Some(1), Some(1), Some(1)]),
+        ("ISTRUE(v)", [Some(0), Some(0), Some(1), Some(1)]),
+        ("ISFALSE(v)", [Some(0), Some(1), Some(0), Some(0)]),
+        ("v IS TRUE", [Some(0), Some(0), Some(1), Some(1)]),
+        ("v IS NOT TRUE", [Some(1), Some(1), Some(0), Some(0)]),
+        ("v IS FALSE", [Some(0), Some(1), Some(0), Some(0)]),
+        ("v IS NOT FALSE", [Some(1), Some(0), Some(1), Some(1)]),
+        ("v IS UNKNOWN", [Some(1), Some(0), Some(0), Some(0)]),
+        ("v IS NOT UNKNOWN", [Some(0), Some(1), Some(1), Some(1)]),
+    ];
+    let projection = cases
+        .iter()
+        .map(|(expression, _)| *expression)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let output = session
+        .run_with_columns(&format!(
+            "SELECT {projection} FROM shared_pred_ops ORDER BY id"
+        ))
+        .unwrap();
+    let StmtOutput::Rows { columns, rows } = output else {
+        panic!("expected predicate SQL rows")
+    };
+    assert_eq!(columns.len(), cases.len());
+    assert_eq!(rows.len(), 4);
+    for row in &rows {
+        assert_eq!(row.len(), cases.len());
+    }
+    for (column_index, (expression, expected)) in cases.iter().enumerate() {
+        // The existing SQL descriptors are signed boolean integers, unlike
+        // the unsigned bitwise results in the preceding batch.
+        assert!(!columns[column_index].1.is_unsigned(), "{expression}");
+        for (row_index, &value) in expected.iter().enumerate() {
+            assert_eq!(
+                rows[row_index][column_index],
+                value.map_or(Datum::Null, Datum::Int),
+                "{expression}, fixture id {}",
+                row_index + 1
+            );
+        }
+    }
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_predicate_sql_columns_and_filters() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE shared_pred_zero (id INT PRIMARY KEY, v BIGINT)")
+        .unwrap();
+    session
+        .run("INSERT INTO shared_pred_zero VALUES (1,NULL),(2,2)")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    let mut statements = Vec::new();
+    for expression in [
+        "NOT v",
+        "!v",
+        "ISNULL(v)",
+        "v IS NULL",
+        "v IS NOT NULL",
+        "ISTRUE(v)",
+        "ISFALSE(v)",
+        "v IS TRUE",
+        "v IS NOT TRUE",
+        "v IS FALSE",
+        "v IS NOT FALSE",
+        "v IS UNKNOWN",
+        "v IS NOT UNKNOWN",
+    ] {
+        for id in [1, 2] {
+            // No migrated outer function can mask a direct predicate bypass.
+            statements.push(format!(
+                "SELECT {expression} FROM shared_pred_zero WHERE id={id}"
+            ));
+        }
+    }
+    // Cover the ISNULL bitmap candidate and a NOT filter as well as projection.
+    // Keep NOT on the column: NOT(v = 0) may legitimately optimize to v != 0.
+    statements.extend([
+        "SELECT id FROM shared_pred_zero WHERE v IS NULL".to_owned(),
+        "SELECT id FROM shared_pred_zero WHERE NOT v".to_owned(),
+    ]);
+    for sql in statements {
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("predicate SQL must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+    }
+}

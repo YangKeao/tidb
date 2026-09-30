@@ -79,6 +79,9 @@ pub(crate) fn eval_unary(
         if op == BitNeg {
             return eval_bit_neg_in(None, ctx);
         }
+        if matches!(op, Not | NotKeyword) {
+            return crate::eval_boolean_ready_in(crate::BooleanFunction::UnaryNot, None, ctx);
+        }
         return Ok(Datum::Null);
     }
     if v.is_range_sentinel() {
@@ -86,10 +89,7 @@ pub(crate) fn eval_unary(
     }
     // Logical NOT is three-valued truthiness, shared by Int and Decimal.
     if let Not | NotKeyword = op {
-        return match truthy_of(&v)? {
-            Some(t) => Ok(bool_int(!t)),
-            None => Ok(Datum::Null),
-        };
+        return crate::eval_boolean_ready_in(crate::BooleanFunction::UnaryNot, truthy_of(&v)?, ctx);
     }
     match v {
         // Go's unary classes never SEE a string argument: `getFunction` names

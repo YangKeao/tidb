@@ -227,9 +227,23 @@ impl PbBuiltin {
                     Ok(value)
                 }
             }
-            Kernel::IsNull => Ok(Datum::Int(i64::from(argument(0)?.is_null()))),
-            Kernel::Truth { negate } => Ok(logic_truthy(&argument(0)?, ctx)?
-                .map_or(Datum::Null, |value| Datum::Int(i64::from(value ^ negate)))),
+            Kernel::IsNull => {
+                let ready = if argument(0)?.is_null() {
+                    None
+                } else {
+                    Some(false)
+                };
+                crate::eval_boolean_ready_in(crate::BooleanFunction::IsNull, ready, ctx)
+            }
+            Kernel::Truth { negate } => {
+                let ready = logic_truthy(&argument(0)?, ctx)?;
+                let function = if negate {
+                    crate::BooleanFunction::UnaryNot
+                } else {
+                    crate::BooleanFunction::IsTrueWithNull
+                };
+                crate::eval_boolean_ready_in(function, ready, ctx)
+            }
             Kernel::Logic(op) => {
                 let left = logic_truthy(&argument(0)?, ctx)?;
                 if (op == BinaryOp::LogicAnd && left == Some(false))

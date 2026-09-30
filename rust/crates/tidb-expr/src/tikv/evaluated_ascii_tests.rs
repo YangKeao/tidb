@@ -1065,6 +1065,18 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::HexInt | EvaluatedBytesOp::HexStr => "HEX",
         EvaluatedBytesOp::Bin => "BIN",
         EvaluatedBytesOp::BitCount => "BIT_COUNT",
+        EvaluatedBytesOp::IsNull => "ISNULL",
+        EvaluatedBytesOp::IsTrue => "ISTRUE",
+        EvaluatedBytesOp::IsFalse => "ISFALSE",
+        EvaluatedBytesOp::IsTrueWithNull => "ISTRUE_WITH_NULL",
+        EvaluatedBytesOp::UnaryNot => {
+            return crate::apply_unary(tidb_ast::UnaryOp::Not, value.clone(), columns);
+        }
+        EvaluatedBytesOp::IsNotNull
+        | EvaluatedBytesOp::IsNotTrue
+        | EvaluatedBytesOp::IsNotFalse => {
+            panic!("composed predicates need their original expression entry")
+        }
         EvaluatedBytesOp::BitNeg => {
             return crate::apply_unary(tidb_ast::UnaryOp::BitNeg, value.clone(), columns);
         }
@@ -1096,6 +1108,282 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+#[test]
+fn boolean_dispatch_preserves_three_values_and_composed_aliases() {
+    use crate::BooleanFunction::*;
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    for (function, expected, calls) in [
+        (UnaryNot, [None, Some(1), Some(0)], 1),
+        (IsNull, [Some(1), Some(0), Some(0)], 1),
+        (IsTrue, [Some(0), Some(0), Some(1)], 1),
+        (IsFalse, [Some(0), Some(1), Some(0)], 1),
+        (IsTrueWithNull, [None, Some(0), Some(1)], 1),
+        (IsNotNull, [Some(0), Some(1), Some(1)], 2),
+        (IsNotTrue, [Some(1), Some(1), Some(0)], 2),
+        (IsNotFalse, [Some(1), Some(0), Some(1)], 2),
+    ] {
+        for (ready, expected) in [None, Some(false), Some(true)].into_iter().zip(expected) {
+            arm_eval_one_observation();
+            let result = crate::eval_boolean_ready_in(function, ready, &columns);
+            let observation = take_eval_one_observation();
+            assert_eq!(
+                result,
+                Ok(expected.map_or(Datum::Null, Datum::Int)),
+                "{function:?} {ready:?}"
+            );
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(
+                observation.after_kernel_invocations,
+                observation
+                    .before_kernel_invocations
+                    .map(|before| before + calls)
+            );
+        }
+    }
+    assert!(EvaluatedBytesResult::Int(Datum::Int(2))
+        .into_boolean_datum()
+        .is_err());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn boolean_dispatch_preserves_pb_warnings_and_native_predicate_wrappers() {
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    use tidb_proto::tipb;
+    struct Warnings(RefCell<Vec<(u16, String)>>);
+    impl Columns for Warnings {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            Some(Datum::MaxValue)
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.0.borrow_mut().push((code, message.to_owned()));
+        }
+    }
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let native = Warnings(RefCell::new(Vec::new()));
+    let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    scope.with_columns(&native, |columns| {
+        assert_eq!(
+            crate::apply_unary(tidb_ast::UnaryOp::Not, Datum::new_string("1x"), columns),
+            Ok(Datum::Int(0))
+        );
+        assert!(
+            native.0.borrow().is_empty(),
+            "ordinary NOT retains warning-free truthy_of"
+        );
+        for (signature, input, expected, warned) in [
+            (
+                tipb::ScalarFuncSig::UnaryNotInt,
+                Some(b"1x".to_vec()),
+                Datum::Int(0),
+                true,
+            ),
+            (
+                tipb::ScalarFuncSig::IntIsTrueWithNull,
+                None,
+                Datum::Null,
+                false,
+            ),
+            (
+                tipb::ScalarFuncSig::StringIsNull,
+                Some(b"1x".to_vec()),
+                Datum::Int(0),
+                false,
+            ),
+        ] {
+            native.0.borrow_mut().clear();
+            let child = tipb::Expr {
+                tp: Some(
+                    (if input.is_none() {
+                        tipb::ExprType::Null
+                    } else {
+                        tipb::ExprType::String
+                    }) as i32,
+                ),
+                val: input,
+                field_type: Some(tipb::FieldType {
+                    tp: Some(253),
+                    charset: Some("utf8mb4".into()),
+                    collate: Some(46),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let pb = tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(signature as i32),
+                children: vec![child],
+                field_type: Some(tipb::FieldType {
+                    tp: Some(8),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let expression = crate::distsql_builtin::pb_to_expr(&pb, &[]).unwrap();
+            arm_eval_one_observation();
+            let result = expression.eval(columns, row.to_row());
+            let observation = take_eval_one_observation();
+            assert_eq!(result, Ok(expected));
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(
+                observation.after_kernel_invocations,
+                observation
+                    .before_kernel_invocations
+                    .map(|before| before + 1)
+            );
+            assert_eq!(
+                *native.0.borrow(),
+                if warned {
+                    vec![(1292, "Truncated incorrect DOUBLE value: '1x'".to_owned())]
+                } else {
+                    vec![]
+                }
+            );
+        }
+        // AST UNKNOWN is presence-only; the typed alias deliberately retains
+        // its preexisting truth-coercion rejection of this same sentinel.
+        let unknown = tidb_ast::Expr::Is {
+            expr: Box::new(tidb_ast::Expr::Column(vec!["x".into()])),
+            target: tidb_ast::IsTarget::Unknown,
+            not: false,
+        };
+        assert_eq!(crate::eval_in(&unknown, columns), Ok(Datum::Int(0)));
+        let typed = ScalarFunction::new(
+            tidb_ast::CiString::new("isunknown"),
+            FieldType::new(FieldTypeCode::LongLong),
+            vec![Expression::Constant(Constant::new(
+                Datum::MaxValue,
+                FieldType::new(FieldTypeCode::LongLong),
+            ))],
+        );
+        arm_eval_one_observation();
+        let result = typed.eval(columns, row.to_row());
+        let observation = take_eval_one_observation();
+        assert_eq!(
+            result,
+            Err(EvalError::Unsupported("truth coercion of a non-SQL datum"))
+        );
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(
+            crate::apply_unary(tidb_ast::UnaryOp::Not, Datum::MaxValue, columns),
+            Err(EvalError::Unsupported("range sentinel expression operand"))
+        );
+        for (sql, expected, calls) in [
+            ("1 NOT IN (1, 2)", Datum::Int(0), 1),
+            ("1 NOT BETWEEN 0 AND 2", Datum::Int(0), 1),
+            ("NULL NOT LIKE '%'", Datum::Null, 1),
+            ("'a' NOT REGEXP 'b'", Datum::Int(1), 1),
+            ("NULL IS NOT TRUE", Datum::Int(1), 2),
+        ] {
+            let tidb_ast::Stmt::Query(query) =
+                tidb_parser::parse(&format!("SELECT {sql}")).unwrap()
+            else {
+                panic!("query")
+            };
+            let tidb_ast::QueryStmt::Select(select) = query.into_inner() else {
+                panic!("SELECT")
+            };
+            let tidb_ast::SelectField::Expr { expr, .. } = &select.fields[0] else {
+                panic!("expression")
+            };
+            arm_eval_one_observation();
+            let result = crate::eval_in(expr, columns);
+            let observation = take_eval_one_observation();
+            assert_eq!(result, Ok(expected), "{sql}");
+            assert_eq!(observation.facade_entries, 1, "{sql}");
+            assert_eq!(
+                observation.after_kernel_invocations,
+                observation
+                    .before_kernel_invocations
+                    .map(|before| before + calls)
+            );
+        }
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn boolean_dispatch_vector_fallback_keeps_the_explicit_root() {
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    let field = FieldType::new(FieldTypeCode::LongLong);
+    let mut column = crate::column::Column::new(1, field.clone());
+    column.index = 0;
+    let isnull = ScalarFunction::new(
+        tidb_ast::CiString::new("isnull"),
+        field.clone(),
+        vec![Expression::Column(column)],
+    );
+    let not = ScalarFunction::new(
+        tidb_ast::CiString::new("not"),
+        field.clone(),
+        vec![Expression::ScalarFunction(isnull.clone())],
+    );
+    let mut chunk = tidb_chunk::chunk::Chunk::new_with_capacity(&[field], 2);
+    chunk.append_null(0);
+    chunk.append_int64(0, 0);
+    for function in [&isnull, &not] {
+        let mut untouched = vec![42];
+        arm_eval_one_observation();
+        assert_eq!(
+            function.vec_eval_bool(&chunk, &[0, 1], &mut untouched),
+            Ok(false)
+        );
+        let observation = take_eval_one_observation();
+        assert_eq!(untouched, vec![42]);
+        assert_eq!(
+            observation.facade_entries, 0,
+            "decline before child evaluation"
+        );
+    }
+    let filters = [Expression::ScalarFunction(not)];
+    for slots in [0, 1] {
+        let owner = AsciiPoolOwner::new(test_policy(slots, slots)).unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        let columns = AdvertisedAsciiColumns {
+            scope: Some(&scope),
+            execution: &execution,
+        };
+        arm_eval_one_observation();
+        let result = crate::evaluator::vectorized_filter_consider_null(
+            &columns,
+            true,
+            &filters,
+            &chunk,
+            Vec::new(),
+            Vec::new(),
+        );
+        let observation = take_eval_one_observation();
+        if slots == 0 {
+            assert!(
+                matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource)
+            );
+            assert_eq!(observation.facade_entries, 0);
+        } else {
+            assert_eq!(result, Ok((vec![false, true], vec![false, false])));
+            assert_eq!(observation.facade_entries, 4);
+            // The alternating operations replace a one-slot worker, so its
+            // per-worker counter is not a root-wide aggregate counter.
+            assert!(observation.before_kernel_invocations.is_some());
+            assert!(observation.after_kernel_invocations.is_some());
+        }
+        drop(scope);
+        execution.close();
+    }
 }
 
 #[test]

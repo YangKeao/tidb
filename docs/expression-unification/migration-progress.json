@@ -1,8 +1,8 @@
 {
-  "checkpoint_id": "integer-seven-10",
+  "checkpoint_id": "boolean-five-11",
   "frozen_denominator": 245,
   "required_families": 221,
-  "functional_delegation_and_native_deletion_count": 22,
+  "functional_delegation_and_native_deletion_count": 27,
   "fully_final_audited_count": 0,
   "final_performance_and_workspace_gates_complete": false,
   "families": [
@@ -27,12 +27,17 @@
     {"id": "bitor", "status": "functional_tikv_only", "native_algorithm_deleted": true, "unsigned_result": true},
     {"id": "bitxor", "status": "functional_tikv_only", "native_algorithm_deleted": true, "unsigned_result": true},
     {"id": "leftshift", "status": "functional_tikv_only", "native_algorithm_deleted": true, "unsigned_result": true},
-    {"id": "rightshift", "status": "functional_tikv_only", "native_algorithm_deleted": true, "unsigned_result": true}
+    {"id": "rightshift", "status": "functional_tikv_only", "native_algorithm_deleted": true, "unsigned_result": true},
+    {"id": "not", "status": "functional_tikv_only", "native_algorithm_deleted": true, "pb_unistore_and_syntactic_negation_connected": true},
+    {"id": "isnull", "status": "functional_tikv_only", "native_algorithm_deleted": true, "presence_all_native_datums": true, "admitted_pb_and_unistore_signatures_connected": true, "negated_and_unknown_forms_connected": true},
+    {"id": "istrue", "status": "functional_tikv_only", "native_algorithm_deleted": true, "isnottrue_fixed_two_call_recipe": true},
+    {"id": "isfalse", "status": "functional_tikv_only", "native_algorithm_deleted": true, "isnotfalse_fixed_two_call_recipe": true},
+    {"id": "istrue_with_null", "status": "functional_tikv_only", "native_algorithm_deleted": true, "existing_pb_and_native_routes_connected": true, "ordinary_sql_admission_not_added": true}
   ],
-  "shared_evidence": "evidence/integer-seven-checkpoint.md",
+  "shared_evidence": "evidence/boolean-five-checkpoint.md",
   "one_operation_keyed_pool": true,
   "actual_mixed_column_sql_verified": true,
   "zero_slot_refusal_for_new_paths_verified": true,
   "deferred": ["complete operation-scope reuse", "broader wrapper capability propagation", "release performance", "paired differential rerun", "whole-workspace final acceptance"],
-  "next_batch_not_credited": ["not", "isnull", "istrue", "isfalse", "istrue_with_null"]
+  "next_candidates_not_credited": ["md5", "sha1", "sha2", "compress", "uncompress", "uncompressed_length", "ord"]
 }

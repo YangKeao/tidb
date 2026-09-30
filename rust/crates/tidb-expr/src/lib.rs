@@ -734,6 +734,57 @@ pub fn apply_unary(
     eval_unary(op, v, ops::Operand::Literal, ctx)
 }
 
+/// Closed boolean operations over a frontend-normalized truth/null marker.
+/// These operations do not choose a SQL coercion policy or result FieldType.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BooleanFunction {
+    /// Three-valued logical NOT.
+    UnaryNot,
+    /// Presence test; the value of a non-NULL marker is ignored.
+    IsNull,
+    /// IS TRUE, with NULL producing zero.
+    IsTrue,
+    /// IS FALSE, with NULL producing zero.
+    IsFalse,
+    /// Truth normalization that preserves NULL.
+    IsTrueWithNull,
+    /// NOT(IS NULL), evaluated as two official calls.
+    IsNotNull,
+    /// NOT(IS TRUE), not the NULL-distinct IS FALSE operation.
+    IsNotTrue,
+    /// NOT(IS FALSE), not the NULL-distinct IS TRUE operation.
+    IsNotFalse,
+}
+
+/// Evaluates one boolean operation after the caller's original conversion.
+///
+/// `ready` is the already-evaluated truth value, or NULL. Presence-only
+/// callers use `Some(false)` for every non-NULL datum without truth coercion.
+/// The caller retains its own warning/error policy and passes the live context;
+/// the shared driver supplies the answer, including for NULL inputs.
+pub fn eval_boolean_ready_in(
+    function: BooleanFunction,
+    ready: Option<bool>,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    let operation = match function {
+        BooleanFunction::UnaryNot => tikv::EvaluatedBytesOp::UnaryNot,
+        BooleanFunction::IsNull => tikv::EvaluatedBytesOp::IsNull,
+        BooleanFunction::IsTrue => tikv::EvaluatedBytesOp::IsTrue,
+        BooleanFunction::IsFalse => tikv::EvaluatedBytesOp::IsFalse,
+        BooleanFunction::IsTrueWithNull => tikv::EvaluatedBytesOp::IsTrueWithNull,
+        BooleanFunction::IsNotNull => tikv::EvaluatedBytesOp::IsNotNull,
+        BooleanFunction::IsNotTrue => tikv::EvaluatedBytesOp::IsNotTrue,
+        BooleanFunction::IsNotFalse => tikv::EvaluatedBytesOp::IsNotFalse,
+    };
+    tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || Ok(tikv::EvaluatedArgs::Int(ready.map(i64::from))),
+        tikv::EvaluatedBytesResult::into_boolean_datum,
+    )
+}
+
 /// `AVG`'s `SUM / COUNT`, exposed so `tidb-exec` can compute it without
 /// reimplementing decimal division: an `Int` sum promotes to decimal (scale
 /// 0, MySQL's implicit rule, same as every other decimal op); the result
@@ -1087,17 +1138,24 @@ pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
             )?;
             let le =
                 crate::ops::eval_binary_in(tidb_ast::BinaryOp::Le, v, eval_in(high, cols)?, cols)?;
-            Ok(negate_if(logic_and(ge, le, cols)?, *not))
+            negate_if(logic_and(ge, le, cols)?, *not, cols)
         }
         Expr::Is { expr, target, not } => {
             // IS is always TRUE/FALSE (never NULL): it tests a definite property.
             let v = eval_in(expr, cols)?;
-            let holds = match target {
-                IsTarget::Null | IsTarget::Unknown => v == Datum::Null,
-                IsTarget::True => truthy_of(&v)? == Some(true),
-                IsTarget::False => truthy_of(&v)? == Some(false),
+            let ready = match target {
+                IsTarget::Null | IsTarget::Unknown => (!v.is_null()).then_some(false),
+                IsTarget::True | IsTarget::False => truthy_of(&v)?,
             };
-            Ok(bool_int(holds ^ not))
+            let function = match (target, *not) {
+                (IsTarget::Null | IsTarget::Unknown, false) => BooleanFunction::IsNull,
+                (IsTarget::Null | IsTarget::Unknown, true) => BooleanFunction::IsNotNull,
+                (IsTarget::True, false) => BooleanFunction::IsTrue,
+                (IsTarget::True, true) => BooleanFunction::IsNotTrue,
+                (IsTarget::False, false) => BooleanFunction::IsFalse,
+                (IsTarget::False, true) => BooleanFunction::IsNotFalse,
+            };
+            eval_boolean_ready_in(function, ready, cols)
         }
         Expr::Like {
             expr,
@@ -1119,7 +1177,7 @@ pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
             // `None`/`Some(0)`/`Some(byte)` meaning, confirmed via
             // `gorun` for a custom single-byte escape character.
             match (eval_in(expr, cols)?, eval_in(pattern, cols)?) {
-                (Datum::Null, _) | (_, Datum::Null) => Ok(Datum::Null),
+                (Datum::Null, _) | (_, Datum::Null) => negate_if(Datum::Null, *not, cols),
                 (v, p) => {
                     let value = v.sql_bytes().map_err(|_| {
                         EvalError::Unsupported("invalid LIKE operand scalar domain")
@@ -1132,7 +1190,7 @@ pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
                     } else {
                         like_match(value, pattern, *escape)
                     };
-                    Ok(bool_int(matched ^ not))
+                    negate_if(bool_int(matched), *not, cols)
                 }
             }
         }
@@ -1144,7 +1202,7 @@ pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
         // pattern error rules.
         Expr::Regexp { expr, pattern, not } => {
             match (eval_in(expr, cols)?, eval_in(pattern, cols)?) {
-                (Datum::Null, _) | (_, Datum::Null) => Ok(Datum::Null),
+                (Datum::Null, _) | (_, Datum::Null) => negate_if(Datum::Null, *not, cols),
                 (v, p) => {
                     let value = v
                         .sql_string()
@@ -1152,7 +1210,7 @@ pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
                     let pattern = p
                         .sql_string()
                         .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP pattern"))?;
-                    Ok(bool_int(regexp_match(&value, &pattern)? ^ not))
+                    negate_if(bool_int(regexp_match(&value, &pattern)?), *not, cols)
                 }
             }
         }

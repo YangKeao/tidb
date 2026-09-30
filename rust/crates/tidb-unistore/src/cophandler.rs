@@ -4101,6 +4101,21 @@ fn collation_of(expr: &tipb::Expr) -> i32 {
     tidb_datatype::restore_collation_id_if_needed(protocol)
 }
 
+/// The legacy evaluator has already selected its integer or datum channel.
+/// Keep that coercion outside the shared predicate and check its native result.
+fn eval_boolean_ready(
+    function: tidb_expr::BooleanFunction,
+    ready: Option<bool>,
+) -> Result<Option<i128>, String> {
+    match tidb_expr::eval_boolean_ready_in(function, ready, &tidb_expr::NoColumns)
+        .map_err(|error| format!("{error:?}"))?
+    {
+        tidb_datatype::Datum::Int(value @ (0 | 1)) => Ok(Some(i128::from(value))),
+        tidb_datatype::Datum::Null => Ok(None),
+        _ => Err("boolean function returned an invalid result".to_owned()),
+    }
+}
+
 /// Evaluates one pushed-down expression against a scanned row: MySQL's
 /// three-valued int (`Some(0/1/n)`) or NULL, beside Go's expression-level
 /// error -- the 1690 overflow terror the request-level answer carries.
@@ -4628,17 +4643,22 @@ pub fn eval_expr(
                         _ => None,
                     }
                 }
-                SimpleSig::UnaryNot => child(0)?.map(|v| i128::from(v == 0)),
-                SimpleSig::IntIsNull => Some(i128::from(child(0)?.is_none())),
+                SimpleSig::UnaryNot => eval_boolean_ready(
+                    tidb_expr::BooleanFunction::UnaryNot,
+                    child(0)?.map(|value| value != 0),
+                )?,
+                SimpleSig::IntIsNull => eval_boolean_ready(
+                    tidb_expr::BooleanFunction::IsNull,
+                    child(0)?.map(|_| false),
+                )?,
                 SimpleSig::VectorFloat32IsNull => {
                     // The vector leaf answers NULL only through its datum.
-                    match children.first().map(|c| eval_datum(c, row)) {
-                        Some(Ok(datum)) => {
-                            Some(i128::from(matches!(datum, tidb_datatype::Datum::Null)))
-                        }
+                    let ready = match children.first().map(|c| eval_datum(c, row)) {
+                        Some(Ok(Datum::Null)) | None => None,
+                        Some(Ok(_)) => Some(false),
                         Some(Err(message)) => return Err(message),
-                        None => Some(1),
-                    }
+                    };
+                    eval_boolean_ready(tidb_expr::BooleanFunction::IsNull, ready)?
                 }
                 SimpleSig::InString(collation) => {
                     // Go `builtinInStringSig`: TRUE on any match under the
@@ -4688,13 +4708,12 @@ pub fn eval_expr(
                     // Each family's IS NULL inspects its own leaf's DATUM,
                     // not the int truth channel: a present non-NULL datum
                     // answers FALSE even when that kind is not comparable.
-                    match children.first().map(|c| eval_datum(c, row)) {
-                        Some(Ok(datum)) => {
-                            Some(i128::from(matches!(datum, tidb_datatype::Datum::Null)))
-                        }
+                    let ready = match children.first().map(|c| eval_datum(c, row)) {
+                        Some(Ok(Datum::Null)) | None => None,
+                        Some(Ok(_)) => Some(false),
                         Some(Err(message)) => return Err(message),
-                        None => Some(1),
-                    }
+                    };
+                    eval_boolean_ready(tidb_expr::BooleanFunction::IsNull, ready)?
                 }
                 // Go's temporal extraction family: `builtinDateSig` truncates
                 // a DATETIME to its date part, the clock signatures read the
@@ -6498,6 +6517,48 @@ mod tests {
             eval_expr(&string_null, &row, 4, &zone()).expect("evals"),
             Some(1)
         );
+    }
+
+    #[test]
+    fn is_null_preserves_integer_and_datum_channels() {
+        use tidb_datatype::Datum;
+        let row = [Datum::Real(1.0)];
+        let evaluate =
+            |sig, children| eval_expr(&SimpleExpr::Func(sig, children), &row, 4, &zone());
+        assert_eq!(
+            evaluate(SimpleSig::IntIsNull, vec![SimpleExpr::Column(0)]),
+            Ok(Some(1))
+        );
+        assert_eq!(
+            evaluate(SimpleSig::IntIsNull, vec![SimpleExpr::Column(1)]),
+            Ok(Some(1))
+        );
+        for sig in [
+            SimpleSig::DecimalIsNull,
+            SimpleSig::DurationIsNull,
+            SimpleSig::RealIsNull,
+            SimpleSig::StringIsNull,
+            SimpleSig::TimeIsNull,
+            SimpleSig::VectorFloat32IsNull,
+        ] {
+            assert_eq!(evaluate(sig, vec![SimpleExpr::Column(0)]), Ok(Some(0)));
+            assert_eq!(evaluate(sig, vec![SimpleExpr::Null]), Ok(Some(1)));
+            assert_eq!(evaluate(sig, Vec::new()), Ok(Some(1)));
+            assert_eq!(
+                evaluate(sig, vec![SimpleExpr::Column(1)]),
+                Err("aggregate input is outside the scanned row".to_owned())
+            );
+            assert_eq!(
+                evaluate(
+                    sig,
+                    vec![SimpleExpr::Func(
+                        SimpleSig::UnaryNot,
+                        vec![SimpleExpr::Int(0)]
+                    )],
+                ),
+                Err("a computed aggregate argument is a later course".to_owned())
+            );
+        }
     }
 
     #[test]

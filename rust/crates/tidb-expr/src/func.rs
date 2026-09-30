@@ -708,21 +708,26 @@ pub(crate) fn eval_func_values(
         }
         // Go `builtinIntIsNullSig`: 1 when the argument is NULL, else 0 --
         // never NULL itself. `IS UNKNOWN` is the same function.
-        "ISNULL" if vals.len() == 1 => Ok(Datum::Int(i64::from(vals[0] == Datum::Null))),
+        "ISNULL" if vals.len() == 1 => crate::eval_boolean_ready_in(
+            crate::BooleanFunction::IsNull,
+            (!vals[0].is_null()).then_some(false),
+            ctx,
+        ),
         // Go `builtinIntIsTrueSig` with keepNull false: NULL and zero are 0.
-        "ISTRUE" if vals.len() == 1 => {
-            truthy_of(&vals[0]).map(|t| Datum::Int(i64::from(t == Some(true))))
-        }
+        "ISTRUE" if vals.len() == 1 => truthy_of(&vals[0]).and_then(|ready| {
+            crate::eval_boolean_ready_in(crate::BooleanFunction::IsTrue, ready, ctx)
+        }),
         // Go's filter wrapper uses `builtinIntIsTrueSig{keepNull:true}` for
         // predicates whose NULL result must survive a NOT/OR rewrite.  This
         // is the value-preserving sibling of ISTRUE: NULL stays NULL, while
         // every other datum follows the same Datum.ToBool truthiness rule.
-        "ISTRUE_WITH_NULL" if vals.len() == 1 => truthy_of(&vals[0])
-            .map(|t| t.map_or(Datum::Null, |truthy| Datum::Int(i64::from(truthy)))),
+        "ISTRUE_WITH_NULL" if vals.len() == 1 => truthy_of(&vals[0]).and_then(|ready| {
+            crate::eval_boolean_ready_in(crate::BooleanFunction::IsTrueWithNull, ready, ctx)
+        }),
         // Go `builtinIntIsFalseSig`: 1 only for a non-NULL zero.
-        "ISFALSE" if vals.len() == 1 => {
-            truthy_of(&vals[0]).map(|t| Datum::Int(i64::from(t == Some(false))))
-        }
+        "ISFALSE" if vals.len() == 1 => truthy_of(&vals[0]).and_then(|ready| {
+            crate::eval_boolean_ready_in(crate::BooleanFunction::IsFalse, ready, ctx)
+        }),
         // COALESCE returns the first non-NULL argument.
         "COALESCE" => Ok(vals
             .iter()
@@ -1004,7 +1009,7 @@ pub(crate) fn eval_in_list(
                 _ => found_match = true,
             }
         }
-        return Ok(in_result(found_match, found_null, not));
+        return in_result(found_match, found_null, not, cols);
     }
     let v = eval_in(expr, cols)?;
     let mut found_null = false;
@@ -1017,7 +1022,7 @@ pub(crate) fn eval_in_list(
             _ => found_match = true,
         }
     }
-    Ok(in_result(found_match, found_null, not))
+    in_result(found_match, found_null, not, cols)
 }
 
 /// The three-valued answer of an `IN` whose whole list has been compared:
@@ -1029,24 +1034,35 @@ pub(crate) fn eval_in_list(
 /// it returned TRUE from inside the loop even when an earlier item had
 /// already set `found_null` -- so folding the whole list changes WHICH
 /// items get evaluated, never the boolean this returns.
-fn in_result(found_match: bool, found_null: bool, not: bool) -> Datum {
-    if found_match {
-        bool_int(!not)
+fn in_result(
+    found_match: bool,
+    found_null: bool,
+    not: bool,
+    cols: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    let value = if found_match {
+        bool_int(true)
     } else if found_null {
         Datum::Null
     } else {
-        bool_int(not) // no match, no NULL: FALSE for IN, TRUE for NOT IN
-    }
+        bool_int(false)
+    };
+    negate_if(value, not, cols)
 }
 
-/// Negates a three-valued boolean when `neg` is set; NULL stays NULL. Called
-/// from `crate::eval_in`'s `BETWEEN` handling.
-pub(crate) fn negate_if(v: Datum, neg: bool) -> Datum {
-    match (neg, v) {
-        (true, Datum::Int(i)) => bool_int(i == 0),
-        (true, Datum::UInt(i)) => bool_int(i == 0),
-        (_, v) => v,
+/// Negates an already-computed predicate only when requested, retaining the
+/// original signed-int/NULL packing and passing other datum kinds unchanged.
+pub(crate) fn negate_if(v: Datum, neg: bool, cols: &dyn Columns) -> Result<Datum, EvalError> {
+    if !neg {
+        return Ok(v);
     }
+    let ready = match v {
+        Datum::Int(i) => Some(i != 0),
+        Datum::UInt(i) => Some(i != 0),
+        Datum::Null => None,
+        other => return Ok(other),
+    };
+    crate::eval_boolean_ready_in(crate::BooleanFunction::UnaryNot, ready, cols)
 }
 
 #[cfg(test)]

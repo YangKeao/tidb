@@ -786,9 +786,10 @@ impl Creation {
             self.operation,
             LocalCompileContext {
                 limits: CompileLimits {
-                    // One call node plus at most three ready argument columns.
+                    // Three ready arguments plus a call, or a two-call unary
+                    // predicate over one ready argument (depth three).
                     max_nodes: 4,
-                    max_depth: 2,
+                    max_depth: 3,
                 },
             },
             self.core.policy.execution_limits(),
@@ -1348,6 +1349,14 @@ impl EvaluatedBytesResult {
         }
     }
 
+    /// Pack only a computed boolean carrier; do not recalculate its truth.
+    pub(crate) fn into_boolean_datum(self) -> Result<Datum, EvalError> {
+        match self {
+            Self::Int(value @ (Datum::Int(0) | Datum::Int(1) | Datum::Null)) => Ok(value),
+            _ => Err(result_kind_error().into_eval_error()),
+        }
+    }
+
     /// The signed C carrier owns the result bits, not the frontend SQL flag.
     /// Negative carriers are valid unsigned bitwise answers, never overflows.
     pub(crate) fn into_uint_bits_datum(self) -> Result<Datum, EvalError> {
@@ -1384,7 +1393,15 @@ fn materialize_computed(
             | EvaluatedBytesOp::BitOr
             | EvaluatedBytesOp::BitXor
             | EvaluatedBytesOp::LeftShift
-            | EvaluatedBytesOp::RightShift,
+            | EvaluatedBytesOp::RightShift
+            | EvaluatedBytesOp::UnaryNot
+            | EvaluatedBytesOp::IsNull
+            | EvaluatedBytesOp::IsTrue
+            | EvaluatedBytesOp::IsFalse
+            | EvaluatedBytesOp::IsTrueWithNull
+            | EvaluatedBytesOp::IsNotNull
+            | EvaluatedBytesOp::IsNotTrue
+            | EvaluatedBytesOp::IsNotFalse,
             ComputedValue::Int(value),
         ) => own_computed_int(value)
             .into_datum()
