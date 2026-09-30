@@ -365,6 +365,18 @@ impl PbBuiltin {
                             return eval_pb_char_length(&value, binary, ctx);
                         }
                         match kernel {
+                            Kernel::Round => {
+                                // The observed SQL NULL is the only demand
+                                // witness. Earlier values remain uncoerced and
+                                // later children, including extra ones, stay
+                                // unevaluated exactly as at the old boundary.
+                                return crate::tikv::evaluate_args_in(
+                                    crate::tikv::EvaluatedBytesOp::MathNullWitnessNative,
+                                    ctx,
+                                    || Ok(crate::tikv::EvaluatedArgs::NullWitness(None)),
+                                    crate::tikv::EvaluatedBytesResult::into_int_datum,
+                                );
+                            }
                             Kernel::String {
                                 operation: StringOp::Upper,
                                 binary,

@@ -43,7 +43,10 @@ impl AsciiComputedValue for ComputedValue {
     fn value(&self) -> Option<i64> {
         match self {
             ComputedValue::Int(value) => value.value(),
-            ComputedValue::Bytes(_) | ComputedValue::Ieee754Bits(_) => {
+            ComputedValue::Bytes(_)
+            | ComputedValue::Ieee754Bits(_)
+            | ComputedValue::Decimal(_)
+            | ComputedValue::Int128(_) => {
                 panic!("ASCII assertion received a non-Int result")
             }
         }
@@ -1114,6 +1117,31 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::EltNative => {
             panic!("variadic string operations need their original argument list")
         }
+        EvaluatedBytesOp::AbsIntNative
+        | EvaluatedBytesOp::AbsUIntNative
+        | EvaluatedBytesOp::AbsRealNative
+        | EvaluatedBytesOp::AbsDecimalNative
+        | EvaluatedBytesOp::CeilIntNative
+        | EvaluatedBytesOp::FloorIntNative
+        | EvaluatedBytesOp::CeilRealNative
+        | EvaluatedBytesOp::FloorRealNative
+        | EvaluatedBytesOp::CeilDecimalNative
+        | EvaluatedBytesOp::FloorDecimalNative
+        | EvaluatedBytesOp::RoundIntNative
+        | EvaluatedBytesOp::RoundIntWithScaleNative
+        | EvaluatedBytesOp::RoundRealNative
+        | EvaluatedBytesOp::RoundDecimalNative
+        | EvaluatedBytesOp::TruncateIntNative
+        | EvaluatedBytesOp::TruncateUIntNative
+        | EvaluatedBytesOp::TruncateIntUnsignedScaleNative
+        | EvaluatedBytesOp::TruncateRealNative
+        | EvaluatedBytesOp::TruncateDecimalNative
+        | EvaluatedBytesOp::RoundInt128Legacy
+        | EvaluatedBytesOp::RoundRealLegacy
+        | EvaluatedBytesOp::RoundDecimalLegacy
+        | EvaluatedBytesOp::MathNullWitnessNative => {
+            panic!("typed math needs its exact operand domain and NULL demand")
+        }
         EvaluatedBytesOp::FieldBytesNative
         | EvaluatedBytesOp::FieldIntNative
         | EvaluatedBytesOp::FieldRealNative
@@ -1201,6 +1229,316 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+fn observe_wide_math(
+    evaluate: impl FnOnce() -> Result<Datum, EvalError>,
+) -> (Result<Datum, EvalError>, EvalOneObservation) {
+    arm_eval_one_observation();
+    let result = evaluate();
+    (result, take_eval_one_observation())
+}
+
+fn assert_wide_math_c4(observation: EvalOneObservation) {
+    assert_eq!(observation.facade_entries, 1);
+    assert!(
+        observation.after_kernel_invocations.unwrap()
+            > observation.before_kernel_invocations.unwrap()
+    );
+}
+
+#[test]
+fn wide_math_dispatch_preserves_value_kinds_wide_storage_and_typed_decimal() {
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    use tidb_datatype::Decimal;
+
+    // Only public constructors/arithmetic build this >nine-word value; its
+    // hidden division fraction must not pass through Display or i128.
+    let hidden = Decimal::from_int(-1)
+        .div_mysql(&Decimal::from_int(100_000), 4)
+        .unwrap();
+    let wide = Decimal::max_or_min(true, 90, 0)
+        .add(&hidden)
+        .with_declared_shape(100, 4);
+    assert!(wide.coefficient_digits().len() > 81);
+    assert!(wide.coefficient_i128().is_none());
+    assert!(wide.storage_scale() > wide.scale());
+    assert!(wide.is_negative());
+    assert_eq!(wide.declared_shape(), Some((100, 4)));
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (name, values, expected) in [
+            ("ABS", vec![Datum::Float32(-1.25)], Datum::Real(1.25)),
+            ("FLOOR", vec![Datum::Float32(1.75)], Datum::Float32(1.0)),
+            (
+                "TRUNCATE",
+                vec![Datum::Float32(1.75), Datum::Int(1)],
+                Datum::Float32(1.7),
+            ),
+            ("ROUND", vec![Datum::UInt(u64::MAX)], Datum::UInt(u64::MAX)),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::math_fn::dispatch_values(name, &values, columns).unwrap()
+            });
+            let result = result.unwrap();
+            assert_eq!(
+                std::mem::discriminant(&result),
+                std::mem::discriminant(&expected),
+                "{name}"
+            );
+            assert_eq!(result, expected, "{name}");
+            assert_wide_math_c4(observation);
+        }
+
+        // The generic native pack return must not detour through a 64-bit Datum.
+        arm_eval_one_observation();
+        let integer = crate::eval_legacy_round_int_in(Some(i128::MIN), columns);
+        assert_eq!(integer, Ok(Some(i128::MIN)));
+        assert_wide_math_c4(take_eval_one_observation());
+
+        let (result, observation) = observe_wide_math(|| {
+            crate::math_fn::dispatch_values("ABS", &[Datum::Decimal(wide.clone())], columns)
+                .unwrap()
+        });
+        let Datum::Decimal(result) = result.unwrap() else {
+            panic!("wide ABS must return Decimal")
+        };
+        assert!(!result.is_negative());
+        assert_eq!(result.coefficient_digits(), wide.coefficient_digits());
+        assert_eq!(
+            (result.scale(), result.storage_scale()),
+            (wide.scale(), wide.storage_scale())
+        );
+        assert_eq!(result.declared_shape(), None);
+        assert_wide_math_c4(observation);
+
+        let decimal = |text| {
+            Expression::Constant(Constant::new(
+                Datum::Decimal(Decimal::from_literal(text)),
+                FieldType::new(FieldTypeCode::NewDecimal),
+            ))
+        };
+        for (name, args, result_type, expected) in [
+            (
+                "round",
+                vec![
+                    decimal("1.2567"),
+                    Expression::Constant(Constant::new(
+                        Datum::Int(4),
+                        FieldType::new(FieldTypeCode::LongLong),
+                    )),
+                ],
+                FieldType::new(FieldTypeCode::NewDecimal)
+                    .with_flen(20)
+                    .with_decimal(2),
+                "1.26",
+            ),
+            (
+                "ceil",
+                vec![decimal("1.2")],
+                FieldType::new(FieldTypeCode::NewDecimal)
+                    .with_flen(20)
+                    .with_decimal(0),
+                "2",
+            ),
+        ] {
+            let function = ScalarFunction::new(tidb_ast::CiString::new(name), result_type, args);
+            let (result, observation) =
+                observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            let Datum::Decimal(result) = result.unwrap() else {
+                panic!("typed {name} lost its Decimal result domain")
+            };
+            assert_eq!(
+                result.to_string(),
+                expected,
+                "typed result scale caps ROUND's requested scale"
+            );
+            assert_eq!(
+                result.declared_shape(),
+                None,
+                "CEIL must not collapse to Int and recast through the return column shape"
+            );
+            assert_wide_math_c4(observation);
+        }
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn wide_math_dispatch_pb_round_null_keeps_child_demand_and_native_precedence() {
+    use crate::expression::Expression;
+    use crate::scalar_function::{PbBuiltin, ScalarFunction};
+    use tidb_proto::tipb::ScalarFuncSig;
+
+    #[derive(Default)]
+    struct Params {
+        values: RefCell<Vec<Datum>>,
+        reads: RefCell<Vec<usize>>,
+    }
+    impl Columns for Params {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn param_value(&self, order: usize) -> Result<Datum, EvalError> {
+            self.reads.borrow_mut().push(order);
+            Ok(self.values.borrow()[order].clone())
+        }
+    }
+    let native = Params::default();
+    let build = |signature, result_code| {
+        let mut args: Vec<_> = (0..native.values.borrow().len())
+            .map(|order| {
+                let mut constant =
+                    Constant::new(Datum::Null, FieldType::new(FieldTypeCode::Double));
+                constant.param_marker = Some(crate::constant::ParamMarker {
+                    order: order as i64,
+                });
+                Expression::Constant(constant)
+            })
+            .collect();
+        args.push(Expression::ScalarFunction(ScalarFunction::new(
+            tidb_ast::CiString::new("__undemanded_round_tail__"),
+            FieldType::new(FieldTypeCode::Double),
+            Vec::new(),
+        )));
+        ScalarFunction::from_pb(
+            PbBuiltin::new(signature).unwrap(),
+            FieldType::new(result_code),
+            args,
+        )
+    };
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for (signature, result_code, values, reads) in [
+            (
+                ScalarFuncSig::RoundInt,
+                FieldTypeCode::LongLong,
+                vec![Datum::Null],
+                vec![0],
+            ),
+            (
+                ScalarFuncSig::RoundDec,
+                FieldTypeCode::NewDecimal,
+                vec![Datum::MinNotNull, Datum::Null],
+                vec![0, 1],
+            ),
+        ] {
+            *native.values.borrow_mut() = values;
+            let function = build(signature, result_code);
+            let (result, observation) =
+                observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert_eq!(
+                result,
+                Ok(Datum::Null),
+                "PB NULL precedes coercion and malformed-arity rejection"
+            );
+            assert_eq!(native.reads.replace(Vec::new()), reads);
+            assert_wide_math_c4(observation);
+        }
+        let (result, observation) = observe_wide_math(|| {
+            crate::math_fn::dispatch_values(
+                "ROUND",
+                &[Datum::MinNotNull, Datum::Null, Datum::Int(0)],
+                columns,
+            )
+            .unwrap()
+        });
+        assert_eq!(
+            result,
+            Err(EvalError::Unsupported(
+                "range sentinel ROUND/TRUNCATE argument"
+            )),
+            "ordinary math keeps sentinel-before-NULL-before-arity, unlike PB's child loop"
+        );
+        assert_eq!(observation.facade_entries, 0);
+    });
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        *native.values.borrow_mut() = vec![Datum::MinNotNull, Datum::Null];
+        let function = build(ScalarFuncSig::RoundReal, FieldTypeCode::Double);
+        let (result, observation) = observe_wide_math(|| {
+            function.eval(columns, tidb_chunk::row::Row::empty())
+        });
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(native.reads.replace(Vec::new()), [0, 1]);
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn wide_math_dispatch_abs_overflow_requires_actual_c4_receipt() {
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+
+    let function = ScalarFunction::new(
+        tidb_ast::CiString::new("abs"),
+        FieldType::new(FieldTypeCode::LongLong),
+        vec![Expression::Constant(Constant::new(
+            Datum::Int(i64::MIN),
+            FieldType::new(FieldTypeCode::LongLong),
+        ))],
+    );
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        let (result, observation) = observe_wide_math(|| {
+            crate::math_fn::dispatch_values("ABS", &[Datum::Int(i64::MIN)], columns).unwrap()
+        });
+        assert_eq!(result, Err(EvalError::IntOverflow));
+        assert_wide_math_c4(observation);
+        let (result, observation) =
+            observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        assert_eq!(
+            result,
+            Err(EvalError::DataOutOfRange {
+                value: "BIGINT",
+                expression: "abs(-9223372036854775808)".to_owned(),
+            })
+        );
+        assert_wide_math_c4(observation);
+    });
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for typed in [false, true] {
+            let (result, observation) = observe_wide_math(|| {
+                if typed {
+                    function.eval(columns, tidb_chunk::row::Row::empty())
+                } else {
+                    crate::math_fn::dispatch_values("ABS", &[Datum::Int(i64::MIN)], columns).unwrap()
+                }
+            });
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource), "refused ABS must not invent IntOverflow or its 1690 expression wrapper");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 #[derive(Default)]

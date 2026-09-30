@@ -4565,3 +4565,238 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_field_make_export_dispatch_sql_
         assert!(warnings_of(&session).is_empty(), "{sql}");
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_abs_round_decimal_dispatch_sql_values_metadata_and_overflow() {
+    use tidb_datatype::FieldTypeCode::{Double, LongLong, NewDecimal};
+
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_abs_round_decimal (id INT PRIMARY KEY, i BIGINT, \
+             u BIGINT UNSIGNED, d DECIMAL(10,3), w DECIMAL(24,3), r DOUBLE, k BIGINT)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_abs_round_decimal VALUES \
+             (1,NULL,NULL,NULL,NULL,NULL,NULL),\
+             (2,9007199254740993,9007199254740993,2.500,2.500,2.5e0,0),\
+             (3,-15,18446744073709551610,-1.255,9007199254740993.125,-2.5e0,-1),\
+             (4,42,42,1.234,1.234,1.25e0,4),\
+             (5,-9223372036854775808,NULL,NULL,NULL,NULL,NULL)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    // The MIN row is reserved for the separate ABS diagnostic below. Small
+    // declared-wide decimals select the decimal CEIL/FLOOR result domain too;
+    // the native SQL oracle, not a wire signature, fixes these result types.
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT ABS(i),ABS(u),ABS(d),CEIL(d),CEILING(w),FLOOR(w), \
+             ROUND(i),ROUND(i,0),ROUND(u,k),ROUND(d,k),ROUND(r), \
+             TRUNCATE(u,k),TRUNCATE(d,k) \
+             FROM shared_abs_round_decimal WHERE id<5 ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected native numeric/decimal dispatch rows")
+    };
+    let unspecified = tidb_datatype::UNSPECIFIED_LENGTH;
+    let expected_metadata = [
+        (LongLong, 20, 0, false),
+        (LongLong, 20, 0, true),
+        (NewDecimal, 10, 3, false),
+        (LongLong, 20, 0, false),
+        (NewDecimal, 24, 0, false),
+        (NewDecimal, 24, 0, false),
+        (LongLong, 20, 0, false),
+        (LongLong, 20, 0, false),
+        (LongLong, 20, 0, true),
+        (NewDecimal, 10, 3, false),
+        (Double, unspecified, unspecified, false),
+        (LongLong, 20, 0, true),
+        (NewDecimal, 10, 3, false),
+    ];
+    assert_eq!(columns.len(), expected_metadata.len());
+    for ((_, field), (code, flen, decimal, unsigned)) in columns.iter().zip(expected_metadata) {
+        assert_eq!(field.code(), code);
+        assert_eq!(field.flen(), flen);
+        assert_eq!(field.decimal(), decimal);
+        assert_eq!(field.is_unsigned(), unsigned);
+        assert_eq!(field.collation(), tidb_datatype::Collation::Binary);
+        assert_eq!(field.charset_name(), "binary");
+    }
+    let expected_rows = [
+        ["NULL"; 13],
+        // ROUND(i) preserves 2^53+1; ROUND(i,0) and ROUND(u,0) take the old
+        // f64 round trip. Decimal ties go away from zero, Real ties to even.
+        [
+            "9007199254740993",
+            "9007199254740993",
+            "2.500",
+            "3",
+            "3",
+            "2",
+            "9007199254740993",
+            "9007199254740992",
+            "9007199254740992",
+            "3",
+            "2",
+            "9007199254740993",
+            "2",
+        ],
+        // UInt ...610 is read as signed -6 by ROUND, hence unsigned ...606.
+        // TRUNCATE uses exact uint division. FLOOR(w) cannot pass through f64.
+        [
+            "15",
+            "18446744073709551610",
+            "1.255",
+            "-1",
+            "9007199254740994",
+            "9007199254740993",
+            "-15",
+            "-15",
+            "18446744073709551606",
+            "0",
+            "-2",
+            "18446744073709551610",
+            "0",
+        ],
+        // A row's requested scale 4 is capped by the declared result scale 3.
+        [
+            "42", "42", "1.234", "2", "2", "1", "42", "42", "42", "1.234", "1", "42", "1.234",
+        ],
+    ];
+    assert_eq!(rows.len(), expected_rows.len());
+    for (row_index, (row, expected)) in rows.iter().zip(expected_rows).enumerate() {
+        assert_eq!(row.len(), columns.len());
+        for (column, (value, expected)) in row.iter().zip(expected).enumerate() {
+            if expected == "NULL" {
+                assert_eq!(value, &Datum::Null, "id {}, column {column}", row_index + 1);
+                continue;
+            }
+            match columns[column].1.eval_type() {
+                tidb_datatype::EvalType::Int if columns[column].1.is_unsigned() => {
+                    assert_eq!(value, &Datum::UInt(expected.parse().unwrap()));
+                }
+                tidb_datatype::EvalType::Int => {
+                    assert_eq!(value, &Datum::Int(expected.parse().unwrap()));
+                }
+                tidb_datatype::EvalType::Real => {
+                    assert_eq!(value, &Datum::Real(expected.parse().unwrap()));
+                }
+                tidb_datatype::EvalType::Decimal => {
+                    let Datum::Decimal(decimal) = value else {
+                        panic!(
+                            "expected Decimal at id {}, column {column}: {value:?}",
+                            row_index + 1
+                        )
+                    };
+                    assert_eq!(decimal.to_string(), expected);
+                    // Runtime result scale need not equal FieldType.decimal:
+                    // the dynamic-scale columns declare 3 but return scale 0
+                    // for k=0/-1, rather than padding every result to 3 places.
+                    let scale = expected
+                        .split_once('.')
+                        .map_or(0, |(_, fraction)| fraction.len() as u32);
+                    assert_eq!(decimal.scale(), scale);
+                }
+                other => panic!("unexpected numeric result domain: {other:?}"),
+            }
+        }
+    }
+    assert!(warnings_of(&session).is_empty());
+
+    // A stored operand cannot constant-fold. The SQL diagnostic renders the
+    // original qualified column, not the row's MIN datum or a wire code name.
+    let mysql = session
+        .run_with_columns("SELECT ABS(i) FROM shared_abs_round_decimal WHERE id=5")
+        .unwrap_err()
+        .to_mysql_error();
+    assert_eq!(mysql.code, 1690);
+    assert_eq!(mysql.state, *b"22003");
+    assert_eq!(
+        mysql.message,
+        "BIGINT value is out of range in 'abs(test.shared_abs_round_decimal.i)'"
+    );
+    assert!(mysql.is_from_evaluation());
+    assert!(warnings_of(&session).is_empty());
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_abs_round_decimal_dispatch_sql_columns() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_abs_round_decimal_zero (id INT PRIMARY KEY, i BIGINT, \
+             u BIGINT UNSIGNED, d DECIMAL(10,3), w DECIMAL(24,3), r DOUBLE, k BIGINT)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_abs_round_decimal_zero VALUES \
+             (1,NULL,NULL,NULL,NULL,NULL,NULL),(2,17,17,1.234,1.234,1.25e0,NULL)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // All are direct calls whose old SQL result is genuinely NULL. The last
+    // four have a non-NULL value and a stored NULL scale; neither boundary may
+    // bypass the shared pool. This is not a protobuf child-demand assertion.
+    for (expression, id) in [
+        ("ABS(i)", 1),
+        ("ABS(u)", 1),
+        ("ABS(d)", 1),
+        ("CEIL(d)", 1),
+        ("CEILING(w)", 1),
+        ("FLOOR(w)", 1),
+        ("ROUND(i)", 1),
+        ("ROUND(i,0)", 1),
+        ("ROUND(u,k)", 1),
+        ("ROUND(d,k)", 1),
+        ("ROUND(r)", 1),
+        ("TRUNCATE(u,k)", 1),
+        ("TRUNCATE(d,k)", 1),
+        ("ROUND(u,k)", 2),
+        ("ROUND(d,k)", 2),
+        ("TRUNCATE(u,k)", 2),
+        ("TRUNCATE(d,k)", 2),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_abs_round_decimal_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!(
+                "native numeric/decimal NULL must reach the zero-slot pool: {sql}: {other:?}"
+            ),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+}

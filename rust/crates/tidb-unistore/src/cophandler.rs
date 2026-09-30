@@ -3241,15 +3241,19 @@ impl LegacyEvaluator<'_> {
                                 parsed
                             })
                         }
-                        SimpleSig::RoundReal => self.eval_real(children.first())?.map(f64::round),
-                        SimpleSig::RoundInt => {
-                            self.folded_int(children.first())?.map(|value| value as f64)
-                        }
-                        SimpleSig::RoundDec => Some(
-                            legacy_some!(self.eval_decimal(children.first())?)
-                                .round_to_scale(0)
-                                .to_f64(),
-                        ),
+                        SimpleSig::RoundReal => tidb_expr::eval_legacy_round_real_in(
+                            self.eval_real(children.first())?,
+                            self.raw_columns,
+                        )?,
+                        SimpleSig::RoundInt => tidb_expr::eval_legacy_round_int_in(
+                            self.folded_int(children.first())?,
+                            self.raw_columns,
+                        )?
+                        .map(|value| value as f64),
+                        SimpleSig::RoundDec => tidb_expr::eval_legacy_round_decimal_in(
+                            self.eval_decimal(children.first())?.as_ref(),
+                            self.raw_columns,
+                        )?,
                         SimpleSig::Pow => {
                             let arguments = match self.eval_real(children.first())? {
                                 None => tidb_expr::RawPowReadyArgs::LeftNull,
@@ -4559,7 +4563,9 @@ impl LegacyEvaluator<'_> {
                             None => Some(0),
                         }
                     }
-                    SimpleSig::RoundInt => child(0)?,
+                    SimpleSig::RoundInt => {
+                        tidb_expr::eval_legacy_round_int_in(child(0)?, self.raw_columns)?
+                    }
                     SimpleSig::LtReal
                     | SimpleSig::LeReal
                     | SimpleSig::GtReal
@@ -6857,6 +6863,124 @@ mod tests {
         );
         let pi_value = eval_expr(&pi, &[], 4, &zone()).expect("evals");
         assert!(pi_value.expect("non-null") != 0);
+    }
+
+    #[test]
+    fn legacy_round_preserves_three_raw_domains_and_child_errors() {
+        let time_zone = zone();
+        let row = [tidb_datatype::Datum::UInt(u64::MAX)];
+        let evaluator = LegacyEvaluator::new(&row, 4, &time_zone);
+        let int = SimpleExpr::Func(SimpleSig::RoundInt, vec![SimpleExpr::Column(0)]);
+        assert_eq!(
+            evaluator.eval_expr(&int).unwrap(),
+            Some(i128::from(u64::MAX))
+        );
+        assert_eq!(
+            evaluator.eval_real(Some(&int)).unwrap(),
+            Some(u64::MAX as f64)
+        );
+        for value in [i128::MIN, i128::MAX] {
+            assert_eq!(
+                tidb_expr::eval_legacy_round_int_in(Some(value), &tidb_expr::NoColumns).unwrap(),
+                Some(value)
+            );
+        }
+        for (input, expected) in [
+            (-2.5, -3.0_f64),
+            (-0.0, -0.0),
+            (f64::INFINITY, f64::INFINITY),
+        ] {
+            let real = SimpleExpr::Func(SimpleSig::RoundReal, vec![SimpleExpr::Real(input)]);
+            assert_eq!(
+                evaluator.eval_real(Some(&real)).unwrap().unwrap().to_bits(),
+                expected.to_bits()
+            );
+        }
+        let nan = SimpleExpr::Func(SimpleSig::RoundReal, vec![SimpleExpr::Real(f64::NAN)]);
+        assert!(evaluator.eval_real(Some(&nan)).unwrap().unwrap().is_nan());
+        assert_eq!(evaluator.eval_expr(&nan).unwrap(), None);
+        for (input, expected) in [
+            ("2.5".to_owned(), 3.0),
+            (format!("{}.5", "9".repeat(100)), 1e100),
+        ] {
+            let dec = SimpleExpr::Func(
+                SimpleSig::RoundDec,
+                vec![SimpleExpr::Decimal(tidb_datatype::Decimal::from_literal(
+                    &input,
+                ))],
+            );
+            assert_eq!(evaluator.eval_real(Some(&dec)).unwrap(), Some(expected));
+        }
+        let bad_child = SimpleExpr::Func(
+            SimpleSig::PlusInt,
+            vec![SimpleExpr::Int(i64::MAX), SimpleExpr::Int(1)],
+        );
+        let bad_round = SimpleExpr::Func(SimpleSig::RoundInt, vec![bad_child.clone()]);
+        assert!(matches!(
+            evaluator.eval_expr(&bad_round),
+            Err(LegacyEvalError::Sql(_))
+        ));
+        assert_eq!(evaluator.eval_real(Some(&bad_round)).unwrap(), None);
+        let extra = SimpleExpr::Func(SimpleSig::RoundInt, vec![SimpleExpr::Int(7), bad_child]);
+        assert_eq!(evaluator.eval_expr(&extra).unwrap(), Some(7));
+    }
+
+    #[test]
+    fn legacy_round_null_and_missing_inputs_still_enter_worker() {
+        let policy = tidb_expr::AsciiPoolPolicy::checked(
+            0,
+            0,
+            16 * 1024 * 1024,
+            4 * 1024 * 1024,
+            4 * 1024 * 1024,
+            64,
+            8,
+            4 * 1024 * 1024,
+        )
+        .expect("zero-slot policy");
+        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let execution = owner.begin_execution().expect("execution");
+        let scope = execution.scope();
+        let time_zone = zone();
+        let ordinary = LegacyEvaluator::new(&[], 4, &time_zone);
+        scope.with_columns(&tidb_expr::NoColumns, |columns| {
+            let refusing = LegacyEvaluator {
+                raw_columns: columns,
+                ..LegacyEvaluator::new(&[], 4, &time_zone)
+            };
+            for (sig, input) in [
+                (SimpleSig::RoundInt, SimpleExpr::Int(7)),
+                (SimpleSig::RoundReal, SimpleExpr::Real(2.5)),
+                (
+                    SimpleSig::RoundDec,
+                    SimpleExpr::Decimal(tidb_datatype::Decimal::from_literal("2.5")),
+                ),
+            ] {
+                for (index, children) in [
+                    vec![],
+                    vec![SimpleExpr::Null],
+                    vec![SimpleExpr::Bytes(b"wrong kind".to_vec())],
+                    vec![input],
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let call = SimpleExpr::Func(sig, children);
+                    if index < 3 {
+                        assert_eq!(ordinary.eval_real(Some(&call)).unwrap(), None);
+                        assert_eq!(ordinary.eval_expr(&call).unwrap(), None);
+                    }
+                    assert!(matches!(
+                        refusing.eval_real(Some(&call)),
+                        Err(LegacyEvalError::Infrastructure(_))
+                    ));
+                    assert!(matches!(
+                        refusing.eval_expr(&call),
+                        Err(LegacyEvalError::Infrastructure(_))
+                    ));
+                }
+            }
+        });
     }
 
     #[test]

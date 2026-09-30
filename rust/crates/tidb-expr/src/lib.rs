@@ -840,6 +840,55 @@ pub fn eval_pi_in(ctx: &dyn Columns) -> Result<Datum, EvalError> {
     )
 }
 
+/// Evaluates legacy integer ROUND's identity through the shared worker.
+/// The full signed i128 domain, including NULL, crosses this closed bridge;
+/// callers may convert the owned result to real only after computation.
+pub fn eval_legacy_round_int_in(
+    value: Option<i128>,
+    ctx: &dyn Columns,
+) -> Result<Option<i128>, EvalError> {
+    tikv::evaluate_args_in(
+        tikv::EvaluatedBytesOp::RoundInt128Legacy,
+        ctx,
+        || Ok(tikv::EvaluatedArgs::Int128(value)),
+        tikv::EvaluatedBytesResult::into_int128,
+    )
+}
+
+/// Rounds an already-evaluated legacy real to scale zero, with ties away
+/// from zero (unlike native SQL ROUND's ties-even policy). Raw IEEE values
+/// and NULL enter the shared worker; no finite-result policy is applied here.
+pub fn eval_legacy_round_real_in(
+    value: Option<f64>,
+    ctx: &dyn Columns,
+) -> Result<Option<f64>, EvalError> {
+    tikv::evaluate_args_in(
+        tikv::EvaluatedBytesOp::RoundRealLegacy,
+        ctx,
+        || Ok(tikv::EvaluatedArgs::Ieee754Bits(value.map(f64::to_bits))),
+        |computed| Ok(computed.into_ieee754_bits()?.map(f64::from_bits)),
+    )
+}
+
+/// Sends an unrounded exact decimal to legacy ROUND's shared worker.
+/// The worker rounds to scale zero before converting to raw binary64; this
+/// bridge only transports the wide coefficient and preserves NULL and errors.
+pub fn eval_legacy_round_decimal_in(
+    value: Option<&Decimal>,
+    ctx: &dyn Columns,
+) -> Result<Option<f64>, EvalError> {
+    tikv::evaluate_args_in(
+        tikv::EvaluatedBytesOp::RoundDecimalLegacy,
+        ctx,
+        || {
+            Ok(tikv::EvaluatedArgs::Decimal(
+                value.map(tikv::prepare_math_decimal).transpose()?,
+            ))
+        },
+        |computed| Ok(computed.into_ieee754_bits()?.map(f64::from_bits)),
+    )
+}
+
 /// Closed raw inverse-trigonometric operations for the legacy real channel.
 /// This is not a new SQL or protobuf admission surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

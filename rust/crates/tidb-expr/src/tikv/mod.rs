@@ -41,10 +41,11 @@ use tidb_query_expr::local::prepare_concat_args as prepare_concat_args_local;
 use tidb_query_expr::local::prepare_find_in_set_keys as prepare_find_in_set_keys_local;
 pub(crate) use tidb_query_expr::local::{
     elt_selected_arg, field_int_equal, field_real_equal, legacy_substring_needs_len,
-    make_set_selected, ConcatKind, ConcatTerminal, EvaluatedArgs, EvaluatedBytesOp, FieldIntValue,
-    FieldTerminal, NativeCollation, NativeSearchPolicy, OutputDisposition, PreparedConcatArgs,
-    PreparedExportSetArgs, PreparedFieldArgs, PreparedFindInSetKeys, PreparedMakeSetArgs,
-    ReadyBytesArg, ReadyFieldIntArg, ReadyIeee754Arg, ReadyIntArg, ReadySubstringI128,
+    make_set_selected, native_decimal_target_scale, ConcatKind, ConcatTerminal, EvaluatedArgs,
+    EvaluatedBytesOp, FieldIntValue, FieldTerminal, NativeCollation, NativeSearchPolicy,
+    OutputDisposition, PreparedConcatArgs, PreparedExportSetArgs, PreparedFieldArgs,
+    PreparedFindInSetKeys, PreparedMakeSetArgs, ReadyBytesArg, ReadyDecimalArg, ReadyFieldIntArg,
+    ReadyIeee754Arg, ReadyIntArg, ReadySubstringI128,
 };
 use tidb_query_expr::local::{
     field_bytes_equal as field_bytes_equal_local,
@@ -84,6 +85,27 @@ pub(crate) fn prepare_concat_args(
             ))
         },
     )
+}
+
+/// Transports an existing native coefficient and both scales without computing
+/// a SQL answer or imposing a new native-side decimal precision policy.
+pub(crate) fn prepare_math_decimal(
+    value: &tidb_datatype::Decimal,
+) -> Result<tidb_query_datatype::codec::mysql::Decimal, crate::EvalError> {
+    value
+        .try_to_shared_math(usize::MAX)
+        .map_err(math_decimal_bridge_error)
+}
+
+// Used only by the input/output decimal representation bridges. The backend's
+// narrow wrapper owns the actual NativeDecimalError, not its rendered message.
+fn math_decimal_bridge_error(
+    error: tidb_query_datatype::codec::mysql::decimal::NativeDecimalError,
+) -> crate::EvalError {
+    let cause = tidb_query_expr::local::native_decimal_bridge_error(error);
+    crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+        cause, None,
+    ))
 }
 
 // Only these purpose-specific FIELD/SET pure calls use this conversion. Keep

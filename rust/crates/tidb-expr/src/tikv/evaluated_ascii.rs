@@ -41,9 +41,10 @@ use tidb_datatype::tikv_compat::value::{from_scalar, BridgeError, ValueMetadata}
 use tidb_datatype::{Datum, DatumKind, Time};
 use tidb_query_datatype::{codec::data_type::ScalarValueRef, EvalType};
 use tidb_query_expr::local::{
-    prepare_evaluated_bytes, CompileLimits, ComputedBytesMetadata, ComputedIeee754BitsMetadata,
-    ComputedInt, ComputedIntMetadata, ComputedValue, EvaluatedArgs, EvaluatedBytesOp,
-    EvaluatedBytesWorker, ExecutionLimits, LocalCompileContext,
+    prepare_evaluated_bytes, CompileLimits, ComputedBytesMetadata, ComputedDecimalMetadata,
+    ComputedIeee754BitsMetadata, ComputedInt, ComputedInt128Metadata, ComputedIntMetadata,
+    ComputedValue, EvaluatedArgs, EvaluatedBytesOp, EvaluatedBytesWorker, EvaluatedSqlFailureKind,
+    ExecutionLimits, LocalCompileContext,
 };
 
 use super::adapter_failure::{ExpressionAdapterFailure, ScopeFailureKind};
@@ -1194,12 +1195,24 @@ impl<'a> Invocation<'a> {
         // function-pointer witness. No observer is passed into the worker.
         #[cfg(test)]
         tests::before_eval_one_for_test(worker.kernel_invocations());
-        let result = worker.eval_args(ready);
+        let result = worker.eval_args_reported(ready);
         #[cfg(test)]
         tests::after_eval_one_for_test(worker.kernel_invocations());
-        result.map_err(|error| {
+        result.map_err(|report| {
+            // Only C4's sealed receipt for this operation's actual generated
+            // call authorizes the existing native SQL overflow carrier. Neither
+            // an input value nor an error code/text substitutes for that proof.
+            if operation == EvaluatedBytesOp::AbsIntNative
+                && report.operation() == Some(operation)
+                && matches!(
+                    report.sql_failure(),
+                    Some(EvaluatedSqlFailureKind::AbsSignedOverflow)
+                )
+            {
+                return AsciiBoundaryError::Frontend(EvalError::IntOverflow);
+            }
             AsciiBoundaryError::Kernel(ExpressionRuntimeFailure::from_ascii_local(
-                error,
+                report.into_error(),
                 Some(ExpressionRuntimeFailurePhase::Invoke),
             ))
         })
@@ -1311,7 +1324,10 @@ fn result_kind_error() -> AsciiBoundaryError {
 fn require_computed_int(computed: ComputedValue) -> Result<ComputedInt, AsciiBoundaryError> {
     match computed {
         ComputedValue::Int(value) => Ok(value),
-        ComputedValue::Bytes(_) | ComputedValue::Ieee754Bits(_) => Err(result_kind_error()),
+        ComputedValue::Bytes(_)
+        | ComputedValue::Ieee754Bits(_)
+        | ComputedValue::Decimal(_)
+        | ComputedValue::Int128(_) => Err(result_kind_error()),
     }
 }
 
@@ -1353,15 +1369,24 @@ impl Drop for OneShotAsciiExecution {
 pub(crate) enum EvaluatedBytesResult {
     Int(Datum),
     Bytes(Option<Vec<u8>>),
-    // A separate owned carrier: never ordinary Bytes, SQL Int or NotNan Real.
+    // Separate owned carriers: never ordinary Bytes or a narrower SQL Int.
     Ieee754Bits(Option<u64>),
+    Int128(Option<i128>),
+    Decimal {
+        value: Option<tidb_datatype::Decimal>,
+        // Supplied only by C4's ceil/floor decimal result; no native rounding
+        // or range check is permitted when selecting the existing Int view.
+        checked_i64_view: Option<i64>,
+    },
 }
 
 impl EvaluatedBytesResult {
     pub(crate) fn into_int_datum(self) -> Result<Datum, EvalError> {
         match self {
             Self::Int(value) => Ok(value),
-            Self::Bytes(_) | Self::Ieee754Bits(_) => Err(result_kind_error().into_eval_error()),
+            Self::Bytes(_) | Self::Ieee754Bits(_) | Self::Int128(_) | Self::Decimal { .. } => {
+                Err(result_kind_error().into_eval_error())
+            }
         }
     }
 
@@ -1386,7 +1411,9 @@ impl EvaluatedBytesResult {
     pub(crate) fn into_bytes(self) -> Result<Option<Vec<u8>>, EvalError> {
         match self {
             Self::Bytes(value) => Ok(value),
-            Self::Int(_) | Self::Ieee754Bits(_) => Err(result_kind_error().into_eval_error()),
+            Self::Int(_) | Self::Ieee754Bits(_) | Self::Int128(_) | Self::Decimal { .. } => {
+                Err(result_kind_error().into_eval_error())
+            }
         }
     }
 
@@ -1402,7 +1429,40 @@ impl EvaluatedBytesResult {
     pub(crate) fn into_ieee754_bits(self) -> Result<Option<u64>, EvalError> {
         match self {
             Self::Ieee754Bits(value) => Ok(value),
-            Self::Int(_) | Self::Bytes(_) => Err(result_kind_error().into_eval_error()),
+            Self::Int(_) | Self::Bytes(_) | Self::Int128(_) | Self::Decimal { .. } => {
+                Err(result_kind_error().into_eval_error())
+            }
+        }
+    }
+
+    /// Preserve the complete legacy integer carrier without a Datum detour.
+    pub(crate) fn into_int128(self) -> Result<Option<i128>, EvalError> {
+        match self {
+            Self::Int128(value) => Ok(value),
+            _ => Err(result_kind_error().into_eval_error()),
+        }
+    }
+
+    pub(crate) fn into_decimal_datum(self) -> Result<Datum, EvalError> {
+        match self {
+            Self::Decimal { value, .. } => Ok(value.map_or(Datum::Null, Datum::Decimal)),
+            _ => Err(result_kind_error().into_eval_error()),
+        }
+    }
+
+    /// Select only the checked view already owned by the decimal C4 result.
+    /// An out-of-range view retains the exact computed decimal, as before.
+    pub(crate) fn into_decimal_or_int_datum(self) -> Result<Datum, EvalError> {
+        match self {
+            Self::Decimal {
+                value: None,
+                checked_i64_view: None,
+            } => Ok(Datum::Null),
+            Self::Decimal {
+                value: Some(value),
+                checked_i64_view,
+            } => Ok(checked_i64_view.map_or(Datum::Decimal(value), Datum::Int)),
+            _ => Err(result_kind_error().into_eval_error()),
         }
     }
 }
@@ -1454,7 +1514,17 @@ fn materialize_computed(
             | EvaluatedBytesOp::FindInSetPreparedNative
             | EvaluatedBytesOp::FieldBytesNative
             | EvaluatedBytesOp::FieldIntNative
-            | EvaluatedBytesOp::FieldRealNative,
+            | EvaluatedBytesOp::FieldRealNative
+            | EvaluatedBytesOp::AbsIntNative
+            | EvaluatedBytesOp::AbsUIntNative
+            | EvaluatedBytesOp::CeilIntNative
+            | EvaluatedBytesOp::FloorIntNative
+            | EvaluatedBytesOp::RoundIntNative
+            | EvaluatedBytesOp::RoundIntWithScaleNative
+            | EvaluatedBytesOp::TruncateIntNative
+            | EvaluatedBytesOp::TruncateUIntNative
+            | EvaluatedBytesOp::TruncateIntUnsignedScaleNative
+            | EvaluatedBytesOp::MathNullWitnessNative,
             ComputedValue::Int(value),
         ) => own_computed_int(value)
             .into_datum()
@@ -1534,7 +1604,14 @@ fn materialize_computed(
             | EvaluatedBytesOp::LnNative
             | EvaluatedBytesOp::LogNative
             | EvaluatedBytesOp::Log2Native
-            | EvaluatedBytesOp::PowNative,
+            | EvaluatedBytesOp::PowNative
+            | EvaluatedBytesOp::AbsRealNative
+            | EvaluatedBytesOp::CeilRealNative
+            | EvaluatedBytesOp::FloorRealNative
+            | EvaluatedBytesOp::RoundRealNative
+            | EvaluatedBytesOp::TruncateRealNative
+            | EvaluatedBytesOp::RoundRealLegacy
+            | EvaluatedBytesOp::RoundDecimalLegacy,
             ComputedValue::Ieee754Bits(value),
         ) => {
             match value.metadata() {
@@ -1542,16 +1619,46 @@ fn materialize_computed(
             }
             Ok(EvaluatedBytesResult::Ieee754Bits(value.into_option()))
         }
+        (
+            EvaluatedBytesOp::AbsDecimalNative
+            | EvaluatedBytesOp::CeilDecimalNative
+            | EvaluatedBytesOp::FloorDecimalNative
+            | EvaluatedBytesOp::RoundDecimalNative
+            | EvaluatedBytesOp::TruncateDecimalNative,
+            ComputedValue::Decimal(value),
+        ) => {
+            match value.metadata() {
+                ComputedDecimalMetadata::OwnDecimal => {}
+            }
+            let checked_i64_view = value.checked_i64_view();
+            let value = value
+                .into_option()
+                .map(|value| tidb_datatype::Decimal::try_from_shared_math(&value, usize::MAX))
+                .transpose()
+                .map_err(|error| {
+                    AsciiBoundaryError::Frontend(super::math_decimal_bridge_error(error))
+                })?;
+            Ok(EvaluatedBytesResult::Decimal {
+                value,
+                checked_i64_view,
+            })
+        }
+        (EvaluatedBytesOp::RoundInt128Legacy, ComputedValue::Int128(value)) => {
+            match value.metadata() {
+                ComputedInt128Metadata::OwnInt128 => {}
+            }
+            Ok(EvaluatedBytesResult::Int128(value.into_option()))
+        }
         _ => Err(result_kind_error()),
     }
 }
 
-fn evaluate_scoped_args(
+fn evaluate_scoped_args<T>(
     operation: EvaluatedBytesOp,
     scope: &AsciiScope,
     coerce: impl FnOnce() -> Result<EvaluatedArgs, EvalError>,
-    pack: impl FnOnce(EvaluatedBytesResult) -> Result<Datum, EvalError>,
-) -> Result<Datum, AsciiBoundaryError> {
+    pack: impl FnOnce(EvaluatedBytesResult) -> Result<T, EvalError>,
+) -> Result<T, AsciiBoundaryError> {
     let mut guard = NativeGuard::new(scope);
     let result = (|| {
         // Frontend coercion runs exactly once, before taking/replacing a lease.
@@ -1569,12 +1676,14 @@ fn evaluate_scoped_args(
 /// One closed operation router, sharing the legacy-named ASCII capabilities.
 /// Neither frontend callback enters C4: coercion precedes admission, and native
 /// packing follows the exclusive invocation. Both remain under the scope guard.
-pub(crate) fn evaluate_args_in(
+/// Only the native packed result is generic; the admitted arguments, worker and
+/// lifecycle path remain the same closed boundary, including for legacy i128.
+pub(crate) fn evaluate_args_in<T>(
     operation: EvaluatedBytesOp,
     ctx: &dyn Columns,
     coerce: impl FnOnce() -> Result<EvaluatedArgs, EvalError>,
-    pack: impl FnOnce(EvaluatedBytesResult) -> Result<Datum, EvalError>,
-) -> Result<Datum, EvalError> {
+    pack: impl FnOnce(EvaluatedBytesResult) -> Result<T, EvalError>,
+) -> Result<T, EvalError> {
     if let Some(scope) = ctx.evaluated_ascii_scope() {
         return evaluate_scoped_args(operation, scope, coerce, pack)
             .map_err(AsciiBoundaryError::into_eval_error);

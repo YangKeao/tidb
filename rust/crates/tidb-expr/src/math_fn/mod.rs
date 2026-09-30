@@ -29,6 +29,7 @@ use tidb_ast::{BinaryOp, Expr, UnaryOp};
 
 use crate::coerce::{coerce_str, coerce_str_bytes};
 use crate::ops::{finite_float, to_f64, to_f64_with_mysql_string};
+use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp};
 use crate::{Columns, Datum, EvalError, MysqlRng};
 
 /// Dispatches translated `builtin_math.go` functions, or returns `None` when
@@ -370,6 +371,51 @@ pub(crate) fn crc32_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalE
     )
 }
 
+/// Pack only the computed integer's original SQL signedness.
+fn math_integer_in(
+    operation: EvaluatedBytesOp,
+    arguments: EvaluatedArgs,
+    unsigned: bool,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || Ok(arguments),
+        |computed| {
+            if unsigned {
+                computed.into_uint_bits_datum()
+            } else {
+                computed.into_int_datum()
+            }
+        },
+    )
+}
+
+/// Raw IEEE results retain NaN/Inf and the frontend's Real/Float32 label.
+fn math_real_in(
+    operation: EvaluatedBytesOp,
+    arguments: EvaluatedArgs,
+    float32: bool,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || Ok(arguments),
+        |computed| {
+            Ok(computed.into_ieee754_bits()?.map_or(Datum::Null, |bits| {
+                let value = f64::from_bits(bits);
+                if float32 {
+                    Datum::Float32(value)
+                } else {
+                    Datum::Real(value)
+                }
+            }))
+        },
+    )
+}
+
 /// `ABS(x)`. `absFunctionClass.getFunction` picks the signature from the
 /// argument's EVAL TYPE, not from a fixed list of kinds: `ETInt`, `ETDecimal`
 /// and `ETReal` each get their own sig, and EVERY remaining kind — string,
@@ -383,21 +429,48 @@ fn abs(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
     let [v] = vals else {
         return Err(EvalError::Unsupported("bad function arity"));
     };
-    Ok(match v {
-        Datum::Null => Datum::Null,
-        // `builtinAbsIntSig` returns TiDB's BIGINT overflow error for the
-        // one signed value that cannot be represented by its positive
-        // counterpart.  Do not use `wrapping_abs`: that would silently turn
-        // ABS(MININT) back into MININT and diverge from the source contract.
-        Datum::Int(value) => value
-            .checked_abs()
-            .map(Datum::Int)
-            .ok_or(EvalError::IntOverflow)?,
-        Datum::UInt(value) => Datum::UInt(*value),
-        Datum::Decimal(value) => Datum::Decimal(value.abs()),
-        Datum::Real(value) => Datum::Real(value.abs()),
-        other => Datum::Real(numeric_arg(other, ctx)?.expect("NULL handled above").abs()),
-    })
+    match v {
+        Datum::Null => math_integer_in(
+            EvaluatedBytesOp::AbsIntNative,
+            EvaluatedArgs::Int(None),
+            false,
+            ctx,
+        ),
+        Datum::Int(value) => math_integer_in(
+            EvaluatedBytesOp::AbsIntNative,
+            EvaluatedArgs::Int(Some(*value)),
+            false,
+            ctx,
+        ),
+        Datum::UInt(value) => math_integer_in(
+            EvaluatedBytesOp::AbsUIntNative,
+            EvaluatedArgs::Int(Some(*value as i64)),
+            true,
+            ctx,
+        ),
+        Datum::Decimal(value) => crate::tikv::evaluate_args_in(
+            EvaluatedBytesOp::AbsDecimalNative,
+            ctx,
+            || {
+                Ok(EvaluatedArgs::Decimal(Some(
+                    crate::tikv::prepare_math_decimal(value)?,
+                )))
+            },
+            crate::tikv::EvaluatedBytesResult::into_decimal_datum,
+        ),
+        Datum::Real(value) => math_real_in(
+            EvaluatedBytesOp::AbsRealNative,
+            EvaluatedArgs::Ieee754Bits(Some(value.to_bits())),
+            false,
+            ctx,
+        ),
+        other => math_real_in(
+            EvaluatedBytesOp::AbsRealNative,
+            EvaluatedArgs::Ieee754Bits(numeric_arg(other, ctx)?.map(f64::to_bits)),
+            false,
+            ctx,
+        ),
+    }
 }
 
 /// `SIGN(x)`. Like [`abs`], `signFunctionClass` selects per eval type and
@@ -916,12 +989,23 @@ pub(crate) fn ceil_floor_with_result_domain(
     let [v] = vals else {
         return Err(EvalError::Unsupported("bad function arity"));
     };
-    Ok(match v {
-        Datum::Null => Datum::Null,
-        Datum::Int(i) => Datum::Int(*i),
-        Datum::UInt(i) => Datum::UInt(*i),
+    let integer_op = if ceiling {
+        EvaluatedBytesOp::CeilIntNative
+    } else {
+        EvaluatedBytesOp::FloorIntNative
+    };
+    let real_op = if ceiling {
+        EvaluatedBytesOp::CeilRealNative
+    } else {
+        EvaluatedBytesOp::FloorRealNative
+    };
+    match v {
+        Datum::Null => math_integer_in(integer_op, EvaluatedArgs::Int(None), false, ctx),
+        Datum::Int(i) => math_integer_in(integer_op, EvaluatedArgs::Int(Some(*i)), false, ctx),
+        Datum::UInt(i) => {
+            math_integer_in(integer_op, EvaluatedArgs::Int(Some(*i as i64)), true, ctx)
+        }
         Datum::Decimal(d) => {
-            let r = d.ceil_floor(ceiling);
             let declared_decimal_result = d
                 .declared_shape()
                 .map(|(flen, decimal)| flen - decimal > 18);
@@ -932,27 +1016,54 @@ pub(crate) fn ceil_floor_with_result_domain(
                     .max(1)
                     > 18
             };
-            if decimal_result
+            let keep_decimal = decimal_result
                 .or(declared_decimal_result)
-                .unwrap_or_else(payload_decimal_result)
-            {
-                Datum::Decimal(r)
-            } else {
-                match r.round_to_i64() {
-                    Some(i) => Datum::Int(i),
-                    None => Datum::Decimal(r),
-                }
-            }
+                .unwrap_or_else(payload_decimal_result);
+            crate::tikv::evaluate_args_in(
+                if ceiling {
+                    EvaluatedBytesOp::CeilDecimalNative
+                } else {
+                    EvaluatedBytesOp::FloorDecimalNative
+                },
+                ctx,
+                || {
+                    Ok(EvaluatedArgs::Decimal(Some(
+                        crate::tikv::prepare_math_decimal(d)?,
+                    )))
+                },
+                |computed| {
+                    if keep_decimal {
+                        computed.into_decimal_datum()
+                    } else {
+                        computed.into_decimal_or_int_datum()
+                    }
+                },
+            )
         }
-        Datum::Real(f) => Datum::Real(if ceiling { f.ceil() } else { f.floor() }),
-        Datum::Float32(f) => Datum::Float32(if ceiling { f.ceil() } else { f.floor() }),
+        Datum::Real(f) => math_real_in(
+            real_op,
+            EvaluatedArgs::Ieee754Bits(Some(f.to_bits())),
+            false,
+            ctx,
+        ),
+        Datum::Float32(f) => math_real_in(
+            real_op,
+            EvaluatedArgs::Ieee754Bits(Some(f.to_bits())),
+            true,
+            ctx,
+        ),
         // `ceilFunctionClass`/`floorFunctionClass` choose their real
         // signatures for strings. Preserve the resulting FLOAT type in
         // addition to the numeric-prefix coercion: CEIL('1.23') is 2.0,
         // unlike CEIL(Decimal('1.23')) which has a DECIMAL signature.
         Datum::String(_) | Datum::Bytes(_) => {
             let f = to_f64_with_mysql_string(v, ctx)?;
-            Datum::Real(if ceiling { f.ceil() } else { f.floor() })
+            math_real_in(
+                real_op,
+                EvaluatedArgs::Ieee754Bits(Some(f.to_bits())),
+                false,
+                ctx,
+            )
         }
         Datum::MinNotNull | Datum::MaxValue => {
             return Err(EvalError::Unsupported("range sentinel numeric argument"));
@@ -962,9 +1073,14 @@ pub(crate) fn ceil_floor_with_result_domain(
                 .to_f64()
                 .map_err(|_| EvalError::Unsupported("numeric argument conversion"))?
                 .value;
-            Datum::Real(if ceiling { f.ceil() } else { f.floor() })
+            math_real_in(
+                real_op,
+                EvaluatedArgs::Ieee754Bits(Some(f.to_bits())),
+                false,
+                ctx,
+            )
         }
-    })
+    }
 }
 
 /// `ROUND(x)`/`ROUND(x, d)` (`round: true`) or `TRUNCATE(x, d)` (`false`,
@@ -973,20 +1089,16 @@ pub(crate) fn ceil_floor_with_result_domain(
 /// each confirmed via `goeval` then cross-checked against the real
 /// `pkg/expression/builtin_math.go`/`pkg/types/helper.go` sources (not
 /// assumed to match `CEIL`/`FLOOR`'s rule, which is different):
-/// - `Int` stays `Int` for the 1-arg `ROUND` form (a plain passthrough,
-///   matching `builtinRoundIntSig`). The 2-arg forms round-trip through
-///   `f64` exactly like real TiDB does (`int64(types.Round(float64(x),
-///   d))`/the analogous truncating-division path for `TRUNCATE`) — exact
-///   for any `x` within `f64`'s 53-bit exact-integer range, and losing
-///   precision near `i64::MAX`/`MIN` the SAME way the reference
-///   implementation does (both are IEEE-754 `f64`), rather than being
-///   invented to be more precise than the system being modeled.
+/// - Integer `ROUND` is identity with one argument; with two it always
+///   round-trips through `f64`, including the signed-bit reading of UInt.
+///   Integer `TRUNCATE` instead uses exact signed/unsigned division. These
+///   distinctions belong to the selected shared kernel, not result packing.
 /// - `Decimal` NEVER collapses to `Int` (unlike `CEIL`/`FLOOR` — confirmed
 ///   `ROUND(3.14159)` is `DEC:3`, not `INT:3`) and rounds ties AWAY from
 ///   zero (`ModeHalfUp`/`ModeTruncate`), clamped to MySQL's `DECIMAL` max
 ///   scale (30) for a positive `d`.
 /// - `Float` rounds/truncates via Go's `types.Round`/`types.Truncate`
-///   ported bit-for-bit (see [`go_round_float`]/[`go_truncate_float`]):
+///   implemented bit-for-bit in the shared TiKV native math kernels:
 ///   `ROUND` ties TO EVEN — the OPPOSITE tie-breaking rule from `Decimal`
 ///   (matching the bitwise-conversion precedent), not a "more correct"
 ///   decimal-aware rounding, since the reference implementation is
@@ -1013,7 +1125,12 @@ pub(crate) fn round_or_truncate_with_result_decimal(
         ));
     }
     if vals.contains(&Datum::Null) {
-        return Ok(Datum::Null);
+        return math_integer_in(
+            EvaluatedBytesOp::MathNullWitnessNative,
+            EvaluatedArgs::NullWitness(None),
+            false,
+            ctx,
+        );
     }
     // The integer TRUNCATE signatures inspect the scale FieldType before
     // evaluating its value.  An unsigned scale is therefore always
@@ -1041,67 +1158,76 @@ pub(crate) fn round_or_truncate_with_result_decimal(
         [v, d] => (v, crate::arg_eval_type::eval_int(d)?.unwrap_or_default()),
         _ => return Err(EvalError::Unsupported("bad function arity")),
     };
-    Ok(match v {
-        Datum::Int(i) => {
-            if unsigned_integer_scale || int_round_is_identity {
-                Datum::Int(*i)
-            } else {
-                Datum::Int(if round {
-                    go_round_float(*i as f64, d) as i64
-                } else {
-                    go_truncate_int(*i, d)
-                })
-            }
-        }
-        Datum::UInt(i) => {
-            if unsigned_integer_scale || int_round_is_identity {
-                Datum::UInt(*i)
-            } else {
-                Datum::UInt(if round {
-                    // `builtinRoundWithFracIntSig` reads the argument through
-                    // `EvalInt` -- the SAME 64 bits, read as `int64` -- and
-                    // only the result FieldType carries UNSIGNED. Reading the
-                    // u64 as a magnitude instead diverges past `i64::MAX`:
-                    // CAPTURED from TiDB,
-                    // `ROUND(CAST(18446744073709551610 AS UNSIGNED), -1)` is
-                    // `18446744073709551606`, which is `-6` rounded to `-10`
-                    // and re-read unsigned, not `...610` rounded up.
-                    go_round_float(*i as i64 as f64, d) as i64 as u64
-                } else {
-                    // `builtinTruncateUintSig` operates on the original
-                    // uint64, not through `EvalReal`/f64.  The distinction is
-                    // observable at the u64 boundary: converting
-                    // 18446744073709551615 to f64 first loses enough low
-                    // digits to change the exact -10 result.
-                    go_truncate_uint(*i, d)
-                })
-            }
-        }
+    let integer = |bits: i64, unsigned: bool| {
+        let operation = if int_round_is_identity {
+            EvaluatedBytesOp::RoundIntNative
+        } else if round {
+            EvaluatedBytesOp::RoundIntWithScaleNative
+        } else if unsigned_integer_scale {
+            EvaluatedBytesOp::TruncateIntUnsignedScaleNative
+        } else if unsigned {
+            EvaluatedBytesOp::TruncateUIntNative
+        } else {
+            EvaluatedBytesOp::TruncateIntNative
+        };
+        let arguments = if int_round_is_identity {
+            EvaluatedArgs::Int(Some(bits))
+        } else {
+            EvaluatedArgs::Int2(Some(bits), Some(d))
+        };
+        math_integer_in(operation, arguments, unsigned, ctx)
+    };
+    let real_op = if round {
+        EvaluatedBytesOp::RoundRealNative
+    } else {
+        EvaluatedBytesOp::TruncateRealNative
+    };
+    match v {
+        Datum::Int(i) => integer(*i, false),
+        // ROUND's two-argument integer kernel reads these as signed bits;
+        // unsigned TRUNCATE has its own exact-magnitude kernel.
+        Datum::UInt(i) => integer(*i as i64, true),
         Datum::Decimal(dec) => {
             // MySQL clamps a positive scale to DECIMAL's max (30); a
             // negative scale is used as-is (confirmed via `goeval`:
             // `ROUND(12345, -2)` is `12300`, not clamped).
-            let target_scale = d.clamp(i32::MIN as i64, 30);
-            let target_scale = result_decimal
-                .filter(|decimal| *decimal >= 0)
-                .map_or(target_scale, |decimal| target_scale.min(decimal))
-                as i32;
-            Datum::Decimal(if round {
-                dec.round_to_scale(target_scale)
-            } else {
-                dec.truncate_to_scale(target_scale)
-            })
+            let target_scale = crate::tikv::native_decimal_target_scale(d, result_decimal);
+            crate::tikv::evaluate_args_in(
+                if round {
+                    EvaluatedBytesOp::RoundDecimalNative
+                } else {
+                    EvaluatedBytesOp::TruncateDecimalNative
+                },
+                ctx,
+                || {
+                    Ok(EvaluatedArgs::DecimalIntReady {
+                        value: crate::tikv::ReadyDecimalArg::Value(Some(
+                            crate::tikv::prepare_math_decimal(dec)?,
+                        )),
+                        scale: crate::tikv::ReadyIntArg::Value(Some(i64::from(target_scale))),
+                    })
+                },
+                crate::tikv::EvaluatedBytesResult::into_decimal_datum,
+            )
         }
-        Datum::Real(f) => Datum::Real(if round {
-            go_round_float(*f, d)
-        } else {
-            go_truncate_float(*f, d)
-        }),
-        Datum::Float32(f) => Datum::Float32(if round {
-            go_round_float(*f, d)
-        } else {
-            go_truncate_float(*f, d)
-        }),
+        Datum::Real(f) => math_real_in(
+            real_op,
+            EvaluatedArgs::Ieee754BitsInt {
+                value: Some(f.to_bits()),
+                scale: Some(d),
+            },
+            false,
+            ctx,
+        ),
+        Datum::Float32(f) => math_real_in(
+            real_op,
+            EvaluatedArgs::Ieee754BitsInt {
+                value: Some(f.to_bits()),
+                scale: Some(d),
+            },
+            true,
+            ctx,
+        ),
         Datum::Null | Datum::MinNotNull | Datum::MaxValue => unreachable!("guarded above"),
         // Every remaining kind — string, enum, set, bit, temporal, json,
         // `FLOAT`'s widened form — is `ETReal` to
@@ -1113,128 +1239,16 @@ pub(crate) fn round_or_truncate_with_result_decimal(
         // ROUND-local parse.
         other => {
             let f = numeric_arg(other, ctx)?.expect("NULL guarded above");
-            Datum::Real(if round {
-                go_round_float(f, d)
-            } else {
-                go_truncate_float(f, d)
-            })
+            math_real_in(
+                real_op,
+                EvaluatedArgs::Ieee754BitsInt {
+                    value: Some(f.to_bits()),
+                    scale: Some(d),
+                },
+                false,
+                ctx,
+            )
         }
-    })
-}
-
-/// Go's `math.Pow10(n)` (`src/math/pow10.go`) ported bit-for-bit: a
-/// table-lookup, NOT `10f64.powi(n)` — the two disagree by 1 ULP across most
-/// of the exponent range (confirmed by dumping both sides' bit patterns for
-/// every `n` in `-400..=400` and diffing, not assumed), since Go's table is
-/// a fast approximation rather than always the correctly-rounded result.
-/// `go_round_float`/`go_truncate_float` need this EXACT (occasionally
-/// imprecise) value, not a more accurate one, to reproduce the reference
-/// implementation's own rounding decisions bit-for-bit.
-fn go_pow10(n: i64) -> f64 {
-    const POW10_TAB: [f64; 32] = [
-        1e00, 1e01, 1e02, 1e03, 1e04, 1e05, 1e06, 1e07, 1e08, 1e09, 1e10, 1e11, 1e12, 1e13, 1e14,
-        1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22, 1e23, 1e24, 1e25, 1e26, 1e27, 1e28, 1e29,
-        1e30, 1e31,
-    ];
-    const POW10_POSTAB32: [f64; 10] = [
-        1e00, 1e32, 1e64, 1e96, 1e128, 1e160, 1e192, 1e224, 1e256, 1e288,
-    ];
-    const POW10_NEGTAB32: [f64; 11] = [
-        1e-00, 1e-32, 1e-64, 1e-96, 1e-128, 1e-160, 1e-192, 1e-224, 1e-256, 1e-288, 1e-320,
-    ];
-    if (0..=308).contains(&n) {
-        let n = n as usize;
-        POW10_POSTAB32[n / 32] * POW10_TAB[n % 32]
-    } else if (-323..=0).contains(&n) {
-        let n = (-n) as usize;
-        POW10_NEGTAB32[n / 32] / POW10_TAB[n % 32]
-    } else if n > 0 {
-        f64::INFINITY
-    } else {
-        0.0
-    }
-}
-
-/// Go's `types.Round(f, dec)` (`pkg/types/helper.go`) ported bit-for-bit:
-/// multiply by `10^dec` ([`go_pow10`]), round the intermediate to the
-/// nearest EVEN integer, divide back — deliberately simple and occasionally
-/// imprecise, matching the reference implementation exactly rather than a
-/// "more correct" decimal-aware approach. An infinite intermediate (e.g.
-/// huge `dec`) returns `f` unchanged; a `NaN` result (e.g. `f == 0.0` with
-/// `dec` large enough that `shift` is infinite, giving `0 * inf`) becomes
-/// `0.0` — both are Go's own explicit fallbacks, not invented here. Also
-/// used for `ROUND(int, d)`, which real TiDB implements as this same `f64`
-/// round-trip (`int64(types.Round(float64(val), d))`).
-fn go_round_float(f: f64, dec: i64) -> f64 {
-    let shift = go_pow10(dec);
-    let tmp = f * shift;
-    if tmp.is_infinite() {
-        return f;
-    }
-    let result = tmp.round_ties_even() / shift;
-    if result.is_nan() {
-        0.0
-    } else {
-        result
-    }
-}
-
-/// Go's `types.Truncate(f, dec)` (`pkg/types/helper.go`) ported bit-for-bit:
-/// same shape as [`go_round_float`] but truncates (`f64::trunc`) instead of
-/// rounding, with an extra guard for `shift == 0.0` (`dec` negative enough
-/// that `10^dec` underflows to `0.0`) — Go returns `f` unchanged for a `NaN`
-/// input and `0.0` for everything else in that case.
-fn go_truncate_float(f: f64, dec: i64) -> f64 {
-    let shift = go_pow10(dec);
-    let tmp = f * shift;
-    if tmp.is_infinite() || tmp.is_nan() {
-        return f;
-    }
-    if shift == 0.0 {
-        return if f.is_nan() { f } else { 0.0 };
-    }
-    tmp.trunc() / shift
-}
-
-/// `TRUNCATE(int, d)` ported from Go's `builtinTruncateIntSig`: a
-/// non-negative `d` is a no-op (an integer has nothing past the decimal
-/// point to truncate away); a negative `d` zeroes out the low `-d` decimal
-/// digits via truncating integer division — exact integer arithmetic, no
-/// `f64` round-trip (unlike `ROUND`). A `-d` past `i64`'s own range of exact
-/// powers of ten (`> 18`) falls back to `0`, matching what real MySQL's
-/// float-round-tripped `shift` would produce for any in-range value at that
-/// magnitude anyway, without replicating Go's own undefined float-to-int
-/// overflow behavior at that boundary.
-fn go_truncate_int(val: i64, dec: i64) -> i64 {
-    if dec >= 0 {
-        return val;
-    }
-    let shift = dec
-        .checked_neg()
-        .and_then(|n| u32::try_from(n).ok())
-        .and_then(|n| 10i64.checked_pow(n));
-    match shift {
-        Some(shift) => val / shift * shift,
-        None => 0,
-    }
-}
-
-/// `builtinTruncateUintSig`'s exact unsigned integer path.  As with the Go
-/// signature, a non-negative scale is a no-op and a negative scale divides by
-/// an integer power of ten before multiplying it back.  Powers that do not
-/// fit in `u64` produce zero for every in-range input, matching the quotient
-/// boundary without routing through lossy floating-point conversion.
-fn go_truncate_uint(val: u64, dec: i64) -> u64 {
-    if dec >= 0 {
-        return val;
-    }
-    let shift = dec
-        .checked_neg()
-        .and_then(|n| u32::try_from(n).ok())
-        .and_then(|n| 10u64.checked_pow(n));
-    match shift {
-        Some(shift) => val / shift * shift,
-        None => 0,
     }
 }
 

@@ -17,6 +17,10 @@ use std::ops::Deref;
 
 use crate::MyDecimal;
 use smallvec::SmallVec;
+use tidb_query_datatype::codec::mysql::{
+    decimal::{NativeDecimalError, NativeDecimalOp},
+    Decimal as SharedDecimal,
+};
 
 // TPC-H's DECIMAL(15,2) values need up to 17 coefficient bytes. Keeping the
 // common fixed-point widths inline avoids a heap allocation while decoding
@@ -170,6 +174,133 @@ pub enum DecimalParseError {
 }
 
 impl Decimal {
+    /// Copies the exact coefficient into the shared native-math value domain.
+    /// `limit` bounds each materialized buffer's logical data bytes, not SQL
+    /// precision or the combined physical peak. Declared column shape is not
+    /// part of this arithmetic value; both storage and result scales are.
+    pub fn try_to_shared_math(&self, limit: usize) -> Result<SharedDecimal, NativeDecimalError> {
+        SharedDecimal::try_from_native_digits(
+            self.negative,
+            self.digits.as_bytes(),
+            self.storage_scale,
+            self.scale,
+            limit,
+        )
+    }
+
+    /// Reconstructs an owned native coefficient directly from shared words.
+    /// No Display, SQL parse, visible-scale rounding or fixed nine-word cell is
+    /// involved. This value-producing bridge clears the declared column shape;
+    /// transport retains a zero sign, while ABS/round normalize it in the core.
+    pub fn try_from_shared_math(
+        value: &SharedDecimal,
+        limit: usize,
+    ) -> Result<Self, NativeDecimalError> {
+        let parts = value.words();
+        if parts.result_frac > parts.storage_frac {
+            return Err(NativeDecimalError::InvalidInput(
+                "result scale exceeds storage scale",
+            ));
+        }
+        let fraction = usize::try_from(parts.storage_frac)
+            .map_err(|_| NativeDecimalError::Resource("storage scale exceeds indexing width"))?;
+        let int_words = parts.int_digits.div_ceil(DIGITS_PER_WORD);
+        let active = int_words
+            .checked_add(fraction.div_ceil(DIGITS_PER_WORD))
+            .ok_or(NativeDecimalError::Resource("active word count overflow"))?;
+        if active == 0 || active > parts.words.len() {
+            return Err(NativeDecimalError::InvalidInput(
+                "native coefficient requires initialized active words",
+            ));
+        }
+        let bytes = parts
+            .int_digits
+            .checked_add(fraction)
+            .filter(|bytes| *bytes <= isize::MAX as usize)
+            .ok_or(NativeDecimalError::Resource(
+                "coefficient byte count overflow",
+            ))?;
+        if bytes > limit {
+            return Err(NativeDecimalError::Resource(
+                "coefficient buffer exceeds limit",
+            ));
+        }
+        if parts.words[..active]
+            .iter()
+            .any(|word| *word >= CODEC_POWERS10[DIGITS_PER_WORD] as u32)
+        {
+            return Err(NativeDecimalError::InvalidInput(
+                "active word is not base-1e9",
+            ));
+        }
+        let head = parts.int_digits % DIGITS_PER_WORD;
+        if head != 0 && parts.words[0] >= CODEC_POWERS10[head] as u32 {
+            return Err(NativeDecimalError::InvalidInput(
+                "leading word exceeds its digit count",
+            ));
+        }
+        let tail = fraction % DIGITS_PER_WORD;
+        if tail != 0 && parts.words[active - 1] % CODEC_POWERS10[DIGITS_PER_WORD - tail] as u32 != 0
+        {
+            return Err(NativeDecimalError::InvalidInput(
+                "fractional word has nonzero padding",
+            ));
+        }
+        let mut digits = Vec::new();
+        digits
+            .try_reserve_exact(bytes)
+            .map_err(|_| NativeDecimalError::Resource("coefficient allocation failed"))?;
+        let mut emit_word = |mut word: u32, width: usize| {
+            let mut buffer = [b'0'; DIGITS_PER_WORD];
+            for byte in buffer[..width].iter_mut().rev() {
+                *byte += (word % 10) as u8;
+                word /= 10;
+            }
+            digits.extend_from_slice(&buffer[..width]);
+        };
+        for (index, word) in parts.words[..int_words].iter().enumerate() {
+            let width = if index == 0 {
+                (parts.int_digits - 1) % DIGITS_PER_WORD + 1
+            } else {
+                DIGITS_PER_WORD
+            };
+            emit_word(*word, width);
+        }
+        let mut remaining = fraction;
+        for word in &parts.words[int_words..active] {
+            let width = remaining.min(DIGITS_PER_WORD);
+            emit_word(
+                *word / CODEC_POWERS10[DIGITS_PER_WORD - width] as u32,
+                width,
+            );
+            remaining -= width;
+        }
+        // Normalize only excess coefficient-leading zeroes; retained fraction
+        // zeroes and both scales remain exact. Avoid repeated front removal.
+        let removable = digits.len().saturating_sub(fraction.max(1));
+        let leading = digits[..removable]
+            .iter()
+            .take_while(|digit| **digit == b'0')
+            .count();
+        digits.drain(..leading);
+        Ok(Self {
+            negative: parts.negative,
+            digits: DecimalDigits::from_ascii(SmallVec::from_vec(digits)),
+            scale: parts.result_frac,
+            storage_scale: parts.storage_frac,
+            declared_shape: None,
+        })
+    }
+
+    // Retain the old infallible value API: bridge/core refusals panic here,
+    // never masquerade as a SQL overflow or retry a native arithmetic kernel.
+    fn shared_native_math(&self, operation: NativeDecimalOp) -> Self {
+        self.try_to_shared_math(usize::MAX)
+            .and_then(|value| value.try_native_math(operation, usize::MAX))
+            .and_then(|value| Self::try_from_shared_math(&value, usize::MAX))
+            .expect("shared native decimal math failed")
+    }
+
     /// The single normalization point for ordinary values, whose stored and
     /// displayed scale are identical.
     fn new(negative: bool, digits: impl Into<DecimalDigits>, scale: u32) -> Self {
@@ -716,7 +847,7 @@ impl Decimal {
 
     /// Returns the non-negative magnitude of this value.
     pub fn abs(&self) -> Self {
-        Decimal::new_with_storage(false, self.digits.clone(), self.scale, self.storage_scale)
+        self.shared_native_math(NativeDecimalOp::Abs)
     }
 
     /// `-1` / `0` / `1`, for `SIGN`.
@@ -1501,8 +1632,8 @@ impl Decimal {
     }
 
     /// The EXACT mathematical ceiling (`ceiling: true`) or floor
-    /// (`false`), as a new `Decimal` at scale 0 — computed on the digit
-    /// string directly (not via `f64`), so it's exact for arbitrary
+    /// (`false`), as a new `Decimal` at scale 0 — computed by the shared
+    /// exact word core (not via `f64`), so it's exact for arbitrary
     /// precision (unlike `round_to_i64`, this never loses precision to
     /// `i64`'s own range — `CEIL`/`FLOOR`'s own `i64`-fitting check, if
     /// any, is the CALLER's job, matching real MySQL: `CEIL`/`FLOOR`
@@ -1514,26 +1645,11 @@ impl Decimal {
     /// sign, i.e. `CEIL` truncates a negative value's magnitude while
     /// `FLOOR` rounds it up, and vice versa for a positive value).
     pub fn ceil_floor(&self, ceiling: bool) -> Decimal {
-        if self.storage_scale == 0 {
-            return Decimal::new(self.negative, self.digits.clone(), 0);
-        }
-        let split = self.digits.len() - self.storage_scale as usize;
-        let int_part = if split == 0 {
-            "0"
+        self.shared_native_math(if ceiling {
+            NativeDecimalOp::Ceil
         } else {
-            &self.digits[..split]
-        };
-        let has_fraction = self.digits[split..].bytes().any(|b| b != b'0');
-        if !has_fraction {
-            return Decimal::new(self.negative, int_part.to_string(), 0);
-        }
-        let round_up_magnitude = ceiling != self.negative;
-        let digits = if round_up_magnitude {
-            digit_add(int_part, "1")
-        } else {
-            int_part.to_string()
-        };
-        Decimal::new(self.negative, digits, 0)
+            NativeDecimalOp::Floor
+        })
     }
 
     /// Rounds to `target_scale` fractional digits, ties away from zero
@@ -1624,15 +1740,9 @@ impl Decimal {
         (significant_int as u32 <= int_budget).then_some(rounded)
     }
 
-    /// Shared digit-string implementation for [`Decimal::round_to_scale`] and
-    /// [`Decimal::truncate_to_scale`]: `target_scale >= self.scale` just
-    /// grows the fractional part with exact zeros (no digit is cut either
-    /// way). Otherwise the digits past the cut are dropped; `round` decides
-    /// whether the first dropped digit (`>= 5`) bumps the kept part by one.
-    /// A `target_scale` deep enough to cut every digit (including the
-    /// integer part) naturally falls out to `0` through the same digit math
-    /// MySQL special-cases explicitly (`int(d.digitsInt)+frac < 0` in
-    /// `MyDecimal.Round`) — no separate branch needed here.
+    /// Thin native-policy bridge for [`Decimal::round_to_scale`] and
+    /// [`Decimal::truncate_to_scale`]. The shared core owns rounding and the
+    /// original unchecked scale arithmetic, including profile-dependent wraps.
     fn round_or_truncate_to_scale(&self, target_scale: i32, round: bool) -> Decimal {
         let result_scale = target_scale.max(0) as u32;
         self.round_or_truncate_to_scale_with_storage(target_scale, round, result_scale)
@@ -1644,31 +1754,12 @@ impl Decimal {
         round: bool,
         storage_scale: u32,
     ) -> Decimal {
-        let result_scale = target_scale.max(0) as u32;
-        let storage_scale = storage_scale.max(result_scale);
-        let shift = self.storage_scale as i32 - target_scale;
-        if shift <= 0 {
-            let digits = pad_scale(&self.digits, self.storage_scale, storage_scale);
-            return Decimal::new_with_storage(self.negative, digits, result_scale, storage_scale);
-        }
-        let shift = shift as usize;
-        let mut digits = self.digits.clone();
-        if digits.len() <= shift {
-            digits = format!("{}{digits}", "0".repeat(shift + 1 - digits.len())).into();
-        }
-        let split = digits.len() - shift;
-        let int_part = &digits[..split];
-        let round_up = round && digits.as_bytes()[split] >= b'5';
-        let mut kept = if round_up {
-            digit_add(int_part, "1")
-        } else {
-            int_part.to_string()
-        };
-        if target_scale < 0 {
-            kept.push_str(&"0".repeat((-target_scale) as usize));
-        }
-        let digits = pad_scale(&kept, result_scale, storage_scale);
-        Decimal::new_with_storage(self.negative, digits, result_scale, storage_scale)
+        self.try_to_shared_math(usize::MAX)
+            .and_then(|value| {
+                value.try_native_round_with_storage(target_scale, round, storage_scale, usize::MAX)
+            })
+            .and_then(|value| Self::try_from_shared_math(&value, usize::MAX))
+            .expect("shared native decimal rounding failed")
     }
 }
 
@@ -2140,3 +2231,66 @@ use codec::{
 };
 
 pub use codec::{decimal_bin_size, DecimalCodecError, DecimalCodecFailure, DecimalCodecWarning};
+
+#[cfg(test)]
+mod native_math_bridge_tests {
+    use super::{Decimal, NativeDecimalError};
+    use tidb_query_datatype::codec::mysql::decimal::NativeDecimalOp;
+
+    #[test]
+    fn native_math_bridge_keeps_wide_hidden_scales_and_clears_shape() {
+        let wide_digits = format!("{}{}", "9".repeat(108), "1".repeat(120));
+        let values = [
+            Decimal::from_test_parts(false, "333333333", 4, 9).with_declared_shape(12, 4),
+            Decimal::from_test_parts(true, &wide_digits, 31, 120).with_declared_shape(228, 120),
+            Decimal::new_with_storage_preserving_zero_sign(true, "000".to_owned(), 3, 3),
+        ];
+        for original in &values {
+            let shared = original.try_to_shared_math(usize::MAX).unwrap();
+            assert_eq!(shared.storage_scale(), original.storage_scale());
+            assert_eq!(shared.result_scale(), original.scale());
+            let owned = shared.try_clone_native_math(usize::MAX).unwrap();
+            let restored = Decimal::try_from_shared_math(&owned, usize::MAX).unwrap();
+            assert_eq!(restored.coefficient_digits(), original.coefficient_digits());
+            assert_eq!(restored.is_negative(), original.is_negative());
+            assert_eq!(restored.storage_scale(), original.storage_scale());
+            assert_eq!(restored.scale(), original.scale());
+            assert_eq!(restored.declared_shape(), None);
+        }
+        let input = Decimal::from_literal("-15.5").with_declared_shape(10, 1);
+        for (value, digits, scale) in [
+            (input.abs(), "155", 1),
+            (input.ceil_floor(true), "15", 0),
+            (input.ceil_floor(false), "16", 0),
+            (input.round_to_scale(0), "16", 0),
+            (input.truncate_to_scale(0), "15", 0),
+        ] {
+            assert_eq!(value.coefficient_digits(), digits);
+            assert_eq!((value.storage_scale(), value.scale()), (scale, scale));
+            assert_eq!(value.declared_shape(), None);
+        }
+        let retained = input.round_or_truncate_to_scale_with_storage(0, true, 4);
+        assert_eq!(retained.coefficient_digits(), "160000");
+        assert_eq!((retained.storage_scale(), retained.scale()), (4, 0));
+        assert!(retained.is_negative());
+        assert_eq!(retained.declared_shape(), None);
+        let shared = values[1].try_to_shared_math(usize::MAX).unwrap();
+        assert!(shared.words().words.len() > 9);
+        assert!(matches!(
+            Decimal::try_from_shared_math(&shared, 1),
+            Err(NativeDecimalError::Resource(_))
+        ));
+        let negative_zero = values[2].try_to_shared_math(usize::MAX).unwrap();
+        for operation in [
+            NativeDecimalOp::Abs,
+            NativeDecimalOp::Round(3),
+            NativeDecimalOp::Truncate(0),
+        ] {
+            let result = negative_zero.try_native_math(operation, 1024).unwrap();
+            let result = Decimal::try_from_shared_math(&result, 1024).unwrap();
+            assert!(result.is_zero());
+            assert!(!result.is_negative());
+            assert_eq!(result.declared_shape(), None);
+        }
+    }
+}

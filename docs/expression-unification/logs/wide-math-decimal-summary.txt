@@ -1,0 +1,90 @@
+Checkpoint: wide-math-decimal-five-25
+STATUS: final functional checkpoint, 77->82/245; final acceptance remains 0/245.
+Five whole frozen IDs: abs, ceil (ceiling alias), floor, round, truncate. No extra legacy/bridge credit, denominator change or completed/transcreated Go-package claim.
+Exactly 10 retained Rust logs = 1 compile-only failure + 9 actual test runs: 8 passed, full expression non-green. Old expected values/fixtures are unchanged.
+PROVENANCE: all Rust commands, exit statuses, formatting and fixes are parent-owned. This writer read/grepped all ten log endings and ran sha256sum (exit0), not Rust build/test/fmt.
+RAW DIRECTORY: /home/agent/tidb/expression-unification/logs
+JAN CWD: /home/agent/tidb/expression-unification/tikv; cargo-tikv pin nightly-2026-01-30-x86_64-unknown-linux-gnu.
+AUG CWD: /home/agent/tidb/expression-unification/tidb/rust; cargo-tidb pin nightly-2026-08-22-x86_64-unknown-linux-gnu.
+Parent confirmed commands below because raw logs contain no command headers. Each used: set -o pipefail; <COMMAND> 2>&1 | tee /home/agent/tidb/expression-unification/logs/<LOG>
+Compilation times below are emitted Finished-test-profile times, not performance measurements.
+
+LOG: wide-math-decimal-tikv-datatype.log
+COMMAND [JAN]: ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib decimal -- --test-threads=1
+EXIT: 0; running 98 tests; first compilation 3.34s.
+test result: ok. 98 passed; 0 failed; 0 ignored; 0 measured; 300 filtered out; finished in 0.01s
+SHA256: ef296675311728068050eb793182759d1ae5797e827eb1b1fc3c6be4d3435d65
+LOG: wide-math-decimal-native-datatype.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-datatype --lib decimal -- --test-threads=1
+EXIT: 101; compilation failed, zero tests executed. This is not a zero-pass test result.
+Six diagnostics: E0308 x4, E0277 x2 at then-current crates/tidb-datatype/src/decimal/mod.rs:230/237/243/271: shared u32 words versus native i32 CODEC_POWERS10, including u32 % i32 and u32 / i32.
+error: could not compile `tidb-datatype` (lib test) due to 6 previous errors
+Parent corrected only four CODEC_POWERS10 uses with as u32 for this compile fix, preserving expected values. The failed attempt remains retained.
+SHA256: 1876c66feff9d758e7314d6054e19dab6bb73649c53a0fb50c5ac4710560dbe7
+LOG: wide-math-decimal-native-datatype-rerun.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-datatype --lib decimal -- --test-threads=1
+EXIT: 0; running 90 tests; compilation 2.24s.
+test result: ok. 90 passed; 0 failed; 0 ignored; 0 measured; 347 filtered out; finished in 21.84s
+SHA256: 9f51482e4c54f66afb333b3508c0bf70531a6a9e70716e7bda78b3d4d9a09dac
+LOG: wide-math-decimal-tikv-datatype-rerun.log
+COMMAND [JAN]: ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib decimal -- --test-threads=1
+EXIT: 0; running 98 tests; compilation 1.78s. This follows parent's later shared ABS change to try_finish_exact(value.abs(), result_frac_cnt), reusing the wire worker rather than a duplicate sign assignment.
+test result: ok. 98 passed; 0 failed; 0 ignored; 0 measured; 300 filtered out; finished in 0.01s
+SHA256: 25b1221cf38c4c2fb1d54c59de6efc34768719570c7fdd102afa817500681822
+LOG: wide-math-decimal-tikv-local.log
+COMMAND [JAN]: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+EXIT: 0; running 242 tests; compilation 11.66s. The one ignored test is preexisting.
+test result: ok. 241 passed; 0 failed; 1 ignored; 0 measured; 471 filtered out; finished in 0.19s
+SHA256: c2fb77eef29546ed43978b783a3e2a6aeb14a5e76c2dd93b6851556c9121a63f
+LOG: wide-math-decimal-tikv-math.log
+COMMAND [JAN]: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_math:: -- --test-threads=1
+EXIT: 0; running 48 tests, including the two new native policy/cause tests; compilation 0.12s.
+test result: ok. 48 passed; 0 failed; 0 ignored; 0 measured; 665 filtered out; finished in 0.10s
+SHA256: 211728862500de527de15416f3a06aade050e6b29352f9d9c0969a313778184b
+LOG: wide-math-decimal-dispatch.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-expr --lib wide_math_dispatch_ -- --test-threads=1
+EXIT: 0; running 3 tests; compilation 15.83s.
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1524 filtered out; finished in 0.00s
+SHA256: b3722ff4354e706094d75e05deaf32cf2f45e33477982189c55ac3dfa1435a0a
+LOG: wide-math-decimal-legacy.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_round_ -- --test-threads=1
+EXIT: 0; running 2 focused legacy tests, not the whole unistore suite; compilation 8.55s.
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 193 filtered out; finished in 0.00s
+SHA256: 06b16c5d05bb728a1b32c8c9ead092706a7ba18ea38422b7a8bb91a93ee32c22
+LOG: wide-math-decimal-sql.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+EXIT: 0; running 53 tests; compilation 32.53s.
+test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 0.77s
+SHA256: e3bb4c8097bcf0e9cf69b37a6b1db456ec4df1ae0223e9948d2d45dd5b81f517
+LOG: wide-math-decimal-expr-full.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+EXIT: 101; running 1527 tests; compilation 0.16s.
+test result: FAILED. 1429 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.49s
+SHA256: dffb1401135e1dd7d472e916dee3eeaf04cce11a0e1724ac3f6ec01b74e748a8
+
+FULL-FAILURE COMPARISON (parent-owned comparison, not a whole-log hash)
+Current wide-math-decimal-expr-full.log versus round24 field-make-export-expr-full.log.
+Extract after the first \nfailures:\n, before \ntest result:; normalize only re.sub(r"(?m)^(thread '[^\n]*' \()\d+(\) panicked at)", r'\1THREAD\2', section).
+Parent reports complete normalized sections byte-identical, both SHA256 0930217d98e0b92d727527dc3c7cb7313f1bbe35e643da60114fa6d78203839b. Same value is newly confirmed for this comparison, not a substituted historical hash.
+Retained failures:
+- pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation
+- tests::builtin_info_json_math_source::exp
+- tests::builtin_math_misc_op_source::vectorized_builtin_op_func
+- time_fn::tests::str_to_date_partial_formats_follow_no_zero_date
+Parent reports both repo git diff --check and both lockfile git diff --exit-code checks exit0. These are not extra Rust logs or evidence of a green full suite.
+
+VALIDATED COVERAGE AND BOUNDARIES
+The new SQL tests store five rows including MININT's error row: four normal rows x13 function columns, separate overflow check, and 17 direct zero-slot probes. Do not report five successful projection rows.
+Dispatcher tests cover actual-receipt ABS overflow, wide/storage/value kinds and typed Decimal domains, plus PB NULL/child precedence. Focused legacy tests cover full Int128/real/Decimal, missing/NULL inputs and child errors.
+23 private RPN operations; actual VectorValue::Decimal plus computed Decimal, canonical IEEE LE8 and full Int128 LE16. No fake value substitutes for NULL; witness Some(0) is rejected. NULL/identity still invoke the worker.
+Native GoPow10/order/guards differ from wire powi; Int ROUND unary identity differs from two-arg f64, including UInt signed bits. Integer TRUNCATE stays exact and unsigned-scale identity remains explicit. Native Decimal scale clamp/cap lives only in TiKV, never as i8 wrap.
+ABS's new private overflow branch alone emits AbsSignedOverflow with original 1690 cause, mapped only with the real C4 receipt. Decimal errors, including legacy codec conversion, explicitly retain NativeDecimalError through Caused; no message-text classification or native replay.
+C4 supplies an actual finite logical kernel budget as an internal Int; getters restore raw u64->usize and reject usize::MAX. Decimal+scale+budget uses at most three inputs; no generic driver/graph/four-column or PB/unistore/default admission expansion.
+Unchecked scale subtraction/padding/unary minus follow the actual overflow-check profile, not debug_assertions. Wrapped expansion is resource-preflighted, not replaced with mathematical zero. Current-profile tests are not separate release execution.
+Five-family native algorithms and datatype with_storage digit loop are deleted; independent datatype round_ceiling_to_scale remains native. This is not whole-Decimal completion. Existing infallible datatype facades may still use usize::MAX; finite C4 budget is not a blanket facade guarantee.
+
+UNVERIFIED / FINAL SCOPE
+These decimal filters and two legacy tests do not establish whole datatype/unistore/parser/workspace success. Earlier broader unistore/parser non-green observations remain historical and were not all rerun.
+No allocator-capacity, total physical peak, zero-copy, OOM-safety or performance claim follows from logical word-buffer limits, owner copies or these tests. Release execution, make lint, deeper scope/guard validation and final acceptance remain unverified.
+After source freeze this writer created only this new summary and wide-math-decimal-checkpoint.md; no source, old expected, Plan/README/JSON/guide/index edits or Rust build/test/fmt.
+FINAL: 82/245 functional, final0/245; source and document pair frozen, retained compile failure, full expression still non-green, not PR-ready.
