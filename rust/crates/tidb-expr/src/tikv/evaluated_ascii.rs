@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Closed ready-Bytes caller sharing one scoped pool across its fixed operations.
+//! Closed ready-argument caller sharing one scoped pool across its fixed operations.
 //! Legacy public ASCII capabilities retain their names and ASCII-only value API.
 //!
 //! The real C4 worker is the only computation path. Native children/transcode
@@ -42,8 +42,8 @@ use tidb_datatype::{Datum, DatumKind, Time};
 use tidb_query_datatype::{codec::data_type::ScalarValueRef, EvalType};
 use tidb_query_expr::local::{
     prepare_evaluated_bytes, CompileLimits, ComputedBytesMetadata, ComputedInt,
-    ComputedIntMetadata, ComputedValue, EvaluatedBytesOp, EvaluatedBytesWorker, ExecutionLimits,
-    LocalCompileContext,
+    ComputedIntMetadata, ComputedValue, EvaluatedArgs, EvaluatedBytesOp, EvaluatedBytesWorker,
+    ExecutionLimits, LocalCompileContext,
 };
 
 use super::adapter_failure::{ExpressionAdapterFailure, ScopeFailureKind};
@@ -786,7 +786,8 @@ impl Creation {
             self.operation,
             LocalCompileContext {
                 limits: CompileLimits {
-                    max_nodes: 2,
+                    // One call node plus at most three ready argument columns.
+                    max_nodes: 4,
                     max_depth: 2,
                 },
             },
@@ -1148,6 +1149,14 @@ impl<'a> Invocation<'a> {
         operation: EvaluatedBytesOp,
         ready: ReadyAsciiBytes,
     ) -> Result<ComputedValue, AsciiBoundaryError> {
+        self.run_args(operation, EvaluatedArgs::Bytes(ready.0))
+    }
+
+    fn run_args(
+        &mut self,
+        operation: EvaluatedBytesOp,
+        ready: EvaluatedArgs,
+    ) -> Result<ComputedValue, AsciiBoundaryError> {
         if let Some(lease) = self.lease.as_ref() {
             lease.validate()?;
             if lease.worker.as_ref().expect("validated worker").operation() != operation {
@@ -1170,7 +1179,7 @@ impl<'a> Invocation<'a> {
         // function-pointer witness. No observer is passed into the worker.
         #[cfg(test)]
         tests::before_eval_one_for_test(worker.kernel_invocations());
-        let result = worker.eval_one(ready.0);
+        let result = worker.eval_args(ready);
         #[cfg(test)]
         tests::after_eval_one_for_test(worker.kernel_invocations());
         result.map_err(|error| {
@@ -1369,7 +1378,15 @@ fn materialize_computed(
             | EvaluatedBytesOp::UnHex
             | EvaluatedBytesOp::Reverse
             | EvaluatedBytesOp::ReverseUtf8
-            | EvaluatedBytesOp::Quote,
+            | EvaluatedBytesOp::Quote
+            | EvaluatedBytesOp::HexInt
+            | EvaluatedBytesOp::HexStr
+            | EvaluatedBytesOp::Bin
+            | EvaluatedBytesOp::Left
+            | EvaluatedBytesOp::LeftUtf8
+            | EvaluatedBytesOp::Right
+            | EvaluatedBytesOp::RightUtf8
+            | EvaluatedBytesOp::Replace,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {
@@ -1381,18 +1398,18 @@ fn materialize_computed(
     }
 }
 
-fn evaluate_scoped_bytes(
+fn evaluate_scoped_args(
     operation: EvaluatedBytesOp,
     scope: &AsciiScope,
-    coerce: impl FnOnce() -> Result<Option<Vec<u8>>, EvalError>,
+    coerce: impl FnOnce() -> Result<EvaluatedArgs, EvalError>,
     pack: impl FnOnce(EvaluatedBytesResult) -> Result<Datum, EvalError>,
 ) -> Result<Datum, AsciiBoundaryError> {
     let mut guard = NativeGuard::new(scope);
     let result = (|| {
         // Frontend coercion runs exactly once, before taking/replacing a lease.
-        let ready = ReadyAsciiBytes(coerce().map_err(AsciiBoundaryError::Frontend)?);
+        let ready = coerce().map_err(AsciiBoundaryError::Frontend)?;
         let mut invocation = Invocation::enter(scope)?;
-        let result = invocation.run_for(operation, ready);
+        let result = invocation.run_args(operation, ready);
         let computed = invocation.finish(result)?;
         // No worker/cell/mutex borrow surrounds original native result packing.
         pack(materialize_computed(operation, computed)?).map_err(AsciiBoundaryError::Frontend)
@@ -1404,25 +1421,25 @@ fn evaluate_scoped_bytes(
 /// One closed operation router, sharing the legacy-named ASCII capabilities.
 /// Neither frontend callback enters C4: coercion precedes admission, and native
 /// packing follows the exclusive invocation. Both remain under the scope guard.
-pub(crate) fn evaluate_bytes_in(
+pub(crate) fn evaluate_args_in(
     operation: EvaluatedBytesOp,
     ctx: &dyn Columns,
-    coerce: impl FnOnce() -> Result<Option<Vec<u8>>, EvalError>,
+    coerce: impl FnOnce() -> Result<EvaluatedArgs, EvalError>,
     pack: impl FnOnce(EvaluatedBytesResult) -> Result<Datum, EvalError>,
 ) -> Result<Datum, EvalError> {
     if let Some(scope) = ctx.evaluated_ascii_scope() {
-        return evaluate_scoped_bytes(operation, scope, coerce, pack)
+        return evaluate_scoped_args(operation, scope, coerce, pack)
             .map_err(AsciiBoundaryError::into_eval_error);
     }
     if let Some(execution) = ctx.evaluated_ascii_execution() {
-        return evaluate_scoped_bytes(operation, &execution.scope(), coerce, pack)
+        return evaluate_scoped_args(operation, &execution.scope(), coerce, pack)
             .map_err(AsciiBoundaryError::into_eval_error);
     }
 
     let result = (|| {
         // No capability: preserve frontend precedence even before pool creation.
         let ready = coerce().map_err(AsciiBoundaryError::Frontend)?;
-        // One explicit experimental policy for all fixed two-node recipes.
+        // One explicit experimental policy for all closed fixed-arity recipes.
         // Retained/request allowances are not physical heap/factory-peak bounds.
         // A worker's retained cap must not become a maximum SQL string length.
         let policy = AsciiPoolPolicy::checked(1, 1, 8 << 20, 1 << 20, 2 << 20, 64, 16, usize::MAX)?;
@@ -1430,9 +1447,19 @@ pub(crate) fn evaluate_bytes_in(
         let execution = OneShotAsciiExecution(owner.begin_execution()?);
         // The scope/guard drop before the owned closer, including on unwind.
         let scope = execution.0.scope();
-        evaluate_scoped_bytes(operation, &scope, || Ok(ready), pack)
+        evaluate_scoped_args(operation, &scope, || Ok(ready), pack)
     })();
     result.map_err(AsciiBoundaryError::into_eval_error)
+}
+
+/// Compatible single-Bytes entry; all shapes use the same context/pool driver.
+pub(crate) fn evaluate_bytes_in(
+    operation: EvaluatedBytesOp,
+    ctx: &dyn Columns,
+    coerce: impl FnOnce() -> Result<Option<Vec<u8>>, EvalError>,
+    pack: impl FnOnce(EvaluatedBytesResult) -> Result<Datum, EvalError>,
+) -> Result<Datum, EvalError> {
+    evaluate_args_in(operation, ctx, || coerce().map(EvaluatedArgs::Bytes), pack)
 }
 
 /// Compatible ASCII-only entry into the shared closed operation router.

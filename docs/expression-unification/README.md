@@ -1,30 +1,30 @@
 # Expression unification experiment
 
-Checkpoint-ID: `shared-text-four-08` (previous: `shared-bytes-five-07`)
+Checkpoint-ID: `fixed-args-five-09` (previous: `shared-text-four-08`)
 
-**Ten families now delegate to TiKV and have their native algorithms removed:** ASCII, LENGTH/OCTET_LENGTH, BIT_LENGTH, LTRIM, RTRIM, UNHEX, CRC32, REVERSE, CHAR_LENGTH/CHARACTER_LENGTH and QUOTE. Functional progress:10/245, target221. Final audit/performance/workspace acceptance remains open; this is not overall completion or PR readiness.
+**Fifteen families delegate to TiKV with their native algorithms removed:** ASCII, LENGTH/OCTET_LENGTH, BIT_LENGTH, LTRIM, RTRIM, UNHEX, CRC32, REVERSE, CHAR_LENGTH/CHARACTER_LENGTH, QUOTE, HEX, BIN, LEFT, RIGHT and REPLACE. Functional progress15/245; target221. Final audit/performance/workspace acceptance is still open, not overall completion or PR readiness.
 
 ## Paired repositories
 
 - [YangKeao/tidb, expression-unification-demo](https://github.com/YangKeao/tidb/tree/expression-unification-demo)
 - [YangKeao/tikv, expression-unification-demo](https://github.com/YangKeao/tikv/tree/expression-unification-demo)
 
-Use sibling checkouts named `tidb` and `tikv` for Rust path dependencies. `checkpoint.json` records the paired TiKV commit. Root Plans mirror `/home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md`. Validated checkpoints push both branches, without force-push or automatic PRs.
+Keep sibling checkouts named `tidb` and `tikv` for path dependencies. `checkpoint.json` records the paired TiKV commit. Root Plans mirror `/home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md`. Core-validated steps push both branches without force-push or automatic PR creation.
 
-## Implementation
+## One evaluator, fixed argument shapes
 
-All migrated operations share one synchronous evaluator/driver and operation-keyed pool, not threads or per-function pools. Incompatible cached workers retire before reservations are released. Explicit capabilities are borrowed; contextless callers use a closed TiKV one-shot evaluator, never native fallback. Cold preparation/cache switching and complete operation-scope reuse remain performance follow-ups.
+The same synchronous worker/driver and operation-keyed pool now support nullable Bytes, Int bit patterns, Bytes+Int and three Bytes inputs, yielding owned Int/Bytes. Each operation fixes canonical slots and one official FnCall; no arbitrary program or SQL schema API. ASCII/Bytes methods are thin compatibility entries. Contextless calls use TiKV one-shot evaluation, never native fallback. These workers are not threads.
 
-TiDB retains argument demand/coercion/normalization and SQL metadata. CHAR_LENGTH includes typed PB, unistore Shared and legacy SimpleSig/public-helper routes. Main/PB uses Go invalid-byte normalization; legacy preserves its pre-existing Rust grouping. QUOTE preserves Rust normalization and delegates NULL→"NULL" plus escaping. CRC32 raw UInt packing is preserved; pre-existing SQL inference remains signed LongLong.
+TiDB retains original coercion, demand order, normalization and result metadata. HEX includes typed Int/BIT/UInt and Bytes branches; LEFT/RIGHT cover binary/text and count-first NULL behavior; REPLACE preserves conversion of later tuple arguments even after NULL. Caller compile limit4 admits the fixed three-input recipe; root/epoch/retirement accounting is unchanged.
 
-## Validation
+## Actual validation
 
-TiKV180 passed/1 ignored plus1 dispatch-identity guard. New native/PB dispatcher2 passed; Session/SQL19 passed; legacy unistore1 passed. Full expression1376 passed/4 unchanged baseline failures/94 ignored; complete failure blocks match07 after only thread-ID normalization. A new SQL fixture initially assumed unsigned CRC32 column metadata; corrected against unchanged inference, not by changing production behavior or payload expectations.
+TiKV186 passed/1 ignored plus1 identity guard. New dispatcher3 passed; Session/SQL21 passed. Full expression1379 passed/4 unchanged baseline failures/94 ignored; complete failure blocks equal08 after only thread-ID normalization. No new-test failure or expected-value change this checkpoint. Real mixed-column SQL exercises high-bit integers and multibyte strings;20 direct zero-slot SQL calls reject instead of bypass/replay.
 
-Exact commands/results: `evidence/shared-text-four-checkpoint.md` and `logs/shared-text-four-summary.txt`. `migration-progress.json` separates functional progress from final acceptance. The user requested faster functional migration: comprehensive audits, allocator remeasurement, release performance and whole-workspace/make lint checks remain explicit follow-ups. No physical heap/peak/OOM guarantee or current-artifact coverage by old allocation receipts is claimed.
+Exact commands and limits: `evidence/fixed-args-five-checkpoint.md`, `logs/fixed-args-five-summary.txt`. `migration-progress.json` separates functional progress from final acceptance. TiKV's coprocessor maintenance guide now records the closed in-process argument/ownership contract; RPC wire/read-pool behavior is unchanged.
 
-## Reproduction and next batch
+## Deferred and next
 
-Evidence scopes commands to `tikv/` (Jan2026 compiler) or `tidb/rust/` (Aug2026). Do not mix profiles/artifacts or count zero matched tests as passing. Binaries/caches are not published. Historical baselines remain in earlier evidence documents. This is expression-kernel reuse, not a complete Go-package transcreation claim.
+Not verified: release performance, complete operation-scope reuse/wrapper propagation, new allocation measurements/physical peak or OOM safety, network end-to-end, full workspace or make lint. Old allocation receipts do not certify current artifacts. Historical compatibility remains: main/PB versus legacy CHAR_LENGTH normalization, QUOTE's Rust normalization, and raw CRC32 UInt versus existing signed SQL inference.
 
-Next: HEX/BIN/LEFT/RIGHT/REPLACE with closed Int/Bytes fixed-arity arguments through the same driver; next-batch workspace changes are excluded from this publication.
+Evidence scopes Jan2026 TiKV and Aug2026 TiDB commands to their respective directories. Do not mix compiler artifacts or count zero matched tests as passing. This is kernel reuse, not a complete Go-package transcreation claim. Next: seven integer-bitwise families; their workspace changes are excluded from this publication.

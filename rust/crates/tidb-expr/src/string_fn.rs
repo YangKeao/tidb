@@ -164,23 +164,53 @@ pub(crate) fn bit_length_in(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<
 /// `builtinRightSig` count BYTES for a binary argument (preserving invalid
 /// UTF-8) and their `...UTF8Sig` twins count CHARACTERS. `NULL` if either
 /// argument is `NULL`.
+#[cfg(test)]
 pub(crate) fn str_take(vals: &[Datum], from_left: bool) -> Result<Datum, EvalError> {
+    str_take_in(vals, from_left, &crate::NoColumns)
+}
+
+pub(crate) fn str_take_in(
+    vals: &[Datum],
+    from_left: bool,
+    ctx: &dyn crate::Columns,
+) -> Result<Datum, EvalError> {
     if vals.len() != 2 {
         return Err(EvalError::Unsupported("bad LEFT/RIGHT arguments"));
     }
-    let n = match &vals[1] {
-        Datum::Null => return Ok(Datum::Null),
-        value => crate::cast::to_i64_signed(value).max(0) as usize,
+    let binary = crate::string_signature::is_binary_str(&vals[0]);
+    let operation = match (from_left, binary) {
+        (true, true) => crate::tikv::EvaluatedBytesOp::Left,
+        (true, false) => crate::tikv::EvaluatedBytesOp::LeftUtf8,
+        (false, true) => crate::tikv::EvaluatedBytesOp::Right,
+        (false, false) => crate::tikv::EvaluatedBytesOp::RightUtf8,
     };
-    let Some(units) = StrUnits::of(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    let (start, end) = if from_left {
-        (0, n.min(units.len()))
-    } else {
-        (units.len().saturating_sub(n), units.len())
-    };
-    Ok(units.pack(units.slice(start, end).to_vec()))
+    crate::tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || {
+            let n = match &vals[1] {
+                Datum::Null => return Ok(crate::tikv::EvaluatedArgs::BytesInt(None, None)),
+                value => crate::cast::to_i64_signed(value).max(0),
+            };
+            let bytes = coerce_str_bytes(&vals[0])?.map(|bytes| {
+                if binary {
+                    bytes
+                } else {
+                    crate::string_signature::normalize_utf8_go(bytes)
+                }
+            });
+            Ok(crate::tikv::EvaluatedArgs::BytesInt(bytes, Some(n)))
+        },
+        |result| {
+            Ok(result.into_bytes()?.map_or(Datum::Null, |bytes| {
+                if binary {
+                    Datum::new_bytes(bytes)
+                } else {
+                    Datum::new_string(bytes)
+                }
+            }))
+        },
+    )
 }
 
 /// `SUBSTRING(s, pos[, len])`: 1-indexed, counting in the units of the
@@ -486,43 +516,32 @@ pub(crate) fn position_with_collation(
 /// `str` replaced by `to`. An empty `from` leaves `str` unchanged (matching
 /// MySQL, and avoiding a pathological empty-pattern replace). `NULL` if any
 /// argument is `NULL`.
+#[cfg(test)]
 pub(crate) fn replace(vals: &[Datum]) -> Result<Datum, EvalError> {
+    replace_in(vals, &crate::NoColumns)
+}
+
+pub(crate) fn replace_in(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
     let [value, from, to] = vals else {
         return Err(EvalError::Unsupported("bad REPLACE arity"));
     };
-    let (Some(s), Some(from), Some(to)) = (
-        coerce_str_bytes(value)?,
-        coerce_str_bytes(from)?,
-        coerce_str_bytes(to)?,
-    ) else {
-        return Ok(Datum::Null);
-    };
-    if from.is_empty() {
-        return Ok(string_result(value, s));
-    }
-    Ok(string_result(value, replace_bytes(&s, &from, &to)))
-}
-
-/// Replaces non-overlapping byte occurrences, matching Go's
-/// `strings.ReplaceAll` over an arbitrary Go string.  Keeping this byte based
-/// means binary arguments never pass through a lossy UTF-8 decode.
-fn replace_bytes(value: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(value.len());
-    let mut cursor = 0;
-    while cursor <= value.len() {
-        let Some(relative) = value[cursor..]
-            .windows(from.len())
-            .position(|window| window == from)
-        else {
-            out.extend_from_slice(&value[cursor..]);
-            break;
-        };
-        let start = cursor + relative;
-        out.extend_from_slice(&value[cursor..start]);
-        out.extend_from_slice(to);
-        cursor = start + from.len();
-    }
-    out
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::Replace,
+        ctx,
+        || {
+            let (s, from, to) = (
+                coerce_str_bytes(value)?,
+                coerce_str_bytes(from)?,
+                coerce_str_bytes(to)?,
+            );
+            Ok(crate::tikv::EvaluatedArgs::Bytes3([s, from, to]))
+        },
+        |result| {
+            Ok(result
+                .into_bytes()?
+                .map_or(Datum::Null, |bytes| string_result(value, bytes)))
+        },
+    )
 }
 
 /// Preserve binary result semantics when the source string is binary; normal
@@ -611,18 +630,20 @@ fn strcmp_under(
 /// hex(x'0041')    -> 0041          (hex literal keeps both bytes)
 /// hex(b'01000001')-> 41            (bit literal is one byte to begin with)
 /// ```
+#[cfg(test)]
 pub(crate) fn hex(vals: &[Datum]) -> Result<Datum, EvalError> {
+    hex_in(vals, &crate::NoColumns)
+}
+
+pub(crate) fn hex_in(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
     match &vals[0] {
-        Datum::Null => Ok(Datum::Null),
+        Datum::Null => hex_string_value(&vals[0], ctx),
         Datum::Int(_)
         | Datum::UInt(_)
         | Datum::Decimal(_)
         | Datum::Real(_)
         | Datum::Float32(_)
-        | Datum::Bit(_) => {
-            let bits = radix_integer_bits(&vals[0])?.expect("non-NULL numeric HEX input");
-            Ok(Datum::new_string(format!("{bits:X}")))
-        }
+        | Datum::Bit(_) => hex_int_value(&vals[0], ctx),
         Datum::String(_)
         | Datum::Bytes(_)
         | Datum::BinaryLiteral(_)
@@ -630,40 +651,47 @@ pub(crate) fn hex(vals: &[Datum]) -> Result<Datum, EvalError> {
         | Datum::Enum(_, _)
         | Datum::Set(_, _)
         | Datum::Time(_)
-        | Datum::Json(_) => hex_string_value(&vals[0]),
-        Datum::Raw(value) => Ok(Datum::new_string(
-            value
-                .iter()
-                .map(|byte| format!("{byte:02X}"))
-                .collect::<String>(),
-        )),
+        | Datum::Json(_) => hex_string_value(&vals[0], ctx),
+        Datum::Raw(value) => hex_bytes_in(ctx, || Ok(Some(value.clone()))),
         Datum::MinNotNull | Datum::MaxValue => {
             Err(EvalError::Unsupported("range sentinel HEX argument"))
         }
-        other => {
-            let bytes = other
+        other => hex_bytes_in(ctx, || {
+            other
                 .to_bytes()
-                .map_err(|_| EvalError::Unsupported("HEX argument conversion"))?;
-            Ok(Datum::new_string(
-                bytes
-                    .iter()
-                    .map(|byte| format!("{byte:02X}"))
-                    .collect::<String>(),
-            ))
-        }
+                .map(Some)
+                .map_err(|_| EvalError::Unsupported("HEX argument conversion"))
+        }),
     }
 }
 
-fn hex_string_value(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(bytes) = coerce_str_bytes(value)? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::new_string(
-        bytes
-            .iter()
-            .map(|byte| format!("{byte:02X}"))
-            .collect::<String>(),
-    ))
+fn hex_int_value(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::HexInt,
+        ctx,
+        || {
+            Ok(crate::tikv::EvaluatedArgs::Int(
+                radix_integer_bits(value)?.map(|bits| bits as i64),
+            ))
+        },
+        |result| Ok(result.into_bytes()?.map_or(Datum::Null, Datum::new_string)),
+    )
+}
+
+fn hex_string_value(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    hex_bytes_in(ctx, || coerce_str_bytes(value))
+}
+
+fn hex_bytes_in(
+    ctx: &dyn crate::Columns,
+    coerce: impl FnOnce() -> Result<Option<Vec<u8>>, EvalError>,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::HexStr,
+        ctx,
+        || Ok(crate::tikv::EvaluatedArgs::Bytes(coerce()?)),
+        |result| Ok(result.into_bytes()?.map_or(Datum::Null, Datum::new_string)),
+    )
 }
 
 /// Go `hexFunctionClass.getFunction`: select the string or integer signature
@@ -677,7 +705,7 @@ pub(crate) fn hex_with_type(
     use tidb_datatype::EvalType;
 
     let Some(arg_type) = arg_type else {
-        return hex(vals);
+        return hex_in(vals, ctx);
     };
     let [value] = vals else {
         return Err(EvalError::Unsupported("bad HEX arity"));
@@ -689,11 +717,11 @@ pub(crate) fn hex_with_type(
         | EvalType::Duration
         | EvalType::Json => {
             let value = crate::cast::cast_arg_as_string(value, Some(arg_type), ctx)?;
-            hex_string_value(&value)
+            hex_string_value(&value, ctx)
         }
         EvalType::Int | EvalType::Real | EvalType::Decimal => {
             let value = crate::cast::cast_arg_as_int(value, Some(arg_type), ctx)?;
-            hex(&[value])
+            hex_int_value(&value, ctx)
         }
         _ => Err(EvalError::Unsupported("HEX argument eval type")),
     }
@@ -729,24 +757,32 @@ pub(crate) fn bin(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, Eva
     if vals.len() != 1 {
         return Err(EvalError::Unsupported("bad BIN arity"));
     }
-    let raw: Option<&[u8]> = match &vals[0] {
-        Datum::String(text) => Some(text.bytes()),
-        Datum::Bytes(text) => Some(text),
-        _ => None,
-    };
-    if let Some(text) = raw {
-        if radix_truncated(text) {
-            ctx.append_warning(
-                1292,
-                &format!(
-                    "Truncated incorrect INTEGER value: '{}'",
-                    String::from_utf8_lossy(text)
-                ),
-            );
-        }
-    }
-    Ok(radix_integer_bits(&vals[0])?
-        .map_or(Datum::Null, |bits| Datum::new_string(format!("{bits:b}"))))
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::Bin,
+        ctx,
+        || {
+            let raw: Option<&[u8]> = match &vals[0] {
+                Datum::String(text) => Some(text.bytes()),
+                Datum::Bytes(text) => Some(text),
+                _ => None,
+            };
+            if let Some(text) = raw {
+                if radix_truncated(text) {
+                    ctx.append_warning(
+                        1292,
+                        &format!(
+                            "Truncated incorrect INTEGER value: '{}'",
+                            String::from_utf8_lossy(text)
+                        ),
+                    );
+                }
+            }
+            Ok(crate::tikv::EvaluatedArgs::Int(
+                radix_integer_bits(&vals[0])?.map(|bits| bits as i64),
+            ))
+        },
+        |result| Ok(result.into_bytes()?.map_or(Datum::Null, Datum::new_string)),
+    )
 }
 
 /// `OCT(n)`: the base-8 form of an integer as an unsigned 64-bit value.

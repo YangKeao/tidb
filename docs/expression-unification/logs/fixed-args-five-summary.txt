@@ -1,0 +1,27 @@
+Checkpoint: fixed-args-five-09
+Selected actual result lines; raw logs: /home/agent/tidb/expression-unification/logs/fixed-args-five-*.log
+
+CWD: /home/agent/tidb/expression-unification/tikv
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+EXIT: 0
+running 187 tests
+test result: ok. 186 passed; 0 failed; 1 ignored; 0 measured; 466 filtered out; finished in 0.17s
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib test_evaluated_bytes_rejects_same_carrier_operation_and_kernel_drift -- --test-threads=1
+EXIT: 0
+running 1 test
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 652 filtered out; finished in 0.00s
+
+CWD: /home/agent/tidb/expression-unification/tidb/rust
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib args_dispatch_ -- --test-threads=1
+EXIT: 0
+running 3 tests
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1474 filtered out; finished in 0.00s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::evaluated_ascii_ -- --test-threads=1
+EXIT: 0
+running 21 tests
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 0.21s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+EXIT: 101
+running 1477 tests
+test result: FAILED. 1379 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.33s
+Complete four baseline failure blocks equal08 after only thread-ID normalization. No new-test failure or expected-value change.

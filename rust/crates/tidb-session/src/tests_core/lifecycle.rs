@@ -1515,3 +1515,160 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_crc_reverse_char_length_quote()
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_hex_bin_left_right_replace_sql_values() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_shape_ops (id INT PRIMARY KEY, u BIGINT UNSIGNED, \
+             k BIT(16), b VARBINARY(16), t VARCHAR(16) CHARACTER SET utf8mb4, \
+             n BIGINT, f VARBINARY(8), r VARBINARY(8))",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_shape_ops VALUES \
+             (1,NULL,NULL,NULL,NULL,NULL,NULL,NULL),\
+             (2,0,0,X'','',0,X'','X'),\
+             (3,9223372036854775808,65,X'C3A9E4B8AD','é中',1,X'C3A9',X'FF'),\
+             (4,18446744073709551615,256,X'C3A9E4B8AD','é中',-1,X'',X'FF'),\
+             (5,1,1,'ababa','ababa',99,'aba','Z')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    // Every expression consumes a stored column. One slot switches between
+    // Int(bits), Bytes, BytesInt and Bytes3, including nested migrated HEX.
+    // A declared BIT column takes HEX's integer signature, dropping width zeros.
+    let output = session
+        .run_with_columns(
+            "SELECT HEX(u), HEX(k), HEX(b), BIN(u), HEX(LEFT(b,n)), HEX(RIGHT(b,n)), \
+             HEX(LEFT(t,n)), HEX(RIGHT(t,n)), HEX(REPLACE(b,f,r)), \
+             HEX(REPLACE(t,'é','X')) FROM shared_shape_ops ORDER BY id",
+        )
+        .unwrap();
+    let StmtOutput::Rows { rows, .. } = output else {
+        panic!("expected mixed input-shape SQL rows")
+    };
+    let payloads: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| row.iter().map(cell_text).collect())
+        .collect();
+    let high_bit = format!("1{}", "0".repeat(63));
+    let all_bits = "1".repeat(64);
+    assert_eq!(
+        payloads,
+        [
+            ["NULL"; 10],
+            ["0", "0", "", "0", "", "", "", "", "", ""],
+            [
+                "8000000000000000",
+                "41",
+                "C3A9E4B8AD",
+                high_bit.as_str(),
+                "C3",
+                "AD",
+                "C3A9",
+                "E4B8AD",
+                "FFE4B8AD",
+                "58E4B8AD",
+            ],
+            [
+                "FFFFFFFFFFFFFFFF",
+                "100",
+                "C3A9E4B8AD",
+                all_bits.as_str(),
+                "",
+                "",
+                "",
+                "",
+                "C3A9E4B8AD",
+                "58E4B8AD",
+            ],
+            [
+                "1",
+                "1",
+                "6162616261",
+                "1",
+                "6162616261",
+                "6162616261",
+                "6162616261",
+                "6162616261",
+                "5A6261",
+                "6162616261",
+            ],
+        ]
+    );
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_hex_bin_left_right_replace() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_shape_zero (id INT PRIMARY KEY, u BIGINT UNSIGNED, \
+             k BIT(16), b VARBINARY(16), t VARCHAR(16) CHARACTER SET utf8mb4, \
+             n BIGINT, f VARBINARY(8), r VARBINARY(8))",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_shape_zero VALUES \
+             (1,NULL,NULL,NULL,NULL,NULL,NULL,NULL),\
+             (2,9223372036854775808,65,X'C3A9E4B8AD','é中',1,X'C3A9',X'FF')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // Do not wrap LEFT/RIGHT/REPLACE in HEX here: HEX's own refusal must not
+    // hide an inner operation that wrongly bypasses shared-pool admission.
+    for expression in [
+        "HEX(u)",
+        "HEX(k)",
+        "HEX(b)",
+        "BIN(u)",
+        "LEFT(b,n)",
+        "RIGHT(b,n)",
+        "LEFT(t,n)",
+        "RIGHT(t,n)",
+        "REPLACE(b,f,r)",
+        "REPLACE(t,'é','X')",
+    ] {
+        for id in [1, 2] {
+            let sql = format!("SELECT {expression} FROM shared_shape_zero WHERE id={id}");
+            let error = session.run_with_columns(&sql).expect_err(&sql);
+            match &error {
+                DriverError::Exec(tidb_executor::ExecError::Eval(
+                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                )) => {
+                    assert_eq!(
+                        failure.class(),
+                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                    );
+                    assert_eq!(
+                        failure.origin(),
+                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                    );
+                }
+                other => panic!("unexpected SQL pool diagnostic for {sql}: {other:?}"),
+            }
+            let mysql = error.to_mysql_error();
+            assert_eq!(mysql.code, 1105, "{sql}");
+            assert_eq!(mysql.state, *b"HY000", "{sql}");
+            assert!(mysql.is_from_evaluation(), "{sql}");
+        }
+    }
+}

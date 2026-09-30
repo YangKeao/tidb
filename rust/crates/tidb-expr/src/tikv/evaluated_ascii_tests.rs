@@ -60,7 +60,7 @@ std::thread_local! {
 
 #[derive(Debug, Clone, Copy)]
 struct EvalOneObservation {
-    // Counts adapter entry into eval_one, NOT official fn_ptr invocations.
+    // Counts adapter entry into eval_args, NOT official fn_ptr invocations.
     facade_entries: usize,
     // Actual C4 getter values, only when the real eval_one call is reached.
     // None after a refused/disposed call is not a fabricated zero counter.
@@ -1062,6 +1062,15 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::Crc32 => "CRC32",
         EvaluatedBytesOp::Reverse | EvaluatedBytesOp::ReverseUtf8 => "REVERSE",
         EvaluatedBytesOp::Quote => "QUOTE",
+        EvaluatedBytesOp::HexInt | EvaluatedBytesOp::HexStr => "HEX",
+        EvaluatedBytesOp::Bin => "BIN",
+        EvaluatedBytesOp::Left
+        | EvaluatedBytesOp::LeftUtf8
+        | EvaluatedBytesOp::Right
+        | EvaluatedBytesOp::RightUtf8
+        | EvaluatedBytesOp::Replace => {
+            panic!("multi-argument families need their original argument tuple")
+        }
         EvaluatedBytesOp::CharLength | EvaluatedBytesOp::CharLengthUtf8 => {
             let collation = if operation == EvaluatedBytesOp::CharLength {
                 tidb_datatype::Collation::Binary
@@ -1078,6 +1087,278 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+#[test]
+fn args_dispatch_shares_one_scope_for_all_fixed_shapes() {
+    use EvaluatedBytesOp::*;
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    for (name, operation, input, expected) in [
+        ("ASCII", Ascii, vec![Datum::new_string("A")], Datum::Int(65)),
+        (
+            "HEX",
+            HexInt,
+            vec![Datum::UInt(u64::MAX)],
+            Datum::new_string("FFFFFFFFFFFFFFFF"),
+        ),
+        (
+            "HEX",
+            HexStr,
+            vec![Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(
+                vec![0, 0x41],
+            ))],
+            Datum::new_string("0041"),
+        ),
+        (
+            "BIN",
+            Bin,
+            vec![Datum::Int(-1)],
+            Datum::new_string("1111111111111111111111111111111111111111111111111111111111111111"),
+        ),
+        (
+            "LEFT",
+            Left,
+            vec![Datum::new_bytes(vec![0xe2, 0x82, b'a']), Datum::Int(2)],
+            Datum::new_bytes(vec![0xe2, 0x82]),
+        ),
+        (
+            "LEFT",
+            LeftUtf8,
+            vec![Datum::new_string(vec![0xe2, 0x82, b'a']), Datum::Int(2)],
+            Datum::new_string("\u{fffd}\u{fffd}"),
+        ),
+        (
+            "RIGHT",
+            Right,
+            vec![Datum::new_bytes(vec![0xe2, 0x82, b'a']), Datum::Int(2)],
+            Datum::new_bytes(vec![0x82, b'a']),
+        ),
+        (
+            "RIGHT",
+            RightUtf8,
+            vec![Datum::new_string(vec![0xe2, 0x82, b'a']), Datum::Int(2)],
+            Datum::new_string("\u{fffd}a"),
+        ),
+        (
+            "REPLACE",
+            Replace,
+            vec![
+                Datum::new_bytes("aaaaa"),
+                Datum::new_string("aa"),
+                Datum::new_string("b"),
+            ],
+            Datum::new_bytes("bba"),
+        ),
+        // Original REPLACE packing recognizes Bytes, not every binary collation.
+        (
+            "REPLACE",
+            Replace,
+            vec![
+                Datum::new_collation_string(vec![0xff], tidb_datatype::Collation::Binary),
+                Datum::new_string(""),
+                Datum::new_string("x"),
+            ],
+            Datum::new_string(vec![0xff]),
+        ),
+    ] {
+        arm_eval_one_observation();
+        let result = crate::func::eval_func_values(name, &input, &columns).unwrap();
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(expected), "{name}");
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+        assert_eq!(
+            scope
+                .lease
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .worker
+                .as_ref()
+                .unwrap()
+                .operation(),
+            operation
+        );
+    }
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn args_dispatch_preserves_count_first_and_replace_coercion_demand() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    for name in ["LEFT", "RIGHT"] {
+        arm_eval_one_observation();
+        let result =
+            crate::func::eval_func_values(name, &[Datum::MaxValue, Datum::Null], &columns).unwrap();
+        let observation = take_eval_one_observation();
+        assert_eq!(
+            result,
+            Ok(Datum::Null),
+            "NULL count must not coerce subject"
+        );
+        assert_eq!(observation.facade_entries, 1, "NULL still comes from C4");
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+        arm_eval_one_observation();
+        let result =
+            crate::func::eval_func_values(name, &[Datum::MaxValue, Datum::Int(0)], &columns)
+                .unwrap();
+        let observation = take_eval_one_observation();
+        assert_eq!(
+            result,
+            Err(EvalError::Unsupported("range sentinel byte coercion"))
+        );
+        assert_eq!(
+            observation.facade_entries, 0,
+            "zero still coerces subject first"
+        );
+    }
+    arm_eval_one_observation();
+    let result = crate::func::eval_func_values(
+        "REPLACE",
+        &[Datum::Null, Datum::new_string(""), Datum::MaxValue],
+        &columns,
+    )
+    .unwrap();
+    let observation = take_eval_one_observation();
+    assert_eq!(
+        result,
+        Err(EvalError::Unsupported("range sentinel byte coercion"))
+    );
+    assert_eq!(
+        observation.facade_entries, 0,
+        "earlier NULL must not skip later coercion"
+    );
+    arm_eval_one_observation();
+    let result = crate::func::eval_func_values(
+        "REPLACE",
+        &[Datum::Null, Datum::new_string(""), Datum::new_string("x")],
+        &columns,
+    )
+    .unwrap();
+    let observation = take_eval_one_observation();
+    assert_eq!(result, Ok(Datum::Null));
+    assert_eq!(observation.facade_entries, 1);
+    assert_eq!(
+        observation.after_kernel_invocations,
+        observation
+            .before_kernel_invocations
+            .map(|before| before + 1)
+    );
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn args_dispatch_preserves_typed_hex_and_bin_warning_before_admission() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    for (kind, input, operation, expected) in [
+        (
+            FieldTypeCode::VarString,
+            Datum::UInt(26),
+            EvaluatedBytesOp::HexStr,
+            Datum::new_string("3236"),
+        ),
+        (
+            FieldTypeCode::Bit,
+            Datum::Bit(tidb_datatype::BinaryLiteral::from(vec![0, 0x41])),
+            EvaluatedBytesOp::HexInt,
+            Datum::new_string("41"),
+        ),
+        (
+            FieldTypeCode::LongLong,
+            Datum::Null,
+            EvaluatedBytesOp::HexInt,
+            Datum::Null,
+        ),
+        (
+            FieldTypeCode::VarString,
+            Datum::Null,
+            EvaluatedBytesOp::HexStr,
+            Datum::Null,
+        ),
+    ] {
+        arm_eval_one_observation();
+        let result =
+            crate::string_fn::hex_with_type(&[input], Some(&FieldType::new(kind)), &columns);
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(expected));
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+        assert_eq!(
+            scope
+                .lease
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .worker
+                .as_ref()
+                .unwrap()
+                .operation(),
+            operation
+        );
+    }
+    drop(scope);
+    execution.close();
+
+    // A new Int shape must not obtain a fallback pool; its original warning
+    // still precedes the explicit owner's ordinary admission failure.
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let native = ForwardingSentinel::new(false, None);
+    arm_eval_one_observation();
+    let result = scope.with_columns(&native, |columns| {
+        crate::string_fn::bin(&[Datum::new_string("1x")], columns)
+    });
+    let observation = take_eval_one_observation();
+    assert!(
+        matches!(result, Err(EvalError::ExpressionAdapterFailure(failure))
+        if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource)
+    );
+    assert_eq!(observation.facade_entries, 0);
+    assert_eq!(
+        native.effects.borrow().warnings.as_slice(),
+        &[
+            (42000, "preexisting warning".to_owned()),
+            (1292, "Truncated incorrect INTEGER value: '1x'".to_owned()),
+        ]
+    );
+    drop(scope);
+    execution.close();
 }
 
 #[test]

@@ -1,8 +1,8 @@
 {
-  "checkpoint_id": "shared-text-four-08",
+  "checkpoint_id": "fixed-args-five-09",
   "frozen_denominator": 245,
   "required_families": 221,
-  "functional_delegation_and_native_deletion_count": 10,
+  "functional_delegation_and_native_deletion_count": 15,
   "fully_final_audited_count": 0,
   "final_performance_and_workspace_gates_complete": false,
   "families": [
@@ -15,12 +15,17 @@
     {"id": "crc32", "status": "functional_tikv_only", "native_algorithm_deleted": true, "raw_result_uint_sql_inference_still_signed": true},
     {"id": "reverse", "status": "functional_tikv_only", "native_algorithm_deleted": true, "binary_and_utf8": true},
     {"id": "char_length", "aliases": ["character_length"], "status": "functional_tikv_only", "native_algorithm_deleted": true, "binary_and_utf8": true, "pb_and_unistore_signatures_connected": ["CharLength", "CharLengthUtf8"], "legacy_normalization_preserved": true},
-    {"id": "quote", "status": "functional_tikv_only", "native_algorithm_deleted": true, "null_result_computed_by_tikv": true}
+    {"id": "quote", "status": "functional_tikv_only", "native_algorithm_deleted": true, "null_result_computed_by_tikv": true},
+    {"id": "hex", "status": "functional_tikv_only", "native_algorithm_deleted": true, "int_bytes_and_typed_entry_connected": true},
+    {"id": "bin", "status": "functional_tikv_only", "native_algorithm_deleted": true},
+    {"id": "left", "status": "functional_tikv_only", "native_algorithm_deleted": true, "binary_and_utf8": true},
+    {"id": "right", "status": "functional_tikv_only", "native_algorithm_deleted": true, "binary_and_utf8": true},
+    {"id": "replace", "status": "functional_tikv_only", "native_algorithm_deleted": true, "full_argument_coercion_order_preserved": true}
   ],
-  "shared_evidence": "evidence/shared-text-four-checkpoint.md",
+  "shared_evidence": "evidence/fixed-args-five-checkpoint.md",
   "one_operation_keyed_pool": true,
   "actual_mixed_column_sql_verified": true,
   "zero_slot_refusal_for_new_paths_verified": true,
   "deferred": ["complete operation-scope reuse", "broader wrapper capability propagation", "release performance", "paired differential rerun", "whole-workspace final acceptance"],
-  "next_batch_not_credited": ["hex", "bin", "left", "right", "replace"]
+  "next_batch_not_credited": ["bit_count", "bitneg", "bitand", "bitor", "bitxor", "leftshift", "rightshift"]
 }
