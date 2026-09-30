@@ -1091,7 +1091,10 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::BitOr
         | EvaluatedBytesOp::BitXor
         | EvaluatedBytesOp::LeftShift
-        | EvaluatedBytesOp::RightShift => {
+        | EvaluatedBytesOp::RightShift
+        | EvaluatedBytesOp::LogicalAnd
+        | EvaluatedBytesOp::LogicalOr
+        | EvaluatedBytesOp::LogicalXor => {
             panic!("multi-argument families need their original argument tuple")
         }
         EvaluatedBytesOp::CharLength | EvaluatedBytesOp::CharLengthUtf8 => {
@@ -1110,6 +1113,290 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+#[test]
+fn logical_dispatch_checks_demand_markers_before_admission() {
+    use crate::{LogicalArgs::*, LogicalFunction::*};
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    for (function, left) in [
+        (And, Some(true)),
+        (And, None),
+        (Or, Some(false)),
+        (Or, None),
+        (Xor, Some(false)),
+        (Xor, Some(true)),
+        (Xor, None),
+    ] {
+        arm_eval_one_observation();
+        let result = crate::eval_logical_ready_in(function, UndemandedRight { left }, &columns);
+        let observation = take_eval_one_observation();
+        assert!(
+            matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract)
+        );
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+        assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    }
+    for (function, arguments, expected) in [
+        (And, UndemandedRight { left: Some(false) }, Datum::Int(0)),
+        (Or, UndemandedRight { left: Some(true) }, Datum::Int(1)),
+        (And, Both(None, Some(false)), Datum::Int(0)),
+        (Or, Both(None, Some(true)), Datum::Int(1)),
+        (Xor, Both(None, Some(false)), Datum::Null),
+        (Xor, Both(Some(true), Some(false)), Datum::Int(1)),
+    ] {
+        arm_eval_one_observation();
+        let result = crate::eval_logical_ready_in(function, arguments, &columns);
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(expected));
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    }
+    drop(scope);
+    execution.close();
+    // Even a legitimate short-circuit marker cannot bypass an explicit root.
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    arm_eval_one_observation();
+    let result = crate::eval_logical_ready_in(And, UndemandedRight { left: Some(false) }, &columns);
+    let observation = take_eval_one_observation();
+    assert!(
+        matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource)
+    );
+    assert_eq!(observation.facade_entries, 0);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn logical_dispatch_preserves_typed_pb_lazy_and_ast_eager_demand() {
+    use crate::expression::Expression;
+    use crate::scalar_function::{PbBuiltin, ScalarFunction};
+    use tidb_proto::tipb::ScalarFuncSig;
+    struct Demand(Cell<usize>);
+    impl Columns for Demand {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            self.0.set(self.0.get() + 1);
+            None
+        }
+        fn param_value(&self, _: usize) -> Result<Datum, EvalError> {
+            self.0.set(self.0.get() + 1);
+            Err(EvalError::Unsupported("logical right child failed"))
+        }
+    }
+    let field = FieldType::new(FieldTypeCode::LongLong);
+    let literal = |value| Expression::Constant(Constant::new(value, field.clone()));
+    let mut parameter = Constant::new(Datum::Int(99), field.clone());
+    parameter.param_marker = Some(crate::constant::ParamMarker { order: 0 });
+    let rhs = Expression::Constant(parameter);
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let native = Demand(Cell::new(0));
+    let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    scope.with_columns(&native, |columns| {
+        for (name, signature, dominant) in [
+            ("and", ScalarFuncSig::LogicalAnd, 0),
+            ("or", ScalarFuncSig::LogicalOr, 1),
+        ] {
+            for protobuf in [false, true] {
+                let args = vec![literal(Datum::Int(dominant)), rhs.clone()];
+                let mut function = if protobuf {
+                    // The real admitted PB implementation, not a native-name alias.
+                    ScalarFunction::from_pb(PbBuiltin::new(signature).unwrap(), field.clone(), args)
+                } else {
+                    ScalarFunction::new(tidb_ast::CiString::new(name), field.clone(), args)
+                };
+                native.0.set(0);
+                arm_eval_one_observation();
+                let result = function.eval(columns, row.to_row());
+                let observation = take_eval_one_observation();
+                assert_eq!(result, Ok(Datum::Int(dominant)));
+                assert_eq!(native.0.get(), 0, "the failing RHS was never evaluated");
+                assert_eq!(observation.facade_entries, 1);
+                assert_eq!(
+                    observation.after_kernel_invocations,
+                    observation
+                        .before_kernel_invocations
+                        .map(|before| before + 1)
+                );
+                function.args[0] = literal(Datum::Null);
+                arm_eval_one_observation();
+                let result = function.eval(columns, row.to_row());
+                let observation = take_eval_one_observation();
+                assert_eq!(
+                    result,
+                    Err(EvalError::Unsupported("logical right child failed"))
+                );
+                assert_eq!(native.0.get(), 1, "NULL left still demands the right child");
+                assert_eq!(observation.facade_entries, 0);
+            }
+        }
+        let xor = ScalarFunction::new(
+            tidb_ast::CiString::new("xor"),
+            field.clone(),
+            vec![literal(Datum::Int(0)), rhs.clone()],
+        );
+        native.0.set(0);
+        assert_eq!(
+            xor.eval(columns, row.to_row()),
+            Err(EvalError::Unsupported("logical right child failed"))
+        );
+        assert_eq!(native.0.get(), 1);
+        assert!(
+            PbBuiltin::new(ScalarFuncSig::LogicalXor).is_none(),
+            "no new PB admission"
+        );
+        for sql in ["0 AND rhs", "1 OR rhs", "0 XOR rhs"] {
+            let tidb_ast::Stmt::Query(query) =
+                tidb_parser::parse(&format!("SELECT {sql}")).unwrap()
+            else {
+                panic!("query")
+            };
+            let tidb_ast::QueryStmt::Select(select) = query.into_inner() else {
+                panic!("SELECT")
+            };
+            let tidb_ast::SelectField::Expr { expr, .. } = &select.fields[0] else {
+                panic!("expression")
+            };
+            native.0.set(0);
+            arm_eval_one_observation();
+            let result = crate::eval_in(expr, columns);
+            let observation = take_eval_one_observation();
+            assert!(result.is_err(), "AST remains eager: {sql}");
+            assert_eq!(native.0.get(), 1);
+            assert_eq!(observation.facade_entries, 0);
+        }
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn logical_dispatch_preserves_eager_probes_and_lazy_truncation_policy() {
+    use crate::expression::Expression;
+    use crate::scalar_function::{PbBuiltin, ScalarFunction};
+    struct Diagnostics {
+        reject: Cell<bool>,
+        probes: RefCell<Vec<String>>,
+        warnings: RefCell<Vec<(u16, String)>>,
+    }
+    impl Columns for Diagnostics {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn handle_truncate(&self, message: &str) -> Result<(), EvalError> {
+            self.probes.borrow_mut().push(message.to_owned());
+            if self.reject.get() {
+                Err(EvalError::Unsupported("original logical truncation policy"))
+            } else {
+                self.warnings.borrow_mut().push((1292, message.to_owned()));
+                Ok(())
+            }
+        }
+    }
+    let native = Diagnostics {
+        reject: Cell::new(false),
+        probes: RefCell::new(Vec::new()),
+        warnings: RefCell::new(Vec::new()),
+    };
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    scope.with_columns(&native, |columns| {
+        for reject in [false, true] {
+            native.reject.set(reject);
+            for frontend in ["eager", "typed", "pb"] {
+                native.probes.borrow_mut().clear();
+                native.warnings.borrow_mut().clear();
+                let left = Datum::new_string("0x");
+                let right = Datum::new_string("1x");
+                arm_eval_one_observation();
+                let result = if frontend == "eager" {
+                    crate::ops::logic_and(left, right, columns)
+                } else {
+                    let args = vec![left, right]
+                        .into_iter()
+                        .map(|value| {
+                            Expression::Constant(Constant::new(
+                                value,
+                                FieldType::new(FieldTypeCode::VarString),
+                            ))
+                        })
+                        .collect();
+                    let field = FieldType::new(FieldTypeCode::LongLong);
+                    let function = if frontend == "typed" {
+                        ScalarFunction::new(tidb_ast::CiString::new("and"), field, args)
+                    } else {
+                        ScalarFunction::from_pb(
+                            PbBuiltin::new(tidb_proto::tipb::ScalarFuncSig::LogicalAnd).unwrap(),
+                            field,
+                            args,
+                        )
+                    };
+                    function.eval(columns, row.to_row())
+                };
+                let observation = take_eval_one_observation();
+                let expected_probes = (if frontend == "eager" {
+                    vec!["0x", "1x"]
+                } else {
+                    vec!["0x"]
+                })
+                .into_iter()
+                .map(|text| format!("Truncated incorrect DOUBLE value: '{text}'"))
+                .collect::<Vec<_>>();
+                assert_eq!(*native.probes.borrow(), expected_probes);
+                let expected_warnings: Vec<(u16, String)> = if reject {
+                    vec![]
+                } else {
+                    expected_probes
+                        .into_iter()
+                        .map(|message| (1292, message))
+                        .collect()
+                };
+                assert_eq!(*native.warnings.borrow(), expected_warnings);
+                if reject && frontend != "eager" {
+                    assert_eq!(
+                        result,
+                        Err(EvalError::Unsupported("original logical truncation policy"))
+                    );
+                    assert_eq!(observation.facade_entries, 0);
+                } else {
+                    // Eager helper ignores both probe errors, then calls truthy_of;
+                    // lazy typed/PB propagate their one probe's error instead.
+                    assert_eq!(result, Ok(Datum::Int(0)));
+                    assert_eq!(observation.facade_entries, 1);
+                    assert_eq!(
+                        observation.after_kernel_invocations,
+                        observation
+                            .before_kernel_invocations
+                            .map(|before| before + 1)
+                    );
+                }
+            }
+        }
+    });
+    drop(scope);
+    execution.close();
 }
 
 #[test]
@@ -1384,12 +1671,14 @@ fn boolean_dispatch_preserves_pb_warnings_and_native_predicate_wrappers() {
             crate::apply_unary(tidb_ast::UnaryOp::Not, Datum::MaxValue, columns),
             Err(EvalError::Unsupported("range sentinel expression operand"))
         );
-        for (sql, expected, calls) in [
-            ("1 NOT IN (1, 2)", Datum::Int(0), 1),
-            ("1 NOT BETWEEN 0 AND 2", Datum::Int(0), 1),
-            ("NULL NOT LIKE '%'", Datum::Null, 1),
-            ("'a' NOT REGEXP 'b'", Datum::Int(1), 1),
-            ("NULL IS NOT TRUE", Datum::Int(1), 2),
+        for (sql, expected, facades, single_worker_calls) in [
+            ("1 NOT IN (1, 2)", Datum::Int(0), 1, Some(1)),
+            // Instrumentation changes from one facade to two: AND then NOT.
+            // Their different workers' getter snapshots are not a total delta.
+            ("1 NOT BETWEEN 0 AND 2", Datum::Int(0), 2, None),
+            ("NULL NOT LIKE '%'", Datum::Null, 1, Some(1)),
+            ("'a' NOT REGEXP 'b'", Datum::Int(1), 1, Some(1)),
+            ("NULL IS NOT TRUE", Datum::Int(1), 1, Some(2)),
         ] {
             let tidb_ast::Stmt::Query(query) =
                 tidb_parser::parse(&format!("SELECT {sql}")).unwrap()
@@ -1406,13 +1695,19 @@ fn boolean_dispatch_preserves_pb_warnings_and_native_predicate_wrappers() {
             let result = crate::eval_in(expr, columns);
             let observation = take_eval_one_observation();
             assert_eq!(result, Ok(expected), "{sql}");
-            assert_eq!(observation.facade_entries, 1, "{sql}");
-            assert_eq!(
-                observation.after_kernel_invocations,
-                observation
-                    .before_kernel_invocations
-                    .map(|before| before + calls)
-            );
+            assert_eq!(observation.facade_entries, facades, "{sql}");
+            if let Some(calls) = single_worker_calls {
+                assert_eq!(
+                    observation.after_kernel_invocations,
+                    observation
+                        .before_kernel_invocations
+                        .map(|before| before + calls)
+                );
+            } else {
+                // Independent snapshots from the AND and NOT workers.
+                assert_eq!(observation.before_kernel_invocations, Some(0));
+                assert_eq!(observation.after_kernel_invocations, Some(1));
+            }
         }
     });
     drop(scope);

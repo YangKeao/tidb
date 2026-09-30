@@ -30,7 +30,8 @@ pub use adapter_failure::{
     ExpressionAdapterFailure, ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,
 };
 pub(crate) use evaluated_ascii::{
-    evaluate_args_in, evaluate_ascii_in, evaluate_bytes_in, EvaluatedBytesResult,
+    evaluate_args_in, evaluate_ascii_in, evaluate_bytes_in, evaluate_logical_in,
+    EvaluatedBytesResult,
 };
 pub use evaluated_ascii::{
     AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy, AsciiScope,

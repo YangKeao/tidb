@@ -246,18 +246,22 @@ impl PbBuiltin {
             }
             Kernel::Logic(op) => {
                 let left = logic_truthy(&argument(0)?, ctx)?;
+                let function = match op {
+                    BinaryOp::LogicAnd => crate::LogicalFunction::And,
+                    BinaryOp::LogicOr => crate::LogicalFunction::Or,
+                    _ => unreachable!("protobuf logic admits only AND/OR"),
+                };
                 if (op == BinaryOp::LogicAnd && left == Some(false))
                     || (op == BinaryOp::LogicOr && left == Some(true))
                 {
-                    return Ok(Datum::Int(i64::from(left.unwrap())));
+                    return crate::eval_logical_ready_in(
+                        function,
+                        crate::LogicalArgs::UndemandedRight { left },
+                        ctx,
+                    );
                 }
                 let right = logic_truthy(&argument(1)?, ctx)?;
-                Ok(match (op, left, right) {
-                    (BinaryOp::LogicAnd, _, Some(false)) => Datum::Int(0),
-                    (BinaryOp::LogicOr, _, Some(true)) => Datum::Int(1),
-                    (_, None, _) | (_, _, None) => Datum::Null,
-                    (_, _, Some(value)) => Datum::Int(i64::from(value)),
-                })
+                crate::eval_logical_ready_in(function, crate::LogicalArgs::Both(left, right), ctx)
             }
             Kernel::IntegerMod { unsigned } => {
                 // The four Go MOD signatures bake signedness into the builtin,

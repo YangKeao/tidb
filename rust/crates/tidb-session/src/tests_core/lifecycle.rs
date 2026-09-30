@@ -2103,3 +2103,99 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_md5_sha_sha1_sql_columns() {
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_logical_sql_full_three_valued_table() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE shared_logic_ops (id INT PRIMARY KEY, a BIGINT, b BIGINT)")
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_logic_ops VALUES \
+             (1,NULL,NULL),(2,NULL,0),(3,NULL,-3),\
+             (4,0,NULL),(5,0,0),(6,0,-3),\
+             (7,2,NULL),(8,2,0),(9,2,-3)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    // Stored nullable operands keep the complete 3x3 truth table live at
+    // evaluation; 2 and -3 also cover nonzero values other than boolean 1.
+    let output = session
+        .run_with_columns("SELECT a AND b, a OR b, a XOR b FROM shared_logic_ops ORDER BY id")
+        .unwrap();
+    let StmtOutput::Rows { columns, rows } = output else {
+        panic!("expected logical SQL rows")
+    };
+    assert_eq!(columns.len(), 3);
+    // All three retain their existing signed SQL boolean-integer descriptors.
+    for (_, field_type) in &columns {
+        assert!(!field_type.is_unsigned());
+    }
+    assert_eq!(
+        rows,
+        vec![
+            vec![Datum::Null, Datum::Null, Datum::Null],
+            vec![Datum::Int(0), Datum::Null, Datum::Null],
+            vec![Datum::Null, Datum::Int(1), Datum::Null],
+            vec![Datum::Int(0), Datum::Null, Datum::Null],
+            vec![Datum::Int(0), Datum::Int(0), Datum::Int(0)],
+            vec![Datum::Int(0), Datum::Int(1), Datum::Int(1)],
+            vec![Datum::Null, Datum::Int(1), Datum::Null],
+            vec![Datum::Int(0), Datum::Int(1), Datum::Int(1)],
+            vec![Datum::Int(1), Datum::Int(1), Datum::Int(0)],
+        ]
+    );
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_logical_sql_left_states() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE shared_logic_zero (id INT PRIMARY KEY, a BIGINT, b BIGINT)")
+        .unwrap();
+    session
+        .run("INSERT INTO shared_logic_zero VALUES (1,NULL,-3),(2,0,-3),(3,2,-3)")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // Each operation gets NULL, zero and nonzero left columns. In particular,
+    // false AND / true OR must delegate their answer even when RHS is not
+    // demanded. Neither the operands nor the target expression are constants.
+    for expression in ["a AND b", "a OR b", "a XOR b"] {
+        for id in [1, 2, 3] {
+            let sql = format!("SELECT {expression} FROM shared_logic_zero WHERE id={id}");
+            let error = session.run_with_columns(&sql).expect_err(&sql);
+            match &error {
+                DriverError::Exec(tidb_executor::ExecError::Eval(
+                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                )) => {
+                    assert_eq!(
+                        failure.class(),
+                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                    );
+                    assert_eq!(
+                        failure.origin(),
+                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                    );
+                }
+                other => panic!("logical SQL must reach the zero-slot pool: {sql}: {other:?}"),
+            }
+            let mysql = error.to_mysql_error();
+            assert_eq!(mysql.code, 1105, "{sql}");
+            assert_eq!(mysql.state, *b"HY000", "{sql}");
+            assert!(mysql.is_from_evaluation(), "{sql}");
+        }
+    }
+}

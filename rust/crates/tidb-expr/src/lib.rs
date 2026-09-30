@@ -785,6 +785,43 @@ pub fn eval_boolean_ready_in(
     )
 }
 
+/// Closed binary logical operations over frontend-normalized truth values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogicalFunction {
+    /// Three-valued logical AND.
+    And,
+    /// Three-valued logical OR.
+    Or,
+    /// Three-valued logical XOR.
+    Xor,
+}
+
+/// Records which logical arguments the original frontend actually demanded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogicalArgs {
+    /// Both children were evaluated and converted, including genuine SQL NULLs.
+    Both(Option<bool>, Option<bool>),
+    /// Only the left child was demanded. Legal solely for false AND or true OR;
+    /// the absent right child is not an evaluated SQL NULL or a supplied value.
+    UndemandedRight {
+        /// The evaluated and converted left child.
+        left: Option<bool>,
+    },
+}
+
+/// Evaluates a logical operation without choosing or repeating child demand.
+///
+/// Invalid demand markers fail the adapter contract before worker admission.
+/// A legal undemanded right child uses an explicitly irrelevant representative
+/// inside the closed kernel call; even short-circuit answers come from that call.
+pub fn eval_logical_ready_in(
+    function: LogicalFunction,
+    arguments: LogicalArgs,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    tikv::evaluate_logical_in(function, arguments, ctx)
+}
+
 /// `AVG`'s `SUM / COUNT`, exposed so `tidb-exec` can compute it without
 /// reimplementing decimal division: an `Int` sum promotes to decimal (scale
 /// 0, MySQL's implicit rule, same as every other decimal op); the result

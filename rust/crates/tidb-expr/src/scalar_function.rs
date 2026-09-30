@@ -1627,20 +1627,27 @@ impl ScalarFunction {
                 }
                 if matches!(op, BinaryOp::LogicAnd | BinaryOp::LogicOr) {
                     let lhs = logic_truthy(&lhs, ctx)?;
-                    match (op, lhs) {
-                        (BinaryOp::LogicAnd, Some(false)) => return Ok(Datum::Int(0)),
-                        (BinaryOp::LogicOr, Some(true)) => return Ok(Datum::Int(1)),
-                        _ => {}
+                    let function = if op == BinaryOp::LogicAnd {
+                        crate::LogicalFunction::And
+                    } else {
+                        crate::LogicalFunction::Or
+                    };
+                    if matches!(
+                        (op, lhs),
+                        (BinaryOp::LogicAnd, Some(false)) | (BinaryOp::LogicOr, Some(true))
+                    ) {
+                        return crate::eval_logical_ready_in(
+                            function,
+                            crate::LogicalArgs::UndemandedRight { left: lhs },
+                            ctx,
+                        );
                     }
                     let rhs = logic_truthy(&self.args[1].eval(ctx, row)?, ctx)?;
-                    return Ok(match op {
-                        BinaryOp::LogicAnd if rhs == Some(false) => Datum::Int(0),
-                        BinaryOp::LogicOr if rhs == Some(true) => Datum::Int(1),
-                        _ if lhs.is_none() || rhs.is_none() => Datum::Null,
-                        BinaryOp::LogicAnd => Datum::Int(1),
-                        BinaryOp::LogicOr => Datum::Int(0),
-                        _ => unreachable!("logical operator was guarded"),
-                    });
+                    return crate::eval_logical_ready_in(
+                        function,
+                        crate::LogicalArgs::Both(lhs, rhs),
+                        ctx,
+                    );
                 }
                 let rhs = match domain {
                     Some(domain) => eval_numeric_operand_row(&self.args[1], ctx, row, domain)?,

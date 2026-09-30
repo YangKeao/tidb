@@ -1401,7 +1401,10 @@ fn materialize_computed(
             | EvaluatedBytesOp::IsTrueWithNull
             | EvaluatedBytesOp::IsNotNull
             | EvaluatedBytesOp::IsNotTrue
-            | EvaluatedBytesOp::IsNotFalse,
+            | EvaluatedBytesOp::IsNotFalse
+            | EvaluatedBytesOp::LogicalAnd
+            | EvaluatedBytesOp::LogicalOr
+            | EvaluatedBytesOp::LogicalXor,
             ComputedValue::Int(value),
         ) => own_computed_int(value)
             .into_datum()
@@ -1486,6 +1489,50 @@ pub(crate) fn evaluate_args_in(
         evaluate_scoped_args(operation, &scope, || Ok(ready), pack)
     })();
     result.map_err(AsciiBoundaryError::into_eval_error)
+}
+
+/// Lowers the frontend's explicit demand record to the existing Int2 driver.
+/// Invalid markers are adapter contract errors, never kernel calls or SQL NULL.
+pub(crate) fn evaluate_logical_in(
+    function: crate::LogicalFunction,
+    arguments: crate::LogicalArgs,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    use crate::{LogicalArgs, LogicalFunction};
+    let (left, right) = match arguments {
+        LogicalArgs::Both(left, right) => (left, right),
+        LogicalArgs::UndemandedRight { left } => {
+            if !matches!(
+                (function, left),
+                (LogicalFunction::And, Some(false)) | (LogicalFunction::Or, Some(true))
+            ) {
+                return Err(AsciiBoundaryError::Scope {
+                    kind: ScopeFailureKind::Contract,
+                    reason: "invalid undemanded logical right argument",
+                }
+                .into_eval_error());
+            }
+            // This is an irrelevant representative, NOT an evaluated RHS.
+            // Only the validated absorbing left values make it safe to supply.
+            (left, Some(false))
+        }
+    };
+    let operation = match function {
+        LogicalFunction::And => EvaluatedBytesOp::LogicalAnd,
+        LogicalFunction::Or => EvaluatedBytesOp::LogicalOr,
+        LogicalFunction::Xor => EvaluatedBytesOp::LogicalXor,
+    };
+    evaluate_args_in(
+        operation,
+        ctx,
+        || {
+            Ok(EvaluatedArgs::Int2(
+                left.map(i64::from),
+                right.map(i64::from),
+            ))
+        },
+        EvaluatedBytesResult::into_boolean_datum,
+    )
 }
 
 /// Compatible single-Bytes entry; all shapes use the same context/pool driver.

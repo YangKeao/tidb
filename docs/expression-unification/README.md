@@ -1,8 +1,8 @@
 # Expression unification experiment
 
-Checkpoint-ID: `hash-two-12` (previous: `boolean-five-11`)
+Checkpoint-ID: `logical-three-13` (previous: `hash-two-12`)
 
-**29/245 families delegate to TiKV with their native evaluator algorithms removed; target221.** This checkpoint adds MD5 and SHA/SHA1. SHA is an alias, not a third family. Final audit, performance and whole-workspace acceptance remain open.
+**32/245 families delegate to TiKV with their native evaluator algorithms removed; target221.** This checkpoint adds AND, OR and XOR. Final audit, performance and whole-workspace acceptance remain open.
 
 ## Paired repositories
 
@@ -11,22 +11,22 @@ Checkpoint-ID: `hash-two-12` (previous: `boolean-five-11`)
 
 Use sibling `tidb` and `tikv` checkouts. `checkpoint.json` pins the paired TiKV commit. Root Plans mirror `/home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md`. Validated steps push both branches without force-push or automatic PRs.
 
-## Shared execution and deletion scope
+## Logical execution
 
-One synchronous worker/driver and operation-keyed pool execute closed ready-value recipes. These two hashes use the existing nullable Bytes-to-Bytes single-call route; no new driver, pool, type carrier or limits. Native `hash_input`, charset conversion and original text packing remain. The official kernels own hashing and lowercase hex generation, including NULL wrappers. OpenSSL errors propagate as runtime failures, never native retries.
+One synchronous worker/driver and operation-keyed pool remain. LogicalFunction/LogicalArgs preserve the frontend's original child demand. Only AND(false, undemanded) and OR(true, undemanded) permit an explicit irrelevant RHS representative. Invalid markers, including NULL-left and XOR, fail ScopeContract before any factory or dispatch. The representative is not evaluated RHS data, and even short-circuit answers come from the real official kernel.
 
-The old generic MD5/SHA1 digest calculation and imports are removed from the expression implementation. Other SHA2/SM3 consumers retain shared input/hex helpers. PASSWORD's separate parser/auth double-SHA1 implementation remains an unmigrated family: this is not a claim that all SHA1 code across the repository is gone. No PB/unistore admission was added.
+Closed-ready AND/OR lowering checks the exact signature/control tag and complete ordered arguments, then emits the official eager FnCall. Ordinary Row/wire control stays lazy. No driver, carrier or limit expansion: compile depth3/nodes4 remains.
 
-The preceding boolean batch preserves frontend truth/presence and demand semantics, uses fixed base+UnaryNot recipes for negated predicates, and replaces native vector answer shortcuts with existing context-aware row evaluation. Compile limits remain depth3/nodes4. Workers are evaluator instances, not threads; contextless calls still use TiKV, never native fallback.
+AST/helper and legacy unistore retain eager evaluation; typed/PB AND/OR retain lazy demand and evaluate RHS for NULL-left. Original ignored warning-probe errors versus numeric_arg? diagnostics remain distinct. BETWEEN also uses the shared AND. Existing vector/selection consumers are untouched; XOR gains no PB/unistore admission. Public contextless helpers still use TiKV, never native fallback.
 
 ## Actual validation
 
-TiKV193 passed/1 ignored plus1 identity guard; new native dispatcher2 passed; SQL/lifecycle27 passed. Full expression1387 passed/4 unchanged baseline failures/94 ignored,1485 discovered. Complete four failure blocks match11 after only thread-ID normalization. No existing expected values changed.
+TiKV194 passed/1 ignored plus1 identity guard; new caller dispatcher3 passed; SQL/lifecycle29 passed; legacy unistore1 passed. Full expression1390 passed/4 unchanged baseline failures/94 ignored,1488 discovered. Complete failure blocks match12 after only thread-ID normalization.
 
-New SQL covers binary/text columns, NULL, empty strings, embedded NUL, invalid UTF-8 bytes and all three spellings. Twelve direct zero-slot queries reject instead of bypassing. Fixed SQL digests were computed with independent Python hashlib, not recorded from TiKV. OpenSSL-error runtime injection was not tested.
+New SQL checks all27 three-valued table cells and9 direct zero-slot refusals, including absorbing-left cases. SQL/Go expected values are unchanged. One previous NOT BETWEEN instrumentation expectation changes from1 to2 facade invocations because AND and NOT now both delegate; different workers' counters are not subtracted as a total.
 
-Exact commands and scope: `evidence/hash-two-checkpoint.md`, `logs/hash-two-summary.txt`.
+Exact commands and scope: `evidence/logical-three-checkpoint.md`, `logs/logical-three-summary.txt`.
 
 ## Open work
 
-AND/OR/XOR require preserving each original eager/lazy demand and diagnostic path. SHA2, compression functions and ORD still have explicit warning/format/NULL/charset compatibility gaps; no partial-domain credit is given. Broad operation-scope guards, release performance, allocator remeasurement, physical peak/OOM safety, network end-to-end, full workspace and make lint remain unverified. Old allocation receipts do not certify current artifacts. This is kernel reuse, not a complete Go-package transcreation claim or PR-readiness claim.
+Next: four INET families with original conversion and UInt/binary/text metadata. Four IS_IP predicates, SHA2, compression and ORD retain explicit compatibility gaps and receive no partial-domain credit. Raw floating-point helper sharing is being evaluated without weakening Real/NotNan invariants. Broad operation-scope guards, release performance, allocator remeasurement, physical peak/OOM safety, network end-to-end, full workspace and make lint remain unverified. This is kernel reuse, not a complete Go-package transcreation or PR-readiness claim.

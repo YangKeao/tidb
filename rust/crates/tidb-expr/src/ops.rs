@@ -1411,29 +1411,29 @@ pub(crate) fn logic_and(
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
     warn_string_double_truncation(&[&l, &r], ctx);
-    Ok(match (truthy_of(&l)?, truthy_of(&r)?) {
-        (Some(false), _) | (_, Some(false)) => Datum::Int(0),
-        (Some(true), Some(true)) => Datum::Int(1),
-        _ => Datum::Null,
-    })
+    crate::eval_logical_ready_in(
+        crate::LogicalFunction::And,
+        crate::LogicalArgs::Both(truthy_of(&l)?, truthy_of(&r)?),
+        ctx,
+    )
 }
 
 fn logic_or(l: Datum, r: Datum, ctx: &dyn crate::context::Columns) -> Result<Datum, EvalError> {
     warn_string_double_truncation(&[&l, &r], ctx);
-    // TRUE dominates; otherwise NULL propagates if either side is unknown.
-    Ok(match (truthy_of(&l)?, truthy_of(&r)?) {
-        (Some(true), _) | (_, Some(true)) => Datum::Int(1),
-        (Some(false), Some(false)) => Datum::Int(0),
-        _ => Datum::Null,
-    })
+    crate::eval_logical_ready_in(
+        crate::LogicalFunction::Or,
+        crate::LogicalArgs::Both(truthy_of(&l)?, truthy_of(&r)?),
+        ctx,
+    )
 }
 
 fn logic_xor(l: Datum, r: Datum, ctx: &dyn crate::context::Columns) -> Result<Datum, EvalError> {
     warn_string_double_truncation(&[&l, &r], ctx);
-    Ok(match (truthy_of(&l)?, truthy_of(&r)?) {
-        (Some(a), Some(b)) => bool_int(a ^ b),
-        _ => Datum::Null,
-    })
+    crate::eval_logical_ready_in(
+        crate::LogicalFunction::Xor,
+        crate::LogicalArgs::Both(truthy_of(&l)?, truthy_of(&r)?),
+        ctx,
+    )
 }
 
 /// Called from `eval_binary`'s own `NullEq` arm, after its `Str`/`Float`/

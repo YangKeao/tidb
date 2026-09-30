@@ -4116,6 +4116,25 @@ fn eval_boolean_ready(
     }
 }
 
+/// Adapts already-evaluated legacy operands without adding a lazy branch.
+fn eval_logical_ready(
+    function: tidb_expr::LogicalFunction,
+    left: Option<bool>,
+    right: Option<bool>,
+) -> Result<Option<i128>, String> {
+    match tidb_expr::eval_logical_ready_in(
+        function,
+        tidb_expr::LogicalArgs::Both(left, right),
+        &tidb_expr::NoColumns,
+    )
+    .map_err(|error| format!("{error:?}"))?
+    {
+        tidb_datatype::Datum::Int(value @ (0 | 1)) => Ok(Some(i128::from(value))),
+        tidb_datatype::Datum::Null => Ok(None),
+        _ => Err("logical function returned an invalid result".to_owned()),
+    }
+}
+
 /// Evaluates one pushed-down expression against a scanned row: MySQL's
 /// three-valued int (`Some(0/1/n)`) or NULL, beside Go's expression-level
 /// error -- the 1690 overflow terror the request-level answer carries.
@@ -4627,21 +4646,20 @@ pub fn eval_expr(
                 SimpleSig::LogicalAnd => {
                     // MySQL: FALSE dominates NULL.
                     let (left, right) = (child(0)?, child(1)?);
-                    match (left, right) {
-                        (Some(0), _) | (_, Some(0)) => Some(0),
-                        (Some(_), Some(_)) => Some(1),
-                        _ => None,
-                    }
+                    eval_logical_ready(
+                        tidb_expr::LogicalFunction::And,
+                        left.map(|value| value != 0),
+                        right.map(|value| value != 0),
+                    )?
                 }
                 SimpleSig::LogicalOr => {
                     // MySQL: TRUE dominates NULL.
                     let (left, right) = (child(0)?, child(1)?);
-                    match (left, right) {
-                        (Some(l), _) if l != 0 => Some(1),
-                        (_, Some(r)) if r != 0 => Some(1),
-                        (Some(_), Some(_)) => Some(0),
-                        _ => None,
-                    }
+                    eval_logical_ready(
+                        tidb_expr::LogicalFunction::Or,
+                        left.map(|value| value != 0),
+                        right.map(|value| value != 0),
+                    )?
                 }
                 SimpleSig::UnaryNot => eval_boolean_ready(
                     tidb_expr::BooleanFunction::UnaryNot,
@@ -5804,6 +5822,31 @@ mod tests {
         let rows_data = select.chunks[0].rows_data.as_deref().expect("rows");
         let decoded = tidb_codec::decode(rows_data, 2).expect("one row");
         assert_eq!(decoded, vec![Datum::Int(2), Datum::Int(88)]);
+    }
+
+    #[test]
+    fn legacy_logical_operators_keep_eager_rhs_and_null_channel() {
+        for (sig, dominant) in [(SimpleSig::LogicalAnd, 0), (SimpleSig::LogicalOr, 1)] {
+            let evaluate =
+                |left, right| eval_expr(&SimpleExpr::Func(sig, vec![left, right]), &[], 4, &zone());
+            let rhs_error = SimpleExpr::Func(SimpleSig::RealIsNull, vec![SimpleExpr::Column(0)]);
+            assert_eq!(
+                evaluate(SimpleExpr::Int(dominant), rhs_error),
+                Err("aggregate input is outside the scanned row".to_owned())
+            );
+            assert_eq!(
+                evaluate(SimpleExpr::Int(dominant), SimpleExpr::Null),
+                Ok(Some(i128::from(dominant)))
+            );
+            assert_eq!(
+                evaluate(SimpleExpr::Null, SimpleExpr::Int(1 - dominant)),
+                Ok(None)
+            );
+            assert_eq!(
+                evaluate(SimpleExpr::Int(1 - dominant), SimpleExpr::Real(3.0)),
+                Ok(None)
+            );
+        }
     }
 
     #[test]
