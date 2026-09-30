@@ -3089,3 +3089,268 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_case_sha2_ord_sql_columns() {
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_trim_split_pad_sql_values_metadata_and_packet_policy() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_trim_split_pad (id INT PRIMARY KEY, t VARCHAR(16), \
+             b VARBINARY(16), r VARCHAR(8), d VARCHAR(8), c BIGINT, \
+             u BIGINT UNSIGNED, n BIGINT, p VARCHAR(8), q VARBINARY(8))",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_trim_split_pad VALUES \
+             (1,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL),\
+             (2,'ababa',X'20FF20','aba','ba',1,NULL,7,'',X''),\
+             (3,'aaa',X'6142','a','aa',-1,NULL,3,'',X''),\
+             (4,'你a',X'FF41','你','你',-9223372036854775808,18446744073709551615,4,'x',X'5A'),\
+             (5,NULL,NULL,NULL,NULL,NULL,NULL,-1,'x',X'78'),\
+             (6,'ab',X'6162',NULL,NULL,NULL,NULL,257,'x',X'78')",
+        )
+        .unwrap();
+    session
+        .vars
+        .set_system("max_allowed_packet", "1024".to_owned())
+        .unwrap();
+    assert_eq!(session.max_allowed_packet(), 1024);
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT TRIM(t), TRIM(BOTH r FROM t), TRIM(LEADING r FROM t), \
+             TRIM(TRAILING r FROM t), TRIM(b), SUBSTRING_INDEX(t,d,c), \
+             LPAD(t,n,p), RPAD(t,n,p), LPAD(b,n,p), RPAD(t,n,q) \
+             FROM shared_trim_split_pad WHERE id<5 ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected TRIM/SUBSTRING_INDEX/PAD SQL rows")
+    };
+    assert_eq!(columns.len(), 10);
+    // Expr::Trim keeps its unsized result width. The outer collation pass
+    // still derives TRIM from arg0 and PAD from both string arguments (0, 2).
+    for (column_index, (_, field_type)) in columns.iter().enumerate() {
+        assert_eq!(field_type.eval_type(), tidb_datatype::EvalType::String);
+        let expected_flen = match column_index {
+            0..=4 => tidb_datatype::UNSPECIFIED_LENGTH,
+            5 => 16,
+            _ => 16_777_216,
+        };
+        assert_eq!(field_type.flen(), expected_flen, "column {column_index}");
+        if column_index == 4 || column_index >= 8 {
+            assert_eq!(field_type.collation(), tidb_datatype::Collation::Binary);
+        } else {
+            assert_ne!(field_type.collation(), tidb_datatype::Collation::Binary);
+        }
+    }
+    let expected_text: [[Option<&str>; 7]; 4] = [
+        [None; 7],
+        [
+            Some("ababa"),
+            Some("ba"),
+            Some("ba"),
+            Some("ab"),
+            Some("a"),
+            Some(""),
+            Some(""),
+        ],
+        [
+            Some("aaa"),
+            Some(""),
+            Some(""),
+            Some(""),
+            Some("a"),
+            Some("aaa"),
+            Some("aaa"),
+        ],
+        [
+            Some("你a"),
+            Some("a"),
+            Some("a"),
+            Some("你a"),
+            Some("你a"),
+            Some("xx你a"),
+            Some("你axx"),
+        ],
+    ];
+    let expected_raw_trim: [Option<&[u8]>; 4] = [None, Some(b"\xff"), Some(b"aB"), Some(b"\xffA")];
+    let binary_string =
+        |bytes: Vec<u8>| Datum::new_collation_string(bytes, tidb_datatype::Collation::Binary);
+    let expected_binary_pad = [
+        [Datum::Null, Datum::Null],
+        [binary_string(vec![]), binary_string(vec![])],
+        [binary_string(vec![]), binary_string(b"aaa".to_vec())],
+        [
+            binary_string(b"xx\xffA".to_vec()),
+            binary_string("你a".as_bytes().to_vec()),
+        ],
+    ];
+    assert_eq!(rows.len(), expected_text.len());
+    for (row_index, (row, expected)) in rows.iter().zip(expected_text).enumerate() {
+        assert_eq!(row.len(), 10);
+        for (column_index, expected) in [0, 1, 2, 3, 5, 6, 7].into_iter().zip(expected) {
+            let value = &row[column_index];
+            match expected {
+                None => assert_eq!(value, &Datum::Null),
+                Some(expected) => {
+                    assert!(matches!(value, Datum::String(_)));
+                    assert_ne!(value.collation(), Some(tidb_datatype::Collation::Binary));
+                    assert_eq!(
+                        crate::tests_support::cell_text(value),
+                        expected,
+                        "trim/split/pad fixture id {}, column {column_index}",
+                        row_index + 1
+                    );
+                }
+            }
+        }
+        match expected_raw_trim[row_index] {
+            None => assert_eq!(row[4], Datum::Null),
+            Some(expected) => {
+                assert!(matches!(&row[4], Datum::String(_)));
+                assert_eq!(row[4].collation(), Some(tidb_datatype::Collation::Binary));
+                assert_eq!(row[4].to_bytes().unwrap(), expected);
+            }
+        }
+        assert_eq!(row[8], expected_binary_pad[row_index][0]);
+        assert_eq!(row[9], expected_binary_pad[row_index][1]);
+    }
+    assert!(warnings_of(&session).is_empty());
+
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns("SELECT c,u,SUBSTRING_INDEX(t,d,u) FROM shared_trim_split_pad WHERE id=4")
+        .unwrap()
+    else {
+        panic!("expected stored extreme split counts")
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][0], Datum::Int(i64::MIN));
+    assert_eq!(rows[0][1], Datum::UInt(u64::MAX));
+    assert_eq!(crate::tests_support::cell_text(&rows[0][2]), "你a");
+    assert!(warnings_of(&session).is_empty());
+
+    // NULL source does not skip the packet check, and negative lengths warn
+    // before the range rejection. Positive text length 257 also exceeds 1024
+    // under the original n*4 estimate, before source/pad string coercion.
+    for (function, id) in [("LPAD", 5), ("RPAD", 5), ("LPAD", 6), ("RPAD", 6)] {
+        let sql = format!("SELECT {function}(t,n,p) FROM shared_trim_split_pad WHERE id={id}");
+        let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+            panic!("expected packet-suppressed padding rows")
+        };
+        assert_eq!(rows, vec![vec![Datum::Null]], "{sql}");
+        assert_eq!(
+            session.warnings(),
+            &[SqlWarning {
+                level: WarningLevel::Warning,
+                code: 1301,
+                message: format!(
+                    "Result of {}() was larger than max_allowed_packet (1024) - truncated",
+                    function.to_ascii_lowercase()
+                ),
+            }],
+            "{sql}"
+        );
+    }
+    // Either binary operand selects n bytes, not n*4: both 257-byte results
+    // fit. These tiny buffers also distinguish source-binary from pad-binary.
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns("SELECT LPAD(b,n,p), RPAD(t,n,q) FROM shared_trim_split_pad WHERE id=6")
+        .unwrap()
+    else {
+        panic!("expected allowed binary padding rows")
+    };
+    let left = [vec![b'x'; 255], b"ab".to_vec()].concat();
+    let right = [b"ab".to_vec(), vec![b'x'; 255]].concat();
+    assert_eq!(rows, vec![vec![binary_string(left), binary_string(right)]]);
+    assert!(warnings_of(&session).is_empty());
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_trim_split_pad_sql_columns() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_trim_split_pad_zero (id INT PRIMARY KEY, \
+             t VARCHAR(16), d VARCHAR(8), n BIGINT, p VARCHAR(8))",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_trim_split_pad_zero VALUES \
+             (1,NULL,NULL,NULL,NULL),(2,'ab','b',2,'x'),\
+             (3,'ab','b',NULL,'x'),(4,NULL,'b',-1,'x')",
+        )
+        .unwrap();
+    session
+        .vars
+        .set_system("max_allowed_packet", "1024".to_owned())
+        .unwrap();
+    assert_eq!(session.max_allowed_packet(), 1024);
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // Eight direct NULL/non-NULL calls; then a NULL length with non-NULL
+    // source, and a warning-bearing suppressed result whose source is NULL.
+    for (expression, id) in [
+        ("TRIM(t)", 1),
+        ("TRIM(t)", 2),
+        ("SUBSTRING_INDEX(t,d,n)", 1),
+        ("SUBSTRING_INDEX(t,d,n)", 2),
+        ("LPAD(t,n,p)", 1),
+        ("LPAD(t,n,p)", 2),
+        ("RPAD(t,n,p)", 1),
+        ("RPAD(t,n,p)", 2),
+        ("LPAD(t,n,p)", 3),
+        ("RPAD(t,n,p)", 4),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_trim_split_pad_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("trim/split/pad SQL must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        // The typed evaluation-origin 1105 is not a warning-buffer Error row.
+        if id == 4 {
+            assert_eq!(
+                session.warnings(),
+                &[SqlWarning {
+                    level: WarningLevel::Warning,
+                    code: 1301,
+                    message: "Result of rpad() was larger than \
+                              max_allowed_packet (1024) - truncated"
+                        .to_owned(),
+                }]
+            );
+        } else {
+            assert!(warnings_of(&session).is_empty(), "{sql}");
+        }
+    }
+}

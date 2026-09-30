@@ -1,8 +1,8 @@
 # Expression unification experiment
 
-Checkpoint-ID: `case-sha2-ord-four-18` (previous: `packet-string-four-17`)
+Checkpoint-ID: `trim-subidx-pad-four-19` (previous: `case-sha2-ord-four-18`)
 
-**55/245 families delegate to TiKV with their native evaluator algorithms removed; target 221.** This checkpoint adds LOWER, UPPER, SHA2 and ORD. Strict final-audited acceptance remains 0; this is not PR-ready.
+**59/245 families delegate to TiKV with their native evaluator algorithms removed; target 221.** This checkpoint adds TRIM, SUBSTRING_INDEX, LPAD and RPAD. Strict final-audited acceptance remains 0; this is not PR-ready.
 
 ## Paired repositories
 
@@ -11,28 +11,28 @@ Checkpoint-ID: `case-sha2-ord-four-18` (previous: `packet-string-four-17`)
 
 Use sibling checkouts. `checkpoint.json` pins TiKV and the published Plan hash. Root Plans mirror `/home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md` at publication. Validated steps push both branches without force-push or automatic PRs.
 
-## Casing, SHA2 and ORD ownership
+## Trim, split and pad ownership
 
-LOWER/UPPER binary signatures execute the actual no-op kernels. UTF8 signatures privately bind existing EncodingUtf8Mb4 getters and their Go simple Unicode tables; no new table or casing implementation is added. This avoids the charset-dependent wire selector while preserving canonical empty-charset/zero-heap metadata. Native code retains only per-malformed-byte RuneError normalization and packing. Aliases and existing PB binary/UTF8/NULL routes delegate too.
+TRIM keeps AST source-evaluation/coercion before removal-evaluation/coercion, versus typed evaluation of both children before coercion. All three directions, default space, NULL and empty removal enter TiKV. One trim core retains native sequential-right versus wire independent-right overlap behavior.
 
-SHA2 has one TiKV selector/digest/hex core. Invalid wire selectors still return NULL and warning1583; the native private recipe returns quiet NULL without clearing warnings. Original byte/integer coercion and NULL-left demand remain. ReadyIntArg replaces the packet-specific name; the separate BytesIntReady role validates Undemanded length before using an irrelevant Some(0), never an evaluated SQL NULL.
+SUBSTRING_INDEX keeps original string/count preparation but deletes native splitting. Its dedicated ready role preserves signed/unsigned bits, native MIN and forward non-overlapping suffix policy; the wire reverse scanner is unchanged. Actual NULL count stays NULL, distinct from a checked undemanded count lowered to an irrelevant non-NULL representative.
 
-ORD keeps native argument-charset/first-character preparation, including typed ETString order, then delegates its base256 fold. The facade and both ready matchers validate the proven four-byte prepared domain, without truncation or new budgets. Original wire return-collation decoding/NULL0 stays separate from native NULL. Existing latin1 is byte-preserving: ORD of stored UTF8 'é' remains195, not a silently corrected233.
+PAD keeps length cast/1292, packet/1301, range, then two-string coercion. Binary selection is source OR pad. Both strings are either real evaluated values or explicitly undemanded together; only NULL count, suppression or out-of-range count permits undemanded strings. Zero/valid width still demands both. Real four-column recipes are whitelisted only for the four pad operations: caller limits are five nodes for pad, four otherwise, with depth three unchanged. Driver, pool and general graph admission are not widened.
 
-No new SHA2/ORD PB/unistore admission, driver, pool, limits or native fallback is introduced.
+One TiKV quotient/remainder core constructs and truncates results. Native keeps empty-pad-growth empty and full16MiB character-width admission; wire keeps NULL and UTF8's *4 limit. Native equality is safe while the original wire nonzero equal-length empty-pad division path remains; original wire SUBSTRING_INDEX MIN abs behavior is also retained. These known wire defects are not silently fixed or recreated with artificial panics.
 
 ## Actual validation
 
-- TiKV local: 211 passed/1 ignored; original string: 63 passed; original encryption: 8 passed.
-- Native dispatcher retry: 3 passed; SQL/lifecycle: 39 passed.
-- Full expression: 1403 passed/4 unchanged failures/94 ignored, 1501 discovered. Complete failure blocks match17 after only thread-ID normalization.
+- TiKV local: 215 passed/1 ignored; original string tests: 63 passed.
+- Native dispatcher retry: 3 passed; SQL/lifecycle: 41 passed.
+- Full expression: 1406 passed/4 unchanged failures/94 ignored, 1504 discovered. Complete failure blocks match18 after only thread-ID normalization.
 
-The first native compile failed before tests because three new test references used a nonexistent crate-root Expression path. Only those paths were corrected to the existing expression module. No runtime or old expected value was changed; the initial chain did not reach SQL/full tests.
+Before testing, review caught and corrected the missing pad-only five-node caller limit. The first native compile then failed on two new tests using nonexistent crate-root Expression paths; only those paths were corrected. That initial chain ran no tests or later SQL/full commands. Old expected values were not changed.
 
-SQL checks five stored rows and12 results including aliases, byte/charset prechecks, fixed published SHA256 values and invalid-selector quiet NULL, plus eight direct zero-slot refusals. Full unistore was not rerun. Exact commands: `logs/case-sha2-ord-four-summary.txt`; boundaries: `evidence/case-sha2-ord-four-checkpoint.md`.
+SQL uses four normal stored rows with ten results, stored signedMIN/UIntMAX checks, four text packet refusals, two binary257-byte successes and ten direct zero-slot calls. One native test actually constructs12,582,915 bytes for a4,194,305-character pad result; it checks length/characters/ends/dispatch without a giant fixture. Exact commands: `logs/trim-subidx-pad-four-summary.txt`; boundaries: `evidence/trim-subidx-pad-four-checkpoint.md`.
 
 ## Next work and exclusions
 
-TRIM, SUBSTRING_INDEX, LPAD and RPAD are the next parallel batch, not yet credited. Explicit demand markers and native/wire policy differences remain necessary; pad may narrowly require four fixed operands/five nodes rather than fake typed inputs or partial-arity credit.
+LN, LOG(both arities), LOG2, POW/POWER, UNCOMPRESSED_LENGTH and INSERT are the next parallel batch, not yet credited. EXP/LOG10 use distinct native Go algorithms; COMPRESS has distinct encoded bytes; UNCOMPRESS needs a typed diagnostic outcome and bounded inflation. They cannot be claimed through thin wrappers alone.
 
-Variadic/lazy CONCAT, INSERT offsets, GB collation residuals and other documented compatibility gaps remain. Broad operation-scope guards, physical peak/OOM safety, allocator remeasurement, paired differential reruns, full workspace, make lint and release performance remain unverified. Kernel reuse is not complete Go-package transcreation.
+No new PB/unistore admission was added, and full unistore was not rerun. Operation-scope guards, physical peak/OOM safety, allocator remeasurement, paired differential reruns, full workspace, make lint and release performance remain unverified. Kernel reuse is not complete Go-package transcreation.

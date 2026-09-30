@@ -2377,9 +2377,7 @@ impl ScalarFunction {
             let binary = matches!(value, Datum::Bytes(_));
             let text = crate::coerce::coerce_str_bytes(&value)?;
             let remove = crate::coerce::coerce_str_bytes(&remstr)?;
-            return Ok(crate::string_fn::trim_value(
-                text, remove, direction, binary,
-            ));
+            return crate::string_fn::trim_value_in(text, remove, direction, binary, ctx);
         }
         // Go picks a string-length signature from the ARGUMENT's type before
         // any value exists, which is what `build_string_length` models.

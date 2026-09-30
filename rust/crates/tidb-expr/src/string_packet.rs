@@ -27,7 +27,7 @@
 //! of them read.
 
 use crate::coerce::{coerce_str, coerce_str_bytes};
-use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp, OutputDisposition, ReadyIntArg};
+use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp, OutputDisposition, ReadyBytesArg, ReadyIntArg};
 use crate::{Datum, EvalError};
 
 /// `REPEAT(str, count)`: `str` concatenated `count` times (empty for
@@ -140,87 +140,76 @@ pub(crate) fn pad(
     if vals.len() != 3 {
         return Err(EvalError::Unsupported("bad LPAD/RPAD arguments"));
     }
-    let len = match &vals[1] {
-        Datum::Null => return Ok(Datum::Null),
-        // go's ETInt argument cast warns on the failed string scan exactly
-        // like an explicit CAST (oracle g-err3: lpad(1, 'x', 2) / rpad(1,
-        // 'x', 2) answer '' with `Truncated incorrect INTEGER value: 'x'`).
-        value => crate::cast::to_i64_signed_with_warnings(value, ctx)?,
-    };
     // `lpadFunctionClass.getFunction` tests BOTH string arguments, so a binary
-    // pad string makes the whole call byte-based.
+    // pad string makes the whole call byte-based. This only inspects signature
+    // metadata; both string coercions remain after count and packet policy.
     let binary = crate::string_signature::is_binary_str(&vals[0])
         || crate::string_signature::is_binary_str(&vals[2]);
-    // The packet check comes FIRST in both signatures, before the negative /
-    // MaxBlobWidth rejections, and is the only one of the three that warns.
-    // The byte signature compares the target length itself; the rune one
-    // compares it times `mysql.MaxBytesOfCharacter`, because that many bytes
-    // is the widest the result can become.
-    let requested = if binary {
-        u64::try_from(len).unwrap_or(u64::MAX)
-    } else {
-        u64::try_from(len)
-            .unwrap_or(u64::MAX)
-            .saturating_mul(MAX_BYTES_OF_CHARACTER)
+    let operation = match (left, binary) {
+        (true, true) => EvaluatedBytesOp::LpadBytesNative,
+        (false, true) => EvaluatedBytesOp::RpadBytesNative,
+        (true, false) => EvaluatedBytesOp::LpadUtf8Native,
+        (false, false) => EvaluatedBytesOp::RpadUtf8Native,
     };
-    if requested > ctx.max_allowed_packet() {
-        ctx.handle_allowed_packet_overflowed(if left { "lpad" } else { "rpad" })?;
-        return Ok(Datum::Null);
-    }
-    if !(0..=MAX_BLOB_WIDTH).contains(&len) {
-        return Ok(Datum::Null);
-    }
-    if binary {
-        let (Some(s), Some(padstr)) = (coerce_str_bytes(&vals[0])?, coerce_str_bytes(&vals[2])?)
-        else {
-            return Ok(Datum::Null);
-        };
-        return Ok(pad_bytes(&s, len as usize, &padstr, left));
-    }
-    let (s, padstr) = match (coerce_str(&vals[0])?, coerce_str(&vals[2])?) {
-        (Some(s), Some(p)) => (s, p),
-        (None, _) | (_, None) => return Ok(Datum::Null),
-    };
-    let chars: Vec<char> = s.chars().collect();
-    let len = len as usize;
-    if chars.len() >= len {
-        return Ok(Datum::new_string(
-            chars.into_iter().take(len).collect::<String>(),
-        ));
-    }
-    let pad_chars: Vec<char> = padstr.chars().collect();
-    if pad_chars.is_empty() {
-        return Ok(Datum::new_string(String::new()));
-    }
-    let need = len - chars.len();
-    let fill: String = pad_chars.iter().cycle().take(need).collect();
-    Ok(Datum::new_string(if left {
-        format!("{fill}{s}")
-    } else {
-        format!("{s}{fill}")
-    }))
-}
-/// Binary LPAD/RPAD keeps the source's byte signature instead of decoding it
-/// as UTF-8. The Go `builtinLpadSig`/`builtinRpadSig` paths count bytes, return
-/// the first `len` bytes on truncation, and preserve arbitrary pad octets.
-fn pad_bytes(source: &[u8], len: usize, pad: &[u8], left: bool) -> Datum {
-    if source.len() >= len {
-        return Datum::new_bytes(source[..len].to_vec());
-    }
-    if pad.is_empty() {
-        return Datum::new_bytes(Vec::new());
-    }
-    let need = len - source.len();
-    let mut fill = Vec::with_capacity(need);
-    fill.extend(pad.iter().copied().cycle().take(need));
-    if left {
-        fill.extend_from_slice(source);
-        Datum::new_bytes(fill)
-    } else {
-        let mut result = source.to_vec();
-        result.extend_from_slice(&fill);
-        Datum::new_bytes(result)
-    }
+    crate::tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || {
+            let count = match &vals[1] {
+                Datum::Null => None,
+                // Preserve the ETInt cast's original 1292 warning policy.
+                value => Some(crate::cast::to_i64_signed_with_warnings(value, ctx)?),
+            };
+            let mut disposition = OutputDisposition::Allow;
+            let mut demand_strings = false;
+            if let Some(len) = count {
+                // Packet policy precedes the silent count-domain rejection:
+                // byte width for binary, worst-case UTF-8 width otherwise.
+                let requested = if binary {
+                    u64::try_from(len).unwrap_or(u64::MAX)
+                } else {
+                    u64::try_from(len)
+                        .unwrap_or(u64::MAX)
+                        .saturating_mul(MAX_BYTES_OF_CHARACTER)
+                };
+                if requested > ctx.max_allowed_packet() {
+                    ctx.handle_allowed_packet_overflowed(if left { "lpad" } else { "rpad" })?;
+                    disposition = OutputDisposition::SuppressByPacket;
+                } else {
+                    // Only operand demand is decided here; C4 owns every
+                    // result, including count-domain NULL and zero length.
+                    demand_strings = (0..=MAX_BLOB_WIDTH).contains(&len);
+                }
+            }
+            let (bytes, pad) = if demand_strings {
+                // Keep tuple evaluation: a NULL source still coerces the pad.
+                let (bytes, pad) = if binary {
+                    (coerce_str_bytes(&vals[0])?, coerce_str_bytes(&vals[2])?)
+                } else {
+                    let (source, pad) = (coerce_str(&vals[0])?, coerce_str(&vals[2])?);
+                    (source.map(String::into_bytes), pad.map(String::into_bytes))
+                };
+                (ReadyBytesArg::Value(bytes), ReadyBytesArg::Value(pad))
+            } else {
+                (ReadyBytesArg::Undemanded, ReadyBytesArg::Undemanded)
+            };
+            Ok(EvaluatedArgs::PacketBytesIntBytes {
+                bytes,
+                count,
+                pad,
+                disposition,
+            })
+        },
+        |computed| {
+            Ok(computed.into_bytes()?.map_or(Datum::Null, |bytes| {
+                if binary {
+                    Datum::new_bytes(bytes)
+                } else {
+                    Datum::new_string(bytes)
+                }
+            }))
+        },
+    )
 }
 /// `WEIGHT_STRING(str [AS {CHAR|BINARY}(n)])`, ported from
 /// `builtinWeightStringSig.evalString` in `pkg/expression/builtin_string.go`:

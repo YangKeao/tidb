@@ -461,7 +461,7 @@ use ops::{
 };
 use regexp::regexp_match;
 use row::row_compare;
-use string_fn::{position, trim_value};
+use string_fn::{position, trim_value_in};
 
 /// Evaluates a constant expression, or returns why it is out of scope.
 pub fn eval(expr: &Expr) -> Result<Datum, EvalError> {
@@ -1360,12 +1360,13 @@ pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
                 Some(r) => coerce_str_bytes(&eval_in(r, cols)?)?,
                 None => Some(b" ".to_vec()),
             };
-            Ok(trim_value(
+            trim_value_in(
                 str,
                 remstr,
                 direction.unwrap_or(tidb_ast::TrimDirection::Both),
                 binary,
-            ))
+                cols,
+            )
         }
         Expr::Case {
             value,

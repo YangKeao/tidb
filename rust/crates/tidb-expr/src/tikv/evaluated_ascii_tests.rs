@@ -1100,6 +1100,17 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::Upper | EvaluatedBytesOp::UpperUtf8Ready => "UPPER",
         EvaluatedBytesOp::OrdNative => "ORD",
         EvaluatedBytesOp::Sha2Native => panic!("SHA2 needs its original argument pair"),
+        EvaluatedBytesOp::TrimBothNative
+        | EvaluatedBytesOp::TrimLeadingNative
+        | EvaluatedBytesOp::TrimTrailingNative
+        | EvaluatedBytesOp::SubstringIndexSignedNative
+        | EvaluatedBytesOp::SubstringIndexUnsignedNative
+        | EvaluatedBytesOp::LpadBytesNative
+        | EvaluatedBytesOp::RpadBytesNative
+        | EvaluatedBytesOp::LpadUtf8Native
+        | EvaluatedBytesOp::RpadUtf8Native => {
+            panic!("trim and pad families require their complete operands")
+        }
         EvaluatedBytesOp::IsNull => "ISNULL",
         EvaluatedBytesOp::IsTrue => "ISTRUE",
         EvaluatedBytesOp::IsFalse => "ISFALSE",
@@ -1146,6 +1157,272 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+#[test]
+fn trim_subidx_pad_dispatch_preserves_results_and_demand_markers() {
+    use tidb_ast::TrimDirection;
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    for (direction, input, removal, binary, expected) in [
+        (
+            TrimDirection::Both,
+            Some(b"ababa".to_vec()),
+            Some(b"aba".to_vec()),
+            false,
+            Datum::new_string("ba"),
+        ),
+        (
+            TrimDirection::Leading,
+            Some(b"ababa".to_vec()),
+            Some(b"aba".to_vec()),
+            false,
+            Datum::new_string("ba"),
+        ),
+        (
+            TrimDirection::Trailing,
+            Some(b"ababa".to_vec()),
+            Some(b"aba".to_vec()),
+            false,
+            Datum::new_string("ab"),
+        ),
+        (
+            TrimDirection::Both,
+            Some(vec![0xff]),
+            Some(Vec::new()),
+            true,
+            Datum::new_bytes([0xff]),
+        ),
+        (TrimDirection::Both, None, None, false, Datum::Null),
+    ] {
+        arm_eval_one_observation();
+        let result = crate::string_fn::trim_value_in(input, removal, direction, binary, &columns);
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(expected));
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    }
+    for (name, values, expected) in [
+        (
+            "SUBSTRING_INDEX",
+            vec![
+                Datum::new_string("aaa"),
+                Datum::new_string("aa"),
+                Datum::Int(-1),
+            ],
+            Datum::new_string("a"),
+        ),
+        (
+            "SUBSTRING_INDEX",
+            vec![
+                Datum::new_bytes(b"a.b"),
+                Datum::new_string("."),
+                Datum::Int(i64::MIN),
+            ],
+            Datum::new_bytes(b"a.b"),
+        ),
+        (
+            "SUBSTRING_INDEX",
+            vec![
+                Datum::new_string("a.b"),
+                Datum::new_string("."),
+                Datum::UInt(u64::MAX),
+            ],
+            Datum::new_string("a.b"),
+        ),
+        (
+            "SUBSTRING_INDEX",
+            vec![
+                Datum::new_string("abc"),
+                Datum::new_string(""),
+                Datum::MinNotNull,
+            ],
+            Datum::new_string(""),
+        ),
+        (
+            "SUBSTRING_INDEX",
+            vec![Datum::new_string("abc"), Datum::new_string(""), Datum::Null],
+            Datum::Null,
+        ),
+        (
+            "SUBSTRING_INDEX",
+            vec![Datum::Null, Datum::Null, Datum::Null],
+            Datum::Null,
+        ),
+        (
+            "LPAD",
+            vec![
+                Datum::new_string("ab"),
+                Datum::Int(4),
+                Datum::new_string("你"),
+            ],
+            Datum::new_string("你你ab"),
+        ),
+        (
+            "RPAD",
+            vec![
+                Datum::new_bytes(b"ab"),
+                Datum::Int(4),
+                Datum::new_bytes([0xff]),
+            ],
+            Datum::new_bytes([b'a', b'b', 0xff, 0xff]),
+        ),
+        (
+            "LPAD",
+            vec![Datum::MinNotNull, Datum::Null, Datum::MinNotNull],
+            Datum::Null,
+        ),
+        (
+            "RPAD",
+            vec![Datum::Null, Datum::Null, Datum::Null],
+            Datum::Null,
+        ),
+    ] {
+        arm_eval_one_observation();
+        let result = crate::func::eval_func_values_in(name, &values, &columns).unwrap();
+        let observation = take_eval_one_observation();
+        assert!(
+            matches!(
+                (&result, &expected),
+                (Ok(Datum::Null), Datum::Null)
+                    | (Ok(Datum::String(_)), Datum::String(_))
+                    | (Ok(Datum::Bytes(_)), Datum::Bytes(_))
+            ),
+            "{name} result tag"
+        );
+        assert_eq!(result, Ok(expected), "{name}");
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    }
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn trim_subidx_pad_dispatch_preserves_order_and_explicit_refusal() {
+    use crate::scalar_function::ScalarFunction;
+    use tidb_ast::{Expr, TrimDirection};
+    struct Order {
+        source: RefCell<Datum>,
+        reads: RefCell<Vec<String>>,
+        packet_getters: Cell<usize>,
+    }
+    impl Columns for Order {
+        fn get(&self, path: &[String]) -> Option<Datum> {
+            self.reads.borrow_mut().push(path.join("."));
+            (path.len() == 1 && path[0] == "source").then(|| self.source.borrow().clone())
+        }
+        fn truncate_level(&self) -> ErrorLevel {
+            ErrorLevel::Error
+        }
+        fn max_allowed_packet(&self) -> u64 {
+            self.packet_getters.set(self.packet_getters.get() + 1);
+            64 << 20
+        }
+    }
+    let native = Order {
+        source: RefCell::new(Datum::MinNotNull),
+        reads: RefCell::new(Vec::new()),
+        packet_getters: Cell::new(0),
+    };
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        let ast = Expr::Trim {
+            expr: Box::new(Expr::Column(vec!["source".into()])),
+            remstr: Some(Box::new(Expr::Column(vec!["remove".into()]))),
+            direction: Some(TrimDirection::Both),
+        };
+        assert_eq!(crate::eval_in(&ast, columns), Err(EvalError::Unsupported("range sentinel byte coercion")));
+        assert_eq!(native.reads.borrow().as_slice(), &["source"]);
+        *native.source.borrow_mut() = Datum::Null;
+        native.reads.borrow_mut().clear();
+        assert_eq!(crate::eval_in(&ast, columns), Err(EvalError::Unsupported("unknown column")));
+        assert_eq!(native.reads.borrow().as_slice(), &["source", "remove"], "AST NULL source still evaluates removal");
+
+        let field = FieldType::new(FieldTypeCode::VarString);
+        let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+        let missing = ScalarFunction::new(tidb_ast::CiString::new("__missing_trim_remove__"), field.clone(), Vec::new());
+        let removal_error = missing.eval(columns, row.to_row());
+        assert!(removal_error.is_err());
+        assert_ne!(removal_error, Err(EvalError::Unsupported("range sentinel byte coercion")));
+        let typed = ScalarFunction::new(tidb_ast::CiString::new("trim"), field.clone(), vec![
+            crate::expression::Expression::Constant(Constant::new(Datum::MinNotNull, field)),
+            crate::expression::Expression::ScalarFunction(missing),
+        ]);
+        assert_eq!(typed.eval(columns, row.to_row()), removal_error, "typed TRIM evaluates both expressions before coercion");
+
+        assert_eq!(crate::string_fn::substring_index_in(&[Datum::Null, Datum::MinNotNull, Datum::Null], columns), Err(EvalError::Unsupported("range sentinel byte coercion")));
+        assert_eq!(crate::string_packet::pad(&[Datum::Null, Datum::Int(0), Datum::new_string(vec![0xff])], true, columns), Err(EvalError::Unsupported("invalid UTF-8 string datum")), "NULL source and zero width still demand pad coercion");
+        native.packet_getters.set(0);
+        let result = crate::string_packet::pad(&[Datum::MinNotNull, Datum::new_string("bad"), Datum::MinNotNull], true, columns);
+        assert!(matches!(result, Err(EvalError::TruncatedWrongValue(_))));
+        assert_eq!(native.packet_getters.get(), 0, "length warning/error precedes packet and strings");
+
+        for direction in [TrimDirection::Both, TrimDirection::Leading, TrimDirection::Trailing] {
+            let result = crate::string_fn::trim_value_in(None, None, direction, false, columns);
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        }
+        for name in ["SUBSTRING_INDEX", "LPAD", "RPAD"] {
+            arm_eval_one_observation();
+            let result = crate::func::eval_func_values_in(name, &[Datum::Null, Datum::Null, Datum::Null], columns).unwrap();
+            let observation = take_eval_one_observation();
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource), "{name}");
+            assert_eq!(observation.facade_entries, 0);
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn trim_subidx_pad_dispatch_native_text_pad_exceeds_wire_character_limit() {
+    // One native-only successful size, with the unchanged isolated policy and
+    // the existing default packet allowance. Do not store a giant expected row.
+    let width = 4_194_305_usize;
+    arm_eval_one_observation();
+    let result = crate::string_packet::pad(
+        &[
+            Datum::new_string("尾"),
+            Datum::Int(width as i64),
+            Datum::new_string("你"),
+        ],
+        true,
+        &crate::NoColumns,
+    );
+    let observation = take_eval_one_observation();
+    let Datum::String(value) = result.unwrap() else {
+        panic!("native text LPAD must remain text")
+    };
+    let text = value.as_utf8().unwrap();
+    assert_eq!(text.len(), width * 3);
+    assert_eq!(text.chars().count(), width);
+    assert!(text.starts_with("你你"));
+    assert!(text.ends_with("尾"));
+    assert_eq!(observation.facade_entries, 1);
+    assert_eq!(
+        observation.after_kernel_invocations,
+        observation
+            .before_kernel_invocations
+            .map(|before| before + 1)
+    );
 }
 
 #[test]

@@ -24,7 +24,7 @@ use crate::string_fn::{
     concat_with_context, concat_ws_with_context, elt, export_set, field, format_num,
     from_base64_in, from_base64_with_packet_limit, hex_in, locate, locate_collation,
     locate_with_position, make_set, oct, ord_in, quote_in, replace_in, reverse_in, str_insert,
-    str_take_in, strcmp, substring, substring_index, unhex_in,
+    str_take_in, strcmp, substring, substring_index_in, unhex_in,
 };
 use crate::string_packet::{pad, repeat, space, to_base64};
 use crate::time_fn::calendar::{date_add, date_diff, date_format, date_part, from_days, time_part};
@@ -796,7 +796,7 @@ pub(crate) fn eval_func_values(
         "ELT" if vals.len() >= 2 => elt(vals),
         "EXPORT_SET" => export_set(vals),
         "CONCAT_WS" if vals.len() >= 2 => concat_ws_with_context(vals, ctx),
-        "SUBSTRING_INDEX" if vals.len() == 3 => substring_index(vals),
+        "SUBSTRING_INDEX" if vals.len() == 3 => substring_index_in(vals, ctx),
         // The parser renames `INSERT(...)` to `INSERT_FUNC` to avoid the
         // reserved statement keyword (the same desugar `CHAR`→`CHAR_FUNC`
         // uses).

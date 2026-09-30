@@ -38,7 +38,7 @@ pub use evaluated_ascii::{
     ScopedAsciiColumns,
 };
 pub(crate) use tidb_query_expr::local::{
-    EvaluatedArgs, EvaluatedBytesOp, OutputDisposition, ReadyIntArg,
+    EvaluatedArgs, EvaluatedBytesOp, OutputDisposition, ReadyBytesArg, ReadyIntArg,
 };
 mod lineage;
 mod lower;

@@ -1,0 +1,55 @@
+Checkpoint: trim-subidx-pad-four-19
+Selected actual result lines from /home/agent/tidb/expression-unification/logs/trim-subidx-pad-four-*.log.
+Commands and exit statuses supplied by parent; no tests were rerun to write this summary.
+
+CWD: /home/agent/tidb/expression-unification/tikv
+WRAPPER PIN: nightly-2026-01-30-x86_64-unknown-linux-gnu
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+LOG: trim-subidx-pad-four-tikv-local.log
+EXIT: 0
+running 216 tests
+test result: ok. 215 passed; 0 failed; 1 ignored; 0 measured; 469 filtered out; finished in 0.18s
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_string::tests:: -- --test-threads=1
+LOG: trim-subidx-pad-four-official-string.log
+EXIT: 0
+running 63 tests
+test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 622 filtered out; finished in 0.02s
+
+CWD: /home/agent/tidb/expression-unification/tidb/rust
+WRAPPER PIN: nightly-2026-08-22-x86_64-unknown-linux-gnu
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib trim_subidx_pad_dispatch_ -- --test-threads=1
+LOG: trim-subidx-pad-four-dispatch.log
+EXIT: 101
+TESTS: not started; the initial chain stopped at this compilation failure.
+error[E0433]: cannot find `Expression` in the crate root
+error[E0433]: cannot find `Expression` in the crate root
+error: could not compile `tidb-expr` (lib test) due to 2 previous errors; 21 warnings emitted
+Parent corrected only the two new-test paths from crate::Expression to crate::expression::Expression for this failure; no runtime or pre-existing expected-value change was made for that repair.
+Separately, parent fixed the missed PAD-only max_nodes5 allowance before the gates (others4, depth3 unchanged). No failed run is attributed to this pre-gate correction.
+
+Subsequent receipts, not execution by the failed initial chain:
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib trim_subidx_pad_dispatch_ -- --test-threads=1
+LOG: trim-subidx-pad-four-dispatch-retry.log
+EXIT: 0
+running 3 tests
+test tikv::evaluated_ascii::tests::trim_subidx_pad_dispatch_native_text_pad_exceeds_wire_character_limit ... ok
+test tikv::evaluated_ascii::tests::trim_subidx_pad_dispatch_preserves_order_and_explicit_refusal ... ok
+test tikv::evaluated_ascii::tests::trim_subidx_pad_dispatch_preserves_results_and_demand_markers ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1501 filtered out; finished in 0.08s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::evaluated_ascii_ -- --test-threads=1
+LOG: trim-subidx-pad-four-sql-lifecycle.log
+EXIT: 0
+running 41 tests
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 0.53s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+LOG: trim-subidx-pad-four-expr-full.log
+EXIT: 101
+running 1504 tests
+test result: FAILED. 1406 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.45s
+error: test failed, to rerun pass `-p tidb-expr --lib`
+
+Coverage counts checked in lifecycle.rs: main query4 rows/10 columns; separate stored MIN/UIntMAX query; four text packet1301/NULL calls; two successful binary257 results; ten direct zero-slot refusals. The actual large-output dispatch test is one LPAD with4194305 chars/12582915 bytes plus head/tail/counter checks, not four large PAD fixtures.
+Parent compared all four complete expression failure blocks against case-sha2-ord-four-18: identical after only thread-ID normalization. The full expression suite remains non-green.
+No new PB/unistore admission; unistore was not rerun in19. Pre-existing expected values were not changed.
+Functional delegation/native-deletion: 59/245. Final acceptance: 0/245.
+Complete operation scopes/guards, allocator remeasurement, physical peak/OOM guarantees, performance, full workspace and make lint were not verified by these receipts; this is not PR-ready.

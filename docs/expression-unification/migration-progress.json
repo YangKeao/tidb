@@ -1,8 +1,8 @@
 {
-  "checkpoint_id": "case-sha2-ord-four-18",
+  "checkpoint_id": "trim-subidx-pad-four-19",
   "frozen_denominator": 245,
   "required_families": 221,
-  "functional_delegation_and_native_deletion_count": 55,
+  "functional_delegation_and_native_deletion_count": 59,
   "fully_final_audited_count": 0,
   "final_performance_and_workspace_gates_complete": false,
   "families": [
@@ -60,9 +60,13 @@
     {"id": "lower", "status": "functional_tikv_only", "native_algorithm_deleted": true, "binary_unicode_alias_pb_and_null_entries_connected": true},
     {"id": "upper", "status": "functional_tikv_only", "native_algorithm_deleted": true, "binary_unicode_alias_pb_and_null_entries_connected": true},
     {"id": "sha2", "status": "functional_tikv_only", "native_algorithm_deleted": true, "native_quiet_selector_and_undemanded_length_preserved": true},
-    {"id": "ord", "status": "functional_tikv_only", "native_algorithm_deleted": true, "argument_charset_preparation_and_typed_entry_preserved": true}
+    {"id": "ord", "status": "functional_tikv_only", "native_algorithm_deleted": true, "argument_charset_preparation_and_typed_entry_preserved": true},
+    {"id": "trim", "status": "functional_tikv_only", "native_algorithm_deleted": true, "all_directions_overlap_and_ast_typed_demand_preserved": true},
+    {"id": "substring_index", "status": "functional_tikv_only", "native_algorithm_deleted": true, "signed_unsigned_overlap_and_undemanded_count_preserved": true},
+    {"id": "lpad", "status": "functional_tikv_only", "native_algorithm_deleted": true, "full_byte_rune_packet_and_string_demand_preserved": true},
+    {"id": "rpad", "status": "functional_tikv_only", "native_algorithm_deleted": true, "full_byte_rune_packet_and_string_demand_preserved": true}
   ],
-  "shared_evidence": "evidence/case-sha2-ord-four-checkpoint.md",
+  "shared_evidence": "evidence/trim-subidx-pad-four-checkpoint.md",
   "one_operation_keyed_pool": true,
   "actual_mixed_column_sql_verified": true,
   "zero_slot_refusal_for_new_paths_verified": true,
@@ -70,6 +74,6 @@
   "deferred_compatibility_candidates_not_credited": ["sha2", "compress", "uncompress", "uncompressed_length", "ord"],
   "logical_demand_preserved": true,
   "legacy_infrastructure_errors_remain_typed_until_public_boundary": true,
-  "next_trim_subindex_pad_candidates_not_credited": ["trim", "substring_index", "lpad", "rpad"],
+  "next_math_length_insert_candidates_not_credited": ["ln", "log", "log2", "pow", "uncompressed_length", "insert"],
   "go_trig_compatibility_not_credited": ["sin", "cos", "tan", "cot", "atan"]
 }

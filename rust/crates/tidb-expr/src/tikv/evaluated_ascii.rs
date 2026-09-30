@@ -786,9 +786,20 @@ impl Creation {
             self.operation,
             LocalCompileContext {
                 limits: CompileLimits {
-                    // Three ready arguments plus a call, or a two-call unary
-                    // predicate over one ready argument (depth three).
-                    max_nodes: 4,
+                    // Only pad adds a fourth ready argument (packet policy).
+                    // Existing recipes retain their four-node bound; unary
+                    // two-call predicates still require depth three.
+                    max_nodes: if matches!(
+                        self.operation,
+                        EvaluatedBytesOp::LpadBytesNative
+                            | EvaluatedBytesOp::RpadBytesNative
+                            | EvaluatedBytesOp::LpadUtf8Native
+                            | EvaluatedBytesOp::RpadUtf8Native
+                    ) {
+                        5
+                    } else {
+                        4
+                    },
                     max_depth: 3,
                 },
             },
@@ -1463,7 +1474,16 @@ fn materialize_computed(
             | EvaluatedBytesOp::Upper
             | EvaluatedBytesOp::LowerUtf8Ready
             | EvaluatedBytesOp::UpperUtf8Ready
-            | EvaluatedBytesOp::Sha2Native,
+            | EvaluatedBytesOp::Sha2Native
+            | EvaluatedBytesOp::TrimBothNative
+            | EvaluatedBytesOp::TrimLeadingNative
+            | EvaluatedBytesOp::TrimTrailingNative
+            | EvaluatedBytesOp::SubstringIndexSignedNative
+            | EvaluatedBytesOp::SubstringIndexUnsignedNative
+            | EvaluatedBytesOp::LpadBytesNative
+            | EvaluatedBytesOp::RpadBytesNative
+            | EvaluatedBytesOp::LpadUtf8Native
+            | EvaluatedBytesOp::RpadUtf8Native,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {

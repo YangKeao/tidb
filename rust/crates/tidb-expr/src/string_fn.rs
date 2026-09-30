@@ -1214,65 +1214,53 @@ pub(crate) fn concat_ws_with_context(
 /// `count < 0` (`SUBSTRING_INDEX('a.b.c.d', '.', -2)` = `c.d`). `count = 0`
 /// yields the empty string; `|count|` past the number of parts yields the
 /// whole string. `NULL` if any argument is `NULL`.
+#[cfg(test)]
 pub(crate) fn substring_index(vals: &[Datum]) -> Result<Datum, EvalError> {
+    substring_index_in(vals, &crate::NoColumns)
+}
+
+pub(crate) fn substring_index_in(
+    vals: &[Datum],
+    ctx: &dyn crate::Columns,
+) -> Result<Datum, EvalError> {
     let [value, delim_value, count_value] = vals else {
         return Err(EvalError::Unsupported("bad SUBSTRING_INDEX arity"));
     };
-    let (Some(s), Some(delim)) = (coerce_str_bytes(value)?, coerce_str_bytes(delim_value)?) else {
-        return Ok(Datum::Null);
-    };
-    if count_value == &Datum::Null {
-        return Ok(Datum::Null);
-    }
-    if delim.is_empty() {
-        return Ok(string_result(value, Vec::new()));
-    }
-    // A UInt64 above MaxInt64 is the source's unsigned ETInt overflow case;
-    // builtinSubstringIndexSig returns the complete string before applying
-    // the negative-count branch.  The ordinary signed path uses TiDB's
-    // shared EvalInt coercion for strings, decimals, and reals.
-    if matches!(count_value, Datum::UInt(n) if *n > i64::MAX as u64) {
-        return Ok(string_result(value, s));
-    }
-    let count = crate::cast::to_i64_signed(count_value);
-    if count == 0 {
-        return Ok(string_result(value, Vec::new()));
-    }
-    let parts = split_bytes(&s, &delim);
-    let (start, end) = if count > 0 {
-        (0, (count as usize).min(parts.len()))
-    } else if count == i64::MIN {
-        (0, parts.len())
+    let operation = if matches!(count_value, Datum::UInt(_)) {
+        crate::tikv::EvaluatedBytesOp::SubstringIndexUnsignedNative
     } else {
-        let n = (-count) as usize;
-        (parts.len().saturating_sub(n), parts.len())
+        crate::tikv::EvaluatedBytesOp::SubstringIndexSignedNative
     };
-    let mut out = Vec::new();
-    for (index, part) in parts[start..end].iter().enumerate() {
-        if index != 0 {
-            out.extend_from_slice(&delim);
-        }
-        out.extend_from_slice(part);
-    }
-    Ok(string_result(value, out))
-}
-
-fn split_bytes<'a>(value: &'a [u8], delim: &[u8]) -> Vec<&'a [u8]> {
-    debug_assert!(!delim.is_empty());
-    let mut parts = Vec::new();
-    let mut start = 0;
-    let mut cursor = 0;
-    while cursor + delim.len() <= value.len() {
-        if &value[cursor..cursor + delim.len()] == delim {
-            parts.push(&value[start..cursor]);
-            cursor += delim.len();
-            start = cursor;
-        } else {
-            cursor += 1;
-        }
-    }
-    parts.push(&value[start..]);
-    parts
+    crate::tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || {
+            // Tuple coercion still demands the delimiter when the source is
+            // NULL, and still stops on a source coercion error.
+            let (bytes, delimiter) = (coerce_str_bytes(value)?, coerce_str_bytes(delim_value)?);
+            let count = if count_value == &Datum::Null {
+                crate::tikv::ReadyIntArg::Value(None)
+            } else if bytes.is_none()
+                || delimiter.is_none()
+                || delimiter.as_ref().is_some_and(Vec::is_empty)
+            {
+                crate::tikv::ReadyIntArg::Undemanded
+            } else {
+                // The unsigned operation retains the original UInt bits.
+                crate::tikv::ReadyIntArg::Value(Some(crate::cast::to_i64_signed(count_value)))
+            };
+            Ok(crate::tikv::EvaluatedArgs::BytesBytesIntReady {
+                bytes,
+                delimiter,
+                count,
+            })
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, |bytes| string_result(value, bytes)))
+        },
+    )
 }
 
 /// `INSERT(str, pos, len, newstr)`: replaces the `len` characters of `str`
@@ -2028,7 +2016,7 @@ fn append_char_integer(bytes: &mut Vec<u8>, mut value: i64) {
 /// `remstr` (never per-character) from the requested end(s) of `str` —
 /// confirmed via `gorun`: `TRIM('xx' FROM 'xxhixx')` is `'hi'` (the
 /// 2-character `remstr` removed as a unit, not char-by-char). An empty
-/// `remstr` is a no-op (confirmed via `gorun`), guarded explicitly here
+/// `remstr` is a no-op (confirmed via `gorun`), guarded in the shared kernel
 /// since `str::trim_start_matches`/`trim_end_matches` would otherwise
 /// loop forever matching a zero-length pattern at every position.
 /// `direction` defaults to `Both` when omitted (bare `TRIM(remstr FROM
@@ -2037,39 +2025,45 @@ fn append_char_integer(bytes: &mut Vec<u8>, mut value: i64) {
 /// of those defaults before calling this (see `tidb_ast::Expr::Trim`'s
 /// own doc for the exact `None`/`Some` shape). `NULL` if either operand
 /// is `NULL`.
+#[cfg(test)]
 pub(crate) fn trim_value(
     str: Option<Vec<u8>>,
     remstr: Option<Vec<u8>>,
     direction: tidb_ast::TrimDirection,
     binary: bool,
 ) -> Datum {
-    let (Some(mut str), Some(remstr)) = (str, remstr) else {
-        return Datum::Null;
+    trim_value_in(str, remstr, direction, binary, &crate::NoColumns)
+        .expect("test-only TRIM evaluation")
+}
+
+/// Receives already-coerced operands, preserving the distinct AST and typed
+/// evaluation orders. Every direction, NULL and empty-removal case enters C4.
+pub(crate) fn trim_value_in(
+    str: Option<Vec<u8>>,
+    remstr: Option<Vec<u8>>,
+    direction: tidb_ast::TrimDirection,
+    binary: bool,
+    ctx: &dyn crate::Columns,
+) -> Result<Datum, EvalError> {
+    let operation = match direction {
+        tidb_ast::TrimDirection::Both => crate::tikv::EvaluatedBytesOp::TrimBothNative,
+        tidb_ast::TrimDirection::Leading => crate::tikv::EvaluatedBytesOp::TrimLeadingNative,
+        tidb_ast::TrimDirection::Trailing => crate::tikv::EvaluatedBytesOp::TrimTrailingNative,
     };
-    if remstr.is_empty() {
-        return if binary {
-            Datum::new_bytes(str)
-        } else {
-            Datum::new_string(str)
-        };
-    }
-    use tidb_ast::TrimDirection::*;
-    if matches!(direction, Leading | Both) {
-        while str.starts_with(&remstr) {
-            str.drain(..remstr.len());
-        }
-    }
-    if matches!(direction, Trailing | Both) {
-        while str.ends_with(&remstr) {
-            let new_len = str.len() - remstr.len();
-            str.truncate(new_len);
-        }
-    }
-    if binary {
-        Datum::new_bytes(str)
-    } else {
-        Datum::new_string(str)
-    }
+    crate::tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || Ok(crate::tikv::EvaluatedArgs::Bytes2(str, remstr)),
+        |computed| {
+            Ok(computed.into_bytes()?.map_or(Datum::Null, |bytes| {
+                if binary {
+                    Datum::new_bytes(bytes)
+                } else {
+                    Datum::new_string(bytes)
+                }
+            }))
+        },
+    )
 }
 
 #[cfg(test)]
