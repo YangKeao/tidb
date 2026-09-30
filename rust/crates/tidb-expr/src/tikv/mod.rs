@@ -20,11 +20,19 @@
 // Intentionally not activated at any general expression entrypoint yet.
 #![allow(dead_code)]
 
+mod adapter_failure;
 mod batch;
 mod catalog;
 mod context;
-// Explicit private value-boundary prototype; no SQL dispatcher/public hook.
+// Explicit native value boundary and capabilities, not a SQL dispatcher hook.
 mod evaluated_ascii;
+pub use adapter_failure::{
+    ExpressionAdapterFailure, ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,
+};
+pub use evaluated_ascii::{
+    AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy, AsciiScope,
+    ScopedAsciiColumns,
+};
 mod lineage;
 mod lower;
 mod ordinary;

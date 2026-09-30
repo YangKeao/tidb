@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Private, explicit-scope C4 ASCII caller. No SQL dispatcher is installed.
+//! Explicit-scope C4 ASCII value caller. No SQL dispatcher is installed.
 //!
 //! The real C4 worker is the only computation path. Native children/transcode
-//! precede this value boundary; original return coercion follows it. This is
-//! not a frontend cache, a generic backend pool, or a public Columns extension.
+//! precede this value boundary; original return coercion follows it. Public
+//! native-only capabilities bind a scope without installing statement lifetimes
+//! or propagating through existing business-context wrappers automatically.
 //!
 //! PINNED ACCOUNTING CONTRACT: PoolArcAllocation requires an independent
 //! caller-specific allocation-request receipt for the exact payload/compiler.
@@ -40,14 +41,16 @@ use tidb_datatype::{Datum, DatumKind, Time};
 use tidb_query_datatype::{codec::data_type::ScalarValueRef, EvalType};
 use tidb_query_expr::local::{
     prepare_evaluated_ascii, CompileLimits, ComputedInt, ComputedIntMetadata, EvaluatedAsciiWorker,
-    ExecutionLimits, LocalCompileContext, LocalError,
+    ExecutionLimits, LocalCompileContext,
 };
 
+use super::adapter_failure::{ExpressionAdapterFailure, ScopeFailureKind};
+use super::runtime_failure::{ExpressionRuntimeFailure, ExpressionRuntimeFailurePhase};
 use crate::context::{BlockEncryptionMode, ErrorLevel, SessionTimeZone};
 use crate::{Columns, EvalError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OwnerErrorKind {
+pub(super) enum OwnerErrorKind {
     Policy,
     Resource,
     Closed,
@@ -57,12 +60,16 @@ enum OwnerErrorKind {
 
 /// TiDB-only configuration/lifecycle failure; no KV type is exposed here.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct AsciiOwnerError {
+pub struct AsciiOwnerError {
     kind: OwnerErrorKind,
     message: &'static str,
 }
 
 impl AsciiOwnerError {
+    pub(super) fn kind(&self) -> OwnerErrorKind {
+        self.kind
+    }
+
     fn new(kind: OwnerErrorKind, message: &'static str) -> Self {
         Self { kind, message }
     }
@@ -90,15 +97,36 @@ impl fmt::Display for AsciiOwnerError {
 }
 impl std::error::Error for AsciiOwnerError {}
 
-/// Private structured handoff only. Mapping to Clone/Eq EvalError is a
-/// separate loan; in particular, never stringify/replay a LocalError here.
+/// Private structured handoff. Actual C4 failures capture their known phase at
+/// the producing call; adapter failures never impersonate a LocalError.
 #[derive(Debug)]
-pub(crate) enum AsciiBoundaryError {
+pub(super) enum AsciiBoundaryError {
     Frontend(EvalError),
-    Kernel(LocalError),
+    Kernel(ExpressionRuntimeFailure),
     Metadata(BridgeError),
     Owner(AsciiOwnerError),
-    Scope(&'static str),
+    Scope {
+        kind: ScopeFailureKind,
+        reason: &'static str,
+    },
+}
+
+impl AsciiBoundaryError {
+    fn into_eval_error(self) -> EvalError {
+        match self {
+            Self::Frontend(error) => error,
+            Self::Kernel(failure) => EvalError::ExpressionRuntimeFailure(failure),
+            Self::Metadata(error) => {
+                EvalError::ExpressionAdapterFailure(ExpressionAdapterFailure::from_bridge(error))
+            }
+            Self::Owner(error) => {
+                EvalError::ExpressionAdapterFailure(ExpressionAdapterFailure::from_owner(error))
+            }
+            Self::Scope { kind, reason } => EvalError::ExpressionAdapterFailure(
+                ExpressionAdapterFailure::from_scope(kind, reason),
+            ),
+        }
+    }
 }
 
 impl From<AsciiOwnerError> for AsciiBoundaryError {
@@ -107,9 +135,16 @@ impl From<AsciiOwnerError> for AsciiBoundaryError {
     }
 }
 
-/// Explicit, immutable limits. There is deliberately no Default implementation.
+/// Explicit, immutable limits for the closed ASCII worker; no default policy.
+///
+/// The pool ledger uses conditional retained/request-size accounting for a
+/// validated, fixed compiler/layout cohort. It is not a physical-heap cap, a
+/// factory transient-peak measurement, or an allocation/OOM recovery guarantee.
+/// Creation reservations are allowances, not measured construction peaks.
+/// Caller handles/scopes, native coercion and native error-carrier allocations
+/// are outside this ledger; driver temporaries have a separate call allowance.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct AsciiPoolPolicy {
+pub struct AsciiPoolPolicy {
     max_workers: usize,
     max_creating: usize,
     max_pool_bytes: usize,
@@ -121,7 +156,17 @@ pub(crate) struct AsciiPoolPolicy {
 }
 
 impl AsciiPoolPolicy {
-    pub(crate) fn checked(
+    /// Checks explicit limits and the conditional control-storage charge.
+    ///
+    /// This does not prepare a worker or certify physical heap usage, factory
+    /// transients or OOM recovery. See the accounting exclusions on this type.
+    /// Zero worker/creating slots are valid for a dormant binding; admission
+    /// occurs only when an evaluated value demands the closed ASCII worker.
+    ///
+    /// # Errors
+    /// Returns a native configuration/resource error for inconsistent limits or
+    /// an overflowing/excessive control-storage charge.
+    pub fn checked(
         max_workers: usize,
         max_creating: usize,
         max_pool_bytes: usize,
@@ -247,19 +292,39 @@ struct PoolSnapshot {
     caller_arc_measurement_required: bool,
 }
 
+/// Cloneable, synchronized accounting root for explicit ASCII executions.
+///
+/// Clones share outstanding creation/lease/retirement charges across epochs.
+/// Accounting is conditional on the fixed-pin allocation-request/retained-size
+/// basis, not a physical-heap or transient-peak/OOM guarantee. Caller handles,
+/// scopes, native coercion and native error-carrier allocations are excluded;
+/// see [`AsciiPoolPolicy`]. This owner installs no SQL or statement lifecycle.
 #[derive(Clone)]
-pub(crate) struct AsciiPoolOwner {
+pub struct AsciiPoolOwner {
     core: Arc<PoolCore>,
 }
 
+/// Cloneable, synchronized token for one epoch of an [`AsciiPoolOwner`].
+///
+/// Cloning does not begin an execution or clone a worker. The lifecycle owner
+/// must explicitly close this epoch; dropping a borrowed token does not do so.
 #[derive(Clone)]
-pub(crate) struct AsciiExecution {
+pub struct AsciiExecution {
     core: Arc<PoolCore>,
     epoch: u64,
 }
 
 impl AsciiPoolOwner {
-    pub(crate) fn new(policy: AsciiPoolPolicy) -> Result<Self, AsciiOwnerError> {
+    /// Allocates the accounting root and slot container, not an ASCII worker.
+    ///
+    /// Uses only the caller's checked policy. Its conditional fixed-pin request
+    /// accounting has the exclusions and non-guarantees on [`AsciiPoolPolicy`];
+    /// notably ordinary Arc/Box allocations do not promise OOM recovery.
+    ///
+    /// # Errors
+    /// Returns a native resource error if the slot reservation fails or its
+    /// observed container capacity exceeds the control-storage allowance.
+    pub fn new(policy: AsciiPoolPolicy) -> Result<Self, AsciiOwnerError> {
         let mut slots = Vec::new();
         slots
             .try_reserve_exact(policy.max_workers)
@@ -291,7 +356,16 @@ impl AsciiPoolOwner {
         })
     }
 
-    pub(crate) fn begin_execution(&self) -> Result<AsciiExecution, AsciiOwnerError> {
+    /// Begins a checked, non-reused epoch on this same accounting root.
+    ///
+    /// Invalidates older epochs without forgiving their outstanding charges.
+    /// No worker is prepared here; this is a lifecycle operation, not a row
+    /// entrypoint. The caller owns the matching [`AsciiExecution::close`].
+    ///
+    /// # Errors
+    /// Returns a native lifecycle/contract error if the owner is poisoned or
+    /// the epoch counter is exhausted.
+    pub fn begin_execution(&self) -> Result<AsciiExecution, AsciiOwnerError> {
         let epoch = {
             let mut state = self.core.lock()?;
             let Some(epoch) = state.next_epoch.checked_add(1) else {
@@ -525,7 +599,11 @@ impl PoolCore {
 }
 
 impl AsciiExecution {
-    pub(crate) fn scope(&self) -> AsciiScope {
+    /// Creates an affine scope without checkout, compilation or admission.
+    ///
+    /// A closed epoch is refused only when a value demands its worker. Scopes
+    /// can move between threads but cannot share their mutable worker state.
+    pub fn scope(&self) -> AsciiScope {
         AsciiScope {
             execution: self.clone(),
             lease: RefCell::new(None),
@@ -534,7 +612,12 @@ impl AsciiExecution {
         }
     }
 
-    pub(crate) fn close(&self) {
+    /// Idempotently closes this epoch, never a newer epoch on the same root.
+    ///
+    /// Existing live leases/creations remain charged until their disposal.
+    /// Only the execution's lifecycle owner, not a borrowing operator, should
+    /// close it. This does not wait for outstanding native work to finish.
+    pub fn close(&self) {
         {
             let _state = self.core.cleanup_lock();
             if self.core.epoch.load(Ordering::SeqCst) == self.epoch {
@@ -668,12 +751,22 @@ impl Creation {
             self.core.policy.execution_limits(),
             self.core.policy.worker_retained_cap,
         )
-        .map_err(AsciiBoundaryError::Kernel)?;
+        .map_err(|error| {
+            AsciiBoundaryError::Kernel(ExpressionRuntimeFailure::from_ascii_local(
+                error,
+                Some(ExpressionRuntimeFailurePhase::Prepare),
+            ))
+        })?;
         self.worker = Some(Box::new(worker));
         let worker = self.worker.as_ref().expect("just prepared worker");
         let observed = worker
             .retained_storage()
-            .map_err(AsciiBoundaryError::Kernel)?
+            .map_err(|error| {
+                AsciiBoundaryError::Kernel(ExpressionRuntimeFailure::from_ascii_local(
+                    error,
+                    Some(ExpressionRuntimeFailurePhase::Observe),
+                ))
+            })?
             .total_bytes();
         if !worker.is_healthy() || observed > self.core.policy.worker_retained_cap {
             return Err(
@@ -693,12 +786,18 @@ impl Creation {
     }
 
     fn publish(mut self) -> Result<AsciiLease, AsciiBoundaryError> {
-        let worker = self.worker.as_ref().ok_or(AsciiBoundaryError::Scope(
-            "ASCII publication before preparation",
-        ))?;
+        let worker = self.worker.as_ref().ok_or(AsciiBoundaryError::Scope {
+            kind: ScopeFailureKind::Contract,
+            reason: "ASCII publication before preparation",
+        })?;
         let observed = worker
             .retained_storage()
-            .map_err(AsciiBoundaryError::Kernel)?
+            .map_err(|error| {
+                AsciiBoundaryError::Kernel(ExpressionRuntimeFailure::from_ascii_local(
+                    error,
+                    Some(ExpressionRuntimeFailurePhase::Observe),
+                ))
+            })?
             .total_bytes();
         if !worker.is_healthy() || observed > self.core.policy.worker_retained_cap {
             return Err(AsciiOwnerError::contract("ASCII publication is not healthy").into());
@@ -749,13 +848,18 @@ struct AsciiLease {
 
 impl AsciiLease {
     fn validate(&self) -> Result<usize, AsciiBoundaryError> {
-        let worker = self
-            .worker
-            .as_ref()
-            .ok_or(AsciiBoundaryError::Scope("missing ASCII worker"))?;
+        let worker = self.worker.as_ref().ok_or(AsciiBoundaryError::Scope {
+            kind: ScopeFailureKind::Contract,
+            reason: "missing ASCII worker",
+        })?;
         let observed = worker
             .retained_storage()
-            .map_err(AsciiBoundaryError::Kernel)?
+            .map_err(|error| {
+                AsciiBoundaryError::Kernel(ExpressionRuntimeFailure::from_ascii_local(
+                    error,
+                    Some(ExpressionRuntimeFailurePhase::Observe),
+                ))
+            })?
             .total_bytes();
         if !worker.is_healthy() || observed > self.core.policy.worker_retained_cap {
             return Err(AsciiOwnerError::contract("ASCII worker ownership is not healthy").into());
@@ -838,7 +942,11 @@ impl Drop for Retirement {
 
 /// Affine worker scope. RefCell/Cell intentionally make this Send, not Sync.
 /// It contains no native Columns/row/SQL descriptor or invocation value.
-pub(crate) struct AsciiScope {
+///
+/// A healthy worker is reused within the scope and returned to its same-epoch
+/// pool on ordinary drop. Unwind poison is sticky: it never permits native
+/// replay or silently creates a replacement execution.
+pub struct AsciiScope {
     execution: AsciiExecution,
     lease: RefCell<Option<AsciiLease>>,
     busy: Cell<bool>,
@@ -846,21 +954,63 @@ pub(crate) struct AsciiScope {
 }
 
 impl AsciiScope {
-    pub(crate) fn with_columns<R>(
-        &self,
-        native: &dyn Columns,
-        body: impl FnOnce(&dyn Columns) -> R,
+    /// Lexically binds a capability while preserving native Columns behavior.
+    ///
+    /// An already active scope on `native` wins, including its execution token
+    /// and unwind guard. If discovery itself panics, only the requested scope
+    /// can be quarantined; an undisclosed native scope is not known. Otherwise
+    /// this scope is used when no active scope exists. Binding itself does not
+    /// check out or prepare a worker, perform admission, or supply defaults.
+    /// The sized borrowing wrapper also supports existing `C: Columns` callers;
+    /// neither `native` nor the callback needs `Send`, `Sync` or `'static`.
+    ///
+    /// Put this call INSIDE the caller's panic catcher and encompass native
+    /// child/return work: the guard poisons the effective scope on unwind but
+    /// does not catch it. This API alone does not wire business forwarders or
+    /// statement lifetimes. Callback/handle/coercion/error-carrier allocations
+    /// are outside the conditional fixed-pin pool ledger; neither this binding
+    /// nor that ledger guarantees physical heap, transient peaks or OOM recovery.
+    pub fn with_columns<'a, R>(
+        &'a self,
+        native: &'a dyn Columns,
+        body: impl FnOnce(&ScopedAsciiColumns<'a, 'a>) -> R,
     ) -> R {
+        // Capability discovery is a native virtual call and can itself unwind.
+        // Protect the requested scope until the effective guard is armed; a
+        // scope the getter fails to disclose cannot be identified here.
+        let mut discovery_guard = NativeGuard::new(self);
+        let scope = native.evaluated_ascii_scope().unwrap_or(self);
         // This guard must be INSIDE the existing caller's panic catcher. It
         // catches no panic itself; Drop marks poison while unwinding.
-        let mut guard = NativeGuard::new(self);
-        let scoped = ScopedAsciiColumns {
-            native,
-            scope: self,
-        };
+        let mut guard = NativeGuard::new(scope);
+        discovery_guard.disarm();
+        let scoped = ScopedAsciiColumns { native, scope };
         let result = body(&scoped);
         guard.disarm();
         result
+    }
+
+    /// Computes ASCII from one already evaluated native value using only the
+    /// existing closed C4 worker, including for SQL NULL.
+    ///
+    /// This is a value/coercion boundary, NOT a SQL frontend: the caller must
+    /// already have evaluated children, checked arity, and applied the native
+    /// context-dependent argument casts/transcoding. This method performs the
+    /// existing final byte coercion, invokes C4, and materializes its owned Int
+    /// or NULL; the caller still owns native return-type coercion afterwards.
+    /// No policy, execution, native fallback or general evaluator is synthesized.
+    ///
+    /// Native byte-coercion and error-carrier allocations are outside the pool
+    /// ledger. Its fixed-pin request/retained accounting is conditional, not a
+    /// physical-heap cap, factory transient-peak or allocation/OOM guarantee.
+    /// Use [`Self::with_columns`] to guard surrounding native child/return work.
+    ///
+    /// # Errors
+    /// Original frontend coercion errors precede runtime admission. Actual C4
+    /// errors preserve their cause and known phase; pool/scope/bridge errors
+    /// have the distinct native adapter origin. No failure is replayed natively.
+    pub fn evaluate_value(&self, value: &Datum) -> Result<Datum, EvalError> {
+        evaluate_ascii_value(self, value).map_err(AsciiBoundaryError::into_eval_error)
     }
 
     fn poison(&self) {
@@ -917,15 +1067,24 @@ struct Invocation<'a> {
 impl<'a> Invocation<'a> {
     fn enter(scope: &'a AsciiScope) -> Result<Self, AsciiBoundaryError> {
         if scope.poisoned.get() {
-            return Err(AsciiBoundaryError::Scope("ASCII scope is poisoned"));
+            return Err(AsciiBoundaryError::Scope {
+                kind: ScopeFailureKind::Poisoned,
+                reason: "ASCII scope is poisoned",
+            });
         }
         if scope.busy.get() {
-            return Err(AsciiBoundaryError::Scope("reentrant ASCII runtime borrow"));
+            return Err(AsciiBoundaryError::Scope {
+                kind: ScopeFailureKind::Reentry,
+                reason: "reentrant ASCII runtime borrow",
+            });
         }
         let mut parked = scope
             .lease
             .try_borrow_mut()
-            .map_err(|_| AsciiBoundaryError::Scope("ASCII scope cell is already borrowed"))?;
+            .map_err(|_| AsciiBoundaryError::Scope {
+                kind: ScopeFailureKind::Reentry,
+                reason: "ASCII scope cell is already borrowed",
+            })?;
         let lease = parked.take();
         scope.busy.set(true);
         Ok(Self {
@@ -950,7 +1109,12 @@ impl<'a> Invocation<'a> {
         let result = worker.eval_one(ready.0);
         #[cfg(test)]
         tests::after_eval_one_for_test(worker.kernel_invocations());
-        result.map_err(AsciiBoundaryError::Kernel)
+        result.map_err(|error| {
+            AsciiBoundaryError::Kernel(ExpressionRuntimeFailure::from_ascii_local(
+                error,
+                Some(ExpressionRuntimeFailurePhase::Invoke),
+            ))
+        })
     }
 
     fn finish(
@@ -985,7 +1149,10 @@ impl<'a> Invocation<'a> {
                 _ => {
                     self.scope.poisoned.set(true);
                     drop(lease);
-                    Err(AsciiBoundaryError::Scope("ASCII lease restore conflict"))
+                    Err(AsciiBoundaryError::Scope {
+                        kind: ScopeFailureKind::Contract,
+                        reason: "ASCII lease restore conflict",
+                    })
                 }
             }
         } else {
@@ -1056,7 +1223,7 @@ impl NativeComputedInt {
     }
 }
 
-pub(crate) fn evaluate_ascii_value(
+pub(super) fn evaluate_ascii_value(
     scope: &AsciiScope,
     value: &Datum,
 ) -> Result<Datum, AsciiBoundaryError> {
@@ -1068,10 +1235,15 @@ pub(crate) fn evaluate_ascii_value(
     result
 }
 
-struct ScopedAsciiColumns<'native, 'scope> {
+/// Opaque, sized lexical Columns binding created by [`AsciiScope::with_columns`].
+///
+/// Borrows the original native context and effective scope, with no ownership
+/// or `'static` requirement on that context. Ordinary methods forward to the
+/// original context; only the two ASCII capability methods are overridden.
+/// The wrapper cannot share the scope between threads and does not establish
+/// business-wrapper propagation or statement/executor lifecycle ownership.
+pub struct ScopedAsciiColumns<'native, 'scope> {
     native: &'native dyn Columns,
-    // First private cut: no Columns capability methods exist to expose this.
-    // The lexical binding and full-operation guard nevertheless share one scope.
     scope: &'scope AsciiScope,
 }
 
@@ -1086,6 +1258,14 @@ macro_rules! forward_columns {
 }
 
 impl Columns for ScopedAsciiColumns<'_, '_> {
+    fn evaluated_ascii_scope(&self) -> Option<&AsciiScope> {
+        Some(self.scope)
+    }
+
+    fn evaluated_ascii_execution(&self) -> Option<&AsciiExecution> {
+        Some(&self.scope.execution)
+    }
+
     forward_columns! {
         fn get(&self, path: &[String]) -> Option<Datum>;
         fn context_id(&self) -> u64;

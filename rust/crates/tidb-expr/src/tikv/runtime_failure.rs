@@ -102,9 +102,9 @@ pub struct ExpressionRuntimeFailure {
 impl ExpressionRuntimeFailure {
     /// Moves an actual C4 cause into the native opaque payload.
     ///
-    /// `None` explicitly means unattributed. In particular, the current caller's
-    /// `AsciiBoundaryError::Kernel` can contain preparation, observation or
-    /// invocation errors; that variant alone never justifies `Some(Invoke)`.
+    /// `None` explicitly means unattributed. The evaluated-value caller captures
+    /// Prepare, Observe or Invoke at the actual failing API call, before placing
+    /// this handle in its Kernel variant; Invoke does not prove kernel entry.
     /// There is no default phase and no phase inference from a code or message.
     ///
     /// This allocates one ordinary Arc on the error path. It does not promise

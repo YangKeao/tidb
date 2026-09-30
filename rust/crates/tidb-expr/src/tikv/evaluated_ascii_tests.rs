@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! First-private-cut tests only: explicit scopes and actual C4 workers. These
-//! do not activate SQL dispatch, add Columns capabilities, or prove allocator
-//! requests, factory construction peaks, or integrated return coercion.
+//! Explicit-scope tests with actual C4 workers, including native-only public
+//! value/capability APIs. These do not activate SQL dispatch or establish
+//! business-wrapper propagation/statement lifetimes. They do not measure
+//! allocator requests/factory peaks or prove integrated return coercion.
 
 use super::*;
 use crate::constant::Constant;
@@ -30,6 +31,7 @@ use tidb_datatype::{
     ConversionFlags, CoreTime, DateModes, Datum, FieldType, FieldTypeCode, SessionTimeZone, Time,
     TimeType,
 };
+use tidb_query_expr::local::LocalError;
 
 // Test-thread-local timing seam only: no swappable worker/backend, no global
 // callback, and no cfg(test) field in the production PoolCore payload. The
@@ -131,7 +133,7 @@ fn test_policy(max_workers: usize, max_creating: usize) -> AsciiPoolPolicy {
     .unwrap()
 }
 
-const COLUMNS_METHODS: [&str; 63] = [
+const COLUMNS_FORWARDED_METHODS: [&str; 63] = [
     "get",
     "context_id",
     "use_plan_cache",
@@ -197,6 +199,10 @@ const COLUMNS_METHODS: [&str; 63] = [
     "sequence_setval",
 ];
 
+// Intentional overrides, NOT two more forwarded native methods.
+const COLUMNS_CAPABILITY_METHODS: [&str; 2] =
+    ["evaluated_ascii_scope", "evaluated_ascii_execution"];
+
 // A deliberately small source drift check, not a Rust parser. These specific
 // source blocks have unindented closing braces and one method per declaration.
 // A shape change fails loudly instead of silently excluding the new methods.
@@ -228,27 +234,40 @@ fn declared_methods<'a>(source: &'a str, marker: &str) -> Vec<&'a str> {
 
 #[test]
 fn columns_method_sets_have_no_unreviewed_forwarding_drift() {
-    let expected = BTreeSet::from(COLUMNS_METHODS);
-    assert_eq!(expected.len(), 63, "inventory must not hide duplicates");
+    let forwarded = BTreeSet::from(COLUMNS_FORWARDED_METHODS);
+    let capabilities = BTreeSet::from(COLUMNS_CAPABILITY_METHODS);
+    assert_eq!(forwarded.len(), 63, "inventory must not hide duplicates");
+    assert_eq!(capabilities.len(), 2);
+    assert!(forwarded.is_disjoint(&capabilities));
+    let expected: BTreeSet<_> = forwarded.union(&capabilities).copied().collect();
+    assert_eq!(
+        expected.len(),
+        65,
+        "63 forwarded plus 2 special capabilities"
+    );
     for (source, marker) in [
         (include_str!("../context.rs"), "pub trait Columns"),
         (
             include_str!("evaluated_ascii.rs"),
             "Columns for ScopedAsciiColumns",
         ),
-        (
-            include_str!("evaluated_ascii_tests.rs"),
-            "impl Columns for ForwardingSentinel<'_>",
-        ),
     ] {
         let methods = declared_methods(source, marker);
-        assert_eq!(methods.len(), 63, "method declaration count: {marker}");
+        assert_eq!(methods.len(), 65, "method declaration count: {marker}");
         assert_eq!(
             methods.into_iter().collect::<BTreeSet<_>>(),
             expected,
             "review forwarding and behavioral coverage when Columns changes: {marker}"
         );
     }
+    // The ordinary-method sentinel deliberately inherits default-None
+    // capabilities. Separate runtime tests below observe both overrides.
+    let sentinel = declared_methods(
+        include_str!("evaluated_ascii_tests.rs"),
+        "impl Columns for ForwardingSentinel<'_>",
+    );
+    assert_eq!(sentinel.len(), 63);
+    assert_eq!(sentinel.into_iter().collect::<BTreeSet<_>>(), forwarded);
     // These are the three concrete sessionless overrides at the frozen source
     // checkpoint, NOT three additional Columns trait methods.
     assert_eq!(
@@ -901,14 +920,14 @@ fn exercise_columns(columns: &dyn Columns, input: &NativeInputs) -> Vec<(&'stati
             .iter()
             .map(|(method, _)| *method)
             .collect::<BTreeSet<_>>(),
-        BTreeSet::from(COLUMNS_METHODS),
+        BTreeSet::from(COLUMNS_FORWARDED_METHODS),
         "each inventoried method needs a behavioral observation"
     );
     returned
 }
 
 #[test]
-fn all_columns_methods_forward_arguments_returns_errors_and_effects_through_nested_wrappers() {
+fn ordinary_columns_forward_all_63_methods_through_nested_wrappers() {
     let input = NativeInputs::new();
     let owner = AsciiPoolOwner::new(test_policy(2, 2)).unwrap();
     let execution = owner.begin_execution().unwrap();
@@ -923,7 +942,7 @@ fn all_columns_methods_forward_arguments_returns_errors_and_effects_through_nest
                 .iter()
                 .map(|call| call.method)
                 .collect::<BTreeSet<_>>(),
-            BTreeSet::from(COLUMNS_METHODS),
+            BTreeSet::from(COLUMNS_FORWARDED_METHODS),
             "the native sentinel itself must override every policy default"
         );
         for nested in [false, true] {
@@ -973,6 +992,411 @@ fn scope_worker_observation(scope: &AsciiScope) -> (usize, u64, usize, usize, us
         storage.owned_heap_bytes(),
         storage.total_bytes(),
     )
+}
+
+// Borrowing, non-Send/non-Sync native context: no 'static requirement and no
+// substitute backend. Its advertised execution intentionally may disagree
+// with its active scope; the scoped wrapper must resolve that disagreement.
+struct AdvertisedAsciiColumns<'a> {
+    scope: Option<&'a crate::AsciiScope>,
+    execution: &'a crate::AsciiExecution,
+}
+
+impl Columns for AdvertisedAsciiColumns<'_> {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        None
+    }
+
+    fn evaluated_ascii_scope(&self) -> Option<&crate::AsciiScope> {
+        self.scope
+    }
+
+    fn evaluated_ascii_execution(&self) -> Option<&crate::AsciiExecution> {
+        Some(self.execution)
+    }
+}
+
+// The implicit Sized bound is intentional: this is the existing C: Columns
+// calling shape, not a new production dispatcher or dyn-only replacement.
+fn value_through_sized_columns<C: Columns>(columns: &C, value: &Datum) -> Result<Datum, EvalError> {
+    columns
+        .evaluated_ascii_scope()
+        .expect("this operation explicitly bound its scope")
+        .evaluate_value(value)
+}
+
+#[test]
+fn public_value_producer_invokes_real_c4_for_null_bytes_and_reuses_one_worker() {
+    let owner = crate::AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    let cases = [
+        (Datum::Null, Datum::Null),
+        (Datum::Bytes(vec![]), Datum::Int(0)),
+        (Datum::Raw(vec![0xff, 0xfe]), Datum::Int(255)),
+        (Datum::Bytes(vec![0, b'x']), Datum::Int(0)),
+        (Datum::Int(2), Datum::Int(50)),
+    ];
+    let calls = cases.len() as u64;
+    let mut identity = None;
+    for (index, (input, expected)) in cases.into_iter().enumerate() {
+        assert_eq!(scope.evaluate_value(&input), Ok(expected));
+        let (address, invocations, inline, heap, total) = scope_worker_observation(&scope);
+        assert_eq!(invocations, index as u64 + 1, "NULL also invokes fn_ptr");
+        assert_eq!(
+            *identity.get_or_insert((address, inline, heap, total)),
+            (address, inline, heap, total)
+        );
+        let snapshot = owner.snapshot().unwrap();
+        assert_eq!(
+            (snapshot.factory_attempts, snapshot.factory_successes),
+            (1, 1)
+        );
+    }
+    drop(scope);
+    assert_eq!(owner.snapshot().unwrap().idle, 1);
+    let reused = execution.scope();
+    assert_eq!(reused.evaluate_value(&Datum::Null), Ok(Datum::Null));
+    let (address, invocations, inline, heap, total) = scope_worker_observation(&reused);
+    assert_eq!(invocations, calls + 1);
+    assert_eq!(identity, Some((address, inline, heap, total)));
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 1);
+}
+
+#[test]
+fn public_dynamic_capabilities_are_sized_and_keep_effective_scope_execution_identity() {
+    let owner_a = crate::AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner_b = crate::AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution_a = owner_a.begin_execution().unwrap();
+    let execution_b = owner_b.begin_execution().unwrap();
+    let active = execution_a.scope();
+    let requested = execution_b.scope();
+    assert_eq!(requested.evaluate_value(&Datum::Int(2)), Ok(Datum::Int(50)));
+    let untouched_b = owner_b.snapshot().unwrap();
+    let conflicting = AdvertisedAsciiColumns {
+        scope: Some(&active),
+        execution: &execution_b,
+    };
+    requested.with_columns(&conflicting, |bound: &crate::ScopedAsciiColumns<'_, '_>| {
+        let dynamic: &dyn Columns = bound;
+        assert!(std::ptr::eq(
+            dynamic.evaluated_ascii_scope().unwrap(),
+            &active
+        ));
+        assert!(std::ptr::eq(
+            dynamic.evaluated_ascii_execution().unwrap(),
+            &active.execution
+        ));
+        assert!(!Arc::ptr_eq(
+            &dynamic.evaluated_ascii_execution().unwrap().core,
+            &execution_b.core
+        ));
+        assert_eq!(
+            value_through_sized_columns(bound, &Datum::Null),
+            Ok(Datum::Null)
+        );
+        requested.with_columns(dynamic, |nested| {
+            assert!(std::ptr::eq(
+                nested.evaluated_ascii_scope().unwrap(),
+                &active
+            ));
+            assert!(std::ptr::eq(
+                nested.evaluated_ascii_execution().unwrap(),
+                &active.execution
+            ));
+            assert_eq!(
+                value_through_sized_columns(nested, &Datum::Raw(vec![0xff])),
+                Ok(Datum::Int(255))
+            );
+        });
+    });
+    assert_eq!(scope_worker_observation(&active).1, 2);
+    assert_eq!(scope_worker_observation(&requested).1, 1);
+    assert_eq!(owner_b.snapshot().unwrap(), untouched_b);
+
+    // With no active scope, the requested binding wins even if the base
+    // context advertises a different execution. Do not forward that token.
+    let execution_only = AdvertisedAsciiColumns {
+        scope: None,
+        execution: &execution_a,
+    };
+    requested.with_columns(&execution_only, |bound| {
+        assert!(std::ptr::eq(
+            bound.evaluated_ascii_scope().unwrap(),
+            &requested
+        ));
+        assert!(std::ptr::eq(
+            bound.evaluated_ascii_execution().unwrap(),
+            &requested.execution
+        ));
+        assert_eq!(
+            value_through_sized_columns(bound, &Datum::Null),
+            Ok(Datum::Null)
+        );
+    });
+    assert_eq!(scope_worker_observation(&requested).1, 2);
+    assert_eq!(owner_b.snapshot().unwrap().factory_attempts, 1);
+}
+
+#[test]
+fn public_foreign_nested_native_panic_quarantines_only_the_effective_scope() {
+    let owner_a = crate::AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner_b = crate::AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution_a = owner_a.begin_execution().unwrap();
+    let execution_b = owner_b.begin_execution().unwrap();
+    let active = execution_a.scope();
+    let requested = execution_b.scope();
+    assert_eq!(active.evaluate_value(&Datum::Null), Ok(Datum::Null));
+    assert_eq!(requested.evaluate_value(&Datum::Null), Ok(Datum::Null));
+    let untouched_b = owner_b.snapshot().unwrap();
+    let conflicting = AdvertisedAsciiColumns {
+        scope: Some(&active),
+        execution: &execution_b,
+    };
+    let panic = catch_unwind(AssertUnwindSafe(|| {
+        requested.with_columns(&conflicting, |outer| {
+            requested.with_columns(outer, |inner| {
+                assert!(std::ptr::eq(
+                    inner.evaluated_ascii_scope().unwrap(),
+                    &active
+                ));
+                assert_eq!(
+                    value_through_sized_columns(inner, &Datum::Bytes(vec![b'Q'])),
+                    Ok(Datum::Int(81))
+                );
+                assert_eq!(scope_worker_observation(&active).1, 2);
+                std::panic::panic_any("native after effective value");
+            });
+        });
+    }))
+    .expect_err("the native panic must escape both lexical guards");
+    assert_eq!(
+        panic.downcast_ref::<&str>(),
+        Some(&"native after effective value")
+    );
+    assert!(active.poisoned.get());
+    assert!(active.lease.borrow().is_none());
+    let disposed_a = owner_a.snapshot().unwrap();
+    assert_eq!(
+        (disposed_a.live, disposed_a.idle, disposed_a.retired),
+        (0, 0, 1)
+    );
+    assert_eq!(disposed_a.reserved_bytes, disposed_a.base_bytes);
+    assert!(!requested.poisoned.get());
+    assert_eq!(owner_b.snapshot().unwrap(), untouched_b);
+    assert_eq!(requested.evaluate_value(&Datum::Null), Ok(Datum::Null));
+    assert_eq!(scope_worker_observation(&requested).1, 2);
+    assert_eq!(owner_b.snapshot().unwrap().factory_attempts, 1);
+    assert!(matches!(
+        active.evaluate_value(&Datum::Null),
+        Err(EvalError::ExpressionAdapterFailure(failure))
+            if failure.class() == crate::ExpressionAdapterFailureClass::ScopePoisoned
+    ));
+    assert_eq!(owner_a.snapshot().unwrap(), disposed_a);
+}
+
+#[test]
+fn public_capability_getter_panic_quarantines_requested_ready_scope_before_recovery() {
+    struct PanickingDiscovery<'a>(&'a Cell<usize>);
+    impl Columns for PanickingDiscovery<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+
+        fn evaluated_ascii_scope(&self) -> Option<&crate::AsciiScope> {
+            self.0.set(self.0.get() + 1);
+            std::panic::panic_any("scope discovery panic");
+        }
+    }
+
+    let owner = crate::AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let requested = execution.scope();
+    assert_eq!(requested.evaluate_value(&Datum::Null), Ok(Datum::Null));
+    assert_eq!(scope_worker_observation(&requested).1, 1);
+    let discoveries = Cell::new(0);
+    let body_calls = Cell::new(0);
+    let native = PanickingDiscovery(&discoveries);
+    let panic = catch_unwind(AssertUnwindSafe(|| {
+        requested.with_columns(&native, |_| body_calls.set(body_calls.get() + 1));
+    }))
+    .expect_err("a capability getter is native work and can panic");
+    assert_eq!(panic.downcast_ref::<&str>(), Some(&"scope discovery panic"));
+    assert_eq!(discoveries.get(), 1);
+    assert_eq!(body_calls.get(), 0);
+    assert!(requested.poisoned.get());
+    assert!(requested.lease.borrow().is_none());
+    let disposed = owner.snapshot().unwrap();
+    assert_eq!((disposed.live, disposed.idle, disposed.retired), (0, 0, 1));
+    assert_eq!(disposed.reserved_bytes, disposed.base_bytes);
+    assert!(matches!(
+        requested.evaluate_value(&Datum::Null),
+        Err(EvalError::ExpressionAdapterFailure(failure))
+            if failure.class() == crate::ExpressionAdapterFailureClass::ScopePoisoned
+    ));
+    assert_eq!(owner.snapshot().unwrap(), disposed);
+    // Nothing here claims to identify/quarantine a scope the getter never
+    // returned. Only the known requested scope is protected during discovery.
+}
+
+#[test]
+fn public_invalid_active_scope_never_falls_back_to_a_foreign_execution() {
+    use crate::ExpressionAdapterFailureClass as AdapterClass;
+    for poison in [false, true] {
+        let owner_a = crate::AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+        let owner_b = crate::AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+        let execution_a = owner_a.begin_execution().unwrap();
+        let execution_b = owner_b.begin_execution().unwrap();
+        let active = execution_a.scope();
+        let requested = execution_b.scope();
+        assert_eq!(active.evaluate_value(&Datum::Null), Ok(Datum::Null));
+        assert_eq!(requested.evaluate_value(&Datum::Null), Ok(Datum::Null));
+        let expected_class = if poison {
+            let panic = catch_unwind(AssertUnwindSafe(|| {
+                active.with_columns(&crate::NoColumns, |_| {
+                    std::panic::panic_any("poison active capability");
+                });
+            }));
+            assert!(panic.is_err());
+            AdapterClass::ScopePoisoned
+        } else {
+            execution_a.close();
+            AdapterClass::PoolClosed
+        };
+        let untouched_b = owner_b.snapshot().unwrap();
+        let conflicting = AdvertisedAsciiColumns {
+            scope: Some(&active),
+            execution: &execution_b,
+        };
+        arm_eval_one_observation();
+        let result = requested.with_columns(&conflicting, |outer| {
+            requested.with_columns(outer, |inner| {
+                assert!(std::ptr::eq(
+                    inner.evaluated_ascii_scope().unwrap(),
+                    &active
+                ));
+                assert!(std::ptr::eq(
+                    inner.evaluated_ascii_execution().unwrap(),
+                    &active.execution
+                ));
+                value_through_sized_columns(inner, &Datum::Null)
+            })
+        });
+        let observation = take_eval_one_observation();
+        assert!(matches!(
+            result,
+            Err(EvalError::ExpressionAdapterFailure(failure))
+                if failure.class() == expected_class
+        ));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(owner_b.snapshot().unwrap(), untouched_b);
+        assert_eq!(scope_worker_observation(&requested).1, 1);
+        assert!(!requested.poisoned.get());
+        assert_eq!(owner_a.snapshot().unwrap().factory_attempts, 1);
+    }
+}
+
+#[test]
+fn public_value_errors_capture_actual_prepare_and_invoke_phases_without_recapture() {
+    use crate::ExpressionRuntimeFailureClass as RuntimeClass;
+    use crate::ExpressionRuntimeFailurePhase as Phase;
+    // The first case makes the real factory refuse its worker allowance; the
+    // second really prepares, then refuses work before its fn_ptr is entered.
+    // Observe failures are not fabricated: this test makes no runtime claim
+    // for the structurally captured retained_storage error sites.
+    for (worker_cap, steps, phase) in [(1, 64, Phase::Prepare), (TEST_WORKER_CAP, 0, Phase::Invoke)]
+    {
+        let policy = crate::AsciiPoolPolicy::checked(
+            1,
+            1,
+            TEST_POOL_BYTES,
+            worker_cap,
+            TEST_CREATION_RESERVATION,
+            steps,
+            8,
+            TEST_CALL_BYTES,
+        )
+        .unwrap();
+        let owner = crate::AsciiPoolOwner::new(policy).unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        for (index, value) in [Datum::Null, Datum::Int(2)].into_iter().enumerate() {
+            let failure = match scope.evaluate_value(&value) {
+                Err(EvalError::ExpressionRuntimeFailure(failure)) => failure,
+                other => panic!("expected real public C4 resource failure: {other:?}"),
+            };
+            assert_eq!(failure.class(), RuntimeClass::ResourceLimit);
+            assert_eq!(failure.phase(), Some(phase));
+            assert!(matches!(
+                failure.local_error(),
+                LocalError::ResourceLimit(_)
+            ));
+            let snapshot = owner.snapshot().unwrap();
+            if phase == Phase::Prepare {
+                assert_eq!(snapshot.factory_attempts, index as u64 + 1);
+                assert_eq!(snapshot.factory_successes, 0);
+                assert_eq!(snapshot.reserved_bytes, snapshot.base_bytes);
+                assert!(scope.lease.borrow().is_none());
+            } else {
+                assert_eq!(
+                    (snapshot.factory_attempts, snapshot.factory_successes),
+                    (1, 1)
+                );
+                assert_eq!(scope_worker_observation(&scope).1, 0);
+            }
+            assert!(!scope.poisoned.get());
+        }
+    }
+}
+
+#[test]
+fn public_frontend_errors_precede_zero_slots_closed_epochs_and_scope_poison() {
+    use crate::ExpressionAdapterFailureClass as AdapterClass;
+    for (state, expected_class) in [
+        (0, AdapterClass::PoolResource),
+        (1, AdapterClass::PoolClosed),
+        (2, AdapterClass::ScopePoisoned),
+    ] {
+        let slots = usize::from(state != 0);
+        let owner = crate::AsciiPoolOwner::new(test_policy(slots, slots)).unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        if state != 0 {
+            assert_eq!(scope.evaluate_value(&Datum::Null), Ok(Datum::Null));
+            if state == 1 {
+                execution.close();
+            } else {
+                let panic = catch_unwind(AssertUnwindSafe(|| {
+                    scope.with_columns(&crate::NoColumns, |_| {
+                        std::panic::panic_any("native operation poisoned scope");
+                    });
+                }));
+                assert!(panic.is_err());
+            }
+        }
+        let before = owner.snapshot().unwrap();
+        arm_eval_one_observation();
+        for value in [Datum::MinNotNull, Datum::MaxValue] {
+            assert_eq!(
+                scope.evaluate_value(&value),
+                Err(EvalError::Unsupported("range sentinel byte coercion"))
+            );
+        }
+        let observation = take_eval_one_observation();
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(
+            owner.snapshot().unwrap(),
+            before,
+            "frontend errors precede admission"
+        );
+        assert!(matches!(
+            scope.evaluate_value(&Datum::Null),
+            Err(EvalError::ExpressionAdapterFailure(failure))
+                if failure.class() == expected_class
+        ));
+    }
 }
 
 #[test]
@@ -1222,7 +1646,7 @@ fn all_native_callbacks_run_outside_busy_cell_borrow_and_pool_mutex() {
         exercise_columns(columns, &input);
     });
     assert_eq!(probes.get(), native.calls.borrow().len());
-    assert!(probes.get() >= 2 * COLUMNS_METHODS.len());
+    assert!(probes.get() >= 2 * COLUMNS_FORWARDED_METHODS.len());
     assert_eq!(scope_worker_observation(&scope).1, 1);
 }
 
@@ -1254,7 +1678,8 @@ fn real_call_budget_errors_keep_original_kernel_error_and_do_not_reprepare() {
         for value in [Datum::Int(2), Datum::Null, Datum::Bytes(vec![])] {
             assert!(matches!(
                 evaluate_ascii_value(&scope, &value),
-                Err(AsciiBoundaryError::Kernel(LocalError::ResourceLimit(_)))
+                Err(AsciiBoundaryError::Kernel(failure))
+                    if matches!(failure.local_error(), LocalError::ResourceLimit(_))
             ));
             assert_eq!(scope_worker_observation(&scope).1, 0);
             assert!(!scope.poisoned.get());
@@ -1295,7 +1720,8 @@ fn ready_empty_vec_capacity_is_charged_and_not_retained_after_real_refusal() {
     let scope = execution.scope();
     assert!(matches!(
         eval_ready(&scope, ReadyAsciiBytes(Some(bytes))),
-        Err(AsciiBoundaryError::Kernel(LocalError::ResourceLimit(_)))
+        Err(AsciiBoundaryError::Kernel(failure))
+                    if matches!(failure.local_error(), LocalError::ResourceLimit(_))
     ));
     let refused = scope_worker_observation(&scope);
     assert_eq!(refused.1, 0);
@@ -1331,7 +1757,8 @@ fn real_factory_low_worker_budget_releases_full_creating_reservation() {
     for attempts in 1..=2 {
         assert!(matches!(
             evaluate_ascii_value(&scope, &Datum::Int(2)),
-            Err(AsciiBoundaryError::Kernel(LocalError::ResourceLimit(_)))
+            Err(AsciiBoundaryError::Kernel(failure))
+                    if matches!(failure.local_error(), LocalError::ResourceLimit(_))
         ));
         let snapshot = owner.snapshot().unwrap();
         assert_eq!(snapshot.factory_attempts, attempts);
@@ -1416,9 +1843,10 @@ fn checked_reentry_and_cell_conflict_return_errors_without_refcell_panics_or_new
     }));
     assert!(matches!(
         reentry,
-        Ok(Err(AsciiBoundaryError::Scope(
-            "reentrant ASCII runtime borrow"
-        )))
+        Ok(Err(AsciiBoundaryError::Scope {
+            kind: ScopeFailureKind::Reentry,
+            reason: "reentrant ASCII runtime borrow",
+        }))
     ));
     assert_eq!(
         invocation
@@ -1442,9 +1870,10 @@ fn checked_reentry_and_cell_conflict_return_errors_without_refcell_panics_or_new
     }));
     assert!(matches!(
         conflict,
-        Ok(Err(AsciiBoundaryError::Scope(
-            "ASCII scope cell is already borrowed"
-        )))
+        Ok(Err(AsciiBoundaryError::Scope {
+            kind: ScopeFailureKind::Reentry,
+            reason: "ASCII scope cell is already borrowed",
+        }))
     ));
     drop(held);
     assert!(!scope.poisoned.get());
@@ -2020,8 +2449,14 @@ fn original_owned_kernel_error_survives_a_simultaneous_close_cleanup_error() {
     let scope = execution.scope();
     let mut invocation = Invocation::enter(&scope).unwrap();
     let primary = invocation.run(coerce_ready(&Datum::Null).unwrap());
-    let original_message_allocation = match &primary {
-        Err(AsciiBoundaryError::Kernel(LocalError::ResourceLimit(message))) => message.as_ptr(),
+    let (original_message_allocation, original_failure) = match &primary {
+        Err(AsciiBoundaryError::Kernel(failure)) => {
+            let LocalError::ResourceLimit(message) = failure.local_error() else {
+                panic!("expected the original C4 ResourceLimit cause");
+            };
+            assert_eq!(failure.phase(), Some(ExpressionRuntimeFailurePhase::Invoke));
+            (message.as_ptr(), failure.clone())
+        }
         other => panic!("expected a real C4 work-budget error, got {other:?}"),
     };
     assert_eq!(
@@ -2037,10 +2472,21 @@ fn original_owned_kernel_error_survives_a_simultaneous_close_cleanup_error() {
     );
     execution.close();
     match invocation.finish(primary) {
-        Err(AsciiBoundaryError::Kernel(LocalError::ResourceLimit(message))) => {
+        Err(AsciiBoundaryError::Kernel(failure)) => {
+            let LocalError::ResourceLimit(message) = failure.local_error() else {
+                panic!("cleanup must preserve the original C4 ResourceLimit cause");
+            };
             // Even the original owned error payload survives; no string mapping
             // to a new error and no replacement with the cleanup Closed error.
             assert_eq!(message.as_ptr(), original_message_allocation);
+            assert_eq!(failure, original_failure, "same opaque Arc, no recapture");
+            assert_eq!(failure.phase(), Some(ExpressionRuntimeFailurePhase::Invoke));
+            let native = AsciiBoundaryError::Kernel(failure).into_eval_error();
+            assert_eq!(
+                native,
+                EvalError::ExpressionRuntimeFailure(original_failure),
+                "the native mapper must also move the same captured failure"
+            );
         }
         other => panic!("cleanup must preserve the primary engine error: {other:?}"),
     }
@@ -2119,7 +2565,10 @@ fn caught_native_panics_before_next_kernel_after_kernel_and_during_return_poison
         assert_eq!(disposed.reserved_bytes, disposed.base_bytes);
         assert!(matches!(
             evaluate_ascii_value(&scope, &Datum::Null),
-            Err(AsciiBoundaryError::Scope("ASCII scope is poisoned"))
+            Err(AsciiBoundaryError::Scope {
+                kind: ScopeFailureKind::Poisoned,
+                reason: "ASCII scope is poisoned",
+            })
         ));
         assert_eq!(
             owner.snapshot().unwrap(),

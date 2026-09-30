@@ -230,6 +230,9 @@ pub enum EvalError {
     /// Clones share the cause and compare by cause identity; public diagnostics
     /// expose only the native class and explicitly known phase.
     ExpressionRuntimeFailure(crate::ExpressionRuntimeFailure),
+    /// A native pool, scope, or result-bridge failure, distinct from a backend
+    /// error and from SQL arithmetic status. Its original cause stays private.
+    ExpressionAdapterFailure(crate::ExpressionAdapterFailure),
 }
 
 /// Why a sequence builtin failed, with the code and message TiDB reports.
@@ -521,6 +524,22 @@ impl BlockEncryptionMode {
 
 /// Resolves column and session state during evaluation.
 pub trait Columns {
+    /// The currently bound affine evaluated-ASCII scope, when explicitly bound.
+    /// Adapters preserve this capability rather than starting a second scope.
+    /// Ordinary unbound contexts remain source-compatible and stateless. This
+    /// is a pure borrowed lookup, not an expression-evaluation/resource hook.
+    fn evaluated_ascii_scope(&self) -> Option<&crate::AsciiScope> {
+        None
+    }
+
+    /// The reusable execution behind this context, if its owner supplied one.
+    /// An active scope's execution takes precedence in a scoped wrapper. Merely
+    /// exposing this capability does not establish or rotate an execution epoch.
+    /// Implementations only return or forward a borrowed capability here.
+    fn evaluated_ascii_execution(&self) -> Option<&crate::AsciiExecution> {
+        None
+    }
+
     /// Returns the referenced column, matched by its final name segment.
     fn get(&self, path: &[String]) -> Option<Datum>;
 
