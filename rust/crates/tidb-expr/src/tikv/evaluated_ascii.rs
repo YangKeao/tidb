@@ -1451,7 +1451,10 @@ fn materialize_computed(
             | EvaluatedBytesOp::Locate3BytesExtNative
             | EvaluatedBytesOp::Locate3Utf8ExtNative
             | EvaluatedBytesOp::FindInSetNative
-            | EvaluatedBytesOp::FindInSetPreparedNative,
+            | EvaluatedBytesOp::FindInSetPreparedNative
+            | EvaluatedBytesOp::FieldBytesNative
+            | EvaluatedBytesOp::FieldIntNative
+            | EvaluatedBytesOp::FieldRealNative,
             ComputedValue::Int(value),
         ) => own_computed_int(value)
             .into_datum()
@@ -1511,7 +1514,9 @@ fn materialize_computed(
             | EvaluatedBytesOp::OctStringNative
             | EvaluatedBytesOp::ConcatNative
             | EvaluatedBytesOp::ConcatWsNative
-            | EvaluatedBytesOp::EltNative,
+            | EvaluatedBytesOp::EltNative
+            | EvaluatedBytesOp::MakeSetNative
+            | EvaluatedBytesOp::ExportSetNative,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {

@@ -40,9 +40,19 @@ pub use evaluated_ascii::{
 use tidb_query_expr::local::prepare_concat_args as prepare_concat_args_local;
 use tidb_query_expr::local::prepare_find_in_set_keys as prepare_find_in_set_keys_local;
 pub(crate) use tidb_query_expr::local::{
-    elt_selected_arg, legacy_substring_needs_len, ConcatKind, ConcatTerminal, EvaluatedArgs,
-    EvaluatedBytesOp, NativeCollation, NativeSearchPolicy, OutputDisposition, PreparedConcatArgs,
-    PreparedFindInSetKeys, ReadyBytesArg, ReadyIeee754Arg, ReadyIntArg, ReadySubstringI128,
+    elt_selected_arg, field_int_equal, field_real_equal, legacy_substring_needs_len,
+    make_set_selected, ConcatKind, ConcatTerminal, EvaluatedArgs, EvaluatedBytesOp, FieldIntValue,
+    FieldTerminal, NativeCollation, NativeSearchPolicy, OutputDisposition, PreparedConcatArgs,
+    PreparedExportSetArgs, PreparedFieldArgs, PreparedFindInSetKeys, PreparedMakeSetArgs,
+    ReadyBytesArg, ReadyFieldIntArg, ReadyIeee754Arg, ReadyIntArg, ReadySubstringI128,
+};
+use tidb_query_expr::local::{
+    field_bytes_equal as field_bytes_equal_local,
+    prepare_export_set_args as prepare_export_set_args_local,
+    prepare_field_bytes_args as prepare_field_bytes_args_local,
+    prepare_field_int_args as prepare_field_int_args_local,
+    prepare_field_real_args as prepare_field_real_args_local,
+    prepare_make_set_args as prepare_make_set_args_local,
 };
 
 /// Builds only the opaque constant-list key owner, without a runtime scope.
@@ -74,6 +84,80 @@ pub(crate) fn prepare_concat_args(
             ))
         },
     )
+}
+
+// Only these purpose-specific FIELD/SET pure calls use this conversion. Keep
+// the actual LocalError, without inventing a worker phase or a SQL diagnostic.
+fn field_set_pure_error(error: LocalError) -> crate::EvalError {
+    crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+        error, None,
+    ))
+}
+
+pub(crate) fn field_bytes_equal(
+    needle: &[u8],
+    candidate: &[u8],
+    collation: NativeCollation,
+) -> Result<bool, crate::EvalError> {
+    field_bytes_equal_local(needle, candidate, collation).map_err(field_set_pure_error)
+}
+
+pub(crate) fn prepare_field_bytes_args(
+    total_sql_arity: usize,
+    needle: ReadyBytesArg,
+    prefix: Vec<Option<Vec<u8>>>,
+    terminal: FieldTerminal,
+    collation: NativeCollation,
+) -> Result<PreparedFieldArgs, crate::EvalError> {
+    prepare_field_bytes_args_local(
+        total_sql_arity,
+        needle,
+        prefix,
+        terminal,
+        collation,
+        usize::MAX,
+    )
+    .map_err(field_set_pure_error)
+}
+
+pub(crate) fn prepare_field_int_args(
+    total_sql_arity: usize,
+    needle: ReadyFieldIntArg,
+    prefix: Vec<Option<FieldIntValue>>,
+    terminal: FieldTerminal,
+) -> Result<PreparedFieldArgs, crate::EvalError> {
+    prepare_field_int_args_local(total_sql_arity, needle, prefix, terminal, usize::MAX)
+        .map_err(field_set_pure_error)
+}
+
+pub(crate) fn prepare_field_real_args(
+    total_sql_arity: usize,
+    needle: ReadyIeee754Arg,
+    prefix: Vec<Option<u64>>,
+    terminal: FieldTerminal,
+) -> Result<PreparedFieldArgs, crate::EvalError> {
+    prepare_field_real_args_local(total_sql_arity, needle, prefix, terminal, usize::MAX)
+        .map_err(field_set_pure_error)
+}
+
+pub(crate) fn prepare_make_set_args(
+    mask: Option<u64>,
+    total_sql_arity: usize,
+    entries: Vec<ReadyBytesArg>,
+) -> Result<PreparedMakeSetArgs, crate::EvalError> {
+    prepare_make_set_args_local(mask, total_sql_arity, entries, usize::MAX)
+        .map_err(field_set_pure_error)
+}
+
+pub(crate) fn prepare_export_set_args(
+    bits: ReadyIntArg,
+    on: ReadyBytesArg,
+    off: ReadyBytesArg,
+    separator: Option<ReadyBytesArg>,
+    count: Option<ReadyIntArg>,
+) -> Result<PreparedExportSetArgs, crate::EvalError> {
+    prepare_export_set_args_local(bits, on, off, separator, count, usize::MAX)
+        .map_err(field_set_pure_error)
 }
 mod lineage;
 mod lower;

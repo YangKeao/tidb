@@ -1,8 +1,8 @@
 {
-  "checkpoint_id": "variadic-oct-elt-four-23",
+  "checkpoint_id": "field-make-export-three-24",
   "frozen_denominator": 245,
   "required_families": 221,
-  "functional_delegation_and_native_deletion_count": 74,
+  "functional_delegation_and_native_deletion_count": 77,
   "fully_final_audited_count": 0,
   "final_performance_and_workspace_gates_complete": false,
   "families": [
@@ -79,9 +79,12 @@
     {"id": "oct", "status": "functional_tikv_only", "native_algorithm_deleted": true, "raw64_and_native_text_scanner_policies_preserved": true},
     {"id": "concat", "status": "functional_tikv_only", "native_algorithm_deleted": true, "full_arity_value_typed_and_public_helper_connected": true, "packet_getters_diagnostics_and_child_demand_preserved": true},
     {"id": "concat_ws", "status": "functional_tikv_only", "native_algorithm_deleted": true, "full_arity_value_and_typed_paths_connected": true, "original_index_separator_budget_preserved": true},
-    {"id": "elt", "status": "functional_tikv_only", "native_algorithm_deleted": true, "full_arity_shared_selector_and_final_kernel_connected": true, "eager_children_wrap_and_all_candidate_metadata_preserved": true}
+    {"id": "elt", "status": "functional_tikv_only", "native_algorithm_deleted": true, "full_arity_shared_selector_and_final_kernel_connected": true, "eager_children_wrap_and_all_candidate_metadata_preserved": true},
+    {"id": "field", "status": "functional_tikv_only", "native_algorithm_deleted": true, "all_three_domains_and_full_arity_connected": true, "shared_probe_preserves_coercion_cutoff_not_child_laziness": true},
+    {"id": "make_set", "status": "functional_tikv_only", "native_algorithm_deleted": true, "full_arity_including_mask_only_value_entry": true, "native_unchecked_shift_and_wire_rolling_mask_distinct": true},
+    {"id": "export_set", "status": "functional_tikv_only", "native_algorithm_deleted": true, "both_frontend_policies_and_all_arities_connected": true, "new_single_owner_compatibility_core_not_existing_wire_reuse": true}
   ],
-  "shared_evidence": "evidence/variadic-oct-elt-checkpoint.md",
+  "shared_evidence": "evidence/field-make-export-checkpoint.md",
   "gb_foundation_evidence": "evidence/gb-shared-foundation.md",
   "historical_coverage_correction": "Checkpoint 18/19 LOWER and UPPER complete-family claims missed independent legacy implementations and NULL bypasses; checkpoint 20 repairs them. The temporary corrected count was 63, restored to 65 only after repair validation. No extra families credited.",
   "one_operation_keyed_pool": true,
@@ -91,7 +94,8 @@
   "deferred_compatibility_candidates_not_credited": ["compress", "uncompress", "exp", "log10"],
   "logical_demand_preserved": true,
   "legacy_infrastructure_errors_remain_typed_until_public_boundary": true,
-  "next_string_candidates_not_credited": ["export_set", "field", "make_set", "char", "conv"],
+  "next_string_candidates_not_credited": ["char", "conv"],
+  "next_math_candidates_require_decimal_bridge_and_typed_diagnostics": ["abs", "ceil", "floor", "round", "truncate"],
   "native_collation_selector_owned_by_tikv": true,
   "constant_find_cache_performance_revalidated": false,
   "gb_collation_compatibility_ownership_moved_to_tikv": true,

@@ -4346,3 +4346,222 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_variadic_oct_elt_dispatch_sql_c
         assert!(warnings_of(&session).is_empty(), "{sql}");
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_field_make_export_dispatch_sql_values_and_metadata() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_field_make_export (id INT PRIMARY KEY, n BIGINT, \
+             u BIGINT UNSIGNED, f VARCHAR(8) CHARSET utf8mb4 COLLATE utf8mb4_general_ci, \
+             fb VARBINARY(8), a VARCHAR(8) CHARSET utf8mb4, z VARCHAR(8) CHARSET utf8mb4, c BIGINT)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_field_make_export VALUES \
+             (1,NULL,NULL,NULL,NULL,NULL,NULL,NULL),\
+             (2,9007199254740993,9007199254740993,'b',X'62','Y','N',0),\
+             (3,1,32,'',X'','A','',6),(4,33,33,NULL,NULL,NULL,'Z',64),\
+             (5,-1,9223372036854775808,'?',X'3F','Y','N',65)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    // FIELD has five/six candidates and MAKE_SET has six, never the old
+    // greater-than-64 shift-panic domain. These are value/metadata checks, not
+    // lazy SQL-child assertions: the existing SQL children are eager.
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT n,u, FIELD(n,9007199254740992,1,2,3,u), \
+             FIELD(n,9007199254740992e0,1,2,3,u), \
+             FIELD(f,'a','B','c','d','b',''), FIELD(fb,'a','B','c','d','b',''), \
+             MAKE_SET(u,a,'2','3','4','5',z), MAKE_SET(u,fb,'2','3','4','5',z), \
+             EXPORT_SET(u,a,z), EXPORT_SET(u,a,z,''), EXPORT_SET(u,a,z,'',c) \
+             FROM shared_field_make_export ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected FIELD/MAKE_SET/EXPORT_SET dispatch rows")
+    };
+    assert_eq!(columns.len(), 11);
+    assert_eq!(rows.len(), 5);
+    assert_eq!(rows[1][0], Datum::Int(9_007_199_254_740_993));
+    assert_eq!(rows[1][1], Datum::UInt(9_007_199_254_740_993));
+    assert_eq!(rows[4][1], Datum::UInt(1_u64 << 63));
+    assert!(!columns[0].1.is_unsigned());
+    assert!(columns[1].1.is_unsigned());
+    for (index, (_, field_type)) in columns[2..6].iter().enumerate() {
+        assert_eq!(field_type.eval_type(), tidb_datatype::EvalType::Int);
+        assert_eq!(field_type.flen(), 20);
+        assert_eq!(field_type.decimal(), 0);
+        assert!(!field_type.is_unsigned());
+        let collation = if index == 2 {
+            tidb_datatype::Collation::Utf8Mb4GeneralCi
+        } else {
+            tidb_datatype::Collation::Binary
+        };
+        assert_eq!(field_type.collation(), collation);
+    }
+    for (index, ((_, field_type), width)) in columns[6..]
+        .iter()
+        .zip([25, 25, 2300, 2048, 2048])
+        .enumerate()
+    {
+        assert_eq!(field_type.eval_type(), tidb_datatype::EvalType::String);
+        assert_eq!(field_type.flen(), width);
+        assert_eq!(field_type.decimal(), tidb_datatype::UNSPECIFIED_LENGTH);
+        if index == 1 {
+            assert_eq!(field_type.collation(), tidb_datatype::Collation::Binary);
+        } else {
+            assert_ne!(field_type.collation(), tidb_datatype::Collation::Binary);
+            assert_eq!(field_type.charset_name(), "utf8mb4");
+        }
+    }
+    let assert_text = |value: &Datum, expected: Option<&str>| match expected {
+        None => assert_eq!(value, &Datum::Null),
+        Some(expected) => {
+            assert!(matches!(value, Datum::String(_)));
+            assert_ne!(value.collation(), Some(tidb_datatype::Collation::Binary));
+            assert_eq!(crate::tests_support::cell_text(value), expected);
+        }
+    };
+    let expected_field = [
+        [0, 0, 0, 0], // FIELD(NULL, ...) is 0, not NULL.
+        // Exact Int/UInt comparison reaches candidate 5 above 2^53, while the
+        // REAL signature rounds onto candidate 1. general_ci finds B before b.
+        [5, 1, 2, 5],
+        [2, 2, 6, 6],
+        [5, 5, 0, 0],
+        [0, 0, 0, 0],
+    ];
+    let expected_make = [None, Some("Y"), Some(""), Some("Z"), Some("")];
+    let expected_make_binary = [None, Some("b"), Some(""), Some("Z"), Some("")];
+    // Small explicit fixtures, at most 127 output bytes. 2^53+1 has just these
+    // two on entries. Bit 5 selects the sixth entry in the next row.
+    let mut high_parts = ["N"; 64];
+    high_parts[0] = "Y";
+    high_parts[53] = "Y";
+    let mut sixth_parts = [""; 64];
+    sixth_parts[5] = "A";
+    let expected_export = [
+        [None, None, None],
+        [
+            Some(high_parts.join(",")),
+            Some(high_parts.join("")),
+            Some(String::new()),
+        ],
+        [
+            Some(sixth_parts.join(",")),
+            Some("A".to_owned()),
+            Some("A".to_owned()),
+        ],
+        [None, None, None],
+        // The old native test is signed `(bits & (1 << i)) > 0`: bit 63 is
+        // therefore OFF, even though set. count 65 clamps to the same 64 entries.
+        [
+            Some(["N"; 64].join(",")),
+            Some("N".repeat(64)),
+            Some("N".repeat(64)),
+        ],
+    ];
+    for (index, row) in rows.iter().enumerate() {
+        assert_eq!(row.len(), columns.len());
+        for (value, expected) in row[2..6].iter().zip(expected_field[index]) {
+            assert_eq!(value, &Datum::Int(expected), "id {}", index + 1);
+        }
+        // A selected NULL is skipped; a selected empty sixth candidate is
+        // retained. Bit 63 alone selects none of these six candidates.
+        assert_text(&row[6], expected_make[index]);
+        let binary = expected_make_binary[index].map_or(Datum::Null, |value: &str| {
+            Datum::new_collation_string(value.as_bytes().to_vec(), tidb_datatype::Collation::Binary)
+        });
+        assert_eq!(row[7], binary, "id {}", index + 1);
+        for (value, expected) in row[8..].iter().zip(&expected_export[index]) {
+            assert_text(value, expected.as_deref());
+        }
+    }
+    assert!(warnings_of(&session).is_empty());
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_field_make_export_dispatch_sql_columns() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_field_make_export_zero (id INT PRIMARY KEY, u BIGINT UNSIGNED, \
+             f VARCHAR(8) CHARSET utf8mb4 COLLATE utf8mb4_general_ci, \
+             a VARCHAR(8) CHARSET utf8mb4, z VARCHAR(8) CHARSET utf8mb4, c BIGINT)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_field_make_export_zero VALUES \
+             (1,NULL,NULL,NULL,NULL,NULL),(2,33,'b','Y','N',6),(3,32,'','','',0)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // Direct calls, not another expression masking an unmigrated family.
+    // FIELD(NULL, ...) legally returns 0; MAKE_SET/EXPORT_SET really return
+    // NULL here. With empty labels EXPORT_SET3 still emits 63 commas, while
+    // EXPORT_SET4 and the zero-count EXPORT_SET5 have genuinely empty results.
+    for (expression, id) in [
+        ("FIELD(f,'a','B','c','d','b','')", 1),
+        ("FIELD(f,'a','B','c','d','b','')", 2),
+        ("FIELD(f,'a','B','c','d','b','')", 3),
+        ("FIELD(u,1,2,3,4,u)", 2),
+        ("FIELD(u,1e0,2,3,4,u)", 2),
+        ("MAKE_SET(u,a,'2','3','4','5',z)", 1),
+        ("MAKE_SET(u,a,'2','3','4','5',z)", 2),
+        ("MAKE_SET(u,a,'2','3','4','5',z)", 3),
+        ("EXPORT_SET(u,a,z)", 1),
+        ("EXPORT_SET(u,a,z)", 2),
+        ("EXPORT_SET(u,a,z)", 3),
+        ("EXPORT_SET(u,a,z,'')", 1),
+        ("EXPORT_SET(u,a,z,'')", 2),
+        ("EXPORT_SET(u,a,z,'')", 3),
+        ("EXPORT_SET(u,a,z,'',c)", 1),
+        ("EXPORT_SET(u,a,z,'',c)", 2),
+        ("EXPORT_SET(u,a,z,'',c)", 3),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_field_make_export_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => {
+                panic!("FIELD/MAKE_SET/EXPORT_SET must reach the zero-slot pool: {sql}: {other:?}")
+            }
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        // No coercion diagnostic is expected from these tiny typed operands;
+        // evaluation-origin 1105 is returned, not an Error warning row.
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+}

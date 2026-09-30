@@ -1114,6 +1114,13 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::EltNative => {
             panic!("variadic string operations need their original argument list")
         }
+        EvaluatedBytesOp::FieldBytesNative
+        | EvaluatedBytesOp::FieldIntNative
+        | EvaluatedBytesOp::FieldRealNative
+        | EvaluatedBytesOp::MakeSetNative
+        | EvaluatedBytesOp::ExportSetNative => {
+            panic!("FIELD and set operations need their original operand domains")
+        }
         EvaluatedBytesOp::StrcmpNative
         | EvaluatedBytesOp::Locate2Native
         | EvaluatedBytesOp::Locate3Native
@@ -1194,6 +1201,270 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+#[derive(Default)]
+struct SetFieldProbe {
+    values: RefCell<Vec<Datum>>,
+    events: RefCell<Vec<String>>,
+}
+
+impl Columns for SetFieldProbe {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        None
+    }
+    fn param_value(&self, order: usize) -> Result<Datum, EvalError> {
+        self.events.borrow_mut().push(format!("eval:{order}"));
+        Ok(self.values.borrow()[order].clone())
+    }
+    fn append_warning(&self, code: u16, message: &str) {
+        self.events
+            .borrow_mut()
+            .push(format!("warn:{code}:{message}"));
+    }
+}
+
+impl SetFieldProbe {
+    fn typed(
+        &self,
+        name: &str,
+        values: Vec<Datum>,
+        return_type: FieldType,
+        columns: &dyn Columns,
+    ) -> (Result<Datum, EvalError>, EvalOneObservation, String) {
+        *self.values.borrow_mut() = values;
+        let args = (0..self.values.borrow().len())
+            .map(|order| {
+                let mut constant =
+                    Constant::new(Datum::Null, FieldType::new(FieldTypeCode::VarString));
+                constant.param_marker = Some(crate::constant::ParamMarker {
+                    order: order as i64,
+                });
+                crate::expression::Expression::Constant(constant)
+            })
+            .collect();
+        let function = crate::scalar_function::ScalarFunction::new(
+            tidb_ast::CiString::new(name),
+            return_type,
+            args,
+        );
+        arm_eval_one_observation();
+        let result = function.eval(columns, tidb_chunk::row::Row::empty());
+        let observation = take_eval_one_observation();
+        (
+            result,
+            observation,
+            self.events.replace(Vec::new()).join("|"),
+        )
+    }
+}
+
+fn assert_set_field_c4(observation: EvalOneObservation) {
+    assert_eq!(observation.facade_entries, 1);
+    assert!(
+        observation.after_kernel_invocations.unwrap()
+            > observation.before_kernel_invocations.unwrap()
+    );
+}
+
+#[test]
+fn set_field_dispatch_keeps_typed_mode_eager_children_and_coercion_cutoff() {
+    let native = SetFieldProbe::default();
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        let (result, observation, trace) = native.typed(
+            "field",
+            vec![Datum::new_string("12abc"), Datum::new_string("1"), Datum::Null,
+                Datum::new_string("12"), Datum::Int(0), Datum::new_string("bad_tail")],
+            FieldType::new(FieldTypeCode::LongLong),
+            columns,
+        );
+        assert_eq!(result, Ok(Datum::Int(3)));
+        assert_eq!(trace, "eval:0|eval:1|eval:2|eval:3|eval:4|eval:5|warn:1292:Truncated incorrect DOUBLE value: '12abc'",
+            "the later Int selects Real for the whole list; all children precede one needle warning, but matching stops candidate coercion");
+        assert_set_field_c4(observation);
+
+        let (result, observation, trace) = native.typed(
+            "field", vec![Datum::UInt(u64::MAX), Datum::Int(-1), Datum::UInt(u64::MAX)],
+            FieldType::new(FieldTypeCode::LongLong), columns,
+        );
+        assert_eq!(result, Ok(Datum::Int(2)), "equal bits do not erase mixed integer signedness");
+        assert_eq!(trace, "eval:0|eval:1|eval:2");
+        assert_set_field_c4(observation);
+
+        let (result, observation, trace) = native.typed(
+            "field", vec![Datum::new_string("ABC"), Datum::new_string("abc")],
+            FieldType::new(FieldTypeCode::LongLong).with_collation(tidb_datatype::Collation::Utf8Mb4GeneralCi),
+            columns,
+        );
+        assert_eq!(result, Ok(Datum::Int(1)), "derived collation is not the plain datum's collation");
+        assert_eq!(trace, "eval:0|eval:1");
+        assert_set_field_c4(observation);
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn set_field_dispatch_export_keeps_distinct_frontend_policies() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        let check = |coercing, values: &[Datum], expected: Result<Datum, EvalError>| {
+            arm_eval_one_observation();
+            let result = if coercing {
+                crate::builtin_ext::dispatch("EXPORT_SET", values, columns).unwrap()
+            } else {
+                crate::string_fn::export_set_in(values, columns)
+            };
+            let observation = take_eval_one_observation();
+            assert_eq!(result, expected);
+            if expected.is_ok() {
+                assert_set_field_c4(observation);
+            } else {
+                assert_eq!(observation.facade_entries, 0);
+                assert_eq!(observation.before_kernel_invocations, None);
+                assert_eq!(observation.after_kernel_invocations, None);
+            }
+        };
+        // A coerces both on/off before count=0; B checks any NULL first.
+        let nullable = [
+            Datum::Int(1),
+            Datum::Null,
+            Datum::MinNotNull,
+            Datum::new_string(""),
+            Datum::Int(0),
+        ];
+        check(
+            true,
+            &nullable,
+            Err(EvalError::Unsupported("range sentinel string coercion")),
+        );
+        check(false, &nullable, Ok(Datum::Null));
+
+        let invalid_utf8 = [
+            Datum::Int(1),
+            Datum::new_bytes([0xff]),
+            Datum::new_string("N"),
+            Datum::new_bytes([0xfe]),
+            Datum::Int(2),
+        ];
+        check(
+            true,
+            &invalid_utf8,
+            Err(EvalError::Unsupported("invalid UTF-8 byte datum")),
+        );
+        check(
+            false,
+            &invalid_utf8,
+            Ok(Datum::new_string("\u{fffd}\u{fffd}N")),
+        );
+
+        // B's strict reader still runs when zero count will emit no bytes.
+        let uncast_bits = [
+            Datum::new_string("1"),
+            Datum::new_string("Y"),
+            Datum::new_string("N"),
+            Datum::new_string(""),
+            Datum::Int(0),
+        ];
+        check(true, &uncast_bits, Ok(Datum::new_string("")));
+        check(
+            false,
+            &uncast_bits,
+            Err(EvalError::Unsupported("un-cast types.ETInt argument")),
+        );
+
+        // Both original signed >0 tests reject the top bit, but retain bit 0.
+        let high_bit = [
+            Datum::Int(i64::MIN | 1),
+            Datum::new_string("Y"),
+            Datum::new_string(""),
+            Datum::new_string(""),
+            Datum::Int(64),
+        ];
+        check(true, &high_bit, Ok(Datum::new_string("Y")));
+        check(false, &high_bit, Ok(Datum::new_string("Y")));
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn set_field_dispatch_make_set_demand_and_all_family_root_refusal() {
+    let native = SetFieldProbe::default();
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        // Only small masks: no assertion about unchecked shifts at index >=64
+        // or about overflow-check configuration in any compilation profile.
+        for (mask, expected) in [
+            (Datum::Int(5), Ok(Datum::new_string(""))),
+            (
+                Datum::Int(2),
+                Err(EvalError::Unsupported("range sentinel string coercion")),
+            ),
+            (Datum::Null, Ok(Datum::Null)),
+        ] {
+            let (result, observation, trace) = native.typed(
+                "make_set",
+                vec![mask, Datum::Null, Datum::MinNotNull, Datum::new_string("")],
+                FieldType::new(FieldTypeCode::VarString),
+                columns,
+            );
+            if matches!(&expected, Ok(Datum::String(_))) {
+                assert!(matches!(&result, Ok(Datum::String(_))));
+            }
+            assert_eq!(result, expected);
+            assert_eq!(
+                trace, "eval:0|eval:1|eval:2|eval:3",
+                "all children are eager, only selected candidates are coerced"
+            );
+            if expected.is_ok() {
+                assert_set_field_c4(observation);
+            } else {
+                assert_eq!(observation.facade_entries, 0);
+            }
+        }
+    });
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        let refused = |result: Result<Datum, EvalError>, observation: EvalOneObservation| {
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        };
+        let (result, observation, trace) = native.typed(
+            "field", vec![Datum::Null, Datum::MinNotNull],
+            FieldType::new(FieldTypeCode::LongLong), columns,
+        );
+        assert_eq!(trace, "eval:0|eval:1", "NULL needle still demands the SQL children");
+        refused(result, observation);
+
+        // Mask-only is an existing value-helper boundary, not SQL admission.
+        arm_eval_one_observation();
+        let result = crate::string_fn::make_set_in(&[Datum::Int(0)], columns);
+        refused(result, take_eval_one_observation());
+
+        arm_eval_one_observation();
+        let result = crate::builtin_ext::dispatch(
+            "EXPORT_SET", &[Datum::Null, Datum::MinNotNull, Datum::MinNotNull], columns,
+        ).unwrap();
+        refused(result, take_eval_one_observation());
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 // Native argument/policy probe shared by the three streaming-concat tests.

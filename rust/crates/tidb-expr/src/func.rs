@@ -21,9 +21,9 @@ use crate::eval_in;
 use crate::row::row_compare;
 use crate::string_fn::{
     ascii, bin, bit_count, bit_length_in, case_convert_in, char_func_with_context,
-    concat_with_context, concat_ws_with_context, elt_in, export_set, field, format_num,
+    concat_with_context, concat_ws_with_context, elt_in, export_set_in, field, format_num,
     from_base64_in, from_base64_with_packet_limit, hex_in, locate_collation, locate_in,
-    locate_with_position_in, make_set, oct_in, ord_in, quote_in, replace_in, reverse_in,
+    locate_with_position_in, make_set_in, oct_in, ord_in, quote_in, replace_in, reverse_in,
     str_insert, str_take_in, strcmp_in, substring, substring_index_in, unhex_in,
 };
 use crate::string_packet::{pad, repeat, space, to_base64};
@@ -800,7 +800,7 @@ pub(crate) fn eval_func_values(
         "BIT_LENGTH" => bit_length_in(vals, ctx),
         "FIELD" if vals.len() >= 2 => field(vals, ctx),
         "ELT" if vals.len() >= 2 => elt_in(vals, ctx),
-        "EXPORT_SET" => export_set(vals),
+        "EXPORT_SET" => export_set_in(vals, ctx),
         "CONCAT_WS" if vals.len() >= 2 => concat_ws_with_context(vals, ctx),
         "SUBSTRING_INDEX" if vals.len() == 3 => substring_index_in(vals, ctx),
         // The parser renames `INSERT(...)` to `INSERT_FUNC` to avoid the
@@ -820,7 +820,7 @@ pub(crate) fn eval_func_values(
                 Ok(result)
             }
         }),
-        "MAKE_SET" if !vals.is_empty() => make_set(vals),
+        "MAKE_SET" if !vals.is_empty() => make_set_in(vals, ctx),
         "DATE_FORMAT" if vals.len() == 2 => date_format(&vals[0], &vals[1]),
         "ORD" if vals.len() == 1 => ord_in(vals, ctx),
         "QUOTE" if vals.len() == 1 => quote_in(vals, ctx),

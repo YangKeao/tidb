@@ -1165,7 +1165,22 @@ pub(crate) fn field_with_collation(
     ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
     if vals[0] == Datum::Null {
-        return Ok(Datum::Int(0));
+        return crate::tikv::evaluate_args_in(
+            crate::tikv::EvaluatedBytesOp::FieldBytesNative,
+            ctx,
+            || {
+                Ok(crate::tikv::EvaluatedArgs::FieldReady(
+                    crate::tikv::prepare_field_bytes_args(
+                        vals.len(),
+                        crate::tikv::ReadyBytesArg::Value(None),
+                        Vec::new(),
+                        crate::tikv::FieldTerminal::NeedleNull,
+                        Collation::Binary.native_policy(),
+                    )?,
+                ))
+            },
+            crate::tikv::EvaluatedBytesResult::into_int_datum,
+        );
     }
     // Go's two flags, verbatim (`builtin_string.go:2774-2776`):
     //
@@ -1215,51 +1230,131 @@ pub(crate) fn field_with_collation(
     } else {
         FieldComparisonMode::Real
     };
-    // The real signature coerces the needle ONCE, before the scan: Go's
-    // `builtinFieldRealSig.evalInt` evaluates `args[0]` a single time, so
-    // `FIELD('12abc', 1, 2)` records exactly ONE 1292 (captured) no matter how
-    // many candidates follow. Coercing it inside the loop repeated the
-    // warning per candidate.
-    let needle = match mode {
-        FieldComparisonMode::Real => Some(Datum::Real(to_f64_with_mysql_string(&vals[0], ctx)?)),
-        FieldComparisonMode::String | FieldComparisonMode::Integer => None,
+    let op = match mode {
+        FieldComparisonMode::String => crate::tikv::EvaluatedBytesOp::FieldBytesNative,
+        FieldComparisonMode::Integer => crate::tikv::EvaluatedBytesOp::FieldIntNative,
+        FieldComparisonMode::Real => crate::tikv::EvaluatedBytesOp::FieldRealNative,
     };
-    for (i, v) in vals[1..].iter().enumerate() {
-        if *v == Datum::Null {
-            continue;
-        }
-        let equal = match mode {
-            // Go compares the two evaluated strings through the signature's
-            // own collator, which is where a `_ci` collation folds case and a
-            // PAD SPACE one ignores trailing blanks.
-            FieldComparisonMode::String => {
-                // `builtinFieldStringSig.evalInt` is `b.args[i].EvalString`,
-                // which is `crate::arg_eval_type::eval_string` -- the same
-                // reader that gives an ENUM its NAME, and the reason this arm
-                // admits the hybrids the mode test above just let in.
-                let (Some(needle), Some(candidate)) = (
-                    crate::arg_eval_type::eval_string(&vals[0])?,
-                    crate::arg_eval_type::eval_string(v)?,
-                ) else {
-                    return Err(EvalError::Unsupported("non-string FIELD string operand"));
-                };
-                collation.compare(&needle, &candidate) == std::cmp::Ordering::Equal
-            }
-            FieldComparisonMode::Integer => {
-                crate::eval_binary(tidb_ast::BinaryOp::Eq, vals[0].clone(), v.clone())?
-                    == Datum::Int(1)
-            }
-            FieldComparisonMode::Real => {
-                let needle = needle.clone().expect("coerced above for this mode");
-                let candidate = Datum::Real(to_f64_with_mysql_string(v, ctx)?);
-                crate::eval_binary(tidb_ast::BinaryOp::Eq, needle, candidate)? == Datum::Int(1)
-            }
-        };
-        if equal {
-            return Ok(Datum::Int(i as i64 + 1));
-        }
-    }
-    Ok(Datum::Int(0))
+    crate::tikv::evaluate_args_in(
+        op,
+        ctx,
+        || {
+            let mut terminal = crate::tikv::FieldTerminal::Exhausted;
+            let prepared = match mode {
+                FieldComparisonMode::String => {
+                    let mut ready_needle = crate::tikv::ReadyBytesArg::Undemanded;
+                    let mut prefix = Vec::new();
+                    for value in &vals[1..] {
+                        if *value == Datum::Null {
+                            prefix.push(None);
+                            continue;
+                        }
+                        let (Some(needle), Some(candidate)) = (
+                            crate::arg_eval_type::eval_string(&vals[0])?,
+                            crate::arg_eval_type::eval_string(value)?,
+                        ) else {
+                            return Err(EvalError::Unsupported("non-string FIELD string operand"));
+                        };
+                        let stop = crate::tikv::field_bytes_equal(
+                            &needle,
+                            &candidate,
+                            collation.native_policy(),
+                        )?;
+                        ready_needle = crate::tikv::ReadyBytesArg::Value(Some(needle));
+                        prefix.push(Some(candidate));
+                        if stop {
+                            terminal = crate::tikv::FieldTerminal::Matched;
+                            break;
+                        }
+                    }
+                    crate::tikv::prepare_field_bytes_args(
+                        vals.len(),
+                        ready_needle,
+                        prefix,
+                        terminal,
+                        collation.native_policy(),
+                    )?
+                }
+                FieldComparisonMode::Integer => {
+                    let read_integer =
+                        |value: &Datum| -> Result<crate::tikv::FieldIntValue, EvalError> {
+                            Ok(
+                                match crate::coerce::integer_of(value)?
+                                    .expect("FIELD integer mode has a non-NULL integral operand")
+                                {
+                                    crate::coerce::Integer::Signed(value) => {
+                                        crate::tikv::FieldIntValue {
+                                            bits: value as u64,
+                                            unsigned: false,
+                                        }
+                                    }
+                                    crate::coerce::Integer::Unsigned(value) => {
+                                        crate::tikv::FieldIntValue {
+                                            bits: value,
+                                            unsigned: true,
+                                        }
+                                    }
+                                },
+                            )
+                        };
+                    let mut ready_needle = crate::tikv::ReadyFieldIntArg::Undemanded;
+                    let mut prefix = Vec::new();
+                    for value in &vals[1..] {
+                        if *value == Datum::Null {
+                            prefix.push(None);
+                            continue;
+                        }
+                        let needle = read_integer(&vals[0])?;
+                        let candidate = read_integer(value)?;
+                        let stop = crate::tikv::field_int_equal(
+                            crate::tikv::FieldIntValue {
+                                bits: needle.bits,
+                                unsigned: needle.unsigned,
+                            },
+                            crate::tikv::FieldIntValue {
+                                bits: candidate.bits,
+                                unsigned: candidate.unsigned,
+                            },
+                        );
+                        ready_needle = crate::tikv::ReadyFieldIntArg::Value(Some(needle));
+                        prefix.push(Some(candidate));
+                        if stop {
+                            terminal = crate::tikv::FieldTerminal::Matched;
+                            break;
+                        }
+                    }
+                    crate::tikv::prepare_field_int_args(vals.len(), ready_needle, prefix, terminal)?
+                }
+                FieldComparisonMode::Real => {
+                    // Exactly one needle conversion, even when every candidate
+                    // is NULL. Later candidates remain uncoerced after a match.
+                    let needle = to_f64_with_mysql_string(&vals[0], ctx)?.to_bits();
+                    let mut prefix = Vec::new();
+                    for value in &vals[1..] {
+                        if *value == Datum::Null {
+                            prefix.push(None);
+                            continue;
+                        }
+                        let candidate = to_f64_with_mysql_string(value, ctx)?.to_bits();
+                        let stop = crate::tikv::field_real_equal(needle, candidate);
+                        prefix.push(Some(candidate));
+                        if stop {
+                            terminal = crate::tikv::FieldTerminal::Matched;
+                            break;
+                        }
+                    }
+                    crate::tikv::prepare_field_real_args(
+                        vals.len(),
+                        crate::tikv::ReadyIeee754Arg::Value(Some(needle)),
+                        prefix,
+                        terminal,
+                    )?
+                }
+            };
+            Ok(crate::tikv::EvaluatedArgs::FieldReady(prepared))
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -1465,25 +1560,44 @@ pub(crate) fn str_insert(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Dat
 /// 1-based position has the corresponding bit set in `bits` (arg `i` is
 /// included when bit `i-1` of `bits` is `1`). `NULL` arguments are excluded
 /// even when their bit is set (matching MySQL). `NULL` if `bits` is `NULL`.
+#[cfg(test)]
 pub(crate) fn make_set(vals: &[Datum]) -> Result<Datum, EvalError> {
+    make_set_in(vals, &crate::NoColumns)
+}
+
+pub(crate) fn make_set_in(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
     // `bits` is Go's `types.ETInt` argument, cast by `crate::arg_eval_type`
     // before this body runs, so a SET/ENUM/BIT operand reaches here as the
     // ordinal integer Go's `builtinCastIntAsIntSig` reads out of it -- and
     // `1|4`'s unsigned bitwise OR keeps its raw 64-bit pattern, the same way
     // `bit_count` above does.
-    let Some(bits) = crate::arg_eval_type::eval_int(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    let bits = bits as u64;
-    let mut parts = Vec::new();
-    for (i, v) in vals[1..].iter().enumerate() {
-        if bits & (1 << i) != 0 {
-            if let Some(s) = coerce_str(v)? {
-                parts.push(s);
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::MakeSetNative,
+        ctx,
+        || {
+            let mask = crate::arg_eval_type::eval_int(&vals[0])?.map(|bits| bits as u64);
+            let mut entries = Vec::new();
+            if let Some(mask) = mask {
+                for (index, value) in vals[1..].iter().enumerate() {
+                    entries.push(if crate::tikv::make_set_selected(mask, index) {
+                        crate::tikv::ReadyBytesArg::Value(
+                            coerce_str(value)?.map(String::into_bytes),
+                        )
+                    } else {
+                        crate::tikv::ReadyBytesArg::Undemanded
+                    });
+                }
             }
-        }
-    }
-    Ok(Datum::new_string(parts.join(",")))
+            Ok(crate::tikv::EvaluatedArgs::MakeSetReady(
+                crate::tikv::prepare_make_set_args(mask, vals.len(), entries)?,
+            ))
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 /// Go `EXPORT_SET(bits, on, off[, separator[, number_of_bits]])`
 /// (`builtin_string.go:3403`/`:3434-3542`): bit 0 first, `separator`
@@ -1491,56 +1605,65 @@ pub(crate) fn make_set(vals: &[Datum]) -> Result<Datum, EvalError> {
 /// four-argument form uses the given separator with 64 bits; the
 /// five-argument form clamps a `number_of_bits` outside 0..=64 to 64. Any
 /// `NULL` argument yields `NULL`.
+#[cfg(test)]
 pub(crate) fn export_set(vals: &[Datum]) -> Result<Datum, EvalError> {
+    export_set_in(vals, &crate::NoColumns)
+}
+
+pub(crate) fn export_set_in(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
     if !(3..=5).contains(&vals.len()) {
         return Err(EvalError::Unsupported("bad EXPORT_SET arguments"));
     }
-    if vals.iter().any(|v| matches!(v, Datum::Null)) {
-        return Ok(Datum::Null);
-    }
-    let bits = crate::arg_eval_type::eval_int(&vals[0])?.unwrap_or(0);
-    let Some(on) = crate::arg_eval_type::eval_string(&vals[1])? else {
-        return Ok(Datum::Null);
-    };
-    let Some(off) = crate::arg_eval_type::eval_string(&vals[2])? else {
-        return Ok(Datum::Null);
-    };
-    let on = String::from_utf8_lossy(&on).into_owned();
-    let off = String::from_utf8_lossy(&off).into_owned();
-    let (separator, number_of_bits) = match vals.len() {
-        3 => (",".to_owned(), 64),
-        4 => {
-            let Some(separator) = crate::arg_eval_type::eval_string(&vals[3])? else {
-                return Ok(Datum::Null);
-            };
-            (String::from_utf8_lossy(&separator).into_owned(), 64)
-        }
-        _ => {
-            let Some(separator) = crate::arg_eval_type::eval_string(&vals[3])? else {
-                return Ok(Datum::Null);
-            };
-            let separator = String::from_utf8_lossy(&separator).into_owned();
-            let number = crate::arg_eval_type::eval_int(&vals[4])?.unwrap_or(64);
-            let number_of_bits = if !(0..=64).contains(&number) {
-                64
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::ExportSetNative,
+        ctx,
+        || {
+            use crate::tikv::{ReadyBytesArg, ReadyIntArg};
+            let mut bits = ReadyIntArg::Undemanded;
+            let mut on = ReadyBytesArg::Undemanded;
+            let mut off = ReadyBytesArg::Undemanded;
+            let mut separator = (vals.len() >= 4).then_some(ReadyBytesArg::Undemanded);
+            let mut count = (vals.len() == 5).then_some(ReadyIntArg::Undemanded);
+            // The value entry checks every original datum for NULL before any
+            // conversion. Carry its actual position; do not invent NULL bits.
+            if let Some(null_index) = vals.iter().position(|value| matches!(value, Datum::Null)) {
+                match null_index {
+                    0 => bits = ReadyIntArg::Value(None),
+                    1 => on = ReadyBytesArg::Value(None),
+                    2 => off = ReadyBytesArg::Value(None),
+                    3 => separator = Some(ReadyBytesArg::Value(None)),
+                    4 => count = Some(ReadyIntArg::Value(None)),
+                    _ => unreachable!("EXPORT_SET arity checked above"),
+                }
             } else {
-                number
-            };
-            (separator, number_of_bits)
-        }
-    };
-    let mut result = String::new();
-    for i in 0..number_of_bits {
-        if bits & (1 << i) > 0 {
-            result.push_str(&on);
-        } else {
-            result.push_str(&off);
-        }
-        if i < number_of_bits - 1 {
-            result.push_str(&separator);
-        }
-    }
-    Ok(Datum::new_string(result))
+                bits = ReadyIntArg::Value(crate::arg_eval_type::eval_int(&vals[0])?);
+                let on_bytes = crate::arg_eval_type::eval_string(&vals[1])?;
+                let off_bytes = crate::arg_eval_type::eval_string(&vals[2])?;
+                let lossy =
+                    |bytes: Vec<u8>| String::from_utf8_lossy(&bytes).into_owned().into_bytes();
+                on = ReadyBytesArg::Value(on_bytes.map(lossy));
+                off = ReadyBytesArg::Value(off_bytes.map(lossy));
+                if vals.len() >= 4 {
+                    separator = Some(ReadyBytesArg::Value(
+                        crate::arg_eval_type::eval_string(&vals[3])?.map(lossy),
+                    ));
+                }
+                if vals.len() == 5 {
+                    count = Some(ReadyIntArg::Value(crate::arg_eval_type::eval_int(
+                        &vals[4],
+                    )?));
+                }
+            }
+            Ok(crate::tikv::EvaluatedArgs::ExportSetReady(
+                crate::tikv::prepare_export_set_args(bits, on, off, separator, count)?,
+            ))
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 
 /// `FROM_BASE64(str)`: inverse of [`to_base64`], ported from

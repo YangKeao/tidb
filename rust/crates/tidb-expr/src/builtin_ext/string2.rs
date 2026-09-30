@@ -19,7 +19,7 @@ use tidb_datatype::Collation;
 use crate::coerce::{coerce_str, coerce_str_bytes};
 use crate::string_fn::{format_num_locale, substring_with_contexts};
 use crate::string_signature::{is_binary_str, normalize_utf8_go};
-use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp, NativeCollation, ReadyBytesArg};
+use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp, NativeCollation, ReadyBytesArg, ReadyIntArg};
 use crate::{Datum, EvalError};
 
 /// Dispatches this family's builtins; `None` if `name` isn't one of them.
@@ -35,7 +35,7 @@ pub(crate) fn dispatch(
         ("LOCATE", 3) => Some(locate3_in(vals, ctx)),
         ("FORMAT", 3) => Some(format_with_locale(vals, ctx)),
         ("FIND_IN_SET", 2) => Some(find_in_set(vals, ctx)),
-        ("EXPORT_SET", 3..=5) => Some(export_set(vals)),
+        ("EXPORT_SET", 3..=5) => Some(export_set_in(vals, ctx)),
         ("LTRIM", 1) => Some(ltrim(&vals[0], ctx)),
         ("RTRIM", 1) => Some(rtrim(&vals[0], ctx)),
         ("TRANSLATE", 3) => Some(translate(vals)),
@@ -399,42 +399,67 @@ pub(crate) fn find_in_set_with_collation_in(
 /// same 64 bits and reads them as `int64`, which is `crate::cast::to_i64_signed`.
 /// Matching on `Datum::Int` alone made the idiomatic `EXPORT_SET(1|4, ...)`
 /// spelling return NULL.
-fn export_set(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals[0].is_null() {
-        return Ok(Datum::Null);
-    }
-    let bits = crate::cast::to_i64_signed(&vals[0]);
-    let (Some(on), Some(off)) = (coerce_str(&vals[1])?, coerce_str(&vals[2])?) else {
-        return Ok(Datum::Null);
-    };
-    let separator = if vals.len() >= 4 {
-        let Some(separator) = coerce_str(&vals[3])? else {
-            return Ok(Datum::Null);
-        };
-        separator
-    } else {
-        ",".to_string()
-    };
-    let mut count = if vals.len() == 5 {
-        if vals[4].is_null() {
-            return Ok(Datum::Null);
-        }
-        crate::cast::to_i64_signed(&vals[4])
-    } else {
-        64
-    };
-    if !(0..=64).contains(&count) {
-        count = 64;
-    }
-    let mut parts = Vec::with_capacity(count as usize);
-    for bit in 0..count {
-        parts.push(if bits & (1_i64 << bit) > 0 {
-            on.as_str()
-        } else {
-            off.as_str()
-        });
-    }
-    Ok(Datum::new_string(parts.join(&separator)))
+fn export_set_in(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        EvaluatedBytesOp::ExportSetNative,
+        ctx,
+        || {
+            let bits = if vals[0].is_null() {
+                None
+            } else {
+                Some(crate::cast::to_i64_signed(&vals[0]))
+            };
+            let mut on = ReadyBytesArg::Undemanded;
+            let mut off = ReadyBytesArg::Undemanded;
+            // Outer None is an omitted SQL operand. A provided operand remains
+            // Undemanded only after a real NULL stops the original preparation.
+            let mut separator = (vals.len() >= 4).then_some(ReadyBytesArg::Undemanded);
+            let mut count = (vals.len() == 5).then_some(ReadyIntArg::Undemanded);
+            if bits.is_some() {
+                // Preserve the old tuple: on=NULL still demands off, including
+                // off's strict UTF-8/coercion error, before either NULL wins.
+                let (on_value, off_value) = (coerce_str(&vals[1])?, coerce_str(&vals[2])?);
+                let demand_tail = on_value.is_some() && off_value.is_some();
+                on = ReadyBytesArg::Value(on_value.map(String::into_bytes));
+                off = ReadyBytesArg::Value(off_value.map(String::into_bytes));
+                if demand_tail {
+                    let demand_count = match separator.as_mut() {
+                        Some(separator) => {
+                            let value = coerce_str(&vals[3])?;
+                            let non_null = value.is_some();
+                            *separator = ReadyBytesArg::Value(value.map(String::into_bytes));
+                            non_null
+                        }
+                        None => true,
+                    };
+                    if demand_count {
+                        if let Some(count) = count.as_mut() {
+                            *count = ReadyIntArg::Value(if vals[4].is_null() {
+                                None
+                            } else {
+                                Some(crate::cast::to_i64_signed(&vals[4]))
+                            });
+                        }
+                    }
+                }
+            }
+            // Defaults, count clamping and the signed bit test belong to C.
+            Ok(EvaluatedArgs::ExportSetReady(
+                crate::tikv::prepare_export_set_args(
+                    ReadyIntArg::Value(bits),
+                    on,
+                    off,
+                    separator,
+                    count,
+                )?,
+            ))
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 
 #[cfg(test)]
@@ -1011,6 +1036,162 @@ mod tests {
             .expect("FORMAT/3 evaluates");
             assert_eq!(sink.0.into_inner(), warnings, "{locale:?}");
         }
+    }
+
+    #[test]
+    fn export_set_extension_adapter_preserves_nullable_prefix_and_strict_errors() {
+        use crate::EvalError;
+
+        let evaluate = |args: &[Datum]| {
+            dispatch("EXPORT_SET", args, &crate::NoColumns).expect("EXPORT_SET extension arity")
+        };
+        let five = |on, off, separator, count| vec![Datum::Int(1), on, off, separator, count];
+        // A real NULL witnesses each skipped suffix; later bad values are not
+        // evaluated, but an on=NULL still demands off as part of the tuple.
+        for args in [
+            vec![Datum::Null, Datum::new_bytes([0xff]), Datum::MaxValue],
+            vec![
+                Datum::Null,
+                Datum::new_bytes([0xff]),
+                Datum::MaxValue,
+                Datum::new_bytes([0xff]),
+                Datum::MaxValue,
+            ],
+            five(
+                Datum::Null,
+                string("N"),
+                Datum::new_bytes([0xff]),
+                Datum::MaxValue,
+            ),
+            five(
+                string("Y"),
+                Datum::Null,
+                Datum::new_bytes([0xff]),
+                Datum::MaxValue,
+            ),
+            five(string("Y"), string("N"), Datum::Null, Datum::MaxValue),
+            five(string("Y"), string("N"), string(","), Datum::Null),
+            vec![Datum::Int(1), string("Y"), string("N"), Datum::Null],
+        ] {
+            assert_eq!(evaluate(&args), Ok(Datum::Null), "{args:?}");
+        }
+
+        for args in [
+            vec![Datum::Int(1), Datum::Null, Datum::new_bytes([0xff])],
+            vec![Datum::Int(1), Datum::new_bytes([0xff]), Datum::Null],
+            five(
+                Datum::new_bytes([0xff]),
+                string("N"),
+                string(","),
+                Datum::Null,
+            ),
+            five(
+                string("Y"),
+                string("N"),
+                Datum::new_bytes([0xff]),
+                Datum::Null,
+            ),
+            five(
+                Datum::new_bytes([0xff]),
+                string("N"),
+                string(","),
+                Datum::Int(0),
+            ),
+            five(
+                string("Y"),
+                string("N"),
+                Datum::new_bytes([0xff]),
+                Datum::Int(0),
+            ),
+        ] {
+            assert_eq!(
+                evaluate(&args),
+                Err(EvalError::Unsupported("invalid UTF-8 byte datum")),
+                "{args:?}"
+            );
+        }
+        for args in [
+            vec![Datum::Int(1), Datum::Null, Datum::MaxValue],
+            vec![Datum::Int(1), Datum::MaxValue, Datum::new_bytes([0xff])],
+        ] {
+            assert_eq!(
+                evaluate(&args),
+                Err(EvalError::Unsupported("range sentinel string coercion")),
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn export_set_extension_adapter_preserves_signed_bits_defaults_and_quiet_context() {
+        struct QuietColumns;
+        impl crate::Columns for QuietColumns {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+
+            fn max_allowed_packet(&self) -> u64 {
+                panic!("EXPORT_SET extension has no packet getter")
+            }
+
+            fn append_warning(&self, _: u16, _: &str) {
+                panic!("EXPORT_SET extension has no warning policy")
+            }
+        }
+        let columns = QuietColumns;
+        let evaluate = |args: &[Datum]| {
+            dispatch("EXPORT_SET", args, &columns).expect("EXPORT_SET extension arity")
+        };
+        assert_eq!(
+            evaluate(&[
+                Datum::UInt(u64::MAX),
+                string("1"),
+                string("0"),
+                string(""),
+                Datum::Int(64),
+            ]),
+            Ok(string(&format!("{}0", "1".repeat(63))))
+        );
+        assert_eq!(
+            evaluate(&[Datum::Int(i64::MIN), string("1"), string("0")]),
+            Ok(string(&vec!["0"; 64].join(",")))
+        );
+        assert_eq!(
+            evaluate(&[Datum::Int(i64::MIN), string("1"), string("0"), string(":")]),
+            Ok(string(&vec!["0"; 64].join(":")))
+        );
+        for count in [Datum::Int(-1), Datum::Int(65), Datum::UInt(u64::MAX)] {
+            assert_eq!(
+                evaluate(&[Datum::Int(1), string("1"), string("0"), string(""), count]),
+                Ok(string(&format!("1{}", "0".repeat(63))))
+            );
+        }
+        for (bits, count, expected) in [
+            (Datum::Int(1), Datum::Int(0), ""),
+            (Datum::Int(1), Datum::Real(2.5), "10"),
+            (
+                Datum::Int(1),
+                Datum::Decimal(tidb_datatype::Decimal::from_literal("2.5")),
+                "100",
+            ),
+            (Datum::Real(2.5), Datum::Int(3), "010"),
+            (
+                Datum::Decimal(tidb_datatype::Decimal::from_literal("2.5")),
+                Datum::Int(3),
+                "110",
+            ),
+            (Datum::new_bytes(b"5tail"), Datum::Int(3), "101"),
+            (Datum::new_bytes([0xff]), Datum::Int(3), "000"),
+        ] {
+            assert_eq!(
+                evaluate(&[bits, string("1"), string("0"), string(""), count]),
+                Ok(string(expected))
+            );
+        }
+        assert_eq!(
+            evaluate(&[Datum::Null, Datum::MaxValue, Datum::MaxValue]),
+            Ok(Datum::Null)
+        );
     }
 
     /// Complete scalar rows from `TestExportSet`.  The Go implementation's

@@ -1,0 +1,88 @@
+Checkpoint: field-make-export-three-24
+STATUS: final functional checkpoint; seven actual Rust logs = one compile-only failure plus six test runs. Full expression remains non-green.
+Functional delegation/native-deletion advances74->77/245; final acceptance remains0/245.
+Added frozen IDs: export_set, field, make_set (coverage-baseline.json:149/151/241), not aliases or small-arity subsets. No denominator change or completed/transcreated Go-package claim.
+Source ownership: native7 (B2+A1+D3+E1) + CPP8 =15, all frozen and parent pinned-formatted. A changed only builtin_ext/string2.rs; mod.rs already forwards ctx, and D needed no scalar ctx-only diff. The estimated A2/native8 was corrected to actual A1/native7.
+A wrote no other source, old expectations, earlier evidence, Plan or index. Parent later corrected only two constructors in A's new tests; no datatype/FromStr implementation or expected-value change.
+Writer source-only check, before parent formatting/correction; CWD /home/agent/tidb/expression-unification/tidb:
+COMMAND: git diff --check -- rust/crates/tidb-expr/src/builtin_ext/string2.rs rust/crates/tidb-expr/src/builtin_ext/mod.rs && git diff --numstat -- rust/crates/tidb-expr/src/builtin_ext/string2.rs rust/crates/tidb-expr/src/builtin_ext/mod.rs
+EXIT: 0; observed then string2.rs179+/38-, mod.rs unchanged. Not a build/runtime receipt. A ran no build/test/fmt.
+Parent final repository checks: both git diff --check and both lockfile git diff --exit-code checks exited0. These are not additional Rust logs.
+
+ACTUAL RUST RECEIPTS (parent-owned commands/exits; raw directory /home/agent/tidb/expression-unification/logs)
+CWD: /home/agent/tidb/expression-unification/tikv
+WRAPPER PIN: nightly-2026-01-30-x86_64-unknown-linux-gnu
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+LOG: field-make-export-tikv-local.log
+EXIT: 0
+running 237 tests
+test result: ok. 236 passed; 0 failed; 1 ignored; 0 measured; 469 filtered out; finished in 0.19s
+First January compilation: Finished `test` profile [unoptimized] target(s) in9.32s.
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_string::tests -- --test-threads=1
+LOG: field-make-export-official-string.log
+EXIT: 0
+running 63 tests
+test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 643 filtered out; finished in 0.02s
+
+CWD: /home/agent/tidb/expression-unification/tidb/rust
+WRAPPER PIN: nightly-2026-08-22-x86_64-unknown-linux-gnu
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib set_field_dispatch_ -- --test-threads=1
+LOG: field-make-export-dispatch.log
+EXIT: 101; compilation failed, zero tests executed (not a zero-pass test result).
+Two E0277 diagnostics at that attempt's string2.rs:1172:50 and1174:35: tidb_datatype::Decimal does not implement FromStr for the two new Datum::Decimal("2.5".parse().unwrap()) inputs.
+error: could not compile `tidb-expr` (lib test) due to 2 previous errors; 21 warnings emitted
+Parent inspected Decimal::from_literal and changed exactly those constructors to Datum::Decimal(tidb_datatype::Decimal::from_literal("2.5")), preserving inputs/expected values. The original failed log is retained.
+NOT STARTED after this failed attempt's &&: extension and SQL commands. They are not extra logs or zero-pass runs. The successful runs below are separate executions.
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib set_field_dispatch_ -- --test-threads=1
+LOG: field-make-export-dispatch-rerun.log
+EXIT: 0
+running 3 tests
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1521 filtered out; finished in 0.00s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib builtin_ext::string2::tests -- --test-threads=1
+LOG: field-make-export-extension.log
+EXIT: 0
+running 18 tests
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 1506 filtered out; finished in 0.01s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+LOG: field-make-export-sql.log
+EXIT: 0
+running 51 tests
+test result: ok. 51 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 0.70s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+LOG: field-make-export-expr-full.log
+EXIT: 101
+running 1524 tests
+test result: FAILED. 1426 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.41s
+error: test failed, to rerun pass `-p tidb-expr --lib`
+Current four failures (complete blocks remain in the raw log):
+  pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation
+  tests::builtin_info_json_math_source::exp
+  tests::builtin_math_misc_op_source::vectorized_builtin_op_func
+  time_fn::tests::str_to_date_partial_formats_follow_no_zero_date
+Parent Python assertion: the entire failures section equals variadic-oct-elt-expr-full.log after only thread-ID normalization. Section range is after '\nfailures:\n' and before '\ntest result:'.
+Normalization: re.sub(r"(thread '[^']+' \()\d+(\) panicked)", r'\1THREAD\2', section).
+Parent-reported normalized-section SHA256: 0930217d98e0b92d727527dc3c7cb7313f1bbe35e643da60114fa6d78203839b
+This round's explicit THREAD marker/section range governs that hash; it is not a whole-log hash, a historical hash carried forward, or evidence of a new failure. The fresh full expression run remains non-green.
+
+VALIDATED COVERAGE
+Four new C tests passed: local_evaluated_args_field_bytes_preserves_collation_and_prefix_ordinals; local_evaluated_args_field_numeric_preserves_signedness_and_ieee_equality; local_evaluated_args_make_set_preserves_selection_and_shift_profile; local_evaluated_args_export_set_preserves_defaults_clamps_and_null_witnesses.
+The MAKE_SET regression uses black_box(64_usize), masks0/1, and separate catch_unwind calls for the dynamic old shift and shared selector, comparing boolean-or-panic outcomes in the same active profile without presupposing either. It also verifies wire candidate65 is not selected. No release execution or >64 native SQL execution is claimed.
+All three set_field_dispatch_ tests passed: typed mode/eager children/coercion cutoff, distinct EXPORT_SET frontend policies, MAKE_SET demand and root refusal (including mask-only MAKE_SET and ext NULL).
+Both A regressions passed inside the complete18-test extension module: export_set_extension_adapter_preserves_nullable_prefix_and_strict_errors; export_set_extension_adapter_preserves_signed_bits_defaults_and_quiet_context. Old expectations/fixtures are unchanged.
+Both new E tests passed inside the51-test gate: five rows x11columns =9function outputs + signed/unsigned controls; FIELD integer/real/general_ci/binary, MAKE_SET text/binary metadata, EXPORT_SET3/4/5arity. Four FIELD columns retain signed Int/flen20/decimal0; five string widths remain[25,25,2300,2048,2048].
+The17direct zero-slot cases returned PoolResource/Pool, evaluation-origin1105/HY000 and no warning row. SQL uses five/six FIELD candidates and six MAKE_SET candidates, deliberately below the native >64 shift boundary.
+
+SEMANTIC AND OWNERSHIP BOUNDARIES
+EXPORT_SET has NO original wire core: this is a newly migrated TiKV single-owner compatibility core, not old-wire reuse or new wire/PB/unistore admission.
+Value entry: whole-argument NULL precheck before coercion, carrying the actual NULL position rather than fake NULL bits; otherwise original eval_int/eval_string and Rust from_utf8_lossy.
+Extension entry: bits NULL check/to_i64_signed -> strict on/off tuple -> separator -> count. on=NULL still reads off and preserves its UTF8/range error; on's own error stops first. A tuple NULL skips tail; sep NULL/error skips count. Count0 never skips prior text coercion. No new packet getter, warning policy or ctx timezone read.
+ExportSetReady(PreparedExportSetArgs) distinguishes Value(Some), actual Value(None), and witnessed Undemanded. Outer optional None is omission; provided count requires provided separator. No invented input stands in for an unevaluated SQL slot. Backend owns comma/64 defaults, count0, negative/>64 reset to64, signed >0 bit testing (bit63 off even for UIntMAX), and output generation. Both native adapters use into_bytes/new_string, not a local bit loop/join.
+FIELD preserves string/collation, tagged signed/unsigned integer and IEEE754 real domains. String/integer skip NULL comparisons; real converts its needle once even for all-NULL candidates. Shared equality controls original coercion cutoff, not SQL-child laziness or a frontend-computed result index. Full arity/prefix/FieldTerminal and real NULL-needle/zero results still reach the worker.
+MAKE_SET retains value-helper arity1 without changing wire min_args2. Selected strict-coerced NULLs are omitted from joining, selected empty strings remain; unselected entries are Undemanded. NULL mask skips candidate coercion, not the worker. All SQL children remain eager. Native selection remains mask & (1_u64 << idx) != 0 under actual overflow-check configuration, not cfg(debug_assertions); wire retains rolling-bit zero after bit63.
+Purpose builders use the locked usize::MAX input cap and preserve actual LocalError as opaque ExpressionRuntimeFailure with phase None, without a fabricated invocation phase/SQL site. That cap is not a physical-memory guarantee.
+FIELD modes/MAKE_SET use one packed Bytes input; EXPORT_SET uses Bytes+Int+Int. No extra four-column allowance, generic driver/graph broadening, default projection activation, PB/unistore admission or native fallback/replay is introduced. Legal NULL/empty results still demand the actual worker.
+
+UNVERIFIED / FINAL SCOPE
+Packing and owner/column copies may allocate/retain storage; neither encodings nor functional gates prove zero-copy, allocator bounds, physical peak/OOM safety or performance. No current standalone datatype/collation, unistore/parser or generator validation is claimed; older non-green evidence remains historical, not current passes.
+Whole workspace, make lint, complete/deeper scope/guard validation, release execution, allocator/performance measurement, physical-resource guarantees and final acceptance remain unverified.
+FINAL FUNCTIONAL CHECKPOINT:77/245, final0/245. All15 sources and both documents frozen; not all first attempts passed, full expression is not green, and this is not PR-ready.
