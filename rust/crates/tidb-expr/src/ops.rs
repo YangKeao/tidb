@@ -32,6 +32,41 @@ use integer_coerce::*;
 pub(crate) use operand::{Operand, Operands};
 pub(crate) use real_coerce::*;
 
+/// Delegates already-coerced bit patterns without changing operand demand.
+fn eval_bitwise_binary_in(
+    op: BinaryOp,
+    left: Option<i64>,
+    right: Option<i64>,
+    ctx: &dyn crate::context::Columns,
+) -> Result<Datum, EvalError> {
+    let operation = match op {
+        BinaryOp::BitAnd => crate::tikv::EvaluatedBytesOp::BitAnd,
+        BinaryOp::BitOr => crate::tikv::EvaluatedBytesOp::BitOr,
+        BinaryOp::BitXor => crate::tikv::EvaluatedBytesOp::BitXor,
+        BinaryOp::LeftShift => crate::tikv::EvaluatedBytesOp::LeftShift,
+        BinaryOp::RightShift => crate::tikv::EvaluatedBytesOp::RightShift,
+        _ => unreachable!("caller restricts this helper to bitwise operators"),
+    };
+    crate::tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || Ok(crate::tikv::EvaluatedArgs::Int2(left, right)),
+        crate::tikv::EvaluatedBytesResult::into_uint_bits_datum,
+    )
+}
+
+fn eval_bit_neg_in(
+    value: Option<i64>,
+    ctx: &dyn crate::context::Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::BitNeg,
+        ctx,
+        || Ok(crate::tikv::EvaluatedArgs::Int(value)),
+        crate::tikv::EvaluatedBytesResult::into_uint_bits_datum,
+    )
+}
+
 pub(crate) fn eval_unary(
     op: UnaryOp,
     v: Datum,
@@ -41,6 +76,9 @@ pub(crate) fn eval_unary(
     use UnaryOp::*;
     // Every unary operator applied to NULL is NULL.
     if v == Datum::Null {
+        if op == BitNeg {
+            return eval_bit_neg_in(None, ctx);
+        }
         return Ok(Datum::Null);
     }
     if v.is_range_sentinel() {
@@ -74,7 +112,7 @@ pub(crate) fn eval_unary(
             Minus => Ok(Datum::Real(-to_f64_with_mysql_string(&v, ctx)?)),
             BitNeg => {
                 crate::cast::report_int_truncation(&v, ctx)?;
-                Ok(Datum::UInt(!(crate::cast::to_i64_signed(&v) as u64)))
+                eval_bit_neg_in(Some(crate::cast::to_i64_signed(&v)), ctx)
             }
             Not | NotKeyword => unreachable!("handled above"),
         },
@@ -83,7 +121,7 @@ pub(crate) fn eval_unary(
             Minus => Ok(Datum::Decimal(d.negate())),
             // `~x` rounds to the nearest integer first (ties away from zero),
             // then flips the bits exactly like the `Int` case.
-            BitNeg => Ok(Datum::UInt(!(decimal_bit_operand(&d, ctx)? as u64))),
+            BitNeg => eval_bit_neg_in(Some(decimal_bit_operand(&d, ctx)?), ctx),
             Not | NotKeyword => unreachable!("handled above"),
         },
         // Negating a finite f64 is always finite, so no overflow check is
@@ -98,16 +136,16 @@ pub(crate) fn eval_unary(
             // rounds to the even 2, `~2` is `-3`), not `-4` (which
             // away-from-zero rounding to 3 would give).
             BitNeg => f64_to_i64(f.round_ties_even())
-                .map(|i| Datum::UInt(!(i as u64)))
-                .ok_or(EvalError::IntOverflow),
+                .ok_or(EvalError::IntOverflow)
+                .and_then(|i| eval_bit_neg_in(Some(i), ctx)),
             Not | NotKeyword => unreachable!("handled above"),
         },
         Datum::Float32(f) => match op {
             Plus => Ok(Datum::Float32(f)),
             Minus => Ok(Datum::Float32(-f)),
             BitNeg => f64_to_i64(f.round_ties_even())
-                .map(|i| Datum::UInt(!(i as u64)))
-                .ok_or(EvalError::IntOverflow),
+                .ok_or(EvalError::IntOverflow)
+                .and_then(|i| eval_bit_neg_in(Some(i), ctx)),
             Not | NotKeyword => unreachable!("handled above"),
         },
         // A unary minus over the integer domain is ONE rule, and its
@@ -120,13 +158,13 @@ pub(crate) fn eval_unary(
         Datum::Int(i) => Ok(match op {
             Plus => Datum::Int(i),
             Minus => return unary_minus_integer(i as u64, arg.is_unsigned(), arg),
-            BitNeg => Datum::UInt(!(i as u64)),
+            BitNeg => return eval_bit_neg_in(Some(i), ctx),
             Not | NotKeyword => unreachable!("handled above"),
         }),
         Datum::UInt(i) => Ok(match op {
             Plus => Datum::UInt(i),
             Minus => return unary_minus_integer(i, true, arg),
-            BitNeg => Datum::UInt(!i),
+            BitNeg => return eval_bit_neg_in(Some(i as i64), ctx),
             Not | NotKeyword => unreachable!("handled above"),
         }),
         // Go's unary-minus type inference promotes hybrid values to ETReal;
@@ -148,8 +186,8 @@ pub(crate) fn eval_unary(
                 Minus => Ok(Datum::Decimal(decimal.negate())),
                 BitNeg => decimal
                     .round_to_i64()
-                    .map(|i| Datum::UInt(!(i as u64)))
-                    .ok_or(EvalError::IntOverflow),
+                    .ok_or(EvalError::IntOverflow)
+                    .and_then(|i| eval_bit_neg_in(Some(i), ctx)),
                 Not | NotKeyword => unreachable!("handled above"),
             }
         }
@@ -828,7 +866,7 @@ pub(crate) fn eval_binary_full(
         };
         if let (Some(a), Some(b)) = (bits_of(&l), bits_of(&r)) {
             if l == Datum::Null || r == Datum::Null {
-                return Ok(Datum::Null);
+                return eval_bitwise_binary_in(op, None, None, ctx);
             }
             let (a, b) = (a?, b?);
             return integer_binary(op, Integer::Signed(a), Integer::Signed(b), ctx);
@@ -857,6 +895,9 @@ pub(crate) fn eval_binary_full(
     // other connection. So the residue returns a statement error naming BOTH
     // kinds instead of panicking.
     if l == Datum::Null || r == Datum::Null {
+        if matches!(op, BitAnd | BitOr | BitXor | LeftShift | RightShift) {
+            return eval_bitwise_binary_in(op, None, None, ctx);
+        }
         return Ok(Datum::Null);
     }
     // `integer_of`'s own `Err` (the range sentinels) keeps its existing
@@ -1044,6 +1085,9 @@ fn decimal_binary(
         });
     }
     if l == Datum::Null || r == Datum::Null {
+        if matches!(op, BitAnd | BitOr | BitXor | LeftShift | RightShift) {
+            return eval_bitwise_binary_in(op, None, None, ctx);
+        }
         return Ok(Datum::Null);
     }
     let a = to_decimal(l);
@@ -1091,14 +1135,7 @@ fn decimal_binary(
         // same as unary `~` above -- and SATURATES there rather than failing.
         BitAnd | BitOr | BitXor | LeftShift | RightShift => {
             let (ai, bi) = (decimal_bit_operand(&a, ctx)?, decimal_bit_operand(&b, ctx)?);
-            match op {
-                BitAnd => Datum::UInt((ai as u64) & (bi as u64)),
-                BitOr => Datum::UInt((ai as u64) | (bi as u64)),
-                BitXor => Datum::UInt((ai as u64) ^ (bi as u64)),
-                LeftShift => Datum::UInt(shift_left(ai as u64, bi as u64)),
-                RightShift => Datum::UInt(shift_right(ai as u64, bi as u64)),
-                _ => unreachable!("guarded by outer match"),
-            }
+            return eval_bitwise_binary_in(op, Some(ai), Some(bi), ctx);
         }
         LogicAnd | LogicOr | LogicXor | NullEq => unreachable!("handled by caller"),
     })

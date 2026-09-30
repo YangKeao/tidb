@@ -1348,6 +1348,16 @@ impl EvaluatedBytesResult {
         }
     }
 
+    /// The signed C carrier owns the result bits, not the frontend SQL flag.
+    /// Negative carriers are valid unsigned bitwise answers, never overflows.
+    pub(crate) fn into_uint_bits_datum(self) -> Result<Datum, EvalError> {
+        match self.into_int_datum()? {
+            Datum::Int(bits) => Ok(Datum::UInt(bits as u64)),
+            Datum::Null => Ok(Datum::Null),
+            _ => Err(result_kind_error().into_eval_error()),
+        }
+    }
+
     pub(crate) fn into_bytes(self) -> Result<Option<Vec<u8>>, EvalError> {
         match self {
             Self::Bytes(value) => Ok(value),
@@ -1367,7 +1377,14 @@ fn materialize_computed(
             | EvaluatedBytesOp::BitLength
             | EvaluatedBytesOp::Crc32
             | EvaluatedBytesOp::CharLength
-            | EvaluatedBytesOp::CharLengthUtf8,
+            | EvaluatedBytesOp::CharLengthUtf8
+            | EvaluatedBytesOp::BitCount
+            | EvaluatedBytesOp::BitNeg
+            | EvaluatedBytesOp::BitAnd
+            | EvaluatedBytesOp::BitOr
+            | EvaluatedBytesOp::BitXor
+            | EvaluatedBytesOp::LeftShift
+            | EvaluatedBytesOp::RightShift,
             ComputedValue::Int(value),
         ) => own_computed_int(value)
             .into_datum()

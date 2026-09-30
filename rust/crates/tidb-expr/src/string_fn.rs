@@ -1626,49 +1626,56 @@ pub(crate) fn quote_in(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum
 /// signature: decimal/real/string values first take their MySQL integer
 /// coercion, whose statement warnings are outside this value-only domain.
 pub(crate) fn bit_count(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    let raw: Option<&[u8]> = match &vals[0] {
-        Datum::String(text) => Some(text.bytes()),
-        Datum::Bytes(text) => Some(text),
-        _ => None,
-    };
-    if let Some(text) = raw {
-        if radix_truncated(text) {
-            ctx.append_warning(
-                1292,
-                &format!(
-                    "Truncated incorrect INTEGER value: '{}'",
-                    String::from_utf8_lossy(text)
-                ),
-            );
-        }
-    }
-    let bits = match &vals[0] {
-        Datum::Null => return Ok(Datum::Null),
-        Datum::Int(n) => *n as u64,
-        Datum::UInt(n) => *n,
-        Datum::Decimal(n) => n.round_to_i64_saturating() as u64,
-        Datum::Real(n) => round_float_to_i64_saturating(*n) as u64,
-        // BIT_COUNT's ETInt argument is built through Go's
-        // `builtinCastStringAsIntSig`, which parses non-negative strings as
-        // UINT64 before reinterpreting the result as the signed ETInt carrier.
-        // A plain signed saturation would therefore be wrong for values in
-        // `2^63..=u64::MAX` (for example, `2^63` has one set bit, not 63).
-        // Keep the scan byte-oriented too: Go strings/bytes may contain
-        // malformed UTF-8 after an otherwise valid numeric prefix, and the
-        // source conversion still consumes that prefix.
-        Datum::String(n) => bit_count_string_bytes(n.bytes()),
-        Datum::Bytes(n) => bit_count_string_bytes(n),
-        Datum::MinNotNull | Datum::MaxValue => {
-            return Err(EvalError::Unsupported("range sentinel BIT_COUNT argument"));
-        }
-        other => {
-            other
-                .to_i64()
-                .map_err(|_| EvalError::Unsupported("BIT_COUNT argument conversion"))?
-                .value as u64
-        }
-    };
-    Ok(Datum::Int(i64::from(bits.count_ones())))
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::BitCount,
+        ctx,
+        || {
+            let raw: Option<&[u8]> = match &vals[0] {
+                Datum::String(text) => Some(text.bytes()),
+                Datum::Bytes(text) => Some(text),
+                _ => None,
+            };
+            if let Some(text) = raw {
+                if radix_truncated(text) {
+                    ctx.append_warning(
+                        1292,
+                        &format!(
+                            "Truncated incorrect INTEGER value: '{}'",
+                            String::from_utf8_lossy(text)
+                        ),
+                    );
+                }
+            }
+            let bits = match &vals[0] {
+                Datum::Null => return Ok(crate::tikv::EvaluatedArgs::Int(None)),
+                Datum::Int(n) => *n as u64,
+                Datum::UInt(n) => *n,
+                Datum::Decimal(n) => n.round_to_i64_saturating() as u64,
+                Datum::Real(n) => round_float_to_i64_saturating(*n) as u64,
+                // BIT_COUNT's ETInt argument is built through Go's
+                // `builtinCastStringAsIntSig`, which parses non-negative strings as
+                // UINT64 before reinterpreting the result as the signed ETInt carrier.
+                // A plain signed saturation would therefore be wrong for values in
+                // `2^63..=u64::MAX` (for example, `2^63` has one set bit, not 63).
+                // Keep the scan byte-oriented too: Go strings/bytes may contain
+                // malformed UTF-8 after an otherwise valid numeric prefix, and the
+                // source conversion still consumes that prefix.
+                Datum::String(n) => bit_count_string_bytes(n.bytes()),
+                Datum::Bytes(n) => bit_count_string_bytes(n),
+                Datum::MinNotNull | Datum::MaxValue => {
+                    return Err(EvalError::Unsupported("range sentinel BIT_COUNT argument"));
+                }
+                other => {
+                    other
+                        .to_i64()
+                        .map_err(|_| EvalError::Unsupported("BIT_COUNT argument conversion"))?
+                        .value as u64
+                }
+            };
+            Ok(crate::tikv::EvaluatedArgs::Int(Some(bits as i64)))
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
 }
 
 /// Coerces a raw string/bytes payload through the integer cast used by

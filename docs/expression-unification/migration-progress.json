@@ -1,8 +1,8 @@
 {
-  "checkpoint_id": "fixed-args-five-09",
+  "checkpoint_id": "integer-seven-10",
   "frozen_denominator": 245,
   "required_families": 221,
-  "functional_delegation_and_native_deletion_count": 15,
+  "functional_delegation_and_native_deletion_count": 22,
   "fully_final_audited_count": 0,
   "final_performance_and_workspace_gates_complete": false,
   "families": [
@@ -20,12 +20,19 @@
     {"id": "bin", "status": "functional_tikv_only", "native_algorithm_deleted": true},
     {"id": "left", "status": "functional_tikv_only", "native_algorithm_deleted": true, "binary_and_utf8": true},
     {"id": "right", "status": "functional_tikv_only", "native_algorithm_deleted": true, "binary_and_utf8": true},
-    {"id": "replace", "status": "functional_tikv_only", "native_algorithm_deleted": true, "full_argument_coercion_order_preserved": true}
+    {"id": "replace", "status": "functional_tikv_only", "native_algorithm_deleted": true, "full_argument_coercion_order_preserved": true},
+    {"id": "bit_count", "status": "functional_tikv_only", "native_algorithm_deleted": true, "signed_result": true},
+    {"id": "bitneg", "status": "functional_tikv_only", "native_algorithm_deleted": true, "unsigned_result": true},
+    {"id": "bitand", "status": "functional_tikv_only", "native_algorithm_deleted": true, "unsigned_result": true},
+    {"id": "bitor", "status": "functional_tikv_only", "native_algorithm_deleted": true, "unsigned_result": true},
+    {"id": "bitxor", "status": "functional_tikv_only", "native_algorithm_deleted": true, "unsigned_result": true},
+    {"id": "leftshift", "status": "functional_tikv_only", "native_algorithm_deleted": true, "unsigned_result": true},
+    {"id": "rightshift", "status": "functional_tikv_only", "native_algorithm_deleted": true, "unsigned_result": true}
   ],
-  "shared_evidence": "evidence/fixed-args-five-checkpoint.md",
+  "shared_evidence": "evidence/integer-seven-checkpoint.md",
   "one_operation_keyed_pool": true,
   "actual_mixed_column_sql_verified": true,
   "zero_slot_refusal_for_new_paths_verified": true,
   "deferred": ["complete operation-scope reuse", "broader wrapper capability propagation", "release performance", "paired differential rerun", "whole-workspace final acceptance"],
-  "next_batch_not_credited": ["bit_count", "bitneg", "bitand", "bitor", "bitxor", "leftshift", "rightshift"]
+  "next_batch_not_credited": ["not", "isnull", "istrue", "isfalse", "istrue_with_null"]
 }

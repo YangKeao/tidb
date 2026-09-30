@@ -1,30 +1,30 @@
 # Expression unification experiment
 
-Checkpoint-ID: `fixed-args-five-09` (previous: `shared-text-four-08`)
+Checkpoint-ID: `integer-seven-10` (previous: `fixed-args-five-09`)
 
-**Fifteen families delegate to TiKV with their native algorithms removed:** ASCII, LENGTH/OCTET_LENGTH, BIT_LENGTH, LTRIM, RTRIM, UNHEX, CRC32, REVERSE, CHAR_LENGTH/CHARACTER_LENGTH, QUOTE, HEX, BIN, LEFT, RIGHT and REPLACE. Functional progress15/245; target221. Final audit/performance/workspace acceptance is still open, not overall completion or PR readiness.
+**22/245 families now delegate to TiKV with native algorithms removed; target221.** This checkpoint adds BIT_COUNT, ~, &, |, ^, << and >> to the fifteen string/checksum families. Final audit/performance/workspace acceptance is still open; this is not overall completion or PR readiness.
 
 ## Paired repositories
 
 - [YangKeao/tidb, expression-unification-demo](https://github.com/YangKeao/tidb/tree/expression-unification-demo)
 - [YangKeao/tikv, expression-unification-demo](https://github.com/YangKeao/tikv/tree/expression-unification-demo)
 
-Keep sibling checkouts named `tidb` and `tikv` for path dependencies. `checkpoint.json` records the paired TiKV commit. Root Plans mirror `/home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md`. Core-validated steps push both branches without force-push or automatic PR creation.
+Use sibling `tidb` and `tikv` checkouts for path dependencies. `checkpoint.json` pins the paired TiKV commit. Root Plans mirror `/home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md`. Core-validated steps push both branches without force-push or automatic PRs.
 
-## One evaluator, fixed argument shapes
+## Shared execution
 
-The same synchronous worker/driver and operation-keyed pool now support nullable Bytes, Int bit patterns, Bytes+Int and three Bytes inputs, yielding owned Int/Bytes. Each operation fixes canonical slots and one official FnCall; no arbitrary program or SQL schema API. ASCII/Bytes methods are thin compatibility entries. Contextless calls use TiKV one-shot evaluation, never native fallback. These workers are not threads.
+One synchronous worker/driver and operation-keyed pool handle nullable Bytes, Int bit patterns, Int2, Bytes+Int and Bytes×3, yielding owned Int/Bytes. Each operation fixes canonical slots and its official FnCall. Existing ASCII/Bytes APIs are thin entries; contextless helpers use TiKV one-shot evaluation, never native fallback. Workers are evaluator instances, not threads.
 
-TiDB retains original coercion, demand order, normalization and result metadata. HEX includes typed Int/BIT/UInt and Bytes branches; LEFT/RIGHT cover binary/text and count-first NULL behavior; REPLACE preserves conversion of later tuple arguments even after NULL. Caller compile limit4 admits the fixed three-input recipe; root/epoch/retirement accounting is unchanged.
+Bitwise algorithms are removed from unary, integer, real and decimal routes. Native coercion, diagnostic order and original NULL-demand points remain; six bitwise results keep UInt, BIT_COUNT signed Int. Existing arithmetic-only fast gates are unchanged. AST/typed/row-vector fallback and public helpers reach the shared implementation. PB/unistore had no admitted signatures for these seven families and were not expanded for credit.
 
 ## Actual validation
 
-TiKV186 passed/1 ignored plus1 identity guard. New dispatcher3 passed; Session/SQL21 passed. Full expression1379 passed/4 unchanged baseline failures/94 ignored; complete failure blocks equal08 after only thread-ID normalization. No new-test failure or expected-value change this checkpoint. Real mixed-column SQL exercises high-bit integers and multibyte strings;20 direct zero-slot SQL calls reject instead of bypass/replay.
+TiKV190 passed/1 ignored plus1 identity/type guard. New native dispatch3 passed; Session/SQL23 passed. Full expression1382 passed/4 unchanged baseline failures/94 ignored,1480 discovered; complete failure blocks equal09 after only thread-ID normalization. No new-test failure or expected-value modification. Stored-column SQL checks UInt/signed metadata and bit/shift boundaries;16 direct zero-slot calls reject instead of bypassing.
 
-Exact commands and limits: `evidence/fixed-args-five-checkpoint.md`, `logs/fixed-args-five-summary.txt`. `migration-progress.json` separates functional progress from final acceptance. TiKV's coprocessor maintenance guide now records the closed in-process argument/ownership contract; RPC wire/read-pool behavior is unchanged.
+Commands/results and scope: `evidence/integer-seven-checkpoint.md`, `logs/integer-seven-summary.txt`. Functional versus final acceptance is separated in `migration-progress.json`. The maintenance guide documents bit-pattern transport, not a replacement SQL FieldType descriptor. RPC/read-pool/wire behavior is unchanged.
 
 ## Deferred and next
 
-Not verified: release performance, complete operation-scope reuse/wrapper propagation, new allocation measurements/physical peak or OOM safety, network end-to-end, full workspace or make lint. Old allocation receipts do not certify current artifacts. Historical compatibility remains: main/PB versus legacy CHAR_LENGTH normalization, QUOTE's Rust normalization, and raw CRC32 UInt versus existing signed SQL inference.
+Still open: broad frontend operation-scope/wrapper guards, complete scope reuse, release performance, new allocator observations/physical peak or OOM safety, network end-to-end, full workspace and make lint. Old allocation receipts do not certify current artifacts. Evidence uses scoped Jan2026 TiKV and Aug2026 TiDB commands; zero-match tests are not passing evidence. This is kernel reuse, not a complete Go-package transcreation claim.
 
-Evidence scopes Jan2026 TiKV and Aug2026 TiDB commands to their respective directories. Do not mix compiler artifacts or count zero matched tests as passing. This is kernel reuse, not a complete Go-package transcreation claim. Next: seven integer-bitwise families; their workspace changes are excluded from this publication.
+Next: five boolean families using explicit original truth/presence normalization and closed single/two-function recipes; no finite-only Real/NaN subdomain credit. Next-batch changes are excluded from this publication.

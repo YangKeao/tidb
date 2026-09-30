@@ -1064,11 +1064,20 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::Quote => "QUOTE",
         EvaluatedBytesOp::HexInt | EvaluatedBytesOp::HexStr => "HEX",
         EvaluatedBytesOp::Bin => "BIN",
+        EvaluatedBytesOp::BitCount => "BIT_COUNT",
+        EvaluatedBytesOp::BitNeg => {
+            return crate::apply_unary(tidb_ast::UnaryOp::BitNeg, value.clone(), columns);
+        }
         EvaluatedBytesOp::Left
         | EvaluatedBytesOp::LeftUtf8
         | EvaluatedBytesOp::Right
         | EvaluatedBytesOp::RightUtf8
-        | EvaluatedBytesOp::Replace => {
+        | EvaluatedBytesOp::Replace
+        | EvaluatedBytesOp::BitAnd
+        | EvaluatedBytesOp::BitOr
+        | EvaluatedBytesOp::BitXor
+        | EvaluatedBytesOp::LeftShift
+        | EvaluatedBytesOp::RightShift => {
             panic!("multi-argument families need their original argument tuple")
         }
         EvaluatedBytesOp::CharLength | EvaluatedBytesOp::CharLengthUtf8 => {
@@ -1087,6 +1096,267 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+#[test]
+fn bit_dispatch_preserves_full_width_results_and_conversion_domains() {
+    use tidb_ast::BinaryOp;
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    for (operation, input, expected) in [
+        (
+            EvaluatedBytesOp::BitCount,
+            Datum::new_string("18446744073709551615"),
+            Datum::Int(64),
+        ),
+        (EvaluatedBytesOp::BitCount, Datum::Null, Datum::Null),
+        (
+            EvaluatedBytesOp::BitNeg,
+            Datum::UInt(u64::MAX),
+            Datum::UInt(0),
+        ),
+        (
+            EvaluatedBytesOp::BitNeg,
+            Datum::Real(2.5),
+            Datum::UInt(u64::MAX - 2),
+        ),
+        (EvaluatedBytesOp::BitNeg, Datum::Null, Datum::Null),
+    ] {
+        arm_eval_one_observation();
+        let result = dispatch_bytes_family(operation, &input, &columns);
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(expected));
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    }
+    for (operation, left, right, expected) in [
+        (
+            BinaryOp::BitAnd,
+            Datum::UInt(u64::MAX),
+            Datum::Int(i64::MIN),
+            1_u64 << 63,
+        ),
+        (BinaryOp::BitOr, Datum::Int(0), Datum::Int(-1), u64::MAX),
+        (BinaryOp::BitXor, Datum::UInt(u64::MAX), Datum::Int(-1), 0),
+        (
+            BinaryOp::LeftShift,
+            Datum::UInt(1),
+            Datum::Int(63),
+            1_u64 << 63,
+        ),
+        (BinaryOp::LeftShift, Datum::UInt(1), Datum::Int(64), 0),
+        (BinaryOp::RightShift, Datum::Int(-1), Datum::Int(63), 1),
+        (BinaryOp::RightShift, Datum::UInt(1), Datum::Int(-1), 0),
+        (BinaryOp::BitOr, Datum::Real(2.5), Datum::Int(0), 2),
+        // A hybrid partner retains the existing decimal-kernel fallback.
+        (
+            BinaryOp::BitOr,
+            Datum::Decimal(tidb_datatype::Decimal::parse_mysql("2.5").0),
+            Datum::Bit(tidb_datatype::BinaryLiteral::from(vec![0])),
+            3,
+        ),
+    ] {
+        arm_eval_one_observation();
+        let result = crate::ops::eval_binary_in(operation, left, right, &columns);
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(Datum::UInt(expected)), "{operation:?}");
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    }
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn bit_dispatch_preserves_null_and_diagnostic_demand_order() {
+    struct Warnings(RefCell<Vec<(u16, String)>>);
+    impl Columns for Warnings {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.0.borrow_mut().push((code, message.to_owned()));
+        }
+    }
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let native = Warnings(RefCell::new(Vec::new()));
+    for (left, right, warning) in [
+        (
+            Datum::new_string("1x"),
+            Datum::Null,
+            Some("Truncated incorrect INTEGER value: '1x'"),
+        ),
+        (
+            Datum::Null,
+            Datum::Decimal(tidb_datatype::Decimal::parse_mysql("10000000000000000000").0),
+            Some("Truncated incorrect DECIMAL value: '10000000000000000000'"),
+        ),
+        (Datum::Real(f64::NAN), Datum::Null, None),
+    ] {
+        native.0.borrow_mut().clear();
+        arm_eval_one_observation();
+        let result = scope.with_columns(&native, |columns| {
+            crate::ops::eval_binary_in(tidb_ast::BinaryOp::BitOr, left, right, columns)
+        });
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(Datum::Null));
+        assert_eq!(observation.facade_entries, 1, "NULL must still enter C4");
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+        assert_eq!(
+            *native.0.borrow(),
+            warning
+                .into_iter()
+                .map(|message| (1292, message.to_owned()))
+                .collect::<Vec<_>>()
+        );
+    }
+    arm_eval_one_observation();
+    let result = scope.with_columns(&native, |columns| {
+        crate::ops::eval_binary_in(
+            tidb_ast::BinaryOp::BitOr,
+            Datum::Real(f64::NAN),
+            Datum::Int(0),
+            columns,
+        )
+    });
+    let observation = take_eval_one_observation();
+    assert_eq!(result, Err(EvalError::IntOverflow));
+    assert_eq!(
+        observation.facade_entries, 0,
+        "Real overflow precedes admission"
+    );
+
+    // The existing Option<Result> tuple evaluates the right Decimal's policy
+    // callback even when the left callback already returned an error.
+    let rejecting = ForwardingSentinel::new(true, None);
+    arm_eval_one_observation();
+    let result = scope.with_columns(&rejecting, |columns| {
+        crate::ops::eval_binary_in(
+            tidb_ast::BinaryOp::BitOr,
+            Datum::Decimal(tidb_datatype::Decimal::parse_mysql("10000000000000000000").0),
+            Datum::Decimal(tidb_datatype::Decimal::parse_mysql("-10000000000000000000").0),
+            columns,
+        )
+    });
+    let observation = take_eval_one_observation();
+    assert_eq!(
+        result,
+        Err(EvalError::UnknownColumn(
+            "sentinel original error: handle_truncate".to_owned()
+        ))
+    );
+    assert_eq!(observation.facade_entries, 0);
+    assert_eq!(
+        rejecting.effects.borrow().warnings.as_slice(),
+        &[
+            (42000, "preexisting warning".to_owned()),
+            (
+                42101,
+                "truncate:Truncated incorrect DECIMAL value: '10000000000000000000'".to_owned()
+            ),
+            (
+                42101,
+                "truncate:Truncated incorrect DECIMAL value: '-10000000000000000000'".to_owned()
+            ),
+        ]
+    );
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn bit_dispatch_typed_and_vector_routes_retain_the_explicit_root() {
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    use tidb_ast::CiString;
+    let signed = FieldType::new(FieldTypeCode::LongLong);
+    let unsigned = signed
+        .clone()
+        .with_added_flags(tidb_datatype::FieldTypeFlags::UNSIGNED);
+    let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    let mut chunk = tidb_chunk::chunk::Chunk::new_with_capacity(&[], 2);
+    chunk.set_num_virtual_rows(2);
+    for slots in [0, 1] {
+        let owner = AsciiPoolOwner::new(test_policy(slots, slots)).unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        let columns = AdvertisedAsciiColumns {
+            scope: Some(&scope),
+            execution: &execution,
+        };
+        for left in [Datum::Null, Datum::UInt(u64::MAX)] {
+            let expected = left.clone();
+            let expression = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("bitxor"),
+                unsigned.clone(),
+                vec![
+                    Expression::Constant(Constant::new(left, unsigned.clone())),
+                    Expression::Constant(Constant::new(Datum::Int(0), signed.clone())),
+                ],
+            ));
+            arm_eval_one_observation();
+            let result = expression.eval(&columns, row.to_row());
+            let observation = take_eval_one_observation();
+            if slots == 0 {
+                assert!(
+                    matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource)
+                );
+                assert_eq!(observation.facade_entries, 0);
+            } else {
+                assert_eq!(result, Ok(expected));
+                assert_eq!(observation.facade_entries, 1);
+            }
+            arm_eval_one_observation();
+            let result = crate::evaluator::vectorized_filter_consider_null(
+                &columns,
+                true,
+                &[expression],
+                &chunk,
+                Vec::new(),
+                Vec::new(),
+            );
+            let observation = take_eval_one_observation();
+            if slots == 0 {
+                assert!(
+                    matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource)
+                );
+                assert_eq!(observation.facade_entries, 0);
+            } else {
+                assert!(result.is_ok());
+                assert_eq!(observation.facade_entries, 2);
+                assert_eq!(
+                    observation.after_kernel_invocations,
+                    observation
+                        .before_kernel_invocations
+                        .map(|before| before + 2)
+                );
+            }
+        }
+        drop(scope);
+        execution.close();
+    }
 }
 
 #[test]

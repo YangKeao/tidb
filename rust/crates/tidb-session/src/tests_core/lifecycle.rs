@@ -1672,3 +1672,159 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_hex_bin_left_right_replace() {
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_bitwise_sql_values_and_original_metadata() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE shared_bit_ops (id INT PRIMARY KEY, u BIGINT UNSIGNED, s BIGINT, n BIGINT)")
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_bit_ops VALUES \
+             (1,NULL,NULL,NULL),(2,0,0,0),(3,9223372036854775808,-1,0),\
+             (4,18446744073709551615,-9223372036854775808,63),\
+             (5,1,-1,64),(6,9223372036854775808,0,-1)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    // Actual operator syntax plus the named BIT_COUNT call, all on columns.
+    // The same one-slot root switches between nullable Int and Int2 recipes.
+    let output = session
+        .run_with_columns(
+            "SELECT u & s, u | s, u ^ s, ~s, u << n, u >> n, \
+             BIT_COUNT(s), BIT_COUNT(u) FROM shared_bit_ops ORDER BY id",
+        )
+        .unwrap();
+    let StmtOutput::Rows { columns, rows } = output else {
+        panic!("expected bitwise SQL rows")
+    };
+    assert_eq!(columns.len(), 8);
+    // These are the unchanged builtin_op/result_type contracts: six bitwise
+    // expressions are unsigned LongLong; BIT_COUNT is signed, with flen 2.
+    for (_, field_type) in &columns[..6] {
+        assert!(field_type.is_unsigned());
+    }
+    for (_, field_type) in &columns[6..] {
+        assert!(!field_type.is_unsigned());
+    }
+    let high = 0x8000_0000_0000_0000_u64;
+    let low = 0x7fff_ffff_ffff_ffff_u64;
+    let all = u64::MAX;
+    assert_eq!(
+        rows,
+        vec![
+            vec![Datum::Null; 8],
+            vec![
+                Datum::UInt(0),
+                Datum::UInt(0),
+                Datum::UInt(0),
+                Datum::UInt(all),
+                Datum::UInt(0),
+                Datum::UInt(0),
+                Datum::Int(0),
+                Datum::Int(0),
+            ],
+            vec![
+                Datum::UInt(high),
+                Datum::UInt(all),
+                Datum::UInt(low),
+                Datum::UInt(0),
+                Datum::UInt(high),
+                Datum::UInt(high),
+                Datum::Int(64),
+                Datum::Int(1),
+            ],
+            vec![
+                Datum::UInt(high),
+                Datum::UInt(all),
+                Datum::UInt(low),
+                Datum::UInt(low),
+                Datum::UInt(high),
+                Datum::UInt(1),
+                Datum::Int(1),
+                Datum::Int(64),
+            ],
+            vec![
+                Datum::UInt(1),
+                Datum::UInt(all),
+                Datum::UInt(all - 1),
+                Datum::UInt(0),
+                Datum::UInt(0),
+                Datum::UInt(0),
+                Datum::Int(64),
+                Datum::Int(1),
+            ],
+            vec![
+                Datum::UInt(0),
+                Datum::UInt(high),
+                Datum::UInt(high),
+                Datum::UInt(all),
+                Datum::UInt(0),
+                Datum::UInt(0),
+                Datum::Int(0),
+                Datum::Int(1),
+            ],
+        ]
+    );
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_bitwise_sql_columns() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE shared_bit_zero (id INT PRIMARY KEY, u BIGINT UNSIGNED, s BIGINT, n BIGINT)")
+        .unwrap();
+    session
+        .run("INSERT INTO shared_bit_zero VALUES (1,NULL,NULL,NULL),(2,9223372036854775808,-1,63)")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // Direct expressions, with no migrated outer function that could conceal
+    // a native fast path. Both NULL and non-NULL columns must reach the pool.
+    for expression in [
+        "u & s",
+        "u | s",
+        "u ^ s",
+        "~s",
+        "u << n",
+        "u >> n",
+        "BIT_COUNT(s)",
+        "BIT_COUNT(u)",
+    ] {
+        for id in [1, 2] {
+            let sql = format!("SELECT {expression} FROM shared_bit_zero WHERE id={id}");
+            let error = session.run_with_columns(&sql).expect_err(&sql);
+            match &error {
+                DriverError::Exec(tidb_executor::ExecError::Eval(
+                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                )) => {
+                    assert_eq!(
+                        failure.class(),
+                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                    );
+                    assert_eq!(
+                        failure.origin(),
+                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                    );
+                }
+                other => panic!("{sql} must refuse the installed zero-slot pool: {other:?}"),
+            }
+            let mysql = error.to_mysql_error();
+            assert_eq!(mysql.code, 1105, "{sql}");
+            assert_eq!(mysql.state, *b"HY000", "{sql}");
+            assert!(mysql.is_from_evaluation(), "{sql}");
+        }
+    }
+}

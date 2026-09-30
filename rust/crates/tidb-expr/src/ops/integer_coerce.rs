@@ -199,11 +199,9 @@ pub(crate) fn integer_binary(
                 }
             }
         }
-        BitAnd => Datum::UInt(bits_a & bits_b),
-        BitOr => Datum::UInt(bits_a | bits_b),
-        BitXor => Datum::UInt(bits_a ^ bits_b),
-        LeftShift => Datum::UInt(shift_left(bits_a, bits_b)),
-        RightShift => Datum::UInt(shift_right(bits_a, bits_b)),
+        BitAnd | BitOr | BitXor | LeftShift | RightShift => {
+            return eval_bitwise_binary_in(op, Some(bits_a as i64), Some(bits_b as i64), ctx);
+        }
         Eq => bool_int(integer_cmp(a, b).is_eq()),
         Ge => bool_int(integer_cmp(a, b).is_ge()),
         Gt => bool_int(integer_cmp(a, b).is_gt()),
@@ -296,24 +294,6 @@ pub(super) fn minus_overflows(
     }
     (!signed && !res_unsigned && res < 0)
         || (signed && res_unsigned && (res as u64) > i64::MAX as u64)
-}
-
-/// MySQL shifts operate on 64-bit unsigned values; a shift amount `>= 64`
-/// yields 0.
-pub(super) fn shift_left(a: u64, b: u64) -> u64 {
-    if b >= 64 {
-        0
-    } else {
-        a << b
-    }
-}
-
-pub(super) fn shift_right(a: u64, b: u64) -> u64 {
-    if b >= 64 {
-        0
-    } else {
-        a >> b
-    }
 }
 
 #[cfg(test)]

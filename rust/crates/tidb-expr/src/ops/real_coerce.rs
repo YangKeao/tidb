@@ -54,6 +54,9 @@ pub(super) fn float_binary(
         });
     }
     if l == Datum::Null || r == Datum::Null {
+        if matches!(op, BitAnd | BitOr | BitXor | LeftShift | RightShift) {
+            return eval_bitwise_binary_in(op, None, None, ctx);
+        }
         return Ok(Datum::Null);
     }
     let a = to_f64(l);
@@ -93,14 +96,7 @@ pub(super) fn float_binary(
                 (Some(x), Some(y)) => (x, y),
                 _ => return Err(EvalError::IntOverflow),
             };
-            match op {
-                BitAnd => Datum::UInt((ai as u64) & (bi as u64)),
-                BitOr => Datum::UInt((ai as u64) | (bi as u64)),
-                BitXor => Datum::UInt((ai as u64) ^ (bi as u64)),
-                LeftShift => Datum::UInt(shift_left(ai as u64, bi as u64)),
-                RightShift => Datum::UInt(shift_right(ai as u64, bi as u64)),
-                _ => unreachable!("guarded by outer match"),
-            }
+            return eval_bitwise_binary_in(op, Some(ai), Some(bi), ctx);
         }
         LogicAnd | LogicOr | LogicXor | NullEq => unreachable!("handled by caller"),
     })
