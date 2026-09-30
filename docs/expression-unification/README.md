@@ -1,39 +1,38 @@
 # Expression unification experiment
 
-Checkpoint-ID: `packet-string-four-17` (previous: `pi-ip-five-16`)
+Checkpoint-ID: `case-sha2-ord-four-18` (previous: `packet-string-four-17`)
 
-**51/245 families delegate to TiKV with their native evaluator algorithms removed; target 221.** This checkpoint adds SPACE, REPEAT, TO_BASE64 and FROM_BASE64. Strict final-audited acceptance remains 0; this is not PR-ready.
+**55/245 families delegate to TiKV with their native evaluator algorithms removed; target 221.** This checkpoint adds LOWER, UPPER, SHA2 and ORD. Strict final-audited acceptance remains 0; this is not PR-ready.
 
 ## Paired repositories
 
 - [YangKeao/tidb, expression-unification-demo](https://github.com/YangKeao/tidb/tree/expression-unification-demo)
 - [YangKeao/tikv, expression-unification-demo](https://github.com/YangKeao/tikv/tree/expression-unification-demo)
 
-Use sibling checkouts. `checkpoint.json` pins TiKV and the published Plan hash. Root Plans mirror the canonical `/home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md` at publication. Validated steps push both branches without force-push or automatic PRs.
+Use sibling checkouts. `checkpoint.json` pins TiKV and the published Plan hash. Root Plans mirror `/home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md` at publication. Validated steps push both branches without force-push or automatic PRs.
 
-## Packet-string ownership
+## Casing, SHA2 and ORD ownership
 
-Native code keeps coercion, demand, packet sizing/1301 policy and packing. Typed Allow/SuppressByPacket accompanies real nullable arguments in an independent role. Actual private TiKV wrappers produce suppressed NULL; original inputs are not replaced by fake NULL, nor packet diagnostics by resource errors.
+LOWER/UPPER binary signatures execute the actual no-op kernels. UTF8 signatures privately bind existing EncodingUtf8Mb4 getters and their Go simple Unicode tables; no new table or casing implementation is added. This avoids the charset-dependent wire selector while preserving canonical empty-charset/zero-heap metadata. Native code retains only per-malformed-byte RuneError normalization and packing. Aliases and existing PB binary/UTF8/NULL routes delegate too.
 
-REPEAT's NULL-left path carries an explicit Undemanded count, accepted only for that operation with NULL bytes and Allow. A checked irrelevant Some(0) is physical transport, not an evaluated SQL NULL. One TiKV repeat core serves both wrappers; its empty-input fast path prevents billions of empty iterations without changing wire values.
+SHA2 has one TiKV selector/digest/hex core. Invalid wire selectors still return NULL and warning1583; the native private recipe returns quiet NULL without clearing warnings. Original byte/integer coercion and NULL-left demand remain. ReadyIntArg replaces the packet-specific name; the separate BytesIntReady role validates Undemanded length before using an irrelevant Some(0), never an evaluated SQL NULL.
 
-One encoder/line-wrapper and one decoder live in TiKV. Native TO_BASE64 may encode above16MiB; wire keeps its old empty-result policy. Native FROM_BASE64 removes four whitespace bytes and returns NULL for invalid multiple-of-four length; wire removes six and retains its empty-result behavior. Padding/trailing-bit rules remain covered. The value-only FROM entry keeps execution context but omits packet and raw-length policy. Silent size overflow skips native packet diagnostics and reaches the appropriate kernel with real arguments and Allow.
+ORD keeps native argument-charset/first-character preparation, including typed ETString order, then delegates its base256 fold. The facade and both ready matchers validate the proven four-byte prepared domain, without truncation or new budgets. Original wire return-collation decoding/NULL0 stays separate from native NULL. Existing latin1 is byte-preserving: ORD of stored UTF8 'é' remains195, not a silently corrected233.
 
-Text results remain Text for SPACE/REPEAT/TO_BASE64; FROM stays Binary. No new PB/unistore admission, driver, pool, limits or native fallback is introduced.
+No new SHA2/ORD PB/unistore admission, driver, pool, limits or native fallback is introduced.
 
 ## Actual validation
 
-- TiKV local: 207 passed/1 ignored; original string tests: 63 passed.
-- Native dispatcher: 3 passed, including actual encoding of16,777,217 bytes, demand and packet/value-only policies.
-- SQL/lifecycle retry: 37 passed. Initial run: 36 passed/1 new assertion failure.
-- Full expression: 1400 passed/4 unchanged failures/94 ignored, 1498 discovered. Complete failure blocks match16 after only thread-ID normalization.
+- TiKV local: 211 passed/1 ignored; original string: 63 passed; original encryption: 8 passed.
+- Native dispatcher retry: 3 passed; SQL/lifecycle: 39 passed.
+- Full expression: 1403 passed/4 unchanged failures/94 ignored, 1501 discovered. Complete failure blocks match17 after only thread-ID normalization.
 
-The initial SQL assertion wrongly expected the returned evaluation-origin1105 error to appear in warnings. Existing session teardown explicitly excludes that error row. Only the new assertion/comment changed: Warning1301 remains in diagnostics, while typed1105/HY000 is checked separately. Runtime and existing expected values were untouched. The initial command chain stopped at SQL; full-expression ran independently later.
+The first native compile failed before tests because three new test references used a nonexistent crate-root Expression path. Only those paths were corrected to the existing expression module. No runtime or old expected value was changed; the initial chain did not reach SQL/full tests.
 
-SQL uses seven small rows, four1024-byte packet overflow cases and nine direct zero-slot refusals, including suppressed FROM. Full unistore, full workspace, make lint, release performance and allocator remeasurement were not run here. Exact commands: `logs/packet-string-four-summary.txt`; boundaries: `evidence/packet-string-four-checkpoint.md`.
+SQL checks five stored rows and12 results including aliases, byte/charset prechecks, fixed published SHA256 values and invalid-selector quiet NULL, plus eight direct zero-slot refusals. Full unistore was not rerun. Exact commands: `logs/case-sha2-ord-four-summary.txt`; boundaries: `evidence/case-sha2-ord-four-checkpoint.md`.
 
-## Next work
+## Next work and exclusions
 
-LOWER/UPPER/SHA2/ORD are the next parallel batch, not yet credited. Go simple casing, malformed-byte normalization, binary/PB paths, SHA2's quiet native versus warning wire policy, and ORD's argument-charset preparation must remain explicit. Variadic/lazy CONCAT, overlapping TRIM/SUBSTRING_INDEX, padding limits, INSERT offsets and GB collation residuals remain documented gaps.
+TRIM, SUBSTRING_INDEX, LPAD and RPAD are the next parallel batch, not yet credited. Explicit demand markers and native/wire policy differences remain necessary; pad may narrowly require four fixed operands/five nodes rather than fake typed inputs or partial-arity credit.
 
-Broad operation-scope guards, physical peak/OOM safety, paired differential reruns and final acceptance remain open. Kernel reuse is not complete Go-package transcreation.
+Variadic/lazy CONCAT, INSERT offsets, GB collation residuals and other documented compatibility gaps remain. Broad operation-scope guards, physical peak/OOM safety, allocator remeasurement, paired differential reruns, full workspace, make lint and release performance remain unverified. Kernel reuse is not complete Go-package transcreation.

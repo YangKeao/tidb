@@ -20,10 +20,10 @@ use crate::coerce::{bool_int, truthy_of};
 use crate::eval_in;
 use crate::row::row_compare;
 use crate::string_fn::{
-    ascii, bin, bit_count, bit_length_in, case_convert, char_func_with_context,
+    ascii, bin, bit_count, bit_length_in, case_convert_in, char_func_with_context,
     concat_with_context, concat_ws_with_context, elt, export_set, field, format_num,
     from_base64_in, from_base64_with_packet_limit, hex_in, locate, locate_collation,
-    locate_with_position, make_set, oct, ord, quote_in, replace_in, reverse_in, str_insert,
+    locate_with_position, make_set, oct, ord_in, quote_in, replace_in, reverse_in, str_insert,
     str_take_in, strcmp, substring, substring_index, unhex_in,
 };
 use crate::string_packet::{pad, repeat, space, to_base64};
@@ -760,8 +760,8 @@ pub(crate) fn eval_func_values(
         }
         // ---- string functions ----
         "CONCAT" if !vals.is_empty() => concat_with_context(vals, ctx),
-        "UPPER" | "UCASE" => case_convert(vals, true),
-        "LOWER" | "LCASE" => case_convert(vals, false),
+        "UPPER" | "UCASE" => case_convert_in(vals, true, ctx),
+        "LOWER" | "LCASE" => case_convert_in(vals, false, ctx),
         "LEFT" if vals.len() == 2 => str_take_in(vals, true, ctx),
         "RIGHT" if vals.len() == 2 => str_take_in(vals, false, ctx),
         "SUBSTRING" | "SUBSTR" | "MID" if vals.len() == 3 => substring(vals, ctx),
@@ -816,7 +816,7 @@ pub(crate) fn eval_func_values(
         }),
         "MAKE_SET" if !vals.is_empty() => make_set(vals),
         "DATE_FORMAT" if vals.len() == 2 => date_format(&vals[0], &vals[1]),
-        "ORD" if vals.len() == 1 => ord(vals),
+        "ORD" if vals.len() == 1 => ord_in(vals, ctx),
         "QUOTE" if vals.len() == 1 => quote_in(vals, ctx),
         "BIT_COUNT" if vals.len() == 1 => bit_count(vals, ctx),
         "FORMAT" if vals.len() == 2 => format_num(vals, ctx),

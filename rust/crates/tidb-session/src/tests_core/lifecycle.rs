@@ -2886,3 +2886,206 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_packet_string_sql_columns() {
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_case_sha2_ord_sql_values_and_metadata() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_case_hash_ord (id INT PRIMARY KEY, \
+             t VARCHAR(16) CHARSET utf8mb4, b VARBINARY(16), \
+             l VARCHAR(16) CHARSET latin1, h VARBINARY(8), bits INT)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_case_hash_ord VALUES \
+             (1,NULL,NULL,NULL,NULL,NULL),(2,'',X'','',X'',256),\
+             (3,'你İßΣ',X'E4BDA0','é',X'616263',0),\
+             (4,'Ab',X'4162FF',0xE28241,X'616263',256),\
+             (5,'A',X'61','Z',X'616263',123)",
+        )
+        .unwrap();
+
+    // Existing latin1 storage is a byte-preserving UTF-8 alias, not a write
+    // transcode to ISO-8859-1. Confirm both the declared argument charsets and
+    // actual bytes before testing case conversion or ORD's charset boundary.
+    let StmtOutput::Rows {
+        columns: input_columns,
+        rows: input_rows,
+    } = session
+        .run_with_columns("SELECT t,b,l FROM shared_case_hash_ord ORDER BY id")
+        .unwrap()
+    else {
+        panic!("expected stored case/ORD inputs")
+    };
+    assert_eq!(input_rows.len(), 5);
+    assert_eq!(input_columns[0].1.charset_name(), "utf8mb4");
+    assert_eq!(input_columns[1].1.charset_name(), "binary");
+    assert_eq!(input_columns[2].1.charset_name(), "latin1");
+    assert_eq!(input_rows[2][0].to_bytes().unwrap(), "你İßΣ".as_bytes());
+    assert_eq!(input_rows[2][1].to_bytes().unwrap(), vec![0xe4, 0xbd, 0xa0]);
+    assert_eq!(input_rows[2][2].to_bytes().unwrap(), vec![0xc3, 0xa9]);
+    assert_eq!(input_rows[3][2].to_bytes().unwrap(), vec![0xe2, 0x82, b'A']);
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT LOWER(t), UPPER(t), LCASE(t), UCASE(t), LOWER(b), UPPER(b), \
+             LOWER(l), UPPER(l), SHA2(h,bits), ORD(b), ORD(t), ORD(l) \
+             FROM shared_case_hash_ord ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected case/SHA2/ORD SQL rows")
+    };
+    assert_eq!(columns.len(), 12);
+    for (column_index, (_, field_type)) in columns.iter().enumerate() {
+        if column_index >= 9 {
+            assert_eq!(field_type.eval_type(), tidb_datatype::EvalType::Int);
+            assert_eq!(field_type.flen(), 10);
+            assert!(!field_type.is_unsigned());
+        } else {
+            assert_eq!(field_type.eval_type(), tidb_datatype::EvalType::String);
+            assert_eq!(field_type.flen(), if column_index == 8 { 128 } else { 16 });
+            if matches!(column_index, 4 | 5) {
+                assert_eq!(field_type.collation(), tidb_datatype::Collation::Binary);
+            } else {
+                assert_ne!(field_type.collation(), tidb_datatype::Collation::Binary);
+            }
+        }
+    }
+    // Published SHA-256 vectors, never recorded from the implementation.
+    // The stored length 0 aliases 256; 123 is silent NULL, not warning 1583.
+    let empty_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    let abc_sha256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    let expected_text: [[Option<&str>; 5]; 5] = [
+        [None; 5],
+        [Some(""), Some(""), Some(""), Some(""), Some(empty_sha256)],
+        [
+            Some("你ißσ"),
+            Some("你İßΣ"),
+            Some("é"),
+            Some("É"),
+            Some(abc_sha256),
+        ],
+        [
+            Some("ab"),
+            Some("AB"),
+            Some("\u{fffd}\u{fffd}a"),
+            Some("\u{fffd}\u{fffd}A"),
+            Some(abc_sha256),
+        ],
+        [Some("a"), Some("A"), Some("z"), Some("Z"), None],
+    ];
+    let binary_string =
+        |bytes: Vec<u8>| Datum::new_collation_string(bytes, tidb_datatype::Collation::Binary);
+    let expected_binary = [
+        Datum::Null,
+        binary_string(vec![]),
+        binary_string(vec![0xe4, 0xbd, 0xa0]),
+        binary_string(vec![b'A', b'b', 0xff]),
+        binary_string(vec![b'a']),
+    ];
+    // ORD uses arg0.charset, not its integer return field's binary collation.
+    // latin1's no-op encode plus one-byte peek makes stored C3A9 yield 195.
+    let expected_ord: [[Option<i64>; 3]; 5] = [
+        [None; 3],
+        [Some(0); 3],
+        [Some(228), Some(14_990_752), Some(195)],
+        [Some(65), Some(65), Some(226)],
+        [Some(97), Some(65), Some(90)],
+    ];
+    assert_eq!(rows.len(), expected_text.len());
+    for (row_index, (row, expected)) in rows.iter().zip(expected_text).enumerate() {
+        assert_eq!(row.len(), 12);
+        for (column_index, expected) in [0, 1, 6, 7, 8].into_iter().zip(expected) {
+            let value = &row[column_index];
+            match expected {
+                None => assert_eq!(value, &Datum::Null),
+                Some(expected) => {
+                    assert!(matches!(value, Datum::String(_)));
+                    assert_ne!(value.collation(), Some(tidb_datatype::Collation::Binary));
+                    assert_eq!(
+                        crate::tests_support::cell_text(value),
+                        expected,
+                        "case/SHA2 fixture id {}, column {column_index}",
+                        row_index + 1
+                    );
+                }
+            }
+        }
+        assert_eq!(row[2], row[0], "LCASE alias, id {}", row_index + 1);
+        assert_eq!(row[3], row[1], "UCASE alias, id {}", row_index + 1);
+        assert_eq!(row[4], expected_binary[row_index]);
+        assert_eq!(row[5], expected_binary[row_index]);
+        for (column_index, expected) in expected_ord[row_index].into_iter().enumerate() {
+            assert_eq!(
+                row[9 + column_index],
+                expected.map_or(Datum::Null, Datum::Int),
+                "ORD fixture id {}, argument {column_index}",
+                row_index + 1
+            );
+        }
+    }
+    assert!(warnings_of(&session).is_empty());
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_case_sha2_ord_sql_columns() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_case_hash_ord_zero (id INT PRIMARY KEY, \
+             t VARCHAR(16), b VARBINARY(8), bits INT)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_case_hash_ord_zero VALUES \
+             (1,NULL,NULL,NULL),(2,'Ab',X'616263',256)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    for expression in ["LOWER(t)", "UPPER(t)", "SHA2(b,bits)", "ORD(t)"] {
+        for id in [1, 2] {
+            let sql = format!("SELECT {expression} FROM shared_case_hash_ord_zero WHERE id={id}");
+            let error = session.run_with_columns(&sql).expect_err(&sql);
+            match &error {
+                DriverError::Exec(tidb_executor::ExecError::Eval(
+                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                )) => {
+                    assert_eq!(
+                        failure.class(),
+                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                    );
+                    assert_eq!(
+                        failure.origin(),
+                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                    );
+                }
+                other => {
+                    panic!("case/SHA2/ORD SQL must reach the zero-slot pool: {sql}: {other:?}")
+                }
+            }
+            let mysql = error.to_mysql_error();
+            assert_eq!(mysql.code, 1105, "{sql}");
+            assert_eq!(mysql.state, *b"HY000", "{sql}");
+            assert!(mysql.is_from_evaluation(), "{sql}");
+            // Evaluation-origin 1105 is returned, not an Error warning row.
+            assert!(warnings_of(&session).is_empty(), "{sql}");
+        }
+    }
+}

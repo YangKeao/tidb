@@ -364,6 +364,31 @@ impl PbBuiltin {
                             // the migrated nullable signature actually enter C4.
                             return eval_pb_char_length(&value, binary, ctx);
                         }
+                        match kernel {
+                            Kernel::String {
+                                operation: StringOp::Upper,
+                                binary,
+                            } => {
+                                return crate::string_fn::case_convert_signature_in(
+                                    std::slice::from_ref(&value),
+                                    true,
+                                    binary,
+                                    ctx,
+                                );
+                            }
+                            Kernel::String {
+                                operation: StringOp::Lower,
+                                binary,
+                            } => {
+                                return crate::string_fn::case_convert_signature_in(
+                                    std::slice::from_ref(&value),
+                                    false,
+                                    binary,
+                                    ctx,
+                                );
+                            }
+                            _ => {}
+                        }
                         // Keep this exact NULL child-demand boundary, but do
                         // not bypass the nullable migrated inverse-trig call.
                         match self.signature {
@@ -402,8 +427,12 @@ impl PbBuiltin {
                         }
                         match operation {
                             StringOp::Length => eval_pb_char_length(&values[0], binary, ctx),
-                            StringOp::Upper => crate::string_fn::case_convert(&values, true),
-                            StringOp::Lower => crate::string_fn::case_convert(&values, false),
+                            StringOp::Upper => crate::string_fn::case_convert_signature_in(
+                                &values, true, binary, ctx,
+                            ),
+                            StringOp::Lower => crate::string_fn::case_convert_signature_in(
+                                &values, false, binary, ctx,
+                            ),
                             StringOp::Substring => crate::string_fn::substring(&values, ctx),
                         }
                     }

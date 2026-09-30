@@ -1,8 +1,8 @@
 {
-  "checkpoint_id": "packet-string-four-17",
+  "checkpoint_id": "case-sha2-ord-four-18",
   "frozen_denominator": 245,
   "required_families": 221,
-  "functional_delegation_and_native_deletion_count": 51,
+  "functional_delegation_and_native_deletion_count": 55,
   "fully_final_audited_count": 0,
   "final_performance_and_workspace_gates_complete": false,
   "families": [
@@ -56,9 +56,13 @@
     {"id": "space", "status": "functional_tikv_only", "native_algorithm_deleted": true, "packet_diagnostic_precedes_silent_blob_limit": true},
     {"id": "repeat", "status": "functional_tikv_only", "native_algorithm_deleted": true, "undemanded_count_explicit_and_empty_huge_count_fast": true},
     {"id": "to_base64", "status": "functional_tikv_only", "native_algorithm_deleted": true, "native_above_wire_blob_limit_and_line_wrap_preserved": true},
-    {"id": "from_base64", "status": "functional_tikv_only", "native_algorithm_deleted": true, "native_whitespace_padding_and_value_only_context_preserved": true}
+    {"id": "from_base64", "status": "functional_tikv_only", "native_algorithm_deleted": true, "native_whitespace_padding_and_value_only_context_preserved": true},
+    {"id": "lower", "status": "functional_tikv_only", "native_algorithm_deleted": true, "binary_unicode_alias_pb_and_null_entries_connected": true},
+    {"id": "upper", "status": "functional_tikv_only", "native_algorithm_deleted": true, "binary_unicode_alias_pb_and_null_entries_connected": true},
+    {"id": "sha2", "status": "functional_tikv_only", "native_algorithm_deleted": true, "native_quiet_selector_and_undemanded_length_preserved": true},
+    {"id": "ord", "status": "functional_tikv_only", "native_algorithm_deleted": true, "argument_charset_preparation_and_typed_entry_preserved": true}
   ],
-  "shared_evidence": "evidence/packet-string-four-checkpoint.md",
+  "shared_evidence": "evidence/case-sha2-ord-four-checkpoint.md",
   "one_operation_keyed_pool": true,
   "actual_mixed_column_sql_verified": true,
   "zero_slot_refusal_for_new_paths_verified": true,
@@ -66,6 +70,6 @@
   "deferred_compatibility_candidates_not_credited": ["sha2", "compress", "uncompress", "uncompressed_length", "ord"],
   "logical_demand_preserved": true,
   "legacy_infrastructure_errors_remain_typed_until_public_boundary": true,
-  "next_case_sha2_ord_candidates_not_credited": ["lower", "upper", "sha2", "ord"],
+  "next_trim_subindex_pad_candidates_not_credited": ["trim", "substring_index", "lpad", "rpad"],
   "go_trig_compatibility_not_credited": ["sin", "cos", "tan", "cot", "atan"]
 }

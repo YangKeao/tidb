@@ -1096,6 +1096,10 @@ fn dispatch_bytes_family(
             .unwrap();
         }
         EvaluatedBytesOp::RepeatNative => panic!("REPEAT needs its original argument pair"),
+        EvaluatedBytesOp::Lower | EvaluatedBytesOp::LowerUtf8Ready => "LOWER",
+        EvaluatedBytesOp::Upper | EvaluatedBytesOp::UpperUtf8Ready => "UPPER",
+        EvaluatedBytesOp::OrdNative => "ORD",
+        EvaluatedBytesOp::Sha2Native => panic!("SHA2 needs its original argument pair"),
         EvaluatedBytesOp::IsNull => "ISNULL",
         EvaluatedBytesOp::IsTrue => "ISTRUE",
         EvaluatedBytesOp::IsFalse => "ISFALSE",
@@ -1142,6 +1146,271 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+#[test]
+fn case_sha2_ord_dispatch_preserves_case_aliases_pb_and_nulls() {
+    use crate::scalar_function::{PbBuiltin, ScalarFunction};
+    use tidb_proto::tipb::ScalarFuncSig;
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    for (name, input, expected) in [
+        ("LCASE", Datum::new_string("İA"), Datum::new_string("ia")),
+        ("UCASE", Datum::new_string("aßﬁ"), Datum::new_string("Aßﬁ")),
+        (
+            "LOWER",
+            Datum::new_bytes([b'A', 0xff]),
+            Datum::new_bytes([b'A', 0xff]),
+        ),
+        (
+            "UPPER",
+            Datum::new_string(vec![b'a', 0xe2, 0x82]),
+            Datum::new_string("A\u{fffd}\u{fffd}"),
+        ),
+        ("LOWER", Datum::Null, Datum::Null),
+        ("UPPER", Datum::Null, Datum::Null),
+    ] {
+        arm_eval_one_observation();
+        let result = crate::func::eval_func_values(name, &[input], &columns).unwrap();
+        let observation = take_eval_one_observation();
+        assert!(matches!(
+            (&result, &expected),
+            (Ok(Datum::Null), Datum::Null)
+                | (Ok(Datum::String(_)), Datum::String(_))
+                | (Ok(Datum::Bytes(_)), Datum::Bytes(_))
+        ));
+        assert_eq!(result, Ok(expected), "{name}");
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    }
+    let field = FieldType::new(FieldTypeCode::VarString);
+    let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    for (signature, expected) in [
+        (ScalarFuncSig::Lower, Datum::new_bytes([b'A', 0xe2, 0x82])),
+        (ScalarFuncSig::Upper, Datum::new_bytes([b'A', 0xe2, 0x82])),
+        (
+            ScalarFuncSig::LowerUtf8,
+            Datum::new_string("a\u{fffd}\u{fffd}"),
+        ),
+        (
+            ScalarFuncSig::UpperUtf8,
+            Datum::new_string("A\u{fffd}\u{fffd}"),
+        ),
+    ] {
+        for input in [Datum::new_string(vec![b'A', 0xe2, 0x82]), Datum::Null] {
+            let expected = if input.is_null() {
+                Datum::Null
+            } else {
+                expected.clone()
+            };
+            let function = ScalarFunction::from_pb(
+                PbBuiltin::new(signature).unwrap(),
+                field.clone(),
+                vec![crate::expression::Expression::Constant(Constant::new(
+                    input,
+                    field.clone(),
+                ))],
+            );
+            arm_eval_one_observation();
+            let result = function.eval(&columns, row.to_row());
+            let observation = take_eval_one_observation();
+            assert_eq!(result, Ok(expected), "{signature:?}");
+            assert_eq!(
+                observation.facade_entries, 1,
+                "PB NULL/no-op cannot bypass C4"
+            );
+            assert_eq!(
+                observation.after_kernel_invocations,
+                observation
+                    .before_kernel_invocations
+                    .map(|before| before + 1)
+            );
+        }
+    }
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn case_sha2_ord_dispatch_preserves_selector_and_charset_coercion() {
+    use crate::scalar_function::ScalarFunction;
+    use tidb_datatype::Decimal;
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    let digest =
+        Datum::new_string("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    for (input, length, expected) in [
+        (
+            Datum::new_string("abc"),
+            Datum::Decimal(Decimal::from_scaled_i128(2555, 1)),
+            digest.clone(),
+        ),
+        (Datum::new_string("abc"), Datum::Real(256.5), digest),
+        (
+            Datum::new_string("abc"),
+            Datum::Decimal(Decimal::from_scaled_i128(2565, 1)),
+            Datum::Null,
+        ),
+        (Datum::Null, Datum::new_bytes([0xff]), Datum::Null),
+        (Datum::new_string("abc"), Datum::Null, Datum::Null),
+    ] {
+        arm_eval_one_observation();
+        let result = crate::func::eval_func_values_in("SHA2", &[input, length], &columns).unwrap();
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(expected));
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    }
+    for (input, expected) in [
+        (Datum::new_bytes([0xe4, 0xbd, 0xa0]), Datum::Int(228)),
+        (Datum::new_string("你"), Datum::Int(14_990_752)),
+        (Datum::new_string(""), Datum::Int(0)),
+        (Datum::Null, Datum::Null),
+    ] {
+        arm_eval_one_observation();
+        let result = crate::func::eval_func_values("ORD", &[input], &columns).unwrap();
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(expected));
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    }
+    let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    for (charset, input, expected) in [
+        ("ascii", "你", 228),
+        ("latin1", "你", 228),
+        ("latin1", "é", 195),
+    ] {
+        let argument_type = FieldType::new(FieldTypeCode::VarString).with_charset_name(charset);
+        let function = ScalarFunction::new(
+            tidb_ast::CiString::new("ord"),
+            FieldType::new(FieldTypeCode::LongLong),
+            vec![crate::expression::Expression::Constant(Constant::new(
+                Datum::new_string(input),
+                argument_type,
+            ))],
+        );
+        arm_eval_one_observation();
+        let result = function.eval(&columns, row.to_row());
+        let observation = take_eval_one_observation();
+        assert_eq!(
+            result,
+            Ok(Datum::Int(expected)),
+            "preserve existing {charset} preparation"
+        );
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    }
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn case_sha2_ord_dispatch_keeps_explicit_refusal_and_error_precedence() {
+    use crate::scalar_function::{PbBuiltin, ScalarFunction};
+    use tidb_proto::tipb::ScalarFuncSig;
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    for (name, values) in [
+        ("LOWER", vec![Datum::new_bytes([b'A', 0xff])]),
+        ("UPPER", vec![Datum::Null]),
+        ("SHA2", vec![Datum::Null, Datum::new_bytes([0xff])]),
+        ("ORD", vec![Datum::new_string("")]),
+    ] {
+        arm_eval_one_observation();
+        let result = crate::func::eval_func_values_in(name, &values, &columns).unwrap();
+        let observation = take_eval_one_observation();
+        assert!(
+            matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource),
+            "{name}"
+        );
+        assert_eq!(observation.facade_entries, 0);
+    }
+    for (name, values, error) in [
+        (
+            "LOWER",
+            vec![Datum::MinNotNull],
+            "range sentinel byte coercion",
+        ),
+        (
+            "SHA2",
+            vec![Datum::new_string("abc"), Datum::new_bytes([0xff])],
+            "invalid UTF-8 SHA2 length",
+        ),
+        (
+            "SHA2",
+            vec![Datum::MinNotNull, Datum::Null],
+            "range sentinel hash argument",
+        ),
+        (
+            "ORD",
+            vec![Datum::MinNotNull],
+            "range sentinel byte coercion",
+        ),
+    ] {
+        arm_eval_one_observation();
+        let result = crate::func::eval_func_values_in(name, &values, &columns).unwrap();
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Err(EvalError::Unsupported(error)));
+        assert_eq!(observation.facade_entries, 0);
+    }
+    let field = FieldType::new(FieldTypeCode::VarString);
+    let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    for signature in [
+        ScalarFuncSig::Lower,
+        ScalarFuncSig::Upper,
+        ScalarFuncSig::LowerUtf8,
+        ScalarFuncSig::UpperUtf8,
+    ] {
+        let function = ScalarFunction::from_pb(
+            PbBuiltin::new(signature).unwrap(),
+            field.clone(),
+            vec![crate::expression::Expression::Constant(Constant::new(
+                Datum::Null,
+                field.clone(),
+            ))],
+        );
+        assert!(
+            matches!(function.eval(&columns, row.to_row()), Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource)
+        );
+    }
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 #[test]

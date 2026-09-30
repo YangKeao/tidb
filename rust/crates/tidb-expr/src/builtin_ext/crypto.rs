@@ -32,7 +32,6 @@ use std::io::Write;
 
 use flate2::write::ZlibEncoder;
 use flate2::{Compression, Decompress, FlushDecompress, Status};
-use sha2::{Digest, Sha224, Sha256, Sha384, Sha512};
 
 use crate::{BlockEncryptionMode, Columns, Datum, EvalError};
 
@@ -55,7 +54,7 @@ pub(crate) fn dispatch(
             &vals[0],
             ctx,
         )),
-        ("SHA2", 2) => Some(sha2_hash(&vals[0], &vals[1])),
+        ("SHA2", 2) => Some(sha2_hash(&vals[0], &vals[1], ctx)),
         ("SM3", 1) => Some(sm3_hash(&vals[0])),
         ("RANDOM_BYTES", 1) => Some(random_bytes(&vals[0])),
         ("RANDOM_BYTES", _) => Some(Err(EvalError::WrongParameterCount("random_bytes"))),
@@ -624,22 +623,27 @@ fn hash_input(value: &Datum) -> Result<Option<Vec<u8>>, EvalError> {
 /// their hashes, and leaves the hasher nil for EVERY other value — which
 /// the Go code returns as `NULL` (not an error). Its function class declares
 /// the second argument `ETInt`, so [`encryption_int_argument`] ports that implicit cast
-/// before applying the switch.
-fn sha2_hash(arg: &Datum, len: &Datum) -> Result<Datum, EvalError> {
-    let Some(bytes) = hash_input(arg)? else {
-        return Ok(Datum::Null);
-    };
-    let Some(n) = encryption_int_argument(len)? else {
-        return Ok(Datum::Null);
-    };
-    let hex = match n {
-        0 | 256 => hex_lower(Sha256::digest(bytes.as_slice()).as_slice()),
-        224 => hex_lower(Sha224::digest(bytes.as_slice()).as_slice()),
-        384 => hex_lower(Sha384::digest(bytes.as_slice()).as_slice()),
-        512 => hex_lower(Sha512::digest(bytes.as_slice()).as_slice()),
-        _ => return Ok(Datum::Null),
-    };
-    Ok(Datum::new_string(hex))
+/// before C4 selects and computes the digest.
+fn sha2_hash(arg: &Datum, len: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::Sha2Native,
+        ctx,
+        || {
+            let bytes = hash_input(arg)?;
+            // NULL still reaches C4, but must not demand length coercion.
+            let count = if bytes.is_none() {
+                crate::tikv::ReadyIntArg::Undemanded
+            } else {
+                crate::tikv::ReadyIntArg::Value(encryption_int_argument(len)?)
+            };
+            Ok(crate::tikv::EvaluatedArgs::BytesIntReady { bytes, count })
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 
 /// Ports the `ETInt` coercion requested by the encryption function classes.

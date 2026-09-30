@@ -27,7 +27,7 @@
 //! of them read.
 
 use crate::coerce::{coerce_str, coerce_str_bytes};
-use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp, OutputDisposition, ReadyPacketCount};
+use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp, OutputDisposition, ReadyIntArg};
 use crate::{Datum, EvalError};
 
 /// `REPEAT(str, count)`: `str` concatenated `count` times (empty for
@@ -53,14 +53,14 @@ pub(crate) fn repeat(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, 
             let ready_count = if bytes.is_none() {
                 // Preserve the original NULL-left demand boundary, rather than
                 // coercing an unused count or claiming it was evaluated NULL.
-                ReadyPacketCount::Undemanded
+                ReadyIntArg::Undemanded
             } else if *count == Datum::Null {
-                ReadyPacketCount::Value(None)
+                ReadyIntArg::Value(None)
             } else {
-                ReadyPacketCount::Value(Some(crate::cast::to_i64_signed(count)))
+                ReadyIntArg::Value(Some(crate::cast::to_i64_signed(count)))
             };
             let mut disposition = OutputDisposition::Allow;
-            if let (Some(bytes), ReadyPacketCount::Value(Some(count))) = (&bytes, &ready_count) {
+            if let (Some(bytes), ReadyIntArg::Value(Some(count))) = (&bytes, &ready_count) {
                 // Only packet sizing remains here. Empty/negative answers and
                 // count clamping for result generation belong to the kernel.
                 if *count > 0 && !bytes.is_empty() {

@@ -1,0 +1,59 @@
+Checkpoint: case-sha2-ord-four-18
+Selected actual result lines from /home/agent/tidb/expression-unification/logs/case-sha2-ord-four-*.log.
+Commands and exit statuses supplied by parent; no tests were rerun to write this summary.
+
+CWD: /home/agent/tidb/expression-unification/tikv
+WRAPPER PIN: nightly-2026-01-30-x86_64-unknown-linux-gnu
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+LOG: case-sha2-ord-four-tikv-local.log
+EXIT: 0
+running 212 tests
+test result: ok. 211 passed; 0 failed; 1 ignored; 0 measured; 469 filtered out; finished in 0.18s
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_string::tests:: -- --test-threads=1
+LOG: case-sha2-ord-four-official-string.log
+EXIT: 0
+running 63 tests
+test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 618 filtered out; finished in 0.02s
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_encryption::tests:: -- --test-threads=1
+LOG: case-sha2-ord-four-official-encryption.log
+EXIT: 0
+running 8 tests
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 673 filtered out; finished in 0.00s
+
+CWD: /home/agent/tidb/expression-unification/tidb/rust
+WRAPPER PIN: nightly-2026-08-22-x86_64-unknown-linux-gnu
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib case_sha2_ord_dispatch_ -- --test-threads=1
+LOG: case-sha2-ord-four-dispatch.log
+EXIT: 101
+TESTS: not started; the initial chain stopped at this compilation failure.
+error[E0433]: cannot find `Expression` in the crate root
+error[E0433]: cannot find `Expression` in the crate root
+error[E0433]: cannot find `Expression` in the crate root
+error: could not compile `tidb-expr` (lib test) due to 3 previous errors; 21 warnings emitted
+Parent corrected only the three new-test paths from crate::Expression to crate::expression::Expression; no runtime or old expected-value change was made for this repair.
+
+Subsequent receipts, not continuation of the failed initial chain:
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib case_sha2_ord_dispatch_ -- --test-threads=1
+LOG: case-sha2-ord-four-dispatch-retry.log
+EXIT: 0
+running 3 tests
+test tikv::evaluated_ascii::tests::case_sha2_ord_dispatch_keeps_explicit_refusal_and_error_precedence ... ok
+test tikv::evaluated_ascii::tests::case_sha2_ord_dispatch_preserves_case_aliases_pb_and_nulls ... ok
+test tikv::evaluated_ascii::tests::case_sha2_ord_dispatch_preserves_selector_and_charset_coercion ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1498 filtered out; finished in 0.00s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::evaluated_ascii_ -- --test-threads=1
+LOG: case-sha2-ord-four-sql-lifecycle.log
+EXIT: 0
+running 39 tests
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 0.49s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+LOG: case-sha2-ord-four-expr-full.log
+EXIT: 101
+running 1501 tests
+test result: FAILED. 1403 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.36s
+error: test failed, to rerun pass `-p tidb-expr --lib`
+
+Parent compared all four complete expression failure blocks against packet-string-four-17: identical after only thread-ID normalization. The full expression suite remains non-green.
+No new SHA2/ORD PB or unistore admission; unistore was not rerun in18. Pre-existing expected values were not changed.
+Functional delegation/native-deletion: 55/245. Final acceptance: 0/245.
+Complete operation scopes/guards, allocator remeasurement, physical peak/OOM guarantees, performance, full workspace and make lint were not verified by these receipts; this is not PR-ready.

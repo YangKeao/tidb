@@ -2879,9 +2879,10 @@ impl ScalarFunction {
             .expect("the native regexp family is registered");
         }
         if upper == "ORD" {
-            return crate::string_fn::ord_with_type(
+            return crate::string_fn::ord_with_type_in(
                 &vals,
                 arg_types.first().and_then(Option::as_ref),
+                ctx,
             );
         }
         if matches!(upper.as_str(), "JSON_SET" | "JSON_INSERT" | "JSON_REPLACE")

@@ -1428,7 +1428,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::IsIpv4Nullable
             | EvaluatedBytesOp::IsIpv6Nullable
             | EvaluatedBytesOp::IsIpv4CompatNullable
-            | EvaluatedBytesOp::IsIpv4MappedNullable,
+            | EvaluatedBytesOp::IsIpv4MappedNullable
+            | EvaluatedBytesOp::OrdNative,
             ComputedValue::Int(value),
         ) => own_computed_int(value)
             .into_datum()
@@ -1457,7 +1458,12 @@ fn materialize_computed(
             | EvaluatedBytesOp::RepeatNative
             | EvaluatedBytesOp::ToBase64Native
             | EvaluatedBytesOp::FromBase64Native
-            | EvaluatedBytesOp::FromBase64ValueNative,
+            | EvaluatedBytesOp::FromBase64ValueNative
+            | EvaluatedBytesOp::Lower
+            | EvaluatedBytesOp::Upper
+            | EvaluatedBytesOp::LowerUtf8Ready
+            | EvaluatedBytesOp::UpperUtf8Ready
+            | EvaluatedBytesOp::Sha2Native,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {

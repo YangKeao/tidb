@@ -24,7 +24,6 @@ use crate::{Datum, EvalError};
 use tidb_datatype::{
     find_encoding, get_default_collation, Collation, FieldType, GoString, TransformOp,
 };
-use tidb_hack::{go_to_lower, go_to_upper};
 
 /// CONCAT: `NULL` if any argument is `NULL`, else the concatenation.
 pub(crate) fn concat(vals: &[Datum]) -> Result<Datum, EvalError> {
@@ -61,53 +60,67 @@ pub(crate) fn concat_with_context(
 /// signatures return the original bytes unchanged (the source selects those
 /// signatures from the argument FieldType before evaluation).  Numeric values
 /// still pass through the ordinary ETString conversion.
+#[cfg(test)]
 pub(crate) fn case_convert(vals: &[Datum], upper: bool) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad case-conversion arity"));
-    }
-    match &vals[0] {
-        Datum::Null => Ok(Datum::Null),
-        // `builtinUpperSig`/`builtinLowerSig` return the argument untouched --
-        // not even ASCII-folded -- for every binary-charset spelling, which is
-        // what `is_binary_str` decides in one place.
-        value if crate::string_signature::is_binary_str(value) => Ok(Datum::new_bytes(
-            coerce_str_bytes(value)?.expect("non-NULL value has bytes"),
-        )),
-        value => {
-            let Some(bytes) = coerce_str_bytes(value)? else {
-                return Ok(Datum::Null);
-            };
-            // Go's charset encoders receive a Go string. Their Unicode case
-            // path ranges over it, so each malformed byte becomes one
-            // RuneError before case mapping rather than causing an error or
-            // being collapsed with an adjacent malformed byte.
-            let text = GoString::from(bytes).to_utf8_lossy_go();
-            Ok(Datum::new_string(if upper {
-                go_simple_case(&text, true)
-            } else {
-                go_simple_case(&text, false)
-            }))
-        }
-    }
+    case_convert_in(vals, upper, &crate::NoColumns)
 }
 
-/// TiDB maps case with `strings.ToUpper`/`ToLower`
-/// (`parser/charset/encoding_base.go`), which walk the string applying the
-/// SIMPLE per-rune mappings `unicode.ToUpper`/`ToLower`. Rust's
-/// `str::to_uppercase`/`to_lowercase` apply the FULL mappings instead,
-/// which diverge on 103 code points: `ß` expands to "SS", the ligatures
-/// (ﬁ, ﬄ) and Turkish `İ` grow extra characters, and the 27 Greek
-/// iota-subscript vowels change to a DIFFERENT single vowel
-/// (U+1FA4 -> U+1FAC) rather than expanding.
-///
-/// `tidb_hack::go_to_upper`/`go_to_lower` reproduce Go's simple tables
-/// exactly; see their docs for the per-code-point argument.
-fn go_simple_case(text: &str, upper: bool) -> String {
-    if upper {
-        go_to_upper(text)
-    } else {
-        go_to_lower(text)
-    }
+pub(crate) fn case_convert_in(
+    vals: &[Datum],
+    upper: bool,
+    ctx: &dyn crate::Columns,
+) -> Result<Datum, EvalError> {
+    let [value] = vals else {
+        return Err(EvalError::Unsupported("bad case-conversion arity"));
+    };
+    case_convert_signature_in(
+        vals,
+        upper,
+        crate::string_signature::is_binary_str(value),
+        ctx,
+    )
+}
+
+/// The selected binary/UTF-8 signature must survive even a NULL PB argument.
+/// Binary no-op and simple Unicode mapping both execute in C4. Only Go's
+/// per-malformed-byte RuneError normalization remains on the native side.
+pub(crate) fn case_convert_signature_in(
+    vals: &[Datum],
+    upper: bool,
+    binary: bool,
+    ctx: &dyn crate::Columns,
+) -> Result<Datum, EvalError> {
+    let [value] = vals else {
+        return Err(EvalError::Unsupported("bad case-conversion arity"));
+    };
+    let operation = match (upper, binary) {
+        (false, true) => crate::tikv::EvaluatedBytesOp::Lower,
+        (true, true) => crate::tikv::EvaluatedBytesOp::Upper,
+        (false, false) => crate::tikv::EvaluatedBytesOp::LowerUtf8Ready,
+        (true, false) => crate::tikv::EvaluatedBytesOp::UpperUtf8Ready,
+    };
+    crate::tikv::evaluate_bytes_in(
+        operation,
+        ctx,
+        || {
+            Ok(coerce_str_bytes(value)?.map(|bytes| {
+                if binary {
+                    bytes
+                } else {
+                    GoString::from(bytes).to_utf8_lossy_go().into_bytes()
+                }
+            }))
+        },
+        |computed| {
+            Ok(computed.into_bytes()?.map_or(Datum::Null, |bytes| {
+                if binary {
+                    Datum::new_bytes(bytes)
+                } else {
+                    Datum::new_string(bytes)
+                }
+            }))
+        },
+    )
 }
 
 #[cfg(test)]
@@ -1513,8 +1526,13 @@ mod from_base64_tests {
 /// single-byte (ASCII) char its byte value, for a multibyte char its UTF-8
 /// bytes folded as a base-256 number (`ORD('A')` = 65, `ORD('é')` = 50089).
 /// `0` for the empty string; `NULL` propagates.
+#[cfg(test)]
 pub(crate) fn ord(vals: &[Datum]) -> Result<Datum, EvalError> {
-    ord_with_type(vals, None)
+    ord_in(vals, &crate::NoColumns)
+}
+
+pub(crate) fn ord_in(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    ord_with_type_in(vals, None, ctx)
 }
 
 /// Go `builtinOrdSig.evalInt` with the argument's declared charset. The
@@ -1522,43 +1540,58 @@ pub(crate) fn ord(vals: &[Datum]) -> Result<Datum, EvalError> {
 /// encodes it into that charset, then folds the first encoded character as a
 /// base-256 integer. An unrepresentable character falls back to its first raw
 /// byte.
+#[cfg(test)]
 pub(crate) fn ord_with_type(
     vals: &[Datum],
     arg_type: Option<&FieldType>,
 ) -> Result<Datum, EvalError> {
+    ord_with_type_in(vals, arg_type, &crate::NoColumns)
+}
+
+pub(crate) fn ord_with_type_in(
+    vals: &[Datum],
+    arg_type: Option<&FieldType>,
+    ctx: &dyn crate::Columns,
+) -> Result<Datum, EvalError> {
     let [value] = vals else {
         return Err(EvalError::Unsupported("bad ORD arity"));
     };
-    let Some(bytes) = coerce_str_bytes(value)? else {
-        return Ok(Datum::Null);
-    };
-    let Some(&first_byte) = bytes.first() else {
-        return Ok(Datum::Int(0));
-    };
-    let charset = arg_type.map_or_else(
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::OrdNative,
+        ctx,
         || {
-            if crate::string_signature::is_binary_str(value) {
-                "binary"
+            let Some(bytes) = coerce_str_bytes(value)? else {
+                return Ok(None);
+            };
+            let Some(&first_byte) = bytes.first() else {
+                return Ok(Some(bytes));
+            };
+            // This is only the original charset preparation. The kernel owns
+            // the base-256 fold, including empty and NULL answers.
+            let charset = arg_type.map_or_else(
+                || {
+                    if crate::string_signature::is_binary_str(value) {
+                        "binary"
+                    } else {
+                        "utf8mb4"
+                    }
+                },
+                FieldType::charset_name,
+            );
+            let encoding = find_encoding(charset);
+            let utf8_first = find_encoding("utf8mb4").peek(&bytes);
+            let (encoded, error) = encoding
+                .transform(utf8_first, TransformOp::ENCODE)
+                .into_parts();
+            let first = if error.is_some() {
+                std::slice::from_ref(&first_byte)
             } else {
-                "utf8mb4"
-            }
+                encoding.peek(&encoded)
+            };
+            Ok(Some(first.to_vec()))
         },
-        FieldType::charset_name,
-    );
-    let encoding = find_encoding(charset);
-    let utf8_first = find_encoding("utf8mb4").peek(&bytes);
-    let (encoded, error) = encoding
-        .transform(utf8_first, TransformOp::ENCODE)
-        .into_parts();
-    let first = if error.is_some() {
-        std::slice::from_ref(&first_byte)
-    } else {
-        encoding.peek(&encoded)
-    };
-    let n = first
-        .iter()
-        .fold(0_i64, |acc, &byte| acc * 256 + i64::from(byte));
-    Ok(Datum::Int(n))
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
 }
 
 /// `QUOTE(s)`: `s` wrapped in single quotes with `'`, `\`, NUL and Ctrl-Z
