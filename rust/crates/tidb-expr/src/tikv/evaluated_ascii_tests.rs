@@ -1059,9 +1059,166 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::LTrim => "LTRIM",
         EvaluatedBytesOp::RTrim => "RTRIM",
         EvaluatedBytesOp::UnHex => "UNHEX",
+        EvaluatedBytesOp::Crc32 => "CRC32",
+        EvaluatedBytesOp::Reverse | EvaluatedBytesOp::ReverseUtf8 => "REVERSE",
+        EvaluatedBytesOp::Quote => "QUOTE",
+        EvaluatedBytesOp::CharLength | EvaluatedBytesOp::CharLengthUtf8 => {
+            let collation = if operation == EvaluatedBytesOp::CharLength {
+                tidb_datatype::Collation::Binary
+            } else {
+                tidb_datatype::Collation::DEFAULT
+            };
+            return crate::BuildContext::default()
+                .build_string_length(
+                    crate::StringLengthFunction::CharLength,
+                    FieldType::new(FieldTypeCode::VarString).with_collation(collation),
+                )
+                .eval_in(value, columns);
+        }
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+#[test]
+fn next_bytes_dispatch_keeps_distinct_normalization_and_native_result_kinds() {
+    use EvaluatedBytesOp::*;
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    for (operation, input, expected) in [
+        (
+            Crc32,
+            Datum::new_string("mysql"),
+            Datum::UInt(2_501_908_538),
+        ),
+        (
+            Reverse,
+            Datum::new_bytes(vec![0xe2, 0x82, b'a']),
+            Datum::new_bytes(vec![b'a', 0x82, 0xe2]),
+        ),
+        (
+            ReverseUtf8,
+            Datum::new_string(vec![0xe2, 0x82, b'a']),
+            Datum::new_string("a\u{fffd}\u{fffd}"),
+        ),
+        (CharLength, Datum::new_string("é"), Datum::Int(2)),
+        (CharLengthUtf8, Datum::new_string("é"), Datum::Int(1)),
+        // Go normalization emits one replacement per byte of this suffix;
+        // QUOTE deliberately preserves Rust's single replacement grouping.
+        (
+            CharLengthUtf8,
+            Datum::new_string(vec![0xe2, 0x82]),
+            Datum::Int(2),
+        ),
+        (
+            Quote,
+            Datum::new_bytes(vec![0xe2, 0x82]),
+            Datum::new_bytes("'\u{fffd}'"),
+        ),
+        (Quote, Datum::Null, Datum::new_string("NULL")),
+    ] {
+        arm_eval_one_observation();
+        let result = dispatch_bytes_family(operation, &input, &columns);
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(expected));
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+        assert_eq!(
+            scope
+                .lease
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .worker
+                .as_ref()
+                .unwrap()
+                .operation(),
+            operation
+        );
+    }
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn next_bytes_dispatch_pb_char_length_preserves_go_bytes_and_demands_null() {
+    use crate::ExpressionAdapterFailureClass as Class;
+    use tidb_proto::tipb;
+    let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    for slots in [0, 1] {
+        let owner = AsciiPoolOwner::new(test_policy(slots, slots)).unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let columns = AdvertisedAsciiColumns {
+            scope: None,
+            execution: &execution,
+        };
+        for signature in [
+            tipb::ScalarFuncSig::CharLength,
+            tipb::ScalarFuncSig::CharLengthUtf8,
+        ] {
+            for input in [Some(vec![0xe2, 0x82]), None] {
+                let null = input.is_none();
+                let child = tipb::Expr {
+                    tp: Some(
+                        (if null {
+                            tipb::ExprType::Null
+                        } else {
+                            tipb::ExprType::String
+                        }) as i32,
+                    ),
+                    val: input,
+                    field_type: Some(tipb::FieldType {
+                        tp: Some(253),
+                        charset: Some("utf8mb4".into()),
+                        collate: Some(46),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                };
+                let pb = tipb::Expr {
+                    tp: Some(tipb::ExprType::ScalarFunc as i32),
+                    sig: Some(signature as i32),
+                    children: vec![child],
+                    field_type: Some(tipb::FieldType {
+                        tp: Some(8),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                };
+                let expression = crate::distsql_builtin::pb_to_expr(&pb, &[]).unwrap();
+                arm_eval_one_observation();
+                let result = expression.eval(&columns, row.to_row());
+                let observation = take_eval_one_observation();
+                if slots == 0 {
+                    assert!(
+                        matches!(result, Err(EvalError::ExpressionAdapterFailure(failure))
+                        if failure.class() == Class::PoolResource)
+                    );
+                    assert_eq!(observation.facade_entries, 0);
+                } else {
+                    assert_eq!(result, Ok(if null { Datum::Null } else { Datum::Int(2) }));
+                    assert_eq!(observation.facade_entries, 1, "PB NULL may not bypass C4");
+                    assert_eq!(
+                        observation.after_kernel_invocations,
+                        observation
+                            .before_kernel_invocations
+                            .map(|before| before + 1)
+                    );
+                }
+            }
+        }
+        execution.close();
+    }
 }
 
 #[test]

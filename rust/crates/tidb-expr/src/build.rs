@@ -244,29 +244,29 @@ impl BuiltStringLength {
 
     /// Evaluates the already-selected signature with the caller's context.
     pub fn eval_in(self, argument: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-        let count = match self.signature {
-            StringLengthSignature::Length => {
-                return crate::tikv::evaluate_bytes_in(
-                    crate::tikv::EvaluatedBytesOp::Length,
-                    ctx,
-                    || match stored_bytes(argument) {
-                        Some(bytes) => Ok(Some(bytes.to_vec())),
-                        None => Ok(coerce_str(argument)?.map(String::into_bytes)),
-                    },
-                    |result| result.into_int_datum(),
-                );
-            }
-            StringLengthSignature::CharLengthBinary => match stored_bytes(argument) {
-                Some(bytes) => Some(bytes.len()),
-                None => coerce_str(argument)?.map(|text| text.len()),
-            },
-            StringLengthSignature::CharLengthUtf8 => match stored_bytes(argument) {
-                Some(bytes) => Some(go_utf8_rune_count(bytes)),
-                None => coerce_str(argument)?.map(|text| text.chars().count()),
-            },
+        let operation = match self.signature {
+            StringLengthSignature::Length => crate::tikv::EvaluatedBytesOp::Length,
+            StringLengthSignature::CharLengthBinary => crate::tikv::EvaluatedBytesOp::CharLength,
+            StringLengthSignature::CharLengthUtf8 => crate::tikv::EvaluatedBytesOp::CharLengthUtf8,
         };
-
-        Ok(count.map_or(Datum::Null, |count| Datum::Int(count as i64)))
+        crate::tikv::evaluate_bytes_in(
+            operation,
+            ctx,
+            || {
+                // Keep this helper's strict string fallback, including the old
+                // invalid ENUM/SET errors. The selected signature is immutable.
+                let bytes = match stored_bytes(argument) {
+                    Some(bytes) => Some(bytes.to_vec()),
+                    None => coerce_str(argument)?.map(String::into_bytes),
+                };
+                Ok(if self.signature == StringLengthSignature::CharLengthUtf8 {
+                    bytes.map(crate::string_signature::normalize_utf8_go)
+                } else {
+                    bytes
+                })
+            },
+            crate::tikv::EvaluatedBytesResult::into_int_datum,
+        )
     }
 }
 
@@ -286,37 +286,6 @@ fn stored_bytes(argument: &Datum) -> Option<&[u8]> {
         Datum::BinaryLiteral(value) | Datum::Bit(value) => Some(value.as_bytes()),
         other => other.as_raw_bytes(),
     }
-}
-
-/// Counts runes with Go `unicode/utf8.RuneCountInString` semantics.
-///
-/// Rust's lossy decoder may group malformed subsequences differently. Go's
-/// `DecodeRuneInString` instead returns one `RuneError` of width one for each
-/// invalid encoding and each byte of an incomplete suffix, so the loop must
-/// advance exactly one byte after every valid prefix.
-fn go_utf8_rune_count(mut bytes: &[u8]) -> usize {
-    let mut count = 0;
-    while !bytes.is_empty() {
-        match std::str::from_utf8(bytes) {
-            Ok(_) => {
-                count += bytes
-                    .iter()
-                    .filter(|byte| **byte & 0b1100_0000 != 0b1000_0000)
-                    .count();
-                break;
-            }
-            Err(error) => {
-                let valid = error.valid_up_to();
-                count += bytes[..valid]
-                    .iter()
-                    .filter(|byte| **byte & 0b1100_0000 != 0b1000_0000)
-                    .count();
-                count += 1;
-                bytes = &bytes[valid + 1..];
-            }
-        }
-    }
-    count
 }
 
 #[cfg(test)]

@@ -253,18 +253,43 @@ pub(crate) fn substring(
 /// (`reverseBytes`) for a binary or BIT argument and `builtinReverseUTF8Sig`
 /// (`reverseRunes`) otherwise, so reversing a binary value must NOT permute
 /// the bytes of a multi-byte character back into a valid one.
+#[cfg(test)]
 pub(crate) fn reverse(vals: &[Datum]) -> Result<Datum, EvalError> {
+    reverse_in(vals, &crate::NoColumns)
+}
+
+pub(crate) fn reverse_in(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
     let [value] = vals else {
         return Err(EvalError::Unsupported("bad REVERSE arity"));
     };
-    let Some(units) = StrUnits::of(value)? else {
-        return Ok(Datum::Null);
+    let binary = crate::string_signature::is_binary_str(value);
+    let operation = if binary {
+        crate::tikv::EvaluatedBytesOp::Reverse
+    } else {
+        crate::tikv::EvaluatedBytesOp::ReverseUtf8
     };
-    let mut out = Vec::with_capacity(units.bytes().len());
-    for unit in units.units().rev() {
-        out.extend_from_slice(unit);
-    }
-    Ok(units.pack(out))
+    crate::tikv::evaluate_bytes_in(
+        operation,
+        ctx,
+        || {
+            Ok(coerce_str_bytes(value)?.map(|bytes| {
+                if binary {
+                    bytes
+                } else {
+                    crate::string_signature::normalize_utf8_go(bytes)
+                }
+            }))
+        },
+        |result| {
+            Ok(result.into_bytes()?.map_or(Datum::Null, |bytes| {
+                if binary {
+                    Datum::new_bytes(bytes)
+                } else {
+                    Datum::new_string(bytes)
+                }
+            }))
+        },
+    )
 }
 
 /// `POSITION(substr IN str)`: the 1-indexed, character-based position of
@@ -1530,40 +1555,34 @@ pub(crate) fn ord_with_type(
 /// backslash-escaped — a value safe to paste into SQL. A `NULL` argument
 /// yields the four-character string `NULL` (NOT SQL `NULL`), matching MySQL.
 ///
-/// Go's `Quote` (`builtin_string.go:3228-3229`) opens with `runes :=
-/// []rune(str)` and writes the runes back out, so the argument's BYTES are
-/// decoded as UTF-8 with one U+FFFD substituted per malformed byte -- a
-/// LOSSY step that is part of the answer, not an error. Captured from real
-/// TiDB (`gorun`): `hex(quote(v))` over a `varbinary` holding `0xFF` is
-/// `27EFBFBD27`, i.e. `'` U+FFFD `'`, and the same three bytes come back for
-/// a `bit(8)` holding `b'11111111'`. The argument itself is
-/// `crate::arg_eval_type`'s `types.ETString` cast
-/// (`builtin_string.go:3180`).
+/// The argument retains `crate::arg_eval_type`'s `types.ETString` cast
+/// (`builtin_string.go:3180`) followed by Rust's `String::from_utf8_lossy`.
+/// Its replacement grouping differs from Go's per-malformed-byte `[]rune`
+/// conversion; preserve the existing frontend behavior before C4 escaping.
+#[cfg(test)]
 pub(crate) fn quote(vals: &[Datum]) -> Result<Datum, EvalError> {
-    let Some(bytes) = crate::arg_eval_type::eval_string(&vals[0])? else {
-        return Ok(Datum::new_string("NULL".to_string()));
-    };
-    let mut out = String::with_capacity(bytes.len() + 2);
-    out.push('\'');
-    // `String::from_utf8_lossy` is Go's `[]rune` conversion: both replace
-    // each malformed byte with U+FFFD rather than refusing the value.
-    for c in String::from_utf8_lossy(&bytes).chars() {
-        match c {
-            '\'' => out.push_str("\\'"),
-            '\\' => out.push_str("\\\\"),
-            '\0' => out.push_str("\\0"),
-            '\x1a' => out.push_str("\\Z"),
-            _ => out.push(c),
-        }
-    }
-    out.push('\'');
-    // Go's `SetBinFlagOrBinStr(args[0].GetType(...), bf.tp)` (`:3184`): a
-    // binary argument makes the quoted result binary too.
-    Ok(if crate::string_signature::is_binary_str(&vals[0]) {
-        Datum::new_bytes(out.into_bytes())
-    } else {
-        Datum::new_string(out)
-    })
+    quote_in(vals, &crate::NoColumns)
+}
+
+pub(crate) fn quote_in(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::Quote,
+        ctx,
+        || {
+            Ok(crate::arg_eval_type::eval_string(&vals[0])?
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned().into_bytes()))
+        },
+        |result| {
+            // Go's SetBinFlagOrBinStr keeps binary arguments' results binary.
+            Ok(result.into_bytes()?.map_or(Datum::Null, |bytes| {
+                if crate::string_signature::is_binary_str(&vals[0]) {
+                    Datum::new_bytes(bytes)
+                } else {
+                    Datum::new_string(bytes)
+                }
+            }))
+        },
+    )
 }
 
 /// `BIT_COUNT(n)`: the number of set bits in `n` (as an unsigned 64-bit

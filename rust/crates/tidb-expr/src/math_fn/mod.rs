@@ -185,7 +185,7 @@ pub(crate) fn dispatch_values(
         "RADIANS" => radians(vals, ctx),
         "DEGREES" => degrees(vals, ctx),
         "CONV" if vals.len() == 3 => conv(vals),
-        "CRC32" if vals.len() == 1 => crc32(vals),
+        "CRC32" if vals.len() == 1 => crc32_in(vals, ctx),
         _ => return None,
     };
     Some(result)
@@ -347,24 +347,29 @@ fn to_radix_upper(mut value: u64, radix: u32) -> String {
 
 /// `CRC32(str)`: the IEEE CRC-32 checksum (polynomial `0xEDB88320`) as an
 /// unsigned integer; `NULL` propagates.
+#[cfg(test)]
 pub(crate) fn crc32(vals: &[Datum]) -> Result<Datum, EvalError> {
+    crc32_in(vals, &crate::NoColumns)
+}
+
+pub(crate) fn crc32_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
     // Go's `builtinCRC32Sig.evalInt` hashes the byte sequence returned by
     // `EvalString`; it does not require the bytes to be valid UTF-8.  This is
     // observable for a non-legacy connection charset: the rewriter's
     // `to_binary` wrapper hands CRC32 GBK bytes such as `D2 BB`, which must be
     // hashed directly rather than rejected by a UTF-8 conversion.
-    let Some(bytes) = coerce_str_bytes(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    let mut crc: u32 = 0xFFFF_FFFF;
-    for byte in bytes {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            let mask = (crc & 1).wrapping_neg();
-            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
-        }
-    }
-    Ok(Datum::UInt(u64::from(!crc)))
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::Crc32,
+        ctx,
+        || coerce_str_bytes(&vals[0]),
+        |result| match result.into_int_datum()? {
+            Datum::Null => Ok(Datum::Null),
+            Datum::Int(value) => u32::try_from(value)
+                .map(|checksum| Datum::UInt(u64::from(checksum)))
+                .map_err(|_| EvalError::Unsupported("CRC32 result out of range")),
+            _ => Err(EvalError::Unsupported("CRC32 result type")),
+        },
+    )
 }
 
 /// `ABS(x)`. `absFunctionClass.getFunction` picks the signature from the

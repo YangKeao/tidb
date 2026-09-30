@@ -23,8 +23,8 @@ use crate::string_fn::{
     ascii, bin, bit_count, bit_length_in, case_convert, char_func_with_context,
     concat_with_context, concat_ws_with_context, elt, export_set, field, format_num, from_base64,
     from_base64_with_packet_limit, hex, locate, locate_collation, locate_with_position, make_set,
-    oct, ord, quote, replace, reverse, str_insert, str_take, strcmp, substring, substring_index,
-    unhex_in,
+    oct, ord, quote_in, replace, reverse_in, str_insert, str_take, strcmp, substring,
+    substring_index, unhex_in,
 };
 use crate::string_packet::{pad, repeat, space, to_base64};
 use crate::time_fn::calendar::{date_add, date_diff, date_format, date_part, from_days, time_part};
@@ -760,7 +760,7 @@ pub(crate) fn eval_func_values(
         "LEFT" if vals.len() == 2 => str_take(vals, true),
         "RIGHT" if vals.len() == 2 => str_take(vals, false),
         "SUBSTRING" | "SUBSTR" | "MID" if vals.len() == 3 => substring(vals, ctx),
-        "REVERSE" => reverse(vals),
+        "REVERSE" => reverse_in(vals, ctx),
         // `ASCII`: the first BYTE's numeric value (0 for the empty string).
         "ASCII" => ascii(vals, ctx),
         "REPEAT" if vals.len() == 2 => repeat(vals, ctx),
@@ -812,7 +812,7 @@ pub(crate) fn eval_func_values(
         "MAKE_SET" if !vals.is_empty() => make_set(vals),
         "DATE_FORMAT" if vals.len() == 2 => date_format(&vals[0], &vals[1]),
         "ORD" if vals.len() == 1 => ord(vals),
-        "QUOTE" if vals.len() == 1 => quote(vals),
+        "QUOTE" if vals.len() == 1 => quote_in(vals, ctx),
         "BIT_COUNT" if vals.len() == 1 => bit_count(vals, ctx),
         "FORMAT" if vals.len() == 2 => format_num(vals, ctx),
         "CHAR_FUNC" if !vals.is_empty() => char_func_with_context(vals, ctx),

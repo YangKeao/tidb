@@ -1,30 +1,30 @@
 # Expression unification experiment
 
-Checkpoint-ID: `shared-bytes-five-07` (previous: `ascii-sql-activation-06`)
+Checkpoint-ID: `shared-text-four-08` (previous: `shared-bytes-five-07`)
 
-**Six SQL families now use TiKV; their native algorithms are deleted:** ASCII, LENGTH/OCTET_LENGTH, BIT_LENGTH, LTRIM, RTRIM and UNHEX. Functional delegation/deletion progress is6/245 families (target221). Comprehensive final-audit/performance gates remain separate and open; this is not overall completion or PR readiness.
+**Ten families now delegate to TiKV and have their native algorithms removed:** ASCII, LENGTH/OCTET_LENGTH, BIT_LENGTH, LTRIM, RTRIM, UNHEX, CRC32, REVERSE, CHAR_LENGTH/CHARACTER_LENGTH and QUOTE. Functional progress:10/245, target221. Final audit/performance/workspace acceptance remains open; this is not overall completion or PR readiness.
 
 ## Paired repositories
 
 - [YangKeao/tidb, expression-unification-demo](https://github.com/YangKeao/tidb/tree/expression-unification-demo)
 - [YangKeao/tikv, expression-unification-demo](https://github.com/YangKeao/tikv/tree/expression-unification-demo)
 
-Keep sibling checkouts named `tidb` and `tikv` for Rust path dependencies. `checkpoint.json` records the paired TiKV commit. Both root Plans are publication mirrors of `/home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md`. Core-validated steps push both branches without force-push or automatic PR creation.
+Use sibling checkouts named `tidb` and `tikv` for Rust path dependencies. `checkpoint.json` records the paired TiKV commit. Root Plans mirror `/home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md`. Validated checkpoints push both branches, without force-push or automatic PRs.
 
-## This checkpoint
+## Implementation
 
-- ASCII uses an existing operation scope, a borrowed execution, or a TiKV one-shot evaluator if no capability exists. No native fallback, including NULL. Evaluators are ordinary synchronous objects, not threads.
-- Session's explicit pool policy, stable root, context COW and captured result closer remain intact. Real zero-slot SQL now fails through the native PoolResource adapter rather than computing natively.
-- All six unary families now share one TiKV evaluator and one operation-keyed pool. Incompatible cached/idle workers retire before their reservations are released. No per-op pool, new-root bypass or native replay. Public LENGTH helper/typed row calls also delegate; original coercion and result packing remain.
+All migrated operations share one synchronous evaluator/driver and operation-keyed pool, not threads or per-function pools. Incompatible cached workers retire before reservations are released. Explicit capabilities are borrowed; contextless callers use a closed TiKV one-shot evaluator, never native fallback. Cold preparation/cache switching and complete operation-scope reuse remain performance follow-ups.
 
-## Actual validation
+TiDB retains argument demand/coercion/normalization and SQL metadata. CHAR_LENGTH includes typed PB, unistore Shared and legacy SimpleSig/public-helper routes. Main/PB uses Go invalid-byte normalization; legacy preserves its pre-existing Rust grouping. QUOTE preserves Rust normalization and delegates NULL→"NULL" plus escaping. CRC32 raw UInt packing is preserved; pre-existing SQL inference remains signed LongLong.
 
-New shared-pool dispatch4 passed (including2MiB byte results); Session runtime/SQL17 passed. Mixed one-slot SQL covers all five new families and aliases; zero-slot SQL rejects12 NULL/non-NULL calls instead of replay/bypass. Full expression1374 passed/4 unchanged baseline failures/94 ignored; complete failure blocks match06 after only thread-ID normalization. The new mixed SQL fixture initially used the wrong tagged Datum representation; corrected to unchanged chunk String+Binary materialization without changing payload expectations or production code.
+## Validation
 
-Exact commands and limits: `evidence/shared-bytes-five-checkpoint.md`. `migration-progress.json` separates functional migration from final acceptance. The six-operation TiKV product is unchanged from06 in this checkpoint. Full local raw logs are under expression-unification/logs/; the published evidence summarizes actual runs without copying repeated compiler warnings.
+TiKV180 passed/1 ignored plus1 dispatch-identity guard. New native/PB dispatcher2 passed; Session/SQL19 passed; legacy unistore1 passed. Full expression1376 passed/4 unchanged baseline failures/94 ignored; complete failure blocks match07 after only thread-ID normalization. A new SQL fixture initially assumed unsigned CRC32 column metadata; corrected against unchanged inference, not by changing production behavior or payload expectations.
 
-The user requested faster functional migration. Broad audits, allocation remeasurement and release performance are follow-ups, not per-cut blockers. One-shot cold-start cost, full operation-scope reuse, broader wrapper propagation, network end-to-end, whole workspace and make lint remain unverified. The last192-byte independent allocation-request observation belongs to checkpoint04, not this modified backend/new binary. No physical heap/peak/OOM guarantee is claimed.
+Exact commands/results: `evidence/shared-text-four-checkpoint.md` and `logs/shared-text-four-summary.txt`. `migration-progress.json` separates functional progress from final acceptance. The user requested faster functional migration: comprehensive audits, allocator remeasurement, release performance and whole-workspace/make lint checks remain explicit follow-ups. No physical heap/peak/OOM guarantee or current-artifact coverage by old allocation receipts is claimed.
 
-## Reproduction
+## Reproduction and next batch
 
-The experiment uses separate Jan2026 TiKV and Aug2026 TiDB compiler/target profiles; evidence states each command's working directory. Binaries/caches are not published. Do not count zero matched tests as passing or link arbitrary artifacts. Historical baselines and receipts remain in `evidence/validation-baseline.md` and earlier checkpoint documents. This is expression-kernel reuse, not a complete upstream Go-package transcreation claim.
+Evidence scopes commands to `tikv/` (Jan2026 compiler) or `tidb/rust/` (Aug2026). Do not mix profiles/artifacts or count zero matched tests as passing. Binaries/caches are not published. Historical baselines remain in earlier evidence documents. This is expression-kernel reuse, not a complete Go-package transcreation claim.
+
+Next: HEX/BIN/LEFT/RIGHT/REPLACE with closed Int/Bytes fixed-arity arguments through the same driver; next-batch workspace changes are excluded from this publication.

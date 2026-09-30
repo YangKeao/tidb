@@ -337,6 +337,15 @@ impl PbBuiltin {
                 for arg in args {
                     let value = arg.eval(ctx, row)?;
                     if value.is_null() && !matches!(kernel, Kernel::Json) {
+                        if let Kernel::String {
+                            operation: StringOp::Length,
+                            binary,
+                        } = kernel
+                        {
+                            // Preserve the existing child-demand order, but let
+                            // the migrated nullable signature actually enter C4.
+                            return eval_pb_char_length(&value, binary, ctx);
+                        }
                         return Ok(Datum::Null);
                     }
                     values.push(value);
@@ -363,17 +372,7 @@ impl PbBuiltin {
                             };
                         }
                         match operation {
-                            StringOp::Length => Ok(match &values[0] {
-                                Datum::Null => Datum::Null,
-                                Datum::Bytes(bytes) => Datum::Int(bytes.len() as i64),
-                                value => Datum::Int(
-                                    crate::string_signature::StrUnits::of_with_signature(
-                                        value, false,
-                                    )?
-                                    .expect("non-NULL string")
-                                    .len() as i64,
-                                ),
-                            }),
+                            StringOp::Length => eval_pb_char_length(&values[0], binary, ctx),
                             StringOp::Upper => crate::string_fn::case_convert(&values, true),
                             StringOp::Lower => crate::string_fn::case_convert(&values, false),
                             StringOp::Substring => crate::string_fn::substring(&values, ctx),
@@ -417,6 +416,21 @@ impl PbBuiltin {
             }
         }
     }
+}
+
+fn eval_pb_char_length(value: &Datum, binary: bool, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    // The wire signature is authoritative, not the runtime datum's charset.
+    let collation = if binary {
+        tidb_datatype::Collation::Binary
+    } else {
+        tidb_datatype::Collation::DEFAULT
+    };
+    crate::BuildContext::default()
+        .build_string_length(
+            crate::StringLengthFunction::CharLength,
+            FieldType::new(tidb_datatype::FieldTypeCode::VarString).with_collation(collation),
+        )
+        .eval_in(value, ctx)
 }
 
 fn cast_types(sig: ScalarFuncSig) -> Option<(EvalType, EvalType)> {

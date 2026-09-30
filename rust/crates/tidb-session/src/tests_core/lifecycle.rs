@@ -1382,3 +1382,136 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_all_string_op_columns() {
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_crc_reverse_char_length_quote_sql_values() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_text_ops (id INT PRIMARY KEY, c VARBINARY(16), \
+             b VARBINARY(16), t VARCHAR(16) CHARACTER SET utf8mb4, q VARBINARY(16))",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_text_ops VALUES \
+             (1,NULL,NULL,NULL,NULL),(2,X'',X'','',X''),\
+             (3,'123456789',X'C3A9E4B8AD','é中',X'275C001AFF')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    // Dynamic stored columns distinguish binary byte reversal/counting from
+    // UTF-8 character semantics. HEX inspects payloads without confusing Chunk
+    // SetString materialization with the pre-chunk Datum::Bytes representation.
+    let output = session
+        .run_with_columns(
+            "SELECT CRC32(c), HEX(REVERSE(b)), HEX(REVERSE(t)), CHAR_LENGTH(b), \
+             CHARACTER_LENGTH(t), CHAR_LENGTH(t), CHARACTER_LENGTH(b), \
+             HEX(QUOTE(q)), QUOTE(q) FROM shared_text_ops ORDER BY id",
+        )
+        .unwrap();
+    let StmtOutput::Rows { columns, rows } = output else {
+        panic!("expected mixed CRC/string SQL rows")
+    };
+    let payloads: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| row[..8].iter().map(cell_text).collect())
+        .collect();
+    assert_eq!(
+        payloads,
+        [
+            ["NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "4E554C4C"],
+            ["0", "", "", "0", "0", "0", "0", "2727"],
+            [
+                "3421780262",
+                "ADB8E4A9C3",
+                "E4B8ADC3A9",
+                "5",
+                "2",
+                "2",
+                "5",
+                "275C275C5C5C305C5AEFBFBD27",
+            ],
+        ]
+    );
+    // The existing rewriter/result_type.rs declares CRC32 as signed LongLong.
+    // Preserve that SQL/Chunk contract; the raw evaluator's UInt packing is
+    // checked separately by next_bytes_dispatch_ rather than changing inference.
+    assert!(!columns[0].1.is_unsigned());
+    assert_eq!(rows[1][0], Datum::Int(0));
+    assert_eq!(rows[2][0], Datum::Int(3_421_780_262));
+    // QUOTE(NULL) is the four-byte string NULL, not SQL NULL. The binary
+    // argument's declared collation survives the ordinary Chunk boundary.
+    match &rows[0][8] {
+        Datum::String(value) => {
+            assert_eq!(value.bytes(), b"NULL");
+            assert_eq!(value.collation(), tidb_datatype::Collation::Binary);
+        }
+        other => panic!("QUOTE(NULL column) must be a materialized string: {other:?}"),
+    }
+    // The last HEX value also pins quote escapes for apostrophe, backslash,
+    // NUL and Ctrl-Z, plus the existing single-FF -> U+FFFD normalization.
+    // Exhaustive malformed-sequence and PB/legacy cases belong to D's tests.
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_crc_reverse_char_length_quote() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_text_zero (id INT PRIMARY KEY, b VARBINARY(16), \
+             t VARCHAR(16) CHARACTER SET utf8mb4)",
+        )
+        .unwrap();
+    session
+        .run("INSERT INTO shared_text_zero VALUES (1,NULL,NULL),(2,X'C3A9E4B8AD','é中')")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    for (function, column) in [
+        ("CRC32", "b"),
+        ("REVERSE", "b"),
+        ("REVERSE", "t"),
+        ("CHAR_LENGTH", "b"),
+        ("CHARACTER_LENGTH", "t"),
+        ("QUOTE", "b"),
+        ("QUOTE", "t"),
+    ] {
+        for id in [1, 2] {
+            let sql = format!("SELECT {function}({column}) FROM shared_text_zero WHERE id={id}");
+            let error = session.run_with_columns(&sql).expect_err(&sql);
+            match &error {
+                DriverError::Exec(tidb_executor::ExecError::Eval(
+                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                )) => {
+                    assert_eq!(
+                        failure.class(),
+                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                    );
+                    assert_eq!(
+                        failure.origin(),
+                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                    );
+                }
+                other => panic!("{sql} bypassed shared-pool admission: {other:?}"),
+            }
+            let mysql = error.to_mysql_error();
+            assert_eq!(mysql.code, 1105, "{sql}");
+            assert_eq!(mysql.state, *b"HY000", "{sql}");
+            assert!(mysql.is_from_evaluation(), "{sql}");
+        }
+    }
+}

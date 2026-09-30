@@ -24,7 +24,7 @@ mod adapter_failure;
 mod batch;
 mod catalog;
 mod context;
-// The six ready-Bytes families share this closed value boundary and one pool.
+// The closed ready-Bytes families share this value boundary and one pool.
 mod evaluated_ascii;
 pub use adapter_failure::{
     ExpressionAdapterFailure, ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,

@@ -1,23 +1,26 @@
 {
-  "checkpoint_id": "shared-bytes-five-07",
+  "checkpoint_id": "shared-text-four-08",
   "frozen_denominator": 245,
   "required_families": 221,
-  "functional_delegation_and_native_deletion_count": 6,
+  "functional_delegation_and_native_deletion_count": 10,
   "fully_final_audited_count": 0,
   "final_performance_and_workspace_gates_complete": false,
   "families": [
-    {"id": "ascii", "status": "functional_tikv_only", "native_algorithm_deleted": true, "evidence": "evidence/ascii-sql-activation-checkpoint.md"},
+    {"id": "ascii", "status": "functional_tikv_only", "native_algorithm_deleted": true},
     {"id": "length", "aliases": ["octet_length"], "status": "functional_tikv_only", "native_algorithm_deleted": true, "public_helper_and_typed_row_connected": true},
     {"id": "bit_length", "status": "functional_tikv_only", "native_algorithm_deleted": true},
     {"id": "ltrim", "status": "functional_tikv_only", "native_algorithm_deleted": true},
     {"id": "rtrim", "status": "functional_tikv_only", "native_algorithm_deleted": true},
-    {"id": "unhex", "status": "functional_tikv_only", "native_algorithm_deleted": true}
+    {"id": "unhex", "status": "functional_tikv_only", "native_algorithm_deleted": true},
+    {"id": "crc32", "status": "functional_tikv_only", "native_algorithm_deleted": true, "raw_result_uint_sql_inference_still_signed": true},
+    {"id": "reverse", "status": "functional_tikv_only", "native_algorithm_deleted": true, "binary_and_utf8": true},
+    {"id": "char_length", "aliases": ["character_length"], "status": "functional_tikv_only", "native_algorithm_deleted": true, "binary_and_utf8": true, "pb_and_unistore_signatures_connected": ["CharLength", "CharLengthUtf8"], "legacy_normalization_preserved": true},
+    {"id": "quote", "status": "functional_tikv_only", "native_algorithm_deleted": true, "null_result_computed_by_tikv": true}
   ],
-  "shared_evidence": "evidence/shared-bytes-five-checkpoint.md",
+  "shared_evidence": "evidence/shared-text-four-checkpoint.md",
   "one_operation_keyed_pool": true,
   "actual_mixed_column_sql_verified": true,
-  "zero_slot_refusal_for_all_new_spellings_verified": true,
-  "frozen_implemented_pb_or_unistore_signatures_for_these_families": [],
+  "zero_slot_refusal_for_new_paths_verified": true,
   "deferred": ["complete operation-scope reuse", "broader wrapper capability propagation", "release performance", "paired differential rerun", "whole-workspace final acceptance"],
-  "next_batch_not_credited": ["crc32", "reverse", "char_length", "quote"]
+  "next_batch_not_credited": ["hex", "bin", "left", "right", "replace"]
 }

@@ -58,6 +58,11 @@ pub(crate) fn is_binary_str(value: &Datum) -> bool {
     }
 }
 
+/// Replaces each malformed UTF-8 byte with U+FFFD, matching Go's rune conversion.
+pub(crate) fn normalize_utf8_go(bytes: Vec<u8>) -> Vec<u8> {
+    GoString::from(bytes).to_utf8_lossy_go().into_bytes()
+}
+
 /// A string argument viewed as the unit sequence its selected signature
 /// slices: raw bytes for a binary signature, characters for a UTF-8 one.
 ///
@@ -118,7 +123,7 @@ impl StrUnits {
         // here, then derive every boundary in one linear pass; retaining the
         // malformed octet and merely counting it as a unit produces the right
         // length but the wrong returned bytes.
-        let bytes = GoString::from(bytes).to_utf8_lossy_go().into_bytes();
+        let bytes = normalize_utf8_go(bytes);
         let text = std::str::from_utf8(&bytes).expect("Go replacement yields valid UTF-8");
         let mut bounds: Vec<usize> = text.char_indices().map(|(offset, _)| offset).collect();
         bounds.push(bytes.len());
@@ -146,13 +151,6 @@ impl StrUnits {
     /// The whole payload, for the signatures that only reorder or search it.
     pub(crate) fn bytes(&self) -> &[u8] {
         &self.bytes
-    }
-
-    /// The bytes of each unit, in order.
-    pub(crate) fn units(&self) -> impl DoubleEndedIterator<Item = &[u8]> {
-        self.bounds
-            .windows(2)
-            .map(move |window| &self.bytes[window[0]..window[1]])
     }
 
     /// Rebuilds a result value in the charset this signature was selected

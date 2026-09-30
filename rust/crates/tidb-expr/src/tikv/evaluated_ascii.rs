@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Closed ready-Bytes caller sharing one scoped pool across six operations.
+//! Closed ready-Bytes caller sharing one scoped pool across its fixed operations.
 //! Legacy public ASCII capabilities retain their names and ASCII-only value API.
 //!
 //! The real C4 worker is the only computation path. Native children/transcode
@@ -1353,13 +1353,23 @@ fn materialize_computed(
 ) -> Result<EvaluatedBytesResult, AsciiBoundaryError> {
     match (operation, computed) {
         (
-            EvaluatedBytesOp::Ascii | EvaluatedBytesOp::Length | EvaluatedBytesOp::BitLength,
+            EvaluatedBytesOp::Ascii
+            | EvaluatedBytesOp::Length
+            | EvaluatedBytesOp::BitLength
+            | EvaluatedBytesOp::Crc32
+            | EvaluatedBytesOp::CharLength
+            | EvaluatedBytesOp::CharLengthUtf8,
             ComputedValue::Int(value),
         ) => own_computed_int(value)
             .into_datum()
             .map(EvaluatedBytesResult::Int),
         (
-            EvaluatedBytesOp::LTrim | EvaluatedBytesOp::RTrim | EvaluatedBytesOp::UnHex,
+            EvaluatedBytesOp::LTrim
+            | EvaluatedBytesOp::RTrim
+            | EvaluatedBytesOp::UnHex
+            | EvaluatedBytesOp::Reverse
+            | EvaluatedBytesOp::ReverseUtf8
+            | EvaluatedBytesOp::Quote,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {
@@ -1412,7 +1422,7 @@ pub(crate) fn evaluate_bytes_in(
     let result = (|| {
         // No capability: preserve frontend precedence even before pool creation.
         let ready = coerce().map_err(AsciiBoundaryError::Frontend)?;
-        // One explicit experimental policy for all six fixed two-node recipes.
+        // One explicit experimental policy for all fixed two-node recipes.
         // Retained/request allowances are not physical heap/factory-peak bounds.
         // A worker's retained cap must not become a maximum SQL string length.
         let policy = AsciiPoolPolicy::checked(1, 1, 8 << 20, 1 << 20, 2 << 20, 64, 16, usize::MAX)?;

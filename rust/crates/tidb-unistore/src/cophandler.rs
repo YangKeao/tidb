@@ -4379,19 +4379,36 @@ pub fn eval_expr(
                     .filter(|value| !value.is_nan())
                     .map(|value| i128::from(value != 0.0)),
                 SimpleSig::CharLengthUtf8 | SimpleSig::CharLength => {
-                    // Go `builtinCharLengthUtf8Sig` counts runes;
-                    // `builtinCharLengthBinarySig` counts bytes.
-                    let Some(raw) =
-                        eval_bytes(children.first(), row, div_precision_increment, time_zone)
-                    else {
-                        return Ok(None);
-                    };
-                    let count = if matches!(sig, SimpleSig::CharLengthUtf8) {
-                        String::from_utf8_lossy(&raw).chars().count()
+                    let binary = matches!(sig, SimpleSig::CharLength);
+                    let value =
+                        match eval_bytes(children.first(), row, div_precision_increment, time_zone)
+                        {
+                            None => Datum::Null,
+                            Some(raw) if binary => Datum::new_bytes(raw),
+                            // This legacy public entry has always grouped malformed
+                            // sequences with Rust's lossy decoder. Keep that frontend
+                            // normalization; only its counting kernel moves to C4.
+                            Some(raw) => {
+                                Datum::new_string(String::from_utf8_lossy(&raw).into_owned())
+                            }
+                        };
+                    let collation = if binary {
+                        tidb_datatype::Collation::Binary
                     } else {
-                        raw.len()
+                        tidb_datatype::Collation::DEFAULT
                     };
-                    Some(i128::from(count as u64))
+                    // Legacy eval_expr has no Columns capability. The public
+                    // helper supplies the same closed one-shot path, even NULL.
+                    let built = tidb_expr::BuildContext::default().build_string_length(
+                        tidb_expr::StringLengthFunction::CharLength,
+                        tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString)
+                            .with_collation(collation),
+                    );
+                    match built.eval(&value).map_err(|error| format!("{error:?}"))? {
+                        Datum::Null => None,
+                        Datum::Int(count) => Some(i128::from(count)),
+                        _ => return Err("CHAR_LENGTH returned a non-integer datum".to_owned()),
+                    }
                 }
                 SimpleSig::Lower
                 | SimpleSig::LowerUtf8
@@ -6735,6 +6752,31 @@ mod tests {
         // The bare condition answers its numeric-prefix truth: "éll" has
         // none -> FALSE.
         assert_eq!(eval_expr(&sub, &row, 4, &zone()).expect("evals"), Some(0));
+    }
+
+    #[test]
+    fn legacy_char_length_keeps_rust_lossy_grouping_before_shared_kernel() {
+        use tidb_datatype::Datum;
+        // Rust groups this incomplete sequence into one replacement; the main
+        // expression frontend's Go normalization emits two. Preserve this API.
+        let row = [Datum::new_bytes(vec![0xe2, 0x82])];
+        for (signature, expected) in [(SimpleSig::CharLengthUtf8, 1), (SimpleSig::CharLength, 2)] {
+            let expression = SimpleExpr::Func(signature, vec![SimpleExpr::Column(0)]);
+            assert_eq!(
+                eval_expr(&expression, &row, 4, &zone()).unwrap(),
+                Some(expected)
+            );
+            assert_eq!(
+                eval_expr(&expression, &[Datum::Null], 4, &zone()).unwrap(),
+                None
+            );
+        }
+        let main = tidb_expr::BuildContext::default().build_string_length(
+            tidb_expr::StringLengthFunction::CharLength,
+            tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString)
+                .with_collation(tidb_datatype::Collation::DEFAULT),
+        );
+        assert_eq!(main.eval(&row[0]), Ok(Datum::Int(2)));
     }
 
     #[test]
