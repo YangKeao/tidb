@@ -1,0 +1,27 @@
+{
+  "checkpoint_id": "ascii-sql-activation-06",
+  "frozen_denominator": 245,
+  "required_families": 221,
+  "functional_delegation_and_native_deletion_count": 1,
+  "fully_final_audited_count": 0,
+  "final_performance_and_workspace_gates_complete": false,
+  "families": [
+    {
+      "id": "ascii",
+      "status": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "sql_column_results_verified": true,
+      "zero_slot_sql_refuses_instead_of_native_fallback": true,
+      "official_kernel_dispatch_verified": true,
+      "frozen_supported_typed_pb_signatures": [],
+      "frozen_supported_unistore_signatures": [],
+      "evidence": "evidence/ascii-sql-activation-checkpoint.md",
+      "deferred": ["complete operation-scope reuse", "broader wrapper capability propagation", "release performance", "paired differential rerun", "whole-workspace final acceptance"]
+    },
+    {"id": "length", "aliases": ["octet_length"], "status": "backend_ready_caller_pending", "migration_credit": false},
+    {"id": "bit_length", "status": "backend_ready_caller_pending", "migration_credit": false},
+    {"id": "ltrim", "status": "backend_ready_caller_pending", "migration_credit": false},
+    {"id": "rtrim", "status": "backend_ready_caller_pending", "migration_credit": false},
+    {"id": "unhex", "status": "backend_ready_caller_pending", "migration_credit": false}
+  ]
+}

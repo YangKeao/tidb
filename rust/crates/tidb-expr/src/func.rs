@@ -762,7 +762,7 @@ pub(crate) fn eval_func_values(
         "SUBSTRING" | "SUBSTR" | "MID" if vals.len() == 3 => substring(vals, ctx),
         "REVERSE" => reverse(vals),
         // `ASCII`: the first BYTE's numeric value (0 for the empty string).
-        "ASCII" => ascii(vals),
+        "ASCII" => ascii(vals, ctx),
         "REPEAT" if vals.len() == 2 => repeat(vals, ctx),
         "REPLACE" if vals.len() == 3 => replace(vals),
         "SPACE" if vals.len() == 1 => space(vals, ctx),

@@ -12,23 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Private, explicit signed-LongLong control and PLUS row slices. Not a production
-//! evaluator hook or a complete migrated family. No rejection/error can replay
-//! native evaluation. Only immutable lowering results may be shared; a worker
-//! compiles and owns its own non-Sync official TiKV RPN program.
+//! Closed ASCII value dispatch plus private signed-LongLong control/PLUS slices.
+//! This is not a complete migrated family. No rejection/error can replay native
+//! evaluation. Only immutable lowering results may be shared; a worker compiles
+//! and owns its own non-Sync official TiKV RPN program.
 
-// Intentionally not activated at any general expression entrypoint yet.
+// Control/PLUS prototypes remain private; only the ASCII value hook is active.
 #![allow(dead_code)]
 
 mod adapter_failure;
 mod batch;
 mod catalog;
 mod context;
-// Explicit native value boundary and capabilities, not a SQL dispatcher hook.
+// The ASCII dispatcher uses only this closed value-boundary hook.
 mod evaluated_ascii;
 pub use adapter_failure::{
     ExpressionAdapterFailure, ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,
 };
+pub(crate) use evaluated_ascii::evaluate_ascii_in;
 pub use evaluated_ascii::{
     AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy, AsciiScope,
     ScopedAsciiColumns,
@@ -44,8 +45,7 @@ pub use runtime_failure::{
 #[cfg(test)]
 mod tests;
 
-// Explicit crate-private entrypoints; there is intentionally no live general
-// evaluator caller until the separate activation gate.
+// These other crate-private entrypoints remain outside general evaluation.
 #[allow(unused_imports)]
 pub(crate) use batch::PreparedIntControlSeed;
 #[allow(unused_imports)]

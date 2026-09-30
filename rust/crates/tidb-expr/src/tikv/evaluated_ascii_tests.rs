@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Explicit-scope tests with actual C4 workers, including native-only public
-//! value/capability APIs. These do not activate SQL dispatch or establish
-//! business-wrapper propagation/statement lifetimes. They do not measure
-//! allocator requests/factory peaks or prove integrated return coercion.
+//! Actual C4 workers through explicit capabilities and the ASCII value dispatcher.
+//! These tests do not establish all business-wrapper/entrypoint propagation or
+//! statement lifetimes. They do not measure allocator requests/factory peaks or
+//! prove every caller's integrated return coercion.
 
 use super::*;
 use crate::constant::Constant;
@@ -1023,6 +1023,183 @@ fn value_through_sized_columns<C: Columns>(columns: &C, value: &Datum) -> Result
         .evaluated_ascii_scope()
         .expect("this operation explicitly bound its scope")
         .evaluate_value(value)
+}
+
+#[test]
+fn ascii_dispatch_without_capabilities_uses_real_c4_including_null() {
+    for (input, expected) in [
+        (Datum::Null, Datum::Null),
+        (Datum::Raw(vec![0xff, 0x00]), Datum::Int(255)),
+        (Datum::Int(23), Datum::Int(50)),
+        (Datum::Bytes(vec![]), Datum::Int(0)),
+    ] {
+        arm_eval_one_observation();
+        let result =
+            crate::func::eval_func_values("ASCII", std::slice::from_ref(&input), &crate::NoColumns);
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Some(Ok(expected)));
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(observation.before_kernel_invocations, Some(0));
+        assert_eq!(observation.after_kernel_invocations, Some(1));
+    }
+    assert_eq!(
+        crate::func::eval_func_values("ASCII", &[Datum::MaxValue], &crate::NoColumns),
+        Some(Err(EvalError::Unsupported("range sentinel byte coercion")))
+    );
+}
+
+#[test]
+fn ascii_dispatch_one_shot_accepts_input_larger_than_worker_retained_cap() {
+    // The one-shot worker cap is 1 MiB; this demanded 2 MiB raw value belongs
+    // to the call/input domain, not a new implicit maximum string length.
+    let mut bytes = vec![b'x'; 2 << 20];
+    bytes[0] = b'A';
+    arm_eval_one_observation();
+    let result = crate::func::eval_func_values("ASCII", &[Datum::Raw(bytes)], &crate::NoColumns);
+    let observation = take_eval_one_observation();
+    assert_eq!(result, Some(Ok(Datum::Int(65))));
+    assert_eq!(observation.facade_entries, 1);
+    assert_eq!(observation.before_kernel_invocations, Some(0));
+    assert_eq!(observation.after_kernel_invocations, Some(1));
+    // Returning from the first dispatcher call has already dropped its scope
+    // and closer. A subsequent independent call must remain usable.
+    assert_eq!(
+        crate::func::eval_func_values("ASCII", &[Datum::Null], &crate::NoColumns),
+        Some(Ok(Datum::Null))
+    );
+}
+
+#[test]
+fn ascii_dispatch_execution_capability_reuses_worker_without_closing_epoch() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let columns = AdvertisedAsciiColumns {
+        scope: None,
+        execution: &execution,
+    };
+    for (index, (input, expected)) in [
+        (Datum::Null, Datum::Null),
+        (Datum::Raw(vec![0xff]), Datum::Int(255)),
+        (Datum::Int(23), Datum::Int(50)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        arm_eval_one_observation();
+        let result = crate::func::eval_func_values("ASCII", &[input], &columns);
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Some(Ok(expected)));
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(observation.before_kernel_invocations, Some(index as u64));
+        assert_eq!(observation.after_kernel_invocations, Some(index as u64 + 1));
+        let snapshot = owner.snapshot().unwrap();
+        assert_eq!(
+            (snapshot.factory_attempts, snapshot.factory_successes),
+            (1, 1)
+        );
+        assert_eq!(snapshot.idle, 1);
+    }
+    assert_eq!(
+        execution.scope().evaluate_value(&Datum::Null),
+        Ok(Datum::Null)
+    );
+    execution.close();
+}
+
+#[test]
+fn ascii_dispatch_active_scope_wins_and_keeps_real_worker_identity() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let other_owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let other_execution = other_owner.begin_execution().unwrap();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &other_execution,
+    };
+    let untouched = other_owner.snapshot().unwrap();
+    let mut address = None;
+    for (index, (input, expected)) in [
+        (Datum::Null, Datum::Null),
+        (Datum::Raw(vec![0xff]), Datum::Int(255)),
+        (Datum::Int(23), Datum::Int(50)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(
+            crate::func::eval_func_values("ASCII", &[input], &columns),
+            Some(Ok(expected))
+        );
+        let (actual, invocations, _, _, _) = scope_worker_observation(&scope);
+        assert_eq!(*address.get_or_insert(actual), actual);
+        assert_eq!(invocations, index as u64 + 1, "NULL also reaches fn_ptr");
+    }
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 1);
+    assert_eq!(other_owner.snapshot().unwrap(), untouched);
+    drop(scope);
+    execution.close();
+    other_execution.close();
+}
+
+#[test]
+fn ascii_dispatch_zero_slot_capabilities_never_fall_back_even_for_null() {
+    use crate::ExpressionAdapterFailureClass as Class;
+    use crate::ExpressionAdapterFailureOrigin as Origin;
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    for active in [None, Some(&scope)] {
+        let columns = AdvertisedAsciiColumns {
+            scope: active,
+            execution: &execution,
+        };
+        assert_eq!(
+            crate::func::eval_func_values("ASCII", &[], &columns),
+            Some(Err(EvalError::Unsupported("bad function arity")))
+        );
+        assert_eq!(
+            crate::func::eval_func_values("ASCII", &[Datum::MinNotNull], &columns),
+            Some(Err(EvalError::Unsupported("range sentinel byte coercion")))
+        );
+        for input in [Datum::Null, Datum::Raw(vec![0xff]), Datum::Int(23)] {
+            assert!(matches!(
+                crate::func::eval_func_values("ASCII", &[input], &columns),
+                Some(Err(EvalError::ExpressionAdapterFailure(failure)))
+                    if failure.class() == Class::PoolResource && failure.origin() == Origin::Pool
+            ));
+        }
+    }
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    execution.close();
+}
+
+#[test]
+fn ascii_dispatch_one_shot_closer_closes_on_normal_return_and_unwind() {
+    use crate::ExpressionAdapterFailureClass as Class;
+    for unwind in [false, true] {
+        let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+        let execution = owner.begin_execution().unwrap();
+        // Exercise the production closer with a real worker, not a panic-capable
+        // replacement kernel or a test-only execution factory.
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            let close = OneShotAsciiExecution(execution.clone());
+            let scope = close.0.scope();
+            let mut guard = NativeGuard::new(&scope);
+            assert_eq!(scope.evaluate_value(&Datum::Null), Ok(Datum::Null));
+            if unwind {
+                std::panic::panic_any("one-shot operation unwind");
+            }
+            guard.disarm();
+        }));
+        assert_eq!(outcome.is_err(), unwind);
+        assert_eq!(owner.snapshot().unwrap().factory_attempts, 1);
+        assert!(matches!(
+            execution.scope().evaluate_value(&Datum::Null),
+            Err(EvalError::ExpressionAdapterFailure(failure))
+                if failure.class() == Class::PoolClosed
+        ));
+    }
 }
 
 #[test]

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Explicit-scope C4 ASCII value caller. No SQL dispatcher is installed.
+//! C4 ASCII caller with scoped and one-shot routing from the value dispatcher.
 //!
 //! The real C4 worker is the only computation path. Native children/transcode
 //! precede this value boundary; original return coercion follows it. Public
@@ -1233,6 +1233,49 @@ pub(super) fn evaluate_ascii_value(
     let result = (|| eval_ready(scope, coerce_ready(value)?)?.into_datum())();
     guard.disarm(); // ordinary Result::Err is not an unwind
     result
+}
+
+// Only the isolated one-shot path owns a close. A borrowed execution above a
+// temporary operation scope must remain open for its actual lifecycle owner.
+struct OneShotAsciiExecution(AsciiExecution);
+
+impl Drop for OneShotAsciiExecution {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
+
+/// Routes an already evaluated ASCII operand to C4, never to native replay.
+/// Active scopes win over execution capabilities. Without either capability,
+/// use an isolated experimental execution, not a Go-derived default policy.
+/// Native children/transcoding and the caller's result cast stay outside this
+/// boundary; its final byte coercion occurs exactly once before admission.
+pub(crate) fn evaluate_ascii_in(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    if let Some(scope) = ctx.evaluated_ascii_scope() {
+        return scope.evaluate_value(value);
+    }
+    if let Some(execution) = ctx.evaluated_ascii_execution() {
+        return execution.scope().evaluate_value(value);
+    }
+
+    let result = (|| {
+        // Preserve frontend error precedence even before one-shot pool creation.
+        let ready = coerce_ready(value)?;
+        // Explicit experimental one-shot limits for the fixed two-node recipe.
+        // These are conditional retained/request allowances, not physical heap
+        // bounds or a measured factory peak. Do not cap the existing byte domain
+        // with a small per-call allowance; later reuse/performance work is separate.
+        let policy = AsciiPoolPolicy::checked(1, 1, 8 << 20, 1 << 20, 2 << 20, 64, 16, usize::MAX)?;
+        let owner = AsciiPoolOwner::new(policy)?;
+        let execution = OneShotAsciiExecution(owner.begin_execution()?);
+        // The scope and its unwind guard drop before the one-shot closer.
+        let scope = execution.0.scope();
+        let mut guard = NativeGuard::new(&scope);
+        let result = eval_ready(&scope, ready).and_then(NativeComputedInt::into_datum);
+        guard.disarm(); // Result::Err is not an unwind and is never replayed.
+        result
+    })();
+    result.map_err(AsciiBoundaryError::into_eval_error)
 }
 
 /// Opaque, sized lexical Columns binding created by [`AsciiScope::with_columns`].

@@ -132,17 +132,13 @@ mod case_convert_tests {
     }
 }
 
-/// `ASCII(s)`: return the first byte of the evaluated string, not the first
-/// Unicode scalar value. Go's `EvalString` preserves binary arguments, so
-/// this uses byte-preserving coercion instead of a UTF-8-checked one.
-pub(crate) fn ascii(vals: &[Datum]) -> Result<Datum, EvalError> {
+/// `ASCII(s)` preserves native arity and byte coercion, then delegates every
+/// successful value (including NULL) to the closed TiKV C4 worker.
+pub(crate) fn ascii(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
     if vals.len() != 1 {
         return Err(EvalError::Unsupported("bad function arity"));
     }
-    let Some(bytes) = coerce_str_bytes(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int(i64::from(bytes.first().copied().unwrap_or(0))))
+    crate::tikv::evaluate_ascii_in(&vals[0], ctx)
 }
 
 /// `BIT_LENGTH(s)`: count evaluated bytes and multiply by eight. This follows

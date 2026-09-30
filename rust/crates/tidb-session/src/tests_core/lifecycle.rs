@@ -476,8 +476,9 @@ fn update_and_delete_through_the_session() {
     );
 }
 
-// Explicit test limits, not production defaults. These tests exercise the real
-// already-evaluated value API; they make no SQL-kernel migration claim.
+// Explicit test limits, not production defaults. The activation regressions
+// below exercise real SQL columns; the remaining lifecycle probes also use the
+// already-evaluated value API. Neither is whole-family migration evidence.
 fn ascii_session_policy(workers: usize) -> tidb_executor::AsciiPoolPolicy {
     tidb_executor::AsciiPoolPolicy::checked(
         workers,
@@ -530,7 +531,7 @@ fn assert_ascii_session_live(execution: &tidb_executor::AsciiExecution) {
 }
 
 #[test]
-fn evaluated_ascii_session_installation_is_explicit_busy_safe_and_dormant() {
+fn evaluated_ascii_session_installation_is_busy_safe_and_zero_slots_reject_sql() {
     let mut session = Session::new();
     for is_dml in [false, true] {
         assert!(session
@@ -539,10 +540,13 @@ fn evaluated_ascii_session_installation_is_explicit_busy_safe_and_dormant() {
             .is_none());
     }
     session
-        .run("CREATE TABLE ascii_dormant (id INT, v VARBINARY(8))")
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
         .unwrap();
     session
-        .run("INSERT INTO ascii_dormant VALUES (1,'A'),(2,NULL),(3,'')")
+        .run("CREATE TABLE ascii_zero_slots (id INT PRIMARY KEY, v VARBINARY(8))")
+        .unwrap();
+    session
+        .run("INSERT INTO ascii_zero_slots VALUES (1,NULL),(2,X''),(3,X'FF'),(4,X'C3A9'),(5,X'E4B8AD'),(6,X'41')")
         .unwrap();
     session
         .run_with_columns_using("SELECT 1", false, |session| {
@@ -569,27 +573,36 @@ fn evaluated_ascii_session_installation_is_explicit_busy_safe_and_dormant() {
         .latest_execution_for_test()
         .is_none());
 
-    let sql = "SELECT ASCII(v) FROM ascii_dormant ORDER BY id";
-    let (output, _) = session
-        .run_with_columns_using(sql, false, |session| {
-            for is_dml in [false, true] {
-                let context = session.statement_context(is_dml);
-                assert_ascii_session_failure(
-                    context.evaluated_ascii_execution().unwrap(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource,
+    // Activation changes the previous dormant expectation: an explicitly
+    // installed zero-slot pool must reject real SQL evaluation. No native or
+    // missing-capability one-shot route may bypass this admission decision.
+    // Probe NULL separately too: it must be computed, not short-circuited.
+    for id in 1..=6 {
+        let sql = format!("SELECT ASCII(v) FROM ascii_zero_slots WHERE id={id}");
+        let error = session
+            .run_with_columns(&sql)
+            .expect_err("zero slots must reject SQL ASCII");
+        let mysql = error.clone().to_mysql_error();
+        match error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
                 );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+                assert_eq!(mysql.message, failure.client_message());
             }
-            // A non-folded SQL column still takes the existing native dispatcher.
-            session.execute_statement(sql)
-        })
-        .unwrap();
-    let StmtOutput::Rows { rows, .. } = output else {
-        panic!("expected rows")
-    };
-    assert_eq!(
-        rows,
-        vec![vec![Datum::Int(65)], vec![Datum::Null], vec![Datum::Int(0)]]
-    );
+            other => panic!("SQL must retain the typed pool cause: {other:?}"),
+        }
+        assert_eq!(mysql.code, 1105);
+        assert_eq!(mysql.state, *b"HY000");
+        assert!(mysql.is_from_evaluation());
+    }
     assert!(session
         .statement_context(false)
         .evaluated_ascii_execution()
@@ -601,6 +614,47 @@ fn evaluated_ascii_session_installation_is_explicit_busy_safe_and_dormant() {
             .unwrap(),
         tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
     );
+}
+
+#[test]
+fn evaluated_ascii_sql_columns_use_one_slot_for_null_empty_binary_and_utf8() {
+    let mut session = Session::new();
+    // One serial executor worker fits the explicit one-slot test policy; this
+    // is not a claim that one pool slot supports arbitrary operator parallelism.
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE ascii_one_slot (id INT PRIMARY KEY, v VARBINARY(8))")
+        .unwrap();
+    session
+        .run("INSERT INTO ascii_one_slot VALUES (1,NULL),(2,X''),(3,X'FF'),(4,X'C3A9'),(5,X'E4B8AD'),(6,X'41')")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    // v is a stored column, not a foldable literal. Multibyte values answer the
+    // first encoded byte (195/228), not the Unicode code point (233/20013).
+    for _ in 0..2 {
+        let output = session
+            .run_with_columns("SELECT ASCII(v) FROM ascii_one_slot ORDER BY id")
+            .unwrap();
+        let StmtOutput::Rows { rows, .. } = output else {
+            panic!("expected SQL ASCII rows")
+        };
+        assert_eq!(
+            rows,
+            vec![
+                vec![Datum::Null],
+                vec![Datum::Int(0)],
+                vec![Datum::Int(255)],
+                vec![Datum::Int(195)],
+                vec![Datum::Int(228)],
+                vec![Datum::Int(65)],
+            ]
+        );
+    }
 }
 
 #[test]

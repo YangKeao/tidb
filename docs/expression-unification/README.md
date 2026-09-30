@@ -1,24 +1,30 @@
 # Expression unification experiment
 
-Checkpoint-ID: `session-runtime-lifetime-05` (previous: `native-capability-value-04`)
+Checkpoint-ID: `ascii-sql-activation-06` (previous: `session-runtime-lifetime-05`)
 
-This is a verified intermediate checkpoint, not a completed migration or PR-ready tree. Fully audited families remain0/245, target221. The user requested faster functional progress: compile and focused semantic checks first, deeper audits and performance follow-ups later; no native fallback or hidden test failures.
+**SQL ASCII now uses TiKV; its native algorithm is deleted.** Functional delegation/deletion progress is1/245 families (target221). Comprehensive final-audit/performance gates remain separate and open; this is not overall completion or PR readiness.
 
 ## Paired repositories
 
 - [YangKeao/tidb, expression-unification-demo](https://github.com/YangKeao/tidb/tree/expression-unification-demo)
 - [YangKeao/tikv, expression-unification-demo](https://github.com/YangKeao/tikv/tree/expression-unification-demo)
 
-Keep sibling checkouts named `tidb` and `tikv` for Rust path dependencies. Checkpoint metadata records the paired TiKV commit. Both root Plans are byte-identical publication mirrors of `/home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md`. Each core-validated step pushes both branches without force-push or automatic PR creation.
+Keep sibling checkouts named `tidb` and `tikv` for Rust path dependencies. `checkpoint.json` records the paired TiKV commit. Both root Plans are publication mirrors of `/home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md`. Core-validated steps push both branches without force-push or automatic PR creation.
 
-## Current result
+## This checkpoint
 
-Session now accepts an explicit pool policy once, preserves a stable root, passes one execution through context construction/COW and distinguishes nested calls from detached results. Results hold captured close authority; old Close/Drop cannot close a new epoch or reset its lexical marker. The synchronous evaluator is an ordinary object, not a thread. SQL ASCII remains native in this checkpoint; the next activation and shared-kernel batch are separate work.
+- ASCII uses an existing operation scope, a borrowed execution, or a TiKV one-shot evaluator if no capability exists. No native fallback, including NULL. Evaluators are ordinary synchronous objects, not threads.
+- Session's explicit pool policy, stable root, context COW and captured result closer remain intact. Real zero-slot SQL now fails through the native PoolResource adapter rather than computing natively.
+- Six unary kernels share one TiKV evaluator: ASCII, LENGTH/OCTET_LENGTH, BIT_LENGTH, LTRIM, RTRIM and UNHEX. The last five are backend-ready only; TiDB bindings come next. Old ASCII API is a thin wrapper, not another implementation.
 
-Actual tests: session lifecycle14 before/28 after; complete executor context23; named native error conversion1. Full expression1364 passed/4 unchanged baseline failures/94 ignored; renderer9 passed/1 unchanged baseline failure. Complete old failure bodies were compared after only thread-ID normalization. Exact commands, tested paths and limitations: `evidence/session-runtime-lifetime-checkpoint.md`; ownership contract: `evidence/session-runtime-lifecycle-contract.md`.
+## Actual validation
 
-No release performance, whole-workspace or make lint acceptance yet. Additional lifecycle/fault cases and business-operation scope propagation remain follow-ups. The last independent192-byte caller allocation-request measurement is checkpoint04 (`logs/native-capability-arc-final/`); no fresh measurement is claimed for this checkpoint's binary. That old observation is not portable ABI, allocator peak, whole-pool heap or physical-OOM proof.
+TiKV local176 passed/1 ignored plus1 closed-operation guard test; ASCII dispatcher6 passed (including2MiB input); Session runtime/SQL15 passed. Real column SQL covers NULL/empty/binary/UTF-8 under one-slot and zero-slot policies. Full expression1370 passed/4 unchanged baseline failures/94 ignored; all four complete failure blocks match05 after only thread-ID normalization.
+
+Exact commands and limits: `evidence/ascii-sql-activation-checkpoint.md`. `migration-progress.json` separates functional migration from backend-only work and final acceptance. Full local raw logs are under expression-unification/logs/; the published evidence summarizes actual runs without copying repeated compiler warnings.
+
+The user requested faster functional migration. Broad audits, allocation remeasurement and release performance are follow-ups, not per-cut blockers. One-shot cold-start cost, full operation-scope reuse, broader wrapper propagation, network end-to-end, whole workspace and make lint remain unverified. The last192-byte independent allocation-request observation belongs to checkpoint04, not this modified backend/new binary. No physical heap/peak/OOM guarantee is claimed.
 
 ## Reproduction
 
-The local experiment uses separate Jan2026 TiKV and Aug2026 TiDB compiler/target profiles. Commands and baseline history are in `evidence/validation-baseline.md` and checkpoint-specific evidence. Logs are actual selected receipts; absolute paths/artifact hashes identify local runs. Binaries and caches are not published. Do not count zero matched tests as passing or relink against an arbitrary artifact. No complete upstream Go-package transcreation claim follows.
+The experiment uses separate Jan2026 TiKV and Aug2026 TiDB compiler/target profiles; evidence states each command's working directory. Binaries/caches are not published. Do not count zero matched tests as passing or link arbitrary artifacts. Historical baselines and receipts remain in `evidence/validation-baseline.md` and earlier checkpoint documents. This is expression-kernel reuse, not a complete upstream Go-package transcreation claim.
