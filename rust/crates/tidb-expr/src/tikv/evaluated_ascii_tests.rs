@@ -33,6 +33,21 @@ use tidb_datatype::{
 };
 use tidb_query_expr::local::LocalError;
 
+// Keep the old ASCII-only assertions thin: they still invoke the actual shared
+// worker; this projection accepts no Bytes result and supplies no replacement.
+trait AsciiComputedValue {
+    fn value(&self) -> Option<i64>;
+}
+
+impl AsciiComputedValue for ComputedValue {
+    fn value(&self) -> Option<i64> {
+        match self {
+            ComputedValue::Int(value) => value.value(),
+            ComputedValue::Bytes(_) => panic!("ASCII assertion received a Bytes result"),
+        }
+    }
+}
+
 // Test-thread-local timing seam only: no swappable worker/backend, no global
 // callback, and no cfg(test) field in the production PoolCore payload. The
 // callback is removed and the RefCell borrow released before it can block.
@@ -1025,6 +1040,234 @@ fn value_through_sized_columns<C: Columns>(columns: &C, value: &Datum) -> Result
         .evaluate_value(value)
 }
 
+fn dispatch_bytes_family(
+    operation: EvaluatedBytesOp,
+    value: &Datum,
+    columns: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    let name = match operation {
+        EvaluatedBytesOp::Ascii => "ASCII",
+        EvaluatedBytesOp::Length => {
+            return crate::BuildContext::default()
+                .build_string_length(
+                    crate::StringLengthFunction::Length,
+                    FieldType::new(FieldTypeCode::VarString),
+                )
+                .eval_in(value, columns);
+        }
+        EvaluatedBytesOp::BitLength => "BIT_LENGTH",
+        EvaluatedBytesOp::LTrim => "LTRIM",
+        EvaluatedBytesOp::RTrim => "RTRIM",
+        EvaluatedBytesOp::UnHex => "UNHEX",
+    };
+    crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
+        .expect("closed family has its existing frontend entry")
+}
+
+#[test]
+fn bytes_dispatch_switches_one_cached_worker_in_the_same_active_root() {
+    use EvaluatedBytesOp::*;
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let other_owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let other_execution = other_owner.begin_execution().unwrap();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &other_execution,
+    };
+    for (index, (operation, input, expected)) in [
+        (Ascii, Datum::Raw(vec![b'A', 0xff]), Datum::Int(65)),
+        (Length, Datum::Raw(vec![0xff, 0]), Datum::Int(2)),
+        (BitLength, Datum::UInt(u64::MAX), Datum::Int(160)),
+        (
+            LTrim,
+            Datum::new_string(b" \xff\t ".to_vec()),
+            Datum::new_string(b"\xff\t ".to_vec()),
+        ),
+        (
+            RTrim,
+            Datum::new_bytes(b" \xff\t ".to_vec()),
+            Datum::new_bytes(b" \xff\t".to_vec()),
+        ),
+        (
+            UnHex,
+            Datum::new_string("fF00"),
+            Datum::new_bytes(vec![0xff, 0]),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut address = None;
+        for calls in 1..=2 {
+            assert_eq!(
+                dispatch_bytes_family(operation, &input, &columns),
+                Ok(expected.clone())
+            );
+            let (actual, invocations, _, _, _) = scope_worker_observation(&scope);
+            assert_eq!(*address.get_or_insert(actual), actual);
+            assert_eq!(invocations, calls);
+            assert_eq!(
+                scope
+                    .lease
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .worker
+                    .as_ref()
+                    .unwrap()
+                    .operation(),
+                operation
+            );
+        }
+        assert_eq!(
+            dispatch_bytes_family(operation, &Datum::Null, &columns),
+            Ok(Datum::Null)
+        );
+        assert_eq!(
+            scope_worker_observation(&scope).1,
+            3,
+            "NULL must invoke C4 too"
+        );
+        let snapshot = owner.snapshot().unwrap();
+        assert_eq!(snapshot.factory_successes, index as u64 + 1);
+        assert_eq!(snapshot.retired, index as u64);
+        assert_eq!((snapshot.live, snapshot.idle), (1, 0));
+    }
+    // The original public ASCII-only API also replaces a cached Bytes worker.
+    assert_eq!(
+        scope.evaluate_value(&Datum::new_string("A")),
+        Ok(Datum::Int(65))
+    );
+    assert_eq!(scope_worker_observation(&scope).1, 1);
+    assert_eq!(other_owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
+    other_execution.close();
+}
+
+#[test]
+fn bytes_dispatch_matches_idle_operations_and_retires_for_a_full_slot_set() {
+    use EvaluatedBytesOp::*;
+    let owner = AsciiPoolOwner::new(test_policy(2, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let columns = AdvertisedAsciiColumns {
+        scope: None,
+        execution: &execution,
+    };
+    for (operation, expected, before) in [
+        (Ascii, Datum::Int(65), 0),
+        (Length, Datum::Int(2), 0),
+        (Ascii, Datum::Int(65), 1),
+    ] {
+        arm_eval_one_observation();
+        let result = dispatch_bytes_family(operation, &Datum::new_string("AB"), &columns);
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(expected));
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(observation.before_kernel_invocations, Some(before));
+        assert_eq!(observation.after_kernel_invocations, Some(before + 1));
+    }
+    let cached = owner.snapshot().unwrap();
+    assert_eq!(
+        (cached.factory_successes, cached.idle, cached.retired),
+        (2, 2, 0)
+    );
+    assert_eq!(
+        dispatch_bytes_family(BitLength, &Datum::new_string("AB"), &columns),
+        Ok(Datum::Int(16))
+    );
+    let replaced = owner.snapshot().unwrap();
+    assert_eq!(
+        (replaced.factory_successes, replaced.idle, replaced.retired),
+        (3, 2, 1)
+    );
+    assert_eq!(
+        (replaced.live, replaced.creating, replaced.retiring),
+        (0, 0, 0)
+    );
+    execution.close();
+}
+
+#[test]
+fn bytes_dispatch_explicit_exhausted_roots_never_create_an_alternate_pool() {
+    use crate::ExpressionAdapterFailureClass as Class;
+    use crate::ExpressionAdapterFailureOrigin as Origin;
+    use EvaluatedBytesOp::*;
+    for slots in [0, 1] {
+        let owner = AsciiPoolOwner::new(test_policy(slots, slots)).unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let held = execution.scope();
+        if slots != 0 {
+            assert_eq!(held.evaluate_value(&Datum::Null), Ok(Datum::Null));
+        }
+        let columns = AdvertisedAsciiColumns {
+            scope: None,
+            execution: &execution,
+        };
+        let before = owner.snapshot().unwrap();
+        for operation in [Ascii, Length, BitLength, LTrim, RTrim, UnHex] {
+            assert!(matches!(
+                dispatch_bytes_family(operation, &Datum::Null, &columns),
+                Err(EvalError::ExpressionAdapterFailure(failure))
+                    if failure.class() == Class::PoolResource && failure.origin() == Origin::Pool
+            ));
+            assert!(matches!(
+                dispatch_bytes_family(operation, &Datum::MinNotNull, &columns),
+                Err(EvalError::Unsupported(_))
+            ));
+        }
+        assert_eq!(
+            owner.snapshot().unwrap(),
+            before,
+            "no side pool or failed coercion admission"
+        );
+        execution.close();
+    }
+}
+
+#[test]
+fn bytes_dispatch_one_shot_preserves_native_packing_and_large_owned_output() {
+    use EvaluatedBytesOp::*;
+    for (operation, input, expected) in [
+        (
+            LTrim,
+            Datum::new_string(b" \xff\t ".to_vec()),
+            Datum::new_string(b"\xff\t ".to_vec()),
+        ),
+        (
+            RTrim,
+            Datum::new_bytes(b" \xff\t ".to_vec()),
+            Datum::new_bytes(b" \xff\t".to_vec()),
+        ),
+        (UnHex, Datum::new_string("f"), Datum::new_bytes(vec![0x0f])),
+        (UnHex, Datum::new_bytes(vec![0xff]), Datum::Null),
+    ] {
+        arm_eval_one_observation();
+        let result = dispatch_bytes_family(operation, &input, &crate::NoColumns);
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(expected));
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(observation.before_kernel_invocations, Some(0));
+        assert_eq!(observation.after_kernel_invocations, Some(1));
+    }
+    // A computed Bytes output larger than the 1 MiB retained-worker cap still
+    // belongs to the call/native-result domain, not the idle worker's footprint.
+    let mut bytes = vec![b'A'; 2 << 20];
+    bytes[1] = 0xff;
+    let expected = Datum::new_bytes(bytes.clone());
+    assert_eq!(
+        dispatch_bytes_family(LTrim, &Datum::new_bytes(bytes), &crate::NoColumns),
+        Ok(expected)
+    );
+    let built = crate::BuildContext::default().build_string_length(
+        crate::StringLengthFunction::Length,
+        FieldType::new(FieldTypeCode::VarString),
+    );
+    assert_eq!(built.eval(&Datum::Raw(vec![0xff, 0])), Ok(Datum::Int(2)));
+}
+
 #[test]
 fn ascii_dispatch_without_capabilities_uses_real_c4_including_null() {
     for (input, expected) in [
@@ -1706,7 +1949,7 @@ fn actual_worker_owner_and_scope_traits_are_checked_without_unsafe_impls() {
     require_send_sync::<AsciiExecution>();
     require_send::<AsciiLease>();
     require_send::<AsciiScope>();
-    require_send::<EvaluatedAsciiWorker>();
+    require_send::<EvaluatedBytesWorker>();
 
     // Dependency-free negative assertions: if a type implements the forbidden
     // trait, the placeholder has two applicable implementations and the test
@@ -1719,7 +1962,7 @@ fn actual_worker_owner_and_scope_traits_are_checked_without_unsafe_impls() {
     impl<T: ?Sized + Sync> AmbiguousIfSync<SyncMarker> for T {}
     let _ = <AsciiLease as AmbiguousIfSync<_>>::check;
     let _ = <AsciiScope as AmbiguousIfSync<_>>::check;
-    let _ = <EvaluatedAsciiWorker as AmbiguousIfSync<_>>::check;
+    let _ = <EvaluatedBytesWorker as AmbiguousIfSync<_>>::check;
 
     trait AmbiguousIfClone<A> {
         fn check() {}
@@ -1729,7 +1972,7 @@ fn actual_worker_owner_and_scope_traits_are_checked_without_unsafe_impls() {
     impl<T: ?Sized + Clone> AmbiguousIfClone<CloneMarker> for T {}
     let _ = <AsciiLease as AmbiguousIfClone<_>>::check;
     let _ = <AsciiScope as AmbiguousIfClone<_>>::check;
-    let _ = <EvaluatedAsciiWorker as AmbiguousIfClone<_>>::check;
+    let _ = <EvaluatedBytesWorker as AmbiguousIfClone<_>>::check;
 }
 
 #[test]
@@ -1977,7 +2220,7 @@ fn cold_real_factory_is_prewarmed_without_invoking_and_idle_observation_counts_b
     assert_eq!(worker.retained_storage().unwrap(), cold);
     assert_eq!(
         cold.inline_bytes(),
-        std::mem::size_of::<EvaluatedAsciiWorker>()
+        std::mem::size_of::<EvaluatedBytesWorker>()
     );
     assert_eq!(
         cold.total_bytes(),

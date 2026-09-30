@@ -1,27 +1,23 @@
 {
-  "checkpoint_id": "ascii-sql-activation-06",
+  "checkpoint_id": "shared-bytes-five-07",
   "frozen_denominator": 245,
   "required_families": 221,
-  "functional_delegation_and_native_deletion_count": 1,
+  "functional_delegation_and_native_deletion_count": 6,
   "fully_final_audited_count": 0,
   "final_performance_and_workspace_gates_complete": false,
   "families": [
-    {
-      "id": "ascii",
-      "status": "functional_tikv_only",
-      "native_algorithm_deleted": true,
-      "sql_column_results_verified": true,
-      "zero_slot_sql_refuses_instead_of_native_fallback": true,
-      "official_kernel_dispatch_verified": true,
-      "frozen_supported_typed_pb_signatures": [],
-      "frozen_supported_unistore_signatures": [],
-      "evidence": "evidence/ascii-sql-activation-checkpoint.md",
-      "deferred": ["complete operation-scope reuse", "broader wrapper capability propagation", "release performance", "paired differential rerun", "whole-workspace final acceptance"]
-    },
-    {"id": "length", "aliases": ["octet_length"], "status": "backend_ready_caller_pending", "migration_credit": false},
-    {"id": "bit_length", "status": "backend_ready_caller_pending", "migration_credit": false},
-    {"id": "ltrim", "status": "backend_ready_caller_pending", "migration_credit": false},
-    {"id": "rtrim", "status": "backend_ready_caller_pending", "migration_credit": false},
-    {"id": "unhex", "status": "backend_ready_caller_pending", "migration_credit": false}
-  ]
+    {"id": "ascii", "status": "functional_tikv_only", "native_algorithm_deleted": true, "evidence": "evidence/ascii-sql-activation-checkpoint.md"},
+    {"id": "length", "aliases": ["octet_length"], "status": "functional_tikv_only", "native_algorithm_deleted": true, "public_helper_and_typed_row_connected": true},
+    {"id": "bit_length", "status": "functional_tikv_only", "native_algorithm_deleted": true},
+    {"id": "ltrim", "status": "functional_tikv_only", "native_algorithm_deleted": true},
+    {"id": "rtrim", "status": "functional_tikv_only", "native_algorithm_deleted": true},
+    {"id": "unhex", "status": "functional_tikv_only", "native_algorithm_deleted": true}
+  ],
+  "shared_evidence": "evidence/shared-bytes-five-checkpoint.md",
+  "one_operation_keyed_pool": true,
+  "actual_mixed_column_sql_verified": true,
+  "zero_slot_refusal_for_all_new_spellings_verified": true,
+  "frozen_implemented_pb_or_unistore_signatures_for_these_families": [],
+  "deferred": ["complete operation-scope reuse", "broader wrapper capability propagation", "release performance", "paired differential rerun", "whole-workspace final acceptance"],
+  "next_batch_not_credited": ["crc32", "reverse", "char_length", "quote"]
 }

@@ -2391,7 +2391,7 @@ impl ScalarFunction {
                 });
                 let built =
                     crate::BuildContext::default().build_string_length(function, argument_type);
-                return built.eval(&self.args[0].eval(ctx, row)?);
+                return built.eval_in(&self.args[0].eval(ctx, row)?, ctx);
             }
         }
         // Go `randFunctionClass`: a constant `RAND(N)` owns one

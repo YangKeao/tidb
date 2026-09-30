@@ -34,8 +34,8 @@ pub(crate) fn dispatch(
         ("FORMAT", 3) => Some(format_with_locale(vals, ctx)),
         ("FIND_IN_SET", 2) => Some(find_in_set(vals)),
         ("EXPORT_SET", 3..=5) => Some(export_set(vals)),
-        ("LTRIM", 1) => Some(ltrim(&vals[0])),
-        ("RTRIM", 1) => Some(rtrim(&vals[0])),
+        ("LTRIM", 1) => Some(ltrim(&vals[0], ctx)),
+        ("RTRIM", 1) => Some(rtrim(&vals[0], ctx)),
         ("TRANSLATE", 3) => Some(translate(vals)),
         _ => None,
     }
@@ -159,8 +159,7 @@ fn translate_binary(vals: &[Datum]) -> Result<Datum, EvalError> {
 /// TiDB passes the argument through ETString (`builtin_string.go:2029`, now
 /// `crate::arg_eval_type`'s cast), then calls Go's `strings.TrimLeft(str,
 /// " ")`: it removes only U+0020 SPACE, not general Unicode whitespace.
-/// Keeping the pattern literal prevents Rust from accidentally accepting
-/// tabs, CR, or LF as trimmable input.
+/// The TiKV evaluated-bytes worker owns that U+0020-only scan.
 ///
 /// The scan is over BYTES because Go's is: `strings.TrimLeft` works on a Go
 /// string, which is not UTF-8 validated, and U+0020 is a single byte that
@@ -169,37 +168,40 @@ fn translate_binary(vals: &[Datum]) -> Result<Datum, EvalError> {
 /// (`gorun`), `hex(ltrim(v))` over a `varbinary` holding `0xFF` is `FF` and
 /// `hex(ltrim(b))` over a `bit(8)` holding `b'11111111'` is `FF`; both were
 /// hard errors under the previous UTF-8 coercion.
-fn ltrim(value: &Datum) -> Result<Datum, EvalError> {
-    trimmed(value, |bytes| {
-        let cut = bytes.iter().take_while(|&&byte| byte == b' ').count();
-        bytes[cut..].to_vec()
-    })
+fn ltrim(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    trimmed(value, crate::tikv::EvaluatedBytesOp::LTrim, ctx)
 }
 
 /// `RTRIM(str)`, ported from `builtinRTrimSig.evalString` in
 /// `pkg/expression/builtin_string.go`; it has the same ETString and
 /// U+0020-only contract as [`ltrim`].
-fn rtrim(value: &Datum) -> Result<Datum, EvalError> {
-    trimmed(value, |bytes| {
-        let cut = bytes.iter().rev().take_while(|&&byte| byte == b' ').count();
-        bytes[..bytes.len() - cut].to_vec()
-    })
+fn rtrim(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    trimmed(value, crate::tikv::EvaluatedBytesOp::RTrim, ctx)
 }
 
 /// The shared half of [`ltrim`] and [`rtrim`]: read the `types.ETString`
-/// argument's bytes, strip, and hand the result back under the argument's own
-/// charset -- Go's `SetBinFlagOrBinStr(argType, bf.tp)`, which both function
-/// classes call on `args[0]`.
-fn trimmed(value: &Datum, strip: fn(&[u8]) -> Vec<u8>) -> Result<Datum, EvalError> {
-    let Some(bytes) = crate::arg_eval_type::eval_string(value)? else {
-        return Ok(Datum::Null);
-    };
-    let stripped = strip(&bytes);
-    Ok(if crate::string_signature::is_binary_str(value) {
-        Datum::new_bytes(stripped)
-    } else {
-        Datum::new_string(stripped)
-    })
+/// argument's bytes, delegate stripping, and pack as binary or character data.
+/// Go's `SetBinFlagOrBinStr(argType, bf.tp)` sets the higher return descriptor.
+fn trimmed(
+    value: &Datum,
+    operation: crate::tikv::EvaluatedBytesOp,
+    ctx: &dyn crate::Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        operation,
+        ctx,
+        || crate::arg_eval_type::eval_string(value),
+        |result| {
+            let bytes = result.into_bytes()?;
+            Ok(bytes.map_or(Datum::Null, |bytes| {
+                if is_binary_str(value) {
+                    Datum::new_bytes(bytes)
+                } else {
+                    Datum::new_string(bytes)
+                }
+            }))
+        },
+    )
 }
 
 /// `LOCATE(substr, str, pos)`, ported from `builtinLocate3ArgsSig` and

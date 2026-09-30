@@ -20,11 +20,11 @@ use crate::coerce::{bool_int, truthy_of};
 use crate::eval_in;
 use crate::row::row_compare;
 use crate::string_fn::{
-    ascii, bin, bit_count, bit_length, case_convert, char_func_with_context, concat_with_context,
-    concat_ws_with_context, elt, export_set, field, format_num, from_base64,
+    ascii, bin, bit_count, bit_length_in, case_convert, char_func_with_context,
+    concat_with_context, concat_ws_with_context, elt, export_set, field, format_num, from_base64,
     from_base64_with_packet_limit, hex, locate, locate_collation, locate_with_position, make_set,
     oct, ord, quote, replace, reverse, str_insert, str_take, strcmp, substring, substring_index,
-    unhex,
+    unhex_in,
 };
 use crate::string_packet::{pad, repeat, space, to_base64};
 use crate::time_fn::calendar::{date_add, date_diff, date_format, date_part, from_days, time_part};
@@ -128,7 +128,7 @@ pub(crate) fn eval_func(
                 }
                 StringLengthFunction::CharLength => value,
             };
-            return built.eval(&value);
+            return built.eval_in(&value, cols);
         }
     }
     if let Some(result) = crate::builtin_ext::eval_aes_lazy(
@@ -783,10 +783,10 @@ pub(crate) fn eval_func_values(
             locate(&vals[1], &vals[0], locate_collation(&vals[0], &vals[1]))
         }
         "HEX" if vals.len() == 1 => hex(vals),
-        "UNHEX" if vals.len() == 1 => unhex(vals),
+        "UNHEX" if vals.len() == 1 => unhex_in(vals, ctx),
         "BIN" if vals.len() == 1 => bin(vals, ctx),
         "OCT" if vals.len() == 1 => oct(vals),
-        "BIT_LENGTH" => bit_length(vals),
+        "BIT_LENGTH" => bit_length_in(vals, ctx),
         "FIELD" if vals.len() >= 2 => field(vals, ctx),
         "ELT" if vals.len() >= 2 => elt(vals),
         "EXPORT_SET" => export_set(vals),

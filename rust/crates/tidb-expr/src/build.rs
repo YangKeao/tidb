@@ -239,13 +239,27 @@ impl BuiltStringLength {
 
     /// Evaluates the already-selected signature against one scalar argument.
     pub fn eval(self, argument: &Datum) -> Result<Datum, EvalError> {
+        self.eval_in(argument, &crate::NoColumns)
+    }
+
+    /// Evaluates the already-selected signature with the caller's context.
+    pub fn eval_in(self, argument: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
         let count = match self.signature {
-            StringLengthSignature::Length | StringLengthSignature::CharLengthBinary => {
-                match stored_bytes(argument) {
-                    Some(bytes) => Some(bytes.len()),
-                    None => coerce_str(argument)?.map(|text| text.len()),
-                }
+            StringLengthSignature::Length => {
+                return crate::tikv::evaluate_bytes_in(
+                    crate::tikv::EvaluatedBytesOp::Length,
+                    ctx,
+                    || match stored_bytes(argument) {
+                        Some(bytes) => Ok(Some(bytes.to_vec())),
+                        None => Ok(coerce_str(argument)?.map(String::into_bytes)),
+                    },
+                    |result| result.into_int_datum(),
+                );
             }
+            StringLengthSignature::CharLengthBinary => match stored_bytes(argument) {
+                Some(bytes) => Some(bytes.len()),
+                None => coerce_str(argument)?.map(|text| text.len()),
+            },
             StringLengthSignature::CharLengthUtf8 => match stored_bytes(argument) {
                 Some(bytes) => Some(go_utf8_rune_count(bytes)),
                 None => coerce_str(argument)?.map(|text| text.chars().count()),

@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! C4 ASCII caller with scoped and one-shot routing from the value dispatcher.
+//! Closed ready-Bytes caller sharing one scoped pool across six operations.
+//! Legacy public ASCII capabilities retain their names and ASCII-only value API.
 //!
 //! The real C4 worker is the only computation path. Native children/transcode
 //! precede this value boundary; original return coercion follows it. Public
@@ -40,8 +41,9 @@ use tidb_datatype::tikv_compat::value::{from_scalar, BridgeError, ValueMetadata}
 use tidb_datatype::{Datum, DatumKind, Time};
 use tidb_query_datatype::{codec::data_type::ScalarValueRef, EvalType};
 use tidb_query_expr::local::{
-    prepare_evaluated_ascii, CompileLimits, ComputedInt, ComputedIntMetadata, EvaluatedAsciiWorker,
-    ExecutionLimits, LocalCompileContext,
+    prepare_evaluated_bytes, CompileLimits, ComputedBytesMetadata, ComputedInt,
+    ComputedIntMetadata, ComputedValue, EvaluatedBytesOp, EvaluatedBytesWorker, ExecutionLimits,
+    LocalCompileContext,
 };
 
 use super::adapter_failure::{ExpressionAdapterFailure, ScopeFailureKind};
@@ -225,7 +227,7 @@ enum Slot {
     Leased(SlotToken),
     Idle {
         token: SlotToken,
-        worker: Box<EvaluatedAsciiWorker>,
+        worker: Box<EvaluatedBytesWorker>,
         observed_bytes: usize,
     },
     Retiring {
@@ -630,63 +632,101 @@ impl AsciiExecution {
     // Split reservation/preparation is a closed internal seam, useful for
     // deterministic race tests. No caller supplies a replacement factory.
     fn checkout(&self) -> Result<Checkout, AsciiOwnerError> {
-        let mut state = self.core.lock()?;
-        self.core.check_epoch(self.epoch)?;
-        if let Some(index) = state
-            .slots
-            .iter()
-            .position(|slot| matches!(slot, Slot::Idle { token, .. } if token.epoch == self.epoch))
-        {
-            let Slot::Idle { token, worker, .. } =
-                mem::replace(&mut state.slots[index], Slot::Empty)
-            else {
-                unreachable!("matched idle slot");
-            };
-            state.slots[index] = Slot::Leased(token);
-            return Ok(Checkout::Idle(AsciiLease {
-                core: Arc::clone(&self.core),
-                token,
-                worker: Some(worker),
+        self.checkout_for(EvaluatedBytesOp::Ascii)
+    }
+
+    fn checkout_for(&self, operation: EvaluatedBytesOp) -> Result<Checkout, AsciiOwnerError> {
+        // Bounded eviction even if other threads continually refill idle slots.
+        // Every operation shares this same root, epoch and reservation ledger.
+        let mut evictions_left = self.core.policy.max_workers;
+        loop {
+            let mut state = self.core.lock()?;
+            self.core.check_epoch(self.epoch)?;
+            if let Some(index) = state.slots.iter().position(|slot| {
+                matches!(slot, Slot::Idle { token, worker, .. }
+                    if token.epoch == self.epoch && worker.operation() == operation)
+            }) {
+                let Slot::Idle { token, worker, .. } =
+                    mem::replace(&mut state.slots[index], Slot::Empty)
+                else {
+                    unreachable!("matched idle slot");
+                };
+                state.slots[index] = Slot::Leased(token);
+                return Ok(Checkout::Idle(AsciiLease {
+                    core: Arc::clone(&self.core),
+                    token,
+                    worker: Some(worker),
+                }));
+            }
+            let creating = state
+                .slots
+                .iter()
+                .filter(|slot| matches!(slot, Slot::Creating(_)))
+                .count();
+            if creating >= self.core.policy.max_creating {
+                return Err(AsciiOwnerError::resource(
+                    "ASCII creating-worker limit exceeded",
+                ));
+            }
+            let empty = state
+                .slots
+                .iter()
+                .position(|slot| matches!(slot, Slot::Empty));
+            let bytes = state
+                .reserved_bytes
+                .checked_add(self.core.policy.creation_reservation)
+                .filter(|bytes| *bytes <= self.core.policy.max_pool_bytes);
+            if let (Some(index), Some(bytes)) = (empty, bytes) {
+                let serial = state
+                    .next_serial
+                    .checked_add(1)
+                    .ok_or_else(|| AsciiOwnerError::resource("ASCII slot serial exhausted"))?;
+                let token = SlotToken {
+                    index,
+                    serial,
+                    epoch: self.epoch,
+                };
+                state.next_serial = serial;
+                state.reserved_bytes = bytes;
+                state.slots[index] = Slot::Creating(token);
+                return Ok(Checkout::Create(Creation {
+                    core: Arc::clone(&self.core),
+                    token,
+                    operation,
+                    worker: None,
+                    active: true,
+                }));
+            }
+            if evictions_left != 0 {
+                if let Some(index) = state.slots.iter().position(|slot| {
+                    matches!(slot, Slot::Idle { token, worker, .. }
+                        if token.epoch == self.epoch && worker.operation() != operation)
+                }) {
+                    let Slot::Idle { token, worker, .. } =
+                        mem::replace(&mut state.slots[index], Slot::Empty)
+                    else {
+                        unreachable!("matched idle slot");
+                    };
+                    // Reuse the real retirement path; do not release bytes or
+                    // the slot until the detached worker is actually destroyed.
+                    state.slots[index] = Slot::Leased(token);
+                    let retired = AsciiLease {
+                        core: Arc::clone(&self.core),
+                        token,
+                        worker: Some(worker),
+                    };
+                    drop(state);
+                    drop(retired);
+                    evictions_left -= 1;
+                    continue;
+                }
+            }
+            return Err(AsciiOwnerError::resource(if empty.is_none() {
+                "ASCII worker-slot limit exceeded"
+            } else {
+                "ASCII owner reservation budget exceeded"
             }));
         }
-        let creating = state
-            .slots
-            .iter()
-            .filter(|slot| matches!(slot, Slot::Creating(_)))
-            .count();
-        if creating >= self.core.policy.max_creating {
-            return Err(AsciiOwnerError::resource(
-                "ASCII creating-worker limit exceeded",
-            ));
-        }
-        let index = state
-            .slots
-            .iter()
-            .position(|slot| matches!(slot, Slot::Empty))
-            .ok_or_else(|| AsciiOwnerError::resource("ASCII worker-slot limit exceeded"))?;
-        let bytes = state
-            .reserved_bytes
-            .checked_add(self.core.policy.creation_reservation)
-            .filter(|bytes| *bytes <= self.core.policy.max_pool_bytes)
-            .ok_or_else(|| AsciiOwnerError::resource("ASCII owner reservation budget exceeded"))?;
-        let serial = state
-            .next_serial
-            .checked_add(1)
-            .ok_or_else(|| AsciiOwnerError::resource("ASCII slot serial exhausted"))?;
-        let token = SlotToken {
-            index,
-            serial,
-            epoch: self.epoch,
-        };
-        state.next_serial = serial;
-        state.reserved_bytes = bytes;
-        state.slots[index] = Slot::Creating(token);
-        Ok(Checkout::Create(Creation {
-            core: Arc::clone(&self.core),
-            token,
-            worker: None,
-            active: true,
-        }))
     }
 }
 
@@ -710,7 +750,8 @@ impl Checkout {
 struct Creation {
     core: Arc<PoolCore>,
     token: SlotToken,
-    worker: Option<Box<EvaluatedAsciiWorker>>,
+    operation: EvaluatedBytesOp,
+    worker: Option<Box<EvaluatedBytesWorker>>,
     active: bool,
 }
 
@@ -741,7 +782,8 @@ impl Creation {
                 .ok_or_else(|| AsciiOwnerError::resource("ASCII factory counter exhausted"))?;
         }
         // The full creating reservation predates ALL factory/prewarm/Box work.
-        let worker = prepare_evaluated_ascii(
+        let worker = prepare_evaluated_bytes(
+            self.operation,
             LocalCompileContext {
                 limits: CompileLimits {
                     max_nodes: 2,
@@ -768,7 +810,10 @@ impl Creation {
                 ))
             })?
             .total_bytes();
-        if !worker.is_healthy() || observed > self.core.policy.worker_retained_cap {
+        if worker.operation() != self.operation
+            || !worker.is_healthy()
+            || observed > self.core.policy.worker_retained_cap
+        {
             return Err(
                 AsciiOwnerError::contract("ASCII factory published unhealthy storage").into(),
             );
@@ -843,7 +888,7 @@ impl Drop for Creation {
 struct AsciiLease {
     core: Arc<PoolCore>,
     token: SlotToken,
-    worker: Option<Box<EvaluatedAsciiWorker>>,
+    worker: Option<Box<EvaluatedBytesWorker>>,
 }
 
 impl AsciiLease {
@@ -927,7 +972,7 @@ impl Drop for AsciiLease {
 struct Retirement {
     core: Arc<PoolCore>,
     token: SlotToken,
-    worker: Option<Box<EvaluatedAsciiWorker>>,
+    worker: Option<Box<EvaluatedBytesWorker>>,
     recorded: bool,
 }
 
@@ -1095,13 +1140,32 @@ impl<'a> Invocation<'a> {
     }
 
     fn run(&mut self, ready: ReadyAsciiBytes) -> Result<ComputedInt, AsciiBoundaryError> {
+        require_computed_int(self.run_for(EvaluatedBytesOp::Ascii, ready)?)
+    }
+
+    fn run_for(
+        &mut self,
+        operation: EvaluatedBytesOp,
+        ready: ReadyAsciiBytes,
+    ) -> Result<ComputedValue, AsciiBoundaryError> {
+        if let Some(lease) = self.lease.as_ref() {
+            lease.validate()?;
+            if lease.worker.as_ref().expect("validated worker").operation() != operation {
+                // This affine scope has one cache entry. Replacing its operation
+                // destroys the old worker before any new creating reservation.
+                drop(self.lease.take());
+            }
+        }
         if self.lease.is_none() {
-            self.lease = Some(self.scope.execution.checkout()?.ready()?);
+            self.lease = Some(self.scope.execution.checkout_for(operation)?.ready()?);
         }
         let lease = self.lease.as_mut().expect("checked out worker");
         lease.validate()?;
         // No cell/pool borrow or native callback enters the C4 driver.
         let worker = lease.worker.as_mut().expect("validated worker");
+        if worker.operation() != operation {
+            return Err(AsciiOwnerError::contract("closed Bytes worker operation mismatch").into());
+        }
         // Test-only facade-entry observation, not a substitute for C4's real
         // function-pointer witness. No observer is passed into the worker.
         #[cfg(test)]
@@ -1117,10 +1181,7 @@ impl<'a> Invocation<'a> {
         })
     }
 
-    fn finish(
-        mut self,
-        result: Result<ComputedInt, AsciiBoundaryError>,
-    ) -> Result<ComputedInt, AsciiBoundaryError> {
+    fn finish<T>(mut self, result: Result<T, AsciiBoundaryError>) -> Result<T, AsciiBoundaryError> {
         let postflight = self
             .lease
             .as_ref()
@@ -1197,6 +1258,10 @@ fn eval_ready(
     let mut invocation = Invocation::enter(scope)?;
     let result = invocation.run(ready);
     let computed = invocation.finish(result)?;
+    Ok(own_computed_int(computed))
+}
+
+fn own_computed_int(computed: ComputedInt) -> NativeComputedInt {
     // C4's actual generated output, including NULL, owns this identity. The
     // operand's kind/collation and native return FieldType are not consulted.
     let metadata = match computed.metadata() {
@@ -1206,10 +1271,24 @@ fn eval_ready(
             decimal_declared_shape: None,
         },
     };
-    Ok(NativeComputedInt {
+    NativeComputedInt {
         value: computed.into_option(),
         metadata,
-    })
+    }
+}
+
+fn result_kind_error() -> AsciiBoundaryError {
+    AsciiBoundaryError::Scope {
+        kind: ScopeFailureKind::Contract,
+        reason: "closed Bytes result kind mismatch",
+    }
+}
+
+fn require_computed_int(computed: ComputedValue) -> Result<ComputedInt, AsciiBoundaryError> {
+    match computed {
+        ComputedValue::Int(value) => Ok(value),
+        ComputedValue::Bytes(_) => Err(result_kind_error()),
+    }
 }
 
 impl NativeComputedInt {
@@ -1245,37 +1324,115 @@ impl Drop for OneShotAsciiExecution {
     }
 }
 
-/// Routes an already evaluated ASCII operand to C4, never to native replay.
-/// Active scopes win over execution capabilities. Without either capability,
-/// use an isolated experimental execution, not a Go-derived default policy.
-/// Native children/transcoding and the caller's result cast stay outside this
-/// boundary; its final byte coercion occurs exactly once before admission.
-pub(crate) fn evaluate_ascii_in(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+/// Native-owned computed output, not an operand identity or SQL descriptor.
+/// Byte results deliberately leave text/binary packing to the original frontend.
+pub(crate) enum EvaluatedBytesResult {
+    Int(Datum),
+    Bytes(Option<Vec<u8>>),
+}
+
+impl EvaluatedBytesResult {
+    pub(crate) fn into_int_datum(self) -> Result<Datum, EvalError> {
+        match self {
+            Self::Int(value) => Ok(value),
+            Self::Bytes(_) => Err(result_kind_error().into_eval_error()),
+        }
+    }
+
+    pub(crate) fn into_bytes(self) -> Result<Option<Vec<u8>>, EvalError> {
+        match self {
+            Self::Bytes(value) => Ok(value),
+            Self::Int(_) => Err(result_kind_error().into_eval_error()),
+        }
+    }
+}
+
+fn materialize_computed(
+    operation: EvaluatedBytesOp,
+    computed: ComputedValue,
+) -> Result<EvaluatedBytesResult, AsciiBoundaryError> {
+    match (operation, computed) {
+        (
+            EvaluatedBytesOp::Ascii | EvaluatedBytesOp::Length | EvaluatedBytesOp::BitLength,
+            ComputedValue::Int(value),
+        ) => own_computed_int(value)
+            .into_datum()
+            .map(EvaluatedBytesResult::Int),
+        (
+            EvaluatedBytesOp::LTrim | EvaluatedBytesOp::RTrim | EvaluatedBytesOp::UnHex,
+            ComputedValue::Bytes(value),
+        ) => {
+            match value.metadata() {
+                ComputedBytesMetadata::OwnBytes => {}
+            }
+            Ok(EvaluatedBytesResult::Bytes(value.into_option()))
+        }
+        _ => Err(result_kind_error()),
+    }
+}
+
+fn evaluate_scoped_bytes(
+    operation: EvaluatedBytesOp,
+    scope: &AsciiScope,
+    coerce: impl FnOnce() -> Result<Option<Vec<u8>>, EvalError>,
+    pack: impl FnOnce(EvaluatedBytesResult) -> Result<Datum, EvalError>,
+) -> Result<Datum, AsciiBoundaryError> {
+    let mut guard = NativeGuard::new(scope);
+    let result = (|| {
+        // Frontend coercion runs exactly once, before taking/replacing a lease.
+        let ready = ReadyAsciiBytes(coerce().map_err(AsciiBoundaryError::Frontend)?);
+        let mut invocation = Invocation::enter(scope)?;
+        let result = invocation.run_for(operation, ready);
+        let computed = invocation.finish(result)?;
+        // No worker/cell/mutex borrow surrounds original native result packing.
+        pack(materialize_computed(operation, computed)?).map_err(AsciiBoundaryError::Frontend)
+    })();
+    guard.disarm(); // ordinary Result::Err is never an unwind or native replay
+    result
+}
+
+/// One closed operation router, sharing the legacy-named ASCII capabilities.
+/// Neither frontend callback enters C4: coercion precedes admission, and native
+/// packing follows the exclusive invocation. Both remain under the scope guard.
+pub(crate) fn evaluate_bytes_in(
+    operation: EvaluatedBytesOp,
+    ctx: &dyn Columns,
+    coerce: impl FnOnce() -> Result<Option<Vec<u8>>, EvalError>,
+    pack: impl FnOnce(EvaluatedBytesResult) -> Result<Datum, EvalError>,
+) -> Result<Datum, EvalError> {
     if let Some(scope) = ctx.evaluated_ascii_scope() {
-        return scope.evaluate_value(value);
+        return evaluate_scoped_bytes(operation, scope, coerce, pack)
+            .map_err(AsciiBoundaryError::into_eval_error);
     }
     if let Some(execution) = ctx.evaluated_ascii_execution() {
-        return execution.scope().evaluate_value(value);
+        return evaluate_scoped_bytes(operation, &execution.scope(), coerce, pack)
+            .map_err(AsciiBoundaryError::into_eval_error);
     }
 
     let result = (|| {
-        // Preserve frontend error precedence even before one-shot pool creation.
-        let ready = coerce_ready(value)?;
-        // Explicit experimental one-shot limits for the fixed two-node recipe.
-        // These are conditional retained/request allowances, not physical heap
-        // bounds or a measured factory peak. Do not cap the existing byte domain
-        // with a small per-call allowance; later reuse/performance work is separate.
+        // No capability: preserve frontend precedence even before pool creation.
+        let ready = coerce().map_err(AsciiBoundaryError::Frontend)?;
+        // One explicit experimental policy for all six fixed two-node recipes.
+        // Retained/request allowances are not physical heap/factory-peak bounds.
+        // A worker's retained cap must not become a maximum SQL string length.
         let policy = AsciiPoolPolicy::checked(1, 1, 8 << 20, 1 << 20, 2 << 20, 64, 16, usize::MAX)?;
         let owner = AsciiPoolOwner::new(policy)?;
         let execution = OneShotAsciiExecution(owner.begin_execution()?);
-        // The scope and its unwind guard drop before the one-shot closer.
+        // The scope/guard drop before the owned closer, including on unwind.
         let scope = execution.0.scope();
-        let mut guard = NativeGuard::new(&scope);
-        let result = eval_ready(&scope, ready).and_then(NativeComputedInt::into_datum);
-        guard.disarm(); // Result::Err is not an unwind and is never replayed.
-        result
+        evaluate_scoped_bytes(operation, &scope, || Ok(ready), pack)
     })();
     result.map_err(AsciiBoundaryError::into_eval_error)
+}
+
+/// Compatible ASCII-only entry into the shared closed operation router.
+pub(crate) fn evaluate_ascii_in(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    evaluate_bytes_in(
+        EvaluatedBytesOp::Ascii,
+        ctx,
+        || crate::coerce::coerce_str_bytes(value),
+        EvaluatedBytesResult::into_int_datum,
+    )
 }
 
 /// Opaque, sized lexical Columns binding created by [`AsciiScope::with_columns`].

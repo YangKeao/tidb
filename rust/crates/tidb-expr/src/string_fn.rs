@@ -143,14 +143,21 @@ pub(crate) fn ascii(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, E
 
 /// `BIT_LENGTH(s)`: count evaluated bytes and multiply by eight. This follows
 /// Go's `len(val)` contract for ordinary UTF-8 and binary values alike.
+#[cfg(test)]
 pub(crate) fn bit_length(vals: &[Datum]) -> Result<Datum, EvalError> {
+    bit_length_in(vals, &crate::NoColumns)
+}
+
+pub(crate) fn bit_length_in(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
     if vals.len() != 1 {
         return Err(EvalError::Unsupported("bad function arity"));
     }
-    let Some(bytes) = coerce_str_bytes(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int((bytes.len() as i64) * 8))
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::BitLength,
+        ctx,
+        || coerce_str_bytes(&vals[0]),
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
 }
 
 /// `LEFT`/`RIGHT`: the first or last `n` units, where `builtinLeftSig` and
@@ -675,25 +682,18 @@ pub(crate) fn hex_with_type(
 /// which is a byte-preserving Go string boundary, so malformed input bytes
 /// also follow the normal invalid-hex `NULL` path rather than becoming a Rust
 /// UTF-8 decoding error.
+#[cfg(test)]
 pub(crate) fn unhex(vals: &[Datum]) -> Result<Datum, EvalError> {
-    let Some(s) = coerce_str_bytes(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    let mut digits = Vec::with_capacity(s.len() + s.len() % 2);
-    if s.len() % 2 != 0 {
-        digits.push(b'0');
-    }
-    digits.extend_from_slice(&s);
-    let mut bytes = Vec::with_capacity(digits.len() / 2);
-    for pair in digits.as_chunks::<2>().0 {
-        let hi = hex_nibble(pair[0]);
-        let lo = hex_nibble(pair[1]);
-        match (hi, lo) {
-            (Some(h), Some(l)) => bytes.push((h << 4) | l),
-            _ => return Ok(Datum::Null),
-        }
-    }
-    Ok(Datum::new_bytes(bytes))
+    unhex_in(vals, &crate::NoColumns)
+}
+
+pub(crate) fn unhex_in(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::UnHex,
+        ctx,
+        || coerce_str_bytes(&vals[0]),
+        |result| Ok(result.into_bytes()?.map_or(Datum::Null, Datum::new_bytes)),
+    )
 }
 
 /// `BIN(n)`: the base-2 form of an implicitly-cast integer as an unsigned
@@ -830,15 +830,6 @@ fn trim_go_space(bytes: &[u8]) -> &[u8] {
         end -= 1;
     }
     &bytes[start..end]
-}
-
-fn hex_nibble(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
 }
 
 /// `BIN`'s argument path.  This mirrors

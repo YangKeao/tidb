@@ -1238,3 +1238,147 @@ fn evaluated_ascii_unwrapped_public_execute_statement_owns_its_epoch() {
         tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
     );
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_mixed_string_ops_on_sql_columns() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE shared_string_ops (id INT PRIMARY KEY, v VARBINARY(8), h VARBINARY(8))")
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_string_ops VALUES \
+              (1,NULL,NULL),(2,X'',X''),(3,X'20FF2020','F'),\
+              (4,X'2020C3A92020','c3a9'),(5,X'202020','ABC'),\
+              (6,X'41','0G'),(7,X'FF',X'FF')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    // Stored columns prevent constant folding. Alternating integer/byte results
+    // exercises op replacement in one slot; OCTET_LENGTH shares LENGTH's op.
+    let output = session
+        .run_with_columns(
+            "SELECT LENGTH(v), LTRIM(v), BIT_LENGTH(v), RTRIM(v), \
+             OCTET_LENGTH(v), UNHEX(h) FROM shared_string_ops ORDER BY id",
+        )
+        .unwrap();
+    let StmtOutput::Rows { rows, .. } = output else {
+        panic!("expected mixed shared-kernel SQL rows")
+    };
+    // Chunk row materialization uses SetString plus the declared collation for
+    // VARBINARY/BLOB (tidb-chunk row.rs), not the pre-chunk Datum::Bytes variant.
+    let binary_string =
+        |bytes: Vec<u8>| Datum::new_collation_string(bytes, tidb_datatype::Collation::Binary);
+    assert_eq!(
+        rows,
+        vec![
+            vec![Datum::Null; 6],
+            vec![
+                Datum::Int(0),
+                binary_string(vec![]),
+                Datum::Int(0),
+                binary_string(vec![]),
+                Datum::Int(0),
+                binary_string(vec![]),
+            ],
+            vec![
+                Datum::Int(4),
+                binary_string(vec![0xff, b' ', b' ']),
+                Datum::Int(32),
+                binary_string(vec![b' ', 0xff]),
+                Datum::Int(4),
+                binary_string(vec![0x0f]),
+            ],
+            vec![
+                Datum::Int(6),
+                binary_string(vec![0xc3, 0xa9, b' ', b' ']),
+                Datum::Int(48),
+                binary_string(vec![b' ', b' ', 0xc3, 0xa9]),
+                Datum::Int(6),
+                binary_string(vec![0xc3, 0xa9]),
+            ],
+            vec![
+                Datum::Int(3),
+                binary_string(vec![]),
+                Datum::Int(24),
+                binary_string(vec![]),
+                Datum::Int(3),
+                binary_string(vec![0x0a, 0xbc]),
+            ],
+            vec![
+                Datum::Int(1),
+                binary_string(b"A".to_vec()),
+                Datum::Int(8),
+                binary_string(b"A".to_vec()),
+                Datum::Int(1),
+                Datum::Null,
+            ],
+            vec![
+                Datum::Int(1),
+                binary_string(vec![0xff]),
+                Datum::Int(8),
+                binary_string(vec![0xff]),
+                Datum::Int(1),
+                Datum::Null,
+            ],
+        ]
+    );
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_all_string_op_columns() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE shared_string_zero (id INT PRIMARY KEY, v VARBINARY(8), h VARBINARY(8))")
+        .unwrap();
+    session
+        .run("INSERT INTO shared_string_zero VALUES (1,NULL,NULL),(2,X'20FF20','F')")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // NULL and non-NULL column calls must both reach the installed pool; neither
+    // native calculation nor a missing-capability one-shot may bypass its limit.
+    for (function, column) in [
+        ("LENGTH", "v"),
+        ("OCTET_LENGTH", "v"),
+        ("BIT_LENGTH", "v"),
+        ("LTRIM", "v"),
+        ("RTRIM", "v"),
+        ("UNHEX", "h"),
+    ] {
+        for id in [1, 2] {
+            let sql = format!("SELECT {function}({column}) FROM shared_string_zero WHERE id={id}");
+            let error = session.run_with_columns(&sql).expect_err(&sql);
+            match &error {
+                DriverError::Exec(tidb_executor::ExecError::Eval(
+                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                )) => {
+                    assert_eq!(
+                        failure.class(),
+                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                    );
+                    assert_eq!(
+                        failure.origin(),
+                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                    );
+                }
+                other => panic!("{sql} must retain the typed pool cause: {other:?}"),
+            }
+            let mysql = error.to_mysql_error();
+            assert_eq!(mysql.code, 1105, "{sql}");
+            assert_eq!(mysql.state, *b"HY000", "{sql}");
+            assert!(mysql.is_from_evaluation(), "{sql}");
+        }
+    }
+}

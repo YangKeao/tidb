@@ -12,28 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Closed ASCII value dispatch plus private signed-LongLong control/PLUS slices.
-//! This is not a complete migrated family. No rejection/error can replay native
+//! Closed ready-Bytes value dispatch plus private signed-LongLong control/PLUS slices.
+//! This alone is not complete migrated-family evidence. No rejection/error can replay native
 //! evaluation. Only immutable lowering results may be shared; a worker compiles
 //! and owns its own non-Sync official TiKV RPN program.
 
-// Control/PLUS prototypes remain private; only the ASCII value hook is active.
+// Control/PLUS prototypes remain private; only the closed ready-Bytes hooks are active.
 #![allow(dead_code)]
 
 mod adapter_failure;
 mod batch;
 mod catalog;
 mod context;
-// The ASCII dispatcher uses only this closed value-boundary hook.
+// The six ready-Bytes families share this closed value boundary and one pool.
 mod evaluated_ascii;
 pub use adapter_failure::{
     ExpressionAdapterFailure, ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,
 };
-pub(crate) use evaluated_ascii::evaluate_ascii_in;
+pub(crate) use evaluated_ascii::{evaluate_ascii_in, evaluate_bytes_in, EvaluatedBytesResult};
 pub use evaluated_ascii::{
     AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy, AsciiScope,
     ScopedAsciiColumns,
 };
+pub(crate) use tidb_query_expr::local::EvaluatedBytesOp;
 mod lineage;
 mod lower;
 mod ordinary;
