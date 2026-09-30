@@ -1964,3 +1964,142 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_predicate_sql_columns_and_filte
         assert!(mysql.is_from_evaluation(), "{sql}");
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_md5_sha_sha1_sql_binary_and_text_values() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_hash_ops (id INT PRIMARY KEY, b VARBINARY(16), \
+             t VARCHAR(16) CHARACTER SET utf8mb4)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_hash_ops VALUES \
+             (1,NULL,NULL),(2,X'',''),(3,X'616263','abc'),\
+             (4,X'FF','é中'),(5,X'006100FF','A')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    let output = session
+        .run_with_columns(
+            "SELECT MD5(b), SHA(b), SHA1(b), MD5(t), SHA(t), SHA1(t) \
+             FROM shared_hash_ops ORDER BY id",
+        )
+        .unwrap();
+    let StmtOutput::Rows { columns, rows } = output else {
+        panic!("expected hash SQL rows")
+    };
+    assert_eq!(columns.len(), 6);
+
+    // Independent Python hashlib.md5/sha1 constants over these literal bytes,
+    // not fixtures recorded from the TiKV kernels. SHA and SHA1 share an
+    // algorithm, but both SQL spellings must consume the actual column bytes.
+    let empty = (
+        "d41d8cd98f00b204e9800998ecf8427e",
+        "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+    );
+    let abc = (
+        "900150983cd24fb0d6963f7d28e17f72",
+        "a9993e364706816aba3e25717850c26c9cd0d89d",
+    );
+    let ff = (
+        "00594fd4f42ba43fc1ca0427a0576295",
+        "85e53271e14006f0265921d02d4d736cdc580b0b",
+    );
+    let utf8 = (
+        "f06fd4f6fa9601b2b8d793ff0f2e65f1",
+        "57f448f2872fa262f717efb9545e3ee4fe30e3a1",
+    );
+    let embedded_nul = (
+        "09894eaf397901c43b954e0452edb2d7",
+        "8c6f623d8416a0d6efdbe626b413b8a849346932",
+    );
+    let upper_a = (
+        "7fc56270e7a70fa81a5935b72eacbe29",
+        "6dcd4ce23d88e2ee9568ba546c007c63d9131c1b",
+    );
+    let expected = [
+        ["NULL"; 6],
+        [empty.0, empty.1, empty.1, empty.0, empty.1, empty.1],
+        [abc.0, abc.1, abc.1, abc.0, abc.1, abc.1],
+        [ff.0, ff.1, ff.1, utf8.0, utf8.1, utf8.1],
+        [
+            embedded_nul.0,
+            embedded_nul.1,
+            embedded_nul.1,
+            upper_a.0,
+            upper_a.1,
+            upper_a.1,
+        ],
+    ];
+    assert_eq!(rows.len(), expected.len());
+    for (row_index, (row, expected)) in rows.iter().zip(expected).enumerate() {
+        assert_eq!(row.len(), expected.len());
+        for (column_index, (value, expected)) in row.iter().zip(expected).enumerate() {
+            assert_eq!(
+                crate::tests_support::cell_text(value),
+                expected,
+                "hash fixture id {}, column {column_index}",
+                row_index + 1
+            );
+        }
+    }
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_md5_sha_sha1_sql_columns() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_hash_zero (id INT PRIMARY KEY, b VARBINARY(16), \
+             t VARCHAR(16) CHARACTER SET utf8mb4)",
+        )
+        .unwrap();
+    session
+        .run("INSERT INTO shared_hash_zero VALUES (1,NULL,NULL),(2,X'FF','é中')")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // Direct calls on both declared input kinds, not HEX(hash(...)) or another
+    // migrated outer function whose refusal could hide a native hash route.
+    for expression in ["MD5(b)", "SHA(b)", "SHA1(b)", "MD5(t)", "SHA(t)", "SHA1(t)"] {
+        for id in [1, 2] {
+            let sql = format!("SELECT {expression} FROM shared_hash_zero WHERE id={id}");
+            let error = session.run_with_columns(&sql).expect_err(&sql);
+            match &error {
+                DriverError::Exec(tidb_executor::ExecError::Eval(
+                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                )) => {
+                    assert_eq!(
+                        failure.class(),
+                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                    );
+                    assert_eq!(
+                        failure.origin(),
+                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                    );
+                }
+                other => panic!("hash SQL must reach the zero-slot pool: {sql}: {other:?}"),
+            }
+            let mysql = error.to_mysql_error();
+            assert_eq!(mysql.code, 1105, "{sql}");
+            assert_eq!(mysql.state, *b"HY000", "{sql}");
+            assert!(mysql.is_from_evaluation(), "{sql}");
+        }
+    }
+}

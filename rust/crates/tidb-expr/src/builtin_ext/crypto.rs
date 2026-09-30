@@ -32,9 +32,7 @@ use std::io::Write;
 
 use flate2::write::ZlibEncoder;
 use flate2::{Compression, Decompress, FlushDecompress, Status};
-use md5::{Digest, Md5};
-use sha1::Sha1;
-use sha2::{Sha224, Sha256, Sha384, Sha512};
+use sha2::{Digest, Sha224, Sha256, Sha384, Sha512};
 
 use crate::{BlockEncryptionMode, Columns, Datum, EvalError};
 
@@ -47,8 +45,16 @@ pub(crate) fn dispatch(
     ctx: &dyn Columns,
 ) -> Option<Result<Datum, EvalError>> {
     match (name, vals.len()) {
-        ("MD5", 1) => Some(hash_unary::<Md5>(&vals[0])),
-        ("SHA" | "SHA1", 1) => Some(hash_unary::<Sha1>(&vals[0])),
+        ("MD5", 1) => Some(hash_unary(
+            crate::tikv::EvaluatedBytesOp::Md5,
+            &vals[0],
+            ctx,
+        )),
+        ("SHA" | "SHA1", 1) => Some(hash_unary(
+            crate::tikv::EvaluatedBytesOp::Sha1,
+            &vals[0],
+            ctx,
+        )),
         ("SHA2", 2) => Some(sha2_hash(&vals[0], &vals[1])),
         ("SM3", 1) => Some(sm3_hash(&vals[0])),
         ("RANDOM_BYTES", 1) => Some(random_bytes(&vals[0])),
@@ -533,15 +539,25 @@ fn validate_password_strength(value: &Datum, ctx: &dyn Columns) -> Result<Datum,
 /// string bytes as lowercase hex (32 chars for MD5, 40 for SHA-1); `NULL`
 /// argument propagates to `NULL`. Port of `builtinMD5Sig.evalString` and
 /// `builtinSHA1Sig.evalString` (`pkg/expression/builtin_encryption.go`),
-/// which differ only in the hash used — both eval the argument as a string
-/// (numbers arrive as their decimal text) and hex-encode the sum.
-fn hash_unary<D: Digest>(v: &Datum) -> Result<Datum, EvalError> {
-    match hash_input(v)? {
-        Some(bytes) => Ok(Datum::new_string(hex_lower(
-            D::digest(bytes.as_slice()).as_slice(),
-        ))),
-        None => Ok(Datum::Null),
-    }
+/// which differ only in the hash used. The frontend retains its byte
+/// conversion and text packing; the official kernel owns hashing and hex.
+/// PASSWORD remains a separate family owned by `tidb_parser::auth`, including
+/// its double-SHA1 algorithm; its shared `hash_input` conversion is unchanged.
+fn hash_unary(
+    operation: crate::tikv::EvaluatedBytesOp,
+    value: &Datum,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        operation,
+        ctx,
+        || hash_input(value),
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 
 /// `SM3(str)`: the parser-auth SM3 digest rendered as lowercase hex. TiDB's

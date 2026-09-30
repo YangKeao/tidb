@@ -1065,6 +1065,8 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::HexInt | EvaluatedBytesOp::HexStr => "HEX",
         EvaluatedBytesOp::Bin => "BIN",
         EvaluatedBytesOp::BitCount => "BIT_COUNT",
+        EvaluatedBytesOp::Md5 => "MD5",
+        EvaluatedBytesOp::Sha1 => "SHA1",
         EvaluatedBytesOp::IsNull => "ISNULL",
         EvaluatedBytesOp::IsTrue => "ISTRUE",
         EvaluatedBytesOp::IsFalse => "ISFALSE",
@@ -1108,6 +1110,108 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+#[test]
+fn hash_dispatch_preserves_raw_bytes_aliases_and_text_results() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    // Existing crypto vectors, retaining their text result tag even for bytes.
+    let gbk = Datum::new_bytes([0xd2, 0xbb, 0xb6, 0xfe, 0xc8, 0xfd]);
+    for (name, input, expected) in [
+        (
+            "MD5",
+            Datum::new_string("abc"),
+            Datum::new_string("900150983cd24fb0d6963f7d28e17f72"),
+        ),
+        (
+            "MD5",
+            Datum::new_bytes([0xff, 0, b'a']),
+            Datum::new_string("310e56cdb9dccaf757dbcab30054500e"),
+        ),
+        (
+            "MD5",
+            Datum::Decimal(tidb_datatype::Decimal::parse_mysql("123.123").0),
+            Datum::new_string("46ddc40585caa8abc07c460b3485781e"),
+        ),
+        (
+            "SHA1",
+            gbk.clone(),
+            Datum::new_string("30cda4eed59a2ff592f2881f39d42fed6e10cad8"),
+        ),
+        (
+            "SHA",
+            gbk,
+            Datum::new_string("30cda4eed59a2ff592f2881f39d42fed6e10cad8"),
+        ),
+        (
+            "SHA",
+            Datum::new_string(""),
+            Datum::new_string("da39a3ee5e6b4b0d3255bfef95601890afd80709"),
+        ),
+        ("MD5", Datum::Null, Datum::Null),
+        ("SHA1", Datum::Null, Datum::Null),
+    ] {
+        arm_eval_one_observation();
+        let result = crate::func::eval_func_values(name, &[input], &columns).unwrap();
+        let observation = take_eval_one_observation();
+        assert!(matches!(&result, Ok(Datum::String(_) | Datum::Null)));
+        assert_eq!(result, Ok(expected), "{name}");
+        assert_eq!(
+            observation.facade_entries, 1,
+            "NULL also enters the real worker"
+        );
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    }
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn hash_dispatch_retains_coercion_errors_before_explicit_root_refusal() {
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    for operation in [EvaluatedBytesOp::Md5, EvaluatedBytesOp::Sha1] {
+        for input in [Datum::Null, Datum::new_string("abc")] {
+            arm_eval_one_observation();
+            let result = dispatch_bytes_family(operation, &input, &columns);
+            let observation = take_eval_one_observation();
+            assert!(
+                matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource)
+            );
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        arm_eval_one_observation();
+        let result = dispatch_bytes_family(operation, &Datum::MaxValue, &columns);
+        let observation = take_eval_one_observation();
+        assert_eq!(
+            result,
+            Err(EvalError::Unsupported("range sentinel hash argument"))
+        );
+        assert_eq!(
+            observation.facade_entries, 0,
+            "frontend rejection precedes C admission"
+        );
+    }
+    drop(scope);
+    execution.close();
 }
 
 #[test]

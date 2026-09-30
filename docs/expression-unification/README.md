@@ -1,28 +1,32 @@
 # Expression unification experiment
 
-Checkpoint-ID: `boolean-five-11` (previous: `integer-seven-10`)
+Checkpoint-ID: `hash-two-12` (previous: `boolean-five-11`)
 
-**27/245 families delegate to TiKV with native algorithms removed; target221.** This checkpoint adds NOT, ISNULL, ISTRUE, ISFALSE and ISTRUE_WITH_NULL, including their supported aliases/negated forms. Final audit, performance and whole-workspace acceptance remain open.
+**29/245 families delegate to TiKV with their native evaluator algorithms removed; target221.** This checkpoint adds MD5 and SHA/SHA1. SHA is an alias, not a third family. Final audit, performance and whole-workspace acceptance remain open.
 
 ## Paired repositories
 
 - [YangKeao/tidb, expression-unification-demo](https://github.com/YangKeao/tidb/tree/expression-unification-demo)
 - [YangKeao/tikv, expression-unification-demo](https://github.com/YangKeao/tikv/tree/expression-unification-demo)
 
-Use sibling `tidb` and `tikv` checkouts. `checkpoint.json` pins the paired TiKV commit. Root Plans mirror `/home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md`. Core-validated steps push both branches without force-push or automatic PRs.
+Use sibling `tidb` and `tikv` checkouts. `checkpoint.json` pins the paired TiKV commit. Root Plans mirror `/home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md`. Validated steps push both branches without force-push or automatic PRs.
 
-## Shared execution
+## Shared execution and deletion scope
 
-One synchronous worker/driver and operation-keyed pool handle closed ready-value recipes. Boolean callers retain their original truth/presence conversion across all supported native types, then pass nullable Int0/1. This is not Int-only SQL admission. Three negated tests use a fixed base+UnaryNot pair with exact ordered signature/name/function-pointer validation; other operations remain single-call. Compile depth3/nodes4 accommodates these recipes without opening arbitrary programs. Workers are not threads; contextless callers still use TiKV one-shot evaluation, never native replay.
+One synchronous worker/driver and operation-keyed pool execute closed ready-value recipes. These two hashes use the existing nullable Bytes-to-Bytes single-call route; no new driver, pool, type carrier or limits. Native `hash_input`, charset conversion and original text packing remain. The official kernels own hashing and lowercase hex generation, including NULL wrappers. OpenSSL errors propagate as runtime failures, never native retries.
 
-The closed public BooleanFunction/eval_boolean_ready_in helper also connects legacy unistore. Ordinary versus PB warning behavior, typed UNKNOWN validation versus AST presence, and legacy integer-versus-datum channels stay distinct. Existing NOT/ISNULL vector answer-producing shortcuts are removed; they decline before evaluating children and use the existing context-aware row route. Syntactic NOT IN/BETWEEN/LIKE/REGEXP only moves the negation, not the underlying predicate or child order. No PB/SQL admission was expanded.
+The old generic MD5/SHA1 digest calculation and imports are removed from the expression implementation. Other SHA2/SM3 consumers retain shared input/hex helpers. PASSWORD's separate parser/auth double-SHA1 implementation remains an unmigrated family: this is not a claim that all SHA1 code across the repository is gone. No PB/unistore admission was added.
+
+The preceding boolean batch preserves frontend truth/presence and demand semantics, uses fixed base+UnaryNot recipes for negated predicates, and replaces native vector answer shortcuts with existing context-aware row evaluation. Compile limits remain depth3/nodes4. Workers are evaluator instances, not threads; contextless calls still use TiKV, never native fallback.
 
 ## Actual validation
 
-TiKV192 passed/1 ignored plus1 exact-chain guard. New dispatcher3 passed; SQL/lifecycle25 passed; legacy unistore1 passed. Full expression1385 passed/4 unchanged baseline failures/94 ignored,1483 discovered. Complete failure blocks match10 after only thread-ID normalization. No old expected values changed.
+TiKV193 passed/1 ignored plus1 identity guard; new native dispatcher2 passed; SQL/lifecycle27 passed. Full expression1387 passed/4 unchanged baseline failures/94 ignored,1485 discovered. Complete four failure blocks match11 after only thread-ID normalization. No existing expected values changed.
 
-SQL exercises13 existing spellings over NULL/zero/nonzero values, with28 direct zero-slot projection/filter refusals. ISTRUE_WITH_NULL has no ordinary SQL return-type admission and is verified through existing native/PB routes instead. Exact commands and scope: `evidence/boolean-five-checkpoint.md`, `logs/boolean-five-summary.txt`.
+New SQL covers binary/text columns, NULL, empty strings, embedded NUL, invalid UTF-8 bytes and all three spellings. Twelve direct zero-slot queries reject instead of bypassing. Fixed SQL digests were computed with independent Python hashlib, not recorded from TiKV. OpenSSL-error runtime injection was not tested.
+
+Exact commands and scope: `evidence/hash-two-checkpoint.md`, `logs/hash-two-summary.txt`.
 
 ## Open work
 
-Broad frontend operation-scope guards, complete scope reuse, release performance, allocator remeasurement, physical peak/OOM safety, network end-to-end and full workspace/make lint remain unverified. Old allocation receipts do not certify current artifacts. This is kernel reuse, not a complete Go-package transcreation claim. The next hash/compression/string candidates require compatibility checks before receiving migration credit.
+AND/OR/XOR require preserving each original eager/lazy demand and diagnostic path. SHA2, compression functions and ORD still have explicit warning/format/NULL/charset compatibility gaps; no partial-domain credit is given. Broad operation-scope guards, release performance, allocator remeasurement, physical peak/OOM safety, network end-to-end, full workspace and make lint remain unverified. Old allocation receipts do not certify current artifacts. This is kernel reuse, not a complete Go-package transcreation claim or PR-readiness claim.

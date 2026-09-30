@@ -1420,7 +1420,9 @@ fn materialize_computed(
             | EvaluatedBytesOp::LeftUtf8
             | EvaluatedBytesOp::Right
             | EvaluatedBytesOp::RightUtf8
-            | EvaluatedBytesOp::Replace,
+            | EvaluatedBytesOp::Replace
+            | EvaluatedBytesOp::Md5
+            | EvaluatedBytesOp::Sha1,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {

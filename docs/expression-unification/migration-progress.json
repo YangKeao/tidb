@@ -1,8 +1,8 @@
 {
-  "checkpoint_id": "boolean-five-11",
+  "checkpoint_id": "hash-two-12",
   "frozen_denominator": 245,
   "required_families": 221,
-  "functional_delegation_and_native_deletion_count": 27,
+  "functional_delegation_and_native_deletion_count": 29,
   "fully_final_audited_count": 0,
   "final_performance_and_workspace_gates_complete": false,
   "families": [
@@ -32,12 +32,15 @@
     {"id": "isnull", "status": "functional_tikv_only", "native_algorithm_deleted": true, "presence_all_native_datums": true, "admitted_pb_and_unistore_signatures_connected": true, "negated_and_unknown_forms_connected": true},
     {"id": "istrue", "status": "functional_tikv_only", "native_algorithm_deleted": true, "isnottrue_fixed_two_call_recipe": true},
     {"id": "isfalse", "status": "functional_tikv_only", "native_algorithm_deleted": true, "isnotfalse_fixed_two_call_recipe": true},
-    {"id": "istrue_with_null", "status": "functional_tikv_only", "native_algorithm_deleted": true, "existing_pb_and_native_routes_connected": true, "ordinary_sql_admission_not_added": true}
+    {"id": "istrue_with_null", "status": "functional_tikv_only", "native_algorithm_deleted": true, "existing_pb_and_native_routes_connected": true, "ordinary_sql_admission_not_added": true},
+    {"id": "md5", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_hash_input_and_text_packing_preserved": true},
+    {"id": "sha1", "status": "functional_tikv_only", "aliases": ["sha"], "native_algorithm_deleted": true, "original_hash_input_and_text_packing_preserved": true, "password_family_auth_algorithm_not_in_this_claim": true}
   ],
-  "shared_evidence": "evidence/boolean-five-checkpoint.md",
+  "shared_evidence": "evidence/hash-two-checkpoint.md",
   "one_operation_keyed_pool": true,
   "actual_mixed_column_sql_verified": true,
   "zero_slot_refusal_for_new_paths_verified": true,
   "deferred": ["complete operation-scope reuse", "broader wrapper capability propagation", "release performance", "paired differential rerun", "whole-workspace final acceptance"],
-  "next_candidates_not_credited": ["md5", "sha1", "sha2", "compress", "uncompress", "uncompressed_length", "ord"]
+  "deferred_compatibility_candidates_not_credited": ["sha2", "compress", "uncompress", "uncompressed_length", "ord"],
+  "next_logical_batch_requires_demand_preservation": true
 }
