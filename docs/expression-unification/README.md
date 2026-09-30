@@ -1,8 +1,8 @@
 # Expression unification experiment
 
-Checkpoint-ID: `collated-five-22` (previous: `substring-gb-21`)
+Checkpoint-ID: `variadic-oct-elt-four-23` (previous: `collated-five-22`)
 
-**70/245 families delegate to TiKV with native evaluator algorithms removed; target 221.** This checkpoint covers five SQL spellings: STRCMP, LOCATE, INSTR, POSITION and FIND_IN_SET. They add four frozen families: POSITION is already a LOCATE alias, not a fifth credit. The shared collation selector adds no extra family credit. Strict final-audited acceptance remains 0; this is not PR-ready.
+**74/245 frozen families delegate to TiKV with native evaluator algorithms removed; target 221.** This checkpoint adds OCT, CONCAT, CONCAT_WS and full-arity ELT. Strict final-audited acceptance remains 0; the overall experiment is incomplete and not PR-ready.
 
 ## Paired repositories
 
@@ -11,32 +11,34 @@ Checkpoint-ID: `collated-five-22` (previous: `substring-gb-21`)
 
 Use sibling checkouts. `checkpoint.json` pins TiKV and the published Plan hash. Root Plans mirror `/home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md` at publication. Validated steps push both branches without force-push or automatic PRs.
 
-## Ownership and preserved policies
+## This checkpoint
 
-Seven closed recipes share TiKV comparison/search/first-match primitives. Native STRCMP keeps value versus derived collation selection. LOCATE covers both arities and the independent extension entry; INSTR retains child order before swapping ready operands. POSITION retains its AST versus rewritten collation distinction, and its helper counts characters even with Binary comparison.
+- **CONCAT/CONCAT_WS:** both native join implementations are removed. Value and typed entries share frontend preparation for coercion, packet diagnostics and the demanded prefix. Typed children retain their original lazy stopping points; AST children remain eagerly evaluated before the value helper. The public `concat_values` remains a compatible wrapper around new `concat_values_in`.
+- A dedicated opaque payload carries full SQL arity, real nullable operands and `Complete`, `InputNull` or `PacketExceeded { limit }`. One physical Bytes column is not a four-argument SQL limit, a prejoined answer or a tail padded with fake NULLs. TiKV validates the entire prefix/terminal and invokes the shared wire/native join core.
+- Packet getters keep their original timing. The failing comparison's actual limit is retained; the original diagnostic handler can read the getter again. WS budgets separator bytes by original operand index, while output separators join surviving values. Strict frontend errors stay errors; successful NULL, empty and warning-suppressed results still require C4.
+- **ELT:** one shared selector consumes index plus total SQL arity including the index operand and returns a SQL operand offset. It determines conversion of an already-evaluated value, not which SQL children run. The final three-column recipe revalidates `Value(actual nullable bytes)` versus `Undemanded`. All children still evaluate/wrap eagerly, and any candidate's binary metadata still affects the result.
+- **OCT:** the original raw64 integer renderer and decimal-prefix scanner are shared. Native valid UTF8 retains Unicode trimming; malformed UTF8 and wire strings keep ASCII trimming. Empty raw input differs from nonempty whitespace. Int/UInt/Bit/BinaryLiteral paths do not gain generic ETInt or floating-point rounding semantics.
 
-Native text search retains strict frontend UTF8 conversion and collation-aware windows. Only native LOCATE3 applies the existing Go simple lowercase for CI; its unchecked position decrement differs from extension LOCATE3's wrapping decrement, exact matching and Go invalid-byte preparation. Wire lowercase/memmem and original offset policies are not replaced with native behavior. Only `Locate3Native` joins the specific four-column/five-node whitelist; general graph admission and the driver are unchanged.
-
-FIND_IN_SET uses NoPad **key equality**, not comparison. Both dynamic and constant-list paths reach the worker for NULL, empty and nonempty results. TiKV alone builds opaque prepared keys and searches them; native keeps the existing context-once cache owner, child demand, retries and invalidation. Build-time keys remain frozen while lookup samples its current policy. Cached NULL alone permits an undemanded needle; an empty non-NULL cache still converts and keys a non-NULL needle. The opaque owner clones cheaply, but transport still copies into the existing Vec column. Replacing native HashMap lookup with an ordered scan is **not a performance improvement claim**.
-
-`codec::collation::native::NativeCollation` now owns the selector over existing compare/key, pattern, COW and capability primitives. Sixteen checked tags are semantic policies, not wire IDs. GB still uses the shared native compatibility policy; Pinyin remains the original stub. Registry/global-mode resolution stays native, and DerivedBinary LIKE retains rune semantics. Actual pure-key-builder errors retain their typed cause with an unattributed phase, not a fabricated worker Prepare/Invoke phase or SQL overflow.
-
-No new PB or unistore signature admission was introduced. Existing function typing, coercion, diagnostics and output metadata stay frontend-owned. See [current evidence](evidence/collated-five-checkpoint.md) and the preceding [GB foundation](evidence/gb-shared-foundation.md).
+No generic driver, graph limit or four-column whitelist was widened. No new native PB/unistore admission was introduced. Pure input-builder errors retain the actual LocalError with phase None, not a fabricated worker phase or SQL overflow. No existing expected value or fixture was changed.
 
 ## Actual validation
 
-- TiKV collation: 25 passed; all local evaluator tests: 228 passed/1 ignored; original strings: 63 passed.
-- Native datatype library: 436 passed; shared collation contract: 14 passed.
-- New dispatch/cache checks: 3 passed; extension suite: 16 passed; SQL/lifecycle: 47 passed.
-- New SQL coverage: five stored rows × twelve result columns, plus 21 direct zero-slot refusals.
-- Full expression: **1418 passed/4 unchanged failures/94 ignored**, 1516 discovered, exit 101. Its complete failure block matches checkpoint21 after thread-ID normalization only.
+| Scope | Result |
+|---|---|
+| TiKV all local evaluator tests | 232 passed, 1 ignored |
+| Original TiKV string tests | 63 passed |
+| Native packet/demand regression tests | 3 passed |
+| SQL/lifecycle tests | 49 passed |
+| Full native expression library | **1421 passed, 4 unchanged failures, 94 ignored; exit 101** |
 
-The initial `local::tests` filter also passed 66 tests; it is a subset, not another 66 tests to add to the full local count. All targeted runs and first compilation passed without runtime repair. Two draft API/source-reading mistakes were corrected before compilation; no old expected value was changed. Both lockfiles remain unchanged. The pre-publication ledger check rejected a proposed extra POSITION family; the frozen alias map corrected the tentative count of 71 to 70 before either repository was published.
+New SQL tests cover five stored rows with more than four arguments, binary/text metadata, and 16 direct zero-slot refusals. The complete expression failure block matches checkpoint22 after thread-ID normalization only. First compilation and every targeted run passed; both lockfiles are unchanged.
 
-Ten exact command/result receipts: [summary](logs/collated-five-summary.txt). Unistore, parser-charset and generators were not rerun this checkpoint. Their earlier results are not current green evidence: the known unistore failure and parser default-registry assertion remain documented in checkpoint21. Whole workspace and `make lint` were not run.
+Five exact command/result receipts: [summary](logs/variadic-oct-elt-summary.txt). Detailed ownership and preserved semantics: [evidence](evidence/variadic-oct-elt-checkpoint.md).
 
-## Next work and exclusions
+Datatype/collation suites, unistore, parser-charset and generators were not rerun this checkpoint. Their earlier results are not current green evidence: the known unistore failure and parser default-registry assertion remain documented in checkpoint21. Whole workspace and `make lint` were not run.
 
-Next candidates are OCT, CONCAT, CONCAT_WS and full-arity ELT. A dedicated packed variadic carrier or validated demand selector must cover the complete existing domain; a four-argument subset earns no complete-family credit. FIELD, MAKE_SET and CONV need additional compatibility work. EXP/LOG10 retain distinct native Go algorithms; COMPRESS has distinct encoded bytes; UNCOMPRESS needs typed diagnostic outcomes and bounded inflation.
+## Remaining work
 
-Operation-scope completion, physical peak/OOM safety, allocation remeasurement, paired differential reruns, full codec-domain equivalence and release performance remain unverified. Kernel reuse is not a new complete Go-package transcreation claim. Historical checkpoint18/19 LOWER/UPPER completeness overclaims were corrected and repaired in checkpoint20, without extra family credit or rewritten historical commits.
+Next candidates: EXPORT_SET, FIELD and MAKE_SET; CHAR and CONV follow. FIELD needs first-match coercion cutoff and raw IEEE/signedness policies. MAKE_SET must retain the original above-64 shift behavior under the actual overflow-check profile. EXPORT_SET/CHAR may need new single-owner TiKV compatibility cores, explicitly distinguished from reuse of existing wire implementations. EXP/LOG10, COMPRESS and UNCOMPRESS retain documented compatibility/diagnostic work.
+
+Complete operation-scope guards, physical peak/OOM safety, allocation remeasurement, paired differential reruns, full codec-domain equivalence and release performance remain unverified. Packed ownership/copies are not a zero-copy or performance claim. Kernel reuse is not a new complete Go-package transcreation claim. POSITION remains a LOCATE alias; checkpoint22 corrected its tentative duplicate credit before publication. Checkpoint20 repaired the earlier LOWER/UPPER legacy omissions without extra family credit.

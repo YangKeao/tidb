@@ -1876,59 +1876,30 @@ impl ScalarFunction {
         // evaluate left-to-right. Crossing the limit returns NULL immediately,
         // so a later argument (including one that would error) is unreachable.
         if name == "concat" && !self.args.is_empty() {
-            let mut output = Vec::new();
+            let mut preparation = crate::string_fn::ConcatPreparation::new(
+                crate::string_fn::ConcatKind::Concat,
+                self.args.len(),
+            )?;
             for arg in &self.args {
                 let value = arg.eval(ctx, row)?;
-                let Some(bytes) = crate::coerce::coerce_str_bytes(&value)? else {
-                    return Ok(Datum::Null);
-                };
-                let next_len = output.len().saturating_add(bytes.len()) as u64;
-                if next_len > ctx.max_allowed_packet() {
-                    ctx.handle_allowed_packet_overflowed("concat")?;
-                    return Ok(Datum::Null);
+                if !preparation.push_value(&value, ctx)? {
+                    break;
                 }
-                output.extend_from_slice(&bytes);
             }
-            return Ok(Datum::new_string(output));
+            return preparation.finish_in(ctx);
         }
         if name == "concat_ws" && self.args.len() >= 2 {
-            let separator = self.args[0].eval(ctx, row)?;
-            let Some(separator) = crate::coerce::coerce_str_bytes(&separator)? else {
-                return Ok(Datum::Null);
-            };
-            let mut parts = Vec::new();
-            let mut target_len = 0_u64;
-            for (index, arg) in self.args[1..].iter().enumerate() {
+            let mut preparation = crate::string_fn::ConcatPreparation::new(
+                crate::string_fn::ConcatKind::ConcatWs,
+                self.args.len(),
+            )?;
+            for arg in &self.args {
                 let value = arg.eval(ctx, row)?;
-                let Some(bytes) = crate::coerce::coerce_str_bytes(&value)? else {
-                    continue;
-                };
-                target_len = target_len.saturating_add(bytes.len() as u64);
-                if index > 0 {
-                    target_len = target_len.saturating_add(separator.len() as u64);
+                if !preparation.push_value(&value, ctx)? {
+                    break;
                 }
-                if target_len > ctx.max_allowed_packet() {
-                    ctx.handle_allowed_packet_overflowed("concat_ws")?;
-                    return Ok(Datum::Null);
-                }
-                parts.push(bytes);
             }
-            let output_len = parts
-                .iter()
-                .fold(0_usize, |length, part| length.saturating_add(part.len()))
-                .saturating_add(
-                    separator
-                        .len()
-                        .saturating_mul(parts.len().saturating_sub(1)),
-                );
-            let mut output = Vec::with_capacity(output_len);
-            for (index, part) in parts.iter().enumerate() {
-                if index > 0 {
-                    output.extend_from_slice(&separator);
-                }
-                output.extend_from_slice(part);
-            }
-            return Ok(Datum::new_string(output));
+            return preparation.finish_in(ctx);
         }
         // Go builtinLikeSig/builtinIlikeSig evaluate each argument in order
         // and stop at NULL. The escape is EvalInt followed by byte(escape),

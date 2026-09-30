@@ -37,11 +37,12 @@ pub use evaluated_ascii::{
     AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy, AsciiScope,
     ScopedAsciiColumns,
 };
+use tidb_query_expr::local::prepare_concat_args as prepare_concat_args_local;
 use tidb_query_expr::local::prepare_find_in_set_keys as prepare_find_in_set_keys_local;
 pub(crate) use tidb_query_expr::local::{
-    legacy_substring_needs_len, EvaluatedArgs, EvaluatedBytesOp, NativeCollation,
-    NativeSearchPolicy, OutputDisposition, PreparedFindInSetKeys, ReadyBytesArg, ReadyIeee754Arg,
-    ReadyIntArg, ReadySubstringI128,
+    elt_selected_arg, legacy_substring_needs_len, ConcatKind, ConcatTerminal, EvaluatedArgs,
+    EvaluatedBytesOp, NativeCollation, NativeSearchPolicy, OutputDisposition, PreparedConcatArgs,
+    PreparedFindInSetKeys, ReadyBytesArg, ReadyIeee754Arg, ReadyIntArg, ReadySubstringI128,
 };
 
 /// Builds only the opaque constant-list key owner, without a runtime scope.
@@ -56,6 +57,23 @@ pub(crate) fn prepare_find_in_set_keys(
             error, None,
         ))
     })
+}
+
+/// Encodes only the actual demanded CONCAT prefix and its terminal record.
+/// This pure builder neither joins a SQL result nor borrows a runtime scope.
+pub(crate) fn prepare_concat_args(
+    kind: ConcatKind,
+    total_sql_arity: usize,
+    prefix: Vec<Option<Vec<u8>>>,
+    terminal: ConcatTerminal,
+) -> Result<PreparedConcatArgs, crate::EvalError> {
+    prepare_concat_args_local(kind, total_sql_arity, prefix, terminal, usize::MAX).map_err(
+        |error| {
+            crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+                error, None,
+            ))
+        },
+    )
 }
 mod lineage;
 mod lower;

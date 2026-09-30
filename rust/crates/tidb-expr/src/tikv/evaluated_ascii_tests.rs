@@ -1065,6 +1065,7 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::Reverse | EvaluatedBytesOp::ReverseUtf8 => "REVERSE",
         EvaluatedBytesOp::Quote => "QUOTE",
         EvaluatedBytesOp::HexInt | EvaluatedBytesOp::HexStr => "HEX",
+        EvaluatedBytesOp::OctInt | EvaluatedBytesOp::OctStringNative => "OCT",
         EvaluatedBytesOp::Bin => "BIN",
         EvaluatedBytesOp::BitCount => "BIT_COUNT",
         EvaluatedBytesOp::Md5 => "MD5",
@@ -1107,6 +1108,11 @@ fn dispatch_bytes_family(
         }
         EvaluatedBytesOp::Insert | EvaluatedBytesOp::InsertUtf8Native => {
             panic!("INSERT requires all four original operands")
+        }
+        EvaluatedBytesOp::ConcatNative
+        | EvaluatedBytesOp::ConcatWsNative
+        | EvaluatedBytesOp::EltNative => {
+            panic!("variadic string operations need their original argument list")
         }
         EvaluatedBytesOp::StrcmpNative
         | EvaluatedBytesOp::Locate2Native
@@ -1188,6 +1194,255 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+// Native argument/policy probe shared by the three streaming-concat tests.
+struct ConcatStreamProbe {
+    values: RefCell<Vec<Datum>>,
+    limits: RefCell<std::collections::VecDeque<u64>>,
+    level: Cell<ErrorLevel>,
+    events: RefCell<Vec<String>>,
+}
+
+impl ConcatStreamProbe {
+    fn new() -> Self {
+        Self {
+            values: RefCell::new(Vec::new()),
+            limits: RefCell::new(std::collections::VecDeque::new()),
+            level: Cell::new(ErrorLevel::Warn),
+            events: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn evaluate(
+        &self,
+        name: &str,
+        values: Vec<Datum>,
+        limits: &[u64],
+        columns: &dyn Columns,
+    ) -> (Result<Datum, EvalError>, EvalOneObservation, String) {
+        *self.values.borrow_mut() = values;
+        *self.limits.borrow_mut() = limits.iter().copied().collect();
+        let args = (0..self.values.borrow().len())
+            .map(|order| {
+                let mut constant =
+                    Constant::new(Datum::Null, FieldType::new(FieldTypeCode::VarString));
+                constant.param_marker = Some(crate::constant::ParamMarker {
+                    order: order as i64,
+                });
+                crate::expression::Expression::Constant(constant)
+            })
+            .collect();
+        let function = crate::scalar_function::ScalarFunction::new(
+            tidb_ast::CiString::new(name),
+            FieldType::new(FieldTypeCode::VarString),
+            args,
+        );
+        arm_eval_one_observation();
+        let result = function.eval(columns, tidb_chunk::row::Row::empty());
+        let observation = take_eval_one_observation();
+        assert!(self.limits.borrow().is_empty(), "missing packet getter");
+        (
+            result,
+            observation,
+            self.events.replace(Vec::new()).join("|"),
+        )
+    }
+}
+
+impl Columns for ConcatStreamProbe {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        None
+    }
+    fn param_value(&self, order: usize) -> Result<Datum, EvalError> {
+        self.events.borrow_mut().push(format!("eval:{order}"));
+        Ok(self.values.borrow()[order].clone())
+    }
+    fn max_allowed_packet(&self) -> u64 {
+        let limit = self
+            .limits
+            .borrow_mut()
+            .pop_front()
+            .expect("extra packet getter");
+        self.events.borrow_mut().push(format!("max:{limit}"));
+        limit
+    }
+    fn truncate_level(&self) -> ErrorLevel {
+        self.events.borrow_mut().push("level".to_owned());
+        self.level.get()
+    }
+    fn append_warning(&self, code: u16, message: &str) {
+        self.events
+            .borrow_mut()
+            .push(format!("warn:{code}:{message}"));
+    }
+}
+
+fn assert_concat_stream_c4(observation: EvalOneObservation) {
+    assert_eq!(observation.facade_entries, 1);
+    assert!(
+        observation.after_kernel_invocations.unwrap()
+            > observation.before_kernel_invocations.unwrap()
+    );
+}
+
+#[test]
+fn concat_stream_dispatch_preserves_getters_diagnostics_and_stop() {
+    let native = ConcatStreamProbe::new();
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        let values = || {
+            vec![
+                Datum::new_string(""),
+                Datum::new_string("x"),
+                Datum::MinNotNull,
+            ]
+        };
+        let warning = "Result of concat() was larger than max_allowed_packet (7) - truncated";
+        let (result, observation, trace) = native.evaluate("concat", values(), &[0, 0, 7], columns);
+        assert_eq!(result, Ok(Datum::Null));
+        assert_eq!(
+            trace,
+            format!("eval:0|max:0|eval:1|max:0|max:7|level|warn:1301:{warning}")
+        );
+        assert_concat_stream_c4(observation);
+
+        // The default handler rereads the limit for its message, without
+        // undoing the earlier overflow or demanding the sentinel child.
+        native.level.set(ErrorLevel::Error);
+        let (result, observation, trace) = native.evaluate("concat", values(), &[0, 0, 7], columns);
+        assert_eq!(
+            result,
+            Err(EvalError::AllowedPacketOverflowed(warning.to_owned()))
+        );
+        assert_eq!(trace, "eval:0|max:0|eval:1|max:0|max:7|level");
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+
+        let (result, observation, trace) = native.evaluate(
+            "concat",
+            vec![Datum::new_string(""), Datum::Null, Datum::MinNotNull],
+            &[0],
+            columns,
+        );
+        assert_eq!(result, Ok(Datum::Null));
+        assert_eq!(trace, "eval:0|max:0|eval:1", "NULL has no packet getter");
+        assert_concat_stream_c4(observation);
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn concat_stream_dispatch_ws_preserves_separator_and_original_index_budget() {
+    let native = ConcatStreamProbe::new();
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        let (result, observation, trace) = native.evaluate(
+            "concat_ws",
+            vec![Datum::new_string(","), Datum::Null, Datum::new_string("a"), Datum::MinNotNull],
+            &[1, 9],
+            columns,
+        );
+        assert_eq!(result, Ok(Datum::Null), "the original data index charges the separator even before the first survivor");
+        assert_eq!(trace, "eval:0|eval:1|eval:2|max:1|max:9|level|warn:1301:Result of concat_ws() was larger than max_allowed_packet (9) - truncated");
+        assert_concat_stream_c4(observation);
+
+        let (result, observation, trace) = native.evaluate(
+            "concat_ws", vec![Datum::Null, Datum::MinNotNull], &[], columns,
+        );
+        assert_eq!(result, Ok(Datum::Null));
+        assert_eq!(trace, "eval:0", "NULL separator stops before any data child");
+        assert_concat_stream_c4(observation);
+
+        let (result, observation, trace) = native.evaluate(
+            "concat_ws", vec![Datum::new_string(","), Datum::Null, Datum::Null], &[], columns,
+        );
+        assert!(matches!(&result, Ok(Datum::String(_))));
+        assert_eq!(result, Ok(Datum::new_string("")));
+        assert_eq!(trace, "eval:0|eval:1|eval:2", "separator and NULL data never read packet policy");
+        assert_concat_stream_c4(observation);
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn concat_stream_dispatch_wide_arity_and_terminal_results_keep_explicit_root() {
+    let native = ConcatStreamProbe::new();
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        let (result, observation, trace) = native.evaluate(
+            "concat",
+            vec![
+                Datum::new_bytes([0xff]),
+                Datum::new_string("b"),
+                Datum::new_string(""),
+                Datum::Int(7),
+                Datum::new_string("e"),
+            ],
+            &[16; 5],
+            columns,
+        );
+        assert!(matches!(&result, Ok(Datum::String(_))));
+        assert_eq!(result, Ok(Datum::new_string(vec![0xff, b'b', b'7', b'e'])));
+        assert_eq!(
+            trace,
+            "eval:0|max:16|eval:1|max:16|eval:2|max:16|eval:3|max:16|eval:4|max:16"
+        );
+        assert_concat_stream_c4(observation);
+
+        let (result, observation, trace) = native.evaluate(
+            "concat_ws",
+            vec![
+                Datum::Int(7),
+                Datum::new_string(""),
+                Datum::Null,
+                Datum::new_string("b"),
+                Datum::new_string(""),
+                Datum::new_string("d"),
+            ],
+            &[16; 4],
+            columns,
+        );
+        assert!(matches!(&result, Ok(Datum::String(_))));
+        assert_eq!(result, Ok(Datum::new_string("7b77d")));
+        assert_eq!(
+            trace, "eval:0|eval:1|max:16|eval:2|eval:3|max:16|eval:4|max:16|eval:5|max:16",
+            "empty data reads the limit, numeric separator and NULL data do not"
+        );
+        assert_concat_stream_c4(observation);
+    });
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        // Three terminal classes, not a cross-product over names and arities.
+        for (name, values, limits) in [
+            ("concat", vec![Datum::new_string("")], vec![0]),
+            ("concat_ws", vec![Datum::Null, Datum::MinNotNull], vec![]),
+            ("concat", vec![Datum::new_string("x"), Datum::MinNotNull], vec![0, 7]),
+        ] {
+            let (result, observation, _) = native.evaluate(name, values, &limits, columns);
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 #[test]

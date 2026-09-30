@@ -708,7 +708,12 @@ pub fn date_add_interval(
 /// Applies TiDB's byte-preserving `CONCAT` coercion to already-evaluated
 /// values without round-tripping them through literal AST nodes.
 pub fn concat_values(values: &[Datum]) -> Result<Datum, EvalError> {
-    string_fn::concat(values)
+    concat_values_in(values, &NoColumns)
+}
+
+/// Applies byte-preserving CONCAT using the caller's statement context.
+pub fn concat_values_in(values: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    string_fn::concat_with_context(values, ctx)
 }
 
 /// Applies a binary operator with the current session's explicit

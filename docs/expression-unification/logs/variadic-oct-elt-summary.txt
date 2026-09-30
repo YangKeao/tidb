@@ -1,0 +1,89 @@
+Checkpoint: variadic-oct-elt-four-23
+STATUS: final functional checkpoint after five actual Rust receipts; all16 source files frozen; full expression remains non-green.
+Functional delegation/native-deletion advances70->74/245 after core/native/SQL gates; final acceptance remains0/245.
+Four added frozen IDs: oct, concat, concat_ws, elt. coverage-baseline.json:259/117/118/145 confirms four independent IDs, without an alias addition or denominator change. Credit covers the existing full arity/type domains, not merely a <=4-argument subset. No completed Go-package claim.
+AUTHORIZED OUTPUTS ONLY: evidence/variadic-oct-elt-checkpoint.md and this summary. Earlier evidence, Plan/index and source are not changed by this writer.
+
+SOURCE AND RECEIPT STATUS
+Parent reports all16 source files frozen and pinned-formatted: B3 (string_fn.rs/func.rs/lib.rs), D4, E1, C8.
+The first January compilation completed successfully in9.29s. There was no actual compilation failure or new runtime failure in this round; the full expression run retains its four existing failures. All five actual Rust receipts are recorded below.
+Raw receipt directory: /home/agent/tidb/expression-unification/logs
+This writer used read/grep/glob for inspection and updated only these two documents. No build/test/fmt commands were run here; the following commands/exits belong to the parent.
+
+CWD: /home/agent/tidb/expression-unification/tikv
+WRAPPER PIN: nightly-2026-01-30-x86_64-unknown-linux-gnu
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+LOG: variadic-oct-elt-tikv-local.log
+EXIT: 0
+running 233 tests
+test local::tests::local_evaluated_args_concat_preserves_coerced_prefix_and_terminal ... ok
+test local::tests::local_evaluated_args_concat_ws_keeps_null_slots_in_packet_budget ... ok
+test local::tests::local_evaluated_args_elt_uses_sql_offsets_and_full_arity ... ok
+test local::tests::local_evaluated_args_oct_preserves_raw_bits_and_native_whitespace ... ok
+test result: ok. 232 passed; 0 failed; 1 ignored; 0 measured; 469 filtered out; finished in 0.19s
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_string::tests -- --test-threads=1
+LOG: variadic-oct-elt-official-string.log
+EXIT: 0
+running 63 tests
+test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 639 filtered out; finished in 0.02s
+
+CWD: /home/agent/tidb/expression-unification/tidb/rust
+WRAPPER PIN: nightly-2026-08-22-x86_64-unknown-linux-gnu
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib concat_stream_dispatch_ -- --test-threads=1
+LOG: variadic-oct-elt-dispatch.log
+EXIT: 0
+running 3 tests
+test tikv::evaluated_ascii::tests::concat_stream_dispatch_preserves_getters_diagnostics_and_stop ... ok
+test tikv::evaluated_ascii::tests::concat_stream_dispatch_wide_arity_and_terminal_results_keep_explicit_root ... ok
+test tikv::evaluated_ascii::tests::concat_stream_dispatch_ws_preserves_separator_and_original_index_budget ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1516 filtered out; finished in 0.00s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+LOG: variadic-oct-elt-sql.log
+EXIT: 0
+running 49 tests
+test tests_core::lifecycle::evaluated_ascii_shared_pool_variadic_oct_elt_dispatch_sql_values_and_metadata ... ok
+test tests_core::lifecycle::evaluated_ascii_shared_pool_zero_slots_reject_variadic_oct_elt_dispatch_sql_columns ... ok
+test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 0.69s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+LOG: variadic-oct-elt-expr-full.log
+EXIT: 101
+running 1519 tests
+test result: FAILED. 1421 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.38s
+error: test failed, to rerun pass `-p tidb-expr --lib`
+Current full-expression failures, with complete blocks preserved in the raw log:
+  pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation
+  tests::builtin_info_json_math_source::exp
+  tests::builtin_math_misc_op_source::vectorized_builtin_op_func
+  time_fn::tests::str_to_date_partial_formats_follow_no_zero_date
+Parent compared the entire failures section with collated-five-expr-full.log: byte-identical after only thread-ID normalization. Parent reports normalized-section SHA256 fb665bb70597cfff204649928faef5a1284edcae0a2f1ecd275295b3b36e7cb3 (not a whole-log hash). The fresh full expression suite is not green.
+REPOSITORY CHECKS (parent-reported, not additional Rust LOG receipts): both git diff --check commands exited0 and both lockfile git diff --exit-code checks exited0; no lock changes.
+SQL COVERAGE: both new session tests passed within the49-test gate: five rows and nine output columns (eight family results plus the unsigned control), six-operand CONCAT/WS and six ELT candidates/seven total SQL operands, with selectors reaching5/6. The second test passed16direct zero-slot probes, including legal NULL, empty, invalid-selector and selected-NULL results; expected PoolResource/Pool, evaluation-origin1105/HY000, no warning row. Widths for the eight string results remain[64,64,20,20,21,21,8,8], with original decimal/charset/binary metadata. Original expected values/fixtures are unchanged.
+NOT RERUN THIS ROUND: standalone foundation datatype/collation, unistore, parser and generators; their historical receipts are not current-binary validation.
+
+READ-ONLY ENTRY/DOMAIN FINDINGS
+1. OCT has one operand; CONCAT >=1, CONCAT_WS/ELT >=2 and no fixed maximum. ELT's repeating bit31 cast-mask tail covers all later positions; no3/4/32-argument clamp is allowed.
+2. Both native join surfaces are in scope: string_fn value helpers and scalar_function typed CONCAT/CONCAT_WS loops. The public lib.rs concat_values keeps its signature and delegates through new concat_values_in(values, &NoColumns); _in(values,ctx) carries the caller's actual context.
+3. AST evaluates all children before its value helper; typed CONCAT/WS demand children sequentially and stop at the original NULL/packet boundary. A common preparation type must preserve these distinct child-demand policies.
+4. CONCAT coerces a demanded value, stops at real NULL before that operand's getter, otherwise accumulates its length then reads/compares max_allowed_packet. Overflow's original handler can perform a second getter for its diagnostic and warn1301 or return the strict error.
+5. WS separator/NULL data do not read the getter; separator budget uses the original data-argument index>1, not surviving-part count. NULL gaps may therefore cause a larger budget than final output length.
+6. ELT AST/typed generic entry eagerly evaluates all children and applies the existing int/string wrappers; only afterward does its body read the selected ETString. NULL/out-of-range selector must not newly suppress earlier child/wrap errors.
+7. ELT UInt index wraps as i64; selected uncast types remain errors and selected malformed UTF8 bytes remain bytes. Any binary candidate, even unselected, still governs result classification/static charset.
+8. OCT Int/UInt preserve all64 bits; Bit/BinaryLiteral use to_int().value(). Other datums, including Enum/Set names, use byte coercion, not the generic ETInt or float/Decimal rounding layer.
+9. OCT old string policy: original-empty -> NULL; native valid-UTF8 Unicode trim, malformed-UTF8 ASCII-only trim; nonempty invalid/whitespace prefix -> zero; signed decimal prefix; negative in-range wrapping_neg; overflow MAX even for negative overflow. Wire OctString retains ASCII trimming. These policies must share the scanner/formatter without being conflated.
+10. Vector output falls through to scalar row evaluation. No separate four-family body was found in builtin_ext or native PB/unistore paths. Existing TiKV OctInt/OctString/Concat/ConcatWs/Elt wire signatures do not authorize new native admission.
+11. Source inspection alone never established acceptance; final source freeze and the five actual receipts above support the four complete family IDs, not just their small-arity subsets. Original expectations/fixtures are not changed.
+
+FINAL AGREED TRANSPORT ONLY
+CONCAT/WS: ConcatPreparation -> prepare_concat_args -> ConcatReady(opaque prepared input), one physical Bytes column. The actual optional-byte prefix, genuine SQL NULLs/empty values, original full SQL arity and kind remain distinguishable. No prejoining of the SQL result and no fake-NULL padding of undemanded children.
+Terminal: ConcatTerminal::Complete | InputNull | PacketExceeded { limit: u64 }. InputNull means an actual input NULL (WS separator only). PacketExceeded stores the real comparison getter's limit at the triggering prefix, before the original diagnostic handler's possible second getter.
+C must revalidate prefix/terminal shape and the single relevant prefix-threshold comparison using that supplied limit, without calling a context getter or replaying getter history. Do not claim one getter per overflow. Legal NULL/empty/warning-suppressed results still invoke C4; original strict frontend errors remain errors at their original point.
+The observed pure encoder wrapper maps genuine LocalError to opaque ExpressionRuntimeFailure with phaseNone, not an invented SQL site or worker invocation. Encoding itself is not a SQL answer.
+ELT: shared elt_selected_arg(index,total_sql_arity) uses SQL arity INCLUDING the index and returns a SQL operand offset (first candidate1), not a zero-based candidate number. It governs selected-only conversion after existing eager child/wrap preparation. EltReady retains index, real total_sql_arity and selected ReadyBytesArg. Selected Value(None) is genuine SQL NULL; Undemanded means no selected operand. The declared recipe uses three physical columns; no new four-column driver allowance.
+OCT: frozen native adapter dispatches OctInt or OctStringNative, with its old scanner/formatting body removed; oct_decimal_prefix/oct_bits are shared with the original wire entry points, preserving the distinct whitespace policies under the gates above.
+No generic graph/driver widening, new four-column allowance, default projection activation, native PB/unistore admission or backend-error native replay is claimed.
+
+RESOURCE AND VALIDATION LIMITS
+Input packing/decoding and owner/column copies may allocate or retain storage. Neither resource bookkeeping nor one physical input proves zero-copy execution, allocator bounds, physical peak/OOM guarantees or performance; none has been measured here.
+Current expression baseline: the fresh full run retains four failures, with the complete normalized-section comparison/hash reported above. Older unistore one-failure and parser default7/5 plus three poison failures remain historical non-green observations, not current validation; those suites and standalone datatype/collation/generator checks were not rerun.
+Whole workspace, make lint, complete/deeper scope and guard validation, allocator/performance measurement, physical-resource guarantees and final acceptance remain unverified.
+FINAL FUNCTIONAL CHECKPOINT:74/245, final0/245; full expression remains non-green and this is not PR-ready. Source and both documents are frozen.

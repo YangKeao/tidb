@@ -25,8 +25,134 @@ use tidb_datatype::{
 };
 
 /// CONCAT: `NULL` if any argument is `NULL`, else the concatenation.
+#[cfg(test)]
 pub(crate) fn concat(vals: &[Datum]) -> Result<Datum, EvalError> {
     concat_with_context(vals, &crate::context::NoColumns)
+}
+
+pub(crate) use crate::tikv::ConcatKind;
+use crate::tikv::ConcatTerminal;
+
+/// Prepares a demanded prefix without concatenating any output bytes.
+/// Shared by the eager value entry and the scalar entry's lazy child loop.
+pub(crate) struct ConcatPreparation {
+    kind: ConcatKind,
+    arity: usize,
+    values: Vec<Option<Vec<u8>>>,
+    concat_len: usize,
+    ws_budget: u64,
+    terminal: Option<ConcatTerminal>,
+}
+
+impl ConcatPreparation {
+    pub(crate) fn new(kind: ConcatKind, arity: usize) -> Result<Self, EvalError> {
+        match kind {
+            ConcatKind::Concat if arity == 0 => {
+                return Err(EvalError::Unsupported(
+                    "CONCAT requires at least one argument",
+                ));
+            }
+            ConcatKind::ConcatWs if arity < 2 => {
+                return Err(EvalError::Unsupported(
+                    "CONCAT_WS requires at least two arguments",
+                ));
+            }
+            _ => {}
+        }
+        Ok(Self {
+            kind,
+            arity,
+            values: Vec::new(),
+            concat_len: 0,
+            ws_budget: 0,
+            terminal: None,
+        })
+    }
+
+    /// Returns whether the caller should demand another argument.
+    pub(crate) fn push_value(
+        &mut self,
+        value: &Datum,
+        ctx: &dyn crate::Columns,
+    ) -> Result<bool, EvalError> {
+        if self.terminal.is_some() || self.values.len() >= self.arity {
+            return Err(EvalError::Unsupported(
+                "CONCAT preparation already complete",
+            ));
+        }
+        let index = self.values.len();
+        self.values.push(coerce_str_bytes(value)?);
+        let bytes_len = self.values[index].as_ref().map(Vec::len);
+        let (requested, function) = match self.kind {
+            ConcatKind::Concat => {
+                let Some(bytes_len) = bytes_len else {
+                    self.terminal = Some(ConcatTerminal::InputNull);
+                    return Ok(false);
+                };
+                self.concat_len = self.concat_len.saturating_add(bytes_len);
+                (self.concat_len as u64, "concat")
+            }
+            ConcatKind::ConcatWs => {
+                if index == 0 {
+                    if bytes_len.is_none() {
+                        self.terminal = Some(ConcatTerminal::InputNull);
+                        return Ok(false);
+                    }
+                    // The separator never reads max_allowed_packet itself.
+                    return Ok(true);
+                }
+                let Some(bytes_len) = bytes_len else {
+                    return Ok(true);
+                };
+                self.ws_budget = self.ws_budget.saturating_add(bytes_len as u64);
+                // Original data-argument index, not the count of surviving parts.
+                if index > 1 {
+                    self.ws_budget = self.ws_budget.saturating_add(
+                        self.values[0]
+                            .as_ref()
+                            .expect("demanded non-NULL separator")
+                            .len() as u64,
+                    );
+                }
+                (self.ws_budget, "concat_ws")
+            }
+        };
+        let observed_limit = ctx.max_allowed_packet();
+        if requested > observed_limit {
+            self.terminal = Some(ConcatTerminal::PacketExceeded {
+                limit: observed_limit,
+            });
+            ctx.handle_allowed_packet_overflowed(function)?;
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    pub(crate) fn finish_in(self, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+        let op = match self.kind {
+            ConcatKind::Concat => crate::tikv::EvaluatedBytesOp::ConcatNative,
+            ConcatKind::ConcatWs => crate::tikv::EvaluatedBytesOp::ConcatWsNative,
+        };
+        crate::tikv::evaluate_args_in(
+            op,
+            ctx,
+            || {
+                Ok(crate::tikv::EvaluatedArgs::ConcatReady(
+                    crate::tikv::prepare_concat_args(
+                        self.kind,
+                        self.arity,
+                        self.values,
+                        self.terminal.unwrap_or(ConcatTerminal::Complete),
+                    )?,
+                ))
+            },
+            |computed| {
+                Ok(computed
+                    .into_bytes()?
+                    .map_or(Datum::Null, Datum::new_string))
+            },
+        )
+    }
 }
 
 /// Value-evaluated CONCAT with the statement packet limit applied.
@@ -34,25 +160,13 @@ pub(crate) fn concat_with_context(
     vals: &[Datum],
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
-    if vals.is_empty() {
-        return Err(EvalError::Unsupported(
-            "CONCAT requires at least one argument",
-        ));
-    }
-    let mut out = Vec::new();
-    for v in vals {
-        match coerce_str_bytes(v)? {
-            Some(s) => {
-                if out.len().saturating_add(s.len()) as u64 > ctx.max_allowed_packet() {
-                    ctx.handle_allowed_packet_overflowed("concat")?;
-                    return Ok(Datum::Null);
-                }
-                out.extend_from_slice(&s);
-            }
-            None => return Ok(Datum::Null),
+    let mut preparation = ConcatPreparation::new(ConcatKind::Concat, vals.len())?;
+    for value in vals {
+        if !preparation.push_value(value, ctx)? {
+            break;
         }
     }
-    Ok(Datum::new_string(out))
+    preparation.finish_in(ctx)
 }
 
 /// `LOWER`/`UPPER`: text signatures apply Unicode case mapping while binary
@@ -874,65 +988,42 @@ pub(crate) fn bin(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, Eva
 /// `set('a','b','c')` holding `'a,c'` and `bit(8)` holding `b'00000011'`:
 /// `oct(e)` is `0` and `oct(s)` is `0` (the STRINGS parsed), while `oct(b)`
 /// is `3` and `oct(b'01000001')` is `101`.
+#[cfg(test)]
 pub(crate) fn oct(vals: &[Datum]) -> Result<Datum, EvalError> {
-    match &vals[0] {
-        Datum::Null => Ok(Datum::Null),
-        Datum::Int(value) => Ok(Datum::new_string(format!("{:o}", *value as u64))),
-        Datum::UInt(value) => Ok(Datum::new_string(format!("{value:o}"))),
-        Datum::Bit(bits) | Datum::BinaryLiteral(bits) => {
-            Ok(Datum::new_string(format!("{:o}", bits.to_int().value())))
-        }
-        value => Ok(oct_string_bits(value)?
-            .map_or(Datum::Null, |bits| Datum::new_string(format!("{bits:o}")))),
-    }
+    oct_in(vals, &crate::NoColumns)
 }
 
-/// The `ETString` conversion inside Go's `builtinOctStringSig`.
-/// `getValidPrefix(..., 10)` retains only a leading sign and decimal digits;
-/// `strconv.ParseUint` returns `MaxUint64` together with `ErrRange` on
-/// overflow.  A negative in-range magnitude is negated in the `u64` domain,
-/// but a negative overflow is intentionally left as `MaxUint64` by the Go
-/// implementation.
-fn oct_string_bits(value: &Datum) -> Result<Option<u64>, EvalError> {
-    let Some(value) = coerce_str_bytes(value)? else {
-        return Ok(None);
+pub(crate) fn oct_in(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    let value = &vals[0];
+    let integer = match value {
+        Datum::Int(value) => Some(*value),
+        Datum::UInt(value) => Some(*value as i64),
+        Datum::Bit(bits) | Datum::BinaryLiteral(bits) => Some(bits.to_int().value() as i64),
+        _ => None,
     };
-    if value.is_empty() {
-        return Ok(None);
-    }
-    // Go's `EvalString` and `strings.TrimSpace` operate on byte strings. A
-    // valid UTF-8 value can use Rust's Unicode-equivalent `trim`; malformed
-    // bytes cannot be decoded, so trim the ASCII whitespace that Go also
-    // recognizes around such a payload and leave every other octet intact.
-    let value = trim_go_space(&value);
-    let prefix_len = value
-        .iter()
-        .enumerate()
-        .take_while(|(index, byte)| {
-            byte.is_ascii_digit() || (*index == 0 && matches!(byte, b'+' | b'-'))
-        })
-        .map(|(index, _)| index + 1)
-        .last()
-        .unwrap_or(0);
-    let prefix = &value[..prefix_len];
-    let prefix = prefix.strip_prefix(b"+").unwrap_or(prefix);
-    let (negative, digits) = match prefix.strip_prefix(b"-") {
-        Some(digits) => (true, digits),
-        None => (false, prefix),
-    };
-    if digits.is_empty() {
-        return Ok(Some(0));
-    }
-    let digits = std::str::from_utf8(digits).expect("OCT decimal prefix is ASCII");
-    let (bits, overflow) = match digits.parse::<u64>() {
-        Ok(bits) => (bits, false),
-        Err(_) => (u64::MAX, true),
-    };
-    Ok(Some(if negative && !overflow {
-        bits.wrapping_neg()
+    if let Some(bits) = integer {
+        crate::tikv::evaluate_args_in(
+            crate::tikv::EvaluatedBytesOp::OctInt,
+            ctx,
+            || Ok(crate::tikv::EvaluatedArgs::Int(Some(bits))),
+            |computed| {
+                Ok(computed
+                    .into_bytes()?
+                    .map_or(Datum::Null, Datum::new_string))
+            },
+        )
     } else {
-        bits
-    }))
+        crate::tikv::evaluate_args_in(
+            crate::tikv::EvaluatedBytesOp::OctStringNative,
+            ctx,
+            || Ok(crate::tikv::EvaluatedArgs::Bytes(coerce_str_bytes(value)?)),
+            |computed| {
+                Ok(computed
+                    .into_bytes()?
+                    .map_or(Datum::Null, Datum::new_string))
+            },
+        )
+    }
 }
 
 /// Trims the same source-visible whitespace around an `ETString` value that
@@ -1194,21 +1285,39 @@ enum FieldComparisonMode {
 /// types.SetBinChsClnFlag(bf.tp) }` over `args[1:]` (`:3314-3318`): ANY
 /// binary candidate makes the whole function binary, not just the selected
 /// one.
+#[cfg(test)]
 pub(crate) fn elt(vals: &[Datum]) -> Result<Datum, EvalError> {
-    let Some(index) = crate::arg_eval_type::eval_int(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    if index < 1 || index as usize >= vals.len() {
-        return Ok(Datum::Null);
-    }
-    let Some(selected) = crate::arg_eval_type::eval_string(&vals[index as usize])? else {
-        return Ok(Datum::Null);
-    };
-    Ok(
-        if vals[1..].iter().any(crate::string_signature::is_binary_str) {
-            Datum::new_bytes(selected)
-        } else {
-            Datum::new_string(selected)
+    elt_in(vals, &crate::NoColumns)
+}
+
+pub(crate) fn elt_in(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::EltNative,
+        ctx,
+        || {
+            let index = crate::arg_eval_type::eval_int(&vals[0])?;
+            // SQL arity includes the index operand. The shared selector returns
+            // that same operand offset; no unselected value is read here.
+            let selected = match crate::tikv::elt_selected_arg(index, vals.len()) {
+                Some(offset) => crate::tikv::ReadyBytesArg::Value(
+                    crate::arg_eval_type::eval_string(&vals[offset])?,
+                ),
+                None => crate::tikv::ReadyBytesArg::Undemanded,
+            };
+            Ok(crate::tikv::EvaluatedArgs::EltReady {
+                index,
+                total_sql_arity: vals.len(),
+                selected,
+            })
+        },
+        |computed| {
+            Ok(computed.into_bytes()?.map_or(Datum::Null, |selected| {
+                if vals[1..].iter().any(crate::string_signature::is_binary_str) {
+                    Datum::new_bytes(selected)
+                } else {
+                    Datum::new_string(selected)
+                }
+            }))
         },
     )
 }
@@ -1226,36 +1335,13 @@ pub(crate) fn concat_ws_with_context(
     vals: &[Datum],
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
-    if vals.len() < 2 {
-        return Err(EvalError::Unsupported(
-            "CONCAT_WS requires at least two arguments",
-        ));
+    let mut preparation = ConcatPreparation::new(ConcatKind::ConcatWs, vals.len())?;
+    for value in vals {
+        if !preparation.push_value(value, ctx)? {
+            break;
+        }
     }
-    let Some(sep) = coerce_str_bytes(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    let mut out = Vec::new();
-    let mut have_part = false;
-    let mut target_len = 0_u64;
-    for (index, value) in vals[1..].iter().enumerate() {
-        let Some(value) = coerce_str_bytes(value)? else {
-            continue;
-        };
-        target_len = target_len.saturating_add(value.len() as u64);
-        if index > 0 {
-            target_len = target_len.saturating_add(sep.len() as u64);
-        }
-        if target_len > ctx.max_allowed_packet() {
-            ctx.handle_allowed_packet_overflowed("concat_ws")?;
-            return Ok(Datum::Null);
-        }
-        if have_part {
-            out.extend_from_slice(&sep);
-        }
-        out.extend_from_slice(&value);
-        have_part = true;
-    }
-    Ok(Datum::new_string(out))
+    preparation.finish_in(ctx)
 }
 
 /// `SUBSTRING_INDEX(str, delim, count)`: the substring before the `count`-th

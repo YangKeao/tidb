@@ -4149,3 +4149,200 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_collated_search_set_dispatch_sq
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_variadic_oct_elt_dispatch_sql_values_and_metadata() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_variadic_oct_elt (id INT PRIMARY KEY, \
+             o VARCHAR(32) CHARSET utf8mb4, u BIGINT UNSIGNED, k BIGINT, \
+             t VARCHAR(8) CHARSET utf8mb4, b VARBINARY(8), s VARCHAR(1) CHARSET utf8mb4)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_variadic_oct_elt VALUES \
+             (1,NULL,NULL,NULL,NULL,NULL,NULL),\
+             (2,'\u{00a0}8',18446744073709551615,5,'中',X'FF00','|'),\
+             (3,'',0,6,'',X'',''),(4,'   ',8,0,'A',X'41','|'),\
+             (5,'8',16,1,NULL,NULL,'|')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    // Six actual CONCAT/CONCAT_WS arguments and six ELT candidates, with a
+    // stored selector reaching candidates 5 and 6. No SQL child-laziness claim:
+    // ELT's existing SQL argument evaluation remains eager.
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT u, OCT(o), OCT(u), \
+             CONCAT(t,'a','b','c','d',t), CONCAT(b,'a','b','c','d',b), \
+             CONCAT_WS(s,t,'','x','',t), CONCAT_WS(s,b,'','x','',b), \
+             ELT(k,t,'2','3','4','5','6'), ELT(k,b,'2','3','4','5','6') \
+             FROM shared_variadic_oct_elt ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected variadic/OCT/ELT dispatch rows")
+    };
+    assert_eq!(columns.len(), 9);
+    assert!(columns[0].1.is_unsigned());
+    let widths = [64, 64, 20, 20, 21, 21, 8, 8];
+    for (index, ((_, field_type), width)) in columns[1..].iter().zip(widths).enumerate() {
+        assert_eq!(field_type.eval_type(), tidb_datatype::EvalType::String);
+        assert_eq!(field_type.flen(), width, "column {}", index + 1);
+        assert_eq!(field_type.decimal(), tidb_datatype::UNSPECIFIED_LENGTH);
+        if matches!(index, 3 | 5 | 7) {
+            assert_eq!(field_type.collation(), tidb_datatype::Collation::Binary);
+            assert_eq!(field_type.charset_name(), "binary");
+        } else {
+            assert_ne!(field_type.collation(), tidb_datatype::Collation::Binary);
+            assert_eq!(field_type.charset_name(), "utf8mb4");
+        }
+    }
+    let expected_text = [
+        [None, None, None, None, None],
+        // OCT trims the Unicode NBSP, not only ASCII whitespace; the other
+        // signature renders every bit of the stored UInt64 without clamping.
+        [
+            Some("10"),
+            Some("1777777777777777777777"),
+            Some("中abcd中"),
+            Some("中||x||中"),
+            Some("5"),
+        ],
+        // OCT's original empty string is NULL, while UInt(0) renders "0".
+        [None, Some("0"), Some("abcd"), Some("x"), Some("6")],
+        // Whitespace is nonempty before trimming, so OCT returns "0". ELT(0)
+        // is invalid, not the first candidate.
+        [Some("0"), Some("10"), Some("AabcdA"), Some("A||x||A"), None],
+        // CONCAT propagates a NULL argument; WS skips it but keeps each empty
+        // field, giving |x|. ELT selects the stored NULL first candidate.
+        [Some("10"), Some("20"), None, Some("|x|"), None],
+    ];
+    let expected_binary: [[Option<&[u8]>; 3]; 5] = [
+        [None, None, None],
+        [
+            Some(b"\xff\0abcd\xff\0"),
+            Some(b"\xff\0||x||\xff\0"),
+            Some(b"5"),
+        ],
+        [Some(b"abcd"), Some(b"x"), Some(b"6")],
+        [Some(b"AabcdA"), Some(b"A||x||A"), None],
+        [None, Some(b"|x|"), None],
+    ];
+    assert_eq!(rows.len(), expected_text.len());
+    assert_eq!(rows[1][0], Datum::UInt(u64::MAX));
+    for (row_index, row) in rows.iter().enumerate() {
+        assert_eq!(row.len(), columns.len());
+        for (column, expected) in [1, 2, 3, 5, 7].into_iter().zip(expected_text[row_index]) {
+            let value = &row[column];
+            if let Some(expected) = expected {
+                assert!(matches!(value, Datum::String(_)));
+                assert_ne!(value.collation(), Some(tidb_datatype::Collation::Binary));
+                assert_eq!(
+                    crate::tests_support::cell_text(value),
+                    expected,
+                    "id {}, column {column}",
+                    row_index + 1
+                );
+            } else {
+                assert_eq!(value, &Datum::Null, "id {}, column {column}", row_index + 1);
+            }
+        }
+        // A binary candidate makes ELT binary even when another (text)
+        // candidate is selected. CONCAT/WS must also retain raw FF/00 bytes.
+        for (column, expected) in [4, 6, 8].into_iter().zip(expected_binary[row_index]) {
+            let expected = expected.map_or(Datum::Null, |bytes| {
+                Datum::new_collation_string(bytes.to_vec(), tidb_datatype::Collation::Binary)
+            });
+            assert_eq!(
+                row[column],
+                expected,
+                "id {}, column {column}",
+                row_index + 1
+            );
+        }
+    }
+    assert!(warnings_of(&session).is_empty());
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_variadic_oct_elt_dispatch_sql_columns() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_variadic_oct_elt_zero (id INT PRIMARY KEY, \
+             o VARCHAR(32) CHARSET utf8mb4, u BIGINT UNSIGNED, k BIGINT, \
+             t VARCHAR(8) CHARSET utf8mb4, s VARCHAR(1) CHARSET utf8mb4)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_variadic_oct_elt_zero VALUES \
+             (1,NULL,NULL,NULL,NULL,NULL),\
+             (2,'\u{00a0}8',18446744073709551615,5,'z','|'),\
+             (3,'',0,1,'',''),(4,' ',8,0,'A','|'),(5,'8',16,1,NULL,'|')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // Calls are direct and column-driven. Legal NULL and empty results still
+    // demand a worker, including an invalid or selected-NULL ELT result.
+    for (expression, id) in [
+        ("OCT(o)", 1),
+        ("OCT(o)", 2),
+        ("OCT(o)", 3),
+        ("OCT(o)", 4),
+        ("OCT(u)", 2),
+        ("CONCAT(t,'','','','',t)", 1),
+        ("CONCAT(t,'','','','',t)", 2),
+        ("CONCAT(t,'','','','',t)", 3),
+        ("CONCAT_WS(s,t,'','','',t)", 1),
+        ("CONCAT_WS(s,t,'','','',t)", 2),
+        ("CONCAT_WS(s,t,'','','',t)", 3),
+        ("ELT(k,t,'2','3','4','5','6')", 1),
+        ("ELT(k,t,'2','3','4','5','6')", 2),
+        ("ELT(k,t,'2','3','4','5','6')", 3),
+        ("ELT(k,t,'2','3','4','5','6')", 4),
+        ("ELT(k,t,'2','3','4','5','6')", 5),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_variadic_oct_elt_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("variadic/OCT/ELT must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        // These tiny legal operands introduce no cast/packet diagnostic, and
+        // the returned evaluation-origin 1105 is never an Error warning row.
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+}

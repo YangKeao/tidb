@@ -1506,7 +1506,12 @@ fn materialize_computed(
             | EvaluatedBytesOp::Substring2BytesLegacy
             | EvaluatedBytesOp::Substring2Utf8Legacy
             | EvaluatedBytesOp::Substring3BytesLegacy
-            | EvaluatedBytesOp::Substring3Utf8Legacy,
+            | EvaluatedBytesOp::Substring3Utf8Legacy
+            | EvaluatedBytesOp::OctInt
+            | EvaluatedBytesOp::OctStringNative
+            | EvaluatedBytesOp::ConcatNative
+            | EvaluatedBytesOp::ConcatWsNative
+            | EvaluatedBytesOp::EltNative,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {
