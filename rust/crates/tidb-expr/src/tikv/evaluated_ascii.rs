@@ -41,9 +41,9 @@ use tidb_datatype::tikv_compat::value::{from_scalar, BridgeError, ValueMetadata}
 use tidb_datatype::{Datum, DatumKind, Time};
 use tidb_query_datatype::{codec::data_type::ScalarValueRef, EvalType};
 use tidb_query_expr::local::{
-    prepare_evaluated_bytes, CompileLimits, ComputedBytesMetadata, ComputedInt,
-    ComputedIntMetadata, ComputedValue, EvaluatedArgs, EvaluatedBytesOp, EvaluatedBytesWorker,
-    ExecutionLimits, LocalCompileContext,
+    prepare_evaluated_bytes, CompileLimits, ComputedBytesMetadata, ComputedIeee754BitsMetadata,
+    ComputedInt, ComputedIntMetadata, ComputedValue, EvaluatedArgs, EvaluatedBytesOp,
+    EvaluatedBytesWorker, ExecutionLimits, LocalCompileContext,
 };
 
 use super::adapter_failure::{ExpressionAdapterFailure, ScopeFailureKind};
@@ -1297,7 +1297,7 @@ fn result_kind_error() -> AsciiBoundaryError {
 fn require_computed_int(computed: ComputedValue) -> Result<ComputedInt, AsciiBoundaryError> {
     match computed {
         ComputedValue::Int(value) => Ok(value),
-        ComputedValue::Bytes(_) => Err(result_kind_error()),
+        ComputedValue::Bytes(_) | ComputedValue::Ieee754Bits(_) => Err(result_kind_error()),
     }
 }
 
@@ -1339,13 +1339,15 @@ impl Drop for OneShotAsciiExecution {
 pub(crate) enum EvaluatedBytesResult {
     Int(Datum),
     Bytes(Option<Vec<u8>>),
+    // A separate owned carrier: never ordinary Bytes, SQL Int or NotNan Real.
+    Ieee754Bits(Option<u64>),
 }
 
 impl EvaluatedBytesResult {
     pub(crate) fn into_int_datum(self) -> Result<Datum, EvalError> {
         match self {
             Self::Int(value) => Ok(value),
-            Self::Bytes(_) => Err(result_kind_error().into_eval_error()),
+            Self::Bytes(_) | Self::Ieee754Bits(_) => Err(result_kind_error().into_eval_error()),
         }
     }
 
@@ -1370,7 +1372,15 @@ impl EvaluatedBytesResult {
     pub(crate) fn into_bytes(self) -> Result<Option<Vec<u8>>, EvalError> {
         match self {
             Self::Bytes(value) => Ok(value),
-            Self::Int(_) => Err(result_kind_error().into_eval_error()),
+            Self::Int(_) | Self::Ieee754Bits(_) => Err(result_kind_error().into_eval_error()),
+        }
+    }
+
+    /// Only the explicitly owned IEEE carrier can supply raw float bits.
+    pub(crate) fn into_ieee754_bits(self) -> Result<Option<u64>, EvalError> {
+        match self {
+            Self::Ieee754Bits(value) => Ok(value),
+            Self::Int(_) | Self::Bytes(_) => Err(result_kind_error().into_eval_error()),
         }
     }
 }
@@ -1405,7 +1415,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::LogicalAnd
             | EvaluatedBytesOp::LogicalOr
             | EvaluatedBytesOp::LogicalXor
-            | EvaluatedBytesOp::InetAton,
+            | EvaluatedBytesOp::InetAton
+            | EvaluatedBytesOp::SignRaw,
             ComputedValue::Int(value),
         ) => own_computed_int(value)
             .into_datum()
@@ -1436,6 +1447,19 @@ fn materialize_computed(
                 ComputedBytesMetadata::OwnBytes => {}
             }
             Ok(EvaluatedBytesResult::Bytes(value.into_option()))
+        }
+        (
+            EvaluatedBytesOp::AsinRaw
+            | EvaluatedBytesOp::AcosRaw
+            | EvaluatedBytesOp::SqrtRaw
+            | EvaluatedBytesOp::RadiansRaw
+            | EvaluatedBytesOp::DegreesRaw,
+            ComputedValue::Ieee754Bits(value),
+        ) => {
+            match value.metadata() {
+                ComputedIeee754BitsMetadata::OwnIeee754Bits => {}
+            }
+            Ok(EvaluatedBytesResult::Ieee754Bits(value.into_option()))
         }
         _ => Err(result_kind_error()),
     }

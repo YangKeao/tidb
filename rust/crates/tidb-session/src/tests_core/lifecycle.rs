@@ -2364,3 +2364,173 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_all_inet_sql_columns() {
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_math_real_sql_analytical_values_and_metadata() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_math_ops (id INT PRIMARY KEY, v DOUBLE, \
+             deg DOUBLE, rad DOUBLE)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_math_ops VALUES \
+             (1,NULL,NULL,NULL),(2,0,0,0),\
+             (3,1,180,3.141592653589793),(4,-1,-180,-3.141592653589793),\
+             (5,4,90,1.5707963267948966),(6,-4,360,6.283185307179586)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    // Every target reads a stored nullable column, including the angle inputs.
+    // These are analytical endpoints and square roots, not recorded outputs.
+    let output = session
+        .run_with_columns(
+            "SELECT ASIN(v), ACOS(v), SQRT(v), SIGN(v), RADIANS(deg), DEGREES(rad) \
+             FROM shared_math_ops ORDER BY id",
+        )
+        .unwrap();
+    let StmtOutput::Rows { columns, rows } = output else {
+        panic!("expected real math SQL rows")
+    };
+    assert_eq!(columns.len(), 6);
+    // Preserve the existing inference: SIGN is signed Int, all others Real.
+    for (column_index, (_, field_type)) in columns.iter().enumerate() {
+        let expected_type = if column_index == 3 {
+            tidb_datatype::EvalType::Int
+        } else {
+            tidb_datatype::EvalType::Real
+        };
+        assert_eq!(
+            field_type.eval_type(),
+            expected_type,
+            "column {column_index}"
+        );
+        assert!(!field_type.is_unsigned(), "column {column_index}");
+    }
+    let pi = std::f64::consts::PI;
+    let half_pi = std::f64::consts::FRAC_PI_2;
+    let expected = vec![
+        vec![Datum::Null; 6],
+        vec![
+            Datum::Real(0.0),
+            Datum::Real(half_pi),
+            Datum::Real(0.0),
+            Datum::Int(0),
+            Datum::Real(0.0),
+            Datum::Real(0.0),
+        ],
+        vec![
+            Datum::Real(half_pi),
+            Datum::Real(0.0),
+            Datum::Real(1.0),
+            Datum::Int(1),
+            Datum::Real(pi),
+            Datum::Real(180.0),
+        ],
+        vec![
+            Datum::Real(-half_pi),
+            Datum::Real(pi),
+            Datum::Null,
+            Datum::Int(-1),
+            Datum::Real(-pi),
+            Datum::Real(-180.0),
+        ],
+        vec![
+            Datum::Null,
+            Datum::Null,
+            Datum::Real(2.0),
+            Datum::Int(1),
+            Datum::Real(half_pi),
+            Datum::Real(90.0),
+        ],
+        vec![
+            Datum::Null,
+            Datum::Null,
+            Datum::Null,
+            Datum::Int(-1),
+            Datum::Real(2.0 * pi),
+            Datum::Real(360.0),
+        ],
+    ];
+    assert_eq!(rows.len(), expected.len());
+    for (row_index, (row, expected)) in rows.iter().zip(expected).enumerate() {
+        assert_eq!(row.len(), expected.len());
+        for (column_index, (value, expected)) in row.iter().zip(expected).enumerate() {
+            match expected {
+                Datum::Real(expected) => {
+                    let Datum::Real(actual) = value else {
+                        panic!(
+                            "math id {}, column {column_index}: expected Real, got {value:?}",
+                            row_index + 1
+                        )
+                    };
+                    let tolerance = 1e-12 * expected.abs().max(1.0);
+                    assert!(
+                        actual.is_finite() && (*actual - expected).abs() <= tolerance,
+                        "math id {}, column {column_index}: {actual} != {expected}",
+                        row_index + 1
+                    );
+                }
+                expected => assert_eq!(
+                    value,
+                    &expected,
+                    "math id {}, column {column_index}",
+                    row_index + 1
+                ),
+            }
+        }
+    }
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_six_math_sql_columns() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE shared_math_zero (id INT PRIMARY KEY, v DOUBLE)")
+        .unwrap();
+    session
+        .run("INSERT INTO shared_math_zero VALUES (1,NULL),(2,1)")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // NULL and non-NULL direct calls must each reach the installed pool;
+    // no outer migrated function or constant expression can hide the target.
+    for function in ["ASIN", "ACOS", "SQRT", "SIGN", "RADIANS", "DEGREES"] {
+        for id in [1, 2] {
+            let sql = format!("SELECT {function}(v) FROM shared_math_zero WHERE id={id}");
+            let error = session.run_with_columns(&sql).expect_err(&sql);
+            match &error {
+                DriverError::Exec(tidb_executor::ExecError::Eval(
+                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                )) => {
+                    assert_eq!(
+                        failure.class(),
+                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                    );
+                    assert_eq!(
+                        failure.origin(),
+                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                    );
+                }
+                other => panic!("math SQL must reach the zero-slot pool: {sql}: {other:?}"),
+            }
+            let mysql = error.to_mysql_error();
+            assert_eq!(mysql.code, 1105, "{sql}");
+            assert_eq!(mysql.state, *b"HY000", "{sql}");
+            assert!(mysql.is_from_evaluation(), "{sql}");
+        }
+    }
+}

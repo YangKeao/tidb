@@ -1,8 +1,8 @@
 {
-  "checkpoint_id": "inet-four-14",
+  "checkpoint_id": "raw-math-six-15",
   "frozen_denominator": 245,
   "required_families": 221,
-  "functional_delegation_and_native_deletion_count": 36,
+  "functional_delegation_and_native_deletion_count": 42,
   "fully_final_audited_count": 0,
   "final_performance_and_workspace_gates_complete": false,
   "families": [
@@ -41,15 +41,22 @@
     {"id": "inet_aton", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_text_conversion_and_uint_tag_preserved": true},
     {"id": "inet_ntoa", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_int_conversion_diagnostics_and_text_tag_preserved": true},
     {"id": "inet6_aton", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_raw_bytes_conversion_and_binary_tag_preserved": true},
-    {"id": "inet6_ntoa", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_raw_bytes_conversion_and_text_tag_preserved": true}
+    {"id": "inet6_ntoa", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_raw_bytes_conversion_and_text_tag_preserved": true},
+    {"id": "asin", "status": "functional_tikv_only", "native_algorithm_deleted": true, "ordinary_null_and_legacy_raw_nan_policies_preserved": true, "admitted_pb_and_unistore_connected": true},
+    {"id": "acos", "status": "functional_tikv_only", "native_algorithm_deleted": true, "ordinary_null_and_legacy_raw_nan_policies_preserved": true, "admitted_pb_and_unistore_connected": true},
+    {"id": "sqrt", "status": "functional_tikv_only", "native_algorithm_deleted": true, "raw_nan_infinity_negative_zero_preserved": true},
+    {"id": "sign", "status": "functional_tikv_only", "native_algorithm_deleted": true, "integer_and_decimal_sign_zero_classes_preserved": true},
+    {"id": "radians", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_finite_result_diagnostics_preserved": true},
+    {"id": "degrees", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_finite_result_diagnostics_preserved": true}
   ],
-  "shared_evidence": "evidence/inet-four-checkpoint.md",
+  "shared_evidence": "evidence/raw-math-six-checkpoint.md",
   "one_operation_keyed_pool": true,
   "actual_mixed_column_sql_verified": true,
   "zero_slot_refusal_for_new_paths_verified": true,
   "deferred": ["complete operation-scope reuse", "broader wrapper capability propagation", "release performance", "paired differential rerun", "whole-workspace final acceptance"],
   "deferred_compatibility_candidates_not_credited": ["sha2", "compress", "uncompress", "uncompressed_length", "ord"],
   "logical_demand_preserved": true,
-  "next_raw_math_batch_not_credited": ["asin", "acos", "sqrt", "sign", "radians", "degrees"],
-  "ip_predicates_with_deferred_compatibility": ["is_ipv4", "is_ipv6", "is_ipv4_compat", "is_ipv4_mapped"]
+  "legacy_infrastructure_errors_remain_typed_until_public_boundary": true,
+  "next_pi_ip_batch_not_credited": ["pi", "is_ipv4", "is_ipv6", "is_ipv4_compat", "is_ipv4_mapped"],
+  "go_trig_compatibility_not_credited": ["sin", "cos", "tan", "cot", "atan"]
 }

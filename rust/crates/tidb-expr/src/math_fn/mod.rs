@@ -25,8 +25,6 @@
 mod go_exp_log;
 mod go_trig;
 
-use std::cmp::Ordering;
-
 use tidb_ast::{BinaryOp, Expr, UnaryOp};
 
 use crate::coerce::{coerce_str, coerce_str_bytes};
@@ -410,15 +408,50 @@ fn sign(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
     let [v] = vals else {
         return Err(EvalError::Unsupported("bad function arity"));
     };
-    Ok(match v {
-        Datum::Null => Datum::Null,
-        Datum::Int(value) => Datum::Int(value.signum()),
-        Datum::UInt(value) => Datum::Int(i64::from(*value != 0)),
-        Datum::Decimal(value) => Datum::Int(value.signum()),
-        other => Datum::Int(sign_of_real(
-            numeric_arg(other, ctx)?.expect("NULL handled above"),
-        )),
-    })
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::SignRaw,
+        ctx,
+        || {
+            let ready = match v {
+                Datum::Null => None,
+                // Rounding can lose magnitude bits, but not the sign/zero
+                // class: every nonzero magnitude is in [1, 2^64].
+                Datum::Int(value) => Some(*value as f64),
+                Datum::UInt(value) => Some(*value as f64),
+                Datum::Decimal(value) => Some(sign_decimal_representative(value)),
+                other => numeric_arg(other, ctx)?,
+            };
+            Ok(crate::tikv::EvaluatedArgs::Ieee754Bits(
+                ready.map(f64::to_bits),
+            ))
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
+}
+
+/// SIGN alone needs a sign/zero-preserving conversion, not an approximate
+/// decimal value. `Decimal::to_f64` parses Display, which can round hidden
+/// storage precision to zero; public Decimal constructors also allow scales
+/// beyond the f64 exponent range. Do not infer an 81-digit bound here.
+///
+/// A prefix of at most 15 significant coefficient digits is either zero or
+/// an integer in [1, 10^15), hence exact in f64 (10^15 < 2^50). Discarding
+/// scale and trailing digits preserves SIGN's equivalence class for every
+/// valid ASCII decimal coefficient. This is NOT a general decimal-to-real
+/// conversion and does not compute SIGN's final -1/0/1 answer in native code.
+fn sign_decimal_representative(value: &tidb_datatype::Decimal) -> f64 {
+    let magnitude = value
+        .coefficient_digits()
+        .bytes()
+        .skip_while(|byte| *byte == b'0')
+        .take(15)
+        .fold(0_u64, |prefix, byte| prefix * 10 + u64::from(byte - b'0'));
+    let representative = magnitude as f64;
+    if value.is_negative() {
+        -representative
+    } else {
+        representative
+    }
 }
 
 /// Coerces one function argument to `f64`: `NULL` propagates (the `Ok(None)`
@@ -455,17 +488,34 @@ fn checked_ln(x: f64) -> Datum {
     }
 }
 
-fn sqrt(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+/// Keeps the original numeric conversion inside the sole C4 driver. The
+/// private IEEE carrier retains every f64 bit pattern; each frontend owns
+/// only its existing result policy, not the mathematical computation.
+fn unary_raw_real(
+    vals: &[Datum],
+    ctx: &dyn Columns,
+    operation: crate::tikv::EvaluatedBytesOp,
+    pack: impl FnOnce(Option<f64>) -> Result<Datum, EvalError>,
+) -> Result<Datum, EvalError> {
     let [v] = vals else {
         return Err(EvalError::Unsupported("bad function arity"));
     };
-    Ok(match numeric_arg(v, ctx)? {
-        // MySQL's own domain check: NULL for a negative argument, not an
-        // error (the OPPOSITE convention from POW/EXP's NaN-is-an-error
-        // rule below).
-        Some(x) if x < 0.0 => Datum::Null,
-        Some(x) => Datum::Real(x.sqrt()),
-        None => Datum::Null,
+    crate::tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || {
+            Ok(crate::tikv::EvaluatedArgs::Ieee754Bits(
+                numeric_arg(v, ctx)?.map(f64::to_bits),
+            ))
+        },
+        |computed| pack(computed.into_ieee754_bits()?.map(f64::from_bits)),
+    )
+}
+
+fn sqrt(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    unary_raw_real(vals, ctx, crate::tikv::EvaluatedBytesOp::SqrtRaw, |value| {
+        // Unlike finite_float, SQRT retains the kernel's NaN, +Inf and -0.
+        Ok(value.map_or(Datum::Null, Datum::Real))
     })
 }
 
@@ -612,41 +662,49 @@ pub(crate) fn cot(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError>
 }
 
 fn radians(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    unary_finite(vals, ctx, f64::to_radians)
+    unary_raw_real(
+        vals,
+        ctx,
+        crate::tikv::EvaluatedBytesOp::RadiansRaw,
+        |value| value.map_or(Ok(Datum::Null), finite_float),
+    )
 }
 
 fn degrees(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    unary_finite(vals, ctx, f64::to_degrees)
+    unary_raw_real(
+        vals,
+        ctx,
+        crate::tikv::EvaluatedBytesOp::DegreesRaw,
+        |value| value.map_or(Ok(Datum::Null), finite_float),
+    )
 }
 
-/// `NULL` if `x` isn't in `[-1, 1]` (MySQL's own domain check for
-/// `ASIN`/`ACOS`, mirroring `SQRT`'s), else `Ok(f(x))`.
-fn asin_acos_domain(x: f64, f: impl FnOnce(f64) -> f64) -> Datum {
-    if (-1.0..=1.0).contains(&x) {
-        Datum::Real(f(x))
-    } else {
-        Datum::Null
-    }
+/// The raw inverse-trig primitive returns NaN exactly for values excluded
+/// by the former [-1, 1].contains domain policy (including NaN and infinity).
+/// Ordinary SQL callers expose NULL; the legacy raw-real seam intentionally
+/// does not use this policy because its casts and total_cmp consume NaN.
+fn pack_inverse_trig(value: Option<f64>) -> Result<Datum, EvalError> {
+    Ok(value
+        .filter(|value| !value.is_nan())
+        .map_or(Datum::Null, Datum::Real))
 }
 
 pub(crate) fn asin(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match numeric_arg(v, ctx)? {
-        Some(x) => asin_acos_domain(x, f64::asin),
-        None => Datum::Null,
-    })
+    unary_raw_real(
+        vals,
+        ctx,
+        crate::tikv::EvaluatedBytesOp::AsinRaw,
+        pack_inverse_trig,
+    )
 }
 
 pub(crate) fn acos(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match numeric_arg(v, ctx)? {
-        Some(x) => asin_acos_domain(x, f64::acos),
-        None => Datum::Null,
-    })
+    unary_raw_real(
+        vals,
+        ctx,
+        crate::tikv::EvaluatedBytesOp::AcosRaw,
+        pack_inverse_trig,
+    )
 }
 
 /// `ATAN(x)` (1 argument) or `ATAN(y, x)` (2 arguments, exactly `ATAN2(y,
@@ -848,14 +906,6 @@ pub(crate) fn ceil_floor_with_result_domain(
             Datum::Real(if ceiling { f.ceil() } else { f.floor() })
         }
     })
-}
-
-fn sign_of_real(value: f64) -> i64 {
-    match value.partial_cmp(&0.0) {
-        Some(Ordering::Greater) => 1,
-        Some(Ordering::Less) => -1,
-        _ => 0,
-    }
 }
 
 /// `ROUND(x)`/`ROUND(x, d)` (`round: true`) or `TRUNCATE(x, d)` (`false`,

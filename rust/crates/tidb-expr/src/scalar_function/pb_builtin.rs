@@ -364,6 +364,17 @@ impl PbBuiltin {
                             // the migrated nullable signature actually enter C4.
                             return eval_pb_char_length(&value, binary, ctx);
                         }
+                        // Keep this exact NULL child-demand boundary, but do
+                        // not bypass the nullable migrated inverse-trig call.
+                        match self.signature {
+                            ScalarFuncSig::Asin => {
+                                return crate::math_fn::asin(std::slice::from_ref(&value), ctx)
+                            }
+                            ScalarFuncSig::Acos => {
+                                return crate::math_fn::acos(std::slice::from_ref(&value), ctx)
+                            }
+                            _ => {}
+                        }
                         return Ok(Datum::Null);
                     }
                     values.push(value);

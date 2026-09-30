@@ -822,6 +822,43 @@ pub fn eval_logical_ready_in(
     tikv::evaluate_logical_in(function, arguments, ctx)
 }
 
+/// Closed raw inverse-trigonometric operations for the legacy real channel.
+/// This is not a new SQL or protobuf admission surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RawInverseTrigFunction {
+    /// Raw arcsine, preserving NaN rather than applying SQL domain policy.
+    Asin,
+    /// Raw arccosine, preserving NaN rather than applying SQL domain policy.
+    Acos,
+}
+
+/// Evaluates one already-converted raw inverse-trigonometric argument.
+///
+/// The result is `Datum::Real` (including NaN) or `Datum::Null`. Ordinary
+/// ASIN/ACOS apply their NaN-to-NULL output policy separately. The legacy
+/// real channel must retain NaN for its casts and `total_cmp` consumers.
+/// NULL enters the same real C4 call; adapter/runtime errors are not NULL.
+pub fn eval_raw_inverse_trig_ready_in(
+    function: RawInverseTrigFunction,
+    ready: Option<f64>,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    let operation = match function {
+        RawInverseTrigFunction::Asin => tikv::EvaluatedBytesOp::AsinRaw,
+        RawInverseTrigFunction::Acos => tikv::EvaluatedBytesOp::AcosRaw,
+    };
+    tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || Ok(tikv::EvaluatedArgs::Ieee754Bits(ready.map(f64::to_bits))),
+        |computed| {
+            Ok(computed
+                .into_ieee754_bits()?
+                .map_or(Datum::Null, |bits| Datum::Real(f64::from_bits(bits))))
+        },
+    )
+}
+
 /// `AVG`'s `SUM / COUNT`, exposed so `tidb-exec` can compute it without
 /// reimplementing decimal division: an `Int` sum promotes to decimal (scale
 /// 0, MySQL's implicit rule, same as every other decimal op); the result

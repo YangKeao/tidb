@@ -43,7 +43,9 @@ impl AsciiComputedValue for ComputedValue {
     fn value(&self) -> Option<i64> {
         match self {
             ComputedValue::Int(value) => value.value(),
-            ComputedValue::Bytes(_) => panic!("ASCII assertion received a Bytes result"),
+            ComputedValue::Bytes(_) | ComputedValue::Ieee754Bits(_) => {
+                panic!("ASCII assertion received a non-Int result")
+            }
         }
     }
 }
@@ -1071,6 +1073,12 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::InetNtoa => "INET_NTOA",
         EvaluatedBytesOp::Inet6Aton => "INET6_ATON",
         EvaluatedBytesOp::Inet6Ntoa => "INET6_NTOA",
+        EvaluatedBytesOp::AsinRaw => "ASIN",
+        EvaluatedBytesOp::AcosRaw => "ACOS",
+        EvaluatedBytesOp::SqrtRaw => "SQRT",
+        EvaluatedBytesOp::SignRaw => "SIGN",
+        EvaluatedBytesOp::RadiansRaw => "RADIANS",
+        EvaluatedBytesOp::DegreesRaw => "DEGREES",
         EvaluatedBytesOp::IsNull => "ISNULL",
         EvaluatedBytesOp::IsTrue => "ISTRUE",
         EvaluatedBytesOp::IsFalse => "ISFALSE",
@@ -1117,6 +1125,257 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+#[test]
+fn math_dispatch_preserves_raw_results_and_nullable_policies() {
+    use EvaluatedBytesOp::{AcosRaw, AsinRaw, DegreesRaw, RadiansRaw, SignRaw, SqrtRaw};
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    for (operation, input, expected) in [
+        (AsinRaw, f64::NAN, Datum::Null),
+        (AsinRaw, f64::INFINITY, Datum::Null),
+        (AcosRaw, 2.0, Datum::Null),
+        (AsinRaw, -0.0, Datum::Real(-0.0)),
+        (AcosRaw, 1.0, Datum::Real(0.0)),
+        (SqrtRaw, -1.0, Datum::Null),
+        (SqrtRaw, f64::NAN, Datum::Real(f64::NAN)),
+        (SqrtRaw, f64::INFINITY, Datum::Real(f64::INFINITY)),
+        (SqrtRaw, -0.0, Datum::Real(-0.0)),
+        (RadiansRaw, 180.0, Datum::Real(std::f64::consts::PI)),
+        (RadiansRaw, -0.0, Datum::Real(-0.0)),
+        (DegreesRaw, std::f64::consts::PI, Datum::Real(180.0)),
+    ] {
+        arm_eval_one_observation();
+        let result = dispatch_bytes_family(operation, &Datum::Real(input), &columns);
+        let observation = take_eval_one_observation();
+        match (result.unwrap(), expected) {
+            (Datum::Real(actual), Datum::Real(expected)) if expected.is_nan() => {
+                assert!(actual.is_nan())
+            }
+            (Datum::Real(actual), Datum::Real(expected)) => {
+                assert_eq!(actual.to_bits(), expected.to_bits(), "{operation:?}")
+            }
+            (actual, expected) => assert_eq!(actual, expected, "{operation:?}"),
+        }
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    }
+    for (operation, input) in [
+        (RadiansRaw, f64::NAN),
+        (RadiansRaw, f64::INFINITY),
+        (DegreesRaw, f64::MAX),
+    ] {
+        arm_eval_one_observation();
+        let result = dispatch_bytes_family(operation, &Datum::Real(input), &columns);
+        let observation = take_eval_one_observation();
+        assert_eq!(
+            result,
+            Err(EvalError::FloatOverflow),
+            "retain native 1690 carrier"
+        );
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    }
+    for operation in [AsinRaw, AcosRaw, SqrtRaw, SignRaw, RadiansRaw, DegreesRaw] {
+        arm_eval_one_observation();
+        let result = dispatch_bytes_family(operation, &Datum::Null, &columns);
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(Datum::Null));
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    }
+    // The raw public seam deliberately differs from ordinary SQL domain packing.
+    for function in [
+        crate::RawInverseTrigFunction::Asin,
+        crate::RawInverseTrigFunction::Acos,
+    ] {
+        let result = crate::eval_raw_inverse_trig_ready_in(function, Some(2.0), &columns).unwrap();
+        assert!(matches!(result, Datum::Real(value) if value.is_nan()));
+    }
+    assert!(matches!(
+        EvaluatedBytesResult::Ieee754Bits(Some(0)).into_bytes(),
+        Err(EvalError::ExpressionAdapterFailure(_))
+    ));
+    assert!(matches!(
+        EvaluatedBytesResult::Int(Datum::Int(0)).into_ieee754_bits(),
+        Err(EvalError::ExpressionAdapterFailure(_))
+    ));
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn math_dispatch_sign_retains_hidden_precision_and_unbounded_scale_classes() {
+    use tidb_datatype::Decimal;
+    let hidden = Decimal::from_int(1)
+        .div_mysql(&Decimal::from_int(100_000), 4)
+        .unwrap();
+    // This valid storage value is nonzero even though the old general f64
+    // conversion would parse its rounded SQL display as zero.
+    assert_eq!(hidden.to_string(), "0.0000");
+    assert_eq!(hidden.to_f64(), 0.0);
+    let tiny = Decimal::from_scaled_i128(1, 400);
+    let huge = Decimal::max_or_min(false, 400, 0);
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    for (input, expected) in [
+        (Datum::Decimal(hidden.clone()), 1),
+        (Datum::Decimal(hidden.negate()), -1),
+        (Datum::Decimal(tiny.clone()), 1),
+        (Datum::Decimal(tiny.negate()), -1),
+        (Datum::Decimal(huge.clone()), 1),
+        (Datum::Decimal(huge.negate()), -1),
+        (Datum::Decimal(Decimal::from_scaled_i128(0, 400)), 0),
+        (Datum::Int(i64::MIN), -1),
+        (Datum::Int(i64::MAX), 1),
+        (Datum::UInt(u64::MAX), 1),
+        (Datum::UInt(0), 0),
+        (Datum::Real(-0.0), 0),
+        (Datum::Real(f64::NAN), 0),
+    ] {
+        arm_eval_one_observation();
+        let result = dispatch_bytes_family(EvaluatedBytesOp::SignRaw, &input, &columns);
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(Datum::Int(expected)));
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    }
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn math_dispatch_keeps_coercion_precedence_pb_null_and_explicit_refusal() {
+    use crate::expression::Expression;
+    use crate::scalar_function::{PbBuiltin, ScalarFunction};
+    use tidb_proto::tipb::ScalarFuncSig;
+    use EvaluatedBytesOp::{AcosRaw, AsinRaw, DegreesRaw, RadiansRaw, SignRaw, SqrtRaw};
+    struct Diagnostics {
+        level: Cell<ErrorLevel>,
+        warnings: RefCell<Vec<(u16, String)>>,
+    }
+    impl Columns for Diagnostics {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn truncate_level(&self) -> ErrorLevel {
+            self.level.get()
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.warnings.borrow_mut().push((code, message.to_owned()));
+        }
+    }
+    let native = Diagnostics {
+        level: Cell::new(ErrorLevel::Warn),
+        warnings: RefCell::new(Vec::new()),
+    };
+    let input = Datum::new_string("4x");
+    let message = "Truncated incorrect DOUBLE value: '4x'";
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for level in [ErrorLevel::Warn, ErrorLevel::Error] {
+            native.level.set(level);
+            native.warnings.borrow_mut().clear();
+            arm_eval_one_observation();
+            let result = dispatch_bytes_family(SqrtRaw, &input, columns);
+            let observation = take_eval_one_observation();
+            if level == ErrorLevel::Warn {
+                assert_eq!(result, Ok(Datum::Real(2.0)));
+                assert_eq!(*native.warnings.borrow(), vec![(1292, message.to_owned())]);
+                assert_eq!(observation.facade_entries, 1);
+            } else {
+                assert_eq!(
+                    result,
+                    Err(EvalError::TruncatedWrongValue(message.to_owned()))
+                );
+                assert!(native.warnings.borrow().is_empty());
+                assert_eq!(observation.facade_entries, 0);
+            }
+        }
+        let field = FieldType::new(FieldTypeCode::Double);
+        let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+        for signature in [ScalarFuncSig::Asin, ScalarFuncSig::Acos] {
+            let function = ScalarFunction::from_pb(
+                PbBuiltin::new(signature).unwrap(),
+                field.clone(),
+                vec![Expression::Constant(Constant::new(
+                    Datum::Null,
+                    field.clone(),
+                ))],
+            );
+            arm_eval_one_observation();
+            let result = function.eval(columns, row.to_row());
+            let observation = take_eval_one_observation();
+            assert_eq!(result, Ok(Datum::Null));
+            assert_eq!(observation.facade_entries, 1, "PB NULL must not bypass C4");
+            assert_eq!(
+                observation.after_kernel_invocations,
+                observation
+                    .before_kernel_invocations
+                    .map(|before| before + 1)
+            );
+        }
+    });
+    drop(scope);
+    execution.close();
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        arm_eval_one_observation();
+        let result = dispatch_bytes_family(SqrtRaw, &input, columns);
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Err(EvalError::TruncatedWrongValue(message.to_owned())));
+        assert_eq!(observation.facade_entries, 0);
+        for operation in [AsinRaw, AcosRaw, SqrtRaw, SignRaw, RadiansRaw, DegreesRaw] {
+            arm_eval_one_observation();
+            let result = dispatch_bytes_family(operation, &Datum::MinNotNull, columns);
+            let observation = take_eval_one_observation();
+            assert_eq!(result, Err(EvalError::Unsupported("range sentinel numeric argument")));
+            assert_eq!(observation.facade_entries, 0);
+            arm_eval_one_observation();
+            let result = dispatch_bytes_family(operation, &Datum::Null, columns);
+            let observation = take_eval_one_observation();
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+        }
+        assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    });
+    drop(scope);
+    execution.close();
 }
 
 #[test]
