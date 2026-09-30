@@ -15,7 +15,7 @@
 //! implementation in `pkg/expression/builtin_*.go`, cited per function.
 
 use std::cmp::Ordering;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::Ipv6Addr;
 use std::str::FromStr;
 
 use tidb_ast::BinaryOp;
@@ -40,10 +40,10 @@ pub(crate) fn dispatch(
             (!vals[0].is_null()).then_some(false),
             ctx,
         )),
-        ("INET_ATON", 1) => Some(inet_aton(&vals[0])),
+        ("INET_ATON", 1) => Some(inet_aton(&vals[0], ctx)),
         ("INET_NTOA", 1) => Some(inet_ntoa(&vals[0], ctx)),
-        ("INET6_ATON", 1) => Some(inet6_aton(&vals[0])),
-        ("INET6_NTOA", 1) => Some(inet6_ntoa(&vals[0])),
+        ("INET6_ATON", 1) => Some(inet6_aton(&vals[0], ctx)),
+        ("INET6_NTOA", 1) => Some(inet6_ntoa(&vals[0], ctx)),
         ("IS_IPV4", 1) => Some(is_ipv4_value(&vals[0])),
         ("IS_IPV4_MAPPED", 1) => Some(is_ipv4_mapped_value(&vals[0])),
         ("IS_IPV4_COMPAT", 1) => Some(is_ipv4_compat_value(&vals[0])),
@@ -746,153 +746,71 @@ fn interval_real(value: &Datum, ctx: &dyn crate::Columns) -> Result<f64, EvalErr
     crate::ops::to_f64_with_mysql_string(value, ctx)
 }
 
-/// `INET_ATON(expr)`: decimal dotted IPv4 to an unsigned 32-bit integer,
-/// including TiDB/MySQL's one-, two-, and three-component shorthand. Port of
-/// `builtinInetAtonSig.evalInt` in `pkg/expression/builtin_miscellaneous.go`.
-/// Invalid non-NULL input is an evaluation error in TiDB's strict-context
-/// unit test; this family has no matching generic SQL-error variant, so it is
-/// surfaced as `Unsupported` until the frozen `EvalError` domain grows one.
-fn inet_aton(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(text) = coerce_str(value)? else {
-        return Ok(Datum::Null);
-    };
-    if text.is_empty() || text.ends_with('.') {
-        return Ok(Datum::Null);
-    }
-    let mut result = 0_u64;
-    let mut byte_result = 0_u64;
-    let mut dots = 0_u8;
-    for byte in text.bytes() {
-        match byte {
-            b'0'..=b'9' => {
-                byte_result = byte_result * 10 + u64::from(byte - b'0');
-                if byte_result > 255 {
-                    return Ok(Datum::Null);
-                }
-            }
-            b'.' => {
-                dots += 1;
-                if dots > 3 {
-                    return Ok(Datum::Null);
-                }
-                result = (result << 8) + byte_result;
-                byte_result = 0;
-            }
-            _ => return Ok(Datum::Null),
-        }
-    }
-    if dots == 1 {
-        result <<= 8;
-    }
-    if dots <= 2 {
-        result <<= 8;
-    }
-    Ok(Datum::UInt((result << 8) + byte_result))
+/// `INET_ATON(expr)`: the frontend retains checked text conversion and the
+/// unsigned result tag. The official kernel owns shorthand parsing and NULL
+/// results for malformed addresses; invalid UTF-8 still fails `coerce_str`.
+fn inet_aton(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::InetAton,
+        ctx,
+        || Ok(coerce_str(value)?.map(String::into_bytes)),
+        crate::tikv::EvaluatedBytesResult::into_uint_bits_datum,
+    )
 }
 
-/// `INET_NTOA(expr)`: unsigned 32-bit integer to canonical dotted IPv4.
-/// Port of `builtinInetNtoaSig.evalString` in
-/// `pkg/expression/builtin_miscellaneous.go`. The scalar domain has no
-/// planning-time `ETInt` cast, so only its already-integer values are
-/// representable faithfully; other types remain honestly unsupported.
+/// `INET_NTOA(expr)`: keep the original ETInt conversion and warning policy;
+/// the official kernel owns the IPv4 range test and canonical text formatting.
 fn inet_ntoa(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    let value = match value {
-        Datum::Null => return Ok(Datum::Null),
-        Datum::Int(value) => *value as u64,
-        Datum::UInt(value) => *value,
-        // go's ETInt argument casts any non-NULL value first; the cast is a
-        // real StrToInt, so a non-numeric string raises go's 1292 truncation
-        // warning on its way to 0 ("0.0.0.0") — captured on the oracle for
-        // `INET_NTOA('a')` inside a multi-function statement.
-        other => {
-            crate::cast::report_int_truncation(other, ctx)?;
-            crate::cast::to_i64_signed(other) as u64
-        }
-    };
-    let Ok(value) = u32::try_from(value) else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::new_string(format!(
-        "{}.{}.{}.{}",
-        value >> 24,
-        (value >> 16) & 0xff,
-        (value >> 8) & 0xff,
-        value & 0xff
-    )))
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::InetNtoa,
+        ctx,
+        || {
+            let ready = match value {
+                Datum::Null => None,
+                Datum::Int(value) => Some(*value),
+                // Carry the original UInt bits, not a saturating signed cast.
+                Datum::UInt(value) => Some(*value as i64),
+                other => {
+                    crate::cast::report_int_truncation(other, ctx)?;
+                    Some(crate::cast::to_i64_signed(other))
+                }
+            };
+            Ok(crate::tikv::EvaluatedArgs::Int(ready))
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 
-/// `INET6_ATON(expr)`: parse an IPv4 or IPv6 spelling into the raw network
-/// byte representation used by TiDB's binary `ETString` signature.  Go's
-/// `net.ParseIP` always returns a 16-byte value for a colon-containing
-/// spelling, including IPv4-mapped and IPv4-compatible forms; the source
-/// then keeps the four-byte representation only for a plain dotted IPv4
-/// input.  Port of `builtinInet6AtonSig.evalString` in
-/// `pkg/expression/builtin_miscellaneous.go`.
-fn inet6_aton(value: &Datum) -> Result<Datum, EvalError> {
-    let text: Option<std::borrow::Cow<'_, str>> = match value {
-        Datum::Null => return Ok(Datum::Null),
-        // `EvalString` in the Go signature preserves raw bytes.  IP syntax is
-        // ASCII, so invalid UTF-8 is simply the same parse failure rather than
-        // a lossy replacement conversion.
-        Datum::String(value) => std::str::from_utf8(value.bytes())
-            .ok()
-            .map(std::borrow::Cow::Borrowed),
-        Datum::Bytes(value) => std::str::from_utf8(value)
-            .ok()
-            .map(std::borrow::Cow::Borrowed),
-        _ => coerce_str(value)?.map(std::borrow::Cow::Owned),
-    };
-    // go `net.ParseIP` failure answers SQL NULL, not an error.
-    let Some(text) = text.as_deref() else {
-        return Ok(Datum::Null);
-    };
-    inet6_aton_text(text)
+/// `INET6_ATON(expr)`: preserve String/Bytes payloads and the binary result
+/// tag. Even malformed raw UTF-8 reaches the official parser, which owns NULL
+/// parse failures and the choice of four- versus sixteen-byte output.
+fn inet6_aton(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::Inet6Aton,
+        ctx,
+        || eval_string_bytes(value),
+        |computed| Ok(computed.into_bytes()?.map_or(Datum::Null, Datum::new_bytes)),
+    )
 }
 
-fn inet6_aton_text(text: &str) -> Result<Datum, EvalError> {
-    if text.is_empty() {
-        // go `net.ParseIP("")` is nil -> NULL.
-        return Ok(Datum::Null);
-    }
-    // Keep the source's four-byte result only when the original spelling is
-    // plain IPv4.  `Ipv6Addr::from_str` handles all colon-containing forms,
-    // including embedded IPv4 and mapped IPv4, and its octets are exactly the
-    // bytes Go copies from `ip.To16()`/`ip.To4()`.
-    if !text.contains(':') {
-        if let Ok(ip) = Ipv4Addr::from_str(text) {
-            return Ok(Datum::new_bytes(ip.octets()));
-        }
-    }
-    Ok(Ipv6Addr::from_str(text)
-        .map(|ip| Datum::new_bytes(ip.octets()))
-        .unwrap_or(Datum::Null))
-}
-
-/// `INET6_NTOA(expr)`: render a four- or sixteen-byte binary string as the
-/// canonical textual IPv4/IPv6 spelling.  Go first asks `net.IP.String()` to
-/// format the bytes and then prefixes a sixteen-byte mapped IPv4 result with
-/// `::ffff:`; Rust's `Ipv6Addr` formatter emits that same canonical mapped
-/// spelling.  Any other byte length is SQL `NULL`, matching the source's
-/// `net.ParseIP(ip) == nil` branch.  Port of
-/// `builtinInet6NtoaSig.evalString` in `pkg/expression/builtin_miscellaneous.go`.
-fn inet6_ntoa(value: &Datum) -> Result<Datum, EvalError> {
-    let bytes = match value {
-        Datum::Null => return Ok(Datum::Null),
-        Datum::String(value) => value.bytes().to_vec(),
-        Datum::Bytes(value) => value.clone(),
-        // The Go function's argument is ETString, so numeric constants are
-        // first rendered by EvalString and then interpreted as raw bytes.
-        _ => coerce_str(value)?.expect("non-NULL scalar").into_bytes(),
-    };
-    match bytes.len() {
-        4 => Ok(Datum::new_string(
-            Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]).to_string(),
-        )),
-        16 => Ok(Datum::new_string(
-            Ipv6Addr::from(<[u8; 16]>::try_from(bytes).unwrap()).to_string(),
-        )),
-        _ => Ok(Datum::Null),
-    }
+/// `INET6_NTOA(expr)`: preserve raw input bytes and pack the official result
+/// as text. Byte-length validation, IPv4/IPv6 formatting and mapped-address
+/// spelling all belong to the kernel, not this conversion boundary.
+fn inet6_ntoa(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::Inet6Ntoa,
+        ctx,
+        || eval_string_bytes(value),
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 
 /// `IS_IPV4(expr)`: strict four-component decimal IPv4 predicate. Port of
@@ -960,9 +878,10 @@ fn is_ipv4_compat_value(value: &Datum) -> Result<Datum, EvalError> {
     Ok(Datum::Int(i64::from(compat)))
 }
 
-/// Evaluates the ETString argument used by the Go IPv4 binary predicates
-/// without decoding or replacing arbitrary bytes.  Numeric constants still
-/// follow the normal EvalString coercion used by the source signature.
+/// Evaluates the ETString argument used by the IPv4 binary predicates and
+/// INET6 conversions without decoding or replacing arbitrary bytes. Numeric
+/// constants still follow the original EvalString coercion. The four IS_*
+/// predicates retain their separate native algorithms in this module.
 fn eval_string_bytes(value: &Datum) -> Result<Option<Vec<u8>>, EvalError> {
     match value {
         Datum::Null => Ok(None),

@@ -1067,6 +1067,10 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::BitCount => "BIT_COUNT",
         EvaluatedBytesOp::Md5 => "MD5",
         EvaluatedBytesOp::Sha1 => "SHA1",
+        EvaluatedBytesOp::InetAton => "INET_ATON",
+        EvaluatedBytesOp::InetNtoa => "INET_NTOA",
+        EvaluatedBytesOp::Inet6Aton => "INET6_ATON",
+        EvaluatedBytesOp::Inet6Ntoa => "INET6_NTOA",
         EvaluatedBytesOp::IsNull => "ISNULL",
         EvaluatedBytesOp::IsTrue => "ISTRUE",
         EvaluatedBytesOp::IsFalse => "ISFALSE",
@@ -1113,6 +1117,192 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+#[test]
+fn inet_dispatch_preserves_unsigned_binary_text_and_null_results() {
+    use EvaluatedBytesOp::{Inet6Aton, Inet6Ntoa, InetAton, InetNtoa};
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    let mapped = Datum::new_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 1, 2, 3, 4]);
+    for (operation, input, expected) in [
+        (InetAton, Datum::new_string("127"), Datum::UInt(127)),
+        (
+            InetAton,
+            Datum::new_string("127.255"),
+            Datum::UInt(2_130_706_687),
+        ),
+        (
+            InetAton,
+            Datum::new_string("255.255.255.255"),
+            Datum::UInt(4_294_967_295),
+        ),
+        (
+            InetNtoa,
+            Datum::UInt(4_294_967_295),
+            Datum::new_string("255.255.255.255"),
+        ),
+        (InetNtoa, Datum::UInt(u64::MAX), Datum::Null),
+        (InetNtoa, Datum::Int(-1), Datum::Null),
+        (
+            Inet6Aton,
+            Datum::new_bytes(b"10.0.5.9"),
+            Datum::new_bytes([10, 0, 5, 9]),
+        ),
+        (
+            Inet6Aton,
+            Datum::new_string("::ffff:1.2.3.4"),
+            mapped.clone(),
+        ),
+        (Inet6Aton, Datum::new_bytes([0xff]), Datum::Null),
+        (Inet6Aton, Datum::new_string(vec![0xff]), Datum::Null),
+        (Inet6Ntoa, mapped, Datum::new_string("::ffff:1.2.3.4")),
+        (
+            Inet6Ntoa,
+            Datum::new_bytes([0xff, 0, 0, 1]),
+            Datum::new_string("255.0.0.1"),
+        ),
+        (Inet6Ntoa, Datum::new_bytes([1, 2, 3]), Datum::Null),
+        (
+            Inet6Ntoa,
+            Datum::Int(1234),
+            Datum::new_string("49.50.51.52"),
+        ),
+    ] {
+        arm_eval_one_observation();
+        let result = dispatch_bytes_family(operation, &input, &columns);
+        let observation = take_eval_one_observation();
+        let result = result.unwrap();
+        assert_eq!(result.kind(), expected.kind(), "{operation:?}");
+        assert_eq!(result, expected, "{operation:?}");
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    }
+    for operation in [InetAton, InetNtoa, Inet6Aton, Inet6Ntoa] {
+        arm_eval_one_observation();
+        let result = dispatch_bytes_family(operation, &Datum::Null, &columns);
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(Datum::Null));
+        assert_eq!(
+            observation.facade_entries, 1,
+            "NULL also reaches the real C4 call"
+        );
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    }
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn inet_dispatch_preserves_conversion_errors_warnings_and_root_refusal() {
+    use EvaluatedBytesOp::{Inet6Aton, Inet6Ntoa, InetAton, InetNtoa};
+    struct Diagnostics {
+        level: Cell<ErrorLevel>,
+        warnings: RefCell<Vec<(u16, String)>>,
+    }
+    impl Columns for Diagnostics {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn truncate_level(&self) -> ErrorLevel {
+            self.level.get()
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.warnings.borrow_mut().push((code, message.to_owned()));
+        }
+    }
+    let native = Diagnostics {
+        level: Cell::new(ErrorLevel::Warn),
+        warnings: RefCell::new(Vec::new()),
+    };
+    let input = Datum::new_string("16909060x");
+    let message = "Truncated incorrect INTEGER value: '16909060x'";
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for level in [ErrorLevel::Warn, ErrorLevel::Error] {
+            native.level.set(level);
+            native.warnings.borrow_mut().clear();
+            arm_eval_one_observation();
+            let result = dispatch_bytes_family(InetNtoa, &input, columns);
+            let observation = take_eval_one_observation();
+            if level == ErrorLevel::Warn {
+                assert_eq!(result, Ok(Datum::new_string("1.2.3.4")));
+                assert_eq!(*native.warnings.borrow(), vec![(1292, message.to_owned())]);
+                assert_eq!(observation.facade_entries, 1);
+                assert_eq!(
+                    observation.after_kernel_invocations,
+                    observation
+                        .before_kernel_invocations
+                        .map(|before| before + 1)
+                );
+            } else {
+                assert_eq!(
+                    result,
+                    Err(EvalError::TruncatedWrongValue(message.to_owned()))
+                );
+                assert!(native.warnings.borrow().is_empty());
+                assert_eq!(observation.facade_entries, 0);
+            }
+        }
+    });
+    drop(scope);
+    execution.close();
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for (operation, input, message) in [
+            (InetAton, Datum::new_bytes([0xff]), "invalid UTF-8 byte datum"),
+            (InetAton, Datum::new_string(vec![0xff]), "invalid UTF-8 string datum"),
+            (Inet6Aton, Datum::Raw(vec![0xff]), "invalid UTF-8 raw datum"),
+            (Inet6Ntoa, Datum::Raw(vec![0xff]), "invalid UTF-8 raw datum"),
+        ] {
+            arm_eval_one_observation();
+            let result = dispatch_bytes_family(operation, &input, columns);
+            let observation = take_eval_one_observation();
+            assert_eq!(result, Err(EvalError::Unsupported(message)));
+            assert_eq!(observation.facade_entries, 0, "conversion precedes admission");
+        }
+        arm_eval_one_observation();
+        let result = dispatch_bytes_family(InetNtoa, &input, columns);
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Err(EvalError::TruncatedWrongValue(message.to_owned())));
+        assert_eq!(observation.facade_entries, 0);
+        for operation in [InetAton, InetNtoa, Inet6Aton, Inet6Ntoa] {
+            arm_eval_one_observation();
+            let result = dispatch_bytes_family(operation, &Datum::Null, columns);
+            let observation = take_eval_one_observation();
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0, "no NULL bypass of an explicit root");
+        }
+        native.level.set(ErrorLevel::Warn);
+        arm_eval_one_observation();
+        let result = dispatch_bytes_family(InetNtoa, &input, columns);
+        let observation = take_eval_one_observation();
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(*native.warnings.borrow(), vec![(1292, message.to_owned())]);
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    });
+    drop(scope);
+    execution.close();
 }
 
 #[test]

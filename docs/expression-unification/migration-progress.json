@@ -1,8 +1,8 @@
 {
-  "checkpoint_id": "logical-three-13",
+  "checkpoint_id": "inet-four-14",
   "frozen_denominator": 245,
   "required_families": 221,
-  "functional_delegation_and_native_deletion_count": 32,
+  "functional_delegation_and_native_deletion_count": 36,
   "fully_final_audited_count": 0,
   "final_performance_and_workspace_gates_complete": false,
   "families": [
@@ -37,14 +37,19 @@
     {"id": "sha1", "status": "functional_tikv_only", "aliases": ["sha"], "native_algorithm_deleted": true, "original_hash_input_and_text_packing_preserved": true, "password_family_auth_algorithm_not_in_this_claim": true},
     {"id": "and", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_eager_lazy_demand_preserved": true, "between_consumer_connected": true},
     {"id": "or", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_eager_lazy_demand_preserved": true},
-    {"id": "xor", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_eager_demand_and_diagnostics_preserved": true, "pb_and_unistore_admission_not_added": true}
+    {"id": "xor", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_eager_demand_and_diagnostics_preserved": true, "pb_and_unistore_admission_not_added": true},
+    {"id": "inet_aton", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_text_conversion_and_uint_tag_preserved": true},
+    {"id": "inet_ntoa", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_int_conversion_diagnostics_and_text_tag_preserved": true},
+    {"id": "inet6_aton", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_raw_bytes_conversion_and_binary_tag_preserved": true},
+    {"id": "inet6_ntoa", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_raw_bytes_conversion_and_text_tag_preserved": true}
   ],
-  "shared_evidence": "evidence/logical-three-checkpoint.md",
+  "shared_evidence": "evidence/inet-four-checkpoint.md",
   "one_operation_keyed_pool": true,
   "actual_mixed_column_sql_verified": true,
   "zero_slot_refusal_for_new_paths_verified": true,
   "deferred": ["complete operation-scope reuse", "broader wrapper capability propagation", "release performance", "paired differential rerun", "whole-workspace final acceptance"],
   "deferred_compatibility_candidates_not_credited": ["sha2", "compress", "uncompress", "uncompressed_length", "ord"],
   "logical_demand_preserved": true,
-  "next_inet_batch_not_credited": ["inet_aton", "inet_ntoa", "inet6_aton", "inet6_ntoa"]
+  "next_raw_math_batch_not_credited": ["asin", "acos", "sqrt", "sign", "radians", "degrees"],
+  "ip_predicates_with_deferred_compatibility": ["is_ipv4", "is_ipv6", "is_ipv4_compat", "is_ipv4_mapped"]
 }

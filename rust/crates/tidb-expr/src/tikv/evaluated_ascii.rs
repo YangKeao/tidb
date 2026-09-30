@@ -1404,7 +1404,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::IsNotFalse
             | EvaluatedBytesOp::LogicalAnd
             | EvaluatedBytesOp::LogicalOr
-            | EvaluatedBytesOp::LogicalXor,
+            | EvaluatedBytesOp::LogicalXor
+            | EvaluatedBytesOp::InetAton,
             ComputedValue::Int(value),
         ) => own_computed_int(value)
             .into_datum()
@@ -1425,7 +1426,10 @@ fn materialize_computed(
             | EvaluatedBytesOp::RightUtf8
             | EvaluatedBytesOp::Replace
             | EvaluatedBytesOp::Md5
-            | EvaluatedBytesOp::Sha1,
+            | EvaluatedBytesOp::Sha1
+            | EvaluatedBytesOp::InetNtoa
+            | EvaluatedBytesOp::Inet6Aton
+            | EvaluatedBytesOp::Inet6Ntoa,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {

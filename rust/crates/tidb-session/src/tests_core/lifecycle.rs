@@ -2199,3 +2199,168 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_logical_sql_left_states() {
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_inet_sql_nullable_text_integer_and_binary_values() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_inet_ops (id INT PRIMARY KEY, t VARCHAR(64), \
+             n BIGINT UNSIGNED, b VARBINARY(16))",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_inet_ops VALUES \
+             (1,NULL,NULL,NULL),\
+             (2,'127.0.0.1',2130706433,X'7F000001'),\
+             (3,'255.255.255.255',4294967295,X'FFFFFFFF'),\
+             (4,'2001:db8::1',4294967296,X'20010DB8000000000000000000000001'),\
+             (5,'::ffff:1.2.3.4',16909060,X'00000000000000000000FFFF01020304'),\
+             (6,'not-an-ip',18446744073709551615,X'010203'),\
+             (7,'',0,X'')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    let output = session
+        .run_with_columns(
+            "SELECT INET_ATON(t), INET_NTOA(n), INET6_ATON(t), INET6_NTOA(b) \
+             FROM shared_inet_ops ORDER BY id",
+        )
+        .unwrap();
+    let StmtOutput::Rows { columns, rows } = output else {
+        panic!("expected INET SQL rows")
+    };
+    assert_eq!(columns.len(), 4);
+    // Existing inference declares unsigned ATON and binary 6_ATON. As in
+    // the earlier byte tests, chunk materialization gives a binary String.
+    assert!(columns[0].1.is_unsigned());
+    assert_eq!(columns[2].1.collation(), tidb_datatype::Collation::Binary);
+    let binary_string =
+        |bytes: Vec<u8>| Datum::new_collation_string(bytes, tidb_datatype::Collation::Binary);
+
+    // Standard address constants and fixed network-order bytes, not results
+    // recorded from the new engine. The two NTOA columns carry textual output.
+    let expected: [(Option<u64>, &str, Option<Vec<u8>>, &str); 7] = [
+        (None, "NULL", None, "NULL"),
+        (
+            Some(2_130_706_433),
+            "127.0.0.1",
+            Some(vec![127, 0, 0, 1]),
+            "127.0.0.1",
+        ),
+        (
+            Some(4_294_967_295),
+            "255.255.255.255",
+            Some(vec![0xff; 4]),
+            "255.255.255.255",
+        ),
+        (
+            None,
+            "NULL",
+            Some(vec![
+                0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+            ]),
+            "2001:db8::1",
+        ),
+        (
+            None,
+            "1.2.3.4",
+            Some(vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 1, 2, 3, 4]),
+            "::ffff:1.2.3.4",
+        ),
+        (None, "NULL", None, "NULL"),
+        (None, "0.0.0.0", None, "NULL"),
+    ];
+    assert_eq!(rows.len(), expected.len());
+    for (row_index, (row, (aton, ntoa, aton6, ntoa6))) in rows.iter().zip(expected).enumerate() {
+        assert_eq!(row.len(), 4);
+        assert_eq!(
+            row[0],
+            aton.map_or(Datum::Null, Datum::UInt),
+            "id {}",
+            row_index + 1
+        );
+        assert_eq!(
+            crate::tests_support::cell_text(&row[1]),
+            ntoa,
+            "id {}",
+            row_index + 1
+        );
+        assert_eq!(
+            row[2],
+            aton6.map_or(Datum::Null, binary_string),
+            "id {}",
+            row_index + 1
+        );
+        assert_eq!(
+            crate::tests_support::cell_text(&row[3]),
+            ntoa6,
+            "id {}",
+            row_index + 1
+        );
+    }
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_all_inet_sql_columns() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_inet_zero (id INT PRIMARY KEY, t VARCHAR(64), \
+             n BIGINT UNSIGNED, b VARBINARY(16))",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_inet_zero VALUES \
+             (1,NULL,NULL,NULL),(2,'127.0.0.1',2130706433,X'7F000001')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // Direct stored-column calls keep every target visible to the pool; no
+    // outer HEX or other migrated function can stand in for INET admission.
+    for expression in [
+        "INET_ATON(t)",
+        "INET_NTOA(n)",
+        "INET6_ATON(t)",
+        "INET6_NTOA(b)",
+    ] {
+        for id in [1, 2] {
+            let sql = format!("SELECT {expression} FROM shared_inet_zero WHERE id={id}");
+            let error = session.run_with_columns(&sql).expect_err(&sql);
+            match &error {
+                DriverError::Exec(tidb_executor::ExecError::Eval(
+                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                )) => {
+                    assert_eq!(
+                        failure.class(),
+                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                    );
+                    assert_eq!(
+                        failure.origin(),
+                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                    );
+                }
+                other => panic!("INET SQL must reach the zero-slot pool: {sql}: {other:?}"),
+            }
+            let mysql = error.to_mysql_error();
+            assert_eq!(mysql.code, 1105, "{sql}");
+            assert_eq!(mysql.state, *b"HY000", "{sql}");
+            assert!(mysql.is_from_evaluation(), "{sql}");
+        }
+    }
+}
