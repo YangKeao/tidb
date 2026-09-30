@@ -42,18 +42,18 @@ pub(crate) use json::{
     dispatch_typed_with_paths_and_document as json_dispatch_typed_with_paths_and_document,
     parse_json_document_argument, parse_json_modify_paths, JsonPath, JsonSchemaCache,
 };
+#[cfg(test)]
+pub(crate) use string2::find_in_set_lookup;
 pub(crate) use string2::{
-    build_find_in_set_lookup, find_in_set_lookup, find_in_set_with_collation, FindInSetLookup,
+    build_find_in_set_lookup, find_in_set_lookup_in, find_in_set_with_collation_in, FindInSetLookup,
 };
 
 /// Tries each family in turn; `None` if no family implements `name`.
 ///
-/// `ctx` is the statement warning sink (`crate::Columns`). Only the families
-/// that coerce a value into the ETReal domain take it -- `string2` for
-/// `FORMAT`, `info` for `FORMAT_BYTES`/`FORMAT_NANO_TIME`, `compare2` for
-/// `INTERVAL` -- because those are the ones whose coercion can raise 1292.
-/// The rest stay pure over their argument values, which is a fact worth
-/// keeping visible in the signature.
+/// `ctx` carries statement coercion/warning policy and the evaluated-value
+/// execution capability. Migrated families must retain that real capability
+/// even for NULL or empty results; a separate historical cast context does not
+/// replace the execution context.
 pub(crate) fn dispatch(
     name: &str,
     vals: &[Datum],

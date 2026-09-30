@@ -37,10 +37,26 @@ pub use evaluated_ascii::{
     AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy, AsciiScope,
     ScopedAsciiColumns,
 };
+use tidb_query_expr::local::prepare_find_in_set_keys as prepare_find_in_set_keys_local;
 pub(crate) use tidb_query_expr::local::{
-    legacy_substring_needs_len, EvaluatedArgs, EvaluatedBytesOp, OutputDisposition, ReadyBytesArg,
-    ReadyIeee754Arg, ReadyIntArg, ReadySubstringI128,
+    legacy_substring_needs_len, EvaluatedArgs, EvaluatedBytesOp, NativeCollation,
+    NativeSearchPolicy, OutputDisposition, PreparedFindInSetKeys, ReadyBytesArg, ReadyIeee754Arg,
+    ReadyIntArg, ReadySubstringI128,
 };
+
+/// Builds only the opaque constant-list key owner, without a runtime scope.
+/// The existing caller has no encoded-size SQL policy; retain the real backend
+/// failure without labeling this pure preparation as a worker phase.
+pub(crate) fn prepare_find_in_set_keys(
+    list: Option<&[u8]>,
+    key_policy: NativeCollation,
+) -> Result<PreparedFindInSetKeys, crate::EvalError> {
+    prepare_find_in_set_keys_local(list, key_policy, usize::MAX).map_err(|error| {
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+            error, None,
+        ))
+    })
+}
 mod lineage;
 mod lower;
 mod ordinary;

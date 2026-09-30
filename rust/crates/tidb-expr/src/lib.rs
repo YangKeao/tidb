@@ -461,7 +461,7 @@ use ops::{
 };
 use regexp::regexp_match;
 use row::row_compare;
-use string_fn::{position, trim_value_in};
+use string_fn::{position_in, trim_value_in};
 
 /// Evaluates a constant expression, or returns why it is out of scope.
 pub fn eval(expr: &Expr) -> Result<Datum, EvalError> {
@@ -1496,10 +1496,11 @@ pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
                 cols,
             )
         }
-        Expr::Position { substr, str } => Ok(position(
+        Expr::Position { substr, str } => position_in(
             coerce_str(&eval_in(substr, cols)?)?,
             coerce_str(&eval_in(str, cols)?)?,
-        )),
+            cols,
+        ),
         Expr::Trim {
             expr,
             remstr,

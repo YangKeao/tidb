@@ -1,8 +1,8 @@
 {
-  "checkpoint_id": "substring-gb-21",
+  "checkpoint_id": "collated-five-22",
   "frozen_denominator": 245,
   "required_families": 221,
-  "functional_delegation_and_native_deletion_count": 66,
+  "functional_delegation_and_native_deletion_count": 70,
   "fully_final_audited_count": 0,
   "final_performance_and_workspace_gates_complete": false,
   "families": [
@@ -71,9 +71,13 @@
     {"id": "pow", "aliases": ["power"], "status": "functional_tikv_only", "native_algorithm_deleted": true, "native_pb_and_legacy_demand_and_nonfinite_policies_preserved": true},
     {"id": "uncompressed_length", "status": "functional_tikv_only", "native_algorithm_deleted": true, "nullable_full_le32_and_frontend_short_warning_preserved": true},
     {"id": "insert_func", "status": "functional_tikv_only", "native_algorithm_deleted": true, "binary_utf8_raw_replacement_and_post_result_packet_preserved": true},
-    {"id": "substring", "aliases": ["substr", "mid"], "status": "functional_tikv_only", "native_algorithm_deleted": true, "native_pb_and_legacy_two_and_three_argument_paths_connected": true, "legacy_width_and_demand_and_lossy_policies_preserved": true, "two_argument_sql_cast_context_remains_no_columns": true}
+    {"id": "substring", "aliases": ["substr", "mid"], "status": "functional_tikv_only", "native_algorithm_deleted": true, "native_pb_and_legacy_two_and_three_argument_paths_connected": true, "legacy_width_and_demand_and_lossy_policies_preserved": true, "two_argument_sql_cast_context_remains_no_columns": true},
+    {"id": "strcmp", "status": "functional_tikv_only", "native_algorithm_deleted": true, "value_and_derived_explicit_collation_policies_preserved": true},
+    {"id": "locate", "aliases": ["position"], "status": "functional_tikv_only", "native_algorithm_deleted": true, "both_arities_and_independent_extension_policy_connected": true, "position_ast_rewrite_and_character_unit_helper_connected": true},
+    {"id": "instr", "status": "functional_tikv_only", "native_algorithm_deleted": true, "child_order_and_swapped_ready_operands_preserved": true},
+    {"id": "find_in_set", "status": "functional_tikv_only", "native_algorithm_deleted": true, "dynamic_and_constant_cache_connected": true, "captured_nopad_keys_and_context_once_demand_preserved": true}
   ],
-  "shared_evidence": "evidence/substring-gb-checkpoint.md",
+  "shared_evidence": "evidence/collated-five-checkpoint.md",
   "gb_foundation_evidence": "evidence/gb-shared-foundation.md",
   "historical_coverage_correction": "Checkpoint 18/19 LOWER and UPPER complete-family claims missed independent legacy implementations and NULL bypasses; checkpoint 20 repairs them. The temporary corrected count was 63, restored to 65 only after repair validation. No extra families credited.",
   "one_operation_keyed_pool": true,
@@ -83,7 +87,9 @@
   "deferred_compatibility_candidates_not_credited": ["compress", "uncompress", "exp", "log10"],
   "logical_demand_preserved": true,
   "legacy_infrastructure_errors_remain_typed_until_public_boundary": true,
-  "next_string_candidates_not_credited": ["strcmp", "locate", "instr", "position", "find_in_set"],
+  "next_string_candidates_not_credited": ["oct", "concat", "concat_ws", "elt"],
+  "native_collation_selector_owned_by_tikv": true,
+  "constant_find_cache_performance_revalidated": false,
   "gb_collation_compatibility_ownership_moved_to_tikv": true,
   "gb_foundation_adds_evaluator_family_credit": false,
   "charset_default_registry_assertion_still_non_green": true,

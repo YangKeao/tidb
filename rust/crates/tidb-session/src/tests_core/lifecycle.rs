@@ -3982,3 +3982,170 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_substring_dispatch_sql_columns(
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_collated_search_set_dispatch_sql_values_metadata_and_cache() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_collated_search_set (id INT PRIMARY KEY, \
+             h VARCHAR(16) CHARSET utf8mb4 COLLATE utf8mb4_general_ci, \
+             n VARCHAR(16) CHARSET utf8mb4 COLLATE utf8mb4_general_ci, \
+             hb VARBINARY(16), nb VARBINARY(16), p BIGINT, \
+             f VARCHAR(16) CHARSET utf8mb4 COLLATE utf8mb4_general_ci, \
+             v VARCHAR(32) CHARSET utf8mb4 COLLATE utf8mb4_general_ci)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_collated_search_set VALUES \
+             (1,NULL,NULL,NULL,NULL,NULL,NULL,NULL),\
+             (2,'é','e',X'C3A9',X'65',1,' ','  , , ,'),\
+             (3,'B,b,b','b',X'422C622C62',X'62',2,'b','B,b,b'),\
+             (4,'','',X'',X'',1,'',''),\
+             (5,'ẞ','s',X'E1BA9E',X'73',1,'a','a,a')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    // One shared root, column-driven calls: no constant folding of a family.
+    // INSTR reverses LOCATE's operands; POSITION has its own SQL grammar but
+    // rewrites to the same two-argument LOCATE. p is only 1/2 (or NULL), not
+    // the old LOCATE3 position-minus-one overflow domain.
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT STRCMP(n,h), STRCMP(nb,hb), \
+             LOCATE(n,h), LOCATE(n,h,p), LOCATE(nb,hb), \
+             INSTR(h,n), INSTR(hb,nb), POSITION(n IN h), POSITION(nb IN hb), \
+             FIND_IN_SET(f,v), FIND_IN_SET(nb,hb), FIND_IN_SET(f,'  , , ,') \
+             FROM shared_collated_search_set ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected collated search/set dispatch rows")
+    };
+    let widths = [2, 2, 20, 20, 20, 11, 11, 20, 20, 3, 3, 3];
+    assert_eq!(columns.len(), widths.len());
+    for (index, ((_, field_type), width)) in columns.iter().zip(widths).enumerate() {
+        assert_eq!(field_type.code(), tidb_datatype::FieldTypeCode::LongLong);
+        assert_eq!(field_type.eval_type(), tidb_datatype::EvalType::Int);
+        assert_eq!(field_type.flen(), width);
+        assert_eq!(field_type.decimal(), 0);
+        assert!(!field_type.is_unsigned());
+        // The numeric result still carries the derived comparison collation.
+        let collation = if matches!(index, 1 | 4 | 6 | 8 | 10) {
+            tidb_datatype::Collation::Binary
+        } else {
+            tidb_datatype::Collation::Utf8Mb4GeneralCi
+        };
+        assert_eq!(field_type.collation(), collation, "column {index}");
+    }
+    let expected = [
+        None,
+        // Native general_ci finds e in é; binary does not. FIND_IN_SET uses
+        // NoPad keys: one space first matches field TWO, not the leading two
+        // spaces. The literal-list expression selects the context cache path.
+        Some([0, -1, 1, 1, 0, 1, 0, 1, 0, 2, 0, 2]),
+        // general_ci's B/b duplicate keeps position 1; binary keeps the first
+        // exact b at position 2. LOCATE3 starts at the stored position 2.
+        Some([-1, 1, 1, 3, 3, 1, 3, 1, 3, 1, 2, 0]),
+        // Empty dynamic lists answer 0, whereas the cached nonempty list has
+        // its first empty member at 4. Its earlier one-space members stay put.
+        Some([0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 4]),
+        // GENERAL_CI_PLANE_1E keeps U+1E9E's weight, but native LOCATE3 first
+        // uses Go simple-lower (U+1E9E -> U+00DF), whose general_ci weight is S.
+        // Thus s in ẞ is 0 with two args and 1 with three args, even at pos 1.
+        Some([-1, -1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0]),
+    ];
+    assert_eq!(rows.len(), expected.len());
+    for (row_index, (row, expected)) in rows.iter().zip(expected).enumerate() {
+        assert_eq!(row.len(), widths.len());
+        for (column_index, value) in row.iter().enumerate() {
+            let expected = expected.map_or(Datum::Null, |values| Datum::Int(values[column_index]));
+            assert_eq!(
+                value,
+                &expected,
+                "id {}, column {column_index}",
+                row_index + 1
+            );
+        }
+    }
+    assert!(warnings_of(&session).is_empty());
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_collated_search_set_dispatch_sql_columns() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_collated_search_set_zero (id INT PRIMARY KEY, \
+             h VARCHAR(16) CHARSET utf8mb4 COLLATE utf8mb4_general_ci, \
+             n VARCHAR(16) CHARSET utf8mb4 COLLATE utf8mb4_general_ci, p BIGINT, \
+             f VARCHAR(16) CHARSET utf8mb4 COLLATE utf8mb4_general_ci, \
+             v VARCHAR(32) CHARSET utf8mb4 COLLATE utf8mb4_general_ci)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_collated_search_set_zero VALUES \
+             (1,NULL,NULL,NULL,NULL,NULL),\
+             (2,'é','e',1,' ','  , , ,'),(3,'','',1,'','')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // Every family is called directly on NULL, ordinary, and empty columns;
+    // neither a legal result nor a constant-list cache hit may bypass C4.
+    // LOCATE3 and the constant-list cache get the same three probes as well.
+    for expression in [
+        "STRCMP(n,h)",
+        "LOCATE(n,h)",
+        "LOCATE(n,h,p)",
+        "INSTR(h,n)",
+        "POSITION(n IN h)",
+        "FIND_IN_SET(f,v)",
+        "FIND_IN_SET(f,'  , , ,')",
+    ] {
+        for id in 1..=3 {
+            let sql =
+                format!("SELECT {expression} FROM shared_collated_search_set_zero WHERE id={id}");
+            let error = session.run_with_columns(&sql).expect_err(&sql);
+            match &error {
+                DriverError::Exec(tidb_executor::ExecError::Eval(
+                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                )) => {
+                    assert_eq!(
+                        failure.class(),
+                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                    );
+                    assert_eq!(
+                        failure.origin(),
+                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                    );
+                }
+                other => {
+                    panic!("collated search/set must reach the zero-slot pool: {sql}: {other:?}")
+                }
+            }
+            let mysql = error.to_mysql_error();
+            assert_eq!(mysql.code, 1105, "{sql}");
+            assert_eq!(mysql.state, *b"HY000", "{sql}");
+            assert!(mysql.is_from_evaluation(), "{sql}");
+            // No cast/packet diagnostics, and the returned evaluation-origin
+            // 1105 is not appended as an Error warning row.
+            assert!(warnings_of(&session).is_empty(), "{sql}");
+        }
+    }
+}

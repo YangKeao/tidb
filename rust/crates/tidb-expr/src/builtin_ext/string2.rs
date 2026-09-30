@@ -18,9 +18,9 @@ use tidb_datatype::Collation;
 
 use crate::coerce::{coerce_str, coerce_str_bytes};
 use crate::string_fn::{format_num_locale, substring_with_contexts};
-use crate::string_signature::{is_binary_str, StrUnits};
+use crate::string_signature::{is_binary_str, normalize_utf8_go};
+use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp, NativeCollation, ReadyBytesArg};
 use crate::{Datum, EvalError};
-use std::collections::HashMap;
 
 /// Dispatches this family's builtins; `None` if `name` isn't one of them.
 pub(crate) fn dispatch(
@@ -32,9 +32,9 @@ pub(crate) fn dispatch(
         ("SUBSTRING" | "SUBSTR" | "MID", 2) => {
             Some(substring_with_contexts(vals, &crate::NoColumns, ctx))
         }
-        ("LOCATE", 3) => Some(locate3(vals)),
+        ("LOCATE", 3) => Some(locate3_in(vals, ctx)),
         ("FORMAT", 3) => Some(format_with_locale(vals, ctx)),
-        ("FIND_IN_SET", 2) => Some(find_in_set(vals)),
+        ("FIND_IN_SET", 2) => Some(find_in_set(vals, ctx)),
         ("EXPORT_SET", 3..=5) => Some(export_set(vals)),
         ("LTRIM", 1) => Some(ltrim(&vals[0], ctx)),
         ("RTRIM", 1) => Some(rtrim(&vals[0], ctx)),
@@ -206,40 +206,46 @@ fn trimmed(
     )
 }
 
-/// `LOCATE(substr, str, pos)`, ported from `builtinLocate3ArgsSig` and
-/// `builtinLocate3ArgsUTF8Sig` in `pkg/expression/builtin_string.go`. Those
-/// two bodies are the same search over a different unit — bytes when the
-/// derived collation is `binary`, characters otherwise — so [`StrUnits`]
-/// carries the difference and the scan is written once. Case-insensitive
-/// collations, which the UTF-8 signature folds through its own collator, are
-/// not represented in this value-only dispatch.
-fn locate3(vals: &[Datum]) -> Result<Datum, EvalError> {
+/// `LOCATE(substr, str, pos)`, from `builtinLocate3ArgsSig` and
+/// `builtinLocate3ArgsUTF8Sig` in `pkg/expression/builtin_string.go`.
+/// This historical value-only path uses exact equality, not the main typed
+/// path's collator search. TiKV owns its wrapping start, ranges and scan.
+fn locate3_in(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
     let binary = crate::string_fn::locate_collation(&vals[0], &vals[1]) == Collation::Binary;
-    // The start position is Go's third `types.ETInt` argument, cast by
-    // `crate::arg_eval_type` before this body runs.
-    let (Some(needle), Some(haystack), Some(position)) = (
-        StrUnits::of_with_signature(&vals[0], binary)?,
-        StrUnits::of_with_signature(&vals[1], binary)?,
-        crate::arg_eval_type::eval_int(&vals[2])?,
-    ) else {
-        return Ok(Datum::Null);
+    let operation = if binary {
+        EvaluatedBytesOp::Locate3BytesExtNative
+    } else {
+        EvaluatedBytesOp::Locate3Utf8ExtNative
     };
-    let position = position.wrapping_sub(1);
-    if needle.len() > haystack.len()
-        || position < 0
-        || position as usize > haystack.len() - needle.len()
-    {
-        return Ok(Datum::Int(0));
-    }
-    if needle.len() == 0 {
-        return Ok(Datum::Int(position + 1));
-    }
-    for start in position as usize..=haystack.len() - needle.len() {
-        if haystack.slice(start, start + needle.len()) == needle.bytes() {
-            return Ok(Datum::Int(start as i64 + 1));
-        }
-    }
-    Ok(Datum::Int(0))
+    crate::tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || {
+            let prepare_bytes = |value: &Datum| {
+                coerce_str_bytes(value).map(|bytes| {
+                    bytes.map(|bytes| {
+                        if binary {
+                            bytes
+                        } else {
+                            normalize_utf8_go(bytes)
+                        }
+                    })
+                })
+            };
+            // Preserve all three tuple coercions, even after an earlier NULL.
+            // Only preparation stays here; there is no native unit/slice scan.
+            let needle = prepare_bytes(&vals[0])?;
+            let haystack = prepare_bytes(&vals[1])?;
+            let position = crate::arg_eval_type::eval_int(&vals[2])?;
+            Ok(EvaluatedArgs::BytesBytesInt(needle, haystack, position))
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
+}
+
+#[cfg(test)]
+fn locate3(vals: &[Datum]) -> Result<Datum, EvalError> {
+    locate3_in(vals, &crate::NoColumns)
 }
 
 /// `FORMAT(x, d, locale)`, ported from `builtinFormatWithLocaleSig` in
@@ -255,7 +261,7 @@ fn format_with_locale(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum,
 /// `pkg/expression/builtin_string.go`. The values-only entry point retains a
 /// non-default collation already carried by a datum; plain AST literals use
 /// the connection default because that tier has no derived function type.
-fn find_in_set(vals: &[Datum]) -> Result<Datum, EvalError> {
+fn find_in_set(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
     // The AST/value tier has no separately derived function type, so retain
     // the explicit collation stamped on a COLLATE operand. Plain literals
     // carry the connection default (`utf8mb4_bin`) and therefore do not
@@ -265,100 +271,120 @@ fn find_in_set(vals: &[Datum]) -> Result<Datum, EvalError> {
         .filter_map(Datum::collation)
         .find(|collation| *collation != tidb_datatype::Collation::DEFAULT)
         .unwrap_or(crate::ops::DERIVATION_FREE_COLLATION);
-    find_in_set_with_collation(vals, collation)
+    find_in_set_with_collation_in(vals, collation, ctx)
 }
 
-/// [`find_in_set`] under the collation the expression derivation aggregated
-/// over BOTH arguments (Go `deriveCollation`'s `ast.FindInSet` arm).
-///
-/// Go's `findInSetByKey` compares `collator.KeyWithoutTrimRightSpace` of the
-/// needle against the same key of each comma-separated entry, so a
-/// case-folding collation finds a differently-cased member. Captured from
-/// TiDB: `FIND_IN_SET('b' COLLATE utf8mb4_general_ci, 'a,B,c')` is 2 where the
-/// `utf8mb4_bin` form is 0.
-///
-/// `KeyWithoutTrimRightSpace` -- rather than the ordinary sort key -- is why a
-/// PAD SPACE collation still distinguishes `'a'` from `'a '` here.
+/// Constant-list ownership for Go `getConstStrlistLookup`. Only NULL metadata
+/// is visible here; TiKV owns the immutable keys and first-position scan.
 #[derive(Clone, Debug)]
 pub(crate) struct FindInSetLookup {
     pub(crate) is_null: bool,
-    pub(crate) positions: HashMap<Vec<u8>, i64>,
+    keys: crate::tikv::PreparedFindInSetKeys,
 }
 
-/// Builds Go `getConstStrlistLookup`'s first-position map.
+/// FIND follows the live collator mode, unlike explicit-collation STRCMP.
+/// Binary is also the raw NoPad-key policy when new collations are disabled.
+fn find_in_set_key_policy(collation: Collation) -> NativeCollation {
+    tidb_datatype::get_collator(collation.name())
+        .new_collation()
+        .map_or(NativeCollation::Binary, Collation::native_policy)
+}
+
+/// Prepares only Go `getConstStrlistLookup`'s constant-list keys, not a SQL
+/// answer. A successful context cache retains this build-time key snapshot;
+/// lookup must not re-key a raw list under a later collator mode.
 pub(crate) fn build_find_in_set_lookup(
     list: &Datum,
     collation: tidb_datatype::Collation,
 ) -> Result<FindInSetLookup, EvalError> {
-    let Some(list) = crate::coerce::coerce_str_bytes(list)? else {
-        return Ok(FindInSetLookup {
-            is_null: true,
-            positions: HashMap::new(),
-        });
+    let list = coerce_str_bytes(list)?;
+    let key_policy = if list.as_ref().is_some_and(|list| !list.is_empty()) {
+        find_in_set_key_policy(collation)
+    } else {
+        // The original constructor did not fetch a collator for NULL/empty.
+        // This unused selector is not a substituted SQL value.
+        NativeCollation::Binary
     };
-    if list.is_empty() {
-        // Go's buildFindInSetLookup returns a nil map for an empty strlist;
-        // the lookup then answers 0 even when the needle is the empty string.
-        return Ok(FindInSetLookup {
-            is_null: false,
-            positions: HashMap::new(),
-        });
-    }
-    let collator = tidb_datatype::get_collator(collation.name());
-    let mut positions = HashMap::new();
-    for (index, entry) in list.split(|byte| *byte == b',').enumerate() {
-        positions
-            .entry(collator.key_without_trim_right_space(entry))
-            .or_insert(index as i64 + 1);
-    }
+    let keys = crate::tikv::prepare_find_in_set_keys(list.as_deref(), key_policy)?;
     Ok(FindInSetLookup {
-        is_null: false,
-        positions,
+        is_null: keys.is_null(),
+        keys,
     })
 }
 
-/// Looks up one needle in a previously constructed constant-list map.
+/// Probes an immutable constant-list owner through C4. The caller already
+/// evaluated the needle expression before constructing or retrieving the cache.
+pub(crate) fn find_in_set_lookup_in(
+    needle: &Datum,
+    lookup: &FindInSetLookup,
+    collation: tidb_datatype::Collation,
+    ctx: &dyn crate::Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        EvaluatedBytesOp::FindInSetPreparedNative,
+        ctx,
+        || {
+            let needle = if lookup.is_null {
+                ReadyBytesArg::Undemanded
+            } else {
+                // An empty, non-NULL cache must still coerce the needle.
+                ReadyBytesArg::Value(coerce_str_bytes(needle)?)
+            };
+            let collation = if matches!(&needle, ReadyBytesArg::Value(Some(_))) {
+                find_in_set_key_policy(collation)
+            } else {
+                NativeCollation::Binary
+            };
+            Ok(EvaluatedArgs::FindInSetPreparedReady {
+                needle,
+                keys: lookup.keys.clone(),
+                collation,
+            })
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn find_in_set_lookup(
     needle: &Datum,
     lookup: &FindInSetLookup,
     collation: tidb_datatype::Collation,
 ) -> Result<Datum, EvalError> {
-    if lookup.is_null {
-        return Ok(Datum::Null);
-    }
-    let Some(needle) = crate::coerce::coerce_str_bytes(needle)? else {
-        return Ok(Datum::Null);
-    };
-    let collator = tidb_datatype::get_collator(collation.name());
-    Ok(Datum::Int(
-        lookup
-            .positions
-            .get(&collator.key_without_trim_right_space(&needle))
-            .copied()
-            .unwrap_or(0),
-    ))
+    find_in_set_lookup_in(needle, lookup, collation, &crate::NoColumns)
 }
 
-pub(crate) fn find_in_set_with_collation(
+/// [`find_in_set`] under the collation derived over BOTH arguments (Go
+/// `deriveCollation`'s `ast.FindInSet` arm). Go `findInSetByKey` compares
+/// KeyWithoutTrimRightSpace, so even PAD SPACE collations distinguish 'a' from
+/// 'a '. TiKV owns the same NoPad-key scan, not wire compare(false).
+pub(crate) fn find_in_set_with_collation_in(
     vals: &[Datum],
     collation: tidb_datatype::Collation,
+    ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
-    let (Some(needle), Some(list)) = (
-        crate::coerce::coerce_str_bytes(&vals[0])?,
-        crate::coerce::coerce_str_bytes(&vals[1])?,
-    ) else {
-        return Ok(Datum::Null);
-    };
-    if list.is_empty() {
-        return Ok(Datum::Int(0));
-    }
-    let collator = tidb_datatype::get_collator(collation.name());
-    let needle_key = collator.key_without_trim_right_space(&needle);
-    Ok(Datum::Int(
-        list.split(|byte| *byte == b',')
-            .position(|entry| collator.key_without_trim_right_space(entry) == needle_key)
-            .map_or(0, |index| index as i64 + 1),
-    ))
+    crate::tikv::evaluate_args_in(
+        EvaluatedBytesOp::FindInSetNative,
+        ctx,
+        || {
+            // Tuple coercion demands the list even when the needle is NULL.
+            let left = coerce_str_bytes(&vals[0])?;
+            let right = coerce_str_bytes(&vals[1])?;
+            let collation = if left.is_some() && right.as_ref().is_some_and(|list| !list.is_empty())
+            {
+                find_in_set_key_policy(collation)
+            } else {
+                // Preserve the old NULL/empty-list collator demand boundary.
+                NativeCollation::Binary
+            };
+            Ok(EvaluatedArgs::CollatedBytes2 {
+                left,
+                right,
+                collation,
+            })
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
 }
 
 /// `EXPORT_SET(bits, on, off[, separator[, number_of_bits]])`, ported from
@@ -575,6 +601,138 @@ mod tests {
             .sql_string()
             .unwrap(),
             "N,Y,N,Y,Y"
+        );
+    }
+
+    #[test]
+    fn find_in_set_adapter_preserves_null_empty_and_coercion() {
+        let collation = Collation::Binary;
+        let null = build_find_in_set_lookup(&Datum::Null, collation).unwrap();
+        assert!(null.is_null);
+        for needle in [Datum::Null, Datum::MinNotNull, string("x")] {
+            assert_eq!(
+                super::find_in_set_lookup_in(&needle, &null, collation, &crate::NoColumns).unwrap(),
+                Datum::Null
+            );
+        }
+
+        let empty = build_find_in_set_lookup(&string(""), collation).unwrap();
+        assert!(!empty.is_null);
+        assert_eq!(
+            super::find_in_set_lookup_in(&string(""), &empty, collation, &crate::NoColumns)
+                .unwrap(),
+            Datum::Int(0)
+        );
+        assert_eq!(
+            super::find_in_set_lookup_in(&Datum::Null, &empty, collation, &crate::NoColumns)
+                .unwrap(),
+            Datum::Null
+        );
+        let byte_error = crate::EvalError::Unsupported("range sentinel byte coercion");
+        assert_eq!(
+            super::find_in_set_lookup_in(&Datum::MinNotNull, &empty, collation, &crate::NoColumns,),
+            Err(byte_error.clone())
+        );
+        assert_eq!(
+            super::find_in_set_with_collation_in(
+                &[Datum::Null, Datum::MinNotNull],
+                collation,
+                &crate::NoColumns,
+            ),
+            Err(byte_error.clone())
+        );
+        assert!(matches!(
+            build_find_in_set_lookup(&Datum::MinNotNull, collation),
+            Err(crate::EvalError::Unsupported(
+                "range sentinel byte coercion"
+            ))
+        ));
+        for (list, expected) in [("", 0), (",", 1), ("x,", 2)] {
+            let list = string(list);
+            let lookup = build_find_in_set_lookup(&list, collation).unwrap();
+            assert_eq!(
+                super::find_in_set_lookup_in(&string(""), &lookup, collation, &crate::NoColumns,)
+                    .unwrap(),
+                Datum::Int(expected)
+            );
+            assert_eq!(
+                super::find_in_set_with_collation_in(
+                    &[string(""), list],
+                    collation,
+                    &crate::NoColumns,
+                )
+                .unwrap(),
+                Datum::Int(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn locate3_extension_adapter_preserves_units_wrapping_and_demand() {
+        let text = |bytes: Vec<u8>| Datum::new_collation_string(bytes, Collation::Utf8Mb4Bin);
+        for (values, expected) in [
+            ([string(""), string("abc"), Datum::Int(i64::MIN)], 0),
+            ([string(""), string("abc"), Datum::UInt(u64::MAX)], 0),
+            ([string(""), string("中a"), Datum::Int(3)], 3),
+            ([string(""), string("中a"), Datum::Int(4)], 0),
+            ([string(""), string(""), Datum::Int(1)], 1),
+            (
+                [
+                    Datum::new_collation_string("A", Collation::Utf8Mb4GeneralCi),
+                    Datum::new_collation_string("a", Collation::Utf8Mb4GeneralCi),
+                    Datum::Int(1),
+                ],
+                0,
+            ),
+            ([text(vec![0xe2]), text(vec![0xe2, 0x82]), Datum::Int(2)], 2),
+            (
+                [
+                    Datum::Bytes(vec![0xe2]),
+                    Datum::Bytes(vec![0xe2, 0x82]),
+                    Datum::Int(2),
+                ],
+                0,
+            ),
+        ] {
+            assert_eq!(
+                super::locate3_in(&values, &crate::NoColumns).unwrap(),
+                Datum::Int(expected),
+                "{values:?}"
+            );
+        }
+        assert_eq!(
+            super::locate3_in(
+                &[Datum::Null, string("abc"), Datum::Int(1)],
+                &crate::NoColumns,
+            )
+            .unwrap(),
+            Datum::Null
+        );
+        assert_eq!(
+            super::locate3_in(
+                &[string("a"), string("abc"), Datum::Null],
+                &crate::NoColumns,
+            )
+            .unwrap(),
+            Datum::Null
+        );
+        assert_eq!(
+            super::locate3_in(
+                &[Datum::Null, Datum::MinNotNull, Datum::Int(1)],
+                &crate::NoColumns,
+            ),
+            Err(crate::EvalError::Unsupported(
+                "range sentinel byte coercion"
+            ))
+        );
+        assert_eq!(
+            super::locate3_in(
+                &[Datum::Null, Datum::Null, Datum::MinNotNull],
+                &crate::NoColumns,
+            ),
+            Err(crate::EvalError::Unsupported(
+                "un-cast types.ETInt argument"
+            ))
         );
     }
 

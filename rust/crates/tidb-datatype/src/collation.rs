@@ -30,10 +30,7 @@ use crate::charset::{
 };
 use crate::{CharsetError, Collation, CollationInfo};
 use tidb_query_datatype::codec::collation::{
-    self as shared,
-    collator::*,
-    gb::{self, GbCollation, GbPolicy},
-    Collator as SharedCollator, KeyOptions, LikePatternMode,
+    self as shared, collator::*, native::NativeCollation, Collator as SharedCollator, KeyOptions,
 };
 
 /// Shared wildcard primitives used by the source-compatible string utilities.
@@ -44,60 +41,6 @@ pub mod wildcard {
         compile_bytes, compile_runes, matches_compiled_bytes, matches_compiled_runes_with,
         matches_runes, MatchOptions, PatternType, TrailingEscape,
     };
-}
-
-// Map concrete registry identities explicitly. Registry IDs are positive;
-// TiKV wire IDs are signed and must never be normalized with abs().
-macro_rules! with_shared_collator {
-    ($collation:expr, $C:ident, $body:expr) => {{
-        match $collation {
-            Collation::Binary => {
-                type $C = CollatorBinary;
-                $body
-            }
-            Collation::AsciiBin | Collation::Utf8Bin | Collation::Utf8Mb4Bin => {
-                type $C = CollatorUtf8Mb4Bin;
-                $body
-            }
-            Collation::Latin1Bin => {
-                type $C = CollatorLatin1Bin;
-                $body
-            }
-            Collation::Utf8Mb40900Bin => {
-                type $C = CollatorUtf8Mb4BinNoPadding;
-                $body
-            }
-            Collation::Utf8GeneralCi | Collation::Utf8Mb4GeneralCi => {
-                type $C = CollatorUtf8Mb4GeneralCi;
-                $body
-            }
-            Collation::Utf8UnicodeCi | Collation::Utf8Mb4UnicodeCi => {
-                type $C = CollatorUtf8Mb4UnicodeCi;
-                $body
-            }
-            Collation::Utf8Mb40900AiCi => {
-                type $C = CollatorUtf8Mb40900AiCi;
-                $body
-            }
-            Collation::GbkBin => {
-                type $C = CollatorGbkBin;
-                $body
-            }
-            Collation::GbkChineseCi => {
-                type $C = CollatorGbkChineseCi;
-                $body
-            }
-            Collation::Gb18030Bin => {
-                type $C = CollatorGb18030Bin;
-                $body
-            }
-            Collation::Gb18030ChineseCi => {
-                type $C = CollatorGb18030ChineseCi;
-                $body
-            }
-            Collation::Utf8Mb4ZhPinyinTiDbAsCs => panic!("implement me"),
-        }
-    }};
 }
 
 // Go initializes this to enabled in `pkg/util/collate.init`; bootstrap later
@@ -211,8 +154,10 @@ impl Collator {
     pub fn pattern(self, pattern: impl AsRef<[u8]>, escape: u8) -> WildcardPattern {
         let pattern = pattern.as_ref();
         match self {
+            // Keep DerivedBinary's existing no-padding UTF-8 rune matcher,
+            // not the byte matcher of the distinct Binary identity.
             Self::DerivedBinary => {
-                compile_shared_pattern::<CollatorUtf8Mb4BinNoPadding>(pattern, escape)
+                WildcardPattern(NativeCollation::Utf8Mb40900Bin.compile_pattern(pattern, escape))
             }
             Self::New(collation) => collation.pattern(pattern, escape),
         }
@@ -222,23 +167,20 @@ impl Collator {
     pub fn like_match(self, value: &[u8], pattern: &[u8], escape: u8) -> bool {
         match self {
             Self::DerivedBinary => {
-                match_shared_pattern::<CollatorUtf8Mb4BinNoPadding>(value, pattern, escape)
+                NativeCollation::Utf8Mb40900Bin.matches_pattern(value, pattern, escape)
             }
-            Self::New(collation) => with_shared_collator!(
-                collation,
-                C,
-                match_shared_pattern::<C>(value, pattern, escape)
-            ),
+            Self::New(collation) => collation
+                .native_policy()
+                .matches_pattern(value, pattern, escape),
         }
+        .expect("raw supported LIKE comparison cannot fail")
     }
 
     /// Whether the source implementation can use the raw input as its key.
     pub const fn can_use_raw_mem_as_key(self) -> bool {
         match self {
             Self::DerivedBinary => CollatorUtf8Mb4BinNoPadding::CAN_USE_RAW_MEM_AS_KEY,
-            // Keep the preexisting Pinyin capability query non-panicking.
-            Self::New(Collation::Utf8Mb4ZhPinyinTiDbAsCs) => false,
-            Self::New(collation) => with_shared_collator!(collation, C, C::CAN_USE_RAW_MEM_AS_KEY),
+            Self::New(collation) => collation.native_policy().can_use_raw_mem_as_key(),
         }
     }
 }
@@ -420,16 +362,10 @@ pub fn is_default_collation_for_utf8mb4(name: &str) -> bool {
 
 /// Whether this collation is case-insensitive.
 pub fn is_ci_collation(name: &str) -> bool {
-    matches!(
-        name,
-        "utf8_general_ci"
-            | "utf8mb4_general_ci"
-            | "utf8_unicode_ci"
-            | "utf8mb4_unicode_ci"
-            | "gbk_chinese_ci"
-            | "utf8mb4_0900_ai_ci"
-            | "gb18030_chinese_ci"
-    )
+    // Preserve the source's exact-name whitelist: uppercase spellings and
+    // UTF8MB3 aliases remain false even though registry resolution accepts them.
+    Collation::from_name(name)
+        .is_some_and(|collation| collation.name() == name && collation.native_policy().is_ci())
 }
 
 /// Converts a CI collation to the corresponding binary collation.
@@ -484,81 +420,43 @@ impl WildcardPattern {
     }
 }
 
-fn pattern_options(escape: u8) -> wildcard::MatchOptions {
-    wildcard::MatchOptions {
-        escape: u32::from(escape),
-        trailing_escape: wildcard::TrailingEscape::Literal,
-    }
-}
-
-fn compile_shared_pattern<C: SharedCollator>(pattern: &[u8], escape: u8) -> WildcardPattern {
-    let options = pattern_options(escape);
-    let compiled = match C::LIKE_PATTERN_MODE {
-        LikePatternMode::Bytes => shared::pattern::compile::<
-            CollatorBinary,
-            <CollatorBinary as SharedCollator>::Charset,
-        >(pattern, options),
-        LikePatternMode::BinaryRunes => shared::pattern::compile::<
-            CollatorUtf8Mb4BinNoPadding,
-            <CollatorUtf8Mb4BinNoPadding as SharedCollator>::Charset,
-        >(pattern, options),
-        LikePatternMode::CollatorDefined => {
-            shared::pattern::compile::<C, C::Charset>(pattern, options)
-        }
-    };
-    WildcardPattern(compiled)
-}
-
-fn match_shared_pattern<C: SharedCollator>(value: &[u8], pattern: &[u8], escape: u8) -> bool {
-    let options = pattern_options(escape);
-    match C::LIKE_PATTERN_MODE {
-        LikePatternMode::Bytes => shared::pattern::matches_raw::<
-            CollatorBinary,
-            <CollatorBinary as SharedCollator>::Charset,
-        >(value, pattern, options),
-        LikePatternMode::BinaryRunes => shared::pattern::matches_raw::<
-            CollatorUtf8Mb4BinNoPadding,
-            <CollatorUtf8Mb4BinNoPadding as SharedCollator>::Charset,
-        >(value, pattern, options),
-        LikePatternMode::CollatorDefined => {
-            shared::pattern::matches_raw::<C, C::Charset>(value, pattern, options)
-        }
-    }
-    .expect("raw supported LIKE comparison cannot fail")
-}
-
 impl Collation {
-    fn gb_collation(self) -> Option<GbCollation> {
-        Some(match self {
-            Self::GbkBin => GbCollation::GbkBin,
-            Self::GbkChineseCi => GbCollation::GbkChineseCi,
-            Self::Gb18030Bin => GbCollation::Gb18030Bin,
-            Self::Gb18030ChineseCi => GbCollation::Gb18030ChineseCi,
-            _ => return None,
-        })
+    /// Map metadata to its shared native policy without consulting global mode
+    /// or converting registry/wire IDs. This is not an input-origin label.
+    pub const fn native_policy(self) -> NativeCollation {
+        match self {
+            Self::Binary => NativeCollation::Binary,
+            Self::AsciiBin => NativeCollation::AsciiBin,
+            Self::Latin1Bin => NativeCollation::Latin1Bin,
+            Self::Utf8Bin => NativeCollation::Utf8Bin,
+            Self::Utf8GeneralCi => NativeCollation::Utf8GeneralCi,
+            Self::Utf8UnicodeCi => NativeCollation::Utf8UnicodeCi,
+            Self::Utf8Mb4Bin => NativeCollation::Utf8Mb4Bin,
+            Self::Utf8Mb4GeneralCi => NativeCollation::Utf8Mb4GeneralCi,
+            Self::Utf8Mb4UnicodeCi => NativeCollation::Utf8Mb4UnicodeCi,
+            Self::Utf8Mb40900AiCi => NativeCollation::Utf8Mb40900AiCi,
+            Self::Utf8Mb40900Bin => NativeCollation::Utf8Mb40900Bin,
+            Self::Utf8Mb4ZhPinyinTiDbAsCs => NativeCollation::Utf8Mb4ZhPinyinTiDbAsCs,
+            Self::GbkBin => NativeCollation::GbkBin,
+            Self::GbkChineseCi => NativeCollation::GbkChineseCi,
+            Self::Gb18030Bin => NativeCollation::Gb18030Bin,
+            Self::Gb18030ChineseCi => NativeCollation::Gb18030ChineseCi,
+        }
     }
 
     /// Compiles this explicit new-collation wildcard matcher.
     pub fn pattern(self, pattern: impl AsRef<[u8]>, escape: u8) -> WildcardPattern {
-        with_shared_collator!(
-            self,
-            C,
-            compile_shared_pattern::<C>(pattern.as_ref(), escape)
+        WildcardPattern(
+            self.native_policy()
+                .compile_pattern(pattern.as_ref(), escape),
         )
     }
 
     /// Compares arbitrary Go-string bytes using TiDB's source semantics.
     pub fn compare(self, left: &[u8], right: &[u8]) -> Ordering {
-        match self.gb_collation() {
-            Some(kind) => gb::compare(kind, GbPolicy::Native, left, right, false)
-                .expect("raw native GB comparison cannot fail"),
-            None => with_shared_collator!(
-                self,
-                C,
-                C::sort_compare(left, right, false)
-                    .expect("raw supported collation comparison cannot fail")
-            ),
-        }
+        self.native_policy()
+            .compare(left, right)
+            .expect("raw supported collation comparison cannot fail")
     }
 
     /// Returns TiDB's sort key for arbitrary Go-string bytes.
@@ -567,31 +465,16 @@ impl Collation {
     }
 
     fn key_with_options(self, value: &[u8], options: KeyOptions) -> Vec<u8> {
-        match self.gb_collation() {
-            Some(kind) => gb::key(kind, GbPolicy::Native, value, options)
-                .expect("raw native GB key into Vec cannot fail"),
-            None => with_shared_collator!(
-                self,
-                C,
-                C::sort_key_with_options(value, options)
-                    .expect("raw supported collation key into Vec cannot fail")
-            ),
-        }
+        self.native_policy()
+            .key(value, options)
+            .expect("raw supported collation key into Vec cannot fail")
     }
 
     /// Go's allocation-aware `ImmutableKey`; binary collators borrow input.
     pub fn immutable_key<'a>(self, value: &'a [u8]) -> Cow<'a, [u8]> {
-        match self {
-            Self::GbkBin | Self::Gb18030Bin | Self::GbkChineseCi | Self::Gb18030ChineseCi => {
-                Cow::Owned(self.key(value))
-            }
-            _ => with_shared_collator!(
-                self,
-                C,
-                C::sort_key_cow(value, KeyOptions::Default)
-                    .expect("raw supported collation key cannot fail")
-            ),
-        }
+        self.native_policy()
+            .key_cow(value, KeyOptions::Default)
+            .expect("raw supported collation key cannot fail")
     }
 
     /// Returns the source key without the collation's PAD SPACE preprocessing.
@@ -602,7 +485,7 @@ impl Collation {
     /// Returns the allocation estimate exposed by the corresponding Go collator.
     /// Native GB18030 PUA encoding can exceed this historical estimate.
     pub fn max_key_len(self, value: &[u8]) -> usize {
-        with_shared_collator!(self, C, C::max_sort_key_len(value))
+        self.native_policy().max_key_len(value)
     }
 }
 

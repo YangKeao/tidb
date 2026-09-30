@@ -403,8 +403,17 @@ pub(crate) fn reverse_in(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Dat
 /// `substr`'s first occurrence in `str`; `0` if not found; an empty
 /// `substr` always matches at position `1` (confirmed via `gorun`).
 /// `NULL` if either operand is `NULL`.
+#[cfg(test)]
 pub(crate) fn position(substr: Option<String>, str: Option<String>) -> Datum {
-    position_with_collation(substr, str, tidb_datatype::Collation::Utf8Mb4Bin)
+    position_in(substr, str, &crate::NoColumns).expect("test POSITION worker")
+}
+
+pub(crate) fn position_in(
+    substr: Option<String>,
+    str: Option<String>,
+    ctx: &dyn crate::Columns,
+) -> Result<Datum, EvalError> {
+    position_with_collation_in(substr, str, tidb_datatype::Collation::Utf8Mb4Bin, ctx)
 }
 
 /// `LOCATE(substr, str)` / `INSTR(str, substr)` / `POSITION(substr IN str)`
@@ -421,28 +430,46 @@ pub(crate) fn position(substr: Option<String>, str: Option<String>) -> Datum {
 /// evaluator has no derivation pass and passes `binary` exactly when
 /// [`crate::string_signature::is_binary_str`] holds for an argument, which is
 /// the same condition that makes Go's aggregate `binary`.
+#[cfg(test)]
 pub(crate) fn locate(
     substr: &Datum,
     str: &Datum,
     collation: tidb_datatype::Collation,
 ) -> Result<Datum, EvalError> {
-    if collation != tidb_datatype::Collation::Binary {
-        return Ok(position_with_collation(
-            coerce_str(substr)?,
-            coerce_str(str)?,
-            collation,
-        ));
-    }
-    let (Some(needle), Some(haystack)) = (coerce_str_bytes(substr)?, coerce_str_bytes(str)?) else {
-        return Ok(Datum::Null);
-    };
-    if needle.is_empty() {
-        return Ok(Datum::Int(1));
-    }
-    let found = haystack
-        .windows(needle.len())
-        .position(|window| window == needle.as_slice());
-    Ok(Datum::Int(found.map_or(0, |index| index as i64 + 1)))
+    locate_in(substr, str, collation, &crate::NoColumns)
+}
+
+pub(crate) fn locate_in(
+    substr: &Datum,
+    str: &Datum,
+    collation: tidb_datatype::Collation,
+    ctx: &dyn crate::Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::Locate2Native,
+        ctx,
+        || {
+            let (needle, haystack, policy) = if collation == Collation::Binary {
+                (
+                    coerce_str_bytes(substr)?,
+                    coerce_str_bytes(str)?,
+                    crate::tikv::NativeSearchPolicy::Bytes,
+                )
+            } else {
+                (
+                    coerce_str(substr)?.map(String::into_bytes),
+                    coerce_str(str)?.map(String::into_bytes),
+                    crate::tikv::NativeSearchPolicy::Utf8(collation.native_policy()),
+                )
+            };
+            Ok(crate::tikv::EvaluatedArgs::SearchBytes2 {
+                needle,
+                haystack,
+                policy,
+            })
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
 }
 
 /// `LOCATE(substr, str, pos)` — the three-argument signatures
@@ -458,83 +485,47 @@ pub(crate) fn locate(
 /// Matching in the slice is by the function's collator — which the 2-arg
 /// path already relies on — so a folding collation finds a case-folded
 /// occurrence exactly as it does without a start position.
-pub(crate) fn locate_with_position(
+pub(crate) fn locate_with_position_in(
     vals: &[Datum],
     collation: tidb_datatype::Collation,
+    ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
     let [substr, str, pos] = vals else {
         return Err(EvalError::Unsupported("bad LOCATE arity"));
     };
-    // Go evaluates substr, str, then pos, and isNull on ANY of them is the
-    // NULL result (the Int signatures return `0, true, nil`).
-    let binary = collation == tidb_datatype::Collation::Binary;
-    let needle_opt = if binary {
-        coerce_str_bytes(substr)?.map(|bytes| bytes.to_vec())
-    } else {
-        coerce_str(substr)?.map(|text| text.into_bytes())
-    };
-    let hay_opt = if binary {
-        coerce_str_bytes(str)?.map(|bytes| bytes.to_vec())
-    } else {
-        coerce_str(str)?.map(|text| text.into_bytes())
-    };
-    let (Some(needle), Some(hay)) = (needle_opt, hay_opt) else {
-        return Ok(Datum::Null);
-    };
-    let Some(position) = crate::arg_eval_type::eval_int(pos)? else {
-        return Ok(Datum::Null);
-    };
-    // Transfer the 1-based argument to a 0-based index.
-    let start = position - 1;
-
-    if binary {
-        if start < 0 || start > hay.len() as i64 - needle.len() as i64 {
-            return Ok(Datum::Int(0));
-        }
-        if needle.is_empty() {
-            return Ok(Datum::Int(start + 1));
-        }
-        let found = hay[start as usize..]
-            .windows(needle.len())
-            .position(|window| window == needle.as_slice());
-        return Ok(Datum::Int(
-            found.map_or(0, |index| start + index as i64 + 1),
-        ));
-    }
-
-    // Under a case-insensitive collation Go lowers both strings BEFORE the
-    // rune-count bounds, using `strings.ToLower` (the same simple mapping
-    // `tidb_mysql::to_lowercase` ports).
-    let lower = tidb_datatype::is_ci_collation(collation.name());
-    let (needle, hay) = if lower {
-        (
-            tidb_mysql::to_lowercase(&String::from_utf8_lossy(&needle)).into_bytes(),
-            tidb_mysql::to_lowercase(&String::from_utf8_lossy(&hay)).into_bytes(),
-        )
-    } else {
-        (needle, hay)
-    };
-    let needle = String::from_utf8(needle)
-        .map_err(|_| EvalError::Unsupported("invalid UTF-8 LOCATE needle"))?;
-    let hay = String::from_utf8(hay)
-        .map_err(|_| EvalError::Unsupported("invalid UTF-8 LOCATE haystack"))?;
-    let needle: Vec<char> = needle.chars().collect();
-    let hay: Vec<char> = hay.chars().collect();
-    if start < 0 || start > hay.len() as i64 - needle.len() as i64 {
-        return Ok(Datum::Int(0));
-    }
-    if needle.is_empty() {
-        return Ok(Datum::Int(start + 1));
-    }
-    let slice: String = hay[start as usize..].iter().collect();
-    let window = needle.iter().collect::<String>();
-    for offset in 0..=(slice.chars().count() - needle.len()) {
-        let candidate: String = slice.chars().skip(offset).take(needle.len()).collect();
-        if collation.compare(candidate.as_bytes(), window.as_bytes()) == std::cmp::Ordering::Equal {
-            return Ok(Datum::Int(start + offset as i64 + 1));
-        }
-    }
-    Ok(Datum::Int(0))
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::Locate3Native,
+        ctx,
+        || {
+            // Preserve both string conversions before NULL prevents reading
+            // the integer. Typed callers have already cast that child in ctx.
+            let (needle, haystack, policy) = if collation == Collation::Binary {
+                (
+                    coerce_str_bytes(substr)?,
+                    coerce_str_bytes(str)?,
+                    crate::tikv::NativeSearchPolicy::Bytes,
+                )
+            } else {
+                (
+                    coerce_str(substr)?.map(String::into_bytes),
+                    coerce_str(str)?.map(String::into_bytes),
+                    crate::tikv::NativeSearchPolicy::Utf8(collation.native_policy()),
+                )
+            };
+            let pos = if needle.is_some() && haystack.is_some() {
+                crate::tikv::ReadyIntArg::Value(crate::arg_eval_type::eval_int(pos)?)
+            } else {
+                crate::tikv::ReadyIntArg::Undemanded
+            };
+            Ok(crate::tikv::EvaluatedArgs::SearchBytes2IntReady {
+                needle,
+                haystack,
+                pos,
+                policy,
+            })
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
 }
 
 /// The collation `LOCATE`/`INSTR` derive when no derivation pass ran: Go's
@@ -561,32 +552,27 @@ pub(crate) fn locate_collation(substr: &Datum, str: &Datum) -> tidb_datatype::Co
 /// what makes a folding collation match; a collation whose folding changes
 /// character COUNT (none this tier registers) would need a different scan.
 ///
-/// A `binary` collation selects Go's OTHER signature -- byte offsets, not
-/// character ones -- and never reaches here: [`locate`] branches to it first.
-pub(crate) fn position_with_collation(
+/// Unlike [`locate_in`], this already-text helper always counts characters,
+/// even if its explicit comparison collation is `binary`.
+pub(crate) fn position_with_collation_in(
     substr: Option<String>,
     str: Option<String>,
     collation: tidb_datatype::Collation,
-) -> Datum {
-    let (Some(substr), Some(str)) = (substr, str) else {
-        return Datum::Null;
-    };
-    let needle: Vec<char> = substr.chars().collect();
-    let haystack: Vec<char> = str.chars().collect();
-    if needle.is_empty() {
-        return Datum::Int(1);
-    }
-    if needle.len() > haystack.len() {
-        return Datum::Int(0);
-    }
-    let needle_bytes = substr.as_bytes();
-    for start in 0..=(haystack.len() - needle.len()) {
-        let window: String = haystack[start..start + needle.len()].iter().collect();
-        if collation.compare(window.as_bytes(), needle_bytes) == std::cmp::Ordering::Equal {
-            return Datum::Int(start as i64 + 1);
-        }
-    }
-    Datum::Int(0)
+    ctx: &dyn crate::Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::Locate2Native,
+        ctx,
+        || {
+            Ok(crate::tikv::EvaluatedArgs::SearchBytes2 {
+                needle: substr.map(String::into_bytes),
+                haystack: str.map(String::into_bytes),
+                // This helper always counts characters, even with Binary compare.
+                policy: crate::tikv::NativeSearchPolicy::Utf8(collation.native_policy()),
+            })
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
 }
 
 /// `REPLACE(str, from, to)`: every non-overlapping occurrence of `from` in
@@ -634,12 +620,14 @@ fn string_result(source: &Datum, bytes: Vec<u8>) -> Datum {
 /// `STRCMP(a, b)`: `-1`/`0`/`1` under TiDB's default `utf8mb4_bin` PAD SPACE
 /// collation; a binary operand switches the source signature to the raw
 /// binary collation. `NULL` propagates from either operand.
+#[cfg(test)]
 pub(crate) fn strcmp(vals: &[Datum]) -> Result<Datum, EvalError> {
+    strcmp_in(vals, &crate::NoColumns)
+}
+
+pub(crate) fn strcmp_in(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
     let [left, right] = vals else {
         return Err(EvalError::Unsupported("bad STRCMP arity"));
-    };
-    let (Some(a), Some(b)) = (coerce_str_bytes(left)?, coerce_str_bytes(right)?) else {
-        return Ok(Datum::Null);
     };
     let collation = if matches!(left, Datum::Bytes(_)) || matches!(right, Datum::Bytes(_)) {
         tidb_datatype::Collation::Binary
@@ -648,36 +636,33 @@ pub(crate) fn strcmp(vals: &[Datum]) -> Result<Datum, EvalError> {
             .or_else(|| right.collation())
             .unwrap_or(tidb_datatype::Collation::DEFAULT)
     };
-    strcmp_under(&a, &b, collation)
+    strcmp_with_collation_in(vals, collation, ctx)
 }
 
 /// `STRCMP` under the collation the expression derivation aggregated
 /// (Go `builtinStrcmpSig`, which compares with `b.collator`). Captured from
 /// TiDB: `STRCMP('a' COLLATE utf8mb4_general_ci, 'A' COLLATE
 /// utf8mb4_general_ci)` is 0 where the `utf8mb4_bin` form is 1.
-pub(crate) fn strcmp_with_collation(
+pub(crate) fn strcmp_with_collation_in(
     vals: &[Datum],
     collation: tidb_datatype::Collation,
+    ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
     let [left, right] = vals else {
         return Err(EvalError::Unsupported("bad STRCMP arity"));
     };
-    let (Some(a), Some(b)) = (coerce_str_bytes(left)?, coerce_str_bytes(right)?) else {
-        return Ok(Datum::Null);
-    };
-    strcmp_under(&a, &b, collation)
-}
-
-fn strcmp_under(
-    a: &[u8],
-    b: &[u8],
-    collation: tidb_datatype::Collation,
-) -> Result<Datum, EvalError> {
-    Ok(Datum::Int(match collation.compare(a, b) {
-        std::cmp::Ordering::Less => -1,
-        std::cmp::Ordering::Equal => 0,
-        std::cmp::Ordering::Greater => 1,
-    }))
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::StrcmpNative,
+        ctx,
+        || {
+            Ok(crate::tikv::EvaluatedArgs::CollatedBytes2 {
+                left: coerce_str_bytes(left)?,
+                right: coerce_str_bytes(right)?,
+                collation: collation.native_policy(),
+            })
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
 }
 
 /// `HEX(x)`: renders a numeric argument's implicit-integer bits as uppercase

@@ -786,9 +786,9 @@ impl Creation {
             self.operation,
             LocalCompileContext {
                 limits: CompileLimits {
-                    // Only the four pad and two INSERT operations have four
-                    // ready arguments. Other recipes retain four nodes; unary
-                    // two-call predicates still require depth three.
+                    // Only the four pad, two INSERT and native LOCATE3
+                    // operations have four ready arguments. Other recipes keep
+                    // four nodes; unary two-call predicates require depth three.
                     max_nodes: if matches!(
                         self.operation,
                         EvaluatedBytesOp::LpadBytesNative
@@ -797,6 +797,7 @@ impl Creation {
                             | EvaluatedBytesOp::RpadUtf8Native
                             | EvaluatedBytesOp::Insert
                             | EvaluatedBytesOp::InsertUtf8Native
+                            | EvaluatedBytesOp::Locate3Native
                     ) {
                         5
                     } else {
@@ -1443,7 +1444,14 @@ fn materialize_computed(
             | EvaluatedBytesOp::IsIpv4CompatNullable
             | EvaluatedBytesOp::IsIpv4MappedNullable
             | EvaluatedBytesOp::OrdNative
-            | EvaluatedBytesOp::UncompressedLengthNative,
+            | EvaluatedBytesOp::UncompressedLengthNative
+            | EvaluatedBytesOp::StrcmpNative
+            | EvaluatedBytesOp::Locate2Native
+            | EvaluatedBytesOp::Locate3Native
+            | EvaluatedBytesOp::Locate3BytesExtNative
+            | EvaluatedBytesOp::Locate3Utf8ExtNative
+            | EvaluatedBytesOp::FindInSetNative
+            | EvaluatedBytesOp::FindInSetPreparedNative,
             ComputedValue::Int(value),
         ) => own_computed_int(value)
             .into_datum()

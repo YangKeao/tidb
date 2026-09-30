@@ -22,9 +22,9 @@ use crate::row::row_compare;
 use crate::string_fn::{
     ascii, bin, bit_count, bit_length_in, case_convert_in, char_func_with_context,
     concat_with_context, concat_ws_with_context, elt, export_set, field, format_num,
-    from_base64_in, from_base64_with_packet_limit, hex_in, locate, locate_collation,
-    locate_with_position, make_set, oct, ord_in, quote_in, replace_in, reverse_in, str_insert,
-    str_take_in, strcmp, substring, substring_index_in, unhex_in,
+    from_base64_in, from_base64_with_packet_limit, hex_in, locate_collation, locate_in,
+    locate_with_position_in, make_set, oct, ord_in, quote_in, replace_in, reverse_in, str_insert,
+    str_take_in, strcmp_in, substring, substring_index_in, unhex_in,
 };
 use crate::string_packet::{pad, repeat, space, to_base64};
 use crate::time_fn::calendar::{date_add, date_diff, date_format, date_part, from_days, time_part};
@@ -771,22 +771,28 @@ pub(crate) fn eval_func_values(
         "REPEAT" if vals.len() == 2 => repeat(vals, ctx),
         "REPLACE" if vals.len() == 3 => replace_in(vals, ctx),
         "SPACE" if vals.len() == 1 => space(vals, ctx),
-        "STRCMP" if vals.len() == 2 => strcmp(vals),
+        "STRCMP" if vals.len() == 2 => strcmp_in(vals, ctx),
         "LPAD" if vals.len() == 3 => pad(vals, true, ctx),
         "RPAD" if vals.len() == 3 => pad(vals, false, ctx),
         // `LOCATE(substr, str)` / `INSTR(str, substr)` — same 1-indexed
         // char position, arguments in the opposite order (reusing
         // `position`, which already handles the empty-substr and
         // not-found rules).
-        "LOCATE" if vals.len() == 2 => {
-            locate(&vals[0], &vals[1], locate_collation(&vals[0], &vals[1]))
-        }
+        "LOCATE" if vals.len() == 2 => locate_in(
+            &vals[0],
+            &vals[1],
+            locate_collation(&vals[0], &vals[1]),
+            ctx,
+        ),
         "LOCATE" if vals.len() == 3 => {
-            locate_with_position(vals, locate_collation(&vals[0], &vals[1]))
+            locate_with_position_in(vals, locate_collation(&vals[0], &vals[1]), ctx)
         }
-        "INSTR" if vals.len() == 2 => {
-            locate(&vals[1], &vals[0], locate_collation(&vals[0], &vals[1]))
-        }
+        "INSTR" if vals.len() == 2 => locate_in(
+            &vals[1],
+            &vals[0],
+            locate_collation(&vals[0], &vals[1]),
+            ctx,
+        ),
         "HEX" if vals.len() == 1 => hex_in(vals, ctx),
         "UNHEX" if vals.len() == 1 => unhex_in(vals, ctx),
         "BIN" if vals.len() == 1 => bin(vals, ctx),

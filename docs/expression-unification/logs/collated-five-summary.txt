@@ -1,0 +1,93 @@
+Checkpoint: collated-five-22
+STATUS: final functional checkpoint after ten actual parent receipts; full expression remains non-green.
+Added frozen family IDs: strcmp, locate, instr, find_in_set (four). All five SQL spellings/surfaces STRCMP, LOCATE, INSTR, POSITION and FIND_IN_SET are migrated; POSITION belongs to locate and INSTR remains separate. Corrected functional delegation/native-deletion advances66->70/245 after core/native/SQL gates; final acceptance remains0/245. Native selector deduplication adds no family/package completion credit.
+PUBLICATION-LEDGER CAVEAT: parent membership assertion rejected a separate position ID as a duplicate alias before any publication. Frozen coverage-baseline.json:46 maps position->locate; :233 lists [locate,position] and the normalization rule. Planned71/245 was corrected to70/245 without changing the frozen denominator, previous ledgers, code or tests. collated-five-22 names five SQL spellings, not five families. This was a failed ledger-validation assertion and its correction, not a compilation failure or an extra Rust runtime LOG receipt.
+Raw receipt directory: /home/agent/tidb/expression-unification/logs
+This writer ran no build/test/fmt. The following commands/results belong to the parent.
+
+CWD: /home/agent/tidb/expression-unification/tikv
+WRAPPER PIN: nightly-2026-01-30-x86_64-unknown-linux-gnu
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib codec::collation:: -- --test-threads=1
+LOG: collated-five-tikv-collation.log
+EXIT: 0
+running 25 tests
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 370 filtered out; finished in 0.01s
+
+CWD: /home/agent/tidb/expression-unification/tidb/rust
+WRAPPER PIN: nightly-2026-08-22-x86_64-unknown-linux-gnu
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+LOG: collated-five-native-datatype.log
+EXIT: 0
+running 436 tests
+test result: ok. 436 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.11s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-datatype --test all shared_collation_contract -- --test-threads=1
+LOG: collated-five-shared-collation.log
+EXIT: 0
+running 14 tests
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 80 filtered out; finished in 0.00s
+
+CWD: /home/agent/tidb/expression-unification/tikv
+WRAPPER PIN: nightly-2026-01-30-x86_64-unknown-linux-gnu
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local::tests -- --test-threads=1
+LOG: collated-five-tikv-local.log
+EXIT: 0
+running 66 tests
+test result: ok. 66 passed; 0 failed; 0 ignored; 0 measured; 632 filtered out; finished in 0.02s
+This is only local::tests, not all local modules. It is a successful subset receipt, not a failure or zero-test attempt.
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_string::tests -- --test-threads=1
+LOG: collated-five-official-string.log
+EXIT: 0
+running 63 tests
+test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 635 filtered out; finished in 0.02s
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+LOG: collated-five-tikv-local-all.log
+EXIT: 0
+running 229 tests
+test result: ok. 228 passed; 0 failed; 1 ignored; 0 measured; 469 filtered out; finished in 0.18s
+This separate full local:: receipt includes batch/compile guards and the earlier local::tests subset. Do not sum66+228 or relabel the first receipt as all local.
+The first January expression compilation finished in10.72s without a compilation failure. The logs retain two new mismatched-lifetime-syntax warnings in find_in_set_entries/find_in_set_keys and the preexisting legacy_substring_view warning, along with existing datatype/future-compatibility warnings. No warning-only source edit/rebuild is claimed.
+
+CWD: /home/agent/tidb/expression-unification/tidb/rust
+WRAPPER PIN: nightly-2026-08-22-x86_64-unknown-linux-gnu
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib collation_search_dispatch_ -- --test-threads=1
+LOG: collated-five-dispatch.log
+EXIT: 0
+running 3 tests
+test tikv::evaluated_ascii::tests::collation_search_dispatch_find_cache_lifecycle_and_nopad ... ok
+test tikv::evaluated_ascii::tests::collation_search_dispatch_find_constructor_errors_and_root_refusal ... ok
+test tikv::evaluated_ascii::tests::collation_search_dispatch_preserves_typed_order_and_values ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1513 filtered out; finished in 0.00s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib builtin_ext::string2::tests -- --test-threads=1
+LOG: collated-five-extension.log
+EXIT: 0
+running 16 tests
+test builtin_ext::string2::tests::find_in_set_adapter_preserves_null_empty_and_coercion ... ok
+test builtin_ext::string2::tests::locate3_extension_adapter_preserves_units_wrapping_and_demand ... ok
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 1500 filtered out; finished in 0.01s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+LOG: collated-five-sql.log
+EXIT: 0
+running 47 tests
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 0.68s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+LOG: collated-five-expr-full.log
+EXIT: 101
+running 1516 tests
+test result: FAILED. 1418 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.39s
+error: test failed, to rerun pass `-p tidb-expr --lib`
+Current full-expression failures, with complete blocks preserved in the raw log:
+  pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation
+  tests::builtin_info_json_math_source::exp
+  tests::builtin_math_misc_op_source::vectorized_builtin_op_func
+  time_fn::tests::str_to_date_partial_formats_follow_no_zero_date
+Parent compared the entire failures section against substring-gb-expr-full.log: byte-identical after only thread-ID normalization. Parent reports normalized-section SHA256 fb665bb70597cfff204649928faef5a1284edcae0a2f1ecd275295b3b36e7cb3 (not a whole-log hash). The current full expression suite remains non-green.
+NOT REPEATED THIS ROUND: unistore, parser and generators. Their old receipts do not validate this binary. In particular, round21 parser default7/5 plus three poison failures and unistore1 remain historical non-green observations, not new passing gates. The expression comparison above uses the actual new full-expression run.
+REPOSITORY CHECKS (parent-reported, not additional test receipts): both repository git diff --check commands exited0; both lockfile git diff --exit-code checks exited0. No lock changes or new pins. No actual compilation failure or runtime repair occurred in this round.
+
+SOURCE BOUNDARIES: fixed-context FIND/LOCATE/POSITION/STRCMP adapters; only Locate3Native adds a new four-column recipe. No new PB/unistore admission or generic four-column/graph/driver/pool broadening. Typed UTF8 stays strict with three-argument CI Go-simple-lower; extension LOCATE3 retains wrapping start, Go per-invalid-byte normalization and exact equality. The direct already-text POSITION helper uses UTF8(Binary), whereas SQL POSITION rewrites to LOCATE.
+FIND: pure builder produces immutable NoPad keys, no SQL answer or dispatch. Existing context cache keeps needle-expression-first, Row::empty list construction even for NULL needle, constructor errors uncached and Clone empty. CachedNULL alone suppresses needle coercion; empty cache still coerces/keys a non-NULL needle. Build/probe resolve runtime mode at separate original points; no raw-list row re-keying. Native NoPad KEY equality is not wire compare(false).
+COSTS: opaque keys use cheap Arc cloning but shared-owner extraction copies the encoded Vec input column. HashMap-to-ordered-scan lookup, allocations, physical peak and performance are not measured. Pure-helper LocalError is opaque ExpressionRuntimeFailure phaseNone, not worker Prepare/Invoke or fabricated SQL overflow.
+SELECTOR: sixteen checked native tags/seven CI policies, native algorithm selector removed, shared GB ownership retained, Pinyin remains its original panic stub, DerivedBinary LIKE remains UTF8-rune rather than Binary-byte matching.
+VALIDATED BY PARENT: three dispatcher tests; both new adapter regressions inside the16-test extension gate; both new SQL tests inside the47-test lifecycle gate, covering5rows x12columns and21direct zero-slot probes. Existing expectations/fixtures unchanged.
+RO CORRECTIONS: B rejected parent's CI3 bad-UTF8 expansion hypothesis using the old strict coerce_str path/diff; no source change implemented that hypothesis. A's wrong into_int callback name was replaced by existing into_int_datum before compilation, without adding a converter or generalizing the driver. These are not failed compilation/test receipts.
+Whole workspace, make lint, performance, allocator remeasurement, physical peak/OOM, complete operation scopes/guards and final acceptance remain unverified. Functional70/245, final0/245; full expression remains non-green and this is not PR-ready. Source stays frozen; previous docs/Plan/index are not changed.

@@ -2638,21 +2638,22 @@ impl ScalarFunction {
                             self.args[2].static_type(),
                             ctx,
                         )?;
-                        return crate::string_fn::locate_with_position(
+                        return crate::string_fn::locate_with_position_in(
                             &[substr, str, position],
                             collation,
+                            ctx,
                         );
                     }
-                    return crate::string_fn::locate(&substr, &str, collation);
+                    return crate::string_fn::locate_in(&substr, &str, collation, ctx);
                 }
                 "instr" if self.args.len() == 2 => {
                     let a = self.args[0].eval(ctx, row)?;
                     let b = self.args[1].eval(ctx, row)?;
-                    return crate::string_fn::locate(&b, &a, collation);
+                    return crate::string_fn::locate_in(&b, &a, collation, ctx);
                 }
                 "strcmp" if self.args.len() == 2 => {
                     let vals = [self.args[0].eval(ctx, row)?, self.args[1].eval(ctx, row)?];
-                    return crate::string_fn::strcmp_with_collation(&vals, collation);
+                    return crate::string_fn::strcmp_with_collation_in(&vals, collation, ctx);
                 }
                 "find_in_set" if self.args.len() == 2 => {
                     let needle = self.args[0].eval(ctx, row)?;
@@ -2663,12 +2664,15 @@ impl ScalarFunction {
                                     let list = self.args[1].eval(ctx, Row::empty())?;
                                     crate::builtin_ext::build_find_in_set_lookup(&list, collation)
                                 })?;
-                        return crate::builtin_ext::find_in_set_lookup(&needle, &lookup, collation);
+                        return crate::builtin_ext::find_in_set_lookup_in(
+                            &needle, &lookup, collation, ctx,
+                        );
                     }
                     let list = self.args[1].eval(ctx, row)?;
-                    return crate::builtin_ext::find_in_set_with_collation(
+                    return crate::builtin_ext::find_in_set_with_collation_in(
                         &[needle, list],
                         collation,
+                        ctx,
                     );
                 }
                 // Go `greatestFunctionClass`/`leastFunctionClass`: the

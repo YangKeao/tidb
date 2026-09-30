@@ -1108,6 +1108,15 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::Insert | EvaluatedBytesOp::InsertUtf8Native => {
             panic!("INSERT requires all four original operands")
         }
+        EvaluatedBytesOp::StrcmpNative
+        | EvaluatedBytesOp::Locate2Native
+        | EvaluatedBytesOp::Locate3Native
+        | EvaluatedBytesOp::Locate3BytesExtNative
+        | EvaluatedBytesOp::Locate3Utf8ExtNative
+        | EvaluatedBytesOp::FindInSetNative
+        | EvaluatedBytesOp::FindInSetPreparedNative => {
+            panic!("collation search needs its complete operands and policy")
+        }
         EvaluatedBytesOp::Substring2BytesNative
         | EvaluatedBytesOp::Substring2Utf8Native
         | EvaluatedBytesOp::Substring3BytesNative
@@ -1179,6 +1188,304 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+#[test]
+fn collation_search_dispatch_preserves_typed_order_and_values() {
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    use tidb_datatype::Collation;
+
+    struct Params {
+        values: RefCell<Vec<Datum>>,
+        reads: RefCell<Vec<usize>>,
+    }
+    impl Columns for Params {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn param_value(&self, order: usize) -> Result<Datum, EvalError> {
+            self.reads.borrow_mut().push(order);
+            Ok(self.values.borrow()[order].clone())
+        }
+        fn truncate_level(&self) -> ErrorLevel {
+            ErrorLevel::Error
+        }
+    }
+    let parameter = |order| {
+        let mut constant = Constant::new(Datum::Null, FieldType::new(FieldTypeCode::VarString));
+        constant.param_marker = Some(crate::constant::ParamMarker { order });
+        Expression::Constant(constant)
+    };
+    let function = |name: &str, arity| {
+        ScalarFunction::new(
+            tidb_ast::CiString::new(name),
+            FieldType::new(FieldTypeCode::LongLong).with_collation(Collation::Utf8Mb4GeneralCi),
+            (0..arity).map(parameter).collect(),
+        )
+    };
+    let native = Params {
+        values: RefCell::new(vec![
+            Datum::Null,
+            Datum::MinNotNull,
+            Datum::new_string("bad_pos"),
+        ]),
+        reads: RefCell::new(Vec::new()),
+    };
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        let locate3 = function("locate", 3);
+        arm_eval_one_observation();
+        let result = locate3.eval(columns, tidb_chunk::row::Row::empty());
+        let observation = take_eval_one_observation();
+        assert!(matches!(result, Err(EvalError::TruncatedWrongValue(message)) if message.contains("bad_pos")), "typed position cast precedes both string coercions, even with a NULL needle");
+        assert_eq!(native.reads.replace(Vec::new()), [0, 1, 2]);
+        assert_eq!(observation.facade_entries, 0);
+
+        native.values.borrow_mut()[2] = Datum::Int(1);
+        arm_eval_one_observation();
+        let result = locate3.eval(columns, tidb_chunk::row::Row::empty());
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Err(EvalError::Unsupported("range sentinel string coercion")));
+        assert_eq!(native.reads.replace(Vec::new()), [0, 1, 2]);
+        assert_eq!(observation.facade_entries, 0, "a NULL needle does not suppress source coercion");
+
+        // Fixed derived policies, not a change to the process-wide collation mode.
+        for (name, values, expected) in [
+            ("strcmp", vec![Datum::new_string("A"), Datum::new_string("a")], 0),
+            ("locate", vec![Datum::new_string("b"), Datum::new_string("一Ab")], 3),
+            ("instr", vec![Datum::new_string("一Ab"), Datum::new_string("b")], 3),
+            ("locate", vec![Datum::new_string("b"), Datum::new_string("b一b"), Datum::new_string("2")], 3),
+        ] {
+            let arity = values.len();
+            *native.values.borrow_mut() = values;
+            arm_eval_one_observation();
+            let result = function(name, arity as i64).eval(columns, tidb_chunk::row::Row::empty());
+            let observation = take_eval_one_observation();
+            assert_eq!(result, Ok(Datum::Int(expected)), "{name}");
+            assert_eq!(native.reads.replace(Vec::new()), (0..arity).collect::<Vec<_>>(), "INSTR evaluates source then needle before swapping");
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(observation.after_kernel_invocations, observation.before_kernel_invocations.map(|before| before + 1));
+        }
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn collation_search_dispatch_find_cache_lifecycle_and_nopad() {
+    use crate::expression::{ConstLevel, Expression};
+    use crate::scalar_function::ScalarFunction;
+    use tidb_datatype::Collation;
+
+    struct Params {
+        context: Cell<u64>,
+        values: RefCell<[Datum; 2]>,
+        reads: RefCell<Vec<usize>>,
+    }
+    impl Columns for Params {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn context_id(&self) -> u64 {
+            self.context.get()
+        }
+        fn param_value(&self, order: usize) -> Result<Datum, EvalError> {
+            self.reads.borrow_mut().push(order);
+            Ok(self.values.borrow()[order].clone())
+        }
+    }
+    let parameter = |order| {
+        let mut constant = Constant::new(Datum::Null, FieldType::new(FieldTypeCode::VarString));
+        constant.param_marker = Some(crate::constant::ParamMarker { order });
+        Expression::Constant(constant)
+    };
+    let mut function = ScalarFunction::new(
+        tidb_ast::CiString::new("find_in_set"),
+        FieldType::new(FieldTypeCode::LongLong).with_collation(Collation::Utf8Mb4GeneralCi),
+        vec![parameter(0), parameter(1)],
+    );
+    assert_eq!(function.args[1].const_level(), ConstLevel::ONLY_IN_CONTEXT);
+    let native = Params {
+        context: Cell::new(71),
+        values: RefCell::new([Datum::Null, Datum::Null]),
+        reads: RefCell::new(Vec::new()),
+    };
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        let check = |function: &ScalarFunction, expected, reads: &[usize]| {
+            arm_eval_one_observation();
+            let result = function.eval(columns, tidb_chunk::row::Row::empty());
+            let observation = take_eval_one_observation();
+            assert_eq!(result, Ok(expected));
+            assert_eq!(native.reads.replace(Vec::new()), reads);
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(
+                observation.after_kernel_invocations,
+                observation
+                    .before_kernel_invocations
+                    .map(|before| before + 1)
+            );
+        };
+        check(&function, Datum::Null, &[0, 1]); // NULL needle still initializes list.
+        native.values.borrow_mut()[0] = Datum::MinNotNull;
+        check(&function, Datum::Null, &[0]); // Cached NULL skips cast, not needle eval.
+
+        native.context.set(72);
+        *native.values.borrow_mut() = [Datum::new_string("a "), Datum::new_string("a,a ,a")];
+        check(&function, Datum::Int(2), &[0, 1]); // NoPad keeps the trailing space.
+        *native.values.borrow_mut() = [Datum::new_string("a"), Datum::new_string("other")];
+        check(&function, Datum::Int(1), &[0]); // Cached first duplicate still wins.
+
+        native.context.set(71);
+        native.values.borrow_mut()[1] = Datum::new_string("a ,a");
+        check(&function, Datum::Int(2), &[0, 1]); // Context 72 replaced the old NULL slot.
+        native.values.borrow_mut()[1] = Datum::new_string("other");
+        let cloned = function.clone();
+        check(&cloned, Datum::Int(0), &[0, 1]); // Clone has an empty cache.
+        check(&function, Datum::Int(2), &[0]);
+        function.invalidate_cached_arguments();
+        check(&function, Datum::Int(0), &[0, 1]);
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn collation_search_dispatch_find_constructor_errors_and_root_refusal() {
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    use tidb_datatype::Collation;
+
+    struct Params {
+        context: Cell<u64>,
+        values: RefCell<[Datum; 2]>,
+        fail_list: Cell<bool>,
+        reads: RefCell<Vec<usize>>,
+    }
+    impl Columns for Params {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn context_id(&self) -> u64 {
+            self.context.get()
+        }
+        fn param_value(&self, order: usize) -> Result<Datum, EvalError> {
+            self.reads.borrow_mut().push(order);
+            if order == 1 && self.fail_list.get() {
+                return Err(EvalError::Unsupported("find list expression failed"));
+            }
+            Ok(self.values.borrow()[order].clone())
+        }
+    }
+    let parameter = |order| {
+        let mut constant = Constant::new(Datum::Null, FieldType::new(FieldTypeCode::VarString));
+        constant.param_marker = Some(crate::constant::ParamMarker { order });
+        Expression::Constant(constant)
+    };
+    let function = ScalarFunction::new(
+        tidb_ast::CiString::new("find_in_set"),
+        FieldType::new(FieldTypeCode::LongLong).with_collation(Collation::Utf8Mb4GeneralCi),
+        vec![parameter(0), parameter(1)],
+    );
+    let null_function = function.clone();
+    let native = Params {
+        context: Cell::new(81),
+        values: RefCell::new([Datum::Null, Datum::MinNotNull]),
+        fail_list: Cell::new(true),
+        reads: RefCell::new(Vec::new()),
+    };
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        let check =
+            |function: &ScalarFunction, expected: Result<Datum, EvalError>, reads: &[usize]| {
+                arm_eval_one_observation();
+                let result = function.eval(columns, tidb_chunk::row::Row::empty());
+                let observation = take_eval_one_observation();
+                assert_eq!(result, expected);
+                assert_eq!(native.reads.replace(Vec::new()), reads);
+                assert_eq!(observation.facade_entries, usize::from(expected.is_ok()));
+                if expected.is_ok() {
+                    assert_eq!(
+                        observation.after_kernel_invocations,
+                        observation
+                            .before_kernel_invocations
+                            .map(|before| before + 1)
+                    );
+                } else {
+                    assert_eq!(observation.before_kernel_invocations, None);
+                    assert_eq!(observation.after_kernel_invocations, None);
+                }
+            };
+        // Constructor expression/coercion errors precede NULL propagation;
+        // repeated attempts in this same context must not cache either error.
+        for _ in 0..2 {
+            check(
+                &function,
+                Err(EvalError::Unsupported("find list expression failed")),
+                &[0, 1],
+            );
+        }
+        native.fail_list.set(false);
+        for _ in 0..2 {
+            check(
+                &function,
+                Err(EvalError::Unsupported("range sentinel byte coercion")),
+                &[0, 1],
+            );
+        }
+        native.values.borrow_mut()[1] = Datum::new_string("a,b,a");
+        check(&function, Ok(Datum::Null), &[0, 1]);
+
+        native.values.borrow_mut()[0] = Datum::new_string("a");
+        native.context.set(82);
+        native.fail_list.set(true);
+        check(
+            &function,
+            Err(EvalError::Unsupported("find list expression failed")),
+            &[0, 1],
+        );
+        native.context.set(81);
+        check(&function, Ok(Datum::Int(1)), &[0]); // Failed replacement kept the old slot.
+
+        native.fail_list.set(false);
+        *native.values.borrow_mut() = [Datum::MinNotNull, Datum::Null];
+        check(&null_function, Ok(Datum::Null), &[0, 1]);
+    });
+    drop(scope);
+    execution.close();
+
+    // Reuse the actual typed caches under an explicit exhausted root. Any
+    // list reevaluation would now fail; neither cached hits, misses nor NULL
+    // may return a native answer or create an alternate one-shot pool.
+    native.fail_list.set(true);
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for (function, needle) in [
+            (&function, Datum::new_string("a")),
+            (&function, Datum::new_string("missing")),
+            (&null_function, Datum::MinNotNull),
+        ] {
+            native.values.borrow_mut()[0] = needle;
+            arm_eval_one_observation();
+            let result = function.eval(columns, tidb_chunk::row::Row::empty());
+            let observation = take_eval_one_observation();
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(native.reads.replace(Vec::new()), [0]);
+            assert_eq!(observation.facade_entries, 0);
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 #[test]
