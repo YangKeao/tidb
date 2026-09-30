@@ -43,7 +43,7 @@ use tidb_proto::tipb;
 use tidb_codec::table_key::RecordHandle;
 
 use crate::mvcc_store::MvccStore;
-use tidb_hack::{go_to_lower, go_to_upper};
+use tidb_hack::go_to_lower;
 
 /// Go `kv.ReqTypeDAG` / `ReqTypeAnalyze` / `ReqTypeChecksum`
 /// (`pkg/kv/kv.go:375-377`).
@@ -3251,9 +3251,22 @@ impl LegacyEvaluator<'_> {
                                 .to_f64(),
                         ),
                         SimpleSig::Pow => {
-                            let left = legacy_some!(self.eval_real(children.first())?);
-                            let right = legacy_some!(self.eval_real(children.get(1))?);
-                            Some(left.powf(right))
+                            let arguments = match self.eval_real(children.first())? {
+                                None => tidb_expr::RawPowReadyArgs::LeftNull,
+                                Some(base) => tidb_expr::RawPowReadyArgs::Values {
+                                    base,
+                                    exponent: self.eval_real(children.get(1))?,
+                                },
+                            };
+                            match tidb_expr::eval_raw_pow_ready_in(arguments, self.raw_columns)? {
+                                Datum::Real(value) => Some(value),
+                                Datum::Null => None,
+                                _ => {
+                                    return Err(LegacyEvalError::InvalidResult(
+                                        "POW returned a non-real datum",
+                                    ))
+                                }
+                            }
                         }
                         SimpleSig::Atan2Args => {
                             let left = legacy_some!(self.eval_real(children.first())?);
@@ -3996,15 +4009,41 @@ impl LegacyEvaluator<'_> {
                 let rendered = legacy_some!(time.date_format(&layout).ok());
                 Some(rendered.into_bytes())
             }
-            // Go's string-function family: case folding and substring over the
-            // byte domain for the binary forms and the rune domain for the
-            // UTF8 forms.
             SimpleExpr::Func(
                 sig @ (SimpleSig::Lower
                 | SimpleSig::LowerUtf8
                 | SimpleSig::Upper
-                | SimpleSig::UpperUtf8
-                | SimpleSig::Substring2Args
+                | SimpleSig::UpperUtf8),
+                children,
+            ) => {
+                let function = match sig {
+                    SimpleSig::Lower => tidb_expr::RawCaseFunction::LowerAscii,
+                    SimpleSig::Upper => tidb_expr::RawCaseFunction::UpperAscii,
+                    SimpleSig::LowerUtf8 => tidb_expr::RawCaseFunction::LowerUtf8,
+                    SimpleSig::UpperUtf8 => tidb_expr::RawCaseFunction::UpperUtf8,
+                    _ => unreachable!("case signature matched above"),
+                };
+                let ready = self.eval_bytes(children.first())?;
+                // Preserve this legacy frontend's grouped Rust replacement,
+                // not the ordinary native Go-per-invalid-byte normalization.
+                let ready = if matches!(sig, SimpleSig::LowerUtf8 | SimpleSig::UpperUtf8) {
+                    ready.map(|bytes| String::from_utf8_lossy(&bytes).into_owned().into_bytes())
+                } else {
+                    ready
+                };
+                match tidb_expr::eval_raw_case_ready_in(function, ready, self.raw_columns)? {
+                    Datum::Bytes(bytes) => Some(bytes),
+                    Datum::Null => None,
+                    _ => {
+                        return Err(LegacyEvalError::InvalidResult(
+                            "raw case conversion returned a non-bytes datum",
+                        ))
+                    }
+                }
+            }
+            // Substring retains its byte/rune units and position policy.
+            SimpleExpr::Func(
+                sig @ (SimpleSig::Substring2Args
                 | SimpleSig::Substring2ArgsUtf8
                 | SimpleSig::Substring3Args
                 | SimpleSig::Substring3ArgsUtf8),
@@ -4012,10 +4051,7 @@ impl LegacyEvaluator<'_> {
             ) => {
                 let utf8 = matches!(
                     sig,
-                    SimpleSig::LowerUtf8
-                        | SimpleSig::UpperUtf8
-                        | SimpleSig::Substring2ArgsUtf8
-                        | SimpleSig::Substring3ArgsUtf8
+                    SimpleSig::Substring2ArgsUtf8 | SimpleSig::Substring3ArgsUtf8
                 );
                 let units = |bytes: &[u8]| -> Vec<char> {
                     if utf8 {
@@ -4033,32 +4069,6 @@ impl LegacyEvaluator<'_> {
                         | SimpleSig::Substring3ArgsUtf8
                 );
                 let _ = is_sub;
-                if matches!(
-                    sig,
-                    SimpleSig::Lower
-                        | SimpleSig::LowerUtf8
-                        | SimpleSig::Upper
-                        | SimpleSig::UpperUtf8
-                ) {
-                    let units = units(&text);
-                    let folded: String = match sig {
-                        SimpleSig::LowerUtf8 => go_to_lower(units.iter().collect::<String>()),
-                        SimpleSig::Lower => units
-                            .iter()
-                            .map(|c| (*c as u8).to_ascii_lowercase() as char)
-                            .collect(),
-                        SimpleSig::UpperUtf8 => go_to_upper(units.iter().collect::<String>()),
-                        _ => units
-                            .iter()
-                            .map(|c| (*c as u8).to_ascii_uppercase() as char)
-                            .collect(),
-                    };
-                    return Ok(Some(if utf8 {
-                        folded.into_bytes()
-                    } else {
-                        folded.chars().map(|c| c as u8).collect()
-                    }));
-                }
                 // Go `builtinSubstringSig`: 1-based position; a negative
                 // position counts from the end; a negative length takes the
                 // rest after the start.
@@ -6865,6 +6875,229 @@ mod tests {
         );
         let pi_value = eval_expr(&pi, &[], 4, &zone()).expect("evals");
         assert!(pi_value.expect("non-null") != 0);
+    }
+
+    #[test]
+    fn legacy_case_preserves_ascii_unicode_and_grouped_lossy_bytes() {
+        let time_zone = zone();
+        let evaluator = LegacyEvaluator::new(&[], 4, &time_zone);
+        for (sig, input, expected) in [
+            (
+                SimpleSig::Lower,
+                vec![b'a', b'Z', 0xff],
+                vec![b'a', b'z', 0xff],
+            ),
+            (
+                SimpleSig::Upper,
+                vec![b'a', b'Z', 0xff],
+                vec![b'A', b'Z', 0xff],
+            ),
+            (
+                SimpleSig::LowerUtf8,
+                "İΣß".as_bytes().to_vec(),
+                "iσß".as_bytes().to_vec(),
+            ),
+            (
+                SimpleSig::UpperUtf8,
+                "ßﬁé".as_bytes().to_vec(),
+                "ßﬁÉ".as_bytes().to_vec(),
+            ),
+            // Rust groups this incomplete prefix into ONE replacement rune;
+            // ordinary native Go normalization would emit TWO.
+            (
+                SimpleSig::LowerUtf8,
+                vec![0xe2, 0x82, b'A'],
+                "\u{fffd}a".as_bytes().to_vec(),
+            ),
+            (
+                SimpleSig::UpperUtf8,
+                vec![0xe2, 0x82, b'a'],
+                "\u{fffd}A".as_bytes().to_vec(),
+            ),
+        ] {
+            let call = SimpleExpr::Func(sig, vec![SimpleExpr::Bytes(input)]);
+            assert_eq!(evaluator.eval_bytes(Some(&call)).unwrap(), Some(expected));
+        }
+        for sig in [
+            SimpleSig::Lower,
+            SimpleSig::Upper,
+            SimpleSig::LowerUtf8,
+            SimpleSig::UpperUtf8,
+        ] {
+            let call = SimpleExpr::Func(sig, vec![SimpleExpr::Null]);
+            assert_eq!(evaluator.eval_bytes(Some(&call)).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn legacy_case_null_and_value_admission_errors_remain_typed() {
+        let policy = tidb_expr::AsciiPoolPolicy::checked(
+            0,
+            0,
+            16 * 1024 * 1024,
+            4 * 1024 * 1024,
+            4 * 1024 * 1024,
+            64,
+            8,
+            4 * 1024 * 1024,
+        )
+        .expect("zero-slot policy");
+        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let execution = owner.begin_execution().expect("execution");
+        let scope = execution.scope();
+        let time_zone = zone();
+        scope.with_columns(&tidb_expr::NoColumns, |columns| {
+            let evaluator = LegacyEvaluator {
+                raw_columns: columns,
+                ..LegacyEvaluator::new(&[], 4, &time_zone)
+            };
+            for sig in [
+                SimpleSig::Lower,
+                SimpleSig::Upper,
+                SimpleSig::LowerUtf8,
+                SimpleSig::UpperUtf8,
+            ] {
+                for input in [SimpleExpr::Null, SimpleExpr::Bytes(b"aZ".to_vec())] {
+                    let call = SimpleExpr::Func(sig, vec![input]);
+                    assert!(matches!(
+                        evaluator.eval_bytes(Some(&call)),
+                        Err(LegacyEvalError::Infrastructure(_))
+                    ));
+                    let cast = SimpleExpr::Func(SimpleSig::CastStringAsInt, vec![call]);
+                    let bytes = SimpleExpr::Func(SimpleSig::CastIntAsString, vec![cast]);
+                    assert!(matches!(
+                        evaluator.eval_bytes(Some(&bytes)),
+                        Err(LegacyEvalError::Infrastructure(_))
+                    ));
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn legacy_pow_preserves_raw_nonfinite_results() {
+        let time_zone = zone();
+        let evaluator = LegacyEvaluator::new(&[], 4, &time_zone);
+        let pow = |base, exponent| {
+            SimpleExpr::Func(
+                SimpleSig::Pow,
+                vec![SimpleExpr::Real(base), SimpleExpr::Real(exponent)],
+            )
+        };
+        let nan = pow(-2.0, 0.5);
+        assert!(evaluator
+            .eval_real(Some(&nan))
+            .expect("raw POW")
+            .expect("NaN is not SQL NULL")
+            .is_nan());
+        assert_eq!(
+            evaluator.eval_real(Some(&pow(10.0, 700.0))).unwrap(),
+            Some(f64::INFINITY)
+        );
+        for (base, exponent, expected) in [
+            (0.0, 0.0, 1.0_f64),
+            (f64::NAN, 0.0, 1.0),
+            (-0.0, 3.0, -0.0),
+            (0.5, 2000.0, 0.0),
+        ] {
+            assert_eq!(
+                evaluator
+                    .eval_real(Some(&pow(base, exponent)))
+                    .unwrap()
+                    .unwrap()
+                    .to_bits(),
+                expected.to_bits()
+            );
+        }
+        let cast = SimpleExpr::Func(SimpleSig::CastRealAsInt, vec![nan.clone()]);
+        assert_eq!(evaluator.eval_expr(&cast).unwrap(), Some(0));
+        let compare = SimpleExpr::Func(SimpleSig::EqReal, vec![nan.clone(), nan]);
+        assert_eq!(evaluator.eval_expr(&compare).unwrap(), Some(1));
+    }
+
+    #[test]
+    fn legacy_pow_keeps_operand_demand_and_null_admission() {
+        let policy = tidb_expr::AsciiPoolPolicy::checked(
+            0,
+            0,
+            16 * 1024 * 1024,
+            4 * 1024 * 1024,
+            4 * 1024 * 1024,
+            64,
+            8,
+            4 * 1024 * 1024,
+        )
+        .expect("zero-slot policy");
+        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let execution = owner.begin_execution().expect("execution");
+        let scope = execution.scope();
+        let time_zone = zone();
+        scope.with_columns(&tidb_expr::NoColumns, |columns| {
+            let bad_child = convert_expr(&tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(tipb::ScalarFuncSig::IntIsNull as i32),
+                field_type: Some(tipb::FieldType {
+                    tp: Some(8),
+                    ..Default::default()
+                }),
+                children: vec![tipb::Expr {
+                    tp: Some(tipb::ExprType::Null as i32),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+            .expect("shared child");
+            assert!(matches!(&bad_child, SimpleExpr::Shared(_)));
+            // Only the shared child sees the refusing pool. POW itself uses
+            // its ordinary raw context, so success proves the rhs was skipped.
+            let evaluator = LegacyEvaluator {
+                shared_override: Some(columns),
+                ..LegacyEvaluator::new(&[], 4, &time_zone)
+            };
+            assert!(matches!(
+                evaluator.eval_real(Some(&bad_child)),
+                Err(LegacyEvalError::Infrastructure(_))
+            ));
+            let pow = |left, right| SimpleExpr::Func(SimpleSig::Pow, vec![left, right]);
+            assert_eq!(
+                evaluator
+                    .eval_real(Some(&pow(SimpleExpr::Null, bad_child.clone())))
+                    .unwrap(),
+                None
+            );
+            // A NULL rhs cannot prevent evaluation of the lhs.
+            assert!(matches!(
+                evaluator.eval_real(Some(&pow(bad_child, SimpleExpr::Null))),
+                Err(LegacyEvalError::Infrastructure(_))
+            ));
+            assert_eq!(
+                evaluator
+                    .eval_real(Some(&pow(SimpleExpr::Real(2.0), SimpleExpr::Null)))
+                    .unwrap(),
+                None
+            );
+            let refusing = LegacyEvaluator {
+                raw_columns: columns,
+                ..LegacyEvaluator::new(&[], 4, &time_zone)
+            };
+            for (left, right) in [
+                (SimpleExpr::Null, SimpleExpr::Real(2.0)),
+                (SimpleExpr::Real(2.0), SimpleExpr::Null),
+                (SimpleExpr::Real(2.0), SimpleExpr::Real(3.0)),
+            ] {
+                let call = pow(left, right);
+                assert!(matches!(
+                    refusing.eval_real(Some(&call)),
+                    Err(LegacyEvalError::Infrastructure(_))
+                ));
+                let cast = SimpleExpr::Func(SimpleSig::CastRealAsInt, vec![call]);
+                let bytes = SimpleExpr::Func(SimpleSig::CastIntAsString, vec![cast]);
+                assert!(matches!(
+                    refusing.eval_bytes(Some(&bytes)),
+                    Err(LegacyEvalError::Infrastructure(_))
+                ));
+            }
+        });
     }
 
     #[test]

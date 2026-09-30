@@ -786,8 +786,8 @@ impl Creation {
             self.operation,
             LocalCompileContext {
                 limits: CompileLimits {
-                    // Only pad adds a fourth ready argument (packet policy).
-                    // Existing recipes retain their four-node bound; unary
+                    // Only the four pad and two INSERT operations have four
+                    // ready arguments. Other recipes retain four nodes; unary
                     // two-call predicates still require depth three.
                     max_nodes: if matches!(
                         self.operation,
@@ -795,6 +795,8 @@ impl Creation {
                             | EvaluatedBytesOp::RpadBytesNative
                             | EvaluatedBytesOp::LpadUtf8Native
                             | EvaluatedBytesOp::RpadUtf8Native
+                            | EvaluatedBytesOp::Insert
+                            | EvaluatedBytesOp::InsertUtf8Native
                     ) {
                         5
                     } else {
@@ -1440,7 +1442,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::IsIpv6Nullable
             | EvaluatedBytesOp::IsIpv4CompatNullable
             | EvaluatedBytesOp::IsIpv4MappedNullable
-            | EvaluatedBytesOp::OrdNative,
+            | EvaluatedBytesOp::OrdNative
+            | EvaluatedBytesOp::UncompressedLengthNative,
             ComputedValue::Int(value),
         ) => own_computed_int(value)
             .into_datum()
@@ -1474,6 +1477,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::Upper
             | EvaluatedBytesOp::LowerUtf8Ready
             | EvaluatedBytesOp::UpperUtf8Ready
+            | EvaluatedBytesOp::LowerAsciiNative
+            | EvaluatedBytesOp::UpperAsciiNative
             | EvaluatedBytesOp::Sha2Native
             | EvaluatedBytesOp::TrimBothNative
             | EvaluatedBytesOp::TrimLeadingNative
@@ -1483,7 +1488,9 @@ fn materialize_computed(
             | EvaluatedBytesOp::LpadBytesNative
             | EvaluatedBytesOp::RpadBytesNative
             | EvaluatedBytesOp::LpadUtf8Native
-            | EvaluatedBytesOp::RpadUtf8Native,
+            | EvaluatedBytesOp::RpadUtf8Native
+            | EvaluatedBytesOp::Insert
+            | EvaluatedBytesOp::InsertUtf8Native,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {
@@ -1497,7 +1504,11 @@ fn materialize_computed(
             | EvaluatedBytesOp::SqrtRaw
             | EvaluatedBytesOp::RadiansRaw
             | EvaluatedBytesOp::DegreesRaw
-            | EvaluatedBytesOp::PiRaw,
+            | EvaluatedBytesOp::PiRaw
+            | EvaluatedBytesOp::LnNative
+            | EvaluatedBytesOp::LogNative
+            | EvaluatedBytesOp::Log2Native
+            | EvaluatedBytesOp::PowNative,
             ComputedValue::Ieee754Bits(value),
         ) => {
             match value.metadata() {

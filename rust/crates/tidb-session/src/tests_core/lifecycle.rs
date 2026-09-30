@@ -3354,3 +3354,365 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_trim_split_pad_sql_columns() {
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_log_pow_length_insert_sql_values_metadata_and_warnings() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_log_pow_length_insert (id INT PRIMARY KEY, \
+             x DOUBLE, base DOUBLE, e DOUBLE, z VARBINARY(8), zt VARCHAR(8), \
+             t VARCHAR(16), b VARBINARY(16), pos BIGINT, n BIGINT, \
+             r VARCHAR(1100), rb VARBINARY(8), rt VARCHAR(8) CHARSET latin1)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_log_pow_length_insert VALUES \
+             (1,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL),\
+             (2,1,2,2,X'','','abc',X'614263',2,1,'X',X'FF','X'),\
+             (3,4,2,0.5,X'FFFFFFFF00','AAAAA','中a',X'FF61',2,1,'X',X'FF',0xFF)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_log_pow_length_insert (id,x,base,z) VALUES \
+             (4,0,2,X'00'),(5,2,1,X'0000'),\
+             (6,NULL,NULL,X'000000'),(7,NULL,NULL,X'00000000')",
+        )
+        .unwrap();
+    // The replacement is 1026 bytes but only 342 characters. The non-NULL
+    // INSERT result is 1028 bytes; the NULL source must not read packet policy.
+    let replacement = "中".repeat(342);
+    session
+        .run(&format!(
+            "INSERT INTO shared_log_pow_length_insert (id,t,pos,n,r) VALUES \
+             (8,'abc',2,1,'{replacement}'),(9,NULL,2,1,'{replacement}')"
+        ))
+        .unwrap();
+    session
+        .vars
+        .set_system("max_allowed_packet", "1024".to_owned())
+        .unwrap();
+    assert_eq!(session.max_allowed_packet(), 1024);
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT LN(x), LOG(x), LOG(base,x), LOG2(x), POW(x,e), POWER(x,e), \
+             UNCOMPRESSED_LENGTH(z), UNCOMPRESSED_LENGTH(zt), \
+             INSERT(t,pos,n,r), INSERT(b,pos,n,r), INSERT(t,pos,n,rb) \
+             FROM shared_log_pow_length_insert WHERE id<4 ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected log/pow/length/insert SQL rows")
+    };
+    assert_eq!(columns.len(), 11);
+    for (column_index, (_, field_type)) in columns.iter().enumerate() {
+        match column_index {
+            0..=5 => {
+                assert_eq!(field_type.code(), tidb_datatype::FieldTypeCode::Double);
+                assert_eq!(field_type.eval_type(), tidb_datatype::EvalType::Real);
+                assert_eq!(field_type.flen(), 23);
+                assert_eq!(field_type.decimal(), tidb_datatype::UNSPECIFIED_LENGTH);
+                assert!(!field_type.is_unsigned());
+            }
+            6..=7 => {
+                assert_eq!(field_type.eval_type(), tidb_datatype::EvalType::Int);
+                assert_eq!(field_type.flen(), 10);
+                assert!(!field_type.is_unsigned());
+            }
+            _ => {
+                assert_eq!(field_type.eval_type(), tidb_datatype::EvalType::String);
+                assert_eq!(field_type.flen(), 16_777_216);
+                // Outer derivation aggregates INSERT's arguments 0 and 3.
+                if column_index == 8 {
+                    assert_ne!(field_type.collation(), tidb_datatype::Collation::Binary);
+                } else {
+                    assert_eq!(field_type.collation(), tidb_datatype::Collation::Binary);
+                }
+            }
+        }
+    }
+    let ln_four = 2.0 * std::f64::consts::LN_2;
+    let expected_real = [
+        [None; 6],
+        [
+            Some(0.0),
+            Some(0.0),
+            Some(0.0),
+            Some(0.0),
+            Some(1.0),
+            Some(1.0),
+        ],
+        [
+            Some(ln_four),
+            Some(ln_four),
+            Some(2.0),
+            Some(2.0),
+            Some(2.0),
+            Some(2.0),
+        ],
+    ];
+    let expected_lengths = [
+        [Datum::Null, Datum::Null],
+        [Datum::Int(0), Datum::Int(0)],
+        // Both are raw LE headers, not validated zlib streams. All 32 bits
+        // survive, with no packet rejection based on the advertised length.
+        [Datum::Int(4_294_967_295), Datum::Int(1_094_795_585)],
+    ];
+    let expected_text = [None, Some("aXc"), Some("中X")];
+    let binary_string =
+        |bytes: Vec<u8>| Datum::new_collation_string(bytes, tidb_datatype::Collation::Binary);
+    let expected_binary = [
+        [Datum::Null, Datum::Null],
+        [
+            binary_string(b"aXc".to_vec()),
+            binary_string(b"a\xffc".to_vec()),
+        ],
+        [
+            binary_string(b"\xffX".to_vec()),
+            binary_string(vec![0xe4, 0xff, 0xad, b'a']),
+        ],
+    ];
+    assert_eq!(rows.len(), 3);
+    for (row_index, row) in rows.iter().enumerate() {
+        assert_eq!(row.len(), 11);
+        for (column_index, expected) in expected_real[row_index].into_iter().enumerate() {
+            match expected {
+                None => assert_eq!(row[column_index], Datum::Null),
+                Some(expected) => {
+                    let Datum::Real(actual) = &row[column_index] else {
+                        panic!(
+                            "expected native Real at id {}, column {column_index}",
+                            row_index + 1
+                        )
+                    };
+                    assert!(
+                        (*actual - expected).abs() < 1e-12,
+                        "id {}, column {column_index}: {actual} != {expected}",
+                        row_index + 1
+                    );
+                }
+            }
+        }
+        assert_eq!(row[4], row[5], "POW/POWER aliases");
+        assert_eq!(row[6], expected_lengths[row_index][0]);
+        assert_eq!(row[7], expected_lengths[row_index][1]);
+        match expected_text[row_index] {
+            None => assert_eq!(row[8], Datum::Null),
+            Some(expected) => {
+                assert!(matches!(&row[8], Datum::String(_)));
+                assert_ne!(row[8].collation(), Some(tidb_datatype::Collation::Binary));
+                assert_eq!(crate::tests_support::cell_text(&row[8]), expected);
+            }
+        }
+        assert_eq!(row[9], expected_binary[row_index][0]);
+        assert_eq!(row[10], expected_binary[row_index][1]);
+    }
+    assert!(warnings_of(&session).is_empty());
+
+    // A text-signature replacement is raw too: only the source is normalized
+    // to Go runes. Existing latin1 storage lets the SQL fixture retain FF.
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT rt,INSERT(t,pos,n,rt) FROM shared_log_pow_length_insert WHERE id=3",
+        )
+        .unwrap()
+    else {
+        panic!("expected raw text replacement rows")
+    };
+    assert_eq!(columns[0].1.charset_name(), "latin1");
+    assert_eq!(columns[1].1.eval_type(), tidb_datatype::EvalType::String);
+    assert_eq!(columns[1].1.flen(), 16_777_216);
+    assert_ne!(columns[1].1.collation(), tidb_datatype::Collation::Binary);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][0].to_bytes().unwrap(), vec![0xff]);
+    assert!(matches!(&rows[0][1], Datum::String(_)));
+    assert_ne!(
+        rows[0][1].collation(),
+        Some(tidb_datatype::Collation::Binary)
+    );
+    assert_eq!(rows[0][1].to_bytes().unwrap(), vec![0xe4, 0xb8, 0xad, 0xff]);
+    assert!(warnings_of(&session).is_empty());
+
+    for (expression, id) in [
+        ("LN(x)", 4),
+        ("LOG(x)", 4),
+        ("LOG(base,x)", 4),
+        ("LOG2(x)", 4),
+        ("LOG(base,x)", 5),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_log_pow_length_insert WHERE id={id}");
+        let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+            panic!("expected invalid logarithm rows")
+        };
+        assert_eq!(rows, vec![vec![Datum::Null]], "{sql}");
+        assert_eq!(
+            session.warnings(),
+            &[SqlWarning {
+                level: WarningLevel::Warning,
+                code: 3020,
+                message: "Invalid argument for logarithm".to_owned(),
+            }],
+            "{sql}"
+        );
+    }
+    let mysql = session
+        .run_with_columns("SELECT POW(-2, 0.5)")
+        .unwrap_err()
+        .to_mysql_error();
+    assert_eq!(mysql.code, 1690);
+    assert_eq!(mysql.state, *b"22003");
+    assert_eq!(
+        mysql.message,
+        "DOUBLE value is out of range in 'pow(-2, 0.5)'"
+    );
+
+    for id in 4..=7 {
+        let sql = format!(
+            "SELECT UNCOMPRESSED_LENGTH(z) FROM shared_log_pow_length_insert WHERE id={id}"
+        );
+        let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+            panic!("expected short uncompressed-length rows")
+        };
+        assert_eq!(rows, vec![vec![Datum::Int(0)]], "{sql}");
+        assert_eq!(
+            session.warnings(),
+            &[SqlWarning {
+                level: WarningLevel::Warning,
+                code: 1259,
+                message: "ZLIB: Input data corrupted".to_owned(),
+            }],
+            "{sql}"
+        );
+    }
+    for id in [8, 9] {
+        let sql =
+            format!("SELECT INSERT(t,pos,n,r) FROM shared_log_pow_length_insert WHERE id={id}");
+        let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+            panic!("expected INSERT packet-policy rows")
+        };
+        assert_eq!(rows, vec![vec![Datum::Null]], "{sql}");
+        if id == 8 {
+            assert_eq!(
+                session.warnings(),
+                &[SqlWarning {
+                    level: WarningLevel::Warning,
+                    code: 1301,
+                    message: "Result of insert() was larger than \
+                              max_allowed_packet (1024) - truncated"
+                        .to_owned(),
+                }]
+            );
+        } else {
+            assert!(warnings_of(&session).is_empty());
+        }
+    }
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_log_pow_length_insert_sql_columns() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_log_pow_length_insert_zero (id INT PRIMARY KEY, \
+             x DOUBLE, base DOUBLE, e DOUBLE, z VARBINARY(8), t VARCHAR(16), \
+             pos BIGINT, n BIGINT, r VARCHAR(1100))",
+        )
+        .unwrap();
+    let replacement = "中".repeat(342);
+    session
+        .run(&format!(
+            "INSERT INTO shared_log_pow_length_insert_zero VALUES \
+             (1,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL),\
+             (2,1,2,2,X'FFFFFFFF00','abc',2,1,'{replacement}'),\
+             (3,0,2,2,X'',NULL,NULL,NULL,NULL),\
+             (4,NULL,NULL,NULL,X'000000',NULL,NULL,NULL,NULL)"
+        ))
+        .unwrap();
+    session
+        .vars
+        .set_system("max_allowed_packet", "1024".to_owned())
+        .unwrap();
+    assert_eq!(session.max_allowed_packet(), 1024);
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // Six families, NULL/non-NULL, with both LOG arities represented. The
+    // final two calls retain frontend diagnostics before the typed refusal.
+    for (expression, id) in [
+        ("LN(x)", 1),
+        ("LN(x)", 2),
+        ("LOG(x)", 1),
+        ("LOG(base,x)", 2),
+        ("LOG2(x)", 1),
+        ("LOG2(x)", 2),
+        ("POW(x,e)", 1),
+        ("POW(x,e)", 2),
+        ("UNCOMPRESSED_LENGTH(z)", 1),
+        ("UNCOMPRESSED_LENGTH(z)", 2),
+        ("INSERT(t,pos,n,r)", 1),
+        ("INSERT(t,pos,n,r)", 2),
+        ("LOG(x)", 3),
+        ("UNCOMPRESSED_LENGTH(z)", 4),
+    ] {
+        let sql =
+            format!("SELECT {expression} FROM shared_log_pow_length_insert_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => {
+                panic!("log/pow/length/insert SQL must reach the zero-slot pool: {sql}: {other:?}")
+            }
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        let expected_warning = match id {
+            3 => Some((3020, "Invalid argument for logarithm")),
+            4 => Some((1259, "ZLIB: Input data corrupted")),
+            _ => None,
+        };
+        if let Some((code, message)) = expected_warning {
+            assert_eq!(
+                session.warnings(),
+                &[SqlWarning {
+                    level: WarningLevel::Warning,
+                    code,
+                    message: message.to_owned(),
+                }],
+                "{sql}"
+            );
+        } else {
+            // INSERT id=2 would compute 1028 bytes, but packet policy is only
+            // read AFTER a successful kernel result. No pre-1301 is allowed.
+            // Evaluation-origin 1105 is returned, never an Error warning row.
+            assert!(warnings_of(&session).is_empty(), "{sql}");
+        }
+    }
+}

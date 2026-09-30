@@ -1099,7 +1099,19 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::Lower | EvaluatedBytesOp::LowerUtf8Ready => "LOWER",
         EvaluatedBytesOp::Upper | EvaluatedBytesOp::UpperUtf8Ready => "UPPER",
         EvaluatedBytesOp::OrdNative => "ORD",
+        EvaluatedBytesOp::UncompressedLengthNative => "UNCOMPRESSED_LENGTH",
+        EvaluatedBytesOp::LnNative => "LN",
+        EvaluatedBytesOp::Log2Native => "LOG2",
+        EvaluatedBytesOp::LogNative | EvaluatedBytesOp::PowNative => {
+            panic!("binary real operations need their original pair")
+        }
+        EvaluatedBytesOp::Insert | EvaluatedBytesOp::InsertUtf8Native => {
+            panic!("INSERT requires all four original operands")
+        }
         EvaluatedBytesOp::Sha2Native => panic!("SHA2 needs its original argument pair"),
+        EvaluatedBytesOp::LowerAsciiNative | EvaluatedBytesOp::UpperAsciiNative => {
+            panic!("legacy ASCII case requires its raw legacy entry")
+        }
         EvaluatedBytesOp::TrimBothNative
         | EvaluatedBytesOp::TrimLeadingNative
         | EvaluatedBytesOp::TrimTrailingNative
@@ -1157,6 +1169,454 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+#[test]
+fn log_pow_ulength_insert_dispatch_keeps_math_ieee_and_policy() {
+    struct Warnings(RefCell<Vec<u16>>);
+    impl Columns for Warnings {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn truncate_level(&self) -> ErrorLevel {
+            ErrorLevel::Warn
+        }
+        fn append_warning(&self, code: u16, _: &str) {
+            self.0.borrow_mut().push(code);
+        }
+    }
+    let native = Warnings(RefCell::new(Vec::new()));
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for (name, values, expected, warnings) in [
+            ("LN", vec![Datum::Int(1)], Datum::Real(0.0), vec![]),
+            ("LOG", vec![Datum::Int(1)], Datum::Real(0.0), vec![]),
+            (
+                "LOG",
+                vec![Datum::Int(2), Datum::Int(2)],
+                Datum::Real(1.0),
+                vec![],
+            ),
+            ("LOG2", vec![Datum::Int(8)], Datum::Real(3.0), vec![]),
+            (
+                "POWER",
+                vec![Datum::Int(-2), Datum::Int(3)],
+                Datum::Real(-8.0),
+                vec![],
+            ),
+            ("LN", vec![Datum::Real(-0.0)], Datum::Null, vec![3020]),
+            (
+                "LOG",
+                vec![Datum::Int(1), Datum::Int(2)],
+                Datum::Null,
+                vec![3020],
+            ),
+            ("LOG2", vec![Datum::Int(0)], Datum::Null, vec![3020]),
+            (
+                "LOG",
+                vec![Datum::Null, Datum::Int(-1)],
+                Datum::Null,
+                vec![],
+            ),
+            (
+                "LN",
+                vec![Datum::new_string("bad")],
+                Datum::Null,
+                vec![1292, 3020],
+            ),
+            (
+                "LN",
+                vec![Datum::Real(f64::NAN)],
+                Datum::Real(f64::NAN),
+                vec![],
+            ),
+            (
+                "LOG2",
+                vec![Datum::Real(f64::INFINITY)],
+                Datum::Real(f64::INFINITY),
+                vec![],
+            ),
+        ] {
+            native.0.borrow_mut().clear();
+            arm_eval_one_observation();
+            let result = crate::func::eval_func_values_in(name, &values, columns).unwrap();
+            let observation = take_eval_one_observation();
+            match (result, expected) {
+                (Ok(Datum::Real(actual)), Datum::Real(expected)) if expected.is_nan() => {
+                    assert!(actual.is_nan())
+                }
+                (Ok(Datum::Real(actual)), Datum::Real(expected)) => {
+                    assert_eq!(actual.to_bits(), expected.to_bits(), "{name}")
+                }
+                (actual, expected) => assert_eq!(actual, Ok(expected), "{name}"),
+            }
+            assert_eq!(*native.0.borrow(), warnings, "{name}");
+            assert_eq!(
+                observation.facade_entries, 1,
+                "NULL/domain policy still invokes C4"
+            );
+            assert_eq!(
+                observation.after_kernel_invocations,
+                observation
+                    .before_kernel_invocations
+                    .map(|before| before + 1)
+            );
+        }
+        for name in ["POW", "POWER"] {
+            arm_eval_one_observation();
+            let result = crate::func::eval_func_values_in(
+                name,
+                &[Datum::Real(1e308), Datum::Int(2)],
+                columns,
+            )
+            .unwrap();
+            let observation = take_eval_one_observation();
+            assert_eq!(result, Err(EvalError::FloatOverflow));
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(
+                observation.after_kernel_invocations,
+                observation
+                    .before_kernel_invocations
+                    .map(|before| before + 1)
+            );
+        }
+        for name in ["LOG", "POW"] {
+            arm_eval_one_observation();
+            let result =
+                crate::func::eval_func_values_in(name, &[Datum::Null, Datum::MinNotNull], columns)
+                    .unwrap();
+            let observation = take_eval_one_observation();
+            assert_eq!(
+                result,
+                Err(EvalError::Unsupported("range sentinel numeric argument"))
+            );
+            assert_eq!(
+                observation.facade_entries, 0,
+                "native NULL left still coerces right"
+            );
+        }
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn log_pow_ulength_insert_dispatch_keeps_pb_pow_demand_and_arity() {
+    use crate::expression::Expression;
+    use crate::scalar_function::{PbBuiltin, ScalarFunction};
+    use tidb_proto::tipb::ScalarFuncSig;
+    let field = FieldType::new(FieldTypeCode::Double);
+    let constant = |value| Expression::Constant(Constant::new(value, field.clone()));
+    let missing = Expression::ScalarFunction(ScalarFunction::new(
+        tidb_ast::CiString::new("__undemanded_pow_child__"),
+        field.clone(),
+        Vec::new(),
+    ));
+    let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    for (args, expected) in [
+        (vec![constant(Datum::Null), missing], Datum::Null),
+        (
+            vec![constant(Datum::MinNotNull), constant(Datum::Null)],
+            Datum::Null,
+        ),
+        (
+            vec![constant(Datum::Real(2.0)), constant(Datum::Real(3.0))],
+            Datum::Real(8.0),
+        ),
+    ] {
+        let function = ScalarFunction::from_pb(
+            PbBuiltin::new(ScalarFuncSig::Pow).unwrap(),
+            field.clone(),
+            args,
+        );
+        arm_eval_one_observation();
+        let result = function.eval(&columns, row.to_row());
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(expected));
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    }
+    for (input, expected) in [
+        (Datum::Null, Ok(Datum::Null)),
+        (
+            Datum::Real(2.0),
+            Err(EvalError::Unsupported("bad function arity")),
+        ),
+    ] {
+        let function = ScalarFunction::from_pb(
+            PbBuiltin::new(ScalarFuncSig::Pow).unwrap(),
+            field.clone(),
+            vec![constant(input)],
+        );
+        arm_eval_one_observation();
+        let result = function.eval(&columns, row.to_row());
+        let observation = take_eval_one_observation();
+        assert_eq!(
+            result, expected,
+            "malformed arity retains the old loop boundary"
+        );
+        assert_eq!(observation.facade_entries, 0);
+    }
+    drop(scope);
+    execution.close();
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    for args in [
+        vec![constant(Datum::Null), constant(Datum::MinNotNull)],
+        vec![constant(Datum::MinNotNull), constant(Datum::Null)],
+    ] {
+        let function = ScalarFunction::from_pb(
+            PbBuiltin::new(ScalarFuncSig::Pow).unwrap(),
+            field.clone(),
+            args,
+        );
+        assert!(
+            matches!(function.eval(&columns, row.to_row()), Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource)
+        );
+    }
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn log_pow_ulength_insert_dispatch_keeps_length_warnings_and_refusal() {
+    struct Warnings(RefCell<Vec<u16>>);
+    impl Columns for Warnings {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn append_warning(&self, code: u16, _: &str) {
+            self.0.borrow_mut().push(code);
+        }
+        fn max_allowed_packet(&self) -> u64 {
+            panic!("UNCOMPRESSED_LENGTH has no packet policy; refused INSERT has no result yet")
+        }
+    }
+    let native = Warnings(RefCell::new(Vec::new()));
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for (input, expected, warnings) in [
+            (Datum::Null, Datum::Null, vec![]),
+            (Datum::new_bytes(Vec::new()), Datum::Int(0), vec![]),
+            (Datum::new_bytes([1, 2, 3, 4]), Datum::Int(0), vec![1259]),
+            (
+                Datum::new_bytes([0xff, 0xff, 0xff, 0xff, 0]),
+                Datum::Int(4_294_967_295),
+                vec![],
+            ),
+        ] {
+            native.0.borrow_mut().clear();
+            arm_eval_one_observation();
+            let result =
+                crate::func::eval_func_values_in("UNCOMPRESSED_LENGTH", &[input], columns).unwrap();
+            let observation = take_eval_one_observation();
+            assert_eq!(result, Ok(expected));
+            assert_eq!(*native.0.borrow(), warnings);
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(
+                observation.after_kernel_invocations,
+                observation
+                    .before_kernel_invocations
+                    .map(|before| before + 1)
+            );
+        }
+    });
+    drop(scope);
+    execution.close();
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for (name, values, warnings) in [
+            ("LN", vec![Datum::Int(0)], vec![3020]),
+            ("LOG", vec![Datum::Null, Datum::Null], vec![]),
+            ("LOG2", vec![Datum::Null], vec![]),
+            ("POW", vec![Datum::Null, Datum::Null], vec![]),
+            ("UNCOMPRESSED_LENGTH", vec![Datum::new_bytes([1])], vec![1259]),
+            ("INSERT_FUNC", vec![Datum::Null, Datum::Null, Datum::Null, Datum::Null], vec![]),
+        ] {
+            native.0.borrow_mut().clear();
+            arm_eval_one_observation();
+            let result = crate::func::eval_func_values_in(name, &values, columns).unwrap();
+            let observation = take_eval_one_observation();
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource), "{name}");
+            assert_eq!(*native.0.borrow(), warnings, "frontend diagnostic precedes C4 refusal");
+            assert_eq!(observation.facade_entries, 0);
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn log_pow_ulength_insert_dispatch_keeps_insert_bytes_and_post_packet() {
+    struct Packet {
+        limit: Cell<u64>,
+        getters: Cell<usize>,
+        warnings: RefCell<Vec<u16>>,
+    }
+    impl Columns for Packet {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn truncate_level(&self) -> ErrorLevel {
+            ErrorLevel::Warn
+        }
+        fn append_warning(&self, code: u16, _: &str) {
+            self.warnings.borrow_mut().push(code);
+        }
+        fn max_allowed_packet(&self) -> u64 {
+            self.getters.set(self.getters.get() + 1);
+            self.limit.get()
+        }
+    }
+    let native = Packet {
+        limit: Cell::new(1024),
+        getters: Cell::new(0),
+        warnings: RefCell::new(Vec::new()),
+    };
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for (source, replacement, expected) in [
+            (
+                Datum::new_bytes("中a".as_bytes()),
+                Datum::new_string("X"),
+                Datum::new_bytes([0xe4, b'X', 0xad, b'a']),
+            ),
+            (
+                Datum::new_string("中a"),
+                Datum::new_string("X"),
+                Datum::new_string("中X"),
+            ),
+            (
+                Datum::new_string("中a"),
+                Datum::new_string(vec![0xff]),
+                Datum::new_string(vec![0xe4, 0xb8, 0xad, 0xff]),
+            ),
+            (
+                Datum::new_string(vec![b'a', 0xe2, 0x82, b'z']),
+                Datum::new_string("X"),
+                Datum::new_string("aX\u{fffd}z"),
+            ),
+        ] {
+            native.getters.set(0);
+            arm_eval_one_observation();
+            let result = crate::func::eval_func_values_in(
+                "INSERT_FUNC",
+                &[source, Datum::Int(2), Datum::Int(1), replacement],
+                columns,
+            )
+            .unwrap();
+            let observation = take_eval_one_observation();
+            assert!(matches!(
+                (&result, &expected),
+                (Ok(Datum::String(_)), Datum::String(_)) | (Ok(Datum::Bytes(_)), Datum::Bytes(_))
+            ));
+            assert_eq!(result, Ok(expected));
+            assert_eq!(native.getters.get(), 1);
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(
+                observation.after_kernel_invocations,
+                observation
+                    .before_kernel_invocations
+                    .map(|before| before + 1)
+            );
+        }
+        native.limit.set(1);
+        native.getters.set(0);
+        arm_eval_one_observation();
+        let result = crate::func::eval_func_values_in(
+            "INSERT_FUNC",
+            &[
+                Datum::new_string("中a"),
+                Datum::Int(2),
+                Datum::Int(1),
+                Datum::new_string("X"),
+            ],
+            columns,
+        )
+        .unwrap();
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(Datum::Null));
+        assert_eq!(*native.warnings.borrow(), vec![1301]);
+        // The existing overflow handler reads the limit again for its message.
+        assert_eq!(native.getters.get(), 2);
+        assert_eq!(
+            observation.facade_entries, 1,
+            "packet policy follows actual C4 computation"
+        );
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+        native.getters.set(0);
+        native.warnings.borrow_mut().clear();
+        arm_eval_one_observation();
+        let result = crate::func::eval_func_values_in(
+            "INSERT_FUNC",
+            &[
+                Datum::Null,
+                Datum::Int(2),
+                Datum::Int(1),
+                Datum::new_string("X"),
+            ],
+            columns,
+        )
+        .unwrap();
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(Datum::Null));
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            native.getters.get(),
+            0,
+            "computed NULL never reads packet policy"
+        );
+        assert!(native.warnings.borrow().is_empty());
+        arm_eval_one_observation();
+        let result = crate::string_fn::str_insert(
+            &[Datum::Null, Datum::Null, Datum::Null, Datum::MinNotNull],
+            columns,
+        );
+        let observation = take_eval_one_observation();
+        assert_eq!(
+            result,
+            Err(EvalError::Unsupported("range sentinel byte coercion"))
+        );
+        assert_eq!(
+            observation.facade_entries, 0,
+            "the original full tuple still demands replacement"
+        );
+        assert_eq!(native.getters.get(), 0);
+    });
+    drop(scope);
+    execution.close();
 }
 
 #[test]

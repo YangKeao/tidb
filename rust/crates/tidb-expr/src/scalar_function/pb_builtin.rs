@@ -390,13 +390,24 @@ impl PbBuiltin {
                             _ => {}
                         }
                         // Keep this exact NULL child-demand boundary, but do
-                        // not bypass the nullable migrated inverse-trig call.
+                        // not bypass the nullable migrated math call.
                         match self.signature {
                             ScalarFuncSig::Asin => {
                                 return crate::math_fn::asin(std::slice::from_ref(&value), ctx)
                             }
                             ScalarFuncSig::Acos => {
                                 return crate::math_fn::acos(std::slice::from_ref(&value), ctx)
+                            }
+                            ScalarFuncSig::Pow if args.len() == 2 => {
+                                use crate::tikv::ReadyIeee754Arg::{Undemanded, Value};
+                                // A right NULL suppresses numeric coercion of
+                                // the already-evaluated left child as well.
+                                let (left, right) = if values.is_empty() {
+                                    (Value(None), Undemanded)
+                                } else {
+                                    (Undemanded, Value(None))
+                                };
+                                return crate::math_fn::pow_ready_in(left, right, ctx);
                             }
                             _ => {}
                         }

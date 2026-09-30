@@ -1272,7 +1272,7 @@ pub(crate) fn substring_index_in(
 /// oversized one does -- `builtinInsertUTF8Sig.evalString` clamps both with the
 /// single condition `length > runeLength-pos+1 || length < 0`. Reading it as
 /// zero instead would splice `newstr` in without removing anything.
-pub(crate) fn str_insert(vals: &[Datum]) -> Result<Datum, EvalError> {
+pub(crate) fn str_insert(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
     // `insertFunctionClass.getFunction` selects `builtinInsertSig` (bytes) or
     // `builtinInsertUTF8Sig` (characters) from the RESULT type's charset,
     // which `addBinFlag` makes binary when either string argument is, so
@@ -1283,30 +1283,47 @@ pub(crate) fn str_insert(vals: &[Datum]) -> Result<Datum, EvalError> {
     // `crate::arg_eval_type`; each body below reads the `int64` carrier
     // `b.args[i].EvalInt` returns, so an UNSIGNED position keeps its bits
     // rather than turning the whole call NULL.
-    let (Some(units), Some(pos), Some(len), Some(new)) = (
-        StrUnits::of_with_signature(&vals[0], binary)?,
-        crate::arg_eval_type::eval_int(&vals[1])?,
-        crate::arg_eval_type::eval_int(&vals[2])?,
-        coerce_str_bytes(&vals[3])?,
-    ) else {
-        return Ok(Datum::Null);
-    };
-    let n = units.len();
-    if pos < 1 || pos as usize > n {
-        return Ok(units.pack(units.bytes().to_vec()));
-    }
-    let start = (pos - 1) as usize;
-    let remaining = n - start;
-    let take = if len < 0 || len as u64 > remaining as u64 {
-        remaining
+    let operation = if binary {
+        crate::tikv::EvaluatedBytesOp::Insert
     } else {
-        len as usize
+        crate::tikv::EvaluatedBytesOp::InsertUtf8Native
     };
-    let end = start + take;
-    let mut out = units.slice(0, start).to_vec();
-    out.extend_from_slice(&new);
-    out.extend_from_slice(units.slice(end, n));
-    Ok(units.pack(out))
+    crate::tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || {
+            // Preserve the original tuple's full demand and error order.
+            // Only source text gets Go's per-malformed-byte normalization;
+            // the replacement is raw bytes even for a UTF-8 signature.
+            let (bytes, pos, len, replacement) = (
+                coerce_str_bytes(&vals[0])?.map(|bytes| {
+                    if binary {
+                        bytes
+                    } else {
+                        crate::string_signature::normalize_utf8_go(bytes)
+                    }
+                }),
+                crate::arg_eval_type::eval_int(&vals[1])?,
+                crate::arg_eval_type::eval_int(&vals[2])?,
+                coerce_str_bytes(&vals[3])?,
+            );
+            Ok(crate::tikv::EvaluatedArgs::BytesIntIntBytes(
+                bytes,
+                pos,
+                len,
+                replacement,
+            ))
+        },
+        |computed| {
+            Ok(computed.into_bytes()?.map_or(Datum::Null, |bytes| {
+                if binary {
+                    Datum::new_bytes(bytes)
+                } else {
+                    Datum::new_string(bytes)
+                }
+            }))
+        },
+    )
 }
 
 /// `MAKE_SET(bits, a, b, c, ...)`: a comma-joined set of the arguments whose

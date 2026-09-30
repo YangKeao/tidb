@@ -478,16 +478,6 @@ pub(crate) fn numeric_arg(v: &Datum, ctx: &dyn Columns) -> Result<Option<f64>, E
     }
 }
 
-/// `NULL` if `x <= 0` (MySQL's own domain check for `LN`/`LOG`/`LOG2`/
-/// `LOG10`), else `Ok(x.ln())`.
-fn checked_ln(x: f64) -> Datum {
-    if x <= 0.0 {
-        Datum::Null
-    } else {
-        Datum::Real(x.ln())
-    }
-}
-
 /// Keeps the original numeric conversion inside the sole C4 driver. The
 /// private IEEE carrier retains every f64 bit pattern; each frontend owns
 /// only its existing result policy, not the mathematical computation.
@@ -523,16 +513,30 @@ fn ln(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
     let [v] = vals else {
         return Err(EvalError::Unsupported("bad function arity"));
     };
-    Ok(match numeric_arg(v, ctx)? {
-        // go `builtinLog1ArgSig`: a non-positive argument warns
-        // `ErrInvalidArgumentForLogarithm` (3020) on its way to NULL.
-        Some(x) if x <= 0.0 => {
-            ctx.append_warning(3020, "Invalid argument for logarithm");
-            Datum::Null
-        }
-        Some(x) => checked_ln(x),
-        None => Datum::Null,
-    })
+    let value = numeric_arg(v, ctx)?;
+    let invalid_domain = value.is_some_and(|x| x <= 0.0);
+    if invalid_domain {
+        // Keep the original 3020 after coercion, before entering C4. Domain
+        // rejection is a result policy, never a replacement NULL argument.
+        ctx.append_warning(3020, "Invalid argument for logarithm");
+    }
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::LnNative,
+        ctx,
+        || {
+            Ok(crate::tikv::EvaluatedArgs::Ieee754Bits(
+                value.map(f64::to_bits),
+            ))
+        },
+        |computed| {
+            let value = computed.into_ieee754_bits()?.map(f64::from_bits);
+            Ok(if invalid_domain {
+                Datum::Null
+            } else {
+                value.map_or(Datum::Null, Datum::Real)
+            })
+        },
+    )
 }
 
 /// `LOG(x)` (1 argument, natural log — identical to `LN`) or `LOG(base,
@@ -541,16 +545,34 @@ fn log(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
     match vals {
         [_] => ln(vals, ctx),
         [b, x] => {
-            let (Some(base), Some(x)) = (numeric_arg(b, ctx)?, numeric_arg(x, ctx)?) else {
-                return Ok(Datum::Null);
-            };
-            if base <= 0.0 || base == 1.0 || x <= 0.0 {
-                // go `builtinLog2ArgSig`: the invalid base/argument warns
-                // ErrInvalidArgumentForLogarithm (3020) on its way to NULL.
+            // Both conversions remain demanded even when the base is NULL.
+            let (base, value) = (numeric_arg(b, ctx)?, numeric_arg(x, ctx)?);
+            let invalid_domain = matches!(
+                (base, value),
+                (Some(base), Some(x)) if base <= 0.0 || base == 1.0 || x <= 0.0
+            );
+            if invalid_domain {
+                // The original domain warning requires two non-NULL values.
                 ctx.append_warning(3020, "Invalid argument for logarithm");
-                return Ok(Datum::Null);
             }
-            Ok(Datum::Real(x.log(base)))
+            crate::tikv::evaluate_args_in(
+                crate::tikv::EvaluatedBytesOp::LogNative,
+                ctx,
+                || {
+                    Ok(crate::tikv::EvaluatedArgs::Ieee754Bits2 {
+                        left: crate::tikv::ReadyIeee754Arg::Value(base.map(f64::to_bits)),
+                        right: crate::tikv::ReadyIeee754Arg::Value(value.map(f64::to_bits)),
+                    })
+                },
+                |computed| {
+                    let value = computed.into_ieee754_bits()?.map(f64::from_bits);
+                    Ok(if invalid_domain {
+                        Datum::Null
+                    } else {
+                        value.map_or(Datum::Null, Datum::Real)
+                    })
+                },
+            )
         }
         _ => Err(EvalError::Unsupported("bad function arity")),
     }
@@ -560,18 +582,30 @@ fn log2(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
     let [v] = vals else {
         return Err(EvalError::Unsupported("bad function arity"));
     };
-    Ok(match numeric_arg(v, ctx)? {
-        // go `builtinLog2Sig.evalReal`: a non-positive argument warns
-        // ErrInvalidArgumentForLogarithm (3020) on its way to NULL, exactly
-        // like the 1-arg ln/log10 signatures (oracle g-err3: log2('x')
-        // answers NULL with 1292 + 3020).
-        Some(x) if x <= 0.0 => {
-            ctx.append_warning(3020, "Invalid argument for logarithm");
-            Datum::Null
-        }
-        Some(x) => Datum::Real(x.log2()),
-        None => Datum::Null,
-    })
+    let value = numeric_arg(v, ctx)?;
+    let invalid_domain = value.is_some_and(|x| x <= 0.0);
+    if invalid_domain {
+        // Preserve numeric-prefix diagnostics before 3020 (log2('x') warns
+        // 1292 then 3020), but send the actual non-positive bits into C4.
+        ctx.append_warning(3020, "Invalid argument for logarithm");
+    }
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::Log2Native,
+        ctx,
+        || {
+            Ok(crate::tikv::EvaluatedArgs::Ieee754Bits(
+                value.map(f64::to_bits),
+            ))
+        },
+        |computed| {
+            let value = computed.into_ieee754_bits()?.map(f64::from_bits);
+            Ok(if invalid_domain {
+                Datum::Null
+            } else {
+                value.map_or(Datum::Null, Datum::Real)
+            })
+        },
+    )
 }
 
 fn log10(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
@@ -594,10 +628,35 @@ pub(crate) fn pow(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError>
     let [base, exp] = vals else {
         return Err(EvalError::Unsupported("bad function arity"));
     };
-    let (Some(b), Some(e)) = (numeric_arg(base, ctx)?, numeric_arg(exp, ctx)?) else {
-        return Ok(Datum::Null);
-    };
-    finite_float(b.powf(e))
+    // Unlike PB's child loop, this tuple demands both numeric conversions
+    // even when the left value is NULL; preserve their diagnostic order.
+    let (base, exp) = (numeric_arg(base, ctx)?, numeric_arg(exp, ctx)?);
+    pow_ready_in(
+        crate::tikv::ReadyIeee754Arg::Value(base.map(f64::to_bits)),
+        crate::tikv::ReadyIeee754Arg::Value(exp.map(f64::to_bits)),
+        ctx,
+    )
+}
+
+/// Shares POW's C4 call and result policy with PB's valid-arity NULL boundary.
+/// Only that boundary supplies an Undemanded side opposite an actual NULL;
+/// the backend validates that demand record before choosing its representative.
+pub(crate) fn pow_ready_in(
+    left: crate::tikv::ReadyIeee754Arg,
+    right: crate::tikv::ReadyIeee754Arg,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::PowNative,
+        ctx,
+        || Ok(crate::tikv::EvaluatedArgs::Ieee754Bits2 { left, right }),
+        |computed| {
+            computed
+                .into_ieee754_bits()?
+                .map(f64::from_bits)
+                .map_or(Ok(Datum::Null), finite_float)
+        },
+    )
 }
 
 fn exp(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {

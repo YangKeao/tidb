@@ -204,18 +204,22 @@ fn uncompress(arg: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
 /// prefix as the original length. NULL yields NULL; empty or too-short/corrupted
 /// input yields 0.
 fn uncompressed_length(arg: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let Some(payload) = sql_string_bytes(arg)? else {
-        return Ok(Datum::Null);
-    };
-    if payload.is_empty() {
-        return Ok(Datum::Int(0));
-    }
-    if payload.len() <= 4 {
-        ctx.append_warning(1259, "ZLIB: Input data corrupted");
-        return Ok(Datum::Int(0));
-    }
-    let length = u32::from_le_bytes(payload[0..4].try_into().unwrap());
-    Ok(Datum::Int(i64::from(length)))
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::UncompressedLengthNative,
+        ctx,
+        || {
+            let payload = sql_string_bytes(arg)?;
+            if let Some(bytes) = payload.as_ref() {
+                if !bytes.is_empty() && bytes.len() <= 4 {
+                    ctx.append_warning(1259, "ZLIB: Input data corrupted");
+                }
+            }
+            // NULL, empty, and short inputs still reach the kernel unchanged;
+            // only the original corruption diagnostic belongs to the caller.
+            Ok(payload)
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
 }
 
 const AES_BLOCK_SIZE: usize = 16;

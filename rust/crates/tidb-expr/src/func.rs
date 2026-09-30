@@ -800,7 +800,7 @@ pub(crate) fn eval_func_values(
         // The parser renames `INSERT(...)` to `INSERT_FUNC` to avoid the
         // reserved statement keyword (the same desugar `CHAR`→`CHAR_FUNC`
         // uses).
-        "INSERT_FUNC" if vals.len() == 4 => str_insert(vals).and_then(|result| {
+        "INSERT_FUNC" if vals.len() == 4 => str_insert(vals, ctx).and_then(|result| {
             let result_len = match &result {
                 Datum::String(value) => value.bytes().len(),
                 Datum::Bytes(value) => value.len(),

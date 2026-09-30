@@ -872,6 +872,81 @@ pub fn eval_raw_inverse_trig_ready_in(
     )
 }
 
+/// Already-demanded POW operands for the legacy raw-real channel.
+/// This is not a SQL or protobuf admission surface.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RawPowReadyArgs {
+    /// The evaluated left operand was NULL; the right child was not demanded.
+    LeftNull,
+    /// A non-NULL left operand and the actual evaluated right operand.
+    Values { base: f64, exponent: Option<f64> },
+}
+
+/// Computes raw POW without applying native SQL finite-result policy.
+/// NaN and infinity remain available to legacy casts and comparisons; NULL
+/// still enters C4, with an undemanded right child distinguished from SQL NULL.
+/// Like the raw inverse-trig bridge, returns only Datum::Real or Datum::Null.
+pub fn eval_raw_pow_ready_in(
+    arguments: RawPowReadyArgs,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    tikv::evaluate_args_in(
+        tikv::EvaluatedBytesOp::PowNative,
+        ctx,
+        || {
+            let (left, right) = match arguments {
+                RawPowReadyArgs::LeftNull => (
+                    tikv::ReadyIeee754Arg::Value(None),
+                    tikv::ReadyIeee754Arg::Undemanded,
+                ),
+                RawPowReadyArgs::Values { base, exponent } => (
+                    tikv::ReadyIeee754Arg::Value(Some(base.to_bits())),
+                    tikv::ReadyIeee754Arg::Value(exponent.map(f64::to_bits)),
+                ),
+            };
+            Ok(tikv::EvaluatedArgs::Ieee754Bits2 { left, right })
+        },
+        |computed| {
+            Ok(computed
+                .into_ieee754_bits()?
+                .map_or(Datum::Null, |bits| Datum::Real(f64::from_bits(bits))))
+        },
+    )
+}
+
+/// Closed case-conversion operations for the legacy bytes channel.
+/// The ASCII forms fold ASCII octets; unlike wire binary case conversion,
+/// they are not no-ops. UTF-8 callers retain their own input normalization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RawCaseFunction {
+    LowerAscii,
+    UpperAscii,
+    LowerUtf8,
+    UpperUtf8,
+}
+
+/// Converts already-prepared legacy bytes through the closed value driver.
+/// Returns only Datum::Bytes or Datum::Null, including for UTF-8 operations;
+/// callers own normalization, while the shared kernel owns all case mapping.
+pub fn eval_raw_case_ready_in(
+    function: RawCaseFunction,
+    ready: Option<Vec<u8>>,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    let operation = match function {
+        RawCaseFunction::LowerAscii => tikv::EvaluatedBytesOp::LowerAsciiNative,
+        RawCaseFunction::UpperAscii => tikv::EvaluatedBytesOp::UpperAsciiNative,
+        RawCaseFunction::LowerUtf8 => tikv::EvaluatedBytesOp::LowerUtf8Ready,
+        RawCaseFunction::UpperUtf8 => tikv::EvaluatedBytesOp::UpperUtf8Ready,
+    };
+    tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || Ok(tikv::EvaluatedArgs::Bytes(ready)),
+        |computed| Ok(computed.into_bytes()?.map_or(Datum::Null, Datum::Bytes)),
+    )
+}
+
 /// `AVG`'s `SUM / COUNT`, exposed so `tidb-exec` can compute it without
 /// reimplementing decimal division: an `Int` sum promotes to decimal (scale
 /// 0, MySQL's implicit rule, same as every other decimal op); the result

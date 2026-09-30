@@ -1,0 +1,161 @@
+Checkpoint: log-pow-length-insert-six-20
+STATUS: finalized after separately validated casing repair; nineteen receipts (eleven original plus eight supplemental).
+Corrected functional ledger: restored from temporary63/245 to65/245; final acceptance: 0/245.
+Prior18/19 complete-coverage claims missed legacy LOWER/UPPER algorithms/NULL bypasses. The proposed65 was withheld at63 until this round20 repair; restoring those two old credits is not new family credit. Earlier commits/original receipts are not rewritten to pretend they were complete.
+The eleven ORIGINAL-stage logs below do not validate the later casing repair; eight separately named CASING-REPAIR receipts follow. Both phases are preserved.
+Selected actual lines from /home/agent/tidb/expression-unification/logs/log-pow-length-insert-six-*.log.
+Commands/exit statuses supplied by parent; no tests were rerun to prepare this document.
+
+ORIGINAL STAGE: ELEVEN RECEIPTS
+CWD: /home/agent/tidb/expression-unification/tikv
+WRAPPER PIN: nightly-2026-01-30-x86_64-unknown-linux-gnu
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+LOG: log-pow-length-insert-six-tikv-local.log
+EXIT: 0
+running 220 tests
+test result: ok. 219 passed; 0 failed; 1 ignored; 0 measured; 469 filtered out; finished in 0.18s
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_math::tests:: -- --test-threads=1
+LOG: log-pow-length-insert-six-official-math.log
+EXIT: 0
+running 46 tests
+test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 643 filtered out; finished in 0.10s
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_encryption::tests:: -- --test-threads=1
+LOG: log-pow-length-insert-six-official-encryption.log
+EXIT: 0
+running 8 tests
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 681 filtered out; finished in 0.00s
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_string::tests:: -- --test-threads=1
+LOG: log-pow-length-insert-six-official-string.log
+EXIT: 0
+running 63 tests
+test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 626 filtered out; finished in 0.02s
+
+CWD: /home/agent/tidb/expression-unification/tidb/rust
+WRAPPER PIN: nightly-2026-08-22-x86_64-unknown-linux-gnu
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib log_pow_ulength_insert_dispatch_ -- --test-threads=1
+LOG: log-pow-length-insert-six-dispatch.log
+EXIT: 101
+TESTS: not started; the initial chain stopped at compilation.
+error[E0308]: mismatched types
+error[E0308]: mismatched types
+error: could not compile `tidb-expr` (lib test) due to 2 previous errors; 21 warnings emitted
+New raw-POW helper returned Option<f64> while the existing driver returns Datum. Parent repaired the helper to Real/Null Datum and the unistore caller to explicit matching/InvalidResult, not a generalized driver.
+
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib log_pow_ulength_insert_dispatch_ -- --test-threads=1
+LOG: log-pow-length-insert-six-dispatch-retry.log
+EXIT: 101
+running 4 tests
+test tikv::evaluated_ascii::tests::log_pow_ulength_insert_dispatch_keeps_insert_bytes_and_post_packet ... FAILED
+test tikv::evaluated_ascii::tests::log_pow_ulength_insert_dispatch_keeps_length_warnings_and_refusal ... ok
+test tikv::evaluated_ascii::tests::log_pow_ulength_insert_dispatch_keeps_math_ieee_and_policy ... ok
+test tikv::evaluated_ascii::tests::log_pow_ulength_insert_dispatch_keeps_pb_pow_demand_and_arity ... ok
+assertion `left == right` failed
+  left: 2
+ right: 1
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 1504 filtered out; finished in 0.00s
+The new overflow test expected one packet getter read; func.rs reads once for comparison and context.rs again for warning formatting. Parent changed only the new assertion to2 and its comment. This assertion repair changed no runtime or preexisting expected values.
+
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib log_pow_ulength_insert_dispatch_ -- --test-threads=1
+LOG: log-pow-length-insert-six-dispatch-retry2.log
+EXIT: 0
+running 4 tests
+test tikv::evaluated_ascii::tests::log_pow_ulength_insert_dispatch_keeps_insert_bytes_and_post_packet ... ok
+test tikv::evaluated_ascii::tests::log_pow_ulength_insert_dispatch_keeps_length_warnings_and_refusal ... ok
+test tikv::evaluated_ascii::tests::log_pow_ulength_insert_dispatch_keeps_math_ieee_and_policy ... ok
+test tikv::evaluated_ascii::tests::log_pow_ulength_insert_dispatch_keeps_pb_pow_demand_and_arity ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1504 filtered out; finished in 0.00s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_pow_ -- --test-threads=1
+LOG: log-pow-length-insert-six-legacy-pow.log
+EXIT: 0
+running 2 tests
+test cophandler::tests::legacy_pow_keeps_operand_demand_and_null_admission ... ok
+test cophandler::tests::legacy_pow_preserves_raw_nonfinite_results ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 187 filtered out; finished in 0.00s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::evaluated_ascii_ -- --test-threads=1
+LOG: log-pow-length-insert-six-sql-lifecycle.log
+EXIT: 0
+running 43 tests
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 0.54s
+
+The following two full suites were run independently in the same shell, not joined by success-only chaining; expression exit101 did not skip unistore.
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+LOG: log-pow-length-insert-six-expr-full.log
+EXIT: 101
+running 1508 tests
+test result: FAILED. 1410 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.40s
+error: test failed, to rerun pass `-p tidb-expr --lib`
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+LOG: log-pow-length-insert-six-unistore-full.log
+EXIT: 101
+running 189 tests
+test result: FAILED. 175 passed; 1 failed; 13 ignored; 0 measured; 0 filtered out; finished in 2.97s
+error: test failed, to rerun pass `-p tidb-unistore --lib`
+
+Parent compared all four complete expression failure blocks with19 and the complete unistore failure block with15retry; identical after only thread-ID normalization. Both suites remain non-green.
+Original SQL shape verified from source: 3rows x11columns; separate raw latin1 FF text-replacement case; five logarithm3020 cases, four short-header1259 cases, POW1690/22003, post-result1028-byte INSERT overflow and NULL-source control, fourteen direct zero-slot refusals. LOG3020 and short-header1259 retain their frontend timing; INSERT emits no pre-1301 on pool refusal.
+Original slice: seven operations/six families; LN/one-argument LOG share Ln; LOG2 and two-argument LOG have distinct operations; POW/POWER aliases; UNCOMPRESSED_LENGTH; binary/text INSERT. Legacy POW raw/NULL bypass was repaired in this original stage; no new PB/unistore admission.
+
+CASING-REPAIR STAGE: EIGHT SEPARATE RECEIPTS
+CWD: /home/agent/tidb/expression-unification/tikv
+WRAPPER PIN: nightly-2026-01-30-x86_64-unknown-linux-gnu
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+LOG: log-pow-length-insert-six-casing-repair-tikv-local.log
+EXIT: 0
+running 221 tests
+test result: ok. 220 passed; 0 failed; 1 ignored; 0 measured; 469 filtered out; finished in 0.18s
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_string::tests:: -- --test-threads=1
+LOG: log-pow-length-insert-six-casing-repair-official-string.log
+EXIT: 0
+running 63 tests
+test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 627 filtered out; finished in 0.02s
+
+CWD: /home/agent/tidb/expression-unification/tidb/rust
+WRAPPER PIN: nightly-2026-08-22-x86_64-unknown-linux-gnu
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_case_ -- --test-threads=1
+LOG: log-pow-length-insert-six-casing-repair-legacy-case.log
+EXIT: 0
+running 2 tests
+test cophandler::tests::legacy_case_null_and_value_admission_errors_remain_typed ... ok
+test cophandler::tests::legacy_case_preserves_ascii_unicode_and_grouped_lossy_bytes ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 189 filtered out; finished in 0.00s
+This legacy-case receipt preceded the following dispatch compile failure and remains an actual completed run.
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib log_pow_ulength_insert_dispatch_ -- --test-threads=1
+LOG: log-pow-length-insert-six-casing-repair-dispatch.log
+EXIT: 101
+TESTS: not started; the chained SQL run was not reached.
+error[E0004]: non-exhaustive patterns: `tidb_query_expr::local::EvaluatedBytesOp::LowerAsciiNative` and `tidb_query_expr::local::EvaluatedBytesOp::UpperAsciiNative` not covered
+error: could not compile `tidb-expr` (lib test) due to 1 previous error; 21 warnings emitted
+The existing test helper omitted the two new ASCII enum variants. Parent added only their explicit panic arm stating that legacy ASCII requires its raw legacy entry: no wildcard, no false mapping to SQL LOWER/UPPER, no runtime or preexisting expected-value change for this repair.
+
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib log_pow_ulength_insert_dispatch_ -- --test-threads=1
+LOG: log-pow-length-insert-six-casing-repair-dispatch-retry.log
+EXIT: 0
+running 4 tests
+test tikv::evaluated_ascii::tests::log_pow_ulength_insert_dispatch_keeps_insert_bytes_and_post_packet ... ok
+test tikv::evaluated_ascii::tests::log_pow_ulength_insert_dispatch_keeps_length_warnings_and_refusal ... ok
+test tikv::evaluated_ascii::tests::log_pow_ulength_insert_dispatch_keeps_math_ieee_and_policy ... ok
+test tikv::evaluated_ascii::tests::log_pow_ulength_insert_dispatch_keeps_pb_pow_demand_and_arity ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1504 filtered out; finished in 0.00s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::evaluated_ascii_ -- --test-threads=1
+LOG: log-pow-length-insert-six-casing-repair-sql.log
+EXIT: 0
+running 43 tests
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 0.58s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+LOG: log-pow-length-insert-six-casing-repair-expr-full.log
+EXIT: 101
+running 1508 tests
+test result: FAILED. 1410 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.32s
+error: test failed, to rerun pass `-p tidb-expr --lib`
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+LOG: log-pow-length-insert-six-casing-repair-unistore-full.log
+EXIT: 101
+running 191 tests
+test result: FAILED. 177 passed; 1 failed; 13 ignored; 0 measured; 0 filtered out; finished in 2.98s
+error: test failed, to rerun pass `-p tidb-unistore --lib`
+
+Parent again compared the complete post-repair expression4 failure blocks with19 and the unistore1 block with15retry: identical after only thread-ID normalization. Both full suites ran and remain non-green.
+Casing repair removes legacy native case loops/NULL bypasses. TiKV LowerAsciiNative/UpperAsciiNative are each a single standard-byte wrapper; high bytes remain intact, with no second case table/layer. Wire binary LOWER/UPPER remain no-ops. UTF8 reuses existing private UTF8Ready after old grouped Rust-lossy preparation: incomplete E2 82 becomes one U+FFFD. Two tests cover four signatures, Unicode simple mappings, raw bytes, NULL admission and typed infrastructure errors through direct bytes and nested int/bytes casts.
+Parent precisely restaged the same TiDB11/TiKV10 source set. Functional credit is restored63->65/245, not increased by new LOWER/UPPER families; final acceptance remains0/245. Original-stage logs are not evidence of the casing repair, and historical18/19 complete-coverage claims are explicitly corrected rather than retroactively rewritten.
+SUBSTRING's old algorithm is unchanged/unmigrated and uncredited; GB foundation residuals and the subsequent complete search batch remain open.
+Complete operation scopes/guards, allocator remeasurement, physical peak/OOM guarantees, release performance, full workspace, make lint and final acceptance remain unverified. Not PR-ready.
