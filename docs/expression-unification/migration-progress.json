@@ -1,8 +1,8 @@
 {
-  "checkpoint_id": "raw-math-six-15",
+  "checkpoint_id": "pi-ip-five-16",
   "frozen_denominator": 245,
   "required_families": 221,
-  "functional_delegation_and_native_deletion_count": 42,
+  "functional_delegation_and_native_deletion_count": 47,
   "fully_final_audited_count": 0,
   "final_performance_and_workspace_gates_complete": false,
   "families": [
@@ -47,9 +47,14 @@
     {"id": "sqrt", "status": "functional_tikv_only", "native_algorithm_deleted": true, "raw_nan_infinity_negative_zero_preserved": true},
     {"id": "sign", "status": "functional_tikv_only", "native_algorithm_deleted": true, "integer_and_decimal_sign_zero_classes_preserved": true},
     {"id": "radians", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_finite_result_diagnostics_preserved": true},
-    {"id": "degrees", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_finite_result_diagnostics_preserved": true}
+    {"id": "degrees", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_finite_result_diagnostics_preserved": true},
+    {"id": "pi", "status": "functional_tikv_only", "native_algorithm_deleted": true, "true_noargs_and_existing_pb_legacy_entries_connected": true, "legal_sql_constant_folding_preserved": true},
+    {"id": "is_ipv4", "status": "functional_tikv_only", "native_algorithm_deleted": true, "leading_zero_spelling_and_original_null_policy_preserved": true},
+    {"id": "is_ipv6", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_text_conversion_and_null_policy_preserved": true},
+    {"id": "is_ipv4_compat", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_raw_bytes_and_null_policy_preserved": true},
+    {"id": "is_ipv4_mapped", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_raw_bytes_and_null_policy_preserved": true}
   ],
-  "shared_evidence": "evidence/raw-math-six-checkpoint.md",
+  "shared_evidence": "evidence/pi-ip-five-checkpoint.md",
   "one_operation_keyed_pool": true,
   "actual_mixed_column_sql_verified": true,
   "zero_slot_refusal_for_new_paths_verified": true,
@@ -57,6 +62,6 @@
   "deferred_compatibility_candidates_not_credited": ["sha2", "compress", "uncompress", "uncompressed_length", "ord"],
   "logical_demand_preserved": true,
   "legacy_infrastructure_errors_remain_typed_until_public_boundary": true,
-  "next_pi_ip_batch_not_credited": ["pi", "is_ipv4", "is_ipv6", "is_ipv4_compat", "is_ipv4_mapped"],
+  "next_packet_string_candidates_not_credited": ["space", "repeat", "to_base64", "from_base64"],
   "go_trig_compatibility_not_credited": ["sin", "cos", "tan", "cot", "atan"]
 }

@@ -3260,7 +3260,14 @@ impl LegacyEvaluator<'_> {
                             let right = legacy_some!(self.eval_real(children.get(1))?);
                             Some(left.atan2(right))
                         }
-                        SimpleSig::Pi => Some(std::f64::consts::PI),
+                        SimpleSig::Pi => match tidb_expr::eval_pi_in(self.raw_columns)? {
+                            Datum::Real(value) => Some(value),
+                            _ => {
+                                return Err(LegacyEvalError::InvalidResult(
+                                    "PI returned a non-real datum",
+                                ))
+                            }
+                        },
                         SimpleSig::Acos | SimpleSig::Asin => {
                             let function = if matches!(sig, SimpleSig::Acos) {
                                 tidb_expr::RawInverseTrigFunction::Acos
@@ -6848,8 +6855,14 @@ mod tests {
             eval_expr(&round_eq, &[], 4, &zone()).expect("evals"),
             Some(1)
         );
-        // PI answers the constant.
+        // PI's no-argument C4 path returns its exact binary64 value.
         let pi = SimpleExpr::Func(SimpleSig::Pi, vec![]);
+        assert_eq!(
+            eval_real(Some(&pi), &[], 4, &zone())
+                .expect("PI is non-null")
+                .to_bits(),
+            0x4009_21fb_5444_2d18,
+        );
         let pi_value = eval_expr(&pi, &[], 4, &zone()).expect("evals");
         assert!(pi_value.expect("non-null") != 0);
     }
@@ -6892,6 +6905,15 @@ mod tests {
                 shared_override: Some(columns),
                 ..LegacyEvaluator::new(&[], 4, &time_zone)
             };
+            // Demand legacy PI directly, without the SQL constant folder.
+            // Its no-argument admission failure must survive the integer fold.
+            let pi = SimpleExpr::Func(SimpleSig::Pi, vec![]);
+            let pi_cast = SimpleExpr::Func(SimpleSig::CastRealAsInt, vec![pi]);
+            let pi_bytes = SimpleExpr::Func(SimpleSig::CastIntAsString, vec![pi_cast]);
+            assert!(matches!(
+                evaluator.eval_bytes(Some(&pi_bytes)),
+                Err(LegacyEvalError::Infrastructure(_))
+            ));
             let acos = SimpleExpr::Func(SimpleSig::Acos, vec![SimpleExpr::Real(2.0)]);
             let cast = SimpleExpr::Func(SimpleSig::CastRealAsInt, vec![acos.clone()]);
             let bytes = SimpleExpr::Func(SimpleSig::CastIntAsString, vec![cast]);

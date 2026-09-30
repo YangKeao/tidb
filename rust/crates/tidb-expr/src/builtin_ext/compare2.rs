@@ -15,8 +15,6 @@
 //! implementation in `pkg/expression/builtin_*.go`, cited per function.
 
 use std::cmp::Ordering;
-use std::net::Ipv6Addr;
-use std::str::FromStr;
 
 use tidb_ast::BinaryOp;
 use tidb_datatype::{EvalType, FieldType, FieldTypeFlags, TimeType};
@@ -44,10 +42,10 @@ pub(crate) fn dispatch(
         ("INET_NTOA", 1) => Some(inet_ntoa(&vals[0], ctx)),
         ("INET6_ATON", 1) => Some(inet6_aton(&vals[0], ctx)),
         ("INET6_NTOA", 1) => Some(inet6_ntoa(&vals[0], ctx)),
-        ("IS_IPV4", 1) => Some(is_ipv4_value(&vals[0])),
-        ("IS_IPV4_MAPPED", 1) => Some(is_ipv4_mapped_value(&vals[0])),
-        ("IS_IPV4_COMPAT", 1) => Some(is_ipv4_compat_value(&vals[0])),
-        ("IS_IPV6", 1) => Some(is_ipv6_value(&vals[0])),
+        ("IS_IPV4", 1) => Some(is_ipv4_value(&vals[0], ctx)),
+        ("IS_IPV4_MAPPED", 1) => Some(is_ipv4_mapped_value(&vals[0], ctx)),
+        ("IS_IPV4_COMPAT", 1) => Some(is_ipv4_compat_value(&vals[0], ctx)),
+        ("IS_IPV6", 1) => Some(is_ipv6_value(&vals[0], ctx)),
         _ => None,
     }
 }
@@ -813,43 +811,35 @@ fn inet6_ntoa(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalErro
     )
 }
 
-/// `IS_IPV4(expr)`: strict four-component decimal IPv4 predicate. Port of
-/// `builtinIsIPv4Sig.evalInt` and its `isIPv4` helper in
-/// `pkg/expression/builtin_miscellaneous.go`.
-fn is_ipv4_value(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(value) = coerce_str(value)? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int(i64::from(is_ipv4(&value))))
+/// `IS_IPV4(expr)`: retain checked text coercion and its historical decimal
+/// leading-zero spelling, while the official predicate owns all validation.
+fn is_ipv4_value(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::IsIpv4Nullable,
+        ctx,
+        || Ok(coerce_str(value)?.map(|text| ipv4_zero_spelling(&text))),
+        crate::tikv::EvaluatedBytesResult::into_boolean_datum,
+    )
 }
 
-fn is_ipv4(value: &str) -> bool {
-    let mut dots = 0;
-    let mut component = 0_u16;
-    let mut previous_dot = true;
-    for byte in value.bytes() {
-        match byte {
-            b'0'..=b'9' => {
-                // Only whether the component exceeds 255 matters. Saturate
-                // rather than letting an arbitrarily long invalid component
-                // overflow Rust's debug arithmetic before we reject it.
-                component = component
-                    .saturating_mul(10)
-                    .saturating_add(u16::from(byte - b'0'));
-                previous_dot = false;
-            }
-            b'.' => {
-                dots += 1;
-                if dots > 3 || component > 255 || previous_dot {
-                    return false;
-                }
-                component = 0;
-                previous_dot = true;
-            }
-            _ => return false,
+/// Only remove redundant leading ASCII zeroes from each existing dot segment.
+/// Nonempty all-zero segments retain one zero; empty segments, dot count and
+/// every other byte are left intact. This neither checks a component's range
+/// nor computes a predicate answer, and is not used for the other IP families.
+fn ipv4_zero_spelling(value: &str) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(value.len());
+    for (index, segment) in value.split('.').enumerate() {
+        if index != 0 {
+            bytes.push(b'.');
+        }
+        let stripped = segment.trim_start_matches('0');
+        if stripped.is_empty() && !segment.is_empty() {
+            bytes.push(b'0');
+        } else {
+            bytes.extend_from_slice(stripped.as_bytes());
         }
     }
-    dots == 3 && component <= 255 && !previous_dot
+    bytes
 }
 
 /// `IS_IPV4_MAPPED(expr)`: true only for a sixteen-byte binary payload whose
@@ -858,30 +848,32 @@ fn is_ipv4(value: &str) -> bool {
 /// this helper byte-oriented is important because arbitrary SQL strings are
 /// allowed to contain invalid UTF-8.  Port of
 /// `builtinIsIPv4MappedSig.evalInt` in `pkg/expression/builtin_miscellaneous.go`.
-fn is_ipv4_mapped_value(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(bytes) = eval_string_bytes(value)? else {
-        return Ok(Datum::Null);
-    };
-    let mapped = bytes.len() == 16 && bytes[..12] == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff];
-    Ok(Datum::Int(i64::from(mapped)))
+fn is_ipv4_mapped_value(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::IsIpv4MappedNullable,
+        ctx,
+        || eval_string_bytes(value),
+        crate::tikv::EvaluatedBytesResult::into_boolean_datum,
+    )
 }
 
 /// `IS_IPV4_COMPAT(expr)`: true only for a sixteen-byte binary payload whose
 /// first twelve bytes are all zero (`::/96`, excluding the mapped `::ffff:`
 /// prefix by construction).  Port of `builtinIsIPv4CompatSig.evalInt` in
 /// `pkg/expression/builtin_miscellaneous.go`.
-fn is_ipv4_compat_value(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(bytes) = eval_string_bytes(value)? else {
-        return Ok(Datum::Null);
-    };
-    let compat = bytes.len() == 16 && bytes[..12] == [0; 12];
-    Ok(Datum::Int(i64::from(compat)))
+fn is_ipv4_compat_value(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::IsIpv4CompatNullable,
+        ctx,
+        || eval_string_bytes(value),
+        crate::tikv::EvaluatedBytesResult::into_boolean_datum,
+    )
 }
 
 /// Evaluates the ETString argument used by the IPv4 binary predicates and
 /// INET6 conversions without decoding or replacing arbitrary bytes. Numeric
-/// constants still follow the original EvalString coercion. The four IS_*
-/// predicates retain their separate native algorithms in this module.
+/// constants still follow the original EvalString coercion. Predicate and
+/// INET6 algorithms are delegated; this helper owns only the value conversion.
 fn eval_string_bytes(value: &Datum) -> Result<Option<Vec<u8>>, EvalError> {
     match value {
         Datum::Null => Ok(None),
@@ -894,13 +886,13 @@ fn eval_string_bytes(value: &Datum) -> Result<Option<Vec<u8>>, EvalError> {
 /// `IS_IPV6(expr)`: true for a parseable IPv6 address, including an IPv4
 /// mapped spelling, but false for a pure IPv4 address. Port of
 /// `builtinIsIPv6Sig.evalInt` in `pkg/expression/builtin_miscellaneous.go`.
-fn is_ipv6_value(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(value) = coerce_str(value)? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int(i64::from(
-        Ipv6Addr::from_str(&value).is_ok() && !is_ipv4(&value),
-    )))
+fn is_ipv6_value(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::IsIpv6Nullable,
+        ctx,
+        || Ok(coerce_str(value)?.map(String::into_bytes)),
+        crate::tikv::EvaluatedBytesResult::into_boolean_datum,
+    )
 }
 
 #[cfg(test)]

@@ -143,7 +143,7 @@ impl PbBuiltin {
             Cot => Kernel::Values(crate::math_fn::cot),
             Sin => Kernel::Values(crate::math_fn::sin),
             Pow => Kernel::Values(crate::math_fn::pow),
-            Pi => Kernel::Values(|values, _| crate::math_fn::pi(values)),
+            Pi => Kernel::Values(crate::math_fn::pi),
             Conv => Kernel::Values(|values, _| crate::math_fn::conv(values)),
             RoundInt | RoundReal | RoundDec => Kernel::Round,
             Date => Kernel::Values(crate::time_fn::date),

@@ -1376,6 +1376,14 @@ impl EvaluatedBytesResult {
         }
     }
 
+    /// Pack a non-null real result without a local constant or NULL fallback.
+    pub(crate) fn into_nonnull_real_datum(self) -> Result<Datum, EvalError> {
+        match self {
+            Self::Ieee754Bits(Some(bits)) => Ok(Datum::Real(f64::from_bits(bits))),
+            _ => Err(result_kind_error().into_eval_error()),
+        }
+    }
+
     /// Only the explicitly owned IEEE carrier can supply raw float bits.
     pub(crate) fn into_ieee754_bits(self) -> Result<Option<u64>, EvalError> {
         match self {
@@ -1416,7 +1424,11 @@ fn materialize_computed(
             | EvaluatedBytesOp::LogicalOr
             | EvaluatedBytesOp::LogicalXor
             | EvaluatedBytesOp::InetAton
-            | EvaluatedBytesOp::SignRaw,
+            | EvaluatedBytesOp::SignRaw
+            | EvaluatedBytesOp::IsIpv4Nullable
+            | EvaluatedBytesOp::IsIpv6Nullable
+            | EvaluatedBytesOp::IsIpv4CompatNullable
+            | EvaluatedBytesOp::IsIpv4MappedNullable,
             ComputedValue::Int(value),
         ) => own_computed_int(value)
             .into_datum()
@@ -1453,7 +1465,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::AcosRaw
             | EvaluatedBytesOp::SqrtRaw
             | EvaluatedBytesOp::RadiansRaw
-            | EvaluatedBytesOp::DegreesRaw,
+            | EvaluatedBytesOp::DegreesRaw
+            | EvaluatedBytesOp::PiRaw,
             ComputedValue::Ieee754Bits(value),
         ) => {
             match value.metadata() {

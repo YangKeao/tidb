@@ -1,38 +1,41 @@
 # Expression unification experiment
 
-Checkpoint-ID: `raw-math-six-15` (previous: `inet-four-14`)
+Checkpoint-ID: `pi-ip-five-16` (previous: `raw-math-six-15`)
 
-**42/245 families delegate to TiKV with their native evaluator algorithms removed; target 221.** This checkpoint adds ASIN, ACOS, SQRT, SIGN, RADIANS and DEGREES. Strict final-audited acceptance remains 0; this is not PR-ready.
+**47/245 families delegate to TiKV with their native evaluator algorithms removed; target 221.** This checkpoint adds PI, IS_IPV4, IS_IPV6, IS_IPV4_COMPAT and IS_IPV4_MAPPED. Strict final-audited acceptance remains 0; this is not PR-ready.
 
 ## Paired repositories
 
 - [YangKeao/tidb, expression-unification-demo](https://github.com/YangKeao/tidb/tree/expression-unification-demo)
 - [YangKeao/tikv, expression-unification-demo](https://github.com/YangKeao/tikv/tree/expression-unification-demo)
 
-Use sibling `tidb` and `tikv` checkouts. `checkpoint.json` pins the paired TiKV commit. Root Plans mirror `/home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md`. Validated steps push both branches without force-push or automatic PRs.
+Use sibling checkouts. `checkpoint.json` pins the paired TiKV commit. Root Plans mirror `/home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md`. Validated steps push both branches without force-push or automatic PRs.
 
-## Raw math ownership
+## PI and IP ownership
 
-Six mathematical primitives now live once in TiKV `impl_math.rs`, shared by its original Real wrappers and private native wrappers. An explicit nullable IEEE754-bits role carries all f64 patterns without weakening Real/NotNan. Internal Byte8 transport has strict role/length checks and owned-bit results; SIGN returns signed Int. Ordinary Bytes cannot impersonate this role.
+PI uses true NoArgs: zero input columns/schema entries, one zero-argument FnCall and one output row. Its private wrapper calls the original TiKV pi function and returns owned IEEE bits. No dummy argument, native constant or evaluator shortcut remains in the admitted AST/typed/PB/legacy routes.
 
-Private IDs are rejected by the ordinary registry. Only closed factory recipes select fixed getters through existing common preparation, validation and metadata construction. The same synchronous driver and operation-keyed evaluator-instance pool remain; workers are not threads.
+SQL may legally fold PI. SQL tests verify its value and metadata without forcing the optimizer to retain it or demanding a zero-slot runtime refusal. Separate core/helper/legacy tests prove actual invocation and explicit-context rejection.
 
-TiDB retains coercion and output policy. SIGN adapts integer and Decimal sign/zero classes without using rounded Display/to_f64 or calculating the final sign answer. Ordinary ASIN/ACOS map raw NaN to NULL; legacy consumers retain NaN for casts and total_cmp. SQRT preserves NaN, positive infinity and negative zero; RADIANS/DEGREES retain original finite-result diagnostics. NULL also invokes the actual kernel. No new SQL/PB admission or native fallback.
+Four IP predicates use private default-NULL-propagating wrappers. Non-NULL inputs call the existing official algorithms; wire NULL-to-zero behavior remains unchanged. IPv4 alone removes redundant leading ASCII zeros from each existing dot segment before parsing, retaining empty segments, all separators and other characters. This does not decide range or validity. IPv6 and binary COMPAT/MAPPED payloads are not normalized.
 
-Legacy unistore requires a typed error chain across numeric, string, JSON, temporal and interval consumers. `LegacyEvaluator` preserves old SQL-error folding and demand order while propagating runtime/adapter failures. Public string errors remain at the old boundary. Its method grouping includes indentation changes; use `git diff -w` to review the substantive changes.
+Native IPv4/IPv6 parsing, redundant IPv6 pre-check and binary prefix algorithms are deleted. Checked text conversion, raw-byte conversion, metadata and signed boolean packing remain frontend-owned. No additional PB/unistore admission is introduced for these predicates.
+
+ClosedPrivate selects fixed getters through existing common preparation. NoArgs, IEEE and ordinary-value roles are checked separately. The same synchronous driver, evaluator-instance pool and limits remain; Real/NotNan is not widened and there is no native fallback.
 
 ## Actual validation
 
-- TiKV local: 200 passed/1 ignored; raw identity/role guard: 1 passed; original math tests: 46 passed.
-- New native dispatch: 3 passed; session SQL/lifecycle: 33 passed; restored legacy regressions: 2 passed.
-- Full expression: 1395 passed/4 unchanged failures/94 ignored, 1493 discovered. Complete failure blocks match checkpoint14 after only thread-ID normalization.
-- Full unistore: 173 passed/1 failure/13 ignored, 187 discovered. The failing EqInt('abc',-1) fixture reproduces with only cophandler.rs replaced by its HEAD version; other math sources were unchanged. This is a path-specific comparison, not a full old-workspace rerun. The original Shared SQL-error behavior is retained.
-- The first unistore compile failed at two old String errors needing explicit SQL classification; these were fixed before the above tests. A compile failure is not passing evidence.
+- TiKV local: 203 passed/1 ignored; role/identity guard: 1 passed.
+- New IP and PI dispatch: 1 each passed; SQL/lifecycle: 35 passed.
+- Legacy infrastructure/inverse-trig tests: 2 passed; existing math fixture including exact PI bits: 1 passed.
+- Full expression: 1397 passed/4 unchanged failures/94 ignored, 1495 discovered. Complete failure blocks match15 after only thread-ID normalization.
 
-SQL uses 36 cells of analytical constants, five Real result columns plus SIGN Int metadata, and 12 direct zero-slot refusals. Existing expected values were not changed. Exact commands, results and exclusions: `evidence/raw-math-six-checkpoint.md`, `logs/raw-math-six-summary.txt`.
+SQL checks 28 predicate cells plus PI and metadata, and eight direct zero-slot predicate refusals. Existing expected values were not changed. Full unistore was not rerun here; checkpoint15's non-green full suite and scoped HEAD comparison remain documented, not silently promoted to green.
+
+Exact commands and boundaries: `evidence/pi-ip-five-checkpoint.md`, `logs/pi-ip-five-summary.txt`.
 
 ## Open work
 
-Next: PI with true NoArgs, and four IP predicates with private NULL propagation and IPv4-only leading-zero normalization. They are not credited yet. Ordinary SQL may legally fold PI; tests must not force the optimizer to retain it.
+Next candidates are SPACE, REPEAT, TO_BASE64 and FROM_BASE64. Explicit packet disposition must preserve native1301 policy without fabricating NULL arguments, while private wrappers reuse unique TiKV cores and preserve existing wire behavior. No credit yet.
 
-Go/std trigonometric differences, packet-aware strings, SHA2, compression and ORD retain explicit compatibility gaps. No partial-domain credit. Broad operation-scope guards, release performance, allocator remeasurement, physical peak/OOM safety, paired differential reruns, full workspace and make lint remain unverified. Kernel reuse is not a claim of complete Go-package transcreation.
+Go/std trigonometric differences, other string compatibility, SHA2, compression and ORD remain documented gaps. Broad operation-scope guards, release performance, allocator remeasurement, physical peak/OOM safety, paired differential reruns, full workspace and make lint remain unverified. Kernel reuse is not a claim of complete Go-package transcreation.

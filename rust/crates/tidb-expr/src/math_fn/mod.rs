@@ -171,7 +171,7 @@ pub(crate) fn dispatch_values(
         "LOG" => log(vals, ctx),
         "LOG2" => log2(vals, ctx),
         "LOG10" => log10(vals, ctx),
-        "PI" => pi(vals),
+        "PI" => pi(vals, ctx),
         "SIN" => sin(vals, ctx),
         "COS" => cos(vals, ctx),
         "TAN" => tan(vals, ctx),
@@ -621,9 +621,9 @@ fn exp(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
 }
 
 /// `PI()`: a niladic function returning the constant.
-pub(crate) fn pi(vals: &[Datum]) -> Result<Datum, EvalError> {
+pub(crate) fn pi(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
     match vals {
-        [] => Ok(Datum::Real(std::f64::consts::PI)),
+        [] => crate::eval_pi_in(ctx),
         _ => Err(EvalError::Unsupported("bad function arity")),
     }
 }

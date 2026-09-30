@@ -1079,6 +1079,11 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::SignRaw => "SIGN",
         EvaluatedBytesOp::RadiansRaw => "RADIANS",
         EvaluatedBytesOp::DegreesRaw => "DEGREES",
+        EvaluatedBytesOp::PiRaw => panic!("PI requires its original empty argument tuple"),
+        EvaluatedBytesOp::IsIpv4Nullable => "IS_IPV4",
+        EvaluatedBytesOp::IsIpv6Nullable => "IS_IPV6",
+        EvaluatedBytesOp::IsIpv4CompatNullable => "IS_IPV4_COMPAT",
+        EvaluatedBytesOp::IsIpv4MappedNullable => "IS_IPV4_MAPPED",
         EvaluatedBytesOp::IsNull => "ISNULL",
         EvaluatedBytesOp::IsTrue => "ISTRUE",
         EvaluatedBytesOp::IsFalse => "ISFALSE",
@@ -1125,6 +1130,176 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+#[test]
+fn ip_predicate_dispatch_preserves_spelling_raw_bytes_and_nulls() {
+    use EvaluatedBytesOp::{
+        IsIpv4CompatNullable, IsIpv4MappedNullable, IsIpv4Nullable, IsIpv6Nullable,
+    };
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    let mapped = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 1, 2, 3, 4];
+    for (operation, input, expected) in [
+        (IsIpv4Nullable, Datum::new_string("001.002.0003.000"), 1),
+        (IsIpv4Nullable, Datum::new_string("0000.000.00.0"), 1),
+        (IsIpv4Nullable, Datum::new_string("000256.2.3.4"), 0),
+        (IsIpv4Nullable, Datum::new_string("1..2.3"), 0),
+        (IsIpv4Nullable, Datum::new_string("1.2.3.4."), 0),
+        (IsIpv4Nullable, Datum::new_string("01 .2.3.4"), 0),
+        (IsIpv4Nullable, Datum::new_string("000"), 0),
+        (IsIpv4Nullable, Datum::new_string(""), 0),
+        (IsIpv6Nullable, Datum::new_string("::ffff:1.2.3.4"), 1),
+        (IsIpv6Nullable, Datum::new_string("::ffff:001.2.3.4"), 0),
+        (IsIpv6Nullable, Datum::new_string("1.2.3.4"), 0),
+        (IsIpv4CompatNullable, Datum::new_bytes([0; 16]), 1),
+        (IsIpv4CompatNullable, Datum::new_bytes([0; 4]), 0),
+        (IsIpv4MappedNullable, Datum::new_bytes(mapped), 1),
+        (IsIpv4MappedNullable, Datum::new_string(mapped.to_vec()), 1),
+        (IsIpv4MappedNullable, Datum::new_string("::ffff:1.2.3.4"), 0),
+    ] {
+        arm_eval_one_observation();
+        let result = dispatch_bytes_family(operation, &input, &columns);
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(Datum::Int(expected)), "{operation:?}");
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    }
+    for operation in [
+        IsIpv4Nullable,
+        IsIpv6Nullable,
+        IsIpv4CompatNullable,
+        IsIpv4MappedNullable,
+    ] {
+        arm_eval_one_observation();
+        let result = dispatch_bytes_family(operation, &Datum::Null, &columns);
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(Datum::Null));
+        assert_eq!(
+            observation.facade_entries, 1,
+            "NULL enters the real nullable wrapper"
+        );
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    }
+    drop(scope);
+    execution.close();
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    for operation in [IsIpv4Nullable, IsIpv6Nullable] {
+        arm_eval_one_observation();
+        let result = dispatch_bytes_family(operation, &Datum::new_bytes([0xff]), &columns);
+        let observation = take_eval_one_observation();
+        assert_eq!(
+            result,
+            Err(EvalError::Unsupported("invalid UTF-8 byte datum"))
+        );
+        assert_eq!(
+            observation.facade_entries, 0,
+            "original coercion error precedes refusal"
+        );
+    }
+    for operation in [
+        IsIpv4Nullable,
+        IsIpv6Nullable,
+        IsIpv4CompatNullable,
+        IsIpv4MappedNullable,
+    ] {
+        arm_eval_one_observation();
+        let result = dispatch_bytes_family(operation, &Datum::Null, &columns);
+        let observation = take_eval_one_observation();
+        assert!(
+            matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource)
+        );
+        assert_eq!(observation.facade_entries, 0);
+    }
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn pi_dispatch_uses_noargs_and_preserves_explicit_context() {
+    use crate::scalar_function::{PbBuiltin, ScalarFunction};
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    let field = FieldType::new(FieldTypeCode::Double);
+    let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    let protobuf = ScalarFunction::from_pb(
+        PbBuiltin::new(tidb_proto::tipb::ScalarFuncSig::Pi).unwrap(),
+        field.clone(),
+        Vec::new(),
+    );
+    let typed = ScalarFunction::new(tidb_ast::CiString::new("pi"), field, Vec::new());
+    for entry in 0..4 {
+        arm_eval_one_observation();
+        let result = match entry {
+            0 => crate::eval_pi_in(&columns),
+            1 => crate::math_fn::dispatch_values("PI", &[], &columns).unwrap(),
+            2 => protobuf.eval(&columns, row.to_row()),
+            _ => typed.eval(&columns, row.to_row()),
+        };
+        let observation = take_eval_one_observation();
+        let Datum::Real(value) = result.unwrap() else {
+            panic!("PI must keep its Real tag")
+        };
+        assert_eq!(value.to_bits(), 0x4009_21fb_5444_2d18);
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    }
+    drop(scope);
+    execution.close();
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    // Test the explicit helper, not an optimizer-folded SQL constant.
+    arm_eval_one_observation();
+    let result = crate::eval_pi_in(&columns);
+    let observation = take_eval_one_observation();
+    assert!(
+        matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource)
+    );
+    assert_eq!(observation.facade_entries, 0);
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    assert_eq!(
+        crate::math_fn::pi(&[Datum::Null], &columns),
+        Err(EvalError::Unsupported("bad function arity"))
+    );
+    drop(scope);
+    execution.close();
 }
 
 #[test]

@@ -822,6 +822,19 @@ pub fn eval_logical_ready_in(
     tikv::evaluate_logical_in(function, arguments, ctx)
 }
 
+/// Evaluates PI through the shared no-argument value driver. This seam has
+/// no dummy operand and returns the kernel's owned, non-NULL real result.
+/// Existing SQL constant folding is unchanged; a fold computes through the
+/// same math entry, while direct callers retain their explicit context.
+pub fn eval_pi_in(ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    tikv::evaluate_args_in(
+        tikv::EvaluatedBytesOp::PiRaw,
+        ctx,
+        || Ok(tikv::EvaluatedArgs::NoArgs),
+        tikv::EvaluatedBytesResult::into_nonnull_real_datum,
+    )
+}
+
 /// Closed raw inverse-trigonometric operations for the legacy real channel.
 /// This is not a new SQL or protobuf admission surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

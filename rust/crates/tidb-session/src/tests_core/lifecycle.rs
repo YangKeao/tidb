@@ -2534,3 +2534,137 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_six_math_sql_columns() {
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_pi_and_ip_predicate_sql_values_and_metadata() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_ip_pred_ops (id INT PRIMARY KEY, \
+             t VARCHAR(64), b VARBINARY(16))",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_ip_pred_ops VALUES \
+             (1,NULL,NULL),\
+             (2,'192.168.0.1',X'000000000000000000000000C0A80001'),\
+             (3,'001.002.0003.000004',X'00000000000000000000FFFF01020304'),\
+             (4,'2001:db8::1',X'20010DB8000000000000000000000001'),\
+             (5,'::ffff:1.2.3.4',X'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF'),\
+             (6,'1..2.3',X'000102'),(7,'0000.00.0.000',X'')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    let output = session
+        .run_with_columns(
+            "SELECT PI(), IS_IPV4(t), IS_IPV6(t), IS_IPV4_COMPAT(b), IS_IPV4_MAPPED(b) \
+             FROM shared_ip_pred_ops ORDER BY id",
+        )
+        .unwrap();
+    let StmtOutput::Rows { columns, rows } = output else {
+        panic!("expected PI and IP predicate SQL rows")
+    };
+    assert_eq!(columns.len(), 5);
+    // PI may legally fold before row execution. Only its SQL value and
+    // descriptor are asserted here; native tests own true NoArgs admission.
+    assert_eq!(columns[0].1.code(), tidb_datatype::FieldTypeCode::Double);
+    assert_eq!(columns[0].1.flen(), 8);
+    assert_eq!(columns[0].1.decimal(), 6);
+    assert!(!columns[0].1.is_unsigned());
+    for (column_index, (_, field_type)) in columns.iter().enumerate().skip(1) {
+        assert_eq!(field_type.eval_type(), tidb_datatype::EvalType::Int);
+        assert_eq!(field_type.flen(), 1);
+        assert!(!field_type.is_unsigned(), "column {column_index}");
+        assert!(field_type.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
+    }
+
+    // The four native predicates propagate NULL. Leading-zero decimal
+    // components are accepted, but an original empty component remains invalid.
+    // Binary fixtures distinguish compatible, mapped and nonmatching prefixes.
+    let expected: [[Option<i64>; 4]; 7] = [
+        [None, None, None, None],
+        [Some(1), Some(0), Some(1), Some(0)],
+        [Some(1), Some(0), Some(0), Some(1)],
+        [Some(0), Some(1), Some(0), Some(0)],
+        [Some(0), Some(1), Some(0), Some(0)],
+        [Some(0), Some(0), Some(0), Some(0)],
+        [Some(1), Some(0), Some(0), Some(0)],
+    ];
+    assert_eq!(rows.len(), expected.len());
+    for (row_index, (row, expected)) in rows.iter().zip(expected).enumerate() {
+        assert_eq!(row.len(), 5);
+        assert_eq!(row[0], Datum::Real(std::f64::consts::PI));
+        for (column_index, expected) in expected.into_iter().enumerate() {
+            assert_eq!(
+                row[column_index + 1],
+                expected.map_or(Datum::Null, Datum::Int),
+                "IP predicate fixture id {}, predicate {column_index}",
+                row_index + 1
+            );
+        }
+    }
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_four_ip_predicate_sql_columns() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_ip_pred_zero (id INT PRIMARY KEY, \
+             t VARCHAR(64), b VARBINARY(16))",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_ip_pred_zero VALUES \
+             (1,NULL,NULL),(2,'001.002.3.4',X'00000000000000000000FFFF01020304')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // Direct nullable-column calls only. PI is deliberately absent: a legal
+    // constant fold must not be forced to retain its runtime call for this test.
+    for expression in [
+        "IS_IPV4(t)",
+        "IS_IPV6(t)",
+        "IS_IPV4_COMPAT(b)",
+        "IS_IPV4_MAPPED(b)",
+    ] {
+        for id in [1, 2] {
+            let sql = format!("SELECT {expression} FROM shared_ip_pred_zero WHERE id={id}");
+            let error = session.run_with_columns(&sql).expect_err(&sql);
+            match &error {
+                DriverError::Exec(tidb_executor::ExecError::Eval(
+                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                )) => {
+                    assert_eq!(
+                        failure.class(),
+                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                    );
+                    assert_eq!(
+                        failure.origin(),
+                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                    );
+                }
+                other => panic!("IP predicate SQL must reach the zero-slot pool: {sql}: {other:?}"),
+            }
+            let mysql = error.to_mysql_error();
+            assert_eq!(mysql.code, 1105, "{sql}");
+            assert_eq!(mysql.state, *b"HY000", "{sql}");
+            assert!(mysql.is_from_evaluation(), "{sql}");
+        }
+    }
+}
