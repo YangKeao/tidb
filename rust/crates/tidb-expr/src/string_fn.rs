@@ -1395,8 +1395,27 @@ pub(crate) fn export_set(vals: &[Datum]) -> Result<Datum, EvalError> {
 /// TiDB removes spaces/tabs before calling Go's `StdEncoding.DecodeString`,
 /// whose decoder also ignores CR/LF.  The result is binary string data, so
 /// invalid UTF-8 is preserved rather than replaced or turned into NULL.
+#[cfg(test)]
 pub(crate) fn from_base64(vals: &[Datum]) -> Result<Datum, EvalError> {
-    from_base64_with_packet_limit(vals, None)
+    from_base64_in(vals, &crate::NoColumns)
+}
+
+/// Value-only decoding retains the caller's execution capability without
+/// consulting the statement packet limit or applying its raw-length guard.
+pub(crate) fn from_base64_in(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    if vals.len() != 1 {
+        return Err(EvalError::Unsupported("FROM_BASE64 arity"));
+    }
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::FromBase64ValueNative,
+        ctx,
+        || {
+            Ok(crate::tikv::EvaluatedArgs::Bytes(coerce_str_bytes(
+                &vals[0],
+            )?))
+        },
+        |result| Ok(result.into_bytes()?.map_or(Datum::Null, Datum::new_bytes)),
+    )
 }
 
 /// Evaluates `FROM_BASE64` with Go's signature-level packet bound. The Go
@@ -1406,76 +1425,31 @@ pub(crate) fn from_base64(vals: &[Datum]) -> Result<Datum, EvalError> {
 /// while the value-only helper remains useful for datatype-style tests.
 pub(crate) fn from_base64_with_packet_limit(
     vals: &[Datum],
-    ctx: Option<&dyn crate::Columns>,
+    ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
     if vals.len() != 1 {
         return Err(EvalError::Unsupported("FROM_BASE64 arity"));
     }
-    let Some(input) = coerce_str_bytes(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    if let Some(ctx) = ctx {
-        if input.len() > (isize::MAX as usize) / 3 {
-            return Ok(Datum::Null);
-        }
-        let estimated_len = input.len() * 3 / 4;
-        if estimated_len as u64 > ctx.max_allowed_packet() {
-            ctx.handle_allowed_packet_overflowed("from_base64")?;
-            return Ok(Datum::Null);
-        }
-    }
-    let cleaned: Vec<u8> = input
-        .into_iter()
-        .filter(|byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
-        .collect();
-    if cleaned.is_empty() {
-        return Ok(Datum::new_bytes(Vec::new()));
-    }
-    if !cleaned.len().is_multiple_of(4) {
-        return Ok(Datum::Null);
-    }
-    let val = |c: u8| -> Option<u8> {
-        match c {
-            b'A'..=b'Z' => Some(c - b'A'),
-            b'a'..=b'z' => Some(c - b'a' + 26),
-            b'0'..=b'9' => Some(c - b'0' + 52),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
-        }
-    };
-    let mut bytes = Vec::new();
-    for (group_index, chunk) in cleaned.as_chunks::<4>().0.iter().enumerate() {
-        let last = group_index + 1 == cleaned.len() / 4;
-        let Some(a) = val(chunk[0]) else {
-            return Ok(Datum::Null);
-        };
-        let Some(b) = val(chunk[1]) else {
-            return Ok(Datum::Null);
-        };
-        bytes.push((a << 2) | (b >> 4));
-        if chunk[2] == b'=' {
-            if !last || chunk[3] != b'=' || b & 0x0f != 0 {
-                return Ok(Datum::Null);
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::FromBase64Native,
+        ctx,
+        || {
+            let value = coerce_str_bytes(&vals[0])?;
+            let mut disposition = crate::tikv::OutputDisposition::Allow;
+            if let Some(input) = value.as_ref() {
+                // The oversized-input guard belongs to C4. Only skip the
+                // packet getter here, retaining the original bytes and Allow.
+                if input.len() <= (isize::MAX as usize) / 3
+                    && (input.len() * 3 / 4) as u64 > ctx.max_allowed_packet()
+                {
+                    ctx.handle_allowed_packet_overflowed("from_base64")?;
+                    disposition = crate::tikv::OutputDisposition::SuppressByPacket;
+                }
             }
-            continue;
-        }
-        let Some(c) = val(chunk[2]) else {
-            return Ok(Datum::Null);
-        };
-        bytes.push((b << 4) | (c >> 2));
-        if chunk[3] == b'=' {
-            if !last || c & 0x03 != 0 {
-                return Ok(Datum::Null);
-            }
-            continue;
-        }
-        let Some(d) = val(chunk[3]) else {
-            return Ok(Datum::Null);
-        };
-        bytes.push((c << 6) | d);
-    }
-    Ok(Datum::new_bytes(bytes))
+            Ok(crate::tikv::EvaluatedArgs::PacketBytes { value, disposition })
+        },
+        |result| Ok(result.into_bytes()?.map_or(Datum::Null, Datum::new_bytes)),
+    )
 }
 
 #[cfg(test)]

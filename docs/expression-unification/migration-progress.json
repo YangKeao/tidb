@@ -1,8 +1,8 @@
 {
-  "checkpoint_id": "pi-ip-five-16",
+  "checkpoint_id": "packet-string-four-17",
   "frozen_denominator": 245,
   "required_families": 221,
-  "functional_delegation_and_native_deletion_count": 47,
+  "functional_delegation_and_native_deletion_count": 51,
   "fully_final_audited_count": 0,
   "final_performance_and_workspace_gates_complete": false,
   "families": [
@@ -52,9 +52,13 @@
     {"id": "is_ipv4", "status": "functional_tikv_only", "native_algorithm_deleted": true, "leading_zero_spelling_and_original_null_policy_preserved": true},
     {"id": "is_ipv6", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_text_conversion_and_null_policy_preserved": true},
     {"id": "is_ipv4_compat", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_raw_bytes_and_null_policy_preserved": true},
-    {"id": "is_ipv4_mapped", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_raw_bytes_and_null_policy_preserved": true}
+    {"id": "is_ipv4_mapped", "status": "functional_tikv_only", "native_algorithm_deleted": true, "original_raw_bytes_and_null_policy_preserved": true},
+    {"id": "space", "status": "functional_tikv_only", "native_algorithm_deleted": true, "packet_diagnostic_precedes_silent_blob_limit": true},
+    {"id": "repeat", "status": "functional_tikv_only", "native_algorithm_deleted": true, "undemanded_count_explicit_and_empty_huge_count_fast": true},
+    {"id": "to_base64", "status": "functional_tikv_only", "native_algorithm_deleted": true, "native_above_wire_blob_limit_and_line_wrap_preserved": true},
+    {"id": "from_base64", "status": "functional_tikv_only", "native_algorithm_deleted": true, "native_whitespace_padding_and_value_only_context_preserved": true}
   ],
-  "shared_evidence": "evidence/pi-ip-five-checkpoint.md",
+  "shared_evidence": "evidence/packet-string-four-checkpoint.md",
   "one_operation_keyed_pool": true,
   "actual_mixed_column_sql_verified": true,
   "zero_slot_refusal_for_new_paths_verified": true,
@@ -62,6 +66,6 @@
   "deferred_compatibility_candidates_not_credited": ["sha2", "compress", "uncompress", "uncompressed_length", "ord"],
   "logical_demand_preserved": true,
   "legacy_infrastructure_errors_remain_typed_until_public_boundary": true,
-  "next_packet_string_candidates_not_credited": ["space", "repeat", "to_base64", "from_base64"],
+  "next_case_sha2_ord_candidates_not_credited": ["lower", "upper", "sha2", "ord"],
   "go_trig_compatibility_not_credited": ["sin", "cos", "tan", "cot", "atan"]
 }

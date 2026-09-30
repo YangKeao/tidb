@@ -1,0 +1,54 @@
+Checkpoint: packet-string-four-17
+Selected actual result lines from /home/agent/tidb/expression-unification/logs/packet-string-four-*.log.
+Commands and exit statuses supplied by parent; no tests were rerun to write this summary.
+
+CWD: /home/agent/tidb/expression-unification/tikv
+WRAPPER PIN: nightly-2026-01-30-x86_64-unknown-linux-gnu
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+LOG: packet-string-four-tikv-local.log
+EXIT: 0
+running 208 tests
+test result: ok. 207 passed; 0 failed; 1 ignored; 0 measured; 469 filtered out; finished in 0.18s
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_string::tests:: -- --test-threads=1
+LOG: packet-string-four-official-string.log
+EXIT: 0
+running 63 tests
+test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 614 filtered out; finished in 0.02s
+
+CWD: /home/agent/tidb/expression-unification/tidb/rust
+WRAPPER PIN: nightly-2026-08-22-x86_64-unknown-linux-gnu
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib packet_string_dispatch_ -- --test-threads=1
+LOG: packet-string-four-dispatch.log
+EXIT: 0
+running 3 tests
+test tikv::evaluated_ascii::tests::packet_string_dispatch_keeps_policy_order_and_value_only_context ... ok
+test tikv::evaluated_ascii::tests::packet_string_dispatch_preserves_results_nulls_and_count_demand ... ok
+test tikv::evaluated_ascii::tests::packet_string_dispatch_to_base64_above_wire_blob_limit ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1495 filtered out; finished in 0.19s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::evaluated_ascii_ -- --test-threads=1
+LOG: packet-string-four-sql-lifecycle.log
+EXIT: 101
+running 37 tests
+test result: FAILED. 36 passed; 1 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 0.46s
+error: test failed, to rerun pass `-p tidb-session --lib`
+Failed new test: tests_core::lifecycle::evaluated_ascii_shared_pool_zero_slots_reject_packet_string_sql_columns
+Actual warning list contained Warning1301; the new assertion incorrectly added the returned evaluation-origin1105 as an Error row. E verified the existing session handling; only this new assertion/comment was corrected, not runtime or pre-existing expected values.
+The initial serial chain stopped here; full expression did not execute in that chain.
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::evaluated_ascii_ -- --test-threads=1
+LOG: packet-string-four-sql-lifecycle-retry.log
+EXIT: 0
+running 37 tests
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 0.46s
+
+Separate full-expression invocation after the initial SQL failure, before the retry:
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+LOG: packet-string-four-expr-full.log
+EXIT: 101
+running 1498 tests
+test result: FAILED. 1400 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.25s
+error: test failed, to rerun pass `-p tidb-expr --lib`
+
+Parent compared all four complete expression failure blocks against pi-ip-five-16: identical after only thread-ID normalization. The full expression suite remains non-green.
+No new PB/unistore admission; unistore was not rerun in17. Pre-existing expected values were not changed; the new SQL assertion correction is recorded above.
+Functional delegation/native-deletion: 51/245. Final acceptance: 0/245.
+Complete operation scopes/guards, allocator remeasurement, physical peak/OOM guarantees, performance, full workspace and make lint were not verified by these receipts; this is not PR-ready.

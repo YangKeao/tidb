@@ -2668,3 +2668,221 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_four_ip_predicate_sql_columns()
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_packet_string_sql_values_metadata_and_warnings() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_packet_ops (id INT PRIMARY KEY, n BIGINT, \
+             t VARCHAR(16), b VARBINARY(1024), e VARCHAR(2048))",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_packet_ops VALUES \
+             (1,NULL,NULL,NULL,NULL),(2,0,'',X'',''),\
+             (3,2,'ab',X'616263','YWJj'),(4,-1,'é',X'FF00','/wA='),\
+             (5,2,'中',X'00',' Y Q = = '),(6,1,'x',X'41','!!!!')",
+        )
+        .unwrap();
+    // Small Rust-built input fixtures, never nested calls to the SQL targets.
+    // 1368 raw Base64 bytes estimate to 1026 decoded bytes BEFORE whitespace
+    // removal, although the cleaned YQ== payload would decode to just one byte.
+    let padded_base64 = format!("{}YQ==", " ".repeat(1364));
+    session
+        .run(&format!(
+            "INSERT INTO shared_packet_ops VALUES \
+             (7,1,'a','{}','YQ=='),(8,1025,'ab','{}','{}')",
+            "a".repeat(58),
+            "a".repeat(768),
+            padded_base64,
+        ))
+        .unwrap();
+    // SQL SET SESSION is read-only, and SET GLOBAL does not update this
+    // session. Reuse the existing validated internal SessionVars test setup.
+    session
+        .vars
+        .set_system("max_allowed_packet", "1024".to_owned())
+        .unwrap();
+    assert_eq!(session.max_allowed_packet(), 1024);
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    let output = session
+        .run_with_columns(
+            "SELECT SPACE(n), REPEAT(t,n), TO_BASE64(b), FROM_BASE64(e) \
+             FROM shared_packet_ops WHERE id<8 ORDER BY id",
+        )
+        .unwrap();
+    let StmtOutput::Rows { columns, rows } = output else {
+        panic!("expected packet string SQL rows")
+    };
+    assert_eq!(columns.len(), 4);
+    for (column_index, (_, field_type)) in columns.iter().enumerate() {
+        assert_eq!(field_type.eval_type(), tidb_datatype::EvalType::String);
+        if column_index == 3 {
+            assert_eq!(field_type.collation(), tidb_datatype::Collation::Binary);
+        } else {
+            assert_ne!(field_type.collation(), tidb_datatype::Collation::Binary);
+        }
+    }
+    // Each aaa triple is YWFh. The final a starts a new line after exactly
+    // 76 encoded columns; no encoder under test supplies this expected value.
+    let wrapped = format!("{}\nYQ==", "YWFh".repeat(19));
+    let expected_text: [[Option<&str>; 3]; 7] = [
+        [None; 3],
+        [Some(""); 3],
+        [Some("  "), Some("abab"), Some("YWJj")],
+        [Some(""), Some(""), Some("/wA=")],
+        [Some("  "), Some("中中"), Some("AA==")],
+        [Some(" "), Some("x"), Some("QQ==")],
+        [Some(" "), Some("a"), Some(wrapped.as_str())],
+    ];
+    let binary_string =
+        |bytes: Vec<u8>| Datum::new_collation_string(bytes, tidb_datatype::Collation::Binary);
+    let expected_binary = [
+        Datum::Null,
+        binary_string(vec![]),
+        binary_string(b"abc".to_vec()),
+        binary_string(vec![0xff, 0x00]),
+        binary_string(b"a".to_vec()),
+        Datum::Null,
+        binary_string(b"a".to_vec()),
+    ];
+    assert_eq!(rows.len(), expected_text.len());
+    for (row_index, (row, expected)) in rows.iter().zip(expected_text).enumerate() {
+        assert_eq!(row.len(), 4);
+        for (column_index, expected) in expected.into_iter().enumerate() {
+            let value = &row[column_index];
+            match expected {
+                None => assert_eq!(value, &Datum::Null),
+                Some(expected) => {
+                    assert!(matches!(value, Datum::String(_)));
+                    assert_ne!(value.collation(), Some(tidb_datatype::Collation::Binary));
+                    assert_eq!(
+                        crate::tests_support::cell_text(value),
+                        expected,
+                        "packet string fixture id {}, column {column_index}",
+                        row_index + 1
+                    );
+                }
+            }
+        }
+        assert_eq!(row[3], expected_binary[row_index]);
+    }
+    assert!(warnings_of(&session).is_empty());
+
+    // Each direct target independently suppresses an over-packet result. TO's
+    // 768-byte input needs 1024 Base64 characters PLUS 13 newline bytes.
+    for (expression, function) in [
+        ("SPACE(n)", "space"),
+        ("REPEAT(t,n)", "repeat"),
+        ("TO_BASE64(b)", "to_base64"),
+        ("FROM_BASE64(e)", "from_base64"),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_packet_ops WHERE id=8");
+        let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+            panic!("expected packet-suppressed SQL rows: {sql}")
+        };
+        assert_eq!(rows, vec![vec![Datum::Null]], "{sql}");
+        assert_eq!(
+            session.warnings(),
+            &[SqlWarning {
+                level: WarningLevel::Warning,
+                code: 1301,
+                message: format!(
+                    "Result of {function}() was larger than max_allowed_packet (1024) - truncated"
+                ),
+            }],
+            "{sql}"
+        );
+    }
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_packet_string_sql_columns() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_packet_zero (id INT PRIMARY KEY, n BIGINT, \
+             t VARCHAR(16), b VARBINARY(16), e VARCHAR(2048))",
+        )
+        .unwrap();
+    let padded_base64 = format!("{}YQ==", " ".repeat(1364));
+    session
+        .run(&format!(
+            "INSERT INTO shared_packet_zero VALUES \
+             (1,NULL,NULL,NULL,NULL),(2,2,'ab',X'616263','YWJj'),\
+             (3,1,'a',X'61','{padded_base64}')"
+        ))
+        .unwrap();
+    session
+        .vars
+        .set_system("max_allowed_packet", "1024".to_owned())
+        .unwrap();
+    assert_eq!(session.max_allowed_packet(), 1024);
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // Eight direct NULL/non-NULL calls, plus one warning-before-refusal case.
+    // Even FROM's over-packet branch must call the real suppressed-result
+    // kernel: returning native NULL after warning would evade this pool.
+    for (expression, id) in [
+        ("SPACE(n)", 1),
+        ("SPACE(n)", 2),
+        ("REPEAT(t,n)", 1),
+        ("REPEAT(t,n)", 2),
+        ("TO_BASE64(b)", 1),
+        ("TO_BASE64(b)", 2),
+        ("FROM_BASE64(e)", 1),
+        ("FROM_BASE64(e)", 2),
+        ("FROM_BASE64(e)", 3),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_packet_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("packet string SQL must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        if id == 3 {
+            // finish_statement_state does not append evaluation-origin 1105 to
+            // the warning list. The earlier packet warning survives; the separate
+            // returned typed refusal and its origin were checked above.
+            assert_eq!(
+                session.warnings(),
+                &[SqlWarning {
+                    level: WarningLevel::Warning,
+                    code: 1301,
+                    message: "Result of from_base64() was larger than \
+                              max_allowed_packet (1024) - truncated"
+                        .to_owned(),
+                }]
+            );
+        }
+    }
+}

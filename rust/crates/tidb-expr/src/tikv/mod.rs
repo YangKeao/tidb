@@ -37,7 +37,9 @@ pub use evaluated_ascii::{
     AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy, AsciiScope,
     ScopedAsciiColumns,
 };
-pub(crate) use tidb_query_expr::local::{EvaluatedArgs, EvaluatedBytesOp};
+pub(crate) use tidb_query_expr::local::{
+    EvaluatedArgs, EvaluatedBytesOp, OutputDisposition, ReadyPacketCount,
+};
 mod lineage;
 mod lower;
 mod ordinary;

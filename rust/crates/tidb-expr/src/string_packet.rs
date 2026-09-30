@@ -27,6 +27,7 @@
 //! of them read.
 
 use crate::coerce::{coerce_str, coerce_str_bytes};
+use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp, OutputDisposition, ReadyPacketCount};
 use crate::{Datum, EvalError};
 
 /// `REPEAT(str, count)`: `str` concatenated `count` times (empty for
@@ -44,30 +45,48 @@ pub(crate) fn repeat(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, 
     let [value, count] = vals else {
         return Err(EvalError::Unsupported("bad REPEAT arity"));
     };
-    let Some(value) = coerce_str_bytes(value)? else {
-        return Ok(Datum::Null);
-    };
-    if *count == Datum::Null {
-        return Ok(Datum::Null);
-    }
-    let count = crate::cast::to_i64_signed(count);
-    if count <= 0 || value.is_empty() {
-        return Ok(Datum::new_string(Vec::<u8>::new()));
-    }
-    let count = count.min(i64::from(i32::MAX)) as usize;
-    let Some(output_len) = value.len().checked_mul(count) else {
-        ctx.handle_allowed_packet_overflowed("repeat")?;
-        return Ok(Datum::Null);
-    };
-    if output_len as u64 > ctx.max_allowed_packet() {
-        ctx.handle_allowed_packet_overflowed("repeat")?;
-        return Ok(Datum::Null);
-    }
-    let mut output = Vec::with_capacity(output_len);
-    for _ in 0..count {
-        output.extend_from_slice(&value);
-    }
-    Ok(Datum::new_string(output))
+    crate::tikv::evaluate_args_in(
+        EvaluatedBytesOp::RepeatNative,
+        ctx,
+        || {
+            let bytes = coerce_str_bytes(value)?;
+            let ready_count = if bytes.is_none() {
+                // Preserve the original NULL-left demand boundary, rather than
+                // coercing an unused count or claiming it was evaluated NULL.
+                ReadyPacketCount::Undemanded
+            } else if *count == Datum::Null {
+                ReadyPacketCount::Value(None)
+            } else {
+                ReadyPacketCount::Value(Some(crate::cast::to_i64_signed(count)))
+            };
+            let mut disposition = OutputDisposition::Allow;
+            if let (Some(bytes), ReadyPacketCount::Value(Some(count))) = (&bytes, &ready_count) {
+                // Only packet sizing remains here. Empty/negative answers and
+                // count clamping for result generation belong to the kernel.
+                if *count > 0 && !bytes.is_empty() {
+                    let effective_count = (*count).min(i64::from(i32::MAX)) as usize;
+                    let over_packet = match bytes.len().checked_mul(effective_count) {
+                        Some(length) => length as u64 > ctx.max_allowed_packet(),
+                        None => true,
+                    };
+                    if over_packet {
+                        ctx.handle_allowed_packet_overflowed("repeat")?;
+                        disposition = OutputDisposition::SuppressByPacket;
+                    }
+                }
+            }
+            Ok(EvaluatedArgs::PacketBytesInt {
+                bytes,
+                count: ready_count,
+                disposition,
+            })
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 /// `SPACE(n)`: a string of `n` spaces (empty for `n <= 0`); `NULL` if the
 /// argument is `NULL`.  This is the `ETInt` signature from
@@ -80,22 +99,28 @@ pub(crate) fn space(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, E
     let [value] = vals else {
         return Err(EvalError::Unsupported("bad SPACE arity"));
     };
-    if *value == Datum::Null {
-        return Ok(Datum::Null);
-    }
-    let width = crate::cast::to_i64_signed(value);
-    let width = width.max(0);
-    // `builtinSpaceSig.evalString` checks the session packet limit BEFORE the
-    // `mysql.MaxBlobWidth` result limit, and only the first of the two warns.
-    if (width as u64) > ctx.max_allowed_packet() {
-        ctx.handle_allowed_packet_overflowed("space")?;
-        return Ok(Datum::Null);
-    }
-    const MAX_BLOB_WIDTH: i64 = 16_777_216; // pkg/parser/mysql.MaxBlobWidth
-    if width > MAX_BLOB_WIDTH {
-        return Ok(Datum::Null);
-    }
-    Ok(Datum::new_string(" ".repeat(width as usize)))
+    crate::tikv::evaluate_args_in(
+        EvaluatedBytesOp::SpaceNative,
+        ctx,
+        || {
+            let value = (*value != Datum::Null).then(|| crate::cast::to_i64_signed(value));
+            let mut disposition = OutputDisposition::Allow;
+            if let Some(width) = value {
+                // Packet policy precedes the kernel's silent MaxBlobWidth
+                // NULL, including the original getter for zero/negative width.
+                if width.max(0) as u64 > ctx.max_allowed_packet() {
+                    ctx.handle_allowed_packet_overflowed("space")?;
+                    disposition = OutputDisposition::SuppressByPacket;
+                }
+            }
+            Ok(EvaluatedArgs::PacketInt { value, disposition })
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 /// `LPAD(str, len, pad)` / `RPAD(str, len, pad)`: pad (or truncate) `str` to
 /// `len` characters using `pad` on the left/right. Ported from
@@ -313,49 +338,30 @@ fn base64_needed_encoded_length(n: usize) -> Option<u64> {
 /// encoded characters; `NULL` propagates.  A result over `max_allowed_packet`
 /// is NULL with warning 1301.
 pub(crate) fn to_base64(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    let Some(bytes) = coerce_str_bytes(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    // Go `base64NeededEncodedLength` then the packet check, both BEFORE any
-    // encoding happens -- the point is not to allocate the oversized result.
-    let Some(needed) = base64_needed_encoded_length(bytes.len()) else {
-        return Ok(Datum::Null);
-    };
-    if needed > ctx.max_allowed_packet() {
-        ctx.handle_allowed_packet_overflowed("to_base64")?;
-        return Ok(Datum::Null);
-    }
-    const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in bytes.chunks(3) {
-        let b0 = chunk[0];
-        let b1 = chunk.get(1).copied().unwrap_or(0);
-        let b2 = chunk.get(2).copied().unwrap_or(0);
-        let n = (u32::from(b0) << 16) | (u32::from(b1) << 8) | u32::from(b2);
-        out.push(A[(n >> 18 & 63) as usize] as char);
-        out.push(A[(n >> 12 & 63) as usize] as char);
-        out.push(if chunk.len() > 1 {
-            A[(n >> 6 & 63) as usize] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            A[(n & 63) as usize] as char
-        } else {
-            '='
-        });
-    }
-    if out.len() > 76 {
-        let mut wrapped = String::with_capacity(out.len() + out.len() / 76);
-        for (i, chunk) in out.as_bytes().chunks(76).enumerate() {
-            if i > 0 {
-                wrapped.push('\n');
+    crate::tikv::evaluate_args_in(
+        EvaluatedBytesOp::ToBase64Native,
+        ctx,
+        || {
+            let value = coerce_str_bytes(&vals[0])?;
+            let mut disposition = OutputDisposition::Allow;
+            if let Some(bytes) = value.as_ref() {
+                // A nonrepresentable length skips packet diagnostics, but the
+                // original bytes still enter C4: the kernel owns silent NULL.
+                if let Some(needed) = base64_needed_encoded_length(bytes.len()) {
+                    if needed > ctx.max_allowed_packet() {
+                        ctx.handle_allowed_packet_overflowed("to_base64")?;
+                        disposition = OutputDisposition::SuppressByPacket;
+                    }
+                }
             }
-            wrapped.push_str(std::str::from_utf8(chunk).unwrap());
-        }
-        out = wrapped;
-    }
-    Ok(Datum::new_string(out))
+            Ok(EvaluatedArgs::PacketBytes { value, disposition })
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 #[cfg(test)]
 mod space_tests {

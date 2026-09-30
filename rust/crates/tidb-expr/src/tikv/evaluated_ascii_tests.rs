@@ -1084,6 +1084,18 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::IsIpv6Nullable => "IS_IPV6",
         EvaluatedBytesOp::IsIpv4CompatNullable => "IS_IPV4_COMPAT",
         EvaluatedBytesOp::IsIpv4MappedNullable => "IS_IPV4_MAPPED",
+        EvaluatedBytesOp::SpaceNative => "SPACE",
+        EvaluatedBytesOp::ToBase64Native => "TO_BASE64",
+        EvaluatedBytesOp::FromBase64ValueNative => "FROM_BASE64",
+        EvaluatedBytesOp::FromBase64Native => {
+            return crate::func::eval_func_values_in(
+                "FROM_BASE64",
+                std::slice::from_ref(value),
+                columns,
+            )
+            .unwrap();
+        }
+        EvaluatedBytesOp::RepeatNative => panic!("REPEAT needs its original argument pair"),
         EvaluatedBytesOp::IsNull => "ISNULL",
         EvaluatedBytesOp::IsTrue => "ISTRUE",
         EvaluatedBytesOp::IsFalse => "ISFALSE",
@@ -1130,6 +1142,279 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+#[test]
+fn packet_string_dispatch_preserves_results_nulls_and_count_demand() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    for (name, values, expected) in [
+        ("SPACE", vec![Datum::Null], Datum::Null),
+        ("SPACE", vec![Datum::Int(16_777_217)], Datum::Null),
+        ("REPEAT", vec![Datum::Null, Datum::MinNotNull], Datum::Null),
+        (
+            "REPEAT",
+            vec![Datum::new_string("x"), Datum::Null],
+            Datum::Null,
+        ),
+        (
+            "REPEAT",
+            vec![Datum::new_bytes([0xff, 0]), Datum::Int(2)],
+            Datum::new_string(vec![0xff, 0, 0xff, 0]),
+        ),
+        (
+            "REPEAT",
+            vec![Datum::new_string(""), Datum::Int(i64::MAX)],
+            Datum::new_string(""),
+        ),
+        (
+            "REPEAT",
+            vec![Datum::new_string("x"), Datum::UInt(u64::MAX)],
+            Datum::new_string(""),
+        ),
+        ("TO_BASE64", vec![Datum::Null], Datum::Null),
+        (
+            "TO_BASE64",
+            vec![Datum::new_bytes([0xff, 0])],
+            Datum::new_string("/wA="),
+        ),
+        ("FROM_BASE64", vec![Datum::Null], Datum::Null),
+        ("FROM_BASE64", vec![Datum::new_string("YQ")], Datum::Null),
+        (
+            "FROM_BASE64",
+            vec![Datum::new_bytes(b"YQ==\x0b")],
+            Datum::Null,
+        ),
+        (
+            "FROM_BASE64",
+            vec![Datum::new_string("/wA=")],
+            Datum::new_bytes([0xff, 0]),
+        ),
+    ] {
+        arm_eval_one_observation();
+        let result = crate::func::eval_func_values_in(name, &values, &columns).unwrap();
+        let observation = take_eval_one_observation();
+        assert!(
+            matches!(
+                (&result, &expected),
+                (Ok(Datum::Null), Datum::Null)
+                    | (Ok(Datum::String(_)), Datum::String(_))
+                    | (Ok(Datum::Bytes(_)), Datum::Bytes(_))
+            ),
+            "{name} retains its result tag"
+        );
+        assert_eq!(result, Ok(expected), "{name}");
+        assert_eq!(
+            observation.facade_entries, 1,
+            "NULL and empty answers still enter C4"
+        );
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    }
+    arm_eval_one_observation();
+    let result = crate::string_packet::repeat(&[Datum::MinNotNull, Datum::Null], &columns);
+    let observation = take_eval_one_observation();
+    assert_eq!(
+        result,
+        Err(EvalError::Unsupported("range sentinel byte coercion"))
+    );
+    assert_eq!(
+        observation.facade_entries, 0,
+        "left coercion precedes right NULL"
+    );
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn packet_string_dispatch_to_base64_above_wire_blob_limit() {
+    // Native TO_BASE64 permits this input; the public wire signature's
+    // MaxBlobWidth guard returns empty instead. Use the unchanged isolated
+    // policy, not an enlarged test policy or a recorded expected payload.
+    let input_len = 16_777_217_usize;
+    arm_eval_one_observation();
+    let result = crate::string_packet::to_base64(
+        &[Datum::new_bytes(vec![b'x'; input_len])],
+        &crate::NoColumns,
+    );
+    let observation = take_eval_one_observation();
+    let Datum::String(encoded) = result.unwrap() else {
+        panic!("TO_BASE64 must retain its text tag")
+    };
+    let bytes = encoded.bytes();
+    let plain_len = input_len.div_ceil(3) * 4;
+    let newlines = (plain_len - 1) / 76;
+    assert_eq!(bytes.len(), plain_len + newlines);
+    assert!(bytes.starts_with(b"eHh4"));
+    assert!(bytes.ends_with(b"eHg="));
+    assert_eq!(bytes[76], b'\n');
+    assert_eq!(
+        bytes.iter().filter(|&&byte| byte == b'\n').count(),
+        newlines
+    );
+    let mut lines = bytes.split(|&byte| byte == b'\n').peekable();
+    while let Some(line) = lines.next() {
+        let expected_len = if lines.peek().is_some() {
+            76
+        } else {
+            (plain_len - 1) % 76 + 1
+        };
+        assert_eq!(line.len(), expected_len);
+    }
+    assert_eq!(observation.facade_entries, 1);
+    assert_eq!(
+        observation.after_kernel_invocations,
+        observation
+            .before_kernel_invocations
+            .map(|before| before + 1)
+    );
+}
+
+#[test]
+fn packet_string_dispatch_keeps_policy_order_and_value_only_context() {
+    struct Packet {
+        level: Cell<ErrorLevel>,
+        getters: Cell<usize>,
+        warnings: RefCell<Vec<(u16, String)>>,
+    }
+    impl Columns for Packet {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn truncate_level(&self) -> ErrorLevel {
+            self.level.get()
+        }
+        fn max_allowed_packet(&self) -> u64 {
+            self.getters.set(self.getters.get() + 1);
+            2
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.warnings.borrow_mut().push((code, message.to_owned()));
+        }
+    }
+    let native = Packet {
+        level: Cell::new(ErrorLevel::Warn),
+        getters: Cell::new(0),
+        warnings: RefCell::new(Vec::new()),
+    };
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        arm_eval_one_observation();
+        let result =
+            crate::func::eval_func_values("FROM_BASE64", &[Datum::new_string("YQ==")], columns)
+                .unwrap();
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(Datum::new_bytes(b"a")));
+        assert_eq!(native.getters.get(), 0, "value-only has no packet policy");
+        assert!(native.warnings.borrow().is_empty());
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+
+        for level in [ErrorLevel::Warn, ErrorLevel::Ignore] {
+            native.level.set(level);
+            native.getters.set(0);
+            native.warnings.borrow_mut().clear();
+            arm_eval_one_observation();
+            let result = crate::func::eval_func_values_in(
+                "FROM_BASE64",
+                &[Datum::new_string("    ")],
+                columns,
+            )
+            .unwrap();
+            let observation = take_eval_one_observation();
+            assert_eq!(
+                result,
+                Ok(Datum::Null),
+                "raw length is checked before stripping whitespace"
+            );
+            assert_eq!(
+                native.getters.get(),
+                2,
+                "comparison then diagnostic formatting"
+            );
+            assert_eq!(
+                native.warnings.borrow().as_slice(),
+                &[(
+                    1301,
+                    "Result of from_base64() was larger than max_allowed_packet (2) - truncated"
+                        .to_owned()
+                )]
+            );
+            assert_eq!(
+                observation.facade_entries, 1,
+                "packet suppression is a real kernel NULL"
+            );
+            assert_eq!(
+                observation.after_kernel_invocations,
+                observation
+                    .before_kernel_invocations
+                    .map(|before| before + 1)
+            );
+        }
+        native.getters.set(0);
+        native.warnings.borrow_mut().clear();
+        arm_eval_one_observation();
+        let result =
+            crate::string_packet::repeat(&[Datum::new_string(""), Datum::Int(i64::MAX)], columns);
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(Datum::new_string("")));
+        assert_eq!(
+            native.getters.get(),
+            0,
+            "empty REPEAT keeps its original packet bypass"
+        );
+        assert!(native.warnings.borrow().is_empty());
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    });
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    native.level.set(ErrorLevel::Error);
+    scope.with_columns(&native, |columns| {
+        native.getters.set(0);
+        arm_eval_one_observation();
+        let result = crate::string_packet::space(&[Datum::Int(16_777_217)], columns);
+        let observation = take_eval_one_observation();
+        assert!(matches!(result, Err(EvalError::AllowedPacketOverflowed(_))), "packet Error precedes domain NULL and pool refusal");
+        assert_eq!(native.getters.get(), 2);
+        assert!(native.warnings.borrow().is_empty());
+        assert_eq!(observation.facade_entries, 0);
+        native.getters.set(0);
+        arm_eval_one_observation();
+        let result = crate::func::eval_func_values("FROM_BASE64", &[Datum::new_string("YQ==")], columns).unwrap();
+        let observation = take_eval_one_observation();
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(native.getters.get(), 0, "value-only retains execution scope, not packet policy");
+        assert_eq!(observation.facade_entries, 0);
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 #[test]

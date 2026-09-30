@@ -21,10 +21,10 @@ use crate::eval_in;
 use crate::row::row_compare;
 use crate::string_fn::{
     ascii, bin, bit_count, bit_length_in, case_convert, char_func_with_context,
-    concat_with_context, concat_ws_with_context, elt, export_set, field, format_num, from_base64,
-    from_base64_with_packet_limit, hex_in, locate, locate_collation, locate_with_position,
-    make_set, oct, ord, quote_in, replace_in, reverse_in, str_insert, str_take_in, strcmp,
-    substring, substring_index, unhex_in,
+    concat_with_context, concat_ws_with_context, elt, export_set, field, format_num,
+    from_base64_in, from_base64_with_packet_limit, hex_in, locate, locate_collation,
+    locate_with_position, make_set, oct, ord, quote_in, replace_in, reverse_in, str_insert,
+    str_take_in, strcmp, substring, substring_index, unhex_in,
 };
 use crate::string_packet::{pad, repeat, space, to_base64};
 use crate::time_fn::calendar::{date_add, date_diff, date_format, date_part, from_days, time_part};
@@ -454,7 +454,7 @@ pub(crate) fn eval_func_values_in(
     // through the statement warning policy. Keep this context-sensitive arm
     // ahead of the values-only table so AST and chunk evaluation agree.
     if name == "FROM_BASE64" {
-        return Some(from_base64_with_packet_limit(vals, Some(cols)));
+        return Some(from_base64_with_packet_limit(vals, cols));
     }
 
     // The session-state builtins: pure functions of their argument VALUES
@@ -827,7 +827,7 @@ pub(crate) fn eval_func_values(
         // file access at all, so LOAD_FILE is NULL for every path, readable
         // or not. CAPTURED: `select load_file('/etc/hosts')` is NULL.
         "LOAD_FILE" if vals.len() == 1 => Ok(Datum::Null),
-        "FROM_BASE64" if vals.len() == 1 => from_base64(vals),
+        "FROM_BASE64" if vals.len() == 1 => from_base64_in(vals, ctx),
         // ---- date-part extraction ----
         // A `DATE`/`DATETIME` value is a plain string to this evaluator (no
         // date value domain), so these parse the string's calendar

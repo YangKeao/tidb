@@ -1452,7 +1452,12 @@ fn materialize_computed(
             | EvaluatedBytesOp::Sha1
             | EvaluatedBytesOp::InetNtoa
             | EvaluatedBytesOp::Inet6Aton
-            | EvaluatedBytesOp::Inet6Ntoa,
+            | EvaluatedBytesOp::Inet6Ntoa
+            | EvaluatedBytesOp::SpaceNative
+            | EvaluatedBytesOp::RepeatNative
+            | EvaluatedBytesOp::ToBase64Native
+            | EvaluatedBytesOp::FromBase64Native
+            | EvaluatedBytesOp::FromBase64ValueNative,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {
