@@ -37,6 +37,8 @@ pub use evaluated_ascii::{
     AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy, AsciiScope,
     ScopedAsciiColumns,
 };
+#[cfg(test)]
+pub(crate) use tidb_query_expr::local::conv_valid_prefix_native;
 use tidb_query_expr::local::prepare_concat_args as prepare_concat_args_local;
 use tidb_query_expr::local::prepare_find_in_set_keys as prepare_find_in_set_keys_local;
 pub(crate) use tidb_query_expr::local::{
@@ -44,8 +46,8 @@ pub(crate) use tidb_query_expr::local::{
     make_set_selected, native_decimal_target_scale, ConcatKind, ConcatTerminal, EvaluatedArgs,
     EvaluatedBytesOp, FieldIntValue, FieldTerminal, NativeCollation, NativeSearchPolicy,
     OutputDisposition, PreparedConcatArgs, PreparedExportSetArgs, PreparedFieldArgs,
-    PreparedFindInSetKeys, PreparedMakeSetArgs, ReadyBytesArg, ReadyDecimalArg, ReadyFieldIntArg,
-    ReadyIeee754Arg, ReadyIntArg, ReadySubstringI128,
+    PreparedFindInSetKeys, PreparedMakeSetArgs, ReadyBytesArg, ReadyConvBaseArg, ReadyDecimalArg,
+    ReadyFieldIntArg, ReadyIeee754Arg, ReadyIntArg, ReadySubstringI128,
 };
 use tidb_query_expr::local::{
     field_bytes_equal as field_bytes_equal_local,
@@ -85,6 +87,16 @@ pub(crate) fn prepare_concat_args(
             ))
         },
     )
+}
+
+/// Builds only CHAR's closed nullable-integer input, including an empty list.
+/// Keep the actual preparation failure without inventing a worker phase.
+pub(crate) fn prepare_char_args(values: &[Option<i64>]) -> Result<EvaluatedArgs, crate::EvalError> {
+    tidb_query_expr::local::prepare_char_args(values).map_err(|error| {
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+            error, None,
+        ))
+    })
 }
 
 /// Transports an existing native coefficient and both scales without computing

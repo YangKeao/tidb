@@ -1,0 +1,85 @@
+Checkpoint: char-conv-two-26
+STATUS: final functional checkpoint after actual rerun/full receipts, 82->84/245; final acceptance remains 0/245.
+Two whole frozen IDs: char_func (SQL CHAR), conv. char is not a separate frozen ID. No duplicate legacy/helper credit or completed/transcreated Go-package claim.
+Exactly 8 retained Rust logs = 8 actual test runs: 6 green, first SQL assertion failure, full expression with 4 known failures. Zero compile-only failures; NOT all first-attempt success.
+PROVENANCE: all Rust commands, exit statuses, formatting, oracle correction and normalized comparison are parent-owned. This writer read/grepped completed receipts and ran sha256sum on all eight logs (exit0), not build/test/fmt.
+RAW DIRECTORY: /home/agent/tidb/expression-unification/logs
+JAN CWD: /home/agent/tidb/expression-unification/tikv; cargo-tikv pin nightly-2026-01-30-x86_64-unknown-linux-gnu.
+AUG CWD: /home/agent/tidb/expression-unification/tidb/rust; cargo-tidb pin nightly-2026-08-22-x86_64-unknown-linux-gnu.
+Parent confirmed exact commands because raw logs have no command headers. Each used: set -o pipefail; <COMMAND> 2>&1 | tee /home/agent/tidb/expression-unification/logs/<LOG>
+Compilation times are emitted Finished-test-profile times, not performance measurements.
+
+LOG: char-conv-tikv-local.log
+COMMAND [JAN]: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+EXIT: 0; running 246 tests; compilation 11.11s. The one ignored test is preexisting.
+test result: ok. 245 passed; 0 failed; 1 ignored; 0 measured; 473 filtered out; finished in 0.19s
+SHA256: 95b34154c2d39a45bf6228af06085e656ef30048f81893837da6fe1424acdae0
+LOG: char-conv-tikv-math.log
+COMMAND [JAN]: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_math:: -- --test-threads=1
+EXIT: 0; running 50 tests, including both new CONV policy/cause/i128/profile units; compilation 0.13s.
+test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 669 filtered out; finished in 0.10s
+SHA256: f3dabbc5061752c8be330afc9e4ab6fb704007e5c44f280125a85aa99975d909
+LOG: char-conv-tikv-string.log
+COMMAND [JAN]: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_string:: -- --test-threads=1
+EXIT: 0; running the original 63 tests; compilation 0.12s.
+test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 656 filtered out; finished in 0.02s
+SHA256: b8247d7bb5feeb9183d736eeaa682abf806723d399a33df9b33283a42a873f0f
+LOG: char-conv-dispatch.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-expr --lib char_conv_dispatch_ -- --test-threads=1
+EXIT: 0; running 3 tests; compilation 14.34s.
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1527 filtered out; finished in 0.00s
+SHA256: 868e98e335bdceaffef6460fd00e7ebffb710cc5fb72ee005b46d3f558b188e5
+LOG: char-conv-legacy.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_conv_ -- --test-threads=1
+EXIT: 0; running 2 focused tests, not the whole unistore suite; compilation 6.68s.
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 195 filtered out; finished in 0.00s
+SHA256: bf5ce638ad16d8b08bf87875ffeeb5ec8c7341bc679017ca5084516218be2301
+LOG: char-conv-sql.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+EXIT: 101; running 55 tests; compilation 27.93s. New runtime assertion failure, not a compilation failure.
+test result: FAILED. 54 passed; 1 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 0.79s
+SHA256: e36d99f28958dd4080747e647718be565088a1a5595812f558d723167e085282
+LOG: char-conv-sql-rerun.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+EXIT: 0; running 55 tests; compilation 3.14s. Both strict and lax subcases actually ran on this rerun.
+test result: ok. 55 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 0.81s
+SHA256: 7388634a8c93606524b2d2c81ba882dc71f0afcdaa2d0ca488a19b29bb07d275
+LOG: char-conv-expr-full.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+EXIT: 101; running 1530 tests; compilation 0.13s.
+test result: FAILED. 1432 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.37s
+SHA256: 2f7cfe5ca9c39eee4688b008693b24efeb2f6082cf2214e6791b40854b1cf843
+
+FIRST SQL FAILURE AND NARROW ORACLE CORRECTION
+Failed test: tests_core::lifecycle::evaluated_ascii_shared_pool_char_conv_dispatch_sql_values_metadata_and_diagnostics, then-current lifecycle.rs:4966:9, sql_mode=STRICT_TRANS_TABLES.
+Actual: [(1300, "Invalid utf8mb4 character string: 'FF'")]; expected: [(1300, "Invalid utf8 character string: 'FF'")]. The later lax subcase had not executed; the separate new zero-slot test passed.
+Parent+E read the unchanged pre-migration multibyte_encoding.rs:245 maps utf8->Encoding::Utf8, :107 name=utf8mb4, :198-206 transform error uses self.name(), :88-94 Display. The original CHAR used this same decoder.
+Parent changed ONLY the new assertion's canonical charset word at then-current lifecycle.rs:4968, utf8->utf8mb4. Metadata stays utf8/Utf8Bin; decoder file diff0. No production behavior or old expected/fixture changed for this correction. The first failed log remains alongside the rerun.
+
+FULL-FAILURE COMPARISON (fresh parent-owned comparison, not a whole-log hash)
+Current char-conv-expr-full.log versus round25 wide-math-decimal-expr-full.log.
+section = text.split('\nfailures:\n', 1)[1].split('\ntest result:', 1)[0]
+Normalize only re.sub(r"(?m)^(thread '[^\n]*' \()\d+(\) panicked at)", r'\1THREAD\2', section).
+Parent reports complete normalized sections byte-identical, both SHA256 0930217d98e0b92d727527dc3c7cb7313f1bbe35e643da60114fa6d78203839b. This value was freshly confirmed, not substituted from historical evidence.
+Retained failures:
+- pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation
+- tests::builtin_info_json_math_source::exp
+- tests::builtin_math_misc_op_source::vectorized_builtin_op_func
+- time_fn::tests::str_to_date_partial_formats_follow_no_zero_date
+Parent reports both repo git diff --check and both lockfile git diff --exit-code checks exit0. Those are not extra Rust logs or a green full-suite claim.
+
+VALIDATED COVERAGE AND BOUNDARIES
+SQL: main 5 rows x5 function columns; separate 4 rows x1 CHAR5/UTF8 column; strict/lax each 1 row; independent overflow; 16 direct zero-slot probes (7 CHAR, 9 CONV). These are row/probe counts, not extra Rust tests.
+Dispatch3 covers CHAR empty/NULL/four-byte packing and guarded coercion->charset lookup->decode/warnings, plus CONV full-payload/overflow receipts, PB NULL/child demand, ordinary sentinel precedence and normal non-NULL PB zero-slot context retention. Legacy2 covers full i128, NULL, out-of-range and demand.
+CHAR has a new sole compatibility packing core; CONV actually shares existing wire prefix/parse/clamp/uppercase-format primitives. Four private operations have B/BII/BII/BBB shapes, not a four-column driver/graph widening.
+Native strict text, legacy lossy text/overflow-NULL and wire original-sign/conv(...) errors stay distinct. Native/legacy wrapped sign yields -1 for U64MAX to -10; binary literal uses complete payload, trim-leading-zero, 2->from->to, first-stage termination, empty literal zero.
+Legacy bases are nullable canonical LE16 full i128; kernel inputNULL->fromNone/out-of-i64->toNone/out-of-i64->math order is preserved. A merely invalid from radix cannot skip to; out-of-range non-NULL bases are not disguised as NULL inputs.
+Actual native PosOverflow alone produces ConvUnsignedOverflow with the full signless valid digits/case/leading zeros and actual ParseIntError held through Caused (source10000); marker is fixed1690/EVAL. Mapping requires the real receipt, never code/text inference. No native retry follows backend failure.
+Unchecked base negation preserves the actual overflow-check profile. The MIN comparison is current-profile evidence, not a release-execution receipt. Existing CHAR guarded coercion, charset lookup, decoding, warning/strict and collation policies remain; no extra charset/packet/SQL-mode policy getter; existing C4 capability discovery now applies.
+Parent pinned-formatted/froze 19 source files (9 native/10 TiKV); removed six duplicated helpers including append_char_integer, retaining only cfg(test) conv_valid_prefix as a thin shared-prefix call that does not trim. No new facade graph, PB/unistore/default admission, generic driver or fourth input.
+
+LIMITS / FREEZE
+Whole datatype/unistore/parser/workspace completion, release execution, make lint, broader scope/guard gates and final acceptance remain unverified; earlier broader non-green observations remain historical.
+No zero-copy, allocator-capacity, total physical peak, OOM-safety or performance proof follows from computed packing, owned results or logical byte limits.
+After source freeze this writer created only this summary and char-conv-checkpoint.md: no source/old expected/Plan/README/JSON/guide/index/build/test/fmt changes.
+FINAL: 84/245 functional, final0/245; document pair frozen with the initial SQL assertion failure and non-green full suite retained, not PR-ready.

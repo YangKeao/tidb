@@ -1001,6 +1001,40 @@ pub fn eval_raw_case_ready_in(
     )
 }
 
+/// A legacy CONV base retains its full width and whether its child was demanded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LegacyConvBase {
+    Value(Option<i128>),
+    Undemanded,
+}
+
+/// Computes legacy CONV from already-demanded bytes and integer bases.
+/// NULL and out-of-i64 bases reach the same shared worker as ordinary values;
+/// the kernel owns lossy text decoding, radix conversion and overflow-to-NULL.
+pub fn eval_legacy_conv_in(
+    number: Option<Vec<u8>>,
+    from_base: LegacyConvBase,
+    to_base: LegacyConvBase,
+    ctx: &dyn Columns,
+) -> Result<Option<Vec<u8>>, EvalError> {
+    tikv::evaluate_args_in(
+        tikv::EvaluatedBytesOp::ConvLegacy,
+        ctx,
+        || {
+            let ready = |base| match base {
+                LegacyConvBase::Value(value) => tikv::ReadyConvBaseArg::Value(value),
+                LegacyConvBase::Undemanded => tikv::ReadyConvBaseArg::Undemanded,
+            };
+            Ok(tikv::EvaluatedArgs::ConvLegacyReady {
+                number: tikv::ReadyBytesArg::Value(number),
+                from_base: ready(from_base),
+                to_base: ready(to_base),
+            })
+        },
+        tikv::EvaluatedBytesResult::into_bytes,
+    )
+}
+
 /// Legacy substring units, independent of ordinary SQL/wire substring policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RawSubstringFunction {

@@ -183,7 +183,7 @@ pub(crate) fn dispatch_values(
         "COT" => cot(vals, ctx),
         "RADIANS" => radians(vals, ctx),
         "DEGREES" => degrees(vals, ctx),
-        "CONV" if vals.len() == 3 => conv(vals),
+        "CONV" if vals.len() == 3 => conv_in(vals, ctx),
         "CRC32" if vals.len() == 1 => crc32_in(vals, ctx),
         _ => return None,
     };
@@ -199,149 +199,85 @@ pub(crate) fn dispatch_values(
 /// Bases must be `2..=36` after taking their absolute value, else `NULL`.
 /// A leading `+`/`-` sign is honored; an empty valid prefix yields `"0"`.
 /// `NULL` if any argument is `NULL`.
-pub(crate) fn conv(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.iter().any(Datum::is_range_sentinel) {
-        return Err(EvalError::Unsupported("range sentinel CONV argument"));
-    }
-    if vals[1].is_null() || vals[2].is_null() {
-        return Ok(Datum::Null);
-    }
-    // Both bases are `ETInt` arguments in `convFunctionClass.getFunction`, so
-    // every domain with an integer reading reaches them -- notably
-    // `Datum::UInt`, which `CAST(16 AS UNSIGNED)` produces. Matching on
-    // `Datum::Int` alone answered NULL for it.
-    let (from, to) = (
-        crate::cast::to_i64_signed(&vals[1]),
-        crate::cast::to_i64_signed(&vals[2]),
-    );
-    let n = match &vals[0] {
-        Datum::Null => return Ok(Datum::Null),
-        // Go `builtinConvSig.evalString` recognizes a binary-literal
-        // expression before ordinary EvalString. It first interprets the
-        // literal's bits in base 2 and emits those bits in `from_base`; only
-        // then does the ordinary from_base -> to_base conversion. This is why
-        // `CONV(0x20, 2, 2)` reads the byte as binary `100000`, not as the
-        // one-character string containing an ASCII space.
-        Datum::BinaryLiteral(literal) => {
-            let bit_literal = literal.to_bit_literal_string(true);
-            let digits = &bit_literal[2..];
-            match conv_text(digits, 2, from)? {
-                Some(text) => text,
-                None => return Ok(Datum::Null),
-            }
-        }
-        value => {
-            let Some(text) = coerce_str(value)? else {
-                return Ok(Datum::Null);
-            };
-            text
-        }
+pub(crate) fn conv_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    use crate::tikv::{
+        EvaluatedArgs, EvaluatedBytesOp, ReadyBytesArg,
+        ReadyIntArg::{Undemanded, Value},
     };
-    match conv_text(&n, from, to)? {
-        Some(text) => Ok(Datum::new_string(text)),
-        None => Ok(Datum::Null),
-    }
+
+    // This selects only the argument representation. Coercion and even the
+    // sentinel/base-NULL checks stay inside the existing execution guard.
+    let operation = if matches!(vals.first(), Some(Datum::BinaryLiteral(_))) {
+        EvaluatedBytesOp::ConvBinaryLiteralNative
+    } else {
+        EvaluatedBytesOp::ConvNative
+    };
+    crate::tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || {
+            if vals.iter().any(Datum::is_range_sentinel) {
+                return Err(EvalError::Unsupported("range sentinel CONV argument"));
+            }
+            // Keep the helper's original indexing/short-circuit contract:
+            // extra values participate only in the sentinel scan, and a NULL
+            // first base does not demand even an index read of the second.
+            if vals[1].is_null() {
+                return Ok(EvaluatedArgs::ConvReady {
+                    number: ReadyBytesArg::Undemanded,
+                    from_base: Value(None),
+                    to_base: Undemanded,
+                });
+            }
+            if vals[2].is_null() {
+                return Ok(EvaluatedArgs::ConvReady {
+                    number: ReadyBytesArg::Undemanded,
+                    from_base: Undemanded,
+                    to_base: Value(None),
+                });
+            }
+            // Original no-warning/UTC casts, including UInt's unchanged bits;
+            // both precede the number's NULL or strict-text conversion.
+            let (from_base, to_base) = (
+                crate::cast::to_i64_signed(&vals[1]),
+                crate::cast::to_i64_signed(&vals[2]),
+            );
+            let number = match &vals[0] {
+                Datum::Null => None,
+                // Do not narrow to u64 or build an intermediate bit string.
+                // The shared kernel owns the complete 2 -> from -> to path.
+                Datum::BinaryLiteral(literal) => Some(literal.as_bytes().to_vec()),
+                value => coerce_str(value)?.map(String::into_bytes),
+            };
+            Ok(EvaluatedArgs::ConvReady {
+                number: ReadyBytesArg::Value(number),
+                from_base: Value(Some(from_base)),
+                to_base: Value(Some(to_base)),
+            })
+        },
+        |result| {
+            Ok(match result.into_bytes()? {
+                None => Datum::Null,
+                Some(bytes) => Datum::new_string(
+                    String::from_utf8(bytes).expect("shared CONV output is ASCII"),
+                ),
+            })
+        },
+    )
 }
 
-fn conv_text(n: &str, mut from: i64, mut to: i64) -> Result<Option<String>, EvalError> {
-    let signed = from < 0;
-    let ignore_sign = to < 0;
-    if signed {
-        from = -from;
-    }
-    if ignore_sign {
-        to = -to;
-    }
-    if !(2..=36).contains(&from) || !(2..=36).contains(&to) {
-        return Ok(None);
-    }
-    let prefix = conv_valid_prefix(n.trim(), from as u32);
-    if prefix.is_empty() {
-        return Ok(Some("0".to_owned()));
-    }
-    let (mut negative, digits) = match prefix.strip_prefix('-') {
-        Some(rest) => (true, rest),
-        None => (false, prefix.as_str()),
-    };
-    let mut val: u64 = 0;
-    for c in digits.chars() {
-        // `c` is guaranteed a valid `from`-base digit by `conv_valid_prefix`.
-        // Go's `conv` helper parses the digits through `strconv.ParseUint`,
-        // whose range failure becomes a 1690 quoting the digit string
-        // (sign already stripped) -- not a wrapped value.
-        let digit = u64::from(c.to_digit(from as u32).unwrap());
-        val = match val
-            .checked_mul(u64::from(from as u32))
-            .and_then(|partial| partial.checked_add(digit))
-        {
-            Some(next) => next,
-            None => {
-                return Err(EvalError::DataOutOfRange {
-                    value: "BIGINT UNSIGNED",
-                    expression: digits.to_string(),
-                })
-            }
-        };
-    }
-    // Signed clamping to the i64 range, mirroring the Go `conv` helper.
-    if signed {
-        const ABS_I64_MIN: u64 = 1 << 63; // -math.MinInt64
-        if negative && val > ABS_I64_MIN {
-            val = ABS_I64_MIN;
-        }
-        if !negative && val > i64::MAX as u64 {
-            val = i64::MAX as u64;
-        }
-    }
-    if negative {
-        val = val.wrapping_neg();
-    }
-    // Recompute the sign from the (possibly wrapped) bit pattern.
-    negative = (val as i64) < 0;
-    if ignore_sign && negative {
-        val = val.wrapping_neg();
-    }
-    let mut out = to_radix_upper(val, to as u32);
-    if negative && ignore_sign {
-        out.insert(0, '-');
-    }
-    Ok(Some(out))
+#[cfg(test)]
+pub(crate) fn conv(vals: &[Datum]) -> Result<Datum, EvalError> {
+    conv_in(vals, &crate::NoColumns)
 }
 
 /// The longest valid `CONV` prefix in `base` (a port of
 /// `expression.getValidPrefix`): a leading `+`/`-` at position 0 is allowed
 /// (a leading `+` is dropped), then valid base-`base` digits until the first
 /// invalid character.
+#[cfg(test)]
 pub(crate) fn conv_valid_prefix(s: &str, base: u32) -> String {
-    let mut valid_len = 0;
-    for (i, c) in s.char_indices() {
-        if c == '+' || c == '-' {
-            if i != 0 {
-                break;
-            }
-        } else if c.is_digit(base) {
-            valid_len = i + c.len_utf8();
-        } else {
-            break;
-        }
-    }
-    let prefix = &s[..valid_len];
-    prefix.strip_prefix('+').unwrap_or(prefix).to_string()
-}
-
-/// Renders `value` in `radix` (2..=36) with uppercase digits.
-fn to_radix_upper(mut value: u64, radix: u32) -> String {
-    if value == 0 {
-        return "0".to_string();
-    }
-    const DIGITS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    let mut out = Vec::new();
-    while value > 0 {
-        out.push(DIGITS[(value % u64::from(radix)) as usize]);
-        value /= u64::from(radix);
-    }
-    out.reverse();
-    String::from_utf8(out).unwrap()
+    crate::tikv::conv_valid_prefix_native(s, base)
 }
 
 /// `CRC32(str)`: the IEEE CRC-32 checksum (polynomial `0xEDB88320`) as an

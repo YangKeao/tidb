@@ -144,7 +144,7 @@ impl PbBuiltin {
             Sin => Kernel::Values(crate::math_fn::sin),
             Pow => Kernel::Values(crate::math_fn::pow),
             Pi => Kernel::Values(crate::math_fn::pi),
-            Conv => Kernel::Values(|values, _| crate::math_fn::conv(values)),
+            Conv => Kernel::Values(crate::math_fn::conv_in),
             RoundInt | RoundReal | RoundDec => Kernel::Round,
             Date => Kernel::Values(crate::time_fn::date),
             DateDiff => Kernel::Values(|values, _| crate::time_fn::calendar::date_diff(values)),
@@ -365,7 +365,10 @@ impl PbBuiltin {
                             return eval_pb_char_length(&value, binary, ctx);
                         }
                         match kernel {
-                            Kernel::Round => {
+                            kernel
+                                if matches!(kernel, Kernel::Round)
+                                    || self.signature == ScalarFuncSig::Conv =>
+                            {
                                 // The observed SQL NULL is the only demand
                                 // witness. Earlier values remain uncoerced and
                                 // later children, including extra ones, stay

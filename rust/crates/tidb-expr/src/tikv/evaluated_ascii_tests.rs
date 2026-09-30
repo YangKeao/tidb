@@ -1117,6 +1117,12 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::EltNative => {
             panic!("variadic string operations need their original argument list")
         }
+        EvaluatedBytesOp::CharNative
+        | EvaluatedBytesOp::ConvNative
+        | EvaluatedBytesOp::ConvBinaryLiteralNative
+        | EvaluatedBytesOp::ConvLegacy => {
+            panic!("CHAR and CONV need their original operands and domains")
+        }
         EvaluatedBytesOp::AbsIntNative
         | EvaluatedBytesOp::AbsUIntNative
         | EvaluatedBytesOp::AbsRealNative
@@ -1229,6 +1235,299 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+#[derive(Default)]
+struct CharConvProbe {
+    values: RefCell<Vec<Datum>>,
+    events: RefCell<Vec<String>>,
+    strict: Cell<bool>,
+}
+
+impl Columns for CharConvProbe {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        None
+    }
+    fn param_value(&self, order: usize) -> Result<Datum, EvalError> {
+        self.events.borrow_mut().push(format!("eval:{order}"));
+        Ok(self.values.borrow()[order].clone())
+    }
+    fn truncate_level(&self) -> ErrorLevel {
+        self.events.borrow_mut().push("truncate".to_owned());
+        ErrorLevel::Warn
+    }
+    fn append_warning(&self, code: u16, message: &str) {
+        // Observe the existing actual-C4 getter snapshots, not the host decoder.
+        let invoked = EVAL_ONE_OBSERVATION.with(|slot| {
+            slot.borrow().as_ref().is_some_and(|observation| {
+                matches!((observation.before_kernel_invocations, observation.after_kernel_invocations),
+                    (Some(before), Some(after)) if after > before)
+            })
+        });
+        self.events
+            .borrow_mut()
+            .push(format!("warn:{code}:c4={invoked}:{message}"));
+    }
+    fn strict_sql_mode(&self) -> bool {
+        self.events.borrow_mut().push("strict".to_owned());
+        self.strict.get()
+    }
+}
+
+fn observe_char_conv(
+    evaluate: impl FnOnce() -> Result<Datum, EvalError>,
+) -> (Result<Datum, EvalError>, EvalOneObservation) {
+    arm_eval_one_observation();
+    let result = evaluate();
+    (result, take_eval_one_observation())
+}
+
+fn assert_char_conv_c4(observation: EvalOneObservation) {
+    assert_eq!(observation.facade_entries, 1);
+    assert!(
+        observation.after_kernel_invocations.unwrap()
+            > observation.before_kernel_invocations.unwrap()
+    );
+}
+
+#[test]
+fn char_conv_dispatch_char_empty_null_numbers_and_four_byte_values() {
+    // Decoder refusals are not kernel-entry witnesses or empty CHAR results.
+    for computed in [
+        EvaluatedBytesResult::Bytes(None),
+        EvaluatedBytesResult::Int(Datum::Null),
+    ] {
+        assert!(matches!(computed.into_nonnull_bytes(),
+            Err(EvalError::ExpressionAdapterFailure(failure))
+                if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract));
+    }
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        // The final NULL is the charset sentinel, including the zero-number
+        // value-domain call; it is not a claim about SQL registry admission.
+        for (values, expected) in [
+            (vec![Datum::Null], Vec::new()),
+            (vec![Datum::Null, Datum::Null, Datum::Null], Vec::new()),
+            (
+                vec![
+                    Datum::Int(-1),
+                    Datum::Null,
+                    Datum::Int(0),
+                    Datum::Int(0x0102030405),
+                    Datum::Null,
+                ],
+                vec![0xff, 0xff, 0xff, 0xff, 0, 2, 3, 4, 5],
+            ),
+        ] {
+            let (result, observation) =
+                observe_char_conv(|| crate::string_fn::char_func_with_context(&values, columns));
+            let Datum::Bytes(bytes) = result.unwrap() else {
+                panic!("CHAR without USING must keep its Bytes carrier")
+            };
+            assert_eq!(bytes, expected);
+            assert_char_conv_c4(observation);
+        }
+    });
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        let (result, observation) = observe_char_conv(|| {
+            crate::string_fn::char_func_with_context(&[Datum::Int(65), Datum::new_string("ascii")], columns)
+        });
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn char_conv_dispatch_char_keeps_coercion_charset_and_decode_warning_order() {
+    let native = CharConvProbe::default();
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        let (result, observation) = observe_char_conv(|| {
+            crate::string_fn::char_func_with_context(&[
+                Datum::new_string("65x"), Datum::new_bytes(b"66x".to_vec()),
+                Datum::Json(tidb_datatype::BinaryJSON::parse("false").unwrap()),
+                Datum::new_string("CHAR_TEST_MISSING"),
+            ], columns)
+        });
+        assert_eq!(result, Err(EvalError::Unsupported("Unknown charset char_test_missing")));
+        assert_eq!(native.events.replace(Vec::new()), [
+            "truncate", "warn:1292:c4=false:Truncated incorrect INTEGER value: '65x'",
+            "truncate", "warn:1292:c4=false:Truncated incorrect INTEGER value: '66x'",
+            "truncate", "warn:1292:c4=false:Truncated incorrect INTEGER value: 'false'",
+        ], "all numeric coercions, including JSON rendering, precede charset lookup failure");
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+
+        for strict in [true, false] {
+            native.strict.set(strict);
+            let (result, observation) = observe_char_conv(|| {
+                crate::string_fn::char_func_with_context(&[
+                    Datum::Int(65), Datum::Int(255), Datum::new_string("ascii"),
+                ], columns)
+            });
+            let result = result.unwrap();
+            if strict {
+                assert_eq!(result, Datum::Null);
+            } else {
+                assert!(matches!(&result, Datum::String(_)));
+                assert_eq!(result, Datum::new_collation_string("A", tidb_datatype::Collation::AsciiBin));
+                assert_eq!(result.collation(), Some(tidb_datatype::Collation::AsciiBin));
+            }
+            assert_eq!(native.events.replace(Vec::new()), [
+                "warn:1300:c4=true:Invalid ascii character string: 'FF'", "strict",
+            ], "decode is host packing after actual C4; its warning precedes the strict-mode getter");
+            assert_char_conv_c4(observation);
+        }
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn char_conv_dispatch_conv_keeps_literal_payload_overflow_receipts_and_pb_demand() {
+    use crate::expression::Expression;
+    use crate::scalar_function::{PbBuiltin, ScalarFunction};
+    use tidb_datatype::BinaryLiteral;
+    use tidb_proto::tipb::ScalarFuncSig;
+
+    let native = CharConvProbe::default();
+    let field = FieldType::new(FieldTypeCode::VarString);
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for (values, expected) in [
+            (
+                vec![
+                    Datum::BinaryLiteral(BinaryLiteral::from(vec![0, 0x41])),
+                    Datum::Int(16),
+                    Datum::Int(10),
+                ],
+                Ok(Datum::new_string("65")),
+            ),
+            (
+                vec![
+                    Datum::new_string("18446744073709551615"),
+                    Datum::Int(-10),
+                    Datum::Int(16),
+                ],
+                Ok(Datum::new_string("7FFFFFFFFFFFFFFF")),
+            ),
+            // The first 2 -> from-base leg sees the full 65-bit payload, not a
+            // narrowed/truncated u64. The receipt owns the signless bit digits.
+            (
+                vec![
+                    Datum::BinaryLiteral(BinaryLiteral::from(vec![1, 0, 0, 0, 0, 0, 0, 0, 0])),
+                    Datum::Int(16),
+                    Datum::Int(10),
+                ],
+                Err(EvalError::DataOutOfRange {
+                    value: "BIGINT UNSIGNED",
+                    expression: format!("1{}", "0".repeat(64)),
+                }),
+            ),
+            (
+                vec![
+                    Datum::new_string("  -18446744073709551616tail  "),
+                    Datum::Int(10),
+                    Datum::Int(16),
+                ],
+                Err(EvalError::DataOutOfRange {
+                    value: "BIGINT UNSIGNED",
+                    expression: "18446744073709551616".to_owned(),
+                }),
+            ),
+        ] {
+            let (result, observation) =
+                observe_char_conv(|| crate::math_fn::conv_in(&values, columns));
+            assert_eq!(result, expected);
+            assert_char_conv_c4(observation);
+        }
+        assert!(native.events.borrow().is_empty());
+
+        for (values, expected_reads) in [
+            (vec![Datum::Null], "eval:0"),
+            (vec![Datum::MinNotNull, Datum::Null], "eval:0|eval:1"),
+        ] {
+            *native.values.borrow_mut() = values;
+            let mut args: Vec<_> = (0..native.values.borrow().len())
+                .map(|order| {
+                    let mut constant = Constant::new(Datum::Null, field.clone());
+                    constant.param_marker = Some(crate::constant::ParamMarker {
+                        order: order as i64,
+                    });
+                    Expression::Constant(constant)
+                })
+                .collect();
+            args.push(Expression::ScalarFunction(ScalarFunction::new(
+                tidb_ast::CiString::new("__undemanded_conv_tail__"),
+                field.clone(),
+                Vec::new(),
+            )));
+            let function = ScalarFunction::from_pb(
+                PbBuiltin::new(ScalarFuncSig::Conv).unwrap(),
+                field.clone(),
+                args,
+            );
+            let (result, observation) =
+                observe_char_conv(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert_eq!(
+                result,
+                Ok(Datum::Null),
+                "PB stops at NULL before coercing prior values or checking arity"
+            );
+            assert_eq!(native.events.replace(Vec::new()).join("|"), expected_reads);
+            assert_char_conv_c4(observation);
+        }
+        let (result, observation) = observe_char_conv(|| {
+            crate::math_fn::conv_in(&[Datum::MinNotNull, Datum::Null, Datum::Int(16)], columns)
+        });
+        assert_eq!(
+            result,
+            Err(EvalError::Unsupported("range sentinel CONV argument")),
+            "ordinary CONV still scans sentinels before checking NULL bases"
+        );
+        assert_eq!(observation.facade_entries, 0);
+    });
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        let args = vec![
+            Constant::new(Datum::new_string("10"), field.clone()),
+            Constant::new(Datum::Int(10), FieldType::new(FieldTypeCode::LongLong)),
+            Constant::new(Datum::Int(16), FieldType::new(FieldTypeCode::LongLong)),
+        ].into_iter().map(Expression::Constant).collect();
+        let function = ScalarFunction::from_pb(PbBuiltin::new(ScalarFuncSig::Conv).unwrap(), field.clone(), args);
+        let (result, observation) = observe_char_conv(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource),
+            "non-NULL PB CONV must forward ctx through its values callback, with no fallback or fake SQL overflow");
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 fn observe_wide_math(

@@ -4800,3 +4800,245 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_abs_round_decimal_dispatch_sql_
         assert!(warnings_of(&session).is_empty(), "{sql}");
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_char_conv_dispatch_sql_values_metadata_and_diagnostics() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_char_conv (id INT PRIMARY KEY, n BIGINT, \
+             v VARCHAR(32) CHARSET utf8mb4, f BIGINT, t BIGINT, u BIGINT UNSIGNED, \
+             bad BIGINT, ov VARCHAR(32) CHARSET utf8mb4)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_char_conv VALUES \
+             (1,NULL,NULL,NULL,NULL,NULL,NULL,NULL),\
+             (2,14989485,'18446744073709551615',10,-10,18446744073709551606,255,'-18446744073709551616'),\
+             (3,0,'',2,16,2,NULL,NULL),\
+             (4,-1,'18446744073709551615',-10,16,18446744073709551606,NULL,NULL),\
+             (5,4294967361,'-18446744073709551615',10,-16,NULL,NULL,NULL)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    // Stored bases prevent folding the nine-byte binary literal. CONV must
+    // preserve that literal through its native base-2 -> from -> to stages,
+    // rather than treating it as VARCHAR bytes or a first-eight-byte integer.
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT CHAR(n),CHAR(n,n,n,n,n),CONV(v,f,t),CONV(v,u,t), \
+             CONV(0x000000000000000020,f,t) FROM shared_char_conv ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected CHAR/CONV dispatch rows")
+    };
+    assert_eq!(columns.len(), 5);
+    assert_eq!(rows.len(), 5);
+    for (index, ((_, field), width)) in columns.iter().zip([4, 20, 64, 64, 64]).enumerate() {
+        assert_eq!(field.code(), tidb_datatype::FieldTypeCode::VarString);
+        assert_eq!(field.decimal(), tidb_datatype::UNSPECIFIED_LENGTH);
+        assert_eq!(field.flen(), width);
+        if index < 2 {
+            assert_eq!(field.charset_name(), "binary");
+            assert_eq!(field.collation(), tidb_datatype::Collation::Binary);
+        } else {
+            assert_eq!(field.charset_name(), "utf8mb4");
+            assert_eq!(field.collation(), tidb_datatype::Collation::Utf8Mb4Bin);
+        }
+    }
+    let char_bytes = [
+        Vec::new(), // All numeric NULLs are skipped: empty, not NULL.
+        "中".as_bytes().to_vec(),
+        vec![0],
+        vec![0xff; 4],
+        // Old CHAR shifts the full i64 at most four times. Trimming a u32
+        // first would incorrectly turn 2^32+65 into just 41 instead of 00000041.
+        vec![0, 0, 0, b'A'],
+    ];
+    let expected_conv = [
+        [None, None, None],
+        // Unsigned MAX wraps negative for -toBase; UInt base ...606 is raw -10
+        // and instead selects the signed fromBase clamp to i64::MAX.
+        [Some("-1"), Some("9223372036854775807"), Some("32")],
+        [Some("0"), Some("0"), Some("20")],
+        [
+            Some("7FFFFFFFFFFFFFFF"),
+            Some("7FFFFFFFFFFFFFFF"),
+            Some("20"),
+        ],
+        // -u64::MAX wraps to positive 1: recompute sign after wrapping.
+        [Some("1"), None, Some("20")],
+    ];
+    for (index, row) in rows.iter().enumerate() {
+        assert_eq!(row.len(), columns.len());
+        for (column, copies) in [(0, 1), (1, 5)] {
+            assert_eq!(
+                row[column],
+                Datum::new_collation_string(
+                    char_bytes[index].repeat(copies),
+                    tidb_datatype::Collation::Binary
+                ),
+                "id {}, CHAR arity {copies}",
+                index + 1
+            );
+        }
+        for (value, expected) in row[2..].iter().zip(expected_conv[index]) {
+            let expected = expected.map_or(Datum::Null, |text| {
+                Datum::new_collation_string(
+                    text.as_bytes().to_vec(),
+                    tidb_datatype::Collation::Utf8Mb4Bin,
+                )
+            });
+            assert_eq!(value, &expected, "id {}", index + 1);
+        }
+    }
+    assert!(warnings_of(&session).is_empty());
+
+    // Exclude the negative integer's invalid UTF-8 from this normal projection.
+    // Five numeric arguments remain five; the charset sentinel is not a sixth.
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT CHAR(n,n,n,n,n USING utf8) FROM shared_char_conv WHERE id<>4 ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected UTF-8 CHAR dispatch rows")
+    };
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].1.flen(), 20);
+    assert_eq!(columns[0].1.decimal(), tidb_datatype::UNSPECIFIED_LENGTH);
+    assert_eq!(columns[0].1.charset_name(), "utf8");
+    assert_eq!(columns[0].1.collation(), tidb_datatype::Collation::Utf8Bin);
+    assert_eq!(rows.len(), 4);
+    for (row, index) in rows.iter().zip([0, 1, 2, 4]) {
+        assert_eq!(
+            row,
+            &vec![Datum::new_collation_string(
+                char_bytes[index].repeat(5),
+                tidb_datatype::Collation::Utf8Bin
+            )]
+        );
+    }
+    assert!(warnings_of(&session).is_empty());
+
+    // Native digit overflow is 1690, not the legacy NULL result. The original
+    // sign is removed, but the complete overflowing digit string is preserved.
+    let mysql = session
+        .run_with_columns("SELECT CONV(ov,f,t) FROM shared_char_conv WHERE id=2")
+        .unwrap_err()
+        .to_mysql_error();
+    assert_eq!(mysql.code, 1690);
+    assert_eq!(mysql.state, *b"22003");
+    assert_eq!(
+        mysql.message,
+        "BIGINT UNSIGNED value is out of range in '18446744073709551616'"
+    );
+    assert!(mysql.is_from_evaluation());
+    assert!(warnings_of(&session).is_empty());
+
+    // One stored bad byte after a valid prefix, in both modes. The existing
+    // decoder trims at FF in permissive mode; it does not replace FF with '?'.
+    // No claim of lazy SQL children or changed charset-lookup precedence.
+    for (mode, expected) in [("STRICT_TRANS_TABLES", None), ("", Some("中"))] {
+        session.run(&format!("SET sql_mode='{mode}'")).unwrap();
+        let StmtOutput::Rows { columns, rows } = session
+            .run_with_columns("SELECT CHAR(n,bad USING utf8) FROM shared_char_conv WHERE id=2")
+            .unwrap()
+        else {
+            panic!("expected invalid UTF-8 CHAR result")
+        };
+        assert_eq!(columns[0].1.flen(), 8);
+        assert_eq!(columns[0].1.charset_name(), "utf8");
+        assert_eq!(columns[0].1.collation(), tidb_datatype::Collation::Utf8Bin);
+        let expected = expected.map_or(Datum::Null, |text| {
+            Datum::new_collation_string(text.as_bytes().to_vec(), tidb_datatype::Collation::Utf8Bin)
+        });
+        assert_eq!(rows, vec![vec![expected]], "sql_mode={mode}");
+        assert_eq!(
+            warnings_of(&session),
+            vec![(1300, "Invalid utf8mb4 character string: 'FF'".to_owned())],
+            "sql_mode={mode}"
+        );
+    }
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_char_conv_dispatch_sql_columns() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_char_conv_zero (id INT PRIMARY KEY, n BIGINT, \
+             v VARCHAR(32) CHARSET utf8mb4, f BIGINT, t BIGINT, u BIGINT UNSIGNED, b BIGINT)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_char_conv_zero VALUES \
+             (1,NULL,NULL,10,16,10,1),\
+             (2,65,'18446744073709551615',10,-10,18446744073709551606,1),\
+             (3,0,'',NULL,16,10,1)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // Direct calls only: CHAR's all-NULL list is a genuine empty string;
+    // CONV has NULL digits/bases, an empty prefix returning "0", and a stored
+    // invalid base 1 returning NULL. None may bypass the shared pool. Do not
+    // use UnknownCharset to obscure the prior admission/discovery boundary.
+    for (expression, id) in [
+        ("CHAR(n)", 1),
+        ("CHAR(n)", 2),
+        ("CHAR(n)", 3),
+        ("CHAR(n,n,n,n,n)", 1),
+        ("CHAR(n,n,n,n,n)", 2),
+        ("CHAR(n,n,n,n,n USING utf8)", 1),
+        ("CHAR(n,n,n,n,n USING utf8)", 2),
+        ("CONV(v,f,t)", 1),
+        ("CONV(v,f,t)", 2),
+        ("CONV(v,u,t)", 2),
+        ("CONV(v,u,t)", 3),
+        ("CONV(v,f,t)", 3),
+        ("CONV(v,u,f)", 3),
+        ("CONV(v,b,t)", 2),
+        ("CONV(0x000000000000000020,f,t)", 2),
+        ("CONV(0x000000000000000020,f,t)", 3),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_char_conv_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("CHAR/CONV must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+}

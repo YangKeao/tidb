@@ -1,8 +1,8 @@
 # Expression unification experiment
 
-Checkpoint-ID: `wide-math-decimal-five-25` (previous: `field-make-export-three-24`)
+Checkpoint-ID: `char-conv-two-26` (previous: `wide-math-decimal-five-25`)
 
-**82/245 frozen families delegate to TiKV with native evaluator algorithms removed; target 221.** This checkpoint adds ABS, CEIL/CEILING, FLOOR, ROUND and TRUNCATE across their complete existing domains. Strict final-audited acceptance remains 0; the experiment is incomplete and not PR-ready.
+**84/245 frozen families delegate to TiKV with native evaluator algorithms removed; target 221.** This checkpoint adds CHAR (frozen ID `char_func`) and CONV. Strict final-audited acceptance remains 0; the experiment is incomplete and not PR-ready.
 
 ## Paired repositories
 
@@ -13,36 +13,34 @@ Use sibling checkouts. `checkpoint.json` pins TiKV and the published Plan hash. 
 
 ## This checkpoint
 
-- **Wide Decimal foundation:** controlled coefficient/word bridges preserve hidden storage precision, visible result scale and values beyond 81 digits. C4 consumes and returns actual Decimal vectors, not formatted text or truncated nine-word values. The old native ABS/CEIL/FLOOR/ROUND/TRUNCATE datatype methods and retained-storage rounding delegate to the same shared workers; their duplicated arithmetic is removed. The separate native ceiling-rounding helper remains outside this change, so this is not a whole-Decimal completion claim.
-- **Complete math families:** 23 closed recipes preserve full UInt64, raw IEEE/Float32 result policies, integer identity and exact truncation. Native two-argument integer ROUND retains its original f64 round-trip, and native real ROUND keeps Go Pow10 and ties-even rather than silently adopting wire behavior. Decimal target-scale policy and rounding reside in TiKV. CEIL/FLOOR receive a shared checked i64 view and retain Decimal fallback when necessary.
-- **Existing PB and legacy paths:** PB ROUND's actual-NULL witness preserves its original demand and error precedence. Legacy ROUND preserves full i128 identity, ties-away real rounding, Decimal rounding before f64 conversion, and original child/error-folding rules. NULL and identity results still require a real worker. Only the native packing return type became generic; the guard and evaluator driver remain shared.
-- **Typed failures and resources:** only a sealed ABS invocation that actually returns the explicit signed-overflow cause becomes the existing native 1690 error. Budget, bridge and output failures are never inferred as SQL overflow. Decimal recipes carry the worker's finite remaining budget; logical accounting includes owned spill, initialized NULL backing and result coexistence. This does not establish physical peak/OOM or performance bounds.
+- **CHAR:** a new single-owner TiKV compatibility byte generator, not a claimed pre-existing wire kernel. A closed packed nullable-i64 list supports all existing arities, including value-helper calls with zero numeric items. The original signed shift loop is preserved: zero emits NUL, negative values emit four bytes, and `4294967361` emits `00 00 00 41`. NULL items are skipped; empty/all-NULL lists still compute non-NULL empty bytes through a real worker.
+- **Host charset policy:** numeric coercion/1292 warnings and initial charset lookup remain in guarded preparation. Computed bytes then feed the existing decoder, warning1300, conditional strict-mode read and final collation lookup. No additional packet/SQL-mode policy getter is introduced. Original metadata stays unchanged.
+- **CONV:** native text, full binary-literal and legacy recipes reuse the existing TiKV prefix/parser/clamp/radix primitives with explicit policies. Native/legacy output sign is recomputed from wrapped u64 bits; wire retains its original sign and wrapping-base behavior. Binary literals keep the entire payload and execute the original two conversion stages in TiKV, including first-stage NULL/overflow precedence.
+- **Complete existing paths:** PB preserves its first-NULL child cutoff and forwards the real context for non-NULL calls. Legacy bases retain full i128 in canonical LE16, with original text/from/to demand; out-of-i64 values reach the worker rather than becoming fabricated NULL inputs. Legacy parse overflow remains a kernel-produced NULL.
+- **Typed overflow:** only an actual native CONV parse overflow with the sealed operation and invocation receipt exposes its complete sign-stripped digit payload. The original ParseIntError is retained as a source. Native mapping restores the existing 1690 diagnostic; resource failures and ordinary wire/legacy outcomes are never inferred as overflow from code or text.
 
-Existing wire policies, original unchecked scale arithmetic under the actual workspace profile, SQL coercion and metadata remain distinct and preserved. There is no native fallback, new PB/unistore admission, general graph widening or four-column whitelist expansion.
+Four private operations use at most three physical columns and the same driver. Native byte-generation, radix scanning and formatting algorithms are removed; the old prefix test helper is only a shared wrapper. No PB/unistore admission, general graph, four-column whitelist or execution pool is widened.
 
 ## Actual validation
 
 | Scope | Result |
 |---|---|
-| TiKV Decimal-related tests | 98 passed, twice |
-| Native Decimal-related tests | 90 passed after a compilation fix |
-| TiKV all local evaluator tests | 241 passed, 1 existing ignored |
-| TiKV math tests, including original wire cases | 48 passed |
-| New native dispatch tests | 3 passed |
-| New legacy ROUND tests | 2 passed |
-| SQL/lifecycle tests | 53 passed |
-| Full native expression library | **1429 passed, 4 unchanged failures, 94 ignored; exit 101** |
+| TiKV all local evaluator tests | 245 passed, 1 existing ignored |
+| TiKV math tests, including original wire CONV | 50 passed |
+| Original TiKV string tests | 63 passed |
+| New native dispatch/PB tests | 3 passed |
+| New legacy CONV tests | 2 passed |
+| SQL/lifecycle tests | 55 passed after correcting one new test assertion |
+| Full native expression library | **1432 passed, 4 unchanged failures, 94 ignored; exit 101** |
 
-New SQL coverage uses five stored rows: four normal rows across 13 function columns, plus a separate ABS(MIN) row asserting the original column-name 1690/22003 rendering. Seventeen direct zero-slot calls verify refusal, including NULL inputs. The entire full-expression failure section is byte-identical to checkpoint24 after replacing only panic-heading thread IDs.
+New SQL coverage includes five stored rows across five main function columns, four UTF8 rows, strict/lenient decoding, an independent overflow query and 16 direct zero-slot refusals. The complete expression failure section matches checkpoint25 byte-for-byte after replacing only panic-heading thread IDs.
 
-The first native datatype compilation failed with six diagnostics at four new unsigned-word/signed-power-table operations. Four explicit `as u32` conversions fixed compilation without changing values or expectations. The failed log is retained. The second TiKV datatype run verifies ABS reusing the existing shared ABS worker. Both lockfiles and all existing expected values/fixtures remain unchanged.
+The first SQL run had 54 passes and one failure: the new test incorrectly expected the warning name `utf8`. The unchanged decoder maps `utf8` to the canonical diagnostic name `utf8mb4`; source inspection confirmed this before correcting that one new assertion. Result metadata still says `utf8`/Utf8Bin. The rerun passed both strict and lenient cases. The original failure log is retained; no production fix, old expected-value change, fixture regeneration or compile failure occurred.
 
-Ten receipts (nine actual test runs and one compilation-only failure): [summary](logs/wide-math-decimal-summary.txt). Ownership, commands and compatibility: [evidence](evidence/wide-math-decimal-checkpoint.md).
-
-Full unistore, parser-charset, generators, whole workspace and `make lint` were not rerun. Earlier non-green results are not current passing evidence.
+Eight actual test receipts, including both non-green runs: [summary](logs/char-conv-summary.txt). Ownership and compatibility: [evidence](evidence/char-conv-checkpoint.md). Both lockfiles remain unchanged.
 
 ## Remaining work
 
-CHAR (frozen ID `char_func`) and CONV are next read-only candidates, not credited. CHAR needs a new shared compatibility core; CONV needs explicit native/legacy policies around existing TiKV primitives, including binary-literal conversion and typed overflow. EXP/LOG10, COMPRESS and UNCOMPRESS retain compatibility work.
+SIN/COS/TAN/COT/ATAN are five next read-only candidates; ATAN2 belongs to ATAN. Native Go-bit trig differs from TiKV libm even for ordinary inputs, so a future batch must move the Go-compatible implementation to one shared owner while preserving wire/legacy policy, not silently substitute libm. EXP/LOG10 and compression retain separate compatibility work.
 
-Complete operation-scope coverage, allocation/high-water remeasurement, paired differential reruns, full codec-domain equivalence, release performance and TiFlash integration remain unfinished. Kernel reuse is not a complete Go-package transcreation claim. POSITION remains a LOCATE alias; checkpoint20 repaired earlier LOWER/UPPER legacy omissions without extra credit.
+Complete operation-scope coverage, allocation/high-water and physical-peak checks, paired differential reruns, full codec-domain equivalence, release performance, whole workspace, `make lint` and TiFlash integration remain unfinished. Full datatype, unistore and parser-charset suites were not rerun; historical non-green results are not passing evidence. Kernel reuse is not a complete Go-package transcreation claim.

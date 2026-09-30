@@ -3782,108 +3782,6 @@ impl LegacyEvaluator<'_> {
     }
 }
 
-/// Go `conv` (pkg/expression/builtin_math.go): re-read `text` in base
-/// `from_base` and re-format the value in base `to_base`. A negative
-/// base marks the input (`from_base`) or the output (`to_base`) as
-/// signed; bases outside [2, 36] answer NULL. Parse overflow answers
-/// NULL here where Go raises the BIGINT UNSIGNED 1690 error -- the
-/// bytes channel carries no error (same folding as `IntDivideDecimal`).
-fn conv_convert(text: &[u8], from_base: i64, to_base: i64) -> Option<Vec<u8>> {
-    let mut from_base = from_base;
-    let mut to_base = to_base;
-    let mut signed = false;
-    let mut ignore_sign = false;
-    if from_base < 0 {
-        from_base = -from_base;
-        signed = true;
-    }
-    if to_base < 0 {
-        to_base = -to_base;
-        ignore_sign = true;
-    }
-    if !(2..=36).contains(&from_base) || !(2..=36).contains(&to_base) {
-        return None;
-    }
-    // Go trims whitespace, then keeps the longest prefix valid in the
-    // input base; an empty prefix answers "0".
-    let raw = String::from_utf8_lossy(text);
-    let prefix = valid_prefix(raw.trim(), from_base);
-    if prefix.is_empty() {
-        return Some(b"0".to_vec());
-    }
-    let negative = prefix.starts_with('-');
-    let digits = if negative { &prefix[1..] } else { &prefix };
-    let mut val = u64::from_str_radix(digits, from_base as u32).ok()?;
-    const TWO_POW_63: u64 = 1u64 << 63;
-    if signed {
-        if negative && val > TWO_POW_63 {
-            val = TWO_POW_63;
-        }
-        if !negative && val > i64::MAX as u64 {
-            val = i64::MAX as u64;
-        }
-    }
-    if negative {
-        val = val.wrapping_neg();
-    }
-    let negative = (val as i64) < 0;
-    if ignore_sign && negative {
-        val = val.wrapping_neg();
-    }
-    let mut out = format_u64_base(val, to_base as u32);
-    if negative && ignore_sign {
-        out.insert(0, '-');
-    }
-    Some(out.to_ascii_uppercase().into_bytes())
-}
-
-/// Go `getValidPrefix` (pkg/expression/util.go): the longest prefix of
-/// `s` that parses in `base` (2..=36). A sign counts only at offset 0
-/// and never extends the prefix by itself; the first character beyond
-/// the base's digit range stops the scan. A leading '+' followed by at
-/// least one digit is stripped.
-fn valid_prefix(s: &str, base: i64) -> String {
-    let upper = if base <= 9 {
-        b'0' + base as u8
-    } else {
-        b'A' + (base - 10) as u8
-    };
-    let bytes = s.as_bytes();
-    let mut valid_len = 0usize;
-    for (i, &b) in bytes.iter().enumerate() {
-        if b.is_ascii_alphanumeric() {
-            let c = b.to_ascii_uppercase();
-            if c >= upper {
-                break;
-            }
-            valid_len = i + 1;
-        } else if (b == b'+' || b == b'-') && i == 0 {
-            // A sign is only valid at offset 0.
-        } else {
-            break;
-        }
-    }
-    if valid_len > 1 && bytes[0] == b'+' {
-        return s[1..valid_len].to_string();
-    }
-    s[..valid_len].to_string()
-}
-
-/// Go `strconv.FormatUint` over bases 2..=36: lowercase digits, no sign.
-fn format_u64_base(mut val: u64, base: u32) -> String {
-    if val == 0 {
-        return "0".to_string();
-    }
-    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
-    let mut out = Vec::new();
-    while val > 0 {
-        out.push(DIGITS[(val % u64::from(base)) as usize]);
-        val /= u64::from(base);
-    }
-    out.reverse();
-    String::from_utf8(out).expect("ascii digits")
-}
-
 impl LegacyEvaluator<'_> {
     fn eval_bytes(&self, expr: Option<&SimpleExpr>) -> LegacyResult<Option<Vec<u8>>> {
         use tidb_datatype::Datum;
@@ -3916,14 +3814,22 @@ impl LegacyEvaluator<'_> {
             // re-formats it in another; the base operands go through the
             // int channel.
             SimpleExpr::Func(SimpleSig::Conv, children) => {
-                let text = legacy_some!(self.eval_bytes(children.first())?);
-                let from_base = legacy_some!(self
-                    .folded_int(children.get(1))?
-                    .and_then(|value| i64::try_from(value).ok()));
-                let to_base = legacy_some!(self
-                    .folded_int(children.get(2))?
-                    .and_then(|value| i64::try_from(value).ok()));
-                conv_convert(&text, from_base, to_base)
+                use tidb_expr::LegacyConvBase::{Undemanded, Value};
+                let text = self.eval_bytes(children.first())?;
+                let (from_base, to_base) = if text.is_some() {
+                    let from_base = self.folded_int(children.get(1))?;
+                    // Only the existing width check controls child demand;
+                    // transport the actual i128, not a fabricated NULL.
+                    let to_base = if from_base.is_some_and(|value| i64::try_from(value).is_ok()) {
+                        Value(self.folded_int(children.get(2))?)
+                    } else {
+                        Undemanded
+                    };
+                    (Value(from_base), to_base)
+                } else {
+                    (Undemanded, Undemanded)
+                };
+                tidb_expr::eval_legacy_conv_in(text, from_base, to_base, self.raw_columns)?
             }
             // DATE_ADD/DATE_SUB over a non-temporal source answers the
             // MySQL string form (Go `builtinAddSubDateAsStringSig`): the
@@ -7751,6 +7657,148 @@ mod tests {
             eval_expr(&condition, &row, 4, &zone()).expect("evals"),
             Some(1)
         );
+    }
+
+    #[test]
+    fn legacy_conv_preserves_raw_bases_and_conversion_policies() {
+        use tidb_expr::LegacyConvBase::{Undemanded, Value};
+        let time_zone = zone();
+        let evaluator = LegacyEvaluator::new(&[], 4, &time_zone);
+        for (text, expected) in [
+            (b"18446744073709551615".to_vec(), Some(b"-1".to_vec())),
+            (b"18446744073709551616".to_vec(), None),
+            ("\u{2003}17".as_bytes().to_vec(), Some(b"17".to_vec())),
+            (vec![b'1', b'7', 0xff], Some(b"17".to_vec())),
+        ] {
+            let call = SimpleExpr::Func(
+                SimpleSig::Conv,
+                vec![
+                    SimpleExpr::Bytes(text),
+                    SimpleExpr::Int(10),
+                    SimpleExpr::Int(-10),
+                ],
+            );
+            assert_eq!(evaluator.eval_bytes(Some(&call)).unwrap(), expected);
+        }
+        for base in [i128::MIN, i128::MAX] {
+            assert_eq!(
+                tidb_expr::eval_legacy_conv_in(
+                    Some(b"17".to_vec()),
+                    Value(Some(base)),
+                    Undemanded,
+                    &tidb_expr::NoColumns,
+                )
+                .unwrap(),
+                None
+            );
+        }
+        let bad_base = SimpleExpr::Func(
+            SimpleSig::PlusInt,
+            vec![SimpleExpr::Int(i64::MAX), SimpleExpr::Int(1)],
+        );
+        let folded = SimpleExpr::Func(
+            SimpleSig::Conv,
+            vec![SimpleExpr::Bytes(b"17".to_vec()), bad_base.clone()],
+        );
+        assert_eq!(evaluator.eval_bytes(Some(&folded)).unwrap(), None);
+        let extra = SimpleExpr::Func(
+            SimpleSig::Conv,
+            vec![
+                SimpleExpr::Bytes(b"17".to_vec()),
+                SimpleExpr::Int(10),
+                SimpleExpr::Int(10),
+                bad_base,
+            ],
+        );
+        assert_eq!(
+            evaluator.eval_bytes(Some(&extra)).unwrap(),
+            Some(b"17".to_vec())
+        );
+    }
+
+    #[test]
+    fn legacy_conv_preserves_demand_and_admits_null_terminals() {
+        let policy = tidb_expr::AsciiPoolPolicy::checked(
+            0,
+            0,
+            16 * 1024 * 1024,
+            4 * 1024 * 1024,
+            4 * 1024 * 1024,
+            64,
+            8,
+            4 * 1024 * 1024,
+        )
+        .expect("zero-slot policy");
+        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let execution = owner.begin_execution().expect("execution");
+        let scope = execution.scope();
+        let time_zone = zone();
+        let row = [tidb_datatype::Datum::UInt(u64::MAX)];
+        scope.with_columns(&tidb_expr::NoColumns, |columns| {
+            let bad_child = convert_expr(&tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(tipb::ScalarFuncSig::IntIsNull as i32),
+                field_type: Some(tipb::FieldType {
+                    tp: Some(8),
+                    ..Default::default()
+                }),
+                children: vec![tipb::Expr {
+                    tp: Some(tipb::ExprType::Null as i32),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+            .expect("shared child");
+            assert!(matches!(&bad_child, SimpleExpr::Shared(_)));
+            let evaluator = LegacyEvaluator {
+                shared_override: Some(columns),
+                ..LegacyEvaluator::new(&row, 4, &time_zone)
+            };
+            let conv = |text, from, to| SimpleExpr::Func(SimpleSig::Conv, vec![text, from, to]);
+            for call in [
+                conv(SimpleExpr::Null, bad_child.clone(), bad_child.clone()),
+                conv(
+                    SimpleExpr::Bytes(b"17".to_vec()),
+                    SimpleExpr::Null,
+                    bad_child.clone(),
+                ),
+                conv(
+                    SimpleExpr::Bytes(b"17".to_vec()),
+                    SimpleExpr::Column(0),
+                    bad_child.clone(),
+                ),
+            ] {
+                assert_eq!(evaluator.eval_bytes(Some(&call)).unwrap(), None);
+            }
+            let invalid_radix = conv(
+                SimpleExpr::Bytes(b"17".to_vec()),
+                SimpleExpr::Int(1),
+                bad_child,
+            );
+            assert!(matches!(
+                evaluator.eval_bytes(Some(&invalid_radix)),
+                Err(LegacyEvalError::Infrastructure(_))
+            ));
+            let refusing = LegacyEvaluator {
+                raw_columns: columns,
+                ..LegacyEvaluator::new(&row, 4, &time_zone)
+            };
+            for children in [
+                vec![],
+                vec![SimpleExpr::Bytes(b"17".to_vec()), SimpleExpr::Column(0)],
+                vec![
+                    SimpleExpr::Bytes(b"17".to_vec()),
+                    SimpleExpr::Int(10),
+                    SimpleExpr::Int(10),
+                ],
+            ] {
+                let call = SimpleExpr::Func(SimpleSig::Conv, children);
+                assert!(matches!(
+                    refusing.eval_expr(&call),
+                    Err(LegacyEvalError::Infrastructure(_))
+                ));
+            }
+        });
     }
 
     #[test]

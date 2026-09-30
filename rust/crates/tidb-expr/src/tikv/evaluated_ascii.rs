@@ -1211,6 +1211,28 @@ impl<'a> Invocation<'a> {
             {
                 return AsciiBoundaryError::Frontend(EvalError::IntOverflow);
             }
+            if matches!(
+                operation,
+                EvaluatedBytesOp::ConvNative | EvaluatedBytesOp::ConvBinaryLiteralNative
+            ) && report.operation() == Some(operation)
+                && matches!(
+                    report.sql_failure(),
+                    Some(EvaluatedSqlFailureKind::ConvUnsignedOverflow)
+                )
+            {
+                // The authenticated kernel owns the exact digits, including
+                // stripping the source sign. Do not reparse the native input.
+                let Some(digits) = report.conv_overflow_digits() else {
+                    return AsciiBoundaryError::Scope {
+                        kind: ScopeFailureKind::Contract,
+                        reason: "CONV overflow receipt lacks its digit payload",
+                    };
+                };
+                return AsciiBoundaryError::Frontend(EvalError::DataOutOfRange {
+                    value: "BIGINT UNSIGNED",
+                    expression: digits.to_owned(),
+                });
+            }
             AsciiBoundaryError::Kernel(ExpressionRuntimeFailure::from_ascii_local(
                 report.into_error(),
                 Some(ExpressionRuntimeFailurePhase::Invoke),
@@ -1417,6 +1439,14 @@ impl EvaluatedBytesResult {
         }
     }
 
+    /// Require the computed bytes themselves; NULL is not an empty result.
+    pub(crate) fn into_nonnull_bytes(self) -> Result<Vec<u8>, EvalError> {
+        match self {
+            Self::Bytes(Some(value)) => Ok(value),
+            _ => Err(result_kind_error().into_eval_error()),
+        }
+    }
+
     /// Pack a non-null real result without a local constant or NULL fallback.
     pub(crate) fn into_nonnull_real_datum(self) -> Result<Datum, EvalError> {
         match self {
@@ -1586,7 +1616,11 @@ fn materialize_computed(
             | EvaluatedBytesOp::ConcatWsNative
             | EvaluatedBytesOp::EltNative
             | EvaluatedBytesOp::MakeSetNative
-            | EvaluatedBytesOp::ExportSetNative,
+            | EvaluatedBytesOp::ExportSetNative
+            | EvaluatedBytesOp::CharNative
+            | EvaluatedBytesOp::ConvNative
+            | EvaluatedBytesOp::ConvBinaryLiteralNative
+            | EvaluatedBytesOp::ConvLegacy,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {
