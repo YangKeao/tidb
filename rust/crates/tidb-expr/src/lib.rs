@@ -947,6 +947,90 @@ pub fn eval_raw_case_ready_in(
     )
 }
 
+/// Legacy substring units, independent of ordinary SQL/wire substring policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RawSubstringFunction {
+    Bytes,
+    Utf8,
+}
+
+/// A legacy integer operand retains both its full width and its demand state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RawSubstringInt {
+    Value(Option<i128>),
+    Undemanded,
+}
+
+/// The two actual legacy substring arities; no synthetic maximum length.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RawSubstringReadyArgs {
+    Two {
+        bytes: Option<Vec<u8>>,
+        pos: RawSubstringInt,
+    },
+    Three {
+        bytes: Option<Vec<u8>>,
+        pos: RawSubstringInt,
+        len: RawSubstringInt,
+    },
+}
+
+/// Asks the shared range implementation whether legacy substring needs its
+/// third child. The final kernel independently checks the actual ready inputs.
+pub fn raw_substring_needs_len(source: &[u8], position: i128, utf8: bool) -> bool {
+    tikv::legacy_substring_needs_len(source, position, utf8)
+}
+
+/// Computes legacy substring from demanded values, returning Bytes or NULL.
+/// The shared kernel owns width rejection, lossy UTF-8, ranges and slicing;
+/// the frontend owns only evaluation order and legacy integer conversion.
+pub fn eval_raw_substring_ready_in(
+    function: RawSubstringFunction,
+    arguments: RawSubstringReadyArgs,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    let operation = match (&arguments, function) {
+        (RawSubstringReadyArgs::Two { .. }, RawSubstringFunction::Bytes) => {
+            tikv::EvaluatedBytesOp::Substring2BytesLegacy
+        }
+        (RawSubstringReadyArgs::Two { .. }, RawSubstringFunction::Utf8) => {
+            tikv::EvaluatedBytesOp::Substring2Utf8Legacy
+        }
+        (RawSubstringReadyArgs::Three { .. }, RawSubstringFunction::Bytes) => {
+            tikv::EvaluatedBytesOp::Substring3BytesLegacy
+        }
+        (RawSubstringReadyArgs::Three { .. }, RawSubstringFunction::Utf8) => {
+            tikv::EvaluatedBytesOp::Substring3Utf8Legacy
+        }
+    };
+    tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || {
+            let ready = |value| match value {
+                RawSubstringInt::Value(value) => tikv::ReadySubstringI128::Value(value),
+                RawSubstringInt::Undemanded => tikv::ReadySubstringI128::Undemanded,
+            };
+            Ok(match arguments {
+                RawSubstringReadyArgs::Two { bytes, pos } => {
+                    tikv::EvaluatedArgs::LegacySubstring2Ready {
+                        bytes,
+                        pos: ready(pos),
+                    }
+                }
+                RawSubstringReadyArgs::Three { bytes, pos, len } => {
+                    tikv::EvaluatedArgs::LegacySubstring3Ready {
+                        bytes,
+                        pos: ready(pos),
+                        len: ready(len),
+                    }
+                }
+            })
+        },
+        |computed| Ok(computed.into_bytes()?.map_or(Datum::Null, Datum::Bytes)),
+    )
+}
+
 /// `AVG`'s `SUM / COUNT`, exposed so `tidb-exec` can compute it without
 /// reimplementing decimal division: an `Int` sum promotes to decimal (scale
 /// 0, MySQL's implicit rule, same as every other decimal op); the result

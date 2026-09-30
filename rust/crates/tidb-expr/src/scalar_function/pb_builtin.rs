@@ -387,6 +387,37 @@ impl PbBuiltin {
                                     ctx,
                                 );
                             }
+                            Kernel::String {
+                                operation: StringOp::Substring,
+                                binary,
+                            } if matches!(args.len(), 2 | 3) => {
+                                use crate::tikv::{ReadyBytesArg, ReadyIntArg};
+                                // Earlier children were evaluated, not coerced.
+                                // Only this NULL is known at the ready boundary.
+                                let null_index = values.len();
+                                let bytes = if null_index == 0 {
+                                    ReadyBytesArg::Value(None)
+                                } else {
+                                    ReadyBytesArg::Undemanded
+                                };
+                                let pos = if null_index == 1 {
+                                    ReadyIntArg::Value(None)
+                                } else {
+                                    ReadyIntArg::Undemanded
+                                };
+                                // Actual arity, not the wire signature, has
+                                // always selected the two-/three-argument form.
+                                let len = (args.len() == 3).then(|| {
+                                    if null_index == 2 {
+                                        ReadyIntArg::Value(None)
+                                    } else {
+                                        ReadyIntArg::Undemanded
+                                    }
+                                });
+                                return crate::string_fn::substring_ready_in(
+                                    bytes, pos, len, binary, ctx,
+                                );
+                            }
                             _ => {}
                         }
                         // Keep this exact NULL child-demand boundary, but do

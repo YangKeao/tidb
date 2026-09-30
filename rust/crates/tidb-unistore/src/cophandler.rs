@@ -4041,7 +4041,8 @@ impl LegacyEvaluator<'_> {
                     }
                 }
             }
-            // Substring retains its byte/rune units and position policy.
+            // Legacy substring retains child demand; the shared kernel owns
+            // byte/rune units, width rejection, ranges and slicing.
             SimpleExpr::Func(
                 sig @ (SimpleSig::Substring2Args
                 | SimpleSig::Substring2ArgsUtf8
@@ -4053,64 +4054,45 @@ impl LegacyEvaluator<'_> {
                     sig,
                     SimpleSig::Substring2ArgsUtf8 | SimpleSig::Substring3ArgsUtf8
                 );
-                let units = |bytes: &[u8]| -> Vec<char> {
-                    if utf8 {
-                        String::from_utf8_lossy(bytes).chars().collect()
-                    } else {
-                        bytes.iter().map(|b| *b as char).collect()
-                    }
-                };
-                let text = legacy_some!(self.eval_bytes(children.first())?);
-                let is_sub = matches!(
-                    sig,
-                    SimpleSig::Substring2Args
-                        | SimpleSig::Substring2ArgsUtf8
-                        | SimpleSig::Substring3Args
-                        | SimpleSig::Substring3ArgsUtf8
-                );
-                let _ = is_sub;
-                // Go `builtinSubstringSig`: 1-based position; a negative
-                // position counts from the end; a negative length takes the
-                // rest after the start.
-                let pos_arg = legacy_some!(self
-                    .folded_int(children.get(1))?
-                    .and_then(|value| i64::try_from(value).ok()));
-                let pos = pos_arg;
-                let char_units: Vec<char> = units(&text);
-                let char_count = if utf8 {
-                    char_units.len() as i64
+                let bytes = self.eval_bytes(children.first())?;
+                let pos = if bytes.is_some() {
+                    tidb_expr::RawSubstringInt::Value(self.folded_int(children.get(1))?)
                 } else {
-                    text.len() as i64
+                    tidb_expr::RawSubstringInt::Undemanded
                 };
-                let start = if pos > 0 {
-                    pos - 1
-                } else if pos < 0 {
-                    char_count + pos
-                } else {
-                    return Ok(None);
-                };
-                if start < 0 || start >= char_count {
-                    return Ok(Some(Vec::new()));
-                }
-                let mut end = char_count;
-                if matches!(
+                let arguments = if matches!(
                     sig,
                     SimpleSig::Substring3Args | SimpleSig::Substring3ArgsUtf8
                 ) {
-                    let len_arg = legacy_some!(self
-                        .folded_int(children.get(2))?
-                        .and_then(|value| i64::try_from(value).ok()));
-                    let len = len_arg;
-                    if len < 0 {
-                        return Ok(Some(Vec::new()));
-                    }
-                    end = (start + len).min(char_count);
-                }
-                let picked: String = char_units[start as usize..end as usize].iter().collect();
-                if utf8 {
-                    Some(picked.into_bytes())
+                    let needs_len = match (&bytes, pos) {
+                        (Some(bytes), tidb_expr::RawSubstringInt::Value(Some(position))) => {
+                            tidb_expr::raw_substring_needs_len(bytes, position, utf8)
+                        }
+                        _ => false,
+                    };
+                    let len = if needs_len {
+                        tidb_expr::RawSubstringInt::Value(self.folded_int(children.get(2))?)
+                    } else {
+                        tidb_expr::RawSubstringInt::Undemanded
+                    };
+                    tidb_expr::RawSubstringReadyArgs::Three { bytes, pos, len }
                 } else {
-                    Some(picked.chars().map(|c| c as u8).collect())
+                    tidb_expr::RawSubstringReadyArgs::Two { bytes, pos }
+                };
+                let function = if utf8 {
+                    tidb_expr::RawSubstringFunction::Utf8
+                } else {
+                    tidb_expr::RawSubstringFunction::Bytes
+                };
+                match tidb_expr::eval_raw_substring_ready_in(function, arguments, self.raw_columns)?
+                {
+                    Datum::Bytes(bytes) => Some(bytes),
+                    Datum::Null => None,
+                    _ => {
+                        return Err(LegacyEvalError::InvalidResult(
+                            "raw substring returned a non-bytes datum",
+                        ))
+                    }
                 }
             }
             _ => None,
@@ -6875,6 +6857,238 @@ mod tests {
         );
         let pi_value = eval_expr(&pi, &[], 4, &zone()).expect("evals");
         assert!(pi_value.expect("non-null") != 0);
+    }
+
+    #[test]
+    fn legacy_substring_preserves_arities_lossy_units_and_wide_ints() {
+        let time_zone = zone();
+        let row = [tidb_datatype::Datum::UInt(u64::MAX)];
+        let evaluator = LegacyEvaluator::new(&row, 4, &time_zone);
+        for (sig, source, pos, len, expected) in [
+            (
+                SimpleSig::Substring2Args,
+                vec![0xe2, 0x82, b'a'],
+                SimpleExpr::Int(2),
+                None,
+                Some(vec![0x82, b'a']),
+            ),
+            (
+                SimpleSig::Substring3Args,
+                b"abcd".to_vec(),
+                SimpleExpr::Int(2),
+                Some(SimpleExpr::Int(2)),
+                Some(b"bc".to_vec()),
+            ),
+            // The malformed prefix is ONE Rust-lossy rune, not two Go runes.
+            (
+                SimpleSig::Substring2ArgsUtf8,
+                vec![0xe2, 0x82, b'a'],
+                SimpleExpr::Int(2),
+                None,
+                Some(b"a".to_vec()),
+            ),
+            (
+                SimpleSig::Substring3ArgsUtf8,
+                vec![0xe2, 0x82, b'a'],
+                SimpleExpr::Int(1),
+                Some(SimpleExpr::Int(1)),
+                Some("\u{fffd}".as_bytes().to_vec()),
+            ),
+            (
+                SimpleSig::Substring2ArgsUtf8,
+                "héllo".as_bytes().to_vec(),
+                SimpleExpr::Int(-2),
+                None,
+                Some(b"lo".to_vec()),
+            ),
+            (
+                SimpleSig::Substring2Args,
+                b"abc".to_vec(),
+                SimpleExpr::Int(0),
+                None,
+                None,
+            ),
+            (
+                SimpleSig::Substring3ArgsUtf8,
+                b"abc".to_vec(),
+                SimpleExpr::Int(0),
+                Some(SimpleExpr::Int(1)),
+                None,
+            ),
+            (
+                SimpleSig::Substring2Args,
+                b"abc".to_vec(),
+                SimpleExpr::Column(0),
+                None,
+                None,
+            ),
+            (
+                SimpleSig::Substring3ArgsUtf8,
+                b"abc".to_vec(),
+                SimpleExpr::Int(1),
+                Some(SimpleExpr::Column(0)),
+                None,
+            ),
+            (
+                SimpleSig::Substring3Args,
+                b"abc".to_vec(),
+                SimpleExpr::Int(1),
+                Some(SimpleExpr::Null),
+                None,
+            ),
+            (
+                SimpleSig::Substring3Args,
+                b"abc".to_vec(),
+                SimpleExpr::Int(1),
+                Some(SimpleExpr::Int(-1)),
+                Some(Vec::new()),
+            ),
+            (
+                SimpleSig::Substring3Args,
+                b"abc".to_vec(),
+                SimpleExpr::Int(4),
+                Some(SimpleExpr::Null),
+                Some(Vec::new()),
+            ),
+        ] {
+            let mut children = vec![SimpleExpr::Bytes(source), pos];
+            children.extend(len);
+            let call = SimpleExpr::Func(sig, children);
+            assert_eq!(evaluator.eval_bytes(Some(&call)).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn legacy_substring_keeps_demand_and_typed_null_empty_admission() {
+        let policy = tidb_expr::AsciiPoolPolicy::checked(
+            0,
+            0,
+            16 * 1024 * 1024,
+            4 * 1024 * 1024,
+            4 * 1024 * 1024,
+            64,
+            8,
+            4 * 1024 * 1024,
+        )
+        .expect("zero-slot policy");
+        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let execution = owner.begin_execution().expect("execution");
+        let scope = execution.scope();
+        let time_zone = zone();
+        let row = [tidb_datatype::Datum::UInt(u64::MAX)];
+        scope.with_columns(&tidb_expr::NoColumns, |columns| {
+            let bad_child = convert_expr(&tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(tipb::ScalarFuncSig::IntIsNull as i32),
+                field_type: Some(tipb::FieldType {
+                    tp: Some(8),
+                    ..Default::default()
+                }),
+                children: vec![tipb::Expr {
+                    tp: Some(tipb::ExprType::Null as i32),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+            .expect("shared child");
+            assert!(matches!(&bad_child, SimpleExpr::Shared(_)));
+            let evaluator = LegacyEvaluator {
+                shared_override: Some(columns),
+                ..LegacyEvaluator::new(&row, 4, &time_zone)
+            };
+            assert!(matches!(
+                evaluator.folded_int(Some(&bad_child)),
+                Err(LegacyEvalError::Infrastructure(_))
+            ));
+            for sig in [SimpleSig::Substring3Args, SimpleSig::Substring3ArgsUtf8] {
+                for (source, pos, expected) in [
+                    (SimpleExpr::Null, bad_child.clone(), None),
+                    (SimpleExpr::Bytes(b"abc".to_vec()), SimpleExpr::Null, None),
+                    (SimpleExpr::Bytes(b"abc".to_vec()), SimpleExpr::Int(0), None),
+                    (
+                        SimpleExpr::Bytes(b"abc".to_vec()),
+                        SimpleExpr::Column(0),
+                        None,
+                    ),
+                    (
+                        SimpleExpr::Bytes(b"abc".to_vec()),
+                        SimpleExpr::Int(4),
+                        Some(Vec::new()),
+                    ),
+                    (
+                        SimpleExpr::Bytes(Vec::new()),
+                        SimpleExpr::Int(1),
+                        Some(Vec::new()),
+                    ),
+                ] {
+                    let call = SimpleExpr::Func(sig, vec![source, pos, bad_child.clone()]);
+                    assert_eq!(evaluator.eval_bytes(Some(&call)).unwrap(), expected);
+                }
+                let demand_len = SimpleExpr::Func(
+                    sig,
+                    vec![
+                        SimpleExpr::Bytes(b"abc".to_vec()),
+                        SimpleExpr::Int(1),
+                        bad_child.clone(),
+                    ],
+                );
+                assert!(matches!(
+                    evaluator.eval_bytes(Some(&demand_len)),
+                    Err(LegacyEvalError::Infrastructure(_))
+                ));
+            }
+            for sig in [SimpleSig::Substring2Args, SimpleSig::Substring2ArgsUtf8] {
+                let skip_pos = SimpleExpr::Func(sig, vec![SimpleExpr::Null, bad_child.clone()]);
+                assert_eq!(evaluator.eval_bytes(Some(&skip_pos)).unwrap(), None);
+                let demand_pos = SimpleExpr::Func(
+                    sig,
+                    vec![SimpleExpr::Bytes(b"abc".to_vec()), bad_child.clone()],
+                );
+                assert!(matches!(
+                    evaluator.eval_bytes(Some(&demand_pos)),
+                    Err(LegacyEvalError::Infrastructure(_))
+                ));
+            }
+            // Only now give the substring worker itself the refusing pool.
+            let refusing = LegacyEvaluator {
+                raw_columns: columns,
+                ..LegacyEvaluator::new(&row, 4, &time_zone)
+            };
+            for sig in [
+                SimpleSig::Substring2Args,
+                SimpleSig::Substring2ArgsUtf8,
+                SimpleSig::Substring3Args,
+                SimpleSig::Substring3ArgsUtf8,
+            ] {
+                for (source, pos) in [
+                    (SimpleExpr::Null, SimpleExpr::Int(1)),
+                    (SimpleExpr::Bytes(b"abc".to_vec()), SimpleExpr::Null),
+                    (SimpleExpr::Bytes(b"abc".to_vec()), SimpleExpr::Int(0)),
+                    (SimpleExpr::Bytes(b"abc".to_vec()), SimpleExpr::Column(0)),
+                    (SimpleExpr::Bytes(b"abc".to_vec()), SimpleExpr::Int(4)),
+                    (SimpleExpr::Bytes(b"abc".to_vec()), SimpleExpr::Int(1)),
+                ] {
+                    let mut children = vec![source, pos];
+                    if matches!(
+                        sig,
+                        SimpleSig::Substring3Args | SimpleSig::Substring3ArgsUtf8
+                    ) {
+                        children.push(SimpleExpr::Int(1));
+                    }
+                    let call = SimpleExpr::Func(sig, children);
+                    assert!(matches!(
+                        refusing.eval_bytes(Some(&call)),
+                        Err(LegacyEvalError::Infrastructure(_))
+                    ));
+                    let cast = SimpleExpr::Func(SimpleSig::CastStringAsInt, vec![call]);
+                    let bytes = SimpleExpr::Func(SimpleSig::CastIntAsString, vec![cast]);
+                    assert!(matches!(
+                        refusing.eval_bytes(Some(&bytes)),
+                        Err(LegacyEvalError::Infrastructure(_))
+                    ));
+                }
+            }
+        });
     }
 
     #[test]

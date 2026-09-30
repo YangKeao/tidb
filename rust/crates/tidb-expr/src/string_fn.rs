@@ -19,7 +19,6 @@
 
 use crate::coerce::{coerce_str, coerce_str_bytes};
 use crate::ops::to_f64_with_mysql_string;
-use crate::string_signature::StrUnits;
 use crate::{Datum, EvalError};
 use tidb_datatype::{
     find_encoding, get_default_collation, Collation, FieldType, GoString, TransformOp,
@@ -229,66 +228,131 @@ pub(crate) fn str_take_in(
 /// `SUBSTRING(s, pos[, len])`: 1-indexed, counting in the units of the
 /// signature Go selected for the argument's charset — bytes for
 /// `builtinSubstring2ArgsSig`/`builtinSubstring3ArgsSig`, characters for their
-/// `...UTF8Sig` twins (`pkg/expression/builtin_string.go`). Those four bodies
-/// are the same arithmetic over a different unit, so [`StrUnits`] carries the
-/// difference and this is written once: negative positions count back from the
-/// end, while position zero and every out-of-range position produce the empty
-/// string.
+/// `...UTF8Sig` twins (`pkg/expression/builtin_string.go`). C4 owns slicing
+/// in those units: negative positions count back from the end, while position
+/// zero and out-of-range positions produce the empty string. The caller keeps
+/// its original coercion and NULL-demand policy.
 pub(crate) fn substring(
     vals: &[Datum],
     cols: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
-    if vals.contains(&Datum::Null) {
-        return Ok(Datum::Null);
+    substring_with_contexts(vals, cols, cols)
+}
+
+/// The two-argument value dispatcher historically uses NoColumns for casts.
+/// Keep that complete policy separate from the actual C4 execution capability.
+pub(crate) fn substring_with_contexts(
+    vals: &[Datum],
+    cast_cols: &dyn crate::Columns,
+    execution_cols: &dyn crate::Columns,
+) -> Result<Datum, EvalError> {
+    use crate::tikv::{ReadyBytesArg, ReadyIntArg};
+    if let Some(null_index) = vals.iter().position(Datum::is_null) {
+        // The original NULL check precedes even arity validation. Only real
+        // two/three-operand calls have a recipe; malformed calls keep early NULL.
+        if !matches!(vals.len(), 2 | 3) {
+            return Ok(Datum::Null);
+        }
+        let bytes = if null_index == 0 {
+            ReadyBytesArg::Value(None)
+        } else {
+            ReadyBytesArg::Undemanded
+        };
+        let pos = if null_index == 1 {
+            ReadyIntArg::Value(None)
+        } else {
+            ReadyIntArg::Undemanded
+        };
+        let len = (vals.len() == 3).then(|| {
+            if null_index == 2 {
+                ReadyIntArg::Value(None)
+            } else {
+                ReadyIntArg::Undemanded
+            }
+        });
+        return substring_ready_in(
+            bytes,
+            pos,
+            len,
+            crate::string_signature::is_binary_str(&vals[0]),
+            execution_cols,
+        );
     }
-    // Go builds every `substring` signature through
-    // `newBaseBuiltinFuncWithTp(..., types.ETInt, ...)` for the position and
-    // length arguments, so a non-integer argument is CAST to an integer before
-    // `evalString` runs -- exactly the coercion `LEFT`/`RIGHT` already use here.
-    // Matching only `Datum::Int` refused `SUBSTRING('hello', '2')` (Go: `ello`)
-    // and every other argument Go silently casts.
-    // go's position/length arguments are WrapWithCastAsInt-wrapped: the
-    // conversion warns `Truncated incorrect INTEGER value` exactly like an
-    // explicit CAST (`SUBSTRING('abc', 1, 'x')` warns 1292 for 'x').
-    let (str, pos, length) = match vals {
-        [str, pos] => (
-            str,
-            crate::cast::to_i64_signed_with_warnings(pos, cols)?,
+    // Preserve pos -> optional length -> source coercion, even at positions
+    // whose eventual result is empty. Two arguments never acquire a fake MAX.
+    let (source, pos, len) = match vals {
+        [source, pos] => (
+            source,
+            crate::cast::to_i64_signed_with_warnings(pos, cast_cols)?,
             None,
         ),
-        [str, pos, length] => (
-            str,
-            crate::cast::to_i64_signed_with_warnings(pos, cols)?,
-            Some(crate::cast::to_i64_signed_with_warnings(length, cols)?),
+        [source, pos, len] => (
+            source,
+            crate::cast::to_i64_signed_with_warnings(pos, cast_cols)?,
+            Some(crate::cast::to_i64_signed_with_warnings(len, cast_cols)?),
         ),
         _ => return Err(EvalError::Unsupported("bad SUBSTRING arguments")),
     };
-    let Some(units) = StrUnits::of(str)? else {
-        return Ok(Datum::Null);
-    };
-    let string_len = units.len() as i64;
-    let pos = if pos < 0 { pos + string_len } else { pos - 1 };
-    let start = if !(0..=string_len).contains(&pos) {
-        units.len()
-    } else {
-        pos as usize
-    };
-    let end = match length {
-        None => units.len(),
-        Some(length) if length <= 0 => start,
-        Some(length) => {
-            // Go's source computes `end := pos + length` in int64.  A
-            // positive length can therefore wrap when `pos > 0`, and the
-            // following `end < pos` branch returns the empty string.  Do
-            // not use saturating_add here: it would silently turn that
-            // source-visible overflow into an unexpectedly long tail.
-            let Some(end) = (start as i64).checked_add(length) else {
-                return Ok(units.pack(Vec::new()));
-            };
-            (end as usize).min(units.len())
+    let bytes = coerce_str_bytes(source)?;
+    let binary = crate::string_signature::is_binary_str(source);
+    let bytes = bytes.map(|bytes| {
+        if binary {
+            bytes
+        } else {
+            crate::string_signature::normalize_utf8_go(bytes)
         }
+    });
+    substring_ready_in(
+        ReadyBytesArg::Value(bytes),
+        ReadyIntArg::Value(Some(pos)),
+        len.map(|len| ReadyIntArg::Value(Some(len))),
+        binary,
+        execution_cols,
+    )
+}
+
+/// Receives actual NULL/demand records from native and PB boundaries. An absent
+/// length means the true two-argument signature, not a nullable third argument.
+pub(crate) fn substring_ready_in(
+    bytes: crate::tikv::ReadyBytesArg,
+    pos: crate::tikv::ReadyIntArg,
+    len: Option<crate::tikv::ReadyIntArg>,
+    binary: bool,
+    ctx: &dyn crate::Columns,
+) -> Result<Datum, EvalError> {
+    use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp};
+    let (operation, args) = match (binary, len) {
+        (true, None) => (
+            EvaluatedBytesOp::Substring2BytesNative,
+            EvaluatedArgs::Substring2Ready { bytes, pos },
+        ),
+        (false, None) => (
+            EvaluatedBytesOp::Substring2Utf8Native,
+            EvaluatedArgs::Substring2Ready { bytes, pos },
+        ),
+        (true, Some(len)) => (
+            EvaluatedBytesOp::Substring3BytesNative,
+            EvaluatedArgs::Substring3Ready { bytes, pos, len },
+        ),
+        (false, Some(len)) => (
+            EvaluatedBytesOp::Substring3Utf8Native,
+            EvaluatedArgs::Substring3Ready { bytes, pos, len },
+        ),
     };
-    Ok(units.pack(units.slice(start, end).to_vec()))
+    crate::tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || Ok(args),
+        |computed| {
+            Ok(computed.into_bytes()?.map_or(Datum::Null, |bytes| {
+                if binary {
+                    Datum::new_bytes(bytes)
+                } else {
+                    Datum::new_string(bytes)
+                }
+            }))
+        },
+    )
 }
 
 /// `REVERSE(s)`: the units of `s` in the opposite order. Go's

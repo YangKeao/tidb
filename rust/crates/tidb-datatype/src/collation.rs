@@ -14,9 +14,9 @@
 
 //! TiDB's registry/mode facade over the shared TiKV collation kernels.
 //!
-//! GB key/compare encoding remains an explicit compatibility residual; its
-//! generated images are exact conversions of the original Go authorities.
-//! All LIKE matching and migrated binary/General/UCA operations are shared.
+//! All comparison, key, and LIKE kernels are shared. GB comparison and keys
+//! select the native compatibility policy independently of TiKV's wire policy;
+//! registry resolution, legacy mode, and immutable-key ownership stay native.
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -28,9 +28,12 @@ use crate::charset::{
     get_collation_by_name as charset_collation_by_name,
     get_supported_collations as charset_supported_collations, set_new_collation_defaults,
 };
-use crate::{CharsetError, Collation, CollationInfo, Encoding, TransformOp};
+use crate::{CharsetError, Collation, CollationInfo};
 use tidb_query_datatype::codec::collation::{
-    self as shared, collator::*, Collator as SharedCollator, KeyOptions, LikePatternMode,
+    self as shared,
+    collator::*,
+    gb::{self, GbCollation, GbPolicy},
+    Collator as SharedCollator, KeyOptions, LikePatternMode,
 };
 
 /// Shared wildcard primitives used by the source-compatible string utilities.
@@ -524,14 +527,17 @@ fn match_shared_pattern<C: SharedCollator>(value: &[u8], pattern: &[u8], escape:
     .expect("raw supported LIKE comparison cannot fail")
 }
 
-// Explicit compatibility residuals: GB key/compare encoding is not yet shared.
-// In particular GB18030 PUA keys differ in mapping and trailing NUL behavior.
-const GBK_CHINESE_CI: &[u8; 65_536 * 2] =
-    include_bytes!("collation_data/gbk_chinese_ci_u16_le.bin");
-const GB18030_CHINESE_CI: &[u8; 0x11_0000 * 4] =
-    include_bytes!("collation_data/gb18030_chinese_ci_u32_le.bin");
-
 impl Collation {
+    fn gb_collation(self) -> Option<GbCollation> {
+        Some(match self {
+            Self::GbkBin => GbCollation::GbkBin,
+            Self::GbkChineseCi => GbCollation::GbkChineseCi,
+            Self::Gb18030Bin => GbCollation::Gb18030Bin,
+            Self::Gb18030ChineseCi => GbCollation::Gb18030ChineseCi,
+            _ => return None,
+        })
+    }
+
     /// Compiles this explicit new-collation wildcard matcher.
     pub fn pattern(self, pattern: impl AsRef<[u8]>, escape: u8) -> WildcardPattern {
         with_shared_collator!(
@@ -543,12 +549,10 @@ impl Collation {
 
     /// Compares arbitrary Go-string bytes using TiDB's source semantics.
     pub fn compare(self, left: &[u8], right: &[u8]) -> Ordering {
-        match self {
-            Self::GbkBin => encoded_binary_compare(Encoding::Gbk, left, right),
-            Self::Gb18030Bin => encoded_binary_compare(Encoding::Gb18030, left, right),
-            Self::GbkChineseCi => chinese_ci_compare(left, right, gbk_chinese_ci_weight),
-            Self::Gb18030ChineseCi => chinese_ci_compare(left, right, gb18030_chinese_ci_weight),
-            _ => with_shared_collator!(
+        match self.gb_collation() {
+            Some(kind) => gb::compare(kind, GbPolicy::Native, left, right, false)
+                .expect("raw native GB comparison cannot fail"),
+            None => with_shared_collator!(
                 self,
                 C,
                 C::sort_compare(left, right, false)
@@ -563,13 +567,10 @@ impl Collation {
     }
 
     fn key_with_options(self, value: &[u8], options: KeyOptions) -> Vec<u8> {
-        let trim = options == KeyOptions::Default;
-        match self {
-            Self::GbkBin => encoded_binary_key(Encoding::Gbk, value, trim),
-            Self::Gb18030Bin => gb18030_bin_key(value, trim),
-            Self::GbkChineseCi => chinese_ci_key(value, trim, gbk_chinese_ci_weight),
-            Self::Gb18030ChineseCi => chinese_ci_key(value, trim, gb18030_chinese_ci_weight),
-            _ => with_shared_collator!(
+        match self.gb_collation() {
+            Some(kind) => gb::key(kind, GbPolicy::Native, value, options)
+                .expect("raw native GB key into Vec cannot fail"),
+            None => with_shared_collator!(
                 self,
                 C,
                 C::sort_key_with_options(value, options)
@@ -599,91 +600,10 @@ impl Collation {
     }
 
     /// Returns the allocation estimate exposed by the corresponding Go collator.
-    /// The deferred GB18030 PUA encoding can exceed this historical estimate.
+    /// Native GB18030 PUA encoding can exceed this historical estimate.
     pub fn max_key_len(self, value: &[u8]) -> usize {
         with_shared_collator!(self, C, C::max_sort_key_len(value))
     }
-}
-
-/// Go's `fourBytesRune` set (`pkg/util/collate/gb18030_bin.go`): 19 three-byte
-/// UTF-8 PUA runes whose `customGB18030Encoder` override emits 4 bytes. The
-/// key path feeds a trailing NUL through the encoder so the emitted sort key
-/// is the 4-byte encoding plus one 0x00 byte, matching Go's 5-byte output.
-const GB18030_FOUR_BYTES_RUNES: [u32; 19] = [
-    0xE78D, 0xE78E, 0xE78F, 0xE790, 0xE791, 0xE792, 0xE793, 0xE794, 0xE795, 0xE796, //
-    0xE7C7, 0xE81E, 0xE826, 0xE82B, 0xE82C, 0xE832, 0xE843, 0xE854, 0xE864,
-];
-
-/// Go's `runeLen` (`pkg/util/collate/collate.go`): first-byte width class,
-/// independent of UTF-8 validity.
-fn go_rune_len(first: u8) -> usize {
-    if first < 0x80 {
-        1
-    } else if first < 0xE0 {
-        2
-    } else if first < 0xF0 {
-        3
-    } else {
-        4
-    }
-}
-
-/// Mirrors Go's `gb18030BinCollator.KeyWithoutTrimRightSpace`: walks rune-wise,
-/// feeds four-byte PUA runes an extra trailing NUL through the encoder, and
-/// emits one `'?'` per errored group. The `Compare` path deliberately keeps
-/// using the unpadded [`encoded_binary_key`], because Go's `Compare` also
-/// compares unpadded per-rune encodings.
-fn gb18030_bin_key(value: &[u8], trim: bool) -> Vec<u8> {
-    let value = if trim {
-        trim_trailing_spaces(value)
-    } else {
-        value
-    };
-    let mut buf = Vec::with_capacity(value.len() + value.len() / 3);
-    let mut rest = value;
-    while !rest.is_empty() {
-        let l = go_rune_len(rest[0]).min(rest.len());
-        let rune = std::str::from_utf8(&rest[..l])
-            .ok()
-            .and_then(|s| s.chars().next());
-        let mut chunk = rest[..l].to_vec();
-        if matches!(rune, Some(r) if GB18030_FOUR_BYTES_RUNES.contains(&(r as u32))) {
-            chunk.push(0x00);
-        }
-        let (bytes, error) = Encoding::Gb18030
-            .transform(&chunk, TransformOp::ENCODE_REPLACE)
-            .into_parts();
-        if error.is_some() {
-            buf.push(b'?');
-        } else {
-            buf.extend_from_slice(&bytes);
-        }
-        rest = &rest[l..];
-    }
-    buf
-}
-
-fn encoded_binary_key(encoding: Encoding, value: &[u8], trim: bool) -> Vec<u8> {
-    let value = if trim {
-        trim_trailing_spaces(value)
-    } else {
-        value
-    };
-    encoding
-        .transform(value, TransformOp::ENCODE_REPLACE)
-        .into_parts()
-        .0
-}
-
-fn encoded_binary_compare(encoding: Encoding, left: &[u8], right: &[u8]) -> Ordering {
-    encoded_binary_key(encoding, left, true).cmp(&encoded_binary_key(encoding, right, true))
-}
-
-fn trim_trailing_spaces(mut value: &[u8]) -> &[u8] {
-    while value.last() == Some(&b' ') {
-        value = &value[..value.len() - 1];
-    }
-    value
 }
 
 pub(crate) fn decode_rune(value: &[u8]) -> Result<(u32, usize), ()> {
@@ -703,88 +623,13 @@ pub(crate) fn rune_width(value: &[u8]) -> usize {
     decode_rune(value).map_or(1, |(_, width)| width)
 }
 
-fn chinese_ci_compare(left: &[u8], right: &[u8], weight: fn(u32) -> u32) -> Ordering {
-    let (left, right) = (trim_trailing_spaces(left), trim_trailing_spaces(right));
-    let (mut left_index, mut right_index) = (0, 0);
-    while left_index < left.len() && right_index < right.len() {
-        let (left_rune, left_width) = match decode_rune(&left[left_index..]) {
-            Ok(decoded) => decoded,
-            Err(()) => return Ordering::Equal,
-        };
-        let (right_rune, right_width) = match decode_rune(&right[right_index..]) {
-            Ok(decoded) => decoded,
-            Err(()) => return Ordering::Equal,
-        };
-        left_index += left_width;
-        right_index += right_width;
-        let ordering = weight(left_rune).cmp(&weight(right_rune));
-        if !ordering.is_eq() {
-            return ordering;
-        }
-    }
-    (left.len() - left_index).cmp(&(right.len() - right_index))
-}
-
-fn chinese_ci_key(value: &[u8], trim: bool, weight: fn(u32) -> u32) -> Vec<u8> {
-    let value = if trim {
-        trim_trailing_spaces(value)
-    } else {
-        value
-    };
-    let mut key = Vec::with_capacity(value.len() * 2);
-    let mut index = 0;
-    while index < value.len() {
-        let (codepoint, width) = match decode_rune(&value[index..]) {
-            Ok(decoded) => decoded,
-            Err(()) => break,
-        };
-        index += width;
-        let bytes = weight(codepoint).to_be_bytes();
-        let first = bytes.iter().position(|byte| *byte != 0).unwrap_or(3);
-        key.extend_from_slice(&bytes[first..]);
-    }
-    key
-}
-
-fn gbk_chinese_ci_weight(codepoint: u32) -> u32 {
-    let Some(offset) = usize::try_from(codepoint)
-        .ok()
-        .filter(|codepoint| *codepoint <= 0xFFFF)
-        .map(|codepoint| codepoint * 2)
-    else {
-        return 0x3F;
-    };
-    u32::from(u16::from_le_bytes([
-        GBK_CHINESE_CI[offset],
-        GBK_CHINESE_CI[offset + 1],
-    ]))
-}
-
-fn gb18030_chinese_ci_weight(codepoint: u32) -> u32 {
-    let Some(offset) = usize::try_from(codepoint)
-        .ok()
-        .filter(|codepoint| *codepoint <= 0x10_FFFF)
-        .map(|codepoint| codepoint * 4)
-    else {
-        return 0x3F;
-    };
-    u32::from_le_bytes(
-        GB18030_CHINESE_CI[offset..offset + 4]
-            .try_into()
-            .expect("fixed GB18030 weight width"),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use std::{collections::HashSet, path::Path, process::Command, sync::OnceLock};
 
     use sha2::{Digest, Sha256};
 
-    use super::{
-        Collation, CollatorUtf8Mb40900AiCi, CollatorUtf8Mb4UnicodeCi, SharedCollator,
-        GB18030_CHINESE_CI, GBK_CHINESE_CI,
-    };
+    use super::{Collation, CollatorUtf8Mb40900AiCi, CollatorUtf8Mb4UnicodeCi, SharedCollator};
 
     // Original Go long-map rune inventory; values now come only from TiKV.
     const LONG_0400: [char; 22] = [
@@ -840,14 +685,26 @@ mod tests {
         // images incrementally and compares shared tables to those sources.
         // No second production copy of those weights is needed for this gate.
         verify_source_contracts();
-        assert_eq!(GBK_CHINESE_CI.len(), 131_072);
-        assert_eq!(GB18030_CHINESE_CI.len(), 4_456_448);
+        // Read the single shared authority, including non-scalar table slots.
+        // GBK's shared image is BE u16; retain the original native LE oracle.
+        // Runtime reads avoid embedding another copy in the native test binary.
+        let shared_tables = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../tikv/components/tidb_query_datatype/src/codec/collation/collator");
+        let mut gbk = std::fs::read(shared_tables.join("gbk_chinese_ci.data"))
+            .expect("read shared GBK CI table");
+        let gb18030 = std::fs::read(shared_tables.join("gb18030_chinese_ci.data"))
+            .expect("read shared GB18030 CI table");
+        assert_eq!(gbk.len(), 131_072);
+        assert_eq!(gb18030.len(), 4_456_448);
+        for pair in gbk.chunks_exact_mut(2) {
+            pair.swap(0, 1);
+        }
         assert_eq!(
-            digest(GBK_CHINESE_CI),
+            digest(&gbk),
             "f6f63c33fa57eeaffa5d46841694adab58bd9cddfac3f92389dec4564a6036d6"
         );
         assert_eq!(
-            digest(GB18030_CHINESE_CI),
+            digest(&gb18030),
             "64faeaa726d3555479fa98b7d61add86bbdcb659235da3ffacbbae4fb45d340d"
         );
     }

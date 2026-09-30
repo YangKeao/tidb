@@ -1108,6 +1108,16 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::Insert | EvaluatedBytesOp::InsertUtf8Native => {
             panic!("INSERT requires all four original operands")
         }
+        EvaluatedBytesOp::Substring2BytesNative
+        | EvaluatedBytesOp::Substring2Utf8Native
+        | EvaluatedBytesOp::Substring3BytesNative
+        | EvaluatedBytesOp::Substring3Utf8Native
+        | EvaluatedBytesOp::Substring2BytesLegacy
+        | EvaluatedBytesOp::Substring2Utf8Legacy
+        | EvaluatedBytesOp::Substring3BytesLegacy
+        | EvaluatedBytesOp::Substring3Utf8Legacy => {
+            panic!("SUBSTRING needs its original argument demand and arity")
+        }
         EvaluatedBytesOp::Sha2Native => panic!("SHA2 needs its original argument pair"),
         EvaluatedBytesOp::LowerAsciiNative | EvaluatedBytesOp::UpperAsciiNative => {
             panic!("legacy ASCII case requires its raw legacy entry")
@@ -1169,6 +1179,313 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+#[test]
+fn substring_dispatch_preserves_arity_bytes_and_null_precedence() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedAsciiColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    for (name, values, expected) in [
+        (
+            "SUBSTRING",
+            vec![Datum::new_string("abcd"), Datum::Int(2)],
+            Datum::new_string("bcd"),
+        ),
+        (
+            "SUBSTRING",
+            vec![
+                Datum::new_string("abcd"),
+                Datum::Int(2),
+                Datum::Int(i64::MAX),
+            ],
+            Datum::new_string(""),
+        ),
+        (
+            "SUBSTR",
+            vec![
+                Datum::new_string(vec![0xe2, 0x82, b'z']),
+                Datum::Int(1),
+                Datum::Int(2),
+            ],
+            Datum::new_string("\u{fffd}\u{fffd}"),
+        ),
+        (
+            "MID",
+            vec![
+                Datum::new_bytes([0xe2, 0x82, b'z']),
+                Datum::Int(1),
+                Datum::Int(2),
+            ],
+            Datum::new_bytes([0xe2, 0x82]),
+        ),
+        (
+            "SUBSTRING",
+            vec![Datum::Null, Datum::MinNotNull],
+            Datum::Null,
+        ),
+        (
+            "SUBSTRING",
+            vec![Datum::MinNotNull, Datum::Null, Datum::new_string("bad_len")],
+            Datum::Null,
+        ),
+        (
+            "SUBSTRING",
+            vec![Datum::MinNotNull, Datum::new_string("bad_pos"), Datum::Null],
+            Datum::Null,
+        ),
+    ] {
+        arm_eval_one_observation();
+        let result = crate::func::eval_func_values_in(name, &values, &columns).unwrap();
+        let observation = take_eval_one_observation();
+        assert!(matches!(
+            (&result, &expected),
+            (Ok(Datum::Null), Datum::Null)
+                | (Ok(Datum::String(_)), Datum::String(_))
+                | (Ok(Datum::Bytes(_)), Datum::Bytes(_))
+        ));
+        assert_eq!(result, Ok(expected), "{name}");
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(
+            observation.after_kernel_invocations,
+            observation
+                .before_kernel_invocations
+                .map(|before| before + 1)
+        );
+    }
+    for (values, expected) in [
+        (vec![Datum::Null], Ok(Datum::Null)),
+        (
+            vec![Datum::new_string("abcd")],
+            Err(EvalError::Unsupported("bad SUBSTRING arguments")),
+        ),
+    ] {
+        arm_eval_one_observation();
+        let result = crate::string_fn::substring(&values, &columns);
+        let observation = take_eval_one_observation();
+        assert_eq!(
+            result, expected,
+            "malformed helper calls retain NULL before arity"
+        );
+        assert_eq!(observation.facade_entries, 0);
+    }
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn substring_dispatch_preserves_pb_demand_reader_and_actual_arity() {
+    use crate::expression::Expression;
+    use crate::scalar_function::{PbBuiltin, ScalarFunction};
+    use tidb_proto::tipb::ScalarFuncSig;
+    struct Strict;
+    impl Columns for Strict {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn truncate_level(&self) -> ErrorLevel {
+            ErrorLevel::Error
+        }
+    }
+    let field = FieldType::new(FieldTypeCode::VarString);
+    let constant = |value| Expression::Constant(Constant::new(value, field.clone()));
+    let missing = || {
+        Expression::ScalarFunction(ScalarFunction::new(
+            tidb_ast::CiString::new("__undemanded_substring_child__"),
+            field.clone(),
+            Vec::new(),
+        ))
+    };
+    let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&Strict, |columns| {
+        for (signature, args, expected) in [
+            (
+                ScalarFuncSig::Substring2Args,
+                vec![constant(Datum::Null), missing()],
+                Datum::Null,
+            ),
+            (
+                ScalarFuncSig::Substring2ArgsUtf8,
+                vec![constant(Datum::MinNotNull), constant(Datum::Null)],
+                Datum::Null,
+            ),
+            (
+                ScalarFuncSig::Substring3Args,
+                vec![constant(Datum::Null), missing(), missing()],
+                Datum::Null,
+            ),
+            (
+                ScalarFuncSig::Substring3ArgsUtf8,
+                vec![
+                    constant(Datum::MinNotNull),
+                    constant(Datum::new_string("bad_pos")),
+                    constant(Datum::Null),
+                ],
+                Datum::Null,
+            ),
+            (
+                ScalarFuncSig::Substring2ArgsUtf8,
+                vec![
+                    constant(Datum::new_string("abcd")),
+                    constant(Datum::Int(2)),
+                    constant(Datum::Int(i64::MAX)),
+                ],
+                Datum::new_string(""),
+            ),
+            (
+                ScalarFuncSig::Substring3Args,
+                vec![constant(Datum::new_string("abcd")), constant(Datum::Int(2))],
+                Datum::new_bytes(b"bcd"),
+            ),
+        ] {
+            let function =
+                ScalarFunction::from_pb(PbBuiltin::new(signature).unwrap(), field.clone(), args);
+            arm_eval_one_observation();
+            let result = function.eval(columns, row.to_row());
+            let observation = take_eval_one_observation();
+            assert_eq!(result, Ok(expected), "{signature:?}");
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(
+                observation.after_kernel_invocations,
+                observation
+                    .before_kernel_invocations
+                    .map(|before| before + 1)
+            );
+        }
+        let function = ScalarFunction::from_pb(
+            PbBuiltin::new(ScalarFuncSig::Substring2ArgsUtf8).unwrap(),
+            field.clone(),
+            vec![
+                constant(Datum::Int(1)),
+                constant(Datum::new_string("bad_pos")),
+            ],
+        );
+        arm_eval_one_observation();
+        let result = function.eval(columns, row.to_row());
+        let observation = take_eval_one_observation();
+        assert_eq!(
+            result,
+            Err(EvalError::Unsupported("un-cast types.ETString argument")),
+            "PB source reader precedes numeric conversion"
+        );
+        assert_eq!(observation.facade_entries, 0);
+        for (input, expected) in [
+            (Datum::Null, Ok(Datum::Null)),
+            (
+                Datum::new_string("abcd"),
+                Err(EvalError::Unsupported("bad SUBSTRING arguments")),
+            ),
+        ] {
+            let function = ScalarFunction::from_pb(
+                PbBuiltin::new(ScalarFuncSig::Substring2ArgsUtf8).unwrap(),
+                field.clone(),
+                vec![constant(input)],
+            );
+            arm_eval_one_observation();
+            let result = function.eval(columns, row.to_row());
+            let observation = take_eval_one_observation();
+            assert_eq!(result, expected);
+            assert_eq!(
+                observation.facade_entries, 0,
+                "other malformed arities keep their old path"
+            );
+        }
+    });
+    drop(scope);
+    execution.close();
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&Strict, |columns| {
+        let function = ScalarFunction::from_pb(PbBuiltin::new(ScalarFuncSig::Substring3ArgsUtf8).unwrap(), field.clone(),
+            vec![constant(Datum::MinNotNull), constant(Datum::new_string("bad_pos")), constant(Datum::Null)]);
+        assert!(matches!(function.eval(columns, row.to_row()), Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn substring_dispatch_separates_cast_policy_from_execution_context() {
+    struct Policy {
+        levels: Cell<usize>,
+        zones: Cell<usize>,
+        warnings: RefCell<Vec<u16>>,
+    }
+    impl Columns for Policy {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn truncate_level(&self) -> ErrorLevel {
+            self.levels.set(self.levels.get() + 1);
+            ErrorLevel::Error
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            self.zones.set(self.zones.get() + 1);
+            crate::NoColumns.time_zone()
+        }
+        fn append_warning(&self, code: u16, _: &str) {
+            self.warnings.borrow_mut().push(code);
+        }
+    }
+    let native = Policy {
+        levels: Cell::new(0),
+        zones: Cell::new(0),
+        warnings: RefCell::new(Vec::new()),
+    };
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        arm_eval_one_observation();
+        let result = crate::func::eval_func_values_in("MID", &[Datum::new_string("abcd"), Datum::new_string("bad_pos")], columns).unwrap();
+        let observation = take_eval_one_observation();
+        assert_eq!(result, Ok(Datum::new_string("")));
+        assert_eq!(observation.facade_entries, 1);
+        assert_eq!(observation.after_kernel_invocations, observation.before_kernel_invocations.map(|before| before + 1));
+        assert_eq!((native.levels.get(), native.zones.get()), (0, 0), "two-argument casts retain complete NoColumns policy");
+        assert!(native.warnings.borrow().is_empty());
+        for values in [
+            vec![Datum::new_string("abcd"), Datum::Int(99), Datum::new_string("bad_len")],
+            vec![Datum::MinNotNull, Datum::Int(1), Datum::new_string("bad_len")],
+        ] {
+            arm_eval_one_observation();
+            let result = crate::string_fn::substring(&values, columns);
+            let observation = take_eval_one_observation();
+            assert!(matches!(result, Err(EvalError::TruncatedWrongValue(message)) if message.contains("bad_len")), "native length conversion precedes source/bounds");
+            assert_eq!(observation.facade_entries, 0);
+        }
+        assert!(native.levels.get() > 0 && native.zones.get() > 0, "three-argument coercion still uses the real context");
+    });
+    drop(scope);
+    execution.close();
+    native.levels.set(0);
+    native.zones.set(0);
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        arm_eval_one_observation();
+        let result = crate::func::eval_func_values_in("MID", &[Datum::new_string("abcd"), Datum::new_string("bad_pos")], columns).unwrap();
+        let observation = take_eval_one_observation();
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0, "NoColumns casts must not create a fallback execution scope");
+        let result = crate::string_fn::substring(&[Datum::MinNotNull, Datum::Null, Datum::new_string("bad_len")], columns);
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!((native.levels.get(), native.zones.get()), (0, 0));
+        assert!(native.warnings.borrow().is_empty());
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 #[test]

@@ -62,27 +62,30 @@ tests.
 
 ## Rust ownership and parity decision
 
-The dependency-closed owner is `rust/crates/tidb-datatype`: `charset.rs`
-provides the shared charset/collation registry and mode defaults, while
-`collation.rs` owns all 16 implemented collations, wildcard matching,
-comparison, sort keys, protocol ID conversion, and PAD SPACE helpers. The
+The original dependency-closed port mapped to `rust/crates/tidb-datatype`.
+`charset.rs` still provides the registry and mode defaults; `collation.rs` is
+now the SQL-facing facade for the 16 implemented collations. General/UCA,
+matching and GB implementations/data have moved to the sibling TiKV shared
+owner; this historical package inventory is not a second implementation. The
 source-derived `collation_tests.rs` covers all six Go test functions and adds
 focused checks for borrowed immutable keys, invalid byte patterns, GB18030
 PUA key padding, surrogate-marker zero values, and helper/registry behavior.
 
-The seven generated Rust binary images under
-`src/collation_data/` are lossless little-endian conversions of the Go
-General-CI, UCA 4.0/9.0, GBK, and GB18030 authorities. The Rust generator
+The original seven native images under `src/collation_data/` were lossless
+little-endian conversions of the Go General-CI, UCA 4.0/9.0, GBK and GB18030
+authorities. All seven duplicate images have since been removed in favor of
+TiKV-owned data; their source pins and original hashes remain oracles. The Rust generator
 `scripts/generate_collation_data.py` parses those Go sources, verifies the
 retained original UCA 4.0 fixture and long-map invariants, and checks exact
 table dimensions. The Go DUCET and `ucaimpl` generators therefore have one
 executable Rust generation gate, not a second hand-maintained authority.
 
-Other Rust-side generated/platform artifacts inspected for this owner are the
-parser charset tables in `src/charset_data/{collations,gb18030_by_bytes,
-gb18030_by_rune,gb18030_cases,gbk_cases,known_charsets}.rs`; these are the
-existing generated inputs for charset lookup and encoding and are not edited
-by the collate owner. The collate benchmark is preserved in
+Other original generated/platform artifacts included the parser charset
+tables. Current native inputs remain in
+`src/charset_data/{collations,gb18030_cases,gbk_cases,known_charsets}.rs`;
+the two full GB18030 mapping copies were removed by the parser generator in
+favor of TiKV's canonical mapping, as recorded in `parser_charset.md`.
+The collate benchmark is preserved in
 `benches/collate.rs`; Cargo's `autotests = false` and aggregate `tests/all.rs`
 include the source-derived integration tests.
 
@@ -118,3 +121,56 @@ needed because this package has no failpoint dependency.
   tables and typed cursor implementation rather than adding dynamic dispatch.
 - Not verified locally: Go benchmark execution, Bazel test execution, every
   downstream SQL/ranger consumer, and Windows-specific behavior.
+
+## GB data ownership move (Foundation B; no new package completion claim)
+
+This addendum supersedes only the earlier native GB artifact ownership and
+GB generation descriptions. The complete Go inventory, authority hashes,
+original test/oracle inventory, and historical validation above remain intact;
+this data move is not another transcreated-package completion claim.
+
+The sole GB CI dataset owner is now TiKV's
+`components/tidb_query_datatype/src/codec/collation/collator/`. The updated
+`rust/crates/tidb-datatype/scripts/generate_collation_data.py` compares every
+Go GBK numeric weight with canonical `gbk_chinese_ci.data` as big-endian u16,
+and byte-compares Go `gb18030_weight.data` with canonical
+`gb18030_chinese_ci.data` as little-endian u32. The Go source SHA-256 pins remain
+`f4c81f9fbf27469f4dc2b7add68c315bbc399869f63efdf059142eddb2542dc1` and
+`64faeaa726d3555479fa98b7d61add86bbdcb659235da3ffacbbae4fb45d340d`,
+respectively. General/UCA verification and the original UCA fixture/oracles
+are unchanged by this GB move.
+
+The generator removed only the exact original native duplicate CI images:
+
+| Removed native image | Bytes | Original SHA-256 retained as an oracle |
+| --- | ---: | --- |
+| `src/collation_data/gbk_chinese_ci_u16_le.bin` | 131,072 | `f6f63c33fa57eeaffa5d46841694adab58bd9cddfac3f92389dec4564a6036d6` |
+| `src/collation_data/gb18030_chinese_ci_u32_le.bin` | 4,456,448 | `64faeaa726d3555479fa98b7d61add86bbdcb659235da3ffacbbae4fb45d340d` |
+
+All four existing TiKV collator data files retained exact bytes and modification
+times across generation; no canonical data was rewritten:
+
+| Frozen TiKV file | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `gbk_bin.data` | 131,072 | `31690e4a2ae6b64d0c801b1ac81ae894c6f572e8d917bfc2570a8d38bfd49215` |
+| `gbk_chinese_ci.data` | 131,072 | `936a6495ad2f211980bfb80cd1a52efb0cfbf04f68bfdd75f898d0aeba5336df` |
+| `gb18030_bin.data` | 4,456,448 | `7e97b5ed85a68b81b5322ad33e654ab3b0f0243ae6c6075abf0477a96d2567b7` |
+| `gb18030_chinese_ci.data` | 4,456,448 | `64faeaa726d3555479fa98b7d61add86bbdcb659235da3ffacbbae4fb45d340d` |
+
+Commands run from the TiDB repository root:
+
+- `python3 -B rust/crates/tidb-datatype/scripts/generate_collation_data.py --prune-gb-images` — status 0; removed exactly the two hash-pinned native GB CI images. A second run removed zero files.
+- `python3 -B rust/crates/tidb-datatype/scripts/generate_collation_data.py --check` — status 0 after migration; all shared authorities and absence checks passed. Before migration, status 1 correctly rejected the duplicate native GB images.
+- `python3 -B rust/crates/tidb-datatype/scripts/generate_collation_data.py` — the same read-only verification, status 0 after migration and expected status 1 before migration.
+
+Targeted in-memory fault checks also rejected modified second images,
+symlinks, and non-files before any deletion. Changed canonical weights, a
+truncated GBK table, and changed Go source hashes were rejected; all CLI modes
+failed before writing/deleting on authority drift. The old `--prune-obsolete`
+still names only its original five General/UCA files; the separate GB cleanup
+does not broaden that policy. Parser override ownership and its generated stub
+are recorded in `parser_charset.md`.
+
+Scope of this addendum: data/generator validation only. No builds, formatting,
+`make lint`, Go/Rust runtime tests, or package-readiness gates were rerun by
+this subowner; runtime integration and its validation belong to Foundation B.

@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
-"""Verify shared General/UCA authorities and generate only retained GB images.
+"""Verify TiKV-owned General/UCA/GB tables against TiDB's Go authorities.
 
-The retained binary formats are deliberately trivial and host-independent:
-
-* ``gbk_chinese_ci_u16_le.bin``: 65,536 little-endian u16 weights.
-* ``gb18030_chinese_ci_u32_le.bin``: 1,114,112 little-endian u32 weights.
-
-Every mode requires TiKV's shared General/UCA Rust tables (default: sibling
-``tikv`` repository; override with ``--tikv-root``). Every static slot, including
+Every mode requires TiKV's shared tables (default: sibling ``tikv`` repository;
+override with ``--tikv-root``). Every General/UCA static slot, including
 surrogates, and every u128 long expansion is compared with TiDB's Go authorities.
-UCA 4.0 is also checked against the retained original Go fixture. Source-pinned
-hashes and the former image tests' invariants remain verification-only; no
-General/UCA image is generated.
+UCA 4.0 is also checked against the retained original Go fixture. GBK's 65,536
+Go weights are compared numerically with TiKV's big-endian u16 table; GB18030's
+1,114,112 little-endian u32 weights are byte-compared with the Go source data.
+Source-pinned hashes and the former image tests' invariants remain
+verification-only; no native collation image is generated.
 
-``--check`` is read-only and rejects the five obsolete General/UCA images if
-present. ``--prune-obsolete`` removes only those exact filenames, and only after
-all source checks and retained-GB image checks pass. Every present obsolete
-image must be a regular file with its original pinned length and SHA256; any
-unexpected modification aborts before deletion. Pruning never writes GB images.
+Normal mode and ``--check`` are read-only and reject obsolete native images.
+``--prune-obsolete`` still removes only the five exact General/UCA filenames.
+The separate ``--prune-gb-images`` removes only the two former native GB CI
+images. Both require all shared-source checks to pass first, and every present
+image selected for pruning must be a regular file with its original pinned
+length and SHA256. Unexpected modifications abort before deletion; neither
+pruning mode silently removes the other family's images.
 
 UCA 9.0's surrogate markers agree, but the unreachable non-scalar helper results
 differ: Go's absent map entry is zero, TiKV's match fallback is 0xFFFD. This
@@ -59,7 +58,15 @@ PINNED_RECORDS = {
     "unicode_0900_long": ("<IQQ", 27, "8329421bd84ef04ad3ff5650e6b946d2cb22934d1fded231b7938bb094155c6f"),
     "gbk_chinese_ci": ("<H", 65536, "f6f63c33fa57eeaffa5d46841694adab58bd9cddfac3f92389dec4564a6036d6"),
 }
+GBK_GO_SHA256 = "f4c81f9fbf27469f4dc2b7add68c315bbc399869f63efdf059142eddb2542dc1"
+GBK_TIKV_SHA256 = "936a6495ad2f211980bfb80cd1a52efb0cfbf04f68bfdd75f898d0aeba5336df"
 GB18030_SHA256 = "64faeaa726d3555479fa98b7d61add86bbdcb659235da3ffacbbae4fb45d340d"
+
+# Separate from OBSOLETE_IMAGES: --prune-obsolete must retain its original scope.
+OBSOLETE_GB_IMAGES = {
+    "gbk_chinese_ci_u16_le.bin": (131072, PINNED_RECORDS["gbk_chinese_ci"][2]),
+    "gb18030_chinese_ci_u32_le.bin": (4456448, GB18030_SHA256),
+}
 
 # Deliberately enumerate exact generated filenames: never glob or recurse when
 # pruning. Their source-pinned records also protect unexpected local edits.
@@ -433,12 +440,24 @@ def verify_shared_weights(tikv_root: Path = TIKV_ROOT) -> None:
                     raise ValueError(f"changed UCA 9.0 non-scalar surrogate contract at U+{cp:04X}")
 
 
-def encoded_files(tikv_root: Path = TIKV_ROOT) -> dict[Path, bytes]:
-    # Mandatory in every mode and for callers importing this public helper.
-    # Finish all source verification before any file is written or deleted.
-    verify_shared_weights(tikv_root)
+def verify_shared_gb_weights(tikv_root: Path = TIKV_ROOT) -> None:
+    collators = tikv_root / TIKV_COLLATORS
+    if hashlib.sha256(GBK_GO.read_bytes()).hexdigest() != GBK_GO_SHA256:
+        raise ValueError("GBK CI Go source-pinned SHA256 differs")
     gbk = parse_gbk()
+    # Preserve the former native LE image oracle without constructing an image.
     verify_pinned_records("gbk_chinese_ci", ((weight,) for weight in gbk))
+    gbk_path = collators / "gbk_chinese_ci.data"
+    shared_gbk = gbk_path.read_bytes()
+    if len(shared_gbk) != 65536 * 2:
+        raise ValueError(f"{gbk_path}: expected 65536 big-endian u16 weights")
+    verify_table(
+        "shared GBK CI/Go table", gbk,
+        [weight for (weight,) in struct.iter_unpack(">H", shared_gbk)],
+    )
+    if hashlib.sha256(shared_gbk).hexdigest() != GBK_TIKV_SHA256:
+        raise ValueError(f"{gbk_path}: canonical GBK CI SHA256 differs")
+
     gb18030 = GB18030_DATA.read_bytes()
     if len(gb18030) != 0x110000 * 4:
         raise ValueError(
@@ -446,21 +465,43 @@ def encoded_files(tikv_root: Path = TIKV_ROOT) -> dict[Path, bytes]:
         )
     if hashlib.sha256(gb18030).hexdigest() != GB18030_SHA256:
         raise ValueError("GB18030 CI source-pinned SHA256 differs")
-    return {
-        OUTPUT / "gbk_chinese_ci_u16_le.bin": b"".join(
-            struct.pack("<H", value) for value in gbk
-        ),
-        OUTPUT / "gb18030_chinese_ci_u32_le.bin": gb18030,
-    }
+    gb18030_path = collators / "gb18030_chinese_ci.data"
+    if gb18030_path.read_bytes() != gb18030:
+        raise ValueError(f"{gb18030_path}: canonical GB18030 CI bytes differ from Go")
 
 
-def verify_retained_images(outputs: dict[Path, bytes]) -> None:
-    failures = [
-        str(path.relative_to(ROOT)) for path, expected in outputs.items()
-        if not path.is_file() or path.read_bytes() != expected
+def reject_obsolete_gb_images() -> None:
+    present = [
+        name for name in OBSOLETE_GB_IMAGES
+        if (OUTPUT / name).exists() or (OUTPUT / name).is_symlink()
     ]
-    if failures:
-        raise ValueError("retained GB collation images are stale: " + ", ".join(failures))
+    if present:
+        raise ValueError(
+            "duplicate native GB CI images must be absent: " + ", ".join(present)
+            + "; use --prune-gb-images to remove verified original images"
+        )
+
+
+def prune_obsolete_gb_images() -> None:
+    # Check both exact old images before deleting either; never rewrite TiKV data.
+    pending: list[Path] = []
+    for name, (expected_size, expected_hash) in OBSOLETE_GB_IMAGES.items():
+        path = OUTPUT / name
+        if path.is_symlink():
+            raise ValueError(f"refusing to prune GB image symlink: {path}")
+        if not path.exists():
+            continue
+        if not path.is_file():
+            raise ValueError(f"refusing to prune non-file GB image: {path}")
+        contents = path.read_bytes()
+        if len(contents) != expected_size or hashlib.sha256(contents).hexdigest() != expected_hash:
+            raise ValueError(f"refusing to prune modified GB image: {path}")
+        pending.append(path)
+    for path in pending:
+        path.unlink()
+        print(f"pruned {path.relative_to(ROOT)}")
+    reject_obsolete_gb_images()
+    print(f"pruned {len(pending)} duplicate native GB CI images")
 
 
 def reject_obsolete_images() -> None:
@@ -504,11 +545,15 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--check", action="store_true",
-        help="verify shared sources, retained GB images, and absence of obsolete images without writing",
+        help="verify shared General/UCA/GB sources and absence of native images without writing",
     )
     mode.add_argument(
         "--prune-obsolete", action="store_true",
         help="after verification, remove only the five unmodified obsolete General/UCA images",
+    )
+    mode.add_argument(
+        "--prune-gb-images", action="store_true",
+        help="after verification, remove only the two unmodified duplicate native GB CI images",
     )
     parser.add_argument(
         "--tikv-root", type=Path, default=TIKV_ROOT,
@@ -516,18 +561,16 @@ def main() -> int:
     )
     args = parser.parse_args()
     try:
-        outputs = encoded_files(args.tikv_root)
-        if args.check or args.prune_obsolete:
-            verify_retained_images(outputs)
-            if args.prune_obsolete:
-                prune_obsolete_images()
-            else:
-                reject_obsolete_images()
+        # Finish all authority checks before either narrowly scoped cleanup.
+        verify_shared_weights(args.tikv_root)
+        verify_shared_gb_weights(args.tikv_root)
+        if args.prune_obsolete:
+            prune_obsolete_images()
+        elif args.prune_gb_images:
+            prune_obsolete_gb_images()
         else:
-            OUTPUT.mkdir(parents=True, exist_ok=True)
-            for path, contents in outputs.items():
-                path.write_bytes(contents)
-                print(f"wrote {path.relative_to(ROOT)} ({len(contents)} bytes)")
+            reject_obsolete_images()
+            reject_obsolete_gb_images()
     except (OSError, ValueError, struct.error) as error:
         print(f"collation source verification failed: {error}", file=sys.stderr)
         return 1
@@ -545,9 +588,15 @@ def main() -> int:
         "verified non-scalar distinction: all 2048 U+D800..U+DFFF UCA 9.0 slots are "
         "0xFFFD markers; Go missing-map weight=(0,0), TiKV unreachable fallback=0xFFFD"
     )
-    if args.check or args.prune_obsolete:
-        print("retained GB images match Go sources: 65536 GBK, 1114112 GB18030 weights")
+    print(
+        "TiKV-owned GB CI data match Go sources: 65536 GBK big-endian u16 weights, "
+        "1114112 GB18030 little-endian u32 weights; original native SHA256 oracles retained"
+    )
+    print(f"verified canonical GB data in {args.tikv_root / TIKV_COLLATORS}")
+    if not args.prune_gb_images:
         print("verified: all five obsolete General/UCA images are absent")
+    if not args.prune_obsolete:
+        print("verified: both duplicate native GB CI images are absent")
     return 0
 
 

@@ -5996,6 +5996,7 @@ dependencies = [
  "collections",
  "crc32fast",
  "encoding_rs 0.8.29",
+ "encoding_rs 0.8.35",
  "error_code",
  "hex 0.4.3",
  "kvproto",

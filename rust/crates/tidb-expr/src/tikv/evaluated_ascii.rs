@@ -1490,7 +1490,15 @@ fn materialize_computed(
             | EvaluatedBytesOp::LpadUtf8Native
             | EvaluatedBytesOp::RpadUtf8Native
             | EvaluatedBytesOp::Insert
-            | EvaluatedBytesOp::InsertUtf8Native,
+            | EvaluatedBytesOp::InsertUtf8Native
+            | EvaluatedBytesOp::Substring2BytesNative
+            | EvaluatedBytesOp::Substring2Utf8Native
+            | EvaluatedBytesOp::Substring3BytesNative
+            | EvaluatedBytesOp::Substring3Utf8Native
+            | EvaluatedBytesOp::Substring2BytesLegacy
+            | EvaluatedBytesOp::Substring2Utf8Legacy
+            | EvaluatedBytesOp::Substring3BytesLegacy
+            | EvaluatedBytesOp::Substring3Utf8Legacy,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {

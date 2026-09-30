@@ -1,8 +1,8 @@
 {
-  "checkpoint_id": "log-pow-length-insert-six-20",
+  "checkpoint_id": "substring-gb-21",
   "frozen_denominator": 245,
   "required_families": 221,
-  "functional_delegation_and_native_deletion_count": 65,
+  "functional_delegation_and_native_deletion_count": 66,
   "fully_final_audited_count": 0,
   "final_performance_and_workspace_gates_complete": false,
   "families": [
@@ -70,9 +70,11 @@
     {"id": "log2", "status": "functional_tikv_only", "native_algorithm_deleted": true, "raw_ieee_computation_and_original_domain_warning_preserved": true},
     {"id": "pow", "aliases": ["power"], "status": "functional_tikv_only", "native_algorithm_deleted": true, "native_pb_and_legacy_demand_and_nonfinite_policies_preserved": true},
     {"id": "uncompressed_length", "status": "functional_tikv_only", "native_algorithm_deleted": true, "nullable_full_le32_and_frontend_short_warning_preserved": true},
-    {"id": "insert_func", "status": "functional_tikv_only", "native_algorithm_deleted": true, "binary_utf8_raw_replacement_and_post_result_packet_preserved": true}
+    {"id": "insert_func", "status": "functional_tikv_only", "native_algorithm_deleted": true, "binary_utf8_raw_replacement_and_post_result_packet_preserved": true},
+    {"id": "substring", "aliases": ["substr", "mid"], "status": "functional_tikv_only", "native_algorithm_deleted": true, "native_pb_and_legacy_two_and_three_argument_paths_connected": true, "legacy_width_and_demand_and_lossy_policies_preserved": true, "two_argument_sql_cast_context_remains_no_columns": true}
   ],
-  "shared_evidence": "evidence/log-pow-length-insert-six-checkpoint.md",
+  "shared_evidence": "evidence/substring-gb-checkpoint.md",
+  "gb_foundation_evidence": "evidence/gb-shared-foundation.md",
   "historical_coverage_correction": "Checkpoint 18/19 LOWER and UPPER complete-family claims missed independent legacy implementations and NULL bypasses; checkpoint 20 repairs them. The temporary corrected count was 63, restored to 65 only after repair validation. No extra families credited.",
   "one_operation_keyed_pool": true,
   "actual_mixed_column_sql_verified": true,
@@ -81,7 +83,9 @@
   "deferred_compatibility_candidates_not_credited": ["compress", "uncompress", "exp", "log10"],
   "logical_demand_preserved": true,
   "legacy_infrastructure_errors_remain_typed_until_public_boundary": true,
-  "next_string_candidates_not_credited": ["substring", "strcmp", "locate", "instr", "position", "find_in_set"],
-  "gb_collation_compatibility_ownership_must_be_resolved_before_full_collated_families": true,
+  "next_string_candidates_not_credited": ["strcmp", "locate", "instr", "position", "find_in_set"],
+  "gb_collation_compatibility_ownership_moved_to_tikv": true,
+  "gb_foundation_adds_evaluator_family_credit": false,
+  "charset_default_registry_assertion_still_non_green": true,
   "go_trig_compatibility_not_credited": ["sin", "cos", "tan", "cot", "atan"]
 }

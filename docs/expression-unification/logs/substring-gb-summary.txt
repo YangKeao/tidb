@@ -1,0 +1,125 @@
+Checkpoint: substring-gb-21
+Functional delegation/native-deletion: 66/245 (65+one SUBSTRING family); final acceptance: 0/245.
+SUBSTRING/SUBSTR/MID, actual arities2/3, four existing PB and four legacy signatures count as one family. GB ownership deduplication adds no evaluated-family credit.
+Sixteen actual parent receipts from /home/agent/tidb/expression-unification/logs/substring-gb-*.log. Commands, CWDs and exits confirmed by parent; no tests/builds were run to write this summary.
+Grouped by gate, not represented as one uninterrupted successful chain. Preserve the initial missing-target non-run and all failed/diagnostic receipts.
+
+CWD: /home/agent/tidb/expression-unification/tikv
+WRAPPER PIN: nightly-2026-01-30-x86_64-unknown-linux-gnu
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib codec::collation:: -- --test-threads=1
+LOG: substring-gb-tikv-collation.log
+EXIT: 0
+running 21 tests
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 370 filtered out; finished in 0.01s
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+LOG: substring-gb-tikv-local.log
+EXIT: 0
+running 225 tests
+test result: ok. 224 passed; 0 failed; 1 ignored; 0 measured; 469 filtered out; finished in 0.18s
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_string::tests:: -- --test-threads=1
+LOG: substring-gb-official-string.log
+EXIT: 0
+running 63 tests
+test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 631 filtered out; finished in 0.02s
+
+CWD: /home/agent/tidb/expression-unification/tidb/rust
+WRAPPER PIN: nightly-2026-08-22-x86_64-unknown-linux-gnu
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+LOG: substring-gb-native-datatype.log
+EXIT: 0
+running 436 tests
+test result: ok. 436 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 22.49s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-datatype --test shared_collation_contract -- --test-threads=1
+LOG: substring-gb-shared-collation.log
+EXIT: 101
+TESTS: not started; subsequent commands in this original chain were not reached.
+error: no test target named `shared_collation_contract` in `tidb-datatype` package
+help: available test targets:
+    all
+This is a Cargo test-target selection error, not a Rust product-compilation failure.
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-datatype --test all shared_collation_contract -- --test-threads=1
+LOG: substring-gb-shared-collation-retry.log
+EXIT: 0
+running 14 tests
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 80 filtered out; finished in 0.00s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-datatype --test all parser_charset_package_source -- --test-threads=1
+LOG: substring-gb-parser-charset.log
+EXIT: 101
+running 13 tests
+test parser_charset_package_source::shared_gb_decode_grouping_and_peek_remain_native ... ok
+test parser_charset_package_source::shared_gb_groups_keep_native_transform_policy_and_first_error ... ok
+test parser_charset_package_source::test_get_default_collation ... FAILED
+test parser_charset_package_source::test_utf8mb3 ... FAILED
+test parser_charset_package_source::test_valid_charset ... FAILED
+test parser_charset_package_source::test_valid_custom_charset ... FAILED
+test result: FAILED. 9 passed; 4 failed; 0 ignored; 0 measured; 81 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p tidb-datatype --test all`
+The original default-collation assertion at parser_charset_package_source.rs:80 reports left7/right5 (supported/default counts). Its poisoned lock causes the following three PoisonError failures. The two new GB tests and original encoding tests passed; the full parser gate did not.
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-datatype --test all parser_charset_package_source::test_get_default_collation -- --exact --test-threads=1
+LOG: substring-gb-parser-default-isolated.log
+EXIT: 101
+running 1 test
+test parser_charset_package_source::test_get_default_collation ... FAILED
+assertion `left == right` failed
+  left: 7
+ right: 5
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 93 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p tidb-datatype --test all`
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-datatype --test all parser_charset_package_source -- --test-threads=1 --skip parser_charset_package_source::test_get_default_collation
+LOG: substring-gb-parser-charset-without-default.log
+EXIT: 0
+running 12 tests
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 82 filtered out; finished in 0.00s
+The isolated run uses the same built artifact and reproduces the old assertion without the new tests. The skip explicitly omits that one original assertion; it does not make the full parser gate green. Parent/Da7 verified charset.rs, registry tables, original flag initialization and old assertion are HEAD-unchanged and new tests have no global writes. No complete old HEAD artifact was executed; no such baseline claim is made.
+
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib substring_dispatch_ -- --test-threads=1
+LOG: substring-gb-dispatch.log
+EXIT: 0
+running 3 tests
+test tikv::evaluated_ascii::tests::substring_dispatch_preserves_arity_bytes_and_null_precedence ... ok
+test tikv::evaluated_ascii::tests::substring_dispatch_preserves_pb_demand_reader_and_actual_arity ... ok
+test tikv::evaluated_ascii::tests::substring_dispatch_separates_cast_policy_from_execution_context ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1508 filtered out; finished in 0.00s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_substring_ -- --test-threads=1
+LOG: substring-gb-legacy.log
+EXIT: 0
+running 2 tests
+test cophandler::tests::legacy_substring_keeps_demand_and_typed_null_empty_admission ... ok
+test cophandler::tests::legacy_substring_preserves_arities_lossy_units_and_wide_ints ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 191 filtered out; finished in 0.00s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::evaluated_ascii_ -- --test-threads=1
+LOG: substring-gb-sql.log
+EXIT: 0
+running 45 tests
+test result: ok. 45 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 0.59s
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+LOG: substring-gb-expr-full.log
+EXIT: 101
+running 1511 tests
+test result: FAILED. 1413 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.49s
+error: test failed, to rerun pass `-p tidb-expr --lib`
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+LOG: substring-gb-unistore-full.log
+EXIT: 101
+running 193 tests
+test result: FAILED. 179 passed; 1 failed; 13 ignored; 0 measured; 0 filtered out; finished in 2.98s
+error: test failed, to rerun pass `-p tidb-unistore --lib`
+Parent compared each complete failures section against its round20 casing-repair full log; byte-identical after only thread-ID normalization. Both full suites remain non-green.
+
+CWD: /home/agent/tidb/expression-unification/tidb
+COMMAND: python3 -B rust/crates/tidb-datatype/scripts/generate_collation_data.py --check
+LOG: substring-gb-generator-weights.log
+EXIT: 0
+TiKV-owned GB CI data match Go sources: 65536 GBK big-endian u16 weights, 1114112 GB18030 little-endian u32 weights; original native SHA256 oracles retained
+verified: both duplicate native GB CI images are absent
+COMMAND: python3 -B rust/scripts/generate-parser-charset.py --check-gb
+LOG: substring-gb-generator-charset.log
+EXIT: 0
+verified TiKV-owned GB18030 overrides: exact Go 2094 pairs + nine wire-only pairs; source/canonical/native-pair SHA256; generated stub; obsolete native maps absent
+The charset check covers GB only, not the whole parser generator. Generator checks are not Rust test cases or runtime RED/GREEN proof.
+
+Source-verified SQL: main9rows x4columns, separate SUBSTR/MID alias row, stored UIntMAX bits, latin1 malformed E2 82 41, two-/three-argument1292 distinction, nine direct zero-slot refusals with typed1105/HY000. Native cast/execution contexts remain separate; PB NULL leaves earlier values uncoerced and preserves actualarity2/3; legacy genuinei128/16-byte LE roles and shared needs-length boolean preserve demand without a native SQL answer. Wire/native UTF8 output uses iterators; only legacy retains natural unit slicing. No performance claim follows from source inspection.
+Frozen gb-shared-foundation.md retains canonical hashes/aliases/data provenance. Four duplicate native artifacts are removed; canonical four tables and2103 override pairs remain. The nine wire-only pairs,36 override-subdomain differences and19 PUA key-only NUL cases are not whole-codec equivalence. Native registry encoding_rs0.8.35 and wire git0.8.29 retain distinct policies.
+Dependency preparation is not another test gate: parent kept all TiDB git pins during normal Cargo-tree resolution; TiKV registry0.8.33->0.8.35 also reselected small cfg-if edges. Four gb-shared-foundation lock-preparation logs are separate from these sixteen receipts; no zero-incidental-change claim is made.
+Parent reports pinned formatting and git diff --check exit0. There were no Rust product-compilation error retries in this round; the missing Cargo target and parser assertion/poison failures are retained, not misreported as E0308/E0004 or successful tests. Existing expected values and fixtures were not changed.
+Whole-codec equivalence, subsequent search-family closure, complete operation scopes/guards, allocator/physical peak/OOM, performance, full workspace, make lint and final acceptance remain unverified. Functional66/245 is one added family only; final0/245. Not PR-ready.

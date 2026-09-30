@@ -3716,3 +3716,269 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_log_pow_length_insert_sql_colum
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_substring_dispatch_sql_values_metadata_and_diagnostics() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_substring_dispatch (id INT PRIMARY KEY, \
+             t VARCHAR(16), b VARBINARY(16), p BIGINT, n BIGINT, \
+             u BIGINT UNSIGNED, s VARCHAR(8), l VARCHAR(16) CHARSET latin1)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_substring_dispatch (id,t,b,p,n) VALUES \
+             (1,NULL,NULL,NULL,NULL),(3,'abcd',X'61626364',0,1),\
+             (4,'abcd',X'61626364',-2,2),(5,'abcd',X'61626364',2,0),\
+             (6,'abcd',X'61626364',2,-1),(7,'abcd',X'61626364',10,2),\
+             (8,'abcd',X'61626364',2,9223372036854775807),\
+             (9,'abcd',X'61626364',2,NULL)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_substring_dispatch VALUES \
+             (2,'中ab',X'E4B8AD6162',2,1,18446744073709551615,'bad',0xE28241)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    let assert_text = |value: &Datum, expected: Option<&str>| match expected {
+        None => assert_eq!(value, &Datum::Null),
+        Some(expected) => {
+            assert!(matches!(value, Datum::String(_)));
+            assert_ne!(value.collation(), Some(tidb_datatype::Collation::Binary));
+            assert_eq!(crate::tests_support::cell_text(value), expected);
+        }
+    };
+    let binary_string =
+        |bytes: Vec<u8>| Datum::new_collation_string(bytes, tidb_datatype::Collation::Binary);
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT SUBSTRING(t,p), SUBSTRING(t,p,n), SUBSTRING(b,p), SUBSTRING(b,p,n) \
+             FROM shared_substring_dispatch ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected SUBSTRING dispatch rows")
+    };
+    assert_eq!(columns.len(), 4);
+    for (column_index, (_, field_type)) in columns.iter().enumerate() {
+        assert_eq!(field_type.eval_type(), tidb_datatype::EvalType::String);
+        assert_eq!(field_type.flen(), 16);
+        // Both arities inherit arg0's width and outer-derived collation.
+        if column_index < 2 {
+            assert_ne!(field_type.collation(), tidb_datatype::Collation::Binary);
+        } else {
+            assert_eq!(field_type.collation(), tidb_datatype::Collation::Binary);
+        }
+    }
+    let expected_text = [
+        [None, None],
+        [Some("ab"), Some("a")],
+        [Some(""), Some("")],
+        [Some("cd"), Some("cd")],
+        [Some("bcd"), Some("")],
+        [Some("bcd"), Some("")],
+        [Some(""), Some("")],
+        // The native three-argument start+length overflows. Two arguments do
+        // NOT mean "synthesize i64::MAX length": they still return the tail.
+        [Some("bcd"), Some("")],
+        [Some("bcd"), None],
+    ];
+    assert_eq!(rows.len(), expected_text.len());
+    for (row_index, (row, expected)) in rows.iter().zip(expected_text).enumerate() {
+        assert_eq!(row.len(), 4);
+        for (column_index, expected) in expected.into_iter().enumerate() {
+            assert_text(&row[column_index], expected);
+            let raw = if row_index == 1 {
+                if column_index == 0 {
+                    binary_string(vec![0xb8, 0xad, b'a', b'b'])
+                } else {
+                    binary_string(vec![0xb8])
+                }
+            } else {
+                // All other non-NULL fixtures are the same ASCII bytes in
+                // both columns, so their byte slices have these same bytes.
+                expected.map_or(Datum::Null, |value| {
+                    binary_string(value.as_bytes().to_vec())
+                })
+            };
+            assert_eq!(
+                row[2 + column_index],
+                raw,
+                "id {}, column {column_index}",
+                row_index + 1
+            );
+        }
+    }
+    assert!(warnings_of(&session).is_empty());
+
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT SUBSTR(t,p), SUBSTR(t,p,n), MID(t,p), MID(t,p,n) \
+             FROM shared_substring_dispatch WHERE id=2",
+        )
+        .unwrap()
+    else {
+        panic!("expected SUBSTR/MID alias rows")
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].len(), 4);
+    assert_eq!(columns.len(), 4);
+    for ((value, expected), (_, field_type)) in
+        rows[0].iter().zip(["ab", "a", "ab", "a"]).zip(columns)
+    {
+        assert_text(value, Some(expected));
+        assert_eq!(field_type.eval_type(), tidb_datatype::EvalType::String);
+        assert_eq!(field_type.flen(), 16);
+        assert_ne!(field_type.collation(), tidb_datatype::Collation::Binary);
+    }
+    assert!(warnings_of(&session).is_empty());
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns(
+            "SELECT u,SUBSTRING(t,u),SUBSTRING(t,u,n),SUBSTRING(t,p,u) \
+             FROM shared_substring_dispatch WHERE id=2",
+        )
+        .unwrap()
+    else {
+        panic!("expected stored UInt substring counts")
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].len(), 4);
+    assert_eq!(rows[0][0], Datum::UInt(u64::MAX));
+    // Native ETInt keeps the UInt bits: MAX is position/length -1.
+    for (value, expected) in rows[0][1..].iter().zip(["b", "b", ""]) {
+        assert_text(value, Some(expected));
+    }
+    assert!(warnings_of(&session).is_empty());
+
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT l,SUBSTRING(l,p),SUBSTRING(l,p,n) FROM shared_substring_dispatch WHERE id=2",
+        )
+        .unwrap()
+    else {
+        panic!("expected malformed text substring rows")
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(columns[0].1.charset_name(), "latin1");
+    assert_eq!(rows[0][0].to_bytes().unwrap(), vec![0xe2, 0x82, b'A']);
+    // Go normalizes EACH bad byte before character slicing; Rust's grouped
+    // replacement would incorrectly move A into the second character slot.
+    assert_text(&rows[0][1], Some("\u{fffd}A"));
+    assert_text(&rows[0][2], Some("\u{fffd}"));
+    for (_, field_type) in &columns[1..] {
+        assert_eq!(field_type.eval_type(), tidb_datatype::EvalType::String);
+        assert_eq!(field_type.flen(), 16);
+        assert_eq!(field_type.charset_name(), "latin1");
+    }
+    assert!(warnings_of(&session).is_empty());
+
+    // The old string2 dispatcher coerces TWO arguments under NoColumns;
+    // adding a real execution scope must not also enable its discarded 1292.
+    for (expression, warns) in [("SUBSTRING(t,s)", false), ("SUBSTRING(t,s,n)", true)] {
+        let sql = format!("SELECT {expression} FROM shared_substring_dispatch WHERE id=2");
+        let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+            panic!("expected substring position-coercion rows")
+        };
+        assert_eq!(rows.len(), 1);
+        assert_text(&rows[0][0], Some(""));
+        if warns {
+            assert_eq!(
+                session.warnings(),
+                &[SqlWarning {
+                    level: WarningLevel::Warning,
+                    code: 1292,
+                    message: "Truncated incorrect INTEGER value: 'bad'".to_owned(),
+                }]
+            );
+        } else {
+            assert!(warnings_of(&session).is_empty());
+        }
+    }
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_substring_dispatch_sql_columns() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_substring_dispatch_zero (id INT PRIMARY KEY, \
+             t VARCHAR(16), b VARBINARY(16), p BIGINT, n BIGINT, s VARCHAR(8))",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_substring_dispatch_zero VALUES \
+             (1,NULL,NULL,2,1,'bad'),(2,'abcd',X'61626364',0,1,'bad'),\
+             (3,'abcd',X'61626364',2,NULL,'bad'),\
+             (4,'abcd',X'61626364',2,9223372036854775807,'bad')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // Existing legal NULL, empty, ordinary and overflow-empty results must
+    // still ask for a worker. These are ordinary SQL, not new PB admission.
+    for (expression, id, warns) in [
+        ("SUBSTRING(t,p)", 1, false),
+        ("MID(t,p,n)", 1, false),
+        ("SUBSTR(t,p)", 2, false),
+        ("SUBSTRING(t,p,n)", 2, false),
+        ("SUBSTRING(t,p)", 3, false),
+        ("SUBSTR(t,p,n)", 3, false),
+        ("MID(b,p,n)", 4, false),
+        ("SUBSTRING(t,s)", 2, false),
+        ("SUBSTRING(t,s,n)", 2, true),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_substring_dispatch_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("substring dispatch must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        if warns {
+            // Only the pre-existing three-argument diagnostic survives. The
+            // returned evaluation-origin 1105 is not an Error warning row.
+            assert_eq!(
+                session.warnings(),
+                &[SqlWarning {
+                    level: WarningLevel::Warning,
+                    code: 1292,
+                    message: "Truncated incorrect INTEGER value: 'bad'".to_owned(),
+                }],
+                "{sql}"
+            );
+        } else {
+            assert!(warnings_of(&session).is_empty(), "{sql}");
+        }
+    }
+}

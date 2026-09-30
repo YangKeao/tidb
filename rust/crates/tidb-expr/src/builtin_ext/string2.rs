@@ -17,7 +17,7 @@
 use tidb_datatype::Collation;
 
 use crate::coerce::{coerce_str, coerce_str_bytes};
-use crate::string_fn::{format_num_locale, substring};
+use crate::string_fn::{format_num_locale, substring_with_contexts};
 use crate::string_signature::{is_binary_str, StrUnits};
 use crate::{Datum, EvalError};
 use std::collections::HashMap;
@@ -29,7 +29,9 @@ pub(crate) fn dispatch(
     ctx: &dyn crate::Columns,
 ) -> Option<Result<Datum, EvalError>> {
     match (name, vals.len()) {
-        ("SUBSTRING" | "SUBSTR" | "MID", 2) => Some(substring(vals, &crate::NoColumns)),
+        ("SUBSTRING" | "SUBSTR" | "MID", 2) => {
+            Some(substring_with_contexts(vals, &crate::NoColumns, ctx))
+        }
         ("LOCATE", 3) => Some(locate3(vals)),
         ("FORMAT", 3) => Some(format_with_locale(vals, ctx)),
         ("FIND_IN_SET", 2) => Some(find_in_set(vals)),

@@ -18,8 +18,7 @@ use tidb_datatype::{
     add_charset, add_collation, count_valid_bytes, find_encoding, get_charset_info,
     get_collation_by_name, get_default_collation, get_default_collation_legacy,
     get_supported_charsets, get_supported_collations, remove_charset, valid_charset_and_collation,
-    CharsetInfo, CollationInfo, Encoding, TransformOp, PAD_NONE,
-    TIFLASH_SUPPORTED_CHARSETS,
+    CharsetInfo, CollationInfo, Encoding, TransformOp, PAD_NONE, TIFLASH_SUPPORTED_CHARSETS,
 };
 
 static REGISTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -437,6 +436,91 @@ fn test_encoding_validate() {
         );
         let _ = count_valid_bytes(encoding, &source);
     }
+}
+
+#[test]
+fn shared_gb_groups_keep_native_transform_policy_and_first_error() {
+    let source = b"a\xc3(b\xff";
+    for encoding in [Encoding::Gbk, Encoding::Gb18030] {
+        let mut groups = Vec::new();
+        encoding.foreach(source, TransformOp::FROM_UTF8, |from, to, valid| {
+            groups.push((from.to_vec(), to.to_vec(), valid));
+            true
+        });
+        assert_eq!(
+            groups,
+            vec![
+                (b"a".to_vec(), b"a".to_vec(), true),
+                (b"\xc3(".to_vec(), "�".as_bytes().to_vec(), false),
+                (b"b".to_vec(), b"b".to_vec(), true),
+                (b"\xff".to_vec(), "�".as_bytes().to_vec(), false),
+            ]
+        );
+        let mut stopped = Vec::new();
+        encoding.foreach(source, TransformOp::FROM_UTF8, |from, _, valid| {
+            stopped.push(from.to_vec());
+            valid
+        });
+        assert_eq!(stopped, vec![b"a".to_vec(), b"\xc3(".to_vec()]);
+
+        for (operation, expected, reports_error) in [
+            (TransformOp::ENCODE, b"a".as_slice(), true),
+            (TransformOp::ENCODE_NO_ERR, b"a", false),
+            (TransformOp::ENCODE_REPLACE, b"a?b?", true),
+            (TransformOp::REPLACE_NO_ERR, b"a?b?", false),
+            (
+                TransformOp::FROM_UTF8 | TransformOp::COLLECT_TO,
+                "a�b�".as_bytes(),
+                true,
+            ),
+            (
+                TransformOp::FROM_UTF8 | TransformOp::COLLECT_FROM | TransformOp::COLLECT_TO,
+                source,
+                true,
+            ),
+        ] {
+            let result = encoding.transform(source, operation);
+            assert_eq!(result.bytes(), expected);
+            assert_eq!(result.error().is_some(), reports_error);
+            if let Some(error) = result.error() {
+                assert_eq!(error.charset(), encoding.name());
+                assert_eq!(error.invalid_bytes(), b"\xc3(");
+                assert_eq!(
+                    error.to_string(),
+                    format!("Invalid {} character string: 'C328'", encoding.name())
+                );
+            }
+        }
+        assert_eq!(count_valid_bytes(encoding, source), 1);
+    }
+}
+
+#[test]
+fn shared_gb_decode_grouping_and_peek_remain_native() {
+    for (encoding, expected, invalid) in [
+        (Encoding::Gbk, b"a?c".as_slice(), b"\x80b".as_slice()),
+        (Encoding::Gb18030, b"a?bc", b"\x80"),
+    ] {
+        let result = encoding.transform(b"a\x80bc", TransformOp::DECODE_REPLACE);
+        assert_eq!(result.bytes(), expected);
+        let error = result.error().unwrap();
+        assert_eq!(error.charset(), encoding.name());
+        assert_eq!(error.invalid_bytes(), invalid);
+        assert_eq!(encoding.peek(b"\x80bc"), invalid);
+        assert_eq!(encoding.peek(b""), b"");
+        assert_eq!(encoding.mb_len(b"\x80bc"), 0);
+        assert_eq!(encoding.mb_len(b"\xd6\xd0"), 2);
+        assert_eq!(
+            tidb_datatype::count_valid_bytes_decode(encoding, b"a\x80bc"),
+            1
+        );
+    }
+    assert_eq!(
+        Encoding::Gb18030.peek(b"\x84\x31\x82\x36x"),
+        b"\x84\x31\x82\x36"
+    );
+    assert_eq!(Encoding::Gb18030.mb_len(b"\x84\x31\x82\x36x"), 4);
+    assert_eq!(Encoding::Gbk.peek(b"\x84\x31\x82\x36x"), b"\x84\x31");
 }
 
 #[test]

@@ -549,6 +549,27 @@ fn gb18030_bin_key_pads_four_byte_pua_runes_like_go() {
             Collation::Gb18030Bin.key_without_trim_right_space(input.as_bytes()),
             want.to_vec()
         );
+        // Encoding/comparison must not acquire the key-only trailing NUL.
+        let encoded =
+            crate::Encoding::Gb18030.transform(input.as_bytes(), crate::TransformOp::ENCODE);
+        assert_eq!(encoded.bytes(), &want[..4]);
+        assert!(encoded.error().is_none());
+        let with_nul = format!("{input}\0");
+        assert_eq!(
+            Collation::Gb18030Bin.compare(input.as_bytes(), with_nul.as_bytes()),
+            Ordering::Less
+        );
+        assert_eq!(
+            Collation::Gb18030Bin.compare(with_nul.as_bytes(), input.as_bytes()),
+            Ordering::Greater
+        );
+        let mut key_with_nul = want.to_vec();
+        key_with_nul.push(0);
+        assert_eq!(Collation::Gb18030Bin.key(with_nul.as_bytes()), key_with_nul);
+        assert!(matches!(
+            Collation::Gb18030Bin.immutable_key(input.as_bytes()),
+            Cow::Owned(bytes) if bytes.as_slice() == *want
+        ));
     }
     // Non-PUA runes keep the plain two-byte encoding (U+4E2D -> 0xD6 0xD0).
     assert_eq!(

@@ -16,11 +16,11 @@
 
 use std::fmt;
 
-use encoding_rs::{EncoderResult, GB18030, GBK};
 use tidb_mysql::{to_lowercase as go_simple_lowercase, to_uppercase as go_simple_uppercase};
+use tidb_query_datatype::codec::collation::gb::{self, GbEncoding};
 
 use crate::ascii_encoding::ASCII_ENCODING;
-use crate::charset::{CaseRange, GB18030_BY_BYTES, GB18030_BY_RUNE, GB18030_CASES, GBK_CASES};
+use crate::charset::{CaseRange, GB18030_CASES, GBK_CASES};
 use crate::encoding_base::{TransformOp, TransformPolicy, TransformResult};
 use crate::utf8_encoding::{UTF8_ENCODING, UTF8_MB3_STRICT_ENCODING};
 
@@ -131,18 +131,8 @@ impl Encoding {
         match self {
             Self::Utf8 | Self::Utf8Mb3Strict => UTF8_ENCODING.peek(source),
             Self::Ascii | Self::Latin1 | Self::Binary => source.get(..1).unwrap_or(source),
-            Self::Gbk => source
-                .get(
-                    ..source
-                        .len()
-                        .min(if source.first().is_some_and(|b| *b >= 0x80) {
-                            2
-                        } else {
-                            1
-                        }),
-                )
-                .unwrap_or(source),
-            Self::Gb18030 => peek_gb18030(source),
+            Self::Gbk => gb::peek_native(GbEncoding::Gbk, source),
+            Self::Gb18030 => gb::peek_native(GbEncoding::Gb18030, source),
         }
     }
 
@@ -150,8 +140,8 @@ impl Encoding {
     pub fn mb_len(self, source: &[u8]) -> usize {
         match self {
             Self::Utf8 | Self::Utf8Mb3Strict => UTF8_ENCODING.mb_len(source),
-            Self::Gbk => gbk_mb_len(source),
-            Self::Gb18030 => gb18030_mb_len(source),
+            Self::Gbk => gb::mb_len_native(GbEncoding::Gbk, source),
+            Self::Gb18030 => gb::mb_len_native(GbEncoding::Gb18030, source),
             Self::Ascii | Self::Latin1 | Self::Binary => 0,
         }
     }
@@ -191,31 +181,16 @@ impl Encoding {
                     }
                 }
             }
-            Self::Gbk | Self::Gb18030 => {
-                let from_utf8 = operation.contains(TransformOp::FROM_UTF8);
-                let mut offset = 0;
-                while offset < source.len() {
-                    let width = if from_utf8 {
-                        UTF8_ENCODING.peek(&source[offset..]).len()
-                    } else {
-                        self.peek(&source[offset..]).len()
-                    };
-                    let width = width.max(1).min(source.len() - offset);
-                    let group = &source[offset..offset + width];
-                    let converted = if from_utf8 {
-                        encode_group(self, group)
-                    } else {
-                        decode_group(self, group)
-                    };
-                    let (bytes, valid) = converted
-                        .map(|bytes| (bytes, true))
-                        .unwrap_or_else(|| (b"\xEF\xBF\xBD".to_vec(), false));
-                    if !visit(group, &bytes, valid) {
-                        break;
-                    }
-                    offset += width;
-                }
-            }
+            Self::Gbk | Self::Gb18030 => gb::foreach_native(
+                if self == Self::Gbk {
+                    GbEncoding::Gbk
+                } else {
+                    GbEncoding::Gb18030
+                },
+                source,
+                operation.contains(TransformOp::FROM_UTF8),
+                visit,
+            ),
         }
     }
 
@@ -306,144 +281,6 @@ fn count_valid(encoding: Encoding, source: &[u8], operation: TransformOp) -> usi
         valid
     });
     count
-}
-
-fn encode_group(encoding: Encoding, source: &[u8]) -> Option<Vec<u8>> {
-    let text = std::str::from_utf8(source).ok()?;
-    if text.chars().count() != 1 {
-        return None;
-    }
-    let character = text.chars().next()?;
-    if encoding == Encoding::Gbk && character == '€' {
-        return None;
-    }
-    if encoding == Encoding::Gb18030 {
-        if let Ok(index) = GB18030_BY_RUNE.binary_search_by_key(&character, |row| row.0) {
-            return Some(integer_bytes(GB18030_BY_RUNE[index].1));
-        }
-    }
-    let codec = if encoding == Encoding::Gbk {
-        GBK
-    } else {
-        GB18030
-    };
-    let mut output = [0_u8; 8];
-    let (result, read, written) =
-        codec
-            .new_encoder()
-            .encode_from_utf8_without_replacement(text, &mut output, true);
-    if result == EncoderResult::InputEmpty && read == source.len() {
-        Some(output[..written].to_vec())
-    } else {
-        None
-    }
-}
-
-fn decode_group(encoding: Encoding, source: &[u8]) -> Option<Vec<u8>> {
-    if source.first() == Some(&0x80) {
-        return None;
-    }
-    if encoding == Encoding::Gb18030 {
-        let encoded = bytes_integer(source);
-        if let Ok(index) = GB18030_BY_BYTES.binary_search_by_key(&encoded, |row| row.0) {
-            let mut buffer = [0_u8; 4];
-            return Some(
-                GB18030_BY_BYTES[index]
-                    .1
-                    .encode_utf8(&mut buffer)
-                    .as_bytes()
-                    .to_vec(),
-            );
-        }
-        if source == [0x84, 0x31, 0xA4, 0x37] {
-            return Some(b"\xEF\xBF\xBD".to_vec());
-        }
-    }
-    let codec = if encoding == Encoding::Gbk {
-        GBK
-    } else {
-        GB18030
-    };
-    let decoded = codec
-        .decode_without_bom_handling_and_without_replacement(source)
-        .map(|text| text.into_owned())?;
-    // WHATWG GBK exposes pointer values as private-use characters where
-    // Go's x/text GBK decoder reports an invalid sequence. TiDB follows the
-    // latter and replaces the whole source group.
-    if encoding == Encoding::Gbk
-        && decoded
-            .chars()
-            .any(|character| ('\u{E000}'..='\u{F8FF}').contains(&character))
-    {
-        None
-    } else {
-        Some(decoded.into_bytes())
-    }
-}
-
-fn peek_gb18030(source: &[u8]) -> &[u8] {
-    let Some(&first) = source.first() else {
-        return source;
-    };
-    if first == 0x80 || first == 0xFF || first <= 0x7F {
-        return &source[..1];
-    }
-    if !(0x81..=0xFE).contains(&first) || source.len() < 2 {
-        return &source[..1];
-    }
-    let second = source[1];
-    if (0x40..0x7F).contains(&second) || (0x80..=0xFE).contains(&second) {
-        return &source[..2];
-    }
-    if source.len() >= 4
-        && (0x30..=0x39).contains(&second)
-        && (0x81..=0xFE).contains(&source[2])
-        && (0x30..=0x39).contains(&source[3])
-    {
-        return &source[..4];
-    }
-    &source[..1]
-}
-
-fn gbk_mb_len(source: &[u8]) -> usize {
-    if source.len() >= 2
-        && (0x81..=0xFE).contains(&source[0])
-        && ((0x40..=0x7E).contains(&source[1]) || (0x80..=0xFE).contains(&source[1]))
-    {
-        2
-    } else {
-        0
-    }
-}
-
-fn gb18030_mb_len(source: &[u8]) -> usize {
-    if source.len() < 2 {
-        return 0;
-    }
-    if gbk_mb_len(source) == 2 {
-        return 2;
-    }
-    if (0x81..=0xFE).contains(&source[0])
-        && (0x30..=0x39).contains(&source[1])
-        && (0x81..=0xFE).contains(&source[2])
-        && (0x30..=0x39).contains(&source[3])
-    {
-        4
-    } else {
-        0
-    }
-}
-
-fn bytes_integer(bytes: &[u8]) -> u32 {
-    bytes
-        .iter()
-        .fold(0, |value, byte| (value << 8) | u32::from(*byte))
-}
-
-fn integer_bytes(value: u32) -> Vec<u8> {
-    let bytes = value.to_be_bytes();
-    let first = bytes.iter().position(|byte| *byte != 0).unwrap_or(3);
-    bytes[first..].to_vec()
 }
 
 enum Case {

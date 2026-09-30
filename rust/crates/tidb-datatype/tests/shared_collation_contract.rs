@@ -239,3 +239,165 @@ fn shared_json_helper_preserves_reject_trailing_escape() {
     assert!(tidb_datatype::like_matches("a%b", "a\\%b", '\\'));
     assert!(!tidb_datatype::like_matches("é", "é", 'é'));
 }
+
+#[test]
+fn shared_gb_native_compare_keys_and_no_pad_keep_literal_contracts() {
+    use tidb_query_datatype::codec::collation::{
+        gb::{self, GbCollation, GbPolicy},
+        KeyOptions,
+    };
+
+    for (collation, kind, key, untrimmed, case_order, max_len) in [
+        (
+            Collation::GbkBin,
+            GbCollation::GbkBin,
+            b"\xd6\xd0a".as_slice(),
+            b"\xd6\xd0a ".as_slice(),
+            Ordering::Greater,
+            6,
+        ),
+        (
+            Collation::GbkChineseCi,
+            GbCollation::GbkChineseCi,
+            b"\xd3\x21A",
+            b"\xd3\x21A ",
+            Ordering::Equal,
+            6,
+        ),
+        (
+            Collation::Gb18030Bin,
+            GbCollation::Gb18030Bin,
+            b"\xd6\xd0a",
+            b"\xd6\xd0a ",
+            Ordering::Greater,
+            12,
+        ),
+        (
+            Collation::Gb18030ChineseCi,
+            GbCollation::Gb18030ChineseCi,
+            b"\xff\xa0\x9b\xc1A",
+            b"\xff\xa0\x9b\xc1A ",
+            Ordering::Equal,
+            12,
+        ),
+    ] {
+        let input = "中a ".as_bytes();
+        let facade = get_collator_with_mode(true, collation.name());
+        assert_eq!(facade, Collator::New(collation));
+        assert_eq!(facade.key(input), key, "{collation:?}");
+        assert_eq!(facade.key_without_trim_right_space(input), untrimmed);
+        assert_eq!(facade.max_key_len(input), max_len);
+        assert_eq!(facade.compare(b"a", b"A"), case_order);
+        assert_eq!(facade.compare(b"a ", b"a"), Ordering::Equal);
+        assert_eq!(facade.compare(b"a\0", b"a"), Ordering::Greater);
+        assert!(matches!(facade.immutable_key(input), Cow::Owned(_)));
+        assert_eq!(facade.immutable_key(input).as_ref(), key);
+        assert!(!facade.can_use_raw_mem_as_key());
+
+        assert_eq!(
+            gb::key(kind, GbPolicy::Native, input, KeyOptions::Default).unwrap(),
+            key
+        );
+        assert_eq!(
+            gb::key(kind, GbPolicy::Native, input, KeyOptions::NoPad).unwrap(),
+            untrimmed
+        );
+        assert_eq!(
+            gb::compare(kind, GbPolicy::Native, b"a", b"A", false).unwrap(),
+            case_order
+        );
+        assert_eq!(
+            gb::compare(kind, GbPolicy::Native, b"a ", b"a", false).unwrap(),
+            Ordering::Equal
+        );
+        assert_eq!(
+            gb::compare(kind, GbPolicy::Native, b"a ", b"a", true).unwrap(),
+            Ordering::Greater
+        );
+    }
+}
+
+#[test]
+fn shared_gb_native_malformed_groups_are_not_wire_replacement_bytes() {
+    for (collation, prefix, key, order) in [
+        (
+            Collation::GbkBin,
+            b"a".as_slice(),
+            b"a?".as_slice(),
+            Ordering::Less,
+        ),
+        (Collation::Gb18030Bin, b"a", b"a?", Ordering::Less),
+        (Collation::GbkChineseCi, b"A", b"A", Ordering::Equal),
+        (Collation::Gb18030ChineseCi, b"A", b"A", Ordering::Equal),
+    ] {
+        // The invalid lead byte and following z form one native encode group.
+        // CI instead stops its key at that group and compares equal on invalid.
+        assert_eq!(collation.key(b"a\xffz"), key, "{collation:?}");
+        assert_eq!(collation.key_without_trim_right_space(b"a\xffz"), key);
+        assert_eq!(collation.compare(b"a\xffz", b"ab"), order);
+        assert_eq!(collation.compare(b"\xffz", b"\xfeq"), Ordering::Equal);
+        let mut nul_key = prefix.to_vec();
+        nul_key.push(0);
+        assert_eq!(collation.key(b"a\0 "), nul_key);
+        nul_key.push(b' ');
+        assert_eq!(collation.key_without_trim_right_space(b"a\0 "), nul_key);
+    }
+}
+
+#[test]
+fn shared_gbk_native_euro_does_not_select_wire_table_policy() {
+    use tidb_query_datatype::codec::collation::{
+        gb::{self, GbCollation, GbPolicy},
+        KeyOptions,
+    };
+
+    let euro = "€".as_bytes();
+    assert_eq!(Collation::GbkBin.key(euro), b"?");
+    assert_eq!(Collation::GbkBin.compare(euro, b"?"), Ordering::Equal);
+    assert_eq!(
+        gb::key(
+            GbCollation::GbkBin,
+            GbPolicy::Wire,
+            euro,
+            KeyOptions::Default
+        )
+        .unwrap(),
+        b"\x80"
+    );
+    assert_eq!(
+        gb::compare(GbCollation::GbkBin, GbPolicy::Wire, euro, b"?", false).unwrap(),
+        Ordering::Greater
+    );
+}
+
+#[test]
+fn shared_gb18030_native_compare_is_encoded_byte_order_not_wire_weight_order() {
+    use tidb_query_datatype::codec::collation::gb::{self, GbCollation, GbPolicy};
+
+    let left = "\u{80}".as_bytes();
+    let right = "中".as_bytes();
+    assert_eq!(Collation::Gb18030Bin.compare(left, right), Ordering::Less);
+    assert_eq!(
+        gb::compare(GbCollation::Gb18030Bin, GbPolicy::Wire, left, right, false).unwrap(),
+        Ordering::Greater
+    );
+}
+
+#[test]
+fn shared_gb_disabled_mode_stays_raw_binary() {
+    for collation in [
+        Collation::GbkBin,
+        Collation::GbkChineseCi,
+        Collation::Gb18030Bin,
+        Collation::Gb18030ChineseCi,
+    ] {
+        let facade = get_collator_with_mode(false, collation.name());
+        assert_eq!(facade, Collator::DerivedBinary);
+        assert_eq!(facade.key(b"a\xff "), b"a\xff ");
+        assert_eq!(facade.key_without_trim_right_space(b"a\xff "), b"a\xff ");
+        assert_eq!(facade.compare(b"a ", b"a"), Ordering::Greater);
+        assert_eq!(facade.compare(b"a", b"A"), Ordering::Greater);
+        assert!(matches!(facade.immutable_key(b"a "), Cow::Borrowed(_)));
+        assert!(facade.can_use_raw_mem_as_key());
+    }
+}
