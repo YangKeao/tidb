@@ -1,0 +1,88 @@
+Checkpoint:uuid-translate-six-41; previous:format-time-three-40. Six families IS_UUID/UUID_TO_BIN/BIN_TO_UUID/UUID_VERSION/UUID_TIMESTAMP/TRANSLATE; functional131->137/245, FINAL0/245. No UUID-generation-family credit.
+COUNTS:11 test-Cargo attempts=10 actual nonzero-test runs(8green+2CURRENT baseline non-green full)+1compile-failure attempt. New test RED0; zero-match0; launch failures0; failed-target retries1. all_checks_firstpass=false.
+NON-CARGO:15 final pinned-format --check/both-diff checks passed(check_failures0), BUT formatter_invocation_failures1/retries1; static_proof_check_failures1; ordinary lookup misses3(parent/7 two plus writer one); precompile interface corrections3. No blanket formatting-first-pass claim. Metadata commands0.
+PROVENANCE:parent owns source/gates/exits/proofs; writer read/hashed all11 raw logs with sha256sum(exit0), wrote only these two docs, no fresh source audit/build/test/fmt/Git/index/Plan. RAW=/home/agent/tidb/expression-unification/logs. Failed log preserved separately, not overwritten. B's three metadata docs are separate ownership.
+JAN CWD=/home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv pin nightly-2026-01-30-x86_64-unknown-linux-gnu.
+AUG CWD=/home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb pin nightly-2026-08-22-x86_64-unknown-linux-gnu.
+Exact wrapper:set -o pipefail; <COMMAND> 2>&1 | tee <OUTPUT> >/dev/null; OUTPUT=../logs/<LOG> JAN or ../../logs/<LOG> AUG. Every attempt --locked --lib -- --test-threads=1; filters below, no --exact. Finished includes Cargo build/other work, NOT a benchmark.
+
+LOG[JAN/COMPILE FAILURE]:uuid-translate-tikv-local.log
+COMMAND:../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+EXIT101; three E0061 diagnostics at local/tests.rs:8084/8096/8118, one failed Cargo attempt, no tests ran and no reported Finished/test duration. Bytes3 requires one array, not three constructor arguments.
+SHA256:5d417e596039f2ceb1d1c2f78ba074e765aedb49a580bff64b06fbbb1e4054a0
+LOG[JAN/sole failed-target retry]:uuid-translate-tikv-local-retry.log
+COMMAND:../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+EXIT0; Finished10.36s;273 discovered/preexisting ignore; test result: ok. 272 passed; 0 failed; 1 ignored; 0 measured; 509 filtered out; finished in 0.19s
+SHA256:bceb94b75986f3dd06d8be892e8fecbe154f2485d4967b4b5a0a96cd33920ba0
+LOG[JAN]:uuid-translate-tikv-misc.log
+COMMAND:../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_miscellaneous:: -- --test-threads=1
+EXIT0; Finished0.13s; test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 760 filtered out; finished in 0.00s
+SHA256:df701a78270b3bcb8d019c44659c441dcb0fdfc912f21459756642ba352e3684
+LOG[JAN]:uuid-translate-tikv-string.log
+COMMAND:../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_string:: -- --test-threads=1
+EXIT0; Finished0.12s; test result: ok. 66 passed; 0 failed; 0 ignored; 0 measured; 716 filtered out; finished in 0.02s
+SHA256:b1c6507a8cba825f571b25846e28d0f5eb8babbb4a621b080796bfc26bc09b8a
+LOG[AUG]:uuid-translate-native-misc.log
+COMMAND:../../tools/cargo-tidb test --locked -p tidb-expr --lib builtin_ext::misc::tests -- --test-threads=1
+EXIT0; Finished15.02s; test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 1559 filtered out; finished in 0.00s
+SHA256:f56862047d0e8bd05ea04dc44962ad9648729b823649c2817c2959ef9a337b78
+LOG[AUG]:uuid-translate-native-string.log
+COMMAND:../../tools/cargo-tidb test --locked -p tidb-expr --lib builtin_ext::string2::tests::translate -- --test-threads=1
+EXIT0; Finished0.16s; test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1571 filtered out; finished in 0.00s
+SHA256:28561fc57e67e632f190c1e436ee17ef69785938964bcf45865ed463da91718a
+LOG[AUG]:uuid-translate-native-tables.log
+COMMAND:../../tools/cargo-tidb test --locked -p tidb-expr --lib test_translate_tables -- --test-threads=1
+EXIT0; Finished0.12s; test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1571 filtered out; finished in 0.01s
+SHA256:153ff4be8400767a66554e8a4e21254f94f57d80d682ff2fccb61cb45abd05be
+LOG[AUG]:uuid-translate-dispatch.log
+COMMAND:../../tools/cargo-tidb test --locked -p tidb-expr --lib uuid_translate_dispatch_ -- --test-threads=1
+EXIT0; Finished0.15s; test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1568 filtered out; finished in 0.00s
+SHA256:ddd6be685be395a10d5469bab284f5e0b32537d9b993626384805da88a5aff2c
+LOG[AUG]:uuid-translate-sql.log
+COMMAND:../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+EXIT0; Finished28.41s; test result: ok. 89 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 1.42s
+SHA256:b718ad87548acb5af0d7552c1672e748c34cab5ef4db742d0636450a543afa65
+LOG[AUG/CURRENT baseline non-green]:uuid-translate-expr-full.log
+COMMAND:../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+EXIT101; Finished0.17s;1572 discovered; test result: FAILED. 1474 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.39s
+SHA256:767b33e157f62563977b6aab7bf908b2b2596459eab5d234fbb6bf72115f7a91
+LOG[AUG/CURRENT baseline non-green]:uuid-translate-unistore-full.log
+COMMAND:../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+EXIT101; Finished6.66s;209 discovered; test result: FAILED. 195 passed; 1 failed; 13 ignored; 0 measured; 0 filtered out; finished in 3.01s
+SHA256:831a26f5883e051684f585d756b4654fd6a962c7a8a95d27751de3788e64ab1b
+
+FAILED-FIRST / PRECOMPILE / ORDINARY LOOKUPS
+Actual compile failure: three NEW C tests used EvaluatedArgs::Bytes3(a,b,c), while the existing variant is Bytes3([Option<Vec<u8>>;3]). Parent changed only those constructors to Bytes3([a,b,c]); expected values/business unchanged. One same-target retry, not three retries; not a test RED or launch failure.
+Formatter invocation failed once(exit1): parent supplied tidb/rustates/nonexistent.rs, touching no files in that failed call; the corrected adapter-tests path succeeded. Distinguish formatter_invocation_failures1/retries1 from final pinned --check failures0/both diffs passed. Do NOT say formatting had zero failures overall.
+Static proof failed once because its script guessed Rust func_prop.rs, which glob did not find. Corrected proof establishes only the two REAL scalar_function.rs/arg_eval_type.rs files unchanged; not an invented three-file proof. No source was repaired to satisfy the proof.
+Three precompile interface corrections: B Bytes3 tuple-to-array; parent's B helper-crate path datatype-to-expr; owner7 EvaluateError import root-to-error-module. These occurred before compilation and are separate from the later C constructors' logged E0061 failure.
+Ordinary lookup misses: parent baseline path omitted evidence/; owner7 guessed local/error.rs; writer's earlier RO guessed CPP datatype codec/mysql/json/native.rs before UUID prioritization. Total3=parent/7 two+writer one, not extra Cargo/formatter/static-proof failures. No source changes from those lookups.
+
+CONTRACT / UNIQUE PROVIDER OWNERSHIP
+Nine closed operations use OLD roles:2 Int outputs+1 Decimal+6 Bytes. No new input/result DTO, report, driver, module or PB/cop admission. Swap requires Some actual16-byte parsed value plus Some actual flag; NULL is a genuine old NullWitness, not fabricated bytes or precomputed answers.
+Five typed UUID causes authenticate the EXACT operation. Native renderer borrows the actual input Vec and preserves four old Unsupported outcomes/1411; no code/message matching to infer cause and no input replay/reparse to reconstruct one.
+Sole shared native UUID parser keeps32/36-byte forms,45-byte case-insensitive URN and38-byte arbitrary-shell selection, then uses the existing uuid decoder. Manual hex decoding removed. Formatting uses Uuid.hyphenated rather than a second hex implementation; wire parser/unsigned timestamp policy stays unchanged.
+Native v1/v6/v7 timestamps retain signed microseconds truncated toward zero and six decimal places; other versions NULL. Wire/native share Decimal shift/round leaves, not a float/f64 bridge. Native parse/hex/swap/timestamp/decimal-format bodies are deleted, not left as alternate algorithms.
+UUID_TO_BIN completes parse in a first worker, receives the actual16 bytes, then performs original flag coercion and a complete second swap worker call. Explicit extra lease/transport; NOT double parsing and no nested callback. BIN_TO_UUID preserves flag warnings BEFORE NULL. A SQL NULL is not smuggled as a dummy flag/value.
+TRANSLATE uses sole CPP rune/byte algorithms: descending maps preserve first duplicate, excess-from deletion and unmapped data; any binary argument selects byte policy, but only arg0 chooses binary result metadata. Left-to-right coercion stops at the first NULL and admits the genuine NULL witness without coercing suffixes or inventing three NULL operands. Strict UTF-8 failure is not masked in the rune path; binary retains arbitrary bytes. Both original native Translate maps were removed.
+Preparation remains BEFORE guard/capability admission. Its coercion/allocation/error work is explicitly outside the worker-bound resource claim; no all-preparation-bounded, unchanged-allocation or no-OOM guarantee follows from zero-slot tests.
+Host UUID generation gains only two thin public formatter/epoch helpers, not UUID/UUIDv4/UUIDv7 family credit. Parent verified seven original host UUID/v4/v7/hash/coercion function bodies unchanged; existing clocks/generators are not silently replaced.
+
+SOURCE / TEST PROVENANCE
+Parent scope15Rust(TiKV10/native5),0manifest edits, BOTH locks byte-identical to HEAD,0metadata commands. Final15 pinned --check and both diff checks passed; invocation/proof failures are disclosed separately above.
+Original complete misc/string2 test modules are byte-identical. Old expected fixtures unchanged; original direct-routine tests are not relabeled as native evidence if their datasets are unsuitable. Additional hand-derived literals are explicitly old-policy-derived, not captured from the new provider or falsely labeled old fixtures.
+D4 observes all9 actual workers, AST/typed/error paths and zero/closed resources. E3(SQL89) includes12 direct zero-slot SQL calls with original metadata/exact warnings and1105 Resource versus1411 distinctions, including REAL nonbinary Latin1 FF demand. These are scoped checks, not general SQL-policy claims from error codes alone.
+The original native translate_utf8_vectors and tests::builtin_string_time_source::test_translate_tables each actually ran as the separate1-test gates above. No extra gates are invented from tests also contained in full expr.
+
+CURRENT COMPLETE FAILURE SECTIONS:THREAD IDS ONLY, NO ADDRESS MAPPING
+Parent compared CURRENT complete sections against format-time/Round41. Expr normalized SHA256=25f964887541f45602363f00dc60df4f0af21c74edccc16c38d0804094fb9bff; same four failures:
+- pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation (pushdown_catalog.rs:3077:9)
+- tests::builtin_info_json_math_source::exp (builtin_info_json_math_source.rs:1881:5; original EXP(100_000.0) FloatOverflow assertion)
+- tests::builtin_math_misc_op_source::vectorized_builtin_op_func (crates/tidb-datatype/src/duration.rs:164:55; nonnegative duration FSP: TryFromIntError(NegOverflow))
+- time_fn::tests::str_to_date_partial_formats_follow_no_zero_date (time_fn/tests.rs:888:9)
+Unistore thread-ID-only SHA256=e285bfdba646f2d01f85b485ae317cc07c51b78cf0ae6d664c0fb2bc39259759; same tests_mockstore_part1_go_parity::closure_executor_selection_over_point_range_answers_zero_rows at crates/tidb-unistore/src/tests_mockstore_part1_go_parity.rs:194:5, TruncatedWrongValue("Truncated incorrect DECIMAL value: 'abc'").
+NO CURRENT LOCATION MAPPING. Round41-to40's historical164->212 mapping/older expr hash is NOT this round's comparison. These hashes cover normalized FAILURE SECTIONS only; all11 WHOLE-LOG hashes are separately recorded above. Both current full suites remain non-green.
+
+FREEZE / LIMITS
+DATE, MICROSECOND and larger JSON-path work remain deferred. Round39 parser-all E0061 remains unrepaired and unrun here, purely historical, not a current gate. No whole-workspace/Go-package acceptance, lint, release/profile, allocator/OOM peak, zero-copy/performance, FIPS, M6 or PR-readiness claim.
+Only uuid-translate-checkpoint.md and this summary written under this authorization; no new writer source audit/build/test/fmt/Git/index/Plan. Functional137/245; FINAL0/245; all_checks_firstpass=false.

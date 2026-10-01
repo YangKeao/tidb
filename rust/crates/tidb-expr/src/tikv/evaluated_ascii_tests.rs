@@ -1194,6 +1194,17 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::LastDayTextNative => {
             panic!("temporal formatting needs its original text, core and demand domains")
         }
+        EvaluatedBytesOp::IsUuidNative => "IS_UUID",
+        EvaluatedBytesOp::UuidVersionNative => "UUID_VERSION",
+        EvaluatedBytesOp::UuidTimestampNative => "UUID_TIMESTAMP",
+        EvaluatedBytesOp::UuidToBinParseNative
+        | EvaluatedBytesOp::UuidToBinSwapNative
+        | EvaluatedBytesOp::BinToUuidNative
+        | EvaluatedBytesOp::TranslateUtf8Native
+        | EvaluatedBytesOp::TranslateBinaryNative
+        | EvaluatedBytesOp::TranslateNullNative => {
+            panic!("UUID conversion and TRANSLATE need their original arguments and demand")
+        }
         EvaluatedBytesOp::CompressGoNative | EvaluatedBytesOp::UncompressNative => {
             panic!("compression calls need their original nullable bytes")
         }
@@ -1518,6 +1529,658 @@ fn format_time_pb(
         field,
         args,
     )
+}
+
+#[test]
+fn uuid_translate_dispatch_preserves_uuid_spellings_and_timestamp_carriers() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        // Original misc.rs fixtures: raw 36/32/45/38-byte spellings. The last
+        // wrapper is deliberately not accepted by a narrower braced parser.
+        for text in [
+            "6ccd780c-baba-1026-9564-5b8c656024db",
+            "6ccd780cbaba102695645b8c656024db",
+            "urn:uuid:6ccd780c-baba-1026-9564-5b8c656024db",
+            "{99a9ad03-5298-11ec-8f5c-00ff90147ac3*",
+        ] {
+            for operation in [EvaluatedBytesOp::IsUuidNative, EvaluatedBytesOp::UuidVersionNative] {
+                let (result, observation) = observe_wide_math(|| {
+                    dispatch_bytes_family(operation, &Datum::new_string(text), columns)
+                });
+                assert_eq!(result, Ok(Datum::Int(1)), "{operation:?}: {text}");
+                assert_wide_math_c4(observation);
+            }
+        }
+        let mut raw_wrapper = vec![0xff];
+        raw_wrapper.extend_from_slice(b"99a9ad03-5298-11ec-8f5c-00ff90147ac3*");
+        for (input, expected) in [
+            (Datum::Bytes(raw_wrapper.clone()), 1),
+            (Datum::new_string(raw_wrapper.clone()), 1),
+            (Datum::new_bytes([0xff]), 0),
+            (Datum::new_bytes(b" 99a9ad03-5298-11ec-8f5c-00ff90147ac3\xff"), 0),
+            (Datum::new_string(" 6ccd780c-baba-1026-9564-5b8c656024db "), 0),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                dispatch_bytes_family(EvaluatedBytesOp::IsUuidNative, &input, columns)
+            });
+            assert_eq!(result, Ok(Datum::Int(expected)), "raw parsing follows the lossy trim check, not lossy replacement of the parsed bytes");
+            assert_wide_math_c4(observation);
+        }
+        for operation in [EvaluatedBytesOp::UuidVersionNative, EvaluatedBytesOp::UuidTimestampNative] {
+            for (input, message) in [
+                (Datum::Bytes(raw_wrapper.clone()), "invalid UTF-8 byte datum"),
+                (Datum::new_string(raw_wrapper.clone()), "invalid UTF-8 string datum"),
+            ] {
+                let before = owner.snapshot().unwrap();
+                let (result, observation) = observe_wide_math(|| {
+                    dispatch_bytes_family(operation, &input, columns)
+                });
+                assert_eq!(result, Err(EvalError::Unsupported(message)));
+                assert_eq!(observation.facade_entries, 0);
+                assert_eq!(observation.before_kernel_invocations, None);
+                assert_eq!(observation.after_kernel_invocations, None);
+                assert_eq!(owner.snapshot().unwrap(), before);
+            }
+        }
+        // Fixed source timestamp expectations, never computed by a provider.
+        for (text, expected) in [
+            ("5f13f854-d74a-11f0-9b7a-0ae0156bd76b", "1765537487.118139"),
+            ("1f0e48c1-7860-69cc-9b3f-35f89c103d4d", "1766995078.970004"),
+            ("019b1440-87b7-7380-ab00-ce413e795004", "1765571332.023000"),
+            ("6ccd780cbaba102695645b8c656024db", "-11129156903.290674"),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                dispatch_bytes_family(EvaluatedBytesOp::UuidTimestampNative, &Datum::new_string(text), columns)
+            });
+            let Datum::Decimal(value) = result.unwrap() else {
+                panic!("UUID_TIMESTAMP must retain its Decimal carrier")
+            };
+            assert_eq!(value.to_string(), expected);
+            assert_eq!(value.scale(), 6);
+            assert_wide_math_c4(observation);
+        }
+        for text in [
+            "a3e3b4a1-ea6d-471e-9860-8303a8b261f6",
+            "00000000-0000-0000-0000-000000000000",
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                dispatch_bytes_family(EvaluatedBytesOp::UuidTimestampNative, &Datum::new_string(text), columns)
+            });
+            assert_eq!(result, Ok(Datum::Null), "valid non-timestamp UUIDs return worker NULL");
+            assert_wide_math_c4(observation);
+        }
+        for operation in [
+            EvaluatedBytesOp::IsUuidNative,
+            EvaluatedBytesOp::UuidVersionNative,
+            EvaluatedBytesOp::UuidTimestampNative,
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                dispatch_bytes_family(operation, &Datum::Null, columns)
+            });
+            assert_eq!(result, Ok(Datum::Null));
+            assert_wide_math_c4(observation);
+        }
+        let (result, observation) = observe_wide_math(|| {
+            calendar_fields_ast("UUID_VERSION('{99a9ad03-5298-11ec-8f5c-00ff90147ac3*')", columns)
+        });
+        assert_eq!(result, Ok(Datum::Int(1)));
+        assert_wide_math_c4(observation);
+        let function = crate::scalar_function::ScalarFunction::new(
+            tidb_ast::CiString::new("UUID_TIMESTAMP"),
+            FieldType::new(FieldTypeCode::NewDecimal).with_flen(18).with_decimal(6),
+            vec![crate::expression::Expression::Constant(Constant::new(
+                Datum::new_string("6ccd780cbaba102695645b8c656024db"),
+                FieldType::new(FieldTypeCode::VarString),
+            ))],
+        );
+        let (result, observation) = observe_wide_math(|| {
+            function.eval(columns, tidb_chunk::row::Row::empty())
+        });
+        let Datum::Decimal(value) = result.unwrap() else {
+            panic!("typed UUID_TIMESTAMP must retain Decimal")
+        };
+        assert_eq!(value.to_string(), "-11129156903.290674");
+        assert_eq!(value.scale(), 6);
+        assert_wide_math_c4(observation);
+    });
+    assert!(!scope.busy.get());
+    assert!(!scope.poisoned.get());
+    scope_worker_observation(&scope); // Checks the actual current worker's health/storage.
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn uuid_translate_dispatch_keeps_parse_swap_sequential_and_reuses_real_workers() {
+    let canonical = "6ccd780c-baba-1026-9564-5b8c656024db";
+    // Original UUID_TO_BIN/BIN_TO_UUID fixture bytes, not a round-trip oracle.
+    let normal = vec![
+        0x6c, 0xcd, 0x78, 0x0c, 0xba, 0xba, 0x10, 0x26, 0x95, 0x64, 0x5b, 0x8c, 0x65, 0x60, 0x24,
+        0xdb,
+    ];
+    let swapped = vec![
+        0x10, 0x26, 0xba, 0xba, 0x6c, 0xcd, 0x78, 0x0c, 0x95, 0x64, 0x5b, 0x8c, 0x65, 0x60, 0x24,
+        0xdb,
+    ];
+    let native = ConstructTimeWarnings::default();
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    scope.with_columns(&native, |columns| {
+        arm_eval_one_observation();
+        let parsed = evaluate_args_in(
+            EvaluatedBytesOp::UuidToBinParseNative,
+            columns,
+            || Ok(EvaluatedArgs::Bytes(Some(canonical.as_bytes().to_vec()))),
+            EvaluatedBytesResult::into_bytes,
+        );
+        let observation = take_eval_one_observation();
+        assert_eq!(parsed, Ok(Some(normal.clone())));
+        assert_wide_math_c4(observation);
+        assert_eq!(observation.before_kernel_invocations, Some(0));
+        assert_eq!(observation.after_kernel_invocations, Some(1));
+    });
+    assert!(
+        !scope.busy.get(),
+        "the parse call has completely returned before the next call"
+    );
+    let first = scope_worker_observation(&scope);
+    assert_eq!(first.2 + first.3, first.4);
+    assert!(first.4 <= TEST_WORKER_CAP);
+    drop(scope);
+    assert_eq!(owner.snapshot().unwrap().idle, 1);
+
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        arm_eval_one_observation();
+        let parsed = evaluate_args_in(
+            EvaluatedBytesOp::UuidToBinParseNative,
+            columns,
+            || Ok(EvaluatedArgs::Bytes(Some(canonical.as_bytes().to_vec()))),
+            EvaluatedBytesResult::into_bytes,
+        )
+        .unwrap();
+        let observation = take_eval_one_observation();
+        assert_eq!(parsed, Some(normal.clone()));
+        assert_wide_math_c4(observation);
+        assert_eq!(observation.before_kernel_invocations, Some(1));
+        assert_eq!(observation.after_kernel_invocations, Some(2));
+        let reused = scope_worker_observation(&scope);
+        assert_eq!(
+            (reused.0, reused.2, reused.3, reused.4),
+            (first.0, first.2, first.3, first.4)
+        );
+        assert_eq!(owner.snapshot().unwrap().factory_attempts, 1);
+        assert!(!scope.busy.get());
+        // Feed the actual parsed Some(16 bytes), not a fabricated marker, into
+        // a second complete invocation of the different swap recipe.
+        let (result, observation) = observe_wide_math(|| {
+            evaluate_args_in(
+                EvaluatedBytesOp::UuidToBinSwapNative,
+                columns,
+                || Ok(EvaluatedArgs::BytesInt(parsed, Some(1))),
+                |computed| Ok(computed.into_bytes()?.map_or(Datum::Null, Datum::Bytes)),
+            )
+        });
+        assert_eq!(result, Ok(Datum::Bytes(swapped.clone())));
+        assert_wide_math_c4(observation);
+        assert_eq!(observation.before_kernel_invocations, Some(0));
+        assert_eq!(observation.after_kernel_invocations, Some(1));
+        assert_eq!(owner.snapshot().unwrap().factory_attempts, 2);
+        assert_eq!(scope_worker_observation(&scope).1, 1);
+
+        for (values, expected) in [
+            (vec![Datum::new_string(canonical)], normal.clone()),
+            (
+                vec![Datum::new_string(canonical), Datum::Int(1)],
+                swapped.clone(),
+            ),
+            (
+                vec![Datum::new_string(canonical), Datum::Null],
+                normal.clone(),
+            ),
+            (
+                vec![Datum::new_string(canonical), Datum::new_string("a")],
+                normal.clone(),
+            ),
+        ] {
+            let before = owner.snapshot().unwrap().factory_attempts;
+            let (result, observation) = observe_wide_math(|| {
+                crate::func::eval_func_values("UUID_TO_BIN", &values, columns).unwrap()
+            });
+            assert_eq!(result, Ok(Datum::Bytes(expected)));
+            assert_week_auth_two_calls(observation);
+            // FIRST-before is the new parse worker; LAST-after is the new swap
+            // worker. Neither is a fictional summed per-worker count of two.
+            assert_eq!(observation.before_kernel_invocations, Some(0));
+            assert_eq!(observation.after_kernel_invocations, Some(1));
+            assert_eq!(owner.snapshot().unwrap().factory_attempts, before + 2);
+            assert_eq!(scope_worker_observation(&scope).1, 1);
+            assert_eq!(
+                scope
+                    .lease
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .worker
+                    .as_ref()
+                    .unwrap()
+                    .operation(),
+                EvaluatedBytesOp::UuidToBinSwapNative
+            );
+            assert!(!scope.busy.get());
+            assert!(
+                native.0.borrow().is_empty(),
+                "UUID_TO_BIN keeps its quiet flag conversion"
+            );
+        }
+        let (result, observation) = observe_wide_math(|| {
+            crate::func::eval_func_values(
+                "UUID_TO_BIN",
+                &[Datum::Null, Datum::new_string("a")],
+                columns,
+            )
+            .unwrap()
+        });
+        assert_eq!(result, Ok(Datum::Null));
+        assert_wide_math_c4(observation); // No swap call after the parse worker's NULL.
+        assert!(native.0.borrow().is_empty());
+        for (values, expected) in [
+            (vec![Datum::Bytes(normal.clone())], canonical),
+            (
+                vec![Datum::Bytes(normal.clone()), Datum::Int(1)],
+                "baba1026-780c-6ccd-9564-5b8c656024db",
+            ),
+            (
+                vec![Datum::Bytes(swapped.clone())],
+                "1026baba-6ccd-780c-9564-5b8c656024db",
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::func::eval_func_values("BIN_TO_UUID", &values, columns).unwrap()
+            });
+            assert_eq!(result, Ok(Datum::new_string(expected)));
+            assert_wide_math_c4(observation);
+        }
+        let function = crate::scalar_function::ScalarFunction::new(
+            tidb_ast::CiString::new("BIN_TO_UUID"),
+            FieldType::new(FieldTypeCode::VarString),
+            vec![
+                crate::expression::Expression::Constant(Constant::new(
+                    Datum::Bytes(swapped.clone()),
+                    FieldType::new(FieldTypeCode::VarString)
+                        .with_collation(tidb_datatype::Collation::Binary),
+                )),
+                crate::expression::Expression::Constant(Constant::new(
+                    Datum::Int(1),
+                    FieldType::new(FieldTypeCode::LongLong),
+                )),
+            ],
+        );
+        let (result, observation) =
+            observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        assert_eq!(result, Ok(Datum::new_string(canonical)));
+        assert_wide_math_c4(observation);
+        assert!(native.0.borrow().is_empty());
+    });
+    assert!(!scope.busy.get());
+    assert!(!scope.poisoned.get());
+    scope_worker_observation(&scope);
+    drop(scope);
+    let idle = owner.snapshot().unwrap();
+    assert_eq!((idle.live, idle.idle, idle.creating), (0, 1, 0));
+    assert_eq!(idle.factory_attempts, idle.factory_successes);
+    execution.close();
+}
+
+#[test]
+fn uuid_translate_dispatch_preserves_error_receipts_and_flag_warning_order() {
+    // The four original Unsupported literals are intentionally distinct. BIN
+    // length failure instead carries its actual input, rendered lossily once.
+    let invalid = [
+        (
+            "UUID_TO_BIN",
+            vec![
+                Datum::new_string(" 6ccd780c-baba-1026-9564-5b8c656024db"),
+                Datum::new_string("a"),
+            ],
+            EvalError::Unsupported("invalid UUID_TO_BIN whitespace"),
+        ),
+        (
+            "UUID_TO_BIN",
+            vec![
+                Datum::new_string("6ccd780c-baba-1026-9564-5b8c6560"),
+                Datum::new_string("a"),
+            ],
+            EvalError::Unsupported("invalid UUID for UUID_TO_BIN"),
+        ),
+        (
+            "UUID_VERSION",
+            vec![Datum::new_string("abc")],
+            EvalError::Unsupported("invalid UUID for UUID_VERSION"),
+        ),
+        (
+            "UUID_TIMESTAMP",
+            vec![Datum::new_string("abc")],
+            EvalError::Unsupported("invalid UUID for UUID_TIMESTAMP"),
+        ),
+        (
+            "BIN_TO_UUID",
+            vec![Datum::new_bytes(b"short\xff"), Datum::new_string("a")],
+            EvalError::WrongValueForType {
+                value_class: "string",
+                value: "short\u{fffd}".to_owned(),
+                function: "bin_to_uuid",
+            },
+        ),
+    ];
+    let native = ConstructTimeWarnings::default();
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for (name, values, expected) in &invalid {
+            let (result, observation) =
+                observe_wide_math(|| crate::func::eval_func_values(name, values, columns).unwrap());
+            assert_eq!(
+                result,
+                Err(expected.clone()),
+                "{name}: actual sealed worker cause only"
+            );
+            assert_wide_math_c4(observation);
+            if *name == "BIN_TO_UUID" {
+                assert_eq!(
+                    native.0.replace(Vec::new()),
+                    [(
+                        1292,
+                        "Truncated incorrect INTEGER value: 'a'".to_owned(),
+                        true
+                    )]
+                );
+            } else {
+                assert!(native.0.borrow().is_empty());
+            }
+            assert!(!scope.busy.get());
+            assert!(!scope.poisoned.get());
+            scope_worker_observation(&scope);
+        }
+        let (result, observation) = observe_wide_math(|| {
+            crate::func::eval_func_values(
+                "BIN_TO_UUID",
+                &[Datum::Null, Datum::new_string("a")],
+                columns,
+            )
+            .unwrap()
+        });
+        assert_eq!(result, Ok(Datum::Null));
+        assert_wide_math_c4(observation);
+        assert_eq!(
+            native.0.replace(Vec::new()),
+            [(
+                1292,
+                "Truncated incorrect INTEGER value: 'a'".to_owned(),
+                true
+            )],
+            "flag warning precedes even a NULL payload's admission"
+        );
+    });
+    drop(scope);
+    execution.close();
+
+    for closed in [false, true] {
+        let slots = usize::from(closed);
+        let owner = AsciiPoolOwner::new(test_policy(slots, slots)).unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        if closed {
+            execution.close();
+        }
+        let expected_class = if closed {
+            crate::ExpressionAdapterFailureClass::PoolClosed
+        } else {
+            crate::ExpressionAdapterFailureClass::PoolResource
+        };
+        scope.with_columns(&native, |columns| {
+            for (name, values, _) in &invalid {
+                let (result, observation) = observe_wide_math(|| {
+                    crate::func::eval_func_values(name, values, columns).unwrap()
+                });
+                assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == expected_class), "{name}: malformed input must not mask infrastructure refusal as SQL failure");
+                assert_eq!(observation.facade_entries, 0);
+                assert_eq!(observation.before_kernel_invocations, None);
+                assert_eq!(observation.after_kernel_invocations, None);
+                if *name == "BIN_TO_UUID" {
+                    assert_eq!(native.0.replace(Vec::new()), [(1292, "Truncated incorrect INTEGER value: 'a'".to_owned(), true)]);
+                } else {
+                    assert!(native.0.borrow().is_empty());
+                }
+            }
+            let (result, observation) = observe_wide_math(|| {
+                crate::func::eval_func_values("BIN_TO_UUID", &[Datum::Null, Datum::new_string("a")], columns).unwrap()
+            });
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == expected_class));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+            assert_eq!(native.0.replace(Vec::new()), [(1292, "Truncated incorrect INTEGER value: 'a'".to_owned(), true)]);
+        });
+        assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+        drop(scope);
+        execution.close();
+    }
+}
+
+#[test]
+fn uuid_translate_dispatch_keeps_translate_modes_and_null_coercion_demand() {
+    let function = crate::scalar_function::ScalarFunction::new(
+        tidb_ast::CiString::new("TRANSLATE"),
+        FieldType::new(FieldTypeCode::VarString),
+        ["hello", "lo", "L"]
+            .into_iter()
+            .map(|text| {
+                crate::expression::Expression::Constant(Constant::new(
+                    Datum::new_string(text),
+                    FieldType::new(FieldTypeCode::VarString),
+                ))
+            })
+            .collect(),
+    );
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        // Existing string2.rs literals: rune substitution, first duplicate,
+        // and deletion past the end of `to` all come from the real worker.
+        for (src, from, to, expected) in [
+            ("中文测试", "中试", "XY", "X文测Y"),
+            ("aaa", "aa", "xy", "xxx"),
+            ("hello", "lo", "L", "heLL"),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::func::eval_func_values(
+                    "TRANSLATE",
+                    &[
+                        Datum::new_string(src),
+                        Datum::new_string(from),
+                        Datum::new_string(to),
+                    ],
+                    columns,
+                )
+                .unwrap()
+            });
+            assert_eq!(result, Ok(Datum::new_string(expected)));
+            assert_wide_math_c4(observation);
+            assert_eq!(
+                scope
+                    .lease
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .worker
+                    .as_ref()
+                    .unwrap()
+                    .operation(),
+                EvaluatedBytesOp::TranslateUtf8Native
+            );
+        }
+        // Fixed TestTranslate binary duplicate row: FFFF/FFFF/FEFD -> FEFE.
+        // Move only the binary charset among the three arguments. A binary
+        // suffix must select byte mode without changing arg0's result charset.
+        for binary_argument in 0..3 {
+            let mut values = [
+                Datum::new_string(vec![0xff, 0xff]),
+                Datum::new_string(vec![0xff, 0xff]),
+                Datum::new_string(vec![0xfe, 0xfd]),
+            ];
+            values[binary_argument] = Datum::new_bytes(if binary_argument == 2 {
+                vec![0xfe, 0xfd]
+            } else {
+                vec![0xff, 0xff]
+            });
+            let (result, observation) = observe_wide_math(|| {
+                crate::func::eval_func_values("TRANSLATE", &values, columns).unwrap()
+            });
+            let result = result.unwrap();
+            let expected = if binary_argument == 0 {
+                Datum::new_bytes([0xfe, 0xfe])
+            } else {
+                Datum::new_string(vec![0xfe, 0xfe])
+            };
+            assert_eq!(
+                std::mem::discriminant(&result),
+                std::mem::discriminant(&expected)
+            );
+            assert_eq!(result, expected);
+            assert_wide_math_c4(observation);
+            assert_eq!(
+                scope
+                    .lease
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .worker
+                    .as_ref()
+                    .unwrap()
+                    .operation(),
+                EvaluatedBytesOp::TranslateBinaryNative
+            );
+        }
+        let (result, observation) = observe_wide_math(|| {
+            crate::func::eval_func_values(
+                "TRANSLATE",
+                &[
+                    Datum::new_bytes([0xff, 0xfe, 0xfd, 0xfc, 0xfb]),
+                    Datum::new_bytes([0xfd, 0xfc, 0xfb]),
+                    Datum::new_bytes([0xfe, 0xfd]),
+                ],
+                columns,
+            )
+            .unwrap()
+        });
+        assert_eq!(result, Ok(Datum::new_bytes([0xff, 0xfe, 0xfe, 0xfd])));
+        assert_wide_math_c4(observation);
+        for values in [
+            [
+                Datum::Null,
+                Datum::new_string(vec![0xff]),
+                Datum::new_string(vec![0xff]),
+            ],
+            [
+                Datum::new_string("x"),
+                Datum::Null,
+                Datum::new_string(vec![0xff]),
+            ],
+            [Datum::new_string("x"), Datum::new_string("a"), Datum::Null],
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::func::eval_func_values("TRANSLATE", &values, columns).unwrap()
+            });
+            assert_eq!(
+                result,
+                Ok(Datum::Null),
+                "an actual first NULL stops suffix coercion, not worker admission"
+            );
+            assert_wide_math_c4(observation);
+            assert_eq!(
+                scope
+                    .lease
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .worker
+                    .as_ref()
+                    .unwrap()
+                    .operation(),
+                EvaluatedBytesOp::TranslateNullNative
+            );
+        }
+        for values in [
+            [
+                Datum::new_string(vec![0xff]),
+                Datum::Null,
+                Datum::new_string("x"),
+            ],
+            [
+                Datum::new_string("x"),
+                Datum::new_string(vec![0xff]),
+                Datum::Null,
+            ],
+        ] {
+            let before = owner.snapshot().unwrap();
+            let (result, observation) = observe_wide_math(|| {
+                crate::func::eval_func_values("TRANSLATE", &values, columns).unwrap()
+            });
+            assert_eq!(
+                result,
+                Err(EvalError::Unsupported("invalid UTF-8 string datum")),
+                "a later NULL cannot hide a demanded prefix coercion error"
+            );
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+            assert_eq!(owner.snapshot().unwrap(), before);
+        }
+        let (result, observation) = observe_wide_math(|| {
+            calendar_fields_ast("TRANSLATE('中文测试', '中试', 'XY')", columns)
+        });
+        assert_eq!(result, Ok(Datum::new_string("X文测Y")));
+        assert_wide_math_c4(observation);
+        let (result, observation) =
+            observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        assert_eq!(result, Ok(Datum::new_string("heLL")));
+        assert_wide_math_c4(observation);
+    });
+    assert!(!scope.busy.get());
+    assert!(!scope.poisoned.get());
+    scope_worker_observation(&scope);
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        let (result, observation) = observe_wide_math(|| {
+            crate::func::eval_func_values("TRANSLATE", &[
+                Datum::new_string("x"), Datum::Null, Datum::new_string(vec![0xff]),
+            ], columns).unwrap()
+        });
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource), "NULL witness still requires admission; its invalid UTF-8 suffix remains undemanded");
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+        let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 #[test]

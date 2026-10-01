@@ -7852,3 +7852,347 @@ fn evaluated_ascii_shared_pool_last_day_sql_typed_dates_warnings_and_refusals() 
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_uuid_translate_uuid_values_metadata_and_diagnostics() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_uuid_values (id INT PRIMARY KEY, u VARCHAR(64), b VARBINARY(16), f VARCHAR(8))").unwrap();
+    session
+        .run(
+            "INSERT INTO shared_uuid_values VALUES (1,NULL,NULL,'a'),\
+         (2,'5f13f854-d74a-11f0-9b7a-0ae0156bd76b',NULL,NULL),\
+         (3,'1f0e48c1-7860-69cc-9b3f-35f89c103d4d',NULL,NULL),\
+         (4,'019b1440-87b7-7380-ab00-ce413e795004',NULL,NULL),\
+         (5,'a3e3b4a1-ea6d-471e-9860-8303a8b261f6',NULL,NULL),\
+         (6,'6ccd780cbaba102695645b8c656024db',x'6CCD780CBABA102695645B8C656024DB','0'),\
+         (7,'{99a9ad03-5298-11ec-8f5c-00ff90147ac3*',NULL,NULL),\
+         (8,'urn:uuid:99a9ad03-5298-11ec-8f5c-00ff90147ac3',NULL,NULL),\
+         (9,'abc','1','a'),(10,' 6ccd780c-baba-1026-9564-5b8c656024db',NULL,'a')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let StmtOutput::Rows { columns, rows } = session.run_with_columns(
+        "SELECT IS_UUID(u),UUID_VERSION(u),UUID_TIMESTAMP(u) FROM shared_uuid_values WHERE id<=6 ORDER BY id",
+    ).unwrap() else { panic!("expected UUID scalar rows") };
+    assert_eq!(columns.len(), 3);
+    for ((_, field), (code, flen, scale)) in columns.iter().zip([
+        (tidb_datatype::FieldTypeCode::LongLong, 1, 0),
+        (tidb_datatype::FieldTypeCode::LongLong, 10, 0),
+        (tidb_datatype::FieldTypeCode::NewDecimal, 18, 6),
+    ]) {
+        assert_eq!(field.code(), code);
+        assert_eq!((field.flen(), field.decimal()), (flen, scale));
+        assert_eq!(field.charset_name(), "binary");
+        assert_eq!(field.collation(), tidb_datatype::Collation::Binary);
+        assert!(!field.is_unsigned());
+        assert!(!field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
+    }
+    // Source-owned TestUUIDTimestamp decimals, including the pre-1970 v1.
+    let expected = [
+        ["NULL", "NULL", "NULL"],
+        ["1", "1", "1765537487.118139"],
+        ["1", "6", "1766995078.970004"],
+        ["1", "7", "1765571332.023000"],
+        ["1", "4", "NULL"],
+        ["1", "1", "-11129156903.290674"],
+    ];
+    assert_eq!(rows.len(), expected.len());
+    for (row, expected) in rows.iter().zip(expected) {
+        assert_eq!(row.len(), 3);
+        for (value, expected) in row.iter().zip(expected) {
+            assert_eq!(cell_text(value), expected);
+        }
+        assert!(matches!(&row[2], Datum::Null | Datum::Decimal(_)));
+    }
+    assert!(warnings_of(&session).is_empty());
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns("SELECT IS_UUID(u) FROM shared_uuid_values WHERE id>=7 ORDER BY id")
+        .unwrap()
+    else {
+        panic!("expected UUID parse-shape rows")
+    };
+    assert_eq!(
+        rows,
+        vec![
+            vec![Datum::Int(1)],
+            vec![Datum::Int(1)],
+            vec![Datum::Int(0)],
+            vec![Datum::Int(0)]
+        ]
+    );
+    assert!(warnings_of(&session).is_empty());
+    // Each UUID_TO_BIN row uses two complete sequential calls (probe + swap),
+    // so these four projections cost six worker calls, not four. One slot must
+    // suffice; do not manufacture an inverse-swap roundtrip as the oracle.
+    let StmtOutput::Rows { columns, rows } = session.run_with_columns(
+        "SELECT UUID_TO_BIN(u,f),UUID_TO_BIN(u,1),BIN_TO_UUID(b,f),BIN_TO_UUID(b,1) FROM shared_uuid_values WHERE id=6",
+    ).unwrap() else { panic!("expected raw UUID conversions") };
+    assert_eq!(columns.len(), 4);
+    for (index, (_, field)) in columns.iter().enumerate() {
+        assert_eq!(field.code(), tidb_datatype::FieldTypeCode::VarString);
+        assert_eq!(
+            (field.flen(), field.decimal()),
+            (if index < 2 { 16 } else { 32 }, 0)
+        );
+        assert_eq!(
+            field.charset_name(),
+            if index < 2 { "binary" } else { "utf8mb4" }
+        );
+        assert_eq!(
+            field.collation(),
+            if index < 2 {
+                tidb_datatype::Collation::Binary
+            } else {
+                tidb_datatype::Collation::Utf8Mb4Bin
+            }
+        );
+    }
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].len(), 4);
+    assert_eq!(
+        rows[0][0].to_bytes().unwrap(),
+        vec![
+            0x6c, 0xcd, 0x78, 0x0c, 0xba, 0xba, 0x10, 0x26, 0x95, 0x64, 0x5b, 0x8c, 0x65, 0x60,
+            0x24, 0xdb
+        ]
+    );
+    assert_eq!(
+        rows[0][1].to_bytes().unwrap(),
+        vec![
+            0x10, 0x26, 0xba, 0xba, 0x6c, 0xcd, 0x78, 0x0c, 0x95, 0x64, 0x5b, 0x8c, 0x65, 0x60,
+            0x24, 0xdb
+        ]
+    );
+    assert_eq!(
+        cell_text(&rows[0][2]),
+        "6ccd780c-baba-1026-9564-5b8c656024db"
+    );
+    assert_eq!(
+        cell_text(&rows[0][3]),
+        "baba1026-780c-6ccd-9564-5b8c656024db"
+    );
+    assert!(warnings_of(&session).is_empty());
+    let flag_warning = SqlWarning {
+        level: WarningLevel::Warning,
+        code: 1292,
+        message: "Truncated incorrect INTEGER value: 'a'".to_owned(),
+    };
+    for (expression, warned) in [("UUID_TO_BIN(u,f)", false), ("BIN_TO_UUID(b,f)", true)] {
+        let StmtOutput::Rows { rows, .. } = session
+            .run_with_columns(&format!(
+                "SELECT {expression} FROM shared_uuid_values WHERE id=1",
+            ))
+            .unwrap()
+        else {
+            panic!("expected nullable UUID conversion")
+        };
+        assert_eq!(rows, vec![vec![Datum::Null]]);
+        if warned {
+            assert_eq!(session.warnings(), std::slice::from_ref(&flag_warning));
+        } else {
+            assert!(warnings_of(&session).is_empty());
+        }
+    }
+    for (expression, id, reason) in [
+        ("UUID_VERSION(u)", 9, "invalid UUID for UUID_VERSION"),
+        ("UUID_TIMESTAMP(u)", 9, "invalid UUID for UUID_TIMESTAMP"),
+        ("UUID_TO_BIN(u,f)", 9, "invalid UUID for UUID_TO_BIN"),
+        ("UUID_TO_BIN(u,f)", 10, "invalid UUID_TO_BIN whitespace"),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_uuid_values WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        assert!(
+            matches!(&error, DriverError::Exec(tidb_executor::ExecError::Eval(
+            tidb_executor::EvalError::Unsupported(message))) if *message == reason),
+            "{sql}: {error:?}"
+        );
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105);
+        assert_eq!(mysql.state, *b"HY000");
+        assert!(mysql.is_from_evaluation());
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+    let error = session
+        .run_with_columns("SELECT BIN_TO_UUID(b,f) FROM shared_uuid_values WHERE id=9")
+        .expect_err("bad binary UUID length");
+    let mysql = error.to_mysql_error();
+    assert_eq!(mysql.code, 1411);
+    assert_eq!(
+        mysql.message,
+        "Incorrect string value: '1' for function bin_to_uuid"
+    );
+    assert!(mysql.is_from_evaluation());
+    assert_eq!(session.warnings(), std::slice::from_ref(&flag_warning));
+}
+
+#[test]
+fn evaluated_ascii_uuid_translate_byte_rune_results_and_null_demand() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run(
+        "CREATE TABLE shared_translate_values (id INT PRIMARY KEY, s VARCHAR(16), f VARCHAR(16), \
+         t VARCHAR(16), bs VARBINARY(16), bf VARBINARY(16), bt VARBINARY(16), l VARCHAR(8) CHARSET latin1)",
+    ).unwrap();
+    session
+        .run(
+            "INSERT INTO shared_translate_values VALUES \
+         (1,'中文','中','ab',x'E4B8AD',x'E4B8AD','x',0xFF),\
+         (2,'aaa','aa','xy','aaa','aa','xy',0xFF),\
+         (3,'hello','lo','L','hello','lo','L',0xFF),\
+         (4,NULL,'a','b',NULL,x'FF',x'FF',0xFF)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let StmtOutput::Rows { columns, rows } = session.run_with_columns(
+        "SELECT TRANSLATE(s,f,t),TRANSLATE(s,bf,t),TRANSLATE(bs,f,bt) FROM shared_translate_values ORDER BY id",
+    ).unwrap() else { panic!("expected byte/rune TRANSLATE rows") };
+    assert_eq!(columns.len(), 3);
+    for (index, (_, field)) in columns.iter().enumerate() {
+        assert_eq!(field.code(), tidb_datatype::FieldTypeCode::VarString);
+        assert_eq!((field.flen(), field.decimal()), (16, -1));
+        assert_eq!(
+            field.charset_name(),
+            if index == 2 { "binary" } else { "utf8mb4" }
+        );
+        assert_eq!(
+            field.collation(),
+            if index == 2 {
+                tidb_datatype::Collation::Binary
+            } else {
+                tidb_datatype::Collation::Utf8Mb4Bin
+            }
+        );
+        assert!(!field.is_unsigned());
+        assert!(!field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
+    }
+    let expected = [
+        ["a文", "ab文", "x"],
+        ["xxx", "xxx", "xxx"],
+        ["heLL", "heLL", "heLL"],
+    ];
+    assert_eq!(rows.len(), 4);
+    for (row, expected) in rows[..3].iter().zip(expected) {
+        assert_eq!(row.len(), 3);
+        for (value, expected) in row.iter().zip(expected) {
+            assert_eq!(value.to_bytes().unwrap(), expected.as_bytes());
+        }
+    }
+    assert_eq!(rows[3], vec![Datum::Null; 3]);
+    assert!(warnings_of(&session).is_empty());
+    // Existing latin1 storage keeps FF without turning it into a binary-string
+    // argument. This witnesses the original UTF-8 coercion's lazy demand.
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns("SELECT l,TRANSLATE(s,l,t) FROM shared_translate_values WHERE id=4")
+        .unwrap()
+    else {
+        panic!("expected undemanded invalid UTF-8 layout")
+    };
+    assert_eq!(columns[0].1.charset_name(), "latin1");
+    assert_eq!(rows[0][0].to_bytes().unwrap(), vec![0xff]);
+    assert_eq!(rows[0][1], Datum::Null);
+    assert!(warnings_of(&session).is_empty());
+    let error = session
+        .run_with_columns("SELECT TRANSLATE(s,l,t) FROM shared_translate_values WHERE id=2")
+        .expect_err("non-NULL source demands the bad UTF-8 argument");
+    assert!(matches!(
+        &error,
+        DriverError::Exec(tidb_executor::ExecError::Eval(
+            tidb_executor::EvalError::Unsupported("invalid UTF-8 string datum")
+        ))
+    ));
+    assert_eq!(error.to_mysql_error().code, 1105);
+    assert!(warnings_of(&session).is_empty());
+}
+
+#[test]
+fn evaluated_ascii_uuid_translate_zero_slots_preserve_resources_and_flag_warnings() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run(
+        "CREATE TABLE shared_uuid_translate_zero (id INT PRIMARY KEY, u VARCHAR(64), b VARBINARY(16), \
+         flag VARCHAR(8), s VARCHAR(16), f VARCHAR(16), t VARCHAR(16), l VARCHAR(8) CHARSET latin1)",
+    ).unwrap();
+    session.run(
+        "INSERT INTO shared_uuid_translate_zero VALUES \
+         (1,'6ccd780c-baba-1026-9564-5b8c656024db',x'6CCD780CBABA102695645B8C656024DB','0','abcabc','ab','xy',0xFF),\
+         (2,NULL,NULL,'a',NULL,'ab','xy',0xFF)",
+    ).unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    for (expression, id, warned) in [
+        ("IS_UUID(u)", 1, false),
+        ("UUID_VERSION(u)", 1, false),
+        ("UUID_TIMESTAMP(u)", 1, false),
+        ("UUID_TO_BIN(u,flag)", 1, false),
+        ("BIN_TO_UUID(b,flag)", 1, false),
+        ("TRANSLATE(s,f,t)", 1, false),
+        ("IS_UUID(u)", 2, false),
+        ("UUID_VERSION(u)", 2, false),
+        ("UUID_TIMESTAMP(u)", 2, false),
+        ("UUID_TO_BIN(u,flag)", 2, false),
+        ("BIN_TO_UUID(b,flag)", 2, true),
+        ("TRANSLATE(s,l,t)", 2, false),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_uuid_translate_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("UUID/TRANSLATE must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        if warned {
+            assert_eq!(
+                session.warnings(),
+                &[SqlWarning {
+                    level: WarningLevel::Warning,
+                    code: 1292,
+                    message: "Truncated incorrect INTEGER value: 'a'".to_owned(),
+                }],
+                "{sql}"
+            );
+        } else {
+            assert!(warnings_of(&session).is_empty(), "{sql}");
+        }
+    }
+    // The same nonbinary FF column is demanded for a non-NULL source: the
+    // original preparation error, not a substituted pool failure, must win.
+    let error = session
+        .run_with_columns("SELECT TRANSLATE(s,l,t) FROM shared_uuid_translate_zero WHERE id=1")
+        .expect_err("demanded UTF-8 preparation must precede pool admission");
+    assert!(matches!(
+        &error,
+        DriverError::Exec(tidb_executor::ExecError::Eval(
+            tidb_executor::EvalError::Unsupported("invalid UTF-8 string datum")
+        ))
+    ));
+    assert!(warnings_of(&session).is_empty());
+}

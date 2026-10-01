@@ -18,7 +18,10 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::coerce::coerce_str;
-use crate::{Datum, Decimal, EvalError};
+use crate::{Datum, EvalError};
+use tidb_query_expr::{
+    format_uuid_native as format_uuid, NATIVE_UUID_EPOCH_100NS as UUID_EPOCH_100NS,
+};
 use tidb_util::vitess::hash_uint64;
 
 /// Dispatches this family's builtins; `None` if `name` isn't one of them.
@@ -47,11 +50,11 @@ pub(crate) fn dispatch_in(
         // ETJson, and ETVectorFloat32 remain explicit boundaries because the
         // seed Datum domain intentionally has no corresponding variants.
         ("NAME_CONST", [_, value]) => Some(Ok(value.clone())),
-        ("IS_UUID", [value]) => Some(is_uuid(value)),
-        ("UUID_VERSION", [value]) => Some(uuid_version(value)),
-        ("UUID_TIMESTAMP", [value]) => Some(uuid_timestamp(value)),
-        ("UUID_TO_BIN", [value]) => Some(uuid_to_bin(value, None)),
-        ("UUID_TO_BIN", [value, flag]) => Some(uuid_to_bin(value, Some(flag))),
+        ("IS_UUID", [value]) => Some(is_uuid(value, ctx)),
+        ("UUID_VERSION", [value]) => Some(uuid_version(value, ctx)),
+        ("UUID_TIMESTAMP", [value]) => Some(uuid_timestamp(value, ctx)),
+        ("UUID_TO_BIN", [value]) => Some(uuid_to_bin(value, None, ctx)),
+        ("UUID_TO_BIN", [value, flag]) => Some(uuid_to_bin(value, Some(flag), ctx)),
         ("BIN_TO_UUID", [value]) => Some(bin_to_uuid(ctx, value, None)),
         ("BIN_TO_UUID", [value, flag]) => Some(bin_to_uuid(ctx, value, Some(flag))),
         ("TIDB_SHARD", [value]) => Some(tidb_shard(value, ctx)),
@@ -185,27 +188,40 @@ fn uuid_v7() -> Result<Datum, EvalError> {
 /// The Go signature is binary `ETString`: successful output is therefore raw
 /// sixteen-byte data, not UTF-8 text.  `StringDatum` and `Bytes` both retain
 /// those bytes; numeric values use the source's `ETString` coercion.  The
-/// strict whitespace check is intentionally performed before `parse_uuid`,
-/// because MySQL rejects surrounding spaces although `google/uuid.Parse`
-/// accepts the inner spelling.
-fn uuid_to_bin(value: &Datum, flag: Option<&Datum>) -> Result<Datum, EvalError> {
-    let Some(input) = eval_string_bytes(value)? else {
+/// strict whitespace check runs before parsing inside the worker, because
+/// MySQL rejects surrounding spaces although `google/uuid.Parse` accepts the
+/// inner spelling.
+fn uuid_to_bin(
+    value: &Datum,
+    flag: Option<&Datum>,
+    ctx: &dyn crate::Columns,
+) -> Result<Datum, EvalError> {
+    // The first complete call returns actual parsed UUID bytes, not a marker.
+    // Invalid text and NULL skip flag coercion. Admission therefore precedes
+    // the as-yet-undemanded flag; success pays for two leases/result transport
+    // and two one-shot workers when no context capability is available.
+    let parsed = crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::UuidToBinParseNative,
+        ctx,
+        || Ok(crate::tikv::EvaluatedArgs::Bytes(eval_string_bytes(value)?)),
+        crate::tikv::EvaluatedBytesResult::into_bytes,
+    )?;
+    let Some(parsed) = parsed else {
         return Ok(Datum::Null);
     };
-    if std::str::from_utf8(&input)
-        .map(|text| text.trim() != text)
-        .unwrap_or(false)
-    {
-        return Err(EvalError::Unsupported("invalid UUID_TO_BIN whitespace"));
-    }
-    let Some(uuid) = parse_uuid(&input) else {
-        return Err(EvalError::Unsupported("invalid UUID for UUID_TO_BIN"));
-    };
-    let mut output = uuid;
-    if eval_int_flag(flag) != 0 {
-        output = swap_binary_uuid(&output);
-    }
-    Ok(Datum::Bytes(output.to_vec()))
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::UuidToBinSwapNative,
+        ctx,
+        || {
+            // Missing and actual NULL flags retain their original quiet zero.
+            let flag = eval_int_flag(flag);
+            Ok(crate::tikv::EvaluatedArgs::BytesInt(
+                Some(parsed),
+                Some(flag),
+            ))
+        },
+        |computed| Ok(computed.into_bytes()?.map_or(Datum::Null, Datum::Bytes)),
+    )
 }
 
 /// `BIN_TO_UUID(binary_uuid, swap_flag)`, ported from
@@ -219,48 +235,34 @@ fn bin_to_uuid(
     value: &Datum,
     flag: Option<&Datum>,
 ) -> Result<Datum, EvalError> {
-    // go's flag argument reaches the signature through `WrapWithCastAsInt`,
-    // a plan-time CAST whose constant fold warns `Truncated incorrect
-    // INTEGER value` BEFORE the 1411 payload error is raised at exec -- so
-    // the warning survives the error (captured: BIN_TO_UUID('中文测试',
-    // 'ünïcödé') answers the error with the truncation warning kept).
-    // Coercing the flag ahead of the payload check reproduces that buffer.
-    let flag_int = match flag {
-        Some(flag @ (Datum::String(_) | Datum::Bytes(_))) => {
-            crate::cast::report_int_truncation(flag, ctx)?;
-            crate::cast::to_i64_signed(flag)
-        }
-        Some(flag) if !matches!(flag, Datum::Null) => crate::cast::to_i64_signed(flag),
-        _ => 0,
-    };
-    let Some(input) = eval_string_bytes(value)? else {
-        return Ok(Datum::Null);
-    };
-    if input.len() != 16 {
-        // go `builtinBinToUUIDSig.evalString`:
-        // `types.ErrWrongValueForType("string", str, "bin_to_uuid")` (1411) —
-        // the message word is the WIRE class "string" even though the check
-        // is the 16-byte payload length (captured on the oracle:
-        // "Incorrect string value: '1' for function bin_to_uuid").
-        return Err(EvalError::WrongValueForType {
-            value_class: "string",
-            value: String::from_utf8_lossy(&input).into_owned(),
-            function: "bin_to_uuid",
-        });
-    }
-    let mut uuid = [0_u8; 16];
-    uuid.copy_from_slice(&input);
-    let output = if flag_int != 0 {
-        format_uuid_swapped(&uuid)
-    } else {
-        format_uuid(&uuid)
-    };
-    Ok(Datum::new_string(output))
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::BinToUuidNative,
+        ctx,
+        || {
+            // Preserve the original flag warning/cast before even a NULL
+            // payload. The worker owns length validation and its 1411 cause.
+            let flag_int = match flag {
+                Some(flag @ (Datum::String(_) | Datum::Bytes(_))) => {
+                    crate::cast::report_int_truncation(flag, ctx)?;
+                    crate::cast::to_i64_signed(flag)
+                }
+                Some(flag) if !matches!(flag, Datum::Null) => crate::cast::to_i64_signed(flag),
+                _ => 0,
+            };
+            let input = eval_string_bytes(value)?;
+            Ok(crate::tikv::EvaluatedArgs::BytesInt(input, Some(flag_int)))
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 
 /// The Go `EvalString` payload boundary used by UUID_TO_BIN/BIN_TO_UUID.
 /// String/bytes datums are returned byte-for-byte; scalar numeric values are
-/// stringified, while NULL propagates without evaluating the optional flag.
+/// stringified. Callers retain their distinct optional-flag demand order.
 fn eval_string_bytes(value: &Datum) -> Result<Option<Vec<u8>>, EvalError> {
     crate::coerce::coerce_str_bytes(value)
 }
@@ -269,64 +271,6 @@ fn eval_int_flag(flag: Option<&Datum>) -> i64 {
     flag.filter(|value| !matches!(value, Datum::Null))
         .map(crate::cast::to_i64_signed)
         .unwrap_or(0)
-}
-
-/// Go's `swapBinaryUUID` permutation, shared by both directions.  Applying it
-/// to the sixteen bytes before formatting is equivalent to Go's
-/// `swapStringUUID` output permutation.
-fn swap_binary_uuid(uuid: &[u8; 16]) -> [u8; 16] {
-    [
-        uuid[6], uuid[7], uuid[4], uuid[5], uuid[0], uuid[1], uuid[2], uuid[3], uuid[8], uuid[9],
-        uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15],
-    ]
-}
-
-fn format_uuid(uuid: &[u8; 16]) -> String {
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        uuid[0],
-        uuid[1],
-        uuid[2],
-        uuid[3],
-        uuid[4],
-        uuid[5],
-        uuid[6],
-        uuid[7],
-        uuid[8],
-        uuid[9],
-        uuid[10],
-        uuid[11],
-        uuid[12],
-        uuid[13],
-        uuid[14],
-        uuid[15]
-    )
-}
-
-/// Go's `swapStringUUID` is not the inverse byte permutation used by
-/// UUID_TO_BIN: it rearranges the textual UUID fields as `B-C-A_suffix-A_prefix`.
-/// Formatting from bytes keeps that exact field boundary without any lossy
-/// UTF-8 round trip.
-fn format_uuid_swapped(uuid: &[u8; 16]) -> String {
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        uuid[4],
-        uuid[5],
-        uuid[6],
-        uuid[7],
-        uuid[2],
-        uuid[3],
-        uuid[0],
-        uuid[1],
-        uuid[8],
-        uuid[9],
-        uuid[10],
-        uuid[11],
-        uuid[12],
-        uuid[13],
-        uuid[14],
-        uuid[15]
-    )
 }
 
 /// `TIDB_SHARD(value)`, ported from `builtinTidbShardSig.evalInt` in
@@ -367,42 +311,30 @@ fn vitess_hash(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalErr
 /// and its 38-byte "Microsoft style" form where only the *middle* 36 bytes
 /// are examined. Keep that last behavior: it is explicitly covered by
 /// TiDB's `TestIsUUID` and is why this is not a canonical-format validator.
-fn is_uuid(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(value) = eval_string_bytes(value)? else {
-        return Ok(Datum::Null);
-    };
-    // Go strings are byte strings. `strings.TrimSpace` decodes malformed
-    // bytes as RuneError (which is not whitespace), while still trimming
-    // valid whitespace around them. Lossy decoding has exactly that property;
-    // the original bytes remain authoritative for `uuid.Parse` below.
-    let trim_view = String::from_utf8_lossy(&value);
-    if trim_view.trim() != trim_view.as_ref() {
-        return Ok(Datum::Int(0));
-    }
-    Ok(Datum::Int(i64::from(parse_uuid(&value).is_some())))
+fn is_uuid(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::IsUuidNative,
+        ctx,
+        || eval_string_bytes(value),
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
 }
 
 /// `UUID_VERSION(value)`, ported from `builtinUUIDVersionSig.evalInt` in
 /// `pkg/expression/builtin_miscellaneous.go`.
 ///
 /// TiDB invokes `github.com/google/uuid.Parse` over an `ETString` argument,
-/// then returns the high nibble of UUID byte 6. The scalar domain retains the
-/// string coercion and all parser-accepted UUID spellings. It deliberately
-/// does not reproduce TiDB's diagnostic payload for malformed UUIDs (error
-/// 1411 and its value/type text): [`EvalError`] has no SQL error-code carrier
-/// yet, so malformed input is an evaluator error instead. The current
-/// [`Datum::String`] domain is UTF-8 text rather than TiDB's raw `BINARY` byte
-/// strings, so invalid-UTF-8 arguments and their charset/binary metadata are
-/// not representable; every successful UUID spelling is ASCII. No collation
-/// or warning behavior is omitted for successful scalar values.
-fn uuid_version(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(value) = coerce_str(value)? else {
-        return Ok(Datum::Null);
-    };
-    let Some(bytes) = parse_uuid(value.as_bytes()) else {
-        return Err(EvalError::Unsupported("invalid UUID for UUID_VERSION"));
-    };
-    Ok(Datum::Int(i64::from(bytes[6] >> 4)))
+/// then returns the high nibble of UUID byte 6. Preserve the original strict
+/// UTF-8 string coercion before admission; the worker parses all accepted UUID
+/// spellings. Its typed cause retains the original Unsupported diagnostic for
+/// malformed UUIDs rather than changing this frontend's policy to error 1411.
+fn uuid_version(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::UuidVersionNative,
+        ctx,
+        || Ok(coerce_str(value)?.map(String::into_bytes)),
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
 }
 
 /// `UUID_TIMESTAMP(value)`, ported from `builtinUUIDTimestampSig.evalDecimal`
@@ -410,123 +342,17 @@ fn uuid_version(value: &Datum) -> Result<Datum, EvalError> {
 ///
 /// TiDB accepts the UUID spellings parsed by `google/uuid.Parse`, returns
 /// `NULL` for a valid UUID that does not carry a timestamp, and renders the
-/// Version 1, 6, and 7 time as an exact `DECIMAL(18,6)`. The timestamp
-/// decoding below is a direct port of `google/uuid.UUID.Time` and
-/// `Time.UnixTime` from TiDB's pinned module: the 1582 UUID epoch is converted
-/// to Unix microseconds before making a fixed six-place decimal. Invalid text
-/// remains an evaluator error, matching TiDB's error outcome; `EvalError`
-/// cannot yet preserve TiDB error 1411's diagnostic payload.
-fn uuid_timestamp(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(value) = coerce_str(value)? else {
-        return Ok(Datum::Null);
-    };
-    let Some(uuid) = parse_uuid(value.as_bytes()) else {
-        return Err(EvalError::Unsupported("invalid UUID for UUID_TIMESTAMP"));
-    };
-
-    let timestamp_100ns = match uuid[6] >> 4 {
-        1 => uuid_v1_timestamp_100ns(&uuid),
-        6 => uuid_v6_timestamp_100ns(&uuid),
-        7 => uuid_v7_timestamp_100ns(&uuid),
-        _ => return Ok(Datum::Null),
-    };
-    // `google/uuid.Time.UnixTime` subtracts the UUID epoch in 100ns ticks,
-    // then TiDB divides its nanoseconds by 1000 and rounds at six decimal
-    // places. The result is precisely truncation toward zero to microseconds.
-    let unix_micros = (timestamp_100ns - UUID_EPOCH_100NS) / 10;
-    Ok(Datum::Decimal(decimal_micros(unix_micros)))
-}
-
-const UUID_EPOCH_100NS: i64 = 122_192_928_000_000_000;
-
-fn uuid_v1_timestamp_100ns(uuid: &[u8; 16]) -> i64 {
-    i64::from(u32::from_be_bytes([uuid[0], uuid[1], uuid[2], uuid[3]]))
-        | (i64::from(u16::from_be_bytes([uuid[4], uuid[5]])) << 32)
-        | (i64::from(u16::from_be_bytes([uuid[6], uuid[7]]) & 0x0fff) << 48)
-}
-
-fn uuid_v6_timestamp_100ns(uuid: &[u8; 16]) -> i64 {
-    (i64::from(u32::from_be_bytes([uuid[0], uuid[1], uuid[2], uuid[3]])) << 28)
-        | (i64::from(u16::from_be_bytes([uuid[4], uuid[5]])) << 12)
-        | i64::from(u16::from_be_bytes([uuid[6], uuid[7]]) & 0x0fff)
-}
-
-fn uuid_v7_timestamp_100ns(uuid: &[u8; 16]) -> i64 {
-    let first_eight = u64::from_be_bytes([
-        uuid[0], uuid[1], uuid[2], uuid[3], uuid[4], uuid[5], uuid[6], uuid[7],
-    ]);
-    ((first_eight >> 16) * 10_000) as i64 + UUID_EPOCH_100NS
-}
-
-fn decimal_micros(micros: i64) -> Decimal {
-    let (negative, magnitude) = if micros < 0 {
-        (true, micros.unsigned_abs())
-    } else {
-        (false, micros as u64)
-    };
-    let value = format!("{}.{:06}", magnitude / 1_000_000, magnitude % 1_000_000);
-    // `Decimal::from_literal` intentionally accepts a sign-free AST literal,
-    // so construct and negate only after parsing the magnitude.
-    let value = Decimal::from_literal(&value);
-    if negative {
-        value.negate()
-    } else {
-        value
-    }
-}
-
-/// Exact parse shape of the `google/uuid.Parse` implementation TiDB calls,
-/// decoded to its 16 bytes. Parsing works on bytes because Go selects forms
-/// by byte length and must retain its intentionally permissive 38-byte form.
-fn parse_uuid(value: &[u8]) -> Option<[u8; 16]> {
-    let canonical = match value.len() {
-        36 => value,
-        45 if value[..9].eq_ignore_ascii_case(b"urn:uuid:") => &value[9..],
-        // `google/uuid.Parse` deliberately inspects only the inner 36 bytes
-        // of a 38-byte value; retain its ignored final byte exactly.
-        38 => &value[1..37],
-        32 => value,
-        _ => return None,
-    };
-
-    let mut bytes = [0_u8; 16];
-    if canonical.len() == 32 {
-        for (byte, pair) in bytes.iter_mut().zip(canonical.as_chunks::<2>().0) {
-            *byte = hex_pair(pair[0], pair[1])?;
-        }
-        return Some(bytes);
-    }
-
-    if canonical.len() != 36
-        || canonical[8] != b'-'
-        || canonical[13] != b'-'
-        || canonical[18] != b'-'
-        || canonical[23] != b'-'
-    {
-        return None;
-    }
-
-    let mut hex = canonical.iter().copied().filter(|byte| *byte != b'-');
-    for byte in &mut bytes {
-        *byte = hex_pair(hex.next()?, hex.next()?)?;
-    }
-    if hex.next().is_some() {
-        return None;
-    }
-    Some(bytes)
-}
-
-fn hex_pair(high: u8, low: u8) -> Option<u8> {
-    Some((hex_nibble(high)? << 4) | hex_nibble(low)?)
-}
-
-fn hex_nibble(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
+/// Version 1, 6, and 7 time as an exact `DECIMAL(18,6)`. The worker owns the
+/// `google/uuid.UUID.Time` / `Time.UnixTime` decoding, truncation toward zero
+/// to microseconds and fixed six-place decimal construction. Original strict
+/// string coercion stays in the guard; malformed UUIDs retain Unsupported.
+fn uuid_timestamp(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::UuidTimestampNative,
+        ctx,
+        || Ok(coerce_str(value)?.map(String::into_bytes)),
+        crate::tikv::EvaluatedBytesResult::into_decimal_datum,
+    )
 }
 
 #[cfg(test)]

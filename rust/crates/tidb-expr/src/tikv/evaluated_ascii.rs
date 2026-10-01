@@ -1251,6 +1251,59 @@ impl<'a> Invocation<'a> {
                         message.to_owned(),
                     ));
                 }
+                match (operation, report.sql_failure()) {
+                    (
+                        EvaluatedBytesOp::UuidToBinParseNative,
+                        Some(EvaluatedSqlFailureKind::UuidToBinWhitespace),
+                    ) => {
+                        return AsciiBoundaryError::Frontend(EvalError::Unsupported(
+                            "invalid UUID_TO_BIN whitespace",
+                        ));
+                    }
+                    (
+                        EvaluatedBytesOp::UuidToBinParseNative,
+                        Some(EvaluatedSqlFailureKind::UuidToBinInvalid),
+                    ) => {
+                        return AsciiBoundaryError::Frontend(EvalError::Unsupported(
+                            "invalid UUID for UUID_TO_BIN",
+                        ));
+                    }
+                    (
+                        EvaluatedBytesOp::UuidVersionNative,
+                        Some(EvaluatedSqlFailureKind::UuidVersionInvalid),
+                    ) => {
+                        return AsciiBoundaryError::Frontend(EvalError::Unsupported(
+                            "invalid UUID for UUID_VERSION",
+                        ));
+                    }
+                    (
+                        EvaluatedBytesOp::UuidTimestampNative,
+                        Some(EvaluatedSqlFailureKind::UuidTimestampInvalid),
+                    ) => {
+                        return AsciiBoundaryError::Frontend(EvalError::Unsupported(
+                            "invalid UUID for UUID_TIMESTAMP",
+                        ));
+                    }
+                    (
+                        EvaluatedBytesOp::BinToUuidNative,
+                        Some(EvaluatedSqlFailureKind::BinToUuidInvalidLength),
+                    ) => {
+                        // The receipt owns the exact rejected byte payload;
+                        // never re-read or revalidate the frontend argument.
+                        let Some(input) = report.bin_to_uuid_input() else {
+                            return AsciiBoundaryError::Scope {
+                                kind: ScopeFailureKind::Contract,
+                                reason: "BIN_TO_UUID length receipt lacks its input payload",
+                            };
+                        };
+                        return AsciiBoundaryError::Frontend(EvalError::WrongValueForType {
+                            value_class: "string",
+                            value: String::from_utf8_lossy(input).into_owned(),
+                            function: "bin_to_uuid",
+                        });
+                    }
+                    _ => {}
+                }
             }
             AsciiBoundaryError::Kernel(ExpressionRuntimeFailure::from_ascii_local(
                 report.into_error(),
@@ -1626,6 +1679,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::WeekNullNative
             | EvaluatedBytesOp::WeekCoreNative
             | EvaluatedBytesOp::DateFormatMissingNative
+            | EvaluatedBytesOp::IsUuidNative
+            | EvaluatedBytesOp::UuidVersionNative
             | EvaluatedBytesOp::AbsIntNative
             | EvaluatedBytesOp::AbsUIntNative
             | EvaluatedBytesOp::CeilIntNative
@@ -1719,7 +1774,13 @@ fn materialize_computed(
             | EvaluatedBytesOp::DateFormatNullNative
             | EvaluatedBytesOp::DurationTextProbeNative
             | EvaluatedBytesOp::TimeFormatTextNative
-            | EvaluatedBytesOp::LastDayTextNative,
+            | EvaluatedBytesOp::LastDayTextNative
+            | EvaluatedBytesOp::UuidToBinParseNative
+            | EvaluatedBytesOp::UuidToBinSwapNative
+            | EvaluatedBytesOp::BinToUuidNative
+            | EvaluatedBytesOp::TranslateUtf8Native
+            | EvaluatedBytesOp::TranslateBinaryNative
+            | EvaluatedBytesOp::TranslateNullNative,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {
@@ -1790,7 +1851,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::CeilDecimalNative
             | EvaluatedBytesOp::FloorDecimalNative
             | EvaluatedBytesOp::RoundDecimalNative
-            | EvaluatedBytesOp::TruncateDecimalNative,
+            | EvaluatedBytesOp::TruncateDecimalNative
+            | EvaluatedBytesOp::UuidTimestampNative,
             ComputedValue::Decimal(value),
         ) => {
             match value.metadata() {

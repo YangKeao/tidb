@@ -38,121 +38,70 @@ pub(crate) fn dispatch(
         ("EXPORT_SET", 3..=5) => Some(export_set_in(vals, ctx)),
         ("LTRIM", 1) => Some(ltrim(&vals[0], ctx)),
         ("RTRIM", 1) => Some(rtrim(&vals[0], ctx)),
-        ("TRANSLATE", 3) => Some(translate(vals)),
+        ("TRANSLATE", 3) => Some(translate(vals, ctx)),
         _ => None,
     }
 }
 
-/// `TRANSLATE(str, from_str, to_str)`, ported from `builtinTranslateUTF8Sig`
-/// (`buildTranslateMap4UTF8`) in `pkg/expression/builtin_string.go` — the
-/// default, non-binary charset path. Each character of `from_str` maps to the
-/// character at the same index in `to_str`; characters of `from_str` beyond
-/// `to_str`'s length are deleted; and for a repeated `from_str` character the
-/// first occurrence wins. Any NULL argument yields NULL.
+/// `TRANSLATE` retains its original signature and left-to-right NULL demand.
+/// Any binary argument selects byte substitution, but only arg 0 selects the
+/// result charset. Both substitution maps and first-occurrence-wins policy
+/// belong to the worker, including deletion when `from` outlasts `to`.
 ///
-/// `translateFunctionClass.getFunction` selects the BINARY signature when any
-/// of the three arguments is a binary string (`types.IsBinaryStr(args[0])
-/// || ... args[1] ... || ... args[2] ...`), which [`translate_binary`] ports;
-/// the charset test itself is [`is_binary_str`], the same reading every other
-/// binary/UTF-8 signature pair in this crate makes.
-fn translate(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.iter().take(3).any(is_binary_str) {
-        return translate_binary(vals);
-    }
-    let Some(src) = coerce_str(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    let Some(from) = coerce_str(&vals[1])? else {
-        return Ok(Datum::Null);
-    };
-    let Some(to) = coerce_str(&vals[2])? else {
-        return Ok(Datum::Null);
-    };
-
-    let from: Vec<char> = from.chars().collect();
-    let to: Vec<char> = to.chars().collect();
-    let min_len = from.len().min(to.len());
-
-    // Build the map in Go's descending order so that, for a repeated `from`
-    // character, the first occurrence (lowest index, inserted last) wins.
-    // Characters beyond `to`'s length delete (`None`); the rest map to `to`.
-    let mut map: std::collections::HashMap<char, Option<char>> = std::collections::HashMap::new();
-    for idx in (to.len()..from.len()).rev() {
-        map.insert(from[idx], None);
-    }
-    for idx in (0..min_len).rev() {
-        map.insert(from[idx], Some(to[idx]));
-    }
-
-    let mut out = String::with_capacity(src.len());
-    for ch in src.chars() {
-        match map.get(&ch) {
-            Some(Some(replacement)) => out.push(*replacement),
-            Some(None) => {} // character deleted
-            None => out.push(ch),
+/// Operation selection needs the actual coercion outcome. With no selected-op
+/// driver, prepare the original inputs before capability discovery/scope guard
+/// and admission, then make one ordinary call. An observed NULL uses its own
+/// witness without pretending that any undemanded suffix was a SQL NULL.
+fn translate(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    let binary = vals.iter().take(3).any(is_binary_str);
+    let coerce = |value: &Datum| -> Result<Option<Vec<u8>>, EvalError> {
+        if binary {
+            coerce_str_bytes(value)
+        } else {
+            Ok(coerce_str(value)?.map(String::into_bytes))
         }
-    }
-    Ok(Datum::new_string(out))
-}
-
-/// `builtinTranslateBinarySig.evalString` + `buildTranslateMap4Binary`: the
-/// same substitution over BYTES rather than runes.
-///
-/// The two signatures are not a formatting difference. `TRANSLATE('中文',
-/// CAST('中' AS BINARY), 'ab')` maps the three bytes `E4 B8 AD` of `中`
-/// SEPARATELY -- `E4` to `a`, `B8` to `b`, and `AD` to deletion, because it
-/// has no partner in `to` -- so TiDB answers `ab文` where the rune path would
-/// answer `a文`. Captured from TiDB:
-///
-/// ```text
-/// select translate('中文', cast('中' as binary), 'ab');    -> ab文
-/// select hex(translate(cast('中' as binary), '中', 'x'));  -> 78
-/// select hex(translate(cast('abc' as binary),
-///                      cast('ab' as binary),
-///                      cast('X' as binary)));              -> 5863
-/// ```
-///
-/// Go's `invalidByte = 256` sentinel is `None` here: the map's value type
-/// only exists in Go because a `map[byte]byte` has no spare code point for
-/// "delete", and `Option<u8>` says the same thing without one.
-///
-/// The RESULT charset is arg 0's alone -- `getFunction` calls
-/// `SetBinFlagOrBinStr(argType, bf.tp)` with `argType = args[0]` -- which is
-/// why the signature can be selected by a binary `from`/`to` while the answer
-/// stays a character string.
-fn translate_binary(vals: &[Datum]) -> Result<Datum, EvalError> {
-    let Some(src) = coerce_str_bytes(&vals[0])? else {
-        return Ok(Datum::Null);
     };
-    let Some(from) = coerce_str_bytes(&vals[1])? else {
-        return Ok(Datum::Null);
+    let (operation, ready) = 'prepare: {
+        let Some(src) = coerce(&vals[0])? else {
+            break 'prepare (
+                EvaluatedBytesOp::TranslateNullNative,
+                EvaluatedArgs::NullWitness(None),
+            );
+        };
+        let Some(from) = coerce(&vals[1])? else {
+            break 'prepare (
+                EvaluatedBytesOp::TranslateNullNative,
+                EvaluatedArgs::NullWitness(None),
+            );
+        };
+        let Some(to) = coerce(&vals[2])? else {
+            break 'prepare (
+                EvaluatedBytesOp::TranslateNullNative,
+                EvaluatedArgs::NullWitness(None),
+            );
+        };
+        let operation = if binary {
+            EvaluatedBytesOp::TranslateBinaryNative
+        } else {
+            EvaluatedBytesOp::TranslateUtf8Native
+        };
+        (
+            operation,
+            EvaluatedArgs::Bytes3([Some(src), Some(from), Some(to)]),
+        )
     };
-    let Some(to) = coerce_str_bytes(&vals[2])? else {
-        return Ok(Datum::Null);
-    };
-
-    // Go builds the map in DESCENDING index order in both loops, so for a
-    // repeated `from` byte the lowest index is inserted last and wins.
-    let mut map: std::collections::HashMap<u8, Option<u8>> = std::collections::HashMap::new();
-    for idx in (to.len()..from.len()).rev() {
-        map.insert(from[idx], None);
-    }
-    for idx in (0..from.len().min(to.len())).rev() {
-        map.insert(from[idx], Some(to[idx]));
-    }
-
-    let mut out = Vec::with_capacity(src.len());
-    for byte in src {
-        match map.get(&byte) {
-            Some(Some(replacement)) => out.push(*replacement),
-            Some(None) => {} // byte deleted
-            None => out.push(byte),
-        }
-    }
-    if is_binary_str(&vals[0]) {
-        return Ok(Datum::new_bytes(out));
-    }
-    Ok(Datum::new_string(out))
+    crate::tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || Ok(ready),
+        |computed| {
+            Ok(match computed.into_bytes()? {
+                None => Datum::Null,
+                Some(bytes) if is_binary_str(&vals[0]) => Datum::new_bytes(bytes),
+                Some(bytes) => Datum::new_string(bytes),
+            })
+        },
+    )
 }
 
 /// `LTRIM(str)`, ported from `builtinLTrimSig.evalString` in
