@@ -15,64 +15,21 @@
 //! default), with both binary and source-registered collation matching.
 //! Called directly from `crate::eval_in`'s `Expr::Like` arm.
 
-use tidb_datatype::{Collation, Collator, WildcardPattern};
-use tidb_util::stringutil::{lower_one_string, lower_one_string_excluding_escape_char};
+use tidb_datatype::Collation;
+use tidb_query_expr::{native_ilike_match, native_like_match, NativeLikeInvocation};
 
-/// Go `collate.WildcardPattern`, retained by `builtinLikeSig.patternCache`.
-/// The compiled wildcard tokens are immutable and safe to share across rows
-/// in one statement context.
-#[derive(Clone, Debug)]
-pub(crate) struct CompiledLikePattern {
-    pattern: WildcardPattern,
-}
+use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp, EvaluatedBytesResult};
+use crate::{Columns, Datum, EvalError};
 
-impl CompiledLikePattern {
-    pub(crate) fn new(pattern: &[u8], escape: u8, collation: Collation) -> Self {
-        Self {
-            pattern: collation.pattern(pattern, escape),
-        }
-    }
-
-    pub(crate) fn is_match(&self, text: &[u8]) -> bool {
-        self.pattern.is_match(text)
-    }
-}
-
-/// Go `builtinIlikeSig.patternCache` stores the lowercased binary wildcard
-/// pattern and its possibly transformed escape byte.
-#[derive(Clone, Debug)]
-pub(crate) struct CompiledIlikePattern {
-    pattern: CompiledLikePattern,
-}
-
-impl CompiledIlikePattern {
-    pub(crate) fn new(pattern: &[u8], escape: u8, collation: Collation) -> Self {
-        let (pattern_bytes, escape) = if escape.is_ascii_alphabetic() {
-            lower_ascii_excluding_escape(pattern, escape)
-        } else {
-            (lower_ascii(pattern), escape)
-        };
-        let binary_collation = if collation == Collation::Binary {
-            Collation::Binary
-        } else {
-            Collation::Utf8Mb4Bin
-        };
-        Self {
-            pattern: CompiledLikePattern::new(&pattern_bytes, escape, binary_collation),
-        }
-    }
-
-    pub(crate) fn is_match(&self, text: &[u8]) -> bool {
-        let mut text = text.to_vec();
-        lower_one_string(&mut text);
-        self.pattern.is_match(&text)
-    }
-}
+pub(crate) use tidb_query_expr::{
+    NativeCompiledIlikePattern as CompiledIlikePattern,
+    NativeCompiledLikePattern as CompiledLikePattern,
+};
 
 /// Matches `text` against a `LIKE` pattern (`%` any run, `_` one character),
-/// case-sensitively. Greedy scan with backtracking on the most recent `%`.
-/// `escape` is `tidb_ast::Expr::Like::escape` passed straight through —
-/// see `compile_like`'s own doc for its exact meaning.
+/// case-sensitively through the shared pure matcher. `None` selects the
+/// default backslash escape; `Some(0)` remains a NUL escape.
+#[cfg(test)]
 pub(crate) fn like_match(
     text: impl AsRef<[u8]>,
     pattern: impl AsRef<[u8]>,
@@ -84,20 +41,22 @@ pub(crate) fn like_match(
 /// Matches a pattern using one of the collations translated into
 /// `tidb-datatype`.
 ///
-/// The datatype facade selects byte, rune-identity, or collation-weight
-/// matching. Dynamic and statement-cached calls share the TiKV kernel, without
-/// applying PAD SPACE preprocessing to literal characters. The default of
-/// [`like_match`] remains `utf8mb4_bin`; this entry point takes an explicit
-/// collation without inventing or re-reading session metadata.
+/// The shared pure matcher selects byte, rune-identity, or collation-weight
+/// matching without applying PAD SPACE preprocessing to literal characters.
+/// This utility does not acquire a worker scope; expression evaluation uses
+/// [`like_match_with_collation_in`] to preserve admission errors.
 pub fn like_match_with_collation(
     text: impl AsRef<[u8]>,
     pattern: impl AsRef<[u8]>,
     escape: Option<u8>,
     collation: Collation,
 ) -> bool {
-    let text = text.as_ref();
-    let pattern = pattern.as_ref();
-    Collator::New(collation).like_match(text, pattern, escape.unwrap_or(b'\\'))
+    native_like_match(
+        text.as_ref(),
+        pattern.as_ref(),
+        escape.unwrap_or(b'\\'),
+        collation.native_policy(),
+    )
 }
 
 /// Matches TiDB's `ILIKE` semantics: ASCII letters compare without case,
@@ -119,34 +78,73 @@ pub fn ilike_match_with_collation(
     escape: u8,
     collation: Collation,
 ) -> bool {
-    let text = lower_ascii(text.as_ref());
-    let (pattern, escape) = if escape.is_ascii_alphabetic() {
-        lower_ascii_excluding_escape(pattern.as_ref(), escape)
-    } else {
-        (lower_ascii(pattern.as_ref()), escape)
-    };
-    let binary_collation = if collation == Collation::Binary {
-        Collation::Binary
-    } else {
-        Collation::Utf8Mb4Bin
-    };
-    like_match_with_collation(text, pattern, Some(escape), binary_collation)
+    native_ilike_match(
+        text.as_ref(),
+        pattern.as_ref(),
+        escape,
+        collation.native_policy(),
+    )
 }
 
-fn lower_ascii(value: &[u8]) -> Vec<u8> {
-    let mut value = value.to_vec();
-    lower_one_string(&mut value);
-    value
+fn evaluate_like_prepared_in<T>(
+    ilike: bool,
+    ctx: &dyn Columns,
+    coerce: impl FnOnce() -> Result<EvaluatedArgs, EvalError>,
+    pack: impl FnOnce(EvaluatedBytesResult) -> Result<T, EvalError>,
+) -> Result<T, EvalError> {
+    crate::tikv::evaluate_prepared_args_in(
+        ctx,
+        || {
+            let ready = coerce()?;
+            let operation = if matches!(&ready, EvaluatedArgs::NullWitness(None)) {
+                EvaluatedBytesOp::LikeNullIntNative
+            } else if ilike {
+                EvaluatedBytesOp::IlikeNative
+            } else {
+                EvaluatedBytesOp::LikeNative
+            };
+            Ok((operation, ready))
+        },
+        pack,
+    )
 }
 
-/// Port `stringutil.LowerOneStringExcludeEscapeChar` without applying Unicode
-/// case folding.  The `escaped` state is intentionally carried across an
-/// escape marker for exactly one following character, matching Go's byte
-/// implementation (including the `AA` -> `Aa` example for escape `A`).
-fn lower_ascii_excluding_escape(value: &[u8], escape: u8) -> (Vec<u8>, u8) {
-    let mut value = value.to_vec();
-    let actual_escape = lower_one_string_excluding_escape_char(&mut value, escape);
-    (value, actual_escape)
+/// Preserve frontend demand under the same coercion guard as worker admission.
+pub(crate) fn evaluate_like_in(
+    ilike: bool,
+    ctx: &dyn Columns,
+    coerce: impl FnOnce() -> Result<EvaluatedArgs, EvalError>,
+) -> Result<Datum, EvalError> {
+    evaluate_like_prepared_in(ilike, ctx, coerce, EvaluatedBytesResult::into_boolean_datum)
+}
+
+/// Evaluate a non-NULL LIKE through the caller's worker scope, retaining errors.
+pub fn like_match_with_collation_in(
+    text: &[u8],
+    pattern: &[u8],
+    escape: Option<u8>,
+    collation: Collation,
+    ctx: &dyn Columns,
+) -> Result<bool, EvalError> {
+    evaluate_like_prepared_in(
+        false,
+        ctx,
+        || {
+            Ok(EvaluatedArgs::Like {
+                invocation: NativeLikeInvocation::like(collation.native_policy(), None),
+                text: Some(text.to_vec()),
+                pattern: Some(pattern.to_vec()),
+                escape: Some(i64::from(escape.unwrap_or(b'\\'))),
+            })
+        },
+        EvaluatedBytesResult::into_nonnull_bool,
+    )
+}
+
+/// Admit an actually observed NULL LIKE operand without fabricating values.
+pub fn like_null_in(ctx: &dyn Columns) -> Result<Option<i64>, EvalError> {
+    let value = evaluate_like_in(false, ctx, || Ok(EvaluatedArgs::NullWitness(None)))?;
+    crate::arg_eval_type::eval_int(&value)
 }
 
 #[cfg(test)]
@@ -159,8 +157,9 @@ mod tests {
         let mut mismatches = Vec::new();
         for &(text, pattern, escape, collation, expected) in cases {
             let uncached = like_match_with_collation(text, pattern, Some(escape), collation);
-            let cached = CompiledLikePattern::new(pattern.as_bytes(), escape, collation)
-                .is_match(text.as_bytes());
+            let cached =
+                CompiledLikePattern::new(pattern.as_bytes(), escape, collation.native_policy())
+                    .is_match(text.as_bytes());
             if (uncached, cached) != (expected, expected) {
                 mismatches.push(format!(
                     "text={text:?}, pattern={pattern:?}, escape={escape:?}, collation={collation:?}: \

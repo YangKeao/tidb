@@ -397,18 +397,21 @@ pub use context::{
     SequenceEvalError, SessionTimeZone, ZonedNoColumns,
 };
 pub use grouping::{GroupingFunction, GroupingMetadata, GroupingMetadataError, GroupingMode};
-pub use like::{ilike_match, like_match_with_collation};
+pub use like::{
+    ilike_match, like_match_with_collation, like_match_with_collation_in, like_null_in,
+};
 pub use regexp::regexp_match_bin_collation;
 pub use row::{compare_datums, compare_datums_with_collation};
 pub(crate) use tidb_datatype::{Datum, Decimal};
 pub use tidb_util::mathutil::MysqlRng;
 pub use tikv::{
-    eval_legacy_decimal_arithmetic_in, eval_legacy_integer_arithmetic_in,
+    eval_legacy_decimal_arithmetic_in, eval_legacy_integer_arithmetic_in, eval_legacy_like_in,
     eval_legacy_real_arithmetic_in, eval_regexp_legacy_ready_in, AsciiExecution, AsciiOwnerError,
     AsciiPoolOwner, AsciiPoolPolicy, AsciiScope, BinaryArithmeticOperation,
     ExpressionAdapterFailure, ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,
     ExpressionRuntimeFailure, ExpressionRuntimeFailureClass, ExpressionRuntimeFailurePhase,
-    LegacyBinaryArgs, LegacyIntegerArithmetic, RegexpLegacyInput, ScopedAsciiColumns,
+    LegacyBinaryArgs, LegacyIntegerArithmetic, LegacyLikeArgs, RegexpLegacyInput,
+    ScopedAsciiColumns,
 };
 
 use tidb_ast::{CastStyle, Expr, GetFormatSelector, IsTarget};
@@ -454,9 +457,8 @@ fn ast_binary_overflow_error(
     };
     EvalError::DataOutOfRange { value, expression }
 }
-use coerce::{bool_int, coerce_str, coerce_str_bytes};
+use coerce::{coerce_str, coerce_str_bytes};
 use func::{eval_func, eval_in_list, negate_if};
-use like::like_match;
 use ops::{
     effective_div_precision_increment, eval_binary, eval_binary_with_div_precision, eval_unary,
     logic_and,
@@ -1667,27 +1669,38 @@ pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
             // LIKE '12.5'` is FALSE but `12.50 LIKE '12.50'` is TRUE,
             // matching how `Decimal`'s own `Display` already keeps
             // trailing zeros rather than simplifying them away. `escape`
-            // passes straight through to `like_match` — see
+            // passes straight through to the shared worker — see
             // `tidb_ast::Expr::Like::escape`'s own doc for its exact
             // `None`/`Some(0)`/`Some(byte)` meaning, confirmed via
             // `gorun` for a custom single-byte escape character.
-            match (eval_in(expr, cols)?, eval_in(pattern, cols)?) {
-                (Datum::Null, _) | (_, Datum::Null) => negate_if(Datum::Null, *not, cols),
-                (v, p) => {
-                    let value = v.sql_bytes().map_err(|_| {
-                        EvalError::Unsupported("invalid LIKE operand scalar domain")
-                    })?;
-                    let pattern = p.sql_bytes().map_err(|_| {
-                        EvalError::Unsupported("invalid LIKE pattern scalar domain")
-                    })?;
-                    let matched = if *ilike {
-                        ilike_match(value, pattern, escape.unwrap_or(b'\\'))
-                    } else {
-                        like_match(value, pattern, *escape)
-                    };
-                    negate_if(bool_int(matched), *not, cols)
-                }
-            }
+            let arguments = (eval_in(expr, cols)?, eval_in(pattern, cols)?);
+            let value = like::evaluate_like_in(*ilike, cols, || {
+                let (v, p) = match &arguments {
+                    (Datum::Null, _) | (_, Datum::Null) => {
+                        return Ok(tikv::EvaluatedArgs::NullWitness(None));
+                    }
+                    (v, p) => (v, p),
+                };
+                let text = v
+                    .sql_bytes()
+                    .map_err(|_| EvalError::Unsupported("invalid LIKE operand scalar domain"))?;
+                let pattern = p
+                    .sql_bytes()
+                    .map_err(|_| EvalError::Unsupported("invalid LIKE pattern scalar domain"))?;
+                let collation = tidb_datatype::Collation::Utf8Mb4Bin.native_policy();
+                let invocation = if *ilike {
+                    tidb_query_expr::NativeLikeInvocation::ilike(collation, None)
+                } else {
+                    tidb_query_expr::NativeLikeInvocation::like(collation, None)
+                };
+                Ok(tikv::EvaluatedArgs::Like {
+                    invocation,
+                    text: Some(text),
+                    pattern: Some(pattern),
+                    escape: Some(i64::from(escape.unwrap_or(b'\\'))),
+                })
+            })?;
+            negate_if(value, *not, cols)
         }
         // Case-sensitive (utf8mb4_bin) `[NOT] REGEXP`/`RLIKE`, the SAME
         // NULL-propagation and non-string-operand-coercion rules

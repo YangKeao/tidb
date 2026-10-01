@@ -1,29 +1,30 @@
 # Expression unification experiment
 
-Checkpoint-ID: `binary-three-47` (previous: `unary-two-46`).
-**160/245 functional families, target221; strict final-audited acceptance0.** New families: plus/minus/mul. Incomplete, not PR-ready.
+Checkpoint-ID: `like-two-48` (previous: `binary-three-47`).
+**162/245 functional families, target221; strict final-audited acceptance0.** New families: LIKE/ILIKE. Incomplete, not PR-ready.
 Paired branches: [TiDB](https://github.com/YangKeao/tidb/tree/expression-unification-demo) · [TiKV](https://github.com/YangKeao/tikv/tree/expression-unification-demo). Each checkpoint includes the Plan; no force-push or automatic PR.
 
 ## Shared implementation
-- Public native Decimal add/mul and three MySql methods, coefficient add/sub/mul helpers and word projection now use TiKV implementations. Exact, MySql and signed batch-fast policies remain explicit; wire behavior is not silently replaced by native behavior.
-- 43 unit recipes cover integer, real, Decimal, vector, genuine NULL/missing, full-i128 legacy profiles and real fast outcomes. Only two input roles and one computed result kind are added; no new driver, runtime, metadata binding or factory bound.
-- Fast results distinguish `Unsupported` from actual nullable coefficient/scale values through one TiKV decoder. The batch retains whole-left/whole-right demand and atomic output; unsupported values continue through the ordinary TiKV row route, never a native arithmetic fallback. Nullable integer batch cells also reach a worker.
-- Native unsigned multiply, zero-minus-MIN, subtraction mode and legacy quirks remain distinct. Actual typed causes plus recipe/domain and dispatch evidence authenticate SQL errors; bridge/resource failures are not SQL overflow. Vector results reuse the existing serialized LE decoder; copying is not zero-copy.
+- Existing TiKV wildcard matching stays unchanged. Shared ASCII lowering, alphabetic-escape scanning and const byte-width helpers replace native utility loops; compiled LIKE/ILIKE types and lazy context caches now have a TiKV owner.
+- Five closed recipes return actual owned Int/NULL. Three real bytes/bytes/int inputs carry separate typed invocation metadata, not a fake fourth SQL operand. Cache resolution/compilation/matching happens inside the generated wrapper; owner Clone resets and invocation Clone shares the live owner. Known compiled capacities are charged, not opaque headers or temporary allocation peaks.
+- AST eager, typed sequential and legacy eager child demands remain distinct. Legacy preserves UTF-8-to-empty, Go simple Unicode lower and Reject trailing escape; modern LIKE retains collation policy and Literal trailing escape, ILIKE stays ASCII-only.
+- Scan and SHOW paths forward actual contexts and errors, including SHOW WHERE's scope/execution capability. Public bool/statistics helpers remain pure shared SDK calls, without worker receipts. Wire LikeSig and ordinary PB refusal are unchanged; no new Go vector tier or ILIKE wire signature.
 
 ## Validation
 | Final gate | Result |
 |---|---|
-| Shared datatype / native decimal | 86 / 23 passed |
-| TiKV arithmetic / local | 30 / 284 passed; local1 ignored |
-| Native arithmetic | 79 passed, 19 ignored |
-| SQL / legacy arithmetic | 1 / 1 passed |
-| Full expression | **1486 passed, 4 old failures, 94 ignored; exit101** |
-| Full unistore | **198 passed, 1 old failure, 13 ignored; exit101** |
+| Shared wildcard / native utility | 5 / 13 passed |
+| TiKV LIKE / local | 10 / 287 passed; local1 ignored |
+| Native LIKE | 61 passed, 9 ignored |
+| SQL / legacy / pushed scan | 2 / 1 / 1 passed |
+| NOT LIKE instrumentation | 1 passed; SQL expected NULL unchanged |
+| Full expression | **1488 passed, 4 old failures, 94 ignored; exit101** |
+| Full unistore | **199 passed, 1 old failure, 13 ignored; exit101** |
 
-16 test-Cargo attempts: 14 nonzero-test runs, two compile failures. Seven final focused green gates plus an earlier green run, four measured non-baseline red runs and two known-baseline non-green full runs. Four recovery retries, one diagnostic replay and one final successful refresh; no zero-match or launch failure. Not all first-pass.
-Measured and fixed: Grow multiplication's second carry reduction, missing six closed IEEE admissions, and the integer batch NULL bypass. Compile fixes used the actual existing APIs. No test expected value changed or fixture was recorded. Full failure sections match the previous checkpoint after numeric panic-thread IDs only.
-25 Rust sources (TiKV11/native14), no dependency/manifest/lock changes. Final pinned formatter/diff checks and five original test-module byte proofs pass; one formatter-check retry. Fifteen new focused tests.
-Exact commands, all16 whole-log hashes and source-tool incidents: [summary](logs/binary-three-summary.txt), [evidence](evidence/binary-three-checkpoint.md), `checkpoint.json`.
+15 test-Cargo attempts: 13 nonzero-test runs, two compilation failures, nine final focused green runs. Measured integration RED→GREEN corrected legacy NULL witness selection; a full-run instrumentation RED now expects LIKE then NOT, without changing SQL values. Three recovery retries plus a full-suite confirmation; no zero-match or launch failure. Not all first-pass.
+Both final full failure sections equal the published binary checkpoint after numeric panic-thread IDs only. Original wire LIKE test module is byte-identical; original fixtures/SQL expectations remain unchanged. Static source-table/algorithm analysis confirms all 1,112,064 Unicode scalar lower mappings agree with the original native leaf; this is not a Rust runtime or whole Go-package equivalence test.
+27 Rust sources (TiKV12/native15), no dependency/manifest/lock changes; pinned formatter/diff checks. Twelve added focused tests.
+Exact commands, all15 whole-log hashes and source-tool incidents: [summary](logs/like-two-summary.txt), [evidence](evidence/like-two-checkpoint.md), `checkpoint.json`.
 
 ## Remaining work
-DIV/IntDIV/MOD and 85 remaining eligible families are not migrated. JSON_UNQUOTE/PRETTY renderer closure, FORMAT/DATE/MICROSECOND, request-root integration for default NoColumns, physical heap/peak/OOM, differential tests, M6, TiFlash, release, whole workspace and lint remain unverified. Gigabyte-scale release Decimal scale-wrap shapes rejected by the checked bridge are an explicit compatibility exception, not SQL overflow. Historical parser-all E0061 and full-suite failures remain unresolved. No whole Go-package/type-domain or final performance completion claim.
+83 eligible families remain; MOD/DIV are read-only next candidates, IntDIV requires original warning-before-conversion closure. JSON renderer closure, FORMAT/DATE/MICROSECOND, broader request-root integration, physical heap/peak/OOM, differential tests, M6, TiFlash, release, whole workspace and lint remain unverified. Existing GBK/GB18030 ILIKE mapping and ignored Go vector gaps are preserved, not silently repaired. Prior extreme Decimal release-shape exceptions, parser-all E0061 and full-suite failures remain unresolved. No whole Go-package/type-domain or final performance completion claim.

@@ -491,9 +491,20 @@ const SHOW_STATUS_VARS: &[(&str, &str, bool)] = &[
 struct ShowRowResolver<'a> {
     columns: &'a [&'a str],
     row: &'a [Datum],
+    ctx: &'a dyn tidb_executor::Columns,
 }
 
 impl tidb_executor::Columns for ShowRowResolver<'_> {
+    // Preserve SHOW's existing resolver defaults; only the worker capability
+    // follows the statement into predicates such as WHERE name LIKE pattern.
+    fn evaluated_ascii_scope(&self) -> Option<&tidb_executor::AsciiScope> {
+        self.ctx.evaluated_ascii_scope()
+    }
+
+    fn evaluated_ascii_execution(&self) -> Option<&tidb_executor::AsciiExecution> {
+        self.ctx.evaluated_ascii_execution()
+    }
+
     fn get(&self, path: &[String]) -> Option<Datum> {
         let name = path.last()?;
         let index = self
@@ -509,6 +520,7 @@ fn show_row_matches(
     predicate: &tidb_ast::Expr,
     columns: &[&str],
     row: &[Datum],
+    ctx: &dyn tidb_executor::Columns,
 ) -> Result<bool, DriverError> {
     // go's SHOW WHERE resolves names against the statement's OWN output
     // columns; a name outside that list is ErrBadField with the 'where
@@ -521,7 +533,7 @@ fn show_row_matches(
             clause: "where clause".to_owned(),
         });
     }
-    let resolver = ShowRowResolver { columns, row };
+    let resolver = ShowRowResolver { columns, row, ctx };
     let value = tidb_executor::eval_in(predicate, &resolver)
         .map_err(|e| DriverError::Exec(tidb_executor::ExecError::Eval(e)))?;
     let truthy = tidb_executor::truthy_of(&value)
@@ -619,25 +631,25 @@ impl ShowLikePattern {
             .map_or_else(|| base.to_owned(), |pattern| format!("{base} ({pattern})"))
     }
 
-    fn matches(&self, text: &str) -> bool {
+    fn matches(&self, text: &str, ctx: &dyn tidb_executor::Columns) -> Result<bool, DriverError> {
         let Some(pattern) = &self.value else {
-            return false;
+            return Ok(false);
         };
-        if self.fold_lowercase {
-            tidb_executor::like_match_with_collation(
-                go_to_lower(text),
-                pattern,
-                None,
-                tidb_datatype::Collation::Utf8Mb4Bin,
-            )
+        let folded;
+        let text = if self.fold_lowercase {
+            folded = go_to_lower(text);
+            folded.as_str()
         } else {
-            tidb_executor::like_match_with_collation(
-                text,
-                pattern,
-                None,
-                tidb_datatype::Collation::Utf8Mb4Bin,
-            )
-        }
+            text
+        };
+        tidb_executor::like_match_with_collation_in(
+            text.as_bytes(),
+            pattern.as_bytes(),
+            None,
+            tidb_datatype::Collation::Utf8Mb4Bin,
+            ctx,
+        )
+        .map_err(|e| DriverError::Exec(tidb_executor::ExecError::Eval(e)))
     }
 }
 
@@ -646,6 +658,7 @@ fn filter_show_output(
     output: StmtOutput,
     like_pattern: Option<ShowLikePattern>,
     where_clause: Option<&tidb_ast::Expr>,
+    ctx: &dyn tidb_executor::Columns,
 ) -> Result<StmtOutput, DriverError> {
     let StmtOutput::Rows { columns, rows } = output else {
         return Ok(output);
@@ -655,16 +668,16 @@ fn filter_show_output(
     for row in rows {
         let matches_like = match &like_pattern {
             None => true,
-            Some(pattern) => row
-                .first()
-                .and_then(datum_text)
-                .is_some_and(|text| pattern.matches(&text)),
+            Some(pattern) => match row.first().and_then(datum_text) {
+                Some(text) => pattern.matches(&text, ctx)?,
+                None => false,
+            },
         };
         if !matches_like {
             continue;
         }
         if let Some(predicate) = where_clause {
-            if !show_row_matches(predicate, &column_names, &row)? {
+            if !show_row_matches(predicate, &column_names, &row, ctx)? {
                 continue;
             }
         }
@@ -783,7 +796,13 @@ impl Session {
                     }
                     Some(tidb_ast::ShowBindingsFilter::Where(expr)) => (None, Some(expr)),
                 };
-                filter_show_output(output, like_pattern, where_clause).map(Some)
+                filter_show_output(
+                    output,
+                    like_pattern,
+                    where_clause,
+                    &self.statement_context(false),
+                )
+                .map(Some)
             }
             // `ANALYZE TABLE`, over this session's own catalog. See
             // `crate::analyze_arm` for why an in-process session runs it here
@@ -861,7 +880,13 @@ impl Session {
                     |pattern| pattern.column_name("Database"),
                 );
                 let output = string_column_output(&column_name, names);
-                filter_show_output(output, like_pattern, where_clause).map(Some)
+                filter_show_output(
+                    output,
+                    like_pattern,
+                    where_clause,
+                    &self.statement_context(false),
+                )
+                .map(Some)
             }
             // Go `fetchShowTableStatus`: one row per table in the
             // schema, with the columns MySQL's own SHOW TABLE STATUS
@@ -945,7 +970,13 @@ impl Session {
                     })
                     .collect();
                 let output = StmtOutput::Rows { columns, rows };
-                filter_show_output(output, like_pattern, where_clause).map(Some)
+                filter_show_output(
+                    output,
+                    like_pattern,
+                    where_clause,
+                    &self.statement_context(false),
+                )
+                .map(Some)
             }
             // Go `fetchShowIndex`: one row per index COLUMN, ordered
             // with the clustered primary key first, then the table's own
@@ -999,7 +1030,13 @@ impl Session {
                     })
                     .collect();
                 let output = StmtOutput::Rows { columns, rows };
-                filter_show_output(output, like_pattern, where_clause).map(Some)
+                filter_show_output(
+                    output,
+                    like_pattern,
+                    where_clause,
+                    &self.statement_context(false),
+                )
+                .map(Some)
             }
             // Go `ShowExec` with `ShowVariables`: one row per variable,
             // as `Variable_name` and `Value`, filtered by LIKE.
@@ -1022,17 +1059,20 @@ impl Session {
                 let text =
                     || tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString);
                 let mut rows = Vec::new();
+                let ctx = self.statement_context(false);
                 for definition in sysvar::SYS_VARS {
                     if self.sem_hides_sysvar(definition.name) {
                         continue;
                     }
                     let matches = match &pattern {
-                        Some(pattern) => tidb_executor::like_match_with_collation(
-                            definition.name,
-                            pattern,
+                        Some(pattern) => tidb_executor::like_match_with_collation_in(
+                            definition.name.as_bytes(),
+                            pattern.as_bytes(),
                             None,
                             tidb_datatype::Collation::Utf8Mb4Bin,
-                        ),
+                            &ctx,
+                        )
+                        .map_err(|e| DriverError::Exec(tidb_executor::ExecError::Eval(e)))?,
                         None => true,
                     };
                     if !matches {
@@ -1054,7 +1094,7 @@ impl Session {
                     // Go plans the WHERE as a selection over the same
                     // virtual rows, which is what this filter is.
                     if let Some(predicate) = &show.where_clause {
-                        if !show_row_matches(predicate, SHOW_VARIABLE_COLUMNS, &row)? {
+                        if !show_row_matches(predicate, SHOW_VARIABLE_COLUMNS, &row, &ctx)? {
                             continue;
                         }
                     }
@@ -1113,6 +1153,7 @@ impl Session {
                 let dynamic = uptime
                     .as_ref()
                     .map(|value| ("Uptime", value.as_str(), false));
+                let ctx = self.statement_context(false);
                 for &(name, value, session_only) in SHOW_STATUS_VARS.iter().chain(dynamic.iter()) {
                     // Go fills these two per connection from the negotiated
                     // TLS state (`server.go:1329`); a plaintext connection
@@ -1129,12 +1170,15 @@ impl Session {
                         continue;
                     }
                     if let Some(pattern) = &pattern {
-                        if !tidb_executor::like_match_with_collation(
-                            name,
-                            pattern,
+                        if !tidb_executor::like_match_with_collation_in(
+                            name.as_bytes(),
+                            pattern.as_bytes(),
                             None,
                             tidb_datatype::Collation::Utf8Mb4Bin,
-                        ) {
+                            &ctx,
+                        )
+                        .map_err(|e| DriverError::Exec(tidb_executor::ExecError::Eval(e)))?
+                        {
                             continue;
                         }
                     }
@@ -1145,7 +1189,7 @@ impl Session {
                     // Go plans the WHERE as a selection over the same
                     // virtual rows, which is what this filter is.
                     if let Some(predicate) = predicate {
-                        if !show_row_matches(predicate, SHOW_VARIABLE_COLUMNS, &row)? {
+                        if !show_row_matches(predicate, SHOW_VARIABLE_COLUMNS, &row, &ctx)? {
                             continue;
                         }
                     }
@@ -1189,14 +1233,18 @@ impl Session {
                 // here rather than a table copied out of it is what keeps the
                 // `gbk`/`gb18030` default from having a second spelling.
                 let mut rows = Vec::new();
+                let ctx = self.statement_context(false);
                 for info in tidb_datatype::get_supported_charsets() {
                     if let Some(pattern) = &pattern {
-                        if !tidb_executor::like_match_with_collation(
-                            &info.name,
-                            pattern,
+                        if !tidb_executor::like_match_with_collation_in(
+                            info.name.as_bytes(),
+                            pattern.as_bytes(),
                             None,
                             tidb_datatype::Collation::Utf8Mb4Bin,
-                        ) {
+                            &ctx,
+                        )
+                        .map_err(|e| DriverError::Exec(tidb_executor::ExecError::Eval(e)))?
+                        {
                             continue;
                         }
                     }
@@ -1207,7 +1255,7 @@ impl Session {
                         Datum::Int(info.maxlen as i64),
                     ];
                     if let Some(predicate) = predicate {
-                        if !show_row_matches(predicate, SHOW_CHARSET_COLUMNS, &row)? {
+                        if !show_row_matches(predicate, SHOW_CHARSET_COLUMNS, &row, &ctx)? {
                             continue;
                         }
                     }
@@ -1254,17 +1302,25 @@ impl Session {
                     Datum::Bytes(b"YES".to_vec()),
                     Datum::Bytes(b"YES".to_vec()),
                 ];
-                let included = pattern.is_none_or(|pattern| {
-                    tidb_executor::like_match_with_collation(
-                        "InnoDB",
-                        pattern,
+                let ctx = self.statement_context(false);
+                let matches_like = match pattern {
+                    Some(pattern) => tidb_executor::like_match_with_collation_in(
+                        b"InnoDB",
+                        pattern.as_bytes(),
                         None,
                         tidb_datatype::Collation::Utf8Mb4Bin,
+                        &ctx,
                     )
-                }) && predicate
-                    .map(|predicate| show_row_matches(predicate, SHOW_ENGINES_COLUMNS, &row))
-                    .transpose()?
-                    .unwrap_or(true);
+                    .map_err(|e| DriverError::Exec(tidb_executor::ExecError::Eval(e)))?,
+                    None => true,
+                };
+                let included = matches_like
+                    && predicate
+                        .map(|predicate| {
+                            show_row_matches(predicate, SHOW_ENGINES_COLUMNS, &row, &ctx)
+                        })
+                        .transpose()?
+                        .unwrap_or(true);
                 Ok(Some(StmtOutput::Rows {
                     columns: vec![
                         ("Engine".to_owned(), text()),
@@ -1314,15 +1370,19 @@ impl Session {
                 let number =
                     || tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::LongLong);
                 let mut rows = Vec::new();
+                let ctx = self.statement_context(false);
                 for &collation in SHOW_COLLATION_ROWS {
                     let name = collation.name();
                     if let Some(pattern) = &pattern {
-                        if !tidb_executor::like_match_with_collation(
-                            name,
-                            pattern,
+                        if !tidb_executor::like_match_with_collation_in(
+                            name.as_bytes(),
+                            pattern.as_bytes(),
                             None,
                             tidb_datatype::Collation::Utf8Mb4Bin,
-                        ) {
+                            &ctx,
+                        )
+                        .map_err(|e| DriverError::Exec(tidb_executor::ExecError::Eval(e)))?
+                        {
                             continue;
                         }
                     }
@@ -1348,7 +1408,7 @@ impl Session {
                         Datum::Bytes(pad_attribute.as_bytes().to_vec()),
                     ];
                     if let Some(predicate) = predicate {
-                        if !show_row_matches(predicate, SHOW_COLLATION_COLUMNS, &row)? {
+                        if !show_row_matches(predicate, SHOW_COLLATION_COLUMNS, &row, &ctx)? {
                             continue;
                         }
                     }
@@ -1462,7 +1522,13 @@ impl Session {
                         )],
                         rows: vec![tidb_executor::show_stats::histograms_in_flight_row(count)],
                     };
-                    return filter_show_output(output, like_pattern, where_clause).map(Some);
+                    return filter_show_output(
+                        output,
+                        like_pattern,
+                        where_clause,
+                        &self.statement_context(false),
+                    )
+                    .map(Some);
                 }
                 if show.kind == tidb_ast::ShowInspectionKind::AnalyzeStatus {
                     return self.analyze_status_stmt(show.filter.as_ref()).map(Some);
@@ -1727,7 +1793,13 @@ impl Session {
                     None => self.require_current_database()?.to_owned(),
                 };
                 let output = self.show_columns(&database, &show.table, None, show.full)?;
-                filter_show_output(output, like_pattern, where_clause).map(Some)
+                filter_show_output(
+                    output,
+                    like_pattern,
+                    where_clause,
+                    &self.statement_context(false),
+                )
+                .map(Some)
             }
             // Go's parser rewrites `DESCRIBE tbl [col]` into a SHOW
             // COLUMNS statement; this parser keeps a node of its own, so
@@ -1783,21 +1855,24 @@ impl Session {
                 // deliberately not consulted, which is Go's own standing
                 // TODO there and is measured: a `SELECT(a)` grant makes the
                 // SCHEMA visible but lists no table.
-                let listed: Vec<_> = listed
-                    .into_iter()
-                    .filter(|(name, ..)| {
-                        self.has_any_scoped_privilege(
-                            &database,
-                            name,
-                            privilege::show_tables_priv_mask(),
-                        )
-                    })
-                    .filter(|(name, ..)| {
-                        like_pattern
-                            .as_ref()
-                            .is_none_or(|pattern| pattern.matches(name))
-                    })
-                    .collect();
+                let ctx = self.statement_context(false);
+                let mut matching = Vec::with_capacity(listed.len());
+                for entry in listed {
+                    if !self.has_any_scoped_privilege(
+                        &database,
+                        &entry.0,
+                        privilege::show_tables_priv_mask(),
+                    ) {
+                        continue;
+                    }
+                    if let Some(pattern) = &like_pattern {
+                        if !pattern.matches(&entry.0, &ctx)? {
+                            continue;
+                        }
+                    }
+                    matching.push(entry);
+                }
+                let listed = matching;
                 // Go names the column after the schema being listed.
                 let base_name = format!("Tables_in_{database}");
                 let name_column = match &like_pattern {
@@ -1820,7 +1895,7 @@ impl Session {
                         ));
                     }
                     if let Some(predicate) = where_clause {
-                        if !show_row_matches(predicate, &column_names, &row)? {
+                        if !show_row_matches(predicate, &column_names, &row, &ctx)? {
                             continue;
                         }
                     }

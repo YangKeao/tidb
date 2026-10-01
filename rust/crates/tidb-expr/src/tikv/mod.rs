@@ -35,10 +35,10 @@ pub(crate) use evaluated_ascii::{
     RegexpFunction,
 };
 pub use evaluated_ascii::{
-    eval_legacy_decimal_arithmetic_in, eval_legacy_integer_arithmetic_in,
+    eval_legacy_decimal_arithmetic_in, eval_legacy_integer_arithmetic_in, eval_legacy_like_in,
     eval_legacy_real_arithmetic_in, eval_regexp_legacy_ready_in, AsciiExecution, AsciiOwnerError,
     AsciiPoolOwner, AsciiPoolPolicy, AsciiScope, LegacyBinaryArgs, LegacyIntegerArithmetic,
-    RegexpLegacyInput, ScopedAsciiColumns,
+    LegacyLikeArgs, RegexpLegacyInput, ScopedAsciiColumns,
 };
 pub(crate) use tidb_query_datatype::codec::mysql::json::{
     parse_native_json_document, NativeJsonError,

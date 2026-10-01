@@ -1918,71 +1918,54 @@ impl ScalarFunction {
         // and stop at NULL. The escape is EvalInt followed by byte(escape),
         // not a range-checked conversion that substitutes a default.
         if (name == "like" || name == "ilike") && self.args.len() == 3 {
-            let value = self.args[0].eval(ctx, row)?;
-            if value.is_null() {
-                return Ok(Datum::Null);
-            }
-            let text = value
-                .sql_bytes()
-                .map_err(|_| EvalError::Unsupported("invalid LIKE operand scalar domain"))?;
-            let pattern = self.args[1].eval(ctx, row)?;
-            if pattern.is_null() {
-                return Ok(Datum::Null);
-            }
-            let pattern = pattern
-                .sql_bytes()
-                .map_err(|_| EvalError::Unsupported("invalid LIKE pattern scalar domain"))?;
-            let raw_escape = self.args[2].eval(ctx, row)?;
-            let int_escape =
-                crate::cast::cast_arg_as_int(&raw_escape, self.args[2].static_type(), ctx)?;
-            let Some(escape) = crate::arg_eval_type::eval_int(&int_escape)? else {
-                return Ok(Datum::Null);
-            };
-            let escape = escape as u8;
-            let cache_pattern = self.args[1].const_level() >= ConstLevel::ONLY_IN_CONTEXT;
-            let cache_escape = self.args[2].const_level() >= ConstLevel::ONLY_IN_CONTEXT;
-            let matched = if name == "ilike" {
-                if cache_pattern && cache_escape {
-                    let cached =
-                        self.ilike_pattern_cache
-                            .get_or_init_cache(ctx.context_id(), || {
-                                Ok::<_, EvalError>(crate::like::CompiledIlikePattern::new(
-                                    &pattern,
-                                    escape,
-                                    self.derived_collation(),
-                                ))
-                            })?;
-                    cached.is_match(&text)
-                } else {
-                    crate::like::ilike_match_with_collation(
-                        text,
-                        pattern,
-                        escape,
-                        self.derived_collation(),
-                    )
+            return crate::like::evaluate_like_in(name == "ilike", ctx, || {
+                let value = self.args[0].eval(ctx, row)?;
+                if value.is_null() {
+                    return Ok(crate::tikv::EvaluatedArgs::NullWitness(None));
                 }
-            } else {
-                if cache_pattern && cache_escape {
-                    let cached =
-                        self.like_pattern_cache
-                            .get_or_init_cache(ctx.context_id(), || {
-                                Ok::<_, EvalError>(crate::like::CompiledLikePattern::new(
-                                    &pattern,
-                                    escape,
-                                    self.derived_collation(),
-                                ))
-                            })?;
-                    cached.is_match(&text)
-                } else {
-                    crate::like_match_with_collation(
-                        text,
-                        pattern,
-                        Some(escape),
-                        self.derived_collation(),
-                    )
+                let text = value
+                    .sql_bytes()
+                    .map_err(|_| EvalError::Unsupported("invalid LIKE operand scalar domain"))?;
+                let pattern = self.args[1].eval(ctx, row)?;
+                if pattern.is_null() {
+                    return Ok(crate::tikv::EvaluatedArgs::NullWitness(None));
                 }
-            };
-            return Ok(Datum::Int(i64::from(matched)));
+                let pattern = pattern
+                    .sql_bytes()
+                    .map_err(|_| EvalError::Unsupported("invalid LIKE pattern scalar domain"))?;
+                let raw_escape = self.args[2].eval(ctx, row)?;
+                let int_escape =
+                    crate::cast::cast_arg_as_int(&raw_escape, self.args[2].static_type(), ctx)?;
+                let Some(escape) = crate::arg_eval_type::eval_int(&int_escape)? else {
+                    return Ok(crate::tikv::EvaluatedArgs::NullWitness(None));
+                };
+                let escape = escape as u8;
+                let cache_pattern = self.args[1].const_level() >= ConstLevel::ONLY_IN_CONTEXT;
+                let cache_escape = self.args[2].const_level() >= ConstLevel::ONLY_IN_CONTEXT;
+                let context_id = if cache_pattern && cache_escape {
+                    Some(ctx.context_id())
+                } else {
+                    None
+                };
+                let collation = self.derived_collation().native_policy();
+                let invocation = if name == "ilike" {
+                    tidb_query_expr::NativeLikeInvocation::ilike(
+                        collation,
+                        context_id.map(|id| (&self.ilike_pattern_cache, id)),
+                    )
+                } else {
+                    tidb_query_expr::NativeLikeInvocation::like(
+                        collation,
+                        context_id.map(|id| (&self.like_pattern_cache, id)),
+                    )
+                };
+                Ok(crate::tikv::EvaluatedArgs::Like {
+                    invocation,
+                    text: Some(text),
+                    pattern: Some(pattern),
+                    escape: Some(i64::from(escape)),
+                })
+            });
         }
         // Go's `GETVAR`/`SETVAR` families (`pkg/expression/builtin_other.go`):
         // the variable NAME is a build-time constant, so the rewriter passes

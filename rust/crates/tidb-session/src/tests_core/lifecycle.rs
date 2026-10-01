@@ -9033,6 +9033,135 @@ fn evaluated_ascii_regexp_zero_slots_reject_named_calls_and_null_paths() {
 }
 
 #[test]
+fn evaluated_ascii_like_ilike_sql_columns_cache_unicode_escape_and_nulls() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE shared_like_sql (id INT PRIMARY KEY, s VARCHAR(16), p VARCHAR(16))")
+        .unwrap();
+    session.run("INSERT INTO shared_like_sql VALUES (1,'ABC','a%'),(2,'ü','Ü'),(3,'%','A%'),(4,NULL,'a%'),(5,'a',NULL)").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // Dynamic patterns and context-cached literal patterns use the same actual
+    // statement pool. ILIKE only lowers ASCII; collated LIKE also folds ü/Ü.
+    for _ in 0..2 {
+        let StmtOutput::Rows { rows, .. } = session
+            .run_with_columns(
+                "SELECT s LIKE p,s ILIKE p,s NOT ILIKE p,s LIKE 'a%',s ILIKE 'a%',\
+             s COLLATE utf8mb4_general_ci LIKE p FROM shared_like_sql ORDER BY id",
+            )
+            .unwrap()
+        else {
+            panic!("expected LIKE/ILIKE rows")
+        };
+        let expected = [
+            ["0", "1", "0", "0", "1", "1"],
+            ["0", "0", "1", "0", "0", "1"],
+            ["0", "0", "1", "0", "0", "0"],
+            ["NULL", "NULL", "NULL", "NULL", "NULL", "NULL"],
+            ["NULL", "NULL", "NULL", "1", "1", "NULL"],
+        ];
+        assert_eq!(rows.len(), expected.len());
+        for (row, expected) in rows.iter().zip(expected) {
+            assert_eq!(row.len(), expected.len());
+            for (value, expected) in row.iter().zip(expected) {
+                assert_eq!(cell_text(value), expected);
+            }
+        }
+        assert!(warnings_of(&session).is_empty());
+    }
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns(
+            "SELECT s LIKE p ESCAPE 'A',s ILIKE p ESCAPE 'A',s NOT ILIKE 'A%' ESCAPE 'A' \
+         FROM shared_like_sql WHERE id=3",
+        )
+        .unwrap()
+    else {
+        panic!("expected alphabetic escape rows")
+    };
+    assert_eq!(
+        rows,
+        vec![vec![Datum::Int(1), Datum::Int(1), Datum::Int(0)]]
+    );
+    assert!(warnings_of(&session).is_empty());
+    for sql in [
+        "SHOW TABLES LIKE 'shared_like_sql'",
+        "SHOW TABLES WHERE Tables_in_test LIKE 'shared_like_sql'",
+    ] {
+        let StmtOutput::Rows { rows, .. } = session.run_with_columns(sql).unwrap() else {
+            panic!("expected matching SHOW candidate")
+        };
+        assert_eq!(rows, vec![vec![Datum::Bytes(b"shared_like_sql".to_vec())]]);
+        assert!(warnings_of(&session).is_empty());
+    }
+}
+
+#[test]
+fn evaluated_ascii_like_ilike_zero_slots_reject_columns_cache_and_nulls() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE shared_like_zero (id INT PRIMARY KEY, s VARCHAR(16), p VARCHAR(16))")
+        .unwrap();
+    session
+        .run("INSERT INTO shared_like_zero VALUES (1,'ABC','a%'),(2,NULL,'a%'),(3,'a',NULL)")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // SHOW has a real candidate; empty metadata cannot establish admission.
+    let mut queries = vec![
+        "SHOW TABLES LIKE 'shared_like_zero'".to_owned(),
+        "SHOW TABLES WHERE Tables_in_test LIKE 'shared_like_zero'".to_owned(),
+    ];
+    for id in 1..=3 {
+        for expression in [
+            "s LIKE p",
+            "s ILIKE p",
+            "s NOT LIKE p",
+            "s NOT ILIKE p",
+            "s LIKE 'a%'",
+            "s ILIKE 'a%'",
+            "s ILIKE p ESCAPE 'A'",
+        ] {
+            queries.push(format!(
+                "SELECT {expression} FROM shared_like_zero WHERE id={id}"
+            ));
+        }
+    }
+    for sql in queries {
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("LIKE/ILIKE must reach the actual zero-slot scope: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+}
+
+#[test]
 fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();

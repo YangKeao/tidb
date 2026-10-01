@@ -43,7 +43,6 @@ use tidb_proto::tipb;
 use tidb_codec::table_key::RecordHandle;
 
 use crate::mvcc_store::MvccStore;
-use tidb_hack::go_to_lower;
 
 /// Go `kv.ReqTypeDAG` / `ReqTypeAnalyze` / `ReqTypeChecksum`
 /// (`pkg/kv/kv.go:375-377`).
@@ -4942,36 +4941,33 @@ impl LegacyEvaluator<'_> {
                         Some(i128::from(member))
                     }
                     SimpleSig::Like(collation) => {
-                        // Go `builtinLikeSig`: (target, pattern, escape). Case
-                        // handling follows the comparison's collation -- `_ci`
-                        // folds both sides before the wildcard match, `_bin` is
-                        // exact (Go folds through the collator's weights; the
-                        // fold here is ASCII-lowercase, exact for the common
-                        // ASCII pattern families).
+                        use tidb_expr::LegacyLikeArgs;
+                        // Unlike scalar LIKE, legacy demands all three children,
+                        // even after NULL. Preserve their byte/int channels and
+                        // distinguish absent children only after those demands.
                         let target = self.eval_bytes(children.first())?;
                         let pattern = self.eval_bytes(children.get(1))?;
-                        // LikeSig's third argument is ETInt on the wire. Go
-                        // evaluates it with EvalInt and compiles byte(escape).
                         let escape = child(2)?;
-                        let (Some(target), Some(pattern), Some(escape)) = (target, pattern, escape)
-                        else {
-                            return Ok(None);
+                        let (case_insensitive, args) = if children.len() < 3 {
+                            (false, LegacyLikeArgs::Missing)
+                        } else if let (Some(target), Some(pattern), Some(escape)) =
+                            (target, pattern, escape)
+                        {
+                            let collator = tidb_datatype::get_collator_by_id(*collation);
+                            (
+                                collator.compare(b"a", b"A").is_eq(),
+                                LegacyLikeArgs::Values {
+                                    target,
+                                    pattern,
+                                    escape: escape as u8,
+                                },
+                            )
+                        } else {
+                            // All children existed and were demanded; at least
+                            // one actual operand was NULL, not necessarily escape.
+                            (false, LegacyLikeArgs::NullWitness(None))
                         };
-                        let collator = tidb_datatype::get_collator_by_id(*collation);
-                        let fold = |bytes: &[u8]| -> String {
-                            let text = std::str::from_utf8(bytes).unwrap_or_default();
-                            if collator.compare(b"a", b"A").is_eq() {
-                                go_to_lower(text)
-                            } else {
-                                text.to_owned()
-                            }
-                        };
-                        let escape_char = char::from(escape as u8);
-                        Some(i128::from(tidb_datatype::like_matches(
-                            &fold(&target),
-                            &fold(&pattern),
-                            escape_char,
-                        )))
+                        tidb_expr::eval_legacy_like_in(case_insensitive, args, self.raw_columns)?
                     }
                     SimpleSig::RegexpLike(collation) => {
                         use tidb_expr::RegexpLegacyInput;
@@ -6573,6 +6569,173 @@ mod tests {
             );
             assert_eq!(eval_expr(&escaped, &row_percent, 4, &zone()), Ok(expected));
         }
+    }
+
+    #[test]
+    fn legacy_like_preserves_demand_missing_null_unicode_and_pool_failures() {
+        let time_zone = zone();
+        let pool = |slots| {
+            tidb_expr::AsciiPoolOwner::new(
+                tidb_expr::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    64,
+                    8,
+                    4 * 1024 * 1024,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let bytes = |value: &[u8]| SimpleExpr::Bytes(value.to_vec());
+        let owner = pool(1);
+        let execution = owner.begin_execution().unwrap();
+        execution
+            .scope()
+            .with_columns(&tidb_expr::NoColumns, |columns| {
+                let evaluator = LegacyEvaluator {
+                    raw_columns: columns,
+                    ..LegacyEvaluator::new(&[], 4, &time_zone)
+                };
+                for (collation, target, pattern, escape, expected) in [
+                    (45, "Ü".as_bytes(), "ü".as_bytes(), 92, 1),
+                    (46, "Ü".as_bytes(), "ü".as_bytes(), 92, 0),
+                    (46, "界".as_bytes(), b"_".as_slice(), 92, 1),
+                    (46, b"\xff".as_slice(), b"".as_slice(), 92, 1),
+                    (46, b"".as_slice(), b"\xff".as_slice(), 92, 1),
+                    // Legacy rejects trailing escapes; scalar LIKE accepts them.
+                    (46, b"a\\".as_slice(), b"a\\".as_slice(), 92, 0),
+                    (46, b"100%".as_slice(), b"100\\%".as_slice(), 348, 1),
+                    // Unicode lowercasing changes the pattern but NOT the marker.
+                    (45, b"%".as_slice(), b"A%".as_slice(), 65, 0),
+                    (46, b"%".as_slice(), b"A%".as_slice(), 65, 1),
+                ] {
+                    let call = SimpleExpr::Func(
+                        SimpleSig::Like(collation),
+                        vec![bytes(target), bytes(pattern), SimpleExpr::Int(escape)],
+                    );
+                    assert_eq!(
+                        evaluator.eval_expr(&call).unwrap(),
+                        Some(expected),
+                        "{call:?}"
+                    );
+                }
+                for children in [
+                    vec![],
+                    vec![bytes(b"a")],
+                    vec![bytes(b"a"), bytes(b"a")],
+                    vec![SimpleExpr::Null, bytes(b"a"), SimpleExpr::Int(92)],
+                    vec![bytes(b"a"), SimpleExpr::Null, SimpleExpr::Int(92)],
+                    vec![bytes(b"a"), bytes(b"a"), SimpleExpr::Null],
+                ] {
+                    assert_eq!(
+                        evaluator
+                            .eval_expr(&SimpleExpr::Func(SimpleSig::Like(46), children))
+                            .unwrap(),
+                        None
+                    );
+                }
+                let overflow = SimpleExpr::Func(
+                    SimpleSig::PlusInt,
+                    vec![SimpleExpr::Int(i64::MAX), SimpleExpr::Int(1)],
+                );
+                let call = SimpleExpr::Func(
+                    SimpleSig::Like(46),
+                    vec![SimpleExpr::Null, SimpleExpr::Null, overflow],
+                );
+                assert!(matches!(
+                    evaluator.eval_expr(&call),
+                    Err(LegacyEvalError::Sql(_))
+                ));
+                assert_eq!(evaluator.folded_int(Some(&call)).unwrap(), None);
+            });
+        let shared = convert_expr(&tipb::Expr {
+            tp: Some(tipb::ExprType::ScalarFunc as i32),
+            sig: Some(tipb::ScalarFuncSig::IntIsNull as i32),
+            field_type: Some(tipb::FieldType {
+                tp: Some(8),
+                ..Default::default()
+            }),
+            children: vec![tipb::Expr {
+                tp: Some(tipb::ExprType::Null as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(matches!(&shared, SimpleExpr::Shared(_)));
+        let assert_failure = |error| match error {
+            LegacyEvalError::Infrastructure(tidb_expr::EvalError::ExpressionAdapterFailure(
+                failure,
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_expr::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_expr::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("LIKE lost its pool cause: {other:?}"),
+        };
+        let owner = pool(0);
+        let execution = owner.begin_execution().unwrap();
+        execution
+            .scope()
+            .with_columns(&tidb_expr::NoColumns, |columns| {
+                let evaluator = LegacyEvaluator {
+                    raw_columns: columns,
+                    ..LegacyEvaluator::new(&[], 4, &time_zone)
+                };
+                for children in [
+                    vec![],
+                    vec![bytes(b"a")],
+                    vec![bytes(b"a"), bytes(b"a")],
+                    vec![bytes(b"a"), bytes(b"a"), SimpleExpr::Int(92)],
+                    vec![SimpleExpr::Null, bytes(b"a"), SimpleExpr::Int(92)],
+                    vec![bytes(b"a"), SimpleExpr::Null, SimpleExpr::Int(92)],
+                    vec![bytes(b"a"), bytes(b"a"), SimpleExpr::Null],
+                ] {
+                    let call = SimpleExpr::Func(SimpleSig::Like(46), children);
+                    assert_failure(evaluator.eval_expr(&call).unwrap_err());
+                    assert_failure(evaluator.folded_int(Some(&call)).unwrap_err());
+                    let mut warnings = Vec::new();
+                    assert!(fold_index_selection_error(
+                        evaluator.eval_expr(&call).unwrap_err(),
+                        2,
+                        &mut warnings
+                    )
+                    .is_err());
+                    assert!(warnings.is_empty());
+                }
+                // Only children see zero slots here, separating demand from root admission.
+                let child_only = LegacyEvaluator {
+                    shared_override: Some(columns),
+                    ..LegacyEvaluator::new(&[], 4, &time_zone)
+                };
+                for children in [
+                    vec![shared.clone(), SimpleExpr::Null, SimpleExpr::Null],
+                    vec![SimpleExpr::Null, shared.clone(), SimpleExpr::Null],
+                    vec![SimpleExpr::Null, SimpleExpr::Null, shared.clone()],
+                    vec![shared.clone()],
+                    vec![SimpleExpr::Null, shared.clone()],
+                ] {
+                    assert_failure(
+                        child_only
+                            .eval_expr(&SimpleExpr::Func(SimpleSig::Like(46), children))
+                            .unwrap_err(),
+                    );
+                }
+                let extra = SimpleExpr::Func(
+                    SimpleSig::Like(46),
+                    vec![bytes(b"a"), bytes(b"a"), SimpleExpr::Int(92), shared],
+                );
+                assert_eq!(child_only.eval_expr(&extra).unwrap(), Some(1));
+            });
     }
 
     #[test]

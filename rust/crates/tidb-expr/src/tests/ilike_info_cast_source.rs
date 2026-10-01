@@ -168,7 +168,7 @@ fn like_pattern_cache_reuses_only_within_context() {
             Ok::<_, crate::EvalError>(CompiledLikePattern::new(
                 b"a%",
                 b'\\',
-                Collation::Utf8Mb4Bin,
+                Collation::Utf8Mb4Bin.native_policy(),
             ))
         })
         .expect("LIKE pattern");
@@ -180,7 +180,7 @@ fn like_pattern_cache_reuses_only_within_context() {
             Ok::<_, crate::EvalError>(CompiledLikePattern::new(
                 b"b%",
                 b'\\',
-                Collation::Utf8Mb4Bin,
+                Collation::Utf8Mb4Bin.native_policy(),
             ))
         })
         .expect("LIKE same-context hit");
@@ -190,7 +190,7 @@ fn like_pattern_cache_reuses_only_within_context() {
             Ok::<_, crate::EvalError>(CompiledLikePattern::new(
                 b"b%",
                 b'\\',
-                Collation::Utf8Mb4Bin,
+                Collation::Utf8Mb4Bin.native_policy(),
             ))
         })
         .expect("LIKE replacement");
@@ -203,7 +203,7 @@ fn like_pattern_cache_reuses_only_within_context() {
             Ok::<_, crate::EvalError>(CompiledIlikePattern::new(
                 b"A%",
                 b'\\',
-                Collation::Utf8Mb4Bin,
+                Collation::Utf8Mb4Bin.native_policy(),
             ))
         })
         .expect("ILIKE pattern");

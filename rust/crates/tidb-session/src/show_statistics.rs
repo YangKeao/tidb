@@ -106,7 +106,12 @@ impl Session {
             ],
             rows,
         };
-        filter_show_output(output, like_pattern, where_clause)
+        filter_show_output(
+            output,
+            like_pattern,
+            where_clause,
+            &self.statement_context(false),
+        )
     }
 
     /// Pinned Go `fetchShowAnalyzeStatus` and
@@ -277,7 +282,12 @@ impl Session {
             ],
             rows: result_rows,
         };
-        filter_show_output(output, like_pattern, where_clause)
+        filter_show_output(
+            output,
+            like_pattern,
+            where_clause,
+            &self.statement_context(false),
+        )
     }
 
     /// Go `ShowExec.fetchShowStatsMeta` (`pkg/executor/show_stats.go:36`):
@@ -384,7 +394,12 @@ impl Session {
             ],
             rows,
         };
-        filter_show_output(output, like_pattern, where_clause)
+        filter_show_output(
+            output,
+            like_pattern,
+            where_clause,
+            &self.statement_context(false),
+        )
     }
 
     /// Go `ShowExec.fetchShowStatsLocked`: enumerate every physical table in
@@ -465,7 +480,7 @@ impl Session {
             ],
             rows,
         };
-        filter_show_output(output, like_pattern, where_clause)
+        filter_show_output(output, like_pattern, where_clause, &context)
     }
 
     /// Go `ShowExec.fetchShowStatsHealthy`: one health percentage for every
@@ -549,7 +564,12 @@ impl Session {
             ],
             rows,
         };
-        filter_show_output(output, like_pattern, where_clause)
+        filter_show_output(
+            output,
+            like_pattern,
+            where_clause,
+            &self.statement_context(false),
+        )
     }
 
     /// Go `ShowExec.fetchShowStatsHistogram`: expose every initialized
@@ -706,7 +726,12 @@ impl Session {
             ],
             rows,
         };
-        filter_show_output(output, like_pattern, where_clause)
+        filter_show_output(
+            output,
+            like_pattern,
+            where_clause,
+            &self.statement_context(false),
+        )
     }
 
     /// Go `ShowExec.fetchShowStatsTopN`: render every resident TopN value
@@ -862,7 +887,12 @@ impl Session {
             ],
             rows,
         };
-        filter_show_output(output, like_pattern, where_clause)
+        filter_show_output(
+            output,
+            like_pattern,
+            where_clause,
+            &self.statement_context(false),
+        )
     }
 
     /// Go `ShowExec.fetchShowStatsBuckets`: expose the resident cumulative
@@ -1019,6 +1049,11 @@ impl Session {
             ],
             rows,
         };
-        filter_show_output(output, like_pattern, where_clause)
+        filter_show_output(
+            output,
+            like_pattern,
+            where_clause,
+            &self.statement_context(false),
+        )
     }
 }

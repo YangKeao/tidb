@@ -1254,6 +1254,13 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::UnaryNullNative => {
             panic!("unary signs need their actual value kind and operand descriptor")
         }
+        EvaluatedBytesOp::LikeNative
+        | EvaluatedBytesOp::IlikeNative
+        | EvaluatedBytesOp::LikeLegacyNative
+        | EvaluatedBytesOp::LikeNullIntNative
+        | EvaluatedBytesOp::LikeMissingLegacyNative => {
+            panic!("LIKE calls need their actual arguments, demand and cache handles")
+        }
         EvaluatedBytesOp::RegexpLikeNative
         | EvaluatedBytesOp::RegexpSubstrNative
         | EvaluatedBytesOp::RegexpInstrNative
@@ -7446,9 +7453,9 @@ fn char_conv_dispatch_conv_keeps_literal_payload_overflow_receipts_and_pb_demand
     execution.close();
 }
 
-fn observe_wide_math(
-    evaluate: impl FnOnce() -> Result<Datum, EvalError>,
-) -> (Result<Datum, EvalError>, EvalOneObservation) {
+fn observe_wide_math<T>(
+    evaluate: impl FnOnce() -> Result<T, EvalError>,
+) -> (Result<T, EvalError>, EvalOneObservation) {
     arm_eval_one_observation();
     let result = evaluate();
     (result, take_eval_one_observation())
@@ -11294,7 +11301,8 @@ fn boolean_dispatch_preserves_pb_warnings_and_native_predicate_wrappers() {
             // Instrumentation changes from one facade to two: AND then NOT.
             // Their different workers' getter snapshots are not a total delta.
             ("1 NOT BETWEEN 0 AND 2", Datum::Int(0), 2, None),
-            ("NULL NOT LIKE '%'", Datum::Null, 1, Some(1)),
+            // LIKE's real NULL witness now precedes the independent NOT worker.
+            ("NULL NOT LIKE '%'", Datum::Null, 2, None),
             // REGEXP now dispatches too, before the independent NOT worker.
             ("'a' NOT REGEXP 'b'", Datum::Int(1), 2, None),
             ("NULL IS NOT TRUE", Datum::Int(1), 1, Some(2)),
@@ -13082,6 +13090,148 @@ fn all_native_callbacks_run_outside_busy_cell_borrow_and_pool_mutex() {
     assert_eq!(probes.get(), native.calls.borrow().len());
     assert!(probes.get() >= 2 * COLUMNS_FORWARDED_METHODS.len());
     assert_eq!(scope_worker_observation(&scope).1, 1);
+}
+
+#[test]
+fn like_ready_recipes_own_signed_metadata_and_legacy_presence() {
+    use tidb_query_expr::local::NativeCollation;
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    // Original like.rs source rows: wildcard matching and escape-sensitive
+    // ASCII folding. Neither the arguments nor expected answers are prelowered.
+    for (operation, ready, expected) in [
+        (
+            EvaluatedBytesOp::LikeNative,
+            EvaluatedArgs::Like {
+                invocation: NativeLikeInvocation::like(NativeCollation::Utf8Mb4Bin, None),
+                text: Some(b"pending deposits".to_vec()),
+                pattern: Some(b"%pending%deposits%".to_vec()),
+                escape: Some(i64::from(b'\\')),
+            },
+            Some(1),
+        ),
+        (
+            EvaluatedBytesOp::IlikeNative,
+            EvaluatedArgs::Like {
+                invocation: NativeLikeInvocation::ilike(NativeCollation::Utf8Mb4Bin, None),
+                text: Some(b"abc".to_vec()),
+                pattern: Some(b"ABC".to_vec()),
+                escape: Some(i64::from(b'A')),
+            },
+            Some(0),
+        ),
+        (
+            EvaluatedBytesOp::LikeLegacyNative,
+            EvaluatedArgs::Like {
+                invocation: NativeLikeInvocation::legacy(false),
+                text: Some(b"a%b".to_vec()),
+                pattern: Some(b"a\\%b".to_vec()),
+                escape: Some(i64::from(b'\\')),
+            },
+            Some(1),
+        ),
+        (
+            EvaluatedBytesOp::LikeNullIntNative,
+            EvaluatedArgs::NullWitness(None),
+            None,
+        ),
+        (
+            EvaluatedBytesOp::LikeMissingLegacyNative,
+            EvaluatedArgs::NoArgs,
+            None,
+        ),
+    ] {
+        let mut invocation = Invocation::enter(&scope).unwrap();
+        let result = invocation.run_args(operation, ready);
+        let computed = require_computed_int(invocation.finish(result).unwrap()).unwrap();
+        assert_eq!(computed.metadata(), ComputedIntMetadata::OwnSignedInt);
+        assert_eq!(computed.value(), expected);
+        let native = own_computed_int(computed);
+        assert_eq!(native.metadata.kind, DatumKind::Int);
+        assert_eq!(native.metadata.string_collation, None);
+        assert_eq!(native.metadata.decimal_declared_shape, None);
+        let expected = expected.map_or(Datum::Null, Datum::Int);
+        assert_eq!(native.into_datum().unwrap(), expected);
+        assert_eq!(
+            materialize_computed(operation, ComputedValue::Int(computed))
+                .unwrap()
+                .into_boolean_datum()
+                .unwrap(),
+            expected,
+        );
+        assert_eq!(scope_worker_observation(&scope).1, 1);
+    }
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for args in [LegacyLikeArgs::Missing, LegacyLikeArgs::NullWitness(None)] {
+            let (result, observation) =
+                observe_wide_math(|| eval_legacy_like_in(false, args, columns));
+            assert_eq!(result, Ok(None));
+            assert_wide_math_c4(observation);
+        }
+        let (result, observation) = observe_wide_math(|| {
+            eval_legacy_like_in(
+                false,
+                LegacyLikeArgs::Values {
+                    target: b"a%b".to_vec(),
+                    pattern: b"a\\%b".to_vec(),
+                    escape: b'\\',
+                },
+                columns,
+            )
+        });
+        assert_eq!(result, Ok(Some(1_i128)));
+        assert_wide_math_c4(observation);
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn like_legacy_null_and_missing_cannot_bypass_actual_work_budget() {
+    let mut policy = test_policy(1, 1);
+    policy.max_steps = 0;
+    let owner = AsciiPoolOwner::new(policy).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        let before = owner.snapshot().unwrap();
+        let (result, observation) = observe_wide_math(|| {
+            eval_legacy_like_in(false, LegacyLikeArgs::NullWitness(Some(1)), columns)
+        });
+        assert!(matches!(
+            result,
+            Err(EvalError::ExpressionAdapterFailure(_))
+        ));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(owner.snapshot().unwrap(), before);
+        for args in [
+            LegacyLikeArgs::Missing,
+            LegacyLikeArgs::NullWitness(None),
+            LegacyLikeArgs::Values {
+                target: b"a%b".to_vec(),
+                pattern: b"a\\%b".to_vec(),
+                escape: b'\\',
+            },
+        ] {
+            let (result, observation) =
+                observe_wide_math(|| eval_legacy_like_in(false, args, columns));
+            assert!(matches!(
+                result,
+                Err(EvalError::ExpressionRuntimeFailure(failure))
+                    if matches!(failure.local_error(), LocalError::ResourceLimit(_))
+                        && failure.phase() == Some(ExpressionRuntimeFailurePhase::Invoke)
+            ));
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(observation.before_kernel_invocations, Some(0));
+            assert_eq!(observation.after_kernel_invocations, Some(0));
+            assert_eq!(scope_worker_observation(&scope).1, 0);
+            assert!(!scope.poisoned.get());
+        }
+    });
+    drop(scope);
+    execution.close();
 }
 
 #[test]

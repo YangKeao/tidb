@@ -294,13 +294,13 @@ pub use tidb_expr::constant_fold::take_fold_warnings;
 pub use tidb_expr::infer_pushdown::{blacklist_name, blacklist_store_mask, ExprPushDownBlacklist};
 pub use tidb_expr::CurrentTso;
 pub use tidb_expr::{
-    eval_in, like_match_with_collation, truthy_of, BlockEncryptionMode, Columns, EvalError,
-    JsonError, MysqlRng, SessionTimeZone,
+    eval_in, like_match_with_collation, like_match_with_collation_in, truthy_of,
+    BlockEncryptionMode, Columns, EvalError, JsonError, MysqlRng, SessionTimeZone,
 };
 /// Explicit native runtime capabilities and adapter diagnostics for session
 /// lifecycle ownership; reexporting them installs no default runtime or scope.
 pub use tidb_expr::{
-    AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy,
+    AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy, AsciiScope,
     ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,
 };
 pub use topn::TopNExec;

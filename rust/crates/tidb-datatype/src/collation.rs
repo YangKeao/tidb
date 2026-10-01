@@ -38,8 +38,9 @@ use tidb_query_datatype::codec::collation::{
 pub mod wildcard {
     pub use tidb_query_datatype::codec::collation::decode_utf8_rune_strict;
     pub use tidb_query_datatype::codec::collation::pattern::{
-        compile_bytes, compile_runes, matches_compiled_bytes, matches_compiled_runes_with,
-        matches_runes, MatchOptions, PatternType, TrailingEscape,
+        compile_bytes, compile_runes, lower_one_string, lower_one_string_excluding_escape_char,
+        matches_compiled_bytes, matches_compiled_runes_with, matches_runes, utf8_len, MatchOptions,
+        PatternType, TrailingEscape,
     };
 }
 

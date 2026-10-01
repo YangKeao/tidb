@@ -50,7 +50,7 @@ use tidb_query_expr::local::{
 };
 use tidb_query_expr::{
     BinaryArithmeticErrorKind, BinaryArithmeticOperation, NativeDecimalFastOutcome,
-    NativeDecimalFastValue,
+    NativeDecimalFastValue, NativeLikeInvocation,
 };
 
 use super::adapter_failure::{ExpressionAdapterFailure, ScopeFailureKind};
@@ -1854,6 +1854,11 @@ fn materialize_computed(
             | EvaluatedBytesOp::TidbShardNative
             | EvaluatedBytesOp::VitessHashNative
             | EvaluatedBytesOp::VecDimsNative
+            | EvaluatedBytesOp::LikeNative
+            | EvaluatedBytesOp::IlikeNative
+            | EvaluatedBytesOp::LikeLegacyNative
+            | EvaluatedBytesOp::LikeNullIntNative
+            | EvaluatedBytesOp::LikeMissingLegacyNative
             | EvaluatedBytesOp::RegexpLikeNative
             | EvaluatedBytesOp::RegexpInstrNative
             | EvaluatedBytesOp::RegexpLikeLegacyCiNative
@@ -2424,6 +2429,69 @@ pub(crate) fn eval_arithmetic_decimal_fast_in(
             Ok(EvaluatedArgs::Decimal2 { left, right })
         },
         EvaluatedBytesResult::into_decimal_fast_outcome,
+    )
+}
+
+/// Actual legacy LIKE presence, distinct from a nullable value's SQL result.
+/// Values retain their original bytes; the kernel owns UTF-8 and folding policy.
+#[derive(Debug)]
+pub enum LegacyLikeArgs {
+    Missing,
+    NullWitness(Option<i64>),
+    Values {
+        target: Vec<u8>,
+        pattern: Vec<u8>,
+        escape: u8,
+    },
+}
+
+/// Evaluate legacy LIKE under the caller's scope without native matching.
+/// Missing children and an actual NULL witness enter their own closed recipes;
+/// a non-NULL witness is refused before worker admission.
+pub fn eval_legacy_like_in(
+    case_insensitive: bool,
+    args: LegacyLikeArgs,
+    ctx: &dyn Columns,
+) -> Result<Option<i128>, EvalError> {
+    evaluate_prepared_args_in(
+        ctx,
+        || match args {
+            LegacyLikeArgs::Missing => Ok((
+                EvaluatedBytesOp::LikeMissingLegacyNative,
+                EvaluatedArgs::NoArgs,
+            )),
+            LegacyLikeArgs::NullWitness(value) => {
+                if value.is_some() {
+                    return Err(AsciiBoundaryError::Scope {
+                        kind: ScopeFailureKind::Contract,
+                        reason: "legacy LIKE NULL witness contains a value",
+                    }
+                    .into_eval_error());
+                }
+                Ok((
+                    EvaluatedBytesOp::LikeNullIntNative,
+                    EvaluatedArgs::NullWitness(None),
+                ))
+            }
+            LegacyLikeArgs::Values {
+                target,
+                pattern,
+                escape,
+            } => Ok((
+                EvaluatedBytesOp::LikeLegacyNative,
+                EvaluatedArgs::Like {
+                    invocation: NativeLikeInvocation::legacy(case_insensitive),
+                    text: Some(target),
+                    pattern: Some(pattern),
+                    escape: Some(i64::from(escape)),
+                },
+            )),
+        },
+        |computed| match computed.into_boolean_datum()? {
+            Datum::Int(value) => Ok(Some(i128::from(value))),
+            Datum::Null => Ok(None),
+            _ => Err(result_kind_error().into_eval_error()),
+        },
     )
 }
 

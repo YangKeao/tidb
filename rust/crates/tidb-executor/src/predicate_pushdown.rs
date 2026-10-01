@@ -366,7 +366,7 @@ impl PushedScanFilter {
     ) -> Result<bool, ExecError> {
         for (filter, fast_path) in self.filters.iter().zip(&self.fast_paths) {
             if let Some(fast_path) = fast_path {
-                if !fast_path.matches(row) {
+                if !fast_path.matches(ctx, row)? {
                     return Ok(false);
                 }
                 continue;
@@ -673,8 +673,12 @@ impl FastScanFilter {
         })
     }
 
-    fn matches(&self, row: tidb_chunk::row::Row<'_>) -> bool {
-        match self {
+    fn matches(
+        &self,
+        ctx: &dyn Columns,
+        row: tidb_chunk::row::Row<'_>,
+    ) -> Result<bool, tidb_expr::EvalError> {
+        Ok(match self {
             Self::StringIn {
                 column_offset,
                 collator,
@@ -684,7 +688,7 @@ impl FastScanFilter {
                 if row.is_null(*column_offset) {
                     // `NULL IN (...)` and `NULL NOT IN (...)` are both NULL,
                     // which a scan filter must reject just like `truthy_of`.
-                    return false;
+                    return Ok(false);
                 }
                 let key = collator.key(row.get_string(*column_offset).as_bytes());
                 let found = keys.contains(&key);
@@ -702,21 +706,26 @@ impl FastScanFilter {
                 negated,
             } => {
                 if row.is_null(*column_offset) {
-                    return false;
+                    // Apply WHERE's NULL rejection to the actual worker value,
+                    // without replaying children or negating SQL NULL.
+                    return Ok(tidb_expr::like_null_in(ctx)?
+                        .map(|value| (value != 0) ^ *negated)
+                        .unwrap_or(false));
                 }
-                let matched = tidb_expr::like_match_with_collation(
+                let matched = tidb_expr::like_match_with_collation_in(
                     row.get_string(*column_offset).as_bytes(),
                     pattern,
                     Some(*escape),
                     *collation,
-                );
+                    ctx,
+                )?;
                 if *negated {
                     !matched
                 } else {
                     matched
                 }
             }
-        }
+        })
     }
 }
 
@@ -935,6 +944,56 @@ mod tests {
                 .take(limit.unwrap_or(usize::MAX))
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect())
+        }
+    }
+
+    #[test]
+    fn fast_like_preserves_negation_null_and_execution_failures() {
+        let policy =
+            crate::AsciiPoolPolicy::checked(1, 1, usize::MAX, 1 << 20, 1 << 20, 64, 16, 1 << 20)
+                .unwrap();
+        let owner = crate::AsciiPoolOwner::new(policy).unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let ctx = crate::StmtContext::for_query().with_evaluated_ascii_execution(execution.clone());
+        let mut rows = tidb_chunk::chunk::Chunk::new_with_capacity(
+            &[FieldType::new(FieldTypeCode::VarString)],
+            3,
+        );
+        for value in [
+            Datum::new_string("alpha"),
+            Datum::new_string("beta"),
+            Datum::Null,
+        ] {
+            rows.append_datum(0, &value);
+        }
+        for negated in [false, true] {
+            let filter = super::FastScanFilter::Like {
+                column_offset: 0,
+                pattern: b"a%".to_vec(),
+                escape: b'\\',
+                collation: tidb_datatype::Collation::Utf8Mb4Bin,
+                negated,
+            };
+            assert_eq!(filter.matches(&ctx, rows.get_row(0)).unwrap(), !negated);
+            assert_eq!(filter.matches(&ctx, rows.get_row(1)).unwrap(), negated);
+            assert!(!filter.matches(&ctx, rows.get_row(2)).unwrap());
+        }
+        execution.close();
+        for negated in [false, true] {
+            let filter = super::FastScanFilter::Like {
+                column_offset: 0,
+                pattern: b"a%".to_vec(),
+                escape: b'\\',
+                collation: tidb_datatype::Collation::Utf8Mb4Bin,
+                negated,
+            };
+            for index in 0..3 {
+                assert!(matches!(
+                    filter.matches(&ctx, rows.get_row(index)),
+                    Err(tidb_expr::EvalError::ExpressionAdapterFailure(failure))
+                        if failure.class() == crate::ExpressionAdapterFailureClass::PoolClosed
+                ));
+            }
         }
     }
 

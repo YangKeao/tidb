@@ -300,11 +300,7 @@ pub fn get_tail_space_count(value: &[u8]) -> i64 {
 
 /// Returns the width encoded by the first byte of a UTF-8 sequence.
 pub const fn utf8_len(first: u8) -> usize {
-    if first & 0x80 == 0 {
-        1
-    } else {
-        first.leading_ones() as usize
-    }
+    wildcard::utf8_len(first)
 }
 
 /// Removes `trimmed_chars` valid UTF-8 characters from the front and returns
@@ -343,44 +339,13 @@ pub const fn is_numeric_ascii(value: u8) -> bool {
 
 /// Lowercases ASCII letters in place and leaves every other byte unchanged.
 pub fn lower_one_string(value: &mut [u8]) {
-    for byte in value {
-        if is_upper_ascii(*byte) {
-            *byte = byte.to_ascii_lowercase();
-        }
-    }
+    wildcard::lower_one_string(value)
 }
 
 /// Lowercases ASCII letters without changing the meaning of an ASCII-letter
 /// escape marker. Returns the possibly uppercased effective escape byte.
 pub fn lower_one_string_excluding_escape_char(value: &mut [u8], escape: u8) -> u8 {
-    let actual_escape = if is_lower_ascii(escape) {
-        escape.to_ascii_uppercase()
-    } else {
-        escape
-    };
-    let mut escaped = false;
-    let mut index = 0;
-    while index < value.len() {
-        if is_upper_ascii(value[index]) {
-            if value[index] == escape && !escaped {
-                escaped = true;
-                index += 1;
-                continue;
-            }
-            value[index] = value[index].to_ascii_lowercase();
-        } else {
-            if value[index] == escape && !escaped {
-                escaped = true;
-                value[index] = actual_escape;
-                index += 1;
-                continue;
-            }
-            index += utf8_len(value[index]).saturating_sub(1);
-        }
-        escaped = false;
-        index += 1;
-    }
-    actual_escape
+    wildcard::lower_one_string_excluding_escape_char(value, escape)
 }
 
 /// Escapes `?` for a glob path pattern.
