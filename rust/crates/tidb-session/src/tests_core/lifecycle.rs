@@ -5221,3 +5221,182 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_go_trig_dispatch_sql_columns() 
         assert!(warnings_of(&session).is_empty(), "{sql}");
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_exp_log10_dispatch_sql_bits_metadata_and_diagnostics() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_exp_log10 (id INT PRIMARY KEY, x DOUBLE, n DOUBLE, \
+             d DOUBLE, s VARCHAR(16))",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_exp_log10 VALUES \
+             (1,NULL,NULL,NULL,NULL),(2,1.5e0,100e0,NULL,'2020-01-01'),\
+             (3,0e0,100e0,0e0,NULL),(4,0e0,NULL,-1e0,NULL)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns("SELECT EXP(x),LOG10(n) FROM shared_exp_log10 ORDER BY id")
+        .unwrap()
+    else {
+        panic!("expected native EXP/LOG10 dispatch rows")
+    };
+    assert_eq!(columns.len(), 2);
+    assert_eq!(rows.len(), 4);
+    for (_, field) in &columns {
+        assert_eq!(field.code(), tidb_datatype::FieldTypeCode::Double);
+        assert_eq!(field.flen(), 23);
+        assert_eq!(field.decimal(), tidb_datatype::UNSPECIFIED_LENGTH);
+        assert!(!field.is_unsigned());
+        assert_eq!(field.charset_name(), "binary");
+        assert_eq!(field.collation(), tidb_datatype::Collation::Binary);
+    }
+    // Preserve the original Go EXP(1.5) golden, not libm's neighboring value.
+    // These are fixed round-trip literals, never shared-kernel/stdlib oracles.
+    let expected_bits: [[Option<u64>; 2]; 4] = [
+        [None, None],
+        [
+            Some(4.481689070338065_f64.to_bits()),
+            Some(2.0_f64.to_bits()),
+        ],
+        [Some(1.0_f64.to_bits()), Some(2.0_f64.to_bits())],
+        [Some(1.0_f64.to_bits()), None],
+    ];
+    for (row_index, (row, expected)) in rows.iter().zip(expected_bits).enumerate() {
+        assert_eq!(row.len(), 2);
+        for (column, (value, bits)) in row.iter().zip(expected).enumerate() {
+            match (value, bits) {
+                (Datum::Null, None) => {}
+                (Datum::Real(actual), Some(bits)) => {
+                    assert_eq!(
+                        actual.to_bits(),
+                        bits,
+                        "id {}, column {column}",
+                        row_index + 1
+                    );
+                }
+                other => panic!(
+                    "unexpected EXP/LOG10 cell: id {}, column {column}: {other:?}",
+                    row_index + 1
+                ),
+            }
+        }
+    }
+    assert!(warnings_of(&session).is_empty());
+
+    // Both zero and negative LOG10 inputs are NULL plus the original 3020.
+    // Keep their warning-bearing projection separate from ordinary values.
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns("SELECT LOG10(d) FROM shared_exp_log10 WHERE id>=3 ORDER BY id")
+        .unwrap()
+    else {
+        panic!("expected LOG10 domain rows")
+    };
+    assert_eq!(rows, vec![vec![Datum::Null], vec![Datum::Null]]);
+    assert_eq!(
+        warnings_of(&session),
+        vec![(3020, "Invalid argument for logarithm".to_owned()); 2]
+    );
+
+    // EXP formats the evaluated 2020 after its one ETReal coercion warning.
+    // Unlike COT, this error must not name the source column or raw date text.
+    let mysql = session
+        .run_with_columns("SELECT EXP(s) FROM shared_exp_log10 WHERE id=2")
+        .unwrap_err()
+        .to_mysql_error();
+    assert_eq!(mysql.code, 1690);
+    assert_eq!(mysql.state, *b"22003");
+    assert_eq!(mysql.message, "DOUBLE value is out of range in 'exp(2020)'");
+    assert!(mysql.is_from_evaluation());
+    assert_eq!(
+        session.warnings(),
+        &[SqlWarning {
+            level: WarningLevel::Warning,
+            code: 1292,
+            message: "Truncated incorrect DOUBLE value: '2020-01-01'".to_owned(),
+        }]
+    );
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_exp_log10_dispatch_sql_columns() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE shared_exp_log10_zero (id INT PRIMARY KEY, e VARCHAR(16), n DOUBLE)")
+        .unwrap();
+    session
+        .run("INSERT INTO shared_exp_log10_zero VALUES (1,NULL,NULL),(2,'1.5',100e0),(3,'2020-01-01',0e0)")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // Coercion and LOG10's domain warning precede pool admission. Preserve
+    // those real warnings, then reject even NULL/invalid inputs with the real
+    // typed pool error; neither EXP overflow packing nor an Error warning row
+    // may replace that refusal. Every call uses stored columns, with no mask.
+    for (expression, id, warning) in [
+        ("EXP(e)", 1, None),
+        ("EXP(e)", 2, None),
+        (
+            "EXP(e)",
+            3,
+            Some((1292, "Truncated incorrect DOUBLE value: '2020-01-01'")),
+        ),
+        ("LOG10(n)", 1, None),
+        ("LOG10(n)", 2, None),
+        (
+            "LOG10(n)",
+            3,
+            Some((3020, "Invalid argument for logarithm")),
+        ),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_exp_log10_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("EXP/LOG10 must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        if let Some((code, message)) = warning {
+            assert_eq!(
+                session.warnings(),
+                &[SqlWarning {
+                    level: WarningLevel::Warning,
+                    code,
+                    message: message.to_owned(),
+                }],
+                "{sql}"
+            );
+        } else {
+            assert!(warnings_of(&session).is_empty(), "{sql}");
+        }
+    }
+}

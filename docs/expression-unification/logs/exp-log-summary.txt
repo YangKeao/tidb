@@ -1,0 +1,75 @@
+Checkpoint: exp-log-two-28
+STATUS: final functional checkpoint, 89->91/245; final acceptance remains 0/245.
+Two whole frozen IDs: exp, log10. No alias, PB/legacy entry or duplicate helper credit; go_log/go_frexp do not credit LOG/LN. No completed/transcreated Go-package claim.
+Exactly 6 retained Rust logs = 6 actual first-attempt test runs: 5 scoped green, full expression with 4 known failures. No compile failure, retry, oracle correction or old expected-value change.
+PROVENANCE: Rust commands, exit statuses, formatting and final source/failure-section comparisons are parent-owned. This writer read/grepped completed receipts and ran sha256sum on all six logs (exit0), not build/test/fmt.
+RAW DIRECTORY: /home/agent/tidb/expression-unification/logs
+JAN CWD: /home/agent/tidb/expression-unification/tikv; cargo-tikv pin nightly-2026-01-30-x86_64-unknown-linux-gnu.
+AUG CWD: /home/agent/tidb/expression-unification/tidb/rust; cargo-tidb pin nightly-2026-08-22-x86_64-unknown-linux-gnu.
+Parent supplied exact commands; each used: set -o pipefail; <COMMAND> 2>&1 | tee /home/agent/tidb/expression-unification/logs/<LOG>
+Compilation times are emitted Finished-test-profile times, not performance measurements.
+
+LOG: exp-log-tikv-local.log
+COMMAND [JAN]: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+EXIT: 0; running 249 tests; compilation 9.04s. The one ignored test is preexisting.
+test result: ok. 248 passed; 0 failed; 1 ignored; 0 measured; 477 filtered out; finished in 0.19s
+SHA256: 3a62ba0e78ab74ad8c79a1e051b0584c2fb15a32f72006f776d9972f9f54de5d
+LOG: exp-log-tikv-math.log
+COMMAND [JAN]: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_math:: -- --test-threads=1
+EXIT: 0; running 54 tests, including two new small raw-value units; compilation 0.14s.
+test result: ok. 54 passed; 0 failed; 0 ignored; 0 measured; 672 filtered out; finished in 0.10s
+SHA256: 64da9c2f9cf6899779122162a34552bbfad4fdfc422d427e7d288eb7952512a9
+LOG: exp-log-native-math.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-expr --lib tests::math:: -- --test-threads=1
+EXIT: 0; running the original 20 math tests; compilation 12.29s.
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 1515 filtered out; finished in 0.01s
+SHA256: 63b716e04e3536727fdd25511d05cb87d527792b0cf1e03a6f345acce810ef51
+LOG: exp-log-dispatch.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-expr --lib exp_log_dispatch_ -- --test-threads=1
+EXIT: 0; running 2 representative tests; compilation 0.13s.
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1533 filtered out; finished in 0.00s
+SHA256: 35bc3fef3905e9d7589915ea513c99c8233ab2d4d556a79a60e50fa6369602c6
+LOG: exp-log-sql.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+EXIT: 0; running 59 tests; compilation 22.60s.
+test result: ok. 59 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 0.88s
+SHA256: aa241ae5855d478a254c5e1b6298669abf3e8c99c7435ad37b60f21ca1e28575
+LOG: exp-log-expr-full.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+EXIT: 101; running 1535 tests; compilation 0.15s.
+test result: FAILED. 1437 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.56s
+SHA256: eea589afc9e03689dd64a7b2a683739d1b426eded050cd6e2c4f2e9e28dd5a6e
+
+SOURCE PRESERVATION (not whole-log hashes)
+Parent post-format comparison versus a80a017a: complete 136-line suffix from pub(crate) fn go_exp through EOF is byte-identical, SHA256 c4ed9c6a2fee9e42831d33e3f8c184a7da9a220a08d6abfc9db8e72016e288e4. FMA mul_add, round_ties_even, underflow, constants, reciprocal and the existing frexp subnormal condition are preserved, not repaired.
+Original first13 license lines are identical. The old 170-line native file is deleted; new private impl_math/native_go_exp_log.rs is 168 lines, whole-file post-format SHA256 559aafe7018c76934e98a00a5a0db25411dbb4258711ef6b7bd694d4ab64dc3c, also identical to A's pre-format new-file hash.
+Only the header was revised for the actual retained amd64 FMA oracle path, not every Go CPU/non-FMA implementation, and the valid sibling trig link. Exact body relocation is preservation evidence, not exhaustive mathematical validation. Both wire EXP/LOG10 functions remain unchanged.
+12 Rust paths: native5 (deleted1/live4), TiKV7 (new1/live7); all 11 live files pinned-formatted. Factory wiring stayed at its minimal five-source scope, not seven; its mod/expr_eval surfaces were not changed. Parent confirms old tests/math.rs and builtin_info_json_math_source.rs diffs0. No PB/legacy admission or route expansion.
+No embedded test block existed in the deleted module. Its two pub(crate) providers stay inside a private module, with no local pure export or native test bridge. The existing native math tests execute through production dispatch, not a duplicated fixture suite.
+
+FULL-FAILURE COMPARISON (fresh parent-owned comparison, not a whole-log hash)
+Current exp-log-expr-full.log versus round27 go-trig-expr-full.log.
+section = text.split('\nfailures:\n', 1)[1].split('\ntest result:', 1)[0]
+Normalize only re.sub(r"(?m)^(thread '[^\n]*' \()\d+(\) panicked at)", r'\1THREAD\2', section).
+Parent reports complete normalized sections byte-identical, both SHA256 0930217d98e0b92d727527dc3c7cb7313f1bbe35e643da60114fa6d78203839b. This was freshly confirmed, not substituted from historical evidence.
+Retained failures:
+- pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation
+- tests::builtin_info_json_math_source::exp
+- tests::builtin_math_misc_op_source::vectorized_builtin_op_func
+- time_fn::tests::str_to_date_partial_formats_follow_no_zero_date
+The old EXP(100_000.0) assertion still expects EvalError::FloatOverflow and still fails. No change to that old expected value, no green rewrite, and no claim that this preexisting discrepancy was resolved.
+Parent reports both repository git diff --check and both lockfile git diff --exit-code checks exit0. Those are not extra Rust logs or a green full-suite claim.
+
+VALIDATED COVERAGE AND POLICY BOUNDARIES
+Two exact closed private entries: ExpGoNative/exp_go_native_fn_meta, Log10GoNative/log10_go_native_fn_meta. Existing nullable raw-IEEE LE8 B->B and OwnIeee754Bits encode computed f64 results, not a Real projection or input replay. No new carrier/cause/driver/fourth column/pure bridge/PBlegacy entry.
+EXP's Cell-retained coerced input is consulted only for original diagnostic rendering after a computed non-finite result. It does not predict overflow. Missing retained input is an internal Unsupported invariant failure, NOT a typed ScopeContract guarantee.
+LOG10 keeps coercion then 3020 warning before admission, sends actual input bits, consumes the computed result and only then applies its original domain-NULL policy. NaN/+Inf retain original native raw handling; no EXP-style finite filter or wire Real policy is substituted.
+New kernel2 tests use existing EXP(1.5)=4.481689070338065 and LOG10(100)=2 points plus NULL/NaN/+-Inf. The original math20 includes exp_matches_go_source_vectors_and_arity and log10_source_vectors; dispatcher2 covers representative native bits/IEEE/NULL workers and diagnostics-before-admission/overflow packing. These are not full-domain tests.
+SQL: main 4 rows x2 columns, independent 2 domain rows with3020, date-text conversion warning1292 followed by1690 with original exp(2020) rendering, and 6 direct zero-slot probes. Real1292/3020 warnings survive resource rejection, without fabricated overflow. Row/probe counts are not additional Rust runs. No native retry follows backend failure.
+
+LIMITS / FREEZE
+No retries, compile failures, oracle fixes or old expected changes occurred in this batch; earlier non-green observations remain historical, not current passes.
+Exhaustive f64/subnormal/CPU coverage, whole datatype/unistore/parser/workspace completion, separate release execution, make lint, wider scope/guard gates and final acceptance remain unverified.
+No zero-copy, allocator-capacity, total physical peak, OOM-safety or performance proof follows from bit samples, raw carriers or logical limits.
+After source freeze this writer created only this summary and exp-log-checkpoint.md: no source/old expected/Plan/README/JSON/guide/index/build/test/fmt changes.
+FINAL: 91/245 functional, final0/245; document pair frozen with all four full-suite failures retained, not PR-ready.

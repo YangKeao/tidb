@@ -22,7 +22,6 @@
 //! this dispatch; RAND additionally receives the original argument AST so its
 //! constant-versus-row-dependent generator identity remains unchanged.
 
-mod go_exp_log;
 mod go_trig;
 
 use tidb_ast::{BinaryOp, Expr, UnaryOp};
@@ -621,16 +620,31 @@ fn log10(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
     let [v] = vals else {
         return Err(EvalError::Unsupported("bad function arity"));
     };
-    Ok(match numeric_arg(v, ctx)? {
-        // go `builtinLog10Sig.evalReal`: a non-positive argument warns
-        // `ErrInvalidArgumentForLogarithm` (3020) on its way to NULL.
-        Some(x) if x <= 0.0 => {
-            ctx.append_warning(3020, "Invalid argument for logarithm");
-            Datum::Null
-        }
-        Some(x) => Datum::Real(go_exp_log::go_log10(x)),
-        None => Datum::Null,
-    })
+    let invalid_domain = std::cell::Cell::new(false);
+    crate::tikv::evaluate_args_in(
+        EvaluatedBytesOp::Log10GoNative,
+        ctx,
+        || {
+            let value = numeric_arg(v, ctx)?;
+            let invalid = value.is_some_and(|x| x <= 0.0);
+            invalid_domain.set(invalid);
+            if invalid {
+                // Keep 3020 after coercion and before admission, but send the
+                // actual argument to the shared kernel, not a substitute NULL.
+                ctx.append_warning(3020, "Invalid argument for logarithm");
+            }
+            Ok(EvaluatedArgs::Ieee754Bits(value.map(f64::to_bits)))
+        },
+        |computed| {
+            let value = computed.into_ieee754_bits()?.map(f64::from_bits);
+            Ok(if invalid_domain.get() {
+                Datum::Null
+            } else {
+                // Unlike EXP, native LOG10 retains NaN and positive infinity.
+                value.map_or(Datum::Null, Datum::Real)
+            })
+        },
+    )
 }
 
 pub(crate) fn pow(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
@@ -672,20 +686,33 @@ fn exp(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
     let [v] = vals else {
         return Err(EvalError::Unsupported("bad function arity"));
     };
-    match numeric_arg(v, ctx)? {
-        Some(x) => match go_exp_log::go_exp(x) {
-            value if value.is_finite() => Ok(Datum::Real(value)),
-            // go `builtinExpSig.evalReal` formats its overflow with the
-            // EVALUATED argument, not the source text (oracle g-err3:
-            // exp('2020-01-01') truncates to 2020 and errors `DOUBLE value
-            // is out of range in 'exp(2020)'`).
-            _ => Err(EvalError::DataOutOfRange {
-                value: "DOUBLE",
-                expression: format!("exp({x})"),
-            }),
+    // This invocation's input is retained only for diagnostic formatting;
+    // neither coercion nor packing computes or predicts the EXP result.
+    let coerced_input = std::cell::Cell::new(None);
+    crate::tikv::evaluate_args_in(
+        EvaluatedBytesOp::ExpGoNative,
+        ctx,
+        || {
+            let value = numeric_arg(v, ctx)?;
+            coerced_input.set(value);
+            Ok(EvaluatedArgs::Ieee754Bits(value.map(f64::to_bits)))
         },
-        None => Ok(Datum::Null),
-    }
+        |computed| match computed.into_ieee754_bits()?.map(f64::from_bits) {
+            None => Ok(Datum::Null),
+            Some(value) if value.is_finite() => Ok(Datum::Real(value)),
+            Some(_) => {
+                // Format the evaluated argument, not the source expression:
+                // exp('2020-01-01') truncates to 2020 before exp(2020) errors.
+                let x = coerced_input
+                    .get()
+                    .ok_or(EvalError::Unsupported("EXP result missing coerced input"))?;
+                Err(EvalError::DataOutOfRange {
+                    value: "DOUBLE",
+                    expression: format!("exp({x})"),
+                })
+            }
+        },
+    )
 }
 
 /// `PI()`: a niladic function returning the constant.

@@ -1,8 +1,8 @@
 # Expression unification experiment
 
-Checkpoint-ID: `go-trig-five-27` (previous: `char-conv-two-26`)
+Checkpoint-ID: `exp-log-two-28` (previous: `go-trig-five-27`)
 
-**89/245 frozen families delegate to TiKV with native evaluator algorithms removed; target 221.** This checkpoint adds SIN, COS, TAN, COT and ATAN. Both ATAN arities and ATAN2 belong to the single `atan` family. Strict final-audited acceptance remains 0; the experiment is incomplete and not PR-ready.
+**91/245 frozen families delegate to TiKV with native evaluator algorithms removed; target 221.** This checkpoint adds EXP and LOG10. Strict final-audited acceptance remains 0; the experiment is incomplete and not PR-ready.
 
 ## Paired repositories
 
@@ -13,34 +13,32 @@ Use sibling checkouts. `checkpoint.json` pins TiKV and the published Plan hash. 
 
 ## This checkpoint
 
-- **One Go-compatible owner:** native trig production code moves to TiKV `impl_math/native_go_trig.rs`. This is compatibility-core relocation, **not** a claim that existing libm implementations are bit-identical. Constants, reduction, polynomial order, special-value branches and the trailing ATAN implementation are preserved. Native `go_trig.rs` retains only test imports, documentation and the original golden block.
-- **Preserved evidence:** the original 134-line test block is byte-identical and its three tests pass against the shared provider. The original 400 production lines match after six visibility changes and two formatter-only compact-if layouts; the formatted shared module is 392 lines. Narrow pure exports support the old fixtures, while production evaluators use the closed worker.
-- **Existing transport:** eleven private operations—six native-Go and five legacy-libm forms—reuse unary/binary raw IEEE carriers and owned-bit results. No new carrier, SQL failure marker, evaluator driver or four-column allowance is introduced.
-- **Separate result policies:** wire and legacy share libm primitives. Wire keeps Real/NULL/COT overflow behavior; legacy retains raw NaN/Inf, including COT at signed zero. Native consumes the computed raw result through its existing `finite_float` packing and preserves COT's expression-based diagnostic renderer.
-- **Original operand demand:** ordinary native ATAN2 coerces both operands even when the first is NULL. PB keeps its first-NULL child cutoff with a real NULL-witness invocation. Legacy evaluates the right operand only after a non-NULL left. All existing routes forward their actual context; TAN gains no PB or legacy admission.
+- **One arithmetic owner:** the existing native compatibility algorithms move to TiKV `impl_math/native_go_exp_log.rs`. All 136 production-body lines remain byte-identical after formatting, including EXP's FMA/nearest-even arithmetic and the existing LOG10/Frexp branches. The license is preserved. Only header commentary is corrected to describe the actual oracle FMA path and avoid a universal Go-CPU claim. The old 170-line native file and module declaration are deleted.
+- **Minimal integration:** two closed private unary operations reuse the nullable IEEE carrier, owned-bit result and existing driver. No new argument role, public pure-function bridge, failure kind, graph or four-column allowance is added. These functions had no native PB/legacy admission; none is invented. Existing wire EXP/LOG10 implementations are unchanged.
+- **EXP diagnostics:** guarded coercion runs once. A call-local cell retains the coerced input only to format the original diagnostic after an actual computed non-finite result. Thus date-like text still emits 1292 and then reports `exp(2020)`, not a column expression. An impossible missing input returns an explicit existing Unsupported error, not a fabricated value or new typed scope failure.
+- **LOG10 policy:** non-positive inputs emit the original 3020 warning before admission, but the real input bits still enter the worker. Packing consumes the computed result before applying domain NULL. NaN and positive infinity retain their original raw Real behavior. Pool refusal retains preceding warnings and never becomes SQL overflow or fabricated NULL.
 
-No native trig algorithm remains, and no duplicate Go golden fixture is introduced. Existing POW/LOG demand, error receipts, execution pools and unrelated math families are unchanged.
+The change covers twelve Rust paths: five native, including one deletion, and seven TiKV, including one new module. Eleven live sources were pinned-formatted. Existing math vectors, expected values and both lockfiles remain unchanged.
 
 ## Actual validation
 
 | Scope | Result |
 |---|---|
-| TiKV all local evaluator tests | 247 passed, 1 existing ignored |
-| TiKV math tests, including original wire cases | 52 passed |
-| Original native Go golden tests | 3 passed |
-| New native dispatch/PB tests | 3 passed |
-| New legacy trig tests | 2 passed |
-| SQL/lifecycle tests | 57 passed |
-| Full native expression library | **1435 passed, 4 unchanged failures, 94 ignored; exit 101** |
+| TiKV all local evaluator tests | 248 passed, 1 existing ignored |
+| TiKV math tests, including original wire cases | 54 passed |
+| Original native math/source-vector tests | 20 passed |
+| New native dispatch/diagnostic tests | 2 passed |
+| SQL/lifecycle tests | 59 passed |
+| Full native expression library | **1437 passed, 4 unchanged failures, 94 ignored; exit 101** |
 
-All six targeted Rust runs passed on their first attempt; there were no compilation fixes, assertion corrections or retries. New SQL coverage includes four stored rows across seven call forms, an independent fifth-row COT overflow query and 16 direct zero-slot refusals. Focused PB coverage is representative, not an exhaustive signature matrix.
+All five targeted Rust runs passed on their first attempt, without compilation fixes, assertion corrections or retries. New SQL tests cover four stored rows across two function columns, two domain-warning rows, a text-coercion/overflow query and six direct zero-slot refusals.
 
-The entire full-expression failure section matches checkpoint26 byte-for-byte after replacing only panic-heading thread IDs. Both lockfiles and all existing expected values/fixtures remain unchanged.
+The entire full-expression failure section matches checkpoint27 byte-for-byte after replacing only panic-heading thread IDs. In particular, the old EXP test still expects FloatOverflow while the existing implementation and another source test require DataOutOfRange; migration does not silently change either policy or old expectation.
 
-Seven exact command receipts: [summary](logs/go-trig-summary.txt). Ownership, relocation proof and compatibility: [evidence](evidence/go-trig-checkpoint.md).
+Six exact command receipts: [summary](logs/exp-log-summary.txt). Ownership, source-copy hashes and compatibility: [evidence](evidence/exp-log-checkpoint.md).
 
 ## Remaining work
 
-EXP and LOG10 are the next read-only candidates, not credited. Their existing Go-compatible code can likewise move to a shared owner, but EXP's coerced-input diagnostic formatting and LOG10's warning/domain policy must remain intact. The existing EXP baseline failure is an old expectation conflict, not something to silently fix during migration. Compression retains separate compatibility work.
+COMPRESS and UNCOMPRESS are next read-only candidates, not credited. Native COMPRESS requires the existing Go encoder's exact bytes rather than wire zlib output. UNCOMPRESS needs its bounded, complete-stream policy and actual completed result disposition so the host can append original warnings without re-decoding or guessing from inputs. The Plan records these differences and the closed-worker warning constraint.
 
 Complete operation-scope coverage, allocation/high-water and physical-peak checks, paired differential reruns, full codec-domain equivalence, release performance, whole workspace, `make lint` and TiFlash integration remain unfinished. Full datatype, unistore and parser-charset suites were not rerun; historical non-green results are not passing evidence. This is not a complete Go-package transcreation claim.

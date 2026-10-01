@@ -1136,6 +1136,9 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::Atan2LibmLegacy => {
             panic!("trigonometric calls need their original numeric operands")
         }
+        EvaluatedBytesOp::ExpGoNative | EvaluatedBytesOp::Log10GoNative => {
+            panic!("EXP and LOG10 need their original numeric operands")
+        }
         EvaluatedBytesOp::AbsIntNative
         | EvaluatedBytesOp::AbsUIntNative
         | EvaluatedBytesOp::AbsRealNative
@@ -1248,6 +1251,162 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+#[test]
+fn exp_log_dispatch_preserves_native_bits_ieee_policies_and_null_workers() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (name, input, expected) in [
+            // Locked old native-Go EXP fixture (not libm's .0645 neighbor),
+            // and tests/math.rs::log10_source_vectors. No algorithm oracle.
+            (
+                "EXP",
+                Datum::Real(1.5),
+                Ok(Datum::Real(4.481689070338065_f64)),
+            ),
+            ("LOG10", Datum::Real(100.0), Ok(Datum::Real(2.0_f64))),
+            ("EXP", Datum::Null, Ok(Datum::Null)),
+            ("LOG10", Datum::Null, Ok(Datum::Null)),
+            ("EXP", Datum::Real(f64::NEG_INFINITY), Ok(Datum::Real(0.0))),
+            (
+                "EXP",
+                Datum::Real(f64::NAN),
+                Err(EvalError::DataOutOfRange {
+                    value: "DOUBLE",
+                    expression: "exp(NaN)".to_owned(),
+                }),
+            ),
+            (
+                "EXP",
+                Datum::Real(f64::INFINITY),
+                Err(EvalError::DataOutOfRange {
+                    value: "DOUBLE",
+                    expression: "exp(inf)".to_owned(),
+                }),
+            ),
+            ("LOG10", Datum::Real(f64::NAN), Ok(Datum::Real(f64::NAN))),
+            (
+                "LOG10",
+                Datum::Real(f64::INFINITY),
+                Ok(Datum::Real(f64::INFINITY)),
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::math_fn::dispatch_values(name, std::slice::from_ref(&input), columns)
+                    .unwrap()
+            });
+            match expected {
+                Ok(Datum::Real(expected)) => {
+                    let Datum::Real(actual) = result.unwrap() else {
+                        panic!("{name} lost its Real carrier")
+                    };
+                    if expected.is_nan() {
+                        assert!(actual.is_nan());
+                    } else {
+                        assert_eq!(actual.to_bits(), expected.to_bits(), "{name}({input:?})");
+                    }
+                }
+                expected => assert_eq!(result, expected, "{name}({input:?})"),
+            }
+            assert_wide_math_c4(observation);
+        }
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn exp_log_dispatch_keeps_diagnostics_before_admission_and_overflow_packing() {
+    struct Probe {
+        level: Cell<ErrorLevel>,
+        events: RefCell<Vec<String>>,
+    }
+    impl Columns for Probe {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn truncate_level(&self) -> ErrorLevel {
+            self.events.borrow_mut().push("truncate".to_owned());
+            self.level.get()
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.events
+                .borrow_mut()
+                .push(format!("warn:{code}:{message}"));
+        }
+    }
+    let native = Probe {
+        level: Cell::new(ErrorLevel::Warn),
+        events: RefCell::new(Vec::new()),
+    };
+    let domain_events = "truncate|warn:1292:Truncated incorrect DOUBLE value: '0junk'|warn:3020:Invalid argument for logarithm";
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for (name, input, expected, events) in [
+            ("LOG10", "0junk", Ok(Datum::Null), domain_events),
+            (
+                "EXP",
+                "1000junk",
+                Err(EvalError::DataOutOfRange {
+                    value: "DOUBLE",
+                    expression: "exp(1000)".to_owned(),
+                }),
+                "truncate|warn:1292:Truncated incorrect DOUBLE value: '1000junk'",
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::math_fn::dispatch_values(name, &[Datum::new_string(input)], columns).unwrap()
+            });
+            assert_eq!(
+                result, expected,
+                "EXP formats the coerced argument, not source text or its infinite result"
+            );
+            assert_eq!(native.events.replace(Vec::new()).join("|"), events);
+            assert_wide_math_c4(observation);
+        }
+    });
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for (name, input, events) in [
+            ("EXP", Datum::Real(1000.0), ""),
+            ("LOG10", Datum::new_string("0junk"), domain_events),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::math_fn::dispatch_values(name, std::slice::from_ref(&input), columns).unwrap()
+            });
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource),
+                "resource refusal must not become EXP's 1690 or LOG10's domain NULL");
+            assert_eq!(native.events.replace(Vec::new()).join("|"), events,
+                "coercion 1292 and domain 3020 precede even refused worker admission");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        native.level.set(ErrorLevel::Error);
+        let (result, observation) = observe_wide_math(|| {
+            crate::math_fn::dispatch_values("EXP", &[Datum::new_string("1000junk")], columns).unwrap()
+        });
+        assert_eq!(result, Err(EvalError::TruncatedWrongValue(
+            "Truncated incorrect DOUBLE value: '1000junk'".to_owned())),
+            "strict coercion still wins over both admission refusal and EXP overflow");
+        assert_eq!(native.events.replace(Vec::new()), ["truncate"]);
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 #[test]

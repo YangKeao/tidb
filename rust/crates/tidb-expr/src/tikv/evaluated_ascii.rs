@@ -1635,6 +1635,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::RadiansRaw
             | EvaluatedBytesOp::DegreesRaw
             | EvaluatedBytesOp::PiRaw
+            | EvaluatedBytesOp::ExpGoNative
+            | EvaluatedBytesOp::Log10GoNative
             | EvaluatedBytesOp::LnNative
             | EvaluatedBytesOp::LogNative
             | EvaluatedBytesOp::Log2Native
