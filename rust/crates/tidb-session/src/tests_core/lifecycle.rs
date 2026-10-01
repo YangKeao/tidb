@@ -6309,3 +6309,150 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_hms_dispatch_sql_columns() {
         assert!(warnings_of(&session).is_empty(), "{sql}");
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_monthname_time_to_sec_sql_values_metadata_and_warnings() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_monthname_ttsec (id INT PRIMARY KEY, d VARCHAR(32), s VARCHAR(32), n BIGINT)").unwrap();
+    session
+        .run(
+            "INSERT INTO shared_monthname_ttsec VALUES (1,NULL,NULL,NULL),\
+         (2,'2017-12-01','-02:00:05.999',20005),(3,'2000-01-01','900:00:00',NULL),\
+         (4,'2011-11-11','junk',NULL),(5,'2017-00-01','',NULL),\
+         (6,'not-a-date','2017-12-01 02:00:05',NULL)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // Original independent parsers: month-zero is not a raw MONTH lookup;
+    // duration overflow is NULL, junk/empty are zero, and fractions never round.
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT MONTHNAME(d),TIME_TO_SEC(s) FROM shared_monthname_ttsec ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected month-name and duration rows")
+    };
+    assert_eq!(columns.len(), 2);
+    for ((_, field), (code, flen, decimal)) in columns.iter().zip([
+        (tidb_datatype::FieldTypeCode::VarString, -1, -1),
+        (tidb_datatype::FieldTypeCode::LongLong, 20, 0),
+    ]) {
+        assert_eq!(
+            (field.code(), field.flen(), field.decimal()),
+            (code, flen, decimal)
+        );
+        assert!(!field.is_unsigned());
+        assert!(!field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
+    }
+    assert_eq!(columns[0].1.charset_name(), "utf8mb4");
+    assert_eq!(
+        columns[0].1.collation(),
+        tidb_datatype::Collation::Utf8Mb4Bin
+    );
+    assert_eq!(columns[1].1.charset_name(), "binary");
+    assert_eq!(columns[1].1.collation(), tidb_datatype::Collation::Binary);
+    let text = |s: &str| {
+        Datum::new_collation_string(s.as_bytes().to_vec(), tidb_datatype::Collation::Utf8Mb4Bin)
+    };
+    assert_eq!(
+        rows,
+        vec![
+            vec![Datum::Null, Datum::Null],
+            vec![text("December"), Datum::Int(-7205)],
+            vec![text("January"), Datum::Null],
+            vec![text("November"), Datum::Int(0)],
+            vec![Datum::Null, Datum::Int(0)],
+            vec![Datum::Null, Datum::Int(7205)],
+        ]
+    );
+    // Only the bad DATE's original ETDatetime cast warns. A zero-in-date
+    // reaches the native validator; TIME_TO_SEC does not add an ETDuration cast.
+    assert_eq!(
+        session.warnings(),
+        &[SqlWarning {
+            level: WarningLevel::Warning,
+            code: 1292,
+            message: "Incorrect datetime value: 'not-a-date'".to_owned(),
+        }]
+    );
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns("SELECT TIME_TO_SEC(n) FROM shared_monthname_ttsec WHERE id=2")
+        .unwrap()
+    else {
+        panic!("expected compact numeric duration row")
+    };
+    assert_eq!(rows, vec![vec![Datum::Int(7205)]]);
+    assert!(warnings_of(&session).is_empty());
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_monthname_time_to_sec_sql_columns() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_monthname_ttsec_zero (id INT PRIMARY KEY, d VARCHAR(32), s VARCHAR(32))").unwrap();
+    session
+        .run(
+            "INSERT INTO shared_monthname_ttsec_zero VALUES \
+         (1,NULL,NULL),(2,'2017-12-01','-02:00:05.999'),(3,'not-a-date','junk')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // MONTHNAME's pre-cast warning survives refusal; TIME_TO_SEC's would-be
+    // zero is still a computed result and must not bypass the worker.
+    for (expression, id, warned) in [
+        ("MONTHNAME(d)", 1, false),
+        ("TIME_TO_SEC(s)", 1, false),
+        ("MONTHNAME(d)", 2, false),
+        ("TIME_TO_SEC(s)", 2, false),
+        ("MONTHNAME(d)", 3, true),
+        ("TIME_TO_SEC(s)", 3, false),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_monthname_ttsec_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => {
+                panic!("MONTHNAME/TIME_TO_SEC must reach the zero-slot pool: {sql}: {other:?}")
+            }
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        if warned {
+            assert_eq!(
+                session.warnings(),
+                &[SqlWarning {
+                    level: WarningLevel::Warning,
+                    code: 1292,
+                    message: "Incorrect datetime value: 'not-a-date'".to_owned(),
+                }],
+                "{sql}"
+            );
+        } else {
+            assert!(warnings_of(&session).is_empty(), "{sql}");
+        }
+    }
+}

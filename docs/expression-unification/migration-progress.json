@@ -1,8 +1,8 @@
 {
-  "checkpoint_id": "hms-three-33",
+  "checkpoint_id": "month-seconds-two-34",
   "frozen_denominator": 245,
   "required_families": 221,
-  "functional_delegation_and_native_deletion_count": 106,
+  "functional_delegation_and_native_deletion_count": 108,
   "fully_final_audited_count": 0,
   "final_performance_and_workspace_gates_complete": false,
   "families": [
@@ -111,9 +111,11 @@
     {"id": "quarter", "status": "functional_tikv_only", "native_algorithm_deleted": true, "wire_and_native_share_quarter_primitive": true, "typed_invalid_month_fifteen_still_returns_five": true, "original_etdatetime_cast_getters_and_warnings_preserved": true, "no_pb_or_legacy_admission_added": true},
     {"id": "hour", "status": "functional_tikv_only", "native_algorithm_deleted": true, "shared_native_text_parser_and_public_duration_projection_connected": true, "full_string_coercion_and_duration_display_fsp_preserved": true, "existing_pb_and_legacy_paths_connected": true, "raw_signed_nanos_projection_kept_distinct_from_sql_clamp": true, "malformed_text_null_follows_worker_admission": true, "no_pb_or_legacy_admission_added": true},
     {"id": "minute", "status": "functional_tikv_only", "native_algorithm_deleted": true, "shared_native_text_parser_and_public_duration_projection_connected": true, "full_string_coercion_and_duration_display_fsp_preserved": true, "existing_pb_and_legacy_paths_connected": true, "raw_signed_nanos_projection_kept_distinct_from_sql_clamp": true, "malformed_text_null_follows_worker_admission": true, "no_pb_or_legacy_admission_added": true},
-    {"id": "second", "status": "functional_tikv_only", "native_algorithm_deleted": true, "shared_native_text_parser_and_public_duration_projection_connected": true, "full_string_coercion_and_duration_display_fsp_preserved": true, "existing_pb_and_legacy_paths_connected": true, "raw_signed_nanos_projection_kept_distinct_from_sql_clamp": true, "malformed_text_null_follows_worker_admission": true, "no_pb_or_legacy_admission_added": true}
+    {"id": "second", "status": "functional_tikv_only", "native_algorithm_deleted": true, "shared_native_text_parser_and_public_duration_projection_connected": true, "full_string_coercion_and_duration_display_fsp_preserved": true, "existing_pb_and_legacy_paths_connected": true, "raw_signed_nanos_projection_kept_distinct_from_sql_clamp": true, "malformed_text_null_follows_worker_admission": true, "no_pb_or_legacy_admission_added": true},
+    {"id": "monthname", "status": "functional_tikv_only", "native_algorithm_deleted": true, "shared_full_month_names_and_worker_date_parsing_connected": true, "original_etdatetime_cast_context_getters_and_warnings_preserved": true, "actual_text_not_precomputed_month_enters_worker": true, "parse_result_follows_worker_admission": true, "no_pb_or_legacy_admission_added": true},
+    {"id": "time_to_sec", "status": "functional_tikv_only", "native_algorithm_deleted": true, "complete_shared_text_duration_parser_and_time_format_helper_connected": true, "original_string_coercion_and_unchecked_arithmetic_preserved": true, "no_etduration_cast_or_hms_clamp_substituted": true, "parse_result_follows_worker_admission": true, "overflow_unwind_evidence_is_test_profile_only": true, "no_pb_or_legacy_admission_added": true}
   ],
-  "shared_evidence": "evidence/hms-checkpoint.md",
+  "shared_evidence": "evidence/month-seconds-checkpoint.md",
   "gb_foundation_evidence": "evidence/gb-shared-foundation.md",
   "historical_coverage_correction": "Checkpoint 18/19 LOWER and UPPER complete-family claims missed independent legacy implementations and NULL bypasses; checkpoint 20 repairs them. The temporary corrected count was 63, restored to 65 only after repair validation. No extra families credited.",
   "one_operation_keyed_pool": true,
@@ -133,7 +135,11 @@
   "hms_parse_failure_null_follows_worker_admission": true,
   "hms_full_expression_failure_thread_only_equal_to_previous": false,
   "hms_full_expression_failure_equal_after_explicit_single_location_normalization": true,
-  "next_candidate_frozen_family_ids_not_credited": ["monthname", "time_to_sec"],
+  "month_seconds_completed_functional_checkpoint": "month-seconds-two-34",
+  "month_seconds_full_expression_failure_thread_only_equal_to_previous": true,
+  "duration_parser_panic_release_profile_gates_and_test_adaptation_pending": true,
+  "next_candidate_frozen_family_ids_not_credited": ["period_add", "period_diff", "get_format"],
+  "next_candidate_constraints": "Lock original period wrapping, 1210 diagnostics and GET_FORMAT's special AST handling before implementation.",
   "next_candidates_are_read_only_not_implemented": true,
   "other_temporal_policies_require_separate_locks": ["microsecond", "other_parser_policies"],
   "microsecond_requires_complete_parser_public_helper_and_pb_legacy_policy_lock": true,

@@ -1590,6 +1590,7 @@ fn materialize_computed(
             | EvaluatedBytesOp::HourNanosNative
             | EvaluatedBytesOp::MinuteNanosNative
             | EvaluatedBytesOp::SecondNanosNative
+            | EvaluatedBytesOp::TimeToSecTextNative
             | EvaluatedBytesOp::AbsIntNative
             | EvaluatedBytesOp::AbsUIntNative
             | EvaluatedBytesOp::CeilIntNative
@@ -1667,7 +1668,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::ConvBinaryLiteralNative
             | EvaluatedBytesOp::ConvLegacy
             | EvaluatedBytesOp::CompressGoNative
-            | EvaluatedBytesOp::JsonQuoteNative,
+            | EvaluatedBytesOp::JsonQuoteNative
+            | EvaluatedBytesOp::MonthNameTextNative,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {

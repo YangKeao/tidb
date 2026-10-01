@@ -13,24 +13,10 @@
 // limitations under the License.
 
 use chrono::TimeZone;
+use tidb_query_datatype::codec::mysql::time::MONTH_NAMES;
 use unicode_general_category::{get_general_category, GeneralCategory};
 
 use crate::{CoreTime, Time, TimeError, TimeType};
-
-const MONTH_NAMES: [&str; 12] = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-];
 
 #[derive(Default)]
 struct ParsedTime {

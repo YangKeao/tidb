@@ -1,0 +1,71 @@
+Checkpoint: month-seconds-two-34; previous: hms-three-33.
+STATUS: 106->108/245 functional; final acceptance 0/245. Credit only MONTHNAME/TIME_TO_SEC.
+COUNTS: 9 actual test runs = 8 green + 1 current baseline non-green full run; 10 Cargo attempts = those 9 tests + 1 wrong-CWD launch failure before compilation/tests. Correct-CWD SQL retry is retained, NOT zero launch retries/all launches first-pass. No Rust compile failure, new product RED or old-expected change.
+PROVENANCE: parent owns commands/exits/source/coverage proofs; writer globbed, grepped/read and sha256sum-hashed all ten artifacts (exit0), without build/test/fmt. RAW: /home/agent/tidb/expression-unification/logs.
+JAN correct CWD: /home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv pin nightly-2026-01-30-x86_64-unknown-linux-gnu.
+AUG correct CWD: /home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb pin nightly-2026-08-22-x86_64-unknown-linux-gnu.
+Successful-launch template: set -o pipefail; <COMMAND> 2>&1 | tee <OUTPUT> >/dev/null; OUTPUT is ../logs/<LOG> for JAN, ../../logs/<LOG> for AUG. All logs retain full output; only terminal output is suppressed. All use --test-threads=1, no --exact; Finished times are not benchmarks.
+Native datatype mysql_time::/str_to_date:: ran with &&; CPP local::/impl_time:: and native dispatch/datetime likewise. Failed SQL launch has its distinct exact CWD/command below; formatting the two native datatype files succeeded and is separate from the Cargo error.
+
+LOG [JAN]: month-seconds-tikv-time.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib codec::mysql::time:: -- --test-threads=1
+EXIT: 0; compile2.01s; test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 361 filtered out; finished in 0.01s
+SHA256: 6d57aa6bec4ddaf4ac3ea20fb71d018159c33cabfb873b9f36f2f9cecf14f834
+LOG [AUG]: month-seconds-native-mysql-time.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-datatype --lib mysql_time:: -- --test-threads=1
+EXIT: 0; compile2.18s; test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 405 filtered out; finished in 0.00s
+SHA256: 61368eeeac137db9b79de96a6ff4345c1c4a241e95adaa26b52e38e4912f0313
+LOG [AUG]: month-seconds-native-str-date.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-datatype --lib str_to_date:: -- --test-threads=1
+EXIT: 0; compile0.09s; test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 431 filtered out; finished in 0.00s
+SHA256: 6739ebed1c070eed96ccf9df6535bab755b2edaedcffd1f5814b7837628cc33b
+LOG [JAN]: month-seconds-tikv-local.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+EXIT: 0; compile8.73s; 257 discovered, ignore preexisting; test result: ok. 256 passed; 0 failed; 1 ignored; 0 measured; 487 filtered out; finished in 0.19s
+SHA256: bd14f12ff8aa86054dd16dd54d0db0a25494b6738dee04d95648641750adbcd1
+LOG [JAN]: month-seconds-tikv-kernels.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_time:: -- --test-threads=1
+EXIT: 0; compile0.13s; test result: ok. 54 passed; 0 failed; 0 ignored; 0 measured; 690 filtered out; finished in 0.01s
+SHA256: 229a86bbefb0e56465d6868f4d105425ad09b212e3297d71a49dae4912eb0e38
+LOG [retained failed Cargo launch, NOT a test run]: month-seconds-sql-cwd-error.log
+WRONG CWD: /home/agent/tidb/expression-unification/tidb; EXACT COMMAND: set -o pipefail; ../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1 2>&1 |tee ../logs/month-seconds-sql.log >/dev/null
+EXIT: 101; compilation not started; tests not started; no test-result counts or compile/test timings exist.
+EXACT DIAGNOSTIC: error: could not find `Cargo.toml` in `/home/agent/tidb/expression-unification/tidb` or any parent directory
+SHA256: 57edebfc47a906ac16a9369bad8a88e914faef689aac13395e21e210f2064ef2
+PRESERVATION: original failed sql.log was retained as sql-cwd-error.log before the successful correct-CWD retry replaced sql.log; the error was not discarded or counted as a product test failure.
+LOG [AUG / successful SQL retry]: month-seconds-sql.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+EXIT: 0; compile19.76s; test result: ok. 71 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 1.09s
+SHA256: 6edf70e3738c64a09f28808adfbea715506bcfa5f51b9cc7e07f67404f031d50
+LOG [AUG]: month-seconds-dispatch.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib month_seconds_dispatch_ -- --test-threads=1
+EXIT: 0; compile12.56s; test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1549 filtered out; finished in 0.00s
+SHA256: 8e6a6fb13c13ce2fb12592fddf85023dc4b3fdc99568121544ca9ae3e1139fa3
+LOG [AUG]: month-seconds-native-source.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib tests::datetime:: -- --test-threads=1
+EXIT: 0; compile0.13s; test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 1530 filtered out; finished in 0.02s
+SHA256: e418e07db38aed55b3762af944259632b205aa55ec7bf941613e79eeb552dc86
+LOG [AUG / current baseline non-green full]: month-seconds-expr-full.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+EXIT: 101; compile0.12s; 1551 discovered; test result: FAILED. 1453 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.46s
+SHA256: 29f61985427ef68dc1062f4b8500d339e1d511f202c4d83cbab093a41d069c60
+
+CONTRACT / SCOPE / OVERFLOW
+MonthNameTextNative/month_name_text_native_fn_meta: nullable Bytes->ordinary owned Bytes, real full parse_native_date_ymd then month_name_from_month and to_string().into_bytes(). TimeToSecTextNative/time_to_sec_text_native_fn_meta: nullable Bytes->signed Int, real parse_native_duration_text(&str)->Option<(i64,String)>, selecting seconds. Shared strict UTF-8 stays Other transport; old HMS diagnostics/values stay unchanged. No host prediction, new role/result kind/meta layout/module/driver/context getter or PB admission.
+MONTHNAME retains original ETDatetime, arity/UTF8/coercion preparation; TIME_TO_SEC retains coerce_str/Duration Display without ETDuration casting. Worker-side parsed NULL/0/name/seconds now follow admission. Wire month_name only delegates lookup: zero context-warning/index panic policy stays; wire time_to_sec is unchanged. No strict Duration/nanos range bridge.
+Native duration's thin delegate also serves TIME_FORMAT's fraction-mask needs. Preserve no-digits/junk0, signed colon h, --1:00->3600, --900:00->3240000, positive h>838->None (not clamp), fraction.chars().take(6) without validation, ASCII rsplit date suffix, allocation structure and unchecked multiply/add. No opportunistic repair of old signed-hour/overflow behavior.
+Existing MONTH_NAMES is the full-name table owner after removing four duplicate full tables: CPP date_format_parser, native mysql_time, str_to_date, SQL. ABBR/lowercase matchers intentionally remain distinct; this is not all month text or all DATE_FORMAT/STR_TO_DATE migration.
+Overflow remains an unwind in the observed test profiles, NOT Infrastructure/SQL and not caught in production. TiDB dependencies follow TiDB's root profile, not nested TiKV dev overflow=false; TiKV test explicitly enables checks. Direct datatype catch test passes among44; dispatcher uses a literal real overflow payload, discards poisoned scope/worker, then opens a NEW scope in the SAME execution (factory count2, result-7205). Never claim the old poisoned scope is reusable. No new cfg(debug_assertions)/flags/profile change/checked arithmetic; release/profile gates and panic-test adaptation remain pending.
+Parent static proof succeeded: old duration body from trim onward equals new parser after comment/whitespace/Self and Ok->Option syntax normalization; native mysql_time/str_to_date logic matches after deleting full tables/adding MONTH_NAMES imports and comment/whitespace normalization. NOT whole-file byte identity. Separate byte checks cover single_date, other untouched time_fn algorithms, TIME_FORMAT and old tests.
+Parent final13 sources (TiKV7/native6) pass pinned formatting, both lock checks and both diff checks; no formatter/static-script failure this round. The one Cargo CWD launch failure remains separately disclosed; no old expected was changed.
+D2 has native adapter/duration-policy/preparation/real-unwind coverage, no PB/legacy coverage. E: six rows*two projections plus numeric query; all six zero-slot calls Resource1105, MONTHNAME(badDATE) ALSO preserves prior1292 warning, others have none. No unistore rerun: PB/cop/legacy sources unchanged; the prior unistore receipt is historical only.
+
+CURRENT FULL-EXPR FAILURE COMPARISON (fresh parent check against hms-expr-full.log)
+section = text.split('\nfailures:\n',1)[1].split('\ntest result:',1)[0]; normalize only re.sub(r"(?m)^(thread '[^\n]*' \()\d+(\) panicked at)", r'\1THREAD\2', section).
+Complete normalized sections byte-identical, both SHA25680be9bda05e5bf630e9c246ca9523d23f82c122eaaeec6e220b1b00cec436615. No source-position mapping this round: duration stays212:55. Older093 history/211->212 adjustment is NOT applied here. Failure-section hash, not whole-log hash; current suite remains non-green.
+- pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation
+- tests::builtin_info_json_math_source::exp (old EXP(100_000.0) FloatOverflow assertion still fails)
+- tests::builtin_math_misc_op_source::vectorized_builtin_op_func
+- time_fn::tests::str_to_date_partial_formats_follow_no_zero_date
+
+FREEZE: only month-seconds-checkpoint.md and this summary written under this authorization; no source/other-doc/Plan/JSON/index/build/test/fmt/old-expected edits by writer. No whole temporal codec/Go-package, production-root integration, release/profile/panic-test adaptation, deep/wide guard, internal peak/OOM/zero-copy/performance, make lint/full-workspace completion claim. 108/245 functional, final0/245; not PR-ready.

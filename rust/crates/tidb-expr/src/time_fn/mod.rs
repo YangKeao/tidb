@@ -33,6 +33,7 @@ pub(crate) mod session_tz;
 use self::calendar::{civil_from_days, days_from_civil, parse_date_ymd, week_of_year};
 use crate::coerce::coerce_str;
 use crate::{Columns, Datum, EvalError};
+use tidb_query_datatype::codec::mysql::Time as TikvTime;
 
 /// Dispatches this family's builtins; `None` if `name` isn't one of them.
 pub(crate) fn dispatch(
@@ -70,10 +71,10 @@ pub(crate) fn dispatch(
         "TIDB_CURRENT_TSO" => current_tso(vals, cols),
         "GET_FORMAT" => get_format_value(vals),
         "YEARWEEK" => yearweek(vals),
-        "MONTHNAME" => monthname(vals),
+        "MONTHNAME" => monthname_in(vals, cols),
         "DAYNAME" => dayname(vals),
         "LAST_DAY" => last_day(vals),
-        "TIME_TO_SEC" => time_to_sec(vals),
+        "TIME_TO_SEC" => time_to_sec_in(vals, cols),
         "SEC_TO_TIME" => sec_to_time(vals, cols),
         "MAKEDATE" => makedate(vals),
         "MAKETIME" => maketime(vals, cols),
@@ -718,25 +719,34 @@ fn yearweek(vals: &[Datum]) -> Result<Datum, EvalError> {
     }))
 }
 
-/// `builtinMonthNameSig` in `pkg/expression/builtin_time.go`.
+/// Original single-argument text preparation, used only inside the guards.
+/// Parsing stays in the worker: resource refusal precedes bad-text results,
+/// while the original arity, UTF-8 and coercion errors precede admission.
+fn single_temporal_text(vals: &[Datum]) -> Result<Option<Vec<u8>>, EvalError> {
+    let [value] = vals else {
+        return Err(EvalError::Unsupported("bad function arity"));
+    };
+    Ok(coerce_str(value)?.map(String::into_bytes))
+}
+
+/// `builtinMonthNameSig` retains its existing upstream ETDatetime cast.
+/// The worker parses the actual text and selects the shared full month name.
+pub(crate) fn monthname_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::MonthNameTextNative,
+        ctx,
+        || single_temporal_text(vals),
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
+}
+
+#[cfg(test)]
 fn monthname(vals: &[Datum]) -> Result<Datum, EvalError> {
-    const MONTHS: [&str; 12] = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ];
-    Ok(single_date(vals)?.map_or(Datum::Null, |(_, month, _)| {
-        Datum::new_string(MONTHS[(month - 1) as usize].to_string())
-    }))
+    monthname_in(vals, &crate::NoColumns)
 }
 
 /// `builtinDayNameSig` in `pkg/expression/builtin_time.go`.
@@ -878,57 +888,7 @@ fn number_arg(value: &Datum, cols: &dyn Columns) -> Result<Option<f64>, EvalErro
 /// forms exercised by `builtin_time_test.go`; the return is signed seconds
 /// plus the fraction text preserved for formatting.
 fn duration(value: &Datum) -> Result<Option<(i64, String)>, EvalError> {
-    let Some(text) = coerce_str(value)? else {
-        return Ok(None);
-    };
-    let text = text.trim();
-    // EvalDuration accepts a datetime-shaped string and uses its time suffix.
-    // This is the `1990-05-07 19:30:10` row in TestTimeFormat, not a generic
-    // temporal parser: the current Datum domain still represents the input as
-    // a string, and the already-owned duration conversion only needs the
-    // suffix after the date separator.
-    let text = match text.rsplit_once(' ') {
-        Some((date, time)) if parse_date_ymd(date).is_some() => time,
-        _ => text,
-    };
-    let (negative, text) = text.strip_prefix('-').map_or((false, text), |s| (true, s));
-    let (h, m, seconds) = if text.contains(':') {
-        let parts: Vec<_> = text.split(':').collect();
-        if !(2..=3).contains(&parts.len()) {
-            return Ok(None);
-        }
-        let Ok(h) = parts[0].parse::<i64>() else {
-            return Ok(None);
-        };
-        let Ok(m) = parts[1].parse::<i64>() else {
-            return Ok(None);
-        };
-        let s = parts.get(2).copied().unwrap_or("0");
-        (h, m, s.to_string())
-    } else {
-        let digits: String = text.chars().take_while(char::is_ascii_digit).collect();
-        if digits.is_empty() {
-            return Ok(Some((0, String::new())));
-        }
-        let Ok(n) = digits.parse::<i64>() else {
-            return Ok(None);
-        };
-        (n / 10_000, n / 100 % 100, (n % 100).to_string())
-    };
-    let (whole, fraction) = seconds
-        .split_once('.')
-        .map_or((seconds.as_str(), ""), |(a, b)| (a, b));
-    let Ok(s) = whole.parse::<i64>() else {
-        return Ok(None);
-    };
-    if h > 838 || !(0..60).contains(&m) || !(0..60).contains(&s) {
-        return Ok(None);
-    }
-    let total = h * 3600 + m * 60 + s;
-    Ok(Some((
-        if negative { -total } else { total },
-        fraction.chars().take(6).collect(),
-    )))
+    Ok(coerce_str(value)?.and_then(|text| TikvTime::parse_native_duration_text(&text)))
 }
 
 enum TimeDiffValue {
@@ -1076,12 +1036,20 @@ fn format_time_diff(micros: i64, fsp: usize) -> String {
     )
 }
 
-/// `builtinTimeToSecSig` in `pkg/expression/builtin_time.go`.
+/// `builtinTimeToSecSig` sends the original text, not precomputed seconds.
+/// Its complete duration parser remains distinct from the HMS clamp policy.
+pub(crate) fn time_to_sec_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::TimeToSecTextNative,
+        ctx,
+        || single_temporal_text(vals),
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
+}
+
+#[cfg(test)]
 fn time_to_sec(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    Ok(duration(&vals[0])?.map_or(Datum::Null, |(seconds, _)| Datum::Int(seconds)))
+    time_to_sec_in(vals, &crate::NoColumns)
 }
 
 /// `builtinSecToTimeSig` in `pkg/expression/builtin_time.go`.

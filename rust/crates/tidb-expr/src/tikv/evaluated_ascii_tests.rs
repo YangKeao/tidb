@@ -1146,6 +1146,9 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::SecondNanosNative => {
             panic!("HMS calls need their original text or signed nanoseconds")
         }
+        EvaluatedBytesOp::MonthNameTextNative | EvaluatedBytesOp::TimeToSecTextNative => {
+            panic!("month names and seconds need their original text")
+        }
         EvaluatedBytesOp::CompressGoNative | EvaluatedBytesOp::UncompressNative => {
             panic!("compression calls need their original nullable bytes")
         }
@@ -1283,6 +1286,236 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+fn month_seconds_function(name: &str, input: Datum) -> crate::scalar_function::ScalarFunction {
+    if name == "TIME_TO_SEC" {
+        return hms_fields_function(name, vec![input], false, false);
+    }
+    assert_eq!(name, "MONTHNAME");
+    let field = FieldType::new(FieldTypeCode::VarString);
+    crate::scalar_function::ScalarFunction::new(
+        tidb_ast::CiString::new(name),
+        field.clone(),
+        vec![crate::expression::Expression::Constant(Constant::new(
+            input, field,
+        ))],
+    )
+}
+
+#[test]
+fn month_seconds_dispatch_keeps_month_reparse_and_seconds_text_policy() {
+    use tidb_datatype::MySqlDuration;
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        // Fixed month_and_monthname_source_vectors values, not the new table
+        // or getters as an oracle. Native typed dates still Display/reparse.
+        for (input, expected) in [
+            (Datum::new_string("2017-12-01"), Datum::new_string("December")),
+            (Datum::new_string("2000-01-01"), Datum::new_string("January")),
+            (Datum::new_string("2011-11-11"), Datum::new_string("November")),
+            (Datum::new_string("0000-01-01"), Datum::new_string("January")),
+            (Datum::new_string("2017-00-01"), Datum::Null),
+            (Datum::new_string("0000-00-00"), Datum::Null),
+            (Datum::new_string("2008-13-01"), Datum::Null),
+            (Datum::Int(20_240_315), Datum::new_string("March")),
+            (Datum::Time(Time::new(CoreTime::from_date(2024, 15, 1, 0, 0, 0, 0), TimeType::Date, 0).unwrap()), Datum::Null),
+            (Datum::Time(Time::new(CoreTime::from_date(2024, 2, 0, 0, 0, 0, 0), TimeType::Date, 0).unwrap()), Datum::Null),
+            (Datum::Null, Datum::Null),
+        ] {
+            let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch("MONTHNAME", &[input], columns).unwrap());
+            assert_eq!(result, Ok(expected), "MONTHNAME must retain its old date parser, not wide raw-core MONTH policy");
+            assert_wide_math_c4(observation);
+        }
+        // First four are time_to_sec_source_vectors. The remaining literals
+        // pin the original duration text policy, distinct from HMS clamping.
+        for (input, expected) in [
+            (Datum::new_string("22:23:00"), Datum::Int(80_580)),
+            (Datum::new_string("00:39:38"), Datum::Int(2_378)),
+            (Datum::new_string("-02:00:05"), Datum::Int(-7_205)),
+            (Datum::new_string("020005"), Datum::Int(7_205)),
+            (Datum::Int(20_005), Datum::Int(7_205)),
+            (Datum::new_string("2010-10-10 02:00:05.123456"), Datum::Int(7_205)),
+            (Datum::new_string("02:00:05.not-digits"), Datum::Int(7_205)),
+            (Datum::new_string("900:30:15"), Datum::Null),
+            (Datum::new_string("02:60:05"), Datum::Null),
+            (Datum::new_string("02:00:60"), Datum::Null),
+            (Datum::new_string("not-a-time"), Datum::Int(0)),
+            (Datum::Duration(MySqlDuration::new(2, 0, 5, 999_999, 3).unwrap()), Datum::Int(7_205)),
+            (Datum::Duration(MySqlDuration::new(900, 30, 15, 0, 0).unwrap()), Datum::Null),
+            (Datum::Null, Datum::Null),
+        ] {
+            let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch("TIME_TO_SEC", &[input], columns).unwrap());
+            assert_eq!(result, Ok(expected), "native Duration uses Display/FSP; fractions neither round seconds nor acquire new validation");
+            assert_wide_math_c4(observation);
+        }
+        for (sql, expected) in [
+            ("MONTHNAME('0000-01-01')", Datum::new_string("January")),
+            ("TIME_TO_SEC('-02:00:05')", Datum::Int(-7_205)),
+        ] {
+            let (result, observation) = observe_wide_math(|| calendar_fields_ast(sql, columns));
+            assert_eq!(result, Ok(expected));
+            assert_wide_math_c4(observation);
+        }
+        for (name, input, expected) in [
+            ("MONTHNAME", "2011-11-11", Datum::new_string("November")),
+            ("TIME_TO_SEC", "00:39:38", Datum::Int(2_378)),
+        ] {
+            let function = month_seconds_function(name, Datum::new_string(input));
+            let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert_eq!(result, Ok(expected));
+            assert_wide_math_c4(observation);
+        }
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn month_seconds_dispatch_preserves_preparation_order_context_and_unwind() {
+    struct Probe {
+        reject_zero: Cell<bool>,
+        events: RefCell<Vec<String>>,
+    }
+    impl Columns for Probe {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn date_modes(&self) -> DateModes {
+            self.events.borrow_mut().push("modes".to_owned());
+            DateModes {
+                no_zero_date: self.reject_zero.get(),
+                ..DateModes::TIDB_DEFAULT_SQL_MODE
+            }
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            self.events.borrow_mut().push("zone".to_owned());
+            SessionTimeZone::Fixed {
+                name: "monthname-context".to_owned(),
+                offset_secs: 0,
+            }
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            let before = EVAL_ONE_OBSERVATION.with(|slot| {
+                slot.borrow().as_ref().is_some_and(|value| {
+                    value.facade_entries == 0
+                        && value.before_kernel_invocations.is_none()
+                        && value.after_kernel_invocations.is_none()
+                })
+            });
+            self.events
+                .borrow_mut()
+                .push(format!("warn:{code}:{message}:before:{before}"));
+        }
+    }
+    let native = Probe {
+        reject_zero: Cell::new(true),
+        events: RefCell::new(Vec::new()),
+    };
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for (name, ordinary, bad) in [("MONTHNAME", "2017-12-01", "2017-00-01"), ("TIME_TO_SEC", "22:23:00", "900:30:15")] {
+            for input in [Datum::new_string(ordinary), Datum::Null, Datum::new_string(bad)] {
+                let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch(name, &[input], columns).unwrap());
+                assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource), "bad valid text and SQL NULL still require worker admission");
+                assert_eq!(observation.facade_entries, 0);
+                assert_eq!(observation.before_kernel_invocations, None);
+                assert_eq!(observation.after_kernel_invocations, None);
+            }
+        }
+        for (name, values, expected) in [
+            ("MONTHNAME", vec![Datum::new_bytes([0xff])], EvalError::Unsupported("invalid UTF-8 byte datum")),
+            ("TIME_TO_SEC", vec![Datum::new_string([0xff])], EvalError::Unsupported("invalid UTF-8 string datum")),
+            ("MONTHNAME", Vec::new(), EvalError::Unsupported("bad function arity")),
+            ("TIME_TO_SEC", vec![Datum::new_string("22:23:00"), Datum::Null], EvalError::Unsupported("bad function arity")),
+        ] {
+            let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch(name, &values, columns).unwrap());
+            assert_eq!(result, Err(expected));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        let (result, observation) = observe_wide_math(|| calendar_fields_ast("TIME_TO_SEC('22:23:00')", columns));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+        let function = month_seconds_function("MONTHNAME", Datum::new_string("2011-11-11"));
+        let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+        native.events.borrow_mut().clear();
+        for reject_zero in [true, false] {
+            native.reject_zero.set(reject_zero);
+            let function = month_seconds_function("MONTHNAME", Datum::new_string("0000-00-00"));
+            let (result, observation) = observe_wide_math(|| {
+                if reject_zero {
+                    calendar_fields_ast("MONTHNAME('0000-00-00')", columns)
+                } else {
+                    function.eval(columns, tidb_chunk::row::Row::empty())
+                }
+            });
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+            let events = native.events.replace(Vec::new());
+            assert!(events.iter().any(|event| event == "modes"));
+            assert!(events.iter().any(|event| event == "zone"));
+            let warnings = events.iter().filter(|event| event.starts_with("warn:")).map(String::as_str).collect::<Vec<_>>();
+            if reject_zero {
+                assert_eq!(warnings, ["warn:1292:Incorrect datetime value: '0000-00-00 00:00:00.000000':before:true"]);
+            } else {
+                assert!(warnings.is_empty(), "the original ETDatetime cast still observes the caller's no_zero_date mode");
+            }
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
+
+    // Preserve the old unchecked multiply's unwind in the current test profile;
+    // this does not promise release-profile behavior or an EvalError conversion.
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let payload = catch_unwind(AssertUnwindSafe(|| {
+        scope.with_columns(&crate::NoColumns, |columns| {
+            crate::time_fn::dispatch(
+                "TIME_TO_SEC",
+                &[Datum::new_string("--9223372036854775808:00")],
+                columns,
+            )
+            .unwrap()
+        })
+    }))
+    .expect_err("the original duration multiply must still unwind in the current test profile");
+    let message = payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str));
+    assert_eq!(message, Some("attempt to multiply with overflow"));
+    // A panicked invocation poisons that scope. Do not reuse it or leave an
+    // armed observation behind; a fresh scope must rebuild the actual worker.
+    drop(scope);
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        let (result, observation) = observe_wide_math(|| {
+            crate::time_fn::dispatch("TIME_TO_SEC", &[Datum::new_string("-02:00:05")], columns)
+                .unwrap()
+        });
+        assert_eq!(result, Ok(Datum::Int(-7_205)));
+        assert_wide_math_c4(observation);
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 2);
+    drop(scope);
+    execution.close();
 }
 
 fn hms_fields_function(

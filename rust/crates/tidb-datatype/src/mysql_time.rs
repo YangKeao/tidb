@@ -16,26 +16,12 @@ use std::cmp::Ordering;
 use std::fmt;
 
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, TimeZone, Timelike, Utc};
+use tidb_query_datatype::codec::mysql::time::MONTH_NAMES;
 
 use crate::{
     check_fsp, get_last_day, CoreTime, Decimal, FspError, MySqlDuration, PackedTime,
     TimeConversionError,
 };
-
-const MONTH_NAMES: [&str; 12] = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-];
 
 /// MySQL temporal type carried by [`Time`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
