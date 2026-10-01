@@ -4776,41 +4776,16 @@ impl LegacyEvaluator<'_> {
                         tidb_expr::eval_legacy_month_in(value, self.raw_columns)?.map(i128::from)
                     }
                     SimpleSig::DateDiff => {
-                        let (Some(left), Some(right)) = (
-                            self.eval_time(children.first())?,
-                            self.eval_time(children.get(1))?,
-                        ) else {
-                            return Ok(None);
-                        };
-                        // DATEDIFF truncates both sides to their date parts and
-                        // answers days from the second to the first.
-                        let to_date = |time: tidb_datatype::Time| {
-                            let core = time.core_time();
-                            tidb_datatype::Time::new(
-                                tidb_datatype::CoreTime::from_date(
-                                    core.year() as u16,
-                                    core.month(),
-                                    core.day(),
-                                    0,
-                                    0,
-                                    0,
-                                    0,
-                                ),
-                                tidb_datatype::TimeType::Date,
-                                0,
-                            )
-                            .ok()
-                        };
-                        let Some(first) = to_date(left) else {
-                            return Ok(None);
-                        };
-                        let Some(second) = to_date(right) else {
-                            return Ok(None);
-                        };
-                        Some(i128::from(second.core_time().timestamp_diff(
-                            first.core_time(),
-                            tidb_datatype::TimestampInterval::Day,
-                        )))
+                        // Keep tuple demand: left NULL still observes right;
+                        // left error stops there, and extra children stay unread.
+                        let (left, right) = (
+                            self.eval_time(children.first())?
+                                .map(|time| time.core_time()),
+                            self.eval_time(children.get(1))?
+                                .map(|time| time.core_time()),
+                        );
+                        tidb_expr::eval_legacy_date_diff_in(left, right, self.raw_columns)?
+                            .map(i128::from)
                     }
                     SimpleSig::TimestampDiff => {
                         let Some(unit_raw) = self.eval_bytes(children.first())? else {
@@ -9154,5 +9129,224 @@ mod tests {
             }
         }
         assert!(refused.is_empty(), "admitted but undecodable: {refused:?}");
+    }
+
+    #[test]
+    fn legacy_date_diff_preserves_raw_day_numbers_and_nullable_inputs() {
+        use tidb_datatype::{CoreTime, Datum, Time, TimeType};
+        let time_zone = zone();
+        let date_diff = |children| SimpleExpr::Func(SimpleSig::DateDiff, children);
+        let raw_time = |core| Time::new(core, TimeType::DateTime, 6).expect("raw time");
+        for (left, right, expected) in [
+            (
+                CoreTime::from_date(2024, 3, 5, 14, 30, 45, 123456),
+                CoreTime::from_date(2024, 3, 3, 23, 0, 0, 0),
+                2,
+            ),
+            (
+                CoreTime::from_date(0, 0, 0, 31, 63, 63, 1_048_575),
+                CoreTime::default(),
+                0,
+            ),
+            // Legacy calc_daynr maps both year-zero dates to 60, unlike civil DATEDIFF.
+            (
+                CoreTime::from_date(0, 3, 1, 0, 0, 0, 0),
+                CoreTime::from_date(0, 2, 29, 23, 59, 59, 999999),
+                0,
+            ),
+            (
+                CoreTime::from_date(2024, 2, 31, 31, 63, 63, 1_048_575),
+                CoreTime::from_date(2024, 2, 30, 0, 0, 0, 0),
+                1,
+            ),
+            (
+                CoreTime::from_date(16_383, 15, 31, 31, 63, 63, 1_048_575),
+                CoreTime::from_date(16_383, 15, 0, 0, 0, 0, 0),
+                31,
+            ),
+            (
+                CoreTime::from_date(2024, 0, 0, 0, 0, 0, 0),
+                CoreTime::from_date(2024, 0, 1, 0, 0, 0, 0),
+                -1,
+            ),
+        ] {
+            let (left, right) = (raw_time(left), raw_time(right));
+            assert_eq!(
+                eval_expr(
+                    &date_diff(vec![SimpleExpr::Time(left), SimpleExpr::Time(right)]),
+                    &[],
+                    4,
+                    &time_zone
+                )
+                .unwrap(),
+                Some(expected)
+            );
+            let row = [Datum::Time(left), Datum::Time(right)];
+            assert_eq!(
+                eval_expr(
+                    &date_diff(vec![SimpleExpr::Column(0), SimpleExpr::Column(1)]),
+                    &row,
+                    4,
+                    &time_zone
+                )
+                .unwrap(),
+                Some(expected)
+            );
+        }
+        let time = SimpleExpr::Time(raw_time(CoreTime::from_date(2024, 3, 5, 0, 0, 0, 0)));
+        let evaluator = LegacyEvaluator::new(&[], 4, &time_zone);
+        let sql_error = SimpleExpr::Func(SimpleSig::CastRealAsInt, vec![SimpleExpr::Real(1e100)]);
+        assert!(matches!(
+            evaluator.eval_expr(&sql_error),
+            Err(LegacyEvalError::Sql(_))
+        ));
+        for children in [
+            vec![],
+            vec![time.clone()],
+            vec![SimpleExpr::Null, time.clone()],
+            vec![time.clone(), SimpleExpr::Null],
+            vec![SimpleExpr::Null, SimpleExpr::Null],
+            vec![
+                SimpleExpr::Func(
+                    SimpleSig::CastStringAsTime,
+                    vec![SimpleExpr::Bytes(b"not a time".to_vec())],
+                ),
+                time.clone(),
+            ],
+            vec![
+                time,
+                SimpleExpr::Func(SimpleSig::CastIntAsTime, vec![sql_error]),
+            ],
+        ] {
+            assert_eq!(evaluator.eval_expr(&date_diff(children)).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn legacy_date_diff_infrastructure_survives_demand_and_consumers() {
+        use tidb_datatype::{CoreTime, Datum, Time, TimeType};
+        let policy = tidb_expr::AsciiPoolPolicy::checked(
+            0,
+            0,
+            16 * 1024 * 1024,
+            4 * 1024 * 1024,
+            4 * 1024 * 1024,
+            64,
+            8,
+            4 * 1024 * 1024,
+        )
+        .expect("zero-slot policy");
+        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let execution = owner.begin_execution().expect("execution");
+        let scope = execution.scope();
+        let time_zone = zone();
+        let raw_time = |core| Time::new(core, TimeType::DateTime, 6).expect("raw time");
+        let row = [
+            Datum::Time(raw_time(CoreTime::from_date(
+                2024, 3, 5, 14, 30, 45, 123456,
+            ))),
+            Datum::Time(raw_time(CoreTime::from_date(2024, 3, 3, 23, 0, 0, 0))),
+        ];
+        let date_diff = |children| SimpleExpr::Func(SimpleSig::DateDiff, children);
+        let unary = |sig, input| SimpleExpr::Func(sig, vec![input]);
+        let assert_resource = |error| match error {
+            LegacyEvalError::Infrastructure(tidb_expr::EvalError::ExpressionAdapterFailure(
+                failure,
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_expr::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_expr::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("DATEDIFF must preserve the actual pool cause: {other:?}"),
+        };
+        scope.with_columns(&tidb_expr::NoColumns, |columns| {
+            let evaluator = LegacyEvaluator {
+                raw_columns: columns,
+                ..LegacyEvaluator::new(&row, 4, &time_zone)
+            };
+            for children in [
+                vec![SimpleExpr::Column(0), SimpleExpr::Column(1)],
+                vec![SimpleExpr::Null, SimpleExpr::Column(1)],
+                vec![SimpleExpr::Column(0), SimpleExpr::Null],
+                vec![SimpleExpr::Null, SimpleExpr::Null],
+                vec![],
+                vec![SimpleExpr::Column(0)],
+                vec![
+                    unary(
+                        SimpleSig::CastStringAsTime,
+                        SimpleExpr::Bytes(b"not a time".to_vec()),
+                    ),
+                    SimpleExpr::Column(1),
+                ],
+                vec![
+                    SimpleExpr::Column(0),
+                    unary(
+                        SimpleSig::CastIntAsTime,
+                        unary(SimpleSig::CastRealAsInt, SimpleExpr::Real(1e100)),
+                    ),
+                ],
+            ] {
+                let call = date_diff(children);
+                assert_resource(evaluator.eval_expr(&call).expect_err("integer consumer"));
+                let real = unary(SimpleSig::CastIntAsReal, call.clone());
+                assert_resource(evaluator.eval_real(Some(&real)).expect_err("real consumer"));
+                let bytes = unary(SimpleSig::CastIntAsString, call.clone());
+                assert_resource(
+                    evaluator
+                        .eval_bytes(Some(&bytes))
+                        .expect_err("bytes consumer"),
+                );
+                let time = unary(SimpleSig::CastIntAsTime, call);
+                assert_resource(evaluator.eval_time(Some(&time)).expect_err("time consumer"));
+            }
+            // Reuse the already-admitted shared predicate solely as a real
+            // refusing child. The DATEDIFF worker itself has a healthy context.
+            let shared = convert_expr(&tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(tipb::ScalarFuncSig::IntIsNull as i32),
+                field_type: Some(tipb::FieldType {
+                    tp: Some(8),
+                    ..Default::default()
+                }),
+                children: vec![tipb::Expr {
+                    tp: Some(tipb::ExprType::Null as i32),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+            .expect("existing shared child");
+            assert!(matches!(&shared, SimpleExpr::Shared(_)));
+            let child_only = LegacyEvaluator {
+                shared_override: Some(columns),
+                ..LegacyEvaluator::new(&row, 4, &time_zone)
+            };
+            assert_resource(child_only.eval_time(Some(&shared)).expect_err("time child"));
+            for children in [
+                // Left NULL still evaluates right; a left error remains fatal.
+                vec![SimpleExpr::Null, shared.clone()],
+                vec![shared.clone(), SimpleExpr::Null],
+                vec![shared.clone(), SimpleExpr::Column(1)],
+                vec![SimpleExpr::Column(0), shared.clone()],
+            ] {
+                assert_resource(
+                    child_only
+                        .eval_expr(&date_diff(children))
+                        .expect_err("demanded child"),
+                );
+            }
+            for (left, right, expected) in [
+                (SimpleExpr::Column(0), SimpleExpr::Column(1), Some(2)),
+                (SimpleExpr::Null, SimpleExpr::Column(1), None),
+                (SimpleExpr::Column(0), SimpleExpr::Null, None),
+            ] {
+                let extra = date_diff(vec![left, right, shared.clone()]);
+                assert_eq!(child_only.eval_expr(&extra).unwrap(), expected);
+            }
+        });
     }
 }

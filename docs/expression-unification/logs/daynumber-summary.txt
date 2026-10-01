@@ -1,0 +1,83 @@
+Checkpoint: daynumber-four-37; previous: weekday-four-36.
+STATUS: 115->119/245 functional; final acceptance 0/245. Six private kernels, four SQL-family credits: DATEDIFF/TO_DAYS/TO_SECONDS/TIDB_PARSE_TSO_LOGICAL. No extra TIMESTAMPDIFF/TIMEDIFF/formatter/date-construction credit.
+COUNTS: 12 actual tests/12 Cargo attempts = 10 green + 2 CURRENT baseline non-green full runs. No Cargo launch/compile/new-product RED failure or Cargo retry. Two non-test check corrections below mean NOT all commands first-pass and NOT zero format/static failures.
+PROVENANCE: parent owns execution/exits/source/coverage/failure comparisons; writer globbed, grepped/read and sha256sum-hashed all twelve logs (exit0). No build/test/fmt or additional source audit under this docs authorization. RAW: /home/agent/tidb/expression-unification/logs.
+JAN CWD: /home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv pin nightly-2026-01-30-x86_64-unknown-linux-gnu.
+AUG CWD: /home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb pin nightly-2026-08-22-x86_64-unknown-linux-gnu.
+Exact template: set -o pipefail; <COMMAND> 2>&1 | tee <OUTPUT> >/dev/null; OUTPUT=../logs/<LOG> for JAN, ../../logs/<LOG> for AUG. All12 retain full logs, suppress only terminal output, use --test-threads=1 and no --exact. Finished times are not benchmarks.
+CPP local/kernels ran with &&; native dispatch/datediff/serial/logical likewise. NativeDT core_time::; SQL evaluated_ascii_; legacy legacy_date_diff_; both full suites --lib with no test-name filter.
+
+LOG [JAN]: daynumber-tikv-time.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib codec::mysql::time:: -- --test-threads=1
+EXIT: 0; compile1.95s; test result: ok. 48 passed; 0 failed; 0 ignored; 0 measured; 361 filtered out; finished in 0.01s
+SHA256: 80f058b750a8b1cf9131eb11cf9e44b88815c33489ff2943b85f2466f30f02d8
+LOG [AUG]: daynumber-native-core-time.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-datatype --lib core_time:: -- --test-threads=1
+EXIT: 0; compile2.05s; test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 423 filtered out; finished in 0.00s
+SHA256: ef0f21ae296a47326ab7b3b6bb340364c5d78a773de1635367c3aa331a3c471d
+LOG [JAN]: daynumber-tikv-local.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+EXIT: 0; compile9.01s; 261 discovered, ignore preexisting; test result: ok. 260 passed; 0 failed; 1 ignored; 0 measured; 493 filtered out; finished in 0.19s
+SHA256: 1ea2a8f0731477798df2949aaccbe547054a373af992e601a0ac58d1c7eba8d6
+LOG [JAN]: daynumber-tikv-kernels.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_time:: -- --test-threads=1
+EXIT: 0; compile0.12s; test result: ok. 60 passed; 0 failed; 0 ignored; 0 measured; 694 filtered out; finished in 0.01s
+SHA256: d18c312a989966c530320334e8b234667a8498e7d794c2882c9a99af9346cb67
+LOG [AUG]: daynumber-sql.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+EXIT: 0; compile19.50s; test result: ok. 77 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 1.20s
+SHA256: 5c5d6e17c6eec0e918305c7b8420c8ab1381cef9b3c132970a2e08e016dd3b05
+LOG [AUG]: daynumber-dispatch.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib date_diff_days_dispatch_ -- --test-threads=1
+EXIT: 0; compile11.77s; test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1556 filtered out; finished in 0.00s
+SHA256: 72d3acc8598ccec7bbf69a41493ae9fa98565ad0a998329dce5cb55ebdb5f41f
+LOG [AUG]: daynumber-native-datediff.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib time_fn::tests::date_diff_source_vectors -- --test-threads=1
+EXIT: 0; compile0.12s; test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1558 filtered out; finished in 0.00s
+SHA256: b6ee926c891fce7db7519a48af7df419f949db511fcb2e3dc35a4baf1f21509c
+LOG [AUG]: daynumber-native-serial.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib time_fn::tests::to_ -- --test-threads=1
+EXIT: 0; compile0.12s; test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1557 filtered out; finished in 0.00s
+SHA256: c776797786dae8e2c39b407337a7eb8e686ac4c3bd6427c326881245f254f073
+LOG [AUG]: daynumber-native-logical.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib time_fn::tests::tidb_parse_tso_logical_vectors -- --test-threads=1
+EXIT: 0; compile0.13s; test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1558 filtered out; finished in 0.00s
+SHA256: ebc4723dc635965d3634f07dd084603819c4eb529b9db087199993054c631192
+LOG [AUG]: daynumber-legacy.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_date_diff_ -- --test-threads=1
+EXIT: 0; compile6.87s; test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 203 filtered out; finished in 0.00s
+SHA256: 5fb38e6058ef8347383721cdb003f42b81b6355b437100de2523c97a24ed1914
+LOG [AUG / CURRENT baseline non-green]: daynumber-unistore-full.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+EXIT: 101; compile0.12s; 205 discovered; test result: FAILED. 191 passed; 1 failed; 13 ignored; 0 measured; 0 filtered out; finished in 3.01s
+SHA256: f3726c925da9e710ff351903c6c1005fe4bedd723b5fd92ef66748edb4b4c08d
+LOG [AUG / CURRENT baseline non-green]: daynumber-expr-full.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+EXIT: 101; compile2.78s; 1559 discovered; test result: FAILED. 1461 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.56s
+SHA256: 723649728064949d43eee8949a75e345843a48ce52c7b7547779a105454e1f32
+
+CONTRACT / DEMAND / PROVENANCE
+DateDiffTextNative/date_diff_text_native_fn_meta, DateDiffNullNative/date_diff_null_native_fn_meta, DateDiffCoreNative/date_diff_core_native_fn_meta, ToDaysTextNative/to_days_text_native_fn_meta, ToSecondsTextNative/to_seconds_text_native_fn_meta, TsoLogicalNative/tso_logical_native_fn_meta: all private nullable kernels return ordinary signed Int. Real worker execution includes NULL/parseNone outcomes; strict UTF8 transport errors are not SQL-date causes.
+Text DATEDIFF: full-calendar parse_native_date_ymd then native_days_from_civil(left)-native_days_from_civil(right), ignoring clock suffix, retaining valid year0/full-u32 year. Serial TO_DAYS/TO_SECONDS use complete strict datetime parsing including clock/full-fraction validation before ignored fields; empty fraction and >6 all-digit fraction remain accepted, non-digit tail after6 remains invalid. Year0-Jan1 daynr1/seconds86400 is not civil+constant. Seconds uses daynr*86400+HMS, no nanos; u32MAX-12-31 seconds135536076801417600 fits i64. TSO None/<=0->NULL, positive low18bits, 262144->Some0; not physical TSO.
+Only new sealed pair role transports two actual nullable LE8 raw cores, no dummy. Complete real bits reach shared const native_core_date_diff; 14/4/5-bit date arithmetic permits rawzero/invalid month/day and ignores clocks, without chrono/SQL parsing/host clock clear. Original Time::new(Date0) always returned Ok. One shared typed-width macro retains raw/public-const-date_diff i32 and serial i64 daynr domains, NOT widening or merging them. NULL witness is existing physical nullable Int: actual None only, Some rejected under its own DATEDIFF identity. No new result kind/metadata layout/report/cause/driver or other PB admission.
+PB observed-NULL DATEDIFF alone routes to the real NULL witness, without coercing its observed prefix or reading suffix; non-NULL PB stays text. Legacy evaluates BOTH required inputs even on NULL, reads no extras, and retains resource failures across consumers. Native text preparation retains original coercion/cast order; these are distinct demand contracts, not universal AST laziness or host prediction.
+E six rows*four Int-metadata projections include year0 text/civil1 versus legacy/raw0. ALL12 zero-slot calls Resource1105; THREE bad-text calls retain original1292 warnings, remaining NINE warnings empty. Legacy2 uses actual Time and columns for rawzero/14-bit years/month15/clock/lowbits, both-nullable demand/extras/resource propagation. D3 covers native suffix/parser distinctions, PB NULL demand/public raw-core, coercion/casts before admission. No all-warnings-empty or year0-NULL claim.
+Parent parser proof: two old clock brace bodies equal after only whitespace/callee-qualification normalization; strict datetime parsing prefix equal, tuple replaces struct in the return. This is NOT whole-parser byte identity. Shared parser/daynr helpers used by TIMESTAMPDIFF/TIMEDIFF/formatters earn no extra family credit.
+Parent nine old bodies byte-identical: native CoreTime weekday/time_diff_internal/private timestamp_diff/get-date inverse; CPP get_daynr/weekday/ordinal; calendar inverse/TIMESTAMPDIFF. Four whole files native arg_eval_type/time_fn/tests/time_fn/duration_parse/time_fn/convert_tz match HEAD; A/B scoped old-body proofs hold. No old expected changed, no new-provider-generated oracle, no whole-codec/calendar/tree identity claim.
+
+NON-TEST CORRECTIONS (not extra Cargo attempts)
+1. Parent static-proof script used native src/{duration_parse,convert_tz} instead of src/time_fn/{duration_parse,convert_tz}; git show128 caused script exit1. Glob confirmed the real paths; corrected complete script reran0. No source repair or extra Cargo. Count: one static-proof-path failure, not product/compile failure.
+2. Final19-source pinned-format first check failed exit1 on two CPP batch.rs returns (ToDaysTextNative/TsoLogicalNative); script stopped BEFORE native formatting/lock/diff checks. Parent wrapped only those two returns' whitespace, then reran ALL19 formats (TiKV9/native10, including authorized types/expr_eval validator changes), both locks and both diffs: all0. Count: one fmt-check failure, not zero-format/first-pass success. Test receipts unchanged; no Cargo retry.
+B also had one rejected no-op edit: no file changed and no product failure. These check reruns are disclosed separately from the twelve actual test runs; no all-commands-first-pass claim.
+
+COMPLETE FAILURE-SECTIONS: parent extracted text.split('\nfailures:\n',1)[1].split('\ntest result:',1)[0], normalized ONLY re.sub(r"(?m)^(thread '[^\n]*' \()\d+(\) panicked at)", r'\1THREAD\2', section). No source-location mapping; hashes below are failure-section hashes, not whole-log hashes or green suites.
+EXPR versus weekday-expr-full.log: complete normalized bytes equal, SHA25680be9bda05e5bf630e9c246ca9523d23f82c122eaaeec6e220b1b00cec436615. Duration remains crates/tidb-datatype/src/duration.rs:212:55, no older093/211->212 adjustment. Same four failures:
+- pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation
+- tests::builtin_info_json_math_source::exp (original EXP(100_000.0) FloatOverflow assertion)
+- tests::builtin_math_misc_op_source::vectorized_builtin_op_func
+- time_fn::tests::str_to_date_partial_formats_follow_no_zero_date
+UNISTORE versus hms-unistore-full.log: complete normalized bytes equal, SHA256e285bfdba646f2d01f85b485ae317cc07c51b78cf0ae6d664c0fb2bc39259759. Location crates/tidb-unistore/src/tests_mockstore_part1_go_parity.rs:194:5 unchanged, no mapping.
+- tests_mockstore_part1_go_parity::closure_executor_selection_over_point_range_answers_zero_rows; TruncatedWrongValue("Truncated incorrect DECIMAL value: 'abc'").
+Unistore191 passed/1 failed/13 ignored IS CURRENT rerun, not unrun or historical-only. Prior hms189 passed/1 failed/13 ignored is just its comparison baseline. Both current full suites remain non-green.
+
+FREEZE: only daynumber-checkpoint.md and this summary written under this authorization; no additional audit/source/other-doc/Plan/JSON/index/build/test/fmt/old-expected edits by writer. Release/profile/panic-test adaptation, lint, M6/production-root, deep/wide guard, internal peak/OOM, zero-copy/performance, full temporal codec/Go-package and full-workspace gates are not established. 119/245 functional; final0/245, NOT PR readiness.

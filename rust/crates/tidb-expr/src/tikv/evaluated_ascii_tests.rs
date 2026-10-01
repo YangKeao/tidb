@@ -1161,6 +1161,14 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::DayNameTextNative => {
             panic!("weekday fields need their original date text")
         }
+        EvaluatedBytesOp::DateDiffTextNative
+        | EvaluatedBytesOp::DateDiffNullNative
+        | EvaluatedBytesOp::DateDiffCoreNative
+        | EvaluatedBytesOp::ToDaysTextNative
+        | EvaluatedBytesOp::ToSecondsTextNative
+        | EvaluatedBytesOp::TsoLogicalNative => {
+            panic!("date differences, day counts and TSO need their original arguments")
+        }
         EvaluatedBytesOp::CompressGoNative | EvaluatedBytesOp::UncompressNative => {
             panic!("compression calls need their original nullable bytes")
         }
@@ -1298,6 +1306,396 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+fn date_diff_days_native(
+    name: &str,
+    values: &[Datum],
+    columns: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    if name == "DATEDIFF" {
+        // Exercise the calendar body's own guard, not func's separate len==2
+        // admission gate (whose wrong-arity result is not replaced here).
+        crate::time_fn::calendar::date_diff_in(values, columns)
+    } else {
+        crate::time_fn::dispatch(name, values, columns).unwrap()
+    }
+}
+
+fn date_diff_days_function(
+    name: &str,
+    values: Vec<Datum>,
+    pb: bool,
+    unreadable_tail: bool,
+) -> crate::scalar_function::ScalarFunction {
+    use crate::expression::Expression;
+    use crate::scalar_function::{PbBuiltin, ScalarFunction};
+    let result_type = FieldType::new(FieldTypeCode::LongLong);
+    let mut args = values
+        .into_iter()
+        .map(|value| {
+            let source_type = if matches!(&value, Datum::Int(_)) {
+                FieldTypeCode::LongLong
+            } else {
+                FieldTypeCode::VarString
+            };
+            Expression::Constant(Constant::new(value, FieldType::new(source_type)))
+        })
+        .collect::<Vec<_>>();
+    if unreadable_tail {
+        args.push(Expression::ScalarFunction(ScalarFunction::new(
+            tidb_ast::CiString::new("__undemanded_date_diff_suffix__"),
+            result_type.clone(),
+            Vec::new(),
+        )));
+    }
+    if pb {
+        assert_eq!(
+            name, "DATEDIFF",
+            "only the existing PB DateDiff signature is admitted"
+        );
+        ScalarFunction::from_pb(
+            PbBuiltin::new(tidb_proto::tipb::ScalarFuncSig::DateDiff).unwrap(),
+            result_type,
+            args,
+        )
+    } else {
+        ScalarFunction::new(tidb_ast::CiString::new(name), result_type, args)
+    }
+}
+
+#[test]
+fn date_diff_days_dispatch_keeps_source_values_nulls_and_distinct_suffix_rules() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        // Fixed date_diff/to_days/to_seconds source vectors and the original
+        // builtin_time_calendars_source TSO literals; no new provider oracle.
+        for (name, values, expected) in [
+            (
+                "DATEDIFF",
+                vec![
+                    Datum::new_string("2004-05-21"),
+                    Datum::new_string("2004:01:02"),
+                ],
+                Datum::Int(140),
+            ),
+            (
+                "DATEDIFF",
+                vec![
+                    Datum::new_string("2008-12-31 23:59:59.000001"),
+                    Datum::new_string("2008-12-30 01:01:01.000002"),
+                ],
+                Datum::Int(1),
+            ),
+            (
+                "DATEDIFF",
+                vec![
+                    Datum::new_string("1010-11-30 23:59:59"),
+                    Datum::new_string("2010-12-31"),
+                ],
+                Datum::Int(-365_274),
+            ),
+            (
+                "DATEDIFF",
+                vec![
+                    Datum::new_string("2007-10-07 23:59:61"),
+                    Datum::new_string("2007-10-07"),
+                ],
+                Datum::Int(0),
+            ),
+            (
+                "DATEDIFF",
+                vec![
+                    Datum::new_string("2004-05-21"),
+                    Datum::new_string("abcdefg"),
+                ],
+                Datum::Null,
+            ),
+            (
+                "DATEDIFF",
+                vec![Datum::Null, Datum::new_string("2004-01-01")],
+                Datum::Null,
+            ),
+            (
+                "DATEDIFF",
+                vec![Datum::new_string("2004-01-01"), Datum::Null],
+                Datum::Null,
+            ),
+            ("TO_DAYS", vec![Datum::Int(950501)], Datum::Int(728_779)),
+            (
+                "TO_DAYS",
+                vec![Datum::new_string("0000-01-01")],
+                Datum::Int(1),
+            ),
+            (
+                "TO_DAYS",
+                vec![Datum::new_string("2007-10-07 00:00:59")],
+                Datum::Int(733_321),
+            ),
+            (
+                "TO_SECONDS",
+                vec![Datum::Int(950501)],
+                Datum::Int(62_966_505_600),
+            ),
+            (
+                "TO_SECONDS",
+                vec![Datum::new_string("2009-11-29 13:43:32")],
+                Datum::Int(63_426_721_412),
+            ),
+            (
+                "TO_SECONDS",
+                vec![Datum::new_string("99-11-29 13:43:32")],
+                Datum::Int(63_111_102_212),
+            ),
+            (
+                "TO_DAYS",
+                vec![Datum::new_string("2007-10-07 23:59:61")],
+                Datum::Null,
+            ),
+            (
+                "TO_SECONDS",
+                vec![Datum::new_string("2007-10-07 23:59:61")],
+                Datum::Null,
+            ),
+            (
+                "TO_SECONDS",
+                vec![Datum::new_string("2007-10-07 00:00:00.bad")],
+                Datum::Null,
+            ),
+            (
+                "TIDB_PARSE_TSO_LOGICAL",
+                vec![Datum::Int(404_411_537_129_996_288)],
+                Datum::Int(0),
+            ),
+            (
+                "TIDB_PARSE_TSO_LOGICAL",
+                vec![Datum::Int(404_411_537_129_996_289)],
+                Datum::Int(1),
+            ),
+            (
+                "TIDB_PARSE_TSO_LOGICAL",
+                vec![Datum::Int(404_411_537_129_996_290)],
+                Datum::Int(2),
+            ),
+            ("TIDB_PARSE_TSO_LOGICAL", vec![Datum::Int(0)], Datum::Null),
+            ("TIDB_PARSE_TSO_LOGICAL", vec![Datum::Int(-1)], Datum::Null),
+            (
+                "TIDB_PARSE_TSO_LOGICAL",
+                vec![Datum::new_string("-1")],
+                Datum::Null,
+            ),
+        ] {
+            let (result, observation) =
+                observe_wide_math(|| date_diff_days_native(name, &values, columns));
+            assert_eq!(
+                result,
+                Ok(expected),
+                "{name}: DATEDIFF ignores the time suffix, but day-number functions validate it"
+            );
+            assert_wide_math_c4(observation);
+        }
+        for name in ["TO_DAYS", "TO_SECONDS", "TIDB_PARSE_TSO_LOGICAL"] {
+            let (result, observation) =
+                observe_wide_math(|| date_diff_days_native(name, &[Datum::Null], columns));
+            assert_eq!(result, Ok(Datum::Null));
+            assert_wide_math_c4(observation);
+        }
+        let (result, observation) = observe_wide_math(|| {
+            calendar_fields_ast(
+                "DATEDIFF('2008-12-31 23:59:59.000001', '2008-12-30 01:01:01.000002')",
+                columns,
+            )
+        });
+        assert_eq!(result, Ok(Datum::Int(1)));
+        assert_wide_math_c4(observation);
+        for (name, value, expected) in [
+            ("TO_DAYS", Datum::new_string("2007-10-07"), 733_321),
+            (
+                "TIDB_PARSE_TSO_LOGICAL",
+                Datum::Int(404_411_537_129_996_290),
+                2,
+            ),
+        ] {
+            let function = date_diff_days_function(name, vec![value], false, false);
+            let (result, observation) =
+                observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert_eq!(result, Ok(Datum::Int(expected)));
+            assert_wide_math_c4(observation);
+        }
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn date_diff_days_dispatch_refuses_after_original_coercion_and_datetime_casts() {
+    let native = CompressionWarningProbe::default();
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for (name, normal, nulls, bad) in [
+            ("DATEDIFF", vec![Datum::new_string("2004-05-21"), Datum::new_string("2004:01:02")], vec![Datum::Null, Datum::new_string("2004-01-01")], vec![Datum::new_string("2004-05-21"), Datum::new_string("abcdefg")]),
+            ("TO_DAYS", vec![Datum::new_string("2007-10-07")], vec![Datum::Null], vec![Datum::new_string("2007-10-07 23:59:61")]),
+            ("TO_SECONDS", vec![Datum::new_string("2009-11-29 13:43:32")], vec![Datum::Null], vec![Datum::new_string("2007-10-07 00:00:00.bad")]),
+            // int_arg's ordinary bad text becomes zero, not a preparation error.
+            ("TIDB_PARSE_TSO_LOGICAL", vec![Datum::Int(404_411_537_129_996_290)], vec![Datum::Null], vec![Datum::new_string("bad")]),
+        ] {
+            for values in [normal, nulls, bad] {
+                let (result, observation) = observe_wide_math(|| date_diff_days_native(name, &values, columns));
+                assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource), "NULL, invalid text, and the nonpositive TSO predicate cannot bypass admission");
+                assert_eq!(observation.facade_entries, 0);
+                assert_eq!(observation.before_kernel_invocations, None);
+                assert_eq!(observation.after_kernel_invocations, None);
+            }
+            let (result, observation) = observe_wide_math(|| date_diff_days_native(name, &[], columns));
+            assert_eq!(result, Err(EvalError::Unsupported("bad function arity")), "native body guard, not func's DATEDIFF len gate");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        for (name, values, expected) in [
+            ("DATEDIFF", vec![Datum::Null, Datum::new_bytes([0xff])], EvalError::Unsupported("invalid UTF-8 byte datum")),
+            ("DATEDIFF", vec![Datum::new_bytes([0xff]), Datum::MinNotNull], EvalError::Unsupported("invalid UTF-8 byte datum")),
+            ("TO_DAYS", vec![Datum::new_bytes([0xff])], EvalError::Unsupported("invalid UTF-8 byte datum")),
+            ("TO_SECONDS", vec![Datum::new_string([0xff])], EvalError::Unsupported("invalid UTF-8 string datum")),
+            ("TIDB_PARSE_TSO_LOGICAL", vec![Datum::MinNotNull], EvalError::Unsupported("range sentinel time argument")),
+        ] {
+            let (result, observation) = observe_wide_math(|| date_diff_days_native(name, &values, columns));
+            assert_eq!(result, Err(expected), "DATEDIFF still coerces the right operand after left NULL, but left error stops first");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        let (result, observation) = observe_wide_math(|| calendar_fields_ast("DATEDIFF('2004-05-21', '2004-01-02')", columns));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+        let function = date_diff_days_function("TO_DAYS", vec![Datum::new_string("2007-10-07")], false, false);
+        let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+        native.0.borrow_mut().clear();
+        let (result, observation) = observe_wide_math(|| calendar_fields_ast("DATEDIFF('0000-00-00', 'not-a-date')", columns));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+        assert_eq!(native.0.borrow().as_slice(), [
+            (1292, "Incorrect datetime value: '0000-00-00 00:00:00.000000'".to_owned(), false),
+            (1292, "Incorrect datetime value: 'not-a-date'".to_owned(), false),
+        ], "both existing ETDatetime casts warn in argument order before worker admission");
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn date_diff_days_dispatch_preserves_pb_null_demand_and_public_raw_core_domain() {
+    let pb_normal = date_diff_days_function(
+        "DATEDIFF",
+        vec![
+            Datum::new_string("2004-05-21"),
+            Datum::new_string("2004:01:02"),
+        ],
+        true,
+        false,
+    );
+    let pb_nulls = [
+        date_diff_days_function("DATEDIFF", vec![Datum::Null], true, false),
+        date_diff_days_function(
+            "DATEDIFF",
+            vec![Datum::Null, Datum::new_bytes([0xff])],
+            true,
+            true,
+        ),
+        date_diff_days_function(
+            "DATEDIFF",
+            vec![Datum::new_bytes([0xff]), Datum::Null],
+            true,
+            true,
+        ),
+    ];
+    // temporal_extraction_follows_go's fixed two-day pair, despite clocks.
+    let left = CoreTime::from_date(2024, 3, 5, 14, 30, 45, 123_456);
+    let right = CoreTime::from_date(2024, 3, 3, 23, 0, 0, 0);
+    let invalid = CoreTime::from_date(16_383, 15, 31, 31, 63, 63, 1_048_575);
+    let invalid_other_clock = CoreTime::from_date(16_383, 15, 31, 0, 0, 0, 0);
+    let raw_pairs = [
+        (Some(left), Some(right), Some(2)),
+        (
+            Some(CoreTime::default()),
+            Some(CoreTime::default()),
+            Some(0),
+        ),
+        (Some(invalid), Some(invalid_other_clock), Some(0)),
+        (None, Some(invalid), None),
+        (Some(left), None, None),
+    ];
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        let (result, observation) = observe_wide_math(|| pb_normal.eval(columns, tidb_chunk::row::Row::empty()));
+        assert_eq!(result, Ok(Datum::Int(140)));
+        assert_wide_math_c4(observation);
+        let pb_suffix = date_diff_days_function("DATEDIFF", vec![Datum::new_string("2007-10-07 23:59:61"), Datum::new_string("2007-10-07")], true, false);
+        let (result, observation) = observe_wide_math(|| pb_suffix.eval(columns, tidb_chunk::row::Row::empty()));
+        assert_eq!(result, Ok(Datum::Int(0)), "PB Values remains the old SQL text algorithm, not raw CoreTime or a stricter timestamp cast");
+        assert_wide_math_c4(observation);
+        for function in &pb_nulls {
+            let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert_eq!(result, Ok(Datum::Null), "only the observed PB NULL is demanded: no arity gate, prefix coercion, or suffix evaluation");
+            assert_wide_math_c4(observation);
+        }
+        for &(left, right, expected) in &raw_pairs {
+            let (result, observation) = observe_wide_math(|| crate::eval_legacy_date_diff_in(left, right, columns).map(|value| value.map_or(Datum::Null, Datum::Int)));
+            assert_eq!(result, Ok(expected.map_or(Datum::Null, Datum::Int)), "raw date fields are not SQL text: zero/invalid equal dates still differ by zero and clock bits do not affect days");
+            assert_wide_math_c4(observation);
+        }
+    });
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for function in std::iter::once(&pb_normal).chain(pb_nulls.iter()) {
+            let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource), "PB Values and its actual NULL witness both retain the caller's scope");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        for (values, expected) in [
+            (vec![Datum::new_string("2004-05-21"), Datum::new_string("2004-01-02"), Datum::new_string("2004-01-01")], EvalError::Unsupported("bad function arity")),
+            (vec![Datum::new_bytes([0xff]), Datum::new_string("2004-01-02")], EvalError::Unsupported("invalid UTF-8 byte datum")),
+        ] {
+            let function = date_diff_days_function("DATEDIFF", values, true, false);
+            let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert_eq!(result, Err(expected), "non-NULL PB inputs retain calendar arity and text preparation errors");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        for &(left, right, _) in &raw_pairs {
+            let (result, observation) = observe_wide_math(|| crate::eval_legacy_date_diff_in(left, right, columns).map(|value| value.map_or(Datum::Null, Datum::Int)));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 fn weekday_fields_function(name: &str, input: Datum) -> crate::scalar_function::ScalarFunction {

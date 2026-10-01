@@ -66,7 +66,7 @@ pub(crate) fn dispatch(
         "QUARTER" => quarter_in(vals, cols),
         "WEEK" => week(vals, cols.default_week_format()),
         "WEEKOFYEAR" => week_of_year_builtin(vals),
-        "TIDB_PARSE_TSO_LOGICAL" => tidb_parse_tso_logical(vals),
+        "TIDB_PARSE_TSO_LOGICAL" => tidb_parse_tso_logical_in(vals, cols),
         "TIDB_BOUNDED_STALENESS" => tidb_bounded_staleness(vals, cols),
         "TIDB_CURRENT_TSO" => current_tso(vals, cols),
         "GET_FORMAT" => get_format_value_in(vals, cols),
@@ -99,8 +99,8 @@ pub(crate) fn dispatch(
         "TIMESTAMP" => add_sub::timestamp(vals, cols),
         "TIMESTAMPADD" => add_sub::timestamp_add(vals, cols),
         "SYSDATE" => add_sub::sysdate(vals, cols),
-        "TO_DAYS" => calendar::to_days(vals),
-        "TO_SECONDS" => calendar::to_seconds(vals),
+        "TO_DAYS" => calendar::to_days_in(vals, cols),
+        "TO_SECONDS" => calendar::to_seconds_in(vals, cols),
         // `EXTRACT(<composite unit> FROM value)`, e.g. `HOUR_MINUTE`,
         // `DAY_SECOND`, `YEAR_MONTH` — see `calendar::extract_composite`'s
         // own doc.
@@ -601,27 +601,32 @@ fn week_of_year_builtin(vals: &[Datum]) -> Result<Datum, EvalError> {
     Ok(Datum::Int(week_of_year(date.0, date.1, date.2, 3, false).1))
 }
 
-/// The low 18 bits of a TSO carry its logical component (`oracle`'s
-/// `physicalShiftBits = 18`, `logicalBits = (1<<18)-1`).
-const TSO_LOGICAL_BITS: i64 = (1 << 18) - 1;
-
 /// `TIDB_PARSE_TSO_LOGICAL(tso)`. Port of `builtinTidbParseTsoLogicalSig` =
 /// `oracle.ExtractLogical`: the low 18 bits of the timestamp oracle value. A
 /// non-positive or NULL argument yields NULL. Session-independent (the physical
 /// half, `TIDB_PARSE_TSO`, is not, because it renders a datetime in the session
 /// time zone). For a positive `tso`, masking the low 18 bits as `i64` equals
 /// Go's `uint64(tso) & logicalBits`.
+pub(crate) fn tidb_parse_tso_logical_in(
+    vals: &[Datum],
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::TsoLogicalNative,
+        ctx,
+        || {
+            if vals.len() != 1 {
+                return Err(EvalError::Unsupported("bad function arity"));
+            }
+            Ok(crate::tikv::EvaluatedArgs::Int(int_arg(&vals[0])?))
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
+}
+
+#[cfg(test)]
 fn tidb_parse_tso_logical(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(tso) = int_arg(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    if tso <= 0 {
-        return Ok(Datum::Null);
-    }
-    Ok(Datum::Int(tso & TSO_LOGICAL_BITS))
+    tidb_parse_tso_logical_in(vals, &crate::NoColumns)
 }
 
 /// Direct table-vector compatibility, not a production evaluator fallback.

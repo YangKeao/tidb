@@ -1614,6 +1614,12 @@ fn materialize_computed(
             | EvaluatedBytesOp::DayOfWeekTextNative
             | EvaluatedBytesOp::WeekdayTextNative
             | EvaluatedBytesOp::DayOfYearTextNative
+            | EvaluatedBytesOp::DateDiffTextNative
+            | EvaluatedBytesOp::DateDiffNullNative
+            | EvaluatedBytesOp::DateDiffCoreNative
+            | EvaluatedBytesOp::ToDaysTextNative
+            | EvaluatedBytesOp::ToSecondsTextNative
+            | EvaluatedBytesOp::TsoLogicalNative
             | EvaluatedBytesOp::AbsIntNative
             | EvaluatedBytesOp::AbsUIntNative
             | EvaluatedBytesOp::CeilIntNative

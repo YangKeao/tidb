@@ -6792,3 +6792,156 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_weekday_dayname_sql_columns() {
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_date_serial_tso_logical_sql_values_and_metadata() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_date_serial (id INT PRIMARY KEY, \
+             l VARCHAR(32), r VARCHAR(32), d VARCHAR(32), s VARCHAR(32), n BIGINT)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_date_serial VALUES (1,NULL,NULL,NULL,NULL,NULL),\
+             (2,'2004-05-21','2004:01:02','2007-10-07 00:00:59','2009-11-29 13:43:32',452605852463012352),\
+             (3,'2008-12-31 23:59:59.000001','2008-12-30 01:01:01.000002','0000-01-01','0000-01-01',262144),\
+             (4,'0000-03-01','0000-02-29','1998-10-00','1998-00-11',0),\
+             (5,'1010-11-30 23:59:59','2010-12-31','2008-10-07','2009-11-29',-1),\
+             (6,NULL,NULL,NULL,NULL,262143)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // Text DATEDIFF is civil-date arithmetic and ignores the clock. TO_DAYS
+    // and TO_SECONDS use strict datetime parsing and MySQL's day-number epoch;
+    // year-zero Feb 29 -> Mar 1 is civil one day, not the legacy raw-core zero.
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT DATEDIFF(l,r),TO_DAYS(d),TO_SECONDS(s),TIDB_PARSE_TSO_LOGICAL(n) \
+             FROM shared_date_serial ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected date-serial and logical-TSO rows")
+    };
+    assert_eq!(columns.len(), 4);
+    for (_, field) in &columns {
+        assert_eq!(field.code(), tidb_datatype::FieldTypeCode::LongLong);
+        assert_eq!(field.flen(), 20);
+        assert_eq!(field.decimal(), 0);
+        assert_eq!(field.charset_name(), "binary");
+        assert_eq!(field.collation(), tidb_datatype::Collation::Binary);
+        assert!(!field.is_unsigned());
+        assert!(!field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
+    }
+    assert_eq!(
+        rows,
+        vec![
+            vec![Datum::Null; 4],
+            vec![
+                Datum::Int(140),
+                Datum::Int(733321),
+                Datum::Int(63_426_721_412),
+                Datum::Int(137728)
+            ],
+            vec![
+                Datum::Int(1),
+                Datum::Int(1),
+                Datum::Int(86400),
+                Datum::Int(0)
+            ],
+            vec![Datum::Int(1), Datum::Null, Datum::Null, Datum::Null],
+            vec![
+                Datum::Int(-365274),
+                Datum::Int(733687),
+                Datum::Int(63_426_672_000),
+                Datum::Null
+            ],
+            vec![Datum::Null, Datum::Null, Datum::Null, Datum::Int(262143)],
+        ]
+    );
+    assert!(warnings_of(&session).is_empty());
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_date_serial_tso_logical_sql_columns() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_date_serial_zero (id INT PRIMARY KEY, \
+             l VARCHAR(32), r VARCHAR(32), d VARCHAR(32), n BIGINT)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_date_serial_zero VALUES (1,NULL,NULL,NULL,NULL),\
+             (2,'2004-05-21','2004-01-02','2007-10-07 00:00:59',262144),\
+             (3,NULL,'not-a-date','not-a-date',0)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // DATEDIFF's NULL lhs must not suppress the rhs cast warning. All NULL
+    // terminals, including a non-positive logical TSO, still require a lease.
+    for (expression, id, warned) in [
+        ("DATEDIFF(l,r)", 1, false),
+        ("TO_DAYS(d)", 1, false),
+        ("TO_SECONDS(d)", 1, false),
+        ("TIDB_PARSE_TSO_LOGICAL(n)", 1, false),
+        ("DATEDIFF(l,r)", 2, false),
+        ("TO_DAYS(d)", 2, false),
+        ("TO_SECONDS(d)", 2, false),
+        ("TIDB_PARSE_TSO_LOGICAL(n)", 2, false),
+        ("DATEDIFF(l,r)", 3, true),
+        ("TO_DAYS(d)", 3, true),
+        ("TO_SECONDS(d)", 3, true),
+        ("TIDB_PARSE_TSO_LOGICAL(n)", 3, false),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_date_serial_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => {
+                panic!("date-serial/logical-TSO must reach the zero-slot pool: {sql}: {other:?}")
+            }
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        if warned {
+            assert_eq!(
+                session.warnings(),
+                &[SqlWarning {
+                    level: WarningLevel::Warning,
+                    code: 1292,
+                    message: "Incorrect datetime value: 'not-a-date'".to_owned(),
+                }],
+                "{sql}"
+            );
+        } else {
+            assert!(warnings_of(&session).is_empty(), "{sql}");
+        }
+    }
+}

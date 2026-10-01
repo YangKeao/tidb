@@ -849,6 +849,16 @@ pub fn eval_legacy_month_in(
     time_fn::month_core_in(value, ctx)
 }
 
+/// Evaluates legacy DATEDIFF from both already-observed nullable raw cores.
+/// No date reconstruction, clock clearing or SQL-text validation occurs here.
+pub fn eval_legacy_date_diff_in(
+    left: Option<tidb_datatype::CoreTime>,
+    right: Option<tidb_datatype::CoreTime>,
+    ctx: &dyn Columns,
+) -> Result<Option<i64>, EvalError> {
+    time_fn::calendar::date_diff_core_in(left, right, ctx)
+}
+
 /// Closed legacy duration projections, distinct from native SQL text parsing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LegacyHmsField {

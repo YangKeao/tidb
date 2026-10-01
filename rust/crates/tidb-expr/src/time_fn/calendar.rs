@@ -266,20 +266,7 @@ pub(crate) fn expand_year_for_time_diff(value: u32, digits: usize) -> i64 {
 /// preserves those values instead of forcing them through Gregorian
 /// month normalization.
 pub(crate) fn time_diff_daynr(year: i64, month: u32, day: u32) -> i64 {
-    if year == 0 && month == 0 {
-        return 0;
-    }
-    let month = i64::from(month);
-    let day = i64::from(day);
-    let mut daynr = 365 * year + 31 * (month - 1) + day;
-    let year = if month <= 2 {
-        year - 1
-    } else {
-        daynr -= (month * 4 + 23) / 10;
-        year
-    };
-    let century = ((year / 100 + 1) * 3) / 4;
-    daynr + year / 4 - century
+    TikvTime::native_time_diff_daynr(year, month, day)
 }
 
 fn is_leap_year(year: i64) -> bool {
@@ -427,25 +414,56 @@ pub(crate) fn from_days(vals: &[Datum]) -> Result<Datum, EvalError> {
     Ok(Datum::new_string(format!("{y:04}-{m:02}-{d:02}")))
 }
 
-/// `DATEDIFF(date1, date2)`, ported from `builtinDateDiffSig.evalInt` in
-/// `pkg/expression/builtin_time.go`.  Both arguments are parsed as calendar
-/// dates; any time-of-day suffix is deliberately ignored, matching TiDB's
-/// `types.DateDiff` contract.  The value-only boundary returns `NULL` for a
-/// failed temporal conversion and has no warning/SQLMode state.
+/// `DATEDIFF` retains both original text conversions in left-to-right order,
+/// even if the first produces NULL. Date parsing (which ignores time suffixes)
+/// and subtraction run in the worker; original casts and warnings stay upstream.
+pub(crate) fn date_diff_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::DateDiffTextNative,
+        ctx,
+        || {
+            if vals.len() != 2 {
+                return Err(EvalError::Unsupported("bad function arity"));
+            }
+            let (left, right) = (coerce_str(&vals[0])?, coerce_str(&vals[1])?);
+            Ok(crate::tikv::EvaluatedArgs::Bytes2(
+                left.map(String::into_bytes),
+                right.map(String::into_bytes),
+            ))
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
+}
+
+/// Legacy CoreTime inputs are not SQL text and must not acquire its date
+/// validation. Preserve both actual nullable raw cores, including clock bits.
+pub(crate) fn date_diff_core_in(
+    left: Option<CoreTime>,
+    right: Option<CoreTime>,
+    ctx: &dyn Columns,
+) -> Result<Option<i64>, EvalError> {
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::DateDiffCoreNative,
+        ctx,
+        || {
+            Ok(crate::tikv::EvaluatedArgs::TimeCoreBits2(
+                left.map(CoreTime::raw),
+                right.map(CoreTime::raw),
+            ))
+        },
+        |computed| match computed.into_int_datum()? {
+            Datum::Null => Ok(None),
+            Datum::Int(value) => Ok(Some(value)),
+            _ => Err(EvalError::Unsupported(
+                "legacy DATEDIFF result kind mismatch",
+            )),
+        },
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn date_diff(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 2 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let (Some(left), Some(right)) = (coerce_str(&vals[0])?, coerce_str(&vals[1])?) else {
-        return Ok(Datum::Null);
-    };
-    let (Some((ly, lm, ld)), Some((ry, rm, rd))) = (parse_date_ymd(&left), parse_date_ymd(&right))
-    else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int(
-        days_from_civil(ly, lm, ld) - days_from_civil(ry, rm, rd),
-    ))
+    date_diff_in(vals, &crate::NoColumns)
 }
 
 #[derive(Clone, Copy)]
@@ -461,15 +479,8 @@ struct TimestampDiffDateTime {
 
 /// Parses a strict DATE/DATETIME string for `TIMESTAMPDIFF`.
 fn parse_timestamp_diff_datetime(input: &str) -> Option<TimestampDiffDateTime> {
-    let input = input.trim();
-    let (date, time) = input
-        .split_once(char::is_whitespace)
-        .or_else(|| input.split_once('T'))
-        .map_or((input, "00:00:00"), |(date, time)| (date, time.trim()));
-    let (year, month, day) = parse_date_ymd(date)?;
-    let (hour, minute, second, fraction) = parse_time_with_fraction(time)?;
-    let fsp = fraction.len();
-    let microsecond = fraction.parse::<u32>().ok().unwrap_or(0) * 10u32.pow(6 - fsp as u32);
+    let (year, month, day, hour, minute, second, microsecond) =
+        TikvTime::parse_native_datetime_components(input)?;
     Some(TimestampDiffDateTime {
         year,
         month,
@@ -577,41 +588,35 @@ pub(crate) fn timestamp_diff(vals: &[Datum]) -> Result<Datum, EvalError> {
 /// `types.TimestampDiff("DAY", types.ZeroDate, date)`.  This preserves the
 /// source's year-zero `0000-01-01 -> 1` behavior while rejecting invalid
 /// zero-date components and malformed time suffixes.
+pub(crate) fn to_days_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::ToDaysTextNative,
+        ctx,
+        || super::single_temporal_text(vals),
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn to_days(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(value) = coerce_str(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    let Some(value) = parse_timestamp_diff_datetime(&value) else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int(time_diff_daynr(
-        value.year,
-        value.month,
-        value.day,
-    )))
+    to_days_in(vals, &crate::NoColumns)
 }
 
 /// `TO_SECONDS(date)`, implemented through the same zero-date timestamp
 /// arithmetic as the Go builtin.  Fractional seconds are deliberately
 /// ignored because the source's `SECOND` unit returns whole seconds.
+pub(crate) fn to_seconds_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::ToSecondsTextNative,
+        ctx,
+        || super::single_temporal_text(vals),
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn to_seconds(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(value) = coerce_str(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    let Some(value) = parse_timestamp_diff_datetime(&value) else {
-        return Ok(Datum::Null);
-    };
-    let seconds = time_diff_daynr(value.year, value.month, value.day) * 86_400
-        + i64::from(value.hour) * 3_600
-        + i64::from(value.minute) * 60
-        + i64::from(value.second);
-    Ok(Datum::Int(seconds))
+    to_seconds_in(vals, &crate::NoColumns)
 }
 
 /// `DATE_ADD`/`DATE_SUB` calendar arithmetic from current Go
@@ -1479,14 +1484,7 @@ fn datetime_composite_value(
 /// leniency here has not been demonstrated as necessary the way the DATE
 /// separator's was (confirmed via `goeval` to matter for real inputs).
 pub(crate) fn parse_time_hms(s: &str) -> Option<(u32, u32, u32)> {
-    let mut parts = s.splitn(3, ':');
-    let h: u32 = parts.next()?.parse().ok()?;
-    let mi: u32 = parts.next()?.parse().ok()?;
-    let sec: u32 = parts.next()?.parse().ok()?;
-    if h > 23 || mi > 59 || sec > 59 {
-        return None;
-    }
-    Some((h, mi, sec))
+    TikvTime::parse_native_clock_hms(s)
 }
 
 /// `DATE_FORMAT`'s time-of-day parser extends [`parse_time_hms`] with the
@@ -1494,20 +1492,7 @@ pub(crate) fn parse_time_hms(s: &str) -> Option<(u32, u32, u32)> {
 /// this to `types.Time.DateFormat` (`pkg/types/time.go`); retaining the
 /// written fraction here is enough for the evaluator's string-only domain.
 pub(crate) fn parse_time_with_fraction(s: &str) -> Option<(u32, u32, u32, String)> {
-    if !s.contains('.') {
-        let (hour, minute, second) = parse_time_hms(s)?;
-        return Some((hour, minute, second, String::new()));
-    }
-    let mut parts = s.splitn(3, ':');
-    let h: u32 = parts.next()?.parse().ok()?;
-    let mi: u32 = parts.next()?.parse().ok()?;
-    let sec_part = parts.next()?;
-    let (sec_part, fraction) = sec_part.split_once('.').unwrap_or((sec_part, ""));
-    let sec: u32 = sec_part.parse().ok()?;
-    if h > 23 || mi > 59 || sec > 59 || !fraction.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    Some((h, mi, sec, fraction.chars().take(6).collect()))
+    TikvTime::parse_native_clock_with_fraction(s)
 }
 
 fn time_parts_with_micros(time_suffix: Option<&str>) -> Option<(u32, u32, u32, u32)> {

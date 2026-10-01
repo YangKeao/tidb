@@ -147,7 +147,7 @@ impl PbBuiltin {
             Conv => Kernel::Values(crate::math_fn::conv_in),
             RoundInt | RoundReal | RoundDec => Kernel::Round,
             Date => Kernel::Values(crate::time_fn::date),
-            DateDiff => Kernel::Values(|values, _| crate::time_fn::calendar::date_diff(values)),
+            DateDiff => Kernel::Values(crate::time_fn::calendar::date_diff_in),
             DateFormatSig => Kernel::Values(|values, _| {
                 let [date, format] = values else {
                     return Err(EvalError::WrongParameterCount("date_format"));
@@ -362,6 +362,16 @@ impl PbBuiltin {
                             // Only the observed NULL enters MONTH's typed core;
                             // earlier values stay uncoerced and later children unread.
                             return crate::time_fn::month_in(std::slice::from_ref(&value), ctx);
+                        }
+                        if self.signature == ScalarFuncSig::DateDiff {
+                            // Only this observed NULL is demanded; the prefix stays
+                            // uncoerced and even extra suffix children stay unread.
+                            return crate::tikv::evaluate_args_in(
+                                crate::tikv::EvaluatedBytesOp::DateDiffNullNative,
+                                ctx,
+                                || Ok(crate::tikv::EvaluatedArgs::NullWitness(None)),
+                                crate::tikv::EvaluatedBytesResult::into_int_datum,
+                            );
                         }
                         // HMS likewise demands only the observed NULL, even
                         // when earlier values or later children are present.

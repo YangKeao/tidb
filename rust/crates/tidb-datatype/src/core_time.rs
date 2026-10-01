@@ -172,8 +172,7 @@ impl CoreTime {
 
     /// Returns the calendar day difference between two dates.
     pub const fn date_diff(self, other: Self) -> i32 {
-        calc_daynr(self.year(), self.month() as i32, self.day() as i32)
-            - calc_daynr(other.year(), other.month() as i32, other.day() as i32)
+        SharedTime::native_core_date_diff(self.raw(), other.raw())
     }
 
     /// Calculates the absolute temporal difference with Go's signed operand rule.
@@ -602,18 +601,8 @@ pub const fn get_last_day(year: i32, month: u8) -> u8 {
 }
 
 /// Calculates days since MySQL's `0000-00-00` epoch.
-pub const fn calc_daynr(mut year: i32, month: i32, day: i32) -> i32 {
-    if year == 0 && month == 0 {
-        return 0;
-    }
-    let mut sum = 365 * year + 31 * (month - 1) + day;
-    if month <= 2 {
-        year -= 1;
-    } else {
-        sum -= (month * 4 + 23) / 10;
-    }
-    let temp = ((year / 100 + 1) * 3) / 4;
-    sum + year / 4 - temp
+pub const fn calc_daynr(year: i32, month: i32, day: i32) -> i32 {
+    SharedTime::native_calc_daynr_i32(year, month, day)
 }
 
 /// Converts a MySQL day number back to a calendar date.
