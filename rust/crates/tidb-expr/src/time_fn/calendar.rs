@@ -18,7 +18,7 @@ use crate::cast::to_i64_signed;
 use crate::coerce::coerce_str;
 use crate::{Columns, Datum, ErrorLevel, EvalError};
 use tidb_datatype::{CoreTime, Time, TimeType};
-use tidb_query_datatype::codec::mysql::{time::MONTH_NAMES, Time as TikvTime};
+use tidb_query_datatype::codec::mysql::Time as TikvTime;
 
 /// The whole stored CoreTime supplied to a component date-part kernel.
 /// For `YEAR`/`MONTH`/`DAYOFMONTH`/`QUARTER`, field access in Go is the whole of
@@ -288,6 +288,7 @@ pub(crate) fn days_in_month_for_time_diff(year: i64, month: u32) -> u32 {
 /// `pkg/types/core_time.go:calcDaynr`, `weekMode`, and `calcWeek`.
 /// `mode` is masked to its low three bits exactly as the Go implementation
 /// does.  `with_year` selects `YearWeek`'s always-year-numbered variant.
+#[cfg(test)]
 pub(crate) fn week_of_year(y: i64, m: u32, d: u32, mode: i64, with_year: bool) -> (i64, i64) {
     TikvTime::native_week_of_year(y, m, d, mode, with_year)
 }
@@ -2107,97 +2108,34 @@ pub(crate) fn format_ymd_result(y: i64, m: u32, d: u32, time_suffix: Option<&str
 /// time, `%W`/`%a`/`%w` weekday renderings, `%M`/`%b` month name, `%j` day-of-year,
 /// `%D` day-with-ordinal-suffix, and `%%` a literal `%`. An unknown `%X`
 /// emits `X` verbatim (matching MySQL).
+pub(crate) fn date_format_in(
+    date: &Datum,
+    fmt: &Datum,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::DateFormatTextNative,
+        ctx,
+        || {
+            // Both original conversions run, even when the date is NULL.
+            // Parsing and text-policy formatting belong entirely to the worker.
+            let (date, fmt) = (coerce_str(date)?, coerce_str(fmt)?);
+            Ok(crate::tikv::EvaluatedArgs::Bytes2(
+                date.map(String::into_bytes),
+                fmt.map(String::into_bytes),
+            ))
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn date_format(date: &Datum, fmt: &Datum) -> Result<Datum, EvalError> {
-    let (Some(s), Some(fmt)) = (coerce_str(date)?, coerce_str(fmt)?) else {
-        return Ok(Datum::Null);
-    };
-    // Split off an optional time-of-day component.
-    let (date_part, time_part) = match s.split_once(' ') {
-        Some((d, t)) => (d, Some(t)),
-        None => (s.as_str(), None),
-    };
-    let Some((y, m, d)) = parse_date_ymd(date_part) else {
-        return Ok(Datum::Null);
-    };
-    let (h, mi, sec, fraction) =
-        time_part
-            .and_then(parse_time_with_fraction)
-            .unwrap_or((0, 0, 0, String::new()));
-
-    let wd = TikvTime::native_weekday_sunday_index(y, m, d);
-    let doy = TikvTime::native_day_of_year(y, m, d);
-    let h12 = ((h + 11) % 12) + 1;
-    let suffix = |n: u32| -> &'static str {
-        match (n % 100, n % 10) {
-            (11..=13, _) => "th",
-            (_, 1) => "st",
-            (_, 2) => "nd",
-            (_, 3) => "rd",
-            _ => "th",
-        }
-    };
-    // Go's `convertDateFormat` writes a negative week-year through
-    // `uint32`, exposing MaxUint32 rather than a signed year such as `-001`.
-    let format_week_year = |year: i64| {
-        if year < 0 {
-            u32::MAX.to_string()
-        } else {
-            format!("{year:04}")
-        }
-    };
-
-    let mut out = String::new();
-    let mut chars = fmt.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c != '%' {
-            out.push(c);
-            continue;
-        }
-        match chars.next() {
-            None => out.push('%'),
-            Some('Y') => out.push_str(&format!("{y:04}")),
-            Some('y') => out.push_str(&format!("{:02}", y.rem_euclid(100))),
-            Some('m') => out.push_str(&format!("{m:02}")),
-            Some('c') => out.push_str(&m.to_string()),
-            Some('d') => out.push_str(&format!("{d:02}")),
-            Some('e') => out.push_str(&d.to_string()),
-            Some('H') => out.push_str(&format!("{h:02}")),
-            Some('k') => out.push_str(&h.to_string()),
-            Some('h' | 'I') => out.push_str(&format!("{h12:02}")),
-            Some('l') => out.push_str(&h12.to_string()),
-            Some('i') => out.push_str(&format!("{mi:02}")),
-            Some('S' | 's') => out.push_str(&format!("{sec:02}")),
-            Some('f') => out.push_str(&format!("{fraction:0<6}")),
-            Some('p') => out.push_str(if h < 12 { "AM" } else { "PM" }),
-            Some('T') => out.push_str(&format!("{h:02}:{mi:02}:{sec:02}")),
-            Some('r') => out.push_str(&format!(
-                "{h12:02}:{mi:02}:{sec:02} {}",
-                if h < 12 { "AM" } else { "PM" }
-            )),
-            Some('W') => out.push_str(TikvTime::weekday_name_from_sunday_index(wd)),
-            Some('a') => out.push_str(&TikvTime::weekday_name_from_sunday_index(wd)[..3]),
-            Some('w') => out.push_str(&wd.to_string()),
-            Some('M') => out.push_str(MONTH_NAMES[(m - 1) as usize]),
-            Some('b') => out.push_str(&MONTH_NAMES[(m - 1) as usize][..3]),
-            Some('j') => out.push_str(&format!("{doy:03}")),
-            Some('D') => out.push_str(&format!("{d}{}", suffix(d))),
-            // Go's `types.Time.DateFormat` maps these to `CoreTime.Week` /
-            // `YearWeek`, whose exact mode handling is ported in
-            // `week_of_year` above. `%U`/`%u` retain the week number's
-            // possible zero; `%V`/`%v` force the corresponding year-week
-            // mode and `%X`/`%x` render its possibly adjacent calendar year.
-            Some('U') => out.push_str(&format!("{:02}", week_of_year(y, m, d, 0, false).1)),
-            Some('u') => out.push_str(&format!("{:02}", week_of_year(y, m, d, 1, false).1)),
-            Some('V') => out.push_str(&format!("{:02}", week_of_year(y, m, d, 2, false).1)),
-            Some('v') => out.push_str(&format!("{:02}", week_of_year(y, m, d, 3, false).1)),
-            Some('X') => out.push_str(&format_week_year(week_of_year(y, m, d, 2, true).0)),
-            Some('x') => out.push_str(&format_week_year(week_of_year(y, m, d, 3, true).0)),
-            Some('%') => out.push('%'),
-            // An unknown specifier emits the letter verbatim (MySQL rule).
-            Some(other) => out.push(other),
-        }
-    }
-    Ok(Datum::new_string(out))
+    date_format_in(date, fmt, &crate::NoColumns)
 }
 
 #[cfg(test)]

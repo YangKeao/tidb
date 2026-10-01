@@ -3825,11 +3825,17 @@ impl LegacyEvaluator<'_> {
             // DATE_FORMAT: Go `builtinDateFormatSig` answers through
             // `Time.DateFormat` over the format layout.
             SimpleExpr::Func(SimpleSig::DateFormatSig, children) => {
-                let time = legacy_some!(self.eval_time(children.first())?);
-                let layout = legacy_some!(self.eval_bytes(children.get(1))?);
-                let layout = String::from_utf8_lossy(&layout).into_owned();
-                let formatted = legacy_some!(time.date_format(&layout).ok());
-                Some(formatted.into_bytes())
+                match self.eval_time(children.first())? {
+                    None => tidb_expr::eval_legacy_date_format_in(None, self.raw_columns)?,
+                    Some(time) => {
+                        let layout = self.eval_bytes(children.get(1))?;
+                        let layout = layout.as_deref().map(String::from_utf8_lossy);
+                        tidb_expr::eval_legacy_date_format_in(
+                            Some((time.core_time(), layout.as_deref())),
+                            self.raw_columns,
+                        )?
+                    }
+                }
             }
             // CONV: Go `builtinConvSig` re-reads the text in one base and
             // re-formats it in another; the base operands go through the
@@ -4480,14 +4486,30 @@ impl LegacyEvaluator<'_> {
                         Some(i128::from(answered))
                     }
                     SimpleSig::DateFormatSig => {
-                        // A bare formatted date as a condition answers its
-                        // numeric-prefix truth ("20240305" -> truthy).
-                        match children.first().map(|c| self.eval_datum(c)) {
-                            Some(Ok(datum)) => {
-                                Some(i128::from(!matches!(datum, tidb_datatype::Datum::Null)))
+                        // This legacy condition tests only the first datum's
+                        // presence, never formatted bytes or the layout child.
+                        match children.first() {
+                            Some(first) => {
+                                let ready = match self.eval_datum(first)? {
+                                    Datum::Null => None,
+                                    _ => Some(false),
+                                };
+                                match tidb_expr::eval_boolean_ready_in(
+                                    tidb_expr::BooleanFunction::IsNotNull,
+                                    ready,
+                                    self.raw_columns,
+                                )? {
+                                    Datum::Int(value @ (0 | 1)) => Some(i128::from(value)),
+                                    _ => {
+                                        return Err(LegacyEvalError::InvalidResult(
+                                            "legacy DATE_FORMAT presence result kind mismatch",
+                                        ))
+                                    }
+                                }
                             }
-                            Some(Err(message)) => return Err(message),
-                            None => Some(0),
+                            None => {
+                                tidb_expr::eval_legacy_date_format_missing_in(self.raw_columns)?
+                            }
                         }
                     }
                     SimpleSig::RoundInt => {
@@ -9509,5 +9531,175 @@ mod tests {
                 );
             }
         });
+    }
+
+    #[test]
+    fn legacy_date_format_preserves_raw_bytes_and_distinct_presence() {
+        use tidb_datatype::{CoreTime, Datum, Time, TimeType};
+        let time_zone = zone();
+        let normal = Time::new(
+            CoreTime::from_date(2024, 3, 5, 14, 30, 45, 123_456),
+            TimeType::DateTime,
+            6,
+        )
+        .unwrap();
+        let invalid_month = Time::new(
+            CoreTime::from_date(2010, 0, 1, 0, 0, 0, 0),
+            TimeType::DateTime,
+            0,
+        )
+        .unwrap();
+        let dirty_clock = Time::new(
+            CoreTime::from_date(2024, 3, 5, 31, 63, 63, 1_048_575),
+            TimeType::DateTime,
+            6,
+        )
+        .unwrap();
+        let date_format = |children| SimpleExpr::Func(SimpleSig::DateFormatSig, children);
+        for (time, layout, expected) in [
+            (normal, b"%Y-%m-%d".to_vec(), Some("2024-03-05")),
+            (normal, Vec::new(), Some("")),
+            (normal, vec![0xff, b'%', b'Y'], Some("\u{fffd}2024")),
+            (invalid_month, b"%M".to_vec(), None),
+            // The raw public formatter drops a trailing %, unlike SQL text.
+            (invalid_month, b"trailing%".to_vec(), Some("trailing")),
+            (dirty_clock, b"%T.%f".to_vec(), Some("31:63:63.1048575")),
+        ] {
+            let row = [Datum::Time(time), Datum::new_bytes(layout.clone())];
+            let evaluator = LegacyEvaluator::new(&row, 4, &time_zone);
+            for call in [
+                date_format(vec![SimpleExpr::Time(time), SimpleExpr::Bytes(layout)]),
+                date_format(vec![SimpleExpr::Column(0), SimpleExpr::Column(1)]),
+            ] {
+                assert_eq!(
+                    evaluator.eval_bytes(Some(&call)).unwrap(),
+                    expected.map(|text| text.as_bytes().to_vec())
+                );
+                // InvalidMonth and empty/non-numeric formatting do not affect
+                // this presence-only branch: its first Time datum is non-NULL.
+                assert_eq!(evaluator.eval_expr(&call).unwrap(), Some(1));
+            }
+        }
+        let evaluator = LegacyEvaluator::new(&[], 4, &time_zone);
+        for (children, presence) in [
+            (vec![], 0),
+            (vec![SimpleExpr::Null, SimpleExpr::Bytes(b"%Y".to_vec())], 0),
+            (vec![SimpleExpr::Time(normal)], 1),
+            (vec![SimpleExpr::Time(normal), SimpleExpr::Null], 1),
+            (vec![SimpleExpr::Int(0), SimpleExpr::Null], 1),
+            (vec![SimpleExpr::Bytes(Vec::new()), SimpleExpr::Null], 1),
+        ] {
+            let call = date_format(children);
+            assert_eq!(evaluator.eval_bytes(Some(&call)).unwrap(), None);
+            assert_eq!(evaluator.eval_expr(&call).unwrap(), Some(presence));
+        }
+    }
+
+    #[test]
+    fn legacy_date_format_pool_failures_preserve_consumers_and_child_demand() {
+        use tidb_datatype::{CoreTime, Datum, Time, TimeType};
+        use tidb_expr::ExpressionAdapterFailureClass as Class;
+        let time_zone = zone();
+        let row = [
+            Datum::Time(
+                Time::new(
+                    CoreTime::from_date(2024, 3, 5, 0, 0, 0, 0),
+                    TimeType::DateTime,
+                    0,
+                )
+                .unwrap(),
+            ),
+            Datum::Time(
+                Time::new(
+                    CoreTime::from_date(2010, 0, 1, 0, 0, 0, 0),
+                    TimeType::DateTime,
+                    0,
+                )
+                .unwrap(),
+            ),
+        ];
+        let date_format = |children| SimpleExpr::Func(SimpleSig::DateFormatSig, children);
+        let unary = |sig, input| SimpleExpr::Func(sig, vec![input]);
+        let assert_failure = |error, class| match error {
+            LegacyEvalError::Infrastructure(tidb_expr::EvalError::ExpressionAdapterFailure(
+                failure,
+            )) => {
+                assert_eq!(failure.class(), class);
+                assert_eq!(
+                    failure.origin(),
+                    tidb_expr::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("DATE_FORMAT must preserve the actual pool cause: {other:?}"),
+        };
+        let shared = convert_expr(&tipb::Expr {
+            tp: Some(tipb::ExprType::ScalarFunc as i32),
+            sig: Some(tipb::ScalarFuncSig::IntIsNull as i32),
+            field_type: Some(tipb::FieldType {
+                tp: Some(8),
+                ..Default::default()
+            }),
+            children: vec![tipb::Expr {
+                tp: Some(tipb::ExprType::Null as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .expect("existing shared child");
+        assert!(matches!(&shared, SimpleExpr::Shared(_)));
+        for (slots, closed, class) in [
+            (0, false, Class::PoolResource),
+            (1, true, Class::PoolClosed),
+        ] {
+            let policy = tidb_expr::AsciiPoolPolicy::checked(
+                slots,
+                slots,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .expect("pool policy");
+            let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+            let execution = owner.begin_execution().expect("execution");
+            let scope = execution.scope();
+            if closed {
+                execution.close();
+            }
+            scope.with_columns(&tidb_expr::NoColumns, |columns| {
+                let evaluator = LegacyEvaluator { raw_columns: columns, ..LegacyEvaluator::new(&row, 4, &time_zone) };
+                for children in [
+                    vec![SimpleExpr::Column(0), SimpleExpr::Bytes(b"%Y-%m-%d".to_vec())],
+                    vec![SimpleExpr::Column(1), SimpleExpr::Bytes(b"%M".to_vec())],
+                    vec![SimpleExpr::Column(0), SimpleExpr::Null],
+                    vec![SimpleExpr::Null, SimpleExpr::Bytes(b"%Y".to_vec())],
+                    vec![],
+                ] {
+                    let call = date_format(children);
+                    assert_failure(evaluator.eval_bytes(Some(&call)).expect_err("bytes formatter"), class);
+                    assert_failure(evaluator.eval_expr(&call).expect_err("integer presence"), class);
+                    assert_failure(evaluator.eval_real(Some(&unary(SimpleSig::CastStringAsReal, call.clone()))).expect_err("real consumer"), class);
+                    assert_failure(evaluator.eval_time(Some(&unary(SimpleSig::CastStringAsTime, call))).expect_err("time consumer"), class);
+                }
+                // The old first-datum error still precedes pool admission.
+                assert!(matches!(evaluator.eval_expr(&date_format(vec![SimpleExpr::Column(99)])),
+                    Err(LegacyEvalError::Sql(message)) if message == "aggregate input is outside the scanned row"));
+                let child_only = LegacyEvaluator { shared_override: Some(columns), ..LegacyEvaluator::new(&row, 4, &time_zone) };
+                let first_error = date_format(vec![shared.clone(), SimpleExpr::Bytes(b"%Y".to_vec())]);
+                assert_failure(child_only.eval_bytes(Some(&first_error)).expect_err("time child"), class);
+                assert_failure(child_only.eval_expr(&first_error).expect_err("datum child"), class);
+                let skipped_layout = date_format(vec![SimpleExpr::Null, shared.clone()]);
+                assert_eq!(child_only.eval_bytes(Some(&skipped_layout)).unwrap(), None);
+                assert_eq!(child_only.eval_expr(&skipped_layout).unwrap(), Some(0));
+                let demanded_layout = date_format(vec![SimpleExpr::Column(0), shared.clone()]);
+                assert_failure(child_only.eval_bytes(Some(&demanded_layout)).expect_err("layout child"), class);
+                assert_eq!(child_only.eval_expr(&demanded_layout).unwrap(), Some(1));
+                let extra = date_format(vec![SimpleExpr::Column(0), SimpleExpr::Bytes(b"%Y-%m-%d".to_vec()), shared.clone()]);
+                assert_eq!(child_only.eval_bytes(Some(&extra)).unwrap(), Some(b"2024-03-05".to_vec()));
+                assert_eq!(child_only.eval_expr(&extra).unwrap(), Some(1));
+            });
+        }
     }
 }

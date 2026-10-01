@@ -1625,6 +1625,7 @@ fn materialize_computed(
             | EvaluatedBytesOp::WeekOfYearTextNative
             | EvaluatedBytesOp::WeekNullNative
             | EvaluatedBytesOp::WeekCoreNative
+            | EvaluatedBytesOp::DateFormatMissingNative
             | EvaluatedBytesOp::AbsIntNative
             | EvaluatedBytesOp::AbsUIntNative
             | EvaluatedBytesOp::CeilIntNative
@@ -1712,7 +1713,13 @@ fn materialize_computed(
             | EvaluatedBytesOp::Sm3Native
             | EvaluatedBytesOp::MakeDateNative
             | EvaluatedBytesOp::FromDaysNative
-            | EvaluatedBytesOp::SecToTimeNative,
+            | EvaluatedBytesOp::SecToTimeNative
+            | EvaluatedBytesOp::DateFormatTextNative
+            | EvaluatedBytesOp::DateFormatCoreNative
+            | EvaluatedBytesOp::DateFormatNullNative
+            | EvaluatedBytesOp::DurationTextProbeNative
+            | EvaluatedBytesOp::TimeFormatTextNative
+            | EvaluatedBytesOp::LastDayTextNative,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {

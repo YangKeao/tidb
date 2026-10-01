@@ -16,7 +16,6 @@ use std::cmp::Ordering;
 use std::fmt;
 
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, TimeZone, Timelike, Utc};
-use tidb_query_datatype::codec::mysql::time::MONTH_NAMES;
 
 use crate::{
     check_fsp, get_last_day, CoreTime, Decimal, FspError, MySqlDuration, PackedTime,
@@ -544,104 +543,8 @@ impl Time {
 
     /// Formats this value with TiDB's MySQL `DATE_FORMAT` conversion rules.
     pub fn date_format(self, layout: &str) -> Result<String, TimeError> {
-        let mut output = String::with_capacity(layout.len());
-        let mut pattern = false;
-        for character in layout.chars() {
-            if pattern {
-                self.push_date_format(character, &mut output)?;
-                pattern = false;
-            } else if character == '%' {
-                pattern = true;
-            } else {
-                output.push(character);
-            }
-        }
-        Ok(output)
-    }
-
-    fn push_date_format(self, conversion: char, output: &mut String) -> Result<(), TimeError> {
-        let hour = self.core.hour();
-        let minute = self.core.minute();
-        let second = self.core.second();
-        match conversion {
-            'b' | 'M' => {
-                let month = self.core.month();
-                if !(1..=12).contains(&month) {
-                    return Err(TimeError::InvalidDate);
-                }
-                let name = MONTH_NAMES[usize::from(month - 1)];
-                output.push_str(if conversion == 'b' { &name[..3] } else { name });
-            }
-            'm' => output.push_str(&format!("{:02}", self.core.month())),
-            'c' => output.push_str(&self.core.month().to_string()),
-            'D' => {
-                let day = self.core.day();
-                output.push_str(&day.to_string());
-                output.push_str(day_suffix(day));
-            }
-            'd' => output.push_str(&format!("{:02}", self.core.day())),
-            'e' => output.push_str(&self.core.day().to_string()),
-            'j' => output.push_str(&format!("{:03}", self.core.year_day())),
-            'H' => output.push_str(&format!("{hour:02}")),
-            'k' => output.push_str(&hour.to_string()),
-            'h' | 'I' => {
-                let twelve_hour = hour % 12;
-                output.push_str(&format!(
-                    "{:02}",
-                    if twelve_hour == 0 { 12 } else { twelve_hour }
-                ));
-            }
-            'l' => {
-                let twelve_hour = hour % 12;
-                output.push_str(&if twelve_hour == 0 { 12 } else { twelve_hour }.to_string());
-            }
-            'i' => output.push_str(&format!("{minute:02}")),
-            'p' => output.push_str(if (hour / 12).is_multiple_of(2) {
-                "AM"
-            } else {
-                "PM"
-            }),
-            'r' => {
-                let normalized = hour % 24;
-                let twelve_hour = match normalized {
-                    0 | 12 => 12,
-                    1..=11 => normalized,
-                    _ => normalized - 12,
-                };
-                let meridiem = if normalized < 12 { "AM" } else { "PM" };
-                output.push_str(&format!(
-                    "{twelve_hour:02}:{minute:02}:{second:02} {meridiem}"
-                ));
-            }
-            'T' => output.push_str(&format!("{hour:02}:{minute:02}:{second:02}")),
-            'S' | 's' => output.push_str(&format!("{second:02}")),
-            'f' => output.push_str(&format!("{:06}", self.core.microsecond())),
-            'U' | 'u' | 'V' => {
-                let mode = match conversion {
-                    'U' => 0,
-                    'u' => 1,
-                    _ => 2,
-                };
-                output.push_str(&format!("{:02}", self.core.week(mode)));
-            }
-            'v' => output.push_str(&format!("{:02}", self.core.year_week(3).1)),
-            'a' => output.push_str(self.core.weekday().abbreviated_name()),
-            'W' => output.push_str(&self.core.weekday().to_string()),
-            'w' => output.push_str(&self.core.weekday().sunday_index().to_string()),
-            'X' | 'x' => {
-                let mode = if conversion == 'X' { 2 } else { 3 };
-                let year = self.core.year_week(mode).0;
-                if year < 0 {
-                    output.push_str(&u32::MAX.to_string());
-                } else {
-                    output.push_str(&format!("{year:04}"));
-                }
-            }
-            'Y' => output.push_str(&format!("{:04}", self.core.year())),
-            'y' => output.push_str(&format!("{:04}", self.core.year())[2..]),
-            _ => output.push(conversion),
-        }
-        Ok(())
+        tidb_query_datatype::codec::mysql::Time::native_core_date_format(self.core.raw(), layout)
+            .ok_or(TimeError::InvalidDate)
     }
 
     /// Validates DATE/DATETIME/TIMESTAMP using TiDB's conversion flags.
@@ -739,15 +642,6 @@ impl Time {
             kind,
             fsp,
         )
-    }
-}
-
-const fn day_suffix(day: u8) -> &'static str {
-    match day {
-        1 | 21 | 31 => "st",
-        2 | 22 => "nd",
-        3 | 23 => "rd",
-        _ => "th",
     }
 }
 

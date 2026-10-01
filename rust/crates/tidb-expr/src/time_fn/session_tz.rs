@@ -38,7 +38,7 @@
 
 use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike, Utc};
 
-use super::calendar::date_format;
+use super::calendar::date_format_in;
 use crate::coerce::coerce_str;
 use crate::context::SessionTimeZone;
 use crate::{Columns, Datum, Decimal, EvalError};
@@ -175,7 +175,7 @@ pub(crate) fn from_unixtime(vals: &[Datum], cols: &dyn Columns) -> Result<Datum,
     };
     let formatted = format_local(local, fsp);
     if vals.len() == 2 {
-        return date_format(&Datum::new_string(formatted), &vals[1]);
+        return date_format_in(&Datum::new_string(formatted), &vals[1], cols);
     }
     Ok(Datum::new_string(formatted))
 }

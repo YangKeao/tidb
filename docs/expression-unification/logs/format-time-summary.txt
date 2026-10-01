@@ -1,0 +1,105 @@
+Checkpoint: format-time-three-40; previous: construct-time-four-39. DATE_FORMAT/TIME_FORMAT/LAST_DAY, functional128->131/245, final acceptance0/245. DATE deferred; no whole-FROM_UNIXTIME credit.
+COUNTS:16 test-Cargo attempts=13 nonzero-test runs(10green+1new test RED+2CURRENT baseline non-green full)+2compile-failure attempts+1zero-match. Failed-target retries3(dispatch2/SQL1); launch failures0; metadata commands0. Zero-match exit0 is NOT a passing coverage gate. all_checks_firstpass=false.
+PROVENANCE: parent owns source/gates/exits/proofs; writer read/hashed all16 logs, sha256sum exit0. RAW=/home/agent/tidb/expression-unification/logs; failed logs retained separately, not overwritten. No writer build/test/fmt/index/Plan/additional source audit.
+JAN CWD=/home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv pin nightly-2026-01-30-x86_64-unknown-linux-gnu.
+AUG CWD=/home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb pin nightly-2026-08-22-x86_64-unknown-linux-gnu.
+Exact wrapper: set -o pipefail; <COMMAND> 2>&1 | tee <OUTPUT> >/dev/null; OUTPUT=../logs/<LOG> JAN or ../../logs/<LOG> AUG. All --locked --lib and --test-threads=1, no --exact. Finished includes build/other Cargo work: not a benchmark. Failed compiles have no reported Finished/test duration.
+
+LOG[JAN]:format-time-tikv-time.log
+COMMAND:../tools/cargo-tikv test --locked -p tidb_query_datatype --lib codec::mysql::time:: -- --test-threads=1
+EXIT0; Finished3.32s; test result: ok. 54 passed; 0 failed; 0 ignored; 0 measured; 361 filtered out; finished in 0.01s
+SHA256:91cece5a56339fbf2f058ebe12c6007c9f1f0fce1f5ec4b8c9b7e86cc708464d
+LOG[JAN]:format-time-tikv-duration.log
+COMMAND:../tools/cargo-tikv test --locked -p tidb_query_datatype --lib codec::mysql::duration:: -- --test-threads=1
+EXIT0; Finished0.12s; test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 394 filtered out; finished in 0.00s
+SHA256:f7b115fe53d5b52e41b086511970355399c3460291a71a11e94996770c633b21
+LOG[AUG]:format-time-native-core.log
+COMMAND:../../tools/cargo-tidb test --locked -p tidb-datatype --lib core_time:: -- --test-threads=1
+EXIT0; Finished3.32s; test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 423 filtered out; finished in 0.00s
+SHA256:d7e0a9d80e66093535b05c7f335fc40cd6e9749a0b6fa56d09851b689d9af6f8
+LOG[AUG]:format-time-native-time.log
+COMMAND:../../tools/cargo-tidb test --locked -p tidb-datatype --lib mysql_time:: -- --test-threads=1
+EXIT0; Finished0.09s; test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 405 filtered out; finished in 0.00s
+SHA256:31777c9774376a1e2a970a17999f871737c900940a799664d908ef8ccea266fd
+LOG[AUG/ZERO MATCH, NOT GREEN COVERAGE]:format-time-native-duration.log
+COMMAND:../../tools/cargo-tidb test --locked -p tidb-datatype --lib duration:: -- --test-threads=1
+EXIT0; Finished0.09s; test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 438 filtered out; finished in 0.00s
+SHA256:fad0a8abe8b94a4c2de3646a0497abbb0ea72cbedd68dcf34dd29046e249d03a
+LOG[AUG/corrected filter]:format-time-native-duration-tests.log
+COMMAND:../../tools/cargo-tidb test --locked -p tidb-datatype --lib duration_tests:: -- --test-threads=1
+EXIT0; Finished0.09s; test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 422 filtered out; finished in 0.00s
+SHA256:5f30d3a0849bc154e2c84c48f7275fa77a3765d21ae29778740f75898afac344
+LOG[JAN]:format-time-tikv-local.log
+COMMAND:../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+EXIT0; Finished12.00s;270 discovered/preexisting ignore; test result: ok. 269 passed; 0 failed; 1 ignored; 0 measured; 502 filtered out; finished in 0.18s
+SHA256:8faa1ac81624f64fdcdcd7ca2738027b91571e9ebc68589cb46983229e9bff37
+LOG[JAN]:format-time-tikv-kernels.log
+COMMAND:../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_time:: -- --test-threads=1
+EXIT0; Finished0.12s; test result: ok. 68 passed; 0 failed; 0 ignored; 0 measured; 704 filtered out; finished in 0.01s
+SHA256:36dc77272c1189910a3157fa0ac8620ee37e8c860d1b5704cbd7d585507df62a
+LOG[AUG/COMPILE FAILURE]:format-time-dispatch.log
+COMMAND:../../tools/cargo-tidb test --locked -p tidb-expr --lib format_time_dispatch_ -- --test-threads=1
+EXIT101; E0271+E0308 at time_fn/mod.rs:1310/1312; no tests ran, no Finished duration. Option<Bytes> pack used with Datum-only evaluate_bytes_in; not a launch failure.
+SHA256:3b8688954612c1353810ba4f7f91bed0951f39c984a7fbe31b0cf53d4fefb62a
+LOG[AUG/NEW TEST RED;failed-target retry1]:format-time-dispatch-retry.log
+COMMAND:../../tools/cargo-tidb test --locked -p tidb-expr --lib format_time_dispatch_ -- --test-threads=1
+EXIT101; Finished7.50s; test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 1565 filtered out; finished in 0.00s
+SHA256:d025392186b75896099746fae6fd3f7c86ca9891994a7debbdb3b6bc79086d04
+LOG[AUG/failed-target retry2]:format-time-dispatch-corrected.log
+COMMAND:../../tools/cargo-tidb test --locked -p tidb-expr --lib format_time_dispatch_ -- --test-threads=1
+EXIT0; Finished3.24s; test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1565 filtered out; finished in 0.00s
+SHA256:653fb4b59e895582057fb369df9f16eec11e4942e797be2824cfc790b0818536
+LOG[AUG/COMPILE FAILURE]:format-time-sql.log
+COMMAND:../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+EXIT101; E0432 session_tz.rs:41 imports date_format configured out by cfg(test); no tests ran, no Finished duration. Not a launch failure.
+SHA256:2c79e151bbe4e44cfdda9362a0c71588b8de6cb0a74e5bf0b9fb99917692e77f
+LOG[AUG/failed-target retry3]:format-time-sql-retry.log
+COMMAND:../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+EXIT0; Finished20.32s; test result: ok. 86 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 1.32s
+SHA256:3ec18bcdb941985a48e049341d17d88973dd56c03e063780ff36d50ffbb6f744
+LOG[AUG]:format-time-legacy.log
+COMMAND:../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_date_format_ -- --test-threads=1
+EXIT0; Finished8.56s; test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 207 filtered out; finished in 0.00s
+SHA256:401d14240d130ce1cf536176b7a25c8ed21680aff88d6df144ca14a6e0a71387
+LOG[AUG/CURRENT baseline non-green]:format-time-expr-full.log
+COMMAND:../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+EXIT101; Finished2.95s;1568 discovered; test result: FAILED. 1470 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.42s
+SHA256:0980020a6ab82eaecb9a553c3924d2649b1194e3b7c9d8d0c14c9c22e87626d3
+LOG[AUG/CURRENT baseline non-green]:format-time-unistore-full.log
+COMMAND:../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+EXIT101; Finished0.13s;209 discovered; test result: FAILED. 195 passed; 1 failed; 13 ignored; 0 measured; 0 filtered out; finished in 3.00s
+SHA256:0802b32d74ef04462989ee4390809ea97180071438f468fd2cb75e1f21e8d38a
+
+FAILED-FIRST EXPLANATIONS / NO ERASED RED
+Dispatch compile: parent replaced the new Option-returning evaluate_bytes_in probe call with generic evaluate_args_in+Args::Bytes, preserving real probe output and sequential demand. Both E0271/E0308 arose in one compile-failure attempt, not two attempts.
+New RED: format_time_dispatch_keeps_duration_probe_before_layout_demand at evaluated_ascii_tests.rs:1668:13 expected Ok(Null) for not-a-time+invalid UTF-8 layout, but got Err(Unsupported("invalid UTF-8 byte datum")). Original no-colon/no-leading-digit parse returns Some0, so layout MUST be demanded. Parent changed the new invalid-duration case to900:00:00 and retained not-a-time as a layout-error case. Parser body byte-identical to2a8e; correction derives from original source, not a new-provider oracle. This IS one new failed test/run; do not say newRED0.
+SQL compile: session_tz import and call only(two lines in that newly affected source) changed to date_format_in(...,cols). FROM_UNIXTIME formatting now carries its real context; no test-provider ungating, no entire-family credit. Failed-target retries=dispatch2+SQL1; corrected zero-match filter is separate, not a fourth failed-target retry.
+Non-test corrections: parent guide-read offset out of range1; writer RO guessed datatype/src/time.rs grep no-path1; D found B's unit NULL-witness input needed None, corrected before compilation1. Static-proof check failures0. These are not Cargo launch failures. Historical Round39 parser-all E0061 remains unrepaired and unrun here; auth20 and Round40's static indentation correction are not Round41 gates.
+
+SEVEN KERNELS / THREE FAMILIES / SHARED OWNERSHIP
+Private getters: date_format_text_native_fn_meta, date_format_core_native_fn_meta, date_format_null_native_fn_meta, date_format_missing_native_fn_meta, duration_text_probe_native_fn_meta, time_format_text_native_fn_meta, last_day_text_native_fn_meta. Six OwnBytes outputs; Missing alone returns existing Int. No fabricated ordinary Bytes or dummy operand.
+DateFormatText: nullable Bytes2->Bytes; both original frontend coercions remain ordered even if date is NULL. Original ASCII-space split, bad/absent clock->midnight, empty layout->empty String; preserve trailing percent/text year/week policy, not wire validity rules.
+DateFormatCore: sole new typed core role, required-present full raw LE8 plus nullable layout->Bytes. No Time constructor/bit truncation. Shared native_core_date_format None represents original public InvalidDate when layout is present; NULL layout remains NULL. Do not blanket-validate raw fields or repair layout-specific old panics.
+DateFormatNull: genuine IntNone witness->BytesNone; PB/legacy time-NULL does not demand layout. DateFormatMissing: true zero-argument worker->IntSome0 for legacy boolean missing first child. Legacy boolean otherwise calls existing IsNotNull with canonical Some(false)/None actual-presence representation, NOT formatted-result truthiness. Never read surplus/suffix children.
+DurationTextProbe: nullable Bytes->original owned Bytes/None via existing broad parse_native_duration_text; Some0 garbage remains Some original text, not fake parsed/validity bytes. Only its completed Some result permits layout coercion and a second TimeFormatText Bytes2->Bytes call. No recursive driver/coerce/pack callback and no host parsing; explicit double parse/transport/two sequential leases, or two one-shots without a context capability.
+LastDayText: nullable Bytes->Bytes; sole original single_datetime rule(trim,first Unicode whitespace split,trim suffix,strict full YMD and optional clock) then shared next-month civil day1 minus1. No T-separator strict-helper substitution, no wire day-zero policy. Native business body removed; DATE conversion deferred.
+Shared Time owns five policy views and one scanner/specifier match, replacing three native formatter loops, with shared week/ordinal/micro primitives behind thin delegates. Wire reuse retains necessary differences. Some write! sites become temporary format! Strings: no unchanged-allocation, faster-rendering, no-OOM or zero-copy claim.
+
+C/D/E AND FIXTURE LIMITS
+Three new D tests pass after the disclosed correction; three SQL additions sit inside86, including16 zero-slot Resource refusals with original source-specific warnings. SQL typed casts still produce original bad-clock8034/nondate1292 outcomes; untyped text DATE_FORMAT's midnight fallback is not a SQL cast oracle. Legacy2 actually exercises Resource/PoolClosed and bytes/int-presence/real/time consumers while preserving child demand.
+New raw year10000/hour24/seven-digit microseconds, raw-Duration24h versus SQL-time, new raw-core-zero %M versus literal/trailing-percent witnesses, missing0 and necessary A transport/parser edge literals are HAND-DERIVED from original policies. They are not mislabeled old fixture rows, not captured from the new provider, and not semantic repairs. Existing old expected fixtures were unchanged; the NEW D expectation/input correction is separately explicit.
+No extra filtered native make/format source gate is invented from tests contained in a full suite. Current full expr and unistore results above are actual runs, not pasted historical statuses.
+
+CURRENT COMPLETE FAILURE-SECTIONS / LOCATION MAPPING
+Expr CURRENT, thread-ID normalization ONLY:25f964887541f45602363f00dc60df4f0af21c74edccc16c38d0804094fb9bff. It is NOT thread-only identical to construct-time.
+Deleting native Duration formatter code before to_number moved its panic from duration.rs:212:55 to CURRENT164:55. Parent proved to_number body byte-identical. After thread normalization and ONLY that panic-header164->212 mapping, complete failure-section SHA256=80be9bda05e5bf630e9c246ca9523d23f82c122eaaeec6e220b1b00cec436615, matching construct-time. Other three locations unchanged. Four retained failures:
+- pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation (pushdown_catalog.rs:3077:9)
+- tests::builtin_info_json_math_source::exp (builtin_info_json_math_source.rs:1881:5; original EXP(100_000.0) FloatOverflow assertion)
+- tests::builtin_math_misc_op_source::vectorized_builtin_op_func (CURRENT crates/tidb-datatype/src/duration.rs:164:55; nonnegative duration FSP: TryFromIntError(NegOverflow); explicit header mapping above)
+- time_fn::tests::str_to_date_partial_formats_follow_no_zero_date (time_fn/tests.rs:888:9)
+Unistore thread-ID-only SHA256=e285bfdba646f2d01f85b485ae317cc07c51b78cf0ae6d664c0fb2bc39259759 matches construct-time WITHOUT location mapping: tests_mockstore_part1_go_parity::closure_executor_selection_over_point_range_answers_zero_rows, crates/tidb-unistore/src/tests_mockstore_part1_go_parity.rs:194:5, TruncatedWrongValue("Truncated incorrect DECIMAL value: 'abc'").
+All hashes in this section are FAILURE-SECTION hashes, not the16 whole-log SHA256 values above. Both CURRENT full suites remain non-green; unchanged/mapped failure evidence never makes either suite pass.
+
+FREEZE / UNVERIFIED
+Parent source scope22Rust(TiKV9/native13);0manifest edits;2locks byte-identical to HEAD. All22 pinned-format checks and both repository diff checks had0 failures; no metadata commands. Only these two docs were written under this authorization; no new writer source audit/build/test/fmt/index/Plan.
+Full workspace/Go-package/complete-temporal acceptance, lint, release/profile/panic-test adaptation, allocator/OOM peak, zero-copy/performance, M6 and PR readiness remain unestablished. Functional131/245; FINAL0/245; all_checks_firstpass=false.

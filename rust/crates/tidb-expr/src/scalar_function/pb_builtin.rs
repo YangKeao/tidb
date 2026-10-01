@@ -148,11 +148,11 @@ impl PbBuiltin {
             RoundInt | RoundReal | RoundDec => Kernel::Round,
             Date => Kernel::Values(crate::time_fn::date),
             DateDiff => Kernel::Values(crate::time_fn::calendar::date_diff_in),
-            DateFormatSig => Kernel::Values(|values, _| {
+            DateFormatSig => Kernel::Values(|values, ctx| {
                 let [date, format] = values else {
                     return Err(EvalError::WrongParameterCount("date_format"));
                 };
-                crate::time_fn::calendar::date_format(date, format)
+                crate::time_fn::calendar::date_format_in(date, format, ctx)
             }),
             Hour => Kernel::Values(crate::time_fn::calendar::hour_in),
             Minute => Kernel::Values(crate::time_fn::calendar::minute_in),
@@ -382,6 +382,11 @@ impl PbBuiltin {
                                 || Ok(crate::tikv::EvaluatedArgs::NullWitness(None)),
                                 crate::tikv::EvaluatedBytesResult::into_int_datum,
                             );
+                        }
+                        if self.signature == ScalarFuncSig::DateFormatSig {
+                            // Only this observed NULL is demanded, without coercing
+                            // the prefix, reading suffixes, or checking non-NULL arity.
+                            return crate::eval_date_format_null_in(ctx);
                         }
                         // HMS likewise demands only the observed NULL, even
                         // when earlier values or later children are present.

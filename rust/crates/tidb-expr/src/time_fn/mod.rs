@@ -30,11 +30,12 @@ pub(crate) mod duration_parse;
 pub(crate) mod extract;
 pub(crate) mod session_tz;
 
+use self::calendar::civil_from_days;
 #[cfg(test)]
 use self::calendar::week_of_year;
-use self::calendar::{civil_from_days, days_from_civil, parse_date_ymd};
 use crate::coerce::coerce_str;
 use crate::{Columns, Datum, EvalError};
+#[cfg(test)]
 use tidb_query_datatype::codec::mysql::Time as TikvTime;
 
 /// Dispatches this family's builtins; `None` if `name` isn't one of them.
@@ -75,14 +76,14 @@ pub(crate) fn dispatch(
         "YEARWEEK" => yearweek_in(vals, cols),
         "MONTHNAME" => monthname_in(vals, cols),
         "DAYNAME" => dayname_in(vals, cols),
-        "LAST_DAY" => last_day(vals),
+        "LAST_DAY" => last_day_in(vals, cols),
         "TIME_TO_SEC" => time_to_sec_in(vals, cols),
         "SEC_TO_TIME" => sec_to_time_in(vals, cols),
         "MAKEDATE" => makedate_in(vals, cols),
         "MAKETIME" => maketime_in(vals, cols),
         "PERIOD_ADD" => period_add_in(vals, cols),
         "PERIOD_DIFF" => period_diff_in(vals, cols),
-        "TIME_FORMAT" => time_format(vals),
+        "TIME_FORMAT" => time_format_in(vals, cols),
         "STR_TO_DATE" => calendar::str_to_date(vals, cols),
         "FROM_DAYS" => calendar::from_days_in(vals, cols),
         "TIMEDIFF" => time_diff(vals),
@@ -432,33 +433,6 @@ fn format_time_only(secs: i64, nanos: u32, fsp: u32, round: bool) -> String {
     };
     let secs = secs + carry;
     format!("{}{}", format_hms(secs), frac_suffix(nanos, fsp))
-}
-
-/// Parses a date/datetime argument at the same value boundary as Go's
-/// `EvalTime`.  [`parse_date_ymd`] intentionally ignores a trailing time
-/// suffix because date-part functions only need the calendar fields; the
-/// `LAST_DAY` signature still rejects a malformed suffix (for example
-/// `23:59:61`) before it computes the month end.
-fn single_datetime(vals: &[Datum]) -> Result<Option<(i64, u32, u32)>, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(value) = coerce_str(&vals[0])? else {
-        return Ok(None);
-    };
-    let value = value.trim();
-    let (date, time) = value
-        .split_once(char::is_whitespace)
-        .map_or((value, None), |(date, time)| (date, Some(time.trim())));
-    let Some(ymd) = parse_date_ymd(date) else {
-        return Ok(None);
-    };
-    if let Some(time) = time {
-        if calendar::parse_time_with_fraction(time).is_none() {
-            return Ok(None);
-        }
-    }
-    Ok(Some(ymd))
 }
 
 /// `builtinMonthSig.evalInt` in `pkg/expression/builtin_time.go`.
@@ -837,14 +811,25 @@ fn dayname(vals: &[Datum]) -> Result<Datum, EvalError> {
     dayname_in(vals, &crate::NoColumns)
 }
 
-/// `builtinLastDaySig` in `pkg/expression/builtin_time.go`.
+/// `builtinLastDaySig` retains the original guarded text coercion. The worker
+/// owns whitespace splitting, strict clock-suffix validation and month-end
+/// arithmetic; the existing outer typed DATE conversion is unchanged.
+fn last_day_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::LastDayTextNative,
+        ctx,
+        || single_temporal_text(vals),
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
+}
+
+#[cfg(test)]
 fn last_day(vals: &[Datum]) -> Result<Datum, EvalError> {
-    Ok(single_datetime(vals)?.map_or(Datum::Null, |(y, m, _)| {
-        let next_month = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
-        let (last_y, last_m, last_d) =
-            civil_from_days(days_from_civil(next_month.0, next_month.1, 1) - 1);
-        Datum::new_string(format!("{last_y:04}-{last_m:02}-{last_d:02}"))
-    }))
+    last_day_in(vals, &crate::NoColumns)
 }
 
 /// Go `RoundFloat` + the int cast (`pkg/types/helper.go:30`,
@@ -953,14 +938,6 @@ fn number_arg(value: &Datum, cols: &dyn Columns) -> Result<Option<f64>, EvalErro
                 .value,
         ),
     })
-}
-
-/// Parses TiDB's duration inputs used by `TIME_TO_SEC` and `TIME_FORMAT`.
-/// This covers the accepted `H:M[:S[.fraction]]` and right-aligned numeric
-/// forms exercised by `builtin_time_test.go`; the return is signed seconds
-/// plus the fraction text preserved for formatting.
-fn duration(value: &Datum) -> Result<Option<(i64, String)>, EvalError> {
-    Ok(coerce_str(value)?.and_then(|text| TikvTime::parse_native_duration_text(&text)))
 }
 
 enum TimeDiffValue {
@@ -1315,54 +1292,46 @@ fn period_diff(vals: &[Datum]) -> Result<Datum, EvalError> {
     period_diff_in(vals, &crate::NoColumns)
 }
 
-/// `builtinTimeFormatSig` in `pkg/expression/builtin_time.go`; shares the
-/// `types.Duration.DurationFormat` specifier family with DATE_FORMAT.
+/// `builtinTimeFormatSig` demands its mask only after duration parsing succeeds.
+/// Two complete sequential calls preserve that boundary without host parsing or
+/// callback reentry. First admission can precede mask coercion; successful calls
+/// pay for two parses, owned-text transport and two leases (two one-shot workers
+/// without a context capability). Formatting retains the native text policy.
+fn time_format_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    let text = crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::DurationTextProbeNative,
+        ctx,
+        || {
+            if vals.len() != 2 {
+                return Err(EvalError::Unsupported("bad function arity"));
+            }
+            Ok(crate::tikv::EvaluatedArgs::Bytes(
+                coerce_str(&vals[0])?.map(String::into_bytes),
+            ))
+        },
+        crate::tikv::EvaluatedBytesResult::into_bytes,
+    )?;
+    let Some(text) = text else {
+        return Ok(Datum::Null);
+    };
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::TimeFormatTextNative,
+        ctx,
+        || {
+            let mask = coerce_str(&vals[1])?.map(String::into_bytes);
+            Ok(crate::tikv::EvaluatedArgs::Bytes2(Some(text), mask))
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
+}
+
+#[cfg(test)]
 fn time_format(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 2 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some((seconds, fraction)) = duration(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    let Some(mask) = coerce_str(&vals[1])? else {
-        return Ok(Datum::Null);
-    };
-    if mask.is_empty() {
-        return Ok(Datum::Null);
-    }
-    let sign = if seconds < 0 { "-" } else { "" };
-    let total = seconds.unsigned_abs();
-    let hour = total / 3600;
-    let minute = total / 60 % 60;
-    let second = total % 60;
-    let hour12 = (hour + 11) % 12 + 1;
-    let mut out = String::new();
-    let mut chars = mask.chars();
-    while let Some(c) = chars.next() {
-        if c != '%' {
-            out.push(c);
-            continue;
-        }
-        match chars.next() {
-            None => out.push('%'),
-            Some('H') => out.push_str(&format!("{sign}{hour:02}")),
-            Some('k') => out.push_str(&format!("{sign}{hour}")),
-            Some('h' | 'I') => out.push_str(&format!("{hour12:02}")),
-            Some('l') => out.push_str(&hour12.to_string()),
-            Some('i') => out.push_str(&format!("{minute:02}")),
-            Some('S' | 's') => out.push_str(&format!("{second:02}")),
-            Some('f') => out.push_str(&format!("{fraction:0<6}")),
-            Some('p') => out.push_str(if hour < 12 { "AM" } else { "PM" }),
-            Some('T') => out.push_str(&format!("{sign}{hour:02}:{minute:02}:{second:02}")),
-            Some('r') => out.push_str(&format!(
-                "{hour12:02}:{minute:02}:{second:02} {}",
-                if hour < 12 { "AM" } else { "PM" }
-            )),
-            Some('%') => out.push('%'),
-            Some(other) => out.push(other),
-        }
-    }
-    Ok(Datum::new_string(out))
+    time_format_in(vals, &crate::NoColumns)
 }
 
 #[cfg(test)]

@@ -1185,6 +1185,15 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::SecToTimeNative => {
             panic!("temporal construction needs its original numeric and precision domains")
         }
+        EvaluatedBytesOp::DateFormatTextNative
+        | EvaluatedBytesOp::DateFormatCoreNative
+        | EvaluatedBytesOp::DateFormatNullNative
+        | EvaluatedBytesOp::DateFormatMissingNative
+        | EvaluatedBytesOp::DurationTextProbeNative
+        | EvaluatedBytesOp::TimeFormatTextNative
+        | EvaluatedBytesOp::LastDayTextNative => {
+            panic!("temporal formatting needs its original text, core and demand domains")
+        }
         EvaluatedBytesOp::CompressGoNative | EvaluatedBytesOp::UncompressNative => {
             panic!("compression calls need their original nullable bytes")
         }
@@ -1484,6 +1493,339 @@ fn construct_time_function(
         FieldType::new(result_code).with_decimal(0),
         args,
     )
+}
+
+fn format_time_pb(
+    values: Vec<Datum>,
+    unreadable_tail: bool,
+) -> crate::scalar_function::ScalarFunction {
+    use crate::expression::Expression;
+    use crate::scalar_function::{PbBuiltin, ScalarFunction};
+    let field = FieldType::new(FieldTypeCode::VarString);
+    let mut args = values
+        .into_iter()
+        .map(|value| Expression::Constant(Constant::new(value, field.clone())))
+        .collect::<Vec<_>>();
+    if unreadable_tail {
+        args.push(Expression::ScalarFunction(ScalarFunction::new(
+            tidb_ast::CiString::new("__undemanded_date_format_suffix__"),
+            field.clone(),
+            Vec::new(),
+        )));
+    }
+    ScalarFunction::from_pb(
+        PbBuiltin::new(tidb_proto::tipb::ScalarFuncSig::DateFormatSig).unwrap(),
+        field,
+        args,
+    )
+}
+
+#[test]
+fn format_time_dispatch_keeps_sql_date_format_and_strict_last_day_distinct() {
+    let native = ConstructTimeWarnings::default();
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        // The first row is the original date_format_source_vectors literal.
+        // The remaining formatting expectations pin the small original source
+        // rules: bad clock/fraction becomes midnight, empty stays empty, and
+        // SQL text keeps a trailing percent. No provider computes expectations.
+        for (date, layout, expected) in [
+            (Datum::new_string("2010-01-07 23:12:34.12345"), Datum::new_string("%b %M %m %c %D %d %e %j %k %h %i %p %r %T %s %f %U %u %V %v %a %W %w %X %x %Y %y %%"), Datum::new_string("Jan January 01 1 7th 07 7 007 23 11 12 PM 11:12:34 PM 23:12:34 34 123450 01 01 01 01 Thu Thursday 4 2010 2010 2010 10 %")),
+            (Datum::new_string("2007-10-07 23:59:61"), Datum::new_string("%Y-%m-%d %T.%f"), Datum::new_string("2007-10-07 00:00:00.000000")),
+            (Datum::new_string("2007-10-07 11:22:33.bad"), Datum::new_string("%T"), Datum::new_string("00:00:00")),
+            (Datum::new_string("2010-01-07"), Datum::new_string(""), Datum::new_string("")),
+            (Datum::new_string("2010-01-07"), Datum::new_string("trailing%"), Datum::new_string("trailing%")),
+            (Datum::Null, Datum::new_string("%Y"), Datum::Null),
+            (Datum::new_string("2010-01-07"), Datum::Null, Datum::Null),
+        ] {
+            let (result, observation) = observe_wide_math(|| crate::func::eval_func_values("DATE_FORMAT", &[date, layout], columns).unwrap());
+            assert_eq!(result, Ok(expected));
+            assert_wide_math_c4(observation);
+        }
+        for (input, expected) in [
+            (Datum::new_string("2003-02-05"), Datum::new_string("2003-02-28")),
+            (Datum::new_string("2004-02-05"), Datum::new_string("2004-02-29")),
+            (Datum::Int(950501), Datum::new_string("1995-05-31")),
+            (Datum::new_string("2007-10-07 23:59:61"), Datum::Null),
+            (Datum::new_string("2007-10-07 11:22:33.bad"), Datum::Null),
+            (Datum::Null, Datum::Null),
+        ] {
+            let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch("LAST_DAY", &[input], columns).unwrap());
+            assert_eq!(result, Ok(expected), "LAST_DAY keeps full datetime validation rather than DATE_FORMAT's midnight fallback");
+            assert_wide_math_c4(observation);
+        }
+        let (result, observation) = observe_wide_math(|| calendar_fields_ast("DATE_FORMAT('2010-01-07', '%Y')", columns));
+        assert_eq!(result, Ok(Datum::new_string("2010")));
+        assert_wide_math_c4(observation);
+        let function = construct_time_function("LAST_DAY", vec![Datum::Int(950501)], FieldTypeCode::Date);
+        let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        assert_eq!(result, Ok(Datum::Time(Time::new(CoreTime::from_date(1995, 5, 31, 0, 0, 0, 0), TimeType::Date, 0).unwrap())));
+        assert_wide_math_c4(observation);
+        assert!(native.0.borrow().is_empty());
+    });
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for date in [Datum::new_string("2010-01-07"), Datum::Null, Datum::new_string("not-a-date")] {
+            let (result, observation) = observe_wide_math(|| crate::func::eval_func_values("DATE_FORMAT", &[date, Datum::new_string("%Y")], columns).unwrap());
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        for values in [
+            vec![Datum::Null, Datum::new_bytes([0xff])],
+            vec![Datum::new_bytes([0xff]), Datum::MinNotNull],
+        ] {
+            let (result, observation) = observe_wide_math(|| crate::func::eval_func_values("DATE_FORMAT", &values, columns).unwrap());
+            assert_eq!(result, Err(EvalError::Unsupported("invalid UTF-8 byte datum")), "SQL coerces the layout after a NULL date, but a left coercion error stops first");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        for input in [Datum::new_string("2004-02-05"), Datum::Null, Datum::new_string("2007-10-07 23:59:61")] {
+            let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch("LAST_DAY", &[input], columns).unwrap());
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        for (values, expected) in [
+            (Vec::new(), EvalError::Unsupported("bad function arity")),
+            (vec![Datum::new_bytes([0xff])], EvalError::Unsupported("invalid UTF-8 byte datum")),
+        ] {
+            let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch("LAST_DAY", &values, columns).unwrap());
+            assert_eq!(result, Err(expected));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        let function = construct_time_function("LAST_DAY", vec![Datum::Int(950501)], FieldTypeCode::Date);
+        let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+        let (result, observation) = observe_wide_math(|| calendar_fields_ast("LAST_DAY('0000-00-00')", columns));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+        assert_eq!(native.0.replace(Vec::new()), [(1292, "Incorrect datetime value: '0000-00-00 00:00:00.000000'".to_owned(), true)], "the existing upstream datetime cast still warns before admission");
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn format_time_dispatch_keeps_duration_probe_before_layout_demand() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        // Original duration-scale and time_format_hour_family source literals.
+        for (time, layout, expected) in [
+            (
+                Datum::new_string("1990-05-07 19:30:10"),
+                Datum::new_string("%H %i %s"),
+                Datum::new_string("19 30 10"),
+            ),
+            (
+                Datum::new_string("23:00:00"),
+                Datum::new_string("%H %k %h %I %l"),
+                Datum::new_string("23 23 11 11 11"),
+            ),
+            (
+                Datum::new_string("07:42:03.000001"),
+                Datum::new_string("%f"),
+                Datum::new_string("000001"),
+            ),
+            (Datum::new_string("12:34:56"), Datum::Null, Datum::Null),
+            (
+                Datum::new_string("12:34:56"),
+                Datum::new_string(""),
+                Datum::Null,
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::time_fn::dispatch("TIME_FORMAT", &[time, layout], columns).unwrap()
+            });
+            assert_eq!(result, Ok(expected));
+            assert_week_auth_two_calls(observation); // FIRST-before/LAST-after may belong to different workers.
+        }
+        for time in [Datum::Null, Datum::new_string("900:00:00")] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::time_fn::dispatch("TIME_FORMAT", &[time, Datum::new_bytes([0xff])], columns)
+                    .unwrap()
+            });
+            assert_eq!(
+                result,
+                Ok(Datum::Null),
+                "a NULL or invalid duration never coerces its layout"
+            );
+            assert_wide_math_c4(observation);
+        }
+        // The original wide parser treats a non-colon string with no leading
+        // digits as zero, not an invalid duration. Its successful probe must
+        // still demand the layout; this expectation follows that original rule.
+        for time in ["12:34:56", "not-a-time"] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::time_fn::dispatch(
+                    "TIME_FORMAT",
+                    &[Datum::new_string(time), Datum::new_bytes([0xff])],
+                    columns,
+                )
+                .unwrap()
+            });
+            assert_eq!(
+                result,
+                Err(EvalError::Unsupported("invalid UTF-8 byte datum"))
+            );
+            assert_wide_math_c4(observation); // The whole probe returned before layout coercion failed.
+        }
+        let (result, observation) = observe_wide_math(|| {
+            calendar_fields_ast("TIME_FORMAT('23:00:00', '%H %k %h %I %l')", columns)
+        });
+        assert_eq!(result, Ok(Datum::new_string("23 23 11 11 11")));
+        assert_week_auth_two_calls(observation);
+    });
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for time in [Datum::new_string("12:34:56"), Datum::Null, Datum::new_string("not-a-time")] {
+            let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch("TIME_FORMAT", &[time, Datum::new_bytes([0xff])], columns).unwrap());
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource), "the first admission precedes the still-undemanded layout error");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        for (values, expected) in [
+            (Vec::new(), EvalError::Unsupported("bad function arity")),
+            (vec![Datum::new_bytes([0xff]), Datum::MinNotNull], EvalError::Unsupported("invalid UTF-8 byte datum")),
+        ] {
+            let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch("TIME_FORMAT", &values, columns).unwrap());
+            assert_eq!(result, Err(expected));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        let (result, observation) = observe_wide_math(|| calendar_fields_ast("TIME_FORMAT('23:00:00', '%H')", columns));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn format_time_dispatch_preserves_pb_null_demand_and_public_raw_missing_domains() {
+    let normal = format_time_pb(
+        vec![
+            Datum::new_string("2007-10-07 23:59:61"),
+            Datum::new_string("%T"),
+        ],
+        false,
+    );
+    let nulls = [
+        format_time_pb(vec![Datum::Null], false),
+        format_time_pb(vec![Datum::Null, Datum::new_bytes([0xff])], true),
+        format_time_pb(vec![Datum::new_bytes([0xff]), Datum::Null], true),
+    ];
+    let core = CoreTime::from_date(2010, 1, 7, 23, 12, 34, 123_450);
+    let invalid_month = CoreTime::from_date(2010, 0, 1, 0, 0, 0, 0);
+    // The raw %M error and discarded trailing percent are old datatype fixture
+    // literals. The single %Y field below is its original four-digit source
+    // rule, not a call to a migrated public formatter to produce an oracle.
+    let raw = [
+        (Some((core, Some("%Y"))), Datum::new_string("2010")),
+        (Some((invalid_month, Some("%M"))), Datum::Null),
+        (
+            Some((invalid_month, Some("trailing%"))),
+            Datum::new_string("trailing"),
+        ),
+        (None, Datum::Null),
+        (Some((core, None)), Datum::Null),
+    ];
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        let (result, observation) = observe_wide_math(|| normal.eval(columns, tidb_chunk::row::Row::empty()));
+        assert_eq!(result, Ok(Datum::new_string("00:00:00")), "PB Values retains the SQL text midnight fallback, not raw clock fields");
+        assert_wide_math_c4(observation);
+        for function in &nulls {
+            let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert_eq!(result, Ok(Datum::Null), "only the observed PB NULL is demanded, without prefix coercion, suffix evaluation, or new arity restriction");
+            assert_wide_math_c4(observation);
+        }
+        for (input, expected) in &raw {
+            let (result, observation) = observe_wide_math(|| crate::eval_legacy_date_format_in(*input, columns).map(|value| value.map_or(Datum::Null, Datum::new_string)));
+            assert_eq!(result, Ok(expected.clone()));
+            assert_wide_math_c4(observation);
+        }
+        arm_eval_one_observation();
+        let missing = crate::eval_legacy_date_format_missing_in(columns);
+        let observation = take_eval_one_observation();
+        assert_eq!(missing, Ok(Some(0_i128)), "genuinely missing first child retains its original boolean-domain zero");
+        assert_wide_math_c4(observation);
+    });
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for function in std::iter::once(&normal).chain(nulls.iter()) {
+            let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        for (values, expected) in [
+            (vec![Datum::new_string("2010-01-07"), Datum::new_string("%Y"), Datum::new_string("extra")], EvalError::WrongParameterCount("date_format")),
+            (vec![Datum::new_bytes([0xff]), Datum::new_string("%Y")], EvalError::Unsupported("invalid UTF-8 byte datum")),
+        ] {
+            let function = format_time_pb(values, false);
+            let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert_eq!(result, Err(expected), "non-NULL PB Values keeps its exact original guard and strict coercion");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        for (input, _) in &raw {
+            let (result, observation) = observe_wide_math(|| crate::eval_legacy_date_format_in(*input, columns).map(|value| value.map_or(Datum::Null, Datum::new_string)));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource), "raw formatter failure may become NULL, but actual driver errors must not be swallowed by .ok()");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        arm_eval_one_observation();
+        let missing = crate::eval_legacy_date_format_missing_in(columns);
+        let observation = take_eval_one_observation();
+        assert!(matches!(missing, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 #[test]

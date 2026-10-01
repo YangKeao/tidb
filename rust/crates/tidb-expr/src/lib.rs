@@ -859,6 +859,68 @@ pub fn eval_legacy_date_diff_in(
     time_fn::calendar::date_diff_core_in(left, right, ctx)
 }
 
+/// Formats legacy DATE_FORMAT's already-observed raw core and ready layout.
+/// `None` records an actual NULL time whose layout was never demanded. With a
+/// core present, the optional layout is its actual nullable value after the
+/// caller's original lossy UTF-8 conversion; this seam does not coerce it again.
+pub fn eval_legacy_date_format_in(
+    value: Option<(tidb_datatype::CoreTime, Option<&str>)>,
+    ctx: &dyn Columns,
+) -> Result<Option<Vec<u8>>, EvalError> {
+    let operation = match value {
+        None => tikv::EvaluatedBytesOp::DateFormatNullNative,
+        Some(_) => tikv::EvaluatedBytesOp::DateFormatCoreNative,
+    };
+    tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || {
+            Ok(match value {
+                None => tikv::EvaluatedArgs::NullWitness(None),
+                Some((core, layout)) => tikv::EvaluatedArgs::TimeCoreBitsBytes {
+                    core: core.raw(),
+                    bytes: layout.map(|layout| layout.as_bytes().to_vec()),
+                },
+            })
+        },
+        tikv::EvaluatedBytesResult::into_bytes,
+    )
+}
+
+/// Carries an actual observed PB DATE_FORMAT NULL without demanding another
+/// child or coercing an already-evaluated prefix. The owned worker result is
+/// packed normally; it is not discarded in favor of a host-created NULL.
+pub fn eval_date_format_null_in(ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    tikv::evaluate_args_in(
+        tikv::EvaluatedBytesOp::DateFormatNullNative,
+        ctx,
+        || Ok(tikv::EvaluatedArgs::NullWitness(None)),
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
+}
+
+/// Preserves legacy DATE_FORMAT's boolean path with genuinely no first child.
+/// No dummy operand or SQL NULL is invented; the worker supplies the integer
+/// answer, which this packer only widens to the legacy i128 result domain.
+pub fn eval_legacy_date_format_missing_in(ctx: &dyn Columns) -> Result<Option<i128>, EvalError> {
+    tikv::evaluate_args_in(
+        tikv::EvaluatedBytesOp::DateFormatMissingNative,
+        ctx,
+        || Ok(tikv::EvaluatedArgs::NoArgs),
+        |computed| match computed.into_int_datum()? {
+            Datum::Null => Ok(None),
+            Datum::Int(value) => Ok(Some(i128::from(value))),
+            _ => Err(EvalError::Unsupported(
+                "legacy DATE_FORMAT missing-child result kind mismatch",
+            )),
+        },
+    )
+}
+
 /// Reads legacy WEEK's mode-zero projection from its actual nullable raw core.
 /// No session default getter, text parsing or calendar validation is introduced.
 pub fn eval_legacy_week_in(

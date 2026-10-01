@@ -7427,3 +7427,428 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_temporal_constructors_sql_colum
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_date_format_sql_values_context_and_refusals() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    let create =
+        "CREATE TABLE shared_date_format (id INT PRIMARY KEY, d VARCHAR(32), f VARBINARY(64))";
+    let insert = "INSERT INTO shared_date_format VALUES \
+         (1,'2023-07-14 09:30:00','%Y/%m/%d %H:%i'),(2,'2023-07-14','%W %M %e'),\
+         (3,NULL,'%Y'),(4,'2023-07-14',''),(5,'2023-07-14','trailing%'),\
+         (6,'not-a-date','%Y'),(7,'2007-10-07 23:59:61','%T'),\
+         (8,NULL,x'FF'),(9,'2023-07-14',x'FF')";
+    session.run(create).unwrap();
+    session.run(insert).unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns("SELECT DATE_FORMAT(d,f) FROM shared_date_format WHERE id<=5 ORDER BY id")
+        .unwrap()
+    else {
+        panic!("expected DATE_FORMAT rows")
+    };
+    assert_eq!(columns.len(), 1);
+    let field = &columns[0].1;
+    assert_eq!(field.code(), tidb_datatype::FieldTypeCode::VarString);
+    assert_eq!((field.flen(), field.decimal()), (-1, -1));
+    assert_eq!(field.charset_name(), "utf8mb4");
+    assert_eq!(field.collation(), tidb_datatype::Collation::Utf8Mb4Bin);
+    assert!(!field.is_unsigned());
+    assert!(!field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
+    let text = |s: &str| {
+        Datum::new_collation_string(s.as_bytes().to_vec(), tidb_datatype::Collation::Utf8Mb4Bin)
+    };
+    // The first two answers are the old date_format_datediff_source fixtures.
+    // Empty/trailing masks retain calendar::date_format's native SQL profile,
+    // not the separate public raw-Time formatter's trailing-percent behavior.
+    assert_eq!(
+        rows,
+        vec![
+            vec![text("2023/07/14 09:30")],
+            vec![text("Friday July 14")],
+            vec![Datum::Null],
+            vec![text("")],
+            vec![text("trailing%")],
+        ]
+    );
+    assert!(warnings_of(&session).is_empty());
+    session
+        .run("SET collation_connection='utf8mb4_general_ci'")
+        .unwrap();
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns("SELECT DATE_FORMAT(d,f) FROM shared_date_format WHERE id=1")
+        .unwrap()
+    else {
+        panic!("expected connection-collated DATE_FORMAT")
+    };
+    assert_eq!(columns[0].1.charset_name(), "utf8mb4");
+    assert_eq!(
+        columns[0].1.collation(),
+        tidb_datatype::Collation::Utf8Mb4GeneralCi
+    );
+    assert_eq!(
+        rows,
+        vec![vec![Datum::new_collation_string(
+            b"2023/07/14 09:30".to_vec(),
+            tidb_datatype::Collation::Utf8Mb4GeneralCi,
+        )]]
+    );
+    assert!(warnings_of(&session).is_empty());
+    // The typed SQL argument cast runs before the formatter: unlike the
+    // untyped body's midnight fallback, a bad clock is NULL with native 8034.
+    for (id, code, message) in [
+        (6, 1292, "Incorrect datetime value: 'not-a-date'"),
+        (7, 8034, "Incorrect datetime value: '2007-10-07 23:59:61'"),
+    ] {
+        let sql = format!("SELECT DATE_FORMAT(d,f) FROM shared_date_format WHERE id={id}");
+        let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+            panic!("expected native date-cast NULL: {sql}")
+        };
+        assert_eq!(rows, vec![vec![Datum::Null]], "{sql}");
+        assert_eq!(
+            session.warnings(),
+            &[SqlWarning {
+                level: WarningLevel::Warning,
+                code,
+                message: message.to_owned(),
+            }],
+            "{sql}"
+        );
+    }
+    // Both text coercions are demanded, even when the left datum is NULL.
+    for id in [8, 9] {
+        let sql = format!("SELECT DATE_FORMAT(d,f) FROM shared_date_format WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        assert!(
+            matches!(
+                &error,
+                DriverError::Exec(tidb_executor::ExecError::Eval(
+                    tidb_executor::EvalError::Unsupported(message)
+                )) if message.starts_with("invalid UTF-8")
+            ),
+            "{sql}: {error:?}"
+        );
+    }
+    // Policy installation is one-shot; use a fresh session for real refusals.
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run(create).unwrap();
+    session.run(insert).unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    for (id, warning) in [
+        (1, None),
+        (3, None),
+        (4, None),
+        (6, Some((1292, "Incorrect datetime value: 'not-a-date'"))),
+        (
+            7,
+            Some((8034, "Incorrect datetime value: '2007-10-07 23:59:61'")),
+        ),
+    ] {
+        let sql = format!("SELECT DATE_FORMAT(d,f) FROM shared_date_format WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("DATE_FORMAT must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        // The pool's evaluation-origin 1105 adds no Error warning row.
+        if let Some((code, message)) = warning {
+            assert_eq!(
+                session.warnings(),
+                &[SqlWarning {
+                    level: WarningLevel::Warning,
+                    code,
+                    message: message.to_owned(),
+                }],
+                "{sql}"
+            );
+        } else {
+            assert!(warnings_of(&session).is_empty(), "{sql}");
+        }
+    }
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_time_format_sql_probe_order_metadata_and_refusals() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    let create =
+        "CREATE TABLE shared_time_format (id INT PRIMARY KEY, t VARCHAR(32), f VARBINARY(64))";
+    let insert = "INSERT INTO shared_time_format VALUES \
+         (1,'23:00:00','%H %k %h %I %l'),(2,'25:30:00','%H %i'),\
+         (3,'10:20:30.123456','%H %i %s %f'),(4,NULL,x'FF'),(5,'900:00:00',x'FF'),\
+         (6,'12:34:56',''),(7,'-25:30:00','%H|%k|%T|%h|%I|%l|%r|%p'),\
+         (8,'25:30:00','%H|%k|%T|%h|%I|%l|%r|%p'),(9,'23:00:00',x'FF')";
+    session.run(create).unwrap();
+    session.run(insert).unwrap();
+    // The probe must release its lease before the final formatter takes the
+    // only slot. Invalid/NULL durations must never decode the format column.
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns("SELECT TIME_FORMAT(t,f) FROM shared_time_format WHERE id<=6 ORDER BY id")
+        .unwrap()
+    else {
+        panic!("expected TIME_FORMAT rows")
+    };
+    assert_eq!(columns.len(), 1);
+    let field = &columns[0].1;
+    assert_eq!(field.code(), tidb_datatype::FieldTypeCode::VarString);
+    assert_eq!((field.flen(), field.decimal()), (352, -1));
+    assert_eq!(field.charset_name(), "utf8mb4");
+    assert_eq!(field.collation(), tidb_datatype::Collation::Utf8Mb4Bin);
+    assert!(!field.is_unsigned());
+    assert!(!field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
+    let text = |s: &str| {
+        Datum::new_collation_string(s.as_bytes().to_vec(), tidb_datatype::Collation::Utf8Mb4Bin)
+    };
+    // Old TestTimeFormat, duration_functions_source and fractional_duration_source.
+    assert_eq!(
+        rows,
+        vec![
+            vec![text("23 23 11 11 11")],
+            vec![text("25 30")],
+            vec![text("10 20 30 123456")],
+            vec![Datum::Null],
+            vec![Datum::Null],
+            vec![Datum::Null],
+        ]
+    );
+    // TIME_FORMAT's text-duration probe has no native ETDuration cast/warning.
+    assert!(warnings_of(&session).is_empty());
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns(
+            "SELECT TIME_FORMAT(t,f) FROM shared_time_format WHERE id IN (7,8) ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected signed wide-hour formatting")
+    };
+    assert_eq!(rows.len(), 2);
+    let negative = cell_text(&rows[0][0]);
+    let positive = cell_text(&rows[1][0]);
+    let negative: Vec<_> = negative.split('|').collect();
+    let positive: Vec<_> = positive.split('|').collect();
+    assert_eq!(negative.len(), 8);
+    assert_eq!(positive.len(), 8);
+    // Source-body invariants: only H/k/T carry a sign; >24-hour p/r stay PM,
+    // unlike the separate public raw-duration formatter's periodic AM path.
+    for index in 0..3 {
+        assert_eq!(negative[index], format!("-{}", positive[index]));
+    }
+    assert_eq!(&negative[3..], &positive[3..]);
+    assert_eq!(positive[7], "PM");
+    assert!(positive[6].ends_with(" PM"));
+    assert!(warnings_of(&session).is_empty());
+    let error = session
+        .run_with_columns("SELECT TIME_FORMAT(t,f) FROM shared_time_format WHERE id=9")
+        .expect_err("valid duration must demand the invalid UTF-8 format");
+    assert!(
+        matches!(
+            &error,
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::Unsupported(message)
+            )) if message.starts_with("invalid UTF-8")
+        ),
+        "{error:?}"
+    );
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run(create).unwrap();
+    session.run(insert).unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // Includes NULL, invalid, empty-format and valid-plus-invalid-UTF8-format:
+    // even a NULL probe result must acquire the real pool before returning.
+    for id in [1, 4, 5, 6, 7, 9] {
+        let sql = format!("SELECT TIME_FORMAT(t,f) FROM shared_time_format WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("TIME_FORMAT must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_last_day_sql_typed_dates_warnings_and_refusals() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    let create = "CREATE TABLE shared_last_day (id INT PRIMARY KEY, d VARCHAR(40), n BIGINT)";
+    let insert = "INSERT INTO shared_last_day VALUES (1,'2003-02-05',950501),\
+         (2,'2004-02-05',NULL),(3,'2004-01-01 01:01:01',NULL),\
+         (4,'\u{2003}2004-02-05\u{2003}',NULL),(5,NULL,NULL),\
+         (6,'2007-10-07 23:59:61',NULL),(7,'not-a-date',NULL)";
+    session.run(create).unwrap();
+    session.run(insert).unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns("SELECT LAST_DAY(d) FROM shared_last_day WHERE id<=5 ORDER BY id")
+        .unwrap()
+    else {
+        panic!("expected typed LAST_DAY rows")
+    };
+    assert_eq!(columns.len(), 1);
+    let field = &columns[0].1;
+    assert_eq!(field.code(), tidb_datatype::FieldTypeCode::Date);
+    assert_eq!((field.flen(), field.decimal()), (10, 0));
+    assert_eq!(field.charset_name(), "binary");
+    assert_eq!(field.collation(), tidb_datatype::Collation::Binary);
+    assert!(!field.is_unsigned());
+    assert!(!field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
+    // Original TestLastDay answers, including the same leap date after trim.
+    let expected = [
+        "2003-02-28",
+        "2004-02-29",
+        "2004-01-31",
+        "2004-02-29",
+        "NULL",
+    ];
+    assert_eq!(rows.len(), expected.len());
+    for (row, expected) in rows.iter().zip(expected) {
+        assert_eq!(row.len(), 1);
+        assert!(matches!(&row[0], Datum::Null | Datum::Time(_)));
+        assert_eq!(cell_text(&row[0]), expected);
+    }
+    assert!(warnings_of(&session).is_empty());
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns("SELECT LAST_DAY(n) FROM shared_last_day WHERE id=1")
+        .unwrap()
+    else {
+        panic!("expected compact numeric date")
+    };
+    assert!(matches!(&rows[0][0], Datum::Time(_)));
+    assert_eq!(cell_text(&rows[0][0]), "1995-05-31");
+    assert!(warnings_of(&session).is_empty());
+    for (id, code, message) in [
+        (6, 8034, "Incorrect datetime value: '2007-10-07 23:59:61'"),
+        (7, 1292, "Incorrect datetime value: 'not-a-date'"),
+    ] {
+        let sql = format!("SELECT LAST_DAY(d) FROM shared_last_day WHERE id={id}");
+        let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+            panic!("expected invalid date/clock NULL: {sql}")
+        };
+        assert_eq!(rows, vec![vec![Datum::Null]], "{sql}");
+        assert_eq!(
+            session.warnings(),
+            &[SqlWarning {
+                level: WarningLevel::Warning,
+                code,
+                message: message.to_owned(),
+            }],
+            "{sql}"
+        );
+    }
+    // Policy installation is one-shot; use a fresh session for real refusals.
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run(create).unwrap();
+    session.run(insert).unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    for (id, warning) in [
+        (1, None),
+        (4, None),
+        (5, None),
+        (
+            6,
+            Some((8034, "Incorrect datetime value: '2007-10-07 23:59:61'")),
+        ),
+        (7, Some((1292, "Incorrect datetime value: 'not-a-date'"))),
+    ] {
+        let sql = format!("SELECT LAST_DAY(d) FROM shared_last_day WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("LAST_DAY must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        // Preserve only pre-admission cast diagnostics, never an Error 1105 row.
+        if let Some((code, message)) = warning {
+            assert_eq!(
+                session.warnings(),
+                &[SqlWarning {
+                    level: WarningLevel::Warning,
+                    code,
+                    message: message.to_owned(),
+                }],
+                "{sql}"
+            );
+        } else {
+            assert!(warnings_of(&session).is_empty(), "{sql}");
+        }
+    }
+}

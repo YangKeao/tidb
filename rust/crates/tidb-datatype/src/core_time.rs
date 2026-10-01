@@ -109,13 +109,7 @@ impl CoreTime {
 
     /// Returns the day within the year, or zero for an incomplete date.
     pub const fn year_day(self) -> i32 {
-        if self.month() == 0 || self.day() == 0 {
-            0
-        } else {
-            calc_daynr(self.year(), self.month() as i32, self.day() as i32)
-                - calc_daynr(self.year(), 1, 1)
-                + 1
-        }
+        SharedTime::native_core_year_day(self.raw())
     }
 
     /// Returns the normalized Gregorian weekday.
@@ -123,13 +117,7 @@ impl CoreTime {
     /// Like Go's `time.Date`, invalid month-day combinations are normalized;
     /// for example 2019-02-31 is the Sunday 2019-03-03.
     pub fn weekday(self) -> Weekday {
-        let month_offset = i32::from(self.month()) - 1;
-        let year = self.year() + month_offset.div_euclid(12);
-        let month = month_offset.rem_euclid(12) as u32 + 1;
-        let first = NaiveDate::from_ymd_opt(year, month, 1)
-            .expect("CoreTime's encoded year and month fit chrono");
-        let normalized = first + ChronoDuration::days(i64::from(self.day()) - 1);
-        Weekday::from_sunday_index(normalized.weekday().num_days_from_sunday() as i32)
+        Weekday::from_sunday_index(SharedTime::native_core_weekday_sunday_index(self.raw()) as i32)
     }
 
     /// Converts this value through an IANA timezone, rejecting invalid or

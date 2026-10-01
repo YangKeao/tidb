@@ -28,7 +28,7 @@ use crate::string_fn::{
 };
 use crate::string_packet::{pad, repeat, space, to_base64};
 use crate::time_fn::calendar::{
-    date_add, date_diff_in, date_format, from_days_in, hour_in, minute_in, second_in, year_in,
+    date_add, date_diff_in, date_format_in, from_days_in, hour_in, minute_in, second_in, year_in,
 };
 use crate::{BuildContext, Columns, Datum, EvalError, StringLengthFunction};
 
@@ -823,7 +823,7 @@ pub(crate) fn eval_func_values(
             }
         }),
         "MAKE_SET" if !vals.is_empty() => make_set_in(vals, ctx),
-        "DATE_FORMAT" if vals.len() == 2 => date_format(&vals[0], &vals[1]),
+        "DATE_FORMAT" if vals.len() == 2 => date_format_in(&vals[0], &vals[1], ctx),
         "ORD" if vals.len() == 1 => ord_in(vals, ctx),
         "QUOTE" if vals.len() == 1 => quote_in(vals, ctx),
         "BIT_COUNT" if vals.len() == 1 => bit_count(vals, ctx),

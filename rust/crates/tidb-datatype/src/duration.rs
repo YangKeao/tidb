@@ -115,7 +115,7 @@ impl MySqlDuration {
 
     /// Returns the absolute microsecond component.
     pub const fn microsecond(self) -> i64 {
-        (self.nanoseconds.unsigned_abs() / 1_000 % 1_000_000) as i64
+        SharedDuration::micro_secs_from_nanos(self.nanoseconds) as i64
     }
 
     /// Adds two durations while preserving the larger FSP.
@@ -144,58 +144,10 @@ impl MySqlDuration {
 
     /// Formats this duration with MySQL's `TIME_FORMAT` conversion rules.
     pub fn duration_format(self, layout: &str) -> String {
-        let mut output = String::with_capacity(layout.len());
-        let mut pattern = false;
-        for character in layout.chars() {
-            if pattern {
-                self.push_duration_format(character, &mut output);
-                pattern = false;
-            } else if character == '%' {
-                pattern = true;
-            } else {
-                output.push(character);
-            }
-        }
-        output
-    }
-
-    fn push_duration_format(self, conversion: char, output: &mut String) {
-        let hour = self.hour();
-        let minute = self.minute();
-        let second = self.second();
-        match conversion {
-            'H' => output.push_str(&format!("{hour:02}")),
-            'k' => output.push_str(&hour.to_string()),
-            'h' | 'I' => {
-                let twelve_hour = hour % 12;
-                output.push_str(&format!(
-                    "{:02}",
-                    if twelve_hour == 0 { 12 } else { twelve_hour }
-                ));
-            }
-            'l' => {
-                let twelve_hour = hour % 12;
-                output.push_str(&(if twelve_hour == 0 { 12 } else { twelve_hour }).to_string());
-            }
-            'i' => output.push_str(&format!("{minute:02}")),
-            'p' => output.push_str(if hour / 12 % 2 == 0 { "AM" } else { "PM" }),
-            'r' => {
-                let normalized = hour % 24;
-                let twelve_hour = match normalized {
-                    0 | 12 => 12,
-                    1..=11 => normalized,
-                    _ => normalized - 12,
-                };
-                output.push_str(&format!(
-                    "{twelve_hour:02}:{minute:02}:{second:02} {}",
-                    if normalized < 12 { "AM" } else { "PM" }
-                ));
-            }
-            'T' => output.push_str(&format!("{hour:02}:{minute:02}:{second:02}")),
-            'S' | 's' => output.push_str(&format!("{second:02}")),
-            'f' => output.push_str(&format!("{:06}", self.microsecond())),
-            _ => output.push(conversion),
-        }
+        tidb_query_datatype::codec::mysql::Time::native_raw_duration_format(
+            self.nanoseconds,
+            layout,
+        )
     }
 
     /// Returns TiDB's numeric TIME representation.
