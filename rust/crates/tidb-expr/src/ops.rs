@@ -426,6 +426,7 @@ fn prepare_binary_arithmetic(
     op: BinaryOp,
     l: Datum,
     r: Datum,
+    div_precision_increment: u32,
     operands: Operands<'_>,
     ctx: &dyn crate::context::Columns,
     unsigned_result: &std::cell::Cell<bool>,
@@ -468,7 +469,7 @@ fn prepare_binary_arithmetic(
     if matches!(l, Datum::Json(_)) || matches!(r, Datum::Json(_)) {
         return Err(EvalError::Unsupported("JSON operand"));
     }
-    // MOD rejects vectors here, after JSON but before casts and actual NULL.
+    // MOD and / reject vectors after JSON but before casts and actual NULL.
     if matches!(l, Datum::Raw(_) | Datum::VectorFloat32(_))
         || matches!(r, Datum::Raw(_) | Datum::VectorFloat32(_))
     {
@@ -481,6 +482,7 @@ fn prepare_binary_arithmetic(
             op,
             numeric_context_value(l),
             numeric_context_value(r),
+            div_precision_increment,
             operands,
             ctx,
             unsigned_result,
@@ -494,6 +496,7 @@ fn prepare_binary_arithmetic(
             op,
             cast_binary_string_operand(op, l, ctx)?,
             cast_binary_string_operand(op, r, ctx)?,
+            div_precision_increment,
             operands,
             ctx,
             unsigned_result,
@@ -513,6 +516,7 @@ fn prepare_binary_arithmetic(
             Minus => Op::SubRealNative,
             Mul => Op::MulRealNative,
             Mod => Op::ModRealNative,
+            Div => Op::DivRealNative,
             _ => unreachable!("only worker arithmetic families prepare here"),
         };
         return Ok((
@@ -520,6 +524,22 @@ fn prepare_binary_arithmetic(
             EvaluatedArgs::Ieee754Bits2 {
                 left: crate::tikv::ReadyIeee754Arg::Value(Some(left.to_bits())),
                 right: crate::tikv::ReadyIeee754Arg::Value(Some(right.to_bits())),
+            },
+        ));
+    }
+    // Unlike MOD, non-real / promotes even two integral inputs to Decimal.
+    if op == Div {
+        if l == Datum::Null || r == Datum::Null {
+            return null();
+        }
+        let left = to_decimal(l);
+        let right = to_decimal(r);
+        return Ok((
+            Op::DivDecimalNative,
+            EvaluatedArgs::DecimalDivision {
+                left: Some(crate::tikv::prepare_math_decimal(&left)?),
+                right: Some(crate::tikv::prepare_math_decimal(&right)?),
+                frac_increment: effective_div_precision_increment(div_precision_increment),
             },
         ));
     }
@@ -558,15 +578,27 @@ fn eval_binary_arithmetic_in(
     op: BinaryOp,
     l: Datum,
     r: Datum,
+    div_precision_increment: u32,
     operands: Operands<'_>,
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
-    use crate::tikv::EvaluatedBytesResult;
+    use crate::tikv::{EvaluatedBytesResult, NativeDecimalDivisionDisposition as Division};
     let unsigned_result = std::cell::Cell::new(false);
     let input_was_null = std::cell::Cell::new(false);
     crate::tikv::evaluate_prepared_args_in(
         ctx,
-        || prepare_binary_arithmetic(op, l, r, operands, ctx, &unsigned_result, &input_was_null),
+        || {
+            prepare_binary_arithmetic(
+                op,
+                l,
+                r,
+                div_precision_increment,
+                operands,
+                ctx,
+                &unsigned_result,
+                &input_was_null,
+            )
+        },
         |computed| {
             let value = match computed {
                 value @ EvaluatedBytesResult::Int(_) => {
@@ -580,6 +612,25 @@ fn eval_binary_arithmetic_in(
                     .into_ieee754_bits()?
                     .map_or(Datum::Null, |bits| Datum::Real(f64::from_bits(bits)))),
                 value @ EvaluatedBytesResult::Decimal { .. } => value.into_decimal_datum(),
+                EvaluatedBytesResult::DecimalDivision {
+                    value: Some(value),
+                    disposition: Division::Ok,
+                } => Ok(Datum::Decimal(value)),
+                EvaluatedBytesResult::DecimalDivision {
+                    value: Some(value),
+                    disposition: Division::Truncated,
+                } => {
+                    ctx.handle_truncate(&format!("Truncated incorrect DECIMAL value: '{value}'"))?;
+                    Ok(Datum::Decimal(value))
+                }
+                EvaluatedBytesResult::DecimalDivision {
+                    value: Some(_),
+                    disposition: Division::Overflow,
+                } => Err(EvalError::DecimalOverflow),
+                EvaluatedBytesResult::DecimalDivision {
+                    value: None,
+                    disposition: Division::ZeroDivisor,
+                } => Ok(Datum::Null),
                 value @ EvaluatedBytesResult::NativeVector(_) => value.into_native_vector_datum(),
                 // The existing typed packer rejects every other computed kind.
                 other => other.into_int_datum(),
@@ -589,15 +640,15 @@ fn eval_binary_arithmetic_in(
     )
 }
 
-/// A non-NULL MOD input pair yields NULL only when the worker found division by
-/// zero. Genuine input NULL and failed admission never emit that SQL warning.
+/// A non-NULL MOD or / input pair yields NULL only when the worker found
+/// division by zero. Genuine input NULL and failed admission never warn.
 fn finish_arithmetic_result(
     op: BinaryOp,
     value: Datum,
     input_was_null: bool,
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
-    if op == BinaryOp::Mod && !input_was_null && value.is_null() {
+    if matches!(op, BinaryOp::Mod | BinaryOp::Div) && !input_was_null && value.is_null() {
         ctx.handle_division_by_zero()?;
     }
     Ok(value)
@@ -613,8 +664,8 @@ pub(crate) fn eval_binary_full(
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
     use BinaryOp::*;
-    if matches!(op, Plus | Minus | Mul | Mod) {
-        return eval_binary_arithmetic_in(op, l, r, operands, ctx);
+    if matches!(op, Plus | Minus | Mul | Mod | Div) {
+        return eval_binary_arithmetic_in(op, l, r, div_precision_increment, operands, ctx);
     }
     if l.is_range_sentinel() || r.is_range_sentinel() {
         return Err(EvalError::Unsupported("range sentinel expression operand"));
@@ -1096,40 +1147,6 @@ pub(crate) fn eval_binary_full(
             return decimal_integer_division(&a, &b, unsigned_pair, ctx);
         }
         return float_binary(op, l, r, ctx);
-    }
-    // `/` always promotes both operands to Decimal and produces a Decimal
-    // result — even for two Int operands, MySQL's `/` never yields an Int
-    // (confirmed via goeval: `1 / 2` is `DEC:0.5000`) — so it's intercepted
-    // here, before the Int-only/decimal-only dispatch below would otherwise
-    // only reach it when a Decimal operand was ALREADY present.
-    if op == Div {
-        if l == Datum::Null || r == Datum::Null {
-            return Ok(Datum::Null);
-        }
-        let a = to_decimal(l);
-        let b = to_decimal(r);
-        if b.is_zero() {
-            ctx.handle_division_by_zero()?;
-            return Ok(Datum::Null);
-        }
-        let target_scale = a.scale() + effective_div_precision_increment(div_precision_increment);
-        let (quotient, warning) = a
-            .true_div_with_warning(&b, target_scale)
-            .ok_or(EvalError::DecimalOverflow)?;
-        if warning == Some(tidb_datatype::DecimalCodecWarning::Overflow) {
-            return Err(EvalError::DecimalOverflow);
-        }
-        if warning == Some(tidb_datatype::DecimalCodecWarning::Truncated) {
-            ctx.handle_truncate(&format!("Truncated incorrect DECIMAL value: '{quotient}'"))?;
-        }
-        let (precision, fraction) = quotient.precision_and_frac();
-        // Go MyDecimal has nine base-1e9 words. Fractional words may be
-        // rounded/truncated, but an integer part needing a tenth word is
-        // ErrOverflow (1690), as `TestDecimalErrOverflow` pins for `/`.
-        if precision - fraction > 81 {
-            return Err(EvalError::DecimalOverflow);
-        }
-        return Ok(Datum::Decimal(quotient));
     }
     // go's bit signatures declare `ETInt` arguments, and the implied casts
     // wrap EACH OPERAND IN ITS OWN SOURCE TYPE: a `uint64` operand goes

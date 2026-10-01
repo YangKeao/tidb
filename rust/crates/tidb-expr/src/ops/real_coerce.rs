@@ -63,14 +63,7 @@ pub(super) fn float_binary(
     let b = to_f64(r);
     Ok(match op {
         Plus | Minus | Mul => unreachable!("worker arithmetic dispatched before this ladder"),
-        Div => {
-            if b == 0.0 {
-                ctx.handle_division_by_zero()?;
-                Datum::Null
-            } else {
-                finite_float(a / b)?
-            }
-        }
+        Div => unreachable!("worker arithmetic dispatched before this ladder"),
         IntDiv => unreachable!("DIV evaluates decimal operands before real dispatch"),
         Mod => unreachable!("worker arithmetic dispatched before this ladder"),
         Eq => bool_int(a == b),

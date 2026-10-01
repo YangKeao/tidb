@@ -48,6 +48,7 @@ impl AsciiComputedValue for ComputedValue {
             | ComputedValue::Ieee754Bits(_)
             | ComputedValue::Decimal(_)
             | ComputedValue::DecimalFast(_)
+            | ComputedValue::DecimalDivision(_)
             | ComputedValue::Int128(_)
             | ComputedValue::Uncompress(_)
             | ComputedValue::JsonReport(_) => {
@@ -1246,7 +1247,11 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::ModInt128Legacy
         | EvaluatedBytesOp::ModRealNative
         | EvaluatedBytesOp::ModRealLegacy
-        | EvaluatedBytesOp::ModDecimalNative => {
+        | EvaluatedBytesOp::ModDecimalNative
+        | EvaluatedBytesOp::DivRealNative
+        | EvaluatedBytesOp::DivRealLegacy
+        | EvaluatedBytesOp::DivDecimalNative
+        | EvaluatedBytesOp::DivDecimalLegacy => {
             panic!("binary arithmetic needs its actual pair and signature profile")
         }
         EvaluatedBytesOp::UnaryPlusIntNative
@@ -1831,6 +1836,182 @@ fn binary_arithmetic_dispatch_keeps_profiles_and_legacy_presence() {
         assert_eq!(mode.reads.get(), reads);
     });
     assert!(!scope.busy.get());
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn division_sdk_preserves_kinds_dispositions_and_raw_legacy_precision() {
+    use tidb_datatype::Decimal;
+    use NativeDecimalDivisionDisposition::{Ok as Exact, Overflow, Truncated, ZeroDivisor};
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for operation in [EvaluatedBytesOp::DivRealNative, EvaluatedBytesOp::DivRealLegacy] {
+            for (right, expected) in [(2.0_f64, Some(2.75_f64.to_bits())), (-0.0, None)] {
+                let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                    operation, columns,
+                    || Ok(EvaluatedArgs::Ieee754Bits2 {
+                        left: super::super::ReadyIeee754Arg::Value(Some(5.5_f64.to_bits())),
+                        right: super::super::ReadyIeee754Arg::Value(Some(right.to_bits())),
+                    }),
+                    EvaluatedBytesResult::into_ieee754_bits,
+                ));
+                assert_eq!(result, Ok(expected));
+                assert_wide_math_c4(observation);
+            }
+        }
+        let (result, observation) = observe_wide_math(|| evaluate_args_in(
+            EvaluatedBytesOp::DivRealNative, columns,
+            || Ok(EvaluatedArgs::Ieee754Bits2 {
+                left: super::super::ReadyIeee754Arg::Value(Some(f64::MAX.to_bits())),
+                right: super::super::ReadyIeee754Arg::Value(Some(0.5_f64.to_bits())),
+            }),
+            EvaluatedBytesResult::into_ieee754_bits,
+        ));
+        assert_eq!(result, Err(EvalError::FloatOverflow));
+        assert_wide_math_c4(observation);
+        for (left, right, expected) in [(5.5, 2.0, Some(2.75)), (5.5, -0.0, None), (f64::MAX, 0.5, Some(f64::INFINITY))] {
+            let (result, observation) = observe_wide_math(|| eval_legacy_real_arithmetic_in(
+                BinaryArithmeticOperation::Divide, LegacyBinaryArgs::Values(left, right), columns,
+            ));
+            assert_eq!(result, Ok(expected));
+            assert_wide_math_c4(observation);
+        }
+        let wide = format!("{}.1234", "9".repeat(74));
+        let negative_wide = format!("-1{}", "0".repeat(80));
+        let negative_maximum = format!("-{}", "9".repeat(81));
+        for (operation, effective_increment, quotient) in [
+            (EvaluatedBytesOp::DivDecimalNative, 4, "0.3333"),
+            (EvaluatedBytesOp::DivDecimalLegacy, 0, "0"),
+        ] {
+            // Native packets already contain the frontend's effective 0 -> 4;
+            // the legacy profile must retain the original raw zero increment.
+            for (left, right, frac_increment, disposition, expected) in [
+                ("1", "3", effective_increment, Exact, Some(quotient)),
+                ("1.0", "0", u32::MAX, ZeroDivisor, None),
+                (wide.as_str(), "1", 0, Truncated, Some(wide.as_str())),
+                (negative_wide.as_str(), "0.01", 0, Overflow, Some(negative_maximum.as_str())),
+            ] {
+                let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                    operation, columns,
+                    || Ok(EvaluatedArgs::DecimalDivision {
+                        left: Some(super::super::prepare_math_decimal(&Decimal::from_literal(left))?),
+                        right: Some(super::super::prepare_math_decimal(&Decimal::from_literal(right))?),
+                        frac_increment,
+                    }),
+                    |computed| match computed {
+                        EvaluatedBytesResult::DecimalDivision { value, disposition } => Ok((value, disposition)),
+                        _ => Err(result_kind_error().into_eval_error()),
+                    },
+                ));
+                let (value, actual_disposition) = result.unwrap();
+                assert_eq!(actual_disposition, disposition);
+                assert_eq!(value.map(|value| value.to_string()), expected.map(str::to_owned));
+                assert_wide_math_c4(observation);
+            }
+        }
+        for (left, right, frac_increment, expected) in [
+            ("1", "3", 0, Some("0")),
+            ("1", "3", 4, Some("0.3333")),
+            ("1.0", "0", u32::MAX, None),
+            (wide.as_str(), "1", 0, Some(wide.as_str())),
+            (negative_wide.as_str(), "0.01", 0, Some(negative_maximum.as_str())),
+        ] {
+            let (result, observation) = observe_wide_math(|| eval_legacy_decimal_division_in(
+                LegacyBinaryArgs::Values(Decimal::from_literal(left), Decimal::from_literal(right)),
+                frac_increment, columns,
+            ));
+            assert_eq!(result.unwrap().map(|value| value.to_string()), expected.map(str::to_owned));
+            assert_wide_math_c4(observation);
+        }
+        for missing in [false, true] {
+            let operation = if missing { EvaluatedBytesOp::BinaryArithmeticMissingLegacy } else { EvaluatedBytesOp::BinaryArithmeticNullNative };
+            let (result, observation) = observe_wide_math(|| eval_legacy_decimal_division_in(
+                if missing { LegacyBinaryArgs::Missing } else { LegacyBinaryArgs::NullWitness(None) },
+                u32::MAX, columns,
+            ));
+            assert_eq!(result, Ok(None));
+            assert_wide_math_c4(observation);
+            assert_eq!(scope.lease.borrow().as_ref().unwrap().worker.as_ref().unwrap().operation(), operation);
+            let (result, observation) = observe_wide_math(|| eval_legacy_real_arithmetic_in(
+                BinaryArithmeticOperation::Divide,
+                if missing { LegacyBinaryArgs::Missing } else { LegacyBinaryArgs::NullWitness(None) }, columns,
+            ));
+            assert_eq!(result, Ok(None));
+            assert_wide_math_c4(observation);
+        }
+        let (result, observation) = observe_wide_math(|| eval_legacy_decimal_division_in(
+            LegacyBinaryArgs::NullWitness(Some(0)), 0, columns,
+        ));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract));
+        assert_eq!(observation.facade_entries, 0);
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn division_sdk_zero_budget_and_precisionless_contracts_do_not_fake_sql_results() {
+    use tidb_datatype::Decimal;
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for zero in [false, true] {
+            let right = if zero { 0.0_f64 } else { 0.5 };
+            for operation in [EvaluatedBytesOp::DivRealNative, EvaluatedBytesOp::DivRealLegacy] {
+                let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                    operation, columns,
+                    || Ok(EvaluatedArgs::Ieee754Bits2 {
+                        left: super::super::ReadyIeee754Arg::Value(Some(f64::MAX.to_bits())),
+                        right: super::super::ReadyIeee754Arg::Value(Some(right.to_bits())),
+                    }),
+                    EvaluatedBytesResult::into_ieee754_bits,
+                ));
+                assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+                assert_eq!(observation.facade_entries, 0);
+            }
+            for operation in [EvaluatedBytesOp::DivDecimalNative, EvaluatedBytesOp::DivDecimalLegacy] {
+                let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                    operation, columns,
+                    || Ok(EvaluatedArgs::DecimalDivision {
+                        left: Some(super::super::prepare_math_decimal(&Decimal::from_literal("1.0"))?),
+                        right: Some(super::super::prepare_math_decimal(&Decimal::from_literal(if zero { "0" } else { "3" }))?),
+                        frac_increment: u32::MAX,
+                    }),
+                    |_| Ok(()),
+                ));
+                assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+                assert_eq!(observation.facade_entries, 0);
+                assert_eq!(observation.before_kernel_invocations, None);
+                assert_eq!(observation.after_kernel_invocations, None);
+            }
+        }
+        for args in [LegacyBinaryArgs::Missing, LegacyBinaryArgs::NullWitness(None), LegacyBinaryArgs::Values(Decimal::from_literal("1"), Decimal::from_literal("0"))] {
+            let (result, observation) = observe_wide_math(|| eval_legacy_decimal_division_in(args, 0, columns));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+        }
+        for args in [LegacyBinaryArgs::Missing, LegacyBinaryArgs::NullWitness(None), LegacyBinaryArgs::Values(Decimal::from_literal("1"), Decimal::from_literal("3"))] {
+            let (result, observation) = observe_wide_math(|| eval_legacy_decimal_arithmetic_in(
+                BinaryArithmeticOperation::Divide, args, columns,
+            ));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract));
+            assert_eq!(observation.facade_entries, 0);
+        }
+        let (result, observation) = observe_wide_math(|| eval_arithmetic_decimal_fast_in(
+            BinaryArithmeticOperation::Divide, None, None, columns,
+        ));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract));
+        assert_eq!(observation.facade_entries, 0);
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
     assert!(!scope.poisoned.get());
     drop(scope);
     execution.close();

@@ -1,28 +1,27 @@
 # Expression unification experiment
 
-Checkpoint-ID: `mod-one-49` (previous: `like-two-48`).
-**163/245 functional families, target221; strict final-audited acceptance0.** New family: MOD. Incomplete, not PR-ready.
-Paired branches: [TiDB](https://github.com/YangKeao/tidb/tree/expression-unification-demo) · [TiKV](https://github.com/YangKeao/tikv/tree/expression-unification-demo). Each checkpoint includes the Plan; no force-push or automatic PR.
+Checkpoint-ID: `div-one-50` (previous `mod-one-49`).
+**164/245 functional families; target221; strict final acceptance0.** New family: true division `/`, not integer DIV. Incomplete, not PR-ready.
+Paired branches: [TiDB](https://github.com/YangKeao/tidb/tree/expression-unification-demo) · [TiKV](https://github.com/YangKeao/tikv/tree/expression-unification-demo). Each checkpoint includes the same Plan; no force-push or automatic PR.
 
 ## Shared implementation
-- Public native Decimal remainder delegates to a checked TiKV Grow-remainder wrapper over the existing division loop. Exact wide values, hidden scales, dividend sign and normalized zero remain intact; no Fixed9 substitution or discarded quotient.
-- Eight closed value recipes cover four native integer profiles, full-i128 legacy integer, native/legacy IEEE real and shared Decimal. Existing NULL/missing recipes are reused; no new carrier, result kind, metadata binding or driver.
-- Value recipes require two real non-NULL inputs. Their computed NULL alone means zero divisor; native code then applies the original handler, retaining explicit input presence to distinguish genuine SQL NULL. Legacy remains silent. No host zero test or arithmetic fallback.
-- Original signedness, nonfinite policies, typed/PB child demand and batch order remain distinct. Three NULL-admission seams are connected. Wire MOD, DIV/IntDIV and coefficient-fast tiers remain unchanged.
+Four profiles cover native/legacy real and Decimal division. Full-u32 precision is a transient typed binding over the existing three physical Decimal/Decimal/budget slots. The actual wrapper records one disposition, while the official Decimal column remains the only value owner. Guarded materialization validates the call witness/status/presence and clears state before reuse.
+
+Shared Grow division preserves native hidden scales, signed overflow saturation, visible-floor truncation and source precision policies. Native `div_mysql_with_warning` is a thin bridge; duplicate quotient/bounding code is removed. Frontends retain original casts, child/batch demand and post-result warning/error handling, not arithmetic. Native effective precision and legacy raw increments remain distinct; actual NULL/missing use existing recipes. Wire behavior, IntDIV flow and coefficient-fast tiers remain unchanged.
 
 ## Validation
 | Gate | Result |
 |---|---|
-| Shared / native Decimal | 87 / 24 passed |
-| TiKV MOD / local | 20 / 289 passed; local1 ignored |
-| Native MOD | 35 passed, 2 ignored |
+| Shared / native Decimal | 88 / 25 passed |
+| TiKV division / local | 13 / 291 passed; local1 ignored |
+| Native division | 20 passed |
 | Legacy / SQL | 1 / 2 passed |
-| Full expression | **1490 passed, 4 old failures, 94 ignored; exit101** |
-| Full unistore | **200 passed, 1 old failure, 13 ignored; exit101** |
+| Full expression | **1492 passed,4 old failures,94 ignored; exit101** |
+| Full unistore | **201 passed,1 old failure,13 ignored; exit101** |
 
-Nine actual test runs; seven focused gates passed first try. No compile failure, new RED, retry or zero-match. Full failure sections match the prior checkpoint after numeric panic-thread IDs only. Three original complete test modules remain byte-identical; no original SQL expectation/fixture changes. Eleven added focused tests.
-17 Rust sources (TiKV7/native10), no dependency/manifest/lock changes; pinned formatter/diff checks.
-Exact commands and all9 whole-log hashes: [summary](logs/mod-one-summary.txt), [evidence](evidence/mod-one-checkpoint.md), `checkpoint.json`.
+Ten Cargo attempts: nine actual runs and one E0004 compile failure, fixed by an exact new-result rejection arm. Seven final focused gates pass. Full failure sections equal the previous checkpoint after thread IDs only. No new test RED or original fixture changes; two newly authored self-oracles were replaced with independent pins before tests ran. Eleven new tests,19 Rust sources (TiKV8/native11), no dependency/manifest/lock changes; scoped formatter/diff checks pass.
+
+Exact commands and all log hashes: [summary](logs/div-one-summary.txt); ownership/protocol/policies: [evidence](evidence/div-one-checkpoint.md), `checkpoint.json` and the root Plan.
 
 ## Remaining work
-82 eligible families remain. DIV still needs explicit full-u32 precision and actual Decimal disposition; IntDIV needs warning-before-conversion preservation. These are not replaced with Fixed9 or fake SQL operands. JSON renderer closure, FORMAT/DATE/MICROSECOND, broader request-root integration, physical heap/peak/OOM, differential tests, M6, TiFlash, release, whole workspace and lint remain unverified. Existing compatibility exceptions and parser/full-suite failures remain unresolved. No whole Go-package/type-domain or final performance completion claim.
+81 eligible families remain; target needs57. IntDIV warning-before-conversion, typed Time/parser closure, broader request-root integration, physical heap/peak/OOM, differential/M6/TiFlash, release/performance, whole workspace and lint remain unverified. Existing parser/full-suite failures and extreme Decimal release-shape exceptions remain unresolved. No complete Go-package/type-domain equivalence claim. AES two-family reuse is a read-only candidate requiring a shared public crypto/dependency step, not completed work.

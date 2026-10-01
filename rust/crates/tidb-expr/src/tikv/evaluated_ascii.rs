@@ -41,12 +41,12 @@ use tidb_datatype::tikv_compat::value::{from_scalar, BridgeError, ValueMetadata}
 use tidb_datatype::{Datum, DatumKind, Time};
 use tidb_query_datatype::{codec::data_type::ScalarValueRef, EvalType};
 use tidb_query_expr::local::{
-    prepare_evaluated_bytes, CompileLimits, ComputedBytesMetadata, ComputedDecimalFastMetadata,
-    ComputedDecimalMetadata, ComputedIeee754BitsMetadata, ComputedInt, ComputedInt128Metadata,
-    ComputedIntMetadata, ComputedJsonReportMetadata, ComputedNativeVectorMetadata,
-    ComputedUncompressMetadata, ComputedValue, EvaluatedArgs, EvaluatedBytesOp,
-    EvaluatedBytesWorker, EvaluatedSqlFailureKind, ExecutionLimits, JsonReportOutcome,
-    LocalCompileContext, UncompressOutcome,
+    prepare_evaluated_bytes, CompileLimits, ComputedBytesMetadata, ComputedDecimalDivisionMetadata,
+    ComputedDecimalFastMetadata, ComputedDecimalMetadata, ComputedIeee754BitsMetadata, ComputedInt,
+    ComputedInt128Metadata, ComputedIntMetadata, ComputedJsonReportMetadata,
+    ComputedNativeVectorMetadata, ComputedUncompressMetadata, ComputedValue, EvaluatedArgs,
+    EvaluatedBytesOp, EvaluatedBytesWorker, EvaluatedSqlFailureKind, ExecutionLimits,
+    JsonReportOutcome, LocalCompileContext, NativeDecimalDivisionDisposition, UncompressOutcome,
 };
 use tidb_query_expr::{
     BinaryArithmeticErrorKind, BinaryArithmeticOperation, NativeDecimalFastOutcome,
@@ -1323,6 +1323,7 @@ impl<'a> Invocation<'a> {
                         | EvaluatedBytesOp::SubRealNative
                         | EvaluatedBytesOp::MulRealNative
                         | EvaluatedBytesOp::ModRealNative
+                        | EvaluatedBytesOp::DivRealNative
                         | EvaluatedBytesOp::AddDecimalNative
                         | EvaluatedBytesOp::SubDecimalNative
                         | EvaluatedBytesOp::MulDecimalNative,
@@ -1341,6 +1342,15 @@ impl<'a> Invocation<'a> {
                             return AsciiBoundaryError::Scope {
                                 kind: ScopeFailureKind::Contract,
                                 reason: "native modulo failure receipt has an unexpected cause",
+                            };
+                        }
+                        if operation == EvaluatedBytesOp::DivRealNative
+                            && (cause.operation != BinaryArithmeticOperation::Divide
+                                || cause.kind != BinaryArithmeticErrorKind::FloatOverflow)
+                        {
+                            return AsciiBoundaryError::Scope {
+                                kind: ScopeFailureKind::Contract,
+                                reason: "native division failure receipt has an unexpected cause",
                             };
                         }
                         return AsciiBoundaryError::Frontend(match cause.kind {
@@ -1378,6 +1388,12 @@ impl<'a> Invocation<'a> {
                                 return AsciiBoundaryError::Scope {
                                     kind: ScopeFailureKind::Contract,
                                     reason: "legacy modulo has no arithmetic SQL failure",
+                                };
+                            }
+                            BinaryArithmeticOperation::Divide => {
+                                return AsciiBoundaryError::Scope {
+                                    kind: ScopeFailureKind::Contract,
+                                    reason: "legacy division has no integer arithmetic SQL failure",
                                 };
                             }
                         };
@@ -1574,7 +1590,8 @@ fn require_computed_int(computed: ComputedValue) -> Result<ComputedInt, AsciiBou
         | ComputedValue::Uncompress(_)
         | ComputedValue::JsonReport(_)
         | ComputedValue::NativeVector(_)
-        | ComputedValue::DecimalFast(_) => Err(result_kind_error()),
+        | ComputedValue::DecimalFast(_)
+        | ComputedValue::DecimalDivision(_) => Err(result_kind_error()),
     }
 }
 
@@ -1629,6 +1646,11 @@ pub(crate) enum EvaluatedBytesResult {
         // or range check is permitted when selecting the existing Int view.
         checked_i64_view: Option<i64>,
     },
+    // Division carries the actual kernel disposition, not a reconstructed status.
+    DecimalDivision {
+        value: Option<tidb_datatype::Decimal>,
+        disposition: NativeDecimalDivisionDisposition,
+    },
     // The actual aligned vector, never ordinary Bytes or an input descriptor.
     NativeVector(Option<tidb_datatype::VectorFloat32>),
     // The decoder has already distinguished Unsupported, SQL NULL and a value.
@@ -1646,7 +1668,8 @@ impl EvaluatedBytesResult {
             | Self::Int128(_)
             | Self::NativeVector(_)
             | Self::DecimalFast(_)
-            | Self::Decimal { .. } => Err(result_kind_error().into_eval_error()),
+            | Self::Decimal { .. }
+            | Self::DecimalDivision { .. } => Err(result_kind_error().into_eval_error()),
         }
     }
 
@@ -1687,7 +1710,8 @@ impl EvaluatedBytesResult {
             | Self::Int128(_)
             | Self::NativeVector(_)
             | Self::DecimalFast(_)
-            | Self::Decimal { .. } => Err(result_kind_error().into_eval_error()),
+            | Self::Decimal { .. }
+            | Self::DecimalDivision { .. } => Err(result_kind_error().into_eval_error()),
         }
     }
 
@@ -1734,7 +1758,8 @@ impl EvaluatedBytesResult {
             | Self::Int128(_)
             | Self::NativeVector(_)
             | Self::DecimalFast(_)
-            | Self::Decimal { .. } => Err(result_kind_error().into_eval_error()),
+            | Self::Decimal { .. }
+            | Self::DecimalDivision { .. } => Err(result_kind_error().into_eval_error()),
         }
     }
 
@@ -2099,7 +2124,9 @@ fn materialize_computed(
             | EvaluatedBytesOp::SubRealLegacy
             | EvaluatedBytesOp::MulRealLegacy
             | EvaluatedBytesOp::ModRealNative
-            | EvaluatedBytesOp::ModRealLegacy,
+            | EvaluatedBytesOp::ModRealLegacy
+            | EvaluatedBytesOp::DivRealNative
+            | EvaluatedBytesOp::DivRealLegacy,
             ComputedValue::Ieee754Bits(value),
         ) => {
             match value.metadata() {
@@ -2142,6 +2169,37 @@ fn materialize_computed(
                 value,
                 checked_i64_view,
             })
+        }
+        (
+            EvaluatedBytesOp::DivDecimalNative | EvaluatedBytesOp::DivDecimalLegacy,
+            ComputedValue::DecimalDivision(report),
+        ) => {
+            match report.metadata() {
+                ComputedDecimalDivisionMetadata::OwnDecimalDivision => {}
+            }
+            let (value, disposition) = report.into_parts();
+            match (disposition, value.as_ref()) {
+                (NativeDecimalDivisionDisposition::ZeroDivisor, None)
+                | (
+                    NativeDecimalDivisionDisposition::Ok
+                    | NativeDecimalDivisionDisposition::Truncated
+                    | NativeDecimalDivisionDisposition::Overflow,
+                    Some(_),
+                ) => {}
+                _ => {
+                    return Err(AsciiBoundaryError::Scope {
+                        kind: ScopeFailureKind::Contract,
+                        reason: "decimal division disposition contradicts its computed value",
+                    });
+                }
+            }
+            let value = value
+                .map(|value| tidb_datatype::Decimal::try_from_shared_math(&value, usize::MAX))
+                .transpose()
+                .map_err(|error| {
+                    AsciiBoundaryError::Frontend(super::math_decimal_bridge_error(error))
+                })?;
+            Ok(EvaluatedBytesResult::DecimalDivision { value, disposition })
         }
         (
             EvaluatedBytesOp::RoundInt128Legacy
@@ -2359,6 +2417,7 @@ pub fn eval_legacy_real_arithmetic_in(
                     BinaryArithmeticOperation::Subtract => EvaluatedBytesOp::SubRealLegacy,
                     BinaryArithmeticOperation::Multiply => EvaluatedBytesOp::MulRealLegacy,
                     BinaryArithmeticOperation::Modulo => EvaluatedBytesOp::ModRealLegacy,
+                    BinaryArithmeticOperation::Divide => EvaluatedBytesOp::DivRealLegacy,
                 };
                 Ok((
                     operation,
@@ -2378,11 +2437,25 @@ pub fn eval_legacy_real_arithmetic_in(
 
 /// Convert only actual demanded decimal layouts; the worker owns arithmetic and
 /// the legacy warning-result policy. Representation failures remain failures.
+/// Division requires [`eval_legacy_decimal_division_in`] and explicit precision.
 pub fn eval_legacy_decimal_arithmetic_in(
     operation: BinaryArithmeticOperation,
     args: LegacyBinaryArgs<tidb_datatype::Decimal>,
     ctx: &dyn Columns,
 ) -> Result<Option<tidb_datatype::Decimal>, EvalError> {
+    let operation = match operation {
+        BinaryArithmeticOperation::Add => EvaluatedBytesOp::AddDecimalLegacy,
+        BinaryArithmeticOperation::Subtract => EvaluatedBytesOp::SubDecimalLegacy,
+        BinaryArithmeticOperation::Multiply => EvaluatedBytesOp::MulDecimalLegacy,
+        BinaryArithmeticOperation::Modulo => EvaluatedBytesOp::ModDecimalNative,
+        BinaryArithmeticOperation::Divide => {
+            return Err(AsciiBoundaryError::Scope {
+                kind: ScopeFailureKind::Contract,
+                reason: "decimal division requires an explicit fraction increment",
+            }
+            .into_eval_error());
+        }
+    };
     evaluate_prepared_args_in(
         ctx,
         || match args {
@@ -2395,12 +2468,6 @@ pub fn eval_legacy_decimal_arithmetic_in(
                 arithmetic_null_witness(value)?,
             )),
             LegacyBinaryArgs::Values(left, right) => {
-                let operation = match operation {
-                    BinaryArithmeticOperation::Add => EvaluatedBytesOp::AddDecimalLegacy,
-                    BinaryArithmeticOperation::Subtract => EvaluatedBytesOp::SubDecimalLegacy,
-                    BinaryArithmeticOperation::Multiply => EvaluatedBytesOp::MulDecimalLegacy,
-                    BinaryArithmeticOperation::Modulo => EvaluatedBytesOp::ModDecimalNative,
-                };
                 let left = super::prepare_math_decimal(&left)?;
                 let right = super::prepare_math_decimal(&right)?;
                 Ok((
@@ -2415,6 +2482,42 @@ pub fn eval_legacy_decimal_arithmetic_in(
         |computed| match computed {
             EvaluatedBytesResult::Int(Datum::Null) => Ok(None),
             EvaluatedBytesResult::Decimal { value, .. } => Ok(value),
+            _ => Err(result_kind_error().into_eval_error()),
+        },
+    )
+}
+
+/// Evaluate legacy decimal division with the caller's unmodified precision.
+/// The worker owns arithmetic and its status; legacy packing keeps the actual
+/// value without applying native warning policy or substituting precision zero.
+pub fn eval_legacy_decimal_division_in(
+    args: LegacyBinaryArgs<tidb_datatype::Decimal>,
+    frac_increment: u32,
+    ctx: &dyn Columns,
+) -> Result<Option<tidb_datatype::Decimal>, EvalError> {
+    evaluate_prepared_args_in(
+        ctx,
+        || match args {
+            LegacyBinaryArgs::Missing => Ok((
+                EvaluatedBytesOp::BinaryArithmeticMissingLegacy,
+                EvaluatedArgs::NoArgs,
+            )),
+            LegacyBinaryArgs::NullWitness(value) => Ok((
+                EvaluatedBytesOp::BinaryArithmeticNullNative,
+                arithmetic_null_witness(value)?,
+            )),
+            LegacyBinaryArgs::Values(left, right) => Ok((
+                EvaluatedBytesOp::DivDecimalLegacy,
+                EvaluatedArgs::DecimalDivision {
+                    left: Some(super::prepare_math_decimal(&left)?),
+                    right: Some(super::prepare_math_decimal(&right)?),
+                    frac_increment,
+                },
+            )),
+        },
+        |computed| match computed {
+            EvaluatedBytesResult::Int(Datum::Null) => Ok(None),
+            EvaluatedBytesResult::DecimalDivision { value, .. } => Ok(value),
             _ => Err(result_kind_error().into_eval_error()),
         },
     )
@@ -2436,6 +2539,13 @@ pub(crate) fn eval_arithmetic_decimal_fast_in(
             return Err(AsciiBoundaryError::Scope {
                 kind: ScopeFailureKind::Contract,
                 reason: "modulo is unsupported by the decimal fast contract",
+            }
+            .into_eval_error());
+        }
+        BinaryArithmeticOperation::Divide => {
+            return Err(AsciiBoundaryError::Scope {
+                kind: ScopeFailureKind::Contract,
+                reason: "division is unsupported by the decimal fast contract",
             }
             .into_eval_error());
         }

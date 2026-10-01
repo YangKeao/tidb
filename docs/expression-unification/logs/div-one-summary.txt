@@ -1,0 +1,44 @@
+div-one-50 / round51 command receipts
+Previous mod-one-49. Functional164/245, strict0; incomplete/not PR-ready.
+Raw logs: /home/agent/tidb/expression-unification/logs.
+T cwd=/home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv, nightly-2026-01-30.
+N cwd=/home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb, nightly-2026-08-22.
+Command form: set -o pipefail; <wrapper> <arguments> 2>&1 | tee <relative-log> >/dev/null.
+T relative-log=../logs/<name>, N=../../logs/<name>. Counts: passed/failed/ignored/filtered (measured0); time: compile/test seconds.
+
+1 T test --locked -p tidb_query_datatype --lib codec::mysql::decimal:: -- --test-threads=1
+  div-one-tikv-datatype.log; 88/0/0/336; 2.26/.01s; exit0; SHA256 7e7568c5e19f4c5e871420525482c51110addbf2fd95ee3f32ba9e450d41cd04
+2 N test --locked -p tidb-datatype --lib decimal:: -- --test-threads=1
+  div-one-native-datatype.log; 25/0/0/417; 2.41/.00s; exit0; SHA256 94e45e350a2a0314fca6ddcd4975fcbea67f04f3a3375eb2b85adf941f4dcfa3
+3 T test --locked -p tidb_query_expr --lib div -- --test-threads=1
+  div-one-tikv-expr.log; 13/0/0/818; 12.81/.00s; exit0; SHA256 918eadc97ed5983f0e7b0d79a381aafbc8de254a29dc08981ea737b67d03b145
+4 T test --locked -p tidb_query_expr --lib local -- --test-threads=1
+  div-one-tikv-local.log; 291/0/1/539; .12/.20s; exit0; SHA256 41402b9bb2b99b455b93943946b84f17836035760165924f9280ac364fff5a6c
+5 N test --locked -p tidb-expr --lib div -- --test-threads=1
+  div-one-native-expr.log; COMPILE FAILURE, no tests executed; one E0004 at evaluated_ascii.rs:1584 require_computed_int; exit101; SHA256 fd989ff244e227152edd93b1f3df04b3552e6c48cd74e62cdcfcf107390f8d51
+6 N test --locked -p tidb-expr --lib div -- --test-threads=1
+  div-one-native-expr-retry.log; 20/0/0/1570; 7.79/.01s; exit0; SHA256 bd80c4fe6c1a6db10ac16eb256cbe87498fb58d2be41ab6ab9fa8e439f4ce5ad
+7 N test --locked -p tidb-unistore --lib legacy_true_division_ -- --test-threads=1
+  div-one-legacy.log; 1/0/0/214; 7.02/.00s; exit0; SHA256 d677c34bae2ba5114df11546e9d59e5bb1f9184e05291a62a7100450d961cfff
+8 N test --locked -p tidb-session --lib evaluated_ascii_true_division_ -- --test-threads=1
+  div-one-sql.log; 2/0/0/2181; 29.20/.06s; exit0; SHA256 a8f6ecb48a59d74cacdddc03cbd8c98dc5166b20919a1f80665c5fa94a03de21
+9 N test --locked -p tidb-expr --lib -- --test-threads=1
+  div-one-expr-full.log; 1492/4/94/0; .17/13.44s; exit101; SHA256 411a1b04f677d79519bcca6454fcb840bdbc38bafa80a38ea17cb5ee0b06ce13
+10 N test --locked -p tidb-unistore --lib -- --test-threads=1
+  div-one-unistore-full.log; 201/1/13/0; .12/2.99s; exit101; SHA256 da476f86f7ccc6e6036cf86dd04a5918fd3796e0d159dedfcac3f5d9b136b365
+
+10 launches = 9 actual nonzero-test runs + 1 compile failure; seven final focused green, two known-baseline full non-green. One retry. No new test RED, zero-match, launch failure, metadata/lock-resolution run, fixture recording or invented negative phase. Full suites are NOT green.
+Compile fix: exact ComputedValue::DecimalDivision(_) => result_kind_error rejection added to integer-only projection. No SQL expectation changed. Existing exhaustive rejection helpers gain new variants only.
+Source review BEFORE legacy gate removed two newly authored self-oracles (expected computed by the same shared div_mysql provider). Independent fixed pins now assert -3.750000000/visible6, 10^19/3 with 19 integer digits+54 threes/visible30, and 8.1e80/.1 saturation at81 nines/scale0. This was not a measured test RED or modification of original fixtures. Parent did not record provider output as an oracle.
+
+Complete failure sections equal mod-one-49 after ONLY numeric panic-heading thread IDs -> (<id>). Slice starts at newline+failures:+newline and ends before newline+test result:, retaining all panic payloads and final failure list; no address mapping.
+Expression SHA256 27654f2c0ad2971242c00f50182467598cdfd9c2c65e5bf5a32e683708448637 (old IFNULL/EXP/duration164:55/STR_TO_DATE).
+Unistore SHA256 b64dcced405c699c11b72ee31888c58e491b4e5b4e74fa2d445454e1d1e146e9 (old point-range selection194:5).
+Original complete #[cfg(test)] mod tests suffix byte-equality vs starting HEADs:
+TiKV Decimal 9a217340d9d495773a043cbe0378a68c5401737315752dcdc1105be52cc2e332;
+TiKV impl_arithmetic f72a3ad990dbfe20c207e8764950c53276bbd4ea3e0953545f74c89764b511ea;
+native ops f823ff05f80ca755b998f6e92db3f3ef79ea462f5ae607d5aece0c2c9ee3bbaa.
+
+19 Rust sources (TiKV8/native11), 11 new test functions (datatype1+1, shared2, local2, nativeSDK2, legacy1, SQL2). Six parallel single-file owners, parent-only serialized gates/formatting/publication. No new module/dependency/manifest/lock changes. All19 pinned rustfmt --edition2021 --config skip_children=true --check and both working/staged git diff --check pass. No reported source-tool/formatter/static-proof denial/failure. Ownership guides updated without policy changes.
+Core coverage: actual bound full-u32 precision, native target-scale versus raw legacy increment, single wrapper entry/terminal/witness, status/presence, fixed metadata accounting, failure/unwind cleanup and poison/reuse, owned report beyond worker lifetime, nonnull value admission, true NULL/missing, real NaN/Inf policy, signed saturation, hidden/visible-floor truncation, zero ordering, live word budgets and bounded profile-dependent u32 cases. SQL covers precision0->4, integer promotion, left-NULL RHS suppression, SELECT warnings, strict zero UPDATE,1292 truncation and15 real-column zero-slot cases.
+Deferred: IntDIV evaluator/warning-before-conversion migration; whole workspace/make lint/dev/bazel_prepare; release/performance/zero-copy/full physical heap/allocator-peak/OOM/M6/150-row differential/TiFlash; invalid extreme wrapped Decimal shape domain and existing compatibility exceptions. No full Go-package or theoretical unlimited-wrap equivalence. DATE/TIME/MICROSECOND and AES remain read-only candidates; AES would require an explicit shared public crypto closure/dependency step, not an already-existing TiKV leaf. Remaining eligible81, target221 needs57.

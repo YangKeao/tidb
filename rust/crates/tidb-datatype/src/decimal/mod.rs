@@ -1083,80 +1083,23 @@ impl Decimal {
         other: &Decimal,
         frac_increment: u32,
     ) -> Option<(Decimal, Option<DecimalCodecWarning>)> {
-        self.div_mysql_unbounded(other, frac_increment)
-            .map(bound_decimal_codec_result)
-    }
-
-    fn div_mysql_unbounded(&self, other: &Decimal, frac_increment: u32) -> Option<Decimal> {
-        if other.is_zero() {
-            return None;
-        }
-        let result_scale = (self.scale + frac_increment).min(CODEC_MAX_DECIMAL_SCALE as u32);
-        if self.is_zero() {
-            return Some(Decimal::new(false, "0".to_owned(), result_scale));
-        }
-        let frac1 = word_scale(self.storage_scale);
-        let frac2 = word_scale(other.storage_scale);
-        let padding = (frac1 - self.storage_scale) + (frac2 - other.storage_scale);
-        let adjusted_increment = frac_increment.saturating_sub(padding);
-        let storage_scale = word_scale(frac1 + frac2 + adjusted_increment);
-
-        // AVG over integer/decimal columns is the hottest DECIMAL division
-        // path in TPC-H q17. Go's MyDecimal implementation works on the
-        // already-packed integer words; the general Rust compatibility path
-        // below first pads and divides decimal strings. For the common
-        // scale-zero case, perform the same truncating long division with
-        // u128 and materialize only the result coefficient. The bounds checks
-        // keep arbitrary-precision and overflow behavior on the complete path.
-        let common_scale = self.storage_scale.max(other.storage_scale);
-        if other.storage_scale == 0
-            && self.scale <= self.storage_scale
-            && other.scale <= other.storage_scale
-        {
-            if let (Ok(dividend), Ok(divisor)) =
-                (self.digits.parse::<u128>(), other.digits.parse::<u128>())
-            {
-                let numerator_exponent = common_scale
-                    .checked_add(storage_scale)
-                    .and_then(|scale| scale.checked_sub(self.storage_scale));
-                let divisor_exponent = common_scale.checked_sub(other.storage_scale);
-                if let (Some(numerator_exponent), Some(divisor_exponent)) =
-                    (numerator_exponent, divisor_exponent)
-                {
-                    let numerator_factor = 10u128.checked_pow(numerator_exponent);
-                    let divisor_factor = 10u128.checked_pow(divisor_exponent);
-                    if let (Some(numerator_factor), Some(divisor_factor)) =
-                        (numerator_factor, divisor_factor)
-                    {
-                        if let (Some(numerator), Some(divisor)) = (
-                            dividend.checked_mul(numerator_factor),
-                            divisor.checked_mul(divisor_factor),
-                        ) {
-                            let quotient = numerator / divisor;
-                            return Some(Decimal::new_with_storage(
-                                self.negative != other.negative,
-                                quotient.to_string(),
-                                result_scale,
-                                storage_scale,
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        let numerator = pad_scale(
-            &pad_scale(&self.digits, self.storage_scale, common_scale),
-            common_scale,
-            common_scale + storage_scale,
-        );
-        let divisor = pad_scale(&other.digits, other.storage_scale, common_scale);
-        let (quotient, _) = digit_divmod(&numerator, &divisor);
-        Some(Decimal::new_with_storage(
-            self.negative != other.negative,
-            quotient,
-            result_scale,
-            storage_scale,
+        let output = self
+            .try_to_shared_math(usize::MAX)
+            .and_then(|left| {
+                other
+                    .try_to_shared_math(usize::MAX)
+                    .and_then(|right| left.try_native_mysql_div(&right, frac_increment, usize::MAX))
+            })
+            .expect("shared native decimal division failed")?;
+        let (value, warning) = match output {
+            SharedDecimalResult::Ok(value) => (value, None),
+            SharedDecimalResult::Truncated(value) => (value, Some(DecimalCodecWarning::Truncated)),
+            SharedDecimalResult::Overflow(value) => (value, Some(DecimalCodecWarning::Overflow)),
+        };
+        Some((
+            Self::try_from_shared_math(&value, usize::MAX)
+                .expect("shared native decimal division result failed"),
+            warning,
         ))
     }
 
@@ -1713,51 +1656,6 @@ fn word_scale(scale: u32) -> u32 {
     scale.div_ceil(9) * 9
 }
 
-/// Applies Go `DecimalDiv`'s nine-word result bound after the digit-string
-/// arithmetic has produced its exact value. The SQL-visible scale remains
-/// intact; only hidden fractional words are dropped when the source reports
-/// `ErrTruncated`.
-fn bound_decimal_codec_result(value: Decimal) -> (Decimal, Option<DecimalCodecWarning>) {
-    if value.is_zero() {
-        return (value, None);
-    }
-    let split = value
-        .digits
-        .len()
-        .saturating_sub(value.storage_scale as usize);
-    let integer_digits = value.digits[..split].trim_start_matches('0').len();
-    let words_int = digits_to_words(integer_digits);
-    let words_frac = digits_to_words(value.storage_scale as usize);
-    let (_, fixed_frac, warning) = fix_word_cnt_error(words_int, words_frac);
-    match warning {
-        None => (value, None),
-        Some(DecimalCodecWarning::Overflow) => (
-            Decimal::max_or_min(
-                value.negative,
-                (CODEC_WORD_BUF_LEN * DIGITS_PER_WORD) as u32,
-                0,
-            ),
-            warning,
-        ),
-        Some(DecimalCodecWarning::Truncated) => {
-            let target_storage = (fixed_frac * DIGITS_PER_WORD) as u32;
-            let target_storage = target_storage.max(value.scale);
-            let discarded = value.storage_scale.saturating_sub(target_storage) as usize;
-            let digits = if discarded == 0 {
-                value.digits.clone()
-            } else {
-                value.digits[..value.digits.len() - discarded]
-                    .to_owned()
-                    .into()
-            };
-            (
-                Decimal::new_with_storage(value.negative, digits, value.scale, target_storage),
-                warning,
-            )
-        }
-    }
-}
-
 /// Left-pads two unsigned digit strings with `0` to equal length, so they can
 /// be compared or added digit-by-digit.
 fn pad_equal(a: &str, b: &str) -> (String, String) {
@@ -1879,12 +1777,103 @@ fn digit_divmod(a: &str, b: &str) -> (String, String) {
 }
 pub(crate) mod codec;
 
-use codec::{
-    digits_to_words, fix_word_cnt_error, MyDecimalWords, CODEC_MAX_DECIMAL_SCALE, CODEC_POWERS10,
-    CODEC_WORD_BUF_LEN, DIGITS_PER_WORD,
-};
+use codec::{digits_to_words, MyDecimalWords, CODEC_POWERS10, CODEC_WORD_BUF_LEN, DIGITS_PER_WORD};
 
 pub use codec::{decimal_bin_size, DecimalCodecError, DecimalCodecFailure, DecimalCodecWarning};
+
+#[cfg(test)]
+mod native_mysql_division_tests {
+    use super::{Decimal, DecimalCodecWarning};
+
+    #[test]
+    fn native_mysql_division_facade_keeps_source_shape_and_disposition() {
+        let cases = [
+            (
+                Decimal::from_int(1),
+                Decimal::from_int(3),
+                "333333333".to_owned(),
+                9,
+                4,
+                false,
+                None,
+            ),
+            (
+                Decimal::from_test_parts(true, "15345", 1, 3),
+                Decimal::from_int(5),
+                "3069000000".to_owned(),
+                9,
+                5,
+                true,
+                None,
+            ),
+            (
+                Decimal::from_test_parts(true, &"9".repeat(90), 0, 0),
+                Decimal::from_int(1),
+                "9".repeat(81),
+                0,
+                0,
+                true,
+                Some(DecimalCodecWarning::Overflow),
+            ),
+            (
+                Decimal::from_test_parts(
+                    false,
+                    &format!("1{}12345678901234567890", "0".repeat(80)),
+                    20,
+                    20,
+                ),
+                Decimal::from_int(1),
+                format!("1{}123456789012345678900000", "0".repeat(80)),
+                24,
+                24,
+                false,
+                Some(DecimalCodecWarning::Truncated),
+            ),
+            (
+                Decimal::new_with_storage_preserving_zero_sign(true, "000000".to_owned(), 6, 6),
+                Decimal::from_int(3),
+                "0".repeat(10),
+                10,
+                10,
+                false,
+                None,
+            ),
+            (
+                Decimal::from_test_parts(true, "1", 0, 90),
+                Decimal::from_int(3),
+                "0".repeat(81),
+                81,
+                4,
+                false,
+                Some(DecimalCodecWarning::Truncated),
+            ),
+        ];
+        for (left, right, digits, storage, visible, negative, warning) in cases {
+            let left = left.with_declared_shape(120, 30);
+            let (output, actual_warning) = left.div_mysql_with_warning(&right, 4).unwrap();
+            assert_eq!(actual_warning, warning);
+            assert_eq!(output.coefficient_digits(), digits);
+            assert_eq!((output.storage_scale(), output.scale()), (storage, visible));
+            assert_eq!(output.is_negative(), negative);
+            assert_eq!(output.declared_shape(), None);
+            assert_eq!(
+                left.div_mysql(&right, 4).unwrap().coefficient_digits(),
+                digits
+            );
+        }
+        // A genuinely zero full-precision quotient bypasses the result bound.
+        let tiny = Decimal::from_test_parts(true, "1", 0, 90);
+        let (zero, warning) = tiny
+            .div_mysql_with_warning(&Decimal::from_int(3), 0)
+            .unwrap();
+        assert_eq!(warning, None);
+        assert_eq!((zero.storage_scale(), zero.scale()), (90, 0));
+        assert!(zero.is_zero() && !zero.is_negative());
+        assert!(tiny
+            .div_mysql_with_warning(&Decimal::from_int(0), u32::MAX)
+            .is_none());
+    }
+}
 
 #[cfg(test)]
 mod native_remainder_tests {

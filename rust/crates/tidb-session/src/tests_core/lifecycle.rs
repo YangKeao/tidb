@@ -9363,6 +9363,168 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_true_division_sql_preserves_precision_demand_and_diagnostics() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_div_sql (id INT PRIMARY KEY, a BIGINT, b BIGINT, d DECIMAL(65,30), e DECIMAL(65,30), r DOUBLE, t DOUBLE, nr DOUBLE, nd DECIMAL(20,2), s VARCHAR(8), copies BIGINT)").unwrap();
+    session.run("INSERT INTO shared_div_sql VALUES (1,8,7,-7.5,2,-7.5e0,2e0,NULL,NULL,'x',2048),(2,7,0,7.5,0,7.5e0,0e0,NULL,NULL,'x',2048),(3,8,7,10000000000000000000.000000000000000000000000000000,3.000000000000000000000000000000,-1e308,0.1e0,NULL,NULL,'x',2048)").unwrap();
+    session
+        .vars
+        .set_system("max_allowed_packet", "1024".to_owned())
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    for (precision, expected) in [(0, "1.1429"), (4, "1.1429"), (10, "1.1428571429")] {
+        session
+            .run(&format!("SET div_precision_increment={precision}"))
+            .unwrap();
+        let StmtOutput::Rows { rows, .. } = session
+            .run_with_columns("SELECT a/b,r/t FROM shared_div_sql WHERE id=1")
+            .unwrap()
+        else {
+            panic!("expected typed true division")
+        };
+        assert!(
+            matches!(&rows[0][0], Datum::Decimal(_)),
+            "integer / promotes to Decimal"
+        );
+        assert_eq!(cell_text(&rows[0][0]), expected);
+        assert_eq!(rows[0][1], Datum::Real(-3.75));
+        assert!(session.warnings().is_empty());
+    }
+    session.run("SET div_precision_increment=4").unwrap();
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns("SELECT d/e FROM shared_div_sql WHERE id=1")
+        .unwrap()
+    else {
+        panic!("expected negative decimal quotient")
+    };
+    assert_eq!(
+        rows,
+        vec![vec![Datum::Decimal(
+            tidb_datatype::Decimal::parse_mysql("-3.75").0
+        )]]
+    );
+    // Both true-division signatures retain their original NULL-left short circuit.
+    for expression in [
+        "nr / CAST(REPEAT(s,copies) AS DOUBLE)",
+        "nd / CAST(REPEAT(s,copies) AS DECIMAL(20,2))",
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_div_sql WHERE id=1");
+        let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+            panic!("{sql}")
+        };
+        assert_eq!(rows, vec![vec![Datum::Null]], "{sql}");
+        assert!(
+            session.warnings().is_empty(),
+            "undemanded RHS must not emit packet warning: {sql}"
+        );
+    }
+    for mode in ["", "STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO"] {
+        session.run(&format!("SET sql_mode='{mode}'")).unwrap();
+        for expression in ["a/b", "r/t", "d/e"] {
+            let sql = format!("SELECT {expression} FROM shared_div_sql WHERE id=2");
+            let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+                panic!("{sql}")
+            };
+            assert_eq!(rows, vec![vec![Datum::Null]], "{sql}");
+            assert_eq!(
+                session.warnings(),
+                &[SqlWarning {
+                    level: WarningLevel::Warning,
+                    code: 1365,
+                    message: "Division by 0".to_owned(),
+                }],
+                "{sql}"
+            );
+        }
+        let StmtOutput::Rows { rows, .. } = session
+            .run_with_columns("SELECT nr/t,nd/e FROM shared_div_sql WHERE id=2")
+            .unwrap()
+        else {
+            panic!("expected silent NULL division")
+        };
+        assert_eq!(rows, vec![vec![Datum::Null; 2]]);
+        assert!(session.warnings().is_empty());
+    }
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns("SELECT d/e FROM shared_div_sql WHERE id=3")
+        .unwrap()
+    else {
+        panic!("truncated quotient still returns its value")
+    };
+    assert!(matches!(&rows[0][0], Datum::Decimal(_)));
+    assert_eq!(session.warnings().len(), 1);
+    assert_eq!(session.warnings()[0].level, WarningLevel::Warning);
+    assert_eq!(session.warnings()[0].code, 1292);
+    assert!(session.warnings()[0]
+        .message
+        .starts_with("Truncated incorrect DECIMAL value: '"));
+    let error = session
+        .run("UPDATE shared_div_sql SET r=r/t WHERE id=2")
+        .expect_err("strict division by zero");
+    assert!(matches!(
+        &error,
+        DriverError::Exec(tidb_executor::ExecError::Eval(
+            tidb_executor::EvalError::DivisionByZero
+        ))
+    ));
+    let mysql = error.to_mysql_error();
+    assert_eq!(mysql.code, 1365);
+    assert_eq!(mysql.state, *b"22012");
+    assert_eq!(mysql.message, "Division by 0");
+    assert!(mysql.is_from_evaluation());
+}
+
+#[test]
+fn evaluated_ascii_true_division_zero_slots_reject_columns_nulls_and_zero() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_div_zero (a BIGINT, b BIGINT, z BIGINT, n BIGINT, r DOUBLE, t DOUBLE, rz DOUBLE, rn DOUBLE, d DECIMAL(20,2), e DECIMAL(20,2), dz DECIMAL(20,2), dn DECIMAL(20,2))").unwrap();
+    session
+        .run("INSERT INTO shared_div_zero VALUES (7,2,0,NULL,7.5e0,2e0,0e0,NULL,7.5,2,0,NULL)")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    for expression in [
+        "a/b", "a/z", "n/b", "a/n", "n/z", "r/t", "r/rz", "rn/t", "r/rn", "rn/rz", "d/e", "d/dz",
+        "dn/e", "d/dn", "dn/dz",
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_div_zero");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("true division bypassed its worker: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(
+            session.warnings().is_empty(),
+            "zero warnings follow successful worker evaluation only: {sql}"
+        );
+    }
+}
+
+#[test]
 fn evaluated_ascii_modulo_sql_preserves_domains_demand_and_zero_diagnostics() {
     let mut session = Session::new();
     session

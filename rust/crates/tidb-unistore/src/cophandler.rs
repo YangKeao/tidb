@@ -2879,13 +2879,32 @@ impl LegacyEvaluator<'_> {
                 // while ignoring its warnings, as the old .0 consumers did.
                 tidb_expr::eval_legacy_decimal_arithmetic_in(operation, args, self.raw_columns)?
             }
-            // Division retains its separate, unchanged legacy path.
             SimpleExpr::Func(SimpleSig::DivideDecimal, children) => {
-                let (left, right) = (
-                    legacy_some!(self.eval_decimal(children.first())?),
-                    legacy_some!(self.eval_decimal(children.get(1))?),
-                );
-                left.div_mysql(&right, div_precision_increment as u32)
+                use tidb_expr::LegacyBinaryArgs;
+                let left = self.eval_decimal(children.first())?;
+                let args = if children.is_empty() {
+                    LegacyBinaryArgs::Missing
+                } else if let Some(left) = left {
+                    let right = self.eval_decimal(children.get(1))?;
+                    if children.len() < 2 {
+                        LegacyBinaryArgs::Missing
+                    } else {
+                        match right {
+                            Some(right) => LegacyBinaryArgs::Values(left, right),
+                            None => LegacyBinaryArgs::NullWitness(None),
+                        }
+                    }
+                } else {
+                    // The original legacy_some! leaves the RHS undemanded.
+                    LegacyBinaryArgs::NullWitness(None)
+                };
+                // Preserve the request's raw precision, including zero, and
+                // the old decimal value while silently ignoring core statuses.
+                tidb_expr::eval_legacy_decimal_division_in(
+                    args,
+                    div_precision_increment as u32,
+                    self.raw_columns,
+                )?
             }
             // Go `goTimeToMysqlUnixTimestamp`: the microseconds of the wall
             // clock in the session zone, divided by 1e6 exactly (an out-of-
@@ -3219,7 +3238,8 @@ impl LegacyEvaluator<'_> {
                 sig @ (SimpleSig::PlusReal
                 | SimpleSig::MinusReal
                 | SimpleSig::MultiplyReal
-                | SimpleSig::ModReal),
+                | SimpleSig::ModReal
+                | SimpleSig::DivideReal),
                 children,
             ) => {
                 use tidb_expr::{BinaryArithmeticOperation as Operation, LegacyBinaryArgs};
@@ -3245,16 +3265,15 @@ impl LegacyEvaluator<'_> {
                     SimpleSig::PlusReal => Operation::Add,
                     SimpleSig::MinusReal => Operation::Subtract,
                     SimpleSig::ModReal => Operation::Modulo,
+                    SimpleSig::DivideReal => Operation::Divide,
                     _ => Operation::Multiply,
                 };
                 // Legacy real arithmetic retains Inf/NaN rather than applying
                 // the ordinary SQL real signature's overflow policy.
                 tidb_expr::eval_legacy_real_arithmetic_in(operation, args, self.raw_columns)?
             }
-            // Division and casts keep their original separate path.
             SimpleExpr::Func(
-                sig @ (SimpleSig::DivideReal
-                | SimpleSig::CastIntAsReal
+                sig @ (SimpleSig::CastIntAsReal
                 | SimpleSig::CastDecimalAsReal
                 | SimpleSig::CastRealAsReal
                 | SimpleSig::CastStringAsReal
@@ -3272,111 +3291,101 @@ impl LegacyEvaluator<'_> {
                 | SimpleSig::Sin),
                 children,
             ) => {
-                if !matches!(sig, SimpleSig::DivideReal) {
-                    // Go wraps the operand in the cast signature; the widening
-                    // itself is exact for the admitted source kinds.
-                    return Ok(match sig {
-                        SimpleSig::CastIntAsReal => {
-                            // The int channel carries no error for a leaf.
-                            let value = self.folded_int(children.first())?;
-                            value.map(|value| value as f64)
-                        }
-                        SimpleSig::CastDecimalAsReal => {
-                            Some(legacy_some!(self.eval_decimal(children.first())?).to_f64())
-                        }
-                        SimpleSig::CastStringAsReal => {
-                            let raw = legacy_some!(self.eval_bytes(children.first())?);
-                            let text = String::from_utf8_lossy(&raw);
-                            let Some(prefix) = numeric_prefix(text.trim_start(), true) else {
-                                return Ok(Some(0.0));
-                            };
-                            let parsed = prefix.parse::<f64>().unwrap_or(f64::NAN);
-                            // `strconv.ParseFloat` range saturation: ±MaxFloat64.
-                            Some(if parsed.is_infinite() {
-                                if parsed > 0.0 {
-                                    f64::MAX
-                                } else {
-                                    f64::MIN
-                                }
+                // Go wraps the operand in the cast signature; the widening
+                // itself is exact for the admitted source kinds.
+                return Ok(match sig {
+                    SimpleSig::CastIntAsReal => {
+                        // The int channel carries no error for a leaf.
+                        let value = self.folded_int(children.first())?;
+                        value.map(|value| value as f64)
+                    }
+                    SimpleSig::CastDecimalAsReal => {
+                        Some(legacy_some!(self.eval_decimal(children.first())?).to_f64())
+                    }
+                    SimpleSig::CastStringAsReal => {
+                        let raw = legacy_some!(self.eval_bytes(children.first())?);
+                        let text = String::from_utf8_lossy(&raw);
+                        let Some(prefix) = numeric_prefix(text.trim_start(), true) else {
+                            return Ok(Some(0.0));
+                        };
+                        let parsed = prefix.parse::<f64>().unwrap_or(f64::NAN);
+                        // `strconv.ParseFloat` range saturation: ±MaxFloat64.
+                        Some(if parsed.is_infinite() {
+                            if parsed > 0.0 {
+                                f64::MAX
                             } else {
-                                parsed
-                            })
-                        }
-                        SimpleSig::RoundReal => tidb_expr::eval_legacy_round_real_in(
-                            self.eval_real(children.first())?,
-                            self.raw_columns,
-                        )?,
-                        SimpleSig::RoundInt => tidb_expr::eval_legacy_round_int_in(
-                            self.folded_int(children.first())?,
-                            self.raw_columns,
-                        )?
-                        .map(|value| value as f64),
-                        SimpleSig::RoundDec => tidb_expr::eval_legacy_round_decimal_in(
-                            self.eval_decimal(children.first())?.as_ref(),
-                            self.raw_columns,
-                        )?,
-                        SimpleSig::Pow => {
-                            let arguments = match self.eval_real(children.first())? {
-                                None => tidb_expr::RawPowReadyArgs::LeftNull,
-                                Some(base) => tidb_expr::RawPowReadyArgs::Values {
-                                    base,
-                                    exponent: self.eval_real(children.get(1))?,
-                                },
-                            };
-                            match tidb_expr::eval_raw_pow_ready_in(arguments, self.raw_columns)? {
-                                Datum::Real(value) => Some(value),
-                                Datum::Null => None,
-                                _ => {
-                                    return Err(LegacyEvalError::InvalidResult(
-                                        "POW returned a non-real datum",
-                                    ))
-                                }
+                                f64::MIN
                             }
-                        }
-                        SimpleSig::Atan2Args => {
-                            let arguments = match self.eval_real(children.first())? {
-                                None => None,
-                                Some(left) => Some((left, self.eval_real(children.get(1))?)),
-                            };
-                            tidb_expr::eval_legacy_atan2_in(arguments, self.raw_columns)?
-                        }
-                        SimpleSig::Pi => match tidb_expr::eval_pi_in(self.raw_columns)? {
+                        } else {
+                            parsed
+                        })
+                    }
+                    SimpleSig::RoundReal => tidb_expr::eval_legacy_round_real_in(
+                        self.eval_real(children.first())?,
+                        self.raw_columns,
+                    )?,
+                    SimpleSig::RoundInt => tidb_expr::eval_legacy_round_int_in(
+                        self.folded_int(children.first())?,
+                        self.raw_columns,
+                    )?
+                    .map(|value| value as f64),
+                    SimpleSig::RoundDec => tidb_expr::eval_legacy_round_decimal_in(
+                        self.eval_decimal(children.first())?.as_ref(),
+                        self.raw_columns,
+                    )?,
+                    SimpleSig::Pow => {
+                        let arguments = match self.eval_real(children.first())? {
+                            None => tidb_expr::RawPowReadyArgs::LeftNull,
+                            Some(base) => tidb_expr::RawPowReadyArgs::Values {
+                                base,
+                                exponent: self.eval_real(children.get(1))?,
+                            },
+                        };
+                        match tidb_expr::eval_raw_pow_ready_in(arguments, self.raw_columns)? {
                             Datum::Real(value) => Some(value),
+                            Datum::Null => None,
                             _ => {
                                 return Err(LegacyEvalError::InvalidResult(
-                                    "PI returned a non-real datum",
+                                    "POW returned a non-real datum",
                                 ))
                             }
-                        },
-                        SimpleSig::Acos | SimpleSig::Asin => {
-                            let function = if matches!(sig, SimpleSig::Acos) {
-                                tidb_expr::RawInverseTrigFunction::Acos
-                            } else {
-                                tidb_expr::RawInverseTrigFunction::Asin
-                            };
-                            self.inverse_trig(function, self.eval_real(children.first())?)?
                         }
-                        other => {
-                            let value = self.eval_real(children.first())?;
-                            let function = match other {
-                                SimpleSig::Atan1Arg => tidb_expr::LegacyTrigFunction::Atan,
-                                SimpleSig::Cos => tidb_expr::LegacyTrigFunction::Cos,
-                                SimpleSig::Sin => tidb_expr::LegacyTrigFunction::Sin,
-                                SimpleSig::Cot => tidb_expr::LegacyTrigFunction::Cot,
-                                _ => return Ok(None),
-                            };
-                            tidb_expr::eval_legacy_trig_in(function, value, self.raw_columns)?
+                    }
+                    SimpleSig::Atan2Args => {
+                        let arguments = match self.eval_real(children.first())? {
+                            None => None,
+                            Some(left) => Some((left, self.eval_real(children.get(1))?)),
+                        };
+                        tidb_expr::eval_legacy_atan2_in(arguments, self.raw_columns)?
+                    }
+                    SimpleSig::Pi => match tidb_expr::eval_pi_in(self.raw_columns)? {
+                        Datum::Real(value) => Some(value),
+                        _ => {
+                            return Err(LegacyEvalError::InvalidResult(
+                                "PI returned a non-real datum",
+                            ))
                         }
-                    });
-                }
-                let (left, right) = (
-                    legacy_some!(self.eval_real(children.first())?),
-                    legacy_some!(self.eval_real(children.get(1))?),
-                );
-                match sig {
-                    _ if right != 0.0 => Some(left / right),
-                    _ => None,
-                }
+                    },
+                    SimpleSig::Acos | SimpleSig::Asin => {
+                        let function = if matches!(sig, SimpleSig::Acos) {
+                            tidb_expr::RawInverseTrigFunction::Acos
+                        } else {
+                            tidb_expr::RawInverseTrigFunction::Asin
+                        };
+                        self.inverse_trig(function, self.eval_real(children.first())?)?
+                    }
+                    other => {
+                        let value = self.eval_real(children.first())?;
+                        let function = match other {
+                            SimpleSig::Atan1Arg => tidb_expr::LegacyTrigFunction::Atan,
+                            SimpleSig::Cos => tidb_expr::LegacyTrigFunction::Cos,
+                            SimpleSig::Sin => tidb_expr::LegacyTrigFunction::Sin,
+                            SimpleSig::Cot => tidb_expr::LegacyTrigFunction::Cot,
+                            _ => return Ok(None),
+                        };
+                        tidb_expr::eval_legacy_trig_in(function, value, self.raw_columns)?
+                    }
+                });
             }
             _ => None,
         })
@@ -10141,6 +10150,176 @@ mod tests {
                 assert_eq!(child_only.eval_expr(&extra).unwrap(), Some(1));
             });
         }
+    }
+
+    #[test]
+    fn legacy_true_division_preserves_raw_precision_core_values_and_demand() {
+        use tidb_datatype::Decimal;
+        let time_zone = zone();
+        let decimal = |text: &str| Decimal::parse_mysql(text).0;
+        let dec_call = |left, right| {
+            SimpleExpr::Func(
+                SimpleSig::DivideDecimal,
+                vec![SimpleExpr::Decimal(left), SimpleExpr::Decimal(right)],
+            )
+        };
+        for (precision, rendered) in [(0, "1"), (4, "1.1429"), (10, "1.1428571429")] {
+            let evaluator = LegacyEvaluator::new(&[], precision, &time_zone);
+            let call = dec_call(decimal("8"), decimal("7"));
+            assert_eq!(
+                evaluator
+                    .eval_decimal(Some(&call))
+                    .unwrap()
+                    .unwrap()
+                    .to_string(),
+                rendered
+            );
+        }
+        let evaluator = LegacyEvaluator::new(&[], 4, &time_zone);
+        // Pin values independently of the shared division provider. 10^19/3
+        // has 19 integer digits: the old nine-word bound retains 54 fraction
+        // digits, although only 30 are visible; legacy ignores its truncation.
+        for (left, right, expected) in [
+            ("-7.50", "2", Some(("-3.750000000".to_owned(), 6))),
+            ("7.50", "-2", Some(("-3.750000000".to_owned(), 6))),
+            ("1", "0", None),
+            (
+                "10000000000000000000.000000000000000000000000000000",
+                "3.000000000000000000000000000000",
+                Some((format!("3333333333333333333.{}", "3".repeat(54)), 30)),
+            ),
+        ] {
+            let (left, right) = (decimal(left), decimal(right));
+            let actual = evaluator
+                .eval_decimal(Some(&dec_call(left, right)))
+                .unwrap();
+            assert_eq!(
+                actual.map(|value| (value.storage_string(), value.scale())),
+                expected
+            );
+        }
+        let large = decimal(&format!("81{}", "0".repeat(79)));
+        let tenth = decimal("0.1");
+        let actual = evaluator
+            .eval_decimal(Some(&dec_call(large, tenth)))
+            .unwrap()
+            .unwrap();
+        // 8.1e80 / 0.1 requires 82 integer digits; legacy keeps saturation.
+        assert_eq!(actual.storage_string(), "9".repeat(81));
+        assert_eq!(actual.scale(), 0);
+        for (left, right, expected) in [
+            (-7.5, 2.0, Some(-3.75)),
+            (7.5, -2.0, Some(-3.75)),
+            (1.0, -0.0, None),
+            (-f64::MAX, 0.5, Some(f64::NEG_INFINITY)),
+        ] {
+            let call = SimpleExpr::Func(
+                SimpleSig::DivideReal,
+                vec![SimpleExpr::Real(left), SimpleExpr::Real(right)],
+            );
+            assert_eq!(evaluator.eval_real(Some(&call)).unwrap(), expected);
+        }
+        let owner = tidb_expr::AsciiPoolOwner::new(
+            tidb_expr::AsciiPoolPolicy::checked(
+                0,
+                0,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let shared = convert_expr(&tipb::Expr {
+            tp: Some(tipb::ExprType::ScalarFunc as i32),
+            sig: Some(tipb::ScalarFuncSig::IntIsNull as i32),
+            field_type: Some(tipb::FieldType {
+                tp: Some(8),
+                ..Default::default()
+            }),
+            children: vec![tipb::Expr {
+                tp: Some(tipb::ExprType::Null as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+        let assert_pool = |error| match error {
+            LegacyEvalError::Infrastructure(tidb_expr::EvalError::ExpressionAdapterFailure(
+                failure,
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_expr::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_expr::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("true division lost pool cause: {other:?}"),
+        };
+        execution
+            .scope()
+            .with_columns(&tidb_expr::NoColumns, |columns| {
+                let scoped = LegacyEvaluator {
+                    raw_columns: columns,
+                    ..LegacyEvaluator::new(&[], 0, &time_zone)
+                };
+                let child_only = LegacyEvaluator {
+                    shared_override: Some(columns),
+                    ..LegacyEvaluator::new(&[], 0, &time_zone)
+                };
+                for (sig, value, zero) in [
+                    (
+                        SimpleSig::DivideReal,
+                        SimpleExpr::Real(7.0),
+                        SimpleExpr::Real(0.0),
+                    ),
+                    (
+                        SimpleSig::DivideDecimal,
+                        SimpleExpr::Decimal(decimal("7")),
+                        SimpleExpr::Decimal(decimal("0")),
+                    ),
+                ] {
+                    for children in [
+                        vec![value.clone(), value.clone()],
+                        vec![value.clone(), zero],
+                        vec![SimpleExpr::Null, value.clone()],
+                        vec![value.clone(), SimpleExpr::Null],
+                        vec![],
+                        vec![value.clone()],
+                        vec![SimpleExpr::Null],
+                    ] {
+                        let call = SimpleExpr::Func(sig.clone(), children);
+                        assert_pool(
+                            scoped
+                                .eval_expr(&call)
+                                .expect_err("division requires worker for every presence"),
+                        );
+                        assert_pool(
+                            scoped
+                                .folded_int(Some(&call))
+                                .expect_err("pool error cannot fold to NULL"),
+                        );
+                    }
+                    let null_left =
+                        SimpleExpr::Func(sig.clone(), vec![SimpleExpr::Null, shared.clone()]);
+                    assert_eq!(child_only.eval_expr(&null_left).unwrap(), None);
+                    let missing = SimpleExpr::Func(sig.clone(), vec![]);
+                    assert_eq!(child_only.eval_expr(&missing).unwrap(), None);
+                    let demanded = SimpleExpr::Func(sig, vec![value, shared.clone()]);
+                    assert_pool(
+                        child_only
+                            .eval_expr(&demanded)
+                            .expect_err("non-NULL left demands RHS"),
+                    );
+                }
+            });
     }
 
     #[test]
