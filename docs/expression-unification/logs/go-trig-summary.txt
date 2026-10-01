@@ -1,0 +1,78 @@
+Checkpoint: go-trig-five-27
+STATUS: final functional checkpoint, 84->89/245; final acceptance remains 0/245.
+Five whole frozen IDs: sin, cos, tan, cot, atan. atan2 is an alias, not a sixth family. No duplicate legacy/test-bridge credit or completed/transcreated Go-package claim.
+Exactly 7 retained Rust logs = 7 actual test runs: 6 scoped green, full expression with 4 known failures. No retries, compile failures or old expected-value corrections in this batch.
+PROVENANCE: all Rust commands, exit statuses, formatting and final source/golden/failure-section comparisons are parent-owned. This writer read/grepped completed receipts and ran sha256sum on all seven logs (exit0), not build/test/fmt.
+RAW DIRECTORY: /home/agent/tidb/expression-unification/logs
+JAN CWD: /home/agent/tidb/expression-unification/tikv; cargo-tikv pin nightly-2026-01-30-x86_64-unknown-linux-gnu.
+AUG CWD: /home/agent/tidb/expression-unification/tidb/rust; cargo-tidb pin nightly-2026-08-22-x86_64-unknown-linux-gnu.
+Parent supplied exact commands; each used: set -o pipefail; <COMMAND> 2>&1 | tee /home/agent/tidb/expression-unification/logs/<LOG>
+Compilation times are emitted Finished-test-profile times, not performance measurements.
+
+LOG: go-trig-tikv-local.log
+COMMAND [JAN]: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+EXIT: 0; running 248 tests; compilation 9.45s. The one ignored test is preexisting.
+test result: ok. 247 passed; 0 failed; 1 ignored; 0 measured; 475 filtered out; finished in 0.19s
+SHA256: a9f959d4f2aa8f2d8163ff5d1b6202d8f3d12956da6bc3730d5de414ae8f2569
+LOG: go-trig-tikv-math.log
+COMMAND [JAN]: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_math:: -- --test-threads=1
+EXIT: 0; running 52 tests, including two new raw-policy units; compilation 0.13s.
+test result: ok. 52 passed; 0 failed; 0 ignored; 0 measured; 671 filtered out; finished in 0.10s
+SHA256: e8ad437bfce254d8032bfda0ee1fbf616deabffb7364a43e9dab3d396343869c
+LOG: go-trig-goldens.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-expr --lib go_trig::tests:: -- --test-threads=1
+EXIT: 0; running the original 3 Go tests; compilation 12.39s.
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1530 filtered out; finished in 0.00s
+SHA256: 73f489b297bcea34e6260b500599dcdd7d94a74aeed4dfc06bfb61de29417bf5
+LOG: go-trig-dispatch.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-expr --lib trig_dispatch_ -- --test-threads=1
+EXIT: 0; running 3 representative tests, not a complete PB matrix; compilation 0.12s.
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1530 filtered out; finished in 0.00s
+SHA256: b659bcd43bcd454945101f0208d3bd669efe0cd17fab7188e70eb92b0e901608
+LOG: go-trig-legacy.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_trig_ -- --test-threads=1
+EXIT: 0; running 2 focused tests, not the whole unistore suite; compilation 5.71s.
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 197 filtered out; finished in 0.00s
+SHA256: 63f60262300b46f0264d3c169bfed28e69a4c1e63e79c71341ffc55216015980
+LOG: go-trig-sql.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+EXIT: 0; running 57 tests; compilation 23.57s.
+test result: ok. 57 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 0.85s
+SHA256: 9a73c41eb352e8acef00ba4488e143a2bd273e0f7f35ac305f3158c4b7fcf832
+LOG: go-trig-expr-full.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+EXIT: 101; running 1533 tests; compilation 0.12s.
+test result: FAILED. 1435 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.58s
+SHA256: 9bf689ab9660a7e44df4fb8c5ef7c760a47567520617ef5d2b03124a692cd03a
+
+SOURCE AND GOLDEN RECEIPTS (not whole-log hashes)
+Original native go_trig.rs production was lines1-313 plus449-535; the 134-line cfg(test) block314-447 sat between them. Both production regions, including Xatan/Satan/ATAN/ATAN2, moved with original license/provenance; no duplicate Go production algorithm remains native.
+The old 134-line test block remains native and byte-identical after parent formatting: SHA256 37e34eb959d142d59ccd06c6c4787f17a1ac37d06e4a4b6cdccf657ae0c0b129. Actual old tests cot_one_matches_go_engine_value, large_arguments_reduce_like_go and matches_go_bit_for_bit_on_golden_vectors all passed.
+A's pre-format new module was 400 lines; its comparison against pinned a133570f production, allowing only six visibility changes, was byte-equal: SHA256 70407b5c603fd4f56f68c73e1a0c17b1ea3682002f26d24997eac41d0c43f1c7.
+CURRENT POST-FORMAT module is 392 lines: SHA256 51b36fb03bbd265d12cb4e76e7e54b66f48f571ea0e75e1cb4f1896295630f88. Jan fmt compressed only the shl/shr if layouts; parent comparison allowed exactly six visibility changes plus those two known layout changes, with everything else byte-identical. Do not label the final file 400 lines or entirely unchanged raw bytes.
+Parent pinned-formatted/froze 18 Rust sources: 9 native and 9 TiKV including the new module. The six public pure provider functions are go_sin/go_cos/go_tan/go_atan/go_atan2/trig_reduce inside a pub(crate) module, exposed via C local only for native cfg(test) bridging; dependency exports are not cfg(test)-gated. Production still invokes the private RPN entries, not the test bridge.
+
+FULL-FAILURE COMPARISON (fresh parent-owned comparison, not a whole-log hash)
+Current go-trig-expr-full.log versus round26 char-conv-expr-full.log.
+section = text.split('\nfailures:\n', 1)[1].split('\ntest result:', 1)[0]
+Normalize only re.sub(r"(?m)^(thread '[^\n]*' \()\d+(\) panicked at)", r'\1THREAD\2', section).
+Parent reports complete normalized sections byte-identical, both SHA256 0930217d98e0b92d727527dc3c7cb7313f1bbe35e643da60114fa6d78203839b. This value was freshly confirmed, not substituted from historical evidence.
+Retained failures:
+- pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation
+- tests::builtin_info_json_math_source::exp
+- tests::builtin_math_misc_op_source::vectorized_builtin_op_func
+- time_fn::tests::str_to_date_partial_formats_follow_no_zero_date
+Parent reports both repository git diff --check and both lockfile git diff --exit-code checks exit0. Those are not extra Rust logs or a green full-suite claim.
+
+VALIDATED COVERAGE AND POLICY BOUNDARIES
+NativeGo compatibility core is uniquely relocated, NOT made equivalent to existing wire/libm. Wire+legacy genuinely share libm primitives, but wire Real NaN->NULL/COT infinity error differs from legacy computed raw NaN/infinity. No LegacyLibm TAN entry or new native/legacy PB TAN admission.
+11 private operations = 6 NativeGo +5 LegacyLibm, with unary B->B and binary BB->B raw LE8, ATAN2(y,x). The carriers encode computed results, not input replay; native COT remains 1/go_tan. Existing finite_float, GoError/AST renderer and coercion/NULL policies remain frontend completion, without a new cause/role/ctx getter/driver/graph/fourth column.
+SQL checks 4 regular rows x7 forms, a separate fifth-row COT(0) overflow case, and 16 direct zero-slot probes; not five successful seven-column rows. Counts describe SQL rows/probes, not extra Rust tests.
+Dispatch3 tests selected native reduction/signed-zero values, native ATAN2 NULL-left still coercing right unlike PB, overflow packing and non-NULL PB context forwarding. These are limited representatives, NOT a full PB matrix. Legacy2 covers libm/raw special values and child/NULL demand.
+No original golden or old expected value was changed; no retries or compilation failures occurred in this batch. Prior non-green observations remain historical, not newly successful gates. No native replay follows a backend failure.
+
+LIMITS / FREEZE
+Whole datatype/unistore/parser/workspace completion, exhaustive PB coverage, separate release execution, make lint, wider scope/guard gates and final acceptance remain unverified.
+No zero-copy, allocator-capacity, total physical peak, OOM-safety or performance proof follows from bit-exact samples, raw carriers or logical byte limits.
+After source freeze this writer created only this summary and go-trig-checkpoint.md: no source/old expected/Plan/README/JSON/guide/index/build/test/fmt changes.
+FINAL: 89/245 functional, final0/245; document pair frozen with the non-green full suite retained, not PR-ready.

@@ -37,10 +37,12 @@ pub use evaluated_ascii::{
     AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy, AsciiScope,
     ScopedAsciiColumns,
 };
-#[cfg(test)]
-pub(crate) use tidb_query_expr::local::conv_valid_prefix_native;
 use tidb_query_expr::local::prepare_concat_args as prepare_concat_args_local;
 use tidb_query_expr::local::prepare_find_in_set_keys as prepare_find_in_set_keys_local;
+#[cfg(test)]
+pub(crate) use tidb_query_expr::local::{
+    conv_valid_prefix_native, go_atan, go_atan2, go_cos, go_sin, go_tan, trig_reduce,
+};
 pub(crate) use tidb_query_expr::local::{
     elt_selected_arg, field_int_equal, field_real_equal, legacy_substring_needs_len,
     make_set_selected, native_decimal_target_scale, ConcatKind, ConcatTerminal, EvaluatedArgs,

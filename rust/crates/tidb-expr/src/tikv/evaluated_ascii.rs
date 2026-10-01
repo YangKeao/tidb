@@ -1639,6 +1639,17 @@ fn materialize_computed(
             | EvaluatedBytesOp::LogNative
             | EvaluatedBytesOp::Log2Native
             | EvaluatedBytesOp::PowNative
+            | EvaluatedBytesOp::SinGoNative
+            | EvaluatedBytesOp::CosGoNative
+            | EvaluatedBytesOp::TanGoNative
+            | EvaluatedBytesOp::CotGoNative
+            | EvaluatedBytesOp::AtanGoNative
+            | EvaluatedBytesOp::Atan2GoNative
+            | EvaluatedBytesOp::SinLibmLegacy
+            | EvaluatedBytesOp::CosLibmLegacy
+            | EvaluatedBytesOp::CotLibmLegacy
+            | EvaluatedBytesOp::AtanLibmLegacy
+            | EvaluatedBytesOp::Atan2LibmLegacy
             | EvaluatedBytesOp::AbsRealNative
             | EvaluatedBytesOp::CeilRealNative
             | EvaluatedBytesOp::FloorRealNative

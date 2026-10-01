@@ -696,37 +696,28 @@ pub(crate) fn pi(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> 
     }
 }
 
-/// The shape shared by every unary trig/`RADIANS`/`DEGREES` function with
-/// NO explicit MySQL domain check (unlike `ASIN`/`ACOS` below): `NULL` if
-/// the argument is `NULL`, else `f(x)` wrapped through `finite_float`.
-fn unary_finite(
-    vals: &[Datum],
-    ctx: &dyn Columns,
-    f: impl FnOnce(f64) -> f64,
-) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    match numeric_arg(v, ctx)? {
-        Some(x) => finite_float(f(x)),
-        None => Ok(Datum::Null),
-    }
-}
-
 pub(crate) fn sin(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    unary_finite(vals, ctx, go_trig::go_sin)
+    unary_raw_real(vals, ctx, EvaluatedBytesOp::SinGoNative, |value| {
+        value.map_or(Ok(Datum::Null), finite_float)
+    })
 }
 
 pub(crate) fn cos(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    unary_finite(vals, ctx, go_trig::go_cos)
+    unary_raw_real(vals, ctx, EvaluatedBytesOp::CosGoNative, |value| {
+        value.map_or(Ok(Datum::Null), finite_float)
+    })
 }
 
 fn tan(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    unary_finite(vals, ctx, go_trig::go_tan)
+    unary_raw_real(vals, ctx, EvaluatedBytesOp::TanGoNative, |value| {
+        value.map_or(Ok(Datum::Null), finite_float)
+    })
 }
 
 pub(crate) fn cot(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    unary_finite(vals, ctx, |x| 1.0 / go_trig::go_tan(x))
+    unary_raw_real(vals, ctx, EvaluatedBytesOp::CotGoNative, |value| {
+        value.map_or(Ok(Datum::Null), finite_float)
+    })
 }
 
 fn radians(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
@@ -779,7 +770,9 @@ pub(crate) fn acos(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError
 /// x)` — same argument order, confirmed via `goeval`, not assumed).
 pub(crate) fn atan(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
     match vals {
-        [_] => unary_finite(vals, ctx, go_trig::go_atan),
+        [_] => unary_raw_real(vals, ctx, EvaluatedBytesOp::AtanGoNative, |value| {
+            value.map_or(Ok(Datum::Null), finite_float)
+        }),
         [_, _] => atan2(vals, ctx),
         _ => Err(EvalError::Unsupported("bad function arity")),
     }
@@ -789,10 +782,26 @@ pub(crate) fn atan2(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalErro
     let [y, x] = vals else {
         return Err(EvalError::Unsupported("bad function arity"));
     };
-    let (Some(y), Some(x)) = (numeric_arg(y, ctx)?, numeric_arg(x, ctx)?) else {
-        return Ok(Datum::Null);
-    };
-    finite_float(go_trig::go_atan2(y, x))
+    crate::tikv::evaluate_args_in(
+        EvaluatedBytesOp::Atan2GoNative,
+        ctx,
+        || {
+            // Preserve the value path's demand: even a NULL y still coerces x.
+            // PB's first-NULL child boundary is handled by its own witness.
+            let left = numeric_arg(y, ctx)?.map(f64::to_bits);
+            let right = numeric_arg(x, ctx)?.map(f64::to_bits);
+            Ok(EvaluatedArgs::Ieee754Bits2 {
+                left: crate::tikv::ReadyIeee754Arg::Value(left),
+                right: crate::tikv::ReadyIeee754Arg::Value(right),
+            })
+        },
+        |computed| {
+            computed
+                .into_ieee754_bits()?
+                .map(f64::from_bits)
+                .map_or(Ok(Datum::Null), finite_float)
+        },
+    )
 }
 
 /// `randFunctionClass` / `builtinRandSig` / `builtinRandWithSeedFirstGenSig`

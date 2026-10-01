@@ -3273,9 +3273,11 @@ impl LegacyEvaluator<'_> {
                             }
                         }
                         SimpleSig::Atan2Args => {
-                            let left = legacy_some!(self.eval_real(children.first())?);
-                            let right = legacy_some!(self.eval_real(children.get(1))?);
-                            Some(left.atan2(right))
+                            let arguments = match self.eval_real(children.first())? {
+                                None => None,
+                                Some(left) => Some((left, self.eval_real(children.get(1))?)),
+                            };
+                            tidb_expr::eval_legacy_atan2_in(arguments, self.raw_columns)?
                         }
                         SimpleSig::Pi => match tidb_expr::eval_pi_in(self.raw_columns)? {
                             Datum::Real(value) => Some(value),
@@ -3294,14 +3296,15 @@ impl LegacyEvaluator<'_> {
                             self.inverse_trig(function, self.eval_real(children.first())?)?
                         }
                         other => {
-                            let value = legacy_some!(self.eval_real(children.first())?);
-                            match other {
-                                SimpleSig::Atan1Arg => Some(value.atan()),
-                                SimpleSig::Cos => Some(value.cos()),
-                                SimpleSig::Sin => Some(value.sin()),
-                                SimpleSig::Cot => Some(1.0 / value.tan()),
+                            let value = self.eval_real(children.first())?;
+                            let function = match other {
+                                SimpleSig::Atan1Arg => tidb_expr::LegacyTrigFunction::Atan,
+                                SimpleSig::Cos => tidb_expr::LegacyTrigFunction::Cos,
+                                SimpleSig::Sin => tidb_expr::LegacyTrigFunction::Sin,
+                                SimpleSig::Cot => tidb_expr::LegacyTrigFunction::Cot,
                                 _ => return Ok(None),
-                            }
+                            };
+                            tidb_expr::eval_legacy_trig_in(function, value, self.raw_columns)?
                         }
                     });
                 }
@@ -7340,6 +7343,125 @@ mod tests {
                     refusing.eval_bytes(Some(&bytes)),
                     Err(LegacyEvalError::Infrastructure(_))
                 ));
+            }
+        });
+    }
+
+    #[test]
+    fn legacy_trig_preserves_libm_values_and_raw_specials() {
+        let time_zone = zone();
+        let evaluator = LegacyEvaluator::new(&[], 4, &time_zone);
+        for (sig, input, expected) in [
+            (SimpleSig::Sin, 1.0, 1.0_f64.sin()),
+            (SimpleSig::Cos, 1.0, 1.0_f64.cos()),
+            (SimpleSig::Atan1Arg, 1.0, 1.0_f64.atan()),
+            (SimpleSig::Cot, 1.0, 1.0 / 1.0_f64.tan()),
+            (SimpleSig::Atan1Arg, -0.0, -0.0),
+            (SimpleSig::Cot, 0.0, f64::INFINITY),
+            (SimpleSig::Cot, -0.0, f64::NEG_INFINITY),
+            (SimpleSig::Sin, f64::INFINITY, f64::NAN),
+            (SimpleSig::Cos, f64::NAN, f64::NAN),
+        ] {
+            let call = SimpleExpr::Func(sig, vec![SimpleExpr::Real(input)]);
+            let actual = evaluator.eval_real(Some(&call)).unwrap().unwrap();
+            if expected.is_nan() {
+                assert!(actual.is_nan());
+                assert_eq!(evaluator.eval_expr(&call).unwrap(), None);
+            } else {
+                assert_eq!(actual.to_bits(), expected.to_bits());
+            }
+            let null = SimpleExpr::Func(sig, vec![]);
+            assert_eq!(evaluator.eval_real(Some(&null)).unwrap(), None);
+        }
+        let atan2 = SimpleExpr::Func(
+            SimpleSig::Atan2Args,
+            vec![SimpleExpr::Real(-0.0), SimpleExpr::Real(-0.0)],
+        );
+        assert_eq!(
+            evaluator
+                .eval_real(Some(&atan2))
+                .unwrap()
+                .unwrap()
+                .to_bits(),
+            (-0.0_f64).atan2(-0.0).to_bits()
+        );
+        let right_null = SimpleExpr::Func(
+            SimpleSig::Atan2Args,
+            vec![SimpleExpr::Real(1.0), SimpleExpr::Null],
+        );
+        assert_eq!(evaluator.eval_real(Some(&right_null)).unwrap(), None);
+    }
+
+    #[test]
+    fn legacy_trig_keeps_child_demand_and_null_admission() {
+        let policy = tidb_expr::AsciiPoolPolicy::checked(
+            0,
+            0,
+            16 * 1024 * 1024,
+            4 * 1024 * 1024,
+            4 * 1024 * 1024,
+            64,
+            8,
+            4 * 1024 * 1024,
+        )
+        .expect("zero-slot policy");
+        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let execution = owner.begin_execution().expect("execution");
+        let scope = execution.scope();
+        let time_zone = zone();
+        scope.with_columns(&tidb_expr::NoColumns, |columns| {
+            let bad_child = convert_expr(&tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(tipb::ScalarFuncSig::IntIsNull as i32),
+                field_type: Some(tipb::FieldType {
+                    tp: Some(8),
+                    ..Default::default()
+                }),
+                children: vec![tipb::Expr {
+                    tp: Some(tipb::ExprType::Null as i32),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+            .expect("shared child");
+            assert!(matches!(&bad_child, SimpleExpr::Shared(_)));
+            let evaluator = LegacyEvaluator {
+                shared_override: Some(columns),
+                ..LegacyEvaluator::new(&[], 4, &time_zone)
+            };
+            let atan2 = |left, right| SimpleExpr::Func(SimpleSig::Atan2Args, vec![left, right]);
+            let skipped = atan2(SimpleExpr::Null, bad_child.clone());
+            assert_eq!(evaluator.eval_real(Some(&skipped)).unwrap(), None);
+            let demanded = atan2(SimpleExpr::Real(1.0), bad_child.clone());
+            assert!(matches!(
+                evaluator.eval_real(Some(&demanded)),
+                Err(LegacyEvalError::Infrastructure(_))
+            ));
+            let unary = SimpleExpr::Func(SimpleSig::Sin, vec![bad_child.clone()]);
+            assert!(matches!(
+                evaluator.eval_real(Some(&unary)),
+                Err(LegacyEvalError::Infrastructure(_))
+            ));
+            let extra = SimpleExpr::Func(SimpleSig::Sin, vec![SimpleExpr::Real(0.0), bad_child]);
+            assert_eq!(evaluator.eval_real(Some(&extra)).unwrap(), Some(0.0));
+            let refusing = LegacyEvaluator {
+                raw_columns: columns,
+                ..LegacyEvaluator::new(&[], 4, &time_zone)
+            };
+            for sig in [
+                SimpleSig::Sin,
+                SimpleSig::Cos,
+                SimpleSig::Cot,
+                SimpleSig::Atan1Arg,
+                SimpleSig::Atan2Args,
+            ] {
+                for left in [SimpleExpr::Null, SimpleExpr::Real(1.0)] {
+                    let call = SimpleExpr::Func(sig, vec![left, SimpleExpr::Real(1.0)]);
+                    assert!(matches!(
+                        refusing.eval_expr(&call),
+                        Err(LegacyEvalError::Infrastructure(_))
+                    ));
+                }
             }
         });
     }

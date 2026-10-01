@@ -889,6 +889,63 @@ pub fn eval_legacy_round_decimal_in(
     )
 }
 
+/// Closed legacy libm operations, distinct from native SQL's Go-bit policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LegacyTrigFunction {
+    Sin,
+    Cos,
+    Cot,
+    Atan,
+}
+
+/// Computes a demanded legacy unary argument, preserving raw NaN and infinity.
+/// NULL also enters the shared worker; no SQL finite-result policy is applied.
+pub fn eval_legacy_trig_in(
+    kind: LegacyTrigFunction,
+    value: Option<f64>,
+    ctx: &dyn Columns,
+) -> Result<Option<f64>, EvalError> {
+    let operation = match kind {
+        LegacyTrigFunction::Sin => tikv::EvaluatedBytesOp::SinLibmLegacy,
+        LegacyTrigFunction::Cos => tikv::EvaluatedBytesOp::CosLibmLegacy,
+        LegacyTrigFunction::Cot => tikv::EvaluatedBytesOp::CotLibmLegacy,
+        LegacyTrigFunction::Atan => tikv::EvaluatedBytesOp::AtanLibmLegacy,
+    };
+    tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || Ok(tikv::EvaluatedArgs::Ieee754Bits(value.map(f64::to_bits))),
+        |computed| Ok(computed.into_ieee754_bits()?.map(f64::from_bits)),
+    )
+}
+
+/// Computes legacy libm atan2(y, x) without changing operand demand.
+/// `None` records a NULL y and an undemanded x; `Some((y, x))` carries the
+/// non-NULL y and the actual demanded x. Raw nonfinite results are retained.
+pub fn eval_legacy_atan2_in(
+    arguments: Option<(f64, Option<f64>)>,
+    ctx: &dyn Columns,
+) -> Result<Option<f64>, EvalError> {
+    tikv::evaluate_args_in(
+        tikv::EvaluatedBytesOp::Atan2LibmLegacy,
+        ctx,
+        || {
+            let (left, right) = match arguments {
+                None => (
+                    tikv::ReadyIeee754Arg::Value(None),
+                    tikv::ReadyIeee754Arg::Undemanded,
+                ),
+                Some((y, x)) => (
+                    tikv::ReadyIeee754Arg::Value(Some(y.to_bits())),
+                    tikv::ReadyIeee754Arg::Value(x.map(f64::to_bits)),
+                ),
+            };
+            Ok(tikv::EvaluatedArgs::Ieee754Bits2 { left, right })
+        },
+        |computed| Ok(computed.into_ieee754_bits()?.map(f64::from_bits)),
+    )
+}
+
 /// Closed raw inverse-trigonometric operations for the legacy real channel.
 /// This is not a new SQL or protobuf admission surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

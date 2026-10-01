@@ -367,7 +367,15 @@ impl PbBuiltin {
                         match kernel {
                             kernel
                                 if matches!(kernel, Kernel::Round)
-                                    || self.signature == ScalarFuncSig::Conv =>
+                                    || matches!(
+                                        self.signature,
+                                        ScalarFuncSig::Conv
+                                            | ScalarFuncSig::Atan1Arg
+                                            | ScalarFuncSig::Atan2Args
+                                            | ScalarFuncSig::Cos
+                                            | ScalarFuncSig::Cot
+                                            | ScalarFuncSig::Sin
+                                    ) =>
                             {
                                 // The observed SQL NULL is the only demand
                                 // witness. Earlier values remain uncoerced and

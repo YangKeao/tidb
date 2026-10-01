@@ -5042,3 +5042,182 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_char_conv_dispatch_sql_columns(
         assert!(warnings_of(&session).is_empty(), "{sql}");
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_go_trig_dispatch_sql_bits_metadata_and_overflow() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE shared_go_trig (id INT PRIMARY KEY, x DOUBLE, y DOUBLE)")
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_go_trig VALUES \
+             (1,NULL,1e0),(2,-1e0,1e0),(3,1e0,1e0),(4,0.5e0,NULL),(5,0e0,0e0)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    // Three copied sin/cos/tan vectors from math_fn/go_trig.rs's existing
+    // Go-bit goldens, not stdlib calls or calls back into the shared kernel.
+    // COT/ATAN read y=1 or NULL so their exact old source goldens suffice;
+    // the two-argument spellings read (x,y) and cover either nullable operand.
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT SIN(x),COS(x),TAN(x),COT(y),ATAN(y),ATAN(x,y),ATAN2(x,y) \
+             FROM shared_go_trig WHERE id<5 ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected Go trig dispatch rows")
+    };
+    assert_eq!(columns.len(), 7);
+    assert_eq!(rows.len(), 4);
+    for (_, field) in &columns {
+        assert_eq!(field.code(), tidb_datatype::FieldTypeCode::Double);
+        assert_eq!(field.flen(), 23);
+        assert_eq!(field.decimal(), tidb_datatype::UNSPECIFIED_LENGTH);
+        assert!(!field.is_unsigned());
+        assert_eq!(field.charset_name(), "binary");
+        assert_eq!(field.collation(), tidb_datatype::Collation::Binary);
+    }
+    // Existing tests/math.rs source vectors pin these decimal round-trip
+    // literals. In particular Go COT(1) ends in 3308, not libm's 3306.
+    let cot_one = 0.6420926159343308_f64.to_bits();
+    let atan_one = 0.7853981633974483_f64.to_bits();
+    let atan_minus_one = (-0.7853981633974483_f64).to_bits();
+    let expected_bits: [[Option<u64>; 7]; 4] = [
+        [None, None, None, Some(cot_one), Some(atan_one), None, None],
+        [
+            Some(0xbfeaed548f090cee),
+            Some(0x3fe14a280fb5068c),
+            Some(0xbff8eb245cbee3a5),
+            Some(cot_one),
+            Some(atan_one),
+            Some(atan_minus_one),
+            Some(atan_minus_one),
+        ],
+        [
+            Some(0x3feaed548f090cee),
+            Some(0x3fe14a280fb5068c),
+            Some(0x3ff8eb245cbee3a5),
+            Some(cot_one),
+            Some(atan_one),
+            Some(atan_one),
+            Some(atan_one),
+        ],
+        [
+            Some(0x3fdeaee8744b05f0),
+            Some(0x3fec1528065b7d50),
+            Some(0x3fe17b4f5bf3474a),
+            None,
+            None,
+            None,
+            None,
+        ],
+    ];
+    for (row_index, (row, expected)) in rows.iter().zip(expected_bits).enumerate() {
+        assert_eq!(row.len(), columns.len());
+        for (column, (value, bits)) in row.iter().zip(expected).enumerate() {
+            match (value, bits) {
+                (Datum::Null, None) => {}
+                (Datum::Real(actual), Some(bits)) => {
+                    assert_eq!(
+                        actual.to_bits(),
+                        bits,
+                        "id {}, column {column}",
+                        row_index + 1
+                    );
+                }
+                other => panic!(
+                    "unexpected Go trig cell: id {}, column {column}: {other:?}",
+                    row_index + 1
+                ),
+            }
+        }
+    }
+    assert!(warnings_of(&session).is_empty());
+
+    // Keep the fifth row out of the normal projection. The frontend's finite
+    // policy and existing scalar renderer attach the original column name,
+    // not the value spelling "cot(0)", to COT's DOUBLE overflow.
+    let mysql = session
+        .run_with_columns("SELECT COT(x) FROM shared_go_trig WHERE id=5")
+        .unwrap_err()
+        .to_mysql_error();
+    assert_eq!(mysql.code, 1690);
+    assert_eq!(mysql.state, *b"22003");
+    assert_eq!(
+        mysql.message,
+        "DOUBLE value is out of range in 'cot(test.shared_go_trig.x)'"
+    );
+    assert!(mysql.is_from_evaluation());
+    assert!(warnings_of(&session).is_empty());
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_go_trig_dispatch_sql_columns() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE shared_go_trig_zero (id INT PRIMARY KEY, x DOUBLE, y DOUBLE)")
+        .unwrap();
+    session
+        .run("INSERT INTO shared_go_trig_zero VALUES (1,NULL,1e0),(2,-1e0,1e0),(3,0.5e0,NULL)")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // Every native spelling, including both ATAN arities and ATAN2, must
+    // acquire the real worker for ordinary values and genuine NULL results.
+    // Direct stored-column calls prevent folding or an outer mask from
+    // supplying the failure. The final two calls isolate a NULL second arg.
+    for (expression, id) in [
+        ("SIN(x)", 1),
+        ("COS(x)", 1),
+        ("TAN(x)", 1),
+        ("COT(x)", 1),
+        ("ATAN(x)", 1),
+        ("ATAN(x,y)", 1),
+        ("ATAN2(x,y)", 1),
+        ("SIN(x)", 2),
+        ("COS(x)", 2),
+        ("TAN(x)", 2),
+        ("COT(x)", 2),
+        ("ATAN(x)", 2),
+        ("ATAN(x,y)", 2),
+        ("ATAN2(x,y)", 2),
+        ("ATAN(x,y)", 3),
+        ("ATAN2(x,y)", 3),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_go_trig_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("Go trig must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+}

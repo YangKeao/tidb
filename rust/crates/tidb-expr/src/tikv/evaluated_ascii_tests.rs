@@ -1123,6 +1123,19 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::ConvLegacy => {
             panic!("CHAR and CONV need their original operands and domains")
         }
+        EvaluatedBytesOp::SinGoNative
+        | EvaluatedBytesOp::CosGoNative
+        | EvaluatedBytesOp::TanGoNative
+        | EvaluatedBytesOp::CotGoNative
+        | EvaluatedBytesOp::AtanGoNative
+        | EvaluatedBytesOp::Atan2GoNative
+        | EvaluatedBytesOp::SinLibmLegacy
+        | EvaluatedBytesOp::CosLibmLegacy
+        | EvaluatedBytesOp::CotLibmLegacy
+        | EvaluatedBytesOp::AtanLibmLegacy
+        | EvaluatedBytesOp::Atan2LibmLegacy => {
+            panic!("trigonometric calls need their original numeric operands")
+        }
         EvaluatedBytesOp::AbsIntNative
         | EvaluatedBytesOp::AbsUIntNative
         | EvaluatedBytesOp::AbsRealNative
@@ -1235,6 +1248,223 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+#[test]
+fn trig_dispatch_native_go_bits_preserve_reduction_and_signed_zero() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        // Frozen Go 1.25 vectors and the cot(1) regression from the original
+        // math_fn/go_trig.rs tests, not host libm or the moved pure functions.
+        for (name, values, expected_bits) in [
+            ("SIN", vec![Datum::Real(1e9)], 0x3fe1778cae83c69a),
+            ("COS", vec![Datum::Real(1.0)], 0x3fe14a280fb5068c),
+            ("TAN", vec![Datum::Real(1.0)], 0x3ff8eb245cbee3a5),
+            (
+                "COT",
+                vec![Datum::Real(1.0)],
+                0.6420926159343308_f64.to_bits(),
+            ),
+            // The original Go zero branches retain y's sign, including the
+            // negative-x atan2 quadrant; reversing y/x would produce -pi/2.
+            ("ATAN", vec![Datum::Real(-0.0)], 0x8000000000000000),
+            (
+                "ATAN2",
+                vec![Datum::Real(-0.0), Datum::Real(-1.0)],
+                0xc00921fb54442d18,
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::math_fn::dispatch_values(name, &values, columns).unwrap()
+            });
+            let Datum::Real(value) = result.unwrap() else {
+                panic!("{name} must retain its Real result carrier")
+            };
+            assert_eq!(value.to_bits(), expected_bits, "{name}");
+            assert_wide_math_c4(observation);
+        }
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn trig_dispatch_atan2_null_left_still_coerces_right_unlike_pb() {
+    use crate::expression::Expression;
+    use crate::scalar_function::{PbBuiltin, ScalarFunction};
+    use tidb_proto::tipb::ScalarFuncSig;
+
+    struct Probe {
+        values: RefCell<Vec<Datum>>,
+        events: RefCell<Vec<String>>,
+        level: Cell<ErrorLevel>,
+    }
+    impl Columns for Probe {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn param_value(&self, order: usize) -> Result<Datum, EvalError> {
+            self.events.borrow_mut().push(format!("eval:{order}"));
+            Ok(self.values.borrow()[order].clone())
+        }
+        fn truncate_level(&self) -> ErrorLevel {
+            self.events.borrow_mut().push("truncate".to_owned());
+            self.level.get()
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.events
+                .borrow_mut()
+                .push(format!("warn:{code}:{message}"));
+        }
+    }
+    let native = Probe {
+        values: RefCell::new(Vec::new()),
+        events: RefCell::new(Vec::new()),
+        level: Cell::new(ErrorLevel::Warn),
+    };
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for (level, expected, events, invoked) in [
+            (
+                ErrorLevel::Warn,
+                Ok(Datum::Null),
+                "truncate|warn:1292:Truncated incorrect DOUBLE value: '12x'",
+                true,
+            ),
+            (
+                ErrorLevel::Error,
+                Err(EvalError::TruncatedWrongValue(
+                    "Truncated incorrect DOUBLE value: '12x'".to_owned(),
+                )),
+                "truncate",
+                false,
+            ),
+        ] {
+            native.level.set(level);
+            let (result, observation) = observe_wide_math(|| {
+                crate::math_fn::atan2(&[Datum::Null, Datum::new_string("12x")], columns)
+            });
+            assert_eq!(
+                result, expected,
+                "ordinary atan2 still demands numeric coercion of x after NULL y"
+            );
+            assert_eq!(native.events.replace(Vec::new()).join("|"), events);
+            if invoked {
+                assert_wide_math_c4(observation);
+            } else {
+                assert_eq!(observation.facade_entries, 0);
+                assert_eq!(observation.before_kernel_invocations, None);
+                assert_eq!(observation.after_kernel_invocations, None);
+            }
+        }
+
+        let field = FieldType::new(FieldTypeCode::Double);
+        for (signature, values, expected_reads) in [
+            (ScalarFuncSig::Atan1Arg, vec![Datum::Null], "eval:0"),
+            (
+                ScalarFuncSig::Atan2Args,
+                vec![Datum::MinNotNull, Datum::Null],
+                "eval:0|eval:1",
+            ),
+        ] {
+            *native.values.borrow_mut() = values;
+            let mut args: Vec<_> = (0..native.values.borrow().len())
+                .map(|order| {
+                    let mut constant = Constant::new(Datum::Null, field.clone());
+                    constant.param_marker = Some(crate::constant::ParamMarker {
+                        order: order as i64,
+                    });
+                    Expression::Constant(constant)
+                })
+                .collect();
+            args.push(Expression::ScalarFunction(ScalarFunction::new(
+                tidb_ast::CiString::new("__undemanded_trig_tail__"),
+                field.clone(),
+                Vec::new(),
+            )));
+            let function =
+                ScalarFunction::from_pb(PbBuiltin::new(signature).unwrap(), field.clone(), args);
+            let (result, observation) =
+                observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert_eq!(
+                result,
+                Ok(Datum::Null),
+                "PB NULL neither coerces its earlier sentinel nor checks the extra arity"
+            );
+            assert_eq!(native.events.replace(Vec::new()).join("|"), expected_reads);
+            assert_wide_math_c4(observation);
+        }
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn trig_dispatch_cot_keeps_overflow_pack_and_pb_nonnull_forwards_context() {
+    use crate::expression::Expression;
+    use crate::scalar_function::{PbBuiltin, ScalarFunction};
+    use tidb_proto::tipb::ScalarFuncSig;
+
+    let field = FieldType::new(FieldTypeCode::Double);
+    let function = ScalarFunction::new(
+        tidb_ast::CiString::new("cot"),
+        field.clone(),
+        vec![Expression::Constant(Constant::new(
+            Datum::Real(0.0),
+            field.clone(),
+        ))],
+    );
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        let (result, observation) =
+            observe_wide_math(|| crate::math_fn::cot(&[Datum::Real(0.0)], columns));
+        assert_eq!(result, Err(EvalError::FloatOverflow));
+        assert_wide_math_c4(observation);
+        let (result, observation) =
+            observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        assert_eq!(
+            result,
+            Err(EvalError::DataOutOfRange {
+                value: "DOUBLE",
+                expression: "cot(0)".to_owned(),
+            })
+        );
+        assert_wide_math_c4(observation);
+    });
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        // Normal non-NULL calls exercise the PB values callbacks, not the
+        // dedicated early-NULL witness. One unary and one binary representative.
+        for (signature, values) in [
+            (ScalarFuncSig::Sin, vec![Datum::Real(1.0)]),
+            (ScalarFuncSig::Atan2Args, vec![Datum::Real(1.0), Datum::Real(2.0)]),
+        ] {
+            let args = values.into_iter().map(|value| {
+                Expression::Constant(Constant::new(value, field.clone()))
+            }).collect();
+            let function = ScalarFunction::from_pb(PbBuiltin::new(signature).unwrap(), field.clone(), args);
+            let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource),
+                "PB values callbacks must pass the explicit root context rather than use a one-shot fallback");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 #[derive(Default)]
