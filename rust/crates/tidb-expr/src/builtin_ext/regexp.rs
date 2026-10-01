@@ -15,14 +15,21 @@
 //! Positional regular-expression builtins, ported from
 //! `pkg/expression/builtin_regexp.go`.
 //!
-//! This module owns the scalar value-domain portions of
-//! `REGEXP_SUBSTR`, `REGEXP_INSTR`, and `REGEXP_REPLACE`.  TiDB's Go
+//! This module retains scalar preparation and packing for
+//! `REGEXP_SUBSTR`, `REGEXP_INSTR`, and `REGEXP_REPLACE`; shared TiKV leaves
+//! own their matching and replacement algorithms, without a C4 handoff here.
+//! TiDB's Go
 //! signatures additionally select collations, issue statement warnings, and
 //! expose vectorized/DAG paths. This evaluator accepts evaluated UTF-8 scalar
 //! values; its scalar-function caller supplies the source's context-keyed
 //! compiled-pattern and replacement-instruction caches.
 
-use regex::{Captures, Regex};
+use regex::Regex;
+pub(crate) use tidb_query_expr::NativeReplacementPart as ReplacementPart;
+use tidb_query_expr::{
+    regexp_instr_match, regexp_replace_matches, regexp_replacement_parts, regexp_substr_match,
+    regexp_trim_at, RegexpPolicyError, RegexpReplacementEncoding,
+};
 
 use super::BuiltinFuncCache;
 use crate::coerce::coerce_str;
@@ -109,29 +116,15 @@ fn integer(value: &Datum) -> Result<Option<i64>, EvalError> {
     }
 }
 
-/// Returns the byte offset at which one-indexed character position `pos`
-/// starts.  TiDB's non-binary regexp signatures count UTF-8 characters, while
-/// Go's regexp engine reports byte offsets internally and converts them back
-/// to character positions for `REGEXP_INSTR`.
-fn trim_at(text: &str, pos: i64) -> Result<(usize, &str), EvalError> {
-    if pos < 1 {
-        return Err(EvalError::Unsupported(INVALID_INDEX));
-    }
-    // Go's signatures accept the one-indexed start of an empty string.  The
-    // regex then still gets to see the empty input (for example `^$` matches
-    // at position 1).  Any other position is genuinely out of range.
-    if text.is_empty() && pos == 1 {
-        return Ok((0, text));
-    }
-    let chars = text.chars().count() as i64;
-    if pos > chars {
-        return Err(EvalError::Unsupported(INVALID_INDEX));
-    }
-    let byte = text
-        .char_indices()
-        .nth((pos - 1) as usize)
-        .map_or(text.len(), |(byte, _)| byte);
-    Ok((byte, &text[byte..]))
+/// Preserve native static diagnostics from actual typed leaf failures. Wire
+/// callers retain their own dynamic diagnostic payloads for the same causes.
+fn regexp_policy_error(error: RegexpPolicyError) -> EvalError {
+    EvalError::Unsupported(match error {
+        RegexpPolicyError::InvalidMatchType(_) => "Invalid match type",
+        RegexpPolicyError::InvalidPosition { .. } => INVALID_INDEX,
+        RegexpPolicyError::InvalidSubstitution(_) => INVALID_SUBSTITUTION,
+        RegexpPolicyError::InvalidReplacementUtf8(_) => "invalid UTF-8 regexp replacement",
+    })
 }
 
 fn optional_string(value: &Datum) -> Result<Option<String>, EvalError> {
@@ -166,7 +159,7 @@ fn regexp_substr_with_compiler(
         let Some(occurrence) = integer(&vals[3])? else {
             return Ok(Datum::Null);
         };
-        occurrence.max(1)
+        occurrence
     } else {
         1
     };
@@ -179,12 +172,9 @@ fn regexp_substr_with_compiler(
         String::new()
     };
 
-    let (_, trimmed) = trim_at(&text, pos)?;
+    let (_, trimmed) = regexp_trim_at(&text, pos).map_err(regexp_policy_error)?;
     let regexp = compile(&pattern, &match_type)?;
-    let matched = regexp
-        .find_iter(trimmed)
-        .nth((occurrence - 1) as usize)
-        .map(|matched| matched.as_str().to_owned());
+    let matched = regexp_substr_match(&regexp, trimmed, occurrence).map(str::to_owned);
     Ok(matched.map_or(Datum::Null, Datum::new_string))
 }
 
@@ -212,7 +202,7 @@ fn regexp_instr_with_compiler(
         let Some(occurrence) = integer(&vals[3])? else {
             return Ok(Datum::Null);
         };
-        occurrence.max(1)
+        occurrence
     } else {
         1
     };
@@ -236,113 +226,20 @@ fn regexp_instr_with_compiler(
         String::new()
     };
 
-    let (_, trimmed) = trim_at(&text, pos)?;
+    let (_, trimmed) = regexp_trim_at(&text, pos).map_err(regexp_policy_error)?;
     let regexp = compile(&pattern, &match_type)?;
-    let Some(matched) = regexp.find_iter(trimmed).nth((occurrence - 1) as usize) else {
-        return Ok(Datum::Int(0));
-    };
-
-    let prefix_chars = trimmed[..matched.start()].chars().count() as i64;
-    let end_chars = trimmed[..matched.end()].chars().count() as i64;
-    Ok(Datum::Int(
-        pos + if return_option == 0 {
-            prefix_chars
-        } else {
-            end_chars
-        },
-    ))
+    Ok(Datum::Int(regexp_instr_match(
+        &regexp,
+        trimmed,
+        pos,
+        occurrence,
+        return_option,
+    )))
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ReplacementPart {
-    Group(usize),
-    Literal(Vec<u8>),
-}
-
-/// TiDB's source does not use `regex.ReplaceAllString`'s `$name` syntax.  It
-/// tokenizes a backslash followed by one ASCII digit as a capture reference;
-/// every other escaped byte is inserted literally and a trailing backslash is
-/// ignored.  This is copied from `getInstructions` in the Go source.
+/// Keep the replacement-cache API while the shared leaf owns tokenization.
 pub(crate) fn replacement_parts(replacement: &str) -> Vec<ReplacementPart> {
-    let bytes = replacement.as_bytes();
-    let mut parts = Vec::new();
-    let mut literal = Vec::new();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] != b'\\' {
-            literal.push(bytes[index]);
-            index += 1;
-            continue;
-        }
-        if index + 1 >= bytes.len() {
-            break;
-        }
-        if bytes[index + 1].is_ascii_digit() {
-            if !literal.is_empty() {
-                parts.push(ReplacementPart::Literal(std::mem::take(&mut literal)));
-            }
-            parts.push(ReplacementPart::Group((bytes[index + 1] - b'0') as usize));
-        } else {
-            literal.push(bytes[index + 1]);
-        }
-        index += 2;
-    }
-    if !literal.is_empty() {
-        parts.push(ReplacementPart::Literal(literal));
-    }
-    parts
-}
-
-fn render_replacement(
-    captures: &Captures<'_>,
-    parts: &[ReplacementPart],
-) -> Result<Vec<u8>, EvalError> {
-    let mut rendered = Vec::new();
-    for part in parts {
-        match part {
-            ReplacementPart::Literal(literal) => rendered.extend_from_slice(literal),
-            ReplacementPart::Group(group) => {
-                let Some(capture) = captures.get(*group) else {
-                    return Err(EvalError::Unsupported(INVALID_SUBSTITUTION));
-                };
-                rendered.extend_from_slice(capture.as_str().as_bytes());
-            }
-        }
-    }
-    Ok(rendered)
-}
-
-fn replace_matches(
-    text: &str,
-    regexp: &Regex,
-    parts: &[ReplacementPart],
-    occurrence: i64,
-) -> Result<String, EvalError> {
-    let mut output = String::with_capacity(text.len());
-    let mut copied_until = 0;
-    let mut match_number = 0_i64;
-    for captures in regexp.captures_iter(text) {
-        let Some(matched) = captures.get(0) else {
-            continue;
-        };
-        match_number += 1;
-        let selected = occurrence == 0 || match_number == occurrence;
-        if !selected {
-            continue;
-        }
-        output.push_str(&text[copied_until..matched.start()]);
-        let rendered = render_replacement(&captures, parts)?;
-        let rendered = std::str::from_utf8(&rendered)
-            .map_err(|_| EvalError::Unsupported("invalid UTF-8 regexp replacement"))?;
-        output.push_str(rendered);
-        copied_until = matched.end();
-        if occurrence > 0 {
-            output.push_str(&text[copied_until..]);
-            return Ok(output);
-        }
-    }
-    output.push_str(&text[copied_until..]);
-    Ok(output)
+    regexp_replacement_parts(replacement.as_bytes())
 }
 
 fn regexp_replace(vals: &[Datum]) -> Result<Datum, EvalError> {
@@ -375,11 +272,7 @@ fn regexp_replace_with_compiler(
         let Some(occurrence) = integer(&vals[4])? else {
             return Ok(Datum::Null);
         };
-        if occurrence < 0 {
-            1
-        } else {
-            occurrence
-        }
+        occurrence
     } else {
         0
     };
@@ -392,14 +285,19 @@ fn regexp_replace_with_compiler(
         String::new()
     };
 
-    let (byte, trimmed) = trim_at(&text, pos)?;
+    let (byte, trimmed) = regexp_trim_at(&text, pos).map_err(regexp_policy_error)?;
     let regexp = compile(&pattern, &match_type)?;
     let parts = resolve_replacement(&replacement)?;
-    let replaced = replace_matches(trimmed, &regexp, &parts, occurrence)?;
-    let mut output = String::with_capacity(byte + replaced.len());
-    output.push_str(&text[..byte]);
-    output.push_str(&replaced);
-    Ok(Datum::new_string(output))
+    regexp_replace_matches(
+        &text[..byte],
+        trimmed,
+        &regexp,
+        &parts,
+        occurrence,
+        RegexpReplacementEncoding::NativeUtf8,
+    )
+    .map(Datum::new_string)
+    .map_err(regexp_policy_error)
 }
 
 #[cfg(test)]

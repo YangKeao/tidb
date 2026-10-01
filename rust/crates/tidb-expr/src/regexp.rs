@@ -33,25 +33,15 @@ fn build_regexp(pattern: &str, match_type: &str) -> Result<Regex, EvalError> {
         return Err(EvalError::Unsupported("empty regular expression pattern"));
     }
 
-    // Reduce Go's rightmost-flag-wins rule deterministically before building
-    // the expression. The three remaining RE2 options are independent.
-    let mut case_insensitive = false;
-    let mut multi_line = false;
-    let mut dot_matches_new_line = false;
-    for flag in match_type.bytes() {
-        match flag {
-            b'i' => case_insensitive = true,
-            b'c' => case_insensitive = false,
-            b'm' => multi_line = true,
-            b's' => dot_matches_new_line = true,
-            _ => return Err(EvalError::Unsupported("Invalid match type")),
-        }
-    }
+    // Share flag reduction, but keep the native builder's original pattern
+    // representation rather than the wire compiler's inline flag prefix.
+    let flags = tidb_query_expr::regexp_match_flags(match_type, false)
+        .map_err(|_| EvalError::Unsupported("Invalid match type"))?;
 
     RegexBuilder::new(pattern)
-        .case_insensitive(case_insensitive)
-        .multi_line(multi_line)
-        .dot_matches_new_line(dot_matches_new_line)
+        .case_insensitive(flags.contains(&'i'))
+        .multi_line(flags.contains(&'m'))
+        .dot_matches_new_line(flags.contains(&'s'))
         .build()
         .map_err(|_| EvalError::Unsupported("invalid regular expression pattern"))
 }

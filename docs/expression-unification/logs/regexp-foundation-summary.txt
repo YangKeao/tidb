@@ -1,0 +1,48 @@
+Checkpoint:regexp-foundation-44; previous:vector-eight-43. Pure shared foundation only; functional151/245 UNCHANGED, FINAL0/245. REGEXP_LIKE/SUBSTR/INSTR/REPLACE are NOT newly completed evaluators/families; native still invokes shared leaves directly, no closed-RPN takeover credit.
+COUNTS:6test-Cargo attempts=6actual nonzero runs=4focusedgreen+2CURRENT old-failure fulls. Compile/new executed-test RED/zero-match/launch/failed-targetretry/supplementalreplay/Cargo metadata/lockresolutions0. Focused checks firstpass=true ONLY; no all-checks-green or overall-firstpass-success assertion.
+SOURCE/CHECKS(parent-owned):5Rust=CPP3(new regexp_policy.rs+lib.rs+impl_regexp.rs)+native2(root regexp.rs+builtin_ext/regexp.rs). No manifest/dependency/lock changes. Final5 pinned-format checks+2repository diff checks passed; formatter/static-proof failures0. Three whole original test modules byte-identical, no old test/expected changes; added only3 hand-derived leaf tests, no provider oracle.
+SOURCE TOOLS:ordinarylookup failures2(7's wrong native path; A's nonexistent scalar_function/vectorized_eval.rs). Observation-precondition edit failures2(one each7/B), each recovered by fresh read+retry(total2). Not sandbox denials; normal zero-match globs not errors. LiteralMismatch/presentation/ABIguessfix0. Round44 compile failures/assertion omission are historical, NOT Round45 counters.
+PROVENANCE:writer read/hashed6 logs via sha256sum /home/agent/tidb/expression-unification/logs/regexp-foundation-*.log (exit0), writes ONLY this summary and regexp-foundation-checkpoint.md. Parent owns source/gates/exits/proofs, B owns separate metadata. No fresh writer source audit/build/test/fmt/Git/index/Plan.
+RAW=/home/agent/tidb/expression-unification/logs. Every LOG suffix below has prefix regexp-foundation- and extension .log; SHA256 covers WHOLE LOGS. JAN CWD=/home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv pin nightly-2026-01-30-x86_64-unknown-linux-gnu.
+AUG CWD=/home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb pin nightly-2026-08-22-x86_64-unknown-linux-gnu. Wrapper:set -o pipefail; <COMMAND> 2>&1 | tee <OUTPUT> >/dev/null. OUTPUT=../logs/regexp-foundation-<LOG>.log JAN or ../../logs/regexp-foundation-<LOG>.log AUG.
+All6 commands --locked --lib -- --test-threads=1, no --exact; measured0. Receipt notation:P/F/I;filtered;Finished/test seconds;exit. All actually ran nonzero tests. Finished includes Cargo work, NOT a benchmark; focused tests overlap full suites, not extra distinct-test credit.
+
+LOG=tikv [JAN focused]; COMMAND:../tools/cargo-tikv test --locked -p tidb_query_expr --lib regexp -- --test-threads=1
+7/0/0;790;8.03/0.04s;exit0;SHA256=be25ad102748825a14e8e7bafee252d5271030a44428c0700944f48ef3d0c6db
+LOG=native [AUG focused]; COMMAND:../../tools/cargo-tidb test --locked -p tidb-expr --lib regexp::tests:: -- --test-threads=1
+7/0/0;1571;10.82/0.06s;exit0;SHA256=7791c5d156c4865a09c057f894ecccb268309d576c67a918ffe99a09b1c57919
+LOG=cache [AUG focused]; COMMAND:../../tools/cargo-tidb test --locked -p tidb-expr --lib regexp_cache_identity_by_statement_context -- --test-threads=1
+1/0/0;1577;0.17/0.00s;exit0;SHA256=c4e4c8c9ca51770fbce4b713ac34306d389cecdb1625ef7ebe9a5fac199764c3
+LOG=sql [AUG focused]; COMMAND:../../tools/cargo-tidb test --locked -p tidb-session --lib regexp_ -- --test-threads=1
+2/0/0;2171;23.90/0.04s;exit0;SHA256=56659603b65db9103bbdeaf02324823621d589982b80b0c952e93336e4ebca0a
+LOG=expr-full [AUG CURRENT baseline non-green]; COMMAND:../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+1480/4old/94;0;1578discovered;0.19/10.60s;exit101;SHA256=f043c143375e37d52e4c83fcbce7304fa8e06df3f69c5a1882656fd8c59f0538
+LOG=unistore-full [AUG CURRENT baseline non-green]; COMMAND:../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+195/1old/13;0;209discovered;5.69/2.99s;exit101;SHA256=045f777ff2ed060f1b8ab6e52f712760f35b1626420dc521469af3ada7054604
+
+ACTUAL COVERAGE, NOT AN EXPANDED SQL CLAIM
+CPP7=original impl_regexp::tests four+regexp_policy three new hand-derived tests:flags/positions/nth, single-digit tokens/capture errors, per-selected-replacement UTF-8 ordering. Native7=original root regexp::tests three+builtin_ext::regexp::tests four. Parent preserved these3 complete old modules byte-for-byte; no changed expected values or re-recording.
+Cache1 is tests::regexp_vec_cache_source::regexp_cache_identity_by_statement_context:original context/constness reuse, successful and failed pattern memoization, replacement cache and clone-reset contract. No new cache protocol is established by passing this old test.
+SQL2 are tests_collation::field_find_in_set_and_regexp_use_the_derived_collation and tests_core::builtins::regexp_through_the_chunk_path. These are existing REGEXP_LIKE/predicate rows ONLY, not new positional SQL coverage or new result-metadata assertions. No extra positional-SQL gate was run or invented from tests in a full suite.
+
+SHARED ALGORITHMS / PRESERVED POLICIES
+Six pure helpers share flags, character trim, nth matching/INSTR character-position count, single-digit backslash tokenization, capture rendering and prefix-inclusive replacement; three typed enums encode actual policy errors, Group/Literal parts and NativeUtf8/WireBytes encoding. No new fake thin getter or driver:the regex-library matcher was already common.
+Only the leaf normalizes raw occurrence:SUBSTR/INSTR max1, negative REPLACE->1, zero REPLACE remains all matches. Native validates each selected replacement's rendered UTF-8 immediately, before later capture errors; wire keeps raw bytes. Prefix concatenation and capture iteration are shared, not left as a native result-producing tail.
+Shared actual typed InvalidMatchType/InvalidPosition/InvalidSubstitution/InvalidReplacementUtf8 are mapped by variant to original native static Unsupported or original wire dynamic diagnostics. No message-text classification, silent SQL-policy repair or shared compiler-representation substitution.
+Native keeps RegexBuilder on original pattern; wire keeps HashSet iteration and inline flags with original Regex Debug error text. Frontend empty-pattern/UTF-8/NULL/return-option/compilation order stays separate:positional native tuple pairs/triples all coerce before NULL test; native trim precedes compile, wire compiles before positional validation. Native collation-derived flags are not newly applied to positional functions.
+Context-id and const-level decisions, both compiled-success and compiled-error cache results, replacement-instruction cache, context switching and clone reset stay unchanged. Public statistics UTF-8/error->None fallback remains; existing PB/legacy invalidUTF-8->empty, invalid-pattern->NULL and empty-pattern-allowed special domain is not rewritten.
+No new C4 operation/Args/result/six-slot expansion/driver/cache protocol/PB admission; native still directly invokes shared leaves. This is foundation only, not four-family evaluator takeover, full-domain/whole-Go-package completion or a new cache ownership mechanism. Allocation/performance/allocator-peak/OOM equivalence is unproved.
+
+CURRENT COMPLETE FAILURE SECTIONS:ONLY THREAD IDS; NO ADDRESS MAPPING
+Parent compared complete current sections against Round44 vector, not merely names/counts. Expr normalized SHA256=25f964887541f45602363f00dc60df4f0af21c74edccc16c38d0804094fb9bff; unchanged four failures:
+- pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation (pushdown_catalog.rs:3077:9)
+- tests::builtin_info_json_math_source::exp (builtin_info_json_math_source.rs:1881:5; EXP(100_000.0) expects FloatOverflow)
+- tests::builtin_math_misc_op_source::vectorized_builtin_op_func (crates/tidb-datatype/src/duration.rs:164:55; nonnegative duration FSP: TryFromIntError(NegOverflow))
+- time_fn::tests::str_to_date_partial_formats_follow_no_zero_date (time_fn/tests.rs:888:9)
+Unistore normalized SHA256=e285bfdba646f2d01f85b485ae317cc07c51b78cf0ae6d664c0fb2bc39259759; same tests_mockstore_part1_go_parity::closure_executor_selection_over_point_range_answers_zero_rows at crates/tidb-unistore/src/tests_mockstore_part1_go_parity.rs:194:5; TruncatedWrongValue("Truncated incorrect DECIMAL value: 'abc'").
+ONLY panic-heading thread IDs normalized, NO ADDRESS MAPPING/historical164->212 remap. These complete FAILURE-SECTION hashes differ from WHOLE-LOG SHA256 above. Both full suites remain CURRENT non-green; four focused first passes do not make all checks green or universally first-pass.
+
+FUTURE GAP / FREEZE
+Plan45 RO sketch, NOT implemented:actual shared cache state and typed errors, native retains owner with clone reset; private typed RPN metadata bind/unbind and pool-return cleanup; lazy initialization and miss writeback at original demand points. Existing unit-only payload/storage charges do not cover this cache state:budget and ownership contract must be locked before implementation. Host callbacks, fake Bytes or detached snapshots cannot stand in for true shared state.
+FORMAT/DATE/MICROSECOND/larger JSON paths/M6 remain deferred; historical Round39 parser-all E0061 was neither repaired nor rerun here. Whole-workspace/Go-package acceptance/lint/release/profile/FIPS/performance/zero-copy/allocator-OOM-peak/PR-readiness remain unestablished.
+Only2authorized docs written; read/hash6logs, no fresh source/build/other audit/test/fmt/Git/index/Plan/Bmetadata edit.6actual tests=4focusedgreen+2old-current-full; compile/newRED/zero/launch/retry/supplemental/metadata/lockres0, ordinarylookup2, observationedit2/retry2, literalMismatch/presentation/ABIguessfix0; focused firstpass=true ONLY. Functional151/245 unchanged; FINAL0/245.
