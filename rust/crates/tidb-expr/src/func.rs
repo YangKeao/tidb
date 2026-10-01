@@ -27,7 +27,7 @@ use crate::string_fn::{
     str_insert, str_take_in, strcmp_in, substring, substring_index_in, unhex_in,
 };
 use crate::string_packet::{pad, repeat, space, to_base64};
-use crate::time_fn::calendar::{date_add, date_diff, date_format, date_part, from_days, time_part};
+use crate::time_fn::calendar::{date_add, date_diff, date_format, from_days, time_part, year_in};
 use crate::{BuildContext, Columns, Datum, EvalError, StringLengthFunction};
 
 /// Evaluates a builtin scalar function over its evaluated arguments.
@@ -835,12 +835,9 @@ pub(crate) fn eval_func_values(
         "LOAD_FILE" if vals.len() == 1 => Ok(Datum::Null),
         "FROM_BASE64" if vals.len() == 1 => from_base64_in(vals, ctx),
         // ---- date-part extraction ----
-        // A `DATE`/`DATETIME` value is a plain string to this evaluator (no
-        // date value domain), so these parse the string's calendar
-        // components directly; `NULL` if it doesn't coerce to a string or
-        // doesn't parse as a valid date (calendar-validated: month 1-12, day
-        // valid for that specific month/year including leap years).
-        "YEAR" => date_part(vals, |d| d.0),
+        // The existing ETDatetime cast has already supplied Time or NULL.
+        // Preserve its raw fields, including zero/invalid calendar values.
+        "YEAR" => year_in(vals, ctx),
         // `HOUR`/`MINUTE`/`SECOND`: a GENUINELY different two-path
         // algorithm from the DATE-part functions above, depending on
         // whether the argument contains a `:` — see

@@ -1580,6 +1580,10 @@ fn materialize_computed(
             | EvaluatedBytesOp::JsonValidTextNative
             | EvaluatedBytesOp::JsonValidBinaryNative
             | EvaluatedBytesOp::JsonValidOtherNative
+            | EvaluatedBytesOp::YearCoreNative
+            | EvaluatedBytesOp::MonthCoreNative
+            | EvaluatedBytesOp::DayOfMonthCoreNative
+            | EvaluatedBytesOp::QuarterCoreNative
             | EvaluatedBytesOp::AbsIntNative
             | EvaluatedBytesOp::AbsUIntNative
             | EvaluatedBytesOp::CeilIntNative

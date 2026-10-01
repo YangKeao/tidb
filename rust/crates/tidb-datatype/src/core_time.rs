@@ -19,6 +19,7 @@ use chrono::{
     DateTime, Datelike, Duration as ChronoDuration, LocalResult, NaiveDate, NaiveDateTime,
     TimeZone, Timelike,
 };
+use tidb_query_datatype::codec::mysql::Time as SharedTime;
 
 const YEAR_OFFSET: u64 = 50;
 const MONTH_OFFSET: u64 = 46;
@@ -68,17 +69,17 @@ impl CoreTime {
 
     /// Returns the year.
     pub const fn year(self) -> i32 {
-        ((self.0 >> YEAR_OFFSET) & 0x3fff) as i32
+        SharedTime::year_from_core_bits(self.0) as i32
     }
 
     /// Returns the month.
     pub const fn month(self) -> u8 {
-        ((self.0 >> MONTH_OFFSET) & 0x0f) as u8
+        SharedTime::month_from_core_bits(self.0) as u8
     }
 
     /// Returns the day of month.
     pub const fn day(self) -> u8 {
-        ((self.0 >> DAY_OFFSET) & 0x1f) as u8
+        SharedTime::day_from_core_bits(self.0) as u8
     }
 
     /// Returns the hour.

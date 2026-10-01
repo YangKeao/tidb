@@ -19,8 +19,8 @@ use crate::coerce::coerce_str;
 use crate::{Columns, Datum, ErrorLevel, EvalError};
 use tidb_datatype::{CoreTime, Time, TimeType};
 
-/// The calendar `(year, month, day)` a *component* date-part function
-/// (`YEAR`/`MONTH`/`DAYOFMONTH`/`QUARTER`) reads, which in Go is the whole of
+/// The whole stored CoreTime supplied to a component date-part kernel.
+/// For `YEAR`/`MONTH`/`DAYOFMONTH`/`QUARTER`, field access in Go is the whole of
 /// the function body: `builtinYearSig`/`MonthSig`/`DayOfMonthSig`/`QuarterSig`
 /// return `date.Year()` / `date.Month()` / `date.Day()` off the value
 /// `EvalTime` handed them, with NO parsing and NO `InvalidZero` check -- so a
@@ -36,19 +36,12 @@ use tidb_datatype::{CoreTime, Time, TimeType};
 /// this function is now equally short: a temporal value or `NULL` is ALL that
 /// can arrive, and a string is decided by the cast -- one rule, in one place,
 /// instead of one per call site.
-pub(crate) fn component_date(vals: &[Datum]) -> Result<Option<(i64, u32, u32)>, EvalError> {
+pub(crate) fn component_time_core(vals: &[Datum]) -> Result<Option<CoreTime>, EvalError> {
     let [value] = vals else {
         return Err(EvalError::Unsupported("bad function arity"));
     };
     match value {
-        Datum::Time(time) => {
-            let core = time.core_time();
-            Ok(Some((
-                i64::from(core.year()),
-                u32::from(core.month()),
-                u32::from(core.day()),
-            )))
-        }
+        Datum::Time(time) => Ok(Some(time.core_time())),
         Datum::Null => Ok(None),
         // Unreachable through either evaluator: both apply the ETDatetime
         // argument cast first. Refusing loudly keeps a future caller that
@@ -59,10 +52,44 @@ pub(crate) fn component_date(vals: &[Datum]) -> Result<Option<(i64, u32, u32)>, 
     }
 }
 
-/// The calendar `(year, month, day)` parsed from a single-argument
-/// date-part function's argument, honoring an already-typed `Datum::Time`
-/// (including a zero datetime) via [`component_date`]: `NULL` only if it does
-/// not coerce/parse as a valid date (see [`parse_date_ymd`]).
+/// Sends the complete, unvalidated stored core through the closed worker.
+/// ETDatetime conversion belongs to the existing caller, not this adapter.
+pub(crate) fn component_field_in(
+    vals: &[Datum],
+    operation: crate::tikv::EvaluatedBytesOp,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || {
+            Ok(crate::tikv::EvaluatedArgs::TimeCoreBits(
+                component_time_core(vals)?.map(CoreTime::raw),
+            ))
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
+}
+
+pub(crate) fn year_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    component_field_in(vals, crate::tikv::EvaluatedBytesOp::YearCoreNative, ctx)
+}
+
+/// Test compatibility only: the original tuple uses the shared CoreTime
+/// getters. Production date-part evaluation always enters the closed worker.
+#[cfg(test)]
+pub(crate) fn component_date(vals: &[Datum]) -> Result<Option<(i64, u32, u32)>, EvalError> {
+    Ok(component_time_core(vals)?.map(|core| {
+        (
+            i64::from(core.year()),
+            u32::from(core.month()),
+            u32::from(core.day()),
+        )
+    }))
+}
+
+/// Preserves the old test-vector callback, not a production generic fallback.
+#[cfg(test)]
 pub(crate) fn date_part(
     vals: &[Datum],
     f: impl Fn((i64, u32, u32)) -> i64,

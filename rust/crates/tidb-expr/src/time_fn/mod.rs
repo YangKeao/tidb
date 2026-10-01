@@ -57,12 +57,12 @@ pub(crate) fn dispatch(
         "DATE" => date(vals, cols),
         "MICROSECOND" => microsecond(vals),
         "TIME" => time(vals, cols),
-        "MONTH" => month(vals),
-        "DAY" | "DAYOFMONTH" => day_of_month(vals),
+        "MONTH" => month_in(vals, cols),
+        "DAY" | "DAYOFMONTH" => day_of_month_in(vals, cols),
         "DAYOFWEEK" => day_of_week(vals),
         "DAYOFYEAR" => day_of_year(vals),
         "WEEKDAY" => weekday(vals),
-        "QUARTER" => quarter(vals),
+        "QUARTER" => quarter_in(vals, cols),
         "WEEK" => week(vals, cols.default_week_format()),
         "WEEKOFYEAR" => week_of_year_builtin(vals),
         "TIDB_PARSE_TSO_LOGICAL" => tidb_parse_tso_logical(vals),
@@ -470,10 +470,36 @@ fn single_datetime(vals: &[Datum]) -> Result<Option<(i64, u32, u32)>, EvalError>
 /// The source returns the stored month field directly with no zero
 /// rejection, because `monthFunctionClass` declares its argument
 /// `types.ETDatetime` (`builtin_time.go:1116`) and so receives a value
-/// `EvalTime` already produced non-NULL — see [`calendar::component_date`].
+/// `EvalTime` already produced non-NULL — see [`calendar::component_time_core`].
+pub(crate) fn month_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    calendar::component_field_in(vals, crate::tikv::EvaluatedBytesOp::MonthCoreNative, ctx)
+}
+
+#[cfg(test)]
 pub(crate) fn month(vals: &[Datum]) -> Result<Datum, EvalError> {
-    Ok(calendar::component_date(vals)?
-        .map_or(Datum::Null, |(_, month, _)| Datum::Int(i64::from(month))))
+    month_in(vals, &crate::NoColumns)
+}
+
+/// The legacy MONTH seam accepts an already-evaluated core without rebuilding
+/// or validating a Time. Even NULL reaches the same shared field kernel.
+pub(crate) fn month_core_in(
+    value: Option<tidb_datatype::CoreTime>,
+    ctx: &dyn Columns,
+) -> Result<Option<i64>, EvalError> {
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::MonthCoreNative,
+        ctx,
+        || {
+            Ok(crate::tikv::EvaluatedArgs::TimeCoreBits(
+                value.map(tidb_datatype::CoreTime::raw),
+            ))
+        },
+        |computed| match computed.into_int_datum()? {
+            Datum::Null => Ok(None),
+            Datum::Int(value) => Ok(Some(value)),
+            _ => Err(EvalError::Unsupported("MONTH result kind mismatch")),
+        },
+    )
 }
 
 /// `builtinDayOfMonthSig.evalInt` in `pkg/expression/builtin_time.go`.
@@ -481,10 +507,18 @@ pub(crate) fn month(vals: &[Datum]) -> Result<Datum, EvalError> {
 /// The source returns the stored day field directly with no zero rejection,
 /// because `dayOfMonthFunctionClass` declares its argument
 /// `types.ETDatetime` (`builtin_time.go:1284`) and so receives a value
-/// `EvalTime` already produced non-NULL — see [`calendar::component_date`].
+/// `EvalTime` already produced non-NULL — see [`calendar::component_time_core`].
+fn day_of_month_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    calendar::component_field_in(
+        vals,
+        crate::tikv::EvaluatedBytesOp::DayOfMonthCoreNative,
+        ctx,
+    )
+}
+
+#[cfg(test)]
 fn day_of_month(vals: &[Datum]) -> Result<Datum, EvalError> {
-    Ok(calendar::component_date(vals)?
-        .map_or(Datum::Null, |(_, _, day)| Datum::Int(i64::from(day))))
+    day_of_month_in(vals, &crate::NoColumns)
 }
 
 /// `builtinDayOfWeekSig.evalInt`: Sunday is 1 through Saturday 7. Invalid
@@ -529,12 +563,13 @@ fn weekday(vals: &[Datum]) -> Result<Datum, EvalError> {
 /// ETDatetime cast ([`crate::arg_eval_type`]) is what decides a string, and
 /// it is `types.ParseTime` under the READ path's `IgnoreZeroInDate`, which
 /// keeps a zero month exactly as Go does.
+fn quarter_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    calendar::component_field_in(vals, crate::tikv::EvaluatedBytesOp::QuarterCoreNative, ctx)
+}
+
+#[cfg(test)]
 fn quarter(vals: &[Datum]) -> Result<Datum, EvalError> {
-    Ok(
-        calendar::component_date(vals)?.map_or(Datum::Null, |(_, month, _)| {
-            Datum::Int(i64::from(month.div_ceil(3)))
-        }),
-    )
+    quarter_in(vals, &crate::NoColumns)
 }
 
 /// `builtinWeekWithModeSig` / `builtinWeekWithoutModeSig` in

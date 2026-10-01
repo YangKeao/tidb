@@ -1,0 +1,78 @@
+Checkpoint: temporal-fields-four-32; previous: json-storage-quote-three-31.
+STATUS: 99->103/245 functional; final acceptance 0/245. YEAR/MONTH/DAYOFMONTH/QUARTER are four families; DAY alias earns no extra credit.
+HISTORY: 12 actual runs = 9 green + 1 intentional RED subsequently GREEN + 2 known full-suite non-green runs. One deliberate regression rerun; NOT twelve green, all-first-pass, zero-retry or a fabricated initial-wave split. No compile failure or old-expected modification.
+PROVENANCE: parent owns execution/exits/source/coverage proofs; writer globbed, grepped/read and sha256sum-hashed all twelve completed logs (exit0), without building/testing/formatting. RAW: /home/agent/tidb/expression-unification/logs.
+JAN CWD: /home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv pin nightly-2026-01-30-x86_64-unknown-linux-gnu.
+AUG CWD: /home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb pin nightly-2026-08-22-x86_64-unknown-linux-gnu.
+Execution: set -o pipefail; <COMMAND> 2>&1 | tee <OUTPUT>; OUTPUT is ../logs/<LOG> for JAN, ../../logs/<LOG> for AUG. JAN local/guard/kernels ran with &&; AUG dispatch/native-source likewise. Legacy exact tests retain --exact; full tests have no filter. Finished times are not benchmarks.
+
+LOG [JAN]: temporal-fields-tikv-datatype.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib codec::mysql::time:: -- --test-threads=1
+EXIT: 0; compile1.96s; test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 360 filtered out; finished in 0.01s
+SHA256: 7edb177f897254ed11a97bc3bb3f0dfb8c3b9d07e59826b55be6436043d96add
+LOG [AUG]: temporal-fields-native-datatype.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-datatype --lib core_time -- --test-threads=1
+EXIT: 0; compile2.12s; test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 423 filtered out; finished in 0.00s
+SHA256: 43f108f53053ea66920924b75a28275693035b71ebd1442ee873098daed43a03
+LOG [JAN]: temporal-fields-tikv-local.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+EXIT: 0; compile8.77s; 255 discovered, ignore preexisting; test result: ok. 254 passed; 0 failed; 1 ignored; 0 measured; 484 filtered out; finished in 0.19s
+SHA256: e64585b58512c41d4c8c57251651a891976ec81ff9aae2f89b54b5903e1e4333
+LOG [JAN]: temporal-fields-tikv-guard.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib test_evaluated_raw_rejects_role_length_and_kernel_drift -- --test-threads=1
+EXIT: 0; compile0.12s; test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 738 filtered out; finished in 0.00s
+SHA256: b8116082580f6f7f51aad644e56f9fe63e44f03829ae904fc8c9d03bc5aa6db7
+LOG [JAN]: temporal-fields-tikv-kernels.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_time:: -- --test-threads=1
+EXIT: 0; compile0.12s; test result: ok. 51 passed; 0 failed; 0 ignored; 0 measured; 688 filtered out; finished in 0.01s
+SHA256: 5cde7f6940a26ea7b4106d485c8388c91e53808bfe69e89ed0ecb4169148c61b
+LOG [AUG / intentional RED]: temporal-fields-legacy-red.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-unistore --lib cophandler::tests::legacy_month_infrastructure_survives_consumers_and_index_flags -- --exact --test-threads=1
+EXIT: 101; compile11.52s; test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 200 filtered out; finished in 0.00s
+SHA256: 656fb8da5723bc03d3f429939f73e98c906dd98f6c970269b6b4688ab958f878
+LOG [AUG / regression GREEN]: temporal-fields-legacy-green.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-unistore --lib cophandler::tests::legacy_month_infrastructure_survives_consumers_and_index_flags -- --exact --test-threads=1
+EXIT: 0; compile2.29s; test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 200 filtered out; finished in 0.00s
+SHA256: 3a42675d259965b54ffd6985ef14c7b1c1382fc1b429e1748f50422d30f2c072
+LOG [AUG / current non-green full]: temporal-fields-unistore-full.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+EXIT: 101; compile0.12s; 201 discovered; test result: FAILED. 187 passed; 1 failed; 13 ignored; 0 measured; 0 filtered out; finished in 2.97s
+SHA256: 67ceeac805b2d794aa5d2ad7fb325b28f3157ac54ae9f0a0cb9a070789808ecf
+LOG [AUG]: temporal-fields-dispatch.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib calendar_fields_dispatch_ -- --test-threads=1
+EXIT: 0; compile7.53s; test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1543 filtered out; finished in 0.00s
+SHA256: e155e922d446fadfde82ee1138df5867ffa188dae06eb00d716b690d40e5fbd2
+LOG [AUG]: temporal-fields-native-source.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib tests::datetime:: -- --test-threads=1
+EXIT: 0; compile0.12s; test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 1525 filtered out; finished in 0.02s
+SHA256: d87ee91db4ad411d2af3351abf70c0a1324f6cbea15ddbee5741c4861fd717ae
+LOG [AUG]: temporal-fields-sql.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+EXIT: 0; compile19.11s; test result: ok. 67 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 1.09s
+SHA256: 54763061ba1b68364ab077e6bccff28599b544b1e9ed5dbb132082d6150763a9
+LOG [AUG / current non-green full]: temporal-fields-expr-full.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+EXIT: 101; compile0.15s; 1546 discovered; test result: FAILED. 1448 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.47s
+SHA256: 1bbd2c0be0a1412d81571c16c3fd608c45f6ca0a6f14e2f1d5e7139e1f120b2b
+
+BOUNDARIES / REVIEW AND REGRESSION HISTORY
+Four exact private entries: YearCoreNative/year_core_native_fn_meta, MonthCoreNative/month_core_native_fn_meta, DayOfMonthCoreNative/day_of_month_core_native_fn_meta, QuarterCoreNative/quarter_core_native_fn_meta. Distinct nullable-u64 TimeCoreBits role uses physical exact8LE Bytes and unchanged signed Int output; wrong width is Other transport, not date validation.
+Sole TiKV const year/month/day/quarter extractors serve native CoreTime delegates and TiKV getters; wire quarter calls t.quarter(). No host-computed field answer, strict DateTime/from_packed construction or whole-Time bridge. NULL workers, core0->0, invalidmonth15->15/quarter5 and allones16383/15/31/5 stay quiet; lower/clock bits are ignored. Wire NO_ZERO_DATE/context-warning/nullable order stays unchanged.
+PB review corrected the length-one-only NULL-prefix restriction. Every actually observed NULL, including legacy extra-arity NULL success, reaches a real worker without coercing the observed prefix or reading its suffix; old admission is not expanded. Do not claim the first source edit had no omission.
+Intentional RED retained: cophandler.rs:7707 reports Ok(()) versus expected ExpressionAdapterFailure{class:PoolResource,origin:Pool}. Parent identified legacy index flags swallowing real eval_pi_in zero-slot infrastructure into Ok()/warning1265. A three-line cophandler class check returns infrastructure Err first, leaving ordinary SQL/InvalidResult flag semantics intact; identical exact test GREEN and its full-unistore occurrence pass.
+PB NULL-prefix review changes also happened between RED/GREEN: the whole binary was NOT limited to the three cophandler lines. Regression infrastructure came from actual eval_pi_in, not a PB-generated failure, so that local causal check is separate. Public eval/table/default-NoColumns one-shot behavior is preserved; production request-root injection is NOT established by this evidence.
+D3 covers raw fields, metadata, preparation/refusal and MONTH/PB-NULL routes. E: four rows*five projections including DAY alias; typed-zero setup has one1292 diagnostic; four numeric projections; two string-cast queries with1292 diagnostics; nine zero-slot calls all refuse with PoolResource/Pool (1105); YEAR(bad) additionally retains its pre-admission1292 warning.
+Parent pinned-formatted/checked18 live Rust sources (TiKV8/native10); both repository diff checks and both lockfile checks exit0. Byte-identical proof scope: entire native time_fn/tests.rs, tests/datetime.rs, arg_eval_type.rs; old native core_time cfg(test) block; calendar from parse_date_ymd onward; all old TiKV impl_time tests from test_add_duration_and_duration onward. No broader source inventory/proof is inferred.
+
+TWO CURRENT NON-GREEN FULL-SUITE COMPARISONS (fresh parent comparisons)
+section = text.split('\nfailures:\n',1)[1].split('\ntest result:',1)[0]; normalize only re.sub(r"(?m)^(thread '[^\n]*' \()\d+(\) panicked at)", r'\1THREAD\2', section).
+Native expr complete normalized section equals json-storage-quote-expr-full.log; both SHA256 0930217d98e0b92d727527dc3c7cb7313f1bbe35e643da60114fa6d78203839b. Four retained failures:
+- pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation
+- tests::builtin_info_json_math_source::exp
+- tests::builtin_math_misc_op_source::vectorized_builtin_op_func
+- time_fn::tests::str_to_date_partial_formats_follow_no_zero_date
+Unistore complete normalized section equals substring-gb-unistore-full.log; both SHA256 e285bfdba646f2d01f85b485ae317cc07c51b78cf0ae6d664c0fb2bc39259759. Retained failure:
+- tests_mockstore_part1_go_parity::closure_executor_selection_over_point_range_answers_zero_rows (TruncatedWrongValue DECIMAL 'abc').
+These are failure-section hashes, not whole-log hashes. Both full suites are currently non-green; the old EXP(100_000.0) FloatOverflow assertion still fails. Known does not mean fixed, skipped or merely historical.
+
+FREEZE: only temporal-fields-checkpoint.md and this summary were written under this authorization; no source/other-doc/Plan/JSON/index/build/test/fmt/old-expected edits. No complete Time/Date codec/Go-package, deep or broad input, production request-root integration, internal peak/OOM/zero-copy/performance, release, make lint/full-workspace or wider-guard completion claim. 103/245 functional, final0/245; not PR-ready.

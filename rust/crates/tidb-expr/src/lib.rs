@@ -840,6 +840,15 @@ pub fn eval_pi_in(ctx: &dyn Columns) -> Result<Datum, EvalError> {
     )
 }
 
+/// Reads legacy MONTH from its already-evaluated raw CoreTime through the
+/// shared worker, preserving NULL without a Time constructor or validation.
+pub fn eval_legacy_month_in(
+    value: Option<tidb_datatype::CoreTime>,
+    ctx: &dyn Columns,
+) -> Result<Option<i64>, EvalError> {
+    time_fn::month_core_in(value, ctx)
+}
+
 /// Evaluates legacy integer ROUND's identity through the shared worker.
 /// The full signed i128 domain, including NULL, crosses this closed bridge;
 /// callers may convert the owned result to real only after computation.

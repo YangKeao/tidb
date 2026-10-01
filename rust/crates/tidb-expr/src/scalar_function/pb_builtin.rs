@@ -164,7 +164,7 @@ impl PbBuiltin {
                 crate::time_fn::calendar::time_part(values, |time| i64::from(time.2))
             }),
             MicroSecond => Kernel::Values(|values, _| crate::time_fn::microsecond(values)),
-            Month => Kernel::Values(|values, _| crate::time_fn::month(values)),
+            Month => Kernel::Values(crate::time_fn::month_in),
             WeekWithoutMode => Kernel::Values(|values, ctx| {
                 crate::time_fn::week(values, ctx.default_week_format())
             }),
@@ -363,6 +363,11 @@ impl PbBuiltin {
                             // Preserve the existing child-demand order, but let
                             // the migrated nullable signature actually enter C4.
                             return eval_pb_char_length(&value, binary, ctx);
+                        }
+                        if self.signature == ScalarFuncSig::Month {
+                            // Only the observed NULL enters MONTH's typed core;
+                            // earlier values stay uncoerced and later children unread.
+                            return crate::time_fn::month_in(std::slice::from_ref(&value), ctx);
                         }
                         match kernel {
                             kernel

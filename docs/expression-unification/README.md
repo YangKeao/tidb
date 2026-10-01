@@ -1,38 +1,40 @@
 # Expression unification experiment
 
-Checkpoint-ID: `json-storage-quote-three-31` (previous: `json-introspection-three-30`)
-
-**99/245 frozen families delegate to TiKV with native evaluator algorithms removed; target 221.** This checkpoint adds JSON_STORAGE_FREE, JSON_STORAGE_SIZE and JSON_QUOTE. Strict final-audited acceptance remains **0**; this is incomplete and not PR-ready.
+Checkpoint-ID: `temporal-fields-four-32` (previous: `json-storage-quote-three-31`)
+**103/245 frozen families delegate to TiKV with native evaluator algorithms removed; target 221.** Added: YEAR, MONTH, DAYOFMONTH (DAY alias) and QUARTER. Strict final-audited acceptance remains **0**; incomplete and not PR-ready.
 
 Paired branches: [TiDB](https://github.com/YangKeao/tidb/tree/expression-unification-demo) · [TiKV](https://github.com/YangKeao/tikv/tree/expression-unification-demo). Use sibling checkouts.
-`checkpoint.json` pins TiKV and the published Plan hash. Root Plans mirror `/home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md` at publication; paired pushes do not force-push or create PRs automatically.
+The parent records the paired TiKV commit and Plan hash in `checkpoint.json` before publication. Root Plans mirror `/home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md`; publication uses paired pushes, not force-push or automatic PRs.
 
 ## This checkpoint
 
-- **Storage:** actual worker parsing feeds FREE's computed zero and SIZE's shared encoder-layout/public native-size primitive, including the root byte. No duplicate varint algorithm or binary-encoding bridge introduces u16 key limits. Typed binary-size and JSON path-quote helpers are not conflated with these SQL families.
-- **Quote:** one traversal retains distinct native serde and wire escaping. Native HTML and U+2028/U+2029 handling stays unchanged. Checked `6n+2` reservation is not preservation of the old allocation pattern, a physical-peak bound or an OOM-safety guarantee.
-- **Error phases:** storage coercion stays guarded; parsing occurs after admission, so zero-slot refusal precedes malformed/empty JSON errors. This explicitly changes former error precedence. QUOTE's original UTF-8 and 3064 input errors still precede admission. NULL/empty values reach real workers.
-- **Scope:** 15 Rust files (TiKV 9, native 6); no new module, result kind, input role, NoArgs case, PB/legacy admission, driver or four-column allowance. UNQUOTE and other JSON algorithms remain outside this claim.
+- **Field ownership:** four TiKV Time associated const primitives, plus the quarter instance getter, serve the kernels; native CoreTime's three const getters are thin delegates. Typed invalid fields remain lossless (16383/15/31; quarter 5). Kind, FSP and clock fields are not observed by these four results. Wire YEAR/DAY zero-date warnings remain unchanged; this is not a whole-Time bridge.
+- **Closed protocol:** one new nullable `TimeCoreBits` role accepts exactly eight little-endian bytes, isolated from Bytes/IEEE/Int even for NULL. Four fixed CoreNative operations use the closed Bytes-to-Int factory and existing OwnSignedInt; no new result kind, metadata, module, driver, NoArgs case, four-column allowance or PB admission. Scope: 18 Rust files, TiKV 8/native 10.
+- **Native/PB behavior:** original ETDatetime casts, context getters and warnings stay intact. MONTH PB sends any observed NULL to the worker without coercing the observed prefix or reading the suffix; non-NULL bad arity stays an error. Tuple/callback compatibility is test-only, not a production fallback.
+- **Legacy correction:** a real PI zero-slot regression exposed the index helper's flags=2 downgrade to `Ok` plus warning 1265. A three-line Infrastructure-first guard now returns the error; SQL/InvalidResult flags and messages and public eval/table handling stay unchanged. **DefaultNoColumns one-shot/request-root capability propagation remains unfixed.**
 
 ## Actual validation
 
-| Final run | Result |
+| Run | Result |
 |---|---|
-| TiKV datatype | 35 passed |
-| TiKV local evaluator | 253 passed, 1 existing ignored |
-| TiKV JSON kernels | 21 passed |
-| Native JSON | 40 passed |
-| Original JSON source tests | 30 passed |
-| New native dispatch tests | 2 passed |
-| SQL/lifecycle | 65 passed |
-| Full native expression library | **1445 passed, 4 unchanged failures, 94 ignored; 1543 total, exit 101; 10.45 s** |
+| TiKV datatype | 42 passed |
+| TiKV local evaluator | 254 passed, 1 existing ignored |
+| TiKV guard | 1 passed |
+| TiKV time kernels | 51 passed |
+| Native CoreTime | 15 passed |
+| Native dispatch | 3 passed |
+| Native datetime | 21 passed |
+| SQL/lifecycle | 67 passed |
+| Legacy index regression, before fix | 0 passed, 1 failed; exit 101; 0.00 s |
+| Same exact legacy filter, after fix | 1 passed, 0 failed; exit 0; 0.00 s |
+| Full unistore | **187 passed, 1 unchanged failure, 13 ignored; 201 total; exit 101; 2.97 s** |
+| Full native expression library | **1448 passed, 4 unchanged failures, 94 ignored; 1546 total; exit 101; 10.47 s** |
 
-**8 actual runs: 7 green, 1 known non-green; no compilation failures, retries or expected-value edits.** Pinned formatting/checks covered all 15 files; lockfiles stayed unchanged and diff checks passed. Original JSON/source fixtures, json2/construct/jcodec test blocks and UNQUOTE-onward source remain unchanged. The full failure section matches checkpoint30 after only thread-ID normalization: SHA-256 `0930217d98e0b92d727527dc3c7cb7313f1bbe35e643da60114fa6d78203839b`.
-SQL checks cover four rows across three families, two actual control-byte HEX columns, four 3140 diagnostics and eight zero-slot calls. A 65536-byte key with NULL retains the old size 65556; the inline case remains 24. Only that long-key test uses a `4 × 64 KiB` call cap, not a production-policy change or peak-allocation claim.
-
-Exact commands: [summary](logs/json-storage-quote-summary.txt). Ownership and compatibility: [evidence](evidence/json-storage-quote-checkpoint.md).
+**12 actual runs: 9 green, 1 intentional red subsequently green, 2 known full-suite non-green.** Zero compilation failures; no expected/oracle edits. Both complete failure sections match their baselines after thread-ID-only normalization; exact names and hashes are in `checkpoint.json`. All 18 files passed pinned formatting/checks; both locks and the recorded original fixture files/blocks remain unchanged, and diff checks passed. This is not a zero-rerun or first-wave-perfect claim.
+SQL coverage includes four rows × five projections with DAY alias, typed zero/setup 1292, four numeric columns, two original cast-1292 cases and nine zero-slot calls (bad YEAR retains pre-admission 1292). Three dispatch tests cover invalid fields, Date clock/FSP0 versus Timestamp/FSP6, AST/typed/PB context and PB(NULL,bad-tail) NULL/refusal.
+Exact commands: [summary](logs/temporal-fields-summary.txt). Ownership and corrections: [evidence](evidence/temporal-fields-checkpoint.md).
 
 ## Remaining work
 
-Next read-only candidates, **not credited**: YEAR, MONTH, DAYOFMONTH and QUARTER; DAY aliases DAYOFMONTH, not another family. Only MONTH has existing PB/legacy paths, which must also connect. Any future bridge must retain zero/invalid date fields without validation and preserve ETDatetime casts, getters and warnings; this is not a shared-Time migration. JSON_LENGTH remains deferred. DAYOFWEEK/DAYOFYEAR are also deferred: SQL rejection, public-helper Gregorian normalization and TiKV chrono panic/warning policies are not interchangeable through a strict constructor. No next-batch implementation is claimed.
-Operation-scope coverage, allocation/physical-peak checks, paired differential reruns, release performance, whole workspace, `make lint` and TiFlash remain unfinished. No whole-JSON-codec or complete Go-package claim is made; full datatype, unistore and parser-charset suites were not rerun.
+Next read-only candidates, **not credited**: HOUR, MINUTE, SECOND. SQL has no ETDuration cast here; even typed Duration passes through Display and `parse_hms_extended`'s special clamp. Future work must share that parser, raw-signed-nanos projection/public const helpers and PB/legacy paths, not substitute direct nanos reads. MICROSECOND, TIME_TO_SEC, other parser policies and MONTHNAME require separate locks; no next-batch completion or interchangeable Time domain is claimed.
+JSON_LENGTH/DAYOFWEEK/DAYOFYEAR stay deferred. Operation-scope/capability coverage, allocation/physical peak, paired differential reruns, release performance, whole workspace, `make lint` and TiFlash remain unfinished. No full datatype/parser-suite, whole-Go-package, performance or OOM-safety claim is made.

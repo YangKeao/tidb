@@ -426,21 +426,20 @@ fn exec_index_scan(
             match conditions
                 .iter()
                 .map(|condition| {
-                    eval_expr(condition, &row, context.div_precision_increment, &timezone)
+                    LegacyEvaluator::new(&row, context.div_precision_increment, &timezone)
+                        .eval_expr(condition)
                 })
-                .collect::<Result<Vec<_>, String>>()
+                .collect::<LegacyResult<Vec<_>>>()
             {
                 Ok(values) if values.iter().all(|v| v.is_some_and(|v| v != 0)) => {}
                 Ok(_) => continue,
-                Err(message) => {
-                    if context.flags & 2 != 0 {
-                        eval_warnings.push(tipb::Error {
-                            code: Some(1265),
-                            msg: Some(message),
-                        });
-                        continue;
+                Err(error) => {
+                    if let Err(message) =
+                        fold_index_selection_error(error, context.flags, &mut eval_warnings)
+                    {
+                        return other_error(&message);
                     }
-                    return other_error(&message);
+                    continue;
                 }
             }
             if let Some(aggregator) = aggregator.as_mut() {
@@ -1280,6 +1279,25 @@ impl LegacyEvalError {
 }
 
 type LegacyResult<T> = Result<T, LegacyEvalError>;
+
+fn fold_index_selection_error(
+    error: LegacyEvalError,
+    flags: u64,
+    warnings: &mut Vec<tipb::Error>,
+) -> Result<(), String> {
+    if matches!(&error, LegacyEvalError::Infrastructure(_)) {
+        return Err(error.into_message());
+    }
+    let message = error.into_message();
+    if flags & 2 == 0 {
+        return Err(message);
+    }
+    warnings.push(tipb::Error {
+        code: Some(1265),
+        msg: Some(message),
+    });
+    Ok(())
+}
 
 fn fold_legacy_sql<T>(value: LegacyResult<T>) -> LegacyResult<Option<T>> {
     match value {
@@ -4758,10 +4776,10 @@ impl LegacyEvaluator<'_> {
                         Some(i128::from(duration.microsecond()))
                     }
                     SimpleSig::Month => {
-                        let Some(time) = self.eval_time(children.first())? else {
-                            return Ok(None);
-                        };
-                        Some(i128::from(time.core_time().month()))
+                        let value = self
+                            .eval_time(children.first())?
+                            .map(|time| time.core_time());
+                        tidb_expr::eval_legacy_month_in(value, self.raw_columns)?.map(i128::from)
                     }
                     SimpleSig::DateDiff => {
                         let (Some(left), Some(right)) = (
@@ -7568,6 +7586,137 @@ mod tests {
     }
 
     #[test]
+    fn legacy_month_infrastructure_survives_consumers_and_index_flags() {
+        let policy = tidb_expr::AsciiPoolPolicy::checked(
+            0,
+            0,
+            16 * 1024 * 1024,
+            4 * 1024 * 1024,
+            4 * 1024 * 1024,
+            64,
+            8,
+            4 * 1024 * 1024,
+        )
+        .expect("zero-slot policy");
+        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let execution = owner.begin_execution().expect("execution");
+        let scope = execution.scope();
+        let time_zone = zone();
+        let time = tidb_datatype::Time::from_date_checked(
+            2024,
+            3,
+            5,
+            0,
+            0,
+            0,
+            0,
+            tidb_datatype::TimeType::DateTime,
+            0,
+        )
+        .expect("time");
+        scope.with_columns(&tidb_expr::NoColumns, |columns| {
+            let evaluator = LegacyEvaluator {
+                raw_columns: columns,
+                ..LegacyEvaluator::new(&[], 4, &time_zone)
+            };
+            for children in [
+                vec![SimpleExpr::Time(time)],
+                vec![SimpleExpr::Null],
+                vec![],
+                vec![SimpleExpr::Func(
+                    SimpleSig::CastStringAsTime,
+                    vec![SimpleExpr::Bytes(b"not a time".to_vec())],
+                )],
+                vec![SimpleExpr::Func(
+                    SimpleSig::CastIntAsTime,
+                    vec![SimpleExpr::Func(
+                        SimpleSig::CastRealAsInt,
+                        vec![SimpleExpr::Real(1e100)],
+                    )],
+                )],
+            ] {
+                // Values, NULL and soft SQL NULL all reach MONTH's worker.
+                let month = SimpleExpr::Func(SimpleSig::Month, children);
+                assert!(matches!(
+                    evaluator.eval_expr(&month),
+                    Err(LegacyEvalError::Infrastructure(_))
+                ));
+                let real = SimpleExpr::Func(SimpleSig::CastIntAsReal, vec![month.clone()]);
+                assert!(matches!(
+                    evaluator.eval_real(Some(&real)),
+                    Err(LegacyEvalError::Infrastructure(_))
+                ));
+                let time = SimpleExpr::Func(SimpleSig::CastIntAsTime, vec![month]);
+                assert!(matches!(
+                    evaluator.eval_time(Some(&time)),
+                    Err(LegacyEvalError::Infrastructure(_))
+                ));
+            }
+            let shared = convert_expr(&tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(tipb::ScalarFuncSig::IntIsNull as i32),
+                field_type: Some(tipb::FieldType {
+                    tp: Some(8),
+                    ..Default::default()
+                }),
+                children: vec![tipb::Expr {
+                    tp: Some(tipb::ExprType::Null as i32),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+            .expect("shared child");
+            assert!(matches!(&shared, SimpleExpr::Shared(_)));
+            // Only the child sees the refusing pool; MONTH still demands only first().
+            let child_only = LegacyEvaluator {
+                shared_override: Some(columns),
+                ..LegacyEvaluator::new(&[], 4, &time_zone)
+            };
+            let demanded = SimpleExpr::Func(SimpleSig::Month, vec![shared.clone()]);
+            assert!(matches!(
+                child_only.eval_expr(&demanded),
+                Err(LegacyEvalError::Infrastructure(_))
+            ));
+            for (first, expected) in [(SimpleExpr::Time(time), Some(3)), (SimpleExpr::Null, None)] {
+                let extra = SimpleExpr::Func(SimpleSig::Month, vec![first, shared.clone()]);
+                assert_eq!(child_only.eval_expr(&extra).unwrap(), expected);
+            }
+
+            for flags in [0, 1, 2, 3] {
+                for (error, message) in [
+                    (LegacyEvalError::Sql("legacy SQL".to_owned()), "legacy SQL"),
+                    (
+                        LegacyEvalError::InvalidResult("legacy result"),
+                        "legacy result",
+                    ),
+                ] {
+                    let mut warnings = Vec::new();
+                    let result = fold_index_selection_error(error, flags, &mut warnings);
+                    if flags & 2 != 0 {
+                        assert_eq!(result, Ok(()));
+                        assert_eq!(warnings.len(), 1);
+                        assert_eq!(warnings[0].code, Some(1265));
+                        assert_eq!(warnings[0].msg.as_deref(), Some(message));
+                    } else {
+                        assert_eq!(result, Err(message.to_owned()));
+                        assert!(warnings.is_empty());
+                    }
+                }
+                let error = tidb_expr::eval_pi_in(columns).expect_err("real zero-slot C4 refusal");
+                let message = format!("{error:?}");
+                let error = LegacyEvalError::from(error);
+                assert!(matches!(&error, LegacyEvalError::Infrastructure(_)));
+                let mut warnings = Vec::new();
+                assert_eq!(
+                    fold_index_selection_error(error, flags, &mut warnings),
+                    Err(message)
+                );
+                assert!(warnings.is_empty());
+            }
+        });
+    }
+
+    #[test]
     fn probe_pow_expr() {
         let pow = SimpleExpr::Func(
             SimpleSig::Pow,
@@ -7650,6 +7799,56 @@ mod tests {
                 .with_collation(tidb_datatype::Collation::DEFAULT),
         );
         assert_eq!(main.eval(&row[0]), Ok(Datum::Int(2)));
+    }
+
+    #[test]
+    fn legacy_month_preserves_raw_calendar_fields_and_soft_nulls() {
+        use tidb_datatype::{CoreTime, Datum, Time, TimeType};
+        let time_zone = zone();
+        let month = |input| SimpleExpr::Func(SimpleSig::Month, vec![input]);
+        for (core, expected) in [
+            (CoreTime::from_date(2024, 3, 5, 14, 30, 45, 123456), 3),
+            (CoreTime::default(), 0),
+            (CoreTime::from_date(2024, 2, 31, 31, 63, 63, 1_048_575), 2),
+            (
+                CoreTime::from_date(16_383, 15, 31, 31, 63, 63, 1_048_575),
+                15,
+            ),
+        ] {
+            // MONTH keeps the raw getter's four-bit month, even for invalid dates.
+            let time = Time::new(core, TimeType::DateTime, 6).expect("raw time");
+            assert_eq!(
+                eval_expr(&month(SimpleExpr::Time(time)), &[], 4, &time_zone).unwrap(),
+                Some(expected)
+            );
+            assert_eq!(
+                eval_expr(
+                    &month(SimpleExpr::Column(0)),
+                    &[Datum::Time(time)],
+                    4,
+                    &time_zone,
+                )
+                .unwrap(),
+                Some(expected)
+            );
+        }
+        let evaluator = LegacyEvaluator::new(&[], 4, &time_zone);
+        let sql_error = SimpleExpr::Func(SimpleSig::CastRealAsInt, vec![SimpleExpr::Real(1e100)]);
+        assert!(matches!(
+            evaluator.eval_expr(&sql_error),
+            Err(LegacyEvalError::Sql(_))
+        ));
+        for input in [
+            SimpleExpr::Null,
+            SimpleExpr::Func(
+                SimpleSig::CastStringAsTime,
+                vec![SimpleExpr::Bytes(b"not a time".to_vec())],
+            ),
+            SimpleExpr::Func(SimpleSig::CastIntAsTime, vec![sql_error]),
+        ] {
+            assert_eq!(evaluator.eval_time(Some(&input)).unwrap(), None);
+            assert_eq!(evaluator.eval_expr(&month(input)).unwrap(), None);
+        }
     }
 
     #[test]

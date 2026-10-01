@@ -1132,6 +1132,12 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::JsonQuoteNative => {
             panic!("JSON storage and quoting need their original source domains")
         }
+        EvaluatedBytesOp::YearCoreNative
+        | EvaluatedBytesOp::MonthCoreNative
+        | EvaluatedBytesOp::DayOfMonthCoreNative
+        | EvaluatedBytesOp::QuarterCoreNative => {
+            panic!("calendar fields need their original time cores")
+        }
         EvaluatedBytesOp::CompressGoNative | EvaluatedBytesOp::UncompressNative => {
             panic!("compression calls need their original nullable bytes")
         }
@@ -1269,6 +1275,318 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+fn calendar_fields_native(
+    name: &str,
+    values: &[Datum],
+    columns: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    if name == "YEAR" {
+        crate::func::eval_func_values(name, values, columns).unwrap()
+    } else {
+        crate::time_fn::dispatch(name, values, columns).unwrap()
+    }
+}
+
+fn calendar_fields_ast(sql: &str, columns: &dyn Columns) -> Result<Datum, EvalError> {
+    let tidb_ast::Stmt::Query(query) = tidb_parser::parse(&format!("SELECT {sql}")).unwrap() else {
+        panic!("query")
+    };
+    let tidb_ast::QueryStmt::Select(select) = query.into_inner() else {
+        panic!("SELECT")
+    };
+    let tidb_ast::SelectField::Expr { expr, .. } = &select.fields[0] else {
+        panic!("expression")
+    };
+    crate::eval_in(expr, columns)
+}
+
+fn calendar_fields_month(input: Datum, pb: bool) -> crate::scalar_function::ScalarFunction {
+    use crate::expression::Expression;
+    use crate::scalar_function::{PbBuiltin, ScalarFunction};
+    let args = vec![Expression::Constant(Constant::new(
+        input,
+        FieldType::new(FieldTypeCode::Date),
+    ))];
+    let result_type = FieldType::new(FieldTypeCode::LongLong);
+    if pb {
+        ScalarFunction::from_pb(
+            PbBuiltin::new(tidb_proto::tipb::ScalarFuncSig::Month).unwrap(),
+            result_type,
+            args,
+        )
+    } else {
+        ScalarFunction::new(tidb_ast::CiString::new("month"), result_type, args)
+    }
+}
+
+#[test]
+fn calendar_fields_dispatch_preserves_raw_fields_zero_and_temporal_metadata() {
+    // Public constructors retain these stored fields; expected values are
+    // locked source fields, never computed through the migrated getters.
+    let maximum = Datum::Time(
+        Time::new(
+            CoreTime::from_date(16_383, 15, 31, 17, 18, 19, 123_456),
+            TimeType::DateTime,
+            6,
+        )
+        .unwrap(),
+    );
+    let zero = Datum::Time(Time::new(CoreTime::default(), TimeType::DateTime, 0).unwrap());
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (name, maximum_field) in [
+            ("YEAR", 16_383),
+            ("MONTH", 15),
+            ("DAYOFMONTH", 31),
+            ("QUARTER", 5),
+        ] {
+            for (input, expected) in [
+                (maximum.clone(), Datum::Int(maximum_field)),
+                (zero.clone(), Datum::Int(0)),
+                (Datum::Null, Datum::Null),
+            ] {
+                let (result, observation) = observe_wide_math(|| {
+                    calendar_fields_native(name, std::slice::from_ref(&input), columns)
+                });
+                assert_eq!(
+                    result,
+                    Ok(expected),
+                    "{name} must use the stored core without validating or reparsing it"
+                );
+                assert_wide_math_c4(observation);
+            }
+        }
+        let core = CoreTime::from_date(2024, 3, 15, 17, 18, 19, 123_456);
+        // Date forces FSP zero in Time::new but retains its clock bits;
+        // Timestamp keeps FSP six. Neither changes the selected date field.
+        for (name, kind, expected) in [
+            ("DAYOFMONTH", TimeType::Date, 15),
+            ("MONTH", TimeType::Timestamp, 3),
+        ] {
+            let input = Datum::Time(Time::new(core, kind, 6).unwrap());
+            let (result, observation) =
+                observe_wide_math(|| calendar_fields_native(name, &[input], columns));
+            assert_eq!(result, Ok(Datum::Int(expected)));
+            assert_wide_math_c4(observation);
+        }
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn calendar_fields_dispatch_month_routes_keep_cast_context_and_nullable_worker() {
+    struct Probe {
+        reject_zero: Cell<bool>,
+        events: RefCell<Vec<String>>,
+    }
+    impl Columns for Probe {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn date_modes(&self) -> DateModes {
+            self.events.borrow_mut().push("modes".to_owned());
+            DateModes {
+                no_zero_date: self.reject_zero.get(),
+                ..DateModes::TIDB_DEFAULT_SQL_MODE
+            }
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            self.events.borrow_mut().push("zone".to_owned());
+            SessionTimeZone::Fixed {
+                name: "calendar-context".to_owned(),
+                offset_secs: 0,
+            }
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            let before = EVAL_ONE_OBSERVATION.with(|slot| {
+                slot.borrow().as_ref().is_some_and(|value| {
+                    value.facade_entries == 0
+                        && value.before_kernel_invocations.is_none()
+                        && value.after_kernel_invocations.is_none()
+                })
+            });
+            self.events
+                .borrow_mut()
+                .push(format!("warn:{code}:{message}:before:{before}"));
+        }
+    }
+    let native = Probe {
+        reject_zero: Cell::new(true),
+        events: RefCell::new(Vec::new()),
+    };
+    let ordinary = Datum::Time(
+        Time::new(
+            CoreTime::from_date(2011, 11, 11, 12, 13, 14, 0),
+            TimeType::Date,
+            0,
+        )
+        .unwrap(),
+    );
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for (sql, expected) in [
+            ("MONTH('2011-11-11')", Datum::Int(11)),
+            ("MONTH(NULL)", Datum::Null),
+        ] {
+            let (result, observation) = observe_wide_math(|| calendar_fields_ast(sql, columns));
+            assert_eq!(result, Ok(expected));
+            assert_wide_math_c4(observation);
+        }
+        native.events.borrow_mut().clear();
+        for pb in [false, true] {
+            // Normal one-argument MONTH requests on the typed and PB paths.
+            for (input, expected) in [
+                (ordinary.clone(), Datum::Int(11)),
+                (Datum::Null, Datum::Null),
+            ] {
+                let function = calendar_fields_month(input, pb);
+                let (result, observation) =
+                    observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+                assert_eq!(result, Ok(expected));
+                assert!(
+                    native.events.borrow().is_empty(),
+                    "typed temporal values must not stringify/reparse through session casting"
+                );
+                assert_wide_math_c4(observation);
+            }
+        }
+        let (result, observation) =
+            observe_wide_math(|| calendar_fields_ast("MONTH('0000-00-00')", columns));
+        assert_eq!(result, Ok(Datum::Null));
+        assert_wide_math_c4(observation);
+        let events = native.events.replace(Vec::new());
+        assert!(events.iter().any(|event| event == "modes"));
+        assert!(events.iter().any(|event| event == "zone"));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.starts_with("warn:"))
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["warn:1292:Incorrect datetime value: '0000-00-00 00:00:00.000000':before:true"]
+        );
+        native.reject_zero.set(false);
+        let (result, observation) =
+            observe_wide_math(|| calendar_fields_ast("MONTH('0000-00-00')", columns));
+        assert_eq!(
+            result,
+            Ok(Datum::Int(0)),
+            "the caller's original date mode still controls the cast"
+        );
+        assert_wide_math_c4(observation);
+        let events = native.events.replace(Vec::new());
+        assert!(events.iter().any(|event| event == "modes"));
+        assert!(events.iter().any(|event| event == "zone"));
+        assert!(!events.iter().any(|event| event.starts_with("warn:")));
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn calendar_fields_dispatch_refuses_without_fallback_but_keeps_preparation_errors() {
+    use crate::expression::Expression;
+    use crate::scalar_function::{PbBuiltin, ScalarFunction};
+    let field = FieldType::new(FieldTypeCode::LongLong);
+    // The old PB first-NULL shortcut skips this unreadable suffix, even at
+    // extra arity; only the observed NULL is sent to the real MONTH worker.
+    let null_prefix = ScalarFunction::from_pb(
+        PbBuiltin::new(tidb_proto::tipb::ScalarFuncSig::Month).unwrap(),
+        field.clone(),
+        vec![
+            Expression::Constant(Constant::new(
+                Datum::Null,
+                FieldType::new(FieldTypeCode::Date),
+            )),
+            Expression::ScalarFunction(ScalarFunction::new(
+                tidb_ast::CiString::new("__undemanded_calendar_tail__"),
+                field,
+                Vec::new(),
+            )),
+        ],
+    );
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        let (result, observation) =
+            observe_wide_math(|| null_prefix.eval(columns, tidb_chunk::row::Row::empty()));
+        assert_eq!(
+            result,
+            Ok(Datum::Null),
+            "PB NULL must skip the suffix rather than add an arity gate"
+        );
+        assert_wide_math_c4(observation);
+    });
+    drop(scope);
+    execution.close();
+
+    let ordinary = Datum::Time(
+        Time::new(
+            CoreTime::from_date(2011, 11, 11, 12, 13, 14, 0),
+            TimeType::Date,
+            0,
+        )
+        .unwrap(),
+    );
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for name in ["YEAR", "MONTH", "DAYOFMONTH", "QUARTER"] {
+            for input in [ordinary.clone(), Datum::Null] {
+                let (result, observation) = observe_wide_math(|| calendar_fields_native(name, &[input], columns));
+                assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+                assert_eq!(observation.facade_entries, 0);
+                assert_eq!(observation.before_kernel_invocations, None);
+                assert_eq!(observation.after_kernel_invocations, None);
+            }
+        }
+        for (name, values, expected) in [
+            ("MONTH", vec![Datum::new_bytes([0u8; 8])], EvalError::Unsupported("a date-part argument reached the signature without its ETDatetime cast")),
+            ("YEAR", Vec::new(), EvalError::Unsupported("bad function arity")),
+        ] {
+            let (result, observation) = observe_wide_math(|| calendar_fields_native(name, &values, columns));
+            assert_eq!(result, Err(expected), "wrong native type (including eight bytes) and arity remain preparation errors");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        for sql in ["MONTH('2011-11-11')", "MONTH(NULL)"] {
+            let (result, observation) = observe_wide_math(|| calendar_fields_ast(sql, columns));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        for pb in [false, true] {
+            for input in [ordinary.clone(), Datum::Null] {
+                let function = calendar_fields_month(input, pb);
+                let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+                assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource),
+                    "ordinary and PB MONTH must retain the actual context even for SQL NULL");
+                assert_eq!(observation.facade_entries, 0);
+                assert_eq!(observation.before_kernel_invocations, None);
+                assert_eq!(observation.after_kernel_invocations, None);
+            }
+        }
+        let (result, observation) = observe_wide_math(|| null_prefix.eval(columns, tidb_chunk::row::Row::empty()));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource),
+            "PB NULL prefix still skips the suffix but cannot bypass the real worker's admission");
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 #[test]

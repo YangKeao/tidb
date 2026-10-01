@@ -5956,3 +5956,217 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_json_storage_quote_dispatch_sql
         assert!(warnings_of(&session).is_empty(), "{sql}");
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_date_fields_dispatch_sql_values_metadata_and_coercion() {
+    let mut session = Session::new();
+    session
+        .run("SET sql_mode='STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE'")
+        .unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_date_fields (id INT PRIMARY KEY, \
+             d DATETIME, s VARCHAR(32), n BIGINT)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_date_fields VALUES (1,NULL,NULL,NULL),\
+             (3,'2024-02-29 12:34:56','not-a-date',20240315),\
+             (4,'2021-12-31 23:59:59',NULL,NULL)",
+        )
+        .unwrap();
+    // The recorded INSERT IGNORE mechanism stores a typed zero. Do not use a
+    // read-path string CAST here: NO_ZERO_DATE would turn that into SQL NULL.
+    session
+        .run("INSERT IGNORE INTO shared_date_fields VALUES (2,0,'0000-00-00',NULL)")
+        .unwrap();
+    assert_eq!(session.warnings().len(), 1);
+    assert_eq!(session.warnings()[0].level, WarningLevel::Warning);
+    assert_eq!(session.warnings()[0].code, 1292);
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns("SELECT d FROM shared_date_fields WHERE id=2")
+        .unwrap()
+    else {
+        panic!("expected a stored zero DATETIME")
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].len(), 1);
+    assert!(matches!(&rows[0][0], Datum::Time(time) if time.is_zero()));
+    assert_eq!(cell_text(&rows[0][0]), "0000-00-00 00:00:00");
+    // Only ordinary setup SQL cleared the INSERT warning. No evaluation
+    // warnings are manually drained or suppressed after installing the policy.
+    assert!(warnings_of(&session).is_empty());
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT YEAR(d),MONTH(d),DAYOFMONTH(d),DAY(d),QUARTER(d) \
+             FROM shared_date_fields ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected stored date-field rows")
+    };
+    assert_eq!(columns.len(), 5);
+    for (_, field) in &columns {
+        assert_eq!(field.code(), tidb_datatype::FieldTypeCode::LongLong);
+        assert_eq!(field.flen(), 20);
+        assert_eq!(field.decimal(), 0);
+        assert_eq!(field.charset_name(), "binary");
+        assert_eq!(field.collation(), tidb_datatype::Collation::Binary);
+        assert!(!field.is_unsigned());
+        assert!(!field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
+    }
+    assert_eq!(
+        rows,
+        vec![
+            vec![Datum::Null; 5],
+            vec![Datum::Int(0); 5],
+            vec![
+                Datum::Int(2024),
+                Datum::Int(2),
+                Datum::Int(29),
+                Datum::Int(29),
+                Datum::Int(1)
+            ],
+            vec![
+                Datum::Int(2021),
+                Datum::Int(12),
+                Datum::Int(31),
+                Datum::Int(31),
+                Datum::Int(4)
+            ],
+        ]
+    );
+    assert!(warnings_of(&session).is_empty());
+
+    // A numeric source keeps its original packed-date cast, rather than
+    // becoming a string or being interpreted as a native calendar field.
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns(
+            "SELECT YEAR(n),MONTH(n),DAY(n),QUARTER(n) FROM shared_date_fields WHERE id=3",
+        )
+        .unwrap()
+    else {
+        panic!("expected numeric-source date fields")
+    };
+    assert_eq!(
+        rows,
+        vec![vec![
+            Datum::Int(2024),
+            Datum::Int(3),
+            Datum::Int(15),
+            Datum::Int(1)
+        ]]
+    );
+    assert!(warnings_of(&session).is_empty());
+
+    // The string zero differs from the stored typed zero above. The original
+    // NO_ZERO_DATE cast warning renders the parsed zero at MaxFsp, not the
+    // source spelling; the bad-string warning instead retains its raw text.
+    for (expression, id, message) in [
+        ("YEAR(s)", 3, "Incorrect datetime value: 'not-a-date'"),
+        (
+            "MONTH(s)",
+            2,
+            "Incorrect datetime value: '0000-00-00 00:00:00.000000'",
+        ),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_date_fields WHERE id={id}");
+        let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+            panic!("expected cast-to-NULL date-field row: {sql}")
+        };
+        assert_eq!(rows, vec![vec![Datum::Null]], "{sql}");
+        assert_eq!(
+            session.warnings(),
+            &[SqlWarning {
+                level: WarningLevel::Warning,
+                code: 1292,
+                message: message.to_owned(),
+            }],
+            "{sql}"
+        );
+    }
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_date_fields_dispatch_sql_columns() {
+    let mut session = Session::new();
+    session
+        .run("SET sql_mode='STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE'")
+        .unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_date_fields_zero (id INT PRIMARY KEY, \
+             d DATETIME, s VARCHAR(32))",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_date_fields_zero VALUES \
+             (1,NULL,NULL),(2,'2024-02-29 12:34:56','not-a-date')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // All four field operations use real nullable DATETIME columns. The last
+    // call keeps the original cast warning BEFORE resource refusal: its NULL
+    // result still needs a worker and must not become a successful SQL NULL.
+    for (expression, id, warning) in [
+        ("YEAR(d)", 1, None),
+        ("MONTH(d)", 1, None),
+        ("DAYOFMONTH(d)", 1, None),
+        ("QUARTER(d)", 1, None),
+        ("YEAR(d)", 2, None),
+        ("MONTH(d)", 2, None),
+        ("DAYOFMONTH(d)", 2, None),
+        ("QUARTER(d)", 2, None),
+        ("YEAR(s)", 2, Some("Incorrect datetime value: 'not-a-date'")),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_date_fields_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("date fields must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        if let Some(message) = warning {
+            assert_eq!(
+                session.warnings(),
+                &[SqlWarning {
+                    level: WarningLevel::Warning,
+                    code: 1292,
+                    message: message.to_owned(),
+                }],
+                "{sql}"
+            );
+        } else {
+            assert!(warnings_of(&session).is_empty(), "{sql}");
+        }
+    }
+}
