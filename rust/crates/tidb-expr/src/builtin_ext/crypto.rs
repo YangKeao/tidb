@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! `crypto` family builtins. Every builtin here is transcreated from
+//! `crypto` family compatibility builtins following
 //! `pkg/expression/builtin_encryption.go`; test vectors come from
 //! `pkg/expression/builtin_encryption_test.go`.
 //!
@@ -22,16 +22,15 @@
 //!
 //! `COMPRESS`, `UNCOMPRESS`, and `UNCOMPRESSED_LENGTH` implement TiDB's binary
 //! framing: a 4-byte little-endian original-length prefix followed by a zlib
-//! stream. The compressed block layout is deliberately left to Rust's zlib
-//! encoder; SQL observes a standards-compliant stream and the framing, not a
-//! particular standard-library DEFLATE strategy. The inverse functions require
-//! a complete checksummed stream, cap inflation at the framed original length,
-//! and append TiDB's corruption warnings to the statement context.
+//! stream. COMPRESS retains the existing Go-compatible encoder's exact bytes
+//! through the shared TiKV owner, rather than substituting wire zlib output.
+//! UNCOMPRESS requires a complete checksummed stream and bounded inflation in
+//! that shared owner. Its completed outcome determines statement warnings here;
+//! resource refusal does not fabricate a zlib warning. UNCOMPRESSED_LENGTH only
+//! reads the existing frame header and retains its separate short-input policy.
 //!
-use std::io::Write;
-
-use flate2::write::ZlibEncoder;
-use flate2::{Compression, Decompress, FlushDecompress, Status};
+#[cfg(test)]
+use crate::tikv::{frame_compressed, inflate};
 
 use crate::{BlockEncryptionMode, Columns, Datum, EvalError};
 
@@ -62,7 +61,7 @@ pub(crate) fn dispatch(
         ("VALIDATE_PASSWORD_STRENGTH", 1) => Some(validate_password_strength(&vals[0], ctx)),
         ("ENCODE", 2) => Some(sql_encode(&vals[0], &vals[1])),
         ("DECODE", 2) => Some(sql_decode(&vals[0], &vals[1])),
-        ("COMPRESS", 1) => Some(compress(&vals[0])),
+        ("COMPRESS", 1) => Some(compress(&vals[0], ctx)),
         ("AES_ENCRYPT" | "AES_DECRYPT", _) => {
             eval_aes_lazy(name, vals.len(), |i| Ok(vals[i].clone()), ctx)
         }
@@ -76,127 +75,51 @@ pub(crate) fn dispatch(
 /// as the original byte length followed by a zlib stream. A trailing dot keeps
 /// a stream ending in ASCII space from being changed by SQL trailing-space
 /// handling, matching TiDB's public format.
-fn compress(arg: &Datum) -> Result<Datum, EvalError> {
-    let Some(payload) = sql_string_bytes(arg)? else {
-        return Ok(Datum::Null);
-    };
-    if payload.is_empty() {
-        return Ok(Datum::new_string(Vec::new()));
-    }
-
-    // go's `deflate()` helper: zlib.NewWriter (level 6) + Write + Close —
-    // transcribed bit-exactly in [`go_flate`]; a generic rust zlib backend
-    // makes different encoder choices and diverges on the wire.
-    let compressed = crate::go_flate::go_zlib_deflate(&payload);
-    Ok(Datum::new_string(frame_compressed(
-        payload.len() as u32,
-        compressed,
-    )))
-}
-
-fn frame_compressed(original_len: u32, compressed: Vec<u8>) -> Vec<u8> {
-    let append_suffix = compressed.last() == Some(&b' ');
-    let mut framed = Vec::with_capacity(4 + compressed.len() + usize::from(append_suffix));
-    framed.extend_from_slice(&original_len.to_le_bytes());
-    framed.extend_from_slice(&compressed);
-    if append_suffix {
-        framed.push(b'.');
-    }
-    framed
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InflateError {
-    Decode,
-    OutputLimit,
-}
-
-/// Inflates a zlib stream up to the framed output limit, returning a distinct
-/// error for malformed streams versus output that crosses `max_output`.
-/// This is the bounded counterpart of
-/// `pkg/expression/builtin_encryption.go`'s `inflate`: Go's `limitedBuffer`
-/// rejects the write that would cross the four-byte declared length, so the
-/// decoder must not materialize an attacker-controlled expansion before
-/// reporting `ZlibZBuf`. Trailing bytes past the stream end are ignored.
-fn inflate(data: &[u8], max_output: usize) -> Result<Vec<u8>, InflateError> {
-    let mut decoder = Decompress::new(true);
-    let mut out = Vec::new();
-    let mut input_offset = 0;
-    let mut chunk = [0; 8 * 1024];
-    loop {
-        let input_before = decoder.total_in();
-        let output_before = decoder.total_out();
-        let remaining = max_output.saturating_sub(out.len());
-        // Give zlib one byte beyond the remaining budget so an over-limit
-        // write is detected without ever appending bytes past the limit.
-        let output_len = chunk.len().min(remaining.saturating_add(1));
-        let status = decoder
-            .decompress(
-                &data[input_offset..],
-                &mut chunk[..output_len],
-                FlushDecompress::None,
-            )
-            .map_err(|_| InflateError::Decode)?;
-        input_offset = usize::try_from(decoder.total_in()).map_err(|_| InflateError::Decode)?;
-        let produced = usize::try_from(decoder.total_out() - output_before)
-            .map_err(|_| InflateError::Decode)?;
-        if produced > remaining {
-            return Err(InflateError::OutputLimit);
-        }
-        out.extend_from_slice(&chunk[..produced]);
-        if status == Status::StreamEnd {
-            return Ok(out);
-        }
-        // `compress/zlib.NewReader` refuses a stream that ends before the
-        // DEFLATE terminator and Adler-32 checksum.  The high-level flate2
-        // reader can instead report a successful zero-byte read for that
-        // truncated input, so require either stream completion or forward
-        // progress toward it here.
-        if decoder.total_in() == input_before && produced == 0 {
-            return Err(InflateError::Decode);
-        }
-    }
+fn compress(arg: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::CompressGoNative,
+        ctx,
+        || sql_string_bytes(arg),
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 
 /// `UNCOMPRESS(payload)`. Port of `builtinUncompressSig.evalString`. The 4-byte
 /// little-endian prefix records the original length and the remainder is a zlib
-/// stream. Empty input yields an empty string; NULL, a too-short/corrupted
-/// payload, an undecodable stream, or a stored length below the decompressed
-/// length all yield NULL and append the same statement warning as Go.
+/// stream. Empty input yields an empty string; NULL remains NULL without a
+/// warning. A too-short/corrupted payload, an undecodable stream, or a stored
+/// length below the decompressed length yields NULL with the original warning.
 fn uncompress(arg: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let Some(payload) = sql_string_bytes(arg)? else {
-        return Ok(Datum::Null);
-    };
-    if payload.is_empty() {
-        return Ok(Datum::new_string(Vec::new()));
-    }
-    if payload.len() <= 4 {
-        ctx.append_warning(1259, "ZLIB: Input data corrupted");
-        return Ok(Datum::Null);
-    }
-    let length = u32::from_le_bytes(payload[0..4].try_into().unwrap());
-    let bytes = match inflate(&payload[4..], length as usize) {
-        Ok(bytes) => bytes,
-        Err(InflateError::OutputLimit) => {
-            ctx.append_warning(
-                1258,
-                "ZLIB: Not enough room in the output buffer (probably, length of uncompressed data was corrupted)",
-            );
-            return Ok(Datum::Null);
-        }
-        Err(InflateError::Decode) => {
-            ctx.append_warning(1259, "ZLIB: Input data corrupted");
-            return Ok(Datum::Null);
-        }
-    };
-    if length < bytes.len() as u32 {
-        ctx.append_warning(
-            1258,
-            "ZLIB: Not enough room in the output buffer (probably, length of uncompressed data was corrupted)",
-        );
-        return Ok(Datum::Null);
-    }
-    Ok(Datum::new_string(bytes))
+    use crate::tikv::UncompressOutcome;
+
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::UncompressNative,
+        ctx,
+        || sql_string_bytes(arg),
+        |computed| {
+            // Only the completed kernel disposition produces SQL warnings;
+            // carrier-contract and resource failures propagate without one.
+            Ok(match computed.into_uncompress()? {
+                UncompressOutcome::Null => Datum::Null,
+                UncompressOutcome::Value(bytes) => Datum::new_string(bytes),
+                UncompressOutcome::Corrupt => {
+                    ctx.append_warning(1259, "ZLIB: Input data corrupted");
+                    Datum::Null
+                }
+                UncompressOutcome::OutputLimit => {
+                    ctx.append_warning(
+                        1258,
+                        "ZLIB: Not enough room in the output buffer (probably, length of uncompressed data was corrupted)",
+                    );
+                    Datum::Null
+                }
+            })
+        },
+    )
 }
 
 /// `UNCOMPRESSED_LENGTH(payload)`. Port of

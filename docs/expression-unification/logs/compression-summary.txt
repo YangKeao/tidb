@@ -1,0 +1,83 @@
+Checkpoint: compression-two-29
+STATUS: final functional checkpoint, 91->93/245; final acceptance remains 0/245.
+Only frozen IDs compress/uncompress; no alias, helper, UNCOMPRESSED_LENGTH, PB/legacy or read-only JSON-planning credit. No completed/transcreated Go-package claim.
+PROVENANCE: parent supplied exact commands/exits, source comparisons and coverage; writer globbed, grepped/read seven completed logs and ran sha256sum on all seven (exit0), not build/test/fmt. Seven actual first-attempt Rust runs: six scoped green + retained full failure; zero compile failures, test retries, old-expected changes or new-oracle corrections.
+RAW DIRECTORY: /home/agent/tidb/expression-unification/logs
+JAN CWD: /home/agent/tidb/expression-unification/tikv; cargo-tikv pin nightly-2026-01-30-x86_64-unknown-linux-gnu.
+AUG CWD: /home/agent/tidb/expression-unification/tidb/rust; cargo-tidb pin nightly-2026-08-22-x86_64-unknown-linux-gnu.
+Each exact command used: set -o pipefail; <COMMAND> 2>&1 | tee <OUTPUT>; OUTPUT is ../logs/<LOG> for JAN, ../../logs/<LOG> for AUG. Parent ran the seven listed Rust commands with no additional rerun.
+Compilation times are emitted Finished-test-profile times, not performance measurements.
+
+LOG: compression-tikv-local.log
+COMMAND [JAN]: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+EXIT: 0; running 251 tests; compilation 9.36s. The one ignored global-body-delta test is preexisting.
+test result: ok. 250 passed; 0 failed; 1 ignored; 0 measured; 479 filtered out; finished in 0.19s
+SHA256: 2a5f793ee3f3d68402a813a94ce068182edb1ef5ef7f33c0c6cd60a600269e27
+LOG: compression-tikv-encryption.log
+COMMAND [JAN]: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_encryption:: -- --test-threads=1
+EXIT: 0; running 10 tests, including existing wire tests and two new policy units; compilation 0.12s.
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 720 filtered out; finished in 0.00s
+SHA256: df895084eb6c153a0b21388b7a5c5feb6662bf3bde584d622b194cb75e02f42e
+LOG: compression-go-flate.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-expr --lib go_flate::tests:: -- --test-threads=1
+EXIT: 0; running the original one test with two retained golden vectors; compilation 12.47s.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1537 filtered out; finished in 0.00s
+SHA256: 9660b7f9354b612825a4187120c947213c1bf1a9f56efe530007e584c1d07703
+LOG: compression-native-crypto.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-expr --lib builtin_ext::crypto::tests:: -- --test-threads=1
+EXIT: 0; running the original 15 crypto tests; compilation 0.12s.
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 1523 filtered out; finished in 0.01s
+SHA256: 84801cf90fb7c1ea52165fdebd299c5c00eed1dc6cac21b0d0f03074c494c34e
+LOG: compression-dispatch.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-expr --lib compression_dispatch_ -- --test-threads=1
+EXIT: 0; running three representative dispatcher tests; compilation 0.12s.
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1535 filtered out; finished in 0.00s
+SHA256: eec89af5fbb120cd767f7c2a7f36922d0a49af14fbdcaff29315ffa7e1a08249
+LOG: compression-sql.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+EXIT: 0; running 61 tests; compilation 24.12s.
+test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 0.85s
+SHA256: a84cf02b9098eeb24a312348b6d0bddc0b06ce1113c9454facb5cb327d9c5767
+LOG: compression-expr-full.log
+COMMAND [AUG]: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+EXIT: 101; running 1538 tests; compilation 0.12s.
+test result: FAILED. 1440 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.58s
+SHA256: 14bd256ad5fd2de2b946eb0d803222a7f9f9d5656988881cac99bd6933555d46
+
+SOURCE PRESERVATION (parent-owned comparisons, not whole-log hashes)
+Pre-format new Go module: complete 1153-line production copy byte-identical to 16001161, SHA256 17b251625e0eac68b73637858681b9ec995bbfb0105259871750f17b592354b4. No old test block was copied into TiKV.
+Final whole module: 1152 lines, SHA256 15a4c146f42e4c92b6130eaa32cf44b42961a9da01eb75b22ff5751f658c767a. Parent corrected inherited all-input/all-backend/CPU/package claims in the header; BSD attribution, license first13 and concrete COMPRESS-helper explanation remain.
+Original const-start section: 1114 lines, raw SHA256 69e966130c0822c4de171e50ce8c815e4acaae1ba1629d2cc1a2c9660d64708d.
+New const-start section: 1116 lines, raw SHA256 d8592afa85c8280cbb60e7c028bf885e8f96bef93eeac563d0359f1b24d79ebf. The same pinned January formatter applied to both sections yields byte-identical bodies; their raw bytes/hashes are NOT identical.
+Native inflate INNER body: original-byte-identical, SHA256 e64d370e366cebbf1bcf67df0e4984a9bd18e733d9f86206325e1e45033c8b23. Its public signature uses std::result::Result; original InflateError derives/variants remain.
+Wire UNCOMPRESS INNER body: original-byte-identical to f31c735, SHA256 f5de99946eb36e17d369b29a453fae196112198ae2b500166d54bdfc8afaa1df. Native frame/wire COMPRESS each differ only by two shared LE-u32-prefix/dot-rule calls, preserving their original allocation/I/O ordering, not unifying their encoder/zero/error policies.
+Original native Go tests24 SHA256 bfc4f6603122b95cb63d1fce588d85ced79464feaf6320cddf8dca172519b4cb and crypto tests758 SHA256 26c634d413c9f7df57b6e787d2bddfa1c41c2eeff8484c70ed0fee51d43758c1 remain byte-identical after formatting. Native go_flate.rs is now44, formerly1177 lines; UNCOMPRESSED_LENGTH and all subsequent source remain unchanged.
+Providers go_zlib_deflate/frame_compressed/inflate/InflateError compile in TiKV; native imports of the three functions are cfg(test) bridges, not production bypasses. All 14 live Rust sources (native6/TiKV8) pinned-formatted; parent reports both repository git diff --check and both lockfile git diff --exit-code checks exit0.
+Pre-freeze text checks were NOT all green: table96 transcription and nonverbatim inflate reconstruction were caught and restored, including original scratch-buffer placement/progress guard; the framing verifier was corrected to normalize the actual last()==Some(&space) predicate. These are separate from zero Rust compile failures/retries/oracle changes.
+
+FULL-FAILURE COMPARISON (fresh parent comparison, not a whole-log hash)
+Current compression-expr-full.log versus round28 exp-log-expr-full.log; complete failure section, not only failure names.
+section = text.split('\nfailures:\n', 1)[1].split('\ntest result:', 1)[0]
+Normalize only re.sub(r"(?m)^(thread '[^\n]*' \()\d+(\) panicked at)", r'\1THREAD\2', section).
+Parent reports normalized sections byte-identical, both SHA256 0930217d98e0b92d727527dc3c7cb7313f1bbe35e643da60114fa6d78203839b. Retained failures:
+- pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation
+- tests::builtin_info_json_math_source::exp
+- tests::builtin_math_misc_op_source::vectorized_builtin_op_func
+- time_fn::tests::str_to_date_partial_formats_follow_no_zero_date
+The old EXP(100_000.0) FloatOverflow assertion still fails. No old expectation was changed, no historical failure was relabeled a current pass, and the full run remains non-green.
+
+VALIDATED COVERAGE / POLICY BOUNDARIES
+Exact closed entries: CompressGoNative/compress_go_native_fn_meta and UncompressNative/uncompress_native_fn_meta, existing nullable Bytes args. None=SQL NULL; Some([0]+actual bytes)=Value including empty; Some([1])=Corrupt; Some([2])=OutputLimit. Status encodings require exact length1; other encodings are rejected.
+COMPRESS uses the unique retained Go-compatible encoder and existing owned-byte result path. ComputedUncompress::into_outcome/UncompressOutcome add four-state computed typing with OwnUncompress metadata, not a new argument role/cause/driver/general context getter/fourth internal column/PBlegacy admission.
+Native checks/inflate determine UNCOMPRESS disposition: 8-KiB scratch, remaining+1, StreamEnd, checksum, progress and final declared-length comparison retained; decoded-empty success and ignored trailing data are not wire decoded-zero/error-priority policy. NULL/empty still execute actual wrappers.
+C copies Value payload only from source[1..]; status decoding allocates no payload and retains0, not a zero-allocation claim for the whole call. Encoded-tag physical budgeting plus payload-length/actual-capacity checks do not prove zero-copy or bound internal encoder/inflater allocation peaks.
+Frontend coerces with the real context, calls C4, then maps actual outcomes to1259/1258; no host decode, input-based prediction, sealed-worker warning or native replay after backend failure. Resource/transport errors are not SQL zlib warnings; envelope try_reserve propagates other_err!, not every allocation failure as PoolResource.
+Kernel2 units include correlated generated-stream checks. Factory2 cover canonical decoding, eight actual owned-result calls and wrong-role/capacity refusal. Dispatcher3 cover real C4, two-context isolation, NULL/empty and sentinel coercion refusal before admission; not exhaustive domain verification.
+SQL has seven stored fixture rows; normal matrix4 rows x3 HEX projections, separate unwrapped1 row x2 columns with metadata VarString flen29/LongBlob flen16777216 (both binary). Projection counts are not extra stored rows or Rust runs.
+SQL checks the complete old Go hello golden and independent Go/MySQL frames. Raw00FF20 covers prefix/suffix plus round-trip only: correlated, NOT a full compressed-byte golden.
+Three separate SQL diagnostic queries: junk1259, declared length2 1258, checksum missing one byte1259. Five fixture values feed eight direct zero-slot probes, all1105/no warnings; these do not fabricate decode warnings before admission.
+
+LIMITS / FREEZE
+No exhaustive inputs/DEFLATE variants/CPU/whole-Go-package proof, compressed-input OOM safety, internal allocation-peak/zero-copy/performance proof, whole datatype/unistore/parser/workspace completion, separate release execution, make lint or wider guard acceptance. Read-only next-JSON planning remains uncredited.
+This docs authorization changed only compression-checkpoint.md and this summary, not sources/old expected/other docs/Plan/JSON/index/build/test/fmt. All four full-suite failures remain disclosed.
+FINAL: 93/245 functional, final0/245; document pair frozen, not PR-ready.

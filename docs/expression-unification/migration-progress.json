@@ -1,8 +1,8 @@
 {
-  "checkpoint_id": "exp-log-two-28",
+  "checkpoint_id": "compression-two-29",
   "frozen_denominator": 245,
   "required_families": 221,
-  "functional_delegation_and_native_deletion_count": 91,
+  "functional_delegation_and_native_deletion_count": 93,
   "fully_final_audited_count": 0,
   "final_performance_and_workspace_gates_complete": false,
   "families": [
@@ -96,23 +96,26 @@
     {"id": "cot", "status": "functional_tikv_only", "native_algorithm_deleted": true, "native_go_core_relocated_not_replaced_with_libm": true, "native_pb_and_legacy_paths_connected": true, "native_computed_finite_policy_and_expression_renderer_preserved": true, "legacy_raw_infinities_and_wire_error_policy_preserved": true},
     {"id": "atan", "aliases": ["atan2"], "status": "functional_tikv_only", "native_algorithm_deleted": true, "native_go_core_relocated_not_replaced_with_libm": true, "both_arities_native_pb_and_legacy_paths_connected": true, "distinct_native_pb_and_legacy_operand_demand_preserved": true},
     {"id": "exp", "status": "functional_tikv_only", "native_algorithm_deleted": true, "existing_go_compatibility_fma_arithmetic_relocated_unchanged": true, "computed_nonfinite_result_uses_original_coerced_input_diagnostic": true, "no_pb_or_legacy_admission_added": true},
-    {"id": "log10", "status": "functional_tikv_only", "native_algorithm_deleted": true, "existing_go_compatibility_log_arithmetic_relocated_unchanged": true, "original_3020_warning_precedes_admission_and_actual_bits_enter_worker": true, "computed_result_consumed_before_domain_packing_with_nan_and_positive_infinity_preserved": true, "no_pb_or_legacy_admission_added": true}
+    {"id": "log10", "status": "functional_tikv_only", "native_algorithm_deleted": true, "existing_go_compatibility_log_arithmetic_relocated_unchanged": true, "original_3020_warning_precedes_admission_and_actual_bits_enter_worker": true, "computed_result_consumed_before_domain_packing_with_nan_and_positive_infinity_preserved": true, "no_pb_or_legacy_admission_added": true},
+    {"id": "compress", "status": "functional_tikv_only", "native_algorithm_deleted": true, "go_compatible_encoder_relocated_without_algorithm_changes": true, "original_byte_fixtures_preserved": true, "wire_encoder_not_substituted": true, "no_pb_or_legacy_admission_added": true},
+    {"id": "uncompress", "status": "functional_tikv_only", "native_algorithm_deleted": true, "bounded_complete_stream_policy_relocated_unchanged": true, "actual_completed_outcome_drives_original_host_warnings": true, "resource_refusal_never_becomes_zlib_warning_or_sql_null": true, "wire_reader_policy_preserved": true, "no_pb_or_legacy_admission_added": true}
   ],
-  "shared_evidence": "evidence/exp-log-checkpoint.md",
+  "shared_evidence": "evidence/compression-checkpoint.md",
   "gb_foundation_evidence": "evidence/gb-shared-foundation.md",
   "historical_coverage_correction": "Checkpoint 18/19 LOWER and UPPER complete-family claims missed independent legacy implementations and NULL bypasses; checkpoint 20 repairs them. The temporary corrected count was 63, restored to 65 only after repair validation. No extra families credited.",
   "one_operation_keyed_pool": true,
   "actual_mixed_column_sql_verified": true,
   "zero_slot_refusal_for_new_paths_verified": true,
   "deferred": ["complete operation-scope reuse", "broader wrapper capability propagation", "release performance", "paired differential rerun", "whole-workspace final acceptance"],
-  "deferred_compatibility_candidates_not_credited": ["compress", "uncompress", "exp", "log10"],
+  "deferred_compatibility_candidates_not_credited": ["json_length"],
   "logical_demand_preserved": true,
   "legacy_infrastructure_errors_remain_typed_until_public_boundary": true,
-  "next_candidate_frozen_family_ids_not_credited": ["compress", "uncompress"],
+  "next_candidate_frozen_family_ids_not_credited": ["json_valid", "json_type", "json_depth"],
   "atan2_alias_owner": "atan",
   "single_owner_go_trig_compatibility_core_checkpoint": "go-trig-five-27",
   "single_owner_exp_log10_compatibility_core_checkpoint": "exp-log-two-28",
-  "next_compression_batch_requires_go_byte_compatibility_and_actual_bounded_inflate_disposition": true,
+  "single_owner_compression_checkpoint": "compression-two-29",
+  "next_json_introspection_batch_requires_exact_numeric_typed_binary_and_malformed_input_policies": true,
   "wide_decimal_math_bridge_and_abs_typed_diagnostic_checkpoint": "wide-math-decimal-five-25",
   "entire_decimal_type_migration_complete": false,
   "remaining_native_decimal_ceiling_round_helper_not_migrated": true,
@@ -122,5 +125,5 @@
   "gb_collation_compatibility_ownership_moved_to_tikv": true,
   "gb_foundation_adds_evaluator_family_credit": false,
   "charset_default_registry_assertion_still_non_green": true,
-  "go_trig_compatibility_not_credited": ["sin", "cos", "tan", "cot", "atan"]
+  "go_trig_completed_frozen_family_ids": ["sin", "cos", "tan", "cot", "atan"]
 }

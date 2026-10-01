@@ -46,7 +46,8 @@ impl AsciiComputedValue for ComputedValue {
             ComputedValue::Bytes(_)
             | ComputedValue::Ieee754Bits(_)
             | ComputedValue::Decimal(_)
-            | ComputedValue::Int128(_) => {
+            | ComputedValue::Int128(_)
+            | ComputedValue::Uncompress(_) => {
                 panic!("ASCII assertion received a non-Int result")
             }
         }
@@ -1117,6 +1118,9 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::EltNative => {
             panic!("variadic string operations need their original argument list")
         }
+        EvaluatedBytesOp::CompressGoNative | EvaluatedBytesOp::UncompressNative => {
+            panic!("compression calls need their original nullable bytes")
+        }
         EvaluatedBytesOp::CharNative
         | EvaluatedBytesOp::ConvNative
         | EvaluatedBytesOp::ConvBinaryLiteralNative
@@ -1251,6 +1255,212 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+// Existing SQL frames from builtin_ext/crypto.rs, not C4 result envelopes.
+const COMPRESSION_HELLO_FRAME: &[u8] = &[
+    5, 0, 0, 0, 0x78, 0x9c, 0xca, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x04, 0, 0, 0xff, 0xff, 0x06, 0x2c,
+    0x02, 0x15,
+];
+const COMPRESSION_LIMIT_FRAME: &[u8] = &[
+    2, 0, 0, 0, 0x78, 0x9c, 0xca, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x04, 0, 0, 0xff, 0xff, 0x06, 0x2c,
+    0x02, 0x15,
+];
+
+#[derive(Default)]
+struct CompressionWarningProbe(RefCell<Vec<(u16, String, bool)>>);
+
+impl Columns for CompressionWarningProbe {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        None
+    }
+    fn append_warning(&self, code: u16, message: &str) {
+        let invoked = EVAL_ONE_OBSERVATION.with(|slot| {
+            slot.borrow().as_ref().is_some_and(|observation| {
+                matches!((observation.before_kernel_invocations, observation.after_kernel_invocations),
+                    (Some(before), Some(after)) if after > before)
+            })
+        });
+        self.0
+            .borrow_mut()
+            .push((code, message.to_owned(), invoked));
+    }
+}
+
+#[test]
+fn compression_dispatch_compress_keeps_go_bytes_string_carrier_and_nulls() {
+    // go_flate.rs::compresses_like_go_zlib's fixed "aaaaaaaaaa" stream,
+    // with the original four-byte LE(10) SQL frame; no encoder oracle.
+    let golden = vec![
+        10u8, 0, 0, 0, 0x78, 0x9c, 0x4a, 0x84, 0x03, 0x40, 0, 0, 0, 0xff, 0xff, 0x14, 0xe1, 0x03,
+        0xcb,
+    ];
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (input, expected) in [
+            (Datum::new_string("aaaaaaaaaa"), Some(golden)),
+            (Datum::Null, None),
+            (Datum::new_string(""), Some(Vec::new())),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::builtin_ext::crypto::dispatch(
+                    "COMPRESS",
+                    std::slice::from_ref(&input),
+                    columns,
+                )
+                .unwrap()
+            });
+            match (result.unwrap(), expected) {
+                (Datum::Null, None) => {}
+                (Datum::String(value), Some(expected)) => {
+                    assert_eq!(value.bytes(), expected.as_slice())
+                }
+                (actual, expected) => {
+                    panic!("COMPRESS carrier/value mismatch: {actual:?}, {expected:?}")
+                }
+            }
+            assert_wide_math_c4(observation);
+        }
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn compression_dispatch_uncompress_keeps_outcomes_and_actual_warning_contexts() {
+    // Native accessor isolation only: these are not C4 invocation evidence
+    // and do not fabricate a private computed value or a wire envelope.
+    assert!(
+        matches!(EvaluatedBytesResult::Bytes(None).into_uncompress(),
+        Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract)
+    );
+    assert!(
+        matches!(EvaluatedBytesResult::Uncompress(crate::tikv::UncompressOutcome::Null).into_bytes(),
+        Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract)
+    );
+
+    let first = CompressionWarningProbe::default();
+    let second = CompressionWarningProbe::default();
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&first, |columns| {
+        for (input, expected) in [
+            (Datum::Null, Datum::Null),
+            (Datum::new_string(""), Datum::new_string("")),
+            (
+                Datum::new_bytes(COMPRESSION_HELLO_FRAME),
+                Datum::new_string("hello"),
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::builtin_ext::crypto::dispatch(
+                    "UNCOMPRESS",
+                    std::slice::from_ref(&input),
+                    columns,
+                )
+                .unwrap()
+            });
+            match (result.unwrap(), expected) {
+                (Datum::Null, Datum::Null) => {}
+                (Datum::String(actual), Datum::String(expected)) => {
+                    assert_eq!(actual.bytes(), expected.bytes())
+                }
+                (actual, expected) => {
+                    panic!("UNCOMPRESS carrier/value mismatch: {actual:?}, {expected:?}")
+                }
+            }
+            assert!(first.0.borrow().is_empty());
+            assert_wide_math_c4(observation);
+        }
+    });
+    let (result, corrupt_call) = scope.with_columns(&first, |columns| {
+        observe_wide_math(|| {
+            crate::builtin_ext::crypto::dispatch(
+                "UNCOMPRESS",
+                &[Datum::new_string("12345")],
+                columns,
+            )
+            .unwrap()
+        })
+    });
+    assert_eq!(result, Ok(Datum::Null));
+    assert_wide_math_c4(corrupt_call);
+    let corrupt_warning = vec![(1259, "ZLIB: Input data corrupted".to_owned(), true)];
+    assert_eq!(*first.0.borrow(), corrupt_warning);
+    assert!(second.0.borrow().is_empty());
+
+    let (result, limit_call) = scope.with_columns(&second, |columns| {
+        observe_wide_math(|| {
+            crate::builtin_ext::crypto::dispatch(
+                "UNCOMPRESS",
+                &[Datum::new_bytes(COMPRESSION_LIMIT_FRAME)],
+                columns,
+            )
+            .unwrap()
+        })
+    });
+    assert_eq!(result, Ok(Datum::Null));
+    assert_wide_math_c4(limit_call);
+    assert_eq!(
+        limit_call.before_kernel_invocations, corrupt_call.after_kernel_invocations,
+        "the same operation stays on this scope's worker across native contexts"
+    );
+    assert_eq!(*second.0.borrow(), vec![(1258,
+        "ZLIB: Not enough room in the output buffer (probably, length of uncompressed data was corrupted)".to_owned(), true)]);
+    assert_eq!(
+        *first.0.borrow(),
+        corrupt_warning,
+        "the later context must not contaminate the first warning sink"
+    );
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn compression_dispatch_refusal_precedes_sql_outcomes_but_not_string_coercion() {
+    let native = CompressionWarningProbe::default();
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for (name, input) in [
+            ("COMPRESS", Datum::new_string("aaaaaaaaaa")),
+            ("COMPRESS", Datum::Null),
+            ("COMPRESS", Datum::new_string("")),
+            ("UNCOMPRESS", Datum::new_bytes(COMPRESSION_HELLO_FRAME)),
+            ("UNCOMPRESS", Datum::Null),
+            ("UNCOMPRESS", Datum::new_string("")),
+            ("UNCOMPRESS", Datum::new_string("12345")),
+            ("UNCOMPRESS", Datum::new_bytes(COMPRESSION_LIMIT_FRAME)),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::builtin_ext::crypto::dispatch(name, std::slice::from_ref(&input), columns).unwrap()
+            });
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource),
+                "{name} must not fall back or predict SQL NULL from the input");
+            assert!(native.0.borrow().is_empty(), "corruption/output-limit warnings belong after actual C4");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        for name in ["COMPRESS", "UNCOMPRESS"] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::builtin_ext::crypto::dispatch(name, &[Datum::MinNotNull], columns).unwrap()
+            });
+            assert_eq!(result, Err(EvalError::Unsupported("range sentinel string argument")),
+                "sql_string_bytes keeps its original error before worker admission");
+            assert!(native.0.borrow().is_empty());
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 #[test]

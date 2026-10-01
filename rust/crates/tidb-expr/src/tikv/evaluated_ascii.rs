@@ -43,8 +43,9 @@ use tidb_query_datatype::{codec::data_type::ScalarValueRef, EvalType};
 use tidb_query_expr::local::{
     prepare_evaluated_bytes, CompileLimits, ComputedBytesMetadata, ComputedDecimalMetadata,
     ComputedIeee754BitsMetadata, ComputedInt, ComputedInt128Metadata, ComputedIntMetadata,
-    ComputedValue, EvaluatedArgs, EvaluatedBytesOp, EvaluatedBytesWorker, EvaluatedSqlFailureKind,
-    ExecutionLimits, LocalCompileContext,
+    ComputedUncompressMetadata, ComputedValue, EvaluatedArgs, EvaluatedBytesOp,
+    EvaluatedBytesWorker, EvaluatedSqlFailureKind, ExecutionLimits, LocalCompileContext,
+    UncompressOutcome,
 };
 
 use super::adapter_failure::{ExpressionAdapterFailure, ScopeFailureKind};
@@ -1349,7 +1350,8 @@ fn require_computed_int(computed: ComputedValue) -> Result<ComputedInt, AsciiBou
         ComputedValue::Bytes(_)
         | ComputedValue::Ieee754Bits(_)
         | ComputedValue::Decimal(_)
-        | ComputedValue::Int128(_) => Err(result_kind_error()),
+        | ComputedValue::Int128(_)
+        | ComputedValue::Uncompress(_) => Err(result_kind_error()),
     }
 }
 
@@ -1391,6 +1393,8 @@ impl Drop for OneShotAsciiExecution {
 pub(crate) enum EvaluatedBytesResult {
     Int(Datum),
     Bytes(Option<Vec<u8>>),
+    // Decoder outcomes are not ordinary Bytes; warnings remain native packing.
+    Uncompress(UncompressOutcome),
     // Separate owned carriers: never ordinary Bytes or a narrower SQL Int.
     Ieee754Bits(Option<u64>),
     Int128(Option<i128>),
@@ -1406,9 +1410,11 @@ impl EvaluatedBytesResult {
     pub(crate) fn into_int_datum(self) -> Result<Datum, EvalError> {
         match self {
             Self::Int(value) => Ok(value),
-            Self::Bytes(_) | Self::Ieee754Bits(_) | Self::Int128(_) | Self::Decimal { .. } => {
-                Err(result_kind_error().into_eval_error())
-            }
+            Self::Bytes(_)
+            | Self::Uncompress(_)
+            | Self::Ieee754Bits(_)
+            | Self::Int128(_)
+            | Self::Decimal { .. } => Err(result_kind_error().into_eval_error()),
         }
     }
 
@@ -1433,9 +1439,19 @@ impl EvaluatedBytesResult {
     pub(crate) fn into_bytes(self) -> Result<Option<Vec<u8>>, EvalError> {
         match self {
             Self::Bytes(value) => Ok(value),
-            Self::Int(_) | Self::Ieee754Bits(_) | Self::Int128(_) | Self::Decimal { .. } => {
-                Err(result_kind_error().into_eval_error())
-            }
+            Self::Int(_)
+            | Self::Uncompress(_)
+            | Self::Ieee754Bits(_)
+            | Self::Int128(_)
+            | Self::Decimal { .. } => Err(result_kind_error().into_eval_error()),
+        }
+    }
+
+    /// Move only the kernel's decoded outcome; do not inspect input or bytes.
+    pub(crate) fn into_uncompress(self) -> Result<UncompressOutcome, EvalError> {
+        match self {
+            Self::Uncompress(outcome) => Ok(outcome),
+            _ => Err(result_kind_error().into_eval_error()),
         }
     }
 
@@ -1459,9 +1475,11 @@ impl EvaluatedBytesResult {
     pub(crate) fn into_ieee754_bits(self) -> Result<Option<u64>, EvalError> {
         match self {
             Self::Ieee754Bits(value) => Ok(value),
-            Self::Int(_) | Self::Bytes(_) | Self::Int128(_) | Self::Decimal { .. } => {
-                Err(result_kind_error().into_eval_error())
-            }
+            Self::Int(_)
+            | Self::Bytes(_)
+            | Self::Uncompress(_)
+            | Self::Int128(_)
+            | Self::Decimal { .. } => Err(result_kind_error().into_eval_error()),
         }
     }
 
@@ -1620,13 +1638,20 @@ fn materialize_computed(
             | EvaluatedBytesOp::CharNative
             | EvaluatedBytesOp::ConvNative
             | EvaluatedBytesOp::ConvBinaryLiteralNative
-            | EvaluatedBytesOp::ConvLegacy,
+            | EvaluatedBytesOp::ConvLegacy
+            | EvaluatedBytesOp::CompressGoNative,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {
                 ComputedBytesMetadata::OwnBytes => {}
             }
             Ok(EvaluatedBytesResult::Bytes(value.into_option()))
+        }
+        (EvaluatedBytesOp::UncompressNative, ComputedValue::Uncompress(value)) => {
+            match value.metadata() {
+                ComputedUncompressMetadata::OwnUncompress => {}
+            }
+            Ok(EvaluatedBytesResult::Uncompress(value.into_outcome()))
         }
         (
             EvaluatedBytesOp::AsinRaw

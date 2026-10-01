@@ -41,7 +41,8 @@ use tidb_query_expr::local::prepare_concat_args as prepare_concat_args_local;
 use tidb_query_expr::local::prepare_find_in_set_keys as prepare_find_in_set_keys_local;
 #[cfg(test)]
 pub(crate) use tidb_query_expr::local::{
-    conv_valid_prefix_native, go_atan, go_atan2, go_cos, go_sin, go_tan, trig_reduce,
+    conv_valid_prefix_native, frame_compressed, go_atan, go_atan2, go_cos, go_sin, go_tan,
+    go_zlib_deflate, inflate, trig_reduce,
 };
 pub(crate) use tidb_query_expr::local::{
     elt_selected_arg, field_int_equal, field_real_equal, legacy_substring_needs_len,
@@ -49,7 +50,7 @@ pub(crate) use tidb_query_expr::local::{
     EvaluatedBytesOp, FieldIntValue, FieldTerminal, NativeCollation, NativeSearchPolicy,
     OutputDisposition, PreparedConcatArgs, PreparedExportSetArgs, PreparedFieldArgs,
     PreparedFindInSetKeys, PreparedMakeSetArgs, ReadyBytesArg, ReadyConvBaseArg, ReadyDecimalArg,
-    ReadyFieldIntArg, ReadyIeee754Arg, ReadyIntArg, ReadySubstringI128,
+    ReadyFieldIntArg, ReadyIeee754Arg, ReadyIntArg, ReadySubstringI128, UncompressOutcome,
 };
 use tidb_query_expr::local::{
     field_bytes_equal as field_bytes_equal_local,
