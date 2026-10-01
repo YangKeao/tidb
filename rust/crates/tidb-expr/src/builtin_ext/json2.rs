@@ -14,9 +14,7 @@
 //! JSON depth/storage leaves. They deliberately share `json`'s one textual
 //! ETJson boundary rather than creating a second coercion rule.
 
-use serde_json::Value as Json;
-
-use super::json::{json_document_text_argument, parse_json_document_argument};
+use super::json::json_document_text_argument;
 use crate::{Datum, EvalError};
 
 /// Dispatches this leaf's builtins; `None` if `name` isn't one of them.
@@ -27,8 +25,8 @@ pub(crate) fn dispatch_in(
 ) -> Option<Result<Datum, EvalError>> {
     match (name, vals) {
         ("JSON_DEPTH", [value]) => Some(json_depth(value, ctx)),
-        ("JSON_STORAGE_FREE", [value]) => Some(json_storage_free(value)),
-        ("JSON_STORAGE_SIZE", [value]) => Some(json_storage_size(value)),
+        ("JSON_STORAGE_FREE", [value]) => Some(json_storage_free(value, ctx)),
+        ("JSON_STORAGE_SIZE", [value]) => Some(json_storage_size(value, ctx)),
         _ => None,
     }
 }
@@ -66,11 +64,23 @@ fn json_depth(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalErro
 /// not reserve free space for a parsed document, so every valid document
 /// returns zero; SQL NULL propagates and malformed/non-document arguments
 /// remain errors at the shared document boundary.
-fn json_storage_free(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(_) = parse_json_document_argument(value)? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int(0))
+fn json_storage_free(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    use crate::tikv::JsonReportOutcome;
+
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::JsonStorageFreeNative,
+        ctx,
+        || Ok(json_document_text_argument(value)?.map(String::into_bytes)),
+        |computed| match computed.into_json_report()? {
+            JsonReportOutcome::Null => Ok(Datum::Null),
+            JsonReportOutcome::Int(value) => Ok(Datum::Int(value)),
+            JsonReportOutcome::EmptyText => Err(EvalError::Json(crate::JsonError::EmptyText)),
+            JsonReportOutcome::InvalidText => Err(EvalError::Json(crate::JsonError::InvalidText)),
+            JsonReportOutcome::Bytes(_) => Err(EvalError::Unsupported(
+                "JSON_STORAGE_FREE result kind mismatch",
+            )),
+        },
+    )
 }
 
 /// `JSON_STORAGE_SIZE(json_doc)`, ported from `builtinJSONStorageSizeSig` in
@@ -79,53 +89,23 @@ fn json_storage_free(value: &Datum) -> Result<Datum, EvalError> {
 /// helper mirrors the source encoder's fixed headers, value entries, inline
 /// literal entries, varint string lengths, and recursive payload sizes for
 /// the textual JSON domain.
-fn json_storage_size(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(document) = parse_json_document_argument(value)? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int((binary_json_value_size(&document) + 1) as i64))
-}
+fn json_storage_size(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    use crate::tikv::JsonReportOutcome;
 
-fn binary_json_value_size(value: &Json) -> usize {
-    match value {
-        // Root scalar literal values occupy their one-byte literal payload.
-        Json::Null | Json::Bool(_) => 1,
-        // All JSON numbers use the fixed eight-byte binary representation.
-        Json::Number(_) => 8,
-        // Binary JSON strings store a uvarint byte length followed by UTF-8.
-        Json::String(text) => uvarint_size(text.len() as u64) + text.len(),
-        // Arrays have an eight-byte header and five-byte value entries. Null
-        // and boolean children are inlined in their entries and therefore do
-        // not add a recursive payload.
-        Json::Array(values) => {
-            8 + values.len() * 5
-                + values
-                    .iter()
-                    .filter(|value| !matches!(value, Json::Null | Json::Bool(_)))
-                    .map(binary_json_value_size)
-                    .sum::<usize>()
-        }
-        // Objects add six-byte key entries, five-byte value entries, and raw
-        // UTF-8 key bytes before the non-literal value payloads.
-        Json::Object(values) => {
-            8 + values.len() * (6 + 5)
-                + values.keys().map(|key| key.len()).sum::<usize>()
-                + values
-                    .values()
-                    .filter(|value| !matches!(value, Json::Null | Json::Bool(_)))
-                    .map(binary_json_value_size)
-                    .sum::<usize>()
-        }
-    }
-}
-
-fn uvarint_size(mut value: u64) -> usize {
-    let mut size = 1;
-    while value >= 0x80 {
-        value >>= 7;
-        size += 1;
-    }
-    size
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::JsonStorageSizeNative,
+        ctx,
+        || Ok(json_document_text_argument(value)?.map(String::into_bytes)),
+        |computed| match computed.into_json_report()? {
+            JsonReportOutcome::Null => Ok(Datum::Null),
+            JsonReportOutcome::Int(value) => Ok(Datum::Int(value)),
+            JsonReportOutcome::EmptyText => Err(EvalError::Json(crate::JsonError::EmptyText)),
+            JsonReportOutcome::InvalidText => Err(EvalError::Json(crate::JsonError::InvalidText)),
+            JsonReportOutcome::Bytes(_) => Err(EvalError::Unsupported(
+                "JSON_STORAGE_SIZE result kind mismatch",
+            )),
+        },
+    )
 }
 
 #[cfg(test)]

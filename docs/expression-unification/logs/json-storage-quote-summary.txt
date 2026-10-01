@@ -1,0 +1,63 @@
+Checkpoint: json-storage-quote-three-31; previous: json-introspection-three-30.
+STATUS: 96->99/245 functional; final acceptance 0/245. Only json_storage_free/json_storage_size/json_quote earn credit, not other APIs or JSON families.
+RUNS: exactly eight current-batch Rust runs, seven scoped green + one retained non-green full run; no preliminary wave, duplicate run, compile failure, failed-target retry, old-expected/oracle modification or fixture recording.
+PROVENANCE: execution/exits/source and coverage proofs are parent-owned; writer globbed, grepped/read all eight logs and sha256sum-hashed all eight (exit0), without building/testing/formatting. RAW: /home/agent/tidb/expression-unification/logs.
+JAN CWD: /home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv pin nightly-2026-01-30-x86_64-unknown-linux-gnu.
+AUG CWD: /home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb pin nightly-2026-08-22-x86_64-unknown-linux-gnu.
+Exact execution: set -o pipefail; <COMMAND> 2>&1 | tee <OUTPUT>; OUTPUT is ../logs/<LOG> for JAN, ../../logs/<LOG> for AUG.
+JAN local/kernels ran serially with &&; AUG native-json/native-source/dispatch likewise; other targets independently, separate logs throughout. Compilation times are emitted Finished-test-profile times, not benchmarks.
+
+LOG [JAN]: json-storage-quote-tikv-datatype.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib codec::mysql::json:: -- --test-threads=1
+EXIT: 0; compile1.92s; test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 366 filtered out; finished in 0.00s
+SHA256: 923453559e6f07ea4175d72057adfb37338a81949ba10c6c3f6cc678e5addc21
+LOG [JAN]: json-storage-quote-tikv-local.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+EXIT: 0; compile9.97s; 254 discovered, ignore preexisting; test result: ok. 253 passed; 0 failed; 1 ignored; 0 measured; 483 filtered out; finished in 0.19s
+SHA256: 786d6f51a83bfdae6311cab56232f5b40c695509c6e6abac435d460761b70884
+LOG [JAN]: json-storage-quote-tikv-kernels.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_json:: -- --test-threads=1
+EXIT: 0; compile0.14s; test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 716 filtered out; finished in 0.00s
+SHA256: eb0d751180cb12c8f40ff7bdb18e96ffd339431f6bb3cfdaf94311df59e22524
+LOG [AUG]: json-storage-quote-native-json.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib builtin_ext::json -- --test-threads=1
+EXIT: 0; compile12.97s; test result: ok. 40 passed; 0 failed; 0 ignored; 0 measured; 1503 filtered out; finished in 0.32s
+SHA256: 632b411a3d2184cf50c6349b4f8a25e830c4c37d73de101c39ce8113e79f41df
+LOG [AUG]: json-storage-quote-native-source.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib tests::builtin_info_json_math_source::json_ -- --test-threads=1
+EXIT: 0; compile0.16s; test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 1513 filtered out; finished in 0.27s
+SHA256: 9009acc6375b372fad521d4be97d09f0920c7679020c01a887dfd2ca890d8860
+LOG [AUG]: json-storage-quote-dispatch.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib json_storage_quote_dispatch_ -- --test-threads=1
+EXIT: 0; compile0.12s; test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1541 filtered out; finished in 0.00s
+SHA256: e23133258b055c8d5be1c561dff132ca7eff441ae3d26e4bee7b6ee08f872257
+LOG [AUG]: json-storage-quote-sql.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+EXIT: 0; compile24.35s; test result: ok. 65 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 1.07s
+SHA256: 6100a1f456c47a92b5fc0dde37176ff54549de61489024d8d39e427eca1d8106
+LOG [AUG]: json-storage-quote-expr-full.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+EXIT: 101; compile0.13s (actual log); 1543 discovered; test result: FAILED. 1445 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.45s
+SHA256: 85daec6d9901d3979d267d83d9d5eeb92f1d5f964b4310853026d983452e6dc2
+
+IMPLEMENTATION / BOUNDARIES
+JsonStorageFreeNative/json_storage_free_native_fn_meta actually runs shared parse before computing0. JsonStorageSizeNative/json_storage_size_native_fn_meta calls native_json_storage_size(&Value), includes the root byte and keeps the old usize as i64 cast; shared layout primitives, not a host calculator or u16-key encoding bridge.
+Both storage entries are nullable Bytes->computed JsonReport: None=SQL NULL; Some([0]+i64LE8)=integer; exact Some([1])=EmptyText; exact Some([2])=InvalidText. Resource/transport errors are not fabricated JSON statuses. The original native serde document domain, duplicate-key and depth-limit policies remain.
+JsonQuoteNative/json_quote_native_fn_meta returns ordinary owned Bytes; NULL executes the nullable worker. Invalid direct-C UTF-8 returns Other, never lossy replacement. One Wire/Native quoting traversal shares quote/backslash/ordinary writes: wire07->\a,0b->\v, other unlisted controls raw; native standard short escapes and otherwise lowercase \u00xx for00..1f. HTML/U2028/U2029/UTF-8 bytes stay literal, not Go binary-JSON marshaling.
+Original source-type/applicable strict-UTF-8/numeric-to-JSON/Display preparation stays before admission. Actual storage parsing follows admission: zero-slot resource refusal now precedes bad-JSON domain errors. QUOTE's strict UTF-8 and original type-error3064 preparation still precede zero slots; do not claim wholly unchanged ordering or native preparse/prediction/replay.
+Native quote reserves checked6n+2 with try_reserve_exact; wire retains2n+2. This is not the old serde allocation strategy, a whole-call peak bound, OOM guarantee or zero-copy/performance proof. No new argument role/driver/context getter/cause/fourth internal column/PBlegacy admission.
+Typed-binary physical sizing and JSON-path quoting have different APIs/contracts; this checkpoint does not claim to migrate them or the entire JSON codec/package.
+D: 65,536-byte object key with null value has old formula65,556; only that case raises its local call cap to4*TEST_CALL_BYTES. No production cap change and no allocation-peak evidence follows.
+E: main four rows*three projections plus separate actual-control HEX two columns, four3140 diagnostics, eight zero-slot calls. SQL65 includes both storage/quote values-metadata-errors and zero-slot-column tests; scope is representative, not exhaustive.
+Parent pinned-formatted/checked15 live Rust sources (TiKV9/native6); both repository diff checks and both lockfile checks exit0. Complete old native builtin_ext/json/tests.rs and tests/builtin_info_json_math_source.rs remain byte-identical; complete old cfg(test) blocks in native json2.rs/construct.rs and TiKV jcodec.rs, plus native construct.rs from JSON_UNQUOTE onward, likewise match pre-move TiDB 1ad936a2 / TiKV ad9edff. No broader source-proof claim is inferred.
+
+FULL-FAILURE COMPARISON (fresh parent comparison with json-introspection-expr-full.log)
+section = text.split('\nfailures:\n',1)[1].split('\ntest result:',1)[0]; normalize only re.sub(r"(?m)^(thread '[^\n]*' \()\d+(\) panicked at)", r'\1THREAD\2', section).
+Complete normalized sections byte-identical, both SHA2560930217d98e0b92d727527dc3c7cb7313f1bbe35e643da60114fa6d78203839b; not a whole-log hash, not a green full suite. Retained failures:
+- pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation
+- tests::builtin_info_json_math_source::exp
+- tests::builtin_math_misc_op_source::vectorized_builtin_op_func
+- time_fn::tests::str_to_date_partial_formats_follow_no_zero_date
+The old EXP(100_000.0) FloatOverflow assertion still fails. No old failure is presented as repaired or as a current pass.
+
+FREEZE: only json-storage-quote-checkpoint.md and this summary were written under this authorization; no source/other-doc/Plan/JSON/index/build/test/fmt/old-expected changes. No whole Go-package/workspace, release, make lint or wider-guard completion claim; historical non-green evidence stays historical. 99/245 functional, final0/245, not PR-ready.

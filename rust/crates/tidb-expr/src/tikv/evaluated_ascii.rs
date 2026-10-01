@@ -1656,7 +1656,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::ConvNative
             | EvaluatedBytesOp::ConvBinaryLiteralNative
             | EvaluatedBytesOp::ConvLegacy
-            | EvaluatedBytesOp::CompressGoNative,
+            | EvaluatedBytesOp::CompressGoNative
+            | EvaluatedBytesOp::JsonQuoteNative,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {
@@ -1673,7 +1674,9 @@ fn materialize_computed(
         (
             EvaluatedBytesOp::JsonTypeTextNative
             | EvaluatedBytesOp::JsonTypeBinaryNative
-            | EvaluatedBytesOp::JsonDepthNative,
+            | EvaluatedBytesOp::JsonDepthNative
+            | EvaluatedBytesOp::JsonStorageFreeNative
+            | EvaluatedBytesOp::JsonStorageSizeNative,
             ComputedValue::JsonReport(value),
         ) => {
             match value.metadata() {

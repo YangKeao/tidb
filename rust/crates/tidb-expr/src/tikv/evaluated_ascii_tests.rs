@@ -1127,6 +1127,11 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::JsonDepthNative => {
             panic!("JSON introspection needs its original source domains")
         }
+        EvaluatedBytesOp::JsonStorageFreeNative
+        | EvaluatedBytesOp::JsonStorageSizeNative
+        | EvaluatedBytesOp::JsonQuoteNative => {
+            panic!("JSON storage and quoting need their original source domains")
+        }
         EvaluatedBytesOp::CompressGoNative | EvaluatedBytesOp::UncompressNative => {
             panic!("compression calls need their original nullable bytes")
         }
@@ -1264,6 +1269,179 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+#[test]
+fn json_storage_quote_dispatch_keeps_native_storage_and_quote_conventions() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        // Original json2.rs storage tables and the locked old inline-size
+        // formula; neither wire JSON nor the migrated algorithm is an oracle.
+        for (name, input, expected) in [
+            ("JSON_STORAGE_FREE", Datum::Null, Ok(Datum::Null)),
+            ("JSON_STORAGE_SIZE", Datum::Null, Ok(Datum::Null)),
+            ("JSON_QUOTE", Datum::Null, Ok(Datum::Null)),
+            ("JSON_STORAGE_FREE", Datum::Int(1), Ok(Datum::Int(0))),
+            ("JSON_STORAGE_SIZE", Datum::Int(1), Ok(Datum::Int(9))),
+            (
+                "JSON_STORAGE_SIZE",
+                Datum::new_string("true"),
+                Ok(Datum::Int(2)),
+            ),
+            (
+                "JSON_STORAGE_SIZE",
+                Datum::new_string("[null,true,false]"),
+                Ok(Datum::Int(24)),
+            ),
+            (
+                "JSON_STORAGE_SIZE",
+                Datum::new_string("{}"),
+                Ok(Datum::Int(9)),
+            ),
+            (
+                "JSON_STORAGE_SIZE",
+                Datum::new_string(r#"{"a":1}"#),
+                Ok(Datum::Int(29)),
+            ),
+            (
+                "JSON_STORAGE_SIZE",
+                Datum::new_string(r#"[{"a":{"a":1},"b":2}]"#),
+                Ok(Datum::Int(82)),
+            ),
+            (
+                "JSON_STORAGE_FREE",
+                Datum::new_string("a"),
+                Err(EvalError::Json(crate::JsonError::InvalidText)),
+            ),
+            (
+                "JSON_QUOTE",
+                Datum::new_string(""),
+                Ok(Datum::new_string("\"\"")),
+            ),
+            // Native serde quoting, not wire-Go quoting: controls use JSON
+            // escapes, but HTML and the two literal separators are untouched.
+            (
+                "JSON_QUOTE",
+                Datum::new_string("\u{7}\u{b}\0<>&\u{2028}\u{2029}"),
+                Ok(Datum::new_string(
+                    "\"\\u0007\\u000b\\u0000<>&\u{2028}\u{2029}\"",
+                )),
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::builtin_ext::dispatch(name, std::slice::from_ref(&input), columns).unwrap()
+            });
+            if let Ok(Datum::String(expected)) = &expected {
+                let Ok(Datum::String(actual)) = &result else {
+                    panic!("{name} lost its String carrier")
+                };
+                assert_eq!(actual.bytes(), expected.bytes());
+            }
+            assert_eq!(result, expected, "{name}({input:?})");
+            assert_wide_math_c4(observation);
+        }
+    });
+    drop(scope);
+    execution.close();
+
+    // Only this long-key fixture gets more per-call room for ready/column
+    // storage; global policy, worker/pool caps, and ordinary cases stay put.
+    // This configured allowance is not evidence of an allocator peak.
+    let policy = AsciiPoolPolicy::checked(
+        1,
+        1,
+        TEST_POOL_BYTES,
+        TEST_WORKER_CAP,
+        TEST_CREATION_RESERVATION,
+        64,
+        8,
+        4 * TEST_CALL_BYTES,
+    )
+    .unwrap();
+    let owner = AsciiPoolOwner::new(policy).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let document = Datum::new_string(format!("{{\"{}\":null}}", "k".repeat(65_536)));
+    scope.with_columns(&crate::NoColumns, |columns| {
+        // Locked old formula: 1 root + 8 header + 11 entry + 65536 key
+        // bytes + 0 inline-literal payload. No u16 wire-key restriction.
+        for (name, expected) in [("JSON_STORAGE_SIZE", 65_556), ("JSON_STORAGE_FREE", 0)] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::builtin_ext::dispatch(name, std::slice::from_ref(&document), columns)
+                    .unwrap()
+            });
+            assert_eq!(result, Ok(Datum::Int(expected)));
+            assert_wide_math_c4(observation);
+        }
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn json_storage_quote_dispatch_preserves_scope_and_preparation_precedence() {
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        // Storage parsing now belongs to C4: refused admission wins over bad
+        // JSON, deliberately continuing the new JSON scope-priority policy.
+        for (name, input) in [
+            ("JSON_STORAGE_FREE", Datum::Null),
+            ("JSON_STORAGE_SIZE", Datum::Null),
+            ("JSON_QUOTE", Datum::Null),
+            ("JSON_STORAGE_FREE", Datum::new_string("a")),
+            ("JSON_STORAGE_SIZE", Datum::new_string("a")),
+            ("JSON_STORAGE_FREE", Datum::Int(1)),
+            ("JSON_STORAGE_SIZE", Datum::Int(1)),
+            ("JSON_QUOTE", Datum::new_string("native")),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::builtin_ext::dispatch(name, std::slice::from_ref(&input), columns).unwrap()
+            });
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource),
+                "{name} must not preparse, return SQL NULL, or fall back");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        for (name, input, expected) in [
+            ("JSON_QUOTE", Datum::new_bytes([0xff]), EvalError::Unsupported("invalid UTF-8 string datum")),
+            ("JSON_QUOTE", Datum::Int(1), EvalError::Json(crate::JsonError::IncorrectType {
+                argument: 1, function: "json_quote", // Original SQL error 3064.
+            })),
+            ("JSON_STORAGE_SIZE", Datum::new_bytes([0xff]), EvalError::Unsupported("invalid UTF-8 string datum")),
+            ("JSON_STORAGE_FREE", Datum::Real(f64::NAN), EvalError::Unsupported("datum JSON conversion")),
+            ("JSON_STORAGE_FREE", Datum::Float32(1.0), EvalError::Unsupported("JSON document requires JSON or string")),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::builtin_ext::dispatch(name, std::slice::from_ref(&input), columns).unwrap()
+            });
+            assert_eq!(result, Err(expected), "{name} retains its original preparation error before admission");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        let field = FieldType::new(FieldTypeCode::VarString);
+        let function = ScalarFunction::new(
+            tidb_ast::CiString::new("json_quote"), field.clone(),
+            vec![Expression::Constant(Constant::new(Datum::new_string("native"), field))],
+        );
+        let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource),
+            "the normal typed fallback must retain the caller's actual context");
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 fn json_introspection_raw_empty(type_code: u8) -> Datum {

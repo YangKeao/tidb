@@ -5775,3 +5775,184 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_json_report_dispatch_sql_column
         assert!(warnings_of(&session).is_empty(), "{sql}");
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_json_storage_quote_dispatch_sql_values_metadata_and_errors() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_json_storage_quote (id INT PRIMARY KEY, \
+             v VARCHAR(64) CHARSET utf8mb4)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_json_storage_quote VALUES \
+             (1,NULL),(2,'null'),(3,'[1,true,\"x\"]'),\
+             (4,'[{\"a\":{\"a\":1},\"b\":2}]'),(5,'a'),(6,''),\
+             (7,x'070B3C3E26E280A8E280A9')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT JSON_STORAGE_FREE(v),JSON_STORAGE_SIZE(v),JSON_QUOTE(v) \
+             FROM shared_json_storage_quote WHERE id<5 ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected JSON storage and quote rows")
+    };
+    assert_eq!(columns.len(), 3);
+    for (index, (_, field)) in columns.iter().enumerate() {
+        assert!(!field.is_unsigned());
+        assert!(!field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
+        if index == 2 {
+            assert_eq!(field.code(), tidb_datatype::FieldTypeCode::VarString);
+            assert_eq!(field.flen(), tidb_datatype::UNSPECIFIED_LENGTH);
+            assert_eq!(field.decimal(), tidb_datatype::UNSPECIFIED_LENGTH);
+            assert_eq!(field.charset_name(), "utf8mb4");
+            assert_eq!(field.collation(), tidb_datatype::Collation::Utf8Mb4Bin);
+        } else {
+            assert_eq!(field.code(), tidb_datatype::FieldTypeCode::LongLong);
+            assert_eq!(field.flen(), 20);
+            assert_eq!(field.decimal(), 0);
+            assert_eq!(field.charset_name(), "binary");
+            assert_eq!(field.collation(), tidb_datatype::Collation::Binary);
+        }
+    }
+    let text = |value: &str| {
+        Datum::new_collation_string(
+            value.as_bytes().to_vec(),
+            tidb_datatype::Collation::Utf8Mb4Bin,
+        )
+    };
+    // 82 is the unchanged nested-object source fixture. The mixed array's 34
+    // is the old layout: root tag 1 + header 8 + entries 3*5 + number 8 + string
+    // length/payload 2; true is inline. No new encoder supplies these expected sizes.
+    assert_eq!(
+        rows,
+        vec![
+            vec![Datum::Null, Datum::Null, Datum::Null],
+            vec![Datum::Int(0), Datum::Int(2), text(r#""null""#)],
+            vec![Datum::Int(0), Datum::Int(34), text(r#""[1,true,\"x\"]""#)],
+            vec![
+                Datum::Int(0),
+                Datum::Int(82),
+                text(r#""[{\"a\":{\"a\":1},\"b\":2}]""#)
+            ],
+        ]
+    );
+    assert!(warnings_of(&session).is_empty());
+
+    // The stored bytes contain actual BEL/VT, not SQL backslash sequences.
+    // Keep the old serde JSON rules independently: \u0007/\u000b (not wire
+    // \a/\v), with HTML and U+2028/U+2029 left as their original UTF-8 bytes.
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns(
+            "SELECT HEX(v),HEX(JSON_QUOTE(v)) FROM shared_json_storage_quote WHERE id=7",
+        )
+        .unwrap()
+    else {
+        panic!("expected JSON quote control-byte row")
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].len(), 2);
+    assert_eq!(cell_text(&rows[0][0]), "070B3C3E26E280A8E280A9");
+    assert_eq!(
+        cell_text(&rows[0][1]),
+        "225C75303030375C75303030623C3E26E280A8E280A922"
+    );
+    assert!(warnings_of(&session).is_empty());
+
+    // Admitted storage calls parse both malformed and empty documents, even
+    // though every successful STORAGE_FREE result is zero. Keep the original
+    // JsonError variants, not a new parser's detail or a fabricated NULL.
+    for (id, message) in [
+        (
+            5,
+            "Invalid JSON text: The document root must not be followed by other values.",
+        ),
+        (6, "Invalid JSON text: The document is empty"),
+    ] {
+        for expression in ["JSON_STORAGE_FREE(v)", "JSON_STORAGE_SIZE(v)"] {
+            let sql = format!("SELECT {expression} FROM shared_json_storage_quote WHERE id={id}");
+            let mysql = session
+                .run_with_columns(&sql)
+                .expect_err(&sql)
+                .to_mysql_error();
+            assert_eq!(mysql.code, 3140, "{sql}");
+            assert_eq!(mysql.state, *b"22032", "{sql}");
+            assert_eq!(mysql.message, message, "{sql}");
+            assert!(mysql.is_from_evaluation(), "{sql}");
+            assert!(warnings_of(&session).is_empty(), "{sql}");
+        }
+    }
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_json_storage_quote_dispatch_sql_columns() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_json_storage_quote_zero (id INT PRIMARY KEY, \
+             v VARCHAR(16) CHARSET utf8mb4, e VARCHAR(16) CHARSET utf8mb4)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_json_storage_quote_zero VALUES \
+             (1,NULL,NULL),(2,'null','null'),(3,'a','')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // Direct calls only: all NULLs still need the worker, and malformed/empty
+    // storage documents cannot be parsed into a JSON error before admission.
+    for (expression, id) in [
+        ("JSON_STORAGE_FREE(v)", 1),
+        ("JSON_STORAGE_SIZE(e)", 1),
+        ("JSON_QUOTE(v)", 1),
+        ("JSON_STORAGE_FREE(v)", 2),
+        ("JSON_STORAGE_SIZE(e)", 2),
+        ("JSON_QUOTE(v)", 2),
+        ("JSON_STORAGE_FREE(v)", 3),
+        ("JSON_STORAGE_SIZE(e)", 3),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_json_storage_quote_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("JSON storage/quote must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+}

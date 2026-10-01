@@ -32,22 +32,32 @@ use crate::coerce::coerce_str;
 use crate::{Datum, EvalError, JsonError};
 use tidb_datatype::FieldType;
 
-/// `JSON_QUOTE(str)`, port of `builtinJSONQuoteSig.evalString`.  Go's
-/// `encoding/json.Encoder` has `SetEscapeHTML(false)`; serde_json has the
-/// same HTML rule for strings, while retaining Go-compatible JSON escapes.
-pub(super) fn json_quote(v: &Datum) -> Result<Datum, EvalError> {
-    if let Some(text) = json_sql_string(v)? {
-        return serde_json::to_string(text)
-            .map(Datum::new_string)
-            .map_err(|_| EvalError::Unsupported("JSON_QUOTE encoding"));
-    }
-    match v {
-        Datum::Null => Ok(Datum::Null),
-        _ => Err(EvalError::Json(JsonError::IncorrectType {
-            argument: 1,
-            function: "json_quote",
-        })),
-    }
+/// `JSON_QUOTE(str)` preserves the existing native serde JSON escaping:
+/// HTML characters and U+2028/U+2029 separators remain unescaped. The shared
+/// kernel keeps this policy distinct from wire escaping; this is not a claim
+/// of complete Go escaping equivalence.
+pub(super) fn json_quote(v: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::JsonQuoteNative,
+        ctx,
+        || {
+            if let Some(text) = json_sql_string(v)? {
+                return Ok(Some(text.as_bytes().to_vec()));
+            }
+            match v {
+                Datum::Null => Ok(None),
+                _ => Err(EvalError::Json(JsonError::IncorrectType {
+                    argument: 1,
+                    function: "json_quote",
+                })),
+            }
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 
 /// `JSON_UNQUOTE(str)`, port of `builtinJSONUnquoteSig.evalString` plus

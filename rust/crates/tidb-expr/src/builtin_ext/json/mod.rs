@@ -86,7 +86,7 @@ pub(crate) fn dispatch_in(
         ("JSON_VALID", 1) => Some(json_valid(&vals[0], ctx)),
         ("JSON_SCHEMA_VALID", 2) => Some(json_schema_valid(vals)),
         ("JSON_TYPE", 1) => Some(json_type(&vals[0], ctx)),
-        ("JSON_QUOTE", 1) => Some(json_quote(&vals[0])),
+        ("JSON_QUOTE", 1) => Some(json_quote(&vals[0], ctx)),
         ("JSON_UNQUOTE", 1) => Some(json_unquote(&vals[0])),
         ("JSON_ARRAY", 0..) => Some(json_array(vals, &no_arg_types(vals.len()))),
         ("JSON_OBJECT", 0..) => Some(json_object(vals, &no_arg_types(vals.len()))),
