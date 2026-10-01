@@ -41,11 +41,16 @@ use tidb_datatype::tikv_compat::value::{from_scalar, BridgeError, ValueMetadata}
 use tidb_datatype::{Datum, DatumKind, Time};
 use tidb_query_datatype::{codec::data_type::ScalarValueRef, EvalType};
 use tidb_query_expr::local::{
-    prepare_evaluated_bytes, CompileLimits, ComputedBytesMetadata, ComputedDecimalMetadata,
-    ComputedIeee754BitsMetadata, ComputedInt, ComputedInt128Metadata, ComputedIntMetadata,
-    ComputedJsonReportMetadata, ComputedNativeVectorMetadata, ComputedUncompressMetadata,
-    ComputedValue, EvaluatedArgs, EvaluatedBytesOp, EvaluatedBytesWorker, EvaluatedSqlFailureKind,
-    ExecutionLimits, JsonReportOutcome, LocalCompileContext, UncompressOutcome,
+    prepare_evaluated_bytes, CompileLimits, ComputedBytesMetadata, ComputedDecimalFastMetadata,
+    ComputedDecimalMetadata, ComputedIeee754BitsMetadata, ComputedInt, ComputedInt128Metadata,
+    ComputedIntMetadata, ComputedJsonReportMetadata, ComputedNativeVectorMetadata,
+    ComputedUncompressMetadata, ComputedValue, EvaluatedArgs, EvaluatedBytesOp,
+    EvaluatedBytesWorker, EvaluatedSqlFailureKind, ExecutionLimits, JsonReportOutcome,
+    LocalCompileContext, UncompressOutcome,
+};
+use tidb_query_expr::{
+    BinaryArithmeticErrorKind, BinaryArithmeticOperation, NativeDecimalFastOutcome,
+    NativeDecimalFastValue,
 };
 
 use super::adapter_failure::{ExpressionAdapterFailure, ScopeFailureKind};
@@ -1301,6 +1306,75 @@ impl<'a> Invocation<'a> {
                         });
                     }
                     (
+                        EvaluatedBytesOp::AddIntSsNative
+                        | EvaluatedBytesOp::AddIntSuNative
+                        | EvaluatedBytesOp::AddIntUsNative
+                        | EvaluatedBytesOp::AddIntUuNative
+                        | EvaluatedBytesOp::SubIntSsNative
+                        | EvaluatedBytesOp::SubIntSuNative
+                        | EvaluatedBytesOp::SubIntUsNative
+                        | EvaluatedBytesOp::SubIntUuNative
+                        | EvaluatedBytesOp::SubIntSuForcedNative
+                        | EvaluatedBytesOp::SubIntUsForcedNative
+                        | EvaluatedBytesOp::SubIntUuForcedNative
+                        | EvaluatedBytesOp::MulIntSignedNative
+                        | EvaluatedBytesOp::MulIntUnsignedNative
+                        | EvaluatedBytesOp::AddRealNative
+                        | EvaluatedBytesOp::SubRealNative
+                        | EvaluatedBytesOp::MulRealNative
+                        | EvaluatedBytesOp::AddDecimalNative
+                        | EvaluatedBytesOp::SubDecimalNative
+                        | EvaluatedBytesOp::MulDecimalNative,
+                        Some(EvaluatedSqlFailureKind::BinaryArithmeticNative),
+                    ) => {
+                        let Some(cause) = report.native_binary_arithmetic_error() else {
+                            return AsciiBoundaryError::Scope {
+                                kind: ScopeFailureKind::Contract,
+                                reason: "binary arithmetic failure receipt lacks its native cause",
+                            };
+                        };
+                        return AsciiBoundaryError::Frontend(match cause.kind {
+                            BinaryArithmeticErrorKind::IntOverflow => EvalError::IntOverflow,
+                            BinaryArithmeticErrorKind::FloatOverflow => EvalError::FloatOverflow,
+                            BinaryArithmeticErrorKind::DecimalOverflow => {
+                                EvalError::DecimalOverflow
+                            }
+                        });
+                    }
+                    (
+                        EvaluatedBytesOp::AddInt128SignedLegacy
+                        | EvaluatedBytesOp::AddInt128UnsignedLegacy
+                        | EvaluatedBytesOp::AddInt128RejectLeftLegacy
+                        | EvaluatedBytesOp::AddInt128RejectRightLegacy
+                        | EvaluatedBytesOp::SubInt128SignedLegacy
+                        | EvaluatedBytesOp::SubInt128UnsignedLegacy
+                        | EvaluatedBytesOp::SubInt128RejectLeftLegacy
+                        | EvaluatedBytesOp::SubInt128RejectRightLegacy
+                        | EvaluatedBytesOp::MulInt128SignedLegacy
+                        | EvaluatedBytesOp::MulInt128UnsignedLegacy,
+                        Some(EvaluatedSqlFailureKind::BinaryArithmeticLegacy),
+                    ) => {
+                        let Some(cause) = report.legacy_binary_arithmetic_error() else {
+                            return AsciiBoundaryError::Scope {
+                                kind: ScopeFailureKind::Contract,
+                                reason: "binary arithmetic failure receipt lacks its legacy cause",
+                            };
+                        };
+                        let expression = match cause.operation {
+                            BinaryArithmeticOperation::Add => "ADD",
+                            BinaryArithmeticOperation::Subtract => "SUBTRACT",
+                            BinaryArithmeticOperation::Multiply => "MULTIPLY",
+                        };
+                        return AsciiBoundaryError::Frontend(EvalError::DataOutOfRange {
+                            value: if cause.unsigned {
+                                "BIGINT UNSIGNED"
+                            } else {
+                                "BIGINT"
+                            },
+                            expression: expression.to_owned(),
+                        });
+                    }
+                    (
                         EvaluatedBytesOp::UnaryMinusIntNative
                         | EvaluatedBytesOp::UnaryMinusUIntNative,
                         Some(EvaluatedSqlFailureKind::UnaryMinusNative),
@@ -1345,7 +1419,10 @@ impl<'a> Invocation<'a> {
                         | EvaluatedBytesOp::VecL1DistanceNative
                         | EvaluatedBytesOp::VecL2DistanceNative
                         | EvaluatedBytesOp::VecNegativeInnerProductNative
-                        | EvaluatedBytesOp::VecCosineDistanceNative,
+                        | EvaluatedBytesOp::VecCosineDistanceNative
+                        | EvaluatedBytesOp::AddVectorNative
+                        | EvaluatedBytesOp::SubVectorNative
+                        | EvaluatedBytesOp::MulVectorNative,
                         Some(EvaluatedSqlFailureKind::VectorNative),
                     ) => {
                         // Render only the actual typed cause. Do not parse the
@@ -1480,7 +1557,8 @@ fn require_computed_int(computed: ComputedValue) -> Result<ComputedInt, AsciiBou
         | ComputedValue::Int128(_)
         | ComputedValue::Uncompress(_)
         | ComputedValue::JsonReport(_)
-        | ComputedValue::NativeVector(_) => Err(result_kind_error()),
+        | ComputedValue::NativeVector(_)
+        | ComputedValue::DecimalFast(_) => Err(result_kind_error()),
     }
 }
 
@@ -1537,6 +1615,8 @@ pub(crate) enum EvaluatedBytesResult {
     },
     // The actual aligned vector, never ordinary Bytes or an input descriptor.
     NativeVector(Option<tidb_datatype::VectorFloat32>),
+    // The decoder has already distinguished Unsupported, SQL NULL and a value.
+    DecimalFast(NativeDecimalFastOutcome),
 }
 
 impl EvaluatedBytesResult {
@@ -1549,6 +1629,7 @@ impl EvaluatedBytesResult {
             | Self::Ieee754Bits(_)
             | Self::Int128(_)
             | Self::NativeVector(_)
+            | Self::DecimalFast(_)
             | Self::Decimal { .. } => Err(result_kind_error().into_eval_error()),
         }
     }
@@ -1589,6 +1670,7 @@ impl EvaluatedBytesResult {
             | Self::Ieee754Bits(_)
             | Self::Int128(_)
             | Self::NativeVector(_)
+            | Self::DecimalFast(_)
             | Self::Decimal { .. } => Err(result_kind_error().into_eval_error()),
         }
     }
@@ -1635,7 +1717,16 @@ impl EvaluatedBytesResult {
             | Self::JsonReport(_)
             | Self::Int128(_)
             | Self::NativeVector(_)
+            | Self::DecimalFast(_)
             | Self::Decimal { .. } => Err(result_kind_error().into_eval_error()),
+        }
+    }
+
+    /// Move the kernel-decoded outcome without parsing its private wire format.
+    pub(crate) fn into_decimal_fast_outcome(self) -> Result<NativeDecimalFastOutcome, EvalError> {
+        match self {
+            Self::DecimalFast(outcome) => Ok(outcome),
+            _ => Err(result_kind_error().into_eval_error()),
         }
     }
 
@@ -1773,6 +1864,21 @@ fn materialize_computed(
             | EvaluatedBytesOp::UnaryMinusIntNative
             | EvaluatedBytesOp::UnaryMinusUIntNative
             | EvaluatedBytesOp::UnaryNullNative
+            | EvaluatedBytesOp::AddIntSsNative
+            | EvaluatedBytesOp::AddIntSuNative
+            | EvaluatedBytesOp::AddIntUsNative
+            | EvaluatedBytesOp::AddIntUuNative
+            | EvaluatedBytesOp::SubIntSsNative
+            | EvaluatedBytesOp::SubIntSuNative
+            | EvaluatedBytesOp::SubIntUsNative
+            | EvaluatedBytesOp::SubIntUuNative
+            | EvaluatedBytesOp::SubIntSuForcedNative
+            | EvaluatedBytesOp::SubIntUsForcedNative
+            | EvaluatedBytesOp::SubIntUuForcedNative
+            | EvaluatedBytesOp::MulIntSignedNative
+            | EvaluatedBytesOp::MulIntUnsignedNative
+            | EvaluatedBytesOp::BinaryArithmeticNullNative
+            | EvaluatedBytesOp::BinaryArithmeticMissingLegacy
             | EvaluatedBytesOp::AbsIntNative
             | EvaluatedBytesOp::AbsUIntNative
             | EvaluatedBytesOp::CeilIntNative
@@ -1890,7 +1996,13 @@ fn materialize_computed(
             }
             Ok(EvaluatedBytesResult::Bytes(value.into_option()))
         }
-        (EvaluatedBytesOp::VecFromTextNative, ComputedValue::NativeVector(value)) => {
+        (
+            EvaluatedBytesOp::VecFromTextNative
+            | EvaluatedBytesOp::AddVectorNative
+            | EvaluatedBytesOp::SubVectorNative
+            | EvaluatedBytesOp::MulVectorNative,
+            ComputedValue::NativeVector(value),
+        ) => {
             match value.metadata() {
                 ComputedNativeVectorMetadata::OwnNativeVector => {}
             }
@@ -1954,7 +2066,13 @@ fn materialize_computed(
             | EvaluatedBytesOp::VecL2NormNative
             | EvaluatedBytesOp::VecRealNullNative
             | EvaluatedBytesOp::UnaryPlusBitsNative
-            | EvaluatedBytesOp::UnaryMinusBitsNative,
+            | EvaluatedBytesOp::UnaryMinusBitsNative
+            | EvaluatedBytesOp::AddRealNative
+            | EvaluatedBytesOp::SubRealNative
+            | EvaluatedBytesOp::MulRealNative
+            | EvaluatedBytesOp::AddRealLegacy
+            | EvaluatedBytesOp::SubRealLegacy
+            | EvaluatedBytesOp::MulRealLegacy,
             ComputedValue::Ieee754Bits(value),
         ) => {
             match value.metadata() {
@@ -1972,7 +2090,13 @@ fn materialize_computed(
             | EvaluatedBytesOp::UnaryPlusDecimalNative
             | EvaluatedBytesOp::UnaryMinusDecimalNative
             | EvaluatedBytesOp::UnaryMinusIntConstantNative
-            | EvaluatedBytesOp::UnaryMinusUIntConstantNative,
+            | EvaluatedBytesOp::UnaryMinusUIntConstantNative
+            | EvaluatedBytesOp::AddDecimalNative
+            | EvaluatedBytesOp::SubDecimalNative
+            | EvaluatedBytesOp::MulDecimalNative
+            | EvaluatedBytesOp::AddDecimalLegacy
+            | EvaluatedBytesOp::SubDecimalLegacy
+            | EvaluatedBytesOp::MulDecimalLegacy,
             ComputedValue::Decimal(value),
         ) => {
             match value.metadata() {
@@ -1991,11 +2115,35 @@ fn materialize_computed(
                 checked_i64_view,
             })
         }
-        (EvaluatedBytesOp::RoundInt128Legacy, ComputedValue::Int128(value)) => {
+        (
+            EvaluatedBytesOp::RoundInt128Legacy
+            | EvaluatedBytesOp::AddInt128SignedLegacy
+            | EvaluatedBytesOp::AddInt128UnsignedLegacy
+            | EvaluatedBytesOp::AddInt128RejectLeftLegacy
+            | EvaluatedBytesOp::AddInt128RejectRightLegacy
+            | EvaluatedBytesOp::SubInt128SignedLegacy
+            | EvaluatedBytesOp::SubInt128UnsignedLegacy
+            | EvaluatedBytesOp::SubInt128RejectLeftLegacy
+            | EvaluatedBytesOp::SubInt128RejectRightLegacy
+            | EvaluatedBytesOp::MulInt128SignedLegacy
+            | EvaluatedBytesOp::MulInt128UnsignedLegacy,
+            ComputedValue::Int128(value),
+        ) => {
             match value.metadata() {
                 ComputedInt128Metadata::OwnInt128 => {}
             }
             Ok(EvaluatedBytesResult::Int128(value.into_option()))
+        }
+        (
+            EvaluatedBytesOp::AddDecimalFastNative
+            | EvaluatedBytesOp::SubDecimalFastNative
+            | EvaluatedBytesOp::MulDecimalFastNative,
+            ComputedValue::DecimalFast(value),
+        ) => {
+            match value.metadata() {
+                ComputedDecimalFastMetadata::OwnDecimalFast => {}
+            }
+            Ok(EvaluatedBytesResult::DecimalFast(value.into_outcome()))
         }
         _ => Err(result_kind_error()),
     }
@@ -2021,7 +2169,7 @@ fn evaluate_scoped_args<T>(
     result
 }
 
-fn evaluate_prepared_args_in<T>(
+pub(crate) fn evaluate_prepared_args_in<T>(
     ctx: &dyn Columns,
     prepare: impl FnOnce() -> Result<(EvaluatedBytesOp, EvaluatedArgs), EvalError>,
     pack: impl FnOnce(EvaluatedBytesResult) -> Result<T, EvalError>,
@@ -2063,6 +2211,220 @@ pub(crate) fn evaluate_args_in<T>(
     pack: impl FnOnce(EvaluatedBytesResult) -> Result<T, EvalError>,
 ) -> Result<T, EvalError> {
     evaluate_prepared_args_in(ctx, || Ok((operation, coerce()?)), pack)
+}
+
+/// The original legacy integer signatures have distinct signedness and
+/// operand-rejection policies; callers select only their actual signature.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LegacyIntegerArithmetic {
+    AddSigned,
+    AddUnsigned,
+    AddRejectLeft,
+    AddRejectRight,
+    SubSigned,
+    SubUnsigned,
+    SubRejectLeft,
+    SubRejectRight,
+    MulSigned,
+    MulUnsigned,
+}
+
+/// Missing children and an actually evaluated SQL NULL have distinct recipes.
+/// A non-NULL witness is a contract error, never an arithmetic operand.
+#[derive(Debug)]
+pub enum LegacyBinaryArgs<T> {
+    Missing,
+    NullWitness(Option<i64>),
+    Values(T, T),
+}
+
+fn arithmetic_null_witness(value: Option<i64>) -> Result<EvaluatedArgs, EvalError> {
+    if value.is_some() {
+        return Err(AsciiBoundaryError::Scope {
+            kind: ScopeFailureKind::Contract,
+            reason: "binary arithmetic NULL witness contains a value",
+        }
+        .into_eval_error());
+    }
+    Ok(EvaluatedArgs::NullWitness(None))
+}
+
+/// Evaluate only the caller's explicit legacy integer signature and presence.
+/// Original i128 operands reach the worker without narrowing or host arithmetic.
+pub fn eval_legacy_integer_arithmetic_in(
+    profile: LegacyIntegerArithmetic,
+    args: LegacyBinaryArgs<i128>,
+    ctx: &dyn Columns,
+) -> Result<Option<i128>, EvalError> {
+    evaluate_prepared_args_in(
+        ctx,
+        || match args {
+            LegacyBinaryArgs::Missing => Ok((
+                EvaluatedBytesOp::BinaryArithmeticMissingLegacy,
+                EvaluatedArgs::NoArgs,
+            )),
+            LegacyBinaryArgs::NullWitness(value) => Ok((
+                EvaluatedBytesOp::BinaryArithmeticNullNative,
+                arithmetic_null_witness(value)?,
+            )),
+            LegacyBinaryArgs::Values(left, right) => {
+                let operation = match profile {
+                    LegacyIntegerArithmetic::AddSigned => EvaluatedBytesOp::AddInt128SignedLegacy,
+                    LegacyIntegerArithmetic::AddUnsigned => {
+                        EvaluatedBytesOp::AddInt128UnsignedLegacy
+                    }
+                    LegacyIntegerArithmetic::AddRejectLeft => {
+                        EvaluatedBytesOp::AddInt128RejectLeftLegacy
+                    }
+                    LegacyIntegerArithmetic::AddRejectRight => {
+                        EvaluatedBytesOp::AddInt128RejectRightLegacy
+                    }
+                    LegacyIntegerArithmetic::SubSigned => EvaluatedBytesOp::SubInt128SignedLegacy,
+                    LegacyIntegerArithmetic::SubUnsigned => {
+                        EvaluatedBytesOp::SubInt128UnsignedLegacy
+                    }
+                    LegacyIntegerArithmetic::SubRejectLeft => {
+                        EvaluatedBytesOp::SubInt128RejectLeftLegacy
+                    }
+                    LegacyIntegerArithmetic::SubRejectRight => {
+                        EvaluatedBytesOp::SubInt128RejectRightLegacy
+                    }
+                    LegacyIntegerArithmetic::MulSigned => EvaluatedBytesOp::MulInt128SignedLegacy,
+                    LegacyIntegerArithmetic::MulUnsigned => {
+                        EvaluatedBytesOp::MulInt128UnsignedLegacy
+                    }
+                };
+                Ok((operation, EvaluatedArgs::Int1282(Some(left), Some(right))))
+            }
+        },
+        |computed| match computed {
+            EvaluatedBytesResult::Int(Datum::Null) => Ok(None),
+            value => value.into_int128(),
+        },
+    )
+}
+
+/// Legacy REAL arithmetic retains raw IEEE values and its original NULL demand.
+pub fn eval_legacy_real_arithmetic_in(
+    operation: BinaryArithmeticOperation,
+    args: LegacyBinaryArgs<f64>,
+    ctx: &dyn Columns,
+) -> Result<Option<f64>, EvalError> {
+    evaluate_prepared_args_in(
+        ctx,
+        || match args {
+            LegacyBinaryArgs::Missing => Ok((
+                EvaluatedBytesOp::BinaryArithmeticMissingLegacy,
+                EvaluatedArgs::NoArgs,
+            )),
+            LegacyBinaryArgs::NullWitness(value) => Ok((
+                EvaluatedBytesOp::BinaryArithmeticNullNative,
+                arithmetic_null_witness(value)?,
+            )),
+            LegacyBinaryArgs::Values(left, right) => {
+                let operation = match operation {
+                    BinaryArithmeticOperation::Add => EvaluatedBytesOp::AddRealLegacy,
+                    BinaryArithmeticOperation::Subtract => EvaluatedBytesOp::SubRealLegacy,
+                    BinaryArithmeticOperation::Multiply => EvaluatedBytesOp::MulRealLegacy,
+                };
+                Ok((
+                    operation,
+                    EvaluatedArgs::Ieee754Bits2 {
+                        left: super::ReadyIeee754Arg::Value(Some(left.to_bits())),
+                        right: super::ReadyIeee754Arg::Value(Some(right.to_bits())),
+                    },
+                ))
+            }
+        },
+        |computed| match computed {
+            EvaluatedBytesResult::Int(Datum::Null) => Ok(None),
+            value => Ok(value.into_ieee754_bits()?.map(f64::from_bits)),
+        },
+    )
+}
+
+/// Convert only actual demanded decimal layouts; the worker owns arithmetic and
+/// the legacy warning-result policy. Representation failures remain failures.
+pub fn eval_legacy_decimal_arithmetic_in(
+    operation: BinaryArithmeticOperation,
+    args: LegacyBinaryArgs<tidb_datatype::Decimal>,
+    ctx: &dyn Columns,
+) -> Result<Option<tidb_datatype::Decimal>, EvalError> {
+    evaluate_prepared_args_in(
+        ctx,
+        || match args {
+            LegacyBinaryArgs::Missing => Ok((
+                EvaluatedBytesOp::BinaryArithmeticMissingLegacy,
+                EvaluatedArgs::NoArgs,
+            )),
+            LegacyBinaryArgs::NullWitness(value) => Ok((
+                EvaluatedBytesOp::BinaryArithmeticNullNative,
+                arithmetic_null_witness(value)?,
+            )),
+            LegacyBinaryArgs::Values(left, right) => {
+                let operation = match operation {
+                    BinaryArithmeticOperation::Add => EvaluatedBytesOp::AddDecimalLegacy,
+                    BinaryArithmeticOperation::Subtract => EvaluatedBytesOp::SubDecimalLegacy,
+                    BinaryArithmeticOperation::Multiply => EvaluatedBytesOp::MulDecimalLegacy,
+                };
+                let left = super::prepare_math_decimal(&left)?;
+                let right = super::prepare_math_decimal(&right)?;
+                Ok((
+                    operation,
+                    EvaluatedArgs::Decimal2 {
+                        left: Some(left),
+                        right: Some(right),
+                    },
+                ))
+            }
+        },
+        |computed| match computed {
+            EvaluatedBytesResult::Int(Datum::Null) => Ok(None),
+            EvaluatedBytesResult::Decimal { value, .. } => Ok(value),
+            _ => Err(result_kind_error().into_eval_error()),
+        },
+    )
+}
+
+/// Lossless fast-input layout adaptation plus the same closed worker lifecycle.
+/// Unsupported is a computed outcome, never a substitute for a bridge failure.
+pub(crate) fn eval_arithmetic_decimal_fast_in(
+    operation: BinaryArithmeticOperation,
+    left: Option<NativeDecimalFastValue>,
+    right: Option<NativeDecimalFastValue>,
+    ctx: &dyn Columns,
+) -> Result<NativeDecimalFastOutcome, EvalError> {
+    let operation = match operation {
+        BinaryArithmeticOperation::Add => EvaluatedBytesOp::AddDecimalFastNative,
+        BinaryArithmeticOperation::Subtract => EvaluatedBytesOp::SubDecimalFastNative,
+        BinaryArithmeticOperation::Multiply => EvaluatedBytesOp::MulDecimalFastNative,
+    };
+    evaluate_args_in(
+        operation,
+        ctx,
+        || {
+            let left = left
+                .map(|value| {
+                    tidb_query_datatype::codec::mysql::Decimal::try_from_native_fast(
+                        value,
+                        usize::MAX,
+                    )
+                })
+                .transpose()
+                .map_err(super::math_decimal_bridge_error)?;
+            let right = right
+                .map(|value| {
+                    tidb_query_datatype::codec::mysql::Decimal::try_from_native_fast(
+                        value,
+                        usize::MAX,
+                    )
+                })
+                .transpose()
+                .map_err(super::math_decimal_bridge_error)?;
+            Ok(EvaluatedArgs::Decimal2 { left, right })
+        },
+        EvaluatedBytesResult::into_decimal_fast_outcome,
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

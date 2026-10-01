@@ -9232,3 +9232,149 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
         assert!(warnings_of(&zero).is_empty(), "{sql}");
     }
 }
+
+#[test]
+fn evaluated_ascii_binary_arithmetic_sql_keeps_domains_mode_and_pool_failures() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET sql_mode='', tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run(
+        "CREATE TABLE shared_binary_sql (id INT PRIMARY KEY, a BIGINT, b BIGINT, u BIGINT UNSIGNED, \
+         d DECIMAL(6,2), e DECIMAL(6,2), r DOUBLE, t DOUBLE, v VECTOR, w VECTOR)",
+    ).unwrap();
+    session
+        .run(
+            "INSERT INTO shared_binary_sql VALUES \
+         (1,7,2,0,1.25,2.50,1.5e0,2.0e0,'[1,2]','[3,4]'),\
+         (2,9223372036854775807,1,0,NULL,NULL,NULL,NULL,NULL,NULL),\
+         (3,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // Existing infer_arithmetic_type selects VectorFloat32 as soon as either
+    // operand is vector; ops' old signatures are elementwise for all three.
+    // Decimal's value equality is exact and scale-independent, not f64-based.
+    let decimal = |text: &str| Datum::Decimal(tidb_datatype::Decimal::parse_mysql(text).0);
+    let vector =
+        |values| Datum::new_vector_float32(tidb_datatype::VectorFloat32::must_create(values));
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns(
+            "SELECT a+b,a-b,a*b,d+e,d-e,d*e,r+t,r-t,r*t,v+w,v-w,v*w \
+         FROM shared_binary_sql WHERE id IN (1,3) ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected the three stored arithmetic families")
+    };
+    assert_eq!(
+        rows,
+        vec![
+            vec![
+                Datum::Int(9),
+                Datum::Int(5),
+                Datum::Int(14),
+                decimal("3.75"),
+                decimal("-1.25"),
+                decimal("3.1250"),
+                Datum::Real(3.5),
+                Datum::Real(-0.5),
+                Datum::Real(3.0),
+                vector(vec![4.0, 6.0]),
+                vector(vec![-2.0, -2.0]),
+                vector(vec![3.0, 8.0])
+            ],
+            vec![Datum::Null; 12],
+        ]
+    );
+    assert!(session.warnings().is_empty());
+
+    // Original scalar overflow rendering derives BIGINT[ UNSIGNED] from the
+    // result type; unlike constant unary minus, binary integer overflow errors.
+    for (expression, domain) in [
+        ("a+1", "BIGINT"),
+        ("a-(-1)", "BIGINT"),
+        ("a*2", "BIGINT"),
+        ("u-1", "BIGINT UNSIGNED"),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_binary_sql WHERE id=2");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        assert!(
+            matches!(&error, DriverError::Exec(tidb_executor::ExecError::Eval(
+            tidb_executor::EvalError::DataOutOfRange { value, .. }
+        )) if *value == domain),
+            "{sql}: {error:?}"
+        );
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1690, "{sql}");
+        assert_eq!(mysql.state, *b"22003", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(session.warnings().is_empty(), "{sql}");
+    }
+    session
+        .run("SET sql_mode='NO_UNSIGNED_SUBTRACTION'")
+        .unwrap();
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns("SELECT u-1 FROM shared_binary_sql WHERE id=2")
+        .unwrap()
+    else {
+        panic!("expected forced signed subtraction")
+    };
+    assert_eq!(rows, vec![vec![Datum::Int(-1)]]);
+    assert!(session.warnings().is_empty());
+    session.run("SET sql_mode=''").unwrap();
+    let restored = session
+        .run_with_columns("SELECT u-1 FROM shared_binary_sql WHERE id=2")
+        .expect_err("mode cannot leak through worker reuse");
+    assert!(matches!(
+        &restored,
+        DriverError::Exec(tidb_executor::ExecError::Eval(
+            tidb_executor::EvalError::DataOutOfRange {
+                value: "BIGINT UNSIGNED",
+                ..
+            }
+        ))
+    ));
+    assert_eq!(restored.to_mysql_error().code, 1690);
+    assert!(session.warnings().is_empty());
+
+    let mut zero = Session::new();
+    zero.run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    zero.run("CREATE TABLE shared_binary_zero (a BIGINT, b BIGINT, n BIGINT)")
+        .unwrap();
+    zero.run("INSERT INTO shared_binary_zero VALUES (2,1,NULL)")
+        .unwrap();
+    assert!(zero
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    for expression in ["a+b", "a-b", "a*b", "a+n", "n-b", "a*n"] {
+        let sql = format!("SELECT {expression} FROM shared_binary_zero");
+        let error = zero.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => {
+                panic!("stored binary arithmetic must reach the zero-slot pool: {sql}: {other:?}")
+            }
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(zero.warnings().is_empty(), "{sql}");
+    }
+}

@@ -1,0 +1,72 @@
+BINARY ARITHMETIC CHECKPOINT / binary-three-47 / round48
+Previous unary-two-46. Functional delegation/native deletion160/245 (prior157 family objects retained); strict final-audited0, target221. New frozen ids plus/minus/mul. Incomplete, not PR-ready.
+
+COMMANDS AND WHOLE-LOG RECEIPTS
+Raw logs retained under expression-unification/logs in the experiment workspace. These receipts publish exact commands/results/hashes, not copies of compiler output.
+TiKV cwd expression-unification/tikv; T=../tools/cargo-tikv, pinned nightly-2026-01-30.
+Native cwd expression-unification/tidb/rust; N=../../tools/cargo-tidb, pinned nightly-2026-08-22.
+Command form: set -o pipefail; <wrapper> test --locked -p <package> --lib [filter] -- --test-threads=1 2>&1 | tee <log> >/dev/null.
+Log path ../logs/<name> for TiKV, ../../logs/<name> for native. Rows: passed/failed/ignored/filtered; compile/run seconds; exit; SHA256.
+1 T test --locked -p tidb_query_datatype --lib native_binary_tests::native_binary_double_carry_and_mysql_dispositions -- --test-threads=1
+  binary-three-carry-original.log | 0/1/0/420 | 3.36/.00 | 101 | 0c33e4444c534303d66a7d78b6cfb4757c023c2cad8e7458b54338bf83c89504
+2 T test --locked -p tidb_query_datatype --lib codec::mysql::decimal:: -- --test-threads=1
+  binary-three-tikv-datatype.log | 86/0/0/335 | 1.82/.01 | 0 | 4c07f113846c04640021dfe5370ea11f55cfe32217d800b537dca128e8cd17d6
+3 N test --locked -p tidb-datatype --lib decimal:: -- --test-threads=1
+  binary-three-native-datatype.log | 23/0/0/417 | 3.34/.00 | 0 | 84811328c5d89f84e6381980e856110d34c15105ef6648ec088a13f463edcfd3
+4 T test --locked -p tidb_query_expr --lib arithmetic -- --test-threads=1
+  binary-three-tikv-expr.log | NO TESTS EXECUTED: E0599 missing ToStringValue test import; E0004 existing test match missing DecimalFast rejection arm | 101 | 600bc6a8d51182856cd4ae0565690ca2f0f5d636dd5c02af0fe16ff081f55009
+5 Same TiKV arithmetic command after those compile fixes
+  binary-three-tikv-expr-retry.log | 29/1/0/788 | 10.98/.01 | 101 | 496e5c8557f6edaefd6eccc8d5f58d8c0b928da450cd4b9054002298a159a17a
+6 T test --locked -p tidb_query_expr --lib binary_arithmetic_dispatch_typed_failures_int128_and_budget -- --test-threads=1
+  binary-three-tikv-cause-diagnostic.log | 0/1/0/817 | 4.38/.00 | 101 | 3f5405d32a20155b6b85117b4c6f157957c9f3240caf69048dadb8a4a61fbeab
+7 Same TiKV arithmetic command after completing six closed IEEE readiness admissions
+  binary-three-tikv-expr-ready-retry.log | 30/0/0/788 | 6.41/.00 | 0 | dc3eb9a93bd7a3c10fd5d922c858b101b086d4e695681783d359269b910c9018
+8 T test --locked -p tidb_query_expr --lib local -- --test-threads=1
+  binary-three-tikv-local.log | 284/0/1/533 | .12/.19 | 0 | d71649583bb7b59e6e951e956c4d4d4af33161383990e9567da984cdcf1e356a
+9 N test --locked -p tidb-expr --lib arithmetic -- --test-threads=1
+  binary-three-native-expr.log | NO TESTS EXECUTED: E0308 twice, ReadyIeee754Arg fields populated with bare Option<u64> | 101 | 04d6963cd96485fdc3b2a4d8b6f671f5021074df9b000bc2848d3f3c7e548621
+10 Same native arithmetic command after using actual Value(Some(bits)) constructors
+  binary-three-native-expr-retry.log | 79/0/19/1486 | 8.26/.05 | 0 | 811ed0c19fe03ec2f2b8c830c9561926db127d3ceddcb41076e5cbaef47b43d4
+11 N test --locked -p tidb-session --lib evaluated_ascii_binary_arithmetic_ -- --test-threads=1
+  binary-three-sql.log | 0/1/0/2176 | 32.47/.04 | 101 | 54203b57ec49a354b66fcdd107e328334c2d87a64c39223def808363a4d0062c
+12 Same SQL command after connecting nullable integer batch cells to the real NULL witness
+  binary-three-sql-retry.log | 1/0/0/2176 | 7.67/.04 | 0 | 496ad5946b0ae7931c3d1a4c5707a1632273626112aff2d3bac6c11e88d36a96
+13 N test --locked -p tidb-unistore --lib legacy_binary_arithmetic_ -- --test-threads=1
+  binary-three-legacy.log | 1/0/0/211 | 8.47/.00 | 0 | 6894f700f88fa6db769bae28588f40b2ee2f710455e0fb48c0f4561923e7fd7a
+14 N test --locked -p tidb-expr --lib -- --test-threads=1
+  binary-three-expr-full.log | 1486/4/94/0 | 3.11/13.64 | 101 | 3c8af44f8a16f775b81cabf11a7d4842047c599afe10dbad7a7273a4848eb9dc
+15 N test --locked -p tidb-unistore --lib -- --test-threads=1
+  binary-three-unistore-full.log | 198/1/13/0 | .13/2.99 | 101 | 1dd929820679fbc51f53a57e92b987b9bc73a094e384fac6d640b58455b07a9d
+16 Same native arithmetic command as9/10, refreshed on final integrated source
+  binary-three-native-expr-final.log | 79/0/19/1486 | .12/.05 | 0 | a522bdc8291ca5f80fafb3131b53a16aaadda4111adcfbd4fb4b918eb381900b
+
+COUNTS AND ACTUAL FIXES
+16 test-Cargo attempts = 14 nonzero-test runs + 2 compile-failed attempts. Eight green runs, of which seven are final focused gates; row10 predates the final NULL-batch fix and row16 refreshes it. Four new non-baseline red runs: planned original-Grow negative control1, missing IEEE admission2 including diagnostic replay, and missing NULL-batch route1. Two final known-baseline non-green full runs. Four failed-target recovery retries (rows5/7/10/12), one separate diagnostic replay6, one final successful refresh16; the planned negative control1 is covered by the broader positive gate2. Zero-match/launch failures/metadata/lock-resolution commands0. Not all-first-pass. Failed-only runs executed tests; compile failures did not.
+Original Grow regression: temporarily restore only the old single-carry behavior, keeping new MySql policy and wire Fixed unchanged. The 27-digit-nine square passed. The independent identity with B=1e9, (B²-B-1)(B²-3B-1)=(B-4)B³+B²+4B+1, failed at CPP decimal4999: actual999999995000000001000000004000000001 versus expected999999996000000001000000004000000001. Restore the second reduction for Grow/native policy; all86 Decimal tests pass. No fabricated red or recorded provider oracle.
+Compile fixes: existing ToStringValue trait import in new tests; add DecimalFast to an old packet-test unexpected-type rejection match; populate actual ReadyIeee754Arg::Value(Some(bits)) fields instead of bare Options. No expected values changed.
+IEEE failure: the new real overflow test had no authenticated cause because the existing expr_eval closed Ieee754Bits2 allowlist omitted six new real recipes. A diagnostic-only assertion exposed actual InvalidSpec before the kernel. Add precisely those six private operations, retaining the driver and ordinary PB admission; original assertion then passes.
+NULL batch failure: SQL SELECT a+n FROM shared_binary_zero returned NULL with a zero-slot policy rather than refusing worker admission. Source chain was EvaluatorSuite→NativeNumericConsumer→eval_numeric_batch_values→eval_integer_batch; its _=>None bypassed the operator after whole-left/whole-right evaluation. Guard only +,-,* and pack the actual eval_binary_arithmetic_null_in result through the existing bits mapper. Do not hardcode None, reevaluate children, change other operations, or change the SQL expectation. SQL and final focused/full expression gates then pass except the known old failures.
+
+FAILURE BASELINE PROOF
+Both final full failure sections equal unary-two-46 byte-for-byte after ONLY numeric panic-heading thread IDs become (<id>). Compare from the first newline+'failures:'+newline to before newline+'test result:', including panic payloads and the final failure-name list. No source-address mapping.
+Expression SHA256 27654f2c0ad2971242c00f50182467598cdfd9c2c65e5bf5a32e683708448637; unchanged pushdown_catalog IFNULL3077:9, builtin_info_json_math_source EXP1881:5, vectorized_builtin_op_func duration164:55, STR_TO_DATE888:9.
+Unistore SHA256 b64dcced405c699c11b72ee31888c58e491b4e5b4e74fa2d445454e1d1e146e9; unchanged closure_executor_selection_over_point_range_answers_zero_rows194:5.
+
+SOURCE AND STATIC PROOFS
+25 Rust sources = TiKV11/native14. No dependency/manifest/lock/Bazel changes. Existing compiler warnings remain, including native Decimal::coefficient_i128 missing documentation; new NativeDecimalFastValue fields carry documentation. Final pinned rustfmt --edition 2021 --config skip_children=true --check and both git diff --check gates pass. First CPP formatter check needed six Decimal recipe return wraps; one single-file reformat/recheck resolves it. No static-proof failure.
+Five complete original test tails byte-identical to prior HEAD:
+  TiKV impl_arithmetic::tests f72a3ad990dbfe20c207e8764950c53276bbd4ea3e0953545f74c89764b511ea
+  TiKV impl_vec::tests 52f8be13bc3aa28ab711f06665cd8824d894a9c122f1f9145bf4bc3c225c24f1
+  TiKV decimal::tests 9a217340d9d495773a043cbe0378a68c5401737315752dcdc1105be52cc2e332
+  native ops::tests f823ff05f80ca755b998f6e92db3f3ef79ea462f5ae607d5aece0c2c9ee3bbaa
+  native decimal::native_negate_tests plus following native_math_bridge_tests d50ddf1bc3fa9b1f3ded2b4be127c4178cf76efdc283cb22e3fdc41d04fb8369
+  Inner native_math_bridge_tests separately unchanged:148fbf71b10a45b661e9e6d23b088070984b270f8b09b1c0ecde4be5a22538d0
+Fifteen new functions: datatype3, kernels4, local3, native scope2, batch fast1, legacy1, SQL1. No original SQL or new expected values changed; no old structural-count update. Necessary exhaustive match extensions are not hidden behind the five module proofs. No fixture recording.
+Source incidents: two recovered path lookups (A integer_coerce location; parent guessed numeric.rs then discovered evaluator/numeric_batch.rs); two stale-read edit-observation refusals (C expr_eval; parent after formatting Decimal), both fresh-read/retry; one NoArgs literal mismatch/read/retry. No sandbox escalation, multiple-match, transcription or presentation error. One new test draft dropped a private snapshot assertion during source review rather than widening an API; no factory-count assertion is claimed.
+Architecture/maintenance documentation describes implementation paths and contracts, not new repository policy. Five original modules and exact references/commands provide review evidence; no Go or Bazel policy gate was triggered.
+
+IMPLEMENTATION AND LIMITS
+43 unit recipes: native Int13/IEEE3/Decimal3/vector3/NULL1; legacy Int12810/IEEE3/Decimal3/missing1; DecimalFast3. DecimalBinary is actual [Decimal,Decimal,Int budget], Int1282 is two complete LE16 values, and the sole new computed outcome separates Unsupported from nullable actual coefficient/scale values. Single strict TiKV codec, no fake JSON/NULL outcome and no native business fallback. Factory bounds, driver, regexp metadata binding and ordinary PB admission remain unchanged.
+Shared public Decimal Exact/MySql methods, coefficient add/sub/mul helpers and codec projection use existing word workers with explicit policies. Native multiplication retains unsigned-coefficient fast eligibility, full hidden scales, nine-word projection, signed overflow zero and rounding; signed batch fast retains its distinct checked-negation/alignment rules. Native integer zero-minus-MIN and unsigned raw-bit multiply remain distinct from original wire policies. Typed causes, actual dispatch witnesses and closed recipe/domain checks authenticate SQL failures; resource failures never become SQL overflow. Legacy full-i128 values and historical profile quirks remain, with eager integer children versus sequential real/Decimal. Vector layout copies are real and are not zero-copy.
+Explicit deferred compatibility: gigabyte-scale legal Decimal inputs can wrap unchecked u32 result/storage sums into a shape rejected by the existing bridge under release overflow policy. Keep original debug arithmetic behavior and supported layouts, reject unrepresentable shape as infrastructure, do not weaken all bridge validation or call it SQL overflow. No enormous allocation test or release-equivalence claim.
+DIV/IntDIV/MOD, JSON renderer closure, LIKE/ILIKE and remaining families are future work. No full Go-package/type-domain, production default-NoColumns request-root integration, whole workspace, make lint/dev/bazel_prepare, release, differential, physical heap/peak/OOM, M6, performance or TiFlash completion/PR-readiness claim.

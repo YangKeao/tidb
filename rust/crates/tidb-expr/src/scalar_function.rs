@@ -41,6 +41,7 @@ use crate::expr_collation::CollationInfo;
 use crate::expression::{ConstLevel, Expression, SCALAR_FUNCTION_FLAG};
 use crate::grouping::{GroupingMetadata, GroupingMetadataError, GroupingMode};
 use crate::schema::Schema;
+use crate::tikv::NativeDecimalFastValue;
 use tidb_ast::{BinaryOp, CiString, UnaryOp};
 use tidb_chunk::chunk::Chunk;
 use tidb_chunk::row::Row;
@@ -1495,7 +1496,7 @@ impl ScalarFunction {
             self.args[0].eval(ctx, row)?
         };
         if arithmetic && lhs.is_null() {
-            return Ok(Some(Datum::Null));
+            return crate::ops::eval_binary_arithmetic_null_in(ctx).map(Some);
         }
         let rhs = if arithmetic {
             eval_numeric_row(&self.args[1], ctx, row, EvalType::Int)?
@@ -1631,7 +1632,11 @@ impl ScalarFunction {
                     && !(domain == Some(EvalType::Real) && op == BinaryOp::Plus)
                     && !(op == BinaryOp::Mod && domain != Some(EvalType::Decimal))
                 {
-                    return Ok(Datum::Null);
+                    return if matches!(op, BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul) {
+                        crate::ops::eval_binary_arithmetic_null_in(ctx)
+                    } else {
+                        Ok(Datum::Null)
+                    };
                 }
                 if matches!(op, BinaryOp::LogicAnd | BinaryOp::LogicOr) {
                     let lhs = logic_truthy(&lhs, ctx)?;
@@ -3374,11 +3379,7 @@ impl ScalarFunction {
 /// coefficient at `storage_scale` fraction digits, of which `scale` are the
 /// SQL-visible result scale.
 #[derive(Clone, Copy)]
-struct DecimalValue {
-    coefficient: i128,
-    storage_scale: u32,
-    scale: u32,
-}
+struct DecimalValue(NativeDecimalFastValue);
 
 impl DecimalValue {
     fn from_my_decimal(value: &tidb_datatype::MyDecimal) -> Option<Self> {
@@ -3392,11 +3393,11 @@ impl DecimalValue {
         } else {
             coefficient
         };
-        Some(Self {
+        Some(Self(NativeDecimalFastValue {
             coefficient,
             storage_scale,
             scale: result_frac,
-        })
+        }))
     }
 
     fn from_integer(value: crate::coerce::Integer) -> Self {
@@ -3404,59 +3405,20 @@ impl DecimalValue {
             crate::coerce::Integer::Signed(value) => i128::from(value),
             crate::coerce::Integer::Unsigned(value) => i128::from(value),
         };
-        Self {
+        Self(NativeDecimalFastValue {
             coefficient,
             storage_scale: 0,
             scale: 0,
-        }
-    }
-
-    /// `Decimal::add` (`try_add_fast`): operands aligned to the wider storage
-    /// scale, the visible scale the wider of the two.
-    fn add(self, other: Self) -> Option<Self> {
-        let storage_scale = self.storage_scale.max(other.storage_scale);
-        let left = self.aligned(storage_scale)?;
-        let right = other.aligned(storage_scale)?;
-        Some(Self {
-            coefficient: left.checked_add(right)?,
-            storage_scale,
-            scale: self.scale.max(other.scale),
         })
-    }
-
-    fn sub(self, other: Self) -> Option<Self> {
-        self.add(Self {
-            coefficient: other.coefficient.checked_neg()?,
-            ..other
-        })
-    }
-
-    /// `Decimal::mul_mysql` (`try_mul_mysql_fast`): scales add; a result
-    /// scale past MySQL's 30 takes the general path.
-    fn mul(self, other: Self) -> Option<Self> {
-        let scale = self.scale.checked_add(other.scale)?;
-        if scale > 30 {
-            return None;
-        }
-        Some(Self {
-            coefficient: self.coefficient.checked_mul(other.coefficient)?,
-            storage_scale: self.storage_scale.checked_add(other.storage_scale)?,
-            scale,
-        })
-    }
-
-    fn aligned(self, storage_scale: u32) -> Option<i128> {
-        if storage_scale == self.storage_scale {
-            Some(self.coefficient)
-        } else {
-            self.coefficient
-                .checked_mul(10i128.checked_pow(storage_scale - self.storage_scale)?)
-        }
     }
 
     /// `Decimal::to_chunk_my_decimal`: the cell the row path appends.
     fn to_my_decimal(self) -> Option<tidb_datatype::MyDecimal> {
-        tidb_datatype::MyDecimal::from_scaled_i128(self.coefficient, self.storage_scale, self.scale)
+        tidb_datatype::MyDecimal::from_scaled_i128(
+            self.0.coefficient,
+            self.0.storage_scale,
+            self.0.scale,
+        )
     }
 }
 
@@ -4009,6 +3971,9 @@ fn eval_integer_batch(
                             other => other,
                         })?,
                     )?,
+                    _ if matches!(op, BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul) => {
+                        bits(crate::ops::eval_binary_arithmetic_null_in(ctx)?)?
+                    }
                     _ => None,
                 };
             }
@@ -4227,9 +4192,12 @@ fn vec_eval_decimal(
     expression: &Expression,
     input: &Chunk,
     physical: &[usize],
-) -> Option<Vec<Option<DecimalValue>>> {
+    ctx: &dyn Columns,
+) -> Result<Option<Vec<Option<DecimalValue>>>, EvalError> {
     use tidb_datatype::FieldTypeCode;
-    let field_type = expression.static_type()?;
+    let Some(field_type) = expression.static_type() else {
+        return Ok(None);
+    };
     let is_int = matches!(
         field_type.code(),
         FieldTypeCode::Tiny
@@ -4241,10 +4209,19 @@ fn vec_eval_decimal(
     );
     let is_decimal = field_type.code() == FieldTypeCode::NewDecimal;
     if !is_int && !is_decimal {
-        return None;
+        return Ok(None);
+    }
+    if let Expression::ScalarFunction(function) = expression {
+        return if is_decimal {
+            vec_eval_decimal_function(function, input, physical, ctx)
+        } else {
+            Ok(None)
+        };
     }
     let signed = !field_type.is_unsigned();
-    match expression {
+    // Only shape and physical-cell conversion can decline this leaf path.
+    // Worker failures from recursive arithmetic are propagated above.
+    Ok((|| match expression {
         Expression::Column(column) => {
             let index = usize::try_from(column.index).ok()?;
             if index >= input.num_cols() {
@@ -4301,14 +4278,9 @@ fn vec_eval_decimal(
             };
             Some(vec![value; physical.len()])
         }
-        Expression::ScalarFunction(function) => {
-            if !is_decimal {
-                return None;
-            }
-            vec_eval_decimal_function(function, input, physical)
-        }
+        Expression::ScalarFunction(_) => unreachable!("arithmetic nodes routed above"),
         Expression::CorrelatedColumn(_) => None,
-    }
+    })())
 }
 
 /// The `+`/`-`/`*` node of [`vec_eval_decimal`].
@@ -4316,46 +4288,52 @@ fn vec_eval_decimal_function(
     function: &ScalarFunction,
     input: &Chunk,
     physical: &[usize],
-) -> Option<Vec<Option<DecimalValue>>> {
+    ctx: &dyn Columns,
+) -> Result<Option<Vec<Option<DecimalValue>>>, EvalError> {
+    use crate::tikv::{BinaryArithmeticOperation, NativeDecimalFastOutcome};
     use tidb_datatype::FieldTypeCode;
     if function.func_name.lowercase() == "cast_decimal" {
-        return vec_eval_cast_int_as_decimal(function, input, physical);
+        return Ok(vec_eval_cast_int_as_decimal(function, input, physical));
     }
-    {
-        {
-            if function.args.len() != 2 {
-                return None;
-            }
-            let op = match binary_op_for_name(function.func_name.lowercase()) {
-                Some(op @ (BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul)) => op,
-                _ => return None,
-            };
-            // `eval_binary_full` reaches `decimal_binary` only when an
-            // operand is a decimal; two integers are integer arithmetic.
-            let decimal_argument = function.args.iter().any(|argument| {
-                argument
-                    .static_type()
-                    .is_some_and(|ty| ty.code() == FieldTypeCode::NewDecimal)
-            });
-            if !decimal_argument {
-                return None;
-            }
-            let lhs = vec_eval_decimal(&function.args[0], input, physical)?;
-            let rhs = vec_eval_decimal(&function.args[1], input, physical)?;
-            lhs.into_iter()
-                .zip(rhs)
-                .map(|(left, right)| match (left, right) {
-                    (Some(left), Some(right)) => match op {
-                        BinaryOp::Plus => left.add(right),
-                        BinaryOp::Minus => left.sub(right),
-                        _ => left.mul(right),
-                    }
-                    .map(Some),
-                    _ => Some(None),
-                })
-                .collect()
+    if function.args.len() != 2 {
+        return Ok(None);
+    }
+    let operation = match binary_op_for_name(function.func_name.lowercase()) {
+        Some(BinaryOp::Plus) => BinaryArithmeticOperation::Add,
+        Some(BinaryOp::Minus) => BinaryArithmeticOperation::Subtract,
+        Some(BinaryOp::Mul) => BinaryArithmeticOperation::Multiply,
+        _ => return Ok(None),
+    };
+    // Two integer operands still use integer arithmetic, not this Decimal path.
+    let decimal_argument = function.args.iter().any(|argument| {
+        argument
+            .static_type()
+            .is_some_and(|ty| ty.code() == FieldTypeCode::NewDecimal)
+    });
+    if !decimal_argument {
+        return Ok(None);
+    }
+    // Preserve the original entire-left-batch then entire-right-batch demand.
+    // A declined left shape/value must not start evaluating the right batch.
+    let Some(lhs) = vec_eval_decimal(&function.args[0], input, physical, ctx)? else {
+        return Ok(None);
+    };
+    let Some(rhs) = vec_eval_decimal(&function.args[1], input, physical, ctx)? else {
+        return Ok(None);
+    };
+    let mut values = Vec::with_capacity(lhs.len());
+    for (left, right) in lhs.into_iter().zip(rhs) {
+        match crate::tikv::eval_arithmetic_decimal_fast_in(
+            operation,
+            left.map(|value| value.0),
+            right.map(|value| value.0),
+            ctx,
+        )? {
+            NativeDecimalFastOutcome::Unsupported => return Ok(None),
+            NativeDecimalFastOutcome::Value(value) => values.push(value.map(DecimalValue)),
         }
     }
+    Ok(Some(values))
 }
 
 /// Go `builtinCastIntAsDecimalSig.vecEvalDecimal`, restricted to the shape
@@ -4419,11 +4397,11 @@ fn vec_eval_cast_int_as_decimal(
             } else {
                 i128::from(bits as u64)
             };
-            Some(Some(DecimalValue {
+            Some(Some(DecimalValue(NativeDecimalFastValue {
                 coefficient: value.checked_mul(factor)?,
                 storage_scale: scale,
                 scale,
-            }))
+            })))
         })
         .collect()
 }
@@ -4435,8 +4413,9 @@ impl ScalarFunction {
     /// nothing appended when the shape is not covered (see
     /// [`vec_eval_decimal`]); the appended cells are the ones the row
     /// evaluator would append through `Chunk::append_datum`.
-    pub(crate) fn vec_eval_decimal_arithmetic(
+    pub(crate) fn vec_eval_decimal_arithmetic_in(
         &self,
+        ctx: &dyn Columns,
         input: &Chunk,
         output: &mut Chunk,
         output_index: usize,
@@ -4449,7 +4428,7 @@ impl ScalarFunction {
         }
         let rows = input.num_rows();
         let physical: Vec<usize> = (0..rows).map(|row| input.get_row(row).idx()).collect();
-        let Some(values) = vec_eval_decimal_function(self, input, &physical) else {
+        let Some(values) = vec_eval_decimal_function(self, input, &physical, ctx)? else {
             return Ok(false);
         };
         let mut cells = Vec::with_capacity(rows);
@@ -4469,6 +4448,17 @@ impl ScalarFunction {
             }
         }
         Ok(true)
+    }
+
+    // Compatibility for the existing unit tests; production forwards its scope.
+    #[cfg(test)]
+    pub(crate) fn vec_eval_decimal_arithmetic(
+        &self,
+        input: &Chunk,
+        output: &mut Chunk,
+        output_index: usize,
+    ) -> Result<bool, EvalError> {
+        self.vec_eval_decimal_arithmetic_in(&crate::NoColumns, input, output, output_index)
     }
 }
 

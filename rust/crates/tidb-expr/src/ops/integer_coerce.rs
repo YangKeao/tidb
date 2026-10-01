@@ -68,6 +68,45 @@ pub(super) fn unary_minus_integer(
     )
 }
 
+/// Select a fixed integer recipe from original operand/profile metadata only.
+/// Call inside preparation so the subtraction mode is read at its demand point.
+pub(super) fn prepare_integer_arithmetic(
+    op: BinaryOp,
+    a: Integer,
+    b: Integer,
+    ctx: &dyn crate::context::Columns,
+    unsigned_result: &std::cell::Cell<bool>,
+) -> (crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs) {
+    use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp as Op};
+    let left_unsigned = matches!(a, Integer::Unsigned(_));
+    let right_unsigned = matches!(b, Integer::Unsigned(_));
+    let left = integer_bits(a) as i64;
+    let right = integer_bits(b) as i64;
+    let force_signed = op == BinaryOp::Minus && ctx.no_unsigned_subtraction();
+    let operation = match op {
+        BinaryOp::Plus => match (left_unsigned, right_unsigned) {
+            (false, false) => Op::AddIntSsNative,
+            (false, true) => Op::AddIntSuNative,
+            (true, false) => Op::AddIntUsNative,
+            (true, true) => Op::AddIntUuNative,
+        },
+        BinaryOp::Minus => match (left_unsigned, right_unsigned, force_signed) {
+            (false, false, _) => Op::SubIntSsNative,
+            (false, true, false) => Op::SubIntSuNative,
+            (true, false, false) => Op::SubIntUsNative,
+            (true, true, false) => Op::SubIntUuNative,
+            (false, true, true) => Op::SubIntSuForcedNative,
+            (true, false, true) => Op::SubIntUsForcedNative,
+            (true, true, true) => Op::SubIntUuForcedNative,
+        },
+        BinaryOp::Mul if left_unsigned || right_unsigned => Op::MulIntUnsignedNative,
+        BinaryOp::Mul => Op::MulIntSignedNative,
+        _ => unreachable!("only the three arithmetic families prepare here"),
+    };
+    unsigned_result.set((left_unsigned || right_unsigned) && !force_signed);
+    (operation, EvaluatedArgs::Int2(Some(left), Some(right)))
+}
+
 pub(crate) fn integer_binary(
     op: BinaryOp,
     a: Integer,
@@ -75,50 +114,24 @@ pub(crate) fn integer_binary(
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
     use BinaryOp::*;
-    let lhs_unsigned = matches!(a, Integer::Unsigned(_));
-    let rhs_unsigned = matches!(b, Integer::Unsigned(_));
-    let unsigned = lhs_unsigned || rhs_unsigned;
+    if matches!(op, Plus | Minus | Mul) {
+        let unsigned_result = std::cell::Cell::new(false);
+        return crate::tikv::evaluate_prepared_args_in(
+            ctx,
+            || Ok(prepare_integer_arithmetic(op, a, b, ctx, &unsigned_result)),
+            |computed| {
+                if unsigned_result.get() {
+                    computed.into_uint_bits_datum()
+                } else {
+                    computed.into_int_datum()
+                }
+            },
+        );
+    }
     let bits_a = integer_bits(a);
     let bits_b = integer_bits(b);
     Ok(match op {
-        Plus => return integer_add(a, b),
-        // `-` reports `ErrOverflow` exactly where Go `builtinArithmeticMinusIntSig`
-        // does — via [`minus_overflows`], a line-for-line port of Go's
-        // `overflowCheck` (verified against goeval across every branch). A
-        // non-overflowing result keeps its wrapped two's-complement value, typed
-        // by `unsigned`.
-        Minus => {
-            let force_signed = ctx.no_unsigned_subtraction();
-            if minus_overflows(
-                lhs_unsigned,
-                rhs_unsigned,
-                force_signed,
-                bits_a as i64,
-                bits_b as i64,
-            ) {
-                return Err(EvalError::IntOverflow);
-            }
-            integer_result(unsigned && !force_signed, bits_a.wrapping_sub(bits_b))
-        }
-        // `*` matches Go's two sigs, selected by whether either operand is
-        // unsigned (`getFunction`: `HasUnsignedFlag(lhs) || HasUnsignedFlag(rhs)`
-        // == this `unsigned`). `builtinArithmeticMultiplyIntUnsignedSig` multiplies
-        // the u64 bit patterns and errors when the product wraps
-        // (`unsignedA != 0 && result/unsignedA != unsignedB`); `...MultiplyIntSig`
-        // multiplies as i64 (`a != 0 && result/a != b`, plus the `MinInt64 * -1`
-        // case). Both are exactly `checked_mul` on the respective type.
-        Mul => {
-            if unsigned {
-                return bits_a
-                    .checked_mul(bits_b)
-                    .map(Datum::UInt)
-                    .ok_or(EvalError::IntOverflow);
-            }
-            return (bits_a as i64)
-                .checked_mul(bits_b as i64)
-                .map(Datum::Int)
-                .ok_or(EvalError::IntOverflow);
-        }
+        Plus | Minus | Mul => unreachable!("worker arithmetic dispatched above"),
         // `DIV`/`MOD` by zero yield NULL in MySQL. `DIV` truncates toward zero.
         IntDiv => {
             if bits_b == 0 {
@@ -185,89 +198,6 @@ pub(crate) fn integer_binary(
         Div => unreachable!("handled above"),
         LogicAnd | LogicOr | LogicXor | NullEq => unreachable!("handled above"),
     })
-}
-
-pub(super) fn integer_result(unsigned: bool, bits: u64) -> Datum {
-    if unsigned {
-        Datum::UInt(bits)
-    } else {
-        Datum::Int(bits as i64)
-    }
-}
-
-/// Integer `+` with TiDB's overflow rule (`builtinArithmeticPlusIntSig`): the
-/// result is `UNSIGNED` when either operand is, and any result past that type's
-/// range is `ErrOverflow`, never a silent wrap. Go errors in every signedness
-/// case rather than adding the raw two's-complement bits, so each case maps to a
-/// checked operation: a mixed sum underflows past `0` when a negative addend
-/// exceeds the unsigned operand, or overflows past `u64::MAX`.
-pub(super) fn integer_add(a: Integer, b: Integer) -> Result<Datum, EvalError> {
-    match (a, b) {
-        (Integer::Signed(x), Integer::Signed(y)) => x
-            .checked_add(y)
-            .map(Datum::Int)
-            .ok_or(EvalError::IntOverflow),
-        (Integer::Unsigned(x), Integer::Unsigned(y)) => x
-            .checked_add(y)
-            .map(Datum::UInt)
-            .ok_or(EvalError::IntOverflow),
-        (Integer::Unsigned(x), Integer::Signed(y)) | (Integer::Signed(y), Integer::Unsigned(x)) => {
-            let sum = if y < 0 {
-                x.checked_sub(y.unsigned_abs())
-            } else {
-                x.checked_add(y.unsigned_abs())
-            };
-            sum.map(Datum::UInt).ok_or(EvalError::IntOverflow)
-        }
-    }
-}
-
-/// A line-for-line port of Go `builtinArithmeticMinusIntSig.overflowCheck`:
-/// `true` when `a - b` overflows the result type. `a`/`b` are the operands
-/// reinterpreted as `i64` (Go passes the raw `int64` bits), and
-/// `force_signed` is `NO_UNSIGNED_SUBTRACTION`.
-pub(super) fn minus_overflows(
-    lhs_unsigned: bool,
-    rhs_unsigned: bool,
-    force_signed: bool,
-    a: i64,
-    b: i64,
-) -> bool {
-    let signed = force_signed || (!lhs_unsigned && !rhs_unsigned);
-    let res = a.wrapping_sub(b);
-    let (ua, ub) = (a as u64, b as u64);
-    let mut res_unsigned = false;
-    if lhs_unsigned {
-        if rhs_unsigned {
-            if ua < ub {
-                if res >= 0 {
-                    return true;
-                }
-            } else {
-                res_unsigned = true;
-            }
-        } else if b >= 0 {
-            if ua > ub {
-                res_unsigned = true;
-            }
-        } else if ua > u64::MAX - b.unsigned_abs() {
-            // Go `testIfSumOverflowsUll(ua, uint64(-b))`.
-            return true;
-        } else {
-            res_unsigned = true;
-        }
-    } else if rhs_unsigned {
-        // Go `uint64(a - math.MinInt64) < ub`.
-        if (a.wrapping_sub(i64::MIN) as u64) < ub {
-            return true;
-        }
-    } else if a > 0 && b < 0 {
-        res_unsigned = true;
-    } else if a < 0 && b > 0 && res >= 0 {
-        return true;
-    }
-    (!signed && !res_unsigned && res < 0)
-        || (signed && res_unsigned && (res as u64) > i64::MAX as u64)
 }
 
 #[cfg(test)]

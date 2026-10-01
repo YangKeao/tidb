@@ -212,78 +212,15 @@ impl MyDecimalWords {
     /// most-significant-word-first, the trailing partial fraction word
     /// left-aligned into the high digit positions, and the nine-word clamp.
     pub(super) fn from_decimal(d: &Decimal) -> Self {
-        let digits = d.digits.as_bytes();
-        let storage_scale = d.storage_scale as usize;
-        // The Rust coefficient is left-padded to at least the storage scale, so
-        // the integer digit count is the non-fraction remainder.
-        let source_digits_int = digits.len() - storage_scale;
-        let mut digits_int = source_digits_int;
-        let mut digits_frac = storage_scale;
-
-        let words_int0 = digits_to_words(digits_int);
-        let words_frac0 = digits_to_words(digits_frac);
-        let (words_int, words_frac, warn) = fix_word_cnt_error(words_int0, words_frac0);
-        if warn.is_some() {
-            digits_frac = words_frac * DIGITS_PER_WORD;
-            if warn == Some(DecimalCodecWarning::Overflow) {
-                digits_int = words_int * DIGITS_PER_WORD;
-            }
-        }
-
-        let mut word_buf = [0i32; CODEC_WORD_BUF_LEN];
-
-        // Integer part: read the integer prefix right-to-left into base-1e9
-        // words, filling word_buf[words_int-1] down to word_buf[0].
-        let mut word_idx = words_int;
-        let mut word: i32 = 0;
-        let mut inner = 0usize;
-        let mut remaining = digits_int;
-        let mut si = source_digits_int;
-        while remaining > 0 {
-            remaining -= 1;
-            si -= 1;
-            word += i32::from(digits[si] - b'0') * CODEC_POWERS10[inner];
-            inner += 1;
-            if inner == DIGITS_PER_WORD {
-                word_idx -= 1;
-                word_buf[word_idx] = word;
-                word = 0;
-                inner = 0;
-            }
-        }
-        if inner != 0 {
-            word_idx -= 1;
-            word_buf[word_idx] = word;
-        }
-
-        // Fraction part: read the fraction digits left-to-right; the final
-        // partial word is left-aligned into the high digit positions.
-        word_idx = words_int;
-        word = 0;
-        inner = 0;
-        remaining = digits_frac;
-        let mut fi = source_digits_int;
-        while remaining > 0 {
-            remaining -= 1;
-            word = i32::from(digits[fi] - b'0') + word * 10;
-            fi += 1;
-            inner += 1;
-            if inner == DIGITS_PER_WORD {
-                word_buf[word_idx] = word;
-                word_idx += 1;
-                word = 0;
-                inner = 0;
-            }
-        }
-        if inner != 0 {
-            word_buf[word_idx] = word * CODEC_POWERS10[DIGITS_PER_WORD - inner];
-        }
-
+        let parts = d
+            .try_to_shared_math(usize::MAX)
+            .and_then(|value| value.try_native_word_projection(usize::MAX))
+            .expect("shared native decimal word projection failed");
         MyDecimalWords {
-            negative: d.negative,
-            digits_int: digits_int as i32,
-            digits_frac: digits_frac as i32,
-            word_buf,
+            negative: parts.negative,
+            digits_int: i32::from(parts.int_digits),
+            digits_frac: i32::from(parts.frac_digits),
+            word_buf: parts.words.map(|word| word as i32),
         }
     }
 

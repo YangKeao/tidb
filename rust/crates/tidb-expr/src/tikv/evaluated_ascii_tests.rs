@@ -47,6 +47,7 @@ impl AsciiComputedValue for ComputedValue {
             | ComputedValue::NativeVector(_)
             | ComputedValue::Ieee754Bits(_)
             | ComputedValue::Decimal(_)
+            | ComputedValue::DecimalFast(_)
             | ComputedValue::Int128(_)
             | ComputedValue::Uncompress(_)
             | ComputedValue::JsonReport(_) => {
@@ -1195,6 +1196,51 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::LastDayTextNative => {
             panic!("temporal formatting needs its original text, core and demand domains")
         }
+        EvaluatedBytesOp::AddIntSsNative
+        | EvaluatedBytesOp::AddIntSuNative
+        | EvaluatedBytesOp::AddIntUsNative
+        | EvaluatedBytesOp::AddIntUuNative
+        | EvaluatedBytesOp::SubIntSsNative
+        | EvaluatedBytesOp::SubIntSuNative
+        | EvaluatedBytesOp::SubIntUsNative
+        | EvaluatedBytesOp::SubIntUuNative
+        | EvaluatedBytesOp::SubIntSuForcedNative
+        | EvaluatedBytesOp::SubIntUsForcedNative
+        | EvaluatedBytesOp::SubIntUuForcedNative
+        | EvaluatedBytesOp::MulIntSignedNative
+        | EvaluatedBytesOp::MulIntUnsignedNative
+        | EvaluatedBytesOp::AddRealNative
+        | EvaluatedBytesOp::SubRealNative
+        | EvaluatedBytesOp::MulRealNative
+        | EvaluatedBytesOp::AddDecimalNative
+        | EvaluatedBytesOp::SubDecimalNative
+        | EvaluatedBytesOp::MulDecimalNative
+        | EvaluatedBytesOp::AddVectorNative
+        | EvaluatedBytesOp::SubVectorNative
+        | EvaluatedBytesOp::MulVectorNative
+        | EvaluatedBytesOp::BinaryArithmeticNullNative
+        | EvaluatedBytesOp::AddInt128SignedLegacy
+        | EvaluatedBytesOp::AddInt128UnsignedLegacy
+        | EvaluatedBytesOp::AddInt128RejectLeftLegacy
+        | EvaluatedBytesOp::AddInt128RejectRightLegacy
+        | EvaluatedBytesOp::SubInt128SignedLegacy
+        | EvaluatedBytesOp::SubInt128UnsignedLegacy
+        | EvaluatedBytesOp::SubInt128RejectLeftLegacy
+        | EvaluatedBytesOp::SubInt128RejectRightLegacy
+        | EvaluatedBytesOp::MulInt128SignedLegacy
+        | EvaluatedBytesOp::MulInt128UnsignedLegacy
+        | EvaluatedBytesOp::AddRealLegacy
+        | EvaluatedBytesOp::SubRealLegacy
+        | EvaluatedBytesOp::MulRealLegacy
+        | EvaluatedBytesOp::AddDecimalLegacy
+        | EvaluatedBytesOp::SubDecimalLegacy
+        | EvaluatedBytesOp::MulDecimalLegacy
+        | EvaluatedBytesOp::BinaryArithmeticMissingLegacy
+        | EvaluatedBytesOp::AddDecimalFastNative
+        | EvaluatedBytesOp::SubDecimalFastNative
+        | EvaluatedBytesOp::MulDecimalFastNative => {
+            panic!("binary arithmetic needs its actual pair and signature profile")
+        }
         EvaluatedBytesOp::UnaryPlusIntNative
         | EvaluatedBytesOp::UnaryPlusBitsNative
         | EvaluatedBytesOp::UnaryPlusDecimalNative
@@ -1574,6 +1620,205 @@ fn format_time_pb(
         field,
         args,
     )
+}
+
+#[test]
+fn binary_arithmetic_dispatch_distinguishes_fast_outcomes_and_infra() {
+    let left = NativeDecimalFastValue {
+        coefficient: 12,
+        storage_scale: 1,
+        scale: 1,
+    };
+    let right = NativeDecimalFastValue {
+        coefficient: 3,
+        ..left
+    };
+    let minimum = NativeDecimalFastValue {
+        coefficient: i128::MIN,
+        storage_scale: 0,
+        scale: 0,
+    };
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        // SUB must first negate its rhs: MIN-MIN is Unsupported, not a computed
+        // zero or SQL NULL. These are the old checked-coefficient policy cases.
+        for (operation, left, right, expected) in [
+            (
+                BinaryArithmeticOperation::Add,
+                Some(left),
+                Some(right),
+                NativeDecimalFastOutcome::Value(Some(NativeDecimalFastValue {
+                    coefficient: 15,
+                    storage_scale: 1,
+                    scale: 1,
+                })),
+            ),
+            (
+                BinaryArithmeticOperation::Subtract,
+                Some(minimum),
+                Some(minimum),
+                NativeDecimalFastOutcome::Unsupported,
+            ),
+            (
+                BinaryArithmeticOperation::Multiply,
+                Some(left),
+                Some(right),
+                NativeDecimalFastOutcome::Value(Some(NativeDecimalFastValue {
+                    coefficient: 36,
+                    storage_scale: 2,
+                    scale: 2,
+                })),
+            ),
+            (
+                BinaryArithmeticOperation::Add,
+                None,
+                Some(right),
+                NativeDecimalFastOutcome::Value(None),
+            ),
+        ] {
+            arm_eval_one_observation();
+            let result = eval_arithmetic_decimal_fast_in(operation, left, right, columns);
+            assert_wide_math_c4(take_eval_one_observation());
+            assert_eq!(result, Ok(expected));
+        }
+    });
+    let current = scope_worker_observation(&scope);
+    assert_eq!(current.2 + current.3, current.4);
+    assert!(current.4 <= TEST_WORKER_CAP);
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (left, right) in [(Some(left), Some(right)), (None, None)] {
+            arm_eval_one_observation();
+            let result = eval_arithmetic_decimal_fast_in(BinaryArithmeticOperation::Add, left, right, columns);
+            let observation = take_eval_one_observation();
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        // A representation error also remains typed Err, never Unsupported.
+        // This small invalid shape exercises the real bridge, not allocation/OOM.
+        arm_eval_one_observation();
+        let result = eval_arithmetic_decimal_fast_in(BinaryArithmeticOperation::Add,
+            Some(NativeDecimalFastValue { coefficient: 1, storage_scale: 0, scale: 1 }), None, columns);
+        assert!(matches!(result, Err(EvalError::ExpressionRuntimeFailure(_))));
+        assert_eq!(take_eval_one_observation().facade_entries, 0);
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn binary_arithmetic_dispatch_keeps_profiles_and_legacy_presence() {
+    use tidb_ast::BinaryOp;
+    use tidb_datatype::Decimal;
+
+    struct Mode {
+        forced: Cell<bool>,
+        reads: Cell<usize>,
+    }
+    impl Columns for Mode {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn no_unsigned_subtraction(&self) -> bool {
+            self.reads.set(self.reads.get() + 1);
+            self.forced.get()
+        }
+    }
+    let mode = Mode {
+        forced: Cell::new(false),
+        reads: Cell::new(0),
+    };
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&mode, |columns| {
+        for forced in [false, true] {
+            mode.forced.set(forced);
+            let reads = mode.reads.get();
+            let (result, observation) = observe_wide_math(|| {
+                crate::ops::eval_binary_in(BinaryOp::Minus, Datum::UInt(2), Datum::UInt(3), columns)
+            });
+            assert_wide_math_c4(observation);
+            assert_eq!(mode.reads.get(), reads + 1);
+            assert_eq!(result, if forced { Ok(Datum::Int(-1)) } else { Err(EvalError::IntOverflow) });
+            let operation = if forced { EvaluatedBytesOp::SubIntUuForcedNative } else { EvaluatedBytesOp::SubIntUuNative };
+            assert_eq!(scope.lease.borrow().as_ref().unwrap().worker.as_ref().unwrap().operation(), operation);
+        }
+        let reads = mode.reads.get();
+        let (result, observation) = observe_wide_math(|| {
+            crate::ops::eval_binary_in(BinaryOp::Plus, Datum::UInt(2), Datum::UInt(3), columns)
+        });
+        assert_eq!(result, Ok(Datum::UInt(5)));
+        assert_wide_math_c4(observation);
+        assert_eq!(mode.reads.get(), reads);
+        let (result, observation) = observe_wide_math(|| {
+            crate::ops::eval_binary_in(BinaryOp::Mul, Datum::Real(f64::MAX), Datum::Real(2.0), columns)
+        });
+        assert_eq!(result, Err(EvalError::FloatOverflow));
+        assert_wide_math_c4(observation);
+
+        // Legacy range checks constrain the result, not the input's i128 bits.
+        // Explicit reject-left/right signatures still have their original errors.
+        for (profile, left, right, expected) in [
+            (LegacyIntegerArithmetic::AddSigned, -1, 2, Ok(Some(1))),
+            (LegacyIntegerArithmetic::AddUnsigned, 1_i128 << 64, -1, Ok(Some(i128::from(u64::MAX)))),
+            (LegacyIntegerArithmetic::AddRejectLeft, -1, 2, Err(EvalError::DataOutOfRange { value: "BIGINT UNSIGNED", expression: "ADD".to_owned() })),
+            (LegacyIntegerArithmetic::AddRejectRight, 2, -1, Err(EvalError::DataOutOfRange { value: "BIGINT UNSIGNED", expression: "ADD".to_owned() })),
+            (LegacyIntegerArithmetic::SubUnsigned, 0, 1, Err(EvalError::DataOutOfRange { value: "BIGINT UNSIGNED", expression: "SUBTRACT".to_owned() })),
+            (LegacyIntegerArithmetic::MulSigned, i128::from(i64::MAX), 2, Err(EvalError::DataOutOfRange { value: "BIGINT", expression: "MULTIPLY".to_owned() })),
+        ] {
+            arm_eval_one_observation();
+            let result = eval_legacy_integer_arithmetic_in(profile, LegacyBinaryArgs::Values(left, right), columns);
+            assert_wide_math_c4(take_eval_one_observation());
+            assert_eq!(result, expected);
+        }
+        arm_eval_one_observation();
+        let result = eval_legacy_real_arithmetic_in(BinaryArithmeticOperation::Multiply, LegacyBinaryArgs::Values(f64::MAX, 2.0), columns);
+        assert_eq!(result, Ok(Some(f64::INFINITY)));
+        assert_wide_math_c4(take_eval_one_observation());
+        arm_eval_one_observation();
+        let result = eval_legacy_decimal_arithmetic_in(BinaryArithmeticOperation::Add,
+            LegacyBinaryArgs::Values(Decimal::from_literal("0.10"), Decimal::from_literal("0.20")), columns);
+        assert_eq!(result.unwrap().unwrap().to_string(), "0.30");
+        assert_wide_math_c4(take_eval_one_observation());
+
+        for missing in [false, true] {
+            let operation = if missing { EvaluatedBytesOp::BinaryArithmeticMissingLegacy } else { EvaluatedBytesOp::BinaryArithmeticNullNative };
+            arm_eval_one_observation();
+            assert_eq!(eval_legacy_integer_arithmetic_in(LegacyIntegerArithmetic::AddSigned,
+                if missing { LegacyBinaryArgs::Missing } else { LegacyBinaryArgs::NullWitness(None) }, columns), Ok(None));
+            assert_wide_math_c4(take_eval_one_observation());
+            assert_eq!(scope.lease.borrow().as_ref().unwrap().worker.as_ref().unwrap().operation(), operation);
+            arm_eval_one_observation();
+            assert_eq!(eval_legacy_real_arithmetic_in(BinaryArithmeticOperation::Add,
+                if missing { LegacyBinaryArgs::Missing } else { LegacyBinaryArgs::NullWitness(None) }, columns), Ok(None));
+            assert_wide_math_c4(take_eval_one_observation());
+            arm_eval_one_observation();
+            assert_eq!(eval_legacy_decimal_arithmetic_in(BinaryArithmeticOperation::Add,
+                if missing { LegacyBinaryArgs::Missing } else { LegacyBinaryArgs::NullWitness(None) }, columns), Ok(None));
+            assert_wide_math_c4(take_eval_one_observation());
+        }
+        arm_eval_one_observation();
+        let result = eval_legacy_integer_arithmetic_in(LegacyIntegerArithmetic::AddSigned, LegacyBinaryArgs::NullWitness(Some(0)), columns);
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract));
+        assert_eq!(take_eval_one_observation().facade_entries, 0);
+        assert_eq!(mode.reads.get(), reads);
+    });
+    assert!(!scope.busy.get());
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
 }
 
 #[test]

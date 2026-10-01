@@ -23,9 +23,9 @@
 
 use super::*;
 
-/// Float (`FLOAT`/`DOUBLE`) arithmetic and comparison: an `Int` or
-/// `Decimal` operand promotes to `f64` (MySQL's implicit rule), using
-/// NATIVE `f64` arithmetic throughout — unlike `Decimal`, `Float` needs no
+/// Float comparisons and remaining arithmetic (`+`/`-`/`*` now use workers).
+/// An `Int` or `Decimal` operand promotes to `f64` (MySQL's implicit rule),
+/// using `f64` arithmetic throughout — unlike `Decimal`, `Float` needs no
 /// custom digit-string math, since Rust's `f64` already implements the
 /// same IEEE-754 semantics Go's does (confirmed via direct comparison of
 /// `strconv.FormatFloat(f,'f',-1,64)` against Rust's own `f64` Display
@@ -62,9 +62,7 @@ pub(super) fn float_binary(
     let a = to_f64(l);
     let b = to_f64(r);
     Ok(match op {
-        Plus => finite_float(a + b)?,
-        Minus => finite_float(a - b)?,
-        Mul => finite_float(a * b)?,
+        Plus | Minus | Mul => unreachable!("worker arithmetic dispatched before this ladder"),
         Div => {
             if b == 0.0 {
                 ctx.handle_division_by_zero()?;

@@ -483,7 +483,7 @@ impl EvaluatorSuite {
             {
                 if let Expression::ScalarFunction(function) = expression {
                     // Go's typed `VecEvalDecimal` for decimal arithmetic.
-                    if function.vec_eval_decimal_arithmetic(input, output, *output_index)? {
+                    if function.vec_eval_decimal_arithmetic_in(ctx, input, output, *output_index)? {
                         continue;
                     }
                 }
@@ -1323,6 +1323,83 @@ mod tests {
             vectorized_filter_consider_null(&ctx, true, &both, &input, Vec::new(), Vec::new())
                 .unwrap();
         assert_eq!(selected, vec![false, true, false, false]);
+    }
+
+    #[test]
+    fn projection_decimal_arithmetic_forwards_scope_and_keeps_output_atomic() {
+        use crate::tikv::{AsciiPoolOwner, AsciiPoolPolicy};
+
+        let mut field = FieldType::new(FieldTypeCode::NewDecimal);
+        field.set_flen(40);
+        field.set_decimal(2);
+        let owner = AsciiPoolOwner::new(
+            AsciiPoolPolicy::checked(0, 0, 1 << 20, 1 << 16, 1 << 16, 64, 8, 1 << 16).unwrap(),
+        )
+        .unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        scope.with_columns(&NoColumns, |columns| {
+            for name in ["plus", "minus", "mul"] {
+                for null_left in [false, true] {
+                    let function = ScalarFunction::new(
+                        CiString::new(name),
+                        field.clone(),
+                        vec![decimal_column(0, &field), decimal_column(1, &field)],
+                    );
+                    let mut input = Chunk::new_with_capacity(&[field.clone(), field.clone()], 1);
+                    if null_left {
+                        input.append_null(0);
+                    } else {
+                        input.append_my_decimal(
+                            0,
+                            &Decimal::from_literal("1.25").to_my_decimal().unwrap(),
+                        );
+                    }
+                    input.append_my_decimal(
+                        1,
+                        &Decimal::from_literal("2.00").to_my_decimal().unwrap(),
+                    );
+                    let mut output = Chunk::new_with_capacity(&[field.clone()], 1);
+                    assert!(matches!(
+                        function.vec_eval_decimal_arithmetic_in(columns, &input, &mut output, 0),
+                        Err(EvalError::ExpressionAdapterFailure(failure))
+                            if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource
+                    ));
+                    assert_eq!(output.num_rows(), 0);
+                    let suite =
+                        EvaluatorSuite::new(vec![Expression::ScalarFunction(function)], false);
+                    assert!(matches!(
+                        suite.run(columns, &mut input, &mut output),
+                        Err(EvaluatorError::Eval(EvalError::ExpressionAdapterFailure(failure)))
+                            if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource
+                    ));
+                    assert_eq!(output.num_rows(), 0);
+                }
+            }
+        });
+        drop(scope);
+        execution.close();
+
+        // The first product fits, the second exceeds checked i128. Unsupported
+        // must decline the complete column without appending the first result.
+        let function = ScalarFunction::new(
+            CiString::new("mul"),
+            field.clone(),
+            vec![decimal_column(0, &field), decimal_column(1, &field)],
+        );
+        let mut input = Chunk::new_with_capacity(&[field.clone(), field.clone()], 2);
+        for (left, right) in [
+            ("1.25", "2.00"),
+            ("1000000000000000000000000000000", "10000000000"),
+        ] {
+            input.append_my_decimal(0, &Decimal::from_literal(left).to_my_decimal().unwrap());
+            input.append_my_decimal(1, &Decimal::from_literal(right).to_my_decimal().unwrap());
+        }
+        let mut output = Chunk::new_with_capacity(&[field], 2);
+        assert!(!function
+            .vec_eval_decimal_arithmetic_in(&NoColumns, &input, &mut output, 0)
+            .unwrap());
+        assert_eq!(output.num_rows(), 0);
     }
 
     /// Go `builtinArithmetic*DecimalSig.vecEvalDecimal`: the projection's

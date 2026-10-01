@@ -403,10 +403,12 @@ pub use row::{compare_datums, compare_datums_with_collation};
 pub(crate) use tidb_datatype::{Datum, Decimal};
 pub use tidb_util::mathutil::MysqlRng;
 pub use tikv::{
-    eval_regexp_legacy_ready_in, AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy,
-    AsciiScope, ExpressionAdapterFailure, ExpressionAdapterFailureClass,
-    ExpressionAdapterFailureOrigin, ExpressionRuntimeFailure, ExpressionRuntimeFailureClass,
-    ExpressionRuntimeFailurePhase, RegexpLegacyInput, ScopedAsciiColumns,
+    eval_legacy_decimal_arithmetic_in, eval_legacy_integer_arithmetic_in,
+    eval_legacy_real_arithmetic_in, eval_regexp_legacy_ready_in, AsciiExecution, AsciiOwnerError,
+    AsciiPoolOwner, AsciiPoolPolicy, AsciiScope, BinaryArithmeticOperation,
+    ExpressionAdapterFailure, ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,
+    ExpressionRuntimeFailure, ExpressionRuntimeFailureClass, ExpressionRuntimeFailurePhase,
+    LegacyBinaryArgs, LegacyIntegerArithmetic, RegexpLegacyInput, ScopedAsciiColumns,
 };
 
 use tidb_ast::{CastStyle, Expr, GetFormatSelector, IsTarget};

@@ -29,13 +29,16 @@ mod evaluated_ascii;
 pub use adapter_failure::{
     ExpressionAdapterFailure, ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,
 };
-pub use evaluated_ascii::{
-    eval_regexp_legacy_ready_in, AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy,
-    AsciiScope, RegexpLegacyInput, ScopedAsciiColumns,
-};
 pub(crate) use evaluated_ascii::{
-    evaluate_args_in, evaluate_ascii_in, evaluate_bytes_in, evaluate_logical_in,
-    evaluate_regexp_in, EvaluatedBytesResult, RegexpFunction,
+    eval_arithmetic_decimal_fast_in, evaluate_args_in, evaluate_ascii_in, evaluate_bytes_in,
+    evaluate_logical_in, evaluate_prepared_args_in, evaluate_regexp_in, EvaluatedBytesResult,
+    RegexpFunction,
+};
+pub use evaluated_ascii::{
+    eval_legacy_decimal_arithmetic_in, eval_legacy_integer_arithmetic_in,
+    eval_legacy_real_arithmetic_in, eval_regexp_legacy_ready_in, AsciiExecution, AsciiOwnerError,
+    AsciiPoolOwner, AsciiPoolPolicy, AsciiScope, LegacyBinaryArgs, LegacyIntegerArithmetic,
+    RegexpLegacyInput, ScopedAsciiColumns,
 };
 pub(crate) use tidb_query_datatype::codec::mysql::json::{
     parse_native_json_document, NativeJsonError,
@@ -64,6 +67,8 @@ use tidb_query_expr::local::{
     prepare_field_real_args as prepare_field_real_args_local,
     prepare_make_set_args as prepare_make_set_args_local,
 };
+pub use tidb_query_expr::BinaryArithmeticOperation;
+pub(crate) use tidb_query_expr::{NativeDecimalFastOutcome, NativeDecimalFastValue};
 
 /// Builds only the opaque constant-list key owner, without a runtime scope.
 /// The existing caller has no encoded-size SQL policy; retain the real backend

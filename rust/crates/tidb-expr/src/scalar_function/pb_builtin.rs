@@ -286,7 +286,11 @@ impl PbBuiltin {
                 }
                 let left = eval_numeric_operand_row(&args[0], ctx, row, domain)?;
                 if left.is_null() && !(op == BinaryOp::Mod && domain != EvalType::Decimal) {
-                    return Ok(Datum::Null);
+                    return if matches!(op, BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul) {
+                        crate::ops::eval_binary_arithmetic_null_in(ctx)
+                    } else {
+                        Ok(Datum::Null)
+                    };
                 }
                 let right = eval_numeric_operand_row(&args[1], ctx, row, domain)?;
                 function.eval_binary_values(op, left, right, ctx)

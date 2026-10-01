@@ -2843,16 +2843,44 @@ impl LegacyEvaluator<'_> {
                 Some(Datum::Decimal(value)) => Some(value.clone()),
                 _ => None,
             },
-            // Go `EvalPlusDecimal`/`EvalMinusDecimal`/`EvalMultiplyDecimal`
-            // (`pkg/expression/builtin_arithmetic_vec.go`): exact decimal
-            // arithmetic, NULL in -> NULL out. A zero MOD divisor answers NULL
-            // (MySQL), as `rem_mysql` already encodes.
             SimpleExpr::Func(
                 sig @ (SimpleSig::PlusDecimal
                 | SimpleSig::MinusDecimal
-                | SimpleSig::MultiplyDecimal
-                | SimpleSig::ModDecimal
-                | SimpleSig::DivideDecimal),
+                | SimpleSig::MultiplyDecimal),
+                children,
+            ) => {
+                use tidb_expr::{BinaryArithmeticOperation as Operation, LegacyBinaryArgs};
+                // The old legacy_some! sequence never demanded the right child
+                // after a missing/NULL left. Keep that order, but let the worker
+                // own both genuine absence and nullable results.
+                let left = self.eval_decimal(children.first())?;
+                let args = if children.is_empty() {
+                    LegacyBinaryArgs::Missing
+                } else if let Some(left) = left {
+                    let right = self.eval_decimal(children.get(1))?;
+                    if children.len() < 2 {
+                        LegacyBinaryArgs::Missing
+                    } else {
+                        match right {
+                            Some(right) => LegacyBinaryArgs::Values(left, right),
+                            None => LegacyBinaryArgs::NullWitness(None),
+                        }
+                    }
+                } else {
+                    LegacyBinaryArgs::NullWitness(None)
+                };
+                let operation = match sig {
+                    SimpleSig::PlusDecimal => Operation::Add,
+                    SimpleSig::MinusDecimal => Operation::Subtract,
+                    _ => Operation::Multiply,
+                };
+                // This legacy profile retains the shared decimal core's value
+                // while ignoring its warnings, as the old .0 consumers did.
+                tidb_expr::eval_legacy_decimal_arithmetic_in(operation, args, self.raw_columns)?
+            }
+            // Division/remainder retain their separate, unchanged legacy path.
+            SimpleExpr::Func(
+                sig @ (SimpleSig::ModDecimal | SimpleSig::DivideDecimal),
                 children,
             ) => {
                 let (left, right) = (
@@ -2863,9 +2891,6 @@ impl LegacyEvaluator<'_> {
                     SimpleSig::DivideDecimal => {
                         left.div_mysql(&right, div_precision_increment as u32)
                     }
-                    SimpleSig::PlusDecimal => Some(left.add_mysql(&right).0),
-                    SimpleSig::MinusDecimal => Some(left.sub_mysql(&right).0),
-                    SimpleSig::MultiplyDecimal => Some(left.mul_mysql(&right).0),
                     _ => left.rem_mysql(&right),
                 }
             }
@@ -3197,12 +3222,41 @@ impl LegacyEvaluator<'_> {
                     Some(0.0)
                 }
             }
-            // Go's arithmetic evaluators recurse; the real family composes.
             SimpleExpr::Func(
-                sig @ (SimpleSig::PlusReal
-                | SimpleSig::MinusReal
-                | SimpleSig::MultiplyReal
-                | SimpleSig::DivideReal
+                sig @ (SimpleSig::PlusReal | SimpleSig::MinusReal | SimpleSig::MultiplyReal),
+                children,
+            ) => {
+                use tidb_expr::{BinaryArithmeticOperation as Operation, LegacyBinaryArgs};
+                let left = self.eval_real(children.first())?;
+                let args = if children.is_empty() {
+                    LegacyBinaryArgs::Missing
+                } else if let Some(left) = left {
+                    // Unlike the integer channel, a NULL left never demands
+                    // the right child. Preserve the original legacy_some! order.
+                    let right = self.eval_real(children.get(1))?;
+                    if children.len() < 2 {
+                        LegacyBinaryArgs::Missing
+                    } else {
+                        match right {
+                            Some(right) => LegacyBinaryArgs::Values(left, right),
+                            None => LegacyBinaryArgs::NullWitness(None),
+                        }
+                    }
+                } else {
+                    LegacyBinaryArgs::NullWitness(None)
+                };
+                let operation = match sig {
+                    SimpleSig::PlusReal => Operation::Add,
+                    SimpleSig::MinusReal => Operation::Subtract,
+                    _ => Operation::Multiply,
+                };
+                // Legacy real arithmetic retains Inf/NaN rather than applying
+                // the ordinary SQL real signature's overflow policy.
+                tidb_expr::eval_legacy_real_arithmetic_in(operation, args, self.raw_columns)?
+            }
+            // Division/remainder and casts keep their original separate path.
+            SimpleExpr::Func(
+                sig @ (SimpleSig::DivideReal
                 | SimpleSig::ModReal
                 | SimpleSig::CastIntAsReal
                 | SimpleSig::CastDecimalAsReal
@@ -3222,14 +3276,7 @@ impl LegacyEvaluator<'_> {
                 | SimpleSig::Sin),
                 children,
             ) => {
-                if !matches!(
-                    sig,
-                    SimpleSig::PlusReal
-                        | SimpleSig::MinusReal
-                        | SimpleSig::MultiplyReal
-                        | SimpleSig::DivideReal
-                        | SimpleSig::ModReal
-                ) {
+                if !matches!(sig, SimpleSig::DivideReal | SimpleSig::ModReal) {
                     // Go wraps the operand in the cast signature; the widening
                     // itself is exact for the admitted source kinds.
                     return Ok(match sig {
@@ -3331,9 +3378,6 @@ impl LegacyEvaluator<'_> {
                     legacy_some!(self.eval_real(children.get(1))?),
                 );
                 match sig {
-                    SimpleSig::PlusReal => Some(left + right),
-                    SimpleSig::MinusReal => Some(left - right),
-                    SimpleSig::MultiplyReal => Some(left * right),
                     // Go `math.Mod`: the remainder carries the dividend's
                     // sign; a zero divisor answers NULL (error folded).
                     SimpleSig::ModReal if right != 0.0 => Some(left % right),
@@ -4203,63 +4247,56 @@ impl LegacyEvaluator<'_> {
                     | SimpleSig::MinusIntForcedSignedUnsigned
                     | SimpleSig::MultiplyInt
                     | SimpleSig::MultiplyIntUnsigned => {
+                        use tidb_expr::{LegacyBinaryArgs, LegacyIntegerArithmetic as Profile};
+                        // Both children execute before either SQL-error fold;
+                        // only then distinguish absence from a folded NULL.
                         let (left, right) = (child(0), child(1));
-                        let (Some(left), Some(right)) = (
+                        let (left, right) = (
                             fold_legacy_sql(left)?.flatten(),
                             fold_legacy_sql(right)?.flatten(),
-                        ) else {
-                            return Ok(None);
+                        );
+                        let args = if children.len() < 2 {
+                            LegacyBinaryArgs::Missing
+                        } else {
+                            match (left, right) {
+                                (Some(left), Some(right)) => LegacyBinaryArgs::Values(left, right),
+                                _ => LegacyBinaryArgs::NullWitness(None),
+                            }
                         };
-                        let (name, unsigned) = match sig {
-                            SimpleSig::PlusInt => ("ADD", false),
-                            SimpleSig::PlusIntUnsignedUnsigned
-                            | SimpleSig::PlusIntUnsignedSigned
-                            | SimpleSig::PlusIntSignedUnsigned
-                            | SimpleSig::PlusIntSignedSigned => ("ADD", true),
-                            SimpleSig::MinusInt => ("SUBTRACT", false),
+                        // Preserve these historical signature policies, including
+                        // SignedSigned's unsigned result and SubSignedUnsigned's
+                        // lack of a negative-left rejection. Do not narrow i128.
+                        let profile = match sig {
+                            SimpleSig::PlusInt => Profile::AddSigned,
+                            SimpleSig::PlusIntUnsignedUnsigned | SimpleSig::PlusIntSignedSigned => {
+                                Profile::AddUnsigned
+                            }
+                            SimpleSig::PlusIntUnsignedSigned => Profile::AddRejectRight,
+                            SimpleSig::PlusIntSignedUnsigned => Profile::AddRejectLeft,
+                            SimpleSig::MinusInt => Profile::SubSigned,
+                            SimpleSig::MinusIntUnsignedSigned
+                            | SimpleSig::MinusIntForcedUnsignedSigned => Profile::SubRejectRight,
+                            SimpleSig::MinusIntForcedSignedUnsigned => Profile::SubRejectLeft,
                             SimpleSig::MinusIntUnsignedUnsigned
-                            | SimpleSig::MinusIntUnsignedSigned
                             | SimpleSig::MinusIntSignedUnsigned
                             | SimpleSig::MinusIntSignedSigned
-                            | SimpleSig::MinusIntForcedUnsignedUnsigned
-                            | SimpleSig::MinusIntForcedUnsignedSigned
-                            | SimpleSig::MinusIntForcedSignedUnsigned => ("SUBTRACT", true),
-                            _ => ("MULTIPLY", matches!(sig, SimpleSig::MultiplyIntUnsigned)),
+                            | SimpleSig::MinusIntForcedUnsignedUnsigned => Profile::SubUnsigned,
+                            SimpleSig::MultiplyInt => Profile::MulSigned,
+                            _ => Profile::MulUnsigned,
                         };
-                        let mixed_negative = match sig {
-                            SimpleSig::PlusIntUnsignedSigned
-                            | SimpleSig::MinusIntUnsignedSigned
-                            | SimpleSig::MinusIntForcedUnsignedSigned => right < 0,
-                            SimpleSig::PlusIntSignedUnsigned
-                            | SimpleSig::MinusIntForcedSignedUnsigned => left < 0,
-                            _ => false,
-                        };
-                        let raw = match name {
-                            "ADD" => left.checked_add(right),
-                            "SUBTRACT" => left.checked_sub(right),
-                            _ => left.checked_mul(right),
-                        };
-                        let (low, high) = if unsigned {
-                            (0, u64::MAX as i128)
-                        } else {
-                            (i64::MIN as i128, i64::MAX as i128)
-                        };
-                        if mixed_negative
-                            || !raw
-                                .map(|value| (low..=high).contains(&value))
-                                .unwrap_or(false)
-                        {
-                            return Err(format!(
-                                "{domain} value is out of range in '{name}'",
-                                domain = if unsigned {
-                                    "BIGINT UNSIGNED"
-                                } else {
-                                    "BIGINT"
-                                }
-                            )
-                            .into());
-                        }
-                        Some(raw.expect("checked above"))
+                        tidb_expr::eval_legacy_integer_arithmetic_in(
+                            profile,
+                            args,
+                            self.raw_columns,
+                        )
+                        .map_err(|error| match error {
+                            tidb_expr::EvalError::DataOutOfRange { value, expression } => {
+                                LegacyEvalError::Sql(format!(
+                                    "{value} value is out of range in '{expression}'"
+                                ))
+                            }
+                            error => LegacyEvalError::from(error),
+                        })?
                     }
                     // A bare decimal arithmetic as a condition answers its own
                     // truth (`ToBool`): non-zero is true, NULL is filtered.
@@ -9933,5 +9970,199 @@ mod tests {
                 assert_eq!(child_only.eval_expr(&extra).unwrap(), Some(1));
             });
         }
+    }
+
+    #[test]
+    fn legacy_binary_arithmetic_preserves_profiles_demand_and_typed_failures() {
+        use tidb_datatype::{Datum, Decimal};
+        use tidb_expr::{LegacyBinaryArgs, LegacyIntegerArithmetic as Profile};
+        let time_zone = zone();
+        let decimal = |text: &str| Decimal::parse_mysql(text).0;
+        let pool = |slots| {
+            tidb_expr::AsciiPoolOwner::new(
+                tidb_expr::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    64,
+                    8,
+                    4 * 1024 * 1024,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let owner = pool(1);
+        let execution = owner.begin_execution().unwrap();
+        execution.scope().with_columns(&tidb_expr::NoColumns, |columns| {
+            let row = [Datum::UInt(1_u64 << 63)];
+            let evaluator = LegacyEvaluator {
+                raw_columns: columns,
+                ..LegacyEvaluator::new(&row, 4, &time_zone)
+            };
+            // These are the original legacy policies, not corrected Go pairings.
+            // Even the signed signature accepts a wide input if its i128 result fits.
+            for (sig, left, right, expected) in [
+                (SimpleSig::PlusInt, SimpleExpr::Column(0), SimpleExpr::Int(-1), Ok(i128::from(i64::MAX))),
+                (SimpleSig::PlusIntSignedSigned, SimpleExpr::Int(-2), SimpleExpr::Int(1), Err("BIGINT UNSIGNED value is out of range in 'ADD'")),
+                (SimpleSig::PlusIntSignedUnsigned, SimpleExpr::Int(-1), SimpleExpr::Int(2), Err("BIGINT UNSIGNED value is out of range in 'ADD'")),
+                (SimpleSig::PlusIntUnsignedSigned, SimpleExpr::Int(2), SimpleExpr::Int(-1), Err("BIGINT UNSIGNED value is out of range in 'ADD'")),
+                (SimpleSig::MinusIntSignedUnsigned, SimpleExpr::Int(-1), SimpleExpr::Int(-2), Ok(1)),
+                (SimpleSig::MinusIntForcedSignedUnsigned, SimpleExpr::Int(-1), SimpleExpr::Int(-2), Err("BIGINT UNSIGNED value is out of range in 'SUBTRACT'")),
+                (SimpleSig::MinusIntUnsignedSigned, SimpleExpr::Int(2), SimpleExpr::Int(-1), Err("BIGINT UNSIGNED value is out of range in 'SUBTRACT'")),
+                (SimpleSig::MinusIntForcedUnsignedSigned, SimpleExpr::Int(2), SimpleExpr::Int(-1), Err("BIGINT UNSIGNED value is out of range in 'SUBTRACT'")),
+                (SimpleSig::MultiplyInt, SimpleExpr::Column(0), SimpleExpr::Int(0), Ok(0)),
+                (SimpleSig::MultiplyIntUnsigned, SimpleExpr::Column(0), SimpleExpr::Int(2), Err("BIGINT UNSIGNED value is out of range in 'MULTIPLY'")),
+            ] {
+                let call = SimpleExpr::Func(sig, vec![left, right]);
+                let result = evaluator.eval_expr(&call);
+                match expected {
+                    Ok(value) => assert_eq!(result.unwrap(), Some(value), "{call:?}"),
+                    Err(message) => assert!(matches!(&result, Err(LegacyEvalError::Sql(actual)) if actual.as_str() == message), "{call:?}: {result:?}"),
+                }
+            }
+            // Public ready inputs retain all i128 bits. Cancellation is legal,
+            // while MAX+1 must overflow, not narrow to the apparently safe -1+1.
+            assert_eq!(tidb_expr::eval_legacy_integer_arithmetic_in(
+                Profile::AddSigned, LegacyBinaryArgs::Values(i128::MAX, -i128::MAX), columns,
+            ).unwrap(), Some(0));
+            assert!(matches!(tidb_expr::eval_legacy_integer_arithmetic_in(
+                Profile::AddSigned, LegacyBinaryArgs::Values(i128::MAX, 1), columns,
+            ), Err(tidb_expr::EvalError::DataOutOfRange { value: "BIGINT", expression }) if expression == "ADD"));
+            for (sig, expected) in [(SimpleSig::PlusReal, 3.5), (SimpleSig::MinusReal, -0.5), (SimpleSig::MultiplyReal, 3.0)] {
+                let call = SimpleExpr::Func(sig, vec![SimpleExpr::Real(1.5), SimpleExpr::Real(2.0)]);
+                assert_eq!(evaluator.eval_real(Some(&call)).unwrap(), Some(expected));
+            }
+            for (sig, expected) in [(SimpleSig::PlusDecimal, "3.75"), (SimpleSig::MinusDecimal, "-1.25"), (SimpleSig::MultiplyDecimal, "3.1250")] {
+                let call = SimpleExpr::Func(sig, vec![SimpleExpr::Decimal(decimal("1.25")), SimpleExpr::Decimal(decimal("2.50"))]);
+                assert_eq!(evaluator.eval_decimal(Some(&call)).unwrap(), Some(decimal(expected)));
+            }
+            let infinity = SimpleExpr::Func(SimpleSig::MultiplyReal, vec![SimpleExpr::Real(f64::MAX), SimpleExpr::Real(2.0)]);
+            assert_eq!(evaluator.eval_real(Some(&infinity)).unwrap(), Some(f64::INFINITY));
+            let nan = SimpleExpr::Func(SimpleSig::PlusReal, vec![SimpleExpr::Real(f64::INFINITY), SimpleExpr::Real(f64::NEG_INFINITY)]);
+            assert!(evaluator.eval_real(Some(&nan)).unwrap().unwrap().is_nan());
+        });
+
+        let shared = convert_expr(&tipb::Expr {
+            tp: Some(tipb::ExprType::ScalarFunc as i32),
+            sig: Some(tipb::ScalarFuncSig::IntIsNull as i32),
+            field_type: Some(tipb::FieldType {
+                tp: Some(8),
+                ..Default::default()
+            }),
+            children: vec![tipb::Expr {
+                tp: Some(tipb::ExprType::Null as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .expect("already-admitted shared child");
+        assert!(matches!(&shared, SimpleExpr::Shared(_)));
+        let assert_failure = |error| match error {
+            LegacyEvalError::Infrastructure(tidb_expr::EvalError::ExpressionAdapterFailure(
+                failure,
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_expr::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_expr::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("legacy arithmetic lost the pool cause: {other:?}"),
+        };
+        let zero_owner = pool(0);
+        let zero_execution = zero_owner.begin_execution().unwrap();
+        zero_execution
+            .scope()
+            .with_columns(&tidb_expr::NoColumns, |columns| {
+                let evaluator = LegacyEvaluator {
+                    raw_columns: columns,
+                    ..LegacyEvaluator::new(&[], 4, &time_zone)
+                };
+                for (sig, values) in [
+                    (
+                        SimpleSig::PlusInt,
+                        vec![SimpleExpr::Int(1), SimpleExpr::Int(2)],
+                    ),
+                    (
+                        SimpleSig::MinusReal,
+                        vec![SimpleExpr::Real(1.0), SimpleExpr::Real(2.0)],
+                    ),
+                    (
+                        SimpleSig::MultiplyDecimal,
+                        vec![
+                            SimpleExpr::Decimal(decimal("1")),
+                            SimpleExpr::Decimal(decimal("2")),
+                        ],
+                    ),
+                ] {
+                    for children in [values, vec![SimpleExpr::Null, SimpleExpr::Null], vec![]] {
+                        let call = SimpleExpr::Func(sig.clone(), children);
+                        assert_failure(
+                            evaluator
+                                .eval_expr(&call)
+                                .expect_err("values, NULL, and missing all need the worker"),
+                        );
+                        assert_failure(
+                            evaluator
+                                .folded_int(Some(&call))
+                                .expect_err("SQL folding cannot swallow infrastructure"),
+                        );
+                        let mut warnings = Vec::new();
+                        assert!(fold_index_selection_error(
+                            evaluator.eval_expr(&call).unwrap_err(),
+                            2,
+                            &mut warnings
+                        )
+                        .is_err());
+                        assert!(warnings.is_empty());
+                    }
+                }
+                // Only the shared children see the zero-slot scope here; the root
+                // uses its original one-shot route. This separates demand from admission.
+                let child_only = LegacyEvaluator {
+                    shared_override: Some(columns),
+                    ..LegacyEvaluator::new(&[], 4, &time_zone)
+                };
+                let sql_overflow = SimpleExpr::Func(
+                    SimpleSig::PlusInt,
+                    vec![SimpleExpr::Int(i64::MAX), SimpleExpr::Int(1)],
+                );
+                for children in [
+                    vec![SimpleExpr::Null, shared.clone()],
+                    vec![sql_overflow, shared.clone()],
+                    vec![shared.clone(), SimpleExpr::Null],
+                ] {
+                    assert_failure(
+                        child_only
+                            .eval_expr(&SimpleExpr::Func(SimpleSig::PlusInt, children))
+                            .expect_err("integer channel demands both children before folding"),
+                    );
+                }
+                for sig in [SimpleSig::PlusReal, SimpleSig::MinusDecimal] {
+                    let call = SimpleExpr::Func(sig, vec![SimpleExpr::Null, shared.clone()]);
+                    assert_eq!(
+                        child_only.eval_expr(&call).unwrap(),
+                        None,
+                        "left NULL leaves right undemanded"
+                    );
+                }
+                for (sig, left) in [
+                    (SimpleSig::MultiplyReal, SimpleExpr::Real(1.0)),
+                    (SimpleSig::PlusDecimal, SimpleExpr::Decimal(decimal("1"))),
+                ] {
+                    let call = SimpleExpr::Func(sig, vec![left, shared.clone()]);
+                    assert_failure(
+                        child_only
+                            .eval_expr(&call)
+                            .expect_err("non-NULL left demands right"),
+                    );
+                }
+            });
     }
 }

@@ -18,7 +18,10 @@ use std::ops::Deref;
 use crate::MyDecimal;
 use smallvec::SmallVec;
 use tidb_query_datatype::codec::mysql::{
-    decimal::{NativeDecimalError, NativeDecimalOp},
+    decimal::{
+        native_decimal_coefficient_binary, NativeDecimalBinaryOp, NativeDecimalBinaryPolicy,
+        NativeDecimalError, NativeDecimalOp, Res as SharedDecimalResult,
+    },
     Decimal as SharedDecimal,
 };
 
@@ -299,6 +302,32 @@ impl Decimal {
             .and_then(|value| value.try_native_math(operation, usize::MAX))
             .and_then(|value| Self::try_from_shared_math(&value, usize::MAX))
             .expect("shared native decimal math failed")
+    }
+
+    fn shared_native_binary(
+        &self,
+        other: &Self,
+        operation: NativeDecimalBinaryOp,
+        policy: NativeDecimalBinaryPolicy,
+    ) -> (Self, Option<DecimalCodecWarning>) {
+        let output = self
+            .try_to_shared_math(usize::MAX)
+            .and_then(|left| {
+                other
+                    .try_to_shared_math(usize::MAX)
+                    .and_then(|right| left.try_native_binary(&right, operation, policy, usize::MAX))
+            })
+            .expect("shared native decimal binary math failed");
+        let (value, warning) = match output {
+            SharedDecimalResult::Ok(value) => (value, None),
+            SharedDecimalResult::Truncated(value) => (value, Some(DecimalCodecWarning::Truncated)),
+            SharedDecimalResult::Overflow(value) => (value, Some(DecimalCodecWarning::Overflow)),
+        };
+        (
+            Self::try_from_shared_math(&value, usize::MAX)
+                .expect("shared native decimal binary result failed"),
+            warning,
+        )
     }
 
     /// The single normalization point for ordinary values, whose stored and
@@ -860,135 +889,29 @@ impl Decimal {
     /// (an exact, no-rounding rescale — padding the shorter fractional part
     /// with zero digits), then adds or subtracts magnitudes depending on sign.
     pub fn add(&self, other: &Decimal) -> Decimal {
-        if let Some(result) = self.try_add_fast(other) {
-            return result;
-        }
-        let storage_scale = self.storage_scale.max(other.storage_scale);
-        let scale = self.scale.max(other.scale);
-        let a = pad_scale(&self.digits, self.storage_scale, storage_scale);
-        let b = pad_scale(&other.digits, other.storage_scale, storage_scale);
-        if self.negative == other.negative {
-            return Decimal::new_with_storage(
-                self.negative,
-                digit_add(&a, &b),
-                scale,
-                storage_scale,
-            );
-        }
-        match digit_cmp(&a, &b) {
-            Ordering::Equal => {
-                Decimal::new_with_storage(false, "0".to_string(), scale, storage_scale)
-            }
-            Ordering::Greater => {
-                Decimal::new_with_storage(self.negative, digit_sub(&a, &b), scale, storage_scale)
-            }
-            Ordering::Less => {
-                Decimal::new_with_storage(other.negative, digit_sub(&b, &a), scale, storage_scale)
-            }
-        }
-    }
-
-    /// Fast path for the fixed-scale DECIMAL folds used by TPC-H aggregates.
-    /// Go's `MyDecimal.Add` operates directly on its nine base-1e9 words. For
-    /// the common case where both values have the same storage scale and their
-    /// coefficients fit in `i128`, doing the signed coefficient operation
-    /// directly avoids allocating two padded strings and a digit-wise result.
-    /// Any wider value or scale mismatch keeps the complete arbitrary-precision
-    /// implementation above.
-    fn try_add_fast(&self, other: &Decimal) -> Option<Decimal> {
-        // Operands with different storage scales are aligned the way the
-        // general path pads them: an exact scale-up by a power of ten. Go's
-        // `doAdd`/`doSub` align fractional word counts the same way, so
-        // `1 - l_discount` (scale 0 against scale 2) stays on the integer
-        // path instead of the digit-string path.
-        let storage_scale = self.storage_scale.max(other.storage_scale);
-        let left = Self::fast_operand(
-            &self.digits,
-            self.negative,
-            storage_scale - self.storage_scale,
-        )?;
-        let right = Self::fast_operand(
-            &other.digits,
-            other.negative,
-            storage_scale - other.storage_scale,
-        )?;
-        let sum = left.checked_add(right)?;
-        let negative = sum < 0;
-        let digits = DecimalDigits::from_unsigned(sum.unsigned_abs());
-        Some(Decimal::new_with_storage(
-            negative,
-            digits,
-            self.scale.max(other.scale),
-            storage_scale,
-        ))
-    }
-
-    /// The signed `i128` a coefficient holds after an exact scale-up by
-    /// `shift` decimal places, or `None` when it does not fit.
-    fn fast_operand(digits: &DecimalDigits, negative: bool, shift: u32) -> Option<i128> {
-        let value = digits.parse::<i128>().ok()?;
-        let value = if shift == 0 {
-            value
-        } else {
-            value.checked_mul(10i128.checked_pow(shift)?)?
-        };
-        if negative {
-            value.checked_neg()
-        } else {
-            Some(value)
-        }
+        self.shared_native_binary(
+            other,
+            NativeDecimalBinaryOp::Add,
+            NativeDecimalBinaryPolicy::Exact,
+        )
+        .0
     }
 
     /// Source `DecimalAdd`, including MyDecimal's nine-word result bound.
     pub fn add_mysql(&self, other: &Decimal) -> (Decimal, Option<DecimalCodecWarning>) {
-        let result = self.add(other);
-        // `DecimalAdd` reaches Go's `doAdd` only when both operands have the
-        // same sign. Opposite-sign inputs use `doSub` and must be bounded from
-        // the actual difference instead of this add-only heuristic.
-        if self.negative == other.negative && add_leading_word_overflow(self, other) {
-            return (
-                Decimal::max_or_min(false, (CODEC_WORD_BUF_LEN * DIGITS_PER_WORD) as u32, 0),
-                Some(DecimalCodecWarning::Overflow),
-            );
-        }
-        self.bound_add_sub_result(result)
+        self.shared_native_binary(
+            other,
+            NativeDecimalBinaryOp::Add,
+            NativeDecimalBinaryPolicy::MySql,
+        )
     }
 
     /// Source `DecimalSub`, including MyDecimal's nine-word result bound.
     pub fn sub_mysql(&self, other: &Decimal) -> (Decimal, Option<DecimalCodecWarning>) {
-        let result = self.add(&other.negate());
-        // Go's DecimalSub reaches doAdd only when the operands have opposite
-        // signs; in that branch the same leading-word carry heuristic applies
-        // to the two magnitudes. Same-sign subtraction uses doSub and is
-        // bounded from the actual result below.
-        if self.negative != other.negative && add_leading_word_overflow(self, other) {
-            return (
-                Decimal::max_or_min(false, (CODEC_WORD_BUF_LEN * DIGITS_PER_WORD) as u32, 0),
-                Some(DecimalCodecWarning::Overflow),
-            );
-        }
-        self.bound_add_sub_result(result)
-    }
-
-    fn bound_add_sub_result(&self, result: Decimal) -> (Decimal, Option<DecimalCodecWarning>) {
-        let split = result.digits.len() - result.storage_scale as usize;
-        let integer_digits = result.digits[..split].trim_start_matches('0').len();
-        let words_int = digits_to_words(integer_digits);
-        if words_int > CODEC_WORD_BUF_LEN {
-            // `doAdd` calls `maxDecimal` before assigning the result sign.
-            return (
-                Decimal::max_or_min(false, (CODEC_WORD_BUF_LEN * DIGITS_PER_WORD) as u32, 0),
-                Some(DecimalCodecWarning::Overflow),
-            );
-        }
-        let words_frac = digits_to_words(result.storage_scale as usize);
-        if words_int + words_frac <= CODEC_WORD_BUF_LEN {
-            return (result, None);
-        }
-        let kept_scale = ((CODEC_WORD_BUF_LEN - words_int) * DIGITS_PER_WORD) as i32;
-        (
-            result.truncate_to_scale(kept_scale),
-            Some(DecimalCodecWarning::Truncated),
+        self.shared_native_binary(
+            other,
+            NativeDecimalBinaryOp::Subtract,
+            NativeDecimalBinaryPolicy::MySql,
         )
     }
 
@@ -996,183 +919,22 @@ impl Decimal {
     /// (multiplying two exact fixed-point values never loses precision, so
     /// this needs no rounding — unlike division).
     pub fn mul(&self, other: &Decimal) -> Decimal {
-        let scale = self.scale + other.scale;
-        Decimal::new_with_storage(
-            self.negative != other.negative,
-            digit_mul(&self.digits, &other.digits),
-            scale,
-            self.storage_scale + other.storage_scale,
+        self.shared_native_binary(
+            other,
+            NativeDecimalBinaryOp::Multiply,
+            NativeDecimalBinaryPolicy::Exact,
         )
+        .0
     }
 
-    /// Ports `DecimalMul`'s bounded nine-word arithmetic and disposition.
-    ///
-    /// The returned warning is the source `ErrTruncated`/`ErrOverflow`
-    /// outcome. [`Self::mul`] remains the exact digit-string primitive used
-    /// below the MySQL storage boundary; SQL behavior must use this method.
+    /// Source `DecimalMul`, including unsigned-i128 eligibility, projected
+    /// nine-word arithmetic, signed overflow zero and retained-scale rounding.
     pub fn mul_mysql(&self, other: &Decimal) -> (Decimal, Option<DecimalCodecWarning>) {
-        // TPC-H DECIMAL(15,2) arithmetic is far below MySQL's nine-word
-        // boundary. Avoid converting both operands through decimal strings
-        // and base-1e9 words in this common exact case; wider values retain
-        // the complete source implementation below.
-        if let Some(product) = self.try_mul_mysql_fast(other) {
-            return (product, None);
-        }
-        let left = MyDecimalWords::from_decimal(self);
-        let right = MyDecimalWords::from_decimal(other);
-        let words_int_left = digits_to_words(left.digits_int.max(0) as usize) as i32;
-        let mut words_frac_left = digits_to_words(left.digits_frac.max(0) as usize) as i32;
-        let mut words_int_right = digits_to_words(right.digits_int.max(0) as usize) as i32;
-        let mut words_frac_right = digits_to_words(right.digits_frac.max(0) as usize) as i32;
-        let requested_words_int =
-            digits_to_words((left.digits_int + right.digits_int).max(0) as usize) as i32;
-        let requested_words_frac = words_frac_left + words_frac_right;
-        let (words_int, words_frac, warning) =
-            fix_word_cnt_error(requested_words_int as usize, requested_words_frac as usize);
-        let words_int = words_int as i32;
-        let words_frac = words_frac as i32;
-        let result_scale = (self.scale + other.scale).min(CODEC_MAX_DECIMAL_SCALE as u32);
-
-        if warning == Some(DecimalCodecWarning::Overflow) {
-            // Go assigns `to.negative` before returning ErrOverflow.  The
-            // fixed-word receiver therefore retains a signed zero when the
-            // operands have opposite signs; preserve that observable
-            // `ToString` result instead of normalizing it away.
-            return (
-                Decimal::new_with_storage_preserving_zero_sign(
-                    self.negative != other.negative,
-                    "0".to_owned(),
-                    result_scale,
-                    result_scale,
-                ),
-                warning,
-            );
-        }
-
-        let mut tmp_int = requested_words_int;
-        let mut tmp_frac = requested_words_frac;
-        if warning.is_some() {
-            if tmp_int > words_int {
-                tmp_int -= words_int;
-                tmp_frac = tmp_int >> 1;
-                words_int_right -= tmp_int - tmp_frac;
-                words_frac_left = 0;
-                words_frac_right = 0;
-            } else {
-                tmp_frac -= words_frac;
-                tmp_int = tmp_frac >> 1;
-                if words_frac_left <= words_frac_right {
-                    words_frac_left -= tmp_int;
-                    words_frac_right -= tmp_frac - tmp_int;
-                } else {
-                    words_frac_right -= tmp_int;
-                    words_frac_left -= tmp_frac - tmp_int;
-                }
-            }
-        }
-
-        let mut product = MyDecimalWords {
-            negative: left.negative != right.negative,
-            digits_int: words_int * DIGITS_PER_WORD as i32,
-            digits_frac: (left.digits_frac + right.digits_frac)
-                .min(words_frac * DIGITS_PER_WORD as i32),
-            word_buf: [0; CODEC_WORD_BUF_LEN],
-        };
-
-        let mut start_to = words_int + words_frac - 1;
-        let start_right = words_int_right + words_frac_right - 1;
-        let mut index_left = words_int_left + words_frac_left - 1;
-        while index_left >= 0 {
-            let mut carry = 0;
-            let mut index_to = start_to;
-            let mut index_right = start_right;
-            while index_right >= 0 {
-                let value = i64::from(left.word_buf[index_left as usize])
-                    * i64::from(right.word_buf[index_right as usize]);
-                let base = i64::from(CODEC_POWERS10[DIGITS_PER_WORD]);
-                let high = (value / base) as i32;
-                let low = (value - i64::from(high) * base) as i32;
-                (product.word_buf[index_to as usize], carry) =
-                    add_two_decimal_words(product.word_buf[index_to as usize], low, carry);
-                carry += high;
-                index_right -= 1;
-                index_to -= 1;
-            }
-            if carry > 0 {
-                if index_to < 0 {
-                    return (
-                        Decimal::new_with_storage_preserving_zero_sign(
-                            self.negative != other.negative,
-                            "0".to_owned(),
-                            result_scale,
-                            result_scale,
-                        ),
-                        Some(DecimalCodecWarning::Overflow),
-                    );
-                }
-                (product.word_buf[index_to as usize], carry) =
-                    add_decimal_words(product.word_buf[index_to as usize], 0, carry);
-            }
-            index_to -= 1;
-            while carry > 0 {
-                if index_to < 0 {
-                    return (
-                        Decimal::new_with_storage_preserving_zero_sign(
-                            self.negative != other.negative,
-                            "0".to_owned(),
-                            result_scale,
-                            result_scale,
-                        ),
-                        Some(DecimalCodecWarning::Overflow),
-                    );
-                }
-                (product.word_buf[index_to as usize], carry) =
-                    add_decimal_words(product.word_buf[index_to as usize], 0, carry);
-                index_to -= 1;
-            }
-            start_to -= 1;
-            index_left -= 1;
-        }
-
-        if product.word_buf[..(words_int + words_frac) as usize]
-            .iter()
-            .all(|word| *word == 0)
-        {
-            return (Decimal::new(false, "0".to_owned(), result_scale), warning);
-        }
-
-        let value = product.to_decimal();
-        let storage_scale = value.storage_scale.max(result_scale);
-        (
-            value.round_or_truncate_to_scale_with_storage(result_scale as i32, true, storage_scale),
-            warning,
+        self.shared_native_binary(
+            other,
+            NativeDecimalBinaryOp::Multiply,
+            NativeDecimalBinaryPolicy::MySql,
         )
-    }
-
-    /// Exact bounded multiply for values whose unscaled digits fit in `i128`.
-    /// Returning `None` deliberately keeps all overflow, scale, and nine-word
-    /// warning behavior in [`Self::mul_mysql`]'s complete implementation.
-    fn try_mul_mysql_fast(&self, other: &Decimal) -> Option<Decimal> {
-        let result_scale = self.scale.checked_add(other.scale)?;
-        if result_scale > CODEC_MAX_DECIMAL_SCALE as u32 {
-            return None;
-        }
-        let left = self.digits.parse::<i128>().ok()?;
-        let right = other.digits.parse::<i128>().ok()?;
-        let product = left.checked_mul(right)?;
-        let negative = (product < 0) || (self.negative != other.negative && product != 0);
-        // Keep the fixed-scale fast path allocation-free for the coefficient
-        // itself. `to_string` rebuilt a heap `String` for every DECIMAL
-        // multiply even though the value already fits in `i128`; the add
-        // path uses the same inline digit representation.
-        let digits = DecimalDigits::from_unsigned(product.unsigned_abs());
-        let storage_scale = self.storage_scale.checked_add(other.storage_scale)?;
-        Some(Decimal::new_with_storage(
-            negative,
-            digits,
-            result_scale,
-            storage_scale,
-        ))
     }
 
     /// Source `MyDecimal.Shift`: multiply by `10^shift` inside MyDecimal's
@@ -1758,31 +1520,6 @@ impl Decimal {
     }
 }
 
-/// Go `doAdd` decides an overflow from the leading base-1e9 word before it
-/// adds the remaining words. That heuristic intentionally over-reports for a
-/// full leading word of `999999999`, even when the exact result would still
-/// fit in nine words; preserving it is required for the source error/value
-/// pair at the fixed-word boundary.
-fn add_leading_word_overflow(left: &Decimal, right: &Decimal) -> bool {
-    let left = MyDecimalWords::from_decimal(left);
-    let right = MyDecimalWords::from_decimal(right);
-    let left_words = digits_to_words(left.digits_int.max(0) as usize);
-    let right_words = digits_to_words(right.digits_int.max(0) as usize);
-    let leading = if left_words > right_words {
-        left.word_buf[0]
-    } else if right_words > left_words {
-        right.word_buf[0]
-    } else {
-        left.word_buf[0].saturating_add(right.word_buf[0])
-    };
-    // `doAdd` increments the destination word count when this leading
-    // word can carry.  That is only an overflow once the increment would
-    // exceed the fixed nine-word buffer; smaller values (for example,
-    // `999999999 + 1`) legitimately grow from one word to two.
-    let carry = leading > CODEC_POWERS10[DIGITS_PER_WORD] - 2;
-    left_words.max(right_words) + usize::from(carry) > CODEC_WORD_BUF_LEN
-}
-
 fn format_go_shortest_float(value: f64) -> String {
     let mut buffer = ryu::Buffer::new();
     let rendered = buffer.format_finite(value);
@@ -2038,104 +1775,28 @@ fn digit_cmp(a: &str, b: &str) -> Ordering {
     a.cmp(&b)
 }
 
-/// Adds two unsigned decimal digit strings (schoolbook, with carry).
+/// Adds unsigned coefficients, retaining the original leading-zero width.
 fn digit_add(a: &str, b: &str) -> String {
-    let (a, b) = pad_equal(a, b);
-    let mut out = Vec::with_capacity(a.len() + 1);
-    let mut carry = 0u8;
-    for (x, y) in a.bytes().rev().zip(b.bytes().rev()) {
-        let sum = (x - b'0') + (y - b'0') + carry;
-        out.push(b'0' + sum % 10);
-        carry = sum / 10;
-    }
-    if carry > 0 {
-        out.push(b'0' + carry);
-    }
-    out.reverse();
-    String::from_utf8(out).expect("digits are ASCII")
+    shared_coefficient_binary(a, b, NativeDecimalBinaryOp::Add)
+}
+
+fn shared_coefficient_binary(a: &str, b: &str, operation: NativeDecimalBinaryOp) -> String {
+    String::from_utf8(
+        native_decimal_coefficient_binary(a.as_bytes(), b.as_bytes(), operation, usize::MAX)
+            .expect("shared native coefficient arithmetic failed"),
+    )
+    .expect("shared coefficient digits are ASCII")
 }
 
 /// Subtracts unsigned `b` from unsigned `a`, assuming `a >= b` (the caller
 /// compares magnitudes first via `digit_cmp` and picks the operand order).
 fn digit_sub(a: &str, b: &str) -> String {
-    let (a, b) = pad_equal(a, b);
-    let mut out = Vec::with_capacity(a.len());
-    let mut borrow = 0i8;
-    for (x, y) in a.bytes().rev().zip(b.bytes().rev()) {
-        let mut diff = (x as i8 - b'0' as i8) - (y as i8 - b'0' as i8) - borrow;
-        if diff < 0 {
-            diff += 10;
-            borrow = 1;
-        } else {
-            borrow = 0;
-        }
-        out.push(b'0' + diff as u8);
-    }
-    out.reverse();
-    String::from_utf8(out).expect("digits are ASCII")
+    shared_coefficient_binary(a, b, NativeDecimalBinaryOp::Subtract)
 }
 
-fn add_decimal_words(left: i32, right: i32, carry: i32) -> (i32, i32) {
-    let base = CODEC_POWERS10[DIGITS_PER_WORD];
-    let sum = left + right + carry;
-    if sum >= base {
-        (sum - base, 1)
-    } else {
-        (sum, 0)
-    }
-}
-
-fn add_two_decimal_words(left: i32, right: i32, carry: i32) -> (i32, i32) {
-    let base = i64::from(CODEC_POWERS10[DIGITS_PER_WORD]);
-    let mut sum = i64::from(left) + i64::from(right) + i64::from(carry);
-    let mut next_carry = 0;
-    if sum >= base {
-        next_carry = 1;
-        sum -= base;
-    }
-    if sum >= base {
-        next_carry += 1;
-        sum -= base;
-    }
-    (sum as i32, next_carry)
-}
-
-/// Multiplies two unsigned decimal digit strings (schoolbook long
-/// multiplication).
+/// Multiplies unsigned coefficients, returning canonical digits.
 fn digit_mul(a: &str, b: &str) -> String {
-    if a.bytes().all(|c| c == b'0') || b.bytes().all(|c| c == b'0') {
-        return "0".to_string();
-    }
-    let a_digits: Vec<u32> = a.bytes().rev().map(|c| (c - b'0') as u32).collect();
-    let b_digits: Vec<u32> = b.bytes().rev().map(|c| (c - b'0') as u32).collect();
-    let mut result = vec![0u32; a_digits.len() + b_digits.len()];
-    for (i, &da) in a_digits.iter().enumerate() {
-        let mut carry = 0u32;
-        for (j, &db) in b_digits.iter().enumerate() {
-            let pos = i + j;
-            let val = result[pos] + da * db + carry;
-            result[pos] = val % 10;
-            carry = val / 10;
-        }
-        let mut k = i + b_digits.len();
-        while carry > 0 {
-            let val = result[k] + carry;
-            result[k] = val % 10;
-            carry = val / 10;
-            k += 1;
-        }
-    }
-    let s: String = result
-        .iter()
-        .rev()
-        .map(|d| (b'0' + *d as u8) as char)
-        .collect();
-    let trimmed = s.trim_start_matches('0');
-    if trimmed.is_empty() {
-        "0".to_string()
-    } else {
-        trimmed.to_string()
-    }
+    shared_coefficient_binary(a, b, NativeDecimalBinaryOp::Multiply)
 }
 
 /// Strips leading zero digits, collapsing an all-zero string to `"0"`.
@@ -2226,6 +1887,32 @@ use codec::{
 };
 
 pub use codec::{decimal_bin_size, DecimalCodecError, DecimalCodecFailure, DecimalCodecWarning};
+
+#[cfg(test)]
+mod native_binary_tests {
+    use super::{digit_add, digit_mul, digit_sub, Decimal, MyDecimalWords};
+
+    #[test]
+    fn native_binary_facades_keep_hidden_scales_and_coefficient_consumers() {
+        let hidden = Decimal::from_test_parts(false, "1", 0, 40).with_declared_shape(40, 0);
+        let (product, warning) = hidden.mul_mysql(&hidden);
+        assert_eq!(warning, None); // unsigned-i128 eligibility precedes nine-word projection
+        assert_eq!((product.storage_scale(), product.scale()), (80, 0));
+        assert_eq!(product.coefficient_digits(), format!("{}1", "0".repeat(79)));
+        assert_eq!(product.declared_shape(), None);
+        let wide = Decimal::from_test_parts(false, &"1".repeat(90), 0, 0);
+        let (zero, warning) = wide.sub_mysql(&wide);
+        assert_eq!(warning, None);
+        assert_eq!(zero.coefficient_digits(), "0");
+        assert!(!zero.is_negative());
+        let projected = MyDecimalWords::from_decimal(&wide);
+        assert_eq!(projected.digits_int, 81);
+        assert_eq!(projected.word_buf, [111111111; 9]);
+        assert_eq!(digit_add("0099", "1"), "0100");
+        assert_eq!(digit_sub("0100", "1"), "0099");
+        assert_eq!(digit_mul("0099", "01"), "99");
+    }
+}
 
 #[cfg(test)]
 mod native_negate_tests {

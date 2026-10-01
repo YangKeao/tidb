@@ -363,6 +363,217 @@ fn string_operand_text(d: &Datum) -> String {
     tidb_datatype::warning_subject_byte_cap(&text).to_owned()
 }
 
+/// The original vector cast, shared by arithmetic preparation and comparisons.
+fn binary_vector_operand(value: Datum) -> Result<tidb_datatype::VectorFloat32, EvalError> {
+    let vector_type = tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VectorFloat32);
+    match value
+        .convert_to(&vector_type, tidb_datatype::ConversionFlags::default())
+        .map_err(|error| EvalError::Vector(error.to_string()))?
+        .value
+    {
+        Datum::VectorFloat32(vector) => Ok(vector),
+        _ => unreachable!("a VectorFloat32 conversion returns a vector datum"),
+    }
+}
+
+/// Preserve the source cast/warning policy once for arithmetic and the
+/// remaining bitwise/DIV paths; this helper performs no binary operation.
+fn cast_binary_string_operand(
+    op: BinaryOp,
+    d: Datum,
+    ctx: &dyn crate::context::Columns,
+) -> Result<Datum, EvalError> {
+    use BinaryOp::*;
+    if !matches!(d, Datum::String(_) | Datum::Bytes(_)) {
+        return Ok(d);
+    }
+    match op {
+        BitAnd | BitOr | BitXor | LeftShift | RightShift => {
+            crate::cast::report_int_truncation(&d, ctx)?;
+            Ok(Datum::Int(crate::cast::to_i64_signed(&d)))
+        }
+        IntDiv => {
+            let converted = d
+                .to_decimal()
+                .map_err(|_| EvalError::Unsupported("string operand"))?;
+            if converted.event.is_some() {
+                ctx.handle_truncate(&format!(
+                    "Truncated incorrect DECIMAL value: '{}'",
+                    string_operand_text(&d)
+                ))?;
+            }
+            Ok(Datum::Decimal(converted.value))
+        }
+        _ => Ok(Datum::Real(to_f64_with_mysql_string(&d, ctx)?)),
+    }
+}
+
+/// A NULL actually observed by a native arithmetic caller; no RHS is invented.
+pub(crate) fn eval_binary_arithmetic_null_in(
+    ctx: &dyn crate::context::Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::BinaryArithmeticNullNative,
+        ctx,
+        || Ok(crate::tikv::EvaluatedArgs::NullWitness(None)),
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
+}
+
+/// Preparation preserves the old domain ladder and recursive coercion order.
+/// Only original type/profile metadata selects recipes; no answers are computed.
+fn prepare_binary_arithmetic(
+    op: BinaryOp,
+    l: Datum,
+    r: Datum,
+    operands: Operands<'_>,
+    ctx: &dyn crate::context::Columns,
+    unsigned_result: &std::cell::Cell<bool>,
+) -> Result<(crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs), EvalError> {
+    use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp as Op};
+    use BinaryOp::*;
+    if l.is_range_sentinel() || r.is_range_sentinel() {
+        return Err(EvalError::Unsupported("range sentinel expression operand"));
+    }
+    let l = unsigned_operand(l, operands.lhs);
+    let r = unsigned_operand(r, operands.rhs);
+    let null = || {
+        Ok((
+            Op::BinaryArithmeticNullNative,
+            EvaluatedArgs::NullWitness(None),
+        ))
+    };
+    if matches!(l, Datum::VectorFloat32(_)) || matches!(r, Datum::VectorFloat32(_)) {
+        if l == Datum::Null || r == Datum::Null {
+            return null();
+        }
+        let left = binary_vector_operand(l)?;
+        let right = binary_vector_operand(r)?;
+        let operation = match op {
+            Plus => Op::AddVectorNative,
+            Minus => Op::SubVectorNative,
+            Mul => Op::MulVectorNative,
+            _ => unreachable!("only three arithmetic families prepare here"),
+        };
+        return Ok((
+            operation,
+            EvaluatedArgs::NativeVector2(Some(left), Some(right)),
+        ));
+    }
+    // These errors preceded temporal/string conversion and NULL propagation.
+    if matches!(l, Datum::Json(_)) || matches!(r, Datum::Json(_)) {
+        return Err(EvalError::Unsupported("JSON operand"));
+    }
+    if matches!(l, Datum::Raw(_)) || matches!(r, Datum::Raw(_)) {
+        return Err(EvalError::UnsupportedOperandPair(l.kind(), r.kind()));
+    }
+    if matches!(l, Datum::Time(_) | Datum::Duration(_))
+        || matches!(r, Datum::Time(_) | Datum::Duration(_))
+    {
+        return prepare_binary_arithmetic(
+            op,
+            numeric_context_value(l),
+            numeric_context_value(r),
+            operands,
+            ctx,
+            unsigned_result,
+        );
+    }
+    if matches!(l, Datum::String(_) | Datum::Bytes(_))
+        || matches!(r, Datum::String(_) | Datum::Bytes(_))
+    {
+        return prepare_binary_arithmetic(
+            op,
+            cast_binary_string_operand(op, l, ctx)?,
+            cast_binary_string_operand(op, r, ctx)?,
+            operands,
+            ctx,
+            unsigned_result,
+        );
+    }
+    if matches!(l, Datum::Real(_) | Datum::Float32(_))
+        || matches!(r, Datum::Real(_) | Datum::Float32(_))
+    {
+        if l == Datum::Null || r == Datum::Null {
+            return null();
+        }
+        let left = to_f64(l);
+        let right = to_f64(r);
+        let operation = match op {
+            Plus => Op::AddRealNative,
+            Minus => Op::SubRealNative,
+            Mul => Op::MulRealNative,
+            _ => unreachable!("only three arithmetic families prepare here"),
+        };
+        return Ok((
+            operation,
+            EvaluatedArgs::Ieee754Bits2 {
+                left: crate::tikv::ReadyIeee754Arg::Value(Some(left.to_bits())),
+                right: crate::tikv::ReadyIeee754Arg::Value(Some(right.to_bits())),
+            },
+        ));
+    }
+    if matches!(l, Datum::Decimal(_)) || matches!(r, Datum::Decimal(_)) {
+        if l == Datum::Null || r == Datum::Null {
+            return null();
+        }
+        let left = to_decimal(l);
+        let right = to_decimal(r);
+        let operation = match op {
+            Plus => Op::AddDecimalNative,
+            Minus => Op::SubDecimalNative,
+            Mul => Op::MulDecimalNative,
+            _ => unreachable!("only three arithmetic families prepare here"),
+        };
+        return Ok((
+            operation,
+            EvaluatedArgs::Decimal2 {
+                left: Some(crate::tikv::prepare_math_decimal(&left)?),
+                right: Some(crate::tikv::prepare_math_decimal(&right)?),
+            },
+        ));
+    }
+    if l == Datum::Null || r == Datum::Null {
+        return null();
+    }
+    let (a, b) = match (integer_of(&l)?, integer_of(&r)?) {
+        (Some(a), Some(b)) => (a, b),
+        _ => return Err(EvalError::UnsupportedOperandPair(l.kind(), r.kind())),
+    };
+    Ok(prepare_integer_arithmetic(op, a, b, ctx, unsigned_result))
+}
+
+fn eval_binary_arithmetic_in(
+    op: BinaryOp,
+    l: Datum,
+    r: Datum,
+    operands: Operands<'_>,
+    ctx: &dyn crate::context::Columns,
+) -> Result<Datum, EvalError> {
+    use crate::tikv::EvaluatedBytesResult;
+    let unsigned_result = std::cell::Cell::new(false);
+    crate::tikv::evaluate_prepared_args_in(
+        ctx,
+        || prepare_binary_arithmetic(op, l, r, operands, ctx, &unsigned_result),
+        |computed| match computed {
+            value @ EvaluatedBytesResult::Int(_) => {
+                if unsigned_result.get() {
+                    value.into_uint_bits_datum()
+                } else {
+                    value.into_int_datum()
+                }
+            }
+            value @ EvaluatedBytesResult::Ieee754Bits(_) => Ok(value
+                .into_ieee754_bits()?
+                .map_or(Datum::Null, |bits| Datum::Real(f64::from_bits(bits)))),
+            value @ EvaluatedBytesResult::Decimal { .. } => value.into_decimal_datum(),
+            value @ EvaluatedBytesResult::NativeVector(_) => value.into_native_vector_datum(),
+            // The existing typed packer rejects every other computed kind.
+            other => other.into_int_datum(),
+        },
+    )
+}
+
 pub(crate) fn eval_binary_full(
     op: BinaryOp,
     mut l: Datum,
@@ -373,6 +584,9 @@ pub(crate) fn eval_binary_full(
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
     use BinaryOp::*;
+    if matches!(op, Plus | Minus | Mul) {
+        return eval_binary_arithmetic_in(op, l, r, operands, ctx);
+    }
     if l.is_range_sentinel() || r.is_range_sentinel() {
         return Err(EvalError::Unsupported("range sentinel expression operand"));
     }
@@ -410,50 +624,20 @@ pub(crate) fn eval_binary_full(
             _ => {}
         }
     }
-    // Go selects a vector signature for the arithmetic and comparison
-    // families as soon as EITHER argument is `ETVectorFloat32`, then casts
+    // Arithmetic selected its worker above; the remaining comparisons select
+    // a vector signature as soon as EITHER argument is `ETVectorFloat32`, then cast
     // BOTH inputs into that domain. Vector text is therefore an ordinary
     // operand, while a non-vector text/integer conversion reports the source
     // value-domain error instead of falling through to numeric comparison.
     if (matches!(l, Datum::VectorFloat32(_)) || matches!(r, Datum::VectorFloat32(_)))
-        && matches!(
-            op,
-            Plus | Minus | Mul | Eq | Ne | Lt | Le | Gt | Ge | NullEq
-        )
+        && matches!(op, Eq | Ne | Lt | Le | Gt | Ge | NullEq)
     {
         if l == Datum::Null || r == Datum::Null {
             return Ok(Datum::Null);
         }
-        let vector_type =
-            tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VectorFloat32);
-        let as_vector = |value: Datum| -> Result<tidb_datatype::VectorFloat32, EvalError> {
-            match value
-                .convert_to(&vector_type, tidb_datatype::ConversionFlags::default())
-                .map_err(|error| EvalError::Vector(error.to_string()))?
-                .value
-            {
-                Datum::VectorFloat32(vector) => Ok(vector),
-                _ => unreachable!("a VectorFloat32 conversion returns a vector datum"),
-            }
-        };
-        let left = as_vector(l)?;
-        let right = as_vector(r)?;
-        return match op {
-            Plus => left
-                .add(&right)
-                .map(Datum::new_vector_float32)
-                .map_err(|error| EvalError::Vector(error.to_string())),
-            Minus => left
-                .sub(&right)
-                .map(Datum::new_vector_float32)
-                .map_err(|error| EvalError::Vector(error.to_string())),
-            Mul => left
-                .mul(&right)
-                .map(Datum::new_vector_float32)
-                .map_err(|error| EvalError::Vector(error.to_string())),
-            Eq | Ne | Lt | Le | Gt | Ge | NullEq => Ok(ordering_to_bool(op, left.compare(&right))),
-            _ => unreachable!("vector signature operator was guarded"),
-        };
+        let left = binary_vector_operand(l)?;
+        let right = binary_vector_operand(r)?;
+        return Ok(ordering_to_bool(op, left.compare(&right)));
     }
     // Go builds AND/OR/XOR with ETInt arguments, so each operand first takes
     // MySQL's numeric-prefix truthiness path. This must precede the ordinary
@@ -845,39 +1029,11 @@ pub(crate) fn eval_binary_full(
         // `1.5&'3'` UINT:2, `'12abc'+1` FLOAT:13, `'abc'+1` FLOAT:1
         // (+ warning 1292 `Truncated incorrect DOUBLE value: 'abc'`),
         // `'abc' DIV 2` INT:0 (+ the DECIMAL-worded 1292).
-        let cast_string = |d: Datum| -> Result<Datum, EvalError> {
-            if !matches!(d, Datum::String(_) | Datum::Bytes(_)) {
-                return Ok(d);
-            }
-            match op {
-                BitAnd | BitOr | BitXor | LeftShift | RightShift => {
-                    crate::cast::report_int_truncation(&d, ctx)?;
-                    Ok(Datum::Int(crate::cast::to_i64_signed(&d)))
-                }
-                IntDiv => {
-                    let converted = d
-                        .to_decimal()
-                        .map_err(|_| EvalError::Unsupported("string operand"))?;
-                    if converted.event.is_some() {
-                        // Go's `builtinCastStringAsDecimalSig` routes
-                        // `StrToDecimal`'s truncation through
-                        // `Context.HandleTruncate`, and the message names
-                        // DECIMAL rather than the DOUBLE the real cast names.
-                        ctx.handle_truncate(&format!(
-                            "Truncated incorrect DECIMAL value: '{}'",
-                            string_operand_text(&d)
-                        ))?;
-                    }
-                    Ok(Datum::Decimal(converted.value))
-                }
-                _ => Ok(Datum::Real(to_f64_with_mysql_string(&d, ctx)?)),
-            }
-        };
         // Neither converted operand is a string, so the recursion is one deep.
         return eval_binary_full(
             op,
-            cast_string(l)?,
-            cast_string(r)?,
+            cast_binary_string_operand(op, l, ctx)?,
+            cast_binary_string_operand(op, r, ctx)?,
             div_precision_increment,
             collation,
             operands,
@@ -1054,6 +1210,9 @@ pub(crate) fn integer_binary_typed(
     // the same conversion the generic entry applies runs here first.
     let (l, r) = crate::binary_literal::cast_signed_literal_operands(op, l, r, signed_operands);
     if l == Datum::Null || r == Datum::Null {
+        if matches!(op, BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul) {
+            return eval_binary_arithmetic_null_in(ctx).map(Some);
+        }
         return Ok(Some(Datum::Null));
     }
     let reinterpret = |value: Datum, operand_signed: bool| match value {
@@ -1161,9 +1320,9 @@ pub(crate) fn decimal_integer_division(
     }
 }
 
-/// Decimal arithmetic and comparison: an `Int` operand promotes to a scale-0
-/// decimal (MySQL's implicit rule), and `+`/`-`/`*` and every comparison are
-/// exact (see [`Decimal`]). `NullEq` has its own NULL rule; every other
+/// Decimal comparisons and remaining arithmetic: an `Int` operand promotes
+/// to a scale-0 decimal (MySQL's implicit rule). The `+`/`-`/`*` workers are
+/// selected before this ladder. `NullEq` has its own NULL rule; every other
 /// operator here is `NULL` if either operand is `NULL` — including `DIV`/
 /// `MOD` by zero, matching the `Int` case. `/` itself never reaches this
 /// function — `eval_binary` intercepts it earlier, since it must promote
@@ -1192,27 +1351,7 @@ fn decimal_binary(
     let a = to_decimal(l);
     let b = to_decimal(r);
     Ok(match op {
-        Plus => {
-            let (sum, warning) = a.add_mysql(&b);
-            if warning == Some(tidb_datatype::DecimalCodecWarning::Overflow) {
-                return Err(EvalError::DecimalOverflow);
-            }
-            Datum::Decimal(sum)
-        }
-        Minus => {
-            let (difference, warning) = a.sub_mysql(&b);
-            if warning == Some(tidb_datatype::DecimalCodecWarning::Overflow) {
-                return Err(EvalError::DecimalOverflow);
-            }
-            Datum::Decimal(difference)
-        }
-        Mul => {
-            let (product, warning) = a.mul_mysql(&b);
-            if warning == Some(tidb_datatype::DecimalCodecWarning::Overflow) {
-                return Err(EvalError::DecimalOverflow);
-            }
-            Datum::Decimal(product)
-        }
+        Plus | Minus | Mul => unreachable!("worker arithmetic dispatched before this ladder"),
         Eq => bool_int(a == b),
         Ge => bool_int(a >= b),
         Gt => bool_int(a > b),
