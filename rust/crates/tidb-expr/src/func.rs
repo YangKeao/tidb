@@ -27,7 +27,9 @@ use crate::string_fn::{
     str_insert, str_take_in, strcmp_in, substring, substring_index_in, unhex_in,
 };
 use crate::string_packet::{pad, repeat, space, to_base64};
-use crate::time_fn::calendar::{date_add, date_diff, date_format, from_days, time_part, year_in};
+use crate::time_fn::calendar::{
+    date_add, date_diff, date_format, from_days, hour_in, minute_in, second_in, year_in,
+};
 use crate::{BuildContext, Columns, Datum, EvalError, StringLengthFunction};
 
 /// Evaluates a builtin scalar function over its evaluated arguments.
@@ -838,17 +840,12 @@ pub(crate) fn eval_func_values(
         // The existing ETDatetime cast has already supplied Time or NULL.
         // Preserve its raw fields, including zero/invalid calendar values.
         "YEAR" => year_in(vals, ctx),
-        // `HOUR`/`MINUTE`/`SECOND`: a GENUINELY different two-path
-        // algorithm from the DATE-part functions above, depending on
-        // whether the argument contains a `:` — see
-        // `time_fn::calendar::parse_hms_extended`'s own doc for the full rule
-        // (confirmed via `goeval`, not assumed): a colon-less value
-        // (including a bare `DATE`, non-obviously) decodes its OWN
-        // leading digit run as a right-aligned `HHMMSS` number, NOT a
-        // calendar date at all.
-        "HOUR" => time_part(vals, |t| i64::from(t.0)),
-        "MINUTE" => time_part(vals, |t| i64::from(t.1)),
-        "SECOND" => time_part(vals, |t| i64::from(t.2)),
+        // HMS retains string coercion, including Duration Display, without
+        // an ETDuration cast. The shared worker owns both native parser paths
+        // and their whole-value clamp, distinct from raw nanos projection.
+        "HOUR" => hour_in(vals, ctx),
+        "MINUTE" => minute_in(vals, ctx),
+        "SECOND" => second_in(vals, ctx),
         // `DATEDIFF`: the day count between two dates' DATE parts (any
         // time-of-day component is ignored, confirmed via `goeval` — e.g.
         // the same calendar day at 23:59:59 and 00:00:01 diffs to 0), via

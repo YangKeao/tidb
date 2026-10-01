@@ -4751,23 +4751,17 @@ impl LegacyEvaluator<'_> {
                         // numeric form; comparisons read it as a decimal.
                         Some(i128::from(!date.to_number().is_zero()))
                     }
-                    SimpleSig::Hour => {
-                        let Some(duration) = self.eval_duration(children.first())? else {
-                            return Ok(None);
+                    SimpleSig::Hour | SimpleSig::Minute | SimpleSig::Second => {
+                        let nanos = self
+                            .eval_duration(children.first())?
+                            .map(tidb_datatype::MySqlDuration::nanoseconds);
+                        let field = match sig {
+                            SimpleSig::Hour => tidb_expr::LegacyHmsField::Hour,
+                            SimpleSig::Minute => tidb_expr::LegacyHmsField::Minute,
+                            _ => tidb_expr::LegacyHmsField::Second,
                         };
-                        Some(i128::from(duration.hour()))
-                    }
-                    SimpleSig::Minute => {
-                        let Some(duration) = self.eval_duration(children.first())? else {
-                            return Ok(None);
-                        };
-                        Some(i128::from(duration.minute()))
-                    }
-                    SimpleSig::Second => {
-                        let Some(duration) = self.eval_duration(children.first())? else {
-                            return Ok(None);
-                        };
-                        Some(i128::from(duration.second()))
+                        tidb_expr::eval_legacy_hms_in(field, nanos, self.raw_columns)?
+                            .map(i128::from)
                     }
                     SimpleSig::MicroSecond => {
                         let Some(duration) = self.eval_duration(children.first())? else {
@@ -7717,6 +7711,115 @@ mod tests {
     }
 
     #[test]
+    fn legacy_hms_infrastructure_survives_nulls_and_consumers() {
+        let policy = tidb_expr::AsciiPoolPolicy::checked(
+            0,
+            0,
+            16 * 1024 * 1024,
+            4 * 1024 * 1024,
+            4 * 1024 * 1024,
+            64,
+            8,
+            4 * 1024 * 1024,
+        )
+        .expect("zero-slot policy");
+        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let execution = owner.begin_execution().expect("execution");
+        let scope = execution.scope();
+        let time_zone = zone();
+        let row = [tidb_datatype::Datum::Duration(
+            tidb_datatype::MySqlDuration::from_raw_parts(-3_241_815_000_000_000, 7),
+        )];
+        let unary = |sig, input| SimpleExpr::Func(sig, vec![input]);
+        scope.with_columns(&tidb_expr::NoColumns, |columns| {
+            let evaluator = LegacyEvaluator {
+                raw_columns: columns,
+                ..LegacyEvaluator::new(&row, 4, &time_zone)
+            };
+            for sig in [SimpleSig::Hour, SimpleSig::Minute, SimpleSig::Second] {
+                for children in [
+                    vec![SimpleExpr::Column(0)],
+                    vec![SimpleExpr::Null],
+                    vec![],
+                    vec![unary(
+                        SimpleSig::CastStringAsDuration,
+                        SimpleExpr::Bytes(b"not a duration".to_vec()),
+                    )],
+                    vec![unary(
+                        SimpleSig::CastIntAsDuration,
+                        unary(SimpleSig::CastRealAsInt, SimpleExpr::Real(1e100)),
+                    )],
+                ] {
+                    // Raw values and every NULL terminal must enter the worker.
+                    let call = SimpleExpr::Func(sig, children);
+                    assert!(matches!(
+                        evaluator.eval_expr(&call),
+                        Err(LegacyEvalError::Infrastructure(_))
+                    ));
+                    let real = unary(SimpleSig::CastIntAsReal, call.clone());
+                    assert!(matches!(
+                        evaluator.eval_real(Some(&real)),
+                        Err(LegacyEvalError::Infrastructure(_))
+                    ));
+                    let time = unary(SimpleSig::CastIntAsTime, call);
+                    assert!(matches!(
+                        evaluator.eval_time(Some(&time)),
+                        Err(LegacyEvalError::Infrastructure(_))
+                    ));
+                }
+            }
+            let shared = convert_expr(&tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(tipb::ScalarFuncSig::IntIsNull as i32),
+                field_type: Some(tipb::FieldType {
+                    tp: Some(8),
+                    ..Default::default()
+                }),
+                children: vec![tipb::Expr {
+                    tp: Some(tipb::ExprType::Null as i32),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+            .expect("shared child");
+            assert!(matches!(&shared, SimpleExpr::Shared(_)));
+            let child_only = LegacyEvaluator {
+                shared_override: Some(columns),
+                ..LegacyEvaluator::new(&row, 4, &time_zone)
+            };
+            for (sig, expected) in [
+                (SimpleSig::Hour, 900),
+                (SimpleSig::Minute, 30),
+                (SimpleSig::Second, 15),
+            ] {
+                // The shared child refuses before an otherwise healthy HMS worker.
+                let demanded = unary(sig, shared.clone());
+                assert!(matches!(
+                    child_only.eval_expr(&demanded),
+                    Err(LegacyEvalError::Infrastructure(_))
+                ));
+                let real = unary(SimpleSig::CastIntAsReal, demanded.clone());
+                assert!(matches!(
+                    child_only.eval_real(Some(&real)),
+                    Err(LegacyEvalError::Infrastructure(_))
+                ));
+                let time = unary(SimpleSig::CastIntAsTime, demanded);
+                assert!(matches!(
+                    child_only.eval_time(Some(&time)),
+                    Err(LegacyEvalError::Infrastructure(_))
+                ));
+                for (first, expected) in [
+                    (SimpleExpr::Column(0), Some(expected)),
+                    (SimpleExpr::Null, None),
+                ] {
+                    let extra = SimpleExpr::Func(sig, vec![first, shared.clone()]);
+                    assert_eq!(child_only.eval_expr(&extra).unwrap(), expected);
+                }
+            }
+        });
+    }
+
+    #[test]
     fn probe_pow_expr() {
         let pow = SimpleExpr::Func(
             SimpleSig::Pow,
@@ -7848,6 +7951,110 @@ mod tests {
         ] {
             assert_eq!(evaluator.eval_time(Some(&input)).unwrap(), None);
             assert_eq!(evaluator.eval_expr(&month(input)).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn legacy_hms_preserve_raw_duration_fields_and_coercions() {
+        use tidb_datatype::{BinaryJSON, Datum, Decimal, MyDecimal, MySqlDuration, Time, TimeType};
+        let time_zone = zone();
+        let signatures = [SimpleSig::Hour, SimpleSig::Minute, SimpleSig::Second];
+        let unary = |sig, input| SimpleExpr::Func(sig, vec![input]);
+        // The duration-clock fixtures include 11h/35h; raw values keep their
+        // absolute fields and ignore FSP, rather than the SQL text clamp.
+        for (nanos, fsp, expected) in [
+            (40_271_110_000_000, 0, [11, 11, 11]),
+            (40_271_110_000_000, 6, [11, 11, 11]),
+            (126_671_000_011_000, 6, [35, 11, 11]),
+            (-126_671_000_011_000, 6, [35, 11, 11]),
+            (3_241_815_000_000_000, 7, [900, 30, 15]),
+            (-3_241_815_000_000_000, -1, [900, 30, 15]),
+            (i64::MIN, 7, [2_562_047, 47, 16]),
+            (0, 0, [0, 0, 0]),
+        ] {
+            let row = [Datum::Duration(MySqlDuration::from_raw_parts(nanos, fsp))];
+            for (sig, expected) in signatures.into_iter().zip(expected) {
+                assert_eq!(
+                    eval_expr(&unary(sig, SimpleExpr::Column(0)), &row, 4, &time_zone).unwrap(),
+                    Some(expected)
+                );
+            }
+        }
+        let time = Time::from_date_checked(2024, 3, 5, 14, 30, 45, 123456, TimeType::DateTime, 6)
+            .expect("time column");
+        let row = [
+            Datum::Time(time),
+            Datum::Duration(MySqlDuration::from_raw_parts(3_241_815_000_000_000, 7)),
+        ];
+        let evaluator = LegacyEvaluator::new(&row, 4, &time_zone);
+        let decimal = SimpleExpr::Decimal(Decimal::from_my_decimal(
+            &MyDecimal::from_string(b"113045.123456").0,
+        ));
+        let json = SimpleExpr::Json(BinaryJSON::parse(r#""11:30:45.123456""#).expect("JSON time"));
+        for (input, expected) in [
+            (SimpleExpr::Column(0), [14, 30, 45]),
+            (
+                unary(SimpleSig::CastTimeAsDuration, SimpleExpr::Time(time)),
+                [14, 30, 45],
+            ),
+            (
+                unary(SimpleSig::CastDurationAsDuration, SimpleExpr::Column(1)),
+                [900, 30, 15],
+            ),
+            (
+                unary(SimpleSig::CastIntAsDuration, SimpleExpr::Int(113_045)),
+                [11, 30, 45],
+            ),
+            (
+                unary(
+                    SimpleSig::CastRealAsDuration,
+                    SimpleExpr::Real(113045.123456),
+                ),
+                [11, 30, 45],
+            ),
+            (
+                unary(SimpleSig::CastDecimalAsDuration, decimal),
+                [11, 30, 45],
+            ),
+            (
+                unary(
+                    SimpleSig::CastStringAsDuration,
+                    SimpleExpr::Bytes(b"11:30:45.123456".to_vec()),
+                ),
+                [11, 30, 45],
+            ),
+            (unary(SimpleSig::CastJsonAsDuration, json), [11, 30, 45]),
+        ] {
+            for (sig, expected) in signatures.into_iter().zip(expected) {
+                assert_eq!(
+                    evaluator.eval_expr(&unary(sig, input.clone())).unwrap(),
+                    Some(expected)
+                );
+            }
+        }
+        let sql_error = unary(SimpleSig::CastRealAsInt, SimpleExpr::Real(1e100));
+        assert!(matches!(
+            evaluator.eval_expr(&sql_error),
+            Err(LegacyEvalError::Sql(_))
+        ));
+        for children in [
+            vec![],
+            vec![SimpleExpr::Null],
+            vec![SimpleExpr::Column(2)],
+            // Bare Time and Bytes remain outside eval_duration's leaf domain.
+            vec![SimpleExpr::Time(time)],
+            vec![SimpleExpr::Bytes(b"11:30:45".to_vec())],
+            vec![unary(
+                SimpleSig::CastStringAsDuration,
+                SimpleExpr::Bytes(b"not a duration".to_vec()),
+            )],
+            vec![unary(SimpleSig::CastIntAsDuration, sql_error)],
+        ] {
+            assert_eq!(evaluator.eval_duration(children.first()).unwrap(), None);
+            for sig in signatures {
+                let call = SimpleExpr::Func(sig, children.clone());
+                assert_eq!(evaluator.eval_expr(&call).unwrap(), None);
+            }
         }
     }
 

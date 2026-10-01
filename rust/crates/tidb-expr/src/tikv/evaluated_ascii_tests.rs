@@ -1138,6 +1138,14 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::QuarterCoreNative => {
             panic!("calendar fields need their original time cores")
         }
+        EvaluatedBytesOp::HourTextNative
+        | EvaluatedBytesOp::MinuteTextNative
+        | EvaluatedBytesOp::SecondTextNative
+        | EvaluatedBytesOp::HourNanosNative
+        | EvaluatedBytesOp::MinuteNanosNative
+        | EvaluatedBytesOp::SecondNanosNative => {
+            panic!("HMS calls need their original text or signed nanoseconds")
+        }
         EvaluatedBytesOp::CompressGoNative | EvaluatedBytesOp::UncompressNative => {
             panic!("compression calls need their original nullable bytes")
         }
@@ -1275,6 +1283,199 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+fn hms_fields_function(
+    name: &str,
+    values: Vec<Datum>,
+    pb: bool,
+    unreadable_tail: bool,
+) -> crate::scalar_function::ScalarFunction {
+    use crate::expression::Expression;
+    use crate::scalar_function::{PbBuiltin, ScalarFunction};
+    use tidb_proto::tipb::ScalarFuncSig;
+    let field = FieldType::new(FieldTypeCode::VarString);
+    let mut args = values
+        .into_iter()
+        .map(|value| Expression::Constant(Constant::new(value, field.clone())))
+        .collect::<Vec<_>>();
+    if unreadable_tail {
+        args.push(Expression::ScalarFunction(ScalarFunction::new(
+            tidb_ast::CiString::new("__undemanded_hms_suffix__"),
+            field,
+            Vec::new(),
+        )));
+    }
+    let result_type = FieldType::new(FieldTypeCode::LongLong);
+    if pb {
+        let signature = match name {
+            "HOUR" => ScalarFuncSig::Hour,
+            "MINUTE" => ScalarFuncSig::Minute,
+            "SECOND" => ScalarFuncSig::Second,
+            _ => panic!("HMS fixture name"),
+        };
+        ScalarFunction::from_pb(PbBuiltin::new(signature).unwrap(), result_type, args)
+    } else {
+        ScalarFunction::new(tidb_ast::CiString::new(name), result_type, args)
+    }
+}
+
+#[test]
+fn hms_fields_dispatch_keeps_source_text_parsing_and_duration_display_lane() {
+    use tidb_datatype::MySqlDuration;
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        // test_clock's fixed literals and the old calendar parser's documented
+        // clamp/bare-date rules. No migrated getter or parser computes expected.
+        for (input, expected) in [
+            (Datum::new_string("10:10:10.123456"), [10, 10, 10]),
+            (Datum::new_string("2010-10-10 11:11:11.11"), [11, 11, 11]),
+            (Datum::new_string("900:30:15"), [838, 59, 59]),
+            (Datum::new_string("2024-01-15"), [0, 20, 24]),
+            // This is a native SQL Duration datum, not raw legacy nanoseconds:
+            // Display/FSP precedes text parsing, which still clamps all fields.
+            (
+                Datum::Duration(MySqlDuration::new(900, 30, 15, 123_456, 3).unwrap()),
+                [838, 59, 59],
+            ),
+        ] {
+            for (name, expected) in ["HOUR", "MINUTE", "SECOND"].into_iter().zip(expected) {
+                let (result, observation) = observe_wide_math(|| {
+                    crate::func::eval_func_values(name, std::slice::from_ref(&input), columns)
+                        .unwrap()
+                });
+                assert_eq!(
+                    result,
+                    Ok(Datum::Int(expected)),
+                    "{name} source text policy"
+                );
+                assert_wide_math_c4(observation);
+            }
+        }
+        for (name, input, expected) in [
+            (
+                "HOUR",
+                Datum::new_string("-12:34:56.123456"),
+                Datum::Int(12),
+            ),
+            ("MINUTE", Datum::new_string("900:60:15"), Datum::Null),
+            (
+                "SECOND",
+                Datum::Duration(MySqlDuration::new(12, 34, 56, 123_456, 3).unwrap()),
+                Datum::Int(56),
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::func::eval_func_values(name, &[input], columns).unwrap()
+            });
+            assert_eq!(result, Ok(expected));
+            assert_wide_math_c4(observation);
+        }
+        for name in ["HOUR", "MINUTE", "SECOND"] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::func::eval_func_values(name, &[Datum::Null], columns).unwrap()
+            });
+            assert_eq!(result, Ok(Datum::Null));
+            assert_wide_math_c4(observation);
+        }
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn hms_fields_dispatch_keeps_ast_typed_pb_and_first_null_child_demand() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (name, expected) in [("HOUR", 0), ("MINUTE", 20), ("SECOND", 24)] {
+            let (result, observation) = observe_wide_math(|| calendar_fields_ast(&format!("{name}('2024-01-15')"), columns));
+            assert_eq!(result, Ok(Datum::Int(expected)));
+            assert_wide_math_c4(observation);
+            for pb in [false, true] {
+                let function = hms_fields_function(name, vec![Datum::new_string("2024-01-15")], pb, false);
+                let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+                assert_eq!(result, Ok(Datum::Int(expected)), "no ETDuration cast may replace the native text domain");
+                assert_wide_math_c4(observation);
+            }
+            let function = hms_fields_function(name, vec![Datum::MinNotNull, Datum::Null], true, true);
+            let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert_eq!(result, Ok(Datum::Null), "PB must neither coerce the bad prefix nor read the suffix before forwarding the observed NULL");
+            assert_wide_math_c4(observation);
+        }
+        let (result, observation) = observe_wide_math(|| calendar_fields_ast("HOUR(NULL)", columns));
+        assert_eq!(result, Ok(Datum::Null));
+        assert_wide_math_c4(observation);
+        for (name, pb) in [("MINUTE", false), ("SECOND", true)] {
+            let function = hms_fields_function(name, vec![Datum::Null], pb, false);
+            let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert_eq!(result, Ok(Datum::Null));
+            assert_wide_math_c4(observation);
+        }
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn hms_fields_dispatch_admits_before_bad_text_parse_but_after_native_preparation() {
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for name in ["HOUR", "MINUTE", "SECOND"] {
+            for input in [Datum::new_string("10:10:10.123456"), Datum::Null, Datum::new_string("12:60:00")] {
+                let (result, observation) = observe_wide_math(|| crate::func::eval_func_values(name, &[input], columns).unwrap());
+                assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource),
+                    "valid UTF-8 bad time text must reach admission before the worker can decide SQL NULL");
+                assert_eq!(observation.facade_entries, 0);
+                assert_eq!(observation.before_kernel_invocations, None);
+                assert_eq!(observation.after_kernel_invocations, None);
+            }
+        }
+        for (name, values, expected) in [
+            ("HOUR", vec![Datum::new_bytes([0xff])], EvalError::Unsupported("invalid UTF-8 byte datum")),
+            ("MINUTE", vec![Datum::new_string([0xff])], EvalError::Unsupported("invalid UTF-8 string datum")),
+            ("SECOND", Vec::new(), EvalError::Unsupported("bad function arity")),
+        ] {
+            let (result, observation) = observe_wide_math(|| crate::func::eval_func_values(name, &values, columns).unwrap());
+            assert_eq!(result, Err(expected));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        let (result, observation) = observe_wide_math(|| calendar_fields_ast("HOUR('10:10:10.123456')", columns));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+        for (name, pb) in [("MINUTE", false), ("SECOND", true)] {
+            let function = hms_fields_function(name, vec![Datum::new_string("10:10:10.123456")], pb, false);
+            let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource), "the actual context must reach the worker from each public route");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        let function = hms_fields_function("HOUR", vec![Datum::MinNotNull, Datum::Null], true, true);
+        let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource), "PB first-NULL demand skips prefix coercion and the suffix, not worker admission");
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+        let function = hms_fields_function("HOUR", vec![Datum::new_string("1:02:03"), Datum::new_string("4:05:06")], true, false);
+        let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        assert_eq!(result, Err(EvalError::Unsupported("bad function arity")), "non-NULL PB multi-argument calls retain the original arity error");
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 fn calendar_fields_native(

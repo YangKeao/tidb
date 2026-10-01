@@ -161,7 +161,7 @@
 //!
 //! `HOUR`/`MINUTE`/`SECOND` EXTRACTION (the standalone functions, as
 //! opposed to `DATE_ADD`'s interval arithmetic above) implements real
-//! TiDB's own two-path algorithm ([`time_fn::calendar::parse_hms_extended`],
+//! TiDB's own two-path algorithm ([`tidb_query_datatype::codec::mysql::Time::parse_native_hms`],
 //! confirmed via `goeval`, not assumed), selected by whether the argument
 //! contains a `:`: a colon-containing string parses as a structured
 //! `[DATE ]H:M:S` (`S` defaults to `0`; `H` may be MULTI-DIGIT and exceed
@@ -847,6 +847,24 @@ pub fn eval_legacy_month_in(
     ctx: &dyn Columns,
 ) -> Result<Option<i64>, EvalError> {
     time_fn::month_core_in(value, ctx)
+}
+
+/// Closed legacy duration projections, distinct from native SQL text parsing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LegacyHmsField {
+    Hour,
+    Minute,
+    Second,
+}
+
+/// Projects an already-evaluated signed nanosecond count through the shared
+/// worker. NULL also executes the worker; no Duration or FSP is reconstructed.
+pub fn eval_legacy_hms_in(
+    field: LegacyHmsField,
+    nanos: Option<i64>,
+    ctx: &dyn Columns,
+) -> Result<Option<i64>, EvalError> {
+    time_fn::calendar::hms_nanos_in(field, nanos, ctx)
 }
 
 /// Evaluates legacy integer ROUND's identity through the shared worker.

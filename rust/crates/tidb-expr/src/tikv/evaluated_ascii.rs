@@ -1584,6 +1584,12 @@ fn materialize_computed(
             | EvaluatedBytesOp::MonthCoreNative
             | EvaluatedBytesOp::DayOfMonthCoreNative
             | EvaluatedBytesOp::QuarterCoreNative
+            | EvaluatedBytesOp::HourTextNative
+            | EvaluatedBytesOp::MinuteTextNative
+            | EvaluatedBytesOp::SecondTextNative
+            | EvaluatedBytesOp::HourNanosNative
+            | EvaluatedBytesOp::MinuteNanosNative
+            | EvaluatedBytesOp::SecondNanosNative
             | EvaluatedBytesOp::AbsIntNative
             | EvaluatedBytesOp::AbsUIntNative
             | EvaluatedBytesOp::CeilIntNative

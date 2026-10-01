@@ -154,15 +154,9 @@ impl PbBuiltin {
                 };
                 crate::time_fn::calendar::date_format(date, format)
             }),
-            Hour => Kernel::Values(|values, _| {
-                crate::time_fn::calendar::time_part(values, |time| i64::from(time.0))
-            }),
-            Minute => Kernel::Values(|values, _| {
-                crate::time_fn::calendar::time_part(values, |time| i64::from(time.1))
-            }),
-            Second => Kernel::Values(|values, _| {
-                crate::time_fn::calendar::time_part(values, |time| i64::from(time.2))
-            }),
+            Hour => Kernel::Values(crate::time_fn::calendar::hour_in),
+            Minute => Kernel::Values(crate::time_fn::calendar::minute_in),
+            Second => Kernel::Values(crate::time_fn::calendar::second_in),
             MicroSecond => Kernel::Values(|values, _| crate::time_fn::microsecond(values)),
             Month => Kernel::Values(crate::time_fn::month_in),
             WeekWithoutMode => Kernel::Values(|values, ctx| {
@@ -368,6 +362,29 @@ impl PbBuiltin {
                             // Only the observed NULL enters MONTH's typed core;
                             // earlier values stay uncoerced and later children unread.
                             return crate::time_fn::month_in(std::slice::from_ref(&value), ctx);
+                        }
+                        // HMS likewise demands only the observed NULL, even
+                        // when earlier values or later children are present.
+                        match self.signature {
+                            ScalarFuncSig::Hour => {
+                                return crate::time_fn::calendar::hour_in(
+                                    std::slice::from_ref(&value),
+                                    ctx,
+                                );
+                            }
+                            ScalarFuncSig::Minute => {
+                                return crate::time_fn::calendar::minute_in(
+                                    std::slice::from_ref(&value),
+                                    ctx,
+                                );
+                            }
+                            ScalarFuncSig::Second => {
+                                return crate::time_fn::calendar::second_in(
+                                    std::slice::from_ref(&value),
+                                    ctx,
+                                );
+                            }
+                            _ => {}
                         }
                         match kernel {
                             kernel

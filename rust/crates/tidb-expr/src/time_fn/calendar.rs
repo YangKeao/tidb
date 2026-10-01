@@ -18,6 +18,7 @@ use crate::cast::to_i64_signed;
 use crate::coerce::coerce_str;
 use crate::{Columns, Datum, ErrorLevel, EvalError};
 use tidb_datatype::{CoreTime, Time, TimeType};
+use tidb_query_datatype::codec::mysql::Time as TikvTime;
 
 /// The whole stored CoreTime supplied to a component date-part kernel.
 /// For `YEAR`/`MONTH`/`DAYOFMONTH`/`QUARTER`, field access in Go is the whole of
@@ -105,7 +106,7 @@ pub(crate) fn date_part(
 /// accept `-`, `/`, and `.`) and leading/trailing whitespace tolerance. A
 /// trailing time-of-day component (space-separated) is accepted but
 /// ignored here — this function is deliberately scoped to the DATE part
-/// only; see [`parse_hms_extended`] for `HOUR`/`MINUTE`/`SECOND`
+/// only; see [`TikvTime::parse_native_hms`] for `HOUR`/`MINUTE`/`SECOND`
 /// extraction, which needs a GENUINELY different algorithm (real TiDB's
 /// behavior on a string with no time component is non-obvious — e.g.
 /// `MINUTE('2021-01-01')` is NOT `0` — so it does not simply call this
@@ -122,50 +123,67 @@ pub(crate) fn date_part(
 /// [`expand_year`] for the 2-digit-year century pivot this shares with
 /// the separator-based path below.
 pub(crate) fn parse_date_ymd(s: &str) -> Option<(i64, u32, u32)> {
-    let input = s.trim();
-    let date = input
-        .split_once(char::is_whitespace)
-        .map_or(input, |(date, _)| date);
-    let bare = matches!(date.len(), 6 | 8) && date.bytes().all(|byte| byte.is_ascii_digit());
-    let (year, month, day) = if bare {
-        let year_digits = date.len() - 4;
-        let (year, rest) = date.split_at(year_digits);
-        let (month, day) = rest.split_at(2);
-        (
-            expand_year(year.parse().ok()?, year_digits),
-            month.parse().ok()?,
-            day.parse().ok()?,
-        )
-    } else {
-        let parts = split_numeric_components(date)?;
-        let [(year, year_digits), (month, _), (day, _)] = parts.as_slice() else {
-            return None;
-        };
-        (expand_year(*year, *year_digits), *month, *day)
-    };
-    if !(1..=12).contains(&month) || day == 0 || day > days_in_month(year, month) {
-        return None;
-    }
-    Some((year, month, day))
+    TikvTime::parse_native_date_ymd(s)
 }
 
-/// The `(hour, minute, second)` extracted from a single-argument time-part
-/// function's argument (`HOUR`/`MINUTE`/`SECOND`): `NULL` if it doesn't
-/// coerce to a string or doesn't parse (see [`parse_hms_extended`]).
-pub(crate) fn time_part(
+/// Preserves the original string coercion, including Duration Display/FSP,
+/// without adding an ETDuration cast. Arity and UTF-8 errors precede admission;
+/// parsing and clamping run in the worker, so zero-slot refusal now precedes
+/// a malformed-text NULL result. SQL NULL also executes the worker.
+fn hms_text_in(
     vals: &[Datum],
-    f: impl Fn((u32, u32, u32)) -> i64,
+    operation: crate::tikv::EvaluatedBytesOp,
+    ctx: &dyn Columns,
 ) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(s) = coerce_str(&vals[0])? else {
-        return Ok(Datum::Null);
+    crate::tikv::evaluate_bytes_in(
+        operation,
+        ctx,
+        || {
+            let [value] = vals else {
+                return Err(EvalError::Unsupported("bad function arity"));
+            };
+            Ok(coerce_str(value)?.map(String::into_bytes))
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
+}
+
+pub(crate) fn hour_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    hms_text_in(vals, crate::tikv::EvaluatedBytesOp::HourTextNative, ctx)
+}
+
+pub(crate) fn minute_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    hms_text_in(vals, crate::tikv::EvaluatedBytesOp::MinuteTextNative, ctx)
+}
+
+pub(crate) fn second_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    hms_text_in(vals, crate::tikv::EvaluatedBytesOp::SecondTextNative, ctx)
+}
+
+/// Projects already-evaluated legacy nanoseconds, not native SQL text.
+/// No field is precomputed and NULL is still a demanded worker input.
+pub(crate) fn hms_nanos_in(
+    field: crate::LegacyHmsField,
+    nanos: Option<i64>,
+    ctx: &dyn Columns,
+) -> Result<Option<i64>, EvalError> {
+    use crate::tikv::EvaluatedBytesOp;
+
+    let operation = match field {
+        crate::LegacyHmsField::Hour => EvaluatedBytesOp::HourNanosNative,
+        crate::LegacyHmsField::Minute => EvaluatedBytesOp::MinuteNanosNative,
+        crate::LegacyHmsField::Second => EvaluatedBytesOp::SecondNanosNative,
     };
-    match parse_hms_extended(&s) {
-        Some(hms) => Ok(Datum::Int(f(hms))),
-        None => Ok(Datum::Null),
-    }
+    crate::tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || Ok(crate::tikv::EvaluatedArgs::Int(nanos)),
+        |computed| match computed.into_int_datum()? {
+            Datum::Null => Ok(None),
+            Datum::Int(value) => Ok(Some(value)),
+            _ => Err(EvalError::Unsupported("legacy HMS result kind mismatch")),
+        },
+    )
 }
 
 /// Parses `HOUR`/`MINUTE`/`SECOND`'s single argument into `(hour, minute,
@@ -201,57 +219,9 @@ pub(crate) fn time_part(
 ///   SECOND=24`, NOT the calendar date's own values at all). The SAME
 ///   `0..=59`-for-`M`/`S`-or-invalid and clamp-to-`838:59:59` rules apply
 ///   identically to the decoded `N`.
+#[cfg(test)]
 fn parse_hms_extended(s: &str) -> Option<(u32, u32, u32)> {
-    let s = s.trim();
-    let s = s.strip_prefix('-').unwrap_or(s);
-    if s.contains(':') {
-        let time_str = match s.split_once(char::is_whitespace) {
-            Some((date_str, time_str)) => {
-                parse_date_ymd(date_str)?;
-                time_str.trim_start()
-            }
-            None => s,
-        };
-        let mut fields = time_str.splitn(3, ':');
-        let h: i64 = fields.next()?.parse().ok()?;
-        let m: u32 = fields.next()?.parse().ok()?;
-        let sec: u32 = match fields.next() {
-            Some(field) => {
-                let (whole, fraction) = field
-                    .split_once('.')
-                    .map_or((field, None), |(whole, fraction)| (whole, Some(fraction)));
-                if fraction.is_some_and(|digits| !digits.bytes().all(|byte| byte.is_ascii_digit()))
-                {
-                    return None;
-                }
-                whole.parse().ok()?
-            }
-            None => 0,
-        };
-        clamp_hms(h, m, sec)
-    } else {
-        let digits: String = s.chars().take_while(char::is_ascii_digit).collect();
-        if digits.is_empty() {
-            return None;
-        }
-        let n: i64 = digits.parse().ok()?;
-        clamp_hms(n / 10_000, ((n / 100) % 100) as u32, (n % 100) as u32)
-    }
-}
-
-/// Shared by both of [`parse_hms_extended`]'s paths: rejects an
-/// out-of-range `m`/`sec`, else clamps `h` (and, if clamped, `m`/`sec`
-/// TOO) to TiDB's real documented `TIME` maximum, `838:59:59` (confirmed
-/// via `goeval`, not assumed, that an overflowing `h` clamps the WHOLE
-/// value, not just `h` alone).
-fn clamp_hms(h: i64, m: u32, sec: u32) -> Option<(u32, u32, u32)> {
-    if h < 0 || m > 59 || sec > 59 {
-        return None;
-    }
-    if h > 838 {
-        return Some((838, 59, 59));
-    }
-    Some((h as u32, m, sec))
+    TikvTime::parse_native_hms(s)
 }
 
 /// Splits a string into the `(value, digit count)` of its maximal runs of
@@ -262,24 +232,7 @@ fn clamp_hms(h: i64, m: u32, sec: u32) -> Option<(u32, u32, u32)> {
 /// rule, which depends on how many digits the year was actually WRITTEN
 /// with, not on its numeric value alone.
 fn split_numeric_components(input: &str) -> Option<Vec<(u32, usize)>> {
-    let mut parts = Vec::new();
-    let mut current = String::new();
-    for character in input.chars() {
-        if character.is_ascii_digit() {
-            current.push(character);
-        } else {
-            if current.is_empty() {
-                return None;
-            }
-            parts.push((current.parse().ok()?, current.len()));
-            current.clear();
-        }
-    }
-    if current.is_empty() {
-        return None;
-    }
-    parts.push((current.parse().ok()?, current.len()));
-    (parts.len() == 3).then_some(parts)
+    TikvTime::native_split_date_components(input)
 }
 
 /// Splits numeric date components for the `TIMEDIFF` parser.
@@ -299,14 +252,7 @@ pub(crate) fn split_numeric_components_for_time_diff(input: &str) -> Option<Vec<
 /// asymmetry from the 2-digit case that could not be guessed from the
 /// value alone).
 fn expand_year(value: u32, digits: usize) -> i64 {
-    if digits > 2 {
-        return i64::from(value);
-    }
-    if value <= 69 {
-        2000 + i64::from(value)
-    } else {
-        1900 + i64::from(value)
-    }
+    TikvTime::native_expand_date_year(value, digits)
 }
 
 /// Expands a two-digit year using TiDB's date parsing window.
@@ -337,24 +283,13 @@ pub(crate) fn time_diff_daynr(year: i64, month: u32, day: u32) -> i64 {
 }
 
 fn is_leap_year(year: i64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+    TikvTime::native_is_leap_year(year)
 }
 
 /// The number of days in `month` of `year` (Gregorian, leap-year aware);
 /// `0` for an out-of-range month so a range check against it always fails.
 fn days_in_month(year: i64, month: u32) -> u32 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 => {
-            if is_leap_year(year) {
-                29
-            } else {
-                28
-            }
-        }
-        _ => 0,
-    }
+    TikvTime::native_days_in_month(year, month)
 }
 
 /// Returns the Gregorian month length for the `TIMEDIFF` parser.

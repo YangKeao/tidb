@@ -6170,3 +6170,142 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_date_fields_dispatch_sql_column
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_hms_dispatch_sql_values_metadata_and_native_text_policy() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_hms (id INT PRIMARY KEY, \
+             v VARCHAR(32), n BIGINT, t TIME(1))",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_hms VALUES (1,NULL,NULL,NULL),\
+             (2,'900:30:15',NULL,NULL),(3,'-12:34:56.9',-103045,'-12:34:56.9'),\
+             (4,'2024-01-15',NULL,NULL),(5,'2024-01-15 10:30:45',NULL,NULL),\
+             (6,'12:60:00',NULL,NULL)",
+        )
+        .unwrap();
+    assert!(warnings_of(&session).is_empty());
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    // Original native text rules, not an ETDuration cast or the legacy nanos
+    // adapter: overflowing hours clamp the WHOLE clock; fractions do not round;
+    // a bare date decodes its leading digits as HHMMSS rather than midnight.
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns("SELECT HOUR(v),MINUTE(v),SECOND(v) FROM shared_hms ORDER BY id")
+        .unwrap()
+    else {
+        panic!("expected native HMS text rows")
+    };
+    assert_eq!(columns.len(), 3);
+    for (_, field) in &columns {
+        assert_eq!(field.code(), tidb_datatype::FieldTypeCode::LongLong);
+        assert_eq!(field.flen(), 20);
+        assert_eq!(field.decimal(), 0);
+        assert_eq!(field.charset_name(), "binary");
+        assert_eq!(field.collation(), tidb_datatype::Collation::Binary);
+        assert!(!field.is_unsigned());
+        assert!(!field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
+    }
+    assert_eq!(
+        rows,
+        vec![
+            vec![Datum::Null; 3],
+            vec![Datum::Int(838), Datum::Int(59), Datum::Int(59)],
+            vec![Datum::Int(12), Datum::Int(34), Datum::Int(56)],
+            vec![Datum::Int(0), Datum::Int(20), Datum::Int(24)],
+            vec![Datum::Int(10), Datum::Int(30), Datum::Int(45)],
+            vec![Datum::Null; 3],
+        ]
+    );
+    // Invalid minute text produces NULL without a cast warning. Adding a
+    // duration cast before admission would change both this and the clamp row.
+    assert!(warnings_of(&session).is_empty());
+
+    // The numeric source uses its signed decimal text. A legal typed TIME(1)
+    // retains the original Duration Display/FSP -> text parse path, including
+    // the negative sign and discarded (not rounded) fractional second.
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns(
+            "SELECT HOUR(n),MINUTE(n),SECOND(n),HOUR(t),MINUTE(t),SECOND(t) \
+             FROM shared_hms WHERE id=3",
+        )
+        .unwrap()
+    else {
+        panic!("expected numeric and typed-duration HMS row")
+    };
+    assert_eq!(
+        rows,
+        vec![vec![
+            Datum::Int(10),
+            Datum::Int(30),
+            Datum::Int(45),
+            Datum::Int(12),
+            Datum::Int(34),
+            Datum::Int(56)
+        ]]
+    );
+    assert!(warnings_of(&session).is_empty());
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_hms_dispatch_sql_columns() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE shared_hms_zero (id INT PRIMARY KEY, v VARCHAR(32))")
+        .unwrap();
+    session
+        .run("INSERT INTO shared_hms_zero VALUES (1,NULL),(2,'10:30:45'),(3,'not a time')")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // Parse-to-NULL is a computed result, not a pre-admission escape hatch.
+    // All three signatures, including NULL and bad text, use the real pool.
+    for (expression, id) in [
+        ("HOUR(v)", 1),
+        ("MINUTE(v)", 1),
+        ("SECOND(v)", 1),
+        ("HOUR(v)", 2),
+        ("MINUTE(v)", 2),
+        ("SECOND(v)", 2),
+        ("HOUR(v)", 3),
+        ("MINUTE(v)", 3),
+        ("SECOND(v)", 3),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_hms_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("HMS must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+}

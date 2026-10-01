@@ -1,0 +1,73 @@
+Checkpoint: hms-three-33; previous: temporal-fields-four-32.
+STATUS: 103->106/245 functional; final acceptance 0/245. HOUR/MINUTE/SECOND are three families, despite six private kernels.
+RUNS: 10 actual Rust runs = 8 green + 2 current known non-green full suites. No Rust compile failure, test rerun, new RED run or old-expected change. Prior index RED/GREEN is historical; its old regression passes in this batch's full unistore run. Static-check/fmt corrections below prevent an all-checks-first-pass claim.
+PROVENANCE: parent owns commands/exits/source/coverage proofs; writer globbed, grepped/read and sha256sum-hashed all ten logs (exit0), without build/test/fmt. RAW: /home/agent/tidb/expression-unification/logs.
+JAN CWD: /home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv pin nightly-2026-01-30-x86_64-unknown-linux-gnu.
+AUG CWD: /home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb pin nightly-2026-08-22-x86_64-unknown-linux-gnu.
+Exact shell template: set -o pipefail; <COMMAND> 2>&1 | tee <OUTPUT><REDIRECT>; OUTPUT is ../logs/<LOG> for JAN, ../../logs/<LOG> for AUG. REDIRECT is empty for the first three [visible] logs; it is " >/dev/null" for all seven [quiet] logs, suppressing terminal output only, not log content.
+JAN time/duration ran serially with &&; JAN local/kernels likewise; AUG dispatch/native-source likewise. All use --test-threads=1, no --exact. Finished profile times are not benchmarks; TiKV duration's six bench smoke cases ran as ordinary tests with 0 measured.
+
+LOG [JAN / visible]: hms-tikv-time.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib codec::mysql::time:: -- --test-threads=1
+EXIT: 0; compile2.11s; test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 361 filtered out; finished in 0.01s
+SHA256: 2b66791cde3c447e3ccaf2d2f011b5ec667e837d3cb2f0cd8c073bfe11da93f8
+LOG [JAN / visible]: hms-tikv-duration.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib codec::mysql::duration:: -- --test-threads=1
+EXIT: 0; compile0.12s; includes six ordinary-test bench smoke cases; test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 383 filtered out; finished in 0.00s
+SHA256: dc5b680d5037c726808dd63d01f53815df50c3ec796ef36a2f8f266f27b13661
+LOG [AUG / visible]: hms-native-duration.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-datatype --lib duration -- --test-threads=1
+EXIT: 0; compile2.52s; broad duration filter includes converters, not duration:: only; test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 414 filtered out; finished in 0.00s
+SHA256: c58da6c8971138f29662e43d1d07f58644ba07c1ce5f2409efd40d988911ddd6
+LOG [JAN / quiet]: hms-tikv-local.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+EXIT: 0; compile8.93s; 256 discovered, ignore preexisting; test result: ok. 255 passed; 0 failed; 1 ignored; 0 measured; 486 filtered out; finished in 0.19s
+SHA256: 3d1ff52c24e30d3ef886fe170b2c983dfabb349b86a85dc15e6628e3758ee2bb
+LOG [JAN / quiet]: hms-tikv-kernels.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_time:: -- --test-threads=1
+EXIT: 0; compile0.14s; test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 689 filtered out; finished in 0.01s
+SHA256: bf2622d04022ab8c94b7da13c7aca32ab458ff125bd6b9f38a6341d1f0c58114
+LOG [AUG / quiet / current non-green full]: hms-unistore-full.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+EXIT: 101; compile11.29s; 203 discovered; test result: FAILED. 189 passed; 1 failed; 13 ignored; 0 measured; 0 filtered out; finished in 2.97s
+SHA256: be5baeb46e7defbc6a9348df96fd2378943d2299b97b574480197e65f8af84b8
+LOG [AUG / quiet]: hms-sql.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+EXIT: 0; compile28.35s; test result: ok. 69 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 0.96s
+SHA256: 38343734d097d1f06013a642bc5b89f6b74c144f0f4184b339c4d070d7ce485d
+LOG [AUG / quiet]: hms-dispatch.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib hms_fields_dispatch_ -- --test-threads=1
+EXIT: 0; compile10.18s; test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1546 filtered out; finished in 0.00s
+SHA256: 05344a07ec217395fa71f738b0cd3502f482d2c326da266e47257f94584b1148
+LOG [AUG / quiet]: hms-native-source.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib tests::datetime:: -- --test-threads=1
+EXIT: 0; compile0.14s; test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 1528 filtered out; finished in 0.02s
+SHA256: 4100a74b5972efcdf303bc1cc1c3621f44bd7754662de40e32a59004a7f9dd6b
+LOG [AUG / quiet / current non-green full]: hms-expr-full.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+EXIT: 101; compile4.71s after final formatting; 1549 discovered; test result: FAILED. 1451 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.76s
+SHA256: 0ea14b287f2685bad1dfd84b1ae1eb1bcd53b05ebc7998c3a96c73b24bf1d57e
+
+CONTRACT / PROOF BOUNDARIES
+HourTextNative/MinuteTextNative/SecondTextNative use the existing nullable Bytes->Int carrier, original coerce_str and Duration Display/FSP, not ETDuration casting. Private kernels strictly check UTF-8 (Other transport on invalid bytes), run Time::parse_native_hms on actual text and select the tuple field; NULL/parseNone stay NULL. No host-computed field answer.
+HourNanosNative/MinuteNanosNative/SecondNanosNative use existing nullable Int->Int with actual signed nanos. Shared pub const Duration::{hours_from_nanos,minutes_from_nanos,secs_from_nanos} unsigned_abs formulas serve wire getters and native const delegates, preserving MIN/subsecond/negative/over838 values without constructor validation, rounding or FSP normalization. SQL text and legacy nanos remain different domains.
+Time owns native HMS/date-prefix/split/pivot/leap/month-length helpers: text900:30:15->838/59/59, minute60->NULL, bare2024-01-15->0/20/24; native u32 date-year and original String/Vec allocation structure remain. Wire invalid-month length31 versus native0 stays distinct. MICROSECOND/to_secs/FSP/Display/constructors are unchanged; not a complete Time/Duration codec conversion.
+Malformed text's quiet NULL now follows admission: zero-slot Resource precedes the parse outcome. Original arity/strict-UTF8/coercion remains before admission. PB actually observed NULL preserves no prefix coercion/no suffix read; legacy OptionNull comes through original eval_duration and real-context nanos. Default one-shot and the production request-root gap are unchanged. No new role/result kind/metadata layout/module/driver/context getter/NoArgs/PB admission.
+D3 covers native Display/text, AST/typed/PB and first-NULL demand, original preparation and worker-side parse order. E: six rows*three projections plus one numeric/TIME six-column query; nine zero-slot calls ALL PoolResource1105 with empty warnings, including malformed text. Legacy HMS raw-duration/coercion and infrastructure/consumer tests pass within the current non-green unistore full run.
+Parent's seven original calendar bodies match new Time bodies after Self-symbol qualification, whitespace/formatter optional tuple-comma normalization and lossless const u32->i64 cast normalization: 7/7, NOT byte identity. Original allocation structure is not whole-call allocation/peak/OOM or performance evidence.
+Two static scripts initially failed: missing formatter tuple-comma normalization; wrong assumed cfg(test) module name tests rather than clock_source_tests. Script corrections changed no code. First final fmt check also failed on two batch.rs return wraps; parent reformatted that file without product-logic change, then all17 sources (TiKV8/native9), both lock checks and both diff checks passed. No all-checks-first-attempt claim.
+Byte-preserved scope: five whole native files time_fn/tests.rs, tests/datetime.rs, arg_eval_type.rs, coerce.rs, time_fn/mod.rs; all old calendar tests from #[cfg(test)] mod clock_source_tests onward; native duration source/tests from pub const microsecond onward. Not the whole calendar/source tree.
+
+CURRENT FULL-FAILURE COMPARISONS (fresh parent checks)
+section = text.split('\nfailures:\n',1)[1].split('\ntest result:',1)[0]; thread_only = re.sub(r"(?m)^(thread '[^\n]*' \()\d+(\) panicked at)", r'\1THREAD\2', section).
+Expr thread-only SHA256 is 80be9bda05e5bf630e9c246ca9523d23f82c122eaaeec6e220b1b00cec436615, NOT temporal-fields-expr-full.log's 0930217d98e0b92d727527dc3c7cb7313f1bbe35e643da60114fa6d78203839b.
+The sole difference is a new import shifting the same nonnegative-duration-FSP panic from211:55 to212:55. Parent checked both source lines and the unchanged microsecond-onward suffix. Replace only current "crates/tidb-datatype/src/duration.rs:212:55:" with "crates/tidb-datatype/src/duration.rs:211:55:" once: then complete sections equal, SHA2560930217d98e0b92d727527dc3c7cb7313f1bbe35e643da60114fa6d78203839b. No blanket line normalization.
+- pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation
+- tests::builtin_info_json_math_source::exp (old EXP(100_000.0) FloatOverflow assertion still fails)
+- tests::builtin_math_misc_op_source::vectorized_builtin_op_func
+- time_fn::tests::str_to_date_partial_formats_follow_no_zero_date
+Unistore's complete section equals temporal-fields-unistore-full.log after thread IDs alone: both SHA256 e285bfdba646f2d01f85b485ae317cc07c51b78cf0ae6d664c0fb2bc39259759.
+- tests_mockstore_part1_go_parity::closure_executor_selection_over_point_range_answers_zero_rows (TruncatedWrongValue DECIMAL 'abc').
+These are failure-section hashes, not whole-log hashes. Both full suites are currently non-green, not fixed, merely historical or all-green after normalization.
+
+FREEZE: only hms-checkpoint.md and this summary written under this docs authorization; no source/other-doc/Plan/JSON/index/build/test/fmt/old-expected edits by writer. No whole Time/Duration/Date codec/Go-package, production request-root integration, deep/wide validation, internal peak/OOM/zero-copy/performance, release, make lint/full-workspace or broad-guard completion claim. 106/245 functional, final0/245; not PR-ready.

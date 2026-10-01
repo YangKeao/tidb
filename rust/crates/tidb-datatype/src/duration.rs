@@ -17,6 +17,7 @@
 use std::{cmp::Ordering, error::Error, fmt};
 
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, TimeZone};
+use tidb_query_datatype::codec::mysql::Duration as SharedDuration;
 
 use crate::time_parse::adjust_year_with_event;
 use crate::{
@@ -99,17 +100,17 @@ impl MySqlDuration {
 
     /// Returns the absolute hour component, including values beyond 24.
     pub const fn hour(self) -> i64 {
-        (self.nanoseconds.unsigned_abs() / 3_600_000_000_000) as i64
+        SharedDuration::hours_from_nanos(self.nanoseconds) as i64
     }
 
     /// Returns the absolute minute component.
     pub const fn minute(self) -> i64 {
-        (self.nanoseconds.unsigned_abs() / 60_000_000_000 % 60) as i64
+        SharedDuration::minutes_from_nanos(self.nanoseconds) as i64
     }
 
     /// Returns the absolute second component.
     pub const fn second(self) -> i64 {
-        (self.nanoseconds.unsigned_abs() / 1_000_000_000 % 60) as i64
+        SharedDuration::secs_from_nanos(self.nanoseconds) as i64
     }
 
     /// Returns the absolute microsecond component.
