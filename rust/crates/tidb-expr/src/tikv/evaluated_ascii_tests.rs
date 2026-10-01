@@ -1155,6 +1155,12 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::GetFormatNullNative => {
             panic!("period and format calls need their original arguments and NULL demand")
         }
+        EvaluatedBytesOp::DayOfWeekTextNative
+        | EvaluatedBytesOp::WeekdayTextNative
+        | EvaluatedBytesOp::DayOfYearTextNative
+        | EvaluatedBytesOp::DayNameTextNative => {
+            panic!("weekday fields need their original date text")
+        }
         EvaluatedBytesOp::CompressGoNative | EvaluatedBytesOp::UncompressNative => {
             panic!("compression calls need their original nullable bytes")
         }
@@ -1292,6 +1298,236 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+fn weekday_fields_function(name: &str, input: Datum) -> crate::scalar_function::ScalarFunction {
+    let result_type = FieldType::new(if name == "DAYNAME" {
+        FieldTypeCode::VarString
+    } else {
+        FieldTypeCode::LongLong
+    });
+    crate::scalar_function::ScalarFunction::new(
+        tidb_ast::CiString::new(name),
+        result_type,
+        vec![crate::expression::Expression::Constant(Constant::new(
+            input,
+            FieldType::new(FieldTypeCode::VarString),
+        ))],
+    )
+}
+
+#[test]
+fn weekday_fields_dispatch_keeps_source_calendar_fields_and_typed_reparse() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        // Original calendar_part_source_vectors/dayname_source_vectors plus
+        // the locked year-zero Saturday literal; never derive an expectation
+        // from a migrated parser, weekday primitive, name table, or getter.
+        for (name, input, expected) in [
+            ("DAYOFWEEK", Datum::new_string("2017-12-01"), Datum::Int(6)),
+            (
+                "DAYOFYEAR",
+                Datum::new_string("2017-12-01"),
+                Datum::Int(335),
+            ),
+            (
+                "DAYNAME",
+                Datum::new_string("2017-12-01"),
+                Datum::new_string("Friday"),
+            ),
+            ("DAYOFWEEK", Datum::new_string("2000-01-01"), Datum::Int(7)),
+            ("WEEKDAY", Datum::new_string("2000-01-01"), Datum::Int(5)),
+            ("DAYOFYEAR", Datum::new_string("2000-01-01"), Datum::Int(1)),
+            ("DAYOFWEEK", Datum::new_string("0000-01-01"), Datum::Int(7)),
+            ("WEEKDAY", Datum::new_string("0000-01-01"), Datum::Int(5)),
+            ("DAYOFYEAR", Datum::new_string("0000-01-01"), Datum::Int(1)),
+            (
+                "DAYNAME",
+                Datum::new_string("0000-01-01"),
+                Datum::new_string("Saturday"),
+            ),
+            ("DAYOFWEEK", Datum::Int(20_240_315), Datum::Int(6)),
+            ("WEEKDAY", Datum::Int(20_240_315), Datum::Int(4)),
+            ("DAYOFYEAR", Datum::Int(20_240_315), Datum::Int(75)),
+            (
+                "DAYNAME",
+                Datum::Int(20_171_201),
+                Datum::new_string("Friday"),
+            ),
+            (
+                "DAYNAME",
+                Datum::Time(
+                    Time::new(
+                        CoreTime::from_date(2017, 1, 0, 0, 0, 0, 0),
+                        TimeType::Date,
+                        0,
+                    )
+                    .unwrap(),
+                ),
+                Datum::Null,
+            ),
+        ] {
+            let (result, observation) =
+                observe_wide_math(|| crate::time_fn::dispatch(name, &[input], columns).unwrap());
+            assert_eq!(
+                result,
+                Ok(expected),
+                "{name}: valid year zero is not a blanket NULL"
+            );
+            assert_wide_math_c4(observation);
+        }
+        let invalid_time = Datum::Time(
+            Time::new(
+                CoreTime::from_date(2024, 15, 1, 0, 0, 0, 0),
+                TimeType::Date,
+                0,
+            )
+            .unwrap(),
+        );
+        for name in ["DAYOFWEEK", "WEEKDAY", "DAYOFYEAR", "DAYNAME"] {
+            for input in [
+                Datum::Null,
+                Datum::new_string("2017-00-01"),
+                invalid_time.clone(),
+            ] {
+                let (result, observation) = observe_wide_math(|| {
+                    crate::time_fn::dispatch(name, &[input], columns).unwrap()
+                });
+                assert_eq!(
+                    result,
+                    Ok(Datum::Null),
+                    "typed Time still Display/reparses; do not substitute wide raw-core extraction"
+                );
+                assert_wide_math_c4(observation);
+            }
+        }
+        let (result, observation) =
+            observe_wide_math(|| calendar_fields_ast("DAYOFWEEK('2017-12-01')", columns));
+        assert_eq!(result, Ok(Datum::Int(6)));
+        assert_wide_math_c4(observation);
+        for (name, input, expected) in [
+            ("DAYNAME", "2017-12-01", Datum::new_string("Friday")),
+            ("WEEKDAY", "2000-01-01", Datum::Int(5)),
+        ] {
+            let function = weekday_fields_function(name, Datum::new_string(input));
+            let (result, observation) =
+                observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert_eq!(result, Ok(expected));
+            assert_wide_math_c4(observation);
+        }
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn weekday_fields_dispatch_keeps_admission_after_preparation_and_original_cast_context() {
+    struct Probe {
+        reject_zero: Cell<bool>,
+        events: RefCell<Vec<String>>,
+    }
+    impl Columns for Probe {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn date_modes(&self) -> DateModes {
+            self.events.borrow_mut().push("modes".to_owned());
+            DateModes {
+                no_zero_date: self.reject_zero.get(),
+                ..DateModes::TIDB_DEFAULT_SQL_MODE
+            }
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            self.events.borrow_mut().push("zone".to_owned());
+            SessionTimeZone::Fixed {
+                name: "weekday-fields-context".to_owned(),
+                offset_secs: 0,
+            }
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            let before = EVAL_ONE_OBSERVATION.with(|slot| {
+                slot.borrow().as_ref().is_some_and(|value| {
+                    value.facade_entries == 0
+                        && value.before_kernel_invocations.is_none()
+                        && value.after_kernel_invocations.is_none()
+                })
+            });
+            self.events
+                .borrow_mut()
+                .push(format!("warn:{code}:{message}:before:{before}"));
+        }
+    }
+    let native = Probe {
+        reject_zero: Cell::new(true),
+        events: RefCell::new(Vec::new()),
+    };
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for name in ["DAYOFWEEK", "WEEKDAY", "DAYOFYEAR", "DAYNAME"] {
+            for input in [Datum::new_string("2017-12-01"), Datum::Null, Datum::new_string("2017-00-01")] {
+                let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch(name, &[input], columns).unwrap());
+                assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource), "the worker decides bad-date NULL only after admission");
+                assert_eq!(observation.facade_entries, 0);
+                assert_eq!(observation.before_kernel_invocations, None);
+                assert_eq!(observation.after_kernel_invocations, None);
+            }
+        }
+        for (name, values, expected) in [
+            ("DAYOFWEEK", vec![Datum::new_bytes([0xff])], EvalError::Unsupported("invalid UTF-8 byte datum")),
+            ("DAYNAME", vec![Datum::new_string([0xff])], EvalError::Unsupported("invalid UTF-8 string datum")),
+            ("WEEKDAY", Vec::new(), EvalError::Unsupported("bad function arity")),
+            ("DAYOFYEAR", vec![Datum::Null, Datum::new_string("2017-12-01")], EvalError::Unsupported("bad function arity")),
+        ] {
+            let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch(name, &values, columns).unwrap());
+            assert_eq!(result, Err(expected));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        let (result, observation) = observe_wide_math(|| calendar_fields_ast("DAYOFYEAR('2017-12-01')", columns));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+        let function = weekday_fields_function("DAYNAME", Datum::new_string("2017-12-01"));
+        let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+        native.events.borrow_mut().clear();
+        for reject_zero in [true, false] {
+            native.reject_zero.set(reject_zero);
+            let function = weekday_fields_function("DAYNAME", Datum::new_string("0000-00-00"));
+            let (result, observation) = observe_wide_math(|| {
+                if reject_zero {
+                    calendar_fields_ast("DAYNAME('0000-00-00')", columns)
+                } else {
+                    function.eval(columns, tidb_chunk::row::Row::empty())
+                }
+            });
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+            let events = native.events.replace(Vec::new());
+            assert!(events.iter().any(|event| event == "modes"));
+            assert!(events.iter().any(|event| event == "zone"));
+            let warnings = events.iter().filter(|event| event.starts_with("warn:")).map(String::as_str).collect::<Vec<_>>();
+            if reject_zero {
+                assert_eq!(warnings, ["warn:1292:Incorrect datetime value: '0000-00-00 00:00:00.000000':before:true"]);
+            } else {
+                assert!(warnings.is_empty(), "the existing ETDatetime cast keeps the caller's date mode");
+            }
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 fn period_format_function(

@@ -417,15 +417,9 @@ impl Weekday {
 
 impl fmt::Display for Weekday {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::Sunday => "Sunday",
-            Self::Monday => "Monday",
-            Self::Tuesday => "Tuesday",
-            Self::Wednesday => "Wednesday",
-            Self::Thursday => "Thursday",
-            Self::Friday => "Friday",
-            Self::Saturday => "Saturday",
-        })
+        formatter.write_str(SharedTime::weekday_name_from_sunday_index(u32::from(
+            self.sunday_index(),
+        )))
     }
 }
 

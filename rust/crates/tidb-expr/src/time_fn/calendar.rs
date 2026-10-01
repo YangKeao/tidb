@@ -18,7 +18,7 @@ use crate::cast::to_i64_signed;
 use crate::coerce::coerce_str;
 use crate::{Columns, Datum, ErrorLevel, EvalError};
 use tidb_datatype::{CoreTime, Time, TimeType};
-use tidb_query_datatype::codec::mysql::Time as TikvTime;
+use tidb_query_datatype::codec::mysql::{time::MONTH_NAMES, Time as TikvTime};
 
 /// The whole stored CoreTime supplied to a component date-part kernel.
 /// For `YEAR`/`MONTH`/`DAYOFMONTH`/`QUARTER`, field access in Go is the whole of
@@ -363,20 +363,11 @@ pub(crate) fn week_of_year(y: i64, m: u32, d: u32, mode: i64, with_year: bool) -
     (year, days / 7 + 1)
 }
 
-/// Days since an arbitrary fixed epoch (1970-01-01) for a Gregorian
-/// calendar date — Howard Hinnant's well-known `days_from_civil` algorithm
-/// (<http://howardhinnant.github.io/date_algorithms.html>), correct for the
-/// proleptic Gregorian calendar. Only used for the RELATIVE difference
-/// `DATEDIFF` computes, so matching MySQL's own internal epoch exactly
-/// doesn't matter — any consistent day-numbering gives the same difference.
+/// Gregorian days since 1970-01-01, delegated to the shared wide civil helper.
+/// The fixed epoch is also used by weekday offsets, inverse conversion and
+/// timestamp consumers; this is not MySQL's internal day-number domain.
 pub(crate) fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = (i64::from(m) + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146097 + doe - 719468
+    TikvTime::native_days_from_civil(y, m, d)
 }
 
 /// The inverse of [`days_from_civil`]: the Gregorian calendar date for a day
@@ -2204,33 +2195,8 @@ pub(crate) fn date_format(date: &Datum, fmt: &Datum) -> Result<Datum, EvalError>
             .and_then(parse_time_with_fraction)
             .unwrap_or((0, 0, 0, String::new()));
 
-    const MONTHS: [&str; 12] = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ];
-    const WEEKDAYS: [&str; 7] = [
-        "Sunday",
-        "Monday",
-        "Tuesday",
-        "Wednesday",
-        "Thursday",
-        "Friday",
-        "Saturday",
-    ];
-    // `days_from_civil + 4 (mod 7)` gives 0=Sunday .. 6=Saturday (the same
-    // offset `DAYOFWEEK` uses, verified against real TiDB).
-    let wd = (days_from_civil(y, m, d) + 4).rem_euclid(7) as usize;
-    let doy = days_from_civil(y, m, d) - days_from_civil(y, 1, 1) + 1;
+    let wd = TikvTime::native_weekday_sunday_index(y, m, d);
+    let doy = TikvTime::native_day_of_year(y, m, d);
     let h12 = ((h + 11) % 12) + 1;
     let suffix = |n: u32| -> &'static str {
         match (n % 100, n % 10) {
@@ -2279,11 +2245,11 @@ pub(crate) fn date_format(date: &Datum, fmt: &Datum) -> Result<Datum, EvalError>
                 "{h12:02}:{mi:02}:{sec:02} {}",
                 if h < 12 { "AM" } else { "PM" }
             )),
-            Some('W') => out.push_str(WEEKDAYS[wd]),
-            Some('a') => out.push_str(&WEEKDAYS[wd][..3]),
+            Some('W') => out.push_str(TikvTime::weekday_name_from_sunday_index(wd)),
+            Some('a') => out.push_str(&TikvTime::weekday_name_from_sunday_index(wd)[..3]),
             Some('w') => out.push_str(&wd.to_string()),
-            Some('M') => out.push_str(MONTHS[(m - 1) as usize]),
-            Some('b') => out.push_str(&MONTHS[(m - 1) as usize][..3]),
+            Some('M') => out.push_str(MONTH_NAMES[(m - 1) as usize]),
+            Some('b') => out.push_str(&MONTH_NAMES[(m - 1) as usize][..3]),
             Some('j') => out.push_str(&format!("{doy:03}")),
             Some('D') => out.push_str(&format!("{d}{}", suffix(d))),
             // Go's `types.Time.DateFormat` maps these to `CoreTime.Week` /

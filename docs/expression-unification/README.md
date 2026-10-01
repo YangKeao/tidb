@@ -1,37 +1,39 @@
 # Expression unification experiment
 
-Checkpoint-ID: `period-format-three-35` (previous: `month-seconds-two-34`)
-**111/245 frozen families delegate to TiKV with native evaluator algorithms removed; target 221.** Added: PERIOD_ADD, PERIOD_DIFF and GET_FORMAT. Strict final-audited acceptance remains **0**; incomplete and not PR-ready.
+Checkpoint-ID: `weekday-four-36` (previous: `period-format-three-35`)
+**115/245 frozen families delegate to TiKV with native evaluator algorithms removed; target 221.** Added: DAYOFWEEK, WEEKDAY, DAYOFYEAR and DAYNAME. Strict final-audited acceptance remains **0**; incomplete and not PR-ready.
 
 Paired branches: [TiDB](https://github.com/YangKeao/tidb/tree/expression-unification-demo) · [TiKV](https://github.com/YangKeao/tikv/tree/expression-unification-demo). Use sibling checkouts.
-The parent records the paired TiKV commit and Plan hash in `checkpoint.json` before publication. Root Plans mirror `/home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md`; publication uses paired pushes, not force-push or automatic PRs.
+The parent fills the paired TiKV commit and Plan hash in `checkpoint.json` before publication. Root Plans mirror `/home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md`; publication uses paired pushes, not force-push or automatic PRs.
 
 ## This checkpoint
 
-- **Period ownership:** TiKV Time owns period validation, wrapping forward/inverse conversion and the GET_FORMAT table; native algorithms are deleted. PERIOD_ADD/DIFF retain the original `int_arg` domain and left-to-right conversions: a left NULL still demands right conversion, either observed NULL suppresses period validation, and conversion errors precede admission. Valid periods have no invented seven-digit limit; signed/unsigned wrapping and the year pivot remain unchanged.
-- **Typed diagnostics:** `PeriodAddIncorrectArguments` and `PeriodDiffIncorrectArguments` have exact paired typed causes/receipts. Only authenticated failures restore the original `EvalError::IncorrectArguments` messages and SQL 1210; the host does not validate periods. Resource refusal now precedes worker-side invalid-period diagnostics, while original arity/coercion errors remain earlier.
-- **GET_FORMAT demand:** the values path retains raw bytes, exact uppercase selector matching and ASCII-case-insensitive location matching; when both arguments are non-NULL, unknown combinations return non-NULL empty bytes. Only actual first-argument NULL selects the single-Bytes witness, without reading/coercing location or fabricating a second NULL. Otherwise both actual optional bytes are sent, including for unknown selectors. The independent AST evaluates location once, retains strict `coerce_str`, and transports the real DATE/TIME/DATETIME selector—not a host-computed format.
-- **Closed protocol:** four operations for three families reuse Int2→Int, Bytes2→Bytes and actual-NULL Bytes→Bytes; the witness rejects Some. All NULL paths invoke workers. No new role, result kind, computed metadata, module, driver, NoArgs allowance, four-column allowance or PB/legacy admission. Scope: 13 Rust files, TiKV 8/native 5; no new flags, panic policy or profile changes.
+- **Shared native calendar:** four TiKV Time helpers own wide-i64 forward-civil days, Sunday-first weekday indexing, day-of-year and full weekday names; the full weekday table remains private. Workers parse the complete original native date text, preserving valid year zero and the u32-year domain. Native four-family algorithms, the local DAYS table and unused single_date are deleted. WEEKDAY's shifted-index equivalence is claimed only for fully valid dates.
+- **Preserved boundaries:** original ETDatetime casts, context getters/warnings, full string coercion and arity/UTF-8 errors stay before admission. Parsing and NULL results now execute in workers, so resource refusal precedes bad-date NULL. Calendar weekday/day-of-year and full-name leaves share helpers; CoreTime changes only Display and extensions only full-name lookup. Existing weekday/ordinal/day-number policies, abbreviations, chrono/normalization and inverse construction remain outside this migration.
+- **Closed protocol:** four operations reuse nullable Bytes→three Int results/one ordinary OwnBytes result. No new role, result kind, metadata, driver, typed diagnostic, NoArgs case, four-column allowance or PB/legacy admission. Scope: 14 Rust files, TiKV 8/native 6. No host precomputed date answer or production fallback remains for these four evaluators.
+- **Historical correction:** a MONTHS table still present in native calendar formatting after Round35 is deduplicated now, alongside the full weekday table. The earlier four full-month-table replacements were not proof of repository-wide sole ownership. This correction adds no MONTHNAME or DATE_FORMAT family credit.
 
 ## Actual validation
 
 | Run | Result | Compile / run seconds |
 |---|---|---|
-| TiKV Time | 45 passed, 361 filtered | 2.19 / 0.01 |
-| TiKV local evaluator | 257 passed, 1 existing ignored, 489 filtered | 9.42 / 0.19 |
-| TiKV time kernels | 56 passed, 691 filtered | 0.12 / 0.01 |
-| SQL/lifecycle | 73 passed, 2078 filtered | 22.20 / 1.14 |
-| Native dispatch, true pipeline | 3 passed, 1551 filtered | 12.96 / 0.00 |
-| Native period vectors | 2 passed, 1552 filtered | 0.12 / 0.00 |
-| Native GET_FORMAT table vectors | 1 passed, 1553 filtered | 0.12 / 0.00 |
-| Full native expression library | **1456 passed, 4 old failures, 94 ignored; 1554 total; exit 101** | 0.12 / 10.65 |
+| TiKV Time | 46 passed, 361 filtered | 2.04 / 0.01 |
+| Native CoreTime | 15 passed, 423 filtered | 2.66 / 0.00 |
+| TiKV local evaluator | 258 passed, 1 existing ignored, 491 filtered | 8.86 / 0.19 |
+| TiKV time kernels | 58 passed, 692 filtered | 0.13 / 0.01 |
+| SQL/lifecycle | 75 passed, 2078 filtered | 18.23 / 1.16 |
+| Native dispatch, true pipeline | 2 passed, 1554 filtered | 12.12 / 0.00 |
+| Native calendar vectors | 1 passed, 1555 filtered | 0.13 / 0.00 |
+| Native day-name vectors | 1 passed, 1555 filtered | 0.12 / 0.00 |
+| Native formatting vectors | 2 passed, 1554 filtered | 0.14 / 0.00 |
+| Full native expression library | **1458 passed, 4 old failures, 94 ignored; 1556 total; exit 101** | 0.12 / 10.39 |
 
-**8 actual test runs / 8 Cargo attempts: 7 green, 1 current baseline non-green; no launch failures, retries, Rust compilation failures or new red test run.** The first final formatter check failed (exit 1) on a long `PeriodDiffNative` return in batch.rs; that script stopped at TiKV formatting before native checks/lock checks ran. A whitespace-only wrap fixed it, and the rerun passed all 13 sources, unchanged-lockfile and diff checks. This was not a compilation/test failure or an additional Cargo attempt; not all checks passed first try.
-The complete expression failure section equals **month-seconds-expr-full.log** after only thread-ID normalization, SHA-256 `80be9bda05e5bf630e9c246ca9523d23f82c122eaaeec6e220b1b00cec436615`. No address mapping is needed; duration.rs remains at 212:55. Unistore was not rerun this round or last round: its 189/1/13 result belongs to historical `hms-three-33`, not a current gate.
-SQL covers five normal rows × three projections, a sixth invalid row with two healthy-resource 1210 calls, and nine zero-slot Resource/1105/HY000 calls with no warnings. Three dispatch tests exercise the real pipeline; the one old GET_FORMAT table test uses a cfg(test) direct datatype lookup and is **not C4 evidence**. The moved GET_FORMAT table body matches under whitespace normalization, not a byte-equality claim; wire period_add/period_diff bodies are byte-identical. Five recorded whole files, int_arg, TIME_FORMAT, unrelated native regions and old tests remain byte-identical; expected values/oracles were not changed.
-Exact commands and boundaries: [summary](logs/period-format-summary.txt), [evidence](evidence/period-format-checkpoint.md), `checkpoint.json`.
+**10 actual test runs / 10 Cargo attempts: 9 green, 1 current baseline non-green.** No new formatter/static-check/launch/compilation/test failure or retry occurred. Pinned formatting for all 14 sources, unchanged-lockfile and diff checks passed their first check this round; the previous checkpoint's formatter failure is not a current event.
+The complete expression failure section equals **period-format-expr-full.log** after only thread-ID normalization, SHA-256 `80be9bda05e5bf630e9c246ca9523d23f82c122eaaeec6e220b1b00cec436615`. No address mapping is needed; duration.rs remains at 212:55. Unistore was not rerun: 189/1/13 belongs to historical `hms-three-33`, not the previous period checkpoint or a current gate.
+SQL covers six rows × four projections and an explicit year-zero CAST witness, not merely a weekday coinciding with year 2000. All 12 zero-slot calls return Resource/1105/HY000: each of four bad-text cases retains one original 1292 warning; the other eight have none. Two dispatch tests exercise the actual pipeline. Forward-civil relocation matches under whitespace normalization only; nine recorded policy bodies and six whole files are byte-identical. Original calendar MONTHS/WEEKDAYS literal order matches the shared tables; the corrected 1970-epoch comment changes no algorithm. Old expected values and fixtures are unchanged.
+Exact commands and boundaries: [summary](logs/weekday-summary.txt), [evidence](evidence/weekday-checkpoint.md), `checkpoint.json`.
 
 ## Remaining work
 
-Next grouped read-only candidates, **not credited**: DAYOFWEEK, WEEKDAY, DAYOFYEAR and DAYNAME, around shared forward-civil/week-name helpers. DAYOFWEEK and DAYOFYEAR remain on the deferred list: reopening grouped review does not resolve their compatibility gaps. JSON_LENGTH also stays deferred; no next-batch implementation is claimed.
-Legacy default-NoColumns/request-root propagation, operation-scope coverage, allocation/physical peak, paired differential reruns, release/profile gates, prior duration-panic test adaptation, whole workspace, `make lint`, M6 and TiFlash remain unfinished. MICROSECOND's parser/public-helper/PB/legacy policy and JSON_PRETTY's float-format/compact-helper boundaries need separate locks. No whole-type/package, full datatype/parser-suite, performance or OOM-safety claim is made.
+Next read-only candidates, **not credited**: DATEDIFF, TO_DAYS, TO_SECONDS and TIDB_PARSE_TSO_LOGICAL—not physical TSO. DATEDIFF's existing PB/legacy CoreTime policy needs a bridge distinct from SQL text; TO_DAYS/TO_SECONDS require their strict datetime parser and wide day-number policy, not just a civil offset. DAYOFWEEK/DAYOFYEAR passed this grouped functional gate and leave the current deferred list; JSON_LENGTH remains deferred.
+Legacy capability propagation, operation-scope coverage, allocation/physical peak, paired differential reruns, release/profile gates, prior duration-panic test adaptation, whole workspace, `make lint`, M6 and TiFlash remain unfinished. MICROSECOND and JSON_PRETTY retain their separate parser/public-helper/PB/legacy and float-format/compact-helper locks. No next-batch, whole-type/package, full datatype/parser-suite, performance or OOM-safety completion is claimed.

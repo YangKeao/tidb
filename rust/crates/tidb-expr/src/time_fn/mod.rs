@@ -60,9 +60,9 @@ pub(crate) fn dispatch(
         "TIME" => time(vals, cols),
         "MONTH" => month_in(vals, cols),
         "DAY" | "DAYOFMONTH" => day_of_month_in(vals, cols),
-        "DAYOFWEEK" => day_of_week(vals),
-        "DAYOFYEAR" => day_of_year(vals),
-        "WEEKDAY" => weekday(vals),
+        "DAYOFWEEK" => day_of_week_in(vals, cols),
+        "DAYOFYEAR" => day_of_year_in(vals, cols),
+        "WEEKDAY" => weekday_in(vals, cols),
         "QUARTER" => quarter_in(vals, cols),
         "WEEK" => week(vals, cols.default_week_format()),
         "WEEKOFYEAR" => week_of_year_builtin(vals),
@@ -72,7 +72,7 @@ pub(crate) fn dispatch(
         "GET_FORMAT" => get_format_value_in(vals, cols),
         "YEARWEEK" => yearweek(vals),
         "MONTHNAME" => monthname_in(vals, cols),
-        "DAYNAME" => dayname(vals),
+        "DAYNAME" => dayname_in(vals, cols),
         "LAST_DAY" => last_day(vals),
         "TIME_TO_SEC" => time_to_sec_in(vals, cols),
         "SEC_TO_TIME" => sec_to_time(vals, cols),
@@ -432,13 +432,6 @@ fn format_time_only(secs: i64, nanos: u32, fsp: u32, round: bool) -> String {
     format!("{}{}", format_hms(secs), frac_suffix(nanos, fsp))
 }
 
-fn single_date(vals: &[Datum]) -> Result<Option<(i64, u32, u32)>, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    Ok(coerce_str(&vals[0])?.and_then(|s| parse_date_ymd(&s)))
-}
-
 /// Parses a date/datetime argument at the same value boundary as Go's
 /// `EvalTime`.  [`parse_date_ymd`] intentionally ignores a trailing time
 /// suffix because date-part functions only need the calendar fields; the
@@ -522,34 +515,52 @@ fn day_of_month(vals: &[Datum]) -> Result<Datum, EvalError> {
     day_of_month_in(vals, &crate::NoColumns)
 }
 
-/// `builtinDayOfWeekSig.evalInt`: Sunday is 1 through Saturday 7. Invalid
-/// zero dates are NULL in Go even when EvalTime is configured to parse them.
-fn day_of_week(vals: &[Datum]) -> Result<Datum, EvalError> {
-    Ok(
-        single_date(vals)?.map_or(Datum::Null, |(year, month, day)| {
-            Datum::Int((days_from_civil(year, month, day) + 4).rem_euclid(7) + 1)
-        }),
+/// `builtinDayOfWeekSig.evalInt`: Sunday is 1 through Saturday 7.
+/// Original date parsing and projection run in the worker, including NULL.
+pub(crate) fn day_of_week_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::DayOfWeekTextNative,
+        ctx,
+        || single_temporal_text(vals),
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
     )
+}
+
+#[cfg(test)]
+fn day_of_week(vals: &[Datum]) -> Result<Datum, EvalError> {
+    day_of_week_in(vals, &crate::NoColumns)
 }
 
 /// `builtinDayOfYearSig.evalInt`: one-based day within the calendar year.
-/// Invalid zero dates are NULL before this calculation in the Go evaluator.
-fn day_of_year(vals: &[Datum]) -> Result<Datum, EvalError> {
-    Ok(
-        single_date(vals)?.map_or(Datum::Null, |(year, month, day)| {
-            Datum::Int(days_from_civil(year, month, day) - days_from_civil(year, 1, 1) + 1)
-        }),
+/// Keep the existing cast and text preparation, not a host-computed day count.
+pub(crate) fn day_of_year_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::DayOfYearTextNative,
+        ctx,
+        || single_temporal_text(vals),
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
     )
 }
 
-/// `builtinWeekDaySig.evalInt`: Monday is 0 through Sunday 6. Like
-/// DAYOFWEEK, zero and invalid-zero dates are NULL in the source.
-fn weekday(vals: &[Datum]) -> Result<Datum, EvalError> {
-    Ok(
-        single_date(vals)?.map_or(Datum::Null, |(year, month, day)| {
-            Datum::Int((days_from_civil(year, month, day) + 3).rem_euclid(7))
-        }),
+#[cfg(test)]
+fn day_of_year(vals: &[Datum]) -> Result<Datum, EvalError> {
+    day_of_year_in(vals, &crate::NoColumns)
+}
+
+/// `builtinWeekDaySig.evalInt`: Monday is 0 through Sunday 6.
+/// The worker retains native date validity, including valid year-zero dates.
+pub(crate) fn weekday_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::WeekdayTextNative,
+        ctx,
+        || single_temporal_text(vals),
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
     )
+}
+
+#[cfg(test)]
+fn weekday(vals: &[Datum]) -> Result<Datum, EvalError> {
+    weekday_in(vals, &crate::NoColumns)
 }
 
 /// `builtinQuarterSig.evalInt` = `(date.Month() + 2) / 3`, returning 1-4 for
@@ -747,20 +758,24 @@ fn monthname(vals: &[Datum]) -> Result<Datum, EvalError> {
     monthname_in(vals, &crate::NoColumns)
 }
 
-/// `builtinDayNameSig` in `pkg/expression/builtin_time.go`.
+/// `builtinDayNameSig` parses the actual text and selects the shared full
+/// weekday name in the worker; no native date result or table lookup is kept.
+pub(crate) fn dayname_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::DayNameTextNative,
+        ctx,
+        || single_temporal_text(vals),
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
+}
+
+#[cfg(test)]
 fn dayname(vals: &[Datum]) -> Result<Datum, EvalError> {
-    const DAYS: [&str; 7] = [
-        "Sunday",
-        "Monday",
-        "Tuesday",
-        "Wednesday",
-        "Thursday",
-        "Friday",
-        "Saturday",
-    ];
-    Ok(single_date(vals)?.map_or(Datum::Null, |(y, m, d)| {
-        Datum::new_string(DAYS[(days_from_civil(y, m, d) + 4).rem_euclid(7) as usize].to_string())
-    }))
+    dayname_in(vals, &crate::NoColumns)
 }
 
 /// `builtinLastDaySig` in `pkg/expression/builtin_time.go`.

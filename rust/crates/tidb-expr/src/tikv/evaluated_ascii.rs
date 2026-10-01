@@ -1611,6 +1611,9 @@ fn materialize_computed(
             | EvaluatedBytesOp::TimeToSecTextNative
             | EvaluatedBytesOp::PeriodAddNative
             | EvaluatedBytesOp::PeriodDiffNative
+            | EvaluatedBytesOp::DayOfWeekTextNative
+            | EvaluatedBytesOp::WeekdayTextNative
+            | EvaluatedBytesOp::DayOfYearTextNative
             | EvaluatedBytesOp::AbsIntNative
             | EvaluatedBytesOp::AbsUIntNative
             | EvaluatedBytesOp::CeilIntNative
@@ -1691,7 +1694,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::JsonQuoteNative
             | EvaluatedBytesOp::MonthNameTextNative
             | EvaluatedBytesOp::GetFormatNative
-            | EvaluatedBytesOp::GetFormatNullNative,
+            | EvaluatedBytesOp::GetFormatNullNative
+            | EvaluatedBytesOp::DayNameTextNative,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {

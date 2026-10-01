@@ -1,0 +1,69 @@
+Checkpoint: weekday-four-36; previous: period-format-three-35.
+STATUS: 111->115/245 functional; final acceptance 0/245. Credit only DAYOFWEEK/WEEKDAY/DAYOFYEAR/DAYNAME; no extra DATE_FORMAT/date-construction/table-cleanup credit.
+COUNTS: 10 actual test runs = 9 green + 1 current baseline non-green full run; 10 Cargo attempts. No formatting/static/launch/compile failure, retry or new product RED this round. Round36's formatter failure is historical, not current. Full expr is still non-green; no old expected changed.
+PROVENANCE: parent owns commands/exits/source/coverage proofs; writer globbed, grepped/read and sha256sum-hashed all ten logs (exit0), without build/test/fmt or additional source audit under this docs authorization. RAW: /home/agent/tidb/expression-unification/logs.
+JAN CWD: /home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv pin nightly-2026-01-30-x86_64-unknown-linux-gnu.
+AUG CWD: /home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb pin nightly-2026-08-22-x86_64-unknown-linux-gnu.
+Exact test template: set -o pipefail; <COMMAND> 2>&1 | tee <OUTPUT> >/dev/null; OUTPUT is ../logs/<LOG> for JAN, ../../logs/<LOG> for AUG. All ten logs keep full output; only terminal output is suppressed. All use --test-threads=1, no --exact. Finished times are not benchmarks.
+CPP local/kernels ran with &&; native dispatch/calendar/dayname/format likewise. Native datatype filter is core_time::. SQL is evaluated_ascii_; full expr has no test-name filter.
+
+LOG [JAN]: weekday-tikv-time.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib codec::mysql::time:: -- --test-threads=1
+EXIT: 0; compile2.04s; test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 361 filtered out; finished in 0.01s
+SHA256: 6d88a0f701b9a971a2cced75c490fffd46a861439ff4bfa900aa092ee371d8f5
+LOG [AUG]: weekday-native-core-time.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-datatype --lib core_time:: -- --test-threads=1
+EXIT: 0; compile2.66s; test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 423 filtered out; finished in 0.00s
+SHA256: 97ef877b96f63758893d9fb2a295c1f1bed04c93719845fcdc3f516b0a59b791
+LOG [JAN]: weekday-tikv-local.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+EXIT: 0; compile8.86s; 259 discovered, ignore preexisting; test result: ok. 258 passed; 0 failed; 1 ignored; 0 measured; 491 filtered out; finished in 0.19s
+SHA256: 8742992afda223e9fe2cf6e2b2ce336f264a48eb9fe1f6ebf6e7779f0bd56027
+LOG [JAN]: weekday-tikv-kernels.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_time:: -- --test-threads=1
+EXIT: 0; compile0.13s; test result: ok. 58 passed; 0 failed; 0 ignored; 0 measured; 692 filtered out; finished in 0.01s
+SHA256: f1c435f8408fb9e4fc4f0ef71654328dc96ba29af50c6d655fc7225fc4a94595
+LOG [AUG]: weekday-sql.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+EXIT: 0; compile18.23s; test result: ok. 75 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 1.16s
+SHA256: a17d44bf1e61baab29066d6b4c1c5bdfab5861659aca5009c3cc3c359fb6885e
+LOG [AUG]: weekday-dispatch.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib weekday_fields_dispatch_ -- --test-threads=1
+EXIT: 0; compile12.12s; test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1554 filtered out; finished in 0.00s
+SHA256: 9dd951623847b45c8da6a36a0785f80d9c7e5d4385ecc984c2e57cb6ec337238
+LOG [AUG]: weekday-native-calendar.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib time_fn::tests::calendar_part_source_vectors -- --test-threads=1
+EXIT: 0; compile0.13s; test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1555 filtered out; finished in 0.00s
+SHA256: efc1064bb26f0d6b2612a6b38299156f3dd737f60cdca3059e7545253544ce26
+LOG [AUG]: weekday-native-dayname.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib time_fn::tests::dayname_source_vectors -- --test-threads=1
+EXIT: 0; compile0.12s; test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1555 filtered out; finished in 0.00s
+SHA256: 957c3b6051f4052cbdda535a6e4b3549a830b5d4d6fa6587ae87239eb75a9ff6
+LOG [AUG]: weekday-native-format.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib time_fn::tests::date_format_ -- --test-threads=1
+EXIT: 0; compile0.14s; test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1554 filtered out; finished in 0.00s
+SHA256: 9866ce32a7c7575ad3f827a318bf9bc0d481d4259df88a3c0f5905fbb138aad1
+LOG [AUG / current baseline non-green full]: weekday-expr-full.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+EXIT: 101; compile0.12s; 1556 discovered; test result: FAILED. 1458 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.39s
+SHA256: c65c7fcf0dc566d91eec4e458ad432de6b0cdadc05044f6a2f6ae8e5cd929abe
+
+CONTRACT / SHARING / PRESERVATION
+DayOfWeekTextNative/day_of_week_text_native_fn_meta, WeekdayTextNative/weekday_text_native_fn_meta, DayOfYearTextNative/day_of_year_text_native_fn_meta: nullable Bytes->signed Int; DayNameTextNative/day_name_text_native_fn_meta: nullable Bytes->ordinary owned Bytes. Strict existing UTF8 decoder then full parse_native_date_ymd, Some-only computation; actual NULL/parseNone still runs in worker. Bad transport UTF8 remains Other, not a SQL-date cause. Original ETDatetime/arity/UTF8/coercion stays frontend-first; admission precedes worker parse/field outcome. No new role/result kind/meta layout/cause/module/driver/context getter/PB admission or host prediction.
+Time::native_days_from_civil keeps fixed1970-01-01 epoch; native_weekday_sunday_index is (civil+4).rem_euclid(7), native_day_of_year is civil(date)-civil(Jan1)+1, full weekday lookup returns static text. DOW=index+1; WEEKDAY=(index+6)%7 equals original(civil+3).rem_euclid(7) ONLY in valid parsed full-u32-year domain, not arbitrary i64. DAYNAME uses shared lookup.to_string().into_bytes(). No chrono/get_daynr/CoreTime narrowing or borrowing wire invalid-zero warning policy.
+Legal year0 is retained, not NULL: 0000-01-01=7/5/1/Saturday; 2017-12-01=6/4/335/Friday; u32MAX-12-31=7/5/365/Saturday. Fixed original fixture/formula oracles also cover leap/nonleap, invalid month/day, over-u32 year, NULL and badUTF8; no expected output is generated by the new provider. These are representative tests, not exhaustive all-year/input proof.
+Full weekday names share the getter at four consumer sites, while abbreviations and separate zero/normalization/wire contracts are unchanged. Round37 found calendar DATE_FORMAT's residual MONTHS omitted by Round35's four-site full-month-table cleanup and now removes it. Do NOT retroactively claim Round35 established repository-wide uniqueness. DATE_FORMAT/shared table/date construction earns no extra credit.
+Parent compared complete old native civil brace body with new Time helper after whitespace removal only: equal, NOT source byte identity. Nine original bodies byte-identical: native CoreTime weekday/Sunday-index/abbreviation; Time weekday/ordinal/get_daynr; CPP extension name_abbr/calc_day_number; native inverse-civil. Six whole native func/lib/arg_eval_type/pb_builtin/cophandler/time_fn/tests match HEAD. A stripped only four kernels/two new units and got old impl_time/decoder/wire/tests byte-identical. No whole-calendar/whole-codec/tree claim.
+Parent compared old calendar MONTHS/WEEKDAYS literal sequences against public MONTH_NAMES/private WEEKDAY_NAMES: equal. Only the stale only-DATEDIFF/arbitrary-epoch comment was corrected to describe the actual fixed1970 epoch; moving the civil algorithm did not change it.
+D2 covers native source calendar/typed reparse, admission after original preparation and cast context, not PB/legacy. E: six rows*four projections plus a cast witness that actually observes Time.year0. ALL12 zero-slot calls Resource1105; four bad-text calls ALSO retain original1292 warnings, other eight warnings empty. Not all warnings empty; not zero-year->NULL. No unistore rerun because PB/cop unchanged; hms-unistore-full.log (189 passed/1 failed/13 ignored) is historical only, not current.
+Parent final14 sources (TiKV8/native6), pinned formatting/both locks/both diffs passed on first check this round. No formatter/static-script/Cargo launch/compile failure or retry; do not reuse Round36's format-correction story. Current test-profile receipts still do not establish release/profile/panic-test adaptation; those gates remain pending.
+
+CURRENT FULL-EXPR FAILURE COMPARISON (fresh parent check against period-format-expr-full.log)
+section = text.split('\nfailures:\n',1)[1].split('\ntest result:',1)[0]; normalize only re.sub(r"(?m)^(thread '[^\n]*' \()\d+(\) panicked at)", r'\1THREAD\2', section).
+Complete normalized sections byte-identical, both SHA25680be9bda05e5bf630e9c246ca9523d23f82c122eaaeec6e220b1b00cec436615. Duration remains212:55; no location mapping or older093/211->212 adjustment. Failure-section hash, not whole-log hash; current full suite remains non-green.
+- pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation
+- tests::builtin_info_json_math_source::exp (old EXP(100_000.0) FloatOverflow assertion still fails)
+- tests::builtin_math_misc_op_source::vectorized_builtin_op_func
+- time_fn::tests::str_to_date_partial_formats_follow_no_zero_date
+
+FREEZE: only weekday-checkpoint.md and this summary written under this authorization; no source/other-doc/Plan/JSON/index/build/test/fmt/old-expected edits by writer. No complete temporal codec/Go-package, M6/production-root integration, release/profile/panic-test adaptation, deep/wide guard, internal peak/OOM/zero-copy/performance, make lint or full-workspace completion claim. 115/245 functional, final0/245; not PR-ready.

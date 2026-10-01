@@ -6614,3 +6614,181 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_period_get_format_sql_columns()
         assert!(warnings_of(&session).is_empty(), "{sql}");
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_weekday_dayname_sql_values_metadata_and_year_zero() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE shared_weekday_dayname (id INT PRIMARY KEY, d VARCHAR(32))")
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_weekday_dayname VALUES (1,NULL),(2,'2017-12-01'),\
+             (3,'0000-01-01'),(4,'2000-02-29'),(5,'2017-00-01'),(6,'2017-01-00')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // Preserve the existing ETDatetime cast. Its legal year zero is not a
+    // zero date; zero month/day survive the read cast but fail full validation.
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT DAYOFWEEK(d),WEEKDAY(d),DAYOFYEAR(d),DAYNAME(d) \
+             FROM shared_weekday_dayname ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected weekday and day-name rows")
+    };
+    assert_eq!(columns.len(), 4);
+    for (index, (_, field)) in columns.iter().enumerate() {
+        let expected = if index == 3 {
+            (
+                tidb_datatype::FieldTypeCode::VarString,
+                -1,
+                -1,
+                "utf8mb4",
+                tidb_datatype::Collation::Utf8Mb4Bin,
+            )
+        } else {
+            (
+                tidb_datatype::FieldTypeCode::LongLong,
+                20,
+                0,
+                "binary",
+                tidb_datatype::Collation::Binary,
+            )
+        };
+        assert_eq!(
+            (
+                field.code(),
+                field.flen(),
+                field.decimal(),
+                field.charset_name(),
+                field.collation()
+            ),
+            expected
+        );
+        assert!(!field.is_unsigned());
+        assert!(!field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
+    }
+    let text = |s: &str| {
+        Datum::new_collation_string(s.as_bytes().to_vec(), tidb_datatype::Collation::Utf8Mb4Bin)
+    };
+    assert_eq!(
+        rows,
+        vec![
+            vec![Datum::Null; 4],
+            vec![
+                Datum::Int(6),
+                Datum::Int(4),
+                Datum::Int(335),
+                text("Friday")
+            ],
+            vec![
+                Datum::Int(7),
+                Datum::Int(5),
+                Datum::Int(1),
+                text("Saturday")
+            ],
+            vec![
+                Datum::Int(3),
+                Datum::Int(1),
+                Datum::Int(60),
+                text("Tuesday")
+            ],
+            vec![Datum::Null; 4],
+            vec![Datum::Null; 4],
+        ]
+    );
+    assert!(warnings_of(&session).is_empty());
+    // Years 0 and 2000 share this weekday. Check the actual cast datum too,
+    // rather than accidentally accepting a century-pivoted year as evidence.
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns("SELECT CAST(d AS DATETIME) FROM shared_weekday_dayname WHERE id=3")
+        .unwrap()
+    else {
+        panic!("expected legal year-zero datetime")
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].len(), 1);
+    assert!(matches!(&rows[0][0], Datum::Time(time) if time.core_time().year() == 0));
+    assert_eq!(cell_text(&rows[0][0]), "0000-01-01 00:00:00");
+    assert!(warnings_of(&session).is_empty());
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_weekday_dayname_sql_columns() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE shared_weekday_dayname_zero (id INT PRIMARY KEY, d VARCHAR(32))")
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_weekday_dayname_zero VALUES \
+             (1,NULL),(2,'2017-12-01'),(3,'not-a-date')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // Each invalid text cast keeps its original 1292 before resource refusal;
+    // its resulting NULL must still enter the same worker as an ordinary date.
+    for (expression, id, warned) in [
+        ("DAYOFWEEK(d)", 1, false),
+        ("WEEKDAY(d)", 1, false),
+        ("DAYOFYEAR(d)", 1, false),
+        ("DAYNAME(d)", 1, false),
+        ("DAYOFWEEK(d)", 2, false),
+        ("WEEKDAY(d)", 2, false),
+        ("DAYOFYEAR(d)", 2, false),
+        ("DAYNAME(d)", 2, false),
+        ("DAYOFWEEK(d)", 3, true),
+        ("WEEKDAY(d)", 3, true),
+        ("DAYOFYEAR(d)", 3, true),
+        ("DAYNAME(d)", 3, true),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_weekday_dayname_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("weekday/dayname must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        if warned {
+            assert_eq!(
+                session.warnings(),
+                &[SqlWarning {
+                    level: WarningLevel::Warning,
+                    code: 1292,
+                    message: "Incorrect datetime value: 'not-a-date'".to_owned(),
+                }],
+                "{sql}"
+            );
+        } else {
+            assert!(warnings_of(&session).is_empty(), "{sql}");
+        }
+    }
+}
