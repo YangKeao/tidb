@@ -69,7 +69,7 @@ pub(crate) fn dispatch(
         "TIDB_PARSE_TSO_LOGICAL" => tidb_parse_tso_logical(vals),
         "TIDB_BOUNDED_STALENESS" => tidb_bounded_staleness(vals, cols),
         "TIDB_CURRENT_TSO" => current_tso(vals, cols),
-        "GET_FORMAT" => get_format_value(vals),
+        "GET_FORMAT" => get_format_value_in(vals, cols),
         "YEARWEEK" => yearweek(vals),
         "MONTHNAME" => monthname_in(vals, cols),
         "DAYNAME" => dayname(vals),
@@ -78,8 +78,8 @@ pub(crate) fn dispatch(
         "SEC_TO_TIME" => sec_to_time(vals, cols),
         "MAKEDATE" => makedate(vals),
         "MAKETIME" => maketime(vals, cols),
-        "PERIOD_ADD" => period_add(vals),
-        "PERIOD_DIFF" => period_diff(vals),
+        "PERIOD_ADD" => period_add_in(vals, cols),
+        "PERIOD_DIFF" => period_diff_in(vals, cols),
         "TIME_FORMAT" => time_format(vals),
         "STR_TO_DATE" => calendar::str_to_date(vals, cols),
         "FROM_DAYS" => calendar::from_days(vals),
@@ -613,70 +613,68 @@ fn tidb_parse_tso_logical(vals: &[Datum]) -> Result<Datum, EvalError> {
     Ok(Datum::Int(tso & TSO_LOGICAL_BITS))
 }
 
-/// The `GET_FORMAT` lookup table. `format_type` is one of `DATE`/`DATETIME`/
-/// `TIME` (the AST selector; `TIMESTAMP` collapses into `DATETIME` upstream, so
-/// it shares the datetime row). Location matching is case-insensitive; an
-/// unknown combination returns an empty string. Port of
-/// `builtinGetFormatSig.getFormat`.
+/// Direct table-vector compatibility, not a production evaluator fallback.
+#[cfg(test)]
 pub(crate) fn get_format(format_type: &str, location: &str) -> String {
-    get_format_bytes(format_type.as_bytes(), location.as_bytes()).to_owned()
+    TikvTime::get_format_native(format_type.as_bytes(), location.as_bytes()).to_owned()
 }
 
-fn get_format_value(vals: &[Datum]) -> Result<Datum, EvalError> {
-    let [format_type, location] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    let Some(format_type) = crate::arg_eval_type::eval_string(format_type)? else {
-        return Ok(Datum::Null);
-    };
-    let Some(location) = crate::arg_eval_type::eval_string(location)? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::new_string(get_format_bytes(&format_type, &location)))
-}
-
-fn get_format_bytes(format_type: &[u8], location: &[u8]) -> &'static str {
-    let location_is = |expected: &[u8]| location.eq_ignore_ascii_case(expected);
-    let datetime = format_type == b"DATETIME" || format_type == b"TIMESTAMP";
-    if format_type == b"DATE" {
-        if location_is(b"USA") {
-            "%m.%d.%Y"
-        } else if location_is(b"JIS") || location_is(b"ISO") {
-            "%Y-%m-%d"
-        } else if location_is(b"EUR") {
-            "%d.%m.%Y"
-        } else if location_is(b"INTERNAL") {
-            "%Y%m%d"
-        } else {
-            ""
-        }
-    } else if datetime {
-        if location_is(b"USA") {
-            "%Y-%m-%d %H.%i.%s"
-        } else if location_is(b"JIS") || location_is(b"ISO") {
-            "%Y-%m-%d %H:%i:%s"
-        } else if location_is(b"EUR") {
-            "%Y-%m-%d %H.%i.%s"
-        } else if location_is(b"INTERNAL") {
-            "%Y%m%d%H%i%s"
-        } else {
-            ""
-        }
-    } else if format_type == b"TIME" {
-        if location_is(b"USA") {
-            "%h:%i:%s %p"
-        } else if location_is(b"JIS") || location_is(b"ISO") {
-            "%H:%i:%s"
-        } else if location_is(b"EUR") {
-            "%H.%i.%s"
-        } else if location_is(b"INTERNAL") {
-            "%H%i%s"
-        } else {
-            ""
-        }
+/// Preserve the values signature's byte domain and first-NULL demand boundary.
+pub(crate) fn get_format_value_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    // Only Datum::Null makes eval_string return None. This structural choice
+    // does not coerce either argument or compute a lookup-table answer.
+    let operation = if matches!(vals.first(), Some(Datum::Null)) {
+        crate::tikv::EvaluatedBytesOp::GetFormatNullNative
     } else {
-        ""
-    }
+        crate::tikv::EvaluatedBytesOp::GetFormatNative
+    };
+    crate::tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || {
+            let [format_type, location] = vals else {
+                return Err(EvalError::Unsupported("bad function arity"));
+            };
+            let format_type = crate::arg_eval_type::eval_string(format_type)?;
+            if format_type.is_none() {
+                // This is the actually observed NULL, not a fabricated NULL
+                // for the unobserved location. The witness rejects Some.
+                return Ok(crate::tikv::EvaluatedArgs::Bytes(format_type));
+            }
+            let location = crate::arg_eval_type::eval_string(location)?;
+            Ok(crate::tikv::EvaluatedArgs::Bytes2(format_type, location))
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
+}
+
+/// The independent AST path retains strict text coercion of its observed child.
+/// The grammar selector is real input; only the worker selects the format.
+pub(crate) fn get_format_ast_in(
+    format_type: &str,
+    location: &Datum,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::GetFormatNative,
+        ctx,
+        || {
+            let location = coerce_str(location)?.map(String::into_bytes);
+            Ok(crate::tikv::EvaluatedArgs::Bytes2(
+                Some(format_type.as_bytes().to_vec()),
+                location,
+            ))
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 
 pub(crate) fn week(vals: &[Datum], default_week_format: i64) -> Result<Datum, EvalError> {
@@ -1216,87 +1214,46 @@ fn maketime(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
     )))
 }
 
-/// `PERIOD_ADD(period, months)`, ported from `builtinPeriodAddSig.evalInt`
-/// in `pkg/expression/builtin_time.go`.
-///
-/// A period is an integer `YYMM` or `YYYYMM`, not a date.  TiDB evaluates
-/// both ETInt arguments before it validates the period: consequently an
-/// invalid period paired with `NULL` months is `NULL`, not an error.  Keep
-/// that ordering rather than validating the first argument eagerly.  The Go
-/// helpers operate on `uint64`, so their arithmetic (including conversion
-/// back through `int64`) deliberately wraps; the wrapping methods below are
-/// the structural Rust translation, not overflow recovery.
+/// Both original conversions run left-to-right even when the first is NULL.
+/// Validation and wrapping arithmetic belong to the worker, so admission now
+/// precedes invalid-period 1210 diagnostics; original coercion errors stay first.
+fn period_in(
+    vals: &[Datum],
+    operation: crate::tikv::EvaluatedBytesOp,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || {
+            if vals.len() != 2 {
+                return Err(EvalError::Unsupported("bad function arity"));
+            }
+            Ok(crate::tikv::EvaluatedArgs::Int2(
+                int_arg(&vals[0])?,
+                int_arg(&vals[1])?,
+            ))
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
+}
+
+pub(crate) fn period_add_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    period_in(vals, crate::tikv::EvaluatedBytesOp::PeriodAddNative, ctx)
+}
+
+pub(crate) fn period_diff_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    period_in(vals, crate::tikv::EvaluatedBytesOp::PeriodDiffNative, ctx)
+}
+
+#[cfg(test)]
 fn period_add(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 2 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let (Some(period), Some(months)) = (int_arg(&vals[0])?, int_arg(&vals[1])?) else {
-        return Ok(Datum::Null);
-    };
-    if !valid_period(period) {
-        // TiDB returns ER_WRONG_ARGUMENTS (1210). EvalError carries the
-        // source-facing message but not the server code prefix.
-        return Err(EvalError::IncorrectArguments(
-            "Incorrect arguments to period_add".to_owned(),
-        ));
-    }
-    let sum = (period_to_month(period as u64) as i64).wrapping_add(months);
-    Ok(Datum::Int(month_to_period(sum as u64) as i64))
+    period_add_in(vals, &crate::NoColumns)
 }
 
-/// `PERIOD_DIFF(period1, period2)`, ported from
-/// `builtinPeriodDiffSig.evalInt` in `pkg/expression/builtin_time.go`.
+#[cfg(test)]
 fn period_diff(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 2 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let (Some(period1), Some(period2)) = (int_arg(&vals[0])?, int_arg(&vals[1])?) else {
-        return Ok(Datum::Null);
-    };
-    if !valid_period(period1) || !valid_period(period2) {
-        return Err(EvalError::IncorrectArguments(
-            "Incorrect arguments to period_diff".to_owned(),
-        ));
-    }
-    // Go subtracts the uint64 month totals before converting to int64.
-    Ok(Datum::Int(
-        period_to_month(period1 as u64).wrapping_sub(period_to_month(period2 as u64)) as i64,
-    ))
-}
-
-fn valid_period(period: i64) -> bool {
-    period >= 0 && period % 100 != 0 && period % 100 <= 12
-}
-
-/// Exact `period2Month` from `pkg/expression/builtin_time.go`.
-fn period_to_month(period: u64) -> u64 {
-    if period == 0 {
-        return 0;
-    }
-    let mut year = period / 100;
-    let month = period % 100;
-    if year < 70 {
-        year += 2_000;
-    } else if year < 100 {
-        year += 1_900;
-    }
-    year.wrapping_mul(12).wrapping_add(month).wrapping_sub(1)
-}
-
-/// Exact `month2Period` from `pkg/expression/builtin_time.go`.
-fn month_to_period(month: u64) -> u64 {
-    if month == 0 {
-        return 0;
-    }
-    let mut year = month / 12;
-    if year < 70 {
-        year += 2_000;
-    } else if year < 100 {
-        year += 1_900;
-    }
-    year.wrapping_mul(100)
-        .wrapping_add(month % 12)
-        .wrapping_add(1)
+    period_diff_in(vals, &crate::NoColumns)
 }
 
 /// `builtinTimeFormatSig` in `pkg/expression/builtin_time.go`; shares the

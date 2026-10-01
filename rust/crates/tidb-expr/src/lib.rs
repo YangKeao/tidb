@@ -1435,20 +1435,15 @@ pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
         // parser already collapsed `TIMESTAMP` into `Datetime`), so only the
         // location is evaluated; a NULL location yields NULL. Port of
         // `builtinGetFormatSig.evalString` + `getFormat`.
-        Expr::GetFormat { selector, expr } => match coerce_str(&eval_in(expr, cols)?)? {
-            None => Ok(Datum::Null),
-            Some(location) => {
-                let format_type = match selector {
-                    GetFormatSelector::Date => "DATE",
-                    GetFormatSelector::Time => "TIME",
-                    GetFormatSelector::Datetime => "DATETIME",
-                };
-                Ok(Datum::new_string(time_fn::get_format(
-                    format_type,
-                    &location,
-                )))
-            }
-        },
+        Expr::GetFormat { selector, expr } => {
+            let location = eval_in(expr, cols)?;
+            let format_type = match selector {
+                GetFormatSelector::Date => "DATE",
+                GetFormatSelector::Time => "TIME",
+                GetFormatSelector::Datetime => "DATETIME",
+            };
+            time_fn::get_format_ast_in(format_type, &location, cols)
+        }
         // `CAST`/`CONVERT(expr, type)` share one evaluator (see
         // `tidb_ast::Expr::Cast`'s own doc for why they share one AST node);
         // `NULL` maps to `NULL` for every target type, so it's handled once

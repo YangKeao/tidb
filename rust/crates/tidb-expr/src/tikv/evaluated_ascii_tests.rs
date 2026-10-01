@@ -1149,6 +1149,12 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::MonthNameTextNative | EvaluatedBytesOp::TimeToSecTextNative => {
             panic!("month names and seconds need their original text")
         }
+        EvaluatedBytesOp::PeriodAddNative
+        | EvaluatedBytesOp::PeriodDiffNative
+        | EvaluatedBytesOp::GetFormatNative
+        | EvaluatedBytesOp::GetFormatNullNative => {
+            panic!("period and format calls need their original arguments and NULL demand")
+        }
         EvaluatedBytesOp::CompressGoNative | EvaluatedBytesOp::UncompressNative => {
             panic!("compression calls need their original nullable bytes")
         }
@@ -1286,6 +1292,330 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+fn period_format_function(
+    name: &str,
+    values: Vec<Datum>,
+) -> crate::scalar_function::ScalarFunction {
+    let field = FieldType::new(if name == "GET_FORMAT" {
+        FieldTypeCode::VarString
+    } else {
+        FieldTypeCode::LongLong
+    });
+    let args = values
+        .into_iter()
+        .map(|value| crate::expression::Expression::Constant(Constant::new(value, field.clone())))
+        .collect();
+    crate::scalar_function::ScalarFunction::new(tidb_ast::CiString::new(name), field, args)
+}
+
+#[test]
+fn period_format_dispatch_keeps_period_source_vectors_wrapping_and_nulls() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        // Fixed period_arithmetic_* fixtures, including the recorded Go uint64
+        // wrapping boundary. No migrated helper computes these expectations.
+        for (name, left, right, expected) in [
+            ("PERIOD_ADD", 201611, 2, 201701),
+            ("PERIOD_ADD", 1611, 3, 201702),
+            ("PERIOD_ADD", 7011, 3, 197102),
+            ("PERIOD_DIFF", 200802, 200703, 11),
+            ("PERIOD_DIFF", 201510, 201611, -13),
+            ("PERIOD_ADD", i64::MAX, 1, i64::MIN),
+            ("PERIOD_DIFF", i64::MAX, 197001, 1_106_804_644_422_549_462),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::time_fn::dispatch(name, &[Datum::Int(left), Datum::Int(right)], columns)
+                    .unwrap()
+            });
+            assert_eq!(result, Ok(Datum::Int(expected)), "{name}");
+            assert_wide_math_c4(observation);
+        }
+        for (name, values) in [
+            ("PERIOD_ADD", vec![Datum::Int(0), Datum::Null]),
+            ("PERIOD_DIFF", vec![Datum::Null, Datum::Int(201611)]),
+        ] {
+            let (result, observation) =
+                observe_wide_math(|| crate::time_fn::dispatch(name, &values, columns).unwrap());
+            assert_eq!(result, Ok(Datum::Null));
+            assert_wide_math_c4(observation);
+        }
+        let (result, observation) =
+            observe_wide_math(|| calendar_fields_ast("PERIOD_ADD(201611, 2)", columns));
+        assert_eq!(result, Ok(Datum::Int(201701)));
+        assert_wide_math_c4(observation);
+        let function =
+            period_format_function("PERIOD_DIFF", vec![Datum::Int(200802), Datum::Int(200703)]);
+        let (result, observation) =
+            observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        assert_eq!(result, Ok(Datum::Int(11)));
+        assert_wide_math_c4(observation);
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn period_format_dispatch_keeps_period_sql_failures_behind_admission_and_coercion_first() {
+    let invalid = [
+        ("PERIOD_ADD", 0, 3, "Incorrect arguments to period_add"),
+        ("PERIOD_ADD", -1, 3, "Incorrect arguments to period_add"),
+        (
+            "PERIOD_DIFF",
+            201600,
+            201611,
+            "Incorrect arguments to period_diff",
+        ),
+        (
+            "PERIOD_DIFF",
+            201611,
+            201613,
+            "Incorrect arguments to period_diff",
+        ),
+    ];
+    let nullable = [
+        ("PERIOD_ADD", vec![Datum::Int(-1), Datum::Null]),
+        ("PERIOD_DIFF", vec![Datum::Null, Datum::Int(201613)]),
+    ];
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for &(name, left, right, message) in &invalid {
+            let (result, observation) = observe_wide_math(|| {
+                crate::time_fn::dispatch(name, &[Datum::Int(left), Datum::Int(right)], columns)
+                    .unwrap()
+            });
+            // Preserve the original 1210 carrier and exact function-specific
+            // message; these are actual worker failures, not fabricated receipts.
+            assert_eq!(
+                result,
+                Err(EvalError::IncorrectArguments(message.to_owned()))
+            );
+            assert_wide_math_c4(observation);
+        }
+        for (name, values) in &nullable {
+            let (result, observation) =
+                observe_wide_math(|| crate::time_fn::dispatch(name, values, columns).unwrap());
+            assert_eq!(
+                result,
+                Ok(Datum::Null),
+                "NULL precedes period validity, but not the worker"
+            );
+            assert_wide_math_c4(observation);
+        }
+    });
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for &(name, left, right, _) in &invalid {
+            let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch(name, &[Datum::Int(left), Datum::Int(right)], columns).unwrap());
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource), "identical invalid periods must not become SQL errors before admission");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        for (name, values) in &nullable {
+            let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch(name, values, columns).unwrap());
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        for name in ["PERIOD_ADD", "PERIOD_DIFF"] {
+            for (values, expected) in [
+                (vec![Datum::Null], EvalError::Unsupported("bad function arity")),
+                (vec![Datum::Null, Datum::MinNotNull], EvalError::Unsupported("range sentinel time argument")),
+                (vec![Datum::new_bytes([0xff]), Datum::MinNotNull], EvalError::Unsupported("invalid UTF-8 byte datum")),
+            ] {
+                let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch(name, &values, columns).unwrap());
+                assert_eq!(result, Err(expected), "both coercions are demanded after left NULL; left error still stops first");
+                assert_eq!(observation.facade_entries, 0);
+                assert_eq!(observation.before_kernel_invocations, None);
+                assert_eq!(observation.after_kernel_invocations, None);
+            }
+        }
+        let (result, observation) = observe_wide_math(|| calendar_fields_ast("PERIOD_ADD(201611, 2)", columns));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+        let function = period_format_function("PERIOD_DIFF", vec![Datum::Int(200802), Datum::Int(200703)]);
+        let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn period_format_dispatch_keeps_get_format_bytes_null_demand_and_strict_ast_child() {
+    struct Location {
+        value: RefCell<Datum>,
+        reads: Cell<usize>,
+    }
+    impl Columns for Location {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            self.reads.set(self.reads.get() + 1);
+            Some(self.value.borrow().clone())
+        }
+    }
+    let native = Location {
+        value: RefCell::new(Datum::new_string("USA")),
+        reads: Cell::new(0),
+    };
+    let typed = period_format_function(
+        "GET_FORMAT",
+        vec![Datum::new_string("DATE"), Datum::new_string("USA")],
+    );
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        // Original get_format_table literals: kind is case-sensitive, while
+        // location is ASCII case-insensitive. Unknown is an empty String.
+        for (kind, location, expected) in [
+            (
+                Datum::new_string("DATE"),
+                Datum::new_string("USA"),
+                Datum::new_string("%m.%d.%Y"),
+            ),
+            (
+                Datum::new_string("TIMESTAMP"),
+                Datum::new_string("eur"),
+                Datum::new_string("%Y-%m-%d %H.%i.%s"),
+            ),
+            (
+                Datum::new_string("TIME"),
+                Datum::new_string("usa"),
+                Datum::new_string("%h:%i:%s %p"),
+            ),
+            (
+                Datum::new_string("DATE"),
+                Datum::new_string("unknown"),
+                Datum::new_string(""),
+            ),
+            (
+                Datum::new_string("YEAR"),
+                Datum::new_string("USA"),
+                Datum::new_string(""),
+            ),
+            (
+                Datum::new_string("date"),
+                Datum::new_string("USA"),
+                Datum::new_string(""),
+            ),
+            (
+                Datum::new_bytes([0xff]),
+                Datum::new_string("USA"),
+                Datum::new_string(""),
+            ),
+            (
+                Datum::new_string("DATE"),
+                Datum::new_bytes([0xff]),
+                Datum::new_string(""),
+            ),
+            (Datum::Null, Datum::MinNotNull, Datum::Null),
+            (Datum::new_string("DATE"), Datum::Null, Datum::Null),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::time_fn::dispatch("GET_FORMAT", &[kind, location], columns).unwrap()
+            });
+            assert_eq!(
+                result,
+                Ok(expected),
+                "scalar eval_string keeps raw bytes and skips location after actual first NULL"
+            );
+            assert_wide_math_c4(observation);
+        }
+        let (result, observation) =
+            observe_wide_math(|| typed.eval(columns, tidb_chunk::row::Row::empty()));
+        assert_eq!(result, Ok(Datum::new_string("%m.%d.%Y")));
+        assert_wide_math_c4(observation);
+        for (location, expected) in [
+            (Datum::new_string("USA"), Datum::new_string("%m.%d.%Y")),
+            (Datum::Null, Datum::Null),
+        ] {
+            native.value.replace(location);
+            native.reads.set(0);
+            let (result, observation) = observe_wide_math(|| {
+                calendar_fields_ast("GET_FORMAT(DATE, format_location)", columns)
+            });
+            assert_eq!(result, Ok(expected));
+            assert_eq!(
+                native.reads.get(),
+                1,
+                "the grammar location child is evaluated exactly once"
+            );
+            assert_wide_math_c4(observation);
+        }
+    });
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for values in [
+            vec![Datum::new_string("DATE"), Datum::new_string("USA")],
+            vec![Datum::Null, Datum::MinNotNull],
+            vec![Datum::new_string("DATE"), Datum::Null],
+        ] {
+            let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch("GET_FORMAT", &values, columns).unwrap());
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        for (values, expected) in [
+            (vec![Datum::Null], EvalError::Unsupported("bad function arity")),
+            (vec![Datum::MinNotNull, Datum::Null], EvalError::Unsupported("un-cast types.ETString argument")),
+        ] {
+            let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch("GET_FORMAT", &values, columns).unwrap());
+            assert_eq!(result, Err(expected), "arity and actual eval_string errors remain in preparation");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        let (result, observation) = observe_wide_math(|| typed.eval(columns, tidb_chunk::row::Row::empty()));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+        for location in [Datum::new_string("USA"), Datum::Null] {
+            native.value.replace(location);
+            native.reads.set(0);
+            let (result, observation) = observe_wide_math(|| calendar_fields_ast("GET_FORMAT(DATE, format_location)", columns));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(native.reads.get(), 1);
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        native.value.replace(Datum::new_bytes([0xff]));
+        native.reads.set(0);
+        let (result, observation) = observe_wide_math(|| calendar_fields_ast("GET_FORMAT(DATE, format_location)", columns));
+        assert_eq!(result, Err(EvalError::Unsupported("invalid UTF-8 byte datum")), "AST keeps its original strict coerce_str boundary");
+        assert_eq!(native.reads.get(), 1);
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 fn month_seconds_function(name: &str, input: Datum) -> crate::scalar_function::ScalarFunction {

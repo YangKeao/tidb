@@ -1,0 +1,64 @@
+Checkpoint: period-format-three-35; previous: month-seconds-two-34.
+STATUS: 108->111/245 functional; final acceptance 0/245. PERIOD_ADD/PERIOD_DIFF/GET_FORMAT are three families; four operations include a no-extra-credit NULL witness.
+COUNTS: 8 actual test runs = 7 green + 1 current baseline non-green full run; 8 Cargo attempts, no Cargo launch failure/retry, Rust compile failure or new product RED. One final formatting check failed and its13-source script was rerun after a whitespace correction: NOT zero formatting failures/all-command first-pass. No old expected changed.
+PROVENANCE: parent owns commands/exits/source/coverage proofs; writer globbed, grepped/read and sha256sum-hashed all eight logs (exit0), without build/test/fmt/source audit. RAW: /home/agent/tidb/expression-unification/logs.
+JAN CWD: /home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv pin nightly-2026-01-30-x86_64-unknown-linux-gnu.
+AUG CWD: /home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb pin nightly-2026-08-22-x86_64-unknown-linux-gnu.
+Exact test template: set -o pipefail; <COMMAND> 2>&1 | tee <OUTPUT> >/dev/null; OUTPUT is ../logs/<LOG> for JAN, ../../logs/<LOG> for AUG. All logs keep full output; only terminal output is suppressed. All use --test-threads=1, no --exact. Finished times are not benchmarks.
+CPP local/kernels ran with &&; native dispatch/period/table likewise. CPP datatype and local/kernel shells also performed successful targeted pinned rustfmt --edition 2021 --config skip_children=true first; these formatter commands are not Cargo attempts and are distinct from the later failed final check. Only Cargo commands are listed below.
+
+LOG [JAN]: period-format-tikv-time.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib codec::mysql::time:: -- --test-threads=1
+EXIT: 0; compile2.19s; test result: ok. 45 passed; 0 failed; 0 ignored; 0 measured; 361 filtered out; finished in 0.01s
+SHA256: c3d1c55a529247610ff571fc2a627884112a8a9ac580442d9a7d4d39dc89f08f
+LOG [JAN]: period-format-tikv-local.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+EXIT: 0; compile9.42s; 258 discovered, ignore preexisting; test result: ok. 257 passed; 0 failed; 1 ignored; 0 measured; 489 filtered out; finished in 0.19s
+SHA256: 23a522023f3009e391c91c8a3428a2f45947ba5d18e45986ecd49dfd2d3c8dda
+LOG [JAN]: period-format-tikv-kernels.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_time:: -- --test-threads=1
+EXIT: 0; compile0.12s; test result: ok. 56 passed; 0 failed; 0 ignored; 0 measured; 691 filtered out; finished in 0.01s
+SHA256: e8572966cd5700c244bfb44b9435ab88909df296877a0198cf24091c37551d53
+LOG [AUG]: period-format-sql.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+EXIT: 0; compile22.20s; test result: ok. 73 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 1.14s
+SHA256: e8f4c2d7bebf7c3bb0796e8cb8d13e26850ef4776cac0310efbc1faf07786483
+LOG [AUG]: period-format-dispatch.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib period_format_dispatch_ -- --test-threads=1
+EXIT: 0; compile12.96s; test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1551 filtered out; finished in 0.00s
+SHA256: 64ffaa577f12d9da2f698e11c7bc9448d7dfa68d64af902eeddfe553db90735d
+LOG [AUG]: period-format-native-period.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib time_fn::tests::period_ -- --test-threads=1
+EXIT: 0; compile0.12s; test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1552 filtered out; finished in 0.00s
+SHA256: bcda4dfbb17bd22bdf5d2a4a6d0692aba2751757657399a1472f19e77f34b65d
+LOG [AUG]: period-format-native-table.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib time_fn::tests::get_format_table -- --test-threads=1
+EXIT: 0; compile0.12s; cfg(test) direct datatype table gate, NOT C4; test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1553 filtered out; finished in 0.00s
+SHA256: 468a21e191c889bb303e78173f8c33d98f3f25fb57cac48d54496e2adbf892c2
+LOG [AUG / current baseline non-green full]: period-format-expr-full.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+EXIT: 101; compile0.12s; 1554 discovered; test result: FAILED. 1456 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.65s
+SHA256: c6d6542ecfb9c5421c89a426d853f49303d6cf27e4e4761d9cf590f48cf12f82
+
+CONTRACT / SOURCE / DEMAND BOUNDARIES
+PeriodAddNative/period_add_native_fn_meta and PeriodDiffNative/period_diff_native_fn_meta use existing nullable Int2->signed Int. Only both-Some inputs reach is_valid_native_period. ADD: (period_to_month_wrapping(period asu64) asi64).wrapping_add(months), then month_to_period_wrapping(sum asu64) asi64; DIFF: u64 forward.wrapping_sub, then asi64. Preserve NULL-right over invalid-left, pivot/zero/wrapping and original frontend arity/int coercion. No chrono/range narrowing, host-computed answer or arithmetic repair.
+Time ordinary wire and native wrapping helpers share private zero/split/pivot policy. Wire impl_time period_add/diff bodies retain old i32 narrowing, zero and arithmetic behavior; parent freshly compared both complete brace bodies byte-for-byte after final fmt. These are not claims of identical wire/native domains.
+Common adds only unit EvaluateError::PeriodAddIncorrectArguments / ::PeriodDiffIncorrectArguments, messages exactly "Incorrect arguments to period_add" / "Incorrect arguments to period_diff", code1210/ErrorCodeExt EVAL. Actual invalid private execution creates the typed cause; exact op+exact variant+witness1 certifies matching EvaluatedSqlFailureKind, then native restores IncorrectArguments. Never infer SQL from code/message alone; Custom/Caused/conversions stay unchanged and Shape/Resource is not mapped. Validation/1210 is after admission, frontend coercion failures remain before it.
+GetFormatNative/get_format_native_fn_meta uses two actual nullable raw Bytes->ordinary owned Bytes, exact DATE/TIME/DATETIME/TIMESTAMP type case and ASCII-ignore-case locale; no UTF8 decoding, both-Some unknown/nonUTF8->Some(empty), either None->NULL. GetFormatNullNative/get_format_null_native_fn_meta takes ONE actually observed nullable Bytes, accepts only None, rejects Some including empty without a SQL receipt. It preserves the observed NULL without inventing a second NULL or coercing the unneeded right argument. Outer expression evaluation/casts remain unchanged; the AST location child is still evaluated once. Scalar eval_string and AST strict coerce_str differences stay frontend-owned.
+No new role/result kind/metadata layout/module/driver/context getter/PB admission. Old cfg(test) get_format table helper is direct datatype compatibility only, not production fallback and not C4 coverage. Actual four-operation paths are covered by CPP local/kernels, D3 and SQL; witness is not a fourth family. D3 has no PB/legacy scope. Unistore not rerun: PB/cop sources unchanged, older receipts historical only.
+A's scoped stripping proof preserved all old impl_time source/tests and common branches/conversions; parent whole-native func/arg_eval_type/pb_builtin/cophandler/time_fn/tests byte comparisons match HEAD. Fresh parent comparison of complete HEAD native get_format_bytes brace body and new Time::get_format_native matches after whitespace removal only, NOT byte identity. No whole Time/Date/Duration or full-source-tree equality claim.
+E appends2 tests: five normal rows*three projections, plus row6's two separately tested invalid-period calls with adequate resources, both code1210/exact messages. All nine zero-slot calls are Resource1105/HY000/eval-origin with empty warnings, including NULL and invalid periods. No host-predicted semantic receipt bypasses admission.
+
+FORMATTING CORRECTION / TEST-PROFILE LIMIT
+After expr-full actually ran, final pinned rustfmt --check exited1 because batch.rs's PeriodDiffNative ClosedPrivate return needed wrapping, interrupting the13-source check script. Parent changed only that return's whitespace, then reran all13 sources (TiKV8/native5), both lock checks and both diff checks successfully. Eight Cargo/test receipts unchanged; no Rust compile/test/launch failure or Cargo retry was hidden in this formatter correction. No static/all-command first-pass claim.
+This round has no new production panic/profile change. Prior duration-overflow catch/unwind tests still pass in current filtered/full test profiles; this does not prove release behavior or reuse of a poisoned old scope. Release/profile gates and panic-test adaptation remain pending, not repaired or declared green here.
+
+CURRENT FULL-EXPR FAILURE COMPARISON (fresh parent check against month-seconds-expr-full.log)
+section = text.split('\nfailures:\n',1)[1].split('\ntest result:',1)[0]; normalize only re.sub(r"(?m)^(thread '[^\n]*' \()\d+(\) panicked at)", r'\1THREAD\2', section).
+Complete normalized sections byte-identical, both SHA25680be9bda05e5bf630e9c246ca9523d23f82c122eaaeec6e220b1b00cec436615. Duration stays212:55; no position mapping or older093/211->212 adjustment. Failure-section hash, not whole-log hash; current full suite remains non-green.
+- pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation
+- tests::builtin_info_json_math_source::exp (old EXP(100_000.0) FloatOverflow assertion still fails)
+- tests::builtin_math_misc_op_source::vectorized_builtin_op_func
+- time_fn::tests::str_to_date_partial_formats_follow_no_zero_date
+
+FREEZE: only period-format-checkpoint.md and this summary written under this authorization; no source/other-doc/Plan/JSON/index/build/test/fmt/old-expected edits by writer. No complete temporal codec/Go-package, M6/production-root integration, release/profile/panic-test adaptation, deep/wide guard, internal peak/OOM/zero-copy/performance, make lint or full-workspace completion claim. 111/245 functional, final0/245; not PR-ready.

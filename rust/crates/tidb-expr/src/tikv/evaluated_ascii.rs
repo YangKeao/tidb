@@ -1201,7 +1201,7 @@ impl<'a> Invocation<'a> {
         tests::after_eval_one_for_test(worker.kernel_invocations());
         result.map_err(|report| {
             // Only C4's sealed receipt for this operation's actual generated
-            // call authorizes the existing native SQL overflow carrier. Neither
+            // call authorizes the existing native SQL error carrier. Neither
             // an input value nor an error code/text substitutes for that proof.
             if operation == EvaluatedBytesOp::AbsIntNative
                 && report.operation() == Some(operation)
@@ -1233,6 +1233,24 @@ impl<'a> Invocation<'a> {
                     value: "BIGINT UNSIGNED",
                     expression: digits.to_owned(),
                 });
+            }
+            if report.operation() == Some(operation) {
+                let message = match (operation, report.sql_failure()) {
+                    (
+                        EvaluatedBytesOp::PeriodAddNative,
+                        Some(EvaluatedSqlFailureKind::PeriodAddIncorrectArguments),
+                    ) => Some("Incorrect arguments to period_add"),
+                    (
+                        EvaluatedBytesOp::PeriodDiffNative,
+                        Some(EvaluatedSqlFailureKind::PeriodDiffIncorrectArguments),
+                    ) => Some("Incorrect arguments to period_diff"),
+                    _ => None,
+                };
+                if let Some(message) = message {
+                    return AsciiBoundaryError::Frontend(EvalError::IncorrectArguments(
+                        message.to_owned(),
+                    ));
+                }
             }
             AsciiBoundaryError::Kernel(ExpressionRuntimeFailure::from_ascii_local(
                 report.into_error(),
@@ -1591,6 +1609,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::MinuteNanosNative
             | EvaluatedBytesOp::SecondNanosNative
             | EvaluatedBytesOp::TimeToSecTextNative
+            | EvaluatedBytesOp::PeriodAddNative
+            | EvaluatedBytesOp::PeriodDiffNative
             | EvaluatedBytesOp::AbsIntNative
             | EvaluatedBytesOp::AbsUIntNative
             | EvaluatedBytesOp::CeilIntNative
@@ -1669,7 +1689,9 @@ fn materialize_computed(
             | EvaluatedBytesOp::ConvLegacy
             | EvaluatedBytesOp::CompressGoNative
             | EvaluatedBytesOp::JsonQuoteNative
-            | EvaluatedBytesOp::MonthNameTextNative,
+            | EvaluatedBytesOp::MonthNameTextNative
+            | EvaluatedBytesOp::GetFormatNative
+            | EvaluatedBytesOp::GetFormatNullNative,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {

@@ -6456,3 +6456,161 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_monthname_time_to_sec_sql_colum
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_period_get_format_sql_values_metadata_and_errors() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_period_format (id INT PRIMARY KEY, \
+             p BIGINT, d BIGINT, a BIGINT, b BIGINT, loc VARCHAR(16))",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_period_format VALUES (1,0,NULL,NULL,0,NULL),\
+             (2,201611,2,201701,201611,'USA'),(3,1611,3,201702,1611,'eur'),\
+             (4,7011,3,197102,7011,'unknown'),(5,201611,-13,201510,201611,'INTERNAL'),\
+             (6,0,3,0,201611,'unknown')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // All arithmetic answers are fixed old period vectors. In row one, a
+    // NULL companion must win over invalid period zero in either position.
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT PERIOD_ADD(p,d),PERIOD_DIFF(a,b),GET_FORMAT(DATE,loc) \
+             FROM shared_period_format WHERE id<=5 ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected period and format rows")
+    };
+    assert_eq!(columns.len(), 3);
+    for (index, (_, field)) in columns.iter().enumerate() {
+        let expected = if index == 2 {
+            (
+                tidb_datatype::FieldTypeCode::VarString,
+                17,
+                -1,
+                "utf8mb4",
+                tidb_datatype::Collation::Utf8Mb4Bin,
+            )
+        } else {
+            (
+                tidb_datatype::FieldTypeCode::LongLong,
+                20,
+                0,
+                "binary",
+                tidb_datatype::Collation::Binary,
+            )
+        };
+        assert_eq!(
+            (
+                field.code(),
+                field.flen(),
+                field.decimal(),
+                field.charset_name(),
+                field.collation()
+            ),
+            expected
+        );
+        assert!(!field.is_unsigned());
+        assert!(!field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
+    }
+    let text = |s: &str| {
+        Datum::new_collation_string(s.as_bytes().to_vec(), tidb_datatype::Collation::Utf8Mb4Bin)
+    };
+    assert_eq!(
+        rows,
+        vec![
+            vec![Datum::Null; 3],
+            vec![Datum::Int(201701), Datum::Int(2), text("%m.%d.%Y")],
+            vec![Datum::Int(201702), Datum::Int(3), text("%d.%m.%Y")],
+            vec![Datum::Int(197102), Datum::Int(3), text("")],
+            vec![Datum::Int(201510), Datum::Int(-13), text("%Y%m%d")],
+        ]
+    );
+    assert!(warnings_of(&session).is_empty());
+    // With both coerced operands present, validation belongs to the worker.
+    // Preserve the original classed error, not an adapter refusal or SQL NULL.
+    for (expression, message) in [
+        ("PERIOD_ADD(p,d)", "Incorrect arguments to period_add"),
+        ("PERIOD_DIFF(a,b)", "Incorrect arguments to period_diff"),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_period_format WHERE id=6");
+        let mysql = session
+            .run_with_columns(&sql)
+            .expect_err(&sql)
+            .to_mysql_error();
+        assert_eq!(mysql.code, 1210, "{sql}");
+        assert_eq!(mysql.message, message, "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_period_get_format_sql_columns() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_period_format_zero (id INT PRIMARY KEY, \
+             p BIGINT, d BIGINT, a BIGINT, b BIGINT, loc VARCHAR(16))",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_period_format_zero VALUES (1,0,NULL,NULL,0,NULL),\
+             (2,201611,2,201701,201611,'USA'),(3,0,3,0,201611,'unknown')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // NULL+invalid, ordinary values, and invalid/unknown all require a real
+    // lease. Neither a would-be NULL nor period 1210 may precede admission.
+    for (expression, id) in [
+        ("PERIOD_ADD(p,d)", 1),
+        ("PERIOD_DIFF(a,b)", 1),
+        ("GET_FORMAT(DATE,loc)", 1),
+        ("PERIOD_ADD(p,d)", 2),
+        ("PERIOD_DIFF(a,b)", 2),
+        ("GET_FORMAT(DATE,loc)", 2),
+        ("PERIOD_ADD(p,d)", 3),
+        ("PERIOD_DIFF(a,b)", 3),
+        ("GET_FORMAT(DATE,loc)", 3),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_period_format_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("period/format must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+}
