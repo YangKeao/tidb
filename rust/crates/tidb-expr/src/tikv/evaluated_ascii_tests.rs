@@ -1301,6 +1301,33 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::SqlCryptNullNative => {
             panic!("SQL crypt needs its original data/password coercion demand")
         }
+        EvaluatedBytesOp::AesEncrypt128EcbNative
+        | EvaluatedBytesOp::AesEncrypt192EcbNative
+        | EvaluatedBytesOp::AesEncrypt256EcbNative
+        | EvaluatedBytesOp::AesEncrypt128CbcNative
+        | EvaluatedBytesOp::AesEncrypt192CbcNative
+        | EvaluatedBytesOp::AesEncrypt256CbcNative
+        | EvaluatedBytesOp::AesEncrypt128OfbNative
+        | EvaluatedBytesOp::AesEncrypt192OfbNative
+        | EvaluatedBytesOp::AesEncrypt256OfbNative
+        | EvaluatedBytesOp::AesEncrypt128CfbNative
+        | EvaluatedBytesOp::AesEncrypt192CfbNative
+        | EvaluatedBytesOp::AesEncrypt256CfbNative
+        | EvaluatedBytesOp::AesDecrypt128EcbNative
+        | EvaluatedBytesOp::AesDecrypt192EcbNative
+        | EvaluatedBytesOp::AesDecrypt256EcbNative
+        | EvaluatedBytesOp::AesDecrypt128CbcNative
+        | EvaluatedBytesOp::AesDecrypt192CbcNative
+        | EvaluatedBytesOp::AesDecrypt256CbcNative
+        | EvaluatedBytesOp::AesDecrypt128OfbNative
+        | EvaluatedBytesOp::AesDecrypt192OfbNative
+        | EvaluatedBytesOp::AesDecrypt256OfbNative
+        | EvaluatedBytesOp::AesDecrypt128CfbNative
+        | EvaluatedBytesOp::AesDecrypt192CfbNative
+        | EvaluatedBytesOp::AesDecrypt256CfbNative
+        | EvaluatedBytesOp::AesNullNative => {
+            panic!("AES needs its original data/key/IV and genuine NULL demand")
+        }
         EvaluatedBytesOp::TidbShardNative => "TIDB_SHARD",
         EvaluatedBytesOp::VitessHashNative => "VITESS_HASH",
         EvaluatedBytesOp::FormatBytesNative => "FORMAT_BYTES",
@@ -1836,6 +1863,169 @@ fn binary_arithmetic_dispatch_keeps_profiles_and_legacy_presence() {
         assert_eq!(mode.reads.get(), reads);
     });
     assert!(!scope.busy.get());
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn aes_sdk_all_profiles_match_original_vectors_and_typed_iv_failures() {
+    use EvaluatedBytesOp::*;
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let decode_hex = |text: &str| {
+        text.as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect::<Vec<_>>()
+    };
+    scope.with_columns(&crate::NoColumns, |columns| {
+        // Fixed source vectors: pkg/expression/builtin_encryption_test.go
+        // aesTests. Decrypt receives these constants, never our encrypt output.
+        for (encrypt, decrypt, iv_required, block_mode, ciphertext) in [
+            (AesEncrypt128EcbNative, AesDecrypt128EcbNative, false, true, "697BFE9B3F8C2F289DD82C88C7BC95C4"),
+            (AesEncrypt192EcbNative, AesDecrypt192EcbNative, false, true, "9B139FD002E6496EA2D5C73A2265E661"),
+            (AesEncrypt256EcbNative, AesDecrypt256EcbNative, false, true, "F80DCDEDDBE5663BDB68F74AEDDB8EE3"),
+            (AesEncrypt128CbcNative, AesDecrypt128CbcNative, true, true, "2ECA0077C5EA5768A0485AA522774792"),
+            (AesEncrypt192CbcNative, AesDecrypt192CbcNative, true, true, "516391DB38E908ECA93AAB22870EC787"),
+            (AesEncrypt256CbcNative, AesDecrypt256CbcNative, true, true, "5D0E22C1E77523AEF5C3E10B65653C8F"),
+            (AesEncrypt128OfbNative, AesDecrypt128OfbNative, true, false, "0515A36BBF3DE0"),
+            (AesEncrypt192OfbNative, AesDecrypt192OfbNative, true, false, "FE09DCCF14D458"),
+            (AesEncrypt256OfbNative, AesDecrypt256OfbNative, true, false, "2E70FCAC0C0834"),
+            (AesEncrypt128CfbNative, AesDecrypt128CfbNative, true, false, "0515A36BBF3DE0"),
+            (AesEncrypt192CfbNative, AesDecrypt192CfbNative, true, false, "FE09DCCF14D458"),
+            (AesEncrypt256CfbNative, AesDecrypt256CfbNative, true, false, "2E70FCAC0C0834"),
+        ] {
+            for (operation, input, expected, function) in [
+                (encrypt, b"pingcap".to_vec(), decode_hex(ciphertext), "aes_encrypt"),
+                (decrypt, decode_hex(ciphertext), b"pingcap".to_vec(), "aes_decrypt"),
+            ] {
+                for long_iv in [false, true] {
+                    if long_iv && !iv_required {
+                        continue;
+                    }
+                    let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                        operation, columns,
+                        || Ok(if iv_required {
+                            EvaluatedArgs::Bytes3([
+                                Some(input.clone()), Some(b"1234567890123456".to_vec()),
+                                Some(if long_iv { b"1234567890123456ignored suffix".to_vec() } else { b"1234567890123456".to_vec() }),
+                            ])
+                        } else {
+                            EvaluatedArgs::Bytes2(Some(input.clone()), Some(b"1234567890123456".to_vec()))
+                        }),
+                        EvaluatedBytesResult::into_bytes,
+                    ));
+                    assert_eq!(result, Ok(Some(expected.clone())));
+                    assert_wide_math_c4(observation);
+                }
+                if iv_required {
+                    let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                        operation, columns,
+                        || Ok(EvaluatedArgs::Bytes3([
+                            Some(input.clone()), Some(b"1234567890123456".to_vec()), Some(vec![0; 15]),
+                        ])),
+                        EvaluatedBytesResult::into_bytes,
+                    ));
+                    assert_eq!(result, Err(EvalError::IncorrectArguments(format!(
+                        "The initialization vector supplied to {function} is too short. Must be at least 16 bytes long"
+                    ))));
+                    assert_wide_math_c4(observation);
+                }
+                if !block_mode {
+                    let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                        operation, columns,
+                        || Ok(EvaluatedArgs::Bytes3([
+                            Some(Vec::new()), Some(b"1234567890123456".to_vec()), Some(b"1234567890123456".to_vec()),
+                        ])),
+                        EvaluatedBytesResult::into_bytes,
+                    ));
+                    assert_eq!(result, Ok(Some(Vec::new())));
+                    assert_wide_math_c4(observation);
+                }
+            }
+            if block_mode {
+                for invalid_ciphertext in [Vec::new(), b"corrupt".to_vec()] {
+                    let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                        decrypt, columns,
+                        || Ok(if iv_required {
+                            EvaluatedArgs::Bytes3([
+                                Some(invalid_ciphertext), Some(b"1234567890123456".to_vec()), Some(b"1234567890123456".to_vec()),
+                            ])
+                        } else {
+                            EvaluatedArgs::Bytes2(Some(invalid_ciphertext), Some(b"1234567890123456".to_vec()))
+                        }),
+                        EvaluatedBytesResult::into_bytes,
+                    ));
+                    assert_eq!(result, Ok(None));
+                    assert_wide_math_c4(observation);
+                }
+            }
+        }
+        let (result, observation) = observe_wide_math(|| evaluate_args_in(
+            AesNullNative, columns, || Ok(EvaluatedArgs::NullWitness(None)),
+            EvaluatedBytesResult::into_bytes,
+        ));
+        assert_eq!(result, Ok(None));
+        assert_wide_math_c4(observation);
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn aes_sdk_zero_slots_suppress_values_short_iv_errors_and_genuine_null() {
+    use EvaluatedBytesOp::*;
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for operation in [
+            AesEncrypt128EcbNative, AesEncrypt192EcbNative, AesEncrypt256EcbNative,
+            AesDecrypt128EcbNative, AesDecrypt192EcbNative, AesDecrypt256EcbNative,
+        ] {
+            let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                operation, columns,
+                || Ok(EvaluatedArgs::Bytes2(Some(b"pingcap".to_vec()), Some(b"1234567890123456".to_vec()))),
+                EvaluatedBytesResult::into_bytes,
+            ));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+        }
+        for operation in [
+            AesEncrypt128CbcNative, AesEncrypt192CbcNative, AesEncrypt256CbcNative,
+            AesDecrypt128CbcNative, AesDecrypt192CbcNative, AesDecrypt256CbcNative,
+            AesEncrypt128OfbNative, AesEncrypt192OfbNative, AesEncrypt256OfbNative,
+            AesDecrypt128OfbNative, AesDecrypt192OfbNative, AesDecrypt256OfbNative,
+            AesEncrypt128CfbNative, AesEncrypt192CfbNative, AesEncrypt256CfbNative,
+            AesDecrypt128CfbNative, AesDecrypt192CfbNative, AesDecrypt256CfbNative,
+        ] {
+            for iv in [b"short".as_slice(), b"1234567890123456".as_slice()] {
+                let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                    operation, columns,
+                    || Ok(EvaluatedArgs::Bytes3([
+                        Some(b"pingcap".to_vec()), Some(b"1234567890123456".to_vec()), Some(iv.to_vec()),
+                    ])),
+                    EvaluatedBytesResult::into_bytes,
+                ));
+                assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+                assert_eq!(observation.facade_entries, 0);
+                assert_eq!(observation.before_kernel_invocations, None);
+                assert_eq!(observation.after_kernel_invocations, None);
+            }
+        }
+        let (result, observation) = observe_wide_math(|| evaluate_args_in(
+            AesNullNative, columns, || Ok(EvaluatedArgs::NullWitness(None)),
+            EvaluatedBytesResult::into_bytes,
+        ));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0);
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
     assert!(!scope.poisoned.get());
     drop(scope);
     execution.close();

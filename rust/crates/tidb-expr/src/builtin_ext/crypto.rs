@@ -149,8 +149,6 @@ fn uncompressed_length(arg: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalErro
     )
 }
 
-const AES_BLOCK_SIZE: usize = 16;
-
 /// Evaluates AES arguments in Go's signature order. ECB deliberately ignores
 /// a third argument without evaluating it and emits warning 1618; IV modes
 /// require and evaluate exactly three arguments. Keeping the evaluator as a
@@ -172,108 +170,82 @@ where
     } else {
         return None;
     };
-    let mode = ctx.block_encryption_mode();
-    if mode.iv_required() {
-        if arg_count != 3 {
-            return Some(Err(EvalError::WrongParameterCount(function)));
-        }
-    } else if !(2..=3).contains(&arg_count) {
-        return Some(Err(EvalError::WrongParameterCount(function)));
-    }
-
-    let input = match eval(0).and_then(|value| sql_string_bytes(&value)) {
-        Ok(Some(value)) => value,
-        Ok(None) => return Some(Ok(Datum::Null)),
-        Err(error) => return Some(Err(error)),
-    };
-    let password = match eval(1).and_then(|value| sql_string_bytes(&value)) {
-        Ok(Some(value)) => value,
-        Ok(None) => return Some(Ok(Datum::Null)),
-        Err(error) => return Some(Err(error)),
-    };
-    let iv = if mode.iv_required() {
-        match eval(2).and_then(|value| sql_string_bytes(&value)) {
-            Ok(Some(value)) => Some(value),
-            Ok(None) => return Some(Ok(Datum::Null)),
-            Err(error) => return Some(Err(error)),
-        }
-    } else if arg_count == 3 {
-        ctx.append_warning(1618, "<IV> option ignored");
-        None
-    } else {
-        None
-    };
-    Some(eval_aes_bytes(
-        function,
-        &input,
-        &password,
-        iv.as_deref(),
-        mode,
+    use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp};
+    Some(crate::tikv::evaluate_prepared_args_in(
+        ctx,
+        || {
+            let mode = ctx.block_encryption_mode();
+            if mode.iv_required() {
+                if arg_count != 3 {
+                    return Err(EvalError::WrongParameterCount(function));
+                }
+            } else if !(2..=3).contains(&arg_count) {
+                return Err(EvalError::WrongParameterCount(function));
+            }
+            let null = || {
+                Ok((
+                    EvaluatedBytesOp::AesNullNative,
+                    EvaluatedArgs::NullWitness(None),
+                ))
+            };
+            let Some(input) = sql_string_bytes(&eval(0)?)? else {
+                return null();
+            };
+            let Some(password) = sql_string_bytes(&eval(1)?)? else {
+                return null();
+            };
+            let arguments = if mode.iv_required() {
+                let Some(iv) = sql_string_bytes(&eval(2)?)? else {
+                    return null();
+                };
+                EvaluatedArgs::Bytes3([Some(input), Some(password), Some(iv)])
+            } else {
+                if arg_count == 3 {
+                    ctx.append_warning(1618, "<IV> option ignored");
+                }
+                EvaluatedArgs::Bytes2(Some(input), Some(password))
+            };
+            Ok((aes_operation(function == "aes_encrypt", mode), arguments))
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
     ))
 }
 
-fn eval_aes_bytes(
-    function: &'static str,
-    input: &[u8],
-    password: &[u8],
-    iv: Option<&[u8]>,
-    mode: BlockEncryptionMode,
-) -> Result<Datum, EvalError> {
-    let iv = if mode.iv_required() {
-        let iv = iv.expect("an IV mode evaluates its third argument");
-        if iv.len() < AES_BLOCK_SIZE {
-            return Err(EvalError::IncorrectArguments(format!(
-                "The initialization vector supplied to {function} is too short. Must be at least {AES_BLOCK_SIZE} bytes long"
-            )));
-        }
-        Some(&iv[..AES_BLOCK_SIZE])
-    } else {
-        None
-    };
-    let key = tidb_util::encrypt::derive_key_mysql(password, mode.key_size());
-    let encrypted = function == "aes_encrypt";
-    let result = match mode {
-        BlockEncryptionMode::Aes128Ecb
-        | BlockEncryptionMode::Aes192Ecb
-        | BlockEncryptionMode::Aes256Ecb => {
-            if encrypted {
-                tidb_util::encrypt::aes_encrypt_with_ecb(input, &key)
-            } else {
-                tidb_util::encrypt::aes_decrypt_with_ecb(input, &key)
-            }
-        }
-        BlockEncryptionMode::Aes128Cbc
-        | BlockEncryptionMode::Aes192Cbc
-        | BlockEncryptionMode::Aes256Cbc => {
-            let iv = iv.expect("CBC mode requires an IV");
-            if encrypted {
-                tidb_util::encrypt::aes_encrypt_with_cbc(input, &key, iv)
-            } else {
-                tidb_util::encrypt::aes_decrypt_with_cbc(input, &key, iv)
-            }
-        }
-        BlockEncryptionMode::Aes128Ofb
-        | BlockEncryptionMode::Aes192Ofb
-        | BlockEncryptionMode::Aes256Ofb => {
-            let iv = iv.expect("OFB mode requires an IV");
-            if encrypted {
-                tidb_util::encrypt::aes_encrypt_with_ofb(input, &key, iv)
-            } else {
-                tidb_util::encrypt::aes_decrypt_with_ofb(input, &key, iv)
-            }
-        }
-        BlockEncryptionMode::Aes128Cfb
-        | BlockEncryptionMode::Aes192Cfb
-        | BlockEncryptionMode::Aes256Cfb => {
-            let iv = iv.expect("CFB mode requires an IV");
-            if encrypted {
-                tidb_util::encrypt::aes_encrypt_with_cfb(input, &key, iv)
-            } else {
-                tidb_util::encrypt::aes_decrypt_with_cfb(input, &key, iv)
-            }
-        }
-    };
-    Ok(result.map_or(Datum::Null, Datum::new_string))
+/// Only immutable signature metadata selects the recipe; the worker receives
+/// the complete password and IV and owns key derivation and cipher policy.
+fn aes_operation(encrypt: bool, mode: BlockEncryptionMode) -> crate::tikv::EvaluatedBytesOp {
+    use crate::tikv::EvaluatedBytesOp as Op;
+    use BlockEncryptionMode::*;
+    match (encrypt, mode) {
+        (true, Aes128Ecb) => Op::AesEncrypt128EcbNative,
+        (true, Aes192Ecb) => Op::AesEncrypt192EcbNative,
+        (true, Aes256Ecb) => Op::AesEncrypt256EcbNative,
+        (true, Aes128Cbc) => Op::AesEncrypt128CbcNative,
+        (true, Aes192Cbc) => Op::AesEncrypt192CbcNative,
+        (true, Aes256Cbc) => Op::AesEncrypt256CbcNative,
+        (true, Aes128Ofb) => Op::AesEncrypt128OfbNative,
+        (true, Aes192Ofb) => Op::AesEncrypt192OfbNative,
+        (true, Aes256Ofb) => Op::AesEncrypt256OfbNative,
+        (true, Aes128Cfb) => Op::AesEncrypt128CfbNative,
+        (true, Aes192Cfb) => Op::AesEncrypt192CfbNative,
+        (true, Aes256Cfb) => Op::AesEncrypt256CfbNative,
+        (false, Aes128Ecb) => Op::AesDecrypt128EcbNative,
+        (false, Aes192Ecb) => Op::AesDecrypt192EcbNative,
+        (false, Aes256Ecb) => Op::AesDecrypt256EcbNative,
+        (false, Aes128Cbc) => Op::AesDecrypt128CbcNative,
+        (false, Aes192Cbc) => Op::AesDecrypt192CbcNative,
+        (false, Aes256Cbc) => Op::AesDecrypt256CbcNative,
+        (false, Aes128Ofb) => Op::AesDecrypt128OfbNative,
+        (false, Aes192Ofb) => Op::AesDecrypt192OfbNative,
+        (false, Aes256Ofb) => Op::AesDecrypt256OfbNative,
+        (false, Aes128Cfb) => Op::AesDecrypt128CfbNative,
+        (false, Aes192Cfb) => Op::AesDecrypt192CfbNative,
+        (false, Aes256Cfb) => Op::AesDecrypt256CfbNative,
+    }
 }
 
 /// `PASSWORD(str)`: double-SHA1 the source `EvalString` bytes, prefix the

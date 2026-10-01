@@ -9363,6 +9363,277 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_aes_sql_preserves_twelve_mode_goldens_demand_and_diagnostics() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_aes_sql (id INT PRIMARY KEY, p VARBINARY(32), k VARBINARY(32), iv VARBINARY(32), longiv VARBINARY(64), shortiv VARBINARY(8), c VARBINARY(64), n VARBINARY(32), empty VARBINARY(1), w VARCHAR(8), bad VARBINARY(32))").unwrap();
+    // Fixed Go TestAESEncrypt/TestAESDecrypt vectors already recorded in
+    // crypto_encryption_source::{AES_ROWS,AES_ECB_EXTRA} and builtins.rs.
+    // Decryption consumes these stored goldens, never this test's encryption output.
+    let vectors = [
+        ("aes-128-ecb", "697BFE9B3F8C2F289DD82C88C7BC95C4"),
+        ("aes-192-ecb", "9B139FD002E6496EA2D5C73A2265E661"),
+        ("aes-256-ecb", "F80DCDEDDBE5663BDB68F74AEDDB8EE3"),
+        ("aes-128-cbc", "2ECA0077C5EA5768A0485AA522774792"),
+        ("aes-192-cbc", "516391DB38E908ECA93AAB22870EC787"),
+        ("aes-256-cbc", "5D0E22C1E77523AEF5C3E10B65653C8F"),
+        ("aes-128-ofb", "0515A36BBF3DE0"),
+        ("aes-192-ofb", "FE09DCCF14D458"),
+        ("aes-256-ofb", "2E70FCAC0C0834"),
+        ("aes-128-cfb", "0515A36BBF3DE0"),
+        ("aes-192-cfb", "FE09DCCF14D458"),
+        ("aes-256-cfb", "2E70FCAC0C0834"),
+    ];
+    for (id, (_, ciphertext)) in vectors.iter().enumerate() {
+        session.run(&format!("INSERT INTO shared_aes_sql VALUES ({id},'pingcap','1234567890123456','1234567890123456','1234567890123456ignored-tail','short',X'{ciphertext}',NULL,X'','123x','not-16-bytes')")).unwrap();
+    }
+    session
+        .vars
+        .set_system("max_allowed_packet", "1024".to_owned())
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    for (id, (mode, ciphertext)) in vectors.iter().enumerate() {
+        session
+            .run(&format!("SET block_encryption_mode='{mode}'"))
+            .unwrap();
+        let iv = if mode.ends_with("-ecb") { "" } else { ",iv" };
+        let sql = format!("SELECT HEX(AES_ENCRYPT(p,k{iv})),AES_DECRYPT(c,k{iv}) FROM shared_aes_sql WHERE id={id}");
+        let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+            panic!("{sql}")
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(cell_text(&rows[0][0]), *ciphertext, "{mode}");
+        assert_eq!(cell_text(&rows[0][1]), "pingcap", "{mode}");
+        assert_eq!(
+            rows[0][1].collation(),
+            Some(tidb_datatype::Collation::Binary)
+        );
+        assert!(session.warnings().is_empty(), "{mode}");
+        if !mode.ends_with("-ecb") {
+            let sql = format!("SELECT HEX(AES_ENCRYPT(p,k,longiv)),AES_DECRYPT(c,k,longiv) FROM shared_aes_sql WHERE id={id}");
+            let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+                panic!("{sql}")
+            };
+            assert_eq!(
+                cell_text(&rows[0][0]),
+                *ciphertext,
+                "long IV uses its first 16 bytes: {mode}"
+            );
+            assert_eq!(cell_text(&rows[0][1]), "pingcap", "{mode}");
+            assert!(session.warnings().is_empty());
+            for function in ["AES_ENCRYPT", "AES_DECRYPT"] {
+                let sql =
+                    format!("SELECT {function}(p,k,shortiv) FROM shared_aes_sql WHERE id={id}");
+                let error = session.run_with_columns(&sql).expect_err(&sql);
+                let mysql = error.to_mysql_error();
+                assert_eq!(mysql.code, 1210, "{sql}");
+                assert_eq!(mysql.message, format!("The initialization vector supplied to {} is too short. Must be at least 16 bytes long", function.to_ascii_lowercase()), "{sql}");
+                assert!(mysql.is_from_evaluation(), "{sql}");
+            }
+        }
+        for function in ["AES_ENCRYPT", "AES_DECRYPT"] {
+            // Runtime columns prevent constant folding from demanding these
+            // warning-bearing children before the lazy AES signature runs.
+            for args in ["n,CAST(w AS SIGNED),REPEAT(p,2048)", "p,n,REPEAT(p,2048)"] {
+                let sql = format!("SELECT {function}({args}) FROM shared_aes_sql WHERE id={id}");
+                let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+                    panic!("{sql}")
+                };
+                assert_eq!(rows, vec![vec![Datum::Null]], "{sql}");
+                assert!(
+                    session.warnings().is_empty(),
+                    "NULL suppresses later arguments and ECB 1618: {sql}"
+                );
+            }
+            if !mode.ends_with("-ecb") {
+                let sql = format!("SELECT {function}(p,k,n) FROM shared_aes_sql WHERE id={id}");
+                let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+                    panic!("{sql}")
+                };
+                assert_eq!(rows, vec![vec![Datum::Null]], "{sql}");
+                assert!(session.warnings().is_empty());
+            }
+        }
+        if mode.ends_with("-ecb") || mode.ends_with("-cbc") {
+            // Block modes reject non-block ciphertext and empty ciphertext as
+            // quiet library failures, not worker failures or SQL warnings.
+            let sql = format!("SELECT AES_DECRYPT(bad,k{iv}),AES_DECRYPT(empty,k{iv}),LENGTH(AES_ENCRYPT(empty,empty{iv})) FROM shared_aes_sql WHERE id={id}");
+            let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+                panic!("{sql}")
+            };
+            // Empty plaintext still encrypts one full PKCS#7 padding block,
+            // including with MySQL's empty password (a zero-filled AES key).
+            assert_eq!(
+                rows,
+                vec![vec![Datum::Null, Datum::Null, Datum::Int(16)]],
+                "{sql}"
+            );
+        } else {
+            // OFB/CFB have no padding: empty payload with an empty (zero-filled)
+            // MySQL key has the hand-derived empty result in both directions.
+            let sql = format!("SELECT AES_ENCRYPT(empty,empty,iv),AES_DECRYPT(empty,empty,iv) FROM shared_aes_sql WHERE id={id}");
+            let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+                panic!("{sql}")
+            };
+            assert_eq!(rows.len(), 1);
+            for value in &rows[0] {
+                assert_ne!(value, &Datum::Null);
+                assert_eq!(cell_text(value), "");
+            }
+        }
+        assert!(session.warnings().is_empty(), "{mode}");
+    }
+    session
+        .run("SET block_encryption_mode='aes-128-ecb'")
+        .unwrap();
+    // A coercion warning belongs before the ignored-IV warning. The third
+    // argument would produce 1301 if evaluated, so its absence pins laziness.
+    let StmtOutput::Rows { rows, .. } = session.run_with_columns(
+        "SELECT HEX(AES_ENCRYPT(p,CAST(w AS SIGNED),REPEAT(p,2048))) FROM shared_aes_sql WHERE id=0",
+    ).unwrap() else { panic!("expected ignored-IV ECB ciphertext") };
+    assert_eq!(cell_text(&rows[0][0]), "996E0CA8688D7AD20819B90B273E01C6");
+    assert_eq!(
+        session.warnings(),
+        &[
+            SqlWarning {
+                level: WarningLevel::Warning,
+                code: 1292,
+                message: "Truncated incorrect INTEGER value: '123x'".to_owned()
+            },
+            SqlWarning {
+                level: WarningLevel::Warning,
+                code: 1618,
+                message: "<IV> option ignored".to_owned()
+            },
+        ]
+    );
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns("SELECT AES_DECRYPT(c,k,REPEAT(p,2048)) FROM shared_aes_sql WHERE id=0")
+        .unwrap()
+    else {
+        panic!("expected ignored-IV ECB plaintext")
+    };
+    assert_eq!(cell_text(&rows[0][0]), "pingcap");
+    assert_eq!(
+        session.warnings(),
+        &[SqlWarning {
+            level: WarningLevel::Warning,
+            code: 1618,
+            message: "<IV> option ignored".to_owned()
+        }]
+    );
+    // Existing crypto::aes_ecb_go_vectors pins this valid-length bad padding.
+    // Use the original invalid-padding bytes in a column to prevent folding.
+    session
+        .run("UPDATE shared_aes_sql SET bad='0123456789abcdef' WHERE id=0")
+        .unwrap();
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns("SELECT AES_DECRYPT(bad,'wrong-key') FROM shared_aes_sql WHERE id=0")
+        .unwrap()
+    else {
+        panic!("expected quiet padding failure")
+    };
+    assert_eq!(rows, vec![vec![Datum::Null]]);
+    assert!(session.warnings().is_empty());
+}
+
+#[test]
+fn evaluated_ascii_aes_zero_slots_reject_all_modes_and_actual_column_presence() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_aes_zero (p VARBINARY(32), k VARBINARY(32), iv VARBINARY(32), n VARBINARY(32), empty VARBINARY(1), bad VARBINARY(32), w VARCHAR(8))").unwrap();
+    session.run("INSERT INTO shared_aes_zero VALUES ('pingcap','1234567890123456','1234567890123456',NULL,X'','not-16-bytes','123x')").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    for mode in [
+        "aes-128-ecb",
+        "aes-192-ecb",
+        "aes-256-ecb",
+        "aes-128-cbc",
+        "aes-192-cbc",
+        "aes-256-cbc",
+        "aes-128-ofb",
+        "aes-192-ofb",
+        "aes-256-ofb",
+        "aes-128-cfb",
+        "aes-192-cfb",
+        "aes-256-cfb",
+    ] {
+        session
+            .run(&format!("SET block_encryption_mode='{mode}'"))
+            .unwrap();
+        for function in ["AES_ENCRYPT", "AES_DECRYPT"] {
+            let args: &[&str] = if mode.ends_with("-ecb") {
+                &[
+                    "p,k",
+                    "n,k",
+                    "p,n",
+                    "empty,k",
+                    "empty,empty",
+                    "bad,k",
+                    "p,k,n",
+                ]
+            } else {
+                &[
+                    "p,k,iv",
+                    "n,k,iv",
+                    "p,n,iv",
+                    "p,k,n",
+                    "empty,k,iv",
+                    "empty,empty,iv",
+                    "bad,k,iv",
+                ]
+            };
+            for args in args {
+                // NoFold evidence: direct stored-column AES root, with no HEX,
+                // UNHEX, or other migrated wrapper that could refuse first.
+                let sql = format!("SELECT {function}({args}) FROM shared_aes_zero");
+                let error = session.run_with_columns(&sql).expect_err(&sql);
+                match &error {
+                    DriverError::Exec(tidb_executor::ExecError::Eval(
+                        tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                    )) => {
+                        assert_eq!(
+                            failure.class(),
+                            tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                        );
+                        assert_eq!(
+                            failure.origin(),
+                            tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                        );
+                    }
+                    other => panic!("AES bypassed its worker: {mode}: {sql}: {other:?}"),
+                }
+                let mysql = error.to_mysql_error();
+                assert_eq!(mysql.code, 1105, "{mode}: {sql}");
+                assert_eq!(mysql.state, *b"HY000", "{mode}: {sql}");
+                assert!(mysql.is_from_evaluation(), "{mode}: {sql}");
+                if mode.ends_with("-ecb") && *args == "p,k,n" {
+                    assert_eq!(
+                        session.warnings(),
+                        &[SqlWarning {
+                            level: WarningLevel::Warning,
+                            code: 1618,
+                            message: "<IV> option ignored".to_owned()
+                        }]
+                    );
+                } else {
+                    assert!(session.warnings().is_empty(), "{mode}: {sql}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_true_division_sql_preserves_precision_demand_and_diagnostics() {
     let mut session = Session::new();
     session

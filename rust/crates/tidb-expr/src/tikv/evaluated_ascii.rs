@@ -1238,6 +1238,36 @@ impl<'a> Invocation<'a> {
                 });
             }
             if report.operation() == Some(operation) {
+                if matches!(
+                    operation,
+                    EvaluatedBytesOp::AesEncrypt128CbcNative
+                        | EvaluatedBytesOp::AesEncrypt192CbcNative
+                        | EvaluatedBytesOp::AesEncrypt256CbcNative
+                        | EvaluatedBytesOp::AesEncrypt128OfbNative
+                        | EvaluatedBytesOp::AesEncrypt192OfbNative
+                        | EvaluatedBytesOp::AesEncrypt256OfbNative
+                        | EvaluatedBytesOp::AesEncrypt128CfbNative
+                        | EvaluatedBytesOp::AesEncrypt192CfbNative
+                        | EvaluatedBytesOp::AesEncrypt256CfbNative
+                        | EvaluatedBytesOp::AesDecrypt128CbcNative
+                        | EvaluatedBytesOp::AesDecrypt192CbcNative
+                        | EvaluatedBytesOp::AesDecrypt256CbcNative
+                        | EvaluatedBytesOp::AesDecrypt128OfbNative
+                        | EvaluatedBytesOp::AesDecrypt192OfbNative
+                        | EvaluatedBytesOp::AesDecrypt256OfbNative
+                        | EvaluatedBytesOp::AesDecrypt128CfbNative
+                        | EvaluatedBytesOp::AesDecrypt192CfbNative
+                        | EvaluatedBytesOp::AesDecrypt256CfbNative
+                ) {
+                    // This accessor authenticates the actual short-IV cause,
+                    // exact opcode/profile and this invocation's kernel witness.
+                    // Cipher failures are successful NULL values, not this cause.
+                    if let Some(cause) = report.native_aes_error() {
+                        return AsciiBoundaryError::Frontend(EvalError::IncorrectArguments(
+                            cause.to_string(),
+                        ));
+                    }
+                }
                 let message = match (operation, report.sql_failure()) {
                     (
                         EvaluatedBytesOp::PeriodAddNative,
@@ -2032,6 +2062,31 @@ fn materialize_computed(
             | EvaluatedBytesOp::SqlEncodeNative
             | EvaluatedBytesOp::SqlDecodeNative
             | EvaluatedBytesOp::SqlCryptNullNative
+            | EvaluatedBytesOp::AesEncrypt128EcbNative
+            | EvaluatedBytesOp::AesEncrypt192EcbNative
+            | EvaluatedBytesOp::AesEncrypt256EcbNative
+            | EvaluatedBytesOp::AesEncrypt128CbcNative
+            | EvaluatedBytesOp::AesEncrypt192CbcNative
+            | EvaluatedBytesOp::AesEncrypt256CbcNative
+            | EvaluatedBytesOp::AesEncrypt128OfbNative
+            | EvaluatedBytesOp::AesEncrypt192OfbNative
+            | EvaluatedBytesOp::AesEncrypt256OfbNative
+            | EvaluatedBytesOp::AesEncrypt128CfbNative
+            | EvaluatedBytesOp::AesEncrypt192CfbNative
+            | EvaluatedBytesOp::AesEncrypt256CfbNative
+            | EvaluatedBytesOp::AesDecrypt128EcbNative
+            | EvaluatedBytesOp::AesDecrypt192EcbNative
+            | EvaluatedBytesOp::AesDecrypt256EcbNative
+            | EvaluatedBytesOp::AesDecrypt128CbcNative
+            | EvaluatedBytesOp::AesDecrypt192CbcNative
+            | EvaluatedBytesOp::AesDecrypt256CbcNative
+            | EvaluatedBytesOp::AesDecrypt128OfbNative
+            | EvaluatedBytesOp::AesDecrypt192OfbNative
+            | EvaluatedBytesOp::AesDecrypt256OfbNative
+            | EvaluatedBytesOp::AesDecrypt128CfbNative
+            | EvaluatedBytesOp::AesDecrypt192CfbNative
+            | EvaluatedBytesOp::AesDecrypt256CfbNative
+            | EvaluatedBytesOp::AesNullNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative

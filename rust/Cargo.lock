@@ -5984,6 +5984,7 @@ dependencies = [
 name = "tidb_query_crypto"
 version = "0.0.1"
 dependencies = [
+ "aes",
  "des",
  "sha1 0.10.7",
 ]
