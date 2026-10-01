@@ -18,9 +18,9 @@
 //! pair is an INTEGER pair: the signedness rule that decides which of Go's
 //! per-signedness signatures applies ([`unsigned_operand`]), the arithmetic and
 //! bitwise operators themselves ([`integer_binary`] and the overflow checks it
-//! delegates to), the shift width rule, and unary minus -- the one operator
-//! whose Int signature can be replaced at BUILD time by a decimal one
-//! ([`unary_minus_integer`]).
+//! delegates to), the shift width rule, and unary-minus recipe selection
+//! ([`unary_minus_integer`]). The shared worker owns integer negation,
+//! overflow, and the constant-only promotion to a decimal result.
 
 use super::*;
 
@@ -36,62 +36,36 @@ pub(super) fn unsigned_operand(value: Datum, operand: Operand<'_>) -> Datum {
     }
 }
 
-/// Go `builtinUnaryMinusIntSig.evalInt`'s two branches
-/// (`pkg/expression/builtin_op.go:1106-1124`), plus the ONE promotion
-/// `unaryMinusFunctionClass.typeInfer` performs ahead of them:
-///
-/// ```go
-/// if arg, ok := argExpr.(*Constant); ok && tp == types.ETInt {
-///     overflow = c.handleIntOverflow(ctx, arg)
-///     if overflow { tp = types.ETDecimal }
-/// }
-/// ```
-///
-/// A CONSTANT whose negation leaves `BIGINT` is rebuilt on the DECIMAL
-/// signature and keeps its magnitude; a COLUMN keeps the Int signature and
-/// reports `ErrOverflow`. Captured over `b BIGINT` holding -9223372036854775808
-/// and `u BIGINT UNSIGNED` holding 9223372036854775809: both `SELECT -b` and
-/// `SELECT -u` are `[types:1690] BIGINT value is out of range`, where this
-/// evaluator answered the CLAMPED 9223372036854775807 and -9223372036854775808.
+/// Select the signedness/constness recipe without inspecting overflow or
+/// computing a negated value. Constant recipes provide their own checked Int
+/// view of the computed Decimal; column recipes report the actual typed cause.
 pub(super) fn unary_minus_integer(
     bits: u64,
     unsigned: bool,
     arg: Operand<'_>,
+    ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
-    if !unsigned {
-        let value = bits as i64;
-        if value != i64::MIN {
-            return Ok(Datum::Int(-value));
-        }
-    } else {
-        if bits <= i64::MAX as u64 {
-            return Ok(Datum::Int(-(bits as i64)));
-        }
-        // `-2^63` is representable, so Go returns it rather than overflowing.
-        if bits == 1_u64 << 63 {
-            return Ok(Datum::Int(i64::MIN));
-        }
-    }
-    if !arg.is_constant() {
-        // Go `builtinUnaryMinusIntSig.evalInt` (`builtin_op.go:1116,1121`):
-        // `types.ErrOverflow.GenWithStackByArgs("BIGINT", fmt.Sprintf("-%v", val))`
-        // quotes the NEGATED value rather than the source expression, so the
-        // wire text carries `in '-9223372036854775808'`.
-        let expression = if unsigned {
-            format!("-{bits}")
-        } else {
-            format!("-{}", i64::MIN)
-        };
-        return Err(EvalError::DataOutOfRange {
-            value: "BIGINT",
-            expression,
-        });
-    }
-    Ok(Datum::Decimal(if unsigned {
-        Decimal::from_uint(bits).negate()
-    } else {
-        Decimal::from_uint(1_u64 << 63)
-    }))
+    use crate::tikv::{evaluate_args_in, EvaluatedArgs, EvaluatedBytesOp};
+
+    let constant = arg.is_constant();
+    let operation = match (unsigned, constant) {
+        (false, false) => EvaluatedBytesOp::UnaryMinusIntNative,
+        (true, false) => EvaluatedBytesOp::UnaryMinusUIntNative,
+        (false, true) => EvaluatedBytesOp::UnaryMinusIntConstantNative,
+        (true, true) => EvaluatedBytesOp::UnaryMinusUIntConstantNative,
+    };
+    evaluate_args_in(
+        operation,
+        ctx,
+        || Ok(EvaluatedArgs::Int(Some(bits as i64))),
+        |computed| {
+            if constant {
+                computed.into_decimal_or_int_datum()
+            } else {
+                computed.into_int_datum()
+            }
+        },
+    )
 }
 
 pub(crate) fn integer_binary(

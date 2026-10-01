@@ -1,0 +1,59 @@
+UNARY TWO CHECKPOINT / unary-two-46 / round47
+Previous regexp-worker-45. Functional delegation/native deletion 157/245 (prior155 objects retained); strict final-audited0, target221. New frozen ids unaryplus/unaryminus. Not complete or PR-ready.
+
+COMMANDS AND WHOLE-LOG RECEIPTS
+Raw logs retained in experiment workspace expression-unification/logs; this summary publishes commands, results and whole-log SHA256 rather than copying compiler output into the source review.
+TiKV cwd expression-unification/tikv; T=../tools/cargo-tikv, pinned nightly-2026-01-30.
+Native cwd expression-unification/tidb/rust; N=../../tools/cargo-tidb, pinned nightly-2026-08-22.
+Actual command form: set -o pipefail; <wrapper> test --locked -p <package> --lib [filter] -- --test-threads=1 2>&1 | tee <log> >/dev/null.
+Log path ../logs/<name> for TiKV, ../../logs/<name> for native. Rows: passed/failed/ignored/filtered; compile/run seconds; exit; SHA256.
+1 T test --locked -p tidb_query_datatype --lib native_negate -- --test-threads=1
+  unary-two-tikv-datatype.log | 1/0/0/418 | 2.19/.00 | 0 | 2b744574552179506b4bcfea03ddf85eafe5c448953df4a65695bc938e378711
+2 N test --locked -p tidb-datatype --lib decimal:: -- --test-threads=1
+  unary-two-native-datatype.log | 22/0/0/417 | 2.23/.00 | 0 | 61408a5cce0af6f79cc6007f5a9796b59ea36c2fa4e9f29716923d928bcea4a1
+3 T test --locked -p tidb_query_expr --lib unary -- --test-threads=1
+  unary-two-tikv-expr.log | NO TESTS EXECUTED: test compilation failed, E0599 twice, missing ToStringValue trait import | 101 | 510998ec21afb79e05c724343fdc2cbcfc1fbd47a52df3f2c50c3de3b71e7e3c
+4 Same TiKV unary command after importing the existing trait in the new test module
+  unary-two-tikv-expr-retry.log | 17/0/0/794 | 10.56/.00 | 0 | 19c73b72d47deb49bdfb7c84026e17bdbac91445b5e0ae190c2ff45a5fbd7ef0
+5 T test --locked -p tidb_query_expr --lib local -- --test-threads=1
+  unary-two-tikv-local.log | 281/0/1/529 | .14/.19 | 0 | b70809c98575aaf9816a8eabaebe929ce6c3f81949ccfd4c2ae6f1e2fd15b6e4
+6 N test --locked -p tidb-expr --lib unary -- --test-threads=1
+  unary-two-native-expr.log | 19/0/0/1562 | 14.61/.01 | 0 | bec6619cc9b39c78da7098a2d90791bf344d3565d14a8ac17cad50720e0d932f
+7 N test --locked -p tidb-session --lib evaluated_ascii_unary_ -- --test-threads=1
+  unary-two-sql.log | NO TESTS EXECUTED: test compilation failed, E0277 warning tuple helper versus SqlWarning | 101 | e0b7539c8b29802e32f149b1e3a6e23af76e375c0237b8e1d0746c8626479001
+8 Same SQL command after selecting actual Session::warnings() rather than the tuple helper
+  unary-two-sql-retry.log | 1/0/0/2175 | 7.32/.03 | 0 | aa69f00372652c0eda7af747e9e35805514359bdc0a4fb5e93bd1133f4ecdd18
+9 N test --locked -p tidb-expr --lib -- --test-threads=1
+  unary-two-expr-full.log | 1482/5/94/0 | .16/13.27 | 101 | 91f6a3611f712e34625cbd194b70c5b13621e90a22d30072525644f5045e2fd6
+10 N test --locked -p tidb-unistore --lib -- --test-threads=1
+  unary-two-unistore-full.log | 197/1/13/0 | 6.07/3.01 | 101 | 0832ee54a61eeca2e02eece0e9b915f27f25b11b5a6b1f5e332df6654b82885c
+11 Same full expression command after the old negative-literal instrumentation update
+  unary-two-expr-full-retry.log | 1483/4/94/0 | 3.43/13.33 | 101 | a9761fecc910adf3b407203f328823ea6d9e3953a38eff5f4791385fb8adbe71
+
+COUNTS AND CORRECTIONS
+11 test-Cargo attempts = 9 nonzero-test runs + 2 test-compilation failures. Six final focused green runs, one existing structural-instrumentation RED run (plus four old failures), and two final known-baseline non-green full runs. Failed-target retries3. Zero-match/launch failures/supplemental replay/metadata/lock-resolution commands0. Not all-focused-first-try or all-checks-first-try. No zero/skipped/compile-failed command counted as a pass.
+TiKV new tests called the actual Decimal::to_string_value trait method without importing ToStringValue. Add only that existing trait import; production and expected values unchanged.
+New SQL test compared warnings_of's Vec<(u16,String)> with SqlWarning. Source tests_support.rs52-57 explicitly projects tuples; warnings.rs251-253 exposes the full slice. Select Session::warnings() and retain all original expected level/code/message fields. No provider recording or runtime assertion correction.
+One old AST test FROM_DAYS(-140) expected one facade; unary minus is now a genuine separate worker before FROM_DAYS. Change only that observation to two entries and real before/after getter presence; do not subtract counters belonging to different workers. Its old zero-Date SQL value stays unchanged. This is an intentional structural assertion update, not a production fix or a new oracle.
+
+FAILURE BASELINE PROOF
+Both final full-suite sections equal regexp-worker-45 byte-for-byte after ONLY numeric panic-heading thread IDs are replaced with (<id>). Compare from first newline+'failures:'+newline to before newline+'test result:', including detailed panic payloads and the final names list. No source-address remapping.
+Expression SHA256 27654f2c0ad2971242c00f50182467598cdfd9c2c65e5bf5a32e683708448637; four unchanged failures: pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation (3077:9), tests::builtin_info_json_math_source::exp (1881:5), tests::builtin_math_misc_op_source::vectorized_builtin_op_func (duration.rs164:55), time_fn::tests::str_to_date_partial_formats_follow_no_zero_date (888:9).
+Unistore SHA256 b64dcced405c699c11b72ee31888c58e491b4e5b4e74fa2d445454e1d1e146e9; unchanged tests_mockstore_part1_go_parity::closure_executor_selection_over_point_range_answers_zero_rows (194:5).
+
+SOURCE AND STATIC PROOFS
+15 Rust sources = TiKV9/native6. No dependency/manifest/lock/Bazel changes. All pinned rustfmt --edition 2021 --config skip_children=true --check and both git diff --check gates pass; formatter/static-proof failures0.
+Five complete original test-module tails byte-identical to HEAD:
+  TiKV impl_op::tests 73c39a5d9fa97ba373730d398e88d91238c760dbb09ad3b94a9c2b63eaa7b349
+  TiKV impl_math::tests 11992b9774e1a227e4c47fd60dc6337f2023def3e009fc7bbd458c43121b6d43
+  TiKV decimal::tests 9a217340d9d495773a043cbe0378a68c5401737315752dcdc1105be52cc2e332
+  native ops::tests f823ff05f80ca755b998f6e92db3f3ef79ea462f5ae607d5aece0c2c9ee3bbaa
+  native decimal::native_math_bridge_tests 148fbf71b10a45b661e9e6d23b088070984b270f8b09b1c0ecde4be5a22538d0
+Nine new functions: shared/native datatype1+1, kernels3, local2, native scope1, SQL1. No original SQL or new test expected values changed; one separate old structural trace updated as above. No fixtures regenerated.
+Source tools: seven recovered RO lookup errors (B3, shared-type owner3, D1); one C literal edit mismatch (omitted intervening comment), fresh-read precise retry1. Observation-precondition/multi-match/transcription/presentation failures0. Decimal physical two-slot budget ABI, plus declared-shape packing and single finite-budget/cause helper were explicit precompile refinements, not guessed production APIs. Parent extracted the existing impl_math budget/cause helpers as pub(crate), retaining original math checks/messages, instead of keeping a duplicate unary implementation.
+Architecture index updates descriptive implementation paths and removes two stale hardcoded family counts; no new normative policy or Go/Bazel change. Exact family/progress numbers remain in checkpoint/progress artifacts.
+
+BOUNDARIES
+Eleven unit recipes reuse Values/Ieee754Bits/DecimalUnary/NullWitness roles. Decimal is [actual value, infrastructure budget] physically, not two SQL operands. No new carrier, driver, metadata binding, factory limit or regexp lifecycle change. Runtime plus copies actual values and retains original other-to-decimal conversion; SQL plus elimination remains unchanged. UInt, Float32(f64), string collation and plus-Decimal declared shape are original packing metadata, not host answer bypasses. Constant promotion and checked integer views come from actual worker output. Column overflow is authenticated from the actual typed cause and exact signedness/op/+1 witness. Original double-minus diagnostic and wire zero/error policies remain.
+Native Decimal::negate shares the original wire Neg leaf through native finishing; arbitrary coefficient, visible/storage scales and native zero normalization are preserved. Host coercion/warnings, NULL, child demand and NOT/BitNeg semantics remain; no ordinary PB/legacy admission is invented.
+Binary arithmetic, JSON_UNQUOTE/PRETTY raw/temporal renderer closure, LIKE/ILIKE, FORMAT/DATE/MICROSECOND and other remaining families are future work. No complete Go-package/type-domain, production default-NoColumns request-root integration, whole workspace, make lint/dev/bazel_prepare, release, 150-row differential, allocator peak/physical heap/OOM, zero-copy/performance, M6, TiFlash or PR-readiness claim.

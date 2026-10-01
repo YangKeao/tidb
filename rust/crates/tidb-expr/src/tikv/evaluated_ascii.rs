@@ -1301,6 +1301,29 @@ impl<'a> Invocation<'a> {
                         });
                     }
                     (
+                        EvaluatedBytesOp::UnaryMinusIntNative
+                        | EvaluatedBytesOp::UnaryMinusUIntNative,
+                        Some(EvaluatedSqlFailureKind::UnaryMinusNative),
+                    ) => {
+                        let Some(cause) = report.native_unary_minus_error() else {
+                            return AsciiBoundaryError::Scope {
+                                kind: ScopeFailureKind::Contract,
+                                reason: "unary-minus failure receipt lacks its native cause",
+                            };
+                        };
+                        // Render the authenticated source bits, not a new negation.
+                        // Signed MIN retains the original double minus in its text.
+                        let expression = if cause.unsigned {
+                            format!("-{}", cause.bits)
+                        } else {
+                            format!("-{}", cause.bits as i64)
+                        };
+                        return AsciiBoundaryError::Frontend(EvalError::DataOutOfRange {
+                            value: "BIGINT",
+                            expression,
+                        });
+                    }
+                    (
                         EvaluatedBytesOp::RegexpLikeNative
                         | EvaluatedBytesOp::RegexpSubstrNative
                         | EvaluatedBytesOp::RegexpInstrNative
@@ -1746,6 +1769,10 @@ fn materialize_computed(
             | EvaluatedBytesOp::RegexpLikeLegacyBinNative
             | EvaluatedBytesOp::RegexpNullIntNative
             | EvaluatedBytesOp::RegexpMissingLegacyNative
+            | EvaluatedBytesOp::UnaryPlusIntNative
+            | EvaluatedBytesOp::UnaryMinusIntNative
+            | EvaluatedBytesOp::UnaryMinusUIntNative
+            | EvaluatedBytesOp::UnaryNullNative
             | EvaluatedBytesOp::AbsIntNative
             | EvaluatedBytesOp::AbsUIntNative
             | EvaluatedBytesOp::CeilIntNative
@@ -1854,7 +1881,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::VecAsTextNative
             | EvaluatedBytesOp::RegexpSubstrNative
             | EvaluatedBytesOp::RegexpReplaceNative
-            | EvaluatedBytesOp::RegexpNullBytesNative,
+            | EvaluatedBytesOp::RegexpNullBytesNative
+            | EvaluatedBytesOp::UnaryPlusBytesNative,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {
@@ -1924,7 +1952,9 @@ fn materialize_computed(
             | EvaluatedBytesOp::VecNegativeInnerProductNative
             | EvaluatedBytesOp::VecCosineDistanceNative
             | EvaluatedBytesOp::VecL2NormNative
-            | EvaluatedBytesOp::VecRealNullNative,
+            | EvaluatedBytesOp::VecRealNullNative
+            | EvaluatedBytesOp::UnaryPlusBitsNative
+            | EvaluatedBytesOp::UnaryMinusBitsNative,
             ComputedValue::Ieee754Bits(value),
         ) => {
             match value.metadata() {
@@ -1938,7 +1968,11 @@ fn materialize_computed(
             | EvaluatedBytesOp::FloorDecimalNative
             | EvaluatedBytesOp::RoundDecimalNative
             | EvaluatedBytesOp::TruncateDecimalNative
-            | EvaluatedBytesOp::UuidTimestampNative,
+            | EvaluatedBytesOp::UuidTimestampNative
+            | EvaluatedBytesOp::UnaryPlusDecimalNative
+            | EvaluatedBytesOp::UnaryMinusDecimalNative
+            | EvaluatedBytesOp::UnaryMinusIntConstantNative
+            | EvaluatedBytesOp::UnaryMinusUIntConstantNative,
             ComputedValue::Decimal(value),
         ) => {
             match value.metadata() {

@@ -9031,3 +9031,204 @@ fn evaluated_ascii_regexp_zero_slots_reject_named_calls_and_null_paths() {
         assert!(warnings_of(&session).is_empty(), "{sql}");
     }
 }
+
+#[test]
+fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_unary_sql (id INT PRIMARY KEY, i BIGINT, u BIGINT UNSIGNED, \
+         d DECIMAL(6,2), r DOUBLE, s VARCHAR(16))",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_unary_sql VALUES \
+         (1,2,3,1.25,1.5e0,'2.5'),(2,0,0,0.00,0.0e0,'-0.0'),\
+         (3,-9223372036854775808,9223372036854775808,-2.50,0.0e0,'1界'),\
+         (4,1,9223372036854775809,2.00,2.0e0,'0'),(5,NULL,NULL,NULL,NULL,NULL)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    // Original rewriter unary-plus is the argument itself. Minus keeps each
+    // numeric domain, while its string arm uses the original real coercion.
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns(
+            "SELECT -i,-u,+d,-d,+r,-r,+s,-s FROM shared_unary_sql \
+         WHERE id IN (1,2,5) ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected stored unary rows")
+    };
+    assert_eq!(rows.len(), 3);
+    for row in &rows {
+        assert_eq!(row.len(), 8);
+    }
+    for (value, expected) in rows[0]
+        .iter()
+        .zip(["-2", "-3", "1.25", "-1.25", "1.5", "-1.5", "2.5", "-2.5"])
+    {
+        assert_eq!(cell_text(value), expected);
+    }
+    for index in [0, 1] {
+        assert!(matches!(&rows[0][index], Datum::Int(_)));
+    }
+    for index in [2, 3] {
+        assert!(matches!(&rows[0][index], Datum::Decimal(_)));
+    }
+    for index in [4, 5, 7] {
+        assert!(matches!(&rows[0][index], Datum::Real(_)));
+    }
+    assert!(matches!(&rows[0][6], Datum::String(_)));
+    assert_eq!(rows[1][0], Datum::Int(0));
+    assert_eq!(rows[1][1], Datum::Int(0));
+    assert_eq!(cell_text(&rows[1][2]), "0.00");
+    assert_eq!(cell_text(&rows[1][3]), "0.00");
+    assert_eq!(cell_text(&rows[1][6]), "-0.0");
+    // Hand-derived from unary f64 negation and StrToFloat: +0 -> -0;
+    // the stored text -0.0 first parses to -0, then negates to +0.
+    for (index, bits) in [
+        (4, 0.0_f64.to_bits()),
+        (5, (-0.0_f64).to_bits()),
+        (7, 0.0_f64.to_bits()),
+    ] {
+        assert!(matches!(&rows[1][index], Datum::Real(value) if value.to_bits() == bits));
+    }
+    assert_eq!(rows[2], vec![Datum::Null; 8]);
+    assert!(warnings_of(&session).is_empty());
+
+    // Old source vectors: unsigned 2^63 can negate to signed MIN; only
+    // overflowing CONSTANTS promote to Decimal (builtin_op's typeInfer).
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns(
+            "SELECT +7,-7,+'3',-'3',-9223372036854775808,\
+         -(-9223372036854775808),-9223372036854775809",
+        )
+        .unwrap()
+    else {
+        panic!("expected original unary constant domains")
+    };
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row.len(), 7);
+    assert_eq!(row[0], Datum::Int(7));
+    assert_eq!(row[1], Datum::Int(-7));
+    assert!(matches!(&row[2], Datum::String(_)));
+    assert_eq!(cell_text(&row[2]), "3");
+    assert_eq!(row[3], Datum::Real(-3.0));
+    assert_eq!(row[4], Datum::Int(i64::MIN));
+    for (index, expected) in [(5, "9223372036854775808"), (6, "-9223372036854775809")] {
+        assert!(matches!(&row[index], Datum::Decimal(_)));
+        assert_eq!(cell_text(&row[index]), expected);
+    }
+    assert!(warnings_of(&session).is_empty());
+
+    // Source-derived UTF-8 combination: the byte-prefix scan stops at 界,
+    // so only minus coerces 1界 to 1 and emits one original 1292 warning.
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns("SELECT -u,+i,+s,-s FROM shared_unary_sql WHERE id=3")
+        .unwrap()
+    else {
+        panic!("expected unsigned boundary and string coercion")
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][0], Datum::Int(i64::MIN));
+    assert_eq!(rows[0][1], Datum::Int(i64::MIN));
+    assert!(matches!(&rows[0][2], Datum::String(_)));
+    assert_eq!(cell_text(&rows[0][2]), "1界");
+    assert_eq!(rows[0][3], Datum::Real(-1.0));
+    assert_eq!(
+        session.warnings(),
+        &[SqlWarning {
+            level: WarningLevel::Warning,
+            code: 1292,
+            message: "Truncated incorrect DOUBLE value: '1界'".to_owned(),
+        }]
+    );
+
+    // Unlike ABS, old unary integer overflow quotes the negated VALUE, not
+    // the column name. The signed minimum consequently carries two minuses.
+    for (column, id, operand) in [
+        ("i", 3, "--9223372036854775808"),
+        ("u", 4, "-9223372036854775809"),
+    ] {
+        let sql = format!("SELECT -{column} FROM shared_unary_sql WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        assert!(
+            matches!(&error, DriverError::Exec(tidb_executor::ExecError::Eval(
+            tidb_executor::EvalError::DataOutOfRange { value: "BIGINT", expression }
+        )) if expression.as_str() == operand),
+            "{sql}: {error:?}"
+        );
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1690, "{sql}");
+        assert_eq!(mysql.state, *b"22003", "{sql}");
+        assert_eq!(
+            mysql.message,
+            format!("BIGINT value is out of range in '{operand}'"),
+            "{sql}"
+        );
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+
+    let mut zero = Session::new();
+    zero.run("SET NAMES utf8mb4").unwrap();
+    zero.run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    zero.run("CREATE TABLE shared_unary_zero (i BIGINT, u BIGINT UNSIGNED, d DECIMAL(6,2), r DOUBLE, s VARCHAR(16), n BIGINT)").unwrap();
+    zero.run("INSERT INTO shared_unary_zero VALUES (2,3,1.25,1.5e0,'2.5',NULL)")
+        .unwrap();
+    assert!(zero
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // SQL plus is eliminated even for strings/NULL, not a fabricated runtime
+    // worker call. Do not demand PoolResource or a plus trace for this identity.
+    let StmtOutput::Rows { rows, .. } = zero
+        .run_with_columns("SELECT +i,+u,+d,+r,+s,+n FROM shared_unary_zero")
+        .unwrap()
+    else {
+        panic!("expected plus identity without a worker")
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].len(), 6);
+    for (value, expected) in rows[0].iter().zip(["2", "3", "1.25", "1.5", "2.5", "NULL"]) {
+        assert_eq!(cell_text(value), expected);
+    }
+    assert_eq!(rows[0][0], Datum::Int(2));
+    assert_eq!(rows[0][1], Datum::UInt(3));
+    assert!(matches!(&rows[0][4], Datum::String(_)));
+    assert!(warnings_of(&zero).is_empty());
+    for column in ["i", "u", "d", "r", "s", "n"] {
+        let sql = format!("SELECT -{column} FROM shared_unary_zero");
+        let error = zero.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("stored unary minus must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(warnings_of(&zero).is_empty(), "{sql}");
+    }
+}

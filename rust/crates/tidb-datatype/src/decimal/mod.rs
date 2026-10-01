@@ -837,12 +837,7 @@ impl Decimal {
 
     /// Returns this value with its sign reversed, canonicalizing zero.
     pub fn negate(&self) -> Self {
-        Decimal::new_with_storage(
-            !self.negative,
-            self.digits.clone(),
-            self.scale,
-            self.storage_scale,
-        )
+        self.shared_native_math(NativeDecimalOp::Negate)
     }
 
     /// Returns the non-negative magnitude of this value.
@@ -2231,6 +2226,40 @@ use codec::{
 };
 
 pub use codec::{decimal_bin_size, DecimalCodecError, DecimalCodecFailure, DecimalCodecWarning};
+
+#[cfg(test)]
+mod native_negate_tests {
+    use super::Decimal;
+
+    #[test]
+    fn native_negate_facade_preserves_coefficient_and_hidden_scale() {
+        // Fixed sign expectations; original ordinary-value construction clears
+        // declared shape and negative zero without changing retained digits.
+        let wide_digits = format!("{}{}", "9".repeat(108), "1".repeat(120));
+        let inputs = [
+            (
+                Decimal::from_test_parts(false, "333333333", 4, 9).with_declared_shape(12, 4),
+                true,
+            ),
+            (
+                Decimal::from_test_parts(true, &wide_digits, 31, 120).with_declared_shape(228, 120),
+                false,
+            ),
+            (
+                Decimal::new_with_storage_preserving_zero_sign(true, "000".to_owned(), 3, 3),
+                false,
+            ),
+        ];
+        for (input, expected_negative) in inputs {
+            let result = input.negate();
+            assert_eq!(result.is_negative(), expected_negative);
+            assert_eq!(result.coefficient_digits(), input.coefficient_digits());
+            assert_eq!(result.scale(), input.scale());
+            assert_eq!(result.storage_scale(), input.storage_scale());
+            assert_eq!(result.declared_shape(), None);
+        }
+    }
+}
 
 #[cfg(test)]
 mod native_math_bridge_tests {

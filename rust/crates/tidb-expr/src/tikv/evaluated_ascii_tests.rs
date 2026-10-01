@@ -1195,6 +1195,19 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::LastDayTextNative => {
             panic!("temporal formatting needs its original text, core and demand domains")
         }
+        EvaluatedBytesOp::UnaryPlusIntNative
+        | EvaluatedBytesOp::UnaryPlusBitsNative
+        | EvaluatedBytesOp::UnaryPlusDecimalNative
+        | EvaluatedBytesOp::UnaryPlusBytesNative
+        | EvaluatedBytesOp::UnaryMinusIntNative
+        | EvaluatedBytesOp::UnaryMinusUIntNative
+        | EvaluatedBytesOp::UnaryMinusIntConstantNative
+        | EvaluatedBytesOp::UnaryMinusUIntConstantNative
+        | EvaluatedBytesOp::UnaryMinusBitsNative
+        | EvaluatedBytesOp::UnaryMinusDecimalNative
+        | EvaluatedBytesOp::UnaryNullNative => {
+            panic!("unary signs need their actual value kind and operand descriptor")
+        }
         EvaluatedBytesOp::RegexpLikeNative
         | EvaluatedBytesOp::RegexpSubstrNative
         | EvaluatedBytesOp::RegexpInstrNative
@@ -1561,6 +1574,156 @@ fn format_time_pb(
         field,
         args,
     )
+}
+
+#[test]
+fn unary_dispatch_keeps_metadata_boundaries_and_scope_admission() {
+    use crate::expression::Expression;
+    use crate::ops::Operand;
+    use tidb_ast::UnaryOp;
+    use tidb_datatype::{Collation, Decimal};
+
+    let signed = Expression::Column(crate::column::Column::new(
+        1,
+        FieldType::new(FieldTypeCode::LongLong),
+    ));
+    let unsigned = Expression::Column(crate::column::Column::new(
+        2,
+        FieldType::new(FieldTypeCode::LongLong).with_unsigned(true),
+    ));
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        let run = |op, value, operand| {
+            let (result, observation) =
+                observe_wide_math(|| crate::ops::eval_unary(op, value, operand, columns));
+            assert_wide_math_c4(observation);
+            result
+        };
+        // The original PLUS branches return these exact value kinds/metadata.
+        for input in [
+            Datum::Null,
+            Datum::Int(i64::MIN),
+            Datum::UInt(u64::MAX),
+            Datum::Real(-0.0),
+            Datum::new_bytes([0xff, b'a']),
+            Datum::new_collation_string([0xff, b'A'], Collation::Utf8Mb4GeneralCi),
+        ] {
+            let result = run(UnaryOp::Plus, input.clone(), Operand::Literal).unwrap();
+            assert_eq!(
+                std::mem::discriminant(&result),
+                std::mem::discriminant(&input)
+            );
+            assert_eq!(result, input);
+            if let (Datum::String(result), Datum::String(input)) = (&result, &input) {
+                assert_eq!(result.bytes(), input.bytes());
+                assert_eq!(result.collation(), input.collation());
+            }
+        }
+        // Float32 is tagged f64 storage: this low payload bit is lost by f32.
+        for (op, expected_bits) in [
+            (UnaryOp::Plus, 0x3ff0_0000_0000_0001_u64),
+            (UnaryOp::Minus, 0xbff0_0000_0000_0001_u64),
+        ] {
+            let result = run(
+                op,
+                Datum::Float32(f64::from_bits(0x3ff0_0000_0000_0001)),
+                Operand::Literal,
+            )
+            .unwrap();
+            let Datum::Float32(value) = result else {
+                panic!("unary Float32 lost its original value kind")
+            };
+            assert_eq!(value.to_bits(), expected_bits);
+        }
+        let stamped = Decimal::from_literal("1.20").with_declared_shape(12, 2);
+        for (op, text, shape) in [
+            (UnaryOp::Plus, "1.20", Some((12, 2))),
+            (UnaryOp::Minus, "-1.20", None),
+        ] {
+            let result = run(op, Datum::Decimal(stamped.clone()), Operand::Literal).unwrap();
+            let Datum::Decimal(value) = result else {
+                panic!("unary decimal lost its original value kind")
+            };
+            assert_eq!(value.to_string(), text);
+            assert_eq!(
+                (value.scale(), value.storage_scale()),
+                (stamped.scale(), stamped.storage_scale())
+            );
+            assert_eq!(value.declared_shape(), shape);
+        }
+        // Source constant promotion versus the original column overflow policy.
+        for (value, operand, expected) in [
+            (Datum::Int(7), Operand::Literal, Ok(Datum::Int(-7))),
+            (
+                Datum::Int(i64::MIN),
+                Operand::Literal,
+                Ok(Datum::Decimal(Decimal::from_literal("9223372036854775808"))),
+            ),
+            (
+                Datum::UInt(1_u64 << 63),
+                Operand::Literal,
+                Ok(Datum::Int(i64::MIN)),
+            ),
+            (
+                Datum::UInt(u64::MAX),
+                Operand::Literal,
+                Ok(Datum::Decimal(Decimal::from_literal(
+                    "-18446744073709551615",
+                ))),
+            ),
+            (
+                Datum::Int(i64::MIN),
+                Operand::Expr(&signed),
+                Err(EvalError::DataOutOfRange {
+                    value: "BIGINT",
+                    expression: "--9223372036854775808".to_owned(),
+                }),
+            ),
+            (Datum::Int(7), Operand::Expr(&signed), Ok(Datum::Int(-7))),
+            (
+                Datum::UInt(u64::MAX),
+                Operand::Expr(&unsigned),
+                Err(EvalError::DataOutOfRange {
+                    value: "BIGINT",
+                    expression: "-18446744073709551615".to_owned(),
+                }),
+            ),
+            (
+                Datum::Int(i64::MIN),
+                Operand::Expr(&unsigned),
+                Ok(Datum::Int(i64::MIN)),
+            ),
+        ] {
+            assert_eq!(run(UnaryOp::Minus, value, operand), expected);
+        }
+    });
+    let current = scope_worker_observation(&scope);
+    assert_eq!(current.2 + current.3, current.4);
+    assert!(current.4 <= TEST_WORKER_CAP);
+    assert!(!scope.busy.get());
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for op in [UnaryOp::Plus, UnaryOp::Minus] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::ops::eval_unary(op, Datum::Null, Operand::Literal, columns)
+            });
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 #[test]
@@ -3518,7 +3681,10 @@ fn construct_time_dispatch_keeps_date_source_values_and_real_zero_time_carriers(
         assert_wide_math_c4(observation);
         let (result, observation) = observe_wide_math(|| calendar_fields_ast("FROM_DAYS(-140)", columns));
         assert_eq!(result, Ok(zero.clone()));
-        assert_wide_math_c4(observation);
+        // Unary minus and FROM_DAYS now execute independent worker recipes.
+        assert_eq!(observation.facade_entries, 2);
+        assert!(observation.before_kernel_invocations.is_some());
+        assert!(observation.after_kernel_invocations.is_some());
         for (name, values, code, expected) in [
             ("FROM_DAYS", vec![Datum::Int(735_000)], FieldTypeCode::Date, Datum::Time(Time::new(CoreTime::from_date(2012, 5, 12, 0, 0, 0, 0), TimeType::Date, 0).unwrap())),
             ("FROM_DAYS", vec![Datum::Int(-140)], FieldTypeCode::Date, zero.clone()),
