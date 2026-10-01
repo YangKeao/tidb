@@ -144,7 +144,7 @@ impl std::error::Error for AuthError {}
 
 /// Calculates SHA-1 using the same byte contract as Go's helper.
 pub fn sha1_hash(input: &[u8]) -> [u8; 20] {
-    Sha1::digest(input).into()
+    tidb_query_crypto::sha1_hash(input)
 }
 
 /// Calculates SHA-256 using the same byte contract as Go's helper.
@@ -169,18 +169,7 @@ pub fn check_scrambled_password(salt: &[u8], password_hash: &[u8], auth: &[u8]) 
 
 /// Encodes plaintext bytes as MySQL's uppercase `*SHA1(SHA1(password))` form.
 pub fn encode_password_bytes(password: &[u8]) -> String {
-    if password.is_empty() {
-        return String::new();
-    }
-    let stage_one = sha1_hash(password);
-    let stage_two = sha1_hash(&stage_one);
-    let mut encoded = String::with_capacity(41);
-    encoded.push('*');
-    for byte in stage_two {
-        use fmt::Write as _;
-        let _ = write!(encoded, "{byte:02X}");
-    }
-    encoded
+    tidb_query_crypto::encode_password_bytes(password)
 }
 
 /// Encodes a UTF-8 plaintext password using the source byte algorithm.
@@ -423,157 +412,16 @@ pub fn hash_password_with_salt_bytes(password: &[u8], salt: &[u8], plugin: &str)
 }
 
 /// Incremental SM3 state transcreated from TiDB's Go implementation.
-#[derive(Debug, Clone)]
-pub struct Sm3 {
-    digest: [u32; 8],
-    length_bits: u64,
-    pending: Vec<u8>,
-}
-
-impl Default for Sm3 {
-    fn default() -> Self {
-        Self {
-            digest: [
-                0x7380_166f,
-                0x4914_b2b9,
-                0x1724_42d7,
-                0xda8a_0600,
-                0xa96f_30bc,
-                0x1631_38aa,
-                0xe38d_ee4d,
-                0xb0fb_0e4e,
-            ],
-            length_bits: 0,
-            pending: Vec::new(),
-        }
-    }
-}
-
-impl Sm3 {
-    /// Underlying block size.
-    pub const fn block_size(&self) -> usize {
-        64
-    }
-
-    /// Digest byte size.
-    pub const fn size(&self) -> usize {
-        32
-    }
-
-    /// Resets the state to the SM3 initialization vector.
-    pub fn reset(&mut self) {
-        *self = Self::default();
-    }
-
-    /// Adds bytes to the running hash and returns their source byte count.
-    pub fn write(&mut self, input: &[u8]) -> usize {
-        self.length_bits = self
-            .length_bits
-            .wrapping_add((input.len() as u64).wrapping_mul(8));
-        self.pending.extend_from_slice(input);
-        let complete = self.pending.len() / 64 * 64;
-        if complete != 0 {
-            let blocks = self.pending[..complete].to_vec();
-            compress_sm3_blocks(&mut self.digest, &blocks);
-            self.pending.drain(..complete);
-        }
-        input.len()
-    }
-
-    /// Mirrors Go's concrete `Sum`: input is written, but only the digest returns.
-    pub fn sum(&mut self, input: &[u8]) -> Vec<u8> {
-        self.write(input);
-        let mut final_digest = self.digest;
-        let mut padded = self.pending.clone();
-        padded.push(0x80);
-        while padded.len() % 64 != 56 {
-            padded.push(0);
-        }
-        padded.extend_from_slice(&self.length_bits.to_be_bytes());
-        compress_sm3_blocks(&mut final_digest, &padded);
-        let mut output = Vec::with_capacity(32);
-        for word in final_digest {
-            output.extend_from_slice(&word.to_be_bytes());
-        }
-        output
-    }
-}
+pub use tidb_query_crypto::Sm3;
 
 /// Constructs a reset SM3 state.
 pub fn new_sm3() -> Sm3 {
-    Sm3::default()
+    tidb_query_crypto::new_sm3()
 }
 
 /// Calculates one SM3 digest.
 pub fn sm3_hash(input: &[u8]) -> [u8; 32] {
-    let mut hasher = new_sm3();
-    hasher.write(input);
-    hasher.sum(&[]).try_into().expect("SM3 output is 32 bytes")
-}
-
-fn p0(value: u32) -> u32 {
-    value ^ value.rotate_left(9) ^ value.rotate_left(17)
-}
-
-fn p1(value: u32) -> u32 {
-    value ^ value.rotate_left(15) ^ value.rotate_left(23)
-}
-
-fn compress_sm3_blocks(digest: &mut [u32; 8], mut input: &[u8]) {
-    while input.len() >= 64 {
-        let mut w = [0_u32; 68];
-        let mut w1 = [0_u32; 64];
-        for (index, chunk) in input[..64].as_chunks::<4>().0.iter().enumerate() {
-            w[index] = u32::from_be_bytes(*chunk);
-        }
-        for index in 16..68 {
-            w[index] = p1(w[index - 16] ^ w[index - 9] ^ w[index - 3].rotate_left(15))
-                ^ w[index - 13].rotate_left(7)
-                ^ w[index - 6];
-        }
-        for index in 0..64 {
-            w1[index] = w[index] ^ w[index + 4];
-        }
-        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = *digest;
-        for index in 0..64 {
-            let constant: u32 = if index < 16 { 0x79cc_4519 } else { 0x7a87_9d8a };
-            let ss1 = a
-                .rotate_left(12)
-                .wrapping_add(e)
-                .wrapping_add(constant.rotate_left(index as u32))
-                .rotate_left(7);
-            let ss2 = ss1 ^ a.rotate_left(12);
-            let ff = if index < 16 {
-                a ^ b ^ c
-            } else {
-                (a & b) | (a & c) | (b & c)
-            };
-            let gg = if index < 16 {
-                e ^ f ^ g
-            } else {
-                (e & f) | ((!e) & g)
-            };
-            let tt1 = ff.wrapping_add(d).wrapping_add(ss2).wrapping_add(w1[index]);
-            let tt2 = gg.wrapping_add(h).wrapping_add(ss1).wrapping_add(w[index]);
-            d = c;
-            c = b.rotate_left(9);
-            b = a;
-            a = tt1;
-            h = g;
-            g = f.rotate_left(19);
-            f = e;
-            e = p0(tt2);
-        }
-        digest[0] ^= a;
-        digest[1] ^= b;
-        digest[2] ^= c;
-        digest[3] ^= d;
-        digest[4] ^= e;
-        digest[5] ^= f;
-        digest[6] ^= g;
-        digest[7] ^= h;
-        input = &input[64..];
-    }
+    tidb_query_crypto::sm3_hash(input)
 }
 
 #[cfg(test)]

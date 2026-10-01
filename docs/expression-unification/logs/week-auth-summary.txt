@@ -1,0 +1,96 @@
+Checkpoint: week-auth-five-38; previous: daynumber-four-37. Functional119->124/245, final acceptance0/245; five families WEEK/WEEKOFYEAR/YEARWEEK/PASSWORD/SM3, eight operations, no additional helper/package credit.
+COUNTS: 16 test-Cargo attempts /15 actual test runs =13 green+2 CURRENT baseline non-green full runs; parser-source compile failure is NOT a test run. Plus TWO successful offline metadata commands, counted separately. Compilefail1/static-proof-fail1/fmtfail0; no Cargo launch failure/same-target retry/new product RED. Not all commands first-pass.
+PROVENANCE: parent owns commands/exits/source/coverage/comparisons; writer globbed, grepped/read and sha256sum-hashed all16 logs (exit0), without build/test/fmt/new source audit. RAW=/home/agent/tidb/expression-unification/logs.
+JAN CWD=/home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv pin nightly-2026-01-30-x86_64-unknown-linux-gnu.
+AUG CWD=/home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb pin nightly-2026-08-22-x86_64-unknown-linux-gnu.
+Exact TEST template: set -o pipefail; <COMMAND> 2>&1 | tee <OUTPUT> >/dev/null; OUTPUT=../logs/<LOG> JAN or ../../logs/<LOG> AUG. Full output retained, terminal suppressed. All test commands --locked and --test-threads=1, no --exact; Finished times are not benchmarks.
+Filters are literal: native week is substring week (overlaps D/weekday/date-format), not an exact source-only group; parser auth_shared has NO name filter. Full expr/unistore use --lib without a name filter.
+METADATA [JAN; exit0; not a test]: ../tools/cargo-tikv metadata --offline --format-version 1 >../logs/week-auth-tikv-metadata.json
+METADATA [AUG; exit0; not a test]: ../../tools/cargo-tidb metadata --offline --format-version 1 >../../logs/week-auth-native-metadata.json
+
+LOG [JAN]: week-auth-tikv-time.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib codec::mysql::time:: -- --test-threads=1
+EXIT: 0; compile2.06s; test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 361 filtered out; finished in 0.01s
+SHA256: 545c2502c76eba9b6255d741143308609f50cf555272f69a604691c83b371002
+LOG [AUG]: week-auth-native-core-time.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-datatype --lib core_time:: -- --test-threads=1
+EXIT: 0; compile1.95s; test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 423 filtered out; finished in 0.00s
+SHA256: c2335c46026be40e962511f1c5f045546eb9aa9f4948069d994bd1fe5eeff035
+LOG [JAN]: week-auth-tikv-crypto.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_crypto --lib -- --test-threads=1
+EXIT: 0; compile0.67s; test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+SHA256: 5a6ef3865c0085417dcfcd189c6a965819119ecbb49ef5277a34c3908b1e4ff3
+LOG [AUG]: week-auth-parser-unit.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-parser --lib auth::tests:: -- --test-threads=1
+EXIT: 0; compile3.98s; test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 729 filtered out; finished in 0.06s
+SHA256: efda17d5d30d03759f8f907d9039d7492bb91bfaff2bbb391fc695f71a3be8cd
+LOG [AUG / compile failure, NOT actual test run]: week-auth-parser-source.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-parser --test all parser_auth_package_source:: -- --test-threads=1
+EXIT: 101; no Finished/no tests executed. Three E0061 errors in old parser_hint_source.rs112/127/351:3 args vs select/hint.rs748:4 args. All target did not run and is not restored by auth_shared.
+SHA256: 9e360d3dfb93b81b2d14a4a36033d8d4b6ff0bf633f3bf2b78c3ad7783e6503d
+LOG [AUG / isolated original auth fixture]: week-auth-parser-isolated.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-parser --test auth_shared -- --test-threads=1
+EXIT: 0; compile0.49s; test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+SHA256: 351f12ebb1dab0bbadfc4ec01a4a09096c390f7aec8c39d404dcad6061753697
+LOG [JAN]: week-auth-tikv-local.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+EXIT: 0; compile12.55s; 264 discovered, ignore preexisting; test result: ok. 263 passed; 0 failed; 1 ignored; 0 measured; 496 filtered out; finished in 0.19s
+SHA256: 77e0b44b65160edf40f70cd219963c79dc7d6aacf8a74ab8ec79f255a77f1961
+LOG [JAN]: week-auth-tikv-kernels.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_time:: -- --test-threads=1
+EXIT: 0; compile0.12s; test result: ok. 62 passed; 0 failed; 0 ignored; 0 measured; 698 filtered out; finished in 0.01s
+SHA256: 9d6c8221d2cb109a8776cfbb6c35d6d60780a6e45589f2b6d3817377543a8951
+LOG [JAN]: week-auth-tikv-encryption.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_encryption:: -- --test-threads=1
+EXIT: 0; compile0.12s; test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 749 filtered out; finished in 0.00s
+SHA256: 2536b12672cc7f9e8ae78c7a2b986b0320ffc41aa14548a74af2d76e0d4a5b69
+LOG [AUG]: week-auth-sql.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+EXIT: 0; compile33.38s; test result: ok. 80 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 1.21s
+SHA256: 2ec22734807a8bbde9d5577b438e8608c76a150aef53aaad8cd6f4b1d4a159d4
+LOG [AUG]: week-auth-dispatch.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib week_auth_dispatch_ -- --test-threads=1
+EXIT: 0; compile10.76s; test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1559 filtered out; finished in 0.00s
+SHA256: 8374a8d3049ecf37bd664e07c0f4474d9f6a412f94799b6660011abf37e98ddb
+LOG [AUG]: week-auth-native-week.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib week -- --test-threads=1
+EXIT: 0; compile0.12s; test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 1550 filtered out; finished in 0.00s
+SHA256: 2c5670f40345409182301d4fd180e8363b35598df01ba0525b0f742d136160a0
+LOG [AUG]: week-auth-native-crypto.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib builtin_ext::crypto::tests:: -- --test-threads=1
+EXIT: 0; compile0.12s; test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 1547 filtered out; finished in 0.00s
+SHA256: da1503755ccbcc099b7893d7379bc09c2eee10582c721730c58cf35fcbee341e
+LOG [AUG]: week-auth-legacy.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_week_ -- --test-threads=1
+EXIT: 0; compile13.66s; test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 205 filtered out; finished in 0.00s
+SHA256: 33b3ce60307d680bca67c27ea70d950b33a090e455f040f689ffae9004ae9aca
+LOG [AUG / CURRENT baseline non-green]: week-auth-unistore-full.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+EXIT: 101; compile0.13s; 207 discovered; test result: FAILED. 193 passed; 1 failed; 13 ignored; 0 measured; 0 filtered out; finished in 2.98s
+SHA256: cf5c169c6578d417b2b284e96720d7bc401685194a09327553e49540adc9b95a
+LOG [AUG / CURRENT baseline non-green]: week-auth-expr-full.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+EXIT: 101; compile0.12s; 1562 discovered; test result: FAILED. 1464 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.79s
+SHA256: 67b09e0490f85e66111a523b0a7e58c3115e3dd4b3d44bc7e9236c2101e65628
+
+CONTRACT / COVERAGE / COST
+WeekDateTextNative yields original owned text/None; the two-stage text route uses complete sequential worker calls, not recursion inside coercion/packing. Date failure skips mode demand/coercion; explicit NULL mode0. SQL WEEK default getter stays first, PB observedNULL does not read it; original PB/legacy demand is not generic AST laziness. Probe zero-slot failure can precede an as-yet-undemanded mode error. Repeated parse/two leases or two unscoped one-shots are explicit overhead, not a performance claim.
+Shared week macro preserves i32/i64 domains, day-comparison cast, %7, year0-nonleap week rule and distinct WEEK/YEARWEEK rawzero guards; legacy raw mode0 remains nonvalidating. Eight operations add NO role/driver/DTO/result kind/report. C expr_eval extends only the NullWitness arm for week; existing TimeCoreBits validators unchanged.
+Auth pureleaf uniquely owns original sha1_hash/encode_password_bytes/Sm3 and all streaming helpers. Parser public paths delegate/reexport; other SHA1 streaming stays. Sum(x) first writes x, only returns digest, mutates live state not caller bytes; reset/chunks/write-after-sum retained. PASSWORD frontend1681 precedes hash_input/NULL/admission; native doubleRAW SHA1 uppercase*hex, wireCPP doubleHEX/lower/Other-warning stays distinct. SM3 lowerhex remains original byte domain; no provider replacement/FIPS/general-crypto-framework claim, existing FIPS shim untouched.
+SQL80 includes E3: runtime default-week-format1->0, explicitNULL mode, year0 mode3 sentinel; auth NULL/empty/abc with PASSWORD1681 EACH row. SM3empty asserts only64lowerhex SHAPE, not a new golden; SM3metadata40/PWD41 remain original. ALL15 zero-slot calls Resource:3badDATE keep1292,3PASSWORD keep1681, remaining9 warnings empty. D3 two-facade observer is NOT cumulative; legacy2 covers actual rawTime/columns/NULL/extras/consumer errors. No old fixture/expected edits or new-provider expected oracle.
+Five manifests/two locks: leaf's sole dependency sha1=0.10; parent compared every old package object and allowed only leaf+approved dependency edges. CPPsha1.10.6/native.10.7 retained, no unrelated upgrade. Native parser gained auth_shared in the SAME Cargo.toml, pointing directly to original tests/parser_auth_package_source.rs; no copied fixture. Metadata commands above are separate from all16 test-Cargo attempts.
+
+COMPILE / STATIC-PROOF DISCLOSURE
+Parser all compilefail1: tests/parser_hint_source.rs112/127/351 call parse_hint with3 arguments; src/select/hint.rs748 requires4. Parent proved both sources, original auth fixture and aggregate script byte-identical to HEAD16404402. No hint source fix. No all-target tests ran, no all-target restoration claim, no same-target retry; isolated auth_shared20 and lib auth6 are the actual passed auth evidence.
+Staticproof1: whole-SM3 whitespace-only assertion failed because CPP formatter reflowed one Sum doc into two /// lines. Diff showed only that doc change; canonicalizing THAT comment made the whole section byte-identical. Not a blanket raw whole-block identity claim, algorithm/source repair or product RED. SHA1/encode/wirePASSWORD bodies byte-identical. Earlier A leaf-directory glob ENOENT was pre-creation discovery only, not a Cargo launch/compile failure.
+Parent final23 Rust sources (TiKV12/native11) pinned-format checks passed FIRST format check in both repositories; both diffs0. fmtfail0 this round, not Round38's fmtfail1. Staticproof/compile failures above prevent any all-commands-first-pass claim. No new algorithm/expected edits to hide failures.
+
+CURRENT FULL FAILURE COMPARISONS: parent compared complete failure sections with daynumber-expr-full.log and daynumber-unistore-full.log, normalizing ONLY panic-heading thread IDs. No location mapping; these normalized section hashes are NOT whole-log hashes and do not make either full suite green.
+EXPR same complete normalized bytes, SHA25680be9bda05e5bf630e9c246ca9523d23f82c122eaaeec6e220b1b00cec436615; duration stays crates/tidb-datatype/src/duration.rs:212:55, no source-location adjustment. Four old failures:
+- pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation
+- tests::builtin_info_json_math_source::exp (original EXP(100_000.0) FloatOverflow assertion)
+- tests::builtin_math_misc_op_source::vectorized_builtin_op_func
+- time_fn::tests::str_to_date_partial_formats_follow_no_zero_date
+UNISTORE same complete normalized bytes, SHA256e285bfdba646f2d01f85b485ae317cc07c51b78cf0ae6d664c0fb2bc39259759; tests_mockstore_part1_go_parity::closure_executor_selection_over_point_range_answers_zero_rows, TruncatedWrongValue("Truncated incorrect DECIMAL value: 'abc'"), src/tests_mockstore_part1_go_parity.rs:194:5 unchanged. CURRENT193 passed/1 failed/13 ignored, not an unrun historical gate.
+
+FREEZE: only week-auth-checkpoint.md and this summary written under this authorization. No additional source audit/source/other-doc/Plan/JSON/index/build/test/fmt/old-expected edits by writer. Parser all-target compilation remains blocked; release/profile/panic-test adaptation/lint/M6/production-root/deep-wide guard/internal peak-OOM/zero-copy-performance/full temporal-crypto-Go-package/full-workspace gates remain unestablished. 124/245 functional, final0/245; NOT PR readiness.

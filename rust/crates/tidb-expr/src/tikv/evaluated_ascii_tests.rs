@@ -1169,6 +1169,16 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::TsoLogicalNative => {
             panic!("date differences, day counts and TSO need their original arguments")
         }
+        EvaluatedBytesOp::WeekDateTextNative
+        | EvaluatedBytesOp::WeekTextNative
+        | EvaluatedBytesOp::YearWeekTextNative
+        | EvaluatedBytesOp::WeekOfYearTextNative
+        | EvaluatedBytesOp::WeekNullNative
+        | EvaluatedBytesOp::WeekCoreNative
+        | EvaluatedBytesOp::PasswordNative
+        | EvaluatedBytesOp::Sm3Native => {
+            panic!("week and auth calls need their original argument domains")
+        }
         EvaluatedBytesOp::CompressGoNative | EvaluatedBytesOp::UncompressNative => {
             panic!("compression calls need their original nullable bytes")
         }
@@ -1362,6 +1372,438 @@ fn date_diff_days_function(
     } else {
         ScalarFunction::new(tidb_ast::CiString::new(name), result_type, args)
     }
+}
+
+struct WeekAuthMode {
+    mode: Cell<i64>,
+    reads: RefCell<Vec<bool>>,
+}
+
+impl Columns for WeekAuthMode {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        None
+    }
+    fn default_week_format(&self) -> i64 {
+        let before_probe = EVAL_ONE_OBSERVATION.with(|slot| {
+            slot.borrow().as_ref().is_some_and(|value| {
+                value.facade_entries == 0
+                    && value.before_kernel_invocations.is_none()
+                    && value.after_kernel_invocations.is_none()
+            })
+        });
+        self.reads.borrow_mut().push(before_probe);
+        self.mode.get()
+    }
+}
+
+fn assert_week_auth_two_calls(observation: EvalOneObservation) {
+    assert_eq!(observation.facade_entries, 2);
+    // The observer retains FIRST-before and LAST-after across different workers.
+    // These are actual getters, not a same-worker delta or cumulative counter.
+    assert!(observation.before_kernel_invocations.is_some());
+    assert!(observation
+        .after_kernel_invocations
+        .is_some_and(|value| value > 0));
+}
+
+fn week_auth_pb(
+    values: Vec<Datum>,
+    unreadable_tail: bool,
+) -> crate::scalar_function::ScalarFunction {
+    use crate::expression::Expression;
+    use crate::scalar_function::{PbBuiltin, ScalarFunction};
+    let field = FieldType::new(FieldTypeCode::LongLong);
+    let mut args = values
+        .into_iter()
+        .map(|value| {
+            let code = if matches!(&value, Datum::Int(_)) {
+                FieldTypeCode::LongLong
+            } else {
+                FieldTypeCode::VarString
+            };
+            Expression::Constant(Constant::new(value, FieldType::new(code)))
+        })
+        .collect::<Vec<_>>();
+    if unreadable_tail {
+        args.push(Expression::ScalarFunction(ScalarFunction::new(
+            tidb_ast::CiString::new("__undemanded_week_suffix__"),
+            field.clone(),
+            Vec::new(),
+        )));
+    }
+    ScalarFunction::from_pb(
+        PbBuiltin::new(tidb_proto::tipb::ScalarFuncSig::WeekWithoutMode).unwrap(),
+        field,
+        args,
+    )
+}
+
+#[test]
+fn week_auth_dispatch_keeps_week_mode_demand_and_two_sequential_workers() {
+    let native = WeekAuthMode {
+        mode: Cell::new(1),
+        reads: RefCell::new(Vec::new()),
+    };
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        // Existing week/yearweek/weekofyear date/mode result literals. The
+        // native parser still ignores a bad clock suffix. NULL mode is zero,
+        // not the caller's default and not a nullable result.
+        for (name, values, expected, calls) in [
+            (
+                "WEEK",
+                vec![Datum::new_string("2008-02-20 23:59:61"), Datum::Int(0)],
+                7,
+                2,
+            ),
+            (
+                "WEEK",
+                vec![Datum::new_string("2008-02-20"), Datum::Int(1)],
+                8,
+                2,
+            ),
+            (
+                "WEEK",
+                vec![Datum::new_string("2023-01-01"), Datum::Null],
+                1,
+                2,
+            ),
+            (
+                "YEARWEEK",
+                vec![Datum::new_string("2000-01-01")],
+                199_952,
+                2,
+            ),
+            (
+                "YEARWEEK",
+                vec![Datum::new_string("2000-01-01"), Datum::Null],
+                199_952,
+                2,
+            ),
+            ("WEEKOFYEAR", vec![Datum::new_string("2024-03-15")], 11, 1),
+        ] {
+            let (result, observation) =
+                observe_wide_math(|| crate::time_fn::dispatch(name, &values, columns).unwrap());
+            assert_eq!(result, Ok(Datum::Int(expected)));
+            if calls == 2 {
+                assert_week_auth_two_calls(observation);
+            } else {
+                assert_wide_math_c4(observation);
+            }
+            assert_eq!(
+                native.reads.replace(Vec::new()),
+                if name == "WEEK" {
+                    vec![true]
+                } else {
+                    Vec::new()
+                }
+            );
+        }
+        let function =
+            date_diff_days_function("WEEK", vec![Datum::new_string("2000-12-31")], false, false);
+        for (mode, expected) in [(0, 53), (6, 1)] {
+            native.mode.set(mode);
+            let (result, observation) =
+                observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert_eq!(
+                result,
+                Ok(Datum::Int(expected)),
+                "the original default is read again after the function was built"
+            );
+            assert_week_auth_two_calls(observation);
+            assert_eq!(native.reads.replace(Vec::new()), [true]);
+        }
+        let (result, observation) =
+            observe_wide_math(|| calendar_fields_ast("WEEK('2008-02-20', 1)", columns));
+        assert_eq!(result, Ok(Datum::Int(8)));
+        assert_week_auth_two_calls(observation);
+        assert_eq!(
+            native.reads.replace(Vec::new()),
+            [true],
+            "explicit SQL mode still reads the default before the date probe"
+        );
+        for name in ["WEEK", "YEARWEEK"] {
+            for date in [Datum::Null, Datum::new_string("2008-15-31")] {
+                let (result, observation) = observe_wide_math(|| {
+                    crate::time_fn::dispatch(name, &[date, Datum::MinNotNull], columns).unwrap()
+                });
+                assert_eq!(
+                    result,
+                    Ok(Datum::Null),
+                    "a NULL/bad date never demands the mode"
+                );
+                assert_wide_math_c4(observation);
+                assert_eq!(
+                    native.reads.replace(Vec::new()),
+                    if name == "WEEK" {
+                        vec![true]
+                    } else {
+                        Vec::new()
+                    }
+                );
+            }
+            let (result, observation) = observe_wide_math(|| {
+                crate::time_fn::dispatch(
+                    name,
+                    &[Datum::new_string("2008-02-20"), Datum::MinNotNull],
+                    columns,
+                )
+                .unwrap()
+            });
+            assert_eq!(
+                result,
+                Err(EvalError::Unsupported("range sentinel time argument"))
+            );
+            assert_wide_math_c4(observation); // The successful probe preceded the mode error; no second worker entered.
+            assert_eq!(
+                native.reads.replace(Vec::new()),
+                if name == "WEEK" {
+                    vec![true]
+                } else {
+                    Vec::new()
+                }
+            );
+        }
+        for input in [Datum::Null, Datum::new_string("0000-00-00")] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::time_fn::dispatch("WEEKOFYEAR", &[input], columns).unwrap()
+            });
+            assert_eq!(result, Ok(Datum::Null));
+            assert_wide_math_c4(observation);
+            assert!(native.reads.borrow().is_empty());
+        }
+    });
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for name in ["WEEK", "YEARWEEK", "WEEKOFYEAR"] {
+            for date in [Datum::new_string("2008-02-20"), Datum::Null, Datum::new_string("not-a-date")] {
+                let mut values = vec![date];
+                if name != "WEEKOFYEAR" { values.push(Datum::MinNotNull); }
+                let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch(name, &values, columns).unwrap());
+                assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource), "refusal of the first call precedes even a valid date's unobserved mode error");
+                assert_eq!(observation.facade_entries, 0);
+                assert_eq!(observation.before_kernel_invocations, None);
+                assert_eq!(observation.after_kernel_invocations, None);
+                assert_eq!(native.reads.replace(Vec::new()), if name == "WEEK" { vec![true] } else { Vec::new() });
+            }
+            let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch(name, &[], columns).unwrap());
+            assert_eq!(result, Err(EvalError::Unsupported("bad function arity")));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+            assert_eq!(native.reads.replace(Vec::new()), if name == "WEEK" { vec![true] } else { Vec::new() }, "SQL WEEK's default getter also precedes its arity guard");
+        }
+        let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch("WEEK", &[Datum::new_bytes([0xff])], columns).unwrap());
+        assert_eq!(result, Err(EvalError::Unsupported("invalid UTF-8 byte datum")));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+        assert_eq!(native.reads.replace(Vec::new()), [true]);
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn week_auth_dispatch_preserves_pb_null_prefix_and_legacy_raw_week_domain() {
+    let native = WeekAuthMode {
+        mode: Cell::new(1),
+        reads: RefCell::new(Vec::new()),
+    };
+    let normal = week_auth_pb(vec![Datum::new_string("2008-02-20")], false);
+    let nulls = [
+        week_auth_pb(vec![Datum::Null], true),
+        week_auth_pb(vec![Datum::new_string("2023-01-01"), Datum::Null], true),
+        week_auth_pb(vec![Datum::new_bytes([0xff]), Datum::Null], true),
+    ];
+    let core = CoreTime::from_date(2008, 2, 20, 0, 0, 0, 0);
+    let invalid = CoreTime::from_date(0, 15, 31, 23, 59, 59, 999_999);
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        let (result, observation) = observe_wide_math(|| normal.eval(columns, tidb_chunk::row::Row::empty()));
+        assert_eq!(result, Ok(Datum::Int(8)));
+        assert_week_auth_two_calls(observation);
+        assert_eq!(native.reads.replace(Vec::new()), [true]);
+        for function in &nulls {
+            let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert_eq!(result, Ok(Datum::Null), "PB's observed NULL mode differs from SQL mode zero: no prefix coercion, extra suffix demand, or new arity gate");
+            assert_wide_math_c4(observation);
+            assert!(native.reads.borrow().is_empty(), "the PB NULL branch never reads the default");
+        }
+        // CoreTime's original 2008-02-20 mode-zero fixture and the locked old
+        // zero-core literal. No migrated week getter supplies these expectations.
+        for (input, expected) in [(Some(core), Datum::Int(7)), (Some(CoreTime::default()), Datum::Int(0)), (None, Datum::Null)] {
+            let (result, observation) = observe_wide_math(|| crate::eval_legacy_week_in(input, columns));
+            assert_eq!(result, Ok(expected));
+            assert_wide_math_c4(observation);
+            assert!(native.reads.borrow().is_empty(), "legacy is always raw-core mode zero, not the session default");
+        }
+        let (result, observation) = observe_wide_math(|| crate::eval_legacy_week_in(Some(invalid), columns));
+        assert!(matches!(result, Ok(Datum::Int(_))), "invalid packed date fields retain the raw integer domain; this representative does not pin their numerical week");
+        assert_wide_math_c4(observation);
+        assert!(native.reads.borrow().is_empty());
+    });
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        let (result, observation) = observe_wide_math(|| normal.eval(columns, tidb_chunk::row::Row::empty()));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+        assert_eq!(native.reads.replace(Vec::new()), [true]);
+        for function in &nulls {
+            let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+            assert!(native.reads.borrow().is_empty());
+        }
+        for (values, expected) in [
+            (vec![Datum::new_string("2008-02-20"), Datum::Int(1), Datum::Int(2)], EvalError::Unsupported("bad function arity")),
+            (vec![Datum::new_bytes([0xff])], EvalError::Unsupported("invalid UTF-8 byte datum")),
+        ] {
+            let function = week_auth_pb(values, false);
+            let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert_eq!(result, Err(expected));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+            assert_eq!(native.reads.replace(Vec::new()), [true], "non-NULL PB Values keeps the original eager default and guards");
+        }
+        for input in [Some(core), Some(CoreTime::default()), Some(invalid), None] {
+            let (result, observation) = observe_wide_math(|| crate::eval_legacy_week_in(input, columns));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+            assert!(native.reads.borrow().is_empty());
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn week_auth_dispatch_keeps_native_auth_bytes_and_password_warning_order() {
+    #[derive(Default)]
+    struct Warnings(RefCell<Vec<(u16, String, bool)>>);
+    impl Columns for Warnings {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            let before_admission = EVAL_ONE_OBSERVATION.with(|slot| {
+                slot.borrow().as_ref().is_some_and(|value| {
+                    value.facade_entries == 0
+                        && value.before_kernel_invocations.is_none()
+                        && value.after_kernel_invocations.is_none()
+                })
+            });
+            self.0
+                .borrow_mut()
+                .push((code, message.to_owned(), before_admission));
+        }
+    }
+    let native = Warnings::default();
+    let warning = (
+        1681,
+        "PASSWORD is deprecated and will be removed in a future release.".to_owned(),
+        true,
+    );
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        // Native crypto's old fixtures, not wire PASSWORD's double-hex spelling
+        // and not expectations computed with the migrated hash provider.
+        for (name, input, expected) in [
+            (
+                "PASSWORD",
+                Datum::new_string("abc"),
+                Datum::new_string("*0D3CED9BEC10A777AEC23CCC353A8C08A633045E"),
+            ),
+            (
+                "PASSWORD",
+                Datum::Int(123),
+                Datum::new_string("*23AE809DDACAF96AF0FD78ED04B6A265E05AA257"),
+            ),
+            ("PASSWORD", Datum::new_string(""), Datum::new_string("")),
+            ("PASSWORD", Datum::Null, Datum::Null),
+            (
+                "PASSWORD",
+                Datum::new_bytes([0xff, 0x00, b'a']),
+                Datum::new_string("*F5A241511384DB827F22D2A2188A456E87F7D4F2"),
+            ),
+            (
+                "SM3",
+                Datum::new_bytes(b"abc"),
+                Datum::new_string(
+                    "66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0",
+                ),
+            ),
+            ("SM3", Datum::Null, Datum::Null),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::func::eval_func_values(name, &[input], columns).unwrap()
+            });
+            assert_eq!(result, Ok(expected));
+            assert_wide_math_c4(observation);
+            assert_eq!(
+                native.0.replace(Vec::new()),
+                if name == "PASSWORD" {
+                    vec![warning.clone()]
+                } else {
+                    Vec::new()
+                }
+            );
+        }
+    });
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for name in ["PASSWORD", "SM3"] {
+            // Empty/non-UTF8 SM3 has no new digest oracle here: this pins only
+            // its original raw-byte preparation and real resource admission.
+            for input in [Datum::new_string("abc"), Datum::Null, Datum::new_string(""), Datum::new_bytes([0xff, 0x00, b'a']), Datum::new_string([0xff])] {
+                let (result, observation) = observe_wide_math(|| crate::func::eval_func_values(name, &[input], columns).unwrap());
+                assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+                assert_eq!(observation.facade_entries, 0);
+                assert_eq!(observation.before_kernel_invocations, None);
+                assert_eq!(observation.after_kernel_invocations, None);
+                assert_eq!(native.0.replace(Vec::new()), if name == "PASSWORD" { vec![warning.clone()] } else { Vec::new() }, "PASSWORD warns even before NULL or refused admission; SM3 adds no warning");
+            }
+            let (result, observation) = observe_wide_math(|| crate::func::eval_func_values(name, &[Datum::MinNotNull], columns).unwrap());
+            assert_eq!(result, Err(EvalError::Unsupported("range sentinel hash argument")));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+            assert_eq!(native.0.replace(Vec::new()), if name == "PASSWORD" { vec![warning.clone()] } else { Vec::new() }, "the original PASSWORD warning precedes its coercion error too");
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 #[test]

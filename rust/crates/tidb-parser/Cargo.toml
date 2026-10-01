@@ -14,6 +14,11 @@ build = "../../scripts/aggregate-tests.rs"
 name = "all"
 path = "tests/all.rs"
 
+# Exercise the original auth fixture without compiling unrelated parser tests.
+[[test]]
+name = "auth_shared"
+path = "tests/parser_auth_package_source.rs"
+
 [[bench]]
 name = "all"
 path = "benches/all.rs"
@@ -27,6 +32,7 @@ tidb-hack = { path = "../tidb-hack" }
 tidb-lexer = { path = "../tidb-lexer" }
 tidb-ast = { path = "../tidb-ast" }
 tidb-mysql = { path = "../tidb-mysql" }
+tidb_query_crypto.workspace = true
 encoding_rs.workspace = true
 getrandom.workspace = true
 sha1.workspace = true

@@ -30,7 +30,9 @@ pub(crate) mod duration_parse;
 pub(crate) mod extract;
 pub(crate) mod session_tz;
 
-use self::calendar::{civil_from_days, days_from_civil, parse_date_ymd, week_of_year};
+#[cfg(test)]
+use self::calendar::week_of_year;
+use self::calendar::{civil_from_days, days_from_civil, parse_date_ymd};
 use crate::coerce::coerce_str;
 use crate::{Columns, Datum, EvalError};
 use tidb_query_datatype::codec::mysql::Time as TikvTime;
@@ -64,13 +66,13 @@ pub(crate) fn dispatch(
         "DAYOFYEAR" => day_of_year_in(vals, cols),
         "WEEKDAY" => weekday_in(vals, cols),
         "QUARTER" => quarter_in(vals, cols),
-        "WEEK" => week(vals, cols.default_week_format()),
-        "WEEKOFYEAR" => week_of_year_builtin(vals),
+        "WEEK" => week_in(vals, cols.default_week_format(), cols),
+        "WEEKOFYEAR" => week_of_year_builtin_in(vals, cols),
         "TIDB_PARSE_TSO_LOGICAL" => tidb_parse_tso_logical_in(vals, cols),
         "TIDB_BOUNDED_STALENESS" => tidb_bounded_staleness(vals, cols),
         "TIDB_CURRENT_TSO" => current_tso(vals, cols),
         "GET_FORMAT" => get_format_value_in(vals, cols),
-        "YEARWEEK" => yearweek(vals),
+        "YEARWEEK" => yearweek_in(vals, cols),
         "MONTHNAME" => monthname_in(vals, cols),
         "DAYNAME" => dayname_in(vals, cols),
         "LAST_DAY" => last_day(vals),
@@ -584,21 +586,21 @@ fn quarter(vals: &[Datum]) -> Result<Datum, EvalError> {
     quarter_in(vals, &crate::NoColumns)
 }
 
-/// `builtinWeekWithModeSig` / `builtinWeekWithoutModeSig` in
-/// `pkg/expression/builtin_time.go`. Only the no-mode branch uses the
-/// supplied session `default_week_format`; a caller with no session passes
-/// TiDB's default zero.
-/// `WEEKOFYEAR(date)`. Port of `builtinWeekOfYearSig.evalInt`, which is
-/// `date.Week(3)` — the ISO-like mode-3 week number. Zero and invalid dates are
-/// NULL, matching `week`.
+/// `WEEKOFYEAR(date)` uses mode 3 in its single shared worker invocation.
+/// Date parsing and NULL results follow admission; original text preparation
+/// remains inside the frontend guard.
+fn week_of_year_builtin_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::WeekOfYearTextNative,
+        ctx,
+        || single_temporal_text(vals),
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
+}
+
+#[cfg(test)]
 fn week_of_year_builtin(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(date) = coerce_str(&vals[0])?.and_then(|s| parse_date_ymd(&s)) else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int(week_of_year(date.0, date.1, date.2, 3, false).1))
+    week_of_year_builtin_in(vals, &crate::NoColumns)
 }
 
 /// `TIDB_PARSE_TSO_LOGICAL(tso)`. Port of `builtinTidbParseTsoLogicalSig` =
@@ -693,44 +695,96 @@ pub(crate) fn get_format_ast_in(
     )
 }
 
-pub(crate) fn week(vals: &[Datum], default_week_format: i64) -> Result<Datum, EvalError> {
-    if !(1..=2).contains(&vals.len()) {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(date) = coerce_str(&vals[0])?.and_then(|s| parse_date_ymd(&s)) else {
+/// Probe the date in a worker before demanding the optional mode. The probe
+/// returns the original owned text, never parsed fields or a host-side answer.
+/// Its driver call finishes before the second call starts: no frontend callback
+/// reenters C4. Admission may therefore fail before mode coercion is demanded.
+fn week_text_in(
+    vals: &[Datum],
+    default_mode: i64,
+    operation: crate::tikv::EvaluatedBytesOp,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    let date = crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::WeekDateTextNative,
+        ctx,
+        || {
+            if !(1..=2).contains(&vals.len()) {
+                return Err(EvalError::Unsupported("bad function arity"));
+            }
+            Ok(crate::tikv::EvaluatedArgs::Bytes(
+                coerce_str(&vals[0])?.map(String::into_bytes),
+            ))
+        },
+        crate::tikv::EvaluatedBytesResult::into_bytes,
+    )?;
+    let Some(date) = date else {
         return Ok(Datum::Null);
     };
-    let mode = if vals.len() == 2 {
-        int_arg(&vals[1])?.unwrap_or(0)
-    } else {
-        default_week_format
-    };
-    Ok(Datum::Int(
-        week_of_year(date.0, date.1, date.2, mode, false).1,
-    ))
+    crate::tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || {
+            // An actual NULL mode stays NULL here; the worker applies mode zero.
+            let mode = if vals.len() == 2 {
+                int_arg(&vals[1])?
+            } else {
+                Some(default_mode)
+            };
+            Ok(crate::tikv::EvaluatedArgs::BytesInt(Some(date), mode))
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
 }
 
-/// `builtinYearWeekWithModeSig` / `builtinYearWeekWithoutModeSig` in
-/// `pkg/expression/builtin_time.go`.
+/// Only the no-mode branch consumes the supplied default. Callers preserve the
+/// original eager default_week_format getter, even for explicit modes or errors.
+pub(crate) fn week_in(
+    vals: &[Datum],
+    default_week_format: i64,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    week_text_in(
+        vals,
+        default_week_format,
+        crate::tikv::EvaluatedBytesOp::WeekTextNative,
+        ctx,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn week(vals: &[Datum], default_week_format: i64) -> Result<Datum, EvalError> {
+    week_in(vals, default_week_format, &crate::NoColumns)
+}
+
+/// YEARWEEK's omitted mode is always zero, not the session default. Its year
+/// combination and negative sentinel are calculated only by the final worker.
+fn yearweek_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    let operation = crate::tikv::EvaluatedBytesOp::YearWeekTextNative;
+    week_text_in(vals, 0, operation, ctx)
+}
+
+#[cfg(test)]
 fn yearweek(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if !(1..=2).contains(&vals.len()) {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(date) = coerce_str(&vals[0])?.and_then(|s| parse_date_ymd(&s)) else {
-        return Ok(Datum::Null);
-    };
-    let mode = if vals.len() == 2 {
-        int_arg(&vals[1])?.unwrap_or(0)
-    } else {
-        0
-    };
-    let (year, number) = week_of_year(date.0, date.1, date.2, mode, true);
-    let result = year * 100 + number;
-    Ok(Datum::Int(if result < 0 {
-        i64::from(u32::MAX)
-    } else {
-        result
-    }))
+    yearweek_in(vals, &crate::NoColumns)
+}
+
+/// Legacy WEEK is a nonvalidating raw-core mode-zero projection, distinct from
+/// SQL text parsing. Preserve actual NULL and all original core bits.
+pub(crate) fn week_core_in(
+    value: Option<tidb_datatype::CoreTime>,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::WeekCoreNative,
+        ctx,
+        || {
+            Ok(crate::tikv::EvaluatedArgs::TimeCoreBits(
+                value.map(tidb_datatype::CoreTime::raw),
+            ))
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
 }
 
 /// Original single-argument text preparation, used only inside the guards.

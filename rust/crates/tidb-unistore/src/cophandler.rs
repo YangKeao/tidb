@@ -4695,10 +4695,18 @@ impl LegacyEvaluator<'_> {
                         }
                     }
                     SimpleSig::WeekWithoutMode => {
-                        let Some(time) = self.eval_time(children.first())? else {
-                            return Ok(None);
-                        };
-                        Some(i128::from(time.core_time().week(0)))
+                        let value = self
+                            .eval_time(children.first())?
+                            .map(|time| time.core_time());
+                        match tidb_expr::eval_legacy_week_in(value, self.raw_columns)? {
+                            Datum::Null => None,
+                            Datum::Int(value) => Some(i128::from(value)),
+                            _ => {
+                                return Err(LegacyEvalError::InvalidResult(
+                                    "legacy WEEK result kind mismatch",
+                                ))
+                            }
+                        }
                     }
                     SimpleSig::DecimalIsNull
                     | SimpleSig::DurationIsNull
@@ -9346,6 +9354,159 @@ mod tests {
             ] {
                 let extra = date_diff(vec![left, right, shared.clone()]);
                 assert_eq!(child_only.eval_expr(&extra).unwrap(), expected);
+            }
+        });
+    }
+
+    #[test]
+    fn legacy_week_preserves_raw_mode_zero_fields_and_nulls() {
+        use tidb_datatype::{CoreTime, Datum, Time, TimeType};
+        let time_zone = zone();
+        let week = |children| SimpleExpr::Func(SimpleSig::WeekWithoutMode, children);
+        for (core, expected) in [
+            (CoreTime::from_date(2008, 2, 20, 0, 0, 0, 0), 7),
+            (CoreTime::from_date(2008, 2, 20, 31, 63, 63, 1_048_575), 7),
+            (CoreTime::default(), 0),
+            (CoreTime::from_date(16_383, 0, 31, 31, 63, 63, 1_048_575), 0),
+            (CoreTime::from_date(2024, 15, 0, 31, 63, 63, 1_048_575), 0),
+        ] {
+            // Legacy raw month/day zero yields integer zero, not SQL-text NULL.
+            let time = Time::new(core, TimeType::DateTime, 6).expect("raw time");
+            assert_eq!(
+                eval_expr(&week(vec![SimpleExpr::Time(time)]), &[], 4, &time_zone).unwrap(),
+                Some(expected)
+            );
+            assert_eq!(
+                eval_expr(
+                    &week(vec![SimpleExpr::Column(0)]),
+                    &[Datum::Time(time)],
+                    4,
+                    &time_zone
+                )
+                .unwrap(),
+                Some(expected)
+            );
+        }
+        let evaluator = LegacyEvaluator::new(&[], 4, &time_zone);
+        for children in [
+            vec![],
+            vec![SimpleExpr::Null],
+            vec![SimpleExpr::Func(
+                SimpleSig::CastStringAsTime,
+                vec![SimpleExpr::Bytes(b"not a time".to_vec())],
+            )],
+        ] {
+            assert_eq!(evaluator.eval_expr(&week(children)).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn legacy_week_infrastructure_survives_consumers_and_ignored_extras() {
+        use tidb_datatype::{CoreTime, Datum, Time, TimeType};
+        let policy = tidb_expr::AsciiPoolPolicy::checked(
+            0,
+            0,
+            16 * 1024 * 1024,
+            4 * 1024 * 1024,
+            4 * 1024 * 1024,
+            64,
+            8,
+            4 * 1024 * 1024,
+        )
+        .expect("zero-slot policy");
+        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let execution = owner.begin_execution().expect("execution");
+        let scope = execution.scope();
+        let time_zone = zone();
+        let row = [Datum::Time(
+            Time::new(
+                CoreTime::from_date(2008, 2, 20, 0, 0, 0, 0),
+                TimeType::DateTime,
+                0,
+            )
+            .unwrap(),
+        )];
+        let week = |children| SimpleExpr::Func(SimpleSig::WeekWithoutMode, children);
+        let unary = |sig, input| SimpleExpr::Func(sig, vec![input]);
+        let assert_resource = |error| match error {
+            LegacyEvalError::Infrastructure(tidb_expr::EvalError::ExpressionAdapterFailure(
+                failure,
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_expr::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_expr::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("WEEK must preserve the actual pool cause: {other:?}"),
+        };
+        scope.with_columns(&tidb_expr::NoColumns, |columns| {
+            let evaluator = LegacyEvaluator {
+                raw_columns: columns,
+                ..LegacyEvaluator::new(&row, 4, &time_zone)
+            };
+            for children in [
+                vec![SimpleExpr::Column(0)],
+                vec![SimpleExpr::Null],
+                vec![],
+                vec![unary(
+                    SimpleSig::CastStringAsTime,
+                    SimpleExpr::Bytes(b"not a time".to_vec()),
+                )],
+            ] {
+                let call = week(children);
+                assert_resource(evaluator.eval_expr(&call).expect_err("integer consumer"));
+                assert_resource(
+                    evaluator
+                        .eval_real(Some(&unary(SimpleSig::CastIntAsReal, call.clone())))
+                        .expect_err("real consumer"),
+                );
+                assert_resource(
+                    evaluator
+                        .eval_bytes(Some(&unary(SimpleSig::CastIntAsString, call.clone())))
+                        .expect_err("bytes consumer"),
+                );
+                assert_resource(
+                    evaluator
+                        .eval_time(Some(&unary(SimpleSig::CastIntAsTime, call)))
+                        .expect_err("time consumer"),
+                );
+            }
+            let shared = convert_expr(&tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(tipb::ScalarFuncSig::IntIsNull as i32),
+                field_type: Some(tipb::FieldType {
+                    tp: Some(8),
+                    ..Default::default()
+                }),
+                children: vec![tipb::Expr {
+                    tp: Some(tipb::ExprType::Null as i32),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+            .expect("existing shared child");
+            assert!(matches!(&shared, SimpleExpr::Shared(_)));
+            let child_only = LegacyEvaluator {
+                shared_override: Some(columns),
+                ..LegacyEvaluator::new(&row, 4, &time_zone)
+            };
+            assert_resource(
+                child_only
+                    .eval_expr(&week(vec![shared.clone()]))
+                    .expect_err("demanded first child"),
+            );
+            // The legacy signature never interprets an extra child as a mode.
+            for (first, expected) in [(SimpleExpr::Column(0), Some(7)), (SimpleExpr::Null, None)] {
+                assert_eq!(
+                    child_only
+                        .eval_expr(&week(vec![first, shared.clone()]))
+                        .unwrap(),
+                    expected
+                );
             }
         });
     }

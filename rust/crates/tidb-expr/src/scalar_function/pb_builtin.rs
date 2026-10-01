@@ -160,7 +160,7 @@ impl PbBuiltin {
             MicroSecond => Kernel::Values(|values, _| crate::time_fn::microsecond(values)),
             Month => Kernel::Values(crate::time_fn::month_in),
             WeekWithoutMode => Kernel::Values(|values, ctx| {
-                crate::time_fn::week(values, ctx.default_week_format())
+                crate::time_fn::week_in(values, ctx.default_week_format(), ctx)
             }),
             TimestampDiff => {
                 Kernel::Values(|values, _| crate::time_fn::calendar::timestamp_diff(values))
@@ -368,6 +368,16 @@ impl PbBuiltin {
                             // uncoerced and even extra suffix children stay unread.
                             return crate::tikv::evaluate_args_in(
                                 crate::tikv::EvaluatedBytesOp::DateDiffNullNative,
+                                ctx,
+                                || Ok(crate::tikv::EvaluatedArgs::NullWitness(None)),
+                                crate::tikv::EvaluatedBytesResult::into_int_datum,
+                            );
+                        }
+                        if self.signature == ScalarFuncSig::WeekWithoutMode {
+                            // Preserve the PB NULL prefix without coercing earlier
+                            // values, evaluating suffixes, or reading the default mode.
+                            return crate::tikv::evaluate_args_in(
+                                crate::tikv::EvaluatedBytesOp::WeekNullNative,
                                 ctx,
                                 || Ok(crate::tikv::EvaluatedArgs::NullWitness(None)),
                                 crate::tikv::EvaluatedBytesResult::into_int_datum,

@@ -54,7 +54,11 @@ pub(crate) fn dispatch(
             ctx,
         )),
         ("SHA2", 2) => Some(sha2_hash(&vals[0], &vals[1], ctx)),
-        ("SM3", 1) => Some(sm3_hash(&vals[0])),
+        ("SM3", 1) => Some(hash_unary(
+            crate::tikv::EvaluatedBytesOp::Sm3Native,
+            &vals[0],
+            ctx,
+        )),
         ("RANDOM_BYTES", 1) => Some(random_bytes(&vals[0])),
         ("RANDOM_BYTES", _) => Some(Err(EvalError::WrongParameterCount("random_bytes"))),
         ("PASSWORD", 1) => Some(password_hash(&vals[0], ctx)),
@@ -272,28 +276,13 @@ fn eval_aes_bytes(
     Ok(result.map_or(Datum::Null, Datum::new_string))
 }
 
-/// Lowercase hex of `bytes` — the same "0123456789abcdef" alphabet Go's
-/// `encoding/hex.EncodeToString` (used by `builtinMD5Sig`) and
-/// `fmt.Sprintf("%x", ...)` (used by `builtinSHA1Sig`/`builtinSHA2Sig`)
-/// both produce.
-fn hex_lower(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        out.push(ALPHABET[usize::from(b >> 4)] as char);
-        out.push(ALPHABET[usize::from(b & 0xf)] as char);
-    }
-    out
-}
-
 /// `PASSWORD(str)`: double-SHA1 the source `EvalString` bytes, prefix the
 /// uppercase hexadecimal digest with `*`, and return an empty string for an
 /// empty input. Port of `builtinPasswordSig.evalString` and
 /// `auth.EncodePasswordBytes` (`pkg/expression/builtin_encryption.go` and
-/// `pkg/parser/auth/mysql_native_password.go`). The Go evaluator also emits
-/// `errDeprecatedSyntaxNoReplacement`; warning propagation belongs to the
-/// statement context and is intentionally not fabricated in this value-only
-/// dispatch.
+/// `pkg/parser/auth/mysql_native_password.go`). The native warning precedes
+/// coercion, NULL handling, and worker admission; the shared kernel owns the
+/// native double-raw-SHA1 result, distinct from wire PASSWORD's double-hex form.
 fn password_hash(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
     // go `builtinPasswordSig`: the deprecated spelling warns
     // ErrDeprecatedSyntaxNoReplacement (1681) and still hashes.
@@ -301,12 +290,7 @@ fn password_hash(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
         1681,
         "PASSWORD is deprecated and will be removed in a future release.",
     );
-    let Some(bytes) = hash_input(value)? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::new_string(tidb_parser::auth::encode_password_bytes(
-        &bytes,
-    )))
+    hash_unary(crate::tikv::EvaluatedBytesOp::PasswordNative, value, ctx)
 }
 
 /// The deterministic MySQL 3.21 stream cipher used by TiDB's deprecated
@@ -461,14 +445,10 @@ fn validate_password_strength(value: &Datum, ctx: &dyn Columns) -> Result<Datum,
     Ok(Datum::Int(100))
 }
 
-/// `MD5(str)` / `SHA(str)` / `SHA1(str)`: the digest of the argument's
-/// string bytes as lowercase hex (32 chars for MD5, 40 for SHA-1); `NULL`
-/// argument propagates to `NULL`. Port of `builtinMD5Sig.evalString` and
-/// `builtinSHA1Sig.evalString` (`pkg/expression/builtin_encryption.go`),
-/// which differ only in the hash used. The frontend retains its byte
-/// conversion and text packing; the official kernel owns hashing and hex.
-/// PASSWORD remains a separate family owned by `tidb_parser::auth`, including
-/// its double-SHA1 algorithm; its shared `hash_input` conversion is unchanged.
+/// Shared byte adapter for MD5, SHA/SHA1, SM3, and native PASSWORD. The frontend
+/// retains its original byte conversion and text packing; the shared kernel
+/// owns hashing and hex formatting, including native PASSWORD's empty result.
+/// Actual NULL inputs also reach the worker unchanged.
 fn hash_unary(
     operation: crate::tikv::EvaluatedBytesOp,
     value: &Datum,
@@ -484,17 +464,6 @@ fn hash_unary(
                 .map_or(Datum::Null, Datum::new_string))
         },
     )
-}
-
-/// `SM3(str)`: the parser-auth SM3 digest rendered as lowercase hex. TiDB's
-/// SQL builtin and password plugin deliberately share this digest owner.
-fn sm3_hash(value: &Datum) -> Result<Datum, EvalError> {
-    match hash_input(value)? {
-        Some(bytes) => Ok(Datum::new_string(hex_lower(&tidb_parser::auth::sm3_hash(
-            &bytes,
-        )))),
-        None => Ok(Datum::Null),
-    }
 }
 
 /// `RANDOM_BYTES(len)`: one fresh OS-random binary string per evaluation.

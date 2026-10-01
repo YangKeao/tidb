@@ -859,6 +859,15 @@ pub fn eval_legacy_date_diff_in(
     time_fn::calendar::date_diff_core_in(left, right, ctx)
 }
 
+/// Reads legacy WEEK's mode-zero projection from its actual nullable raw core.
+/// No session default getter, text parsing or calendar validation is introduced.
+pub fn eval_legacy_week_in(
+    value: Option<tidb_datatype::CoreTime>,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    time_fn::week_core_in(value, ctx)
+}
+
 /// Closed legacy duration projections, distinct from native SQL text parsing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LegacyHmsField {

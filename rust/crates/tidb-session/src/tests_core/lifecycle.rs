@@ -6945,3 +6945,232 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_date_serial_tso_logical_sql_col
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_week_modes_sql_values_metadata_and_probe_order() {
+    let mut session = Session::new();
+    session
+        .run(
+            "SET tidb_executor_concurrency=1, tidb_projection_concurrency=1, default_week_format=1",
+        )
+        .unwrap();
+    session
+        .run("CREATE TABLE shared_week_modes (id INT PRIMARY KEY, d VARCHAR(32), m VARBINARY(1))")
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_week_modes VALUES (1,NULL,x'FF'),(2,'2008-02-20',NULL),\
+         (3,'2000-01-01',NULL),(4,'2016-00-05',x'FF'),(5,'0000-01-01','3')",
+        )
+        .unwrap();
+    // One slot is sufficient only if the first probe lease is released before
+    // mode preparation and the final week worker. Invalid dates never read m.
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT WEEK(d),WEEK(d,m),WEEKOFYEAR(d),YEARWEEK(d),YEARWEEK(d,m) \
+         FROM shared_week_modes WHERE id<=4 ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected week-mode rows")
+    };
+    assert_eq!(columns.len(), 5);
+    for (_, field) in &columns {
+        assert_eq!(field.code(), tidb_datatype::FieldTypeCode::LongLong);
+        assert_eq!(field.flen(), 20);
+        assert_eq!(field.decimal(), 0);
+        assert_eq!(field.charset_name(), "binary");
+        assert_eq!(field.collation(), tidb_datatype::Collation::Binary);
+        assert!(!field.is_unsigned());
+        assert!(!field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
+    }
+    assert_eq!(
+        rows,
+        vec![
+            vec![Datum::Null; 5],
+            vec![
+                Datum::Int(8),
+                Datum::Int(7),
+                Datum::Int(8),
+                Datum::Int(200807),
+                Datum::Int(200807)
+            ],
+            vec![
+                Datum::Int(0),
+                Datum::Int(0),
+                Datum::Int(52),
+                Datum::Int(199952),
+                Datum::Int(199952)
+            ],
+            vec![Datum::Null; 5],
+        ]
+    );
+    assert!(warnings_of(&session).is_empty());
+    session.run("SET default_week_format=0").unwrap();
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns("SELECT WEEK(d) FROM shared_week_modes WHERE id=2")
+        .unwrap()
+    else {
+        panic!("expected changed default mode")
+    };
+    assert_eq!(rows, vec![vec![Datum::Int(7)]]);
+    assert!(warnings_of(&session).is_empty());
+    // Only the ISO mode here has the negative year; do not infer the sentinel
+    // from year zero alone or use the session default for YEARWEEK.
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns("SELECT YEARWEEK(d,m) FROM shared_week_modes WHERE id=5")
+        .unwrap()
+    else {
+        panic!("expected negative week-year sentinel")
+    };
+    assert_eq!(rows, vec![vec![Datum::Int(4_294_967_295)]]);
+    assert!(warnings_of(&session).is_empty());
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_password_sm3_sql_values_metadata_and_deprecation() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE shared_password_sm3 (id INT PRIMARY KEY, v VARCHAR(3))")
+        .unwrap();
+    session
+        .run("INSERT INTO shared_password_sm3 VALUES (1,NULL),(2,''),(3,'abc')")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns("SELECT PASSWORD(v),SM3(v) FROM shared_password_sm3 ORDER BY id")
+        .unwrap()
+    else {
+        panic!("expected native password and SM3 rows")
+    };
+    assert_eq!(columns.len(), 2);
+    for ((_, field), flen) in columns.iter().zip([41, 40]) {
+        // SM3's source metadata is 40 even though its digest has 64 hex digits.
+        assert_eq!(field.code(), tidb_datatype::FieldTypeCode::VarString);
+        assert_eq!(field.flen(), flen);
+        assert_eq!(field.decimal(), -1);
+        assert_eq!(field.charset_name(), "utf8mb4");
+        assert_eq!(field.collation(), tidb_datatype::Collation::Utf8Mb4Bin);
+        assert!(!field.is_unsigned());
+        assert!(!field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
+    }
+    let text = |s: &str| {
+        Datum::new_collation_string(s.as_bytes().to_vec(), tidb_datatype::Collation::Utf8Mb4Bin)
+    };
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0], vec![Datum::Null; 2]);
+    assert_eq!(rows[1].len(), 2);
+    assert_eq!(rows[1][0], text(""));
+    // The old fixtures pin abc, not empty SM3: this is a shape assertion only,
+    // not a newly recorded independent digest golden.
+    let empty_digest = cell_text(&rows[1][1]);
+    assert_eq!(empty_digest.len(), 64);
+    assert!(empty_digest
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+    assert_eq!(
+        rows[2],
+        vec![
+            text("*0D3CED9BEC10A777AEC23CCC353A8C08A633045E"),
+            text("66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0"),
+        ]
+    );
+    assert_eq!(session.warnings().len(), 3);
+    for warning in session.warnings() {
+        assert_eq!(
+            warning,
+            &SqlWarning {
+                level: WarningLevel::Warning,
+                code: 1681,
+                message: "PASSWORD is deprecated and will be removed in a future release."
+                    .to_owned(),
+            }
+        );
+    }
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_week_password_sm3_sql_columns() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_week_auth_zero (id INT PRIMARY KEY, d VARCHAR(32), m VARBINARY(1), v VARCHAR(3))").unwrap();
+    session
+        .run(
+            "INSERT INTO shared_week_auth_zero VALUES (1,NULL,x'FF',NULL),\
+         (2,'2008-02-20',x'FF',''),(3,'not-a-date',x'FF','abc')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    let date_warning = Some((1292, "Incorrect datetime value: 'not-a-date'"));
+    let password_warning = Some((
+        1681,
+        "PASSWORD is deprecated and will be removed in a future release.",
+    ));
+    // A valid date plus invalid UTF-8 mode must hit the probe's resource error
+    // before mode coercion. PASSWORD always emits its own warning first.
+    for (expression, id, warning) in [
+        ("WEEK(d,m)", 1, None),
+        ("WEEKOFYEAR(d)", 1, None),
+        ("YEARWEEK(d,m)", 1, None),
+        ("WEEK(d,m)", 2, None),
+        ("WEEKOFYEAR(d)", 2, None),
+        ("YEARWEEK(d,m)", 2, None),
+        ("WEEK(d,m)", 3, date_warning),
+        ("WEEKOFYEAR(d)", 3, date_warning),
+        ("YEARWEEK(d,m)", 3, date_warning),
+        ("PASSWORD(v)", 1, password_warning),
+        ("PASSWORD(v)", 2, password_warning),
+        ("PASSWORD(v)", 3, password_warning),
+        ("SM3(v)", 1, None),
+        ("SM3(v)", 2, None),
+        ("SM3(v)", 3, None),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_week_auth_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("week/auth must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        if let Some((code, message)) = warning {
+            assert_eq!(
+                session.warnings(),
+                &[SqlWarning {
+                    level: WarningLevel::Warning,
+                    code,
+                    message: message.to_owned(),
+                }],
+                "{sql}"
+            );
+        } else {
+            assert!(warnings_of(&session).is_empty(), "{sql}");
+        }
+    }
+}

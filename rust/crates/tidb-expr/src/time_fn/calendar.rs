@@ -289,65 +289,7 @@ pub(crate) fn days_in_month_for_time_diff(year: i64, month: u32) -> u32 {
 /// `mode` is masked to its low three bits exactly as the Go implementation
 /// does.  `with_year` selects `YearWeek`'s always-year-numbered variant.
 pub(crate) fn week_of_year(y: i64, m: u32, d: u32, mode: i64, with_year: bool) -> (i64, i64) {
-    const MONDAY_FIRST: u8 = 1;
-    const WEEK_YEAR: u8 = 2;
-    const FIRST_WEEKDAY: u8 = 4;
-    let calc_daynr = |year: i64, month: u32, day: u32| {
-        if year == 0 && month == 0 {
-            return 0;
-        }
-        let mut year = year;
-        let mut sum = 365 * year + 31 * (i64::from(month) - 1) + i64::from(day);
-        if month <= 2 {
-            year -= 1;
-        } else {
-            sum -= (i64::from(month) * 4 + 23) / 10;
-        }
-        sum + year / 4 - ((year / 100 + 1) * 3) / 4
-    };
-    let days_in_year = |year: i64| {
-        if year & 3 == 0 && (year % 100 != 0 || (year % 400 == 0 && year != 0)) {
-            366
-        } else {
-            365
-        }
-    };
-    let mut behavior = (mode as u8) & 7;
-    if behavior & MONDAY_FIRST == 0 {
-        behavior ^= FIRST_WEEKDAY;
-    }
-    if with_year {
-        behavior |= WEEK_YEAR;
-    }
-    let monday_first = behavior & MONDAY_FIRST != 0;
-    let mut week_year = behavior & WEEK_YEAR != 0;
-    let first_weekday = behavior & FIRST_WEEKDAY != 0;
-    let mut year = y;
-    let daynr = calc_daynr(y, m, d);
-    let mut first_daynr = calc_daynr(y, 1, 1);
-    let mut weekday = (first_daynr + 5 + if monday_first { 0 } else { 1 }) % 7;
-    if m == 1 && d <= (7 - weekday) as u32 {
-        if !week_year && ((first_weekday && weekday != 0) || (!first_weekday && weekday >= 4)) {
-            return (year, 0);
-        }
-        week_year = true;
-        year -= 1;
-        let days = days_in_year(year);
-        first_daynr -= days;
-        weekday = (weekday + 53 * 7 - days) % 7;
-    }
-    let days = if (first_weekday && weekday != 0) || (!first_weekday && weekday >= 4) {
-        daynr - (first_daynr + 7 - weekday)
-    } else {
-        daynr - (first_daynr - weekday)
-    };
-    if week_year && days >= 52 * 7 {
-        weekday = (weekday + days_in_year(year)) % 7;
-        if (!first_weekday && weekday < 4) || (first_weekday && weekday == 0) {
-            return (year + 1, 1);
-        }
-    }
-    (year, days / 7 + 1)
+    TikvTime::native_week_of_year(y, m, d, mode, with_year)
 }
 
 /// Gregorian days since 1970-01-01, delegated to the shared wide civil helper.

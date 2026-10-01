@@ -152,10 +152,7 @@ impl CoreTime {
 
     /// Returns the week under MySQL's mode rules.
     pub const fn week(self, mode: u8) -> i32 {
-        if self.month() == 0 || self.day() == 0 {
-            return 0;
-        }
-        calc_week(self, week_mode(mode)).1
+        SharedTime::native_core_week(self.raw(), mode)
     }
 
     /// Returns the week-numbering year and week with MySQL `YEARWEEK` rules.
@@ -680,64 +677,28 @@ const WEEK_BEHAVIOUR_YEAR: u8 = 2;
 const WEEK_BEHAVIOUR_FIRST_WEEKDAY: u8 = 4;
 
 const fn week_mode(mode: u8) -> u8 {
-    let mut format = mode & 7;
-    if format & WEEK_BEHAVIOUR_MONDAY_FIRST == 0 {
-        format ^= WEEK_BEHAVIOUR_FIRST_WEEKDAY;
-    }
-    format
+    SharedTime::normalize_week_mode_bits((mode & 7) as u32) as u8
 }
 
 /// Calculates weekday from a MySQL day number.
-pub const fn calc_weekday(mut daynr: i32, sunday_first: bool) -> i32 {
-    daynr += 5;
-    if sunday_first {
-        daynr += 1;
-    }
-    daynr % 7
+pub const fn calc_weekday(daynr: i32, sunday_first: bool) -> i32 {
+    SharedTime::native_calc_weekday_i32(daynr, sunday_first)
 }
 
 /// Returns 365 or 366 using TiDB's year-zero rule.
 pub const fn calc_days_in_year(year: i32) -> i32 {
-    if year & 3 == 0 && (year % 100 != 0 || (year % 400 == 0 && year != 0)) {
-        366
-    } else {
-        365
-    }
+    SharedTime::native_calc_days_in_year_i32(year)
 }
 
 const fn calc_week(time: CoreTime, behaviour: u8) -> (i32, i32) {
-    let mut year = time.year();
-    let month = time.month() as i32;
-    let day = time.day() as i32;
-    let daynr = calc_daynr(year, month, day);
-    let mut first_daynr = calc_daynr(year, 1, 1);
-    let monday_first = behaviour & WEEK_BEHAVIOUR_MONDAY_FIRST != 0;
-    let mut week_year = behaviour & WEEK_BEHAVIOUR_YEAR != 0;
-    let first_weekday = behaviour & WEEK_BEHAVIOUR_FIRST_WEEKDAY != 0;
-    let mut weekday = calc_weekday(first_daynr, !monday_first);
-
-    if month == 1 && day <= 7 - weekday {
-        if !week_year && ((first_weekday && weekday != 0) || (!first_weekday && weekday >= 4)) {
-            return (year, 0);
-        }
-        week_year = true;
-        year -= 1;
-        let days = calc_days_in_year(year);
-        first_daynr -= days;
-        weekday = (weekday + 53 * 7 - days) % 7;
-    }
-    let days = if (first_weekday && weekday != 0) || (!first_weekday && weekday >= 4) {
-        daynr - (first_daynr + 7 - weekday)
-    } else {
-        daynr - (first_daynr - weekday)
-    };
-    if week_year && days >= 52 * 7 {
-        weekday = (weekday + calc_days_in_year(year)) % 7;
-        if (!first_weekday && weekday < 4) || (first_weekday && weekday == 0) {
-            return (year + 1, 1);
-        }
-    }
-    (year, days / 7 + 1)
+    SharedTime::native_calc_week_i32(
+        time.year(),
+        time.month() as i32,
+        time.day() as i32,
+        behaviour & WEEK_BEHAVIOUR_MONDAY_FIRST != 0,
+        behaviour & WEEK_BEHAVIOUR_YEAR != 0,
+        behaviour & WEEK_BEHAVIOUR_FIRST_WEEKDAY != 0,
+    )
 }
 
 const fn datetime_to_u64(time: CoreTime) -> u64 {

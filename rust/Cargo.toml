@@ -142,6 +142,7 @@ tikv-client = { path = "third_party/tikv-client-rs" }
 # Local expression-sharing experiment: the sibling TiKV checkout is pinned in
 # /home/agent/tidb/EXPRESSION_UNIFICATION_PLAN.md. Cargo.lock pins the transitive
 # protocol/runtime Git revisions; no TiKV server or storage RPC is involved.
+tidb_query_crypto = { path = "../../tikv/components/tidb_query_crypto" }
 tidb_query_datatype = { path = "../../tikv/components/tidb_query_datatype" }
 tidb_query_expr = { path = "../../tikv/components/tidb_query_expr" }
 tipb = { git = "https://github.com/pingcap/tipb.git" }

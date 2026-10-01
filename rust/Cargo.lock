@@ -5258,6 +5258,7 @@ dependencies = [
  "tidb-hack",
  "tidb-lexer",
  "tidb-mysql",
+ "tidb_query_crypto",
 ]
 
 [[package]]
@@ -5980,6 +5981,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tidb_query_crypto"
+version = "0.0.1"
+dependencies = [
+ "sha1 0.10.7",
+]
+
+[[package]]
 name = "tidb_query_datatype"
 version = "0.0.1"
 dependencies = [
@@ -6051,6 +6059,7 @@ dependencies = [
  "static_assertions",
  "tidb_query_codegen",
  "tidb_query_common",
+ "tidb_query_crypto",
  "tidb_query_datatype",
  "tikv_util",
  "time 0.2.27",
