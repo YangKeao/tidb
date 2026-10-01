@@ -1053,20 +1053,18 @@ impl Decimal {
     /// Source `DecimalMod`, without routing the discarded quotient through
     /// `i64` (the source accepts quotients wider than BIGINT).
     pub fn rem_mysql(&self, other: &Decimal) -> Option<Decimal> {
-        if other.is_zero() {
-            return None;
-        }
-        let storage_scale = self.storage_scale.max(other.storage_scale);
-        let scale = self.scale.max(other.scale);
-        let a = pad_scale(&self.digits, self.storage_scale, storage_scale);
-        let b = pad_scale(&other.digits, other.storage_scale, storage_scale);
-        let (_, remainder) = digit_divmod(&a, &b);
-        Some(Decimal::new_with_storage(
-            self.negative,
-            remainder,
-            scale,
-            storage_scale,
-        ))
+        self.try_to_shared_math(usize::MAX)
+            .and_then(|left| {
+                other
+                    .try_to_shared_math(usize::MAX)
+                    .and_then(|right| left.try_native_rem(&right, usize::MAX))
+            })
+            .and_then(|value| {
+                value
+                    .map(|value| Self::try_from_shared_math(&value, usize::MAX))
+                    .transpose()
+            })
+            .expect("shared native decimal remainder failed")
     }
 
     /// Source `DecimalDiv`: retain the whole base-1e9 fraction words produced
@@ -1887,6 +1885,83 @@ use codec::{
 };
 
 pub use codec::{decimal_bin_size, DecimalCodecError, DecimalCodecFailure, DecimalCodecWarning};
+
+#[cfg(test)]
+mod native_remainder_tests {
+    use super::Decimal;
+
+    #[test]
+    fn native_remainder_facade_preserves_source_scales_sign_and_wide_values() {
+        let wide = format!("{}12345", "9".repeat(108));
+        let cases = [
+            (
+                Decimal::from_test_parts(true, "15345", 1, 3),
+                Decimal::from_test_parts(true, "21000", 2, 4),
+                "6450".to_owned(),
+                4,
+                2,
+                true,
+            ),
+            (
+                Decimal::from_test_parts(false, "15345", 1, 3),
+                Decimal::from_test_parts(true, "21000", 2, 4),
+                "6450".to_owned(),
+                4,
+                2,
+                false,
+            ),
+            (
+                Decimal::from_test_parts(true, "40", 0, 1),
+                Decimal::from_test_parts(true, "2000", 2, 3),
+                "000".to_owned(),
+                3,
+                2,
+                false,
+            ),
+            (
+                Decimal::from_int(1),
+                Decimal::from_test_parts(false, "1", 0, 3),
+                "000".to_owned(),
+                3,
+                0,
+                false,
+            ),
+            (
+                Decimal::from_test_parts(true, &wide, 2, 5),
+                Decimal::from_test_parts(false, &format!("1{}", "0".repeat(116)), 4, 7),
+                format!("{wide}00"),
+                7,
+                4,
+                true,
+            ),
+            (
+                Decimal::from_test_parts(false, &format!("1{}1", "0".repeat(107)), 0, 0),
+                Decimal::from_int(2),
+                "1".to_owned(),
+                0,
+                0,
+                false,
+            ),
+            (
+                Decimal::new_with_storage_preserving_zero_sign(true, "000".to_owned(), 3, 3),
+                Decimal::from_test_parts(false, "20000", 2, 4),
+                "0000".to_owned(),
+                4,
+                3,
+                false,
+            ),
+        ];
+        for (left, right, digits, storage, visible, negative) in cases {
+            let output = left.with_declared_shape(120, 4).rem_mysql(&right).unwrap();
+            assert_eq!(output.coefficient_digits(), digits);
+            assert_eq!((output.storage_scale(), output.scale()), (storage, visible));
+            assert_eq!(output.is_negative(), negative);
+            assert_eq!(output.declared_shape(), None);
+        }
+        let zero = Decimal::new_with_storage_preserving_zero_sign(true, "000".to_owned(), 3, 3);
+        assert!(Decimal::from_int(1).rem_mysql(&zero).is_none());
+    }
+}
 
 #[cfg(test)]
 mod native_binary_tests {

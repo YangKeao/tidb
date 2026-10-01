@@ -1322,6 +1322,7 @@ impl<'a> Invocation<'a> {
                         | EvaluatedBytesOp::AddRealNative
                         | EvaluatedBytesOp::SubRealNative
                         | EvaluatedBytesOp::MulRealNative
+                        | EvaluatedBytesOp::ModRealNative
                         | EvaluatedBytesOp::AddDecimalNative
                         | EvaluatedBytesOp::SubDecimalNative
                         | EvaluatedBytesOp::MulDecimalNative,
@@ -1333,6 +1334,15 @@ impl<'a> Invocation<'a> {
                                 reason: "binary arithmetic failure receipt lacks its native cause",
                             };
                         };
+                        if operation == EvaluatedBytesOp::ModRealNative
+                            && (cause.operation != BinaryArithmeticOperation::Modulo
+                                || cause.kind != BinaryArithmeticErrorKind::FloatOverflow)
+                        {
+                            return AsciiBoundaryError::Scope {
+                                kind: ScopeFailureKind::Contract,
+                                reason: "native modulo failure receipt has an unexpected cause",
+                            };
+                        }
                         return AsciiBoundaryError::Frontend(match cause.kind {
                             BinaryArithmeticErrorKind::IntOverflow => EvalError::IntOverflow,
                             BinaryArithmeticErrorKind::FloatOverflow => EvalError::FloatOverflow,
@@ -1364,6 +1374,12 @@ impl<'a> Invocation<'a> {
                             BinaryArithmeticOperation::Add => "ADD",
                             BinaryArithmeticOperation::Subtract => "SUBTRACT",
                             BinaryArithmeticOperation::Multiply => "MULTIPLY",
+                            BinaryArithmeticOperation::Modulo => {
+                                return AsciiBoundaryError::Scope {
+                                    kind: ScopeFailureKind::Contract,
+                                    reason: "legacy modulo has no arithmetic SQL failure",
+                                };
+                            }
                         };
                         return AsciiBoundaryError::Frontend(EvalError::DataOutOfRange {
                             value: if cause.unsigned {
@@ -1882,6 +1898,10 @@ fn materialize_computed(
             | EvaluatedBytesOp::SubIntUuForcedNative
             | EvaluatedBytesOp::MulIntSignedNative
             | EvaluatedBytesOp::MulIntUnsignedNative
+            | EvaluatedBytesOp::ModIntSsNative
+            | EvaluatedBytesOp::ModIntSuNative
+            | EvaluatedBytesOp::ModIntUsNative
+            | EvaluatedBytesOp::ModIntUuNative
             | EvaluatedBytesOp::BinaryArithmeticNullNative
             | EvaluatedBytesOp::BinaryArithmeticMissingLegacy
             | EvaluatedBytesOp::AbsIntNative
@@ -2077,7 +2097,9 @@ fn materialize_computed(
             | EvaluatedBytesOp::MulRealNative
             | EvaluatedBytesOp::AddRealLegacy
             | EvaluatedBytesOp::SubRealLegacy
-            | EvaluatedBytesOp::MulRealLegacy,
+            | EvaluatedBytesOp::MulRealLegacy
+            | EvaluatedBytesOp::ModRealNative
+            | EvaluatedBytesOp::ModRealLegacy,
             ComputedValue::Ieee754Bits(value),
         ) => {
             match value.metadata() {
@@ -2101,7 +2123,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::MulDecimalNative
             | EvaluatedBytesOp::AddDecimalLegacy
             | EvaluatedBytesOp::SubDecimalLegacy
-            | EvaluatedBytesOp::MulDecimalLegacy,
+            | EvaluatedBytesOp::MulDecimalLegacy
+            | EvaluatedBytesOp::ModDecimalNative,
             ComputedValue::Decimal(value),
         ) => {
             match value.metadata() {
@@ -2131,7 +2154,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::SubInt128RejectLeftLegacy
             | EvaluatedBytesOp::SubInt128RejectRightLegacy
             | EvaluatedBytesOp::MulInt128SignedLegacy
-            | EvaluatedBytesOp::MulInt128UnsignedLegacy,
+            | EvaluatedBytesOp::MulInt128UnsignedLegacy
+            | EvaluatedBytesOp::ModInt128Legacy,
             ComputedValue::Int128(value),
         ) => {
             match value.metadata() {
@@ -2232,6 +2256,8 @@ pub enum LegacyIntegerArithmetic {
     SubRejectRight,
     MulSigned,
     MulUnsigned,
+    /// All four legacy wire labels share the full-i128 remainder profile.
+    Modulo,
 }
 
 /// Missing children and an actually evaluated SQL NULL have distinct recipes.
@@ -2298,6 +2324,7 @@ pub fn eval_legacy_integer_arithmetic_in(
                     LegacyIntegerArithmetic::MulUnsigned => {
                         EvaluatedBytesOp::MulInt128UnsignedLegacy
                     }
+                    LegacyIntegerArithmetic::Modulo => EvaluatedBytesOp::ModInt128Legacy,
                 };
                 Ok((operation, EvaluatedArgs::Int1282(Some(left), Some(right))))
             }
@@ -2331,6 +2358,7 @@ pub fn eval_legacy_real_arithmetic_in(
                     BinaryArithmeticOperation::Add => EvaluatedBytesOp::AddRealLegacy,
                     BinaryArithmeticOperation::Subtract => EvaluatedBytesOp::SubRealLegacy,
                     BinaryArithmeticOperation::Multiply => EvaluatedBytesOp::MulRealLegacy,
+                    BinaryArithmeticOperation::Modulo => EvaluatedBytesOp::ModRealLegacy,
                 };
                 Ok((
                     operation,
@@ -2371,6 +2399,7 @@ pub fn eval_legacy_decimal_arithmetic_in(
                     BinaryArithmeticOperation::Add => EvaluatedBytesOp::AddDecimalLegacy,
                     BinaryArithmeticOperation::Subtract => EvaluatedBytesOp::SubDecimalLegacy,
                     BinaryArithmeticOperation::Multiply => EvaluatedBytesOp::MulDecimalLegacy,
+                    BinaryArithmeticOperation::Modulo => EvaluatedBytesOp::ModDecimalNative,
                 };
                 let left = super::prepare_math_decimal(&left)?;
                 let right = super::prepare_math_decimal(&right)?;
@@ -2403,6 +2432,13 @@ pub(crate) fn eval_arithmetic_decimal_fast_in(
         BinaryArithmeticOperation::Add => EvaluatedBytesOp::AddDecimalFastNative,
         BinaryArithmeticOperation::Subtract => EvaluatedBytesOp::SubDecimalFastNative,
         BinaryArithmeticOperation::Multiply => EvaluatedBytesOp::MulDecimalFastNative,
+        BinaryArithmeticOperation::Modulo => {
+            return Err(AsciiBoundaryError::Scope {
+                kind: ScopeFailureKind::Contract,
+                reason: "modulo is unsupported by the decimal fast contract",
+            }
+            .into_eval_error());
+        }
     };
     evaluate_args_in(
         operation,

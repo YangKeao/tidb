@@ -9363,6 +9363,165 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_modulo_sql_preserves_domains_demand_and_zero_diagnostics() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_mod_sql (id INT PRIMARY KEY, a BIGINT, b BIGINT, u BIGINT UNSIGNED, d DECIMAL(65,30), e DECIMAL(65,30), r DOUBLE, t DOUBLE, ni BIGINT, nr DOUBLE, nd DECIMAL(20,2), s VARCHAR(8), count BIGINT)").unwrap();
+    session.run("INSERT INTO shared_mod_sql VALUES (1,-7,3,3,9007199254740993.25,2,-7.5e0,2e0,NULL,NULL,NULL,'x',2048),(2,7,0,0,7.5,0,7.5e0,0e0,NULL,NULL,NULL,'x',2048)").unwrap();
+    session
+        .vars
+        .set_system("max_allowed_packet", "1024".to_owned())
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let decimal = |text: &str| Datum::Decimal(tidb_datatype::Decimal::parse_mysql(text).0);
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns("SELECT a%b,MOD(a,u),u%a,MOD(d,e),r%t FROM shared_mod_sql WHERE id=1")
+        .unwrap()
+    else {
+        panic!("expected typed MOD values")
+    };
+    assert_eq!(
+        rows,
+        vec![vec![
+            Datum::Int(-1),
+            Datum::Int(-1),
+            Datum::UInt(3),
+            decimal("1.25"),
+            Datum::Real(-1.5)
+        ]]
+    );
+    assert!(session.warnings().is_empty());
+    // The packet warning observes RHS demand without converting a non-NULL
+    // operand into a fake NULL witness. Typed integer/real demand it; decimal does not.
+    for (expression, warns) in [
+        ("ni % CAST(REPEAT(s,count) AS SIGNED)", true),
+        ("MOD(nr,CAST(REPEAT(s,count) AS DOUBLE))", true),
+        ("MOD(nd,CAST(REPEAT(s,count) AS DECIMAL(20,2)))", false),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_mod_sql WHERE id=1");
+        let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+            panic!("{sql}")
+        };
+        assert_eq!(rows, vec![vec![Datum::Null]], "{sql}");
+        if warns {
+            assert_eq!(
+                session.warnings(),
+                &[SqlWarning {
+                    level: WarningLevel::Warning,
+                    code: 1301,
+                    message:
+                        "Result of repeat() was larger than max_allowed_packet (1024) - truncated"
+                            .to_owned(),
+                }],
+                "{sql}"
+            );
+        } else {
+            assert!(session.warnings().is_empty(), "{sql}");
+        }
+    }
+    for mode in ["", "STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO"] {
+        session.run(&format!("SET sql_mode='{mode}'")).unwrap();
+        for expression in ["a%b", "MOD(r,t)", "d%e"] {
+            let sql = format!("SELECT {expression} FROM shared_mod_sql WHERE id=2");
+            let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+                panic!("{sql}")
+            };
+            assert_eq!(rows, vec![vec![Datum::Null]], "{sql}");
+            assert_eq!(
+                session.warnings(),
+                &[SqlWarning {
+                    level: WarningLevel::Warning,
+                    code: 1365,
+                    message: "Division by 0".to_owned(),
+                }],
+                "{sql}"
+            );
+        }
+        let StmtOutput::Rows { rows, .. } = session
+            .run_with_columns("SELECT ni%b,MOD(nr,t),nd%e FROM shared_mod_sql WHERE id=2")
+            .unwrap()
+        else {
+            panic!("expected silent NULL inputs")
+        };
+        assert_eq!(rows, vec![vec![Datum::Null; 3]]);
+        assert!(session.warnings().is_empty());
+    }
+    let error = session
+        .run("UPDATE shared_mod_sql SET a=a%b WHERE id=2")
+        .expect_err("strict MOD by zero");
+    assert!(matches!(
+        &error,
+        DriverError::Exec(tidb_executor::ExecError::Eval(
+            tidb_executor::EvalError::DivisionByZero
+        ))
+    ));
+    let mysql = error.to_mysql_error();
+    assert_eq!(mysql.code, 1365);
+    assert_eq!(mysql.state, *b"22012");
+    assert_eq!(mysql.message, "Division by 0");
+    assert!(mysql.is_from_evaluation());
+}
+
+#[test]
+fn evaluated_ascii_modulo_zero_slots_reject_values_nulls_and_zero_divisors() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_mod_zero (a BIGINT, b BIGINT, z BIGINT, n BIGINT, r DOUBLE, t DOUBLE, rz DOUBLE, rn DOUBLE, d DECIMAL(20,2), e DECIMAL(20,2), dz DECIMAL(20,2), dn DECIMAL(20,2))").unwrap();
+    session
+        .run("INSERT INTO shared_mod_zero VALUES (7,2,0,NULL,7.5e0,2e0,0e0,NULL,7.5,2,0,NULL)")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    for expression in [
+        "a%b",
+        "MOD(a,z)",
+        "n%b",
+        "a%n",
+        "n%z",
+        "r%t",
+        "MOD(r,rz)",
+        "rn%t",
+        "r%rn",
+        "rn%rz",
+        "d%e",
+        "MOD(d,dz)",
+        "dn%e",
+        "d%dn",
+        "dn%dz",
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_mod_zero");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("MOD bypassed its worker: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(session.warnings().is_empty(), "{sql}");
+    }
+}
+
+#[test]
 fn evaluated_ascii_binary_arithmetic_sql_keeps_domains_mode_and_pool_failures() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();

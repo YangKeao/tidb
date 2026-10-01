@@ -429,6 +429,7 @@ fn prepare_binary_arithmetic(
     operands: Operands<'_>,
     ctx: &dyn crate::context::Columns,
     unsigned_result: &std::cell::Cell<bool>,
+    input_was_null: &std::cell::Cell<bool>,
 ) -> Result<(crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs), EvalError> {
     use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp as Op};
     use BinaryOp::*;
@@ -438,12 +439,15 @@ fn prepare_binary_arithmetic(
     let l = unsigned_operand(l, operands.lhs);
     let r = unsigned_operand(r, operands.rhs);
     let null = || {
+        input_was_null.set(true);
         Ok((
             Op::BinaryArithmeticNullNative,
             EvaluatedArgs::NullWitness(None),
         ))
     };
-    if matches!(l, Datum::VectorFloat32(_)) || matches!(r, Datum::VectorFloat32(_)) {
+    if matches!(op, Plus | Minus | Mul)
+        && (matches!(l, Datum::VectorFloat32(_)) || matches!(r, Datum::VectorFloat32(_)))
+    {
         if l == Datum::Null || r == Datum::Null {
             return null();
         }
@@ -464,7 +468,10 @@ fn prepare_binary_arithmetic(
     if matches!(l, Datum::Json(_)) || matches!(r, Datum::Json(_)) {
         return Err(EvalError::Unsupported("JSON operand"));
     }
-    if matches!(l, Datum::Raw(_)) || matches!(r, Datum::Raw(_)) {
+    // MOD rejects vectors here, after JSON but before casts and actual NULL.
+    if matches!(l, Datum::Raw(_) | Datum::VectorFloat32(_))
+        || matches!(r, Datum::Raw(_) | Datum::VectorFloat32(_))
+    {
         return Err(EvalError::UnsupportedOperandPair(l.kind(), r.kind()));
     }
     if matches!(l, Datum::Time(_) | Datum::Duration(_))
@@ -477,6 +484,7 @@ fn prepare_binary_arithmetic(
             operands,
             ctx,
             unsigned_result,
+            input_was_null,
         );
     }
     if matches!(l, Datum::String(_) | Datum::Bytes(_))
@@ -489,6 +497,7 @@ fn prepare_binary_arithmetic(
             operands,
             ctx,
             unsigned_result,
+            input_was_null,
         );
     }
     if matches!(l, Datum::Real(_) | Datum::Float32(_))
@@ -503,7 +512,8 @@ fn prepare_binary_arithmetic(
             Plus => Op::AddRealNative,
             Minus => Op::SubRealNative,
             Mul => Op::MulRealNative,
-            _ => unreachable!("only three arithmetic families prepare here"),
+            Mod => Op::ModRealNative,
+            _ => unreachable!("only worker arithmetic families prepare here"),
         };
         return Ok((
             operation,
@@ -523,7 +533,8 @@ fn prepare_binary_arithmetic(
             Plus => Op::AddDecimalNative,
             Minus => Op::SubDecimalNative,
             Mul => Op::MulDecimalNative,
-            _ => unreachable!("only three arithmetic families prepare here"),
+            Mod => Op::ModDecimalNative,
+            _ => unreachable!("only worker arithmetic families prepare here"),
         };
         return Ok((
             operation,
@@ -552,26 +563,44 @@ fn eval_binary_arithmetic_in(
 ) -> Result<Datum, EvalError> {
     use crate::tikv::EvaluatedBytesResult;
     let unsigned_result = std::cell::Cell::new(false);
+    let input_was_null = std::cell::Cell::new(false);
     crate::tikv::evaluate_prepared_args_in(
         ctx,
-        || prepare_binary_arithmetic(op, l, r, operands, ctx, &unsigned_result),
-        |computed| match computed {
-            value @ EvaluatedBytesResult::Int(_) => {
-                if unsigned_result.get() {
-                    value.into_uint_bits_datum()
-                } else {
-                    value.into_int_datum()
+        || prepare_binary_arithmetic(op, l, r, operands, ctx, &unsigned_result, &input_was_null),
+        |computed| {
+            let value = match computed {
+                value @ EvaluatedBytesResult::Int(_) => {
+                    if unsigned_result.get() {
+                        value.into_uint_bits_datum()
+                    } else {
+                        value.into_int_datum()
+                    }
                 }
-            }
-            value @ EvaluatedBytesResult::Ieee754Bits(_) => Ok(value
-                .into_ieee754_bits()?
-                .map_or(Datum::Null, |bits| Datum::Real(f64::from_bits(bits)))),
-            value @ EvaluatedBytesResult::Decimal { .. } => value.into_decimal_datum(),
-            value @ EvaluatedBytesResult::NativeVector(_) => value.into_native_vector_datum(),
-            // The existing typed packer rejects every other computed kind.
-            other => other.into_int_datum(),
+                value @ EvaluatedBytesResult::Ieee754Bits(_) => Ok(value
+                    .into_ieee754_bits()?
+                    .map_or(Datum::Null, |bits| Datum::Real(f64::from_bits(bits)))),
+                value @ EvaluatedBytesResult::Decimal { .. } => value.into_decimal_datum(),
+                value @ EvaluatedBytesResult::NativeVector(_) => value.into_native_vector_datum(),
+                // The existing typed packer rejects every other computed kind.
+                other => other.into_int_datum(),
+            }?;
+            finish_arithmetic_result(op, value, input_was_null.get(), ctx)
         },
     )
+}
+
+/// A non-NULL MOD input pair yields NULL only when the worker found division by
+/// zero. Genuine input NULL and failed admission never emit that SQL warning.
+fn finish_arithmetic_result(
+    op: BinaryOp,
+    value: Datum,
+    input_was_null: bool,
+    ctx: &dyn crate::context::Columns,
+) -> Result<Datum, EvalError> {
+    if op == BinaryOp::Mod && !input_was_null && value.is_null() {
+        ctx.handle_division_by_zero()?;
+    }
+    Ok(value)
 }
 
 pub(crate) fn eval_binary_full(
@@ -584,7 +613,7 @@ pub(crate) fn eval_binary_full(
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
     use BinaryOp::*;
-    if matches!(op, Plus | Minus | Mul) {
+    if matches!(op, Plus | Minus | Mul | Mod) {
         return eval_binary_arithmetic_in(op, l, r, operands, ctx);
     }
     if l.is_range_sentinel() || r.is_range_sentinel() {
@@ -1361,13 +1390,7 @@ fn decimal_binary(
         Div => unreachable!("handled above"),
         // The bounded decimal kernel preserves warnings before ToInt/ToUint.
         IntDiv => decimal_integer_division(&a, &b, unsigned_pair, ctx)?,
-        Mod => match a.rem_mysql(&b) {
-            Some(r) => Datum::Decimal(r),
-            None => {
-                ctx.handle_division_by_zero()?;
-                Datum::Null
-            }
-        },
+        Mod => unreachable!("worker arithmetic dispatched before this ladder"),
         // Bitwise/shift operators work on integers in MySQL, so a decimal
         // operand rounds to the nearest `i64` first (ties away from zero),
         // same as unary `~` above -- and SATURATES there rather than failing.

@@ -2845,7 +2845,8 @@ impl LegacyEvaluator<'_> {
             SimpleExpr::Func(
                 sig @ (SimpleSig::PlusDecimal
                 | SimpleSig::MinusDecimal
-                | SimpleSig::MultiplyDecimal),
+                | SimpleSig::MultiplyDecimal
+                | SimpleSig::ModDecimal),
                 children,
             ) => {
                 use tidb_expr::{BinaryArithmeticOperation as Operation, LegacyBinaryArgs};
@@ -2871,27 +2872,20 @@ impl LegacyEvaluator<'_> {
                 let operation = match sig {
                     SimpleSig::PlusDecimal => Operation::Add,
                     SimpleSig::MinusDecimal => Operation::Subtract,
+                    SimpleSig::ModDecimal => Operation::Modulo,
                     _ => Operation::Multiply,
                 };
                 // This legacy profile retains the shared decimal core's value
                 // while ignoring its warnings, as the old .0 consumers did.
                 tidb_expr::eval_legacy_decimal_arithmetic_in(operation, args, self.raw_columns)?
             }
-            // Division/remainder retain their separate, unchanged legacy path.
-            SimpleExpr::Func(
-                sig @ (SimpleSig::ModDecimal | SimpleSig::DivideDecimal),
-                children,
-            ) => {
+            // Division retains its separate, unchanged legacy path.
+            SimpleExpr::Func(SimpleSig::DivideDecimal, children) => {
                 let (left, right) = (
                     legacy_some!(self.eval_decimal(children.first())?),
                     legacy_some!(self.eval_decimal(children.get(1))?),
                 );
-                match sig {
-                    SimpleSig::DivideDecimal => {
-                        left.div_mysql(&right, div_precision_increment as u32)
-                    }
-                    _ => left.rem_mysql(&right),
-                }
+                left.div_mysql(&right, div_precision_increment as u32)
             }
             // Go `goTimeToMysqlUnixTimestamp`: the microseconds of the wall
             // clock in the session zone, divided by 1e6 exactly (an out-of-
@@ -3222,7 +3216,10 @@ impl LegacyEvaluator<'_> {
                 }
             }
             SimpleExpr::Func(
-                sig @ (SimpleSig::PlusReal | SimpleSig::MinusReal | SimpleSig::MultiplyReal),
+                sig @ (SimpleSig::PlusReal
+                | SimpleSig::MinusReal
+                | SimpleSig::MultiplyReal
+                | SimpleSig::ModReal),
                 children,
             ) => {
                 use tidb_expr::{BinaryArithmeticOperation as Operation, LegacyBinaryArgs};
@@ -3247,16 +3244,16 @@ impl LegacyEvaluator<'_> {
                 let operation = match sig {
                     SimpleSig::PlusReal => Operation::Add,
                     SimpleSig::MinusReal => Operation::Subtract,
+                    SimpleSig::ModReal => Operation::Modulo,
                     _ => Operation::Multiply,
                 };
                 // Legacy real arithmetic retains Inf/NaN rather than applying
                 // the ordinary SQL real signature's overflow policy.
                 tidb_expr::eval_legacy_real_arithmetic_in(operation, args, self.raw_columns)?
             }
-            // Division/remainder and casts keep their original separate path.
+            // Division and casts keep their original separate path.
             SimpleExpr::Func(
                 sig @ (SimpleSig::DivideReal
-                | SimpleSig::ModReal
                 | SimpleSig::CastIntAsReal
                 | SimpleSig::CastDecimalAsReal
                 | SimpleSig::CastRealAsReal
@@ -3275,7 +3272,7 @@ impl LegacyEvaluator<'_> {
                 | SimpleSig::Sin),
                 children,
             ) => {
-                if !matches!(sig, SimpleSig::DivideReal | SimpleSig::ModReal) {
+                if !matches!(sig, SimpleSig::DivideReal) {
                     // Go wraps the operand in the cast signature; the widening
                     // itself is exact for the admitted source kinds.
                     return Ok(match sig {
@@ -3377,10 +3374,6 @@ impl LegacyEvaluator<'_> {
                     legacy_some!(self.eval_real(children.get(1))?),
                 );
                 match sig {
-                    // Go `math.Mod`: the remainder carries the dividend's
-                    // sign; a zero divisor answers NULL (error folded).
-                    SimpleSig::ModReal if right != 0.0 => Some(left % right),
-                    SimpleSig::ModReal => None,
                     _ if right != 0.0 => Some(left / right),
                     _ => None,
                 }
@@ -4316,10 +4309,25 @@ impl LegacyEvaluator<'_> {
                     SimpleSig::ModIntUnsignedUnsigned
                     | SimpleSig::ModIntUnsignedSigned
                     | SimpleSig::ModIntSignedUnsigned
-                    | SimpleSig::ModIntSignedSigned => match (child(0)?, child(1)?) {
-                        (Some(left), Some(right)) if right != 0 => Some(left % right),
-                        _ => None,
-                    },
+                    | SimpleSig::ModIntSignedSigned => {
+                        use tidb_expr::{LegacyBinaryArgs, LegacyIntegerArithmetic};
+                        // All four old labels ignore unsignedness. Demand both
+                        // children even after NULL, and retain the full i128 values.
+                        let (left, right) = (child(0)?, child(1)?);
+                        let args = if children.len() < 2 {
+                            LegacyBinaryArgs::Missing
+                        } else {
+                            match (left, right) {
+                                (Some(left), Some(right)) => LegacyBinaryArgs::Values(left, right),
+                                _ => LegacyBinaryArgs::NullWitness(None),
+                            }
+                        };
+                        tidb_expr::eval_legacy_integer_arithmetic_in(
+                            LegacyIntegerArithmetic::Modulo,
+                            args,
+                            self.raw_columns,
+                        )?
+                    }
                     // `types.IntDivide`: truncated division, NULL on a zero
                     // divisor, sign of the dividend. The four unsigned-flag
                     // pairings divide the same values, so one i128 arm serves;
@@ -10133,6 +10141,203 @@ mod tests {
                 assert_eq!(child_only.eval_expr(&extra).unwrap(), Some(1));
             });
         }
+    }
+
+    #[test]
+    fn legacy_modulo_preserves_full_width_presence_demand_and_zero_scope() {
+        use tidb_datatype::{Datum, Decimal};
+        use tidb_expr::{LegacyBinaryArgs, LegacyIntegerArithmetic};
+        let time_zone = zone();
+        let decimal = |text: &str| Decimal::parse_mysql(text).0;
+        let row = [Datum::UInt(u64::MAX)];
+        let evaluator = LegacyEvaluator::new(&row, 4, &time_zone);
+        let signatures = [
+            SimpleSig::ModIntUnsignedUnsigned,
+            SimpleSig::ModIntUnsignedSigned,
+            SimpleSig::ModIntSignedUnsigned,
+            SimpleSig::ModIntSignedSigned,
+        ];
+        for sig in &signatures {
+            for (left, right, expected) in [
+                (SimpleExpr::Int(-7), SimpleExpr::Int(3), Some(-1)),
+                (SimpleExpr::Column(0), SimpleExpr::Int(-7), Some(1)),
+                (SimpleExpr::Int(7), SimpleExpr::Int(0), None),
+                (SimpleExpr::Null, SimpleExpr::Int(0), None),
+            ] {
+                assert_eq!(
+                    evaluator
+                        .eval_expr(&SimpleExpr::Func(sig.clone(), vec![left, right]))
+                        .unwrap(),
+                    expected
+                );
+            }
+        }
+        assert_eq!(
+            tidb_expr::eval_legacy_integer_arithmetic_in(
+                LegacyIntegerArithmetic::Modulo,
+                LegacyBinaryArgs::Values(i128::MAX, 97),
+                &tidb_expr::NoColumns,
+            )
+            .unwrap(),
+            Some(i128::MAX % 97)
+        );
+        let real = SimpleExpr::Func(
+            SimpleSig::ModReal,
+            vec![SimpleExpr::Real(-7.5), SimpleExpr::Real(2.0)],
+        );
+        assert_eq!(evaluator.eval_real(Some(&real)).unwrap(), Some(-1.5));
+        let dec = SimpleExpr::Func(
+            SimpleSig::ModDecimal,
+            vec![
+                SimpleExpr::Decimal(decimal("-7.50")),
+                SimpleExpr::Decimal(decimal("2")),
+            ],
+        );
+        assert_eq!(
+            evaluator.eval_decimal(Some(&dec)).unwrap(),
+            Some(decimal("-1.50"))
+        );
+        for (sig, left, zero) in [
+            (
+                SimpleSig::ModReal,
+                SimpleExpr::Real(7.5),
+                SimpleExpr::Real(0.0),
+            ),
+            (
+                SimpleSig::ModDecimal,
+                SimpleExpr::Decimal(decimal("7.5")),
+                SimpleExpr::Decimal(decimal("0")),
+            ),
+        ] {
+            assert_eq!(
+                evaluator
+                    .eval_expr(&SimpleExpr::Func(sig, vec![left, zero]))
+                    .unwrap(),
+                None
+            );
+        }
+        let owner = tidb_expr::AsciiPoolOwner::new(
+            tidb_expr::AsciiPoolPolicy::checked(
+                0,
+                0,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let shared = convert_expr(&tipb::Expr {
+            tp: Some(tipb::ExprType::ScalarFunc as i32),
+            sig: Some(tipb::ScalarFuncSig::IntIsNull as i32),
+            field_type: Some(tipb::FieldType {
+                tp: Some(8),
+                ..Default::default()
+            }),
+            children: vec![tipb::Expr {
+                tp: Some(tipb::ExprType::Null as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+        let assert_pool = |error| match error {
+            LegacyEvalError::Infrastructure(tidb_expr::EvalError::ExpressionAdapterFailure(
+                failure,
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_expr::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_expr::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("MOD lost pool cause: {other:?}"),
+        };
+        execution
+            .scope()
+            .with_columns(&tidb_expr::NoColumns, |columns| {
+                let scoped = LegacyEvaluator {
+                    raw_columns: columns,
+                    ..LegacyEvaluator::new(&row, 4, &time_zone)
+                };
+                for sig in signatures
+                    .iter()
+                    .cloned()
+                    .chain([SimpleSig::ModReal, SimpleSig::ModDecimal])
+                {
+                    let value = match sig {
+                        SimpleSig::ModReal => SimpleExpr::Real(7.0),
+                        SimpleSig::ModDecimal => SimpleExpr::Decimal(decimal("7")),
+                        _ => SimpleExpr::Int(7),
+                    };
+                    let zero = match sig {
+                        SimpleSig::ModReal => SimpleExpr::Real(0.0),
+                        SimpleSig::ModDecimal => SimpleExpr::Decimal(decimal("0")),
+                        _ => SimpleExpr::Int(0),
+                    };
+                    for children in [
+                        vec![value.clone(), value.clone()],
+                        vec![value.clone(), zero],
+                        vec![SimpleExpr::Null, value.clone()],
+                        vec![value.clone(), SimpleExpr::Null],
+                        vec![],
+                        vec![value],
+                        vec![SimpleExpr::Null],
+                    ] {
+                        let call = SimpleExpr::Func(sig.clone(), children);
+                        assert_pool(
+                            scoped
+                                .eval_expr(&call)
+                                .expect_err("every presence needs worker entry"),
+                        );
+                        assert_pool(
+                            scoped
+                                .folded_int(Some(&call))
+                                .expect_err("folding retains pool errors"),
+                        );
+                    }
+                }
+                let child_only = LegacyEvaluator {
+                    shared_override: Some(columns),
+                    ..LegacyEvaluator::new(&row, 4, &time_zone)
+                };
+                for sig in &signatures {
+                    let call =
+                        SimpleExpr::Func(sig.clone(), vec![SimpleExpr::Null, shared.clone()]);
+                    assert_pool(
+                        child_only
+                            .eval_expr(&call)
+                            .expect_err("integer NULL still demands RHS"),
+                    );
+                    let call = SimpleExpr::Func(sig.clone(), vec![shared.clone()]);
+                    assert_pool(
+                        child_only
+                            .eval_expr(&call)
+                            .expect_err("missing RHS still demands LHS"),
+                    );
+                }
+                for (sig, left) in [
+                    (SimpleSig::ModReal, SimpleExpr::Real(1.0)),
+                    (SimpleSig::ModDecimal, SimpleExpr::Decimal(decimal("1"))),
+                ] {
+                    let call =
+                        SimpleExpr::Func(sig.clone(), vec![SimpleExpr::Null, shared.clone()]);
+                    assert_eq!(child_only.eval_expr(&call).unwrap(), None);
+                    let call = SimpleExpr::Func(sig, vec![left, shared.clone()]);
+                    assert_pool(
+                        child_only
+                            .eval_expr(&call)
+                            .expect_err("non-NULL LHS demands RHS"),
+                    );
+                }
+            });
     }
 
     #[test]

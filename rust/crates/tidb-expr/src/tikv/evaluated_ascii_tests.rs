@@ -1238,7 +1238,15 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::BinaryArithmeticMissingLegacy
         | EvaluatedBytesOp::AddDecimalFastNative
         | EvaluatedBytesOp::SubDecimalFastNative
-        | EvaluatedBytesOp::MulDecimalFastNative => {
+        | EvaluatedBytesOp::MulDecimalFastNative
+        | EvaluatedBytesOp::ModIntSsNative
+        | EvaluatedBytesOp::ModIntSuNative
+        | EvaluatedBytesOp::ModIntUsNative
+        | EvaluatedBytesOp::ModIntUuNative
+        | EvaluatedBytesOp::ModInt128Legacy
+        | EvaluatedBytesOp::ModRealNative
+        | EvaluatedBytesOp::ModRealLegacy
+        | EvaluatedBytesOp::ModDecimalNative => {
             panic!("binary arithmetic needs its actual pair and signature profile")
         }
         EvaluatedBytesOp::UnaryPlusIntNative
@@ -1823,6 +1831,168 @@ fn binary_arithmetic_dispatch_keeps_profiles_and_legacy_presence() {
         assert_eq!(mode.reads.get(), reads);
     });
     assert!(!scope.busy.get());
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn modulo_sdk_preserves_computed_kinds_zero_and_legacy_presence() {
+    use tidb_datatype::Decimal;
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for operation in [
+            EvaluatedBytesOp::ModIntSsNative,
+            EvaluatedBytesOp::ModIntSuNative,
+            EvaluatedBytesOp::ModIntUsNative,
+            EvaluatedBytesOp::ModIntUuNative,
+        ] {
+            for (right, expected) in [(5, Datum::Int(2)), (0, Datum::Null)] {
+                let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                    operation, columns, || Ok(EvaluatedArgs::Int2(Some(17), Some(right))),
+                    EvaluatedBytesResult::into_int_datum,
+                ));
+                assert_eq!(result, Ok(expected));
+                assert_wide_math_c4(observation);
+            }
+        }
+        for (left, right, expected) in [
+            ((1_i128 << 100) + 3, 1_i128 << 110, Some((1_i128 << 100) + 3)),
+            (i128::MIN, 2, Some(0)),
+            (-17, 5, Some(-2)),
+            (17, 0, None),
+        ] {
+            let (result, observation) = observe_wide_math(|| eval_legacy_integer_arithmetic_in(
+                LegacyIntegerArithmetic::Modulo, LegacyBinaryArgs::Values(left, right), columns,
+            ));
+            assert_eq!(result, Ok(expected));
+            assert_wide_math_c4(observation);
+        }
+        for operation in [EvaluatedBytesOp::ModRealNative, EvaluatedBytesOp::ModRealLegacy] {
+            for (right, expected) in [(2.0_f64, Some(1.5_f64.to_bits())), (-0.0, None)] {
+                let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                    operation, columns,
+                    || Ok(EvaluatedArgs::Ieee754Bits2 {
+                        left: super::super::ReadyIeee754Arg::Value(Some(5.5_f64.to_bits())),
+                        right: super::super::ReadyIeee754Arg::Value(Some(right.to_bits())),
+                    }),
+                    EvaluatedBytesResult::into_ieee754_bits,
+                ));
+                assert_eq!(result, Ok(expected));
+                assert_wide_math_c4(observation);
+            }
+        }
+        let (result, observation) = observe_wide_math(|| evaluate_args_in(
+            EvaluatedBytesOp::ModRealNative, columns,
+            || Ok(EvaluatedArgs::Ieee754Bits2 {
+                left: super::super::ReadyIeee754Arg::Value(Some(f64::INFINITY.to_bits())),
+                right: super::super::ReadyIeee754Arg::Value(Some(2.0_f64.to_bits())),
+            }),
+            EvaluatedBytesResult::into_ieee754_bits,
+        ));
+        assert_eq!(result, Err(EvalError::FloatOverflow));
+        assert_wide_math_c4(observation);
+        for (left, right, expected) in [(5.5, 2.0, Some(1.5)), (5.5, -0.0, None)] {
+            let (result, observation) = observe_wide_math(|| eval_legacy_real_arithmetic_in(
+                BinaryArithmeticOperation::Modulo, LegacyBinaryArgs::Values(left, right), columns,
+            ));
+            assert_eq!(result, Ok(expected));
+            assert_wide_math_c4(observation);
+        }
+        let (result, observation) = observe_wide_math(|| eval_legacy_real_arithmetic_in(
+            BinaryArithmeticOperation::Modulo,
+            LegacyBinaryArgs::Values(f64::INFINITY, 2.0), columns,
+        ));
+        assert!(result.unwrap().unwrap().is_nan());
+        assert_wide_math_c4(observation);
+        for (right, expected) in [("2.00", Some("1.50")), ("0.00", None)] {
+            let (result, observation) = observe_wide_math(|| eval_legacy_decimal_arithmetic_in(
+                BinaryArithmeticOperation::Modulo,
+                LegacyBinaryArgs::Values(Decimal::from_literal("5.50"), Decimal::from_literal(right)), columns,
+            ));
+            assert_eq!(result.unwrap().map(|value| value.to_string()), expected.map(str::to_owned));
+            assert_wide_math_c4(observation);
+        }
+        for missing in [false, true] {
+            let operation = if missing { EvaluatedBytesOp::BinaryArithmeticMissingLegacy } else { EvaluatedBytesOp::BinaryArithmeticNullNative };
+            let (result, observation) = observe_wide_math(|| eval_legacy_integer_arithmetic_in(
+                LegacyIntegerArithmetic::Modulo,
+                if missing { LegacyBinaryArgs::Missing } else { LegacyBinaryArgs::NullWitness(None) }, columns,
+            ));
+            assert_eq!(result, Ok(None));
+            assert_wide_math_c4(observation);
+            assert_eq!(scope.lease.borrow().as_ref().unwrap().worker.as_ref().unwrap().operation(), operation);
+            let (result, observation) = observe_wide_math(|| eval_legacy_real_arithmetic_in(
+                BinaryArithmeticOperation::Modulo,
+                if missing { LegacyBinaryArgs::Missing } else { LegacyBinaryArgs::NullWitness(None) }, columns,
+            ));
+            assert_eq!(result, Ok(None));
+            assert_wide_math_c4(observation);
+            let (result, observation) = observe_wide_math(|| eval_legacy_decimal_arithmetic_in(
+                BinaryArithmeticOperation::Modulo,
+                if missing { LegacyBinaryArgs::Missing } else { LegacyBinaryArgs::NullWitness(None) }, columns,
+            ));
+            assert_eq!(result, Ok(None));
+            assert_wide_math_c4(observation);
+        }
+        let (result, observation) = observe_wide_math(|| eval_legacy_integer_arithmetic_in(
+            LegacyIntegerArithmetic::Modulo, LegacyBinaryArgs::NullWitness(Some(0)), columns,
+        ));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract));
+        assert_eq!(observation.facade_entries, 0);
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn modulo_sdk_zero_budget_never_fakes_sql_null_or_overflow() {
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for zero in [false, true] {
+            let right = if zero { 0 } else { 2 };
+            let decimal = super::super::prepare_math_decimal(&tidb_datatype::Decimal::from_literal("5")).unwrap();
+            let decimal_right = super::super::prepare_math_decimal(&tidb_datatype::Decimal::from_literal(if zero { "0" } else { "2" })).unwrap();
+            for (operation, args) in [
+                (EvaluatedBytesOp::ModIntSsNative, EvaluatedArgs::Int2(Some(5), Some(right))),
+                (EvaluatedBytesOp::ModIntSuNative, EvaluatedArgs::Int2(Some(5), Some(right))),
+                (EvaluatedBytesOp::ModIntUsNative, EvaluatedArgs::Int2(Some(5), Some(right))),
+                (EvaluatedBytesOp::ModIntUuNative, EvaluatedArgs::Int2(Some(5), Some(right))),
+                (EvaluatedBytesOp::ModInt128Legacy, EvaluatedArgs::Int1282(Some(5), Some(i128::from(right)))),
+                (EvaluatedBytesOp::ModRealNative, EvaluatedArgs::Ieee754Bits2 {
+                    left: super::super::ReadyIeee754Arg::Value(Some(f64::INFINITY.to_bits())),
+                    right: super::super::ReadyIeee754Arg::Value(Some((right as f64).to_bits())),
+                }),
+                (EvaluatedBytesOp::ModRealLegacy, EvaluatedArgs::Ieee754Bits2 {
+                    left: super::super::ReadyIeee754Arg::Value(Some(5.0_f64.to_bits())),
+                    right: super::super::ReadyIeee754Arg::Value(Some((right as f64).to_bits())),
+                }),
+                (EvaluatedBytesOp::ModDecimalNative, EvaluatedArgs::Decimal2 { left: Some(decimal), right: Some(decimal_right) }),
+                (EvaluatedBytesOp::BinaryArithmeticNullNative, EvaluatedArgs::NullWitness(None)),
+                (EvaluatedBytesOp::BinaryArithmeticMissingLegacy, EvaluatedArgs::NoArgs),
+            ] {
+                let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                    operation, columns, || Ok(args), |_| Ok(()),
+                ));
+                assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+                assert_eq!(observation.facade_entries, 0);
+                assert_eq!(observation.before_kernel_invocations, None);
+                assert_eq!(observation.after_kernel_invocations, None);
+            }
+        }
+        let (result, observation) = observe_wide_math(|| eval_arithmetic_decimal_fast_in(
+            BinaryArithmeticOperation::Modulo, None, None, columns,
+        ));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract));
+        assert_eq!(observation.facade_entries, 0);
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
     assert!(!scope.poisoned.get());
     drop(scope);
     execution.close();

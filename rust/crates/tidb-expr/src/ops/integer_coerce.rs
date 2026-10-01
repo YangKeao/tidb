@@ -101,9 +101,19 @@ pub(super) fn prepare_integer_arithmetic(
         },
         BinaryOp::Mul if left_unsigned || right_unsigned => Op::MulIntUnsignedNative,
         BinaryOp::Mul => Op::MulIntSignedNative,
-        _ => unreachable!("only the three arithmetic families prepare here"),
+        BinaryOp::Mod => match (left_unsigned, right_unsigned) {
+            (false, false) => Op::ModIntSsNative,
+            (false, true) => Op::ModIntSuNative,
+            (true, false) => Op::ModIntUsNative,
+            (true, true) => Op::ModIntUuNative,
+        },
+        _ => unreachable!("only worker arithmetic families prepare here"),
     };
-    unsigned_result.set((left_unsigned || right_unsigned) && !force_signed);
+    unsigned_result.set(if op == BinaryOp::Mod {
+        left_unsigned
+    } else {
+        (left_unsigned || right_unsigned) && !force_signed
+    });
     (operation, EvaluatedArgs::Int2(Some(left), Some(right)))
 }
 
@@ -114,17 +124,18 @@ pub(crate) fn integer_binary(
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
     use BinaryOp::*;
-    if matches!(op, Plus | Minus | Mul) {
+    if matches!(op, Plus | Minus | Mul | Mod) {
         let unsigned_result = std::cell::Cell::new(false);
         return crate::tikv::evaluate_prepared_args_in(
             ctx,
             || Ok(prepare_integer_arithmetic(op, a, b, ctx, &unsigned_result)),
             |computed| {
-                if unsigned_result.get() {
+                let value = if unsigned_result.get() {
                     computed.into_uint_bits_datum()
                 } else {
                     computed.into_int_datum()
-                }
+                }?;
+                finish_arithmetic_result(op, value, false, ctx)
             },
         );
     }
@@ -159,33 +170,7 @@ pub(crate) fn integer_binary(
                 Datum::UInt(quotient)
             }
         }
-        Mod => {
-            if bits_b == 0 {
-                ctx.handle_division_by_zero()?;
-                Datum::Null
-            } else {
-                // MOD's result flag follows the left operand only.  Go's
-                // mixed-sign implementations also preserve the dividend sign
-                // instead of taking a remainder over raw unsigned bits.
-                match (a, b) {
-                    (Integer::Unsigned(lhs), Integer::Unsigned(rhs)) => Datum::UInt(lhs % rhs),
-                    (Integer::Unsigned(lhs), Integer::Signed(rhs)) => {
-                        Datum::UInt(lhs % rhs.unsigned_abs())
-                    }
-                    (Integer::Signed(lhs), Integer::Unsigned(rhs)) => {
-                        let remainder = if lhs < 0 {
-                            -((lhs.unsigned_abs() % rhs) as i64)
-                        } else {
-                            (lhs as u64 % rhs) as i64
-                        };
-                        Datum::Int(remainder)
-                    }
-                    (Integer::Signed(lhs), Integer::Signed(rhs)) => {
-                        Datum::Int(lhs.wrapping_rem(rhs))
-                    }
-                }
-            }
-        }
+        Mod => unreachable!("worker arithmetic dispatched above"),
         BitAnd | BitOr | BitXor | LeftShift | RightShift => {
             return eval_bitwise_binary_in(op, Some(bits_a as i64), Some(bits_b as i64), ctx);
         }

@@ -72,14 +72,7 @@ pub(super) fn float_binary(
             }
         }
         IntDiv => unreachable!("DIV evaluates decimal operands before real dispatch"),
-        Mod => {
-            if b == 0.0 {
-                ctx.handle_division_by_zero()?;
-                Datum::Null
-            } else {
-                finite_float(a % b)?
-            }
-        }
+        Mod => unreachable!("worker arithmetic dispatched before this ladder"),
         Eq => bool_int(a == b),
         Ge => bool_int(a >= b),
         Gt => bool_int(a > b),

@@ -1632,7 +1632,10 @@ impl ScalarFunction {
                     && !(domain == Some(EvalType::Real) && op == BinaryOp::Plus)
                     && !(op == BinaryOp::Mod && domain != Some(EvalType::Decimal))
                 {
-                    return if matches!(op, BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul) {
+                    return if matches!(
+                        op,
+                        BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul | BinaryOp::Mod
+                    ) {
                         crate::ops::eval_binary_arithmetic_null_in(ctx)
                     } else {
                         Ok(Datum::Null)
@@ -3954,7 +3957,11 @@ fn eval_integer_batch(
                             other => other,
                         })?,
                     )?,
-                    _ if matches!(op, BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul) => {
+                    _ if matches!(
+                        op,
+                        BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul | BinaryOp::Mod
+                    ) =>
+                    {
                         bits(crate::ops::eval_binary_arithmetic_null_in(ctx)?)?
                     }
                     _ => None,

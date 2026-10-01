@@ -1,0 +1,46 @@
+mod-one-49 / round50 command receipts
+Predecessor like-two-48. Functional163/245, strict0; incomplete/not PR-ready.
+Raw logs: /home/agent/tidb/expression-unification/logs.
+T cwd=/home/agent/tidb/expression-unification/tikv, wrapper=../tools/cargo-tikv, nightly-2026-01-30.
+N cwd=/home/agent/tidb/expression-unification/tidb/rust, wrapper=../../tools/cargo-tidb, nightly-2026-08-22.
+Exact command form: set -o pipefail; <wrapper> <arguments> 2>&1 | tee <log> >/dev/null.
+T uses ../logs/<name>; N uses ../../logs/<name>. Counts below are passed/failed/ignored/filtered; measured=0 throughout. Times are compile/test seconds.
+
+1 T test --locked -p tidb_query_datatype --lib codec::mysql::decimal:: -- --test-threads=1
+  mod-one-tikv-datatype.log; 87/0/0/336; 2.25/0.01s; exit0; SHA256 9d0586582b2938f71b9ba891c7be0d57f37184b62ca109f36a930f1256ce5892
+2 N test --locked -p tidb-datatype --lib decimal:: -- --test-threads=1
+  mod-one-native-datatype.log; 24/0/0/417; 2.41/0.00s; exit0; SHA256 7adb45c7b56db0deb47228839bdc9f856d8eb012c3bc670b78ea4f1b4d69feb8
+3 T test --locked -p tidb_query_expr --lib mod -- --test-threads=1
+  mod-one-tikv-expr.log; 20/0/0/807; 10.68/0.00s; exit0; SHA256 d83e5ca88dd449a19bea500e698ed308374276954c4ec99174b116678d683b68
+4 T test --locked -p tidb_query_expr --lib local -- --test-threads=1
+  mod-one-tikv-local.log; 289/0/1/537; 0.15/0.19s; exit0; SHA256 c5d5eea161522a36849d2699b5aeb17e8a67e9d7a3dc17110ee658c9e2df56b5
+5 N test --locked -p tidb-expr --lib mod -- --test-threads=1
+  mod-one-native-expr.log; 35/0/2/1551; 14.14/0.01s; exit0; SHA256 232a893d1f2343448653205115bc5cc2a89a57c8f4189221945921bf2fb5e544
+6 N test --locked -p tidb-unistore --lib legacy_modulo_ -- --test-threads=1
+  mod-one-legacy.log; 1/0/0/213; 6.45/0.00s; exit0; SHA256 2b0bdcf1479bdb86a8cb95cd1d72f6bf1a0261166cd7bc76cec65e97f28db240
+7 N test --locked -p tidb-session --lib evaluated_ascii_modulo_ -- --test-threads=1
+  mod-one-sql.log; 2/0/0/2179; 23.38/0.05s; exit0; SHA256 7f66bb557fe16e28bd968ac2ff35f1c811df007c994fef9c12521d6e5ef1f18a
+8 N test --locked -p tidb-expr --lib -- --test-threads=1
+  mod-one-expr-full.log; 1490/4/94/0; 0.16/13.55s; exit101; SHA256 437f41ee9ee55df33cd1723e60548c38ce923cdf9820414bc01332dbfdd80063
+9 N test --locked -p tidb-unistore --lib -- --test-threads=1
+  mod-one-unistore-full.log; 200/1/13/0; 0.13/2.99s; exit101; SHA256 9db38bb0035e59dbc3fc88eb944562981bf59c3b0b427f694d3bd7b1721bda61
+
+Nine launches, nine actual nonzero-test runs: seven focused green first-pass, two final old-baseline non-green. No compile/launch/new-test/zero-match failures, retries, metadata commands, lock resolution, fixture recording or invented negative phase. Not every check green: the full suites still fail.
+
+Complete failure sections byte-equal to like-two-48 after ONLY numeric panic-heading thread IDs become (<id>). Slice includes first newline+failures:+newline through just before newline+test result:, including every panic payload and final failure-name list. No source-address mapping.
+Expression SHA256 27654f2c0ad2971242c00f50182467598cdfd9c2c65e5bf5a32e683708448637; original IFNULL/EXP/duration164:55/STR_TO_DATE failures.
+Unistore SHA256 b64dcced405c699c11b72ee31888c58e491b4e5b4e74fa2d445454e1d1e146e9; closure_executor_selection_over_point_range_answers_zero_rows194:5.
+
+Original complete #[cfg(test)] mod tests suffix proofs against starting HEADs:
+- TiKV codec/mysql/decimal.rs: 9a217340d9d495773a043cbe0378a68c5401737315752dcdc1105be52cc2e332.
+- TiKV impl_arithmetic.rs: f72a3ad990dbfe20c207e8764950c53276bbd4ea3e0953545f74c89764b511ea.
+- native ops.rs: f823ff05f80ca755b998f6e92db3f3ef79ea462f5ae607d5aece0c2c9ee3bbaa.
+Existing single-input bridge test helper gains exact eight rejection arms; original SQL/expected values and instrumentation unchanged. Eleven new functions: shared/native datatype1+1, shared kernels2, local2, native bridge2, legacy1, SQL2.
+
+17 Rust files, TiKV7/native10; no new source module/dependency/manifest/lock changes. Six parallel single-writer owners; parent alone ran serialized gates/formatting/publication. Existing lib/mod/compile exports that needed no changes were left alone. No reported source-tool failures/denials/escalations, formatter failure or static-proof failure.
+Final format commands: /home/agent/tidb/expression-reuse/rustup-home/toolchains/nightly-2026-01-30-x86_64-unknown-linux-gnu/bin/rustfmt --edition 2021 --config skip_children=true --check over seven modified TiKV Rust files; corresponding nightly-2026-08-22 path over ten native files. Both git diff --check and staged checks pass. Only scoped files formatted.
+
+Policy evidence: facade and direct-ready admission reject NULL in eight value recipes only; old nullable operations unchanged. Successful None for these nonNULL inputs means zero divisor; native handler runs after the actual result, using explicit original-input presence, while legacy stays silent. Tests cover four signedness profiles, full i128, -0, native nonfinite error versus legacy raw NaN, hidden/wide Decimal remainder and budget refusal. SQL covers old Int/Real eager RHS versus Decimal short-circuit, NULL silence, SELECT warning1365, strict UPDATE error, and fifteen real-column zero-slot cases. No host divisor check, fake RHS, new context binding or warning-capable private EvalContext.
+Shared native remainder reuses private Grow division, not Fixed9 or discarded quotient. Live scratch/output WORD budget boundaries47/48 and51/52 are tested; borrowed inputs are not summed a second time. This is not a whole-heap, allocator-header, peak or OOM guarantee.
+
+Deferred: DIV's full u32 precision/disposition binding/report; IntDIV warning-before-conversion; whole workspace, make lint/dev/bazel_prepare, release/performance/zero-copy/allocator/OOM/M6, 150-row differential, TiFlash, full Go-package/type-domain equivalence, existing compatibility exceptions and baseline failures. MOD is one functional family, not eight credits. Remaining eligible82; target221 still needs58.
