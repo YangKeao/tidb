@@ -28,10 +28,7 @@
 use serde_json::{Number, Value as Json};
 
 use super::path::{extract, parse_path};
-use super::value::{
-    binary_json_datum, json_document_string, json_sql_string, parse_json,
-    parse_json_document_argument,
-};
+use super::value::{binary_json_datum, json_document_string, parse_json_document_argument};
 use crate::builtin_ext::BuiltinFuncCache;
 use crate::coerce::coerce_str;
 use crate::expression::{ConstLevel, Expression};
@@ -184,70 +181,74 @@ pub(super) fn json_schema_valid(values: &[Datum]) -> Result<Datum, EvalError> {
 /// String arguments are JSON documents; every non-string, non-JSON SQL value
 /// is the Go `Others` signature and therefore returns zero rather than being
 /// stringified.  `NULL` propagates.
-pub(super) fn json_valid(v: &Datum) -> Result<Datum, EvalError> {
-    match v {
-        Datum::Null => Ok(Datum::Null),
-        // Non-UTF-8 bytes are simply not a JSON document, which is the zero
-        // this signature reports rather than a statement error.
-        Datum::String(_) | Datum::Bytes(_) => Ok(Datum::Int(i64::from(
-            json_sql_string(v)
-                .ok()
-                .flatten()
-                .is_some_and(|text| parse_json(text).is_ok()),
-        ))),
-        Datum::Int(_) | Datum::UInt(_) | Datum::Decimal(_) | Datum::Real(_) => Ok(Datum::Int(0)),
-        Datum::Float32(_)
-        | Datum::BinaryLiteral(_)
-        | Datum::Duration(_)
-        | Datum::Enum(_, _)
-        | Datum::Bit(_)
-        | Datum::Set(_, _)
-        | Datum::Time(_)
-        | Datum::Raw(_)
-        | Datum::VectorFloat32(_) => Ok(Datum::Int(0)),
-        Datum::Json(_) => Ok(Datum::Int(1)),
-        Datum::MinNotNull | Datum::MaxValue => {
-            Err(EvalError::Unsupported("range sentinel JSON_VALID argument"))
-        }
-    }
+pub(super) fn json_valid(v: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp};
+
+    // Select the SQL signature without inspecting or computing its result.
+    let operation = match v {
+        Datum::Null | Datum::String(_) | Datum::Bytes(_) => EvaluatedBytesOp::JsonValidTextNative,
+        Datum::Json(_) => EvaluatedBytesOp::JsonValidBinaryNative,
+        _ => EvaluatedBytesOp::JsonValidOtherNative,
+    };
+    crate::tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || {
+            Ok(match v {
+                Datum::Null => EvaluatedArgs::Bytes(None),
+                // The text kernel, not UTF-8 coercion, decides validity.
+                Datum::String(value) => EvaluatedArgs::Bytes(Some(value.bytes().to_vec())),
+                Datum::Bytes(value) => EvaluatedArgs::Bytes(Some(value.clone())),
+                Datum::Json(value) => EvaluatedArgs::Bytes(Some(value.encoded())),
+                Datum::MinNotNull | Datum::MaxValue => {
+                    return Err(EvalError::Unsupported("range sentinel JSON_VALID argument"));
+                }
+                // The original Others signature does not read its value.
+                _ => EvaluatedArgs::NoArgs,
+            })
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
 }
 
 /// `JSON_TYPE(json_doc)`, port of `builtinJSONTypeSig.evalString` and
 /// `types.BinaryJSON.Type` (`pkg/types/json_binary_functions.go`).
-pub(super) fn json_type(v: &Datum) -> Result<Datum, EvalError> {
-    if v.is_null() {
-        return Ok(Datum::Null);
-    }
-    // A binary JSON value carries its own type code, and Go answers straight
-    // from it (`BinaryJSON.Type()`). Rendering to text first would collapse
-    // the typed codes -- DATE/DATETIME/TIME and the Opaque family -- into
-    // STRING, which is exactly the names `CAST(.. AS JSON)` now preserves.
-    if let Datum::Json(document) = v {
-        return document
-            .type_name()
-            .map(|name| Datum::new_string(name.to_owned()))
-            .map_err(|_| EvalError::Json(JsonError::InvalidText));
-    }
-    let Some(s) = json_document_string(v)?.map(std::borrow::Cow::into_owned) else {
-        return Err(crate::EvalError::Json(
-            crate::JsonError::InvalidTypeForJson {
-                argument: 1,
-                function: "json_type",
-            },
-        ));
+pub(super) fn json_type(v: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    use crate::tikv::{EvaluatedBytesOp, JsonReportOutcome};
+
+    let operation = if matches!(v, Datum::Json(_)) {
+        EvaluatedBytesOp::JsonTypeBinaryNative
+    } else {
+        EvaluatedBytesOp::JsonTypeTextNative
     };
-    let json = parse_json(&s)?;
-    let ty = match json {
-        Json::Null => "NULL",
-        Json::Bool(_) => "BOOLEAN",
-        Json::Number(n) if n.is_i64() => "INTEGER",
-        Json::Number(n) if n.is_u64() => "UNSIGNED INTEGER",
-        Json::Number(_) => "DOUBLE",
-        Json::String(_) => "STRING",
-        Json::Array(_) => "ARRAY",
-        Json::Object(_) => "OBJECT",
-    };
-    Ok(Datum::new_string(ty.to_string()))
+    crate::tikv::evaluate_bytes_in(
+        operation,
+        ctx,
+        || match v {
+            Datum::Null => Ok(None),
+            // Keep all typed tags and payload bytes; the kernel owns type-name
+            // validation. Display would collapse temporal and opaque kinds.
+            Datum::Json(document) => Ok(Some(document.encoded())),
+            _ => {
+                let text = json_document_string(v)?.ok_or(EvalError::Json(
+                    JsonError::InvalidTypeForJson {
+                        argument: 1,
+                        function: "json_type",
+                    },
+                ))?;
+                Ok(Some(text.into_owned().into_bytes()))
+            }
+        },
+        |computed| match computed.into_json_report()? {
+            JsonReportOutcome::Null => Ok(Datum::Null),
+            JsonReportOutcome::Bytes(value) => Ok(Datum::new_string(value)),
+            JsonReportOutcome::EmptyText => Err(EvalError::Json(JsonError::EmptyText)),
+            JsonReportOutcome::InvalidText => Err(EvalError::Json(JsonError::InvalidText)),
+            JsonReportOutcome::Int(_) => {
+                Err(EvalError::Unsupported("JSON_TYPE result kind mismatch"))
+            }
+        },
+    )
 }
 
 /// `JSON_LENGTH(json_doc [, path])`, port of `builtinJSONLengthSig.evalInt`.

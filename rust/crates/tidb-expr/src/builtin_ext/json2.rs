@@ -16,28 +16,49 @@
 
 use serde_json::Value as Json;
 
-use super::json::parse_json_document_argument;
+use super::json::{json_document_text_argument, parse_json_document_argument};
 use crate::{Datum, EvalError};
 
 /// Dispatches this leaf's builtins; `None` if `name` isn't one of them.
-pub(crate) fn dispatch(name: &str, vals: &[Datum]) -> Option<Result<Datum, EvalError>> {
+pub(crate) fn dispatch_in(
+    name: &str,
+    vals: &[Datum],
+    ctx: &dyn crate::Columns,
+) -> Option<Result<Datum, EvalError>> {
     match (name, vals) {
-        ("JSON_DEPTH", [value]) => Some(json_depth(value)),
+        ("JSON_DEPTH", [value]) => Some(json_depth(value, ctx)),
         ("JSON_STORAGE_FREE", [value]) => Some(json_storage_free(value)),
         ("JSON_STORAGE_SIZE", [value]) => Some(json_storage_size(value)),
         _ => None,
     }
 }
 
+#[cfg(test)]
+pub(crate) fn dispatch(name: &str, vals: &[Datum]) -> Option<Result<Datum, EvalError>> {
+    dispatch_in(name, vals, &crate::NoColumns)
+}
+
 /// `JSON_DEPTH(json_doc)`, ported from `builtinJSONDepthSig.evalInt` in
 /// `pkg/expression/builtin_json.go`. TiDB's `BinaryJSON.GetElemDepth` gives
 /// every scalar and empty container depth one; an array/object is one plus
 /// the greatest depth of any child.
-fn json_depth(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(document) = parse_json_document_argument(value)? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int(depth(&document)))
+fn json_depth(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    use crate::tikv::JsonReportOutcome;
+
+    crate::tikv::evaluate_bytes_in(
+        crate::tikv::EvaluatedBytesOp::JsonDepthNative,
+        ctx,
+        || Ok(json_document_text_argument(value)?.map(String::into_bytes)),
+        |computed| match computed.into_json_report()? {
+            JsonReportOutcome::Null => Ok(Datum::Null),
+            JsonReportOutcome::Int(value) => Ok(Datum::Int(value)),
+            JsonReportOutcome::EmptyText => Err(EvalError::Json(crate::JsonError::EmptyText)),
+            JsonReportOutcome::InvalidText => Err(EvalError::Json(crate::JsonError::InvalidText)),
+            JsonReportOutcome::Bytes(_) => {
+                Err(EvalError::Unsupported("JSON_DEPTH result kind mismatch"))
+            }
+        },
+    )
 }
 
 /// `JSON_STORAGE_FREE(json_doc)`, ported from `builtinJSONStorageFreeSig` in
@@ -105,14 +126,6 @@ fn uvarint_size(mut value: u64) -> usize {
         size += 1;
     }
     size
-}
-
-fn depth(value: &Json) -> i64 {
-    match value {
-        Json::Array(values) => values.iter().map(depth).max().map_or(1, |max| max + 1),
-        Json::Object(values) => values.values().map(depth).max().map_or(1, |max| max + 1),
-        Json::Null | Json::Bool(_) | Json::Number(_) | Json::String(_) => 1,
-    }
 }
 
 #[cfg(test)]

@@ -1,0 +1,89 @@
+Checkpoint: json-introspection-three-30
+STATUS: 93->96/245 functional; final acceptance remains 0/245. Credit only json_valid/json_type/json_depth, not six signatures, helpers, aliases or other JSON families.
+HISTORY: 12 actual Rust runs = four initial green + seven final scoped green + one retained non-green full run. Review found the public native depth helper still recursive after the initial four; final revalidation followed its supplement. No compile failure, failed-target retry, old-expected/oracle modification or fixture recording; NOT all edits complete on the first wave.
+PROVENANCE: commands/exits/source proofs are parent-owned; writer globbed, grepped/read all twelve completed logs and ran sha256sum over all twelve (exit0), without building/testing/formatting.
+RAW DIRECTORY: /home/agent/tidb/expression-unification/logs
+JAN CWD: /home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv pin nightly-2026-01-30-x86_64-unknown-linux-gnu.
+AUG CWD: /home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb pin nightly-2026-08-22-x86_64-unknown-linux-gnu.
+Exact execution: set -o pipefail; <COMMAND> 2>&1 | tee <OUTPUT>; OUTPUT is ../logs/<LOG> for JAN, ../../logs/<LOG> for AUG. Final AUG datatype/native-json/native-source/dispatch ran serially with && and separate retained logs, all exit0.
+Compilation times are emitted Finished-test-profile times, not performance measurements. Initial local/kernels are pre-supplement evidence, not final full-local coverage.
+
+LOG [INITIAL/JAN]: json-introspection-tikv-datatype.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib codec::mysql::json:: -- --test-threads=1
+EXIT: 0; compile3.35s; test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 366 filtered out; finished in 0.00s
+SHA256: 8f14ea721d5b096ac14a1b3ddb2f355bbe67cb945f5f46fe858539fbf1469069
+LOG [INITIAL/AUG]: json-introspection-native-datatype.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-datatype --lib binary_json -- --test-threads=1
+EXIT: 0; compile3.55s; test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 406 filtered out; finished in 0.00s
+SHA256: 6080750bf48a85456cafe50cf0d5d8872a9a9874d3b29a6bd6531f1b1ba51e80
+LOG [INITIAL/JAN]: json-introspection-tikv-local.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+EXIT: 0; compile11.07s; 253 discovered, ignore preexisting; test result: ok. 252 passed; 0 failed; 1 ignored; 0 measured; 481 filtered out; finished in 0.19s
+SHA256: b159fe8067466799ea88756473c8dc60336fb7eacedb5e3dbb0aee0620f3b2d7
+LOG [INITIAL/JAN]: json-introspection-tikv-kernels.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_json:: -- --test-threads=1
+EXIT: 0; compile0.13s; test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 715 filtered out; finished in 0.00s
+SHA256: 9831abc8103400a71f338eaa8e85401f66b38d78d7f80646df8a7e8462d173d4
+
+LOG [FINAL/JAN]: json-introspection-tikv-datatype-final.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib codec::mysql::json:: -- --test-threads=1
+EXIT: 0; compile1.65s; test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 366 filtered out; finished in 0.00s
+SHA256: d1e3c330f3c99a4584327cfcd0715eb3373e41615f214cfb4bd89487e26666f9
+LOG [FINAL/JAN]: json-introspection-tikv-json-final.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib json_ -- --test-threads=1
+EXIT: 0; compile3.74s; test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 702 filtered out; finished in 0.01s
+SHA256: 5525f0ced607fcf91d2fe76dda009b37cd2b2e253070278211a20ac2dc09dc15
+LOG [FINAL/AUG]: json-introspection-native-datatype-final.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-datatype --lib binary_json -- --test-threads=1
+EXIT: 0; compile1.95s; test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 406 filtered out; finished in 0.00s
+SHA256: 3429e1b6a155f997bfeb5156d014ab496ec82a07be0a273dc045581da5ae56a7
+LOG [FINAL/AUG]: json-introspection-native-json.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib builtin_ext::json -- --test-threads=1
+EXIT: 0; compile15.68s; test result: ok. 40 passed; 0 failed; 0 ignored; 0 measured; 1501 filtered out; finished in 0.31s
+SHA256: 2d502ed9b80250c07b4cda5b64b19cbf7785f6362641322d1a7aa0d7a1e20c31
+LOG [FINAL/AUG]: json-introspection-native-source.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib tests::builtin_info_json_math_source::json_ -- --test-threads=1
+EXIT: 0; compile0.14s; test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 1511 filtered out; finished in 0.26s
+SHA256: 6ed86f5444e943df60392e6397b24b43db0deffe193bc6c8a8083f7f02b488e8
+LOG [FINAL/AUG]: json-introspection-dispatch.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib json_introspection_dispatch_ -- --test-threads=1
+EXIT: 0; compile0.12s; test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1538 filtered out; finished in 0.00s
+SHA256: 41714bf3871a51d0c963293c329c8661a6af18420be4c187276182be5be18b83
+LOG [FINAL/AUG]: json-introspection-sql.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+EXIT: 0; compile31.91s; test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 1.00s
+SHA256: 3e925af9bf02d80a9e6b43e495ab620c0c30913d4edbeecaebc1f212cde55a8e
+LOG [FINAL/AUG]: json-introspection-expr-full.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+EXIT: 101; compile0.14s (actual log, not the earlier 0.12 estimate); 1541 discovered; test result: FAILED. 1443 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.54s
+SHA256: 560bdca17624fa1e3760f4680474dadaf899ee370d52bb3eea540f7f1d9dff3c
+
+SOURCE / SCOPE (parent proof, not a source-hash matrix)
+TiKV owns the shared native-document parser, typename selector and depth kernel. Native serde Value, wire JsonRef and validated native node children retain distinct representation/policy adapters, without a general binary-codec bridge or dummy tree.
+Review supplement: native binary_json_ops::element_depth first retains its original to_node validation, then exposes real children to narrow public native_json_depth_from_children. Result max/+1 lives only in TiKV, not a remaining host calculator or generic evaluator; wire's stricter varint codec is not substituted for native validation.
+Parent pinned-formatted/checked all24 Rust sources (native12/TiKV12); both repository git diff --check and both lockfile git diff --exit-code checks exit0.
+Byte-identical preservation: complete native builtin_ext/json/tests.rs and tests/builtin_info_json_math_source.rs; complete old cfg(test) blocks in native json2.rs/binary_json.rs and TiKV json_type.rs/json_depth.rs; report.rs from JSON_LENGTH onward. One new public-depth-helper test was added separately; no old expected/fixture changes.
+The new empty-literal expected BOOLEAN was checked against pinned pre-move e3f3393e source rather than inferred from the new provider. Initial datatype31 already exercised the old depth helper but could not prove the later delegation.
+
+SEMANTICS / COVERAGE
+Six exact private entries: JsonValidTextNative/json_valid_text_native_fn_meta, JsonValidBinaryNative/json_valid_binary_native_fn_meta, JsonValidOtherNative/json_valid_other_native_fn_meta, JsonTypeTextNative/json_type_text_native_fn_meta, JsonTypeBinaryNative/json_type_binary_native_fn_meta, JsonDepthNative/json_depth_native_fn_meta.
+VALID text nullable Bytes->Int computes shared-parse success; bad UTF-8/JSON gives0. Typed JSON Some gives1 without payload validation; SQL NULL runs a nullable wrapper. Others is a genuine NoArgs worker returning0, not a fake input bool or host-computed result.
+TYPE/DEPTH nullable Bytes->Bytes: None=SQL NULL, Some([0]+type-name bytes or i64LE8 depth)=computed value, exact Some([1])=EmptyText only for TypeText/Depth (TypeBinary rejects it as InvalidBatch), exact Some([2])=InvalidText (including typed InvalidBinary). Binary TYPE consumes actual typecode+payload; missing typecode is Other transport error, not a guessed type/domain result.
+The shared native parser preserves i64MAX INTEGER, last-wins duplicate keys, default128 guard and long object keys without u16 truncation. Native TYPE keeps date/time/opaque tags and original local validation only: malformed/empty literal is BOOLEAN (unlike wire's unknown-literal NULL); opaque framing is stricter than wire TYPE, not blanket payload validation.
+Five-state JsonReport moves the typed result: Type payload copied from transport then moved, depth inline. Malformed frame is a contract error; envelope allocation Other and genuine depth-helper/resource errors are not SQL parse statuses. No new argument role/cause/driver/general context getter/fourth internal column/PBlegacy admission.
+Ordering CHANGES explicitly: original source-type/applicable UTF-8/numeric-to-JSON/Display preparation remains before admission; actual parse and typed-TYPE validation are worker work after admission. Zero slots therefore preempt bad-JSON domain errors; no native preparse/prediction or replay, and no claim of wholly unchanged preparation ordering.
+Final joint JSON32 includes two C core tests, all19 impl_json tests and related casts/miscellaneous checks, NOT a final full-local rerun. Final native datatype32 includes test_binary_json_depth_shared_typed_helper. Native JSON40/source30, dispatcher3 and SQL63 retain original vectors and cover tags, carriers, metadata, errors and zero-slot refusal; representative, not exhaustive.
+
+FULL-FAILURE COMPARISON (fresh parent comparison with round29 compression-expr-full.log)
+section = text.split('\nfailures:\n', 1)[1].split('\ntest result:', 1)[0]
+Normalize only re.sub(r"(?m)^(thread '[^\n]*' \()\d+(\) panicked at)", r'\1THREAD\2', section).
+Complete normalized sections byte-identical, both SHA256 0930217d98e0b92d727527dc3c7cb7313f1bbe35e643da60114fa6d78203839b; this is NOT a whole-log hash or a green full run. Retained failures:
+- pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation
+- tests::builtin_info_json_math_source::exp
+- tests::builtin_math_misc_op_source::vectorized_builtin_op_func
+- time_fn::tests::str_to_date_partial_formats_follow_no_zero_date
+The old EXP(100_000.0) FloatOverflow assertion still fails. No old failure is presented as repaired or as a current pass.
+
+LIMITS / FREEZE
+No whole JSON codec/Go-package/workspace, exhaustive-input, internal allocation-peak/OOM, zero-copy/performance, separate release, make lint or wider-guard completion claim. Historical non-green evidence remains historical; result typing does not bound all internal parser allocations.
+This authorization wrote only json-introspection-checkpoint.md and this summary; no source, other docs, old expected, Plan, JSON, index, build/test/fmt changes. FINAL: 96/245 functional, final0/245; frozen, not PR-ready.

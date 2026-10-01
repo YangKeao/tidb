@@ -1,8 +1,8 @@
 # Expression unification experiment
 
-Checkpoint-ID: `compression-two-29` (previous: `exp-log-two-28`)
+Checkpoint-ID: `json-introspection-three-30` (previous: `compression-two-29`)
 
-**93/245 frozen families delegate to TiKV with native evaluator algorithms removed; target 221.** This checkpoint adds COMPRESS and UNCOMPRESS. Strict final-audited acceptance remains 0; the experiment is incomplete and not PR-ready.
+**96/245 frozen families delegate to TiKV with native evaluator algorithms removed; target 221.** This checkpoint adds JSON_VALID, JSON_TYPE and JSON_DEPTH. Strict final-audited acceptance remains **0**; the experiment is incomplete and not PR-ready.
 
 ## Paired repositories
 
@@ -13,36 +13,32 @@ Use sibling checkouts. `checkpoint.json` pins TiKV and the published Plan hash. 
 
 ## This checkpoint
 
-- **One compression owner:** the existing Go-compatible encoder moves to TiKV `impl_encryption/native_go_flate.rs`. Before formatting, all 1153 relocated lines match the original. After a limited header correction, the entire production body matches the original under the same pinned formatter. Native `go_flate.rs` shrinks from 1177 to 44 lines, retaining only the original byte fixtures and a test-only import.
-- **One native inflation owner:** the bounded decoder moves to TiKV `impl_encryption.rs`. Its inner body is byte-identical: 8 KiB scratch, a one-byte excess probe, limit rejection before growth, complete-stream/checksum/progress requirements and ignored trailing data remain. Decoded-empty success remains distinct from wire's policy.
-- **Minimal wire edits:** wire UNCOMPRESS's body is unchanged. Wire COMPRESS and native framing each replace only two primitive calls to share the little-endian prefix and trailing-dot rule, preserving their allocation and I/O order. Wire's encoder is not substituted for native's byte-compatible encoder.
-- **Actual completed outcomes:** COMPRESS reuses ordinary owned Bytes. UNCOMPRESS has a separate sealed result: NULL, decoded bytes (including empty), corruption or output limit. Only its selected recipe interprets the canonical internal envelope. Malformed result framing is a contract error, not a SQL corruption warning.
-- **Warnings remain native policy:** guarded coercion passes actual input to the existing worker. Only completed outcomes produce the original 1259/1258 warnings. NULL and empty inputs still enter the worker. Pool refusal does not become early NULL, overflow or a guessed zlib warning.
+- **Shared parser, type names and depth:** TiKV `native_policy`, `json_type` and `json_depth` own the compatibility parser, common type-name selector and single depth recursion. Text-number distinctions, typed temporal/opaque names and original document coercions remain; no generic lossy JSON codec bridge is introduced.
+- **Public helper included after review:** native `binary_json_ops::element_depth` retains its original `to_node` conversion, then delegates child traversal to the narrow `native_json_depth_from_children` helper. Its nested depth algorithm was removed, without a dummy array or codec bridge. Review found this additional owner; the first edit was not already complete.
+- **Closed execution:** six fixed operations reuse Bytes/NoArgs and the existing driver. The five-state JSON report carries NULL, bytes, integer, empty-text or invalid-text outcomes. JSON_VALID's Others signature is the only added NoArgs whitelist entry. There is no new input role, four-column allowance or PB/legacy admission; native NoColumns dispatch wrappers are test-only.
+- **Explicit error-phase change:** source-type, UTF-8 and numeric-conversion errors remain in guarded coercion before admission. JSON parsing and typed JSON_TYPE validation now happen in the worker: zero-slot refusal therefore precedes bad/empty JSON and malformed typed-payload results. Healthy SQL values and original JSON error codes/messages remain; this is **not** preservation of every former error precedence.
 
-Value extraction copies only the decoded payload, with fallible allocation and the existing requested-length/actual-capacity overlap checks. The encoded result, including its tag, remains charged until release. Status outcomes retain no payload allocation. This is not zero-copy or a bound on allocations inside the decoder. No new input role, driver, generic graph, mutable worker warning context, four-column allowance or PB/legacy entry is added. Three narrow pure-function exports preserve original tests; native production does not use that bypass.
-
-Fourteen live Rust files changed: six native and eight TiKV, including one new module. Both lockfiles, the original 24-line Go fixture block, the 758-line crypto test block and all crypto source from UNCOMPRESSED_LENGTH onward remain unchanged. Obsolete module comments were corrected without changing expected values.
+The change covers 24 Rust files (12 per repository), including one new `native_policy` module. Original expected values are unchanged.
 
 ## Actual validation
 
-| Scope | Result |
+| Final run | Result |
 |---|---|
-| TiKV all local evaluator tests | 250 passed, 1 existing ignored |
-| TiKV encryption tests, including original wire cases | 10 passed |
-| Original Go compression byte-fixture test | 1 passed |
-| Original native crypto tests | 15 passed |
-| New native dispatch/diagnostic tests | 3 passed |
-| SQL/lifecycle tests | 61 passed |
-| Full native expression library | **1440 passed, 4 unchanged failures, 94 ignored; exit 101** |
+| TiKV datatype | 34 passed |
+| TiKV JSON, including two core tests, 19 kernel tests and casts | 32 passed |
+| Native datatype binary JSON, including the added helper test | 32 passed |
+| Native `builtin_ext::json` | 40 passed |
+| Original JSON source tests | 30 passed |
+| New native dispatch tests | 3 passed |
+| SQL/lifecycle | 63 passed |
+| Full native expression library | **1443 passed, 4 unchanged failures, 94 ignored; 1541 total, exit 101; 10.54 s** |
 
-All six targeted Rust runs passed on their first attempt. The entire full-expression failure section matches checkpoint28 after replacing only panic-heading thread IDs; the old EXP expectation conflict remains among those failures. Before source freeze, text comparisons caught and corrected transcription differences; this is distinct from the absence of Rust compilation failures or test retries.
+Four earlier runs (TiKV datatype 34, native datatype 31, local evaluator 252 plus one ignored, kernels 19) preceded the public-helper correction. Across all **12 actual runs, 11 passed and one retained the known non-green baseline**; there were no compilation failures, failed-test retries or expected-value edits. The complete full-expression failure section matches checkpoint29 after thread-ID normalization: SHA-256 `0930217d98e0b92d727527dc3c7cb7313f1bbe35e643da60114fa6d78203839b`.
 
-New SQL tests cover four normal stored rows, independent static Go/MySQL compressed frames, result metadata, three corruption/limit diagnostics and eight direct zero-slot refusals. The raw `00FF20` compression case checks only prefix/suffix and round-trip consistency, not a complete independent compressed-byte golden. Kernel-generated test streams are similarly policy/ownership checks, not independent encoder oracles.
-
-Seven exact command receipts: [summary](logs/compression-summary.txt). Ownership, source-copy hashes and compatibility: [evidence](evidence/compression-checkpoint.md).
+New SQL coverage checks four rows across three families with result metadata, six typed-DATE/numeric/raw columns, four 3140 diagnostics and ten zero-slot refusals. Exact commands: [summary](logs/json-introspection-summary.txt). Ownership, review correction and compatibility limits: [evidence](evidence/json-introspection-checkpoint.md).
 
 ## Remaining work
 
-JSON_VALID, JSON_TYPE and JSON_DEPTH are next read-only candidates, not credited. Their numeric, malformed typed-BinaryJSON and document-conversion policies must be preserved; existing TiKV JSON representation limits prevent assuming a general lossless bridge. JSON_LENGTH's optional path and diagnostic differences require separate work.
+Next frozen read-only candidates, **not credited**: JSON_STORAGE_FREE, JSON_STORAGE_SIZE and JSON_QUOTE. SIZE must share encoder-layout primitives without introducing binary encoding's u16 limits; QUOTE must share traversal while retaining native serde escaping versus wire `0x07 → \a` / `0x0b → \v` policy. JSON_LENGTH remains deferred.
 
-Complete operation-scope coverage, allocation/high-water and physical-peak checks, paired differential reruns, full codec-domain equivalence, release performance, whole workspace, `make lint` and TiFlash integration remain unfinished. Full datatype, unistore and parser-charset suites were not rerun; historical non-green results are not passing evidence. No compressed-input OOM-safety, all-input/CPU equivalence or complete Go-package transcreation claim is made.
+Operation-scope coverage, allocation/high-water and physical-peak checks, paired differential reruns, release performance, whole-workspace acceptance, `make lint` and TiFlash integration remain unfinished. No whole-JSON-codec or complete Go-package claim is made. Full unistore, parser-charset and datatype suites were not rerun; historical non-green results are not passing evidence.

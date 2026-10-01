@@ -47,7 +47,8 @@ impl AsciiComputedValue for ComputedValue {
             | ComputedValue::Ieee754Bits(_)
             | ComputedValue::Decimal(_)
             | ComputedValue::Int128(_)
-            | ComputedValue::Uncompress(_) => {
+            | ComputedValue::Uncompress(_)
+            | ComputedValue::JsonReport(_) => {
                 panic!("ASCII assertion received a non-Int result")
             }
         }
@@ -1118,6 +1119,14 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::EltNative => {
             panic!("variadic string operations need their original argument list")
         }
+        EvaluatedBytesOp::JsonValidTextNative
+        | EvaluatedBytesOp::JsonValidBinaryNative
+        | EvaluatedBytesOp::JsonValidOtherNative
+        | EvaluatedBytesOp::JsonTypeTextNative
+        | EvaluatedBytesOp::JsonTypeBinaryNative
+        | EvaluatedBytesOp::JsonDepthNative => {
+            panic!("JSON introspection needs its original source domains")
+        }
         EvaluatedBytesOp::CompressGoNative | EvaluatedBytesOp::UncompressNative => {
             panic!("compression calls need their original nullable bytes")
         }
@@ -1255,6 +1264,216 @@ fn dispatch_bytes_family(
     };
     crate::func::eval_func_values(name, std::slice::from_ref(value), columns)
         .expect("closed family has its existing frontend entry")
+}
+
+fn json_introspection_raw_empty(type_code: u8) -> Datum {
+    // Public persisted-JSON constructor, not a private C4 result envelope.
+    Datum::Json(tidb_datatype::BinaryJSON::from_encoded_parts(
+        type_code,
+        Vec::<u8>::new(),
+    ))
+}
+
+#[test]
+fn json_introspection_dispatch_keeps_text_other_null_and_depth_semantics() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (name, input, expected) in [
+            ("JSON_VALID", Datum::new_string("[]"), Ok(Datum::Int(1))),
+            ("JSON_VALID", Datum::new_bytes([0xff]), Ok(Datum::Int(0))),
+            ("JSON_VALID", Datum::Int(3), Ok(Datum::Int(0))),
+            ("JSON_VALID", Datum::Null, Ok(Datum::Null)),
+            ("JSON_TYPE", Datum::Null, Ok(Datum::Null)),
+            ("JSON_DEPTH", Datum::Null, Ok(Datum::Null)),
+            // Preserve the original serde document boundary, not the wire parser.
+            (
+                "JSON_TYPE",
+                Datum::new_string("9223372036854775807"),
+                Ok(Datum::new_string("INTEGER")),
+            ),
+            ("JSON_DEPTH", Datum::Int(1), Ok(Datum::Int(1))),
+            // The later duplicate replaces the deeper value before depth is taken.
+            (
+                "JSON_DEPTH",
+                Datum::new_string(r#"{"a":[[1]],"a":0}"#),
+                Ok(Datum::Int(2)),
+            ),
+            (
+                "JSON_TYPE",
+                Datum::new_string("a"),
+                Err(EvalError::Json(crate::JsonError::InvalidText)),
+            ),
+            (
+                "JSON_DEPTH",
+                Datum::new_string(""),
+                Err(EvalError::Json(crate::JsonError::EmptyText)),
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::builtin_ext::dispatch(name, std::slice::from_ref(&input), columns).unwrap()
+            });
+            if matches!(&expected, Ok(Datum::String(_))) {
+                assert!(matches!(&result, Ok(Datum::String(_))));
+            }
+            assert_eq!(result, expected, "{name}({input:?})");
+            assert_wide_math_c4(observation);
+        }
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn json_introspection_dispatch_preserves_typed_tags_and_literal_nonvalidation() {
+    use tidb_datatype::{BinaryJSON, MySqlDuration, Opaque, JSON_TYPE_CODE_LITERAL};
+    // These native accessor guards are not runtime evidence or envelope tests.
+    assert!(
+        matches!(EvaluatedBytesResult::Bytes(None).into_json_report(),
+        Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract)
+    );
+    for result in [
+        EvaluatedBytesResult::JsonReport(crate::tikv::JsonReportOutcome::Null)
+            .into_int_datum()
+            .map(|_| ()),
+        EvaluatedBytesResult::JsonReport(crate::tikv::JsonReportOutcome::Null)
+            .into_bytes()
+            .map(|_| ()),
+    ] {
+        assert!(
+            matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract)
+        );
+    }
+
+    let date = Time::new(
+        CoreTime::from_date(2024, 3, 15, 0, 0, 0, 0),
+        TimeType::Date,
+        0,
+    )
+    .unwrap();
+    let duration = MySqlDuration::new(1, 2, 3, 0, 0).unwrap();
+    let opaque = Opaque {
+        type_code: 0,
+        bytes: vec![0, 1, 2, 3],
+    };
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (name, input, expected) in [
+            (
+                "JSON_TYPE",
+                Datum::Json(BinaryJSON::from_time(date)),
+                Ok(Datum::new_string("DATE")),
+            ),
+            (
+                "JSON_TYPE",
+                Datum::Json(BinaryJSON::from_duration(duration)),
+                Ok(Datum::new_string("TIME")),
+            ),
+            (
+                "JSON_TYPE",
+                Datum::Json(BinaryJSON::from_opaque(opaque)),
+                Ok(Datum::new_string("OPAQUE")),
+            ),
+            (
+                "JSON_VALID",
+                json_introspection_raw_empty(JSON_TYPE_CODE_LITERAL),
+                Ok(Datum::Int(1)),
+            ),
+            // Frozen pre-migration type_name: every non-NULL literal is BOOLEAN,
+            // even an empty literal; do not add general binary validation here.
+            (
+                "JSON_TYPE",
+                json_introspection_raw_empty(JSON_TYPE_CODE_LITERAL),
+                Ok(Datum::new_string("BOOLEAN")),
+            ),
+            (
+                "JSON_TYPE",
+                json_introspection_raw_empty(0xff),
+                Err(EvalError::Json(crate::JsonError::InvalidText)),
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::builtin_ext::dispatch(name, std::slice::from_ref(&input), columns).unwrap()
+            });
+            if matches!(&expected, Ok(Datum::String(_))) {
+                assert!(matches!(&result, Ok(Datum::String(_))));
+            }
+            assert_eq!(result, expected, "{name}({input:?})");
+            assert_wide_math_c4(observation);
+        }
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn json_introspection_dispatch_admission_now_precedes_parse_but_not_preparation() {
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        // New scope priority: bad JSON and typed type-name failures occur in
+        // the worker, so refusal wins. This is not the old host-parse ordering.
+        for (name, input) in [
+            ("JSON_VALID", Datum::new_string("[]")),
+            ("JSON_VALID", Datum::Null),
+            ("JSON_VALID", Datum::Real(f64::INFINITY)), // Others ignores its payload.
+            ("JSON_VALID", Datum::new_bytes([0xff])), // Healthy text answer was 0.
+            ("JSON_VALID", json_introspection_raw_empty(0xff)), // Binary never validates.
+            ("JSON_TYPE", Datum::Null),
+            ("JSON_TYPE", Datum::new_string("a")),
+            ("JSON_TYPE", json_introspection_raw_empty(0xff)),
+            ("JSON_DEPTH", Datum::new_string("[1]")),
+            ("JSON_DEPTH", Datum::Null),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::builtin_ext::dispatch(name, std::slice::from_ref(&input), columns).unwrap()
+            });
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource),
+                "{name} must not preparse, prevalidate, return a constant, or fall back");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        for (name, input, expected) in [
+            ("JSON_TYPE", Datum::new_bytes([0xff]), EvalError::Unsupported("invalid UTF-8 string datum")),
+            ("JSON_DEPTH", Datum::new_bytes([0xff]), EvalError::Unsupported("invalid UTF-8 string datum")),
+            ("JSON_VALID", Datum::MinNotNull, EvalError::Unsupported("range sentinel JSON_VALID argument")),
+            ("JSON_TYPE", Datum::Int(3), EvalError::Json(crate::JsonError::InvalidTypeForJson {
+                argument: 1, function: "json_type",
+            })),
+            ("JSON_DEPTH", Datum::Real(f64::INFINITY), EvalError::Unsupported("datum JSON conversion")),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::builtin_ext::dispatch(name, std::slice::from_ref(&input), columns).unwrap()
+            });
+            assert_eq!(result, Err(expected), "{name} retains its original preparation error before admission");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        // The normal typed ScalarFunction falls through json_dispatch_typed to
+        // eval_func_values_in and the actual-context builtin_ext dispatcher.
+        let field = FieldType::new(FieldTypeCode::VarString);
+        let function = ScalarFunction::new(
+            tidb_ast::CiString::new("json_type"), field.clone(),
+            vec![Expression::Constant(Constant::new(Datum::new_string("[]"), field))],
+        );
+        let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 // Existing SQL frames from builtin_ext/crypto.rs, not C4 result envelopes.

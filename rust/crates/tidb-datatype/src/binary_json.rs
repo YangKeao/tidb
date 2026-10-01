@@ -17,6 +17,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use serde_json::{Map, Number, Value};
+use tidb_query_datatype::codec::mysql::json::{
+    decode_native_json_uvarint, native_binary_json_type_name, native_json_opaque,
+};
 
 use crate::{CoreTime, MySqlDuration, Time, TimeType};
 
@@ -361,20 +364,8 @@ impl BinaryJSON {
 
     /// Decodes an opaque value without changing its bytes.
     pub fn opaque(&self) -> Result<Opaque, BinaryJSONError> {
-        if self.type_code != JSON_TYPE_CODE_OPAQUE {
-            return Err(BinaryJSONError::InvalidBinary);
-        }
-        let (&type_code, payload) = self
-            .value
-            .split_first()
-            .ok_or(BinaryJSONError::InvalidBinary)?;
-        let (length, prefix) = decode_uvarint(payload)?;
-        let bytes = payload
-            .get(prefix..prefix + length)
-            .ok_or(BinaryJSONError::InvalidBinary)?;
-        if prefix + length != payload.len() {
-            return Err(BinaryJSONError::InvalidBinary);
-        }
+        let (type_code, bytes) = native_json_opaque(self.type_code, &self.value)
+            .map_err(|_| BinaryJSONError::InvalidBinary)?;
         Ok(Opaque {
             type_code,
             bytes: bytes.to_vec(),
@@ -383,25 +374,9 @@ impl BinaryJSON {
 
     /// Returns MySQL's JSON_TYPE name.
     pub fn type_name(&self) -> Result<&'static str, BinaryJSONError> {
-        match self.type_code {
-            JSON_TYPE_CODE_OBJECT => Ok("OBJECT"),
-            JSON_TYPE_CODE_ARRAY => Ok("ARRAY"),
-            JSON_TYPE_CODE_LITERAL if self.value == [JSON_LITERAL_NULL] => Ok("NULL"),
-            JSON_TYPE_CODE_LITERAL => Ok("BOOLEAN"),
-            JSON_TYPE_CODE_INT64 => Ok("INTEGER"),
-            JSON_TYPE_CODE_UINT64 => Ok("UNSIGNED INTEGER"),
-            JSON_TYPE_CODE_FLOAT64 => Ok("DOUBLE"),
-            JSON_TYPE_CODE_STRING => Ok("STRING"),
-            JSON_TYPE_CODE_OPAQUE => match self.opaque()?.type_code {
-                0x0f | 0xf9..=0xfe => Ok("BLOB"),
-                0x10 => Ok("BIT"),
-                _ => Ok("OPAQUE"),
-            },
-            JSON_TYPE_CODE_DATE => Ok("DATE"),
-            JSON_TYPE_CODE_DATETIME | JSON_TYPE_CODE_TIMESTAMP => Ok("DATETIME"),
-            JSON_TYPE_CODE_DURATION => Ok("TIME"),
-            _ => Err(BinaryJSONError::InvalidBinary),
-        }
+        let name = native_binary_json_type_name(self.type_code, &self.value)
+            .map_err(|_| BinaryJSONError::InvalidBinary)?;
+        std::str::from_utf8(name).map_err(|_| BinaryJSONError::InvalidBinary)
     }
 
     /// Implements JSON_UNQUOTE for one binary JSON value.
@@ -1449,14 +1424,7 @@ fn encode_uvarint(mut value: usize, output: &mut Vec<u8>) {
 }
 
 fn decode_uvarint(bytes: &[u8]) -> Result<(usize, usize), BinaryJSONError> {
-    let mut value = 0_usize;
-    for (index, byte) in bytes.iter().copied().enumerate().take(10) {
-        value |= usize::from(byte & 0x7f) << (index * 7);
-        if byte < 0x80 {
-            return Ok((value, index + 1));
-        }
-    }
-    Err(BinaryJSONError::InvalidBinary)
+    decode_native_json_uvarint(bytes).map_err(|_| BinaryJSONError::InvalidBinary)
 }
 
 fn format_value(value: &Value) -> String {

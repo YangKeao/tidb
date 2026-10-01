@@ -43,9 +43,9 @@ use tidb_query_datatype::{codec::data_type::ScalarValueRef, EvalType};
 use tidb_query_expr::local::{
     prepare_evaluated_bytes, CompileLimits, ComputedBytesMetadata, ComputedDecimalMetadata,
     ComputedIeee754BitsMetadata, ComputedInt, ComputedInt128Metadata, ComputedIntMetadata,
-    ComputedUncompressMetadata, ComputedValue, EvaluatedArgs, EvaluatedBytesOp,
-    EvaluatedBytesWorker, EvaluatedSqlFailureKind, ExecutionLimits, LocalCompileContext,
-    UncompressOutcome,
+    ComputedJsonReportMetadata, ComputedUncompressMetadata, ComputedValue, EvaluatedArgs,
+    EvaluatedBytesOp, EvaluatedBytesWorker, EvaluatedSqlFailureKind, ExecutionLimits,
+    JsonReportOutcome, LocalCompileContext, UncompressOutcome,
 };
 
 use super::adapter_failure::{ExpressionAdapterFailure, ScopeFailureKind};
@@ -1351,7 +1351,8 @@ fn require_computed_int(computed: ComputedValue) -> Result<ComputedInt, AsciiBou
         | ComputedValue::Ieee754Bits(_)
         | ComputedValue::Decimal(_)
         | ComputedValue::Int128(_)
-        | ComputedValue::Uncompress(_) => Err(result_kind_error()),
+        | ComputedValue::Uncompress(_)
+        | ComputedValue::JsonReport(_) => Err(result_kind_error()),
     }
 }
 
@@ -1395,6 +1396,8 @@ pub(crate) enum EvaluatedBytesResult {
     Bytes(Option<Vec<u8>>),
     // Decoder outcomes are not ordinary Bytes; warnings remain native packing.
     Uncompress(UncompressOutcome),
+    // A parser report is distinct even when its payload is Bytes, Int or NULL.
+    JsonReport(JsonReportOutcome),
     // Separate owned carriers: never ordinary Bytes or a narrower SQL Int.
     Ieee754Bits(Option<u64>),
     Int128(Option<i128>),
@@ -1412,6 +1415,7 @@ impl EvaluatedBytesResult {
             Self::Int(value) => Ok(value),
             Self::Bytes(_)
             | Self::Uncompress(_)
+            | Self::JsonReport(_)
             | Self::Ieee754Bits(_)
             | Self::Int128(_)
             | Self::Decimal { .. } => Err(result_kind_error().into_eval_error()),
@@ -1441,6 +1445,7 @@ impl EvaluatedBytesResult {
             Self::Bytes(value) => Ok(value),
             Self::Int(_)
             | Self::Uncompress(_)
+            | Self::JsonReport(_)
             | Self::Ieee754Bits(_)
             | Self::Int128(_)
             | Self::Decimal { .. } => Err(result_kind_error().into_eval_error()),
@@ -1451,6 +1456,14 @@ impl EvaluatedBytesResult {
     pub(crate) fn into_uncompress(self) -> Result<UncompressOutcome, EvalError> {
         match self {
             Self::Uncompress(outcome) => Ok(outcome),
+            _ => Err(result_kind_error().into_eval_error()),
+        }
+    }
+
+    /// Move only the kernel's typed report; do not parse or inspect the input.
+    pub(crate) fn into_json_report(self) -> Result<JsonReportOutcome, EvalError> {
+        match self {
+            Self::JsonReport(outcome) => Ok(outcome),
             _ => Err(result_kind_error().into_eval_error()),
         }
     }
@@ -1478,6 +1491,7 @@ impl EvaluatedBytesResult {
             Self::Int(_)
             | Self::Bytes(_)
             | Self::Uncompress(_)
+            | Self::JsonReport(_)
             | Self::Int128(_)
             | Self::Decimal { .. } => Err(result_kind_error().into_eval_error()),
         }
@@ -1563,6 +1577,9 @@ fn materialize_computed(
             | EvaluatedBytesOp::FieldBytesNative
             | EvaluatedBytesOp::FieldIntNative
             | EvaluatedBytesOp::FieldRealNative
+            | EvaluatedBytesOp::JsonValidTextNative
+            | EvaluatedBytesOp::JsonValidBinaryNative
+            | EvaluatedBytesOp::JsonValidOtherNative
             | EvaluatedBytesOp::AbsIntNative
             | EvaluatedBytesOp::AbsUIntNative
             | EvaluatedBytesOp::CeilIntNative
@@ -1652,6 +1669,17 @@ fn materialize_computed(
                 ComputedUncompressMetadata::OwnUncompress => {}
             }
             Ok(EvaluatedBytesResult::Uncompress(value.into_outcome()))
+        }
+        (
+            EvaluatedBytesOp::JsonTypeTextNative
+            | EvaluatedBytesOp::JsonTypeBinaryNative
+            | EvaluatedBytesOp::JsonDepthNative,
+            ComputedValue::JsonReport(value),
+        ) => {
+            match value.metadata() {
+                ComputedJsonReportMetadata::OwnJsonReport => {}
+            }
+            Ok(EvaluatedBytesResult::JsonReport(value.into_outcome()))
         }
         (
             EvaluatedBytesOp::AsinRaw

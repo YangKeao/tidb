@@ -515,7 +515,7 @@ pub(crate) fn eval_func_values(
     // through that dispatch here, where the row evaluator lives.
     if name.eq_ignore_ascii_case("json_member_of") || name.eq_ignore_ascii_case("json_memberof") {
         return Some(
-            crate::builtin_ext::json::dispatch("JSON_MEMBER_OF", vals)
+            crate::builtin_ext::json::dispatch_in("JSON_MEMBER_OF", vals, ctx)
                 .unwrap_or_else(|| Err(EvalError::Unsupported("JSON_MEMBER_OF arity"))),
         );
     }

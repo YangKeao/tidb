@@ -69,18 +69,23 @@ pub(crate) use modify::parse_json_modify_paths;
 pub(crate) use path::{parse_path, JsonPath};
 pub(crate) use report::JsonSchemaCache;
 pub(crate) use value::{
-    cast_as_json, cast_as_json_typed, cast_as_json_value_typed, parse_json_document_argument,
+    cast_as_json, cast_as_json_typed, cast_as_json_value_typed, json_document_text_argument,
+    parse_json_document_argument,
 };
 
 /// Dispatches the JSON family.  The match and arities are ports of the
 /// function classes in `pkg/expression/builtin_json.go`:
 /// `builtinJSON{Type,Extract,Unquote,Quote,Array,Object,Length,Valid,
 /// ArrayAppend,ArrayInsert,SUMCRC32}Sig`.
-pub(crate) fn dispatch(name: &str, vals: &[Datum]) -> Option<Result<Datum, EvalError>> {
+pub(crate) fn dispatch_in(
+    name: &str,
+    vals: &[Datum],
+    ctx: &dyn crate::Columns,
+) -> Option<Result<Datum, EvalError>> {
     match (name, vals.len()) {
-        ("JSON_VALID", 1) => Some(json_valid(&vals[0])),
+        ("JSON_VALID", 1) => Some(json_valid(&vals[0], ctx)),
         ("JSON_SCHEMA_VALID", 2) => Some(json_schema_valid(vals)),
-        ("JSON_TYPE", 1) => Some(json_type(&vals[0])),
+        ("JSON_TYPE", 1) => Some(json_type(&vals[0], ctx)),
         ("JSON_QUOTE", 1) => Some(json_quote(&vals[0])),
         ("JSON_UNQUOTE", 1) => Some(json_unquote(&vals[0])),
         ("JSON_ARRAY", 0..) => Some(json_array(vals, &no_arg_types(vals.len()))),
@@ -120,7 +125,12 @@ pub(crate) fn dispatch(name: &str, vals: &[Datum]) -> Option<Result<Datum, EvalE
     }
 }
 
-/// The typed sibling of [`dispatch`] for the function class whose value
+#[cfg(test)]
+pub(crate) fn dispatch(name: &str, vals: &[Datum]) -> Option<Result<Datum, EvalError>> {
+    dispatch_in(name, vals, &crate::NoColumns)
+}
+
+/// The typed sibling of [`dispatch_in`] for the function class whose value
 /// arguments Go builds through an implicit `CAST(... AS JSON)` with
 /// `ParseToJSONFlag` disabled (`newBaseBuiltinFuncWithTp(ctx, ..., ETJson,
 /// ...)` followed by `DisableParseJSONFlag4Expr`): `JSON_ARRAY`,
@@ -129,7 +139,7 @@ pub(crate) fn dispatch(name: &str, vals: &[Datum]) -> Option<Result<Datum, EvalE
 /// static `FieldType` when the caller has one (the chunk rewriter's
 /// `ScalarFunction::args[i].static_type()`); `None` falls back to
 /// [`json_sql_string`]'s plain-text rendering, same as the untyped
-/// [`dispatch`].
+/// [`dispatch_in`].
 ///
 /// Every other JSON function either takes no value-domain argument that can
 /// carry a column's charset (`JSON_TYPE`, `JSON_LENGTH`, ...) or has its
@@ -215,7 +225,7 @@ pub(crate) fn dispatch_typed_with_paths_and_document(
     }
 }
 
-/// An all-`None` `arg_types` slice for [`dispatch`]'s untyped callers, so
+/// An all-`None` `arg_types` slice for [`dispatch_in`]'s untyped callers, so
 /// [`json_array`]/[`json_object`]/[`json_modify`]/[`json_array_append`]/
 /// [`json_array_insert`] share one implementation with [`dispatch_typed`]
 /// instead of duplicating the plain-text path.

@@ -409,6 +409,36 @@ pub(crate) fn parse_json_document_argument(v: &Datum) -> Result<Option<Json>, Ev
     }
 }
 
+/// Prepares JSON_DEPTH's original document text without parsing it. Numeric
+/// inputs retain their existing BinaryJSON conversion and display semantics.
+pub(crate) fn json_document_text_argument(v: &Datum) -> Result<Option<String>, EvalError> {
+    match v {
+        Datum::Null => Ok(None),
+        Datum::String(_) | Datum::Bytes(_) => Ok(json_sql_string(v)?.map(str::to_owned)),
+        Datum::Int(_) | Datum::UInt(_) | Datum::Decimal(_) | Datum::Real(_) => {
+            let binary = v
+                .to_mysql_json()
+                .map_err(|_| EvalError::Unsupported("datum JSON conversion"))?;
+            Ok(Some(binary.to_string()))
+        }
+        Datum::Json(value) => Ok(Some(value.to_string())),
+        Datum::MinNotNull | Datum::MaxValue => {
+            Err(EvalError::Unsupported("JSON document requires string"))
+        }
+        Datum::Float32(_)
+        | Datum::BinaryLiteral(_)
+        | Datum::Duration(_)
+        | Datum::Enum(_, _)
+        | Datum::Bit(_)
+        | Datum::Set(_, _)
+        | Datum::Time(_)
+        | Datum::Raw(_)
+        | Datum::VectorFloat32(_) => Err(EvalError::Unsupported(
+            "JSON document requires JSON or string",
+        )),
+    }
+}
+
 /// The STRICT document coercion go's `JSON_CONTAINS` / `JSON_OVERLAPS` /
 /// `JSON_EXTRACT` / `JSON_MEMBER OF` signatures observe: a NUMERIC scalar in
 /// a JSON position is `ErrInvalidTypeForJSON` (3146) naming the 1-based
@@ -446,8 +476,11 @@ fn datum_json_scalar(value: &Datum) -> Result<Json, EvalError> {
 /// would turn hostile deep input into a process-fatal stack overflow, so the
 /// limit stays as a defensive boundary.
 pub(super) fn parse_json(s: &str) -> Result<Json, EvalError> {
-    if s.trim().is_empty() {
-        return Err(EvalError::Json(JsonError::EmptyText));
-    }
-    serde_json::from_str(s).map_err(|_| EvalError::Json(JsonError::InvalidText))
+    crate::tikv::parse_native_json_document(s).map_err(|error| {
+        use crate::tikv::NativeJsonError;
+        EvalError::Json(match error {
+            NativeJsonError::EmptyText => JsonError::EmptyText,
+            NativeJsonError::InvalidText | NativeJsonError::InvalidBinary => JsonError::InvalidText,
+        })
+    })
 }

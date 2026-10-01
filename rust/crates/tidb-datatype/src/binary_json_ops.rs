@@ -15,6 +15,7 @@
 use std::collections::HashSet;
 
 use serde_json::Value;
+use tidb_query_datatype::codec::mysql::json::native_json_depth_from_children;
 
 use crate::{
     binary_json::JSONNode, compare_binary_json, BinaryJSON, BinaryJSONError,
@@ -119,20 +120,25 @@ impl BinaryJSON {
 
     /// Returns the maximum document nesting depth, with every scalar at depth one.
     pub fn element_depth(&self) -> Result<usize, BinaryJSONError> {
-        fn depth(value: &JSONNode) -> usize {
-            match value {
-                JSONNode::Array(values) => 1 + values.iter().map(depth).max().unwrap_or(0),
-                JSONNode::Object(values) => {
-                    1 + values
-                        .iter()
-                        .map(|(_, value)| depth(value))
-                        .max()
-                        .unwrap_or(0)
+        let root = self.to_node()?;
+        native_json_depth_from_children(&root, |node, visit| {
+            match node {
+                JSONNode::Array(values) => {
+                    for value in values {
+                        visit(value)?;
+                    }
                 }
-                _ => 1,
+                JSONNode::Object(values) => {
+                    for (_, value) in values {
+                        visit(value)?;
+                    }
+                }
+                JSONNode::Scalar(_) => {}
             }
-        }
-        Ok(depth(&self.to_node()?))
+            Ok(())
+        })
+        .map(|depth| depth as usize)
+        .map_err(|_| BinaryJSONError::InvalidBinary)
     }
 
     /// Applies JSON_INSERT, JSON_REPLACE, or JSON_SET paths from left to right.
@@ -1281,6 +1287,20 @@ mod tests {
         ] {
             assert_eq!(json(input).element_depth().unwrap(), expected, "{input}");
         }
+    }
+
+    #[test]
+    fn test_binary_json_depth_shared_typed_helper() {
+        let opaque = BinaryJSON::from_opaque(crate::Opaque {
+            type_code: 0xfc,
+            bytes: vec![0, 0xff],
+        });
+        let root = JSONNode::Array(vec![JSONNode::Object(vec![(
+            "typed".to_owned(),
+            JSONNode::Scalar(opaque),
+        )])]);
+        let value = BinaryJSON::from_node(&root).unwrap();
+        assert_eq!(value.element_depth().unwrap(), 3);
     }
 
     #[test]

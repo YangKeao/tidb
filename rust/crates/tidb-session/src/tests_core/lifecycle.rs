@@ -5577,3 +5577,201 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_compress_uncompress_dispatch_sq
         assert!(warnings_of(&session).is_empty(), "{sql}");
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_json_report_dispatch_sql_values_metadata_and_errors() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_json_report (id INT PRIMARY KEY, \
+             v VARCHAR(64) CHARSET utf8mb4, n BIGINT, d DATE, b VARBINARY(1))",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_json_report VALUES \
+             (1,NULL,NULL,NULL,NULL),(2,'null',NULL,NULL,NULL),\
+             (3,'{\"a\":[{\"b\":1}],\"a\":2,\"c\":[0]}',42,'2020-01-01',x'FF'),\
+             (4,'9223372036854775807',NULL,NULL,NULL),\
+             (5,'a',NULL,NULL,NULL),(6,'',NULL,NULL,NULL)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    // Native document parsing retains the signed i64 maximum and duplicate
+    // keys are last-wins: the overwritten {"b":1} branch must not add depth.
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT JSON_VALID(v),JSON_TYPE(v),JSON_DEPTH(v) \
+             FROM shared_json_report WHERE id<5 ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected JSON report rows")
+    };
+    assert_eq!(columns.len(), 3);
+    for (index, (_, field)) in columns.iter().enumerate() {
+        assert!(!field.is_unsigned());
+        if index == 1 {
+            assert_eq!(field.code(), tidb_datatype::FieldTypeCode::VarString);
+            assert_eq!(field.flen(), tidb_datatype::UNSPECIFIED_LENGTH);
+            assert_eq!(field.decimal(), tidb_datatype::UNSPECIFIED_LENGTH);
+            assert_eq!(field.charset_name(), "utf8mb4");
+            assert_eq!(field.collation(), tidb_datatype::Collation::Utf8Mb4Bin);
+        } else {
+            assert_eq!(field.code(), tidb_datatype::FieldTypeCode::LongLong);
+            assert_eq!(field.flen(), 20);
+            assert_eq!(field.decimal(), 0);
+            assert_eq!(field.charset_name(), "binary");
+            assert_eq!(field.collation(), tidb_datatype::Collation::Binary);
+            assert_eq!(
+                field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN),
+                index == 0
+            );
+        }
+    }
+    let text = |value: &str| {
+        Datum::new_collation_string(
+            value.as_bytes().to_vec(),
+            tidb_datatype::Collation::Utf8Mb4Bin,
+        )
+    };
+    assert_eq!(
+        rows,
+        vec![
+            vec![Datum::Null, Datum::Null, Datum::Null],
+            vec![Datum::Int(1), text("NULL"), Datum::Int(1)],
+            vec![Datum::Int(1), text("OBJECT"), Datum::Int(3)],
+            vec![Datum::Int(1), text("INTEGER"), Datum::Int(1)],
+        ]
+    );
+    assert!(warnings_of(&session).is_empty());
+
+    // Stored DATE -> typed JSON preserves TYPE=DATE; a text roundtrip would
+    // incorrectly answer STRING. DEPTH deliberately uses its original Display
+    // path. VALID's typed/Other/raw-invalid-UTF8 signatures stay distinct.
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns(
+            "SELECT JSON_VALID(CAST(d AS JSON)),JSON_TYPE(CAST(d AS JSON)), \
+             JSON_DEPTH(CAST(d AS JSON)),JSON_VALID(n),JSON_DEPTH(n),JSON_VALID(b) \
+             FROM shared_json_report WHERE id=3",
+        )
+        .unwrap()
+    else {
+        panic!("expected typed and non-document JSON report row")
+    };
+    assert_eq!(
+        rows,
+        vec![vec![
+            Datum::Int(1),
+            text("DATE"),
+            Datum::Int(1),
+            Datum::Int(0),
+            Datum::Int(1),
+            Datum::Int(0)
+        ]]
+    );
+    assert!(warnings_of(&session).is_empty());
+
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns("SELECT JSON_VALID(v) FROM shared_json_report WHERE id>=5 ORDER BY id")
+        .unwrap()
+    else {
+        panic!("expected invalid and empty JSON validity rows")
+    };
+    assert_eq!(rows, vec![vec![Datum::Int(0)], vec![Datum::Int(0)]]);
+    assert!(warnings_of(&session).is_empty());
+
+    // The original JsonError variants own these exact messages. Neither a new
+    // parser's detailed error nor an admission failure may replace them here.
+    for (id, message) in [
+        (
+            5,
+            "Invalid JSON text: The document root must not be followed by other values.",
+        ),
+        (6, "Invalid JSON text: The document is empty"),
+    ] {
+        for expression in ["JSON_TYPE(v)", "JSON_DEPTH(v)"] {
+            let sql = format!("SELECT {expression} FROM shared_json_report WHERE id={id}");
+            let mysql = session
+                .run_with_columns(&sql)
+                .expect_err(&sql)
+                .to_mysql_error();
+            assert_eq!(mysql.code, 3140, "{sql}");
+            assert_eq!(mysql.state, *b"22032", "{sql}");
+            assert_eq!(mysql.message, message, "{sql}");
+            assert!(mysql.is_from_evaluation(), "{sql}");
+            assert!(warnings_of(&session).is_empty(), "{sql}");
+        }
+    }
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_json_report_dispatch_sql_columns() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_json_report_zero (id INT PRIMARY KEY, \
+             v VARCHAR(32) CHARSET utf8mb4, e VARCHAR(32) CHARSET utf8mb4, n BIGINT)",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_json_report_zero VALUES \
+             (1,NULL,NULL,NULL),(2,'{\"a\":[1]}','{\"a\":[1]}',42),(3,'a','',42)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    // NULL and ordinary text in all three forms, then malformed VALID/DEPTH
+    // and empty TYPE text. Parsing belongs to the actual kernel, so these must
+    // fail admission before any JSON-text error. Other-numeric VALID still
+    // needs the real worker even though its value is ignored by that signature.
+    for (expression, id) in [
+        ("JSON_VALID(v)", 1),
+        ("JSON_TYPE(e)", 1),
+        ("JSON_DEPTH(v)", 1),
+        ("JSON_VALID(v)", 2),
+        ("JSON_TYPE(e)", 2),
+        ("JSON_DEPTH(v)", 2),
+        ("JSON_VALID(v)", 3),
+        ("JSON_TYPE(e)", 3),
+        ("JSON_DEPTH(v)", 3),
+        ("JSON_VALID(n)", 2),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_json_report_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("JSON reports must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+}

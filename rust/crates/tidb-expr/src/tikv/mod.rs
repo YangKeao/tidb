@@ -37,6 +37,9 @@ pub use evaluated_ascii::{
     AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy, AsciiScope,
     ScopedAsciiColumns,
 };
+pub(crate) use tidb_query_datatype::codec::mysql::json::{
+    parse_native_json_document, NativeJsonError,
+};
 use tidb_query_expr::local::prepare_concat_args as prepare_concat_args_local;
 use tidb_query_expr::local::prepare_find_in_set_keys as prepare_find_in_set_keys_local;
 #[cfg(test)]
@@ -47,10 +50,11 @@ pub(crate) use tidb_query_expr::local::{
 pub(crate) use tidb_query_expr::local::{
     elt_selected_arg, field_int_equal, field_real_equal, legacy_substring_needs_len,
     make_set_selected, native_decimal_target_scale, ConcatKind, ConcatTerminal, EvaluatedArgs,
-    EvaluatedBytesOp, FieldIntValue, FieldTerminal, NativeCollation, NativeSearchPolicy,
-    OutputDisposition, PreparedConcatArgs, PreparedExportSetArgs, PreparedFieldArgs,
-    PreparedFindInSetKeys, PreparedMakeSetArgs, ReadyBytesArg, ReadyConvBaseArg, ReadyDecimalArg,
-    ReadyFieldIntArg, ReadyIeee754Arg, ReadyIntArg, ReadySubstringI128, UncompressOutcome,
+    EvaluatedBytesOp, FieldIntValue, FieldTerminal, JsonReportOutcome, NativeCollation,
+    NativeSearchPolicy, OutputDisposition, PreparedConcatArgs, PreparedExportSetArgs,
+    PreparedFieldArgs, PreparedFindInSetKeys, PreparedMakeSetArgs, ReadyBytesArg, ReadyConvBaseArg,
+    ReadyDecimalArg, ReadyFieldIntArg, ReadyIeee754Arg, ReadyIntArg, ReadySubstringI128,
+    UncompressOutcome,
 };
 use tidb_query_expr::local::{
     field_bytes_equal as field_bytes_equal_local,
