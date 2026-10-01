@@ -43,9 +43,9 @@ use tidb_query_datatype::{codec::data_type::ScalarValueRef, EvalType};
 use tidb_query_expr::local::{
     prepare_evaluated_bytes, CompileLimits, ComputedBytesMetadata, ComputedDecimalMetadata,
     ComputedIeee754BitsMetadata, ComputedInt, ComputedInt128Metadata, ComputedIntMetadata,
-    ComputedJsonReportMetadata, ComputedUncompressMetadata, ComputedValue, EvaluatedArgs,
-    EvaluatedBytesOp, EvaluatedBytesWorker, EvaluatedSqlFailureKind, ExecutionLimits,
-    JsonReportOutcome, LocalCompileContext, UncompressOutcome,
+    ComputedJsonReportMetadata, ComputedNativeVectorMetadata, ComputedUncompressMetadata,
+    ComputedValue, EvaluatedArgs, EvaluatedBytesOp, EvaluatedBytesWorker, EvaluatedSqlFailureKind,
+    ExecutionLimits, JsonReportOutcome, LocalCompileContext, UncompressOutcome,
 };
 
 use super::adapter_failure::{ExpressionAdapterFailure, ScopeFailureKind};
@@ -1302,6 +1302,24 @@ impl<'a> Invocation<'a> {
                             function: "bin_to_uuid",
                         });
                     }
+                    (
+                        EvaluatedBytesOp::VecFromTextNative
+                        | EvaluatedBytesOp::VecL1DistanceNative
+                        | EvaluatedBytesOp::VecL2DistanceNative
+                        | EvaluatedBytesOp::VecNegativeInnerProductNative
+                        | EvaluatedBytesOp::VecCosineDistanceNative,
+                        Some(EvaluatedSqlFailureKind::VectorNative),
+                    ) => {
+                        // Render only the actual typed cause. Do not parse the
+                        // input again or recompute vector dimensions here.
+                        let Some(cause) = report.native_vector_error() else {
+                            return AsciiBoundaryError::Scope {
+                                kind: ScopeFailureKind::Contract,
+                                reason: "vector failure receipt lacks its native cause",
+                            };
+                        };
+                        return AsciiBoundaryError::Frontend(EvalError::Vector(cause.to_string()));
+                    }
                     _ => {}
                 }
             }
@@ -1423,7 +1441,8 @@ fn require_computed_int(computed: ComputedValue) -> Result<ComputedInt, AsciiBou
         | ComputedValue::Decimal(_)
         | ComputedValue::Int128(_)
         | ComputedValue::Uncompress(_)
-        | ComputedValue::JsonReport(_) => Err(result_kind_error()),
+        | ComputedValue::JsonReport(_)
+        | ComputedValue::NativeVector(_) => Err(result_kind_error()),
     }
 }
 
@@ -1478,6 +1497,8 @@ pub(crate) enum EvaluatedBytesResult {
         // or range check is permitted when selecting the existing Int view.
         checked_i64_view: Option<i64>,
     },
+    // The actual aligned vector, never ordinary Bytes or an input descriptor.
+    NativeVector(Option<tidb_datatype::VectorFloat32>),
 }
 
 impl EvaluatedBytesResult {
@@ -1489,6 +1510,7 @@ impl EvaluatedBytesResult {
             | Self::JsonReport(_)
             | Self::Ieee754Bits(_)
             | Self::Int128(_)
+            | Self::NativeVector(_)
             | Self::Decimal { .. } => Err(result_kind_error().into_eval_error()),
         }
     }
@@ -1519,6 +1541,7 @@ impl EvaluatedBytesResult {
             | Self::JsonReport(_)
             | Self::Ieee754Bits(_)
             | Self::Int128(_)
+            | Self::NativeVector(_)
             | Self::Decimal { .. } => Err(result_kind_error().into_eval_error()),
         }
     }
@@ -1564,7 +1587,16 @@ impl EvaluatedBytesResult {
             | Self::Uncompress(_)
             | Self::JsonReport(_)
             | Self::Int128(_)
+            | Self::NativeVector(_)
             | Self::Decimal { .. } => Err(result_kind_error().into_eval_error()),
+        }
+    }
+
+    /// Move the computed aligned vector without parsing or revalidation.
+    pub(crate) fn into_native_vector_datum(self) -> Result<Datum, EvalError> {
+        match self {
+            Self::NativeVector(value) => Ok(value.map_or(Datum::Null, Datum::VectorFloat32)),
+            _ => Err(result_kind_error().into_eval_error()),
         }
     }
 
@@ -1683,6 +1715,7 @@ fn materialize_computed(
             | EvaluatedBytesOp::UuidVersionNative
             | EvaluatedBytesOp::TidbShardNative
             | EvaluatedBytesOp::VitessHashNative
+            | EvaluatedBytesOp::VecDimsNative
             | EvaluatedBytesOp::AbsIntNative
             | EvaluatedBytesOp::AbsUIntNative
             | EvaluatedBytesOp::CeilIntNative
@@ -1787,13 +1820,20 @@ fn materialize_computed(
             | EvaluatedBytesOp::SqlDecodeNative
             | EvaluatedBytesOp::SqlCryptNullNative
             | EvaluatedBytesOp::FormatBytesNative
-            | EvaluatedBytesOp::FormatNanoTimeNative,
+            | EvaluatedBytesOp::FormatNanoTimeNative
+            | EvaluatedBytesOp::VecAsTextNative,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {
                 ComputedBytesMetadata::OwnBytes => {}
             }
             Ok(EvaluatedBytesResult::Bytes(value.into_option()))
+        }
+        (EvaluatedBytesOp::VecFromTextNative, ComputedValue::NativeVector(value)) => {
+            match value.metadata() {
+                ComputedNativeVectorMetadata::OwnNativeVector => {}
+            }
+            Ok(EvaluatedBytesResult::NativeVector(value.into_value()))
         }
         (EvaluatedBytesOp::UncompressNative, ComputedValue::Uncompress(value)) => {
             match value.metadata() {
@@ -1845,7 +1885,13 @@ fn materialize_computed(
             | EvaluatedBytesOp::TruncateRealNative
             | EvaluatedBytesOp::RoundRealLegacy
             | EvaluatedBytesOp::RoundDecimalLegacy
-            | EvaluatedBytesOp::MakeTimePartsNative,
+            | EvaluatedBytesOp::MakeTimePartsNative
+            | EvaluatedBytesOp::VecL1DistanceNative
+            | EvaluatedBytesOp::VecL2DistanceNative
+            | EvaluatedBytesOp::VecNegativeInnerProductNative
+            | EvaluatedBytesOp::VecCosineDistanceNative
+            | EvaluatedBytesOp::VecL2NormNative
+            | EvaluatedBytesOp::VecRealNullNative,
             ComputedValue::Ieee754Bits(value),
         ) => {
             match value.metadata() {

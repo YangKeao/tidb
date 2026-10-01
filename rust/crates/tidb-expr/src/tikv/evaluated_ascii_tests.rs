@@ -44,6 +44,7 @@ impl AsciiComputedValue for ComputedValue {
         match self {
             ComputedValue::Int(value) => value.value(),
             ComputedValue::Bytes(_)
+            | ComputedValue::NativeVector(_)
             | ComputedValue::Ieee754Bits(_)
             | ComputedValue::Decimal(_)
             | ComputedValue::Int128(_)
@@ -1194,6 +1195,17 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::LastDayTextNative => {
             panic!("temporal formatting needs its original text, core and demand domains")
         }
+        EvaluatedBytesOp::VecAsTextNative => "VEC_AS_TEXT",
+        EvaluatedBytesOp::VecDimsNative => "VEC_DIMS",
+        EvaluatedBytesOp::VecFromTextNative => "VEC_FROM_TEXT",
+        EvaluatedBytesOp::VecL2NormNative => "VEC_L2_NORM",
+        EvaluatedBytesOp::VecL1DistanceNative
+        | EvaluatedBytesOp::VecL2DistanceNative
+        | EvaluatedBytesOp::VecNegativeInnerProductNative
+        | EvaluatedBytesOp::VecCosineDistanceNative
+        | EvaluatedBytesOp::VecRealNullNative => {
+            panic!("vector distances need their original pair and NULL demand")
+        }
         EvaluatedBytesOp::SqlEncodeNative
         | EvaluatedBytesOp::SqlDecodeNative
         | EvaluatedBytesOp::SqlCryptNullNative => {
@@ -1538,6 +1550,360 @@ fn format_time_pb(
         field,
         args,
     )
+}
+
+#[test]
+fn vector_dispatch_keeps_owned_vectors_text_metadata_and_routes() {
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let retained = scope.with_columns(&crate::NoColumns, |columns| {
+        let (result, observation) = observe_wide_math(|| {
+            dispatch_bytes_family(
+                EvaluatedBytesOp::VecFromTextNative,
+                &Datum::new_string("[1,2]"),
+                columns,
+            )
+        });
+        let Datum::VectorFloat32(retained) = result.unwrap() else {
+            panic!("FROM_TEXT must return an owned native vector, not transport bytes")
+        };
+        assert_eq!(retained.elements(), [1.0, 2.0]);
+        assert_eq!(
+            (retained.elements().as_ptr() as usize) % std::mem::align_of::<f32>(),
+            0
+        );
+        assert_wide_math_c4(observation);
+        let input = Datum::VectorFloat32(retained.clone());
+        let (result, observation) = observe_wide_math(|| {
+            dispatch_bytes_family(EvaluatedBytesOp::VecAsTextNative, &input, columns)
+        });
+        let Datum::String(text) = result.unwrap() else {
+            panic!("AS_TEXT preserves String metadata")
+        };
+        assert_eq!(text.bytes(), b"[1,2]");
+        assert_eq!(text.collation(), tidb_datatype::Collation::Utf8Mb4Bin);
+        assert_wide_math_c4(observation);
+        let (result, observation) = observe_wide_math(|| {
+            dispatch_bytes_family(EvaluatedBytesOp::VecDimsNative, &input, columns)
+        });
+        assert_eq!(result, Ok(Datum::Int(2)));
+        assert_wide_math_c4(observation);
+        let function = crate::scalar_function::ScalarFunction::new(
+            tidb_ast::CiString::new("VEC_FROM_TEXT"),
+            FieldType::new(FieldTypeCode::VectorFloat32).with_flen(2),
+            vec![crate::expression::Expression::Constant(Constant::new(
+                Datum::new_string("[1.1,2.2]"),
+                FieldType::new(FieldTypeCode::VarString),
+            ))],
+        );
+        let (result, observation) =
+            observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        let Datum::VectorFloat32(value) = result.unwrap() else {
+            panic!("typed FROM_TEXT retains VectorFloat32")
+        };
+        // Fixed raw f32 values from the original vector_endianess fixture.
+        assert_eq!(
+            value
+                .elements()
+                .iter()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>(),
+            [0x3f8c_cccd, 0x400c_cccd]
+        );
+        assert_wide_math_c4(observation);
+        let (result, observation) =
+            observe_wide_math(|| calendar_fields_ast("VEC_FROM_TEXT('[1,2]')", columns));
+        let Datum::VectorFloat32(value) = result.unwrap() else {
+            panic!("AST FROM_TEXT retains VectorFloat32")
+        };
+        assert_eq!(value.elements(), [1.0, 2.0]);
+        assert_wide_math_c4(observation);
+        assert_eq!(
+            scope_worker_observation(&scope).1,
+            2,
+            "typed and AST calls share the actual current worker"
+        );
+        assert_eq!(owner.snapshot().unwrap().factory_attempts, 4);
+        for operation in [
+            EvaluatedBytesOp::VecFromTextNative,
+            EvaluatedBytesOp::VecAsTextNative,
+            EvaluatedBytesOp::VecDimsNative,
+        ] {
+            let (result, observation) =
+                observe_wide_math(|| dispatch_bytes_family(operation, &Datum::Null, columns));
+            assert_eq!(result, Ok(Datum::Null));
+            assert_wide_math_c4(observation);
+        }
+        retained
+    });
+    let current = scope_worker_observation(&scope);
+    assert_eq!(current.2 + current.3, current.4);
+    assert!(current.4 <= TEST_WORKER_CAP);
+    assert!(!scope.busy.get());
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+    assert_eq!(
+        retained.elements(),
+        [1.0, 2.0],
+        "the returned aligned value owns its elements after worker replacement and close"
+    );
+}
+
+#[test]
+fn vector_dispatch_keeps_metric_values_raw_bits_and_null_demand() {
+    use tidb_datatype::VectorFloat32;
+    let vector = |values: Vec<f32>| Datum::VectorFloat32(VectorFloat32::must_create(values));
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        // Original builtin_ext/vec.rs fixed metrics, including zero-norm NaN.
+        for (name, operation, values, expected) in [
+            (
+                "VEC_L1_DISTANCE",
+                EvaluatedBytesOp::VecL1DistanceNative,
+                vec![vector(vec![1.0, 2.0]), vector(vec![3.0, 5.0])],
+                Datum::Real(5.0),
+            ),
+            (
+                "VEC_L2_DISTANCE",
+                EvaluatedBytesOp::VecL2DistanceNative,
+                vec![vector(vec![0.0, 0.0]), vector(vec![3.0, 4.0])],
+                Datum::Real(5.0),
+            ),
+            (
+                "VEC_NEGATIVE_INNER_PRODUCT",
+                EvaluatedBytesOp::VecNegativeInnerProductNative,
+                vec![vector(vec![1.0, 2.0]), vector(vec![3.0, 4.0])],
+                Datum::Real(-11.0),
+            ),
+            (
+                "VEC_COSINE_DISTANCE",
+                EvaluatedBytesOp::VecCosineDistanceNative,
+                vec![vector(vec![0.0]), vector(vec![1.0])],
+                Datum::Null,
+            ),
+            (
+                "VEC_L2_NORM",
+                EvaluatedBytesOp::VecL2NormNative,
+                vec![vector(vec![3.0, 4.0])],
+                Datum::Real(5.0),
+            ),
+            (
+                "VEC_L2_NORM",
+                EvaluatedBytesOp::VecL2NormNative,
+                vec![Datum::Null],
+                Datum::Null,
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::func::eval_func_values(name, &values, columns).unwrap()
+            });
+            assert_eq!(result, Ok(expected));
+            assert_wide_math_c4(observation);
+            assert_eq!(
+                scope
+                    .lease
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .worker
+                    .as_ref()
+                    .unwrap()
+                    .operation(),
+                operation
+            );
+        }
+        // Raw mutation is a source-supported domain; create/must_create would
+        // reject nonfinite components before they could exercise transport.
+        let mut raw = VectorFloat32::init(1);
+        raw.elements_mut()[0] = f32::from_bits(0x7fc0_1234);
+        let (result, observation) = observe_wide_math(|| {
+            crate::func::eval_func_values(
+                "VEC_L1_DISTANCE",
+                &[Datum::VectorFloat32(raw.clone()), vector(vec![0.0])],
+                columns,
+            )
+            .unwrap()
+        });
+        assert_eq!(
+            result,
+            Ok(Datum::Null),
+            "raw NaN becomes NULL in the actual real-metric worker"
+        );
+        assert_wide_math_c4(observation);
+        raw.elements_mut()[0] = f32::INFINITY;
+        let (result, observation) = observe_wide_math(|| {
+            dispatch_bytes_family(
+                EvaluatedBytesOp::VecL2NormNative,
+                &Datum::VectorFloat32(raw.clone()),
+                columns,
+            )
+        });
+        assert_eq!(
+            result,
+            Ok(Datum::Real(f64::INFINITY)),
+            "infinity is not rejected or folded into NULL"
+        );
+        assert_wide_math_c4(observation);
+        raw.elements_mut()[0] = f32::from_bits(0x8000_0000);
+        let (result, observation) = observe_wide_math(|| {
+            crate::func::eval_func_values(
+                "VEC_NEGATIVE_INNER_PRODUCT",
+                &[Datum::VectorFloat32(raw), vector(vec![1.0])],
+                columns,
+            )
+            .unwrap()
+        });
+        let Datum::Real(value) = result.unwrap() else {
+            panic!("negative inner product keeps its real carrier")
+        };
+        assert_eq!(
+            value.to_bits(),
+            0x8000_0000_0000_0000,
+            "the original zero accumulation followed by negation returns -0"
+        );
+        assert_wide_math_c4(observation);
+        for (name, values) in [
+            ("VEC_L1_DISTANCE", [Datum::Null, Datum::MinNotNull]),
+            ("VEC_L2_DISTANCE", [vector(vec![1.0]), Datum::Null]),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::func::eval_func_values(name, &values, columns).unwrap()
+            });
+            assert_eq!(result, Ok(Datum::Null));
+            assert_wide_math_c4(observation);
+            assert_eq!(
+                scope
+                    .lease
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .worker
+                    .as_ref()
+                    .unwrap()
+                    .operation(),
+                EvaluatedBytesOp::VecRealNullNative
+            );
+        }
+        let (result, observation) = observe_wide_math(|| {
+            crate::func::eval_func_values(
+                "VEC_L2_DISTANCE",
+                &[Datum::new_string("[-1e39,1e39]"), Datum::Null],
+                columns,
+            )
+            .unwrap()
+        });
+        assert_eq!(
+            result,
+            Err(EvalError::Vector(
+                "value -1e+39 out of range for float32".to_owned()
+            )),
+            "actual right NULL does not skip left coercion"
+        );
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+    });
+    scope_worker_observation(&scope);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn vector_dispatch_keeps_actual_vector_errors_behind_admission() {
+    use tidb_datatype::VectorFloat32;
+    let left = Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0]));
+    let right = Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0, 2.0]));
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        let (result, observation) = observe_wide_math(|| {
+            dispatch_bytes_family(
+                EvaluatedBytesOp::VecFromTextNative,
+                &Datum::new_string("[-1e39,1e39]"),
+                columns,
+            )
+        });
+        assert_eq!(
+            result,
+            Err(EvalError::Vector(
+                "value -1e+39 out of range for float32".to_owned()
+            ))
+        );
+        assert_wide_math_c4(observation);
+        let (result, observation) = observe_wide_math(|| {
+            dispatch_bytes_family(
+                EvaluatedBytesOp::VecFromTextNative,
+                &Datum::new_bytes([0xff]),
+                columns,
+            )
+        });
+        assert!(
+            matches!(result, Err(EvalError::Vector(_))),
+            "strict UTF8 validation belongs to the FROM_TEXT worker, not its ETString guard"
+        );
+        assert_wide_math_c4(observation);
+        for name in [
+            "VEC_L1_DISTANCE",
+            "VEC_L2_DISTANCE",
+            "VEC_NEGATIVE_INNER_PRODUCT",
+            "VEC_COSINE_DISTANCE",
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::func::eval_func_values(name, &[left.clone(), right.clone()], columns)
+                    .unwrap()
+            });
+            assert_eq!(
+                result,
+                Err(EvalError::Vector(
+                    "vectors have different dimensions: 1 and 2".to_owned()
+                ))
+            );
+            assert_wide_math_c4(observation);
+            scope_worker_observation(&scope); // Genuine SQL causes leave a healthy worker.
+        }
+    });
+    drop(scope);
+    execution.close();
+    for closed in [false, true] {
+        let slots = usize::from(closed);
+        let owner = AsciiPoolOwner::new(test_policy(slots, slots)).unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        if closed {
+            execution.close();
+        }
+        let class = if closed {
+            crate::ExpressionAdapterFailureClass::PoolClosed
+        } else {
+            crate::ExpressionAdapterFailureClass::PoolResource
+        };
+        scope.with_columns(&crate::NoColumns, |columns| {
+            for (name, values) in [
+                ("VEC_FROM_TEXT", vec![Datum::new_string("[-1e39,1e39]")]),
+                ("VEC_L2_DISTANCE", vec![left.clone(), right.clone()]),
+                ("VEC_L1_DISTANCE", vec![Datum::Null, Datum::MinNotNull]),
+            ] {
+                let (result, observation) = observe_wide_math(|| crate::func::eval_func_values(name, &values, columns).unwrap());
+                assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == class), "a source-shaped vector error cannot mask infrastructure refusal");
+                assert_eq!(observation.facade_entries, 0);
+                assert_eq!(observation.before_kernel_invocations, None);
+                assert_eq!(observation.after_kernel_invocations, None);
+            }
+            let (result, observation) = observe_wide_math(|| crate::func::eval_func_values("VEC_L2_DISTANCE", &[Datum::new_string("[-1e39,1e39]"), Datum::Null], columns).unwrap());
+            assert_eq!(result, Err(EvalError::Vector("value -1e+39 out of range for float32".to_owned())), "the original frontend coercion error still precedes admission");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        });
+        assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+        drop(scope);
+        execution.close();
+    }
 }
 
 #[test]

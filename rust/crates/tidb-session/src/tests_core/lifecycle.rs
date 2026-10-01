@@ -8534,3 +8534,292 @@ fn evaluated_ascii_crypt_hash_format_zero_slots_preserve_resources_and_warnings(
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_vector_stored_values_metadata_and_native_formatting() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_vector_values (id INT PRIMARY KEY, a VECTOR, b VECTOR, t VARCHAR(64))").unwrap();
+    session
+        .run(
+            "INSERT INTO shared_vector_values VALUES (1,NULL,NULL,NULL),\
+         (2,'[3,4]','[0,0]','[1.1,2.2]'),(3,'[1,0]','[-1,0]','[]'),\
+         (4,'[-0,0]','[1,0]','[-0,1e-8,1e10]'),(5,'[3e38]','[-3e38]',NULL)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let StmtOutput::Rows { columns, rows } = session.run_with_columns(
+        "SELECT VEC_AS_TEXT(a),VEC_FROM_TEXT(t),VEC_DIMS(a),VEC_L1_DISTANCE(a,b),\
+         VEC_L2_DISTANCE(a,b),VEC_NEGATIVE_INNER_PRODUCT(a,b),VEC_COSINE_DISTANCE(a,b),VEC_L2_NORM(a) \
+         FROM shared_vector_values WHERE id<=4 ORDER BY id",
+    ).unwrap() else { panic!("expected typed vector SQL rows") };
+    assert_eq!(columns.len(), 8);
+    for (index, (_, field)) in columns.iter().enumerate() {
+        let (code, flen, scale) = match index {
+            0 => (tidb_datatype::FieldTypeCode::VarString, -1, -1),
+            1 => (tidb_datatype::FieldTypeCode::VectorFloat32, -1, -1),
+            2 => (tidb_datatype::FieldTypeCode::LongLong, 20, 0),
+            _ => (tidb_datatype::FieldTypeCode::Double, -1, -1),
+        };
+        assert_eq!(field.code(), code);
+        assert_eq!((field.flen(), field.decimal()), (flen, scale));
+        assert_eq!(
+            field.charset_name(),
+            if index == 0 { "utf8mb4" } else { "binary" }
+        );
+        assert_eq!(
+            field.collation(),
+            if index == 0 {
+                tidb_datatype::Collation::Utf8Mb4Bin
+            } else {
+                tidb_datatype::Collation::Binary
+            }
+        );
+        assert!(!field.is_unsigned());
+        assert!(!field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
+    }
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[0], vec![Datum::Null; 8]);
+    // The old [3,4] distance/norm fixture anchors 5. The other elementary
+    // metrics and signed-zero combinations below are explicitly hand-derived
+    // from the original sequential loops, not a recorded provider oracle.
+    for (row, (text, elements, metrics)) in rows[1..].iter().zip([
+        (
+            "[3,4]",
+            vec![1.1_f32, 2.2],
+            [Some(7.0_f64), Some(5.0), Some(-0.0), None, Some(5.0)],
+        ),
+        (
+            "[1,0]",
+            vec![],
+            [Some(2.0), Some(2.0), Some(1.0), Some(2.0), Some(1.0)],
+        ),
+        (
+            "[-0,0]",
+            vec![-0.0, 1e-8, 1e10],
+            [Some(1.0), Some(1.0), Some(-0.0), None, Some(0.0)],
+        ),
+    ]) {
+        assert_eq!(row.len(), 8);
+        assert_eq!(
+            row[0],
+            Datum::new_collation_string(
+                text.as_bytes().to_vec(),
+                tidb_datatype::Collation::Utf8Mb4Bin
+            )
+        );
+        let Datum::VectorFloat32(value) = &row[1] else {
+            panic!("FROM_TEXT must return a real vector datum")
+        };
+        assert_eq!(value.elements(), elements.as_slice());
+        assert_eq!(row[2], Datum::Int(2));
+        for (actual, expected) in row[3..].iter().zip(metrics) {
+            match (actual, expected) {
+                (Datum::Null, None) => {}
+                (Datum::Real(actual), Some(expected)) => {
+                    assert_eq!(actual.to_bits(), expected.to_bits())
+                }
+                other => panic!("wrong typed vector metric: {other:?}"),
+            }
+        }
+    }
+    let Datum::VectorFloat32(value) = &rows[1][1] else {
+        unreachable!()
+    };
+    // Exact old test_vector_endianess bytes, not parser-generated expected data.
+    assert_eq!(
+        value.serialize(),
+        [2, 0, 0, 0, 0xcd, 0xcc, 0x8c, 0x3f, 0xcd, 0xcc, 0x0c, 0x40]
+    );
+    let Datum::VectorFloat32(value) = &rows[3][1] else {
+        unreachable!()
+    };
+    assert_eq!(value.elements()[0].to_bits(), (-0.0_f32).to_bits());
+    assert!(warnings_of(&session).is_empty());
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns(
+            "SELECT VEC_AS_TEXT(VEC_FROM_TEXT(t)) FROM shared_vector_values WHERE id=4",
+        )
+        .unwrap()
+    else {
+        panic!("expected fixed native vector text")
+    };
+    // Hand-derived fixed-shortest spellings: no JSON/scientific reformatter.
+    assert_eq!(cell_text(&rows[0][0]), "[-0,0.00000001,10000000000]");
+    assert!(warnings_of(&session).is_empty());
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns(
+            "SELECT VEC_L1_DISTANCE(a,b),VEC_L2_DISTANCE(a,b),VEC_NEGATIVE_INNER_PRODUCT(a,b),\
+         VEC_COSINE_DISTANCE(a,b),VEC_L2_NORM(a) FROM shared_vector_values WHERE id=5",
+        )
+        .unwrap()
+    else {
+        panic!("expected finite-input overflow boundary")
+    };
+    // Hand-derived from accepted finite f32 inputs: three f32 loops overflow,
+    // cosine computes NaN and becomes NULL, but native norm accumulates in f64.
+    // No unsupported NaN/Inf SQL input is manufactured.
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].len(), 5);
+    for value in &rows[0][..3] {
+        let Datum::Real(value) = value else {
+            panic!("infinity must remain a real result")
+        };
+        assert!(value.is_infinite() && value.is_sign_positive());
+    }
+    assert_eq!(rows[0][3], Datum::Null);
+    let Datum::Real(norm) = &rows[0][4] else {
+        panic!("norm must remain a real result")
+    };
+    assert!(norm.is_finite() && *norm > 1e38);
+    assert!(warnings_of(&session).is_empty());
+}
+
+#[test]
+fn evaluated_ascii_vector_sql_errors_preserve_left_first_demand() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_vector_errors (id INT PRIMARY KEY, l VARCHAR(64), r VARCHAR(64), b VARBINARY(64))").unwrap();
+    session
+        .run(
+            "INSERT INTO shared_vector_errors VALUES (1,NULL,'abc',x'FF'),\
+         (2,'abc',NULL,'abc'),(3,'[1]','[1,2]','[-1e39,1e39]')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns(
+            "SELECT VEC_L1_DISTANCE(l,r),VEC_L2_DISTANCE(l,r),VEC_NEGATIVE_INNER_PRODUCT(l,r),\
+         VEC_COSINE_DISTANCE(l,r) FROM shared_vector_errors WHERE id=1",
+        )
+        .unwrap()
+    else {
+        panic!("left NULL must not coerce the malformed right vector")
+    };
+    assert_eq!(rows, vec![vec![Datum::Null; 4]]);
+    assert!(warnings_of(&session).is_empty());
+    for (expression, id, message) in [
+        (
+            "VEC_FROM_TEXT(b)",
+            1,
+            "invalid utf-8 sequence of 1 bytes from index 0",
+        ),
+        ("VEC_FROM_TEXT(b)", 2, "Invalid vector text: abc"),
+        (
+            "VEC_FROM_TEXT(b)",
+            3,
+            "value -1e+39 out of range for float32",
+        ),
+        (
+            "VEC_L1_DISTANCE(l,r)",
+            3,
+            "vectors have different dimensions: 1 and 2",
+        ),
+        (
+            "VEC_L2_DISTANCE(l,r)",
+            3,
+            "vectors have different dimensions: 1 and 2",
+        ),
+        (
+            "VEC_NEGATIVE_INNER_PRODUCT(l,r)",
+            3,
+            "vectors have different dimensions: 1 and 2",
+        ),
+        (
+            "VEC_COSINE_DISTANCE(l,r)",
+            3,
+            "vectors have different dimensions: 1 and 2",
+        ),
+        // A right NULL must not suppress the original left conversion error.
+        ("VEC_L1_DISTANCE(l,r)", 2, "Invalid vector text: abc"),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_vector_errors WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        assert!(
+            matches!(&error, DriverError::Exec(tidb_executor::ExecError::Eval(
+            tidb_executor::EvalError::Vector(actual))) if actual == message),
+            "{sql}: {error:?}"
+        );
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert_eq!(mysql.message, message, "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+}
+
+#[test]
+fn evaluated_ascii_vector_zero_slots_reject_all_eight_families_and_nulls() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run(
+        "CREATE TABLE shared_vector_zero (id INT PRIMARY KEY, a VECTOR, b VECTOR, t VARCHAR(64), raw VARBINARY(64))",
+    ).unwrap();
+    session
+        .run(
+            "INSERT INTO shared_vector_zero VALUES (1,'[3,4]','[0,0]','[1,2]','[1,2]'),\
+         (2,NULL,NULL,NULL,'abc'),(3,'[3,4]',NULL,'abc',x'FF'),(4,'[1]','[1,2]',NULL,NULL)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // Eight non-NULL inputs and eight actual NULL paths. The FROM_TEXT and
+    // L2 non-NULL cases deliberately make errors that belong to the worker:
+    // pool refusal must win over its UTF-8 parser and dimension comparison.
+    for (expression, id) in [
+        ("VEC_AS_TEXT(a)", 1),
+        ("VEC_FROM_TEXT(raw)", 3),
+        ("VEC_DIMS(a)", 1),
+        ("VEC_L1_DISTANCE(a,b)", 1),
+        ("VEC_L2_DISTANCE(a,b)", 4),
+        ("VEC_NEGATIVE_INNER_PRODUCT(a,b)", 1),
+        ("VEC_COSINE_DISTANCE(a,b)", 1),
+        ("VEC_L2_NORM(a)", 1),
+        ("VEC_AS_TEXT(a)", 2),
+        ("VEC_FROM_TEXT(t)", 2),
+        ("VEC_DIMS(a)", 2),
+        ("VEC_L1_DISTANCE(a,raw)", 2),
+        ("VEC_L2_DISTANCE(a,raw)", 2),
+        ("VEC_NEGATIVE_INNER_PRODUCT(a,b)", 3),
+        ("VEC_COSINE_DISTANCE(a,b)", 3),
+        ("VEC_L2_NORM(a)", 2),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_vector_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("vectors must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+}

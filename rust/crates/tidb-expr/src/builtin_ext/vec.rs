@@ -16,26 +16,48 @@
 
 use tidb_datatype::{ConversionFlags, FieldType, FieldTypeCode, VectorFloat32};
 
-use crate::{Datum, EvalError};
+use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp, EvaluatedBytesResult};
+use crate::{Columns, Datum, EvalError};
 
+#[cfg(test)]
 pub(crate) fn dispatch(name: &str, vals: &[Datum]) -> Option<Result<Datum, EvalError>> {
+    dispatch_in(name, vals, &crate::NoColumns)
+}
+
+pub(crate) fn dispatch_in(
+    name: &str,
+    vals: &[Datum],
+    ctx: &dyn Columns,
+) -> Option<Result<Datum, EvalError>> {
     match (name, vals) {
-        ("VEC_DIMS", [value]) => Some(dims(value)),
-        ("VEC_L1_DISTANCE", [left, right]) => {
-            Some(distance(left, right, VectorFloat32::l1_distance))
-        }
-        ("VEC_L2_DISTANCE", [left, right]) => {
-            Some(distance(left, right, VectorFloat32::l2_distance))
-        }
-        ("VEC_NEGATIVE_INNER_PRODUCT", [left, right]) => {
-            Some(distance(left, right, VectorFloat32::negative_inner_product))
-        }
-        ("VEC_COSINE_DISTANCE", [left, right]) => {
-            Some(distance(left, right, VectorFloat32::cosine_distance))
-        }
-        ("VEC_L2_NORM", [value]) => Some(l2_norm(value)),
-        ("VEC_FROM_TEXT", [value]) => Some(from_text(value)),
-        ("VEC_AS_TEXT", [value]) => Some(as_text(value)),
+        ("VEC_DIMS", [value]) => Some(dims(value, ctx)),
+        ("VEC_L1_DISTANCE", [left, right]) => Some(distance(
+            left,
+            right,
+            EvaluatedBytesOp::VecL1DistanceNative,
+            ctx,
+        )),
+        ("VEC_L2_DISTANCE", [left, right]) => Some(distance(
+            left,
+            right,
+            EvaluatedBytesOp::VecL2DistanceNative,
+            ctx,
+        )),
+        ("VEC_NEGATIVE_INNER_PRODUCT", [left, right]) => Some(distance(
+            left,
+            right,
+            EvaluatedBytesOp::VecNegativeInnerProductNative,
+            ctx,
+        )),
+        ("VEC_COSINE_DISTANCE", [left, right]) => Some(distance(
+            left,
+            right,
+            EvaluatedBytesOp::VecCosineDistanceNative,
+            ctx,
+        )),
+        ("VEC_L2_NORM", [value]) => Some(l2_norm(value, ctx)),
+        ("VEC_FROM_TEXT", [value]) => Some(from_text(value, ctx)),
+        ("VEC_AS_TEXT", [value]) => Some(as_text(value, ctx)),
         _ => None,
     }
 }
@@ -55,53 +77,86 @@ fn vector(value: &Datum) -> Result<Option<VectorFloat32>, EvalError> {
     }
 }
 
-fn dims(value: &Datum) -> Result<Datum, EvalError> {
-    Ok(vector(value)?.map_or(Datum::Null, |value| Datum::Int(value.len() as i64)))
+fn dims(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        EvaluatedBytesOp::VecDimsNative,
+        ctx,
+        || Ok(EvaluatedArgs::NativeVector(vector(value)?)),
+        EvaluatedBytesResult::into_int_datum,
+    )
 }
 
 fn distance(
     left: &Datum,
     right: &Datum,
-    operation: impl FnOnce(&VectorFloat32, &VectorFloat32) -> Result<f64, tidb_datatype::VectorError>,
+    operation: EvaluatedBytesOp,
+    ctx: &dyn Columns,
 ) -> Result<Datum, EvalError> {
-    let Some(left) = vector(left)? else {
-        return Ok(Datum::Null);
-    };
-    let Some(right) = vector(right)? else {
-        return Ok(Datum::Null);
-    };
-    let result = operation(&left, &right).map_err(|error| EvalError::Vector(error.to_string()))?;
-    Ok(if result.is_nan() {
-        Datum::Null
+    // Inspect only actual datum NULL tags to select the closed recipe. All
+    // conversions stay under its guard, in the original left-to-right order:
+    // a bad left still errors before a NULL right, and a NULL left skips right.
+    let operation = if matches!(left, Datum::Null) || matches!(right, Datum::Null) {
+        EvaluatedBytesOp::VecRealNullNative
     } else {
-        Datum::Real(result)
-    })
-}
-
-fn l2_norm(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(value) = vector(value)? else {
-        return Ok(Datum::Null);
+        operation
     };
-    let norm = value.l2_norm();
-    Ok(if norm.is_nan() {
-        Datum::Null
-    } else {
-        Datum::Real(norm)
-    })
+    crate::tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || {
+            let Some(left) = vector(left)? else {
+                return Ok(EvaluatedArgs::NullWitness(None));
+            };
+            let Some(right) = vector(right)? else {
+                return Ok(EvaluatedArgs::NullWitness(None));
+            };
+            Ok(EvaluatedArgs::NativeVector2(Some(left), Some(right)))
+        },
+        pack_real,
+    )
 }
 
-fn from_text(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(bytes) = crate::arg_eval_type::eval_string(value)? else {
-        return Ok(Datum::Null);
-    };
-    let text = std::str::from_utf8(&bytes).map_err(|error| EvalError::Vector(error.to_string()))?;
-    VectorFloat32::parse(text)
-        .map(Datum::new_vector_float32)
-        .map_err(|error| EvalError::Vector(error.to_string()))
+fn l2_norm(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        EvaluatedBytesOp::VecL2NormNative,
+        ctx,
+        || Ok(EvaluatedArgs::NativeVector(vector(value)?)),
+        pack_real,
+    )
 }
 
-fn as_text(value: &Datum) -> Result<Datum, EvalError> {
-    Ok(vector(value)?.map_or(Datum::Null, |value| Datum::new_string(value.to_string())))
+fn pack_real(computed: EvaluatedBytesResult) -> Result<Datum, EvalError> {
+    // The worker has already applied the original NaN-to-NULL policy. Preserve
+    // every remaining result bit, including infinities, without host filtering.
+    Ok(computed
+        .into_ieee754_bits()?
+        .map_or(Datum::Null, |bits| Datum::Real(f64::from_bits(bits))))
+}
+
+fn from_text(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        EvaluatedBytesOp::VecFromTextNative,
+        ctx,
+        || {
+            Ok(EvaluatedArgs::Bytes(crate::arg_eval_type::eval_string(
+                value,
+            )?))
+        },
+        EvaluatedBytesResult::into_native_vector_datum,
+    )
+}
+
+fn as_text(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        EvaluatedBytesOp::VecAsTextNative,
+        ctx,
+        || Ok(EvaluatedArgs::NativeVector(vector(value)?)),
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 
 #[cfg(test)]
