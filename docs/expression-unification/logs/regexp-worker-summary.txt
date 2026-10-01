@@ -1,0 +1,55 @@
+REGEXP WORKER CHECKPOINT / regexp-worker-45 / round46
+Previous: regexp-foundation-44. Functional delegation + native deletion 155/245; strict final-audited 0. Four new frozen families: regexp_like (REGEXP/RLIKE aliases included), regexp_substr, regexp_instr, regexp_replace. Incomplete; not PR-ready.
+
+COMMANDS AND RAW RECEIPTS
+Raw logs remain in experiment workspace expression-unification/logs; this file publishes their whole-log SHA256 and exact commands/results, not invented successes or a whole-workspace claim.
+TiKV cwd=expression-unification/tikv; T=../tools/cargo-tikv (nightly-2026-01-30).
+Native cwd=expression-unification/tidb/rust; N=../../tools/cargo-tidb (nightly-2026-08-22).
+Each actual command used: set -o pipefail; <wrapper> test --locked -p <package> --lib [filter] -- --test-threads=1 2>&1 | tee <log> >/dev/null.
+TiKV log path ../logs/<name>; native ../../logs/<name>. No metadata or lock-resolution commands.
+Rows below: command | passed/failed/ignored/filtered | compile/run seconds | exit | whole-log SHA256.
+1 T test --locked -p tidb_query_expr --lib regexp -- --test-threads=1
+  regexp-worker-tikv.log | 16/0/0/790 | 10.43/.04 | 0 | 599af8df1f9ef9dcec4e825ddb426097cc1215e027db340daa2e48b4fb3f5cea
+2 T test --locked -p tidb_query_expr --lib local -- --test-threads=1
+  regexp-worker-tikv-local.log | 279/0/1/526 | .14/.19 | 0 | a2b69cb9ec0d98410862da00e63f1b2460738dc908e1fe84e16260773d0f4026
+3 N test --locked -p tidb-expr --lib regexp::tests:: -- --test-threads=1
+  regexp-worker-native.log | 7/0/0/1573 | 13.77/.08 | 0 | d2cf9ed16cbbd4fb701fe401017b00d54b101bf96d3914f16b805eaa4e32129e
+4 N test --locked -p tidb-expr --lib regexp_cache_identity_by_statement_context -- --test-threads=1
+  regexp-worker-cache.log | 1/0/0/1579 | .13/.00 | 0 | 061f81efecfad9678b5901850d8488377abb2f9b99981a122ef54b1ecdb2c8b8
+5 N test --locked -p tidb-expr --lib regexp_dispatch_ -- --test-threads=1
+  regexp-worker-dispatch.log | 2/0/0/1578 | .13/.01 | 0 | 6f73d1bcdf384d9331b631452fae41ba79b75b18c19d1346c24a2cec60e6ab72
+6 N test --locked -p tidb-session --lib regexp_ -- --test-threads=1
+  regexp-worker-sql.log | 3/1/0/2171 | 24.85/.08 | 101 | 7e08e233a0b6ed7cd787ad8b4f40d2e4e1b638cb165b76fccd43ec75f3ba7c9c
+7 N test --locked -p tidb-unistore --lib legacy_regexp_like_ -- --test-threads=1
+  regexp-worker-legacy.log | 1/1/0/209 | 6.03/.00 | 101 | 4d2684b59dca28279f36f348e824533bd3bc2a4236e2f3bd81b1b3e8eb71589f
+8 N test --locked -p tidb-expr --lib -- --test-threads=1
+  regexp-worker-expr-full.log | 1481/5/94/0 | .12/12.82 | 101 | 6234b64620f829760cfacf1bf8f10fe56ea388e6eba1f45c378f2bb491a62b18
+9 Same full tidb-expr command, after the structural instrumentation expectation update
+  regexp-worker-expr-full-retry.log | 1482/4/94/0 | 3.20/13.03 | 101 | 8a25e84745aa980539277cf8ec0d466dbfa68c513004278088cac72101d59b8f
+10 Same tidb-session regexp_ command, after source-derived new metadata expectation correction
+  regexp-worker-sql-retry.log | 4/0/0/2171 | 3.17/.09 | 0 | 1aa97dd5f72aa0da7c68c4ccbd617e3b41469da2e3b9a8e15c611f57ab16ea4c
+11 Same tidb-unistore legacy_regexp_like_ command, after source-derived new PB fixture correction
+  regexp-worker-legacy-retry.log | 2/0/0/209 | 1.41/.00 | 0 | a3436cef22a11ef7fd189489885c05b5f03b7d5b28c5a96c68ab1211e82d8bec
+12 N test --locked -p tidb-unistore --lib -- --test-threads=1
+  regexp-worker-unistore-full.log | 197/1/13/0 | .12/2.98 | 101 | 75a85becfd32d559073ac6fa611fe183204fc74971b130a916019e3e8ee8ad47
+
+COUNTS AND CORRECTIONS
+12 Cargo attempts = 12 nonzero-test runs: 7 final focused green; 2 new-fixture red runs; 1 existing structural-instrumentation failure run (also containing four old failures); 2 final current old full-suite non-green runs. Failed-target retries 3; compile/zero-match/no-tests/launch failure/supplemental/metadata/lock-resolution commands 0. Neither all-focused-first-try nor all-checks-first-try is true. Initial SQL failure prevented its conditional && legacy command from launching; it is not a thirteenth attempt, and legacy was subsequently launched separately.
+SQL initial error: new lifecycle metadata assertions guessed integer outputs stayed binary. Original unchanged SQL rewrite derives collation then stamps result FieldType (collation_derive.rs718-721), and the later binary-string override excludes regexp. Correct all eight columns to utf8mb4/Utf8Mb4Bin; retain integer code/width/scale/sign/boolean, rows, errors and zero-slot expectations. This is source derivation, not recording provider output.
+Legacy initial error: new fixture guessed PB RegexpLikeSig converted to legacy Func. Original convert_expr first selects supported Shared; PB preserves parent return metadata (collation45), and the typed regexp path derives initial i from that metadata. Correct fixture shape to Shared, inspect parent metadata, retain original hand-derived AbC/abc=1, and set its existing test shared_override so that fixture exercises the explicit scope. Direct legacy CI/Bin/UTF-8/NULL/missing tests remain distinct. No production decoder admission or policy change.
+Expression initial extra failure: an old NOT REGEXP instrumentation row expected only NOT's one facade. RegexpLike now has its own C4 invocation, then NOT; change this one structural expectation to two independent worker snapshots, retaining SQL Int(1). No SQL expected value changed. Final full expression suite returns to its original four failures.
+
+COMPLETE FAILURE SECTION COMPARISON
+Compare from the first newline+'failures:'+newline to immediately before newline+'test result:', including detailed panic text and final failure-name list. Normalize ONLY numeric panic-heading thread IDs to (<id>); no source-address remapping or content deletion. Both final sections equal their regexp-foundation counterparts byte-for-byte under that normalization.
+Expression section SHA256 27654f2c0ad2971242c00f50182467598cdfd9c2c65e5bf5a32e683708448637; unchanged failures: pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation (3077:9), tests::builtin_info_json_math_source::exp (1881:5), tests::builtin_math_misc_op_source::vectorized_builtin_op_func (duration.rs164:55), time_fn::tests::str_to_date_partial_formats_follow_no_zero_date (888:9).
+Unistore section SHA256 b64dcced405c699c11b72ee31888c58e491b4e5b4e74fa2d445454e1d1e146e9; unchanged tests_mockstore_part1_go_parity::closure_executor_selection_over_point_range_answers_zero_rows at 194:5. Historical digests used a different canonical marker; historical receipts remain historical, not rewritten.
+
+SOURCE AND STATIC RECEIPTS
+22 Rust sources: TiKV10/native12. No manifest/dependency/lockfile changes. Both repository git diff --check and all pinned rustfmt --edition 2021 --config skip_children=true --check checks passed finally. Initial TiKV formatter check found one new batch.rs return-line wrapping difference; reformat that file then check it and all ten sources successfully: check failure1/retry1, no claimed cause. Native first twelve-source formatter check passed; later test-only corrections were formatted and all22 finally rechecked.
+Three entire original regexp modules remain byte-identical to HEAD: TiKV impl_regexp::tests, native regexp::tests and builtin_ext::regexp::tests. Separate Boolean instrumentation changed as disclosed above; do not claim every old assertion is unchanged.
+Source-tool incidents: C one literal mismatch and one multiple-match edit, both fixed with fresh-read precise retries; one following-old-vector-test name transcription corrected before build. Observation-precondition/ordinary lookup/presentation failures0. Actual-Arc observation and genuine Missing recipe were explicit precompile design refinements, not failed-compilation ABI guesses. Fifteen new functions: shared cache3, kernel3, local binding3, native scope2, legacy2, SQL2. No fixtures regenerated.
+AGENTS review: architecture index changes descriptive paths/implementation only, with no new normative policy, deleted-path references, Go or Bazel changes.
+
+BOUNDARY
+Native owners reset on Clone; explicit typed invocation shares live state. Cache initialization and miss writeback happen only in kernels at original demand points, using actual Arc values. Four typed metadata kinds/roles admit real 3/5/6/6 SQL slots; RAII drops handles/observation before postflight or pool return. Only invalid INSTR return_option authorizes undemanded flags. Two real NULL witnesses, two legacy policies and one genuine Missing NoArgs recipe complete nine operations. Ordinary wire/PB admission and the common driver remain unchanged.
+Checked counts cover fixed holders and observed known cache structures/parts/error-buffer capacities. Regex engine/TLS/Arc headers and transient allocation/peaks are not complete measured heap; M6/OOM/performance remain deferred. Statistics Option helper is a pure TiKV SDK delegate, not a pooled SQL operation. No whole Go-package/workspace, lint, release, performance, zero-copy, allocator-peak, FIPS, production request-root integration or PR readiness claim. FORMAT/DATE/MICROSECOND/larger arithmetic+JSON and final differential/M6/TiFlash remain work.

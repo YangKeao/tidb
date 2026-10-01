@@ -8823,3 +8823,211 @@ fn evaluated_ascii_vector_zero_slots_reject_all_eight_families_and_nulls() {
         assert!(warnings_of(&session).is_empty(), "{sql}");
     }
 }
+
+#[test]
+fn evaluated_ascii_regexp_sql_values_metadata_and_demand_order() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_regexp_sql (id INT PRIMARY KEY, s VARCHAR(32), p VARCHAR(32), \
+         repl VARCHAR(8), pos INT, occ INT, flags VARCHAR(8))",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_regexp_sql VALUES (1,'abc abd','ab.','X',1,2,''),\
+         (2,'你好啊','好','的',2,1,''),(3,'seafood fool','foo(.?)','z\\\\12',3,0,'')",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // Literal and per-row column patterns share one pool, not one regex cache.
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT REGEXP_LIKE(s,'^a'),REGEXP_LIKE(s,p,flags),\
+         REGEXP_SUBSTR(s,'ab.',1,2),REGEXP_SUBSTR(s,p,pos,occ,flags),\
+         REGEXP_INSTR(s,'好',2),REGEXP_INSTR(s,p,pos,occ,0,flags),\
+         REGEXP_REPLACE(s,'ab.','X'),REGEXP_REPLACE(s,p,repl,pos,occ,flags) \
+         FROM shared_regexp_sql ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected named regexp SQL rows")
+    };
+    assert_eq!(columns.len(), 8);
+    for (index, (_, field)) in columns.iter().enumerate() {
+        let is_like = index < 2;
+        let is_int = is_like || matches!(index, 4 | 5);
+        assert_eq!(
+            field.code(),
+            if is_int {
+                tidb_datatype::FieldTypeCode::LongLong
+            } else {
+                tidb_datatype::FieldTypeCode::VarString
+            }
+        );
+        assert_eq!(
+            field.flen(),
+            if is_like {
+                1
+            } else if is_int {
+                20
+            } else {
+                32
+            }
+        );
+        assert_eq!(field.decimal(), if is_int { 0 } else { -1 });
+        // Original collation derivation stamps the string arguments' collation
+        // on every regex result FieldType, including LIKE/INSTR's integer types.
+        assert_eq!(field.charset_name(), "utf8mb4");
+        assert_eq!(field.collation(), tidb_datatype::Collation::Utf8Mb4Bin);
+        assert!(!field.is_unsigned());
+        assert_eq!(
+            field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN),
+            is_like
+        );
+    }
+    // Original Unicode/occurrence and single-digit z\12 fixtures anchor values.
+    // These cross-function rows (including food/INSTR=4 and the retained 啊)
+    // are hand-derived combinations, not newly recorded worker output.
+    let expected = [
+        ["1", "1", "abd", "abd", "0", "5", "X X", "abc X"],
+        ["0", "1", "NULL", "好", "2", "2", "你好啊", "你的啊"],
+        [
+            "0",
+            "1",
+            "NULL",
+            "food",
+            "0",
+            "4",
+            "seafood fool",
+            "seazd2 zl2",
+        ],
+    ];
+    assert_eq!(rows.len(), expected.len());
+    for (row, expected) in rows.iter().zip(expected) {
+        assert_eq!(row.len(), 8);
+        for (value, expected) in row.iter().zip(expected) {
+            assert_eq!(cell_text(value), expected);
+        }
+        for index in [0, 1, 4, 5] {
+            assert!(matches!(&row[index], Datum::Int(_)));
+        }
+    }
+    assert!(warnings_of(&session).is_empty());
+    // Constant NULL flags are mixed with stored columns. In the three
+    // positional functions the original flag-NULL exit precedes trimming.
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns(
+            "SELECT REGEXP_LIKE(s,p,NULL),REGEXP_SUBSTR(s,p,0,1,NULL),\
+         REGEXP_INSTR(s,p,0,1,0,NULL),REGEXP_REPLACE(s,p,repl,0,0,NULL) \
+         FROM shared_regexp_sql WHERE id=1",
+        )
+        .unwrap()
+    else {
+        panic!("expected original late-NULL argument order")
+    };
+    assert_eq!(rows, vec![vec![Datum::Null; 4]]);
+    assert!(warnings_of(&session).is_empty());
+    // Combined-error cases are source-order assertions: position validation
+    // precedes compilation, but INSTR's return_option precedes late flags.
+    for (expression, message) in [
+        ("REGEXP_LIKE(s,'(')", "invalid regular expression pattern"),
+        ("REGEXP_SUBSTR(s,'')", "empty regular expression pattern"),
+        ("REGEXP_REPLACE(s,p,repl,1,0,'p')", "Invalid match type"),
+        (
+            "REGEXP_INSTR(s,p,0,1,2,NULL)",
+            "Incorrect arguments to regexp_instr: return_option must be 1 or 0",
+        ),
+        (
+            "REGEXP_SUBSTR(s,'(',0)",
+            "Index out of bounds in regular expression search",
+        ),
+        (
+            "REGEXP_INSTR(s,'(',0,1,0)",
+            "Index out of bounds in regular expression search",
+        ),
+        (
+            "REGEXP_REPLACE(s,'(',repl,0)",
+            "Index out of bounds in regular expression search",
+        ),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_regexp_sql WHERE id=1");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        assert!(
+            matches!(&error, DriverError::Exec(tidb_executor::ExecError::Eval(
+            tidb_executor::EvalError::Unsupported(actual))) if *actual == message),
+            "{sql}: {error:?}"
+        );
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert_eq!(mysql.message, message, "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+    // A failed pattern must not poison a later expression's statement/cache.
+    let StmtOutput::Rows { rows, .. } = session.run_with_columns(
+        "SELECT REGEXP_LIKE(s,'ab.'),REGEXP_REPLACE(s,'ab.','X',1,2) FROM shared_regexp_sql WHERE id=1",
+    ).unwrap() else { panic!("expected healthy pool after regexp errors") };
+    assert_eq!(rows[0][0], Datum::Int(1));
+    assert_eq!(cell_text(&rows[0][1]), "abc X");
+    assert!(warnings_of(&session).is_empty());
+}
+
+#[test]
+fn evaluated_ascii_regexp_zero_slots_reject_named_calls_and_null_paths() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_regexp_zero (id INT PRIMARY KEY, s VARCHAR(32), p VARCHAR(32), repl VARCHAR(8))").unwrap();
+    session
+        .run("INSERT INTO shared_regexp_zero VALUES (1,'abc abd','ab.','X')")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    for expression in [
+        "REGEXP_LIKE(s,p)",
+        "REGEXP_SUBSTR(s,p)",
+        "REGEXP_INSTR(s,p)",
+        "REGEXP_REPLACE(s,p,repl)",
+        "REGEXP_LIKE(s,p,NULL)",
+        "REGEXP_SUBSTR(s,p,0,1,NULL)",
+        "REGEXP_INSTR(s,p,0,1,0,NULL)",
+        "REGEXP_REPLACE(s,p,repl,0,0,NULL)",
+        // return_option validation belongs to the worker; an unadmitted call
+        // cannot report that SQL failure or pretend the undemanded flags won.
+        "REGEXP_INSTR(s,p,0,1,2,NULL)",
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_regexp_zero WHERE id=1");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("named regexps must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+}

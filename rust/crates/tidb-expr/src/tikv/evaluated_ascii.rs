@@ -788,22 +788,20 @@ impl Creation {
             self.operation,
             LocalCompileContext {
                 limits: CompileLimits {
-                    // Only the four pad, two INSERT and native LOCATE3
-                    // operations have four ready arguments. Other recipes keep
-                    // four nodes; unary two-call predicates require depth three.
-                    max_nodes: if matches!(
-                        self.operation,
+                    // Widen only the exact closed recipes needing additional
+                    // argument nodes. All retain the original depth allowance.
+                    max_nodes: match self.operation {
+                        EvaluatedBytesOp::RegexpSubstrNative => 6,
+                        EvaluatedBytesOp::RegexpInstrNative
+                        | EvaluatedBytesOp::RegexpReplaceNative => 7,
                         EvaluatedBytesOp::LpadBytesNative
-                            | EvaluatedBytesOp::RpadBytesNative
-                            | EvaluatedBytesOp::LpadUtf8Native
-                            | EvaluatedBytesOp::RpadUtf8Native
-                            | EvaluatedBytesOp::Insert
-                            | EvaluatedBytesOp::InsertUtf8Native
-                            | EvaluatedBytesOp::Locate3Native
-                    ) {
-                        5
-                    } else {
-                        4
+                        | EvaluatedBytesOp::RpadBytesNative
+                        | EvaluatedBytesOp::LpadUtf8Native
+                        | EvaluatedBytesOp::RpadUtf8Native
+                        | EvaluatedBytesOp::Insert
+                        | EvaluatedBytesOp::InsertUtf8Native
+                        | EvaluatedBytesOp::Locate3Native => 5,
+                        _ => 4,
                     },
                     max_depth: 3,
                 },
@@ -1303,6 +1301,23 @@ impl<'a> Invocation<'a> {
                         });
                     }
                     (
+                        EvaluatedBytesOp::RegexpLikeNative
+                        | EvaluatedBytesOp::RegexpSubstrNative
+                        | EvaluatedBytesOp::RegexpInstrNative
+                        | EvaluatedBytesOp::RegexpReplaceNative,
+                        Some(EvaluatedSqlFailureKind::RegexpNative),
+                    ) => {
+                        let Some(cause) = report.native_regexp_error() else {
+                            return AsciiBoundaryError::Scope {
+                                kind: ScopeFailureKind::Contract,
+                                reason: "regexp failure receipt lacks its native cause",
+                            };
+                        };
+                        return AsciiBoundaryError::Frontend(crate::regexp::native_regexp_error(
+                            cause,
+                        ));
+                    }
+                    (
                         EvaluatedBytesOp::VecFromTextNative
                         | EvaluatedBytesOp::VecL1DistanceNative
                         | EvaluatedBytesOp::VecL2DistanceNative
@@ -1523,6 +1538,15 @@ impl EvaluatedBytesResult {
         }
     }
 
+    /// Project an already checked boolean result for the original non-NULL API.
+    pub(crate) fn into_nonnull_bool(self) -> Result<bool, EvalError> {
+        match self {
+            Self::Int(Datum::Int(0)) => Ok(false),
+            Self::Int(Datum::Int(1)) => Ok(true),
+            _ => Err(result_kind_error().into_eval_error()),
+        }
+    }
+
     /// The signed C carrier owns the result bits, not the frontend SQL flag.
     /// Negative carriers are valid unsigned bitwise answers, never overflows.
     pub(crate) fn into_uint_bits_datum(self) -> Result<Datum, EvalError> {
@@ -1716,6 +1740,12 @@ fn materialize_computed(
             | EvaluatedBytesOp::TidbShardNative
             | EvaluatedBytesOp::VitessHashNative
             | EvaluatedBytesOp::VecDimsNative
+            | EvaluatedBytesOp::RegexpLikeNative
+            | EvaluatedBytesOp::RegexpInstrNative
+            | EvaluatedBytesOp::RegexpLikeLegacyCiNative
+            | EvaluatedBytesOp::RegexpLikeLegacyBinNative
+            | EvaluatedBytesOp::RegexpNullIntNative
+            | EvaluatedBytesOp::RegexpMissingLegacyNative
             | EvaluatedBytesOp::AbsIntNative
             | EvaluatedBytesOp::AbsUIntNative
             | EvaluatedBytesOp::CeilIntNative
@@ -1821,7 +1851,10 @@ fn materialize_computed(
             | EvaluatedBytesOp::SqlCryptNullNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
-            | EvaluatedBytesOp::VecAsTextNative,
+            | EvaluatedBytesOp::VecAsTextNative
+            | EvaluatedBytesOp::RegexpSubstrNative
+            | EvaluatedBytesOp::RegexpReplaceNative
+            | EvaluatedBytesOp::RegexpNullBytesNative,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {
@@ -1935,15 +1968,15 @@ fn materialize_computed(
 }
 
 fn evaluate_scoped_args<T>(
-    operation: EvaluatedBytesOp,
     scope: &AsciiScope,
-    coerce: impl FnOnce() -> Result<EvaluatedArgs, EvalError>,
+    prepare: impl FnOnce() -> Result<(EvaluatedBytesOp, EvaluatedArgs), EvalError>,
     pack: impl FnOnce(EvaluatedBytesResult) -> Result<T, EvalError>,
 ) -> Result<T, AsciiBoundaryError> {
     let mut guard = NativeGuard::new(scope);
     let result = (|| {
-        // Frontend coercion runs exactly once, before taking/replacing a lease.
-        let ready = coerce().map_err(AsciiBoundaryError::Frontend)?;
+        // Frontend coercion and closed recipe selection happen exactly once,
+        // before taking/replacing a lease, under the original scope guard.
+        let (operation, ready) = prepare().map_err(AsciiBoundaryError::Frontend)?;
         let mut invocation = Invocation::enter(scope)?;
         let result = invocation.run_args(operation, ready);
         let computed = invocation.finish(result)?;
@@ -1954,29 +1987,23 @@ fn evaluate_scoped_args<T>(
     result
 }
 
-/// One closed operation router, sharing the legacy-named ASCII capabilities.
-/// Neither frontend callback enters C4: coercion precedes admission, and native
-/// packing follows the exclusive invocation. Both remain under the scope guard.
-/// Only the native packed result is generic; the admitted arguments, worker and
-/// lifecycle path remain the same closed boundary, including for legacy i128.
-pub(crate) fn evaluate_args_in<T>(
-    operation: EvaluatedBytesOp,
+fn evaluate_prepared_args_in<T>(
     ctx: &dyn Columns,
-    coerce: impl FnOnce() -> Result<EvaluatedArgs, EvalError>,
+    prepare: impl FnOnce() -> Result<(EvaluatedBytesOp, EvaluatedArgs), EvalError>,
     pack: impl FnOnce(EvaluatedBytesResult) -> Result<T, EvalError>,
 ) -> Result<T, EvalError> {
     if let Some(scope) = ctx.evaluated_ascii_scope() {
-        return evaluate_scoped_args(operation, scope, coerce, pack)
+        return evaluate_scoped_args(scope, prepare, pack)
             .map_err(AsciiBoundaryError::into_eval_error);
     }
     if let Some(execution) = ctx.evaluated_ascii_execution() {
-        return evaluate_scoped_args(operation, &execution.scope(), coerce, pack)
+        return evaluate_scoped_args(&execution.scope(), prepare, pack)
             .map_err(AsciiBoundaryError::into_eval_error);
     }
 
     let result = (|| {
         // No capability: preserve frontend precedence even before pool creation.
-        let ready = coerce().map_err(AsciiBoundaryError::Frontend)?;
+        let ready = prepare().map_err(AsciiBoundaryError::Frontend)?;
         // One explicit experimental policy for all closed fixed-arity recipes.
         // Retained/request allowances are not physical heap/factory-peak bounds.
         // A worker's retained cap must not become a maximum SQL string length.
@@ -1985,9 +2012,135 @@ pub(crate) fn evaluate_args_in<T>(
         let execution = OneShotAsciiExecution(owner.begin_execution()?);
         // The scope/guard drop before the owned closer, including on unwind.
         let scope = execution.0.scope();
-        evaluate_scoped_args(operation, &scope, || Ok(ready), pack)
+        evaluate_scoped_args(&scope, || Ok(ready), pack)
     })();
     result.map_err(AsciiBoundaryError::into_eval_error)
+}
+
+/// One closed operation router, sharing the legacy-named ASCII capabilities.
+/// Neither frontend callback enters C4: coercion precedes admission, and native
+/// packing follows the exclusive invocation. Existing scopes guard both; the
+/// no-capability route retains its original preparation-before-pool precedence.
+/// Only the native packed result is generic; arguments and lifecycle stay closed.
+pub(crate) fn evaluate_args_in<T>(
+    operation: EvaluatedBytesOp,
+    ctx: &dyn Columns,
+    coerce: impl FnOnce() -> Result<EvaluatedArgs, EvalError>,
+    pack: impl FnOnce(EvaluatedBytesResult) -> Result<T, EvalError>,
+) -> Result<T, EvalError> {
+    evaluate_prepared_args_in(ctx, || Ok((operation, coerce()?)), pack)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RegexpFunction {
+    Like,
+    Substr,
+    Instr,
+    Replace,
+    LegacyCi,
+    LegacyBin,
+    LegacyMissing,
+}
+
+/// The historical coprocessor distinguishes an absent child from SQL NULL.
+/// A collation decision is supplied only when both actual operands are non-NULL.
+#[derive(Debug)]
+pub enum RegexpLegacyInput {
+    Missing,
+    Values {
+        text: Option<Vec<u8>>,
+        pattern: Option<Vec<u8>>,
+        case_insensitive: Option<bool>,
+    },
+}
+
+/// Narrow ready-input bridge for the historical policies. Recipe selection
+/// shares the original guarded preparation and no-capability precedence.
+pub fn eval_regexp_legacy_ready_in(
+    ctx: &dyn Columns,
+    input: RegexpLegacyInput,
+) -> Result<Datum, EvalError> {
+    evaluate_prepared_args_in(
+        ctx,
+        || match input {
+            RegexpLegacyInput::Missing => Ok((
+                EvaluatedBytesOp::RegexpMissingLegacyNative,
+                EvaluatedArgs::NoArgs,
+            )),
+            RegexpLegacyInput::Values {
+                text,
+                pattern,
+                case_insensitive,
+            } => {
+                if text.is_none() || pattern.is_none() {
+                    return Ok((
+                        EvaluatedBytesOp::RegexpNullIntNative,
+                        EvaluatedArgs::NullWitness(None),
+                    ));
+                }
+                let Some(case_insensitive) = case_insensitive else {
+                    return Err(AsciiBoundaryError::Scope {
+                        kind: ScopeFailureKind::Contract,
+                        reason: "legacy regexp values lack their collation decision",
+                    }
+                    .into_eval_error());
+                };
+                let operation = if case_insensitive {
+                    EvaluatedBytesOp::RegexpLikeLegacyCiNative
+                } else {
+                    EvaluatedBytesOp::RegexpLikeLegacyBinNative
+                };
+                Ok((operation, EvaluatedArgs::Bytes2(text, pattern)))
+            }
+        },
+        EvaluatedBytesResult::into_boolean_datum,
+    )
+}
+
+/// Select only a function's fixed recipe or its actual NULL witness. The worker
+/// validates every non-NULL argument role; no suffix values are manufactured.
+pub(crate) fn evaluate_regexp_in(
+    function: RegexpFunction,
+    ctx: &dyn Columns,
+    coerce: impl FnOnce() -> Result<EvaluatedArgs, EvalError>,
+) -> Result<Datum, EvalError> {
+    evaluate_prepared_args_in(
+        ctx,
+        || {
+            let ready = coerce()?;
+            let operation = if function != RegexpFunction::LegacyMissing
+                && matches!(&ready, EvaluatedArgs::NullWitness(None))
+            {
+                match function {
+                    RegexpFunction::Substr | RegexpFunction::Replace => {
+                        EvaluatedBytesOp::RegexpNullBytesNative
+                    }
+                    _ => EvaluatedBytesOp::RegexpNullIntNative,
+                }
+            } else {
+                match function {
+                    RegexpFunction::Like => EvaluatedBytesOp::RegexpLikeNative,
+                    RegexpFunction::Substr => EvaluatedBytesOp::RegexpSubstrNative,
+                    RegexpFunction::Instr => EvaluatedBytesOp::RegexpInstrNative,
+                    RegexpFunction::Replace => EvaluatedBytesOp::RegexpReplaceNative,
+                    RegexpFunction::LegacyCi => EvaluatedBytesOp::RegexpLikeLegacyCiNative,
+                    RegexpFunction::LegacyBin => EvaluatedBytesOp::RegexpLikeLegacyBinNative,
+                    RegexpFunction::LegacyMissing => EvaluatedBytesOp::RegexpMissingLegacyNative,
+                }
+            };
+            Ok((operation, ready))
+        },
+        |computed| match function {
+            RegexpFunction::Like
+            | RegexpFunction::LegacyCi
+            | RegexpFunction::LegacyBin
+            | RegexpFunction::LegacyMissing => computed.into_boolean_datum(),
+            RegexpFunction::Instr => computed.into_int_datum(),
+            RegexpFunction::Substr | RegexpFunction::Replace => Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string)),
+        },
+    )
 }
 
 /// Lowers the frontend's explicit demand record to the existing Int2 driver.

@@ -403,10 +403,10 @@ pub use row::{compare_datums, compare_datums_with_collation};
 pub(crate) use tidb_datatype::{Datum, Decimal};
 pub use tidb_util::mathutil::MysqlRng;
 pub use tikv::{
-    AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy, AsciiScope,
-    ExpressionAdapterFailure, ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,
-    ExpressionRuntimeFailure, ExpressionRuntimeFailureClass, ExpressionRuntimeFailurePhase,
-    ScopedAsciiColumns,
+    eval_regexp_legacy_ready_in, AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy,
+    AsciiScope, ExpressionAdapterFailure, ExpressionAdapterFailureClass,
+    ExpressionAdapterFailureOrigin, ExpressionRuntimeFailure, ExpressionRuntimeFailureClass,
+    ExpressionRuntimeFailurePhase, RegexpLegacyInput, ScopedAsciiColumns,
 };
 
 use tidb_ast::{CastStyle, Expr, GetFormatSelector, IsTarget};
@@ -459,7 +459,6 @@ use ops::{
     effective_div_precision_increment, eval_binary, eval_binary_with_div_precision, eval_unary,
     logic_and,
 };
-use regexp::regexp_match;
 use row::row_compare;
 use string_fn::{position_in, trim_value_in};
 
@@ -1695,18 +1694,39 @@ pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
         // regexp_match`'s own doc for the empty-pattern/malformed-
         // pattern error rules.
         Expr::Regexp { expr, pattern, not } => {
-            match (eval_in(expr, cols)?, eval_in(pattern, cols)?) {
-                (Datum::Null, _) | (_, Datum::Null) => negate_if(Datum::Null, *not, cols),
-                (v, p) => {
-                    let value = v
-                        .sql_string()
-                        .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP operand"))?;
-                    let pattern = p
-                        .sql_string()
-                        .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP pattern"))?;
-                    negate_if(bool_int(regexp_match(&value, &pattern)?), *not, cols)
-                }
-            }
+            // Preserve the original left-then-right child demand, including NULL.
+            let arguments = (eval_in(expr, cols)?, eval_in(pattern, cols)?);
+            let value = tikv::evaluate_regexp_in(tikv::RegexpFunction::Like, cols, || {
+                let (v, p) = match &arguments {
+                    (Datum::Null, _) | (_, Datum::Null) => {
+                        return Ok(tikv::EvaluatedArgs::NullWitness(None));
+                    }
+                    (v, p) => (v, p),
+                };
+                let text = v
+                    .sql_string()
+                    .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP operand"))?;
+                let pattern = p
+                    .sql_string()
+                    .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP pattern"))?;
+                Ok(tikv::EvaluatedArgs::RegexpLike {
+                    invocation: tidb_query_expr::NativeRegexpInvocation::new(
+                        &builtin_ext::BuiltinFuncCache::default(),
+                        &builtin_ext::BuiltinFuncCache::default(),
+                        0,
+                        false,
+                        false,
+                    ),
+                    text: text.into_bytes(),
+                    pattern: pattern.into_bytes(),
+                    match_type: regexp::regexp_match_type_with_collation(
+                        "",
+                        ops::DERIVATION_FREE_COLLATION,
+                    )
+                    .into_bytes(),
+                })
+            })?;
+            negate_if(value, *not, cols)
         }
         // Go `weightStringFunctionClass`: a NUMERIC argument builds
         // `builtinWeightStringNullSig`, which is always NULL. Go reads that

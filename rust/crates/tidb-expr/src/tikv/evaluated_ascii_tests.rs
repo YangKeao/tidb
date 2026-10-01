@@ -1195,6 +1195,17 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::LastDayTextNative => {
             panic!("temporal formatting needs its original text, core and demand domains")
         }
+        EvaluatedBytesOp::RegexpLikeNative
+        | EvaluatedBytesOp::RegexpSubstrNative
+        | EvaluatedBytesOp::RegexpInstrNative
+        | EvaluatedBytesOp::RegexpReplaceNative
+        | EvaluatedBytesOp::RegexpLikeLegacyCiNative
+        | EvaluatedBytesOp::RegexpLikeLegacyBinNative
+        | EvaluatedBytesOp::RegexpNullIntNative
+        | EvaluatedBytesOp::RegexpNullBytesNative
+        | EvaluatedBytesOp::RegexpMissingLegacyNative => {
+            panic!("regexp calls need their actual arguments, demand and cache handles")
+        }
         EvaluatedBytesOp::VecAsTextNative => "VEC_AS_TEXT",
         EvaluatedBytesOp::VecDimsNative => "VEC_DIMS",
         EvaluatedBytesOp::VecFromTextNative => "VEC_FROM_TEXT",
@@ -1550,6 +1561,251 @@ fn format_time_pb(
         field,
         args,
     )
+}
+
+#[test]
+fn regexp_dispatch_reuses_workers_and_actual_context_cache_owners() {
+    use tidb_query_expr::{
+        NativeCachedRegexp, NativeContextCache, NativeRegexpInvocation, NativeReplacementPart,
+    };
+    let patterns = NativeContextCache::<NativeCachedRegexp>::default();
+    let replacements = NativeContextCache::<Vec<NativeReplacementPart>>::default();
+    let invocation = NativeRegexpInvocation::new(&patterns, &replacements, 11, true, true);
+    let shared = invocation.clone();
+    assert!(patterns.get_cache(11).is_none());
+    assert!(
+        replacements.get_cache(11).is_none(),
+        "binding and cloning handles do not initialize owners"
+    );
+    let replace = |invocation: NativeRegexpInvocation, columns: &dyn Columns| {
+        evaluate_regexp_in(RegexpFunction::Replace, columns, || {
+            Ok(EvaluatedArgs::RegexpReplace {
+                invocation,
+                text: b"fool food foo".to_vec(),
+                pattern: b"foo(.?)".to_vec(),
+                replacement: br"\0+\1".to_vec(),
+                pos: 1,
+                occurrence: 0,
+                match_type: Vec::new(),
+            })
+        })
+    };
+    let like = |invocation: NativeRegexpInvocation,
+                pattern: &[u8],
+                match_type: &[u8],
+                columns: &dyn Columns| {
+        evaluate_regexp_in(RegexpFunction::Like, columns, || {
+            Ok(EvaluatedArgs::RegexpLike {
+                invocation,
+                text: b"abc".to_vec(),
+                pattern: pattern.to_vec(),
+                match_type: match_type.to_vec(),
+            })
+        })
+    };
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        // Call the invocation clone first: it must fill the original owners.
+        let (result, observation) = observe_wide_math(|| replace(shared, columns));
+        assert_eq!(result, Ok(Datum::new_string("fool+l food+d foo+"))); // Old capture-replacement fixture.
+        assert_wide_math_c4(observation);
+        let pattern = patterns.get_cache(11).unwrap();
+        let replacement = replacements.get_cache(11).unwrap();
+        assert!(pattern.result.is_ok());
+        let (result, observation) = observe_wide_math(|| replace(invocation, columns));
+        assert_eq!(result, Ok(Datum::new_string("fool+l food+d foo+")));
+        assert_wide_math_c4(observation);
+        assert_eq!(observation.before_kernel_invocations, Some(1));
+        assert_eq!(observation.after_kernel_invocations, Some(2));
+        assert!(Arc::ptr_eq(&pattern, &patterns.get_cache(11).unwrap()));
+        assert!(Arc::ptr_eq(
+            &replacement,
+            &replacements.get_cache(11).unwrap()
+        ));
+
+        let cloned_patterns = patterns.clone();
+        let cloned_replacements = replacements.clone();
+        assert!(cloned_patterns.get_cache(11).is_none());
+        assert!(cloned_replacements.get_cache(11).is_none());
+        let cloned_owner =
+            NativeRegexpInvocation::new(&cloned_patterns, &cloned_replacements, 11, true, true);
+        let (result, observation) = observe_wide_math(|| replace(cloned_owner, columns));
+        assert_eq!(result, Ok(Datum::new_string("fool+l food+d foo+")));
+        assert_wide_math_c4(observation);
+        assert!(!Arc::ptr_eq(
+            &pattern,
+            &cloned_patterns.get_cache(11).unwrap()
+        ));
+        assert!(!Arc::ptr_eq(
+            &replacement,
+            &cloned_replacements.get_cache(11).unwrap()
+        ));
+
+        let switched = NativeRegexpInvocation::new(&patterns, &replacements, 12, true, true);
+        assert!(
+            Arc::ptr_eq(&pattern, &patterns.get_cache(11).unwrap()),
+            "new-context binding does not evict before the worker"
+        );
+        assert!(patterns.get_cache(12).is_none());
+        let (result, observation) = observe_wide_math(|| replace(switched, columns));
+        assert_eq!(result, Ok(Datum::new_string("fool+l food+d foo+")));
+        assert_wide_math_c4(observation);
+        assert!(patterns.get_cache(11).is_none());
+        assert!(replacements.get_cache(11).is_none());
+        assert!(!Arc::ptr_eq(&pattern, &patterns.get_cache(12).unwrap()));
+        assert!(!Arc::ptr_eq(
+            &replacement,
+            &replacements.get_cache(12).unwrap()
+        ));
+        let current = scope_worker_observation(&scope);
+        assert_eq!(current.1, 4);
+        assert_eq!(current.2 + current.3, current.4);
+        assert!(current.4 <= TEST_WORKER_CAP);
+        assert_eq!(owner.snapshot().unwrap().factory_attempts, 1);
+
+        let failed = NativeRegexpInvocation::new(&patterns, &replacements, 13, true, false);
+        let (result, observation) = observe_wide_math(|| like(failed.clone(), b"(", b"", columns));
+        assert_eq!(
+            result,
+            Err(EvalError::Unsupported("invalid regular expression pattern"))
+        );
+        assert_wide_math_c4(observation);
+        let failure = patterns.get_cache(13).unwrap();
+        assert!(failure.result.is_err());
+        let (result, observation) = observe_wide_math(|| like(failed, b"(", b"", columns));
+        assert_eq!(
+            result,
+            Err(EvalError::Unsupported("invalid regular expression pattern"))
+        );
+        assert_wide_math_c4(observation);
+        assert!(
+            Arc::ptr_eq(&failure, &patterns.get_cache(13).unwrap()),
+            "ordinary compile failure is a genuine warm cache hit"
+        );
+        let bypass = NativeRegexpInvocation::new(&patterns, &replacements, 13, false, false);
+        let (result, observation) = observe_wide_math(|| like(bypass, b"AbC", b"i", columns));
+        assert_eq!(result, Ok(Datum::Int(1))); // Old native regexp_like scalar row.
+        assert_wide_math_c4(observation);
+        assert!(
+            Arc::ptr_eq(&failure, &patterns.get_cache(13).unwrap()),
+            "disabled caching neither reads the cached failure nor overwrites it"
+        );
+        assert_eq!(scope_worker_observation(&scope).1, 3);
+        assert_eq!(owner.snapshot().unwrap().factory_attempts, 2);
+    });
+    assert!(!scope.busy.get());
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn regexp_dispatch_keeps_demand_and_refusal_ahead_of_cache_writes() {
+    use tidb_query_expr::{NativeCachedRegexp, NativeContextCache, NativeReplacementPart};
+    let patterns = NativeContextCache::<NativeCachedRegexp>::default();
+    let replacements = NativeContextCache::<Vec<NativeReplacementPart>>::default();
+    let call = |name: &str, values: &[Datum], context_id: u64, columns: &dyn Columns| {
+        crate::builtin_ext::regexp::dispatch_with_cache_in(
+            name,
+            values,
+            context_id,
+            true,
+            true,
+            &patterns,
+            &replacements,
+            columns,
+        )
+        .unwrap()
+    };
+    let invalid_option = vec![
+        Datum::new_string("abc"),
+        Datum::new_string("("),
+        Datum::Int(1),
+        Datum::Int(1),
+        Datum::Int(2),
+        Datum::new_bytes([0xff]),
+    ];
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        let (result, observation) = observe_wide_math(|| call("REGEXP_INSTR", &invalid_option, 77, columns));
+        assert_eq!(result, Err(EvalError::Unsupported("Incorrect arguments to regexp_instr: return_option must be 1 or 0")));
+        assert_wide_math_c4(observation);
+        assert!(patterns.get_cache(77).is_none(), "invalid return_option precedes compilation and does not coerce the bad UTF8 flag suffix");
+        for (name, operation, values) in [
+            ("REGEXP_INSTR", EvaluatedBytesOp::RegexpNullIntNative, vec![Datum::new_string("abc"), Datum::new_string("("), Datum::Int(1), Datum::Int(1), Datum::Null, Datum::MinNotNull]),
+            ("REGEXP_SUBSTR", EvaluatedBytesOp::RegexpNullBytesNative, vec![Datum::new_string("abc"), Datum::new_string("("), Datum::Null, Datum::MinNotNull]),
+        ] {
+            let (result, observation) = observe_wide_math(|| call(name, &values, 77, columns));
+            assert_eq!(result, Ok(Datum::Null));
+            assert_wide_math_c4(observation);
+            assert_eq!(scope.lease.borrow().as_ref().unwrap().worker.as_ref().unwrap().operation(), operation);
+            assert!(patterns.get_cache(77).is_none());
+            assert!(replacements.get_cache(77).is_none());
+        }
+        // Old source literals; only the real shared worker fills owners.
+        let values = [Datum::new_string("abc"), Datum::new_string("bc")];
+        let (result, observation) = observe_wide_math(|| call("REGEXP_SUBSTR", &values, 77, columns));
+        assert_eq!(result, Ok(Datum::new_string("bc")));
+        assert_wide_math_c4(observation);
+        let cached = patterns.get_cache(77).unwrap();
+        assert!(cached.result.is_ok());
+        let (result, observation) = observe_wide_math(|| call("REGEXP_INSTR", &values, 77, columns));
+        assert_eq!(result, Ok(Datum::Int(2)));
+        assert_wide_math_c4(observation);
+        assert!(Arc::ptr_eq(&cached, &patterns.get_cache(77).unwrap()));
+        assert!(replacements.get_cache(77).is_none());
+        for (case_insensitive, text, pattern, operation, expected) in [
+            (Some(false), Some(b"abc".to_vec()), Some(b"AbC".to_vec()), EvaluatedBytesOp::RegexpLikeLegacyBinNative, Datum::Int(0)),
+            (Some(true), Some(b"abc".to_vec()), Some(b"AbC".to_vec()), EvaluatedBytesOp::RegexpLikeLegacyCiNative, Datum::Int(1)),
+            (None, None, Some(b"(".to_vec()), EvaluatedBytesOp::RegexpNullIntNative, Datum::Null),
+        ] {
+            let (result, observation) = observe_wide_math(|| crate::eval_regexp_legacy_ready_in(columns, crate::RegexpLegacyInput::Values { text, pattern, case_insensitive }));
+            assert_eq!(result, Ok(expected));
+            assert_wide_math_c4(observation);
+            assert_eq!(scope.lease.borrow().as_ref().unwrap().worker.as_ref().unwrap().operation(), operation, "legacy SQL NULL uses its real witness without a collation decision");
+        }
+    });
+    scope_worker_observation(&scope);
+    drop(scope);
+    execution.close();
+    let cached = patterns.get_cache(77).unwrap();
+    for closed in [false, true] {
+        let slots = usize::from(closed);
+        let owner = AsciiPoolOwner::new(test_policy(slots, slots)).unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        if closed {
+            execution.close();
+        }
+        let class = if closed {
+            crate::ExpressionAdapterFailureClass::PoolClosed
+        } else {
+            crate::ExpressionAdapterFailureClass::PoolResource
+        };
+        scope.with_columns(&crate::NoColumns, |columns| {
+            for (name, values) in [
+                ("REGEXP_REPLACE", vec![Datum::new_string("abc abd abe"), Datum::new_string("ab."), Datum::new_string("cz")]),
+                ("REGEXP_INSTR", invalid_option.clone()),
+                ("REGEXP_SUBSTR", vec![Datum::new_string("abc"), Datum::new_string("("), Datum::Null]),
+            ] {
+                let (result, observation) = observe_wide_math(|| call(name, &values, 88, columns));
+                assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == class));
+                assert_eq!(observation.facade_entries, 0);
+                assert_eq!(observation.before_kernel_invocations, None);
+                assert_eq!(observation.after_kernel_invocations, None);
+                assert!(Arc::ptr_eq(&cached, &patterns.get_cache(77).unwrap()), "binding a refused new context must not evict the live cache entry");
+                assert!(patterns.get_cache(88).is_none());
+                assert!(replacements.get_cache(88).is_none());
+            }
+        });
+        assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+        drop(scope);
+        execution.close();
+    }
 }
 
 #[test]
@@ -10628,7 +10884,8 @@ fn boolean_dispatch_preserves_pb_warnings_and_native_predicate_wrappers() {
             // Their different workers' getter snapshots are not a total delta.
             ("1 NOT BETWEEN 0 AND 2", Datum::Int(0), 2, None),
             ("NULL NOT LIKE '%'", Datum::Null, 1, Some(1)),
-            ("'a' NOT REGEXP 'b'", Datum::Int(1), 1, Some(1)),
+            // REGEXP now dispatches too, before the independent NOT worker.
+            ("'a' NOT REGEXP 'b'", Datum::Int(1), 2, None),
             ("NULL IS NOT TRUE", Datum::Int(1), 1, Some(2)),
         ] {
             let tidb_ast::Stmt::Query(query) =
@@ -10655,7 +10912,7 @@ fn boolean_dispatch_preserves_pb_warnings_and_native_predicate_wrappers() {
                         .map(|before| before + calls)
                 );
             } else {
-                // Independent snapshots from the AND and NOT workers.
+                // Independent snapshots from the predicate and NOT workers.
                 assert_eq!(observation.before_kernel_invocations, Some(0));
                 assert_eq!(observation.after_kernel_invocations, Some(1));
             }

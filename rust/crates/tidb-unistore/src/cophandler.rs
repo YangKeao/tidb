@@ -4937,25 +4937,38 @@ impl LegacyEvaluator<'_> {
                         )))
                     }
                     SimpleSig::RegexpLike(collation) => {
-                        // Go `builtinRegexpLikeSig`: (target, pattern), a SEARCH
-                        // match (not anchored). Case handling follows the
-                        // comparison's collation -- `_ci` compiles the pattern
-                        // case-insensitively, `_bin` is exact -- the same fold
-                        // rule the LikeSig arm applies.
+                        use tidb_expr::RegexpLegacyInput;
+                        // Preserve both byte-channel demands before classifying
+                        // missing children versus actual NULLs. The legacy worker
+                        // owns UTF-8-to-empty, empty-pattern and bad-syntax policy.
                         let target = self.eval_bytes(children.first())?;
                         let pattern = self.eval_bytes(children.get(1))?;
-                        let (Some(target), Some(pattern)) = (target, pattern) else {
-                            return Ok(None);
+                        let input = if children.len() < 2 {
+                            RegexpLegacyInput::Missing
+                        } else {
+                            // The old NULL path never looked up a collator. For
+                            // actual values retain its compare(a,A) choice, not a
+                            // newly inferred collation or a fabricated flag.
+                            let case_insensitive = if target.is_some() && pattern.is_some() {
+                                let collator = tidb_datatype::get_collator_by_id(*collation);
+                                Some(collator.compare(b"a", b"A").is_eq())
+                            } else {
+                                None
+                            };
+                            RegexpLegacyInput::Values {
+                                text: target,
+                                pattern,
+                                case_insensitive,
+                            }
                         };
-                        let target_text = std::str::from_utf8(&target).unwrap_or_default();
-                        let pattern_text = std::str::from_utf8(&pattern).unwrap_or_default();
-                        let collator = tidb_datatype::get_collator_by_id(*collation);
-                        let case_insensitive = collator.compare(b"a", b"A").is_eq();
-                        let mut builder = regex::RegexBuilder::new(pattern_text);
-                        builder.case_insensitive(case_insensitive);
-                        match builder.build() {
-                            Ok(re) => Some(i128::from(re.is_match(target_text))),
-                            Err(_) => None,
+                        match tidb_expr::eval_regexp_legacy_ready_in(self.raw_columns, input)? {
+                            Datum::Int(value @ (0 | 1)) => Some(i128::from(value)),
+                            Datum::Null => None,
+                            _ => {
+                                return Err(LegacyEvalError::InvalidResult(
+                                    "legacy REGEXP result kind mismatch",
+                                ))
+                            }
                         }
                     }
                     SimpleSig::InInt => {
@@ -9698,6 +9711,225 @@ mod tests {
                 assert_eq!(child_only.eval_expr(&demanded_layout).unwrap(), Some(1));
                 let extra = date_format(vec![SimpleExpr::Column(0), SimpleExpr::Bytes(b"%Y-%m-%d".to_vec()), shared.clone()]);
                 assert_eq!(child_only.eval_bytes(Some(&extra)).unwrap(), Some(b"2024-03-05".to_vec()));
+                assert_eq!(child_only.eval_expr(&extra).unwrap(), Some(1));
+            });
+        }
+    }
+
+    #[test]
+    fn legacy_regexp_like_preserves_raw_byte_policy_and_collator_choice() {
+        let time_zone = zone();
+        let policy = tidb_expr::AsciiPoolPolicy::checked(
+            1,
+            1,
+            16 * 1024 * 1024,
+            4 * 1024 * 1024,
+            4 * 1024 * 1024,
+            64,
+            8,
+            4 * 1024 * 1024,
+        )
+        .expect("pool policy");
+        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let execution = owner.begin_execution().expect("execution");
+        let scope = execution.scope();
+        let pb = tipb::Expr {
+            tp: Some(tipb::ExprType::ScalarFunc as i32),
+            sig: Some(tipb::ScalarFuncSig::RegexpLikeSig as i32),
+            field_type: Some(tipb::FieldType {
+                tp: Some(8),
+                flen: Some(1),
+                decimal: Some(0),
+                collate: Some(45),
+                ..Default::default()
+            }),
+            children: [b"AbC".as_slice(), b"abc".as_slice()]
+                .into_iter()
+                .map(|value| tipb::Expr {
+                    tp: Some(tipb::ExprType::String as i32),
+                    val: Some(value.to_vec()),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        // This signature is already admitted through shared PB decoding, not
+        // the legacy fallback. from_pb preserves the parent's collation 45;
+        // the untyped string children do not trigger SQL collation derivation.
+        let converted = convert_expr(&pb).expect("existing shared PB REGEXP admission");
+        let SimpleExpr::Shared(shared) = &converted else {
+            panic!("REGEXP's existing PB decoder must retain shared admission")
+        };
+        let field = shared
+            .expression
+            .static_type()
+            .expect("parent PB FieldType");
+        assert_eq!(field.code(), tidb_datatype::FieldTypeCode::LongLong);
+        assert_eq!(field.flen(), 1);
+        assert_eq!(field.decimal(), 0);
+        assert_eq!(field.collation_name(), "utf8mb4_general_ci");
+        scope.with_columns(&tidb_expr::NoColumns, |columns| {
+            let evaluator = LegacyEvaluator {
+                raw_columns: columns,
+                shared_override: Some(columns),
+                ..LegacyEvaluator::new(&[], 4, &time_zone)
+            };
+            // The PB builtin reads that parent collation and adds the native i
+            // flag, so AbC matches abc. Direct legacy policy cases stay below.
+            assert_eq!(evaluator.eval_expr(&converted).unwrap(), Some(1));
+            // Hand-derived from the old arm's SEARCH and per-argument UTF-8
+            // unwrap_or_default policy. A malformed pattern becomes empty,
+            // which this legacy profile allows; malformed regex syntax is NULL.
+            for (collation, text, pattern, expected) in [
+                (45, b"AbC".to_vec(), b"abc".to_vec(), Some(1)),
+                (46, b"AbC".to_vec(), b"abc".to_vec(), Some(0)),
+                (46, b"xxabcyy".to_vec(), b"abc".to_vec(), Some(1)),
+                (46, b"abc".to_vec(), Vec::new(), Some(1)),
+                (46, b"abc".to_vec(), b"(".to_vec(), None),
+                (46, vec![b'a', 0xff], b"^$".to_vec(), Some(1)),
+                (46, b"abc".to_vec(), vec![0xff], Some(1)),
+            ] {
+                let call = SimpleExpr::Func(
+                    SimpleSig::RegexpLike(collation),
+                    vec![SimpleExpr::Bytes(text), SimpleExpr::Bytes(pattern)],
+                );
+                assert_eq!(evaluator.eval_expr(&call).unwrap(), expected);
+            }
+            for children in [
+                vec![SimpleExpr::Null, SimpleExpr::Bytes(b"(".to_vec())],
+                vec![SimpleExpr::Bytes(b"abc".to_vec()), SimpleExpr::Null],
+                vec![SimpleExpr::Bytes(b"abc".to_vec())],
+                vec![],
+            ] {
+                let call = SimpleExpr::Func(SimpleSig::RegexpLike(46), children);
+                assert_eq!(evaluator.eval_expr(&call).unwrap(), None);
+            }
+        });
+    }
+
+    #[test]
+    fn legacy_regexp_like_preserves_pool_failures_and_both_child_demands() {
+        use tidb_expr::ExpressionAdapterFailureClass as Class;
+        let time_zone = zone();
+        let regexp = |children| SimpleExpr::Func(SimpleSig::RegexpLike(46), children);
+        let assert_failure = |error, class| match error {
+            LegacyEvalError::Infrastructure(tidb_expr::EvalError::ExpressionAdapterFailure(
+                failure,
+            )) => {
+                assert_eq!(failure.class(), class);
+                assert_eq!(
+                    failure.origin(),
+                    tidb_expr::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("legacy REGEXP must preserve the pool cause: {other:?}"),
+        };
+        let shared = convert_expr(&tipb::Expr {
+            tp: Some(tipb::ExprType::ScalarFunc as i32),
+            sig: Some(tipb::ScalarFuncSig::IntIsNull as i32),
+            field_type: Some(tipb::FieldType {
+                tp: Some(8),
+                ..Default::default()
+            }),
+            children: vec![tipb::Expr {
+                tp: Some(tipb::ExprType::Null as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .expect("existing shared child");
+        assert!(matches!(&shared, SimpleExpr::Shared(_)));
+        for (slots, closed, class) in [
+            (0, false, Class::PoolResource),
+            (1, true, Class::PoolClosed),
+        ] {
+            let policy = tidb_expr::AsciiPoolPolicy::checked(
+                slots,
+                slots,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .expect("pool policy");
+            let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+            let execution = owner.begin_execution().expect("execution");
+            let scope = execution.scope();
+            if closed {
+                execution.close();
+            }
+            scope.with_columns(&tidb_expr::NoColumns, |columns| {
+                let evaluator = LegacyEvaluator {
+                    raw_columns: columns,
+                    ..LegacyEvaluator::new(&[], 4, &time_zone)
+                };
+                for children in [
+                    vec![
+                        SimpleExpr::Bytes(b"abc".to_vec()),
+                        SimpleExpr::Bytes(b"a".to_vec()),
+                    ],
+                    vec![
+                        SimpleExpr::Bytes(b"abc".to_vec()),
+                        SimpleExpr::Bytes(b"(".to_vec()),
+                    ],
+                    vec![SimpleExpr::Bytes(vec![0xff]), SimpleExpr::Bytes(Vec::new())],
+                    vec![SimpleExpr::Null, SimpleExpr::Bytes(b"a".to_vec())],
+                    vec![SimpleExpr::Bytes(b"abc".to_vec()), SimpleExpr::Null],
+                    vec![SimpleExpr::Bytes(b"abc".to_vec())],
+                    vec![],
+                ] {
+                    let call = regexp(children);
+                    assert_failure(
+                        evaluator.eval_expr(&call).expect_err("regexp worker"),
+                        class,
+                    );
+                    assert_failure(
+                        evaluator
+                            .folded_int(Some(&call))
+                            .expect_err("folded integer consumer"),
+                        class,
+                    );
+                    let real = SimpleExpr::Func(SimpleSig::CastIntAsReal, vec![call.clone()]);
+                    assert_failure(
+                        evaluator.eval_real(Some(&real)).expect_err("real consumer"),
+                        class,
+                    );
+                    let mut warnings = Vec::new();
+                    assert!(fold_index_selection_error(
+                        evaluator.eval_expr(&call).unwrap_err(),
+                        2,
+                        &mut warnings
+                    )
+                    .is_err());
+                    assert!(warnings.is_empty());
+                }
+                // Only child calls see the failing scope here. The root would
+                // succeed one-shot, so these failures prove demand, not merely
+                // the root's later admission. Left NULL still evaluates right.
+                let child_only = LegacyEvaluator {
+                    shared_override: Some(columns),
+                    ..LegacyEvaluator::new(&[], 4, &time_zone)
+                };
+                for children in [
+                    vec![shared.clone(), SimpleExpr::Null],
+                    vec![SimpleExpr::Null, shared.clone()],
+                    vec![SimpleExpr::Bytes(b"abc".to_vec()), shared.clone()],
+                    vec![shared.clone()],
+                ] {
+                    assert_failure(
+                        child_only
+                            .eval_expr(&regexp(children))
+                            .expect_err("demanded shared child"),
+                        class,
+                    );
+                }
+                let extra = regexp(vec![
+                    SimpleExpr::Bytes(b"abc".to_vec()),
+                    SimpleExpr::Bytes(b"a".to_vec()),
+                    shared.clone(),
+                ]);
                 assert_eq!(child_only.eval_expr(&extra).unwrap(), Some(1));
             });
         }

@@ -16,46 +16,55 @@
 //! `pkg/expression/builtin_regexp.go`.
 //!
 //! This module retains scalar preparation and packing for
-//! `REGEXP_SUBSTR`, `REGEXP_INSTR`, and `REGEXP_REPLACE`; shared TiKV leaves
-//! own their matching and replacement algorithms, without a C4 handoff here.
+//! `REGEXP_SUBSTR`, `REGEXP_INSTR`, and `REGEXP_REPLACE`; the guarded TiKV
+//! worker owns validation, lazy cache resolution, matching and replacement.
 //! TiDB's Go
 //! signatures additionally select collations, issue statement warnings, and
 //! expose vectorized/DAG paths. This evaluator accepts evaluated UTF-8 scalar
 //! values; its scalar-function caller supplies the source's context-keyed
 //! compiled-pattern and replacement-instruction caches.
 
-use regex::Regex;
 pub(crate) use tidb_query_expr::NativeReplacementPart as ReplacementPart;
-use tidb_query_expr::{
-    regexp_instr_match, regexp_replace_matches, regexp_replacement_parts, regexp_substr_match,
-    regexp_trim_at, RegexpPolicyError, RegexpReplacementEncoding,
-};
+use tidb_query_expr::{regexp_replacement_parts, NativeRegexpInvocation};
 
 use super::BuiltinFuncCache;
 use crate::coerce::coerce_str;
-use crate::regexp::{compile_regexp, CachedRegexp};
-use crate::{Datum, EvalError};
+use crate::regexp::CachedRegexp;
+use crate::tikv::{evaluate_regexp_in, EvaluatedArgs, ReadyBytesArg, RegexpFunction};
+use crate::{Columns, Datum, EvalError};
 
-const INVALID_INDEX: &str = "Index out of bounds in regular expression search";
-const INVALID_RETURN_OPTION: &str =
-    "Incorrect arguments to regexp_instr: return_option must be 1 or 0";
-const INVALID_SUBSTITUTION: &str = "Substitution number is out of range";
-
-/// Dispatches this family's scalar builtins; `None` means another family may
-/// own the name or the caller should return the normal unsupported-function
-/// error.
+/// Original values-only test entry, now using the same worker path.
+#[cfg(test)]
 pub(crate) fn dispatch(name: &str, vals: &[Datum]) -> Option<Result<Datum, EvalError>> {
-    match (name, vals.len()) {
-        ("REGEXP_SUBSTR", 2..=5) => Some(regexp_substr(vals)),
-        ("REGEXP_INSTR", 2..=6) => Some(regexp_instr(vals)),
-        ("REGEXP_REPLACE", 3..=6) => Some(regexp_replace(vals)),
-        _ => None,
-    }
+    dispatch_in(name, vals, &crate::NoColumns)
 }
 
-/// Values-only regexp dispatch with Go's statement-context memoization. The
-/// caller supplies the build-time constness decisions because this tier has
-/// already evaluated the argument expressions.
+pub(crate) fn dispatch_in(
+    name: &str,
+    vals: &[Datum],
+    ctx: &dyn Columns,
+) -> Option<Result<Datum, EvalError>> {
+    if !matches!(
+        (name, vals.len()),
+        ("REGEXP_SUBSTR", 2..=5) | ("REGEXP_INSTR", 2..=6) | ("REGEXP_REPLACE", 3..=6)
+    ) {
+        return None;
+    }
+    // These uncached owners are never initialized. No context-id lookup is
+    // needed for the original values-only path with both cache flags false.
+    dispatch_with_cache_in(
+        name,
+        vals,
+        0,
+        false,
+        false,
+        &BuiltinFuncCache::default(),
+        &BuiltinFuncCache::default(),
+        ctx,
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn dispatch_with_cache(
     name: &str,
     vals: &[Datum],
@@ -65,40 +74,49 @@ pub(crate) fn dispatch_with_cache(
     regexp_cache: &BuiltinFuncCache<CachedRegexp>,
     replacement_cache: &BuiltinFuncCache<Vec<ReplacementPart>>,
 ) -> Option<Result<Datum, EvalError>> {
-    let compile = |pattern: &str, match_type: &str| {
-        if !cache_pattern {
-            return compile_regexp(pattern, match_type);
-        }
-        let cached = regexp_cache.get_or_init_cache(context_id, || {
-            Ok::<_, EvalError>(CachedRegexp {
-                result: compile_regexp(pattern, match_type),
-            })
-        });
-        match cached {
-            Ok(cached) => cached.result.clone(),
-            Err(error) => Err(error),
-        }
-    };
-    let resolve_replacement = |value: &str| {
-        if !cache_replacement {
-            return Ok(replacement_parts(value));
-        }
-        let cached = replacement_cache
-            .get_or_init_cache(context_id, || Ok::<_, EvalError>(replacement_parts(value)));
-        match cached {
-            Ok(cached) => Ok(cached.as_ref().clone()),
-            Err(error) => Err(error),
-        }
-    };
+    dispatch_with_cache_in(
+        name,
+        vals,
+        context_id,
+        cache_pattern,
+        cache_replacement,
+        regexp_cache,
+        replacement_cache,
+        &crate::NoColumns,
+    )
+}
 
+/// The caller retains constness/context identity; only the kernel may resolve
+/// the actual shared cache owners, including memoized compilation failures.
+pub(crate) fn dispatch_with_cache_in(
+    name: &str,
+    vals: &[Datum],
+    context_id: u64,
+    cache_pattern: bool,
+    cache_replacement: bool,
+    regexp_cache: &BuiltinFuncCache<CachedRegexp>,
+    replacement_cache: &BuiltinFuncCache<Vec<ReplacementPart>>,
+    ctx: &dyn Columns,
+) -> Option<Result<Datum, EvalError>> {
+    let invocation = || {
+        NativeRegexpInvocation::new(
+            regexp_cache,
+            replacement_cache,
+            context_id,
+            cache_pattern,
+            cache_replacement,
+        )
+    };
     match (name, vals.len()) {
-        ("REGEXP_SUBSTR", 2..=5) => Some(regexp_substr_with_compiler(vals, compile)),
-        ("REGEXP_INSTR", 2..=6) => Some(regexp_instr_with_compiler(vals, compile)),
-        ("REGEXP_REPLACE", 3..=6) => Some(regexp_replace_with_compiler(
-            vals,
-            compile,
-            resolve_replacement,
-        )),
+        ("REGEXP_SUBSTR", 2..=5) => Some(evaluate_regexp_in(RegexpFunction::Substr, ctx, || {
+            prepare_substr(vals, invocation())
+        })),
+        ("REGEXP_INSTR", 2..=6) => Some(evaluate_regexp_in(RegexpFunction::Instr, ctx, || {
+            prepare_instr(vals, invocation())
+        })),
+        ("REGEXP_REPLACE", 3..=6) => Some(evaluate_regexp_in(RegexpFunction::Replace, ctx, || {
+            prepare_replace(vals, invocation())
+        })),
         _ => None,
     }
 }
@@ -116,17 +134,6 @@ fn integer(value: &Datum) -> Result<Option<i64>, EvalError> {
     }
 }
 
-/// Preserve native static diagnostics from actual typed leaf failures. Wire
-/// callers retain their own dynamic diagnostic payloads for the same causes.
-fn regexp_policy_error(error: RegexpPolicyError) -> EvalError {
-    EvalError::Unsupported(match error {
-        RegexpPolicyError::InvalidMatchType(_) => "Invalid match type",
-        RegexpPolicyError::InvalidPosition { .. } => INVALID_INDEX,
-        RegexpPolicyError::InvalidSubstitution(_) => INVALID_SUBSTITUTION,
-        RegexpPolicyError::InvalidReplacementUtf8(_) => "invalid UTF-8 regexp replacement",
-    })
-}
-
 fn optional_string(value: &Datum) -> Result<Option<String>, EvalError> {
     coerce_str(value)
 }
@@ -135,21 +142,22 @@ fn required_string(value: &Datum) -> Result<Option<String>, EvalError> {
     optional_string(value)
 }
 
+#[cfg(test)]
 fn regexp_substr(vals: &[Datum]) -> Result<Datum, EvalError> {
-    regexp_substr_with_compiler(vals, compile_regexp)
+    dispatch("REGEXP_SUBSTR", vals).expect("registered regexp substring")
 }
 
-fn regexp_substr_with_compiler(
+fn prepare_substr(
     vals: &[Datum],
-    compile: impl FnOnce(&str, &str) -> Result<Regex, EvalError>,
-) -> Result<Datum, EvalError> {
+    invocation: NativeRegexpInvocation,
+) -> Result<EvaluatedArgs, EvalError> {
     let (Some(text), Some(pattern)) = (required_string(&vals[0])?, required_string(&vals[1])?)
     else {
-        return Ok(Datum::Null);
+        return Ok(EvaluatedArgs::NullWitness(None));
     };
     let pos = if vals.len() >= 3 {
         let Some(pos) = integer(&vals[2])? else {
-            return Ok(Datum::Null);
+            return Ok(EvaluatedArgs::NullWitness(None));
         };
         pos
     } else {
@@ -157,7 +165,7 @@ fn regexp_substr_with_compiler(
     };
     let occurrence = if vals.len() >= 4 {
         let Some(occurrence) = integer(&vals[3])? else {
-            return Ok(Datum::Null);
+            return Ok(EvaluatedArgs::NullWitness(None));
         };
         occurrence
     } else {
@@ -165,34 +173,39 @@ fn regexp_substr_with_compiler(
     };
     let match_type = if vals.len() == 5 {
         let Some(match_type) = optional_string(&vals[4])? else {
-            return Ok(Datum::Null);
+            return Ok(EvaluatedArgs::NullWitness(None));
         };
         match_type
     } else {
         String::new()
     };
 
-    let (_, trimmed) = regexp_trim_at(&text, pos).map_err(regexp_policy_error)?;
-    let regexp = compile(&pattern, &match_type)?;
-    let matched = regexp_substr_match(&regexp, trimmed, occurrence).map(str::to_owned);
-    Ok(matched.map_or(Datum::Null, Datum::new_string))
+    Ok(EvaluatedArgs::RegexpSubstr {
+        invocation,
+        text: text.into_bytes(),
+        pattern: pattern.into_bytes(),
+        pos,
+        occurrence,
+        match_type: match_type.into_bytes(),
+    })
 }
 
+#[cfg(test)]
 fn regexp_instr(vals: &[Datum]) -> Result<Datum, EvalError> {
-    regexp_instr_with_compiler(vals, compile_regexp)
+    dispatch("REGEXP_INSTR", vals).expect("registered regexp position")
 }
 
-fn regexp_instr_with_compiler(
+fn prepare_instr(
     vals: &[Datum],
-    compile: impl FnOnce(&str, &str) -> Result<Regex, EvalError>,
-) -> Result<Datum, EvalError> {
+    invocation: NativeRegexpInvocation,
+) -> Result<EvaluatedArgs, EvalError> {
     let (Some(text), Some(pattern)) = (required_string(&vals[0])?, required_string(&vals[1])?)
     else {
-        return Ok(Datum::Null);
+        return Ok(EvaluatedArgs::NullWitness(None));
     };
     let pos = if vals.len() >= 3 {
         let Some(pos) = integer(&vals[2])? else {
-            return Ok(Datum::Null);
+            return Ok(EvaluatedArgs::NullWitness(None));
         };
         pos
     } else {
@@ -200,7 +213,7 @@ fn regexp_instr_with_compiler(
     };
     let occurrence = if vals.len() >= 4 {
         let Some(occurrence) = integer(&vals[3])? else {
-            return Ok(Datum::Null);
+            return Ok(EvaluatedArgs::NullWitness(None));
         };
         occurrence
     } else {
@@ -208,33 +221,34 @@ fn regexp_instr_with_compiler(
     };
     let return_option = if vals.len() >= 5 {
         let Some(return_option) = integer(&vals[4])? else {
-            return Ok(Datum::Null);
+            return Ok(EvaluatedArgs::NullWitness(None));
         };
-        if return_option != 0 && return_option != 1 {
-            return Err(EvalError::Unsupported(INVALID_RETURN_OPTION));
-        }
         return_option
     } else {
         0
     };
-    let match_type = if vals.len() == 6 {
+    // This decides demand only. The worker produces the invalid-option error
+    // before inspecting flags; no frontend SQL error or fake NULL is supplied.
+    let match_type = if return_option != 0 && return_option != 1 {
+        ReadyBytesArg::Undemanded
+    } else if vals.len() == 6 {
         let Some(match_type) = optional_string(&vals[5])? else {
-            return Ok(Datum::Null);
+            return Ok(EvaluatedArgs::NullWitness(None));
         };
-        match_type
+        ReadyBytesArg::Value(Some(match_type.into_bytes()))
     } else {
-        String::new()
+        ReadyBytesArg::Value(Some(Vec::new()))
     };
 
-    let (_, trimmed) = regexp_trim_at(&text, pos).map_err(regexp_policy_error)?;
-    let regexp = compile(&pattern, &match_type)?;
-    Ok(Datum::Int(regexp_instr_match(
-        &regexp,
-        trimmed,
+    Ok(EvaluatedArgs::RegexpInstr {
+        invocation,
+        text: text.into_bytes(),
+        pattern: pattern.into_bytes(),
         pos,
         occurrence,
         return_option,
-    )))
+        match_type,
+    })
 }
 
 /// Keep the replacement-cache API while the shared leaf owns tokenization.
@@ -242,27 +256,25 @@ pub(crate) fn replacement_parts(replacement: &str) -> Vec<ReplacementPart> {
     regexp_replacement_parts(replacement.as_bytes())
 }
 
+#[cfg(test)]
 fn regexp_replace(vals: &[Datum]) -> Result<Datum, EvalError> {
-    regexp_replace_with_compiler(vals, compile_regexp, |replacement| {
-        Ok(replacement_parts(replacement))
-    })
+    dispatch("REGEXP_REPLACE", vals).expect("registered regexp replacement")
 }
 
-fn regexp_replace_with_compiler(
+fn prepare_replace(
     vals: &[Datum],
-    compile: impl FnOnce(&str, &str) -> Result<Regex, EvalError>,
-    resolve_replacement: impl FnOnce(&str) -> Result<Vec<ReplacementPart>, EvalError>,
-) -> Result<Datum, EvalError> {
+    invocation: NativeRegexpInvocation,
+) -> Result<EvaluatedArgs, EvalError> {
     let (Some(text), Some(pattern), Some(replacement)) = (
         required_string(&vals[0])?,
         required_string(&vals[1])?,
         required_string(&vals[2])?,
     ) else {
-        return Ok(Datum::Null);
+        return Ok(EvaluatedArgs::NullWitness(None));
     };
     let pos = if vals.len() >= 4 {
         let Some(pos) = integer(&vals[3])? else {
-            return Ok(Datum::Null);
+            return Ok(EvaluatedArgs::NullWitness(None));
         };
         pos
     } else {
@@ -270,7 +282,7 @@ fn regexp_replace_with_compiler(
     };
     let occurrence = if vals.len() >= 5 {
         let Some(occurrence) = integer(&vals[4])? else {
-            return Ok(Datum::Null);
+            return Ok(EvaluatedArgs::NullWitness(None));
         };
         occurrence
     } else {
@@ -278,26 +290,22 @@ fn regexp_replace_with_compiler(
     };
     let match_type = if vals.len() == 6 {
         let Some(match_type) = optional_string(&vals[5])? else {
-            return Ok(Datum::Null);
+            return Ok(EvaluatedArgs::NullWitness(None));
         };
         match_type
     } else {
         String::new()
     };
 
-    let (byte, trimmed) = regexp_trim_at(&text, pos).map_err(regexp_policy_error)?;
-    let regexp = compile(&pattern, &match_type)?;
-    let parts = resolve_replacement(&replacement)?;
-    regexp_replace_matches(
-        &text[..byte],
-        trimmed,
-        &regexp,
-        &parts,
+    Ok(EvaluatedArgs::RegexpReplace {
+        invocation,
+        text: text.into_bytes(),
+        pattern: pattern.into_bytes(),
+        replacement: replacement.into_bytes(),
+        pos,
         occurrence,
-        RegexpReplacementEncoding::NativeUtf8,
-    )
-    .map(Datum::new_string)
-    .map_err(regexp_policy_error)
+        match_type: match_type.into_bytes(),
+    })
 }
 
 #[cfg(test)]

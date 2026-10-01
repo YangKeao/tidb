@@ -236,28 +236,39 @@ pub(crate) fn eval_func(
                 .map(Some)
                 .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP_LIKE argument"))
         };
-        let Some(text) = string_arg(0)? else {
-            return Ok(Datum::Null);
-        };
-        let Some(pattern) = string_arg(1)? else {
-            return Ok(Datum::Null);
-        };
-        let match_type = if args.len() == 3 {
-            let Some(match_type) = string_arg(2)? else {
-                return Ok(Datum::Null);
+        return crate::tikv::evaluate_regexp_in(crate::tikv::RegexpFunction::Like, cols, || {
+            let Some(text) = string_arg(0)? else {
+                return Ok(crate::tikv::EvaluatedArgs::NullWitness(None));
             };
-            match_type
-        } else {
-            String::new()
-        };
-        return Ok(Datum::Int(i64::from(
-            crate::regexp::regexp_like_with_collation(
-                &text,
-                &pattern,
+            let Some(pattern) = string_arg(1)? else {
+                return Ok(crate::tikv::EvaluatedArgs::NullWitness(None));
+            };
+            let match_type = if args.len() == 3 {
+                let Some(match_type) = string_arg(2)? else {
+                    return Ok(crate::tikv::EvaluatedArgs::NullWitness(None));
+                };
+                match_type
+            } else {
+                String::new()
+            };
+            let match_type = crate::regexp::regexp_match_type_with_collation(
                 &match_type,
                 crate::ops::DERIVATION_FREE_COLLATION,
-            )?,
-        )));
+            );
+            let invocation = tidb_query_expr::NativeRegexpInvocation::new(
+                &Default::default(),
+                &Default::default(),
+                0,
+                false,
+                false,
+            );
+            Ok(crate::tikv::EvaluatedArgs::RegexpLike {
+                invocation,
+                text: text.into_bytes(),
+                pattern: pattern.into_bytes(),
+                match_type: match_type.into_bytes(),
+            })
+        });
     }
     let vals: Vec<Datum> = args
         .iter()

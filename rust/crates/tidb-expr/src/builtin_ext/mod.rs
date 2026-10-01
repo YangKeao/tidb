@@ -64,7 +64,7 @@ pub(crate) fn dispatch(
         .or_else(|| info::dispatch(name, vals, ctx))
         .or_else(|| json::dispatch_in(name, vals, ctx))
         .or_else(|| json2::dispatch_in(name, vals, ctx))
-        .or_else(|| regexp::dispatch(name, vals))
+        .or_else(|| regexp::dispatch_in(name, vals, ctx))
         .or_else(|| compare2::dispatch(name, vals, ctx))
         .or_else(|| misc::dispatch_in(name, vals, ctx))
         .or_else(|| vec::dispatch_in(name, vals, ctx))

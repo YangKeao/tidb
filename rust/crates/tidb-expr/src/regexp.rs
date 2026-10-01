@@ -17,41 +17,58 @@
 //! for real TiDB's own Go-`regexp`-package-based implementation, not
 //! an arbitrary choice). Shared by the operator and named-function evaluators.
 
-use regex::{Regex, RegexBuilder};
+use regex::Regex;
+use tidb_query_expr::{
+    NativeRegexpCompileError, NativeRegexpError, NativeRegexpInvocation, RegexpPolicyError,
+};
 
-use crate::EvalError;
+use crate::tikv::{evaluate_regexp_in, EvaluatedArgs, EvaluatedBytesResult, RegexpFunction};
+use crate::{Columns, EvalError, NoColumns};
 
-/// Go `regexpMemorizedSig`: a cached pattern retains either its compiled
-/// expression or the compile error produced for this statement context.
-#[derive(Clone, Debug)]
-pub(crate) struct CachedRegexp {
-    pub(crate) result: Result<Regex, EvalError>,
-}
+/// The kernel and frontend retain the same context-owned success/error value.
+pub(crate) use tidb_query_expr::NativeCachedRegexp as CachedRegexp;
 
-fn build_regexp(pattern: &str, match_type: &str) -> Result<Regex, EvalError> {
-    if pattern.is_empty() {
-        return Err(EvalError::Unsupported("empty regular expression pattern"));
+fn compile_error(error: &NativeRegexpCompileError) -> EvalError {
+    match error {
+        NativeRegexpCompileError::EmptyPattern => {
+            EvalError::Unsupported("empty regular expression pattern")
+        }
+        NativeRegexpCompileError::InvalidMatchType(_) => {
+            EvalError::Unsupported("Invalid match type")
+        }
+        NativeRegexpCompileError::InvalidPattern(_) => {
+            EvalError::Unsupported("invalid regular expression pattern")
+        }
     }
-
-    // Share flag reduction, but keep the native builder's original pattern
-    // representation rather than the wire compiler's inline flag prefix.
-    let flags = tidb_query_expr::regexp_match_flags(match_type, false)
-        .map_err(|_| EvalError::Unsupported("Invalid match type"))?;
-
-    RegexBuilder::new(pattern)
-        .case_insensitive(flags.contains(&'i'))
-        .multi_line(flags.contains(&'m'))
-        .dot_matches_new_line(flags.contains(&'s'))
-        .build()
-        .map_err(|_| EvalError::Unsupported("invalid regular expression pattern"))
 }
 
-/// Compiles one of TiDB's RE2-compatible regular expressions for the scalar
-/// functions in `builtin_ext::regexp`. Keeping compilation here makes the
-/// `[NOT] REGEXP` predicate and the positional regexp family share exactly
-/// the same empty-pattern, flag, and syntax validation rules.
+/// Render only a typed cause from the matching invocation, never its Display text.
+pub(crate) fn native_regexp_error(error: &NativeRegexpError) -> EvalError {
+    match error {
+        NativeRegexpError::Compile(error) => compile_error(error),
+        NativeRegexpError::Policy(RegexpPolicyError::InvalidMatchType(flag)) => {
+            compile_error(&NativeRegexpCompileError::InvalidMatchType(*flag))
+        }
+        NativeRegexpError::Policy(RegexpPolicyError::InvalidPosition { .. }) => {
+            EvalError::Unsupported("Index out of bounds in regular expression search")
+        }
+        NativeRegexpError::Policy(RegexpPolicyError::InvalidSubstitution(_)) => {
+            EvalError::Unsupported("Substitution number is out of range")
+        }
+        NativeRegexpError::Policy(RegexpPolicyError::InvalidReplacementUtf8(_)) => {
+            EvalError::Unsupported("invalid UTF-8 regexp replacement")
+        }
+        NativeRegexpError::InvalidReturnOption(_) => EvalError::Unsupported(
+            "Incorrect arguments to regexp_instr: return_option must be 1 or 0",
+        ),
+    }
+}
+
+/// Compatibility compiler entry for the original cache/test API. SQL execution
+/// resolves this same shared compiler only at the kernel's actual demand point.
 pub(crate) fn compile_regexp(pattern: &str, match_type: &str) -> Result<Regex, EvalError> {
-    build_regexp(pattern, match_type)
+    tidb_query_expr::compile_native_regexp(pattern, match_type)
+        .map_err(|error| compile_error(&error))
 }
 
 /// Go `getRegexpMatchType`'s collation-derived initial flag. Explicit match
@@ -84,10 +101,14 @@ pub(crate) fn get_cached_regexp(
     }
     let cached = cache.get_or_init_cache(context_id, || {
         Ok::<_, EvalError>(CachedRegexp {
-            result: compile_regexp(pattern, match_type),
+            result: tidb_query_expr::compile_native_regexp(pattern, match_type),
         })
     })?;
-    cached.result.clone()
+    cached
+        .result
+        .as_ref()
+        .map(Clone::clone)
+        .map_err(compile_error)
 }
 
 /// `REGEXP_LIKE(expr, pat[, match_type])` over the seed evaluator's UTF-8
@@ -95,7 +116,30 @@ pub(crate) fn get_cached_regexp(
 /// scalar-function layer supplies statement-context caching where the Go
 /// signature permits it.
 pub(crate) fn regexp_like(text: &str, pattern: &str, match_type: &str) -> Result<bool, EvalError> {
-    Ok(build_regexp(pattern, match_type)?.is_match(text))
+    regexp_like_in(&NoColumns, text, pattern, match_type)
+}
+
+pub(crate) fn regexp_like_in(
+    ctx: &dyn Columns,
+    text: &str,
+    pattern: &str,
+    match_type: &str,
+) -> Result<bool, EvalError> {
+    let value = evaluate_regexp_in(RegexpFunction::Like, ctx, || {
+        Ok(EvaluatedArgs::RegexpLike {
+            invocation: NativeRegexpInvocation::new(
+                &crate::builtin_ext::BuiltinFuncCache::default(),
+                &crate::builtin_ext::BuiltinFuncCache::default(),
+                0,
+                false,
+                false,
+            ),
+            text: text.as_bytes().to_vec(),
+            pattern: pattern.as_bytes().to_vec(),
+            match_type: match_type.as_bytes().to_vec(),
+        })
+    })?;
+    EvaluatedBytesResult::Int(value).into_nonnull_bool()
 }
 
 /// Whether `text` matches `pattern` anywhere within it — a genuine
@@ -104,7 +148,15 @@ pub(crate) fn regexp_like(text: &str, pattern: &str, match_type: &str) -> Result
 /// malformed patterns are surfaced as `Unsupported`, matching TiDB's source
 /// runtime errors rather than allowing the regex crate's empty-pattern default.
 pub(crate) fn regexp_match(text: &str, pattern: &str) -> Result<bool, EvalError> {
-    regexp_match_with_collation(text, pattern, crate::ops::DERIVATION_FREE_COLLATION)
+    regexp_match_in(&NoColumns, text, pattern)
+}
+
+pub(crate) fn regexp_match_in(
+    ctx: &dyn Columns,
+    text: &str,
+    pattern: &str,
+) -> Result<bool, EvalError> {
+    regexp_match_with_collation_in(ctx, text, pattern, crate::ops::DERIVATION_FREE_COLLATION)
 }
 
 /// [`regexp_match`] under the collation the expression derivation aggregated
@@ -118,15 +170,24 @@ pub(crate) fn regexp_match(text: &str, pattern: &str) -> Result<bool, EvalError>
 /// `utf8mb4_bin` form is 0.
 ///
 /// A user-supplied `match_type` can still override this: an explicit `c` flag
-/// deletes `i` again, which [`build_regexp`]'s left-to-right flag scan already
+/// deletes `i` again, which the shared compiler's left-to-right flag scan
 /// reproduces because the seeded `i` is passed as the leading flag.
 pub(crate) fn regexp_match_with_collation(
     text: &str,
     pattern: &str,
     collation: tidb_datatype::Collation,
 ) -> Result<bool, EvalError> {
+    regexp_match_with_collation_in(&NoColumns, text, pattern, collation)
+}
+
+pub(crate) fn regexp_match_with_collation_in(
+    ctx: &dyn Columns,
+    text: &str,
+    pattern: &str,
+    collation: tidb_datatype::Collation,
+) -> Result<bool, EvalError> {
     let match_type = regexp_match_type_with_collation("", collation);
-    regexp_like(text, pattern, &match_type)
+    regexp_like_in(ctx, text, pattern, &match_type)
 }
 
 /// `[NOT] REGEXP` matching for the statistics TopN-assisted estimation path
@@ -135,11 +196,10 @@ pub(crate) fn regexp_match_with_collation(
 /// columns (Go's new-collation refusal), so the case-sensitive default
 /// matcher is exact, and any invalid UTF-8 operand or malformed pattern
 /// answers `None` — the by-value form of Go's error fallback, which declines
-/// the whole estimation.
+/// the whole estimation. This is a pure shared helper, not a pooled SDK route:
+/// it provides no worker-scope/budget guarantee and never masks a resource error.
 pub fn regexp_match_bin_collation(text: &[u8], pattern: &[u8]) -> Option<bool> {
-    let text = std::str::from_utf8(text).ok()?;
-    let pattern = std::str::from_utf8(pattern).ok()?;
-    regexp_match(text, pattern).ok()
+    tidb_query_expr::regexp_match_bin_collation_native(text, pattern)
 }
 
 /// `REGEXP_LIKE` applies the expression's derived collation before its
@@ -151,8 +211,18 @@ pub(crate) fn regexp_like_with_collation(
     match_type: &str,
     collation: tidb_datatype::Collation,
 ) -> Result<bool, EvalError> {
+    regexp_like_with_collation_in(&NoColumns, text, pattern, match_type, collation)
+}
+
+pub(crate) fn regexp_like_with_collation_in(
+    ctx: &dyn Columns,
+    text: &str,
+    pattern: &str,
+    match_type: &str,
+    collation: tidb_datatype::Collation,
+) -> Result<bool, EvalError> {
     let match_type = regexp_match_type_with_collation(match_type, collation);
-    regexp_like(text, pattern, &match_type)
+    regexp_like_in(ctx, text, pattern, &match_type)
 }
 
 #[cfg(test)]

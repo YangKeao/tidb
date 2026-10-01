@@ -1530,34 +1530,42 @@ impl ScalarFunction {
                 .map(Some)
                 .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP_LIKE argument"))
         };
-        let Some(text) = string_arg(0)? else {
-            return Ok(Datum::Null);
-        };
-        let Some(pattern) = string_arg(1)? else {
-            return Ok(Datum::Null);
-        };
-        let match_type = if self.args.len() == 3 {
-            let Some(match_type) = string_arg(2)? else {
-                return Ok(Datum::Null);
+        crate::tikv::evaluate_regexp_in(crate::tikv::RegexpFunction::Like, ctx, || {
+            let Some(text) = string_arg(0)? else {
+                return Ok(crate::tikv::EvaluatedArgs::NullWitness(None));
             };
-            match_type
-        } else {
-            String::new()
-        };
-        let match_type =
-            crate::regexp::regexp_match_type_with_collation(&match_type, self.derived_collation());
-        let cache_pattern = self.args[1].const_level() >= ConstLevel::ONLY_IN_CONTEXT;
-        let cache_match_type =
-            self.args.len() < 3 || self.args[2].const_level() >= ConstLevel::ONLY_IN_CONTEXT;
-        let regex = crate::regexp::get_cached_regexp(
-            &self.regexp_cache,
-            ctx.context_id(),
-            cache_pattern && cache_match_type,
-            &pattern,
-            &match_type,
-        )?;
-        let matched = regex.is_match(&text);
-        return Ok(Datum::Int(i64::from(matched)));
+            let Some(pattern) = string_arg(1)? else {
+                return Ok(crate::tikv::EvaluatedArgs::NullWitness(None));
+            };
+            let match_type = if self.args.len() == 3 {
+                let Some(match_type) = string_arg(2)? else {
+                    return Ok(crate::tikv::EvaluatedArgs::NullWitness(None));
+                };
+                match_type
+            } else {
+                String::new()
+            };
+            let match_type = crate::regexp::regexp_match_type_with_collation(
+                &match_type,
+                self.derived_collation(),
+            );
+            let cache_pattern = self.args[1].const_level() >= ConstLevel::ONLY_IN_CONTEXT;
+            let cache_match_type =
+                self.args.len() < 3 || self.args[2].const_level() >= ConstLevel::ONLY_IN_CONTEXT;
+            let invocation = tidb_query_expr::NativeRegexpInvocation::new(
+                &self.regexp_cache,
+                &self.regexp_replace_instruction_cache,
+                ctx.context_id(),
+                cache_pattern && cache_match_type,
+                false,
+            );
+            Ok(crate::tikv::EvaluatedArgs::RegexpLike {
+                invocation,
+                text: text.into_bytes(),
+                pattern: pattern.into_bytes(),
+                match_type: match_type.into_bytes(),
+            })
+        })
     }
 
     /// The per-signature evaluation itself.
@@ -2008,31 +2016,39 @@ impl ScalarFunction {
         // either propagates, and `NOT REGEXP` is a separate unary NOT wrapped
         // around this call by the rewriter -- see `Expr::Regexp`'s own doc.
         if name == "regexp" && self.args.len() == 2 {
-            let value = self.args[0].eval(ctx, row)?;
-            if value.is_null() {
-                return Ok(Datum::Null);
-            }
-            let pattern = self.args[1].eval(ctx, row)?;
-            if pattern.is_null() {
-                return Ok(Datum::Null);
-            }
-            let text = value
-                .sql_string()
-                .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP operand"))?;
-            let pattern = pattern
-                .sql_string()
-                .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP pattern"))?;
-            let match_type =
-                crate::regexp::regexp_match_type_with_collation("", self.derived_collation());
-            let regex = crate::regexp::get_cached_regexp(
-                &self.regexp_cache,
-                ctx.context_id(),
-                self.args[1].const_level() >= ConstLevel::ONLY_IN_CONTEXT,
-                &pattern,
-                &match_type,
-            )?;
-            let matched = regex.is_match(&text);
-            return Ok(Datum::Int(i64::from(matched)));
+            return crate::tikv::evaluate_regexp_in(crate::tikv::RegexpFunction::Like, ctx, || {
+                // Preserve REGEXP's NULL demand before UTF-8 conversion; this
+                // differs from the named REGEXP_LIKE cast-before-next-arg path.
+                let value = self.args[0].eval(ctx, row)?;
+                if value.is_null() {
+                    return Ok(crate::tikv::EvaluatedArgs::NullWitness(None));
+                }
+                let pattern = self.args[1].eval(ctx, row)?;
+                if pattern.is_null() {
+                    return Ok(crate::tikv::EvaluatedArgs::NullWitness(None));
+                }
+                let text = value
+                    .sql_string()
+                    .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP operand"))?;
+                let pattern = pattern
+                    .sql_string()
+                    .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP pattern"))?;
+                let match_type =
+                    crate::regexp::regexp_match_type_with_collation("", self.derived_collation());
+                let invocation = tidb_query_expr::NativeRegexpInvocation::new(
+                    &self.regexp_cache,
+                    &self.regexp_replace_instruction_cache,
+                    ctx.context_id(),
+                    self.args[1].const_level() >= ConstLevel::ONLY_IN_CONTEXT,
+                    false,
+                );
+                Ok(crate::tikv::EvaluatedArgs::RegexpLike {
+                    invocation,
+                    text: text.into_bytes(),
+                    pattern: pattern.into_bytes(),
+                    match_type: match_type.into_bytes(),
+                })
+            });
         }
         if name == "regexp_like" && matches!(self.args.len(), 2 | 3) {
             return self.eval_regexp_like(ctx, row);
@@ -2840,7 +2856,7 @@ impl ScalarFunction {
                     .args
                     .get(2)
                     .is_some_and(|argument| argument.const_level() >= ConstLevel::ONLY_IN_CONTEXT);
-            return crate::builtin_ext::regexp::dispatch_with_cache(
+            return crate::builtin_ext::regexp::dispatch_with_cache_in(
                 &upper,
                 &vals,
                 ctx.context_id(),
@@ -2848,6 +2864,7 @@ impl ScalarFunction {
                 cache_replacement,
                 &self.regexp_cache,
                 &self.regexp_replace_instruction_cache,
+                ctx,
             )
             .expect("the native regexp family is registered");
         }

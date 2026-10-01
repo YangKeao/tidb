@@ -29,13 +29,13 @@ mod evaluated_ascii;
 pub use adapter_failure::{
     ExpressionAdapterFailure, ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,
 };
+pub use evaluated_ascii::{
+    eval_regexp_legacy_ready_in, AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy,
+    AsciiScope, RegexpLegacyInput, ScopedAsciiColumns,
+};
 pub(crate) use evaluated_ascii::{
     evaluate_args_in, evaluate_ascii_in, evaluate_bytes_in, evaluate_logical_in,
-    EvaluatedBytesResult,
-};
-pub use evaluated_ascii::{
-    AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy, AsciiScope,
-    ScopedAsciiColumns,
+    evaluate_regexp_in, EvaluatedBytesResult, RegexpFunction,
 };
 pub(crate) use tidb_query_datatype::codec::mysql::json::{
     parse_native_json_document, NativeJsonError,
