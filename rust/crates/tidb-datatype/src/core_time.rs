@@ -150,9 +150,7 @@ impl CoreTime {
 
     /// Returns the signed comparison used by Go `compareTime`.
     pub fn compare(self, other: Self) -> Ordering {
-        datetime_to_u64(self)
-            .cmp(&datetime_to_u64(other))
-            .then_with(|| self.microsecond().cmp(&other.microsecond()))
+        SharedTime::native_core_compare(self.raw(), other.raw())
     }
 
     /// Returns the calendar day difference between two dates.

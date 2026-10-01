@@ -18,7 +18,9 @@ use std::fmt;
 
 use serde_json::{Map, Number, Value};
 use tidb_query_datatype::codec::mysql::json::{
+    compare_native_binary_json, decode_native_binary_json_node, decode_native_binary_json_value,
     decode_native_json_uvarint, native_binary_json_type_name, native_json_opaque,
+    NativeBinaryJsonError, NativeJsonNode,
 };
 
 use crate::{CoreTime, MySqlDuration, Time, TimeType};
@@ -59,9 +61,6 @@ const HEADER_SIZE: usize = 8;
 const KEY_ENTRY_SIZE: usize = 6;
 const VALUE_ENTRY_SIZE: usize = 5;
 const MAX_JSON_DEPTH: usize = 100;
-/// Source `floatEpsilon`: the precision loss tolerated when a JSON double is
-/// compared against a JSON integer.
-const FLOAT_EPSILON: f64 = 1e-8;
 
 /// Source-compatible `type code + value bytes` BinaryJSON representation.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -75,12 +74,7 @@ pub struct BinaryJSON {
 /// Container structure is decoded, while every scalar remains an exact
 /// `type code + payload` value. This preserves opaque and temporal tags across
 /// extract/modify/merge operations without inventing a serde sentinel format.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum JSONNode {
-    Scalar(BinaryJSON),
-    Array(Vec<JSONNode>),
-    Object(Vec<(String, JSONNode)>),
-}
+pub(crate) type JSONNode = NativeJsonNode<BinaryJSON>;
 
 /// Raw MySQL value embedded in binary JSON.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -316,11 +310,14 @@ impl BinaryJSON {
 
     /// Decodes into a JSON tree without losing signed/unsigned integer text.
     pub fn to_value(&self) -> Result<Value, BinaryJSONError> {
-        decode_value(self.type_code, &self.value, 0)
+        decode_native_binary_json_value(self.type_code, &self.value)
+            .map_err(native_binary_json_error)
     }
 
     pub(crate) fn to_node(&self) -> Result<JSONNode, BinaryJSONError> {
-        decode_node(self, 0)
+        decode_native_binary_json_node(self.type_code, &self.value)
+            .map(native_json_node)
+            .map_err(native_binary_json_error)
     }
 
     pub(crate) fn from_node(node: &JSONNode) -> Result<Self, BinaryJSONError> {
@@ -741,204 +738,32 @@ fn encode_base64(bytes: &[u8]) -> String {
 
 /// Compares two binary JSON values using TiDB's JSON precedence and scalar rules.
 pub fn compare_binary_json(left: &BinaryJSON, right: &BinaryJSON) -> Ordering {
-    let left_rank = json_precedence(left);
-    let right_rank = json_precedence(right);
-    if left_rank != right_rank {
-        return left_rank.cmp(&right_rank);
-    }
-    if left.type_code == JSON_TYPE_CODE_OPAQUE && right.type_code == JSON_TYPE_CODE_OPAQUE {
-        return match (left.opaque(), right.opaque()) {
-            (Ok(left), Ok(right)) => left.bytes.cmp(&right.bytes),
-            _ => Ordering::Equal,
-        };
-    }
-    if matches!(
-        left.type_code,
-        JSON_TYPE_CODE_DATE | JSON_TYPE_CODE_DATETIME | JSON_TYPE_CODE_TIMESTAMP
-    ) && matches!(
-        right.type_code,
-        JSON_TYPE_CODE_DATE | JSON_TYPE_CODE_DATETIME | JSON_TYPE_CODE_TIMESTAMP
-    ) {
-        return match (left.as_time(0), right.as_time(0)) {
-            (Ok(left), Ok(right)) => left.compare(right),
-            _ => Ordering::Equal,
-        };
-    }
-    if left.type_code == JSON_TYPE_CODE_DURATION && right.type_code == JSON_TYPE_CODE_DURATION {
-        return match (left.as_duration(), right.as_duration()) {
-            (Ok(left), Ok(right)) => left.nanoseconds().cmp(&right.nanoseconds()),
-            _ => Ordering::Equal,
-        };
-    }
-    if matches!(left.type_code, JSON_TYPE_CODE_ARRAY | JSON_TYPE_CODE_OBJECT)
-        && left.type_code == right.type_code
-    {
-        return match (left.to_node(), right.to_node()) {
-            (Ok(left), Ok(right)) => compare_container_nodes(&left, &right),
-            _ => Ordering::Equal,
-        };
-    }
-    match (left.to_value(), right.to_value()) {
-        (Ok(left), Ok(right)) => compare_json_value(&left, &right),
-        _ => left.value.cmp(&right.value),
+    compare_native_binary_json(left.type_code, &left.value, right.type_code, &right.value)
+}
+
+fn native_binary_json_error(error: NativeBinaryJsonError) -> BinaryJSONError {
+    match error {
+        NativeBinaryJsonError::InvalidBinary => BinaryJSONError::InvalidBinary,
+        NativeBinaryJsonError::TooDeep => BinaryJSONError::TooDeep,
     }
 }
 
-fn compare_container_nodes(left: &JSONNode, right: &JSONNode) -> Ordering {
-    match (left, right) {
-        (JSONNode::Array(left), JSONNode::Array(right)) => left
-            .iter()
-            .zip(right)
-            .map(|(left, right)| compare_nodes(left, right))
-            .find(|ordering| !ordering.is_eq())
-            .unwrap_or_else(|| left.len().cmp(&right.len())),
-        (JSONNode::Object(left), JSONNode::Object(right)) => {
-            let count = left.len().cmp(&right.len());
-            if !count.is_eq() {
-                return count;
-            }
-            let mut left = left.iter().collect::<Vec<_>>();
-            let mut right = right.iter().collect::<Vec<_>>();
-            left.sort_unstable_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
-            right.sort_unstable_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
-            left.into_iter()
-                .zip(right)
-                .find_map(|((left_key, left_value), (right_key, right_value))| {
-                    let key = left_key.as_bytes().cmp(right_key.as_bytes());
-                    if !key.is_eq() {
-                        return Some(key);
-                    }
-                    let value = compare_nodes(left_value, right_value);
-                    (!value.is_eq()).then_some(value)
-                })
-                .unwrap_or(Ordering::Equal)
+// Only the owned scalar carrier changes here; shared decoding owns all binary
+// validation and structure. Neither bytes nor object entries are normalized.
+fn native_json_node(node: NativeJsonNode<(u8, Vec<u8>)>) -> JSONNode {
+    match node {
+        NativeJsonNode::Scalar((type_code, value)) => {
+            JSONNode::Scalar(BinaryJSON { type_code, value })
         }
-        _ => Ordering::Equal,
-    }
-}
-
-fn compare_nodes(left: &JSONNode, right: &JSONNode) -> Ordering {
-    match (left, right) {
-        (JSONNode::Scalar(left), JSONNode::Scalar(right)) => compare_binary_json(left, right),
-        (JSONNode::Array(_), JSONNode::Array(_)) | (JSONNode::Object(_), JSONNode::Object(_)) => {
-            compare_container_nodes(left, right)
+        NativeJsonNode::Array(values) => {
+            JSONNode::Array(values.into_iter().map(native_json_node).collect())
         }
-        _ => {
-            let left = BinaryJSON::from_node(left).expect("decoded JSON node must re-encode");
-            let right = BinaryJSON::from_node(right).expect("decoded JSON node must re-encode");
-            json_precedence(&left).cmp(&json_precedence(&right))
-        }
-    }
-}
-
-fn json_precedence(value: &BinaryJSON) -> i8 {
-    match value.type_code {
-        JSON_TYPE_CODE_OPAQUE => match value.type_name() {
-            Ok("BLOB") => 14,
-            Ok("BIT") => 13,
-            _ => 12,
-        },
-        JSON_TYPE_CODE_DATETIME | JSON_TYPE_CODE_TIMESTAMP => 11,
-        JSON_TYPE_CODE_DURATION => 10,
-        JSON_TYPE_CODE_DATE => 9,
-        JSON_TYPE_CODE_LITERAL if value.value != [JSON_LITERAL_NULL] => 8,
-        JSON_TYPE_CODE_ARRAY => 7,
-        JSON_TYPE_CODE_OBJECT => 6,
-        JSON_TYPE_CODE_STRING => 5,
-        JSON_TYPE_CODE_INT64 | JSON_TYPE_CODE_UINT64 | JSON_TYPE_CODE_FLOAT64 => 4,
-        JSON_TYPE_CODE_LITERAL => 3,
-        _ => 0,
-    }
-}
-
-fn compare_json_value(left: &Value, right: &Value) -> Ordering {
-    match (left, right) {
-        (Value::Null, Value::Null) => Ordering::Equal,
-        (Value::Bool(left), Value::Bool(right)) => left.cmp(right),
-        (Value::Number(left), Value::Number(right)) => compare_json_number(left, right),
-        (Value::String(left), Value::String(right)) => left.as_bytes().cmp(right.as_bytes()),
-        (Value::Array(left), Value::Array(right)) => left
-            .iter()
-            .zip(right)
-            .map(|(left, right)| compare_json_value(left, right))
-            .find(|ordering| !ordering.is_eq())
-            .unwrap_or_else(|| left.len().cmp(&right.len())),
-        (Value::Object(left), Value::Object(right)) => {
-            let count = left.len().cmp(&right.len());
-            if !count.is_eq() {
-                return count;
-            }
-            let mut left = left.iter().collect::<Vec<_>>();
-            let mut right = right.iter().collect::<Vec<_>>();
-            left.sort_unstable_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
-            right.sort_unstable_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
-            left.into_iter()
-                .zip(right)
-                .find_map(|((left_key, left_value), (right_key, right_value))| {
-                    let key = left_key.as_bytes().cmp(right_key.as_bytes());
-                    if !key.is_eq() {
-                        return Some(key);
-                    }
-                    let value = compare_json_value(left_value, right_value);
-                    (!value.is_eq()).then_some(value)
-                })
-                .unwrap_or(Ordering::Equal)
-        }
-        _ => value_precedence(left).cmp(&value_precedence(right)),
-    }
-}
-
-fn value_precedence(value: &Value) -> i8 {
-    match value {
-        Value::Null => 3,
-        Value::Number(_) => 4,
-        Value::String(_) => 5,
-        Value::Object(_) => 6,
-        Value::Array(_) => 7,
-        Value::Bool(_) => 8,
-    }
-}
-
-fn compare_json_number(left: &Number, right: &Number) -> Ordering {
-    match (
-        left.as_i64(),
-        left.as_u64(),
-        left.as_f64(),
-        right.as_i64(),
-        right.as_u64(),
-        right.as_f64(),
-    ) {
-        (Some(left), _, _, Some(right), _, _) => left.cmp(&right),
-        (Some(left), _, _, None, Some(right), _) => {
-            if left < 0 {
-                Ordering::Less
-            } else {
-                (left as u64).cmp(&right)
-            }
-        }
-        (None, Some(left), _, Some(right), _, _) => {
-            if right < 0 {
-                Ordering::Greater
-            } else {
-                left.cmp(&(right as u64))
-            }
-        }
-        (None, Some(left), _, None, Some(right), _) => left.cmp(&right),
-        // Two doubles compare exactly (source `compareFloat64`). The epsilon
-        // below is only for a double against an integer, where the source
-        // widens the integer and accepts the precision loss
-        // (`compareFloat64PrecisionLoss`).
-        (None, None, Some(left), None, None, Some(right)) => {
-            left.partial_cmp(&right).unwrap_or(Ordering::Greater)
-        }
-        (_, _, Some(left), _, _, Some(right)) => {
-            if (left - right).abs() < FLOAT_EPSILON {
-                Ordering::Equal
-            } else {
-                left.partial_cmp(&right).unwrap_or(Ordering::Greater)
-            }
-        }
-        _ => Ordering::Equal,
+        NativeJsonNode::Object(values) => JSONNode::Object(
+            values
+                .into_iter()
+                .map(|(key, value)| (key, native_json_node(value)))
+                .collect(),
+        ),
     }
 }
 
@@ -963,115 +788,6 @@ fn encode_node(node: &JSONNode, depth: usize) -> Result<BinaryJSON, BinaryJSONEr
             encode_binary_object(&values)
         }
     }
-}
-
-fn decode_node(value: &BinaryJSON, depth: usize) -> Result<JSONNode, BinaryJSONError> {
-    if depth > MAX_JSON_DEPTH {
-        return Err(BinaryJSONError::TooDeep);
-    }
-    match value.type_code {
-        JSON_TYPE_CODE_ARRAY => {
-            let (count, size) = read_header(&value.value)?;
-            if size != value.value.len() || HEADER_SIZE + count * VALUE_ENTRY_SIZE > size {
-                return Err(BinaryJSONError::InvalidBinary);
-            }
-            let mut values = Vec::with_capacity(count);
-            for index in 0..count {
-                let entry = HEADER_SIZE + index * VALUE_ENTRY_SIZE;
-                values.push(decode_node(
-                    &decode_binary_entry(
-                        value.value[entry],
-                        &value.value[entry + 1..entry + 5],
-                        &value.value,
-                    )?,
-                    depth + 1,
-                )?);
-            }
-            Ok(JSONNode::Array(values))
-        }
-        JSON_TYPE_CODE_OBJECT => {
-            let (count, size) = read_header(&value.value)?;
-            let value_entries = HEADER_SIZE + count * KEY_ENTRY_SIZE;
-            if size != value.value.len() || value_entries + count * VALUE_ENTRY_SIZE > size {
-                return Err(BinaryJSONError::InvalidBinary);
-            }
-            let mut values = Vec::with_capacity(count);
-            for index in 0..count {
-                let key_entry = HEADER_SIZE + index * KEY_ENTRY_SIZE;
-                let key_offset =
-                    u32::from_le_bytes(value.value[key_entry..key_entry + 4].try_into().unwrap())
-                        as usize;
-                let key_length = u16::from_le_bytes(
-                    value.value[key_entry + 4..key_entry + 6]
-                        .try_into()
-                        .unwrap(),
-                ) as usize;
-                let key = std::str::from_utf8(
-                    value
-                        .value
-                        .get(key_offset..key_offset + key_length)
-                        .ok_or(BinaryJSONError::InvalidBinary)?,
-                )
-                .map_err(|_| BinaryJSONError::InvalidBinary)?
-                .to_owned();
-                let entry = value_entries + index * VALUE_ENTRY_SIZE;
-                let child = decode_binary_entry(
-                    value.value[entry],
-                    &value.value[entry + 1..entry + 5],
-                    &value.value,
-                )?;
-                values.push((key, decode_node(&child, depth + 1)?));
-            }
-            Ok(JSONNode::Object(values))
-        }
-        _ => {
-            validate_scalar(value)?;
-            Ok(JSONNode::Scalar(value.clone()))
-        }
-    }
-}
-
-fn validate_scalar(value: &BinaryJSON) -> Result<(), BinaryJSONError> {
-    match value.type_code {
-        JSON_TYPE_CODE_OPAQUE => {
-            value.opaque()?;
-            Ok(())
-        }
-        JSON_TYPE_CODE_DATE | JSON_TYPE_CODE_DATETIME | JSON_TYPE_CODE_TIMESTAMP
-            if value.value.len() == 8 =>
-        {
-            Ok(())
-        }
-        JSON_TYPE_CODE_DURATION if value.value.len() == 12 => Ok(()),
-        JSON_TYPE_CODE_OBJECT | JSON_TYPE_CODE_ARRAY => Err(BinaryJSONError::InvalidBinary),
-        _ => value.to_value().map(|_| ()),
-    }
-}
-
-fn decode_binary_entry(
-    type_code: u8,
-    entry: &[u8],
-    container: &[u8],
-) -> Result<BinaryJSON, BinaryJSONError> {
-    if type_code == JSON_TYPE_CODE_LITERAL {
-        return BinaryJSON::from_raw(type_code, vec![entry[0]]);
-    }
-    let offset = u32::from_le_bytes(
-        entry
-            .try_into()
-            .map_err(|_| BinaryJSONError::InvalidBinary)?,
-    ) as usize;
-    let value = container
-        .get(offset..)
-        .ok_or(BinaryJSONError::InvalidBinary)?;
-    let length = value_length(type_code, value)?;
-    BinaryJSON::from_raw(
-        type_code,
-        value
-            .get(..length)
-            .ok_or(BinaryJSONError::InvalidBinary)?
-            .to_vec(),
-    )
 }
 
 fn encode_binary_array(values: &[BinaryJSON]) -> Result<BinaryJSON, BinaryJSONError> {
@@ -1278,141 +994,6 @@ fn write_header(output: &mut [u8], count: usize) -> Result<(), BinaryJSONError> 
     output[..4].copy_from_slice(&count.to_le_bytes());
     output[4..8].copy_from_slice(&size.to_le_bytes());
     Ok(())
-}
-
-fn decode_value(type_code: u8, bytes: &[u8], depth: usize) -> Result<Value, BinaryJSONError> {
-    if depth > MAX_JSON_DEPTH {
-        return Err(BinaryJSONError::TooDeep);
-    }
-    match type_code {
-        JSON_TYPE_CODE_LITERAL if bytes == [JSON_LITERAL_NULL] => Ok(Value::Null),
-        JSON_TYPE_CODE_LITERAL if bytes == [JSON_LITERAL_TRUE] => Ok(Value::Bool(true)),
-        JSON_TYPE_CODE_LITERAL if bytes == [JSON_LITERAL_FALSE] => Ok(Value::Bool(false)),
-        JSON_TYPE_CODE_INT64 if bytes.len() == 8 => Ok(Value::Number(
-            i64::from_le_bytes(bytes.try_into().expect("length checked")).into(),
-        )),
-        JSON_TYPE_CODE_UINT64 if bytes.len() == 8 => Ok(Value::Number(
-            u64::from_le_bytes(bytes.try_into().expect("length checked")).into(),
-        )),
-        JSON_TYPE_CODE_FLOAT64 if bytes.len() == 8 => {
-            let value = f64::from_bits(u64::from_le_bytes(
-                bytes.try_into().expect("length checked"),
-            ));
-            Number::from_f64(value)
-                .map(Value::Number)
-                .ok_or(BinaryJSONError::InvalidBinary)
-        }
-        JSON_TYPE_CODE_STRING => {
-            let (length, prefix) = decode_uvarint(bytes)?;
-            let text = std::str::from_utf8(
-                bytes
-                    .get(prefix..prefix + length)
-                    .ok_or(BinaryJSONError::InvalidBinary)?,
-            )
-            .map_err(|_| BinaryJSONError::InvalidBinary)?;
-            if prefix + length != bytes.len() {
-                return Err(BinaryJSONError::InvalidBinary);
-            }
-            Ok(Value::String(text.to_owned()))
-        }
-        JSON_TYPE_CODE_ARRAY => decode_array(bytes, depth + 1),
-        JSON_TYPE_CODE_OBJECT => decode_object(bytes, depth + 1),
-        _ => Err(BinaryJSONError::InvalidBinary),
-    }
-}
-
-fn decode_array(bytes: &[u8], depth: usize) -> Result<Value, BinaryJSONError> {
-    let (count, size) = read_header(bytes)?;
-    if size != bytes.len() || HEADER_SIZE + count * VALUE_ENTRY_SIZE > bytes.len() {
-        return Err(BinaryJSONError::InvalidBinary);
-    }
-    let mut values = Vec::with_capacity(count);
-    for index in 0..count {
-        let entry = HEADER_SIZE + index * VALUE_ENTRY_SIZE;
-        values.push(decode_entry(
-            bytes[entry],
-            &bytes[entry + 1..entry + 5],
-            bytes,
-            depth,
-        )?);
-    }
-    Ok(Value::Array(values))
-}
-
-fn decode_object(bytes: &[u8], depth: usize) -> Result<Value, BinaryJSONError> {
-    let (count, size) = read_header(bytes)?;
-    let value_entries = HEADER_SIZE + count * KEY_ENTRY_SIZE;
-    if size != bytes.len() || value_entries + count * VALUE_ENTRY_SIZE > bytes.len() {
-        return Err(BinaryJSONError::InvalidBinary);
-    }
-    let mut values = Map::new();
-    for index in 0..count {
-        let key_entry = HEADER_SIZE + index * KEY_ENTRY_SIZE;
-        let key_offset =
-            u32::from_le_bytes(bytes[key_entry..key_entry + 4].try_into().unwrap()) as usize;
-        let key_length =
-            u16::from_le_bytes(bytes[key_entry + 4..key_entry + 6].try_into().unwrap()) as usize;
-        let key = std::str::from_utf8(
-            bytes
-                .get(key_offset..key_offset + key_length)
-                .ok_or(BinaryJSONError::InvalidBinary)?,
-        )
-        .map_err(|_| BinaryJSONError::InvalidBinary)?;
-        let entry = value_entries + index * VALUE_ENTRY_SIZE;
-        values.insert(
-            key.to_owned(),
-            decode_entry(bytes[entry], &bytes[entry + 1..entry + 5], bytes, depth)?,
-        );
-    }
-    Ok(Value::Object(values))
-}
-
-fn decode_entry(
-    type_code: u8,
-    entry: &[u8],
-    container: &[u8],
-    depth: usize,
-) -> Result<Value, BinaryJSONError> {
-    if type_code == JSON_TYPE_CODE_LITERAL {
-        return decode_value(type_code, &entry[..1], depth);
-    }
-    let offset = u32::from_le_bytes(entry.try_into().unwrap()) as usize;
-    let value = container
-        .get(offset..)
-        .ok_or(BinaryJSONError::InvalidBinary)?;
-    let length = value_length(type_code, value)?;
-    decode_value(type_code, &value[..length], depth)
-}
-
-fn value_length(type_code: u8, bytes: &[u8]) -> Result<usize, BinaryJSONError> {
-    match type_code {
-        JSON_TYPE_CODE_OBJECT | JSON_TYPE_CODE_ARRAY => {
-            let (_, size) = read_header(bytes)?;
-            Ok(size)
-        }
-        JSON_TYPE_CODE_INT64 | JSON_TYPE_CODE_UINT64 | JSON_TYPE_CODE_FLOAT64 => Ok(8),
-        JSON_TYPE_CODE_DATE | JSON_TYPE_CODE_DATETIME | JSON_TYPE_CODE_TIMESTAMP => Ok(8),
-        JSON_TYPE_CODE_DURATION => Ok(12),
-        JSON_TYPE_CODE_OPAQUE => {
-            let payload = bytes.get(1..).ok_or(BinaryJSONError::InvalidBinary)?;
-            let (length, prefix) = decode_uvarint(payload)?;
-            Ok(1 + prefix + length)
-        }
-        JSON_TYPE_CODE_STRING => {
-            let (length, prefix) = decode_uvarint(bytes)?;
-            Ok(prefix + length)
-        }
-        _ => Err(BinaryJSONError::InvalidBinary),
-    }
-}
-
-fn read_header(bytes: &[u8]) -> Result<(usize, usize), BinaryJSONError> {
-    let header = bytes
-        .get(..HEADER_SIZE)
-        .ok_or(BinaryJSONError::InvalidBinary)?;
-    let count = u32::from_le_bytes(header[..4].try_into().unwrap()) as usize;
-    let size = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
-    Ok((count, size))
 }
 
 fn encode_uvarint(mut value: usize, output: &mut Vec<u8>) {

@@ -1,6 +1,11 @@
 {
-  "checkpoint_id": "aes-two-51",
-  "new_migration_ids": ["aes_encrypt", "aes_decrypt"],
+  "checkpoint_id": "compare-substrate-52",
+  "new_migration_ids": [],
+  "latest_functional_migration_checkpoint": "aes-two-51",
+  "comparison_substrate_checkpoint": "compare-substrate-52",
+  "comparison_substrate_added_family_credit": 0,
+  "comparison_substrate_shared_json_decoder_time_core_and_borrowed_decimal": true,
+  "comparison_predicate_workers_batch_pb_legacy_and_row_context_still_pending": true,
   "frozen_denominator": 245,
   "required_families": 221,
   "functional_delegation_and_native_deletion_count": 166,
@@ -174,7 +179,7 @@
     {"id":"aes_encrypt","status":"functional_tikv_only","native_algorithm_deleted":true,"all_twelve_key_width_mode_profiles_use_actual_workers":true,"shared_aes_public_mode_key_padding_closure":true,"original_guarded_lazy_demand_and_ignored_iv_warning_preserved":true,"actual_null_uses_dedicated_witness":true,"short_iv_uses_exact_typed_profile_and_this_call_receipt":true,"cipher_domain_errors_are_successful_null_not_infrastructure":true,"full_password_and_iv_are_real_inputs":true,"existing_binary_result_metadata_preserved":true,"no_new_pb_or_legacy_admission":true},
     {"id":"aes_decrypt","status":"functional_tikv_only","native_algorithm_deleted":true,"all_twelve_key_width_mode_profiles_use_actual_workers":true,"shared_aes_public_mode_key_padding_closure":true,"original_guarded_lazy_demand_and_ignored_iv_warning_preserved":true,"actual_null_uses_dedicated_witness":true,"short_iv_uses_exact_typed_profile_and_this_call_receipt":true,"cipher_domain_errors_are_successful_null_not_infrastructure":true,"full_password_and_iv_are_real_inputs":true,"existing_binary_result_metadata_preserved":true,"no_new_pb_or_legacy_admission":true}
   ],
-  "shared_evidence": "evidence/aes-two-checkpoint.md",
+  "shared_evidence": "evidence/compare-substrate-checkpoint.md",
   "aes_completed_functional_checkpoint": "aes-two-51",
   "aes_new_value_recipes": 24,
   "aes_new_null_witness_recipes": 1,

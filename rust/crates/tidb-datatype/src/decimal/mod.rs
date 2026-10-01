@@ -22,7 +22,7 @@ use tidb_query_datatype::codec::mysql::{
         native_decimal_coefficient_binary, NativeDecimalBinaryOp, NativeDecimalBinaryPolicy,
         NativeDecimalError, NativeDecimalOp, Res as SharedDecimalResult,
     },
-    Decimal as SharedDecimal,
+    native_decimal_cmp, Decimal as SharedDecimal, NativeDecimalCmpParts,
 };
 
 // TPC-H's DECIMAL(15,2) values need up to 17 coefficient bytes. Keeping the
@@ -1575,68 +1575,18 @@ impl Ord for Decimal {
     /// form cost four heap allocations Go's word-wise `MyDecimal.Compare`
     /// does not have.
     fn cmp(&self, other: &Self) -> Ordering {
-        if self.negative != other.negative {
-            return if self.negative {
-                Ordering::Less
-            } else {
-                Ordering::Greater
-            };
-        }
-        let mag_cmp = cmp_magnitude(
-            self.digits.as_str(),
-            self.storage_scale,
-            other.digits.as_str(),
-            other.storage_scale,
-        );
-        if self.negative {
-            mag_cmp.reverse()
-        } else {
-            mag_cmp
-        }
-    }
-}
-
-/// Compares two unsigned coefficients placed at the decimal point:
-/// `digits * 10^-storage_scale` each, digit-by-digit with missing trailing
-/// fraction digits read as `0`. Equivalent to right-padding both sides to
-/// the common storage scale and comparing the digit strings.
-fn cmp_magnitude(
-    a_digits: &str,
-    a_storage_scale: u32,
-    b_digits: &str,
-    b_storage_scale: u32,
-) -> Ordering {
-    let a_int_end = a_digits.len() - (a_storage_scale as usize).min(a_digits.len());
-    let b_int_end = b_digits.len() - (b_storage_scale as usize).min(b_digits.len());
-    let (a_int, a_frac) = (&a_digits[..a_int_end], &a_digits[a_int_end..]);
-    let (b_int, b_frac) = (&b_digits[..b_int_end], &b_digits[b_int_end..]);
-    // Leading zeros carry no magnitude; strip them so length decides first.
-    let a_int_tz = a_int.trim_start_matches('0');
-    let b_int_tz = b_int.trim_start_matches('0');
-    match a_int_tz
-        .len()
-        .cmp(&b_int_tz.len())
-        .then_with(|| a_int_tz.cmp(b_int_tz))
-    {
-        Ordering::Equal => {}
-        non_eq => return non_eq,
-    }
-    // Equal-length ASCII digit strings compare numerically byte-wise.
-    let common = a_frac.len().min(b_frac.len());
-    match a_frac[..common].cmp(&b_frac[..common]) {
-        Ordering::Equal => {}
-        non_eq => return non_eq,
-    }
-    // A longer fraction only wins when its extra digits are not all zero.
-    let (rest, sign) = if a_frac.len() > b_frac.len() {
-        (&a_frac[common..], Ordering::Greater)
-    } else {
-        (&b_frac[common..], Ordering::Less)
-    };
-    if rest.bytes().any(|digit| digit != b'0') {
-        sign
-    } else {
-        Ordering::Equal
+        native_decimal_cmp(
+            NativeDecimalCmpParts {
+                negative: self.negative,
+                digits: self.digits.as_str(),
+                storage_scale: self.storage_scale,
+            },
+            NativeDecimalCmpParts {
+                negative: other.negative,
+                digits: other.digits.as_str(),
+                storage_scale: other.storage_scale,
+            },
+        )
     }
 }
 
