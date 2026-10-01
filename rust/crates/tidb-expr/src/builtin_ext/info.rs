@@ -80,21 +80,20 @@ fn decode_binary_plan(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, 
 /// `FORMAT_BYTES(value)`, ported from `builtinFormatBytesSig.evalString` and
 /// `GetFormatBytes` in `pkg/expression/builtin_info.go` / `util.go`.
 fn format_bytes(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    let Some(value) = real_arg(value, ctx)? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::new_string(format_scaled(
-        value,
-        &[
-            (1_u64 << 60, "EiB"),
-            (1_u64 << 50, "PiB"),
-            (1_u64 << 40, "TiB"),
-            (1_u64 << 30, "GiB"),
-            (1_u64 << 20, "MiB"),
-            (1_u64 << 10, "KiB"),
-        ],
-        "bytes",
-    )))
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::FormatBytesNative,
+        ctx,
+        || {
+            Ok(crate::tikv::EvaluatedArgs::Ieee754Bits(
+                real_arg(value, ctx)?.map(f64::to_bits),
+            ))
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 
 /// `FORMAT_NANO_TIME(value)`, ported from `builtinFormatNanoTimeSig` and
@@ -102,21 +101,20 @@ fn format_bytes(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalEr
 /// Despite the similarly named MySQL documentation function, TiDB's SQL name
 /// is `FORMAT_NANO_TIME` and its input unit is nanoseconds.
 fn format_nano_time(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    let Some(value) = real_arg(value, ctx)? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::new_string(format_scaled(
-        value,
-        &[
-            (86_400_000_000_000, "d"),
-            (3_600_000_000_000, "h"),
-            (60_000_000_000, "min"),
-            (1_000_000_000, "s"),
-            (1_000_000, "ms"),
-            (1_000, "us"),
-        ],
-        "ns",
-    )))
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::FormatNanoTimeNative,
+        ctx,
+        || {
+            Ok(crate::tikv::EvaluatedArgs::Ieee754Bits(
+                real_arg(value, ctx)?.map(f64::to_bits),
+            ))
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 
 /// The function classes build their sole argument as ETReal.  Reuse the
@@ -129,47 +127,6 @@ fn real_arg(value: &Datum, ctx: &dyn crate::Columns) -> Result<Option<f64>, Eval
         Datum::Null => Ok(None),
         _ => to_f64_with_mysql_string(value, ctx).map(Some),
     }
-}
-
-/// Shared structural port of `GetFormatBytes` and `GetFormatNanoTime`.
-fn format_scaled(value: f64, scales: &[(u64, &str)], base_unit: &str) -> String {
-    let magnitude = value.abs();
-    let Some(&(divisor, unit)) = scales
-        .iter()
-        .find(|(divisor, _)| magnitude >= *divisor as f64)
-    else {
-        return format!("{} {base_unit}", fixed(value, 0));
-    };
-    let scaled = value / divisor as f64;
-    let number = if scaled.abs() >= 100_000.0 {
-        scientific(scaled)
-    } else {
-        fixed(scaled, 2)
-    };
-    format!("{number} {unit}")
-}
-
-/// Go's `strconv.FormatFloat(value, 'f', precision, 64)` uses positive zero
-/// for `-0`, as confirmed with `FORMAT_BYTES(-0.0)` and
-/// `FORMAT_NANO_TIME(-0.0)` through `goeval`.
-fn fixed(value: f64, precision: usize) -> String {
-    let value = if value == 0.0 { 0.0 } else { value };
-    format!("{value:.precision$}")
-}
-
-/// Go's `strconv.FormatFloat(value, 'e', 2, 64)` always emits an exponent
-/// sign and pads its absolute exponent to at least two digits (`e+08`). Rust
-/// supplies the correctly rounded mantissa, then this normalizes only that
-/// spelling difference.
-fn scientific(value: f64) -> String {
-    let rendered = format!("{value:.2e}");
-    let (mantissa, exponent) = rendered
-        .split_once('e')
-        .expect("Rust scientific format always contains an exponent");
-    let exponent = exponent
-        .parse::<i32>()
-        .expect("Rust scientific exponent is a signed integer");
-    format!("{mantissa}e{exponent:+03}")
 }
 
 #[cfg(test)]

@@ -22,6 +22,7 @@ use crate::{Datum, EvalError};
 use tidb_query_expr::{
     format_uuid_native as format_uuid, NATIVE_UUID_EPOCH_100NS as UUID_EPOCH_100NS,
 };
+#[cfg(test)]
 use tidb_util::vitess::hash_uint64;
 
 /// Dispatches this family's builtins; `None` if `name` isn't one of them.
@@ -280,14 +281,20 @@ fn eval_int_flag(flag: Option<&Datum>) -> i64 {
 /// two's-complement `uint64` bits and takes the big-endian ciphertext's low
 /// byte. The bucket count is 256, so the low byte is exactly the modulo.
 fn tidb_shard(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    if matches!(value, Datum::Null) {
-        return Ok(Datum::Null);
-    }
-    // `WrapWithCastAsInt` selects the ETInt cast signature before
-    // `builtinTidbShardSig.evalInt` runs. Reuse the same integer-prefix
-    // conversion used by this evaluator's SIGNED cast for scalar values.
-    let shard_key = crate::cast::to_i64_signed_with_warnings(value, ctx)? as u64;
-    Ok(Datum::UInt(hash_uint64(shard_key) % 256))
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::TidbShardNative,
+        ctx,
+        || {
+            // Preserve the original ETInt prefix conversion and warnings.
+            let value = if matches!(value, Datum::Null) {
+                None
+            } else {
+                Some(crate::cast::to_i64_signed_with_warnings(value, ctx)?)
+            };
+            Ok(crate::tikv::EvaluatedArgs::Int(value))
+        },
+        crate::tikv::EvaluatedBytesResult::into_uint_bits_datum,
+    )
 }
 
 /// `VITESS_HASH(shard_key)`, ported from `builtinVitessHashSig.evalInt`. Like
@@ -295,11 +302,20 @@ fn tidb_shard(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalErro
 /// 64-bit digest is returned. The result column is UNSIGNED, so it is a
 /// `Datum::UInt`.
 fn vitess_hash(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    if matches!(value, Datum::Null) {
-        return Ok(Datum::Null);
-    }
-    let shard_key = crate::cast::to_i64_signed_with_warnings(value, ctx)? as u64;
-    Ok(Datum::UInt(hash_uint64(shard_key)))
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::VitessHashNative,
+        ctx,
+        || {
+            let value = if matches!(value, Datum::Null) {
+                None
+            } else {
+                Some(crate::cast::to_i64_signed_with_warnings(value, ctx)?)
+            };
+            Ok(crate::tikv::EvaluatedArgs::Int(value))
+        },
+        // The signed carrier contains all 64 result bits, not a SQL flag.
+        crate::tikv::EvaluatedBytesResult::into_uint_bits_datum,
+    )
 }
 
 /// `IS_UUID(value)`, ported from `builtinIsUUIDSig.evalInt` in

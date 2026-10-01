@@ -63,8 +63,8 @@ pub(crate) fn dispatch(
         ("RANDOM_BYTES", _) => Some(Err(EvalError::WrongParameterCount("random_bytes"))),
         ("PASSWORD", 1) => Some(password_hash(&vals[0], ctx)),
         ("VALIDATE_PASSWORD_STRENGTH", 1) => Some(validate_password_strength(&vals[0], ctx)),
-        ("ENCODE", 2) => Some(sql_encode(&vals[0], &vals[1])),
-        ("DECODE", 2) => Some(sql_decode(&vals[0], &vals[1])),
+        ("ENCODE", 2) => Some(sql_encode(&vals[0], &vals[1], ctx)),
+        ("DECODE", 2) => Some(sql_decode(&vals[0], &vals[1], ctx)),
         ("COMPRESS", 1) => Some(compress(&vals[0], ctx)),
         ("AES_ENCRYPT" | "AES_DECRYPT", _) => {
             eval_aes_lazy(name, vals.len(), |i| Ok(vals[i].clone()), ctx)
@@ -293,32 +293,66 @@ fn password_hash(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
     hash_unary(crate::tikv::EvaluatedBytesOp::PasswordNative, value, ctx)
 }
 
-/// The deterministic MySQL 3.21 stream cipher used by TiDB's deprecated
-/// `ENCODE(str, password)` function. The byte algorithm is owned once by
-/// `tidb_util::encrypt`, the direct transcreation of `pkg/util/encrypt`.
-fn sql_encode(data: &Datum, password: &Datum) -> Result<Datum, EvalError> {
-    let Some(data) = sql_string_bytes(data)? else {
-        return Ok(Datum::Null);
-    };
-    let Some(password) = sql_string_bytes(password)? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::new_string(tidb_util::encrypt::sql_encode(
-        &data, &password,
-    )))
+/// `ENCODE(str, password)`: the worker owns the deterministic MySQL 3.21
+/// stream cipher; this frontend preserves byte coercion and result metadata.
+fn sql_encode(data: &Datum, password: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    sql_crypt(
+        crate::tikv::EvaluatedBytesOp::SqlEncodeNative,
+        data,
+        password,
+        ctx,
+    )
 }
 
 /// `DECODE(str, password)`, the inverse stream operation of [`sql_encode`].
-fn sql_decode(data: &Datum, password: &Datum) -> Result<Datum, EvalError> {
-    let Some(data) = sql_string_bytes(data)? else {
-        return Ok(Datum::Null);
+fn sql_decode(data: &Datum, password: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    sql_crypt(
+        crate::tikv::EvaluatedBytesOp::SqlDecodeNative,
+        data,
+        password,
+        ctx,
+    )
+}
+
+fn sql_crypt(
+    operation: crate::tikv::EvaluatedBytesOp,
+    data: &Datum,
+    password: &Datum,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    // Select the NULL operation from actual ordered coercion, without an
+    // invented password NULL when data is NULL. Like TRANSLATE, preparation
+    // precedes capability discovery/scope guard: coercion errors therefore
+    // precede admission. Only the ready arguments enter one complete call.
+    let (operation, ready) = 'prepare: {
+        let Some(data) = sql_string_bytes(data)? else {
+            break 'prepare (
+                crate::tikv::EvaluatedBytesOp::SqlCryptNullNative,
+                crate::tikv::EvaluatedArgs::NullWitness(None),
+            );
+        };
+        let Some(password) = sql_string_bytes(password)? else {
+            break 'prepare (
+                crate::tikv::EvaluatedBytesOp::SqlCryptNullNative,
+                crate::tikv::EvaluatedArgs::NullWitness(None),
+            );
+        };
+        (
+            operation,
+            crate::tikv::EvaluatedArgs::Bytes2(Some(data), Some(password)),
+        )
     };
-    let Some(password) = sql_string_bytes(password)? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::new_string(tidb_util::encrypt::sql_decode(
-        &data, &password,
-    )))
+    crate::tikv::evaluate_args_in(
+        operation,
+        ctx,
+        || Ok(ready),
+        // Original Text metadata is retained even for non-UTF-8 output bytes.
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 
 /// The Go `EvalString` byte boundary used by ENCODE/DECODE.  Unlike

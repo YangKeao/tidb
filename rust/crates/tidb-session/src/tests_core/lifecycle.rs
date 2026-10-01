@@ -8196,3 +8196,341 @@ fn evaluated_ascii_uuid_translate_zero_slots_preserve_resources_and_flag_warning
     ));
     assert!(warnings_of(&session).is_empty());
 }
+
+#[test]
+fn evaluated_ascii_crypt_hash_format_stream_direction_values_and_metadata() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_crypt_stream (id INT PRIMARY KEY, d VARCHAR(32), c VARBINARY(32), p VARBINARY(32))").unwrap();
+    session
+        .run(
+            "INSERT INTO shared_crypt_stream VALUES (1,NULL,NULL,x'FF'),\
+         (2,'pingcap',x'2C35B5A4ADF391','1234567890123456'),(3,'',x'',''),\
+         (4,'pingcap',x'CE5C02A5010010','密匙'),(5,'data',x'0001',NULL)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns("SELECT ENCODE(c,p),DECODE(d,p) FROM shared_crypt_stream ORDER BY id")
+        .unwrap()
+    else {
+        panic!("expected original stream-cipher directions")
+    };
+    assert_eq!(columns.len(), 2);
+    for (_, field) in &columns {
+        assert_eq!(field.code(), tidb_datatype::FieldTypeCode::VarString);
+        assert_eq!((field.flen(), field.decimal()), (32, -1));
+        assert_eq!(field.charset_name(), "utf8mb4");
+        assert_eq!(field.collation(), tidb_datatype::Collation::Utf8Mb4Bin);
+        assert!(!field.is_unsigned());
+        assert!(!field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
+    }
+    let raw_text = |bytes: &[u8]| {
+        Datum::new_collation_string(bytes.to_vec(), tidb_datatype::Collation::Utf8Mb4Bin)
+    };
+    // Old TestSQLDecode supplies the ciphertext; ENCODE is the inverse here.
+    // Binary input/output bytes do not change the connection-charset tag.
+    assert_eq!(
+        rows,
+        vec![
+            vec![Datum::Null; 2],
+            vec![
+                raw_text(b"pingcap"),
+                raw_text(&[0x2c, 0x35, 0xb5, 0xa4, 0xad, 0xf3, 0x91])
+            ],
+            vec![raw_text(b""), raw_text(b"")],
+            vec![
+                raw_text(b"pingcap"),
+                raw_text(&[0xce, 0x5c, 0x02, 0xa5, 0x01, 0x00, 0x10])
+            ],
+            vec![Datum::Null; 2],
+        ]
+    );
+    // Passwords are raw bytes, so FF is not an invented UTF-8 error witness.
+    // Byte preparation selects the worker before capability/guard/admission.
+    assert!(warnings_of(&session).is_empty());
+}
+
+#[test]
+fn evaluated_ascii_crypt_hash_format_numeric_values_metadata_and_coercion() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_hash_format (id INT PRIMARY KEY, h BIGINT UNSIGNED, b DOUBLE, \
+         n DOUBLE, s VARCHAR(32), v VECTOR(3))",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_hash_format VALUES (1,NULL,NULL,NULL,NULL,NULL),\
+         (2,1,2048,2000,'abc',NULL),(3,0,75295729,898787877,'1e9999',NULL),\
+         (4,18446744073709551615,-18446644073709551615.0,-9999999991,'18446744073709551615',NULL),\
+         (5,30375298039,287952852482075252752429875.0,4827524825702572425242552.0,NULL,NULL),\
+         (6,NULL,NULL,NULL,'-0.0',NULL),(7,NULL,NULL,NULL,NULL,'[1,2,3]'),\
+         (8,NULL,1023,999,NULL,NULL),(9,NULL,1024,1000,NULL,NULL)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT TIDB_SHARD(h),VITESS_HASH(h),FORMAT_BYTES(b),FORMAT_NANO_TIME(n) \
+         FROM shared_hash_format WHERE id<=5 ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected hash and scaled-format rows")
+    };
+    assert_eq!(columns.len(), 4);
+    for (index, (_, field)) in columns.iter().enumerate() {
+        if index < 2 {
+            assert_eq!(field.code(), tidb_datatype::FieldTypeCode::LongLong);
+            assert_eq!(
+                (field.flen(), field.decimal()),
+                (if index == 0 { 4 } else { 20 }, 0)
+            );
+            assert!(field.is_unsigned());
+            assert_eq!(field.charset_name(), "binary");
+            assert_eq!(field.collation(), tidb_datatype::Collation::Binary);
+        } else {
+            assert_eq!(field.code(), tidb_datatype::FieldTypeCode::VarString);
+            assert_eq!((field.flen(), field.decimal()), (-1, -1));
+            assert!(!field.is_unsigned());
+            assert_eq!(field.charset_name(), "utf8mb4");
+            assert_eq!(field.collation(), tidb_datatype::Collation::Utf8Mb4Bin);
+        }
+        assert!(!field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
+    }
+    let text = |value: &str| {
+        Datum::new_collation_string(
+            value.as_bytes().to_vec(),
+            tidb_datatype::Collation::Utf8Mb4Bin,
+        )
+    };
+    // The shard 51 is hand-derived from the low byte of the old frozen Vitess
+    // vector 031265661E5F1133, not recorded from the new worker/provider.
+    assert_eq!(
+        rows,
+        vec![
+            vec![Datum::Null; 4],
+            vec![
+                Datum::UInt(214),
+                Datum::UInt(1_615_456_034_434_468_822),
+                text("2.00 KiB"),
+                text("2.00 us")
+            ],
+            vec![
+                Datum::UInt(167),
+                Datum::UInt(10_134_873_677_816_210_343),
+                text("71.81 MiB"),
+                text("898.79 ms")
+            ],
+            vec![
+                Datum::UInt(81),
+                Datum::UInt(3_843_066_582_818_235_473),
+                text("-16.00 EiB"),
+                text("-10.00 s")
+            ],
+            vec![
+                Datum::UInt(51),
+                Datum::UInt(221_350_820_965_191_987),
+                text("2.50e+08 EiB"),
+                text("5.59e+10 d")
+            ],
+        ]
+    );
+    assert!(warnings_of(&session).is_empty());
+    // Hand-derived boundary literals from the old >=1024 / >=1000 scale
+    // selection, not a newly recorded formatter oracle.
+    let StmtOutput::Rows { rows, .. } = session.run_with_columns(
+        "SELECT FORMAT_BYTES(b),FORMAT_NANO_TIME(n) FROM shared_hash_format WHERE id>=8 ORDER BY id",
+    ).unwrap() else { panic!("expected base-unit and first-scale edges") };
+    assert_eq!(
+        rows,
+        vec![
+            vec![text("1023 bytes"), text("999 ns")],
+            vec![text("1.00 KiB"), text("1.00 us")],
+        ]
+    );
+    assert!(warnings_of(&session).is_empty());
+    // Source-derived combination: a textual u64::MAX takes the old signed
+    // complement cast, so it reuses the fixed UInt(u64::MAX) hash above.
+    for (expression, id, expected, code, message) in [
+        (
+            "TIDB_SHARD(s),VITESS_HASH(s)",
+            2,
+            ["167", "10134873677816210343"],
+            1292,
+            "Truncated incorrect INTEGER value: 'abc'",
+        ),
+        (
+            "TIDB_SHARD(s),VITESS_HASH(s)",
+            4,
+            ["81", "3843066582818235473"],
+            8030,
+            "Cast to signed converted positive out-of-range integer to its negative complement",
+        ),
+        (
+            "FORMAT_BYTES(s),FORMAT_NANO_TIME(s)",
+            2,
+            ["0 bytes", "0 ns"],
+            1292,
+            "Truncated incorrect DOUBLE value: 'abc'",
+        ),
+        (
+            "FORMAT_BYTES(s),FORMAT_NANO_TIME(s)",
+            3,
+            ["1.56e+290 EiB", "2.08e+294 d"],
+            1292,
+            "Truncated incorrect DOUBLE value: '1e9999'",
+        ),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_hash_format WHERE id={id}");
+        let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+            panic!("expected source coercion row: {sql}")
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].len(), 2);
+        for (value, expected) in rows[0].iter().zip(expected) {
+            assert_eq!(cell_text(value), expected, "{sql}");
+        }
+        assert_eq!(session.warnings().len(), 2, "{sql}");
+        for warning in session.warnings() {
+            assert_eq!(
+                warning,
+                &SqlWarning {
+                    level: WarningLevel::Warning,
+                    code,
+                    message: message.to_owned()
+                },
+                "{sql}"
+            );
+        }
+    }
+    // A stored string plus the original ETReal cast witnesses the negative-zero
+    // input, rather than assuming an SQL numeric literal retained its sign.
+    let StmtOutput::Rows { rows, .. } = session.run_with_columns(
+        "SELECT CAST(s AS DOUBLE),FORMAT_BYTES(s),FORMAT_NANO_TIME(s) FROM shared_hash_format WHERE id=6",
+    ).unwrap() else { panic!("expected negative-zero formatting") };
+    let Datum::Real(value) = &rows[0][0] else {
+        panic!("expected ETReal witness")
+    };
+    assert_eq!(value.to_bits(), (-0.0_f64).to_bits());
+    assert_eq!(rows[0][1], text("0 bytes"));
+    assert_eq!(rows[0][2], text("0 ns"));
+    assert!(warnings_of(&session).is_empty());
+    for expression in ["FORMAT_BYTES(v)", "FORMAT_NANO_TIME(v)"] {
+        let sql = format!("SELECT {expression} FROM shared_hash_format WHERE id=7");
+        let error = session
+            .run_with_columns(&sql)
+            .expect_err("a vector has no ETReal reading");
+        assert!(matches!(
+            &error,
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::Unsupported("numeric argument conversion")
+            ))
+        ));
+        assert_eq!(error.to_mysql_error().code, 1105);
+        assert!(warnings_of(&session).is_empty());
+    }
+}
+
+#[test]
+fn evaluated_ascii_crypt_hash_format_zero_slots_preserve_resources_and_warnings() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_crypt_hash_format_zero (id INT PRIMARY KEY, d VARBINARY(32), \
+         c VARBINARY(32), p VARBINARY(32), h VARCHAR(32), b VARCHAR(32), n VARCHAR(32))",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_crypt_hash_format_zero VALUES \
+         (1,'pingcap',x'2C35B5A4ADF391','1234567890123456','abc','abc','1e9999'),\
+         (2,NULL,NULL,x'FF',NULL,NULL,NULL),(3,'data',x'0001',NULL,NULL,NULL,NULL)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    for (expression, id, warning) in [
+        ("ENCODE(c,p)", 1, None),
+        ("DECODE(d,p)", 1, None),
+        (
+            "TIDB_SHARD(h)",
+            1,
+            Some("Truncated incorrect INTEGER value: 'abc'"),
+        ),
+        (
+            "VITESS_HASH(h)",
+            1,
+            Some("Truncated incorrect INTEGER value: 'abc'"),
+        ),
+        (
+            "FORMAT_BYTES(b)",
+            1,
+            Some("Truncated incorrect DOUBLE value: 'abc'"),
+        ),
+        (
+            "FORMAT_NANO_TIME(n)",
+            1,
+            Some("Truncated incorrect DOUBLE value: '1e9999'"),
+        ),
+        ("ENCODE(c,p)", 2, None),
+        ("DECODE(d,p)", 3, None),
+        ("TIDB_SHARD(h)", 2, None),
+        ("VITESS_HASH(h)", 2, None),
+        ("FORMAT_BYTES(b)", 2, None),
+        ("FORMAT_NANO_TIME(n)", 2, None),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_crypt_hash_format_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("crypt/hash/format must reach the zero-slot pool: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        if let Some(message) = warning {
+            assert_eq!(
+                session.warnings(),
+                &[SqlWarning {
+                    level: WarningLevel::Warning,
+                    code: 1292,
+                    message: message.to_owned(),
+                }],
+                "{sql}"
+            );
+        } else {
+            assert!(warnings_of(&session).is_empty(), "{sql}");
+        }
+    }
+}

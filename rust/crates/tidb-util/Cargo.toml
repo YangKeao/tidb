@@ -45,12 +45,12 @@ tidb-parser = { path = "../tidb-parser" }
 tidb-proto = { path = "../tidb-proto" }
 tidb-tikvutil = { path = "../tidb-tikvutil" }
 tidb-vardef = { path = "../tidb-vardef" }
+tidb_query_crypto.workspace = true
 tikv-client.workspace = true
 aes.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
 crc32fast.workspace = true
-des.workspace = true
 getrandom.workspace = true
 num-traits.workspace = true
 nix.workspace = true

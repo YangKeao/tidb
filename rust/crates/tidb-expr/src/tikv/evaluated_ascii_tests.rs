@@ -1194,6 +1194,15 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::LastDayTextNative => {
             panic!("temporal formatting needs its original text, core and demand domains")
         }
+        EvaluatedBytesOp::SqlEncodeNative
+        | EvaluatedBytesOp::SqlDecodeNative
+        | EvaluatedBytesOp::SqlCryptNullNative => {
+            panic!("SQL crypt needs its original data/password coercion demand")
+        }
+        EvaluatedBytesOp::TidbShardNative => "TIDB_SHARD",
+        EvaluatedBytesOp::VitessHashNative => "VITESS_HASH",
+        EvaluatedBytesOp::FormatBytesNative => "FORMAT_BYTES",
+        EvaluatedBytesOp::FormatNanoTimeNative => "FORMAT_NANO_TIME",
         EvaluatedBytesOp::IsUuidNative => "IS_UUID",
         EvaluatedBytesOp::UuidVersionNative => "UUID_VERSION",
         EvaluatedBytesOp::UuidTimestampNative => "UUID_TIMESTAMP",
@@ -1529,6 +1538,368 @@ fn format_time_pb(
         field,
         args,
     )
+}
+
+#[test]
+fn crypt_hash_format_dispatch_keeps_crypt_bytes_metadata_and_null_demand() {
+    // Original encrypt/crypt.rs and crypto.rs fixture, not a round-trip oracle.
+    let crypt = [0x2c_u8, 0x35, 0xb5, 0xa4, 0xad, 0xf3, 0x91];
+    let password = Datum::new_string("1234567890123456");
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        assert_eq!(
+            columns.connection_charset_info(),
+            ("utf8mb4", "utf8mb4_bin")
+        );
+        for (data, password, expected) in [
+            (
+                Datum::new_string("pingcap"),
+                password.clone(),
+                crypt.to_vec(),
+            ),
+            (Datum::new_string(""), Datum::new_string(""), Vec::new()),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::func::eval_func_values("DECODE", &[data, password], columns).unwrap()
+            });
+            let Datum::String(value) = result.unwrap() else {
+                panic!("SQL crypt packs raw bytes as a connection string, not binary Datum")
+            };
+            assert_eq!(value.bytes(), expected);
+            assert_eq!(value.collation(), tidb_datatype::Collation::Utf8Mb4Bin);
+            assert_wide_math_c4(observation);
+            assert_eq!(
+                scope
+                    .lease
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .worker
+                    .as_ref()
+                    .unwrap()
+                    .operation(),
+                EvaluatedBytesOp::SqlDecodeNative
+            );
+        }
+        let (result, observation) = observe_wide_math(|| {
+            calendar_fields_ast("DECODE('pingcap', '1234567890123456')", columns)
+        });
+        assert_eq!(result, Ok(Datum::new_string(crypt.to_vec())));
+        assert_wide_math_c4(observation);
+        let current = scope_worker_observation(&scope);
+        assert_eq!(current.1, 3);
+        assert_eq!(current.2 + current.3, current.4);
+        assert!(current.4 <= TEST_WORKER_CAP);
+        assert_eq!(
+            owner.snapshot().unwrap().factory_attempts,
+            1,
+            "AST and values reuse the actual scoped worker"
+        );
+        let function = crate::scalar_function::ScalarFunction::new(
+            tidb_ast::CiString::new("ENCODE"),
+            FieldType::new(FieldTypeCode::VarString),
+            vec![
+                crate::expression::Expression::Constant(Constant::new(
+                    Datum::new_bytes(crypt),
+                    FieldType::new(FieldTypeCode::VarString)
+                        .with_collation(tidb_datatype::Collation::Binary),
+                )),
+                crate::expression::Expression::Constant(Constant::new(
+                    password.clone(),
+                    FieldType::new(FieldTypeCode::VarString),
+                )),
+            ],
+        );
+        let (result, observation) =
+            observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        assert_eq!(result, Ok(Datum::new_string("pingcap")));
+        assert_wide_math_c4(observation);
+        assert_eq!(
+            scope
+                .lease
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .worker
+                .as_ref()
+                .unwrap()
+                .operation(),
+            EvaluatedBytesOp::SqlEncodeNative
+        );
+        for (name, values) in [
+            ("DECODE", [Datum::Null, Datum::MinNotNull]),
+            ("ENCODE", [Datum::new_bytes(crypt), Datum::Null]),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::func::eval_func_values(name, &values, columns).unwrap()
+            });
+            assert_eq!(result, Ok(Datum::Null));
+            assert_wide_math_c4(observation);
+            assert_eq!(
+                scope
+                    .lease
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .worker
+                    .as_ref()
+                    .unwrap()
+                    .operation(),
+                EvaluatedBytesOp::SqlCryptNullNative
+            );
+        }
+        for values in [
+            [Datum::MinNotNull, Datum::Null],
+            [Datum::new_bytes(crypt), Datum::MinNotNull],
+        ] {
+            let before = owner.snapshot().unwrap();
+            let (result, observation) = observe_wide_math(|| {
+                crate::func::eval_func_values("ENCODE", &values, columns).unwrap()
+            });
+            assert_eq!(
+                result,
+                Err(EvalError::Unsupported("range sentinel string argument"))
+            );
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+            assert_eq!(owner.snapshot().unwrap(), before);
+        }
+    });
+    assert!(!scope.busy.get());
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+    for closed in [false, true] {
+        let slots = usize::from(closed);
+        let owner = AsciiPoolOwner::new(test_policy(slots, slots)).unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        if closed {
+            execution.close();
+        }
+        let class = if closed {
+            crate::ExpressionAdapterFailureClass::PoolClosed
+        } else {
+            crate::ExpressionAdapterFailureClass::PoolResource
+        };
+        scope.with_columns(&crate::NoColumns, |columns| {
+            let (result, observation) = observe_wide_math(|| crate::func::eval_func_values("DECODE", &[Datum::Null, Datum::MinNotNull], columns).unwrap());
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == class), "actual NULL skips password coercion, not admission");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+            let (result, observation) = observe_wide_math(|| crate::func::eval_func_values("DECODE", &[Datum::MinNotNull, Datum::Null], columns).unwrap());
+            assert_eq!(result, Err(EvalError::Unsupported("range sentinel string argument")), "data preparation fails before admission despite the later NULL");
+            assert_eq!(observation.facade_entries, 0);
+        });
+        assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+        drop(scope);
+        execution.close();
+    }
+}
+
+#[test]
+fn crypt_hash_format_dispatch_keeps_unsigned_hashes_and_cast_warnings() {
+    let native = ConstructTimeWarnings::default();
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        // Old native misc/Vitess literals; no new hash provider computes wants.
+        for (operation, input, expected) in [
+            (
+                EvaluatedBytesOp::TidbShardNative,
+                Datum::UInt(u64::MAX),
+                81_u64,
+            ),
+            (EvaluatedBytesOp::TidbShardNative, Datum::Real(1.9), 143),
+            (
+                EvaluatedBytesOp::VitessHashNative,
+                Datum::Int(0),
+                10_134_873_677_816_210_343,
+            ),
+        ] {
+            let (result, observation) =
+                observe_wide_math(|| dispatch_bytes_family(operation, &input, columns));
+            let Datum::UInt(value) = result.unwrap() else {
+                panic!("hash carrier bits must retain the original unsigned result")
+            };
+            assert_eq!(value, expected);
+            assert_wide_math_c4(observation);
+            assert_eq!(
+                scope
+                    .lease
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .worker
+                    .as_ref()
+                    .unwrap()
+                    .operation(),
+                operation
+            );
+        }
+        assert!(native.0.borrow().is_empty());
+        for (name, input, expected, warning) in [
+            (
+                "TIDB_SHARD",
+                "1.9",
+                214_u64,
+                "Truncated incorrect INTEGER value: '1.9'",
+            ),
+            (
+                "VITESS_HASH",
+                "18446744073709551616",
+                3_843_066_582_818_235_473,
+                "Truncated incorrect INTEGER value: '18446744073709551616'",
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::func::eval_func_values(name, &[Datum::new_string(input)], columns).unwrap()
+            });
+            assert_eq!(result, Ok(Datum::UInt(expected)));
+            assert_wide_math_c4(observation);
+            assert_eq!(
+                native.0.replace(Vec::new()),
+                [(1292, warning.to_owned(), true)]
+            );
+        }
+        for operation in [
+            EvaluatedBytesOp::TidbShardNative,
+            EvaluatedBytesOp::VitessHashNative,
+        ] {
+            let (result, observation) =
+                observe_wide_math(|| dispatch_bytes_family(operation, &Datum::Null, columns));
+            assert_eq!(result, Ok(Datum::Null));
+            assert_wide_math_c4(observation);
+        }
+        let (result, observation) =
+            observe_wide_math(|| calendar_fields_ast("TIDB_SHARD(1)", columns));
+        assert_eq!(result, Ok(Datum::UInt(214)));
+        assert_wide_math_c4(observation);
+        let function = crate::scalar_function::ScalarFunction::new(
+            tidb_ast::CiString::new("VITESS_HASH"),
+            FieldType::new(FieldTypeCode::LongLong).with_unsigned(true),
+            vec![crate::expression::Expression::Constant(Constant::new(
+                Datum::Int(0),
+                FieldType::new(FieldTypeCode::LongLong),
+            ))],
+        );
+        let (result, observation) =
+            observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        assert_eq!(
+            result,
+            Ok(Datum::UInt(10_134_873_677_816_210_343)),
+            "a high result bit is not signed SQL overflow"
+        );
+        assert_wide_math_c4(observation);
+        assert!(native.0.borrow().is_empty());
+    });
+    scope_worker_observation(&scope);
+    drop(scope);
+    execution.close();
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for name in ["TIDB_SHARD", "VITESS_HASH"] {
+            let (result, observation) = observe_wide_math(|| crate::func::eval_func_values(name, &[Datum::new_string("18446744073709551614")], columns).unwrap());
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+            assert_eq!(native.0.replace(Vec::new()), [(8030, "Cast to signed converted positive out-of-range integer to its negative complement".to_owned(), true)]);
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn crypt_hash_format_dispatch_keeps_format_bits_and_source_units() {
+    let function = crate::scalar_function::ScalarFunction::new(
+        tidb_ast::CiString::new("FORMAT_NANO_TIME"),
+        FieldType::new(FieldTypeCode::VarString),
+        vec![crate::expression::Expression::Constant(Constant::new(
+            Datum::Real(-0.0),
+            FieldType::new(FieldTypeCode::Double),
+        ))],
+    );
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        // Exact old info.rs unit/scientific/-0 literals, never provider output.
+        for (operation, input, expected) in [
+            (EvaluatedBytesOp::FormatBytesNative, -0.0, "0 bytes"),
+            (EvaluatedBytesOp::FormatBytesNative, 2048.0, "2.00 KiB"),
+            (
+                EvaluatedBytesOp::FormatBytesNative,
+                287_952_852_482_075_252_752_429_875.0,
+                "2.50e+08 EiB",
+            ),
+            (EvaluatedBytesOp::FormatNanoTimeNative, -0.0, "0 ns"),
+            (EvaluatedBytesOp::FormatNanoTimeNative, 2000.0, "2.00 us"),
+            (
+                EvaluatedBytesOp::FormatNanoTimeNative,
+                4_827_524_825_702_572_425_242_552.0,
+                "5.59e+10 d",
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                dispatch_bytes_family(operation, &Datum::Real(input), columns)
+            });
+            let Datum::String(value) = result.unwrap() else {
+                panic!("formatted units keep their String result domain")
+            };
+            assert_eq!(value.bytes(), expected.as_bytes());
+            assert_eq!(value.collation(), tidb_datatype::Collation::Utf8Mb4Bin);
+            assert_wide_math_c4(observation);
+            assert_eq!(
+                scope
+                    .lease
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .worker
+                    .as_ref()
+                    .unwrap()
+                    .operation(),
+                operation
+            );
+        }
+        for operation in [
+            EvaluatedBytesOp::FormatBytesNative,
+            EvaluatedBytesOp::FormatNanoTimeNative,
+        ] {
+            let (result, observation) =
+                observe_wide_math(|| dispatch_bytes_family(operation, &Datum::Null, columns));
+            assert_eq!(result, Ok(Datum::Null));
+            assert_wide_math_c4(observation);
+        }
+        let (result, observation) =
+            observe_wide_math(|| calendar_fields_ast("FORMAT_BYTES(2048)", columns));
+        assert_eq!(result, Ok(Datum::new_string("2.00 KiB")));
+        assert_wide_math_c4(observation);
+        let (result, observation) =
+            observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        assert_eq!(result, Ok(Datum::new_string("0 ns")));
+        assert_wide_math_c4(observation);
+    });
+    scope_worker_observation(&scope);
+    execution.close();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolClosed));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+    });
+    drop(scope);
 }
 
 #[test]

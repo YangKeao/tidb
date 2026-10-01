@@ -56,9 +56,8 @@ impl MysqlRng {
     /// Generates the next value in `[0, 1)`.
     pub fn gen(&self) -> f64 {
         let mut state = self.lock();
-        state.seed1 = state.seed1.wrapping_mul(3).wrapping_add(state.seed2) % MAX_RAND_VALUE;
-        state.seed2 = state.seed1.wrapping_add(state.seed2).wrapping_add(33) % MAX_RAND_VALUE;
-        f64::from(state.seed1) / f64::from(MAX_RAND_VALUE)
+        let State { seed1, seed2 } = &mut *state;
+        tidb_query_crypto::mysql_rand_step(seed1, seed2)
     }
 
     /// Replaces the first seed without normalization, matching the source.

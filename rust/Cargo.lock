@@ -5885,7 +5885,6 @@ dependencies = [
  "chrono-tz 0.10.4",
  "crc32fast",
  "crossbeam-channel",
- "des",
  "fail 0.4.0",
  "fastrand",
  "flate2",
@@ -5921,6 +5920,7 @@ dependencies = [
  "tidb-proto",
  "tidb-tikvutil",
  "tidb-vardef",
+ "tidb_query_crypto",
  "tikv-client",
  "tonic",
  "tracing",
@@ -5984,6 +5984,7 @@ dependencies = [
 name = "tidb_query_crypto"
 version = "0.0.1"
 dependencies = [
+ "des",
  "sha1 0.10.7",
 ]
 

@@ -1681,6 +1681,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::DateFormatMissingNative
             | EvaluatedBytesOp::IsUuidNative
             | EvaluatedBytesOp::UuidVersionNative
+            | EvaluatedBytesOp::TidbShardNative
+            | EvaluatedBytesOp::VitessHashNative
             | EvaluatedBytesOp::AbsIntNative
             | EvaluatedBytesOp::AbsUIntNative
             | EvaluatedBytesOp::CeilIntNative
@@ -1780,7 +1782,12 @@ fn materialize_computed(
             | EvaluatedBytesOp::BinToUuidNative
             | EvaluatedBytesOp::TranslateUtf8Native
             | EvaluatedBytesOp::TranslateBinaryNative
-            | EvaluatedBytesOp::TranslateNullNative,
+            | EvaluatedBytesOp::TranslateNullNative
+            | EvaluatedBytesOp::SqlEncodeNative
+            | EvaluatedBytesOp::SqlDecodeNative
+            | EvaluatedBytesOp::SqlCryptNullNative
+            | EvaluatedBytesOp::FormatBytesNative
+            | EvaluatedBytesOp::FormatNanoTimeNative,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {

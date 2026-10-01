@@ -1,0 +1,88 @@
+Checkpoint:crypt-hash-format-six-42; previous:uuid-translate-six-41. ENCODE/DECODE/TIDB_SHARD/VITESS_HASH/FORMAT_BYTES/FORMAT_NANO_TIME:137->143/245 functional; FINAL0/245. RAND gets no extra family credit.
+COUNTS:24 raw Cargo receipts=22 test-Cargo attempts+2 non-test offline lock resolutions. All22 tests actually ran nonzero counts:19green(3early/pre-third-RNG-closure+16final-current)+1NEW test RED+2CURRENT old-failure full runs. Compile failures0/launch failures0/zero matches0; failed-target retries1; new test expectation corrections1; all_checks_firstpass=false.
+SOURCE/CHECKS(parent-owned):22Rust=CPP13(including3new)+native9;2manifests/2generated locks. Final22 pinned-format checks+2repository diff checks passed, failures0; static-proof/lookup failures0; source-precontract correction1(Bytes2 array notation->actual two-option tuple), NOT a compile failure. Metadata commands0; lock resolutions2.
+PROVENANCE:writer read/hashed24 logs with sha256sum(exit0), writes ONLY this summary and crypt-hash-format-checkpoint.md; no fresh source audit/build/test/fmt/Git/index/Plan. Parent owns gates/exits/source proofs; B owns separate metadata docs. RAW=/home/agent/tidb/expression-unification/logs. All below LOG suffixes have prefix crypt-hash-format- and extension .log; hashes cover WHOLE LOGS.
+JAN CWD=/home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv pin nightly-2026-01-30-x86_64-unknown-linux-gnu.
+AUG CWD=/home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb pin nightly-2026-08-22-x86_64-unknown-linux-gnu.
+TEST wrapper:set -o pipefail; <COMMAND> 2>&1 | tee <OUTPUT> >/dev/null; OUTPUT=../logs/crypt-hash-format-<LOG>.log JAN or ../../logs/crypt-hash-format-<LOG>.log AUG. All22 tests --locked --lib -- --test-threads=1, no --exact; explicit commands below.
+LOCK wrapper:set -o pipefail; <COMMAND> 2>&1 | tee <OUTPUT>; same OUTPUT mapping, tee is NOT quiet and no --locked. These2 successful Cargo updates are NOT test attempts or metadata commands.
+Receipt notation:P/F/I;filtered;Finished/test seconds;exit. All measured0 in test results; filtered gates overlap full suites, not extra distinct-test credit. Finished includes Cargo work, NOT a benchmark. Lock receipts have no tests or Finished/test timing.
+
+LOG=tikv-lock [JAN non-test]; COMMAND:../tools/cargo-tikv update --offline -p tidb_query_crypto
+5 added+1 upgraded;exit0;SHA256=d2343a8bd9d7d12fc74e34516c4f3f5f8b117c2abbc581b88f132379f06a904c
+LOG=native-lock [AUG non-test]; COMMAND:../../tools/cargo-tidb update --offline -p tidb-util
+0 package-version changes;exit0;SHA256=04dd3b5d70a27236d23b8718d7d7d162a1460939a65acc579d0ce22d2e6f87cb
+LOG=tikv-crypto [JAN early]; COMMAND:../tools/cargo-tikv test --locked -p tidb_query_crypto --lib -- --test-threads=1
+5/0/0;0;0.85/0.00s;exit0;SHA256=73895ac80fe34b1a5a846ff6fa7a44683b6924d1439071ab14a59bd5cb6c30af
+LOG=native-crypt-util [AUG early]; COMMAND:../../tools/cargo-tidb test --locked -p tidb-util --lib encrypt::crypt:: -- --test-threads=1
+2/0/0;575;10.25/0.00s;exit0;SHA256=6dade7c9ffc3a1ed55878dd7c243387a7ab41bb4e5fe3f9e3978981f7475a47f
+LOG=native-vitess-util [AUG early]; COMMAND:../../tools/cargo-tidb test --locked -p tidb-util --lib vitess:: -- --test-threads=1
+1/0/0;576;0.11/0.00s;exit0;SHA256=0f34a393c08e7a1374572ccbf7517b4c81e62386c1812b04a0fd8f9acceea059
+LOG=tikv-crypto-final [JAN final replay]; COMMAND:../tools/cargo-tikv test --locked -p tidb_query_crypto --lib -- --test-threads=1
+5/0/0;0;0.23/0.00s;exit0;SHA256=e99459a68f08d0cb9b5c9f4e87008e7ef4212384411fcea6dddbc4f0fe5b3841
+LOG=tikv-local [JAN NEW RED]; COMMAND:../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+273/1NEW/1old-ignore;514;275discovered;11.96/0.19s;exit101;SHA256=355ee34fee56b185e7c0b999b28d4301a09c08f570749c8cca36ee69b6d4675d
+LOG=tikv-local-retry [JAN final/sole failed-target retry]; COMMAND:../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+274/0/1old-ignore;514;275discovered;4.08/0.19s;exit0;SHA256=0f481aa5332094724405d151199674a6b10dac9faea5aeed1568d1ac7bfa7fca
+LOG=tikv-encryption [JAN final]; COMMAND:../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_encryption:: -- --test-threads=1
+13/0/0;776;0.12/0.00s;exit0;SHA256=87a52507e4da062fdc49503782b76351c8554b6a4bb63167209f8995fb70b92d
+LOG=tikv-misc [JAN final]; COMMAND:../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_miscellaneous:: -- --test-threads=1
+25/0/0;764;0.12/0.00s;exit0;SHA256=d6aafe196dd472a94beae532bb0b51b3813275916adad8d251c6c20dd5386413
+LOG=tikv-rand [JAN final]; COMMAND:../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_math::tests::test_rand -- --test-threads=1
+4/0/0;785;0.12/0.10s;exit0;SHA256=7ac4ba3a3fbc7de0925a03b3bb598a7c1569c20663c68c36b6a56f5c6b8f322c
+LOG=native-crypt-util-final [AUG final replay]; COMMAND:../../tools/cargo-tidb test --locked -p tidb-util --lib encrypt::crypt:: -- --test-threads=1
+2/0/0;575;3.42/0.00s;exit0;SHA256=c47fdf439059118fc702b32072b97efb10d26239125de21f1359a9e6311517bb
+LOG=native-vitess-util-final [AUG final replay]; COMMAND:../../tools/cargo-tidb test --locked -p tidb-util --lib vitess:: -- --test-threads=1
+1/0/0;576;0.11/0.00s;exit0;SHA256=3041bdb3eefd29daa07be9691f5ef8f28c4403caab882617383ef58057b1dd62
+LOG=native-rng-util [AUG final]; COMMAND:../../tools/cargo-tidb test --locked -p tidb-util --lib mathutil::rand:: -- --test-threads=1
+3/0/0;574;0.11/0.00s;exit0;SHA256=07e94bf92161b8b92f4eaaf42ac0c1c71523c9af9dc97916d9074b4c79027f6d
+LOG=native-crypto [AUG final]; COMMAND:../../tools/cargo-tidb test --locked -p tidb-expr --lib builtin_ext::crypto::tests -- --test-threads=1
+15/0/0;1560;15.28/0.01s;exit0;SHA256=323516aff731056e90b9e767bb185ee2bcac5cb3684ad28cd592ace56805d53b
+LOG=native-crypto-source [AUG final]; COMMAND:../../tools/cargo-tidb test --locked -p tidb-expr --lib tests::crypto_encryption_source -- --test-threads=1
+16/0/3old-ignore;1556;19discovered;0.12/0.01s;exit0;SHA256=10c4c05fc323acf3c66c3bae55a5eb08bbf36bdd9de767e27700d73702a64de5
+LOG=native-misc [AUG final]; COMMAND:../../tools/cargo-tidb test --locked -p tidb-expr --lib builtin_ext::misc::tests -- --test-threads=1
+13/0/0;1562;0.12/0.00s;exit0;SHA256=cf404da26eca3936e9a2a580c552bbd8d3e493485f03e930d74bb23d371c59cf
+LOG=native-info [AUG final]; COMMAND:../../tools/cargo-tidb test --locked -p tidb-expr --lib builtin_ext::info::tests -- --test-threads=1
+3/0/0;1572;0.14/0.00s;exit0;SHA256=e35d64cf47599107a21d83c2170bf2b961d8c7eaec62350a14e88f36ae1342b3
+LOG=native-info-source [AUG final]; COMMAND:../../tools/cargo-tidb test --locked -p tidb-expr --lib tests::builtin_info_json_math_source::format_ -- --test-threads=1
+2/0/0;1573;0.12/0.00s;exit0;SHA256=f4ebd23c6590bc9d7c96ed5e97282316d10991db7a228462d6c14cfc12653649
+LOG=dispatch [AUG final]; COMMAND:../../tools/cargo-tidb test --locked -p tidb-expr --lib crypt_hash_format_dispatch_ -- --test-threads=1
+3/0/0;1572;0.12/0.00s;exit0;SHA256=b60d32fa5aba0af34d2007c00dfe8ff1be2a1b0ee2dbfa6678d4b499afa572db
+LOG=sql [AUG final]; COMMAND:../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+92/0/0;2078;32.06/1.39s;exit0;SHA256=94693acca692bb1f46d5094933d7301263ee71240c858db963bb8c80667eb3e4
+LOG=sql-rand [AUG final]; COMMAND:../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::numeric_domain::rand_ -- --test-threads=1
+2/0/0;2168;0.14/0.03s;exit0;SHA256=f7f9e999a033f81eeef0362f16126b0f8158628e37f7b5d50cb6ca422717aca7
+LOG=expr-full [AUG CURRENT baseline non-green]; COMMAND:../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+1477/4old/94;0;1575discovered;0.12/10.49s;exit101;SHA256=ba940c183756e431902bf58cd8e7d11ad8aa7e25fe7037d9fe3bdefd3c3697c4
+LOG=unistore-full [AUG CURRENT baseline non-green]; COMMAND:../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+195/1old/13;0;209discovered;7.98/3.01s;exit101;SHA256=b6410de4b93e24c5217159ae33c6706f835661e5d808023026da0b000dc43aaf
+
+FAILED-FIRST / EXPANSION / DEPENDENCIES
+NEW RED:local::compile::evaluated_ascii_compile_tests::crypt_hash_format_dispatch_getters_shapes_and_private_admission panicked at impl_miscellaneous.rs:272:10, "Rust scientific format always contains an exponent". The new direct-physical +Inf probe wrongly expected success; original scientific() intentionally retained its expect. This is1new failed test/run, not a baseline failure and not a compiler/launch failure.
+Parent changed ONLY that new test to catch_unwind and require infinity panic; None/NaN successful paths and actual-invocation assertions retained. New test expectation correction1; production formatter unchanged, no finite filter or semantic repair; old fixtures/expected untouched. Failed log preserved, separate sole same-target retry green. Do not claim newRED0/allfirstpass.
+The3 early green leaf/util gates precede discovery of native mathutil/rand's third recurrence. CPP leaf/native crypt/native Vitess were replayed successfully after expanding the shared RNG closure; those3 final replays are NOT failed-target retries. Additional actual RNG gates:CPP rand4/native util rand3/session rand2. RAND receives no ledger credit.
+Sole source-precontract correction:parent's draft Bytes2([Option<Vec>;2]) was wrong; existing Bytes2 is a TWO-OPTION TUPLE, unlike array Bytes3. Corrected before source integration, no compile failure. Static-proof and ordinary-lookup failures0 this round; no old round's failures are imported into these counts.
+Two offline lock resolutions were deliberately separate from tests. CPP adds cipher0.5.2/crypto-common0.2.2/des0.9.0/hybrid-array0.4.13/inout0.2.2; typenum1.16.0->1.20.1 is1upgrade, not a sixth new package. digest0.10.7 merely qualifies its existing crypto-common0.1.6 dependency to disambiguate the two versions.
+Native lock adds/upgrades no package versions; tidb-util/tidb_query_crypto dependency edges change. Both manifests and both generated locks are in scope, NOT byte-identical/unmodified claims. Actual January leaf compile/tests passed5 before and after closure expansion, confirming the admitted dependency set on that pin; NOT pending compatibility. This is not a FIPS or whole-workspace dependency claim.
+
+UNIQUE OWNERSHIP / ABI / TEST PROVENANCE
+Shared tidb_query_crypto owns original SqlCrypt, RustCrypto DES and normalized MySqlRand. Sole public mysql_rand_step(&mut u32,&mut u32)->f64 uses WRAPPING arithmetic so raw native seeds keep their original domain; normalized CPP seeds produce exactly the old ordinary-arithmetic recurrence. SQLCrypt, CPP RNG and native mathutil RNG no longer carry competing recurrences.
+Native mutex/time/seed initializers/raw setters/getters stay unchanged; only gen delegates to the shared step. Native-util's3 public thin facades retain existing API and tests; moving selected bodies is not a newly completed/transcreated Go package. Host RAND/state policy is not silently replaced or newly credited.
+Seven closed kernels retain old input/output roles (Bytes2 tuple, genuine NullWitness, Int, Ieee754Bits; existing Bytes/signed-Int results), no new args/result DTO/error cause/report/context/driver/PB/native-cop admission. No SQL ordinary-registry promotion is implied.
+Crypto performs original ordered preparation OUTSIDE guard/capability, then selects ONE complete worker and packs with original new_string metadata. It is not a selected-driver API and not an all-coercion-under-admission claim. NULL stops suffix/password demand and uses the actual witness, never fake password bytes. Original ENCODE/DECODE direction is preserved, not "corrected".
+Hash/format coercion remains inside its guard (the outside-preparation limitation above is Crypto-specific). hash_uint64 and %256 execute in the worker; input is actual ETInt bits, complete64-bit output travels as signed Int then native UInt-bit packing. No float conversion/precomputed hash/dummy values. Formatter input uses real nullable LE8 IEEE bits, not ordinary SQL bytes or finite-only Real.
+Original format_scaled/fixed/scientific bodies and both unit tables retain abs thresholds, -0 normalization, >=1e5 scientific formatting, exact units and raw NaN/infinity behavior including original expect panic. All-bit transport admission does NOT mean totality. Native algorithm bodies removed; public helper facades thin; no alternate formatter or repaired nonfinite semantics.
+Parent verified7 original test modules byte-identical,3 formatter bodies byte-identical, and native RNG bodies except gen unchanged. Old fixtures/expected untouched; new C expectation correction disclosed above. Tests added:CPP5kernels+2local+3leaf, D3 actual-worker dispatch, E3 with12 direct zero-slot SQL cases; literal values are old source or explicitly hand-derived policy expectations, not provider-recorded oracles.
+
+CURRENT COMPLETE FAILURE SECTIONS:ONLY THREAD IDS; NO ADDRESS MAPPING
+Parent compared both complete current sections to Round42. Expr normalized SHA256=25f964887541f45602363f00dc60df4f0af21c74edccc16c38d0804094fb9bff; unchanged four names:
+- pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation (pushdown_catalog.rs:3077:9)
+- tests::builtin_info_json_math_source::exp (builtin_info_json_math_source.rs:1881:5; old EXP(100_000.0) expects FloatOverflow)
+- tests::builtin_math_misc_op_source::vectorized_builtin_op_func (crates/tidb-datatype/src/duration.rs:164:55; nonnegative duration FSP: TryFromIntError(NegOverflow))
+- time_fn::tests::str_to_date_partial_formats_follow_no_zero_date (time_fn/tests.rs:888:9)
+Unistore normalized SHA256=e285bfdba646f2d01f85b485ae317cc07c51b78cf0ae6d664c0fb2bc39259759; unchanged tests_mockstore_part1_go_parity::closure_executor_selection_over_point_range_answers_zero_rows at crates/tidb-unistore/src/tests_mockstore_part1_go_parity.rs:194:5, TruncatedWrongValue("Truncated incorrect DECIMAL value: 'abc'").
+These are normalized COMPLETE FAILURE-SECTION hashes, not whole-log hashes. ONLY panic-heading thread IDs normalized; NO location remapping. Historical164->212 mapping is not used. Both full suites are CURRENT non-green; no whole-suite-green assertion.
+
+LIMITS / FREEZE
+FORMAT locale closure, DATE, MICROSECOND and larger JSON-path work remain deferred. Round39 parser-all E0061 remains unrepaired/unrun here, historical only. M6/whole-workspace or Go-package acceptance/performance/zero-copy/lint/release/profile/FIPS/allocator-OOM-peak/PR-readiness gates remain unestablished.
+Only the two authorized docs written; no new writer source audit/build/test/fmt/Git/index/Plan.24receipts,22actual test runs,19green(3early+16final),1newRED+2old-current-full; compile/launch/zero0,failed-targetretry1,lockresolutions2,metadata0. Functional143/245; FINAL0/245; all_checks_firstpass=false.

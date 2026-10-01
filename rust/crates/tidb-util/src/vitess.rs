@@ -12,21 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use des::cipher::{Block, BlockCipherEncrypt, KeyInit};
-use des::Des;
-use std::sync::LazyLock;
-
-static NULL_KEY_BLOCK: LazyLock<Des> = LazyLock::new(|| {
-    Des::new_from_slice(&[0; 8]).expect("DES accepts the fixed-width all-zero Vitess key")
-});
-
 /// Implements Vitess' method of calculating a hash used for determining a shard
 /// key range: a DES encryption with a 64-bit null key over a 64-bit block.
 pub fn hash_uint64(shard_key: u64) -> u64 {
-    let mut block = Block::<Des>::default();
-    block.copy_from_slice(&shard_key.to_be_bytes());
-    NULL_KEY_BLOCK.encrypt_block(&mut block);
-    u64::from_be_bytes(block.into())
+    tidb_query_crypto::hash_uint64(shard_key)
 }
 
 #[cfg(test)]
