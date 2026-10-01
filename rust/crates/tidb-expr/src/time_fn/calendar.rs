@@ -302,23 +302,14 @@ pub(crate) fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
 /// The inverse of [`days_from_civil`]: the Gregorian calendar date for a day
 /// count `z` since the same 1970-01-01 epoch — Howard Hinnant's
 /// `civil_from_days` algorithm, from the same public source. Used by
-/// [`from_days`] (which converts through [`days_from_civil`]'s own epoch —
+/// [`from_days_in`] (which converts through [`days_from_civil`]'s own epoch —
 /// see `TO_DAYS`'s `719_528` offset, so the exact epoch choice is internal
-/// and doesn't need to match MySQL's) and, unlike `from_days`, directly on
+/// and doesn't need to match MySQL's) and, unlike `from_days_in`, directly on
 /// its OWN public epoch by `crate::time_fn`'s `NOW()`/`CURRENT_TIMESTAMP()`
 /// (a true Unix timestamp's day count IS already `z` in this function's own
 /// terms, since both anchor to 1970-01-01).
 pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
-    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32; // [1, 12]
-    (if m <= 2 { y + 1 } else { y }, m, d)
+    TikvTime::native_civil_from_days(z)
 }
 
 /// `FROM_DAYS`: the inverse of `TO_DAYS` — an absolute day number back to a
@@ -332,28 +323,39 @@ pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
 /// (`3_652_425` to `3_652_499`), which is source-visible in `TestFromDays`
 /// and therefore retained here before the zero-date fallback resumes beyond
 /// it.
+pub(crate) fn from_days_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::FromDaysNative,
+        ctx,
+        || {
+            if vals.len() != 1 {
+                return Err(EvalError::Unsupported("bad function arity"));
+            }
+            let value = match &vals[0] {
+                Datum::Null => None,
+                value => Some(to_i64_signed(value)),
+            };
+            Ok(crate::tikv::EvaluatedArgs::Int(value))
+        },
+        |computed| {
+            Ok(match computed.into_bytes()? {
+                None => Datum::Null,
+                Some(bytes) if bytes.as_slice() == b"0000-00-00" => {
+                    // Pack the provider's actual zero-date value as the original
+                    // typed Time, so the outer cast does not parse it into NULL.
+                    let zero = Time::new(CoreTime::default(), TimeType::Date, 0)
+                        .expect("the zero date is a valid Time");
+                    Datum::new_time(zero)
+                }
+                Some(bytes) => Datum::new_string(bytes),
+            })
+        },
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn from_days(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let n = match &vals[0] {
-        Datum::Null => return Ok(Datum::Null),
-        value => to_i64_signed(value),
-    };
-    if (3_652_425..=3_652_499).contains(&n) {
-        return Ok(Datum::Null);
-    }
-    if !(366..=3_652_424).contains(&n) {
-        // Go `builtinFromDaysSig.evalTime` answers a zero `types.Time`, which
-        // the wire renders as `0000-00-00` -- NOT NULL. Carrying a real Time
-        // datum also keeps the result-typed coercion from re-parsing the
-        // zero date into NULL.
-        let zero = Time::new(CoreTime::default(), TimeType::Date, 0)
-            .expect("the zero date is a valid Time");
-        return Ok(Datum::new_time(zero));
-    }
-    let (y, m, d) = civil_from_days(n - 719_528);
-    Ok(Datum::new_string(format!("{y:04}-{m:02}-{d:02}")))
+    from_days_in(vals, &crate::NoColumns)
 }
 
 /// `DATEDIFF` retains both original text conversions in left-to-right order,

@@ -28,7 +28,7 @@ use crate::string_fn::{
 };
 use crate::string_packet::{pad, repeat, space, to_base64};
 use crate::time_fn::calendar::{
-    date_add, date_diff_in, date_format, from_days, hour_in, minute_in, second_in, year_in,
+    date_add, date_diff_in, date_format, from_days_in, hour_in, minute_in, second_in, year_in,
 };
 use crate::{BuildContext, Columns, Datum, EvalError, StringLengthFunction};
 
@@ -853,8 +853,8 @@ pub(crate) fn eval_func_values(
         // doesn't matter since only the difference is observable.
         // `TO_DAYS`/`TO_SECONDS`: zero-date calendar arithmetic owned by the
         // time-family module, including strict invalid-suffix handling.
-        // `FROM_DAYS`: the reverse of `TO_DAYS` (see `time_fn::calendar::from_days`).
-        "FROM_DAYS" => from_days(vals),
+        // `FROM_DAYS`: the reverse of `TO_DAYS` (see `time_fn::calendar::from_days_in`).
+        "FROM_DAYS" => from_days_in(vals, ctx),
         "DATEDIFF" if vals.len() == 2 => date_diff_in(vals, ctx),
         // Family extension modules (`crate::builtin_ext`) — each family owns
         // one module with its own `dispatch(name, vals) -> Option<...>`, so

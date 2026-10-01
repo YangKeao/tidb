@@ -1709,7 +1709,10 @@ fn materialize_computed(
             | EvaluatedBytesOp::DayNameTextNative
             | EvaluatedBytesOp::WeekDateTextNative
             | EvaluatedBytesOp::PasswordNative
-            | EvaluatedBytesOp::Sm3Native,
+            | EvaluatedBytesOp::Sm3Native
+            | EvaluatedBytesOp::MakeDateNative
+            | EvaluatedBytesOp::FromDaysNative
+            | EvaluatedBytesOp::SecToTimeNative,
             ComputedValue::Bytes(value),
         ) => {
             match value.metadata() {
@@ -1766,7 +1769,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::RoundRealNative
             | EvaluatedBytesOp::TruncateRealNative
             | EvaluatedBytesOp::RoundRealLegacy
-            | EvaluatedBytesOp::RoundDecimalLegacy,
+            | EvaluatedBytesOp::RoundDecimalLegacy
+            | EvaluatedBytesOp::MakeTimePartsNative,
             ComputedValue::Ieee754Bits(value),
         ) => {
             match value.metadata() {

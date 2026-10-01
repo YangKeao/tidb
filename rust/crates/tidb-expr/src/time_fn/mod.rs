@@ -77,14 +77,14 @@ pub(crate) fn dispatch(
         "DAYNAME" => dayname_in(vals, cols),
         "LAST_DAY" => last_day(vals),
         "TIME_TO_SEC" => time_to_sec_in(vals, cols),
-        "SEC_TO_TIME" => sec_to_time(vals, cols),
-        "MAKEDATE" => makedate(vals),
-        "MAKETIME" => maketime(vals, cols),
+        "SEC_TO_TIME" => sec_to_time_in(vals, cols),
+        "MAKEDATE" => makedate_in(vals, cols),
+        "MAKETIME" => maketime_in(vals, cols),
         "PERIOD_ADD" => period_add_in(vals, cols),
         "PERIOD_DIFF" => period_diff_in(vals, cols),
         "TIME_FORMAT" => time_format(vals),
         "STR_TO_DATE" => calendar::str_to_date(vals, cols),
-        "FROM_DAYS" => calendar::from_days(vals),
+        "FROM_DAYS" => calendar::from_days_in(vals, cols),
         "TIMEDIFF" => time_diff(vals),
         "CONVERT_TZ" => convert_tz::convert_tz(vals),
         "FROM_UNIXTIME" => session_tz::from_unixtime(vals, cols),
@@ -1124,18 +1124,40 @@ fn time_to_sec(vals: &[Datum]) -> Result<Datum, EvalError> {
     time_to_sec_in(vals, &crate::NoColumns)
 }
 
-/// `builtinSecToTimeSig` in `pkg/expression/builtin_time.go`.
+/// `builtinSecToTimeSig` keeps original numeric/FSP preparation in the guard.
+/// The worker owns clamping and formatting, including non-SQL raw FSP values.
+fn sec_to_time_in(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::SecToTimeNative,
+        cols,
+        || {
+            if vals.len() != 1 {
+                return Err(EvalError::Unsupported("bad function arity"));
+            }
+            let seconds = number_arg(&vals[0], cols)?;
+            let precision = match seconds {
+                // Successful FSP comes from nonnegative i64 metadata, u8, or
+                // at most six digits, so this transport is lossless, not a clamp.
+                Some(_) => Some(duration_precision(&vals[0])? as i64),
+                // NULL seconds never demand FSP; this is not a second SQL NULL.
+                None => None,
+            };
+            Ok(crate::tikv::EvaluatedArgs::Ieee754BitsInt {
+                value: seconds.map(f64::to_bits),
+                scale: precision,
+            })
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
+}
+
+#[cfg(test)]
 fn sec_to_time(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(seconds) = number_arg(&vals[0], cols)? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::new_string(format_duration(
-        seconds,
-        duration_precision(&vals[0])?,
-    )))
+    sec_to_time_in(vals, cols)
 }
 
 /// The result FSP comes from TiDB's argument type. String coercion uses the
@@ -1173,119 +1195,82 @@ fn duration_precision(value: &Datum) -> Result<usize, EvalError> {
     })
 }
 
-fn format_duration(seconds: f64, fsp: usize) -> String {
-    let sign = if seconds < 0.0 { "-" } else { "" };
-    let max = 838.0 * 3600.0 + 59.0 * 60.0 + 59.0;
-    let mut seconds = seconds.abs();
-    if seconds > max {
-        seconds = max;
-    }
-    let whole = seconds.trunc() as i64;
-    let hour = whole / 3600;
-    let minute = whole / 60 % 60;
-    let mut second = whole % 60;
-    if fsp == 0 {
-        return format!("{sign}{hour:02}:{minute:02}:{second:02}");
-    }
-    // Go reaches this text through `fmt.Sprintf("%v", second)` followed by
-    // `ParseDuration`, whose fraction rounding works on the DECIMAL DIGITS
-    // and carries half-up at the requested precision
-    // (`Duration.RoundFrac`: Go's time.Round rounds nearest values and sends
-    // exact ties toward positive infinity).
-    // Doing the arithmetic in f64 first re-derives 30.0000005 as
-    // ...4999996µs and loses the digit -- so round off the SHORTEST decimal
-    // rendering instead.
-    // Go formats the REAL second value with %v (shortest repr): 30.1 stays
-    // "30.1", 30.0000005 stays "30.0000005".
-    let digits = format!("{seconds}");
-    let mut digits_fraction = match digits.split_once('.') {
-        Some((_, fraction)) => fraction.to_owned(),
-        None => String::new(),
-    };
-    // Round half-up at the requested precision off the FIRST DISCARDED
-    // digit, carrying into the whole part when the fraction overflows.
-    let round_up = digits_fraction.len() > fsp && digits_fraction.as_bytes()[fsp] >= b'5';
-    digits_fraction.truncate(fsp);
-    while digits_fraction.len() < fsp {
-        digits_fraction.push('0');
-    }
-    let mut fraction: i64 = digits_fraction.parse().unwrap_or(0);
-    if round_up {
-        fraction += 1;
-        if fraction >= 10_i64.pow(fsp as u32) {
-            fraction = 0;
-            second += 1;
-        }
-    }
-    format!("{sign}{hour:02}:{minute:02}:{second:02}.{fraction:0fsp$}")
+/// `builtinMakeDateSig` retains both conversions, including after a left NULL.
+/// Year/day validation, arithmetic and date formatting belong to the worker.
+fn makedate_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::MakeDateNative,
+        ctx,
+        || {
+            if vals.len() != 2 {
+                return Err(EvalError::Unsupported("bad function arity"));
+            }
+            let (year, day) = (int_arg(&vals[0])?, int_arg(&vals[1])?);
+            Ok(crate::tikv::EvaluatedArgs::Int2(year, day))
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 
-/// `builtinMakeDateSig` in `pkg/expression/builtin_time.go`.
+#[cfg(test)]
 fn makedate(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 2 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let (Some(mut year), Some(day)) = (int_arg(&vals[0])?, int_arg(&vals[1])?) else {
-        return Ok(Datum::Null);
-    };
-    if day <= 0 || !(0..=9999).contains(&year) {
-        return Ok(Datum::Null);
-    }
-    if year < 70 {
-        year += 2000;
-    } else if year < 100 {
-        year += 1900;
-    }
-    let (result_y, result_m, result_d) = civil_from_days(days_from_civil(year, 1, 1) + day - 1);
-    if !(1..=9999).contains(&result_y) {
-        return Ok(Datum::Null);
-    }
-    Ok(Datum::new_string(format!(
-        "{result_y:04}-{result_m:02}-{result_d:02}"
-    )))
+    makedate_in(vals, &crate::NoColumns)
 }
 
-/// `builtinMakeTimeSig` in `pkg/expression/builtin_time.go`.
+/// `builtinMakeTimeSig` first computes actual seconds in a worker. Only a
+/// successful result demands the original second datum's FSP in a second,
+/// sequential invocation; no callback reenters C4 and no host range test runs.
+/// This deliberately places the first admission before FSP preparation.
+fn maketime_in(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
+    let seconds = crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::MakeTimePartsNative,
+        cols,
+        || {
+            if vals.len() != 3 {
+                return Err(EvalError::Unsupported("bad function arity"));
+            }
+            let (hour, minute, second) = (
+                int_arg(&vals[0])?,
+                int_arg(&vals[1])?,
+                number_arg(&vals[2], cols)?,
+            );
+            let hour_unsigned = matches!(vals[0], Datum::UInt(_));
+            Ok(crate::tikv::EvaluatedArgs::MakeTimeParts {
+                hour: hour.map(|hour| (hour, hour_unsigned)),
+                minute,
+                second: second.map(f64::to_bits),
+            })
+        },
+        crate::tikv::EvaluatedBytesResult::into_ieee754_bits,
+    )?;
+    let Some(seconds) = seconds else {
+        return Ok(Datum::Null);
+    };
+    crate::tikv::evaluate_args_in(
+        crate::tikv::EvaluatedBytesOp::SecToTimeNative,
+        cols,
+        || {
+            Ok(crate::tikv::EvaluatedArgs::Ieee754BitsInt {
+                value: Some(seconds),
+                // Same lossless FSP transport as SEC_TO_TIME, without a 0..=6 cap.
+                scale: Some(duration_precision(&vals[2])? as i64),
+            })
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
+}
+
+#[cfg(test)]
 fn maketime(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    if vals.len() != 3 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let (Some(mut hour), Some(minute), Some(second)) = (
-        int_arg(&vals[0])?,
-        int_arg(&vals[1])?,
-        number_arg(&vals[2], cols)?,
-    ) else {
-        return Ok(Datum::Null);
-    };
-    if !(0..60).contains(&minute) || !(0.0..60.0).contains(&second) {
-        return Ok(Datum::Null);
-    }
-    // Go's `makeTime` checks the argument FieldType's UnsignedFlag before it
-    // interprets the signed value.  A UInt datum carrying a wrapped negative
-    // hour (for example `CAST(-1 AS UNSIGNED)`) therefore clamps to the
-    // positive TIME limit instead of producing a negative duration.  The
-    // value-level evaluator has no separate FieldType parameter, so Datum::UInt
-    // is the equivalent type signal here.
-    let hour_unsigned = matches!(vals[0], Datum::UInt(_));
-    let mut overflow = false;
-    if hour < 0 && hour_unsigned {
-        hour = 838;
-        overflow = true;
-    }
-    let negative = hour < 0;
-    let hour_abs = hour.unsigned_abs();
-    if hour_abs > 838 || (hour_abs == 838 && minute == 59 && second > 59.0) {
-        overflow = true;
-    }
-    let total = if overflow {
-        838.0 * 3600.0 + 59.0 * 60.0 + 59.0
-    } else {
-        hour_abs as f64 * 3600.0 + minute as f64 * 60.0 + second
-    };
-    Ok(Datum::new_string(format_duration(
-        if negative { -total } else { total },
-        duration_precision(&vals[2])?,
-    )))
+    maketime_in(vals, cols)
 }
 
 /// Both original conversions run left-to-right even when the first is NULL.

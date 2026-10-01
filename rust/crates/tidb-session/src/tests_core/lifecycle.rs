@@ -7174,3 +7174,256 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_week_password_sm3_sql_columns()
         }
     }
 }
+
+#[test]
+fn evaluated_ascii_shared_pool_make_date_from_days_sql_typed_dates_and_metadata() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("SET sql_mode='STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE'")
+        .unwrap();
+    session.run("CREATE TABLE shared_date_constructors (id INT PRIMARY KEY, y BIGINT, d BIGINT, n BIGINT)").unwrap();
+    session
+        .run(
+            "INSERT INTO shared_date_constructors VALUES (1,NULL,NULL,NULL),\
+         (2,69,1,734927),(3,70,1,365),(4,2024,60,3652425),\
+         (5,-1,1,3652499),(6,10000,1,3652500)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT MAKEDATE(y,d),FROM_DAYS(n) FROM shared_date_constructors ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected typed date constructors")
+    };
+    assert_eq!(columns.len(), 2);
+    for (_, field) in &columns {
+        assert_eq!(field.code(), tidb_datatype::FieldTypeCode::Date);
+        assert_eq!((field.flen(), field.decimal()), (10, 0));
+        assert_eq!(field.charset_name(), "binary");
+        assert_eq!(field.collation(), tidb_datatype::Collation::Binary);
+        assert!(!field.is_unsigned());
+        assert!(!field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
+    }
+    let expected = [
+        ["NULL", "NULL"],
+        ["2069-01-01", "2012-02-29"],
+        ["1970-01-01", "0000-00-00"],
+        ["2024-02-29", "NULL"],
+        ["NULL", "NULL"],
+        ["NULL", "0000-00-00"],
+    ];
+    assert_eq!(rows.len(), expected.len());
+    for (row, expected) in rows.iter().zip(expected) {
+        assert_eq!(row.len(), 2);
+        for (value, expected) in row.iter().zip(expected) {
+            assert!(matches!(value, Datum::Null | Datum::Time(_)));
+            assert_eq!(cell_text(value), expected);
+        }
+    }
+    // Both sides of the exceptional NULL band retain actual typed zero dates,
+    // even under NO_ZERO_DATE; reparsing a zero string would change the result.
+    for row in [2, 5] {
+        assert!(matches!(&rows[row][1], Datum::Time(time) if time.is_zero()));
+    }
+    assert!(warnings_of(&session).is_empty());
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_make_time_sec_to_time_sql_typed_durations_and_warnings() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_time_constructors (id INT PRIMARY KEY, h BIGINT, m BIGINT, \
+         s DECIMAL(6,3), n DECIMAL(12,2), r DOUBLE, u BIGINT UNSIGNED, i BIGINT, \
+         t VARCHAR(16), b VARBINARY(1))",
+        )
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO shared_time_constructors VALUES \
+         (1,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'abc',x'FF'),\
+         (2,1,2,3.456,1.25,86401.54321,18446744073709551615,0,'123x',NULL),\
+         (3,1000,1,1.000,3864000.00,-3864000,NULL,NULL,NULL,NULL),\
+         (4,12,60,0.000,NULL,NULL,NULL,NULL,NULL,NULL),\
+         (5,12,15,60.000,NULL,NULL,NULL,NULL,NULL,NULL)",
+        )
+        .unwrap();
+    // MAKETIME's total-seconds call must release the one slot before its
+    // independent FSP/formatter call; all outputs still pass the old TIME cast.
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns(
+            "SELECT MAKETIME(h,m,s),SEC_TO_TIME(n),SEC_TO_TIME(r) \
+         FROM shared_time_constructors ORDER BY id",
+        )
+        .unwrap()
+    else {
+        panic!("expected typed duration constructors")
+    };
+    assert_eq!(columns.len(), 3);
+    for ((_, field), (flen, fsp)) in columns.iter().zip([(14, 3), (13, 2), (17, 6)]) {
+        assert_eq!(field.code(), tidb_datatype::FieldTypeCode::Duration);
+        assert_eq!((field.flen(), field.decimal()), (flen, fsp));
+        assert_eq!(field.charset_name(), "binary");
+        assert_eq!(field.collation(), tidb_datatype::Collation::Binary);
+        assert!(!field.is_unsigned());
+        assert!(!field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
+    }
+    let expected = [
+        ["NULL", "NULL", "NULL"],
+        ["01:02:03.456", "00:00:01.25", "24:00:01.543210"],
+        ["838:59:59.000", "838:59:59.00", "-838:59:59.000000"],
+        ["NULL", "NULL", "NULL"],
+        ["NULL", "NULL", "NULL"],
+    ];
+    assert_eq!(rows.len(), expected.len());
+    for (row, expected) in rows.iter().zip(expected) {
+        assert_eq!(row.len(), 3);
+        for (value, expected) in row.iter().zip(expected) {
+            assert!(matches!(value, Datum::Null | Datum::Duration(_)));
+            assert_eq!(cell_text(value), expected);
+        }
+    }
+    assert!(warnings_of(&session).is_empty());
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns("SELECT MAKETIME(u,i,i) FROM shared_time_constructors WHERE id=2")
+        .unwrap()
+    else {
+        panic!("expected unsigned-hour clamp")
+    };
+    assert_eq!(columns[0].1.code(), tidb_datatype::FieldTypeCode::Duration);
+    assert_eq!((columns[0].1.flen(), columns[0].1.decimal()), (10, 0));
+    assert!(matches!(&rows[0][0], Datum::Duration(_)));
+    assert_eq!(cell_text(&rows[0][0]), "838:59:59");
+    assert!(warnings_of(&session).is_empty());
+    // Original number_arg parses the whole string: a numeric prefix plus junk
+    // warns and becomes zero, while invalid UTF-8 silently becomes zero.
+    for (expression, id, expected, warning) in [
+        (
+            "MAKETIME(h,m,t)",
+            1,
+            "NULL",
+            Some("Truncated incorrect DOUBLE value: 'abc'"),
+        ),
+        (
+            "SEC_TO_TIME(t)",
+            2,
+            "00:00:00.000000",
+            Some("Truncated incorrect DOUBLE value: '123x'"),
+        ),
+        ("SEC_TO_TIME(b)", 1, "00:00:00.000000", None),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_time_constructors WHERE id={id}");
+        let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap() else {
+            panic!("expected duration coercion row: {sql}")
+        };
+        assert_eq!(columns[0].1.code(), tidb_datatype::FieldTypeCode::Duration);
+        assert_eq!((columns[0].1.flen(), columns[0].1.decimal()), (17, 6));
+        assert!(matches!(&rows[0][0], Datum::Null | Datum::Duration(_)));
+        assert_eq!(cell_text(&rows[0][0]), expected, "{sql}");
+        if let Some(message) = warning {
+            assert_eq!(
+                session.warnings(),
+                &[SqlWarning {
+                    level: WarningLevel::Warning,
+                    code: 1292,
+                    message: message.to_owned(),
+                }],
+                "{sql}"
+            );
+        } else {
+            assert!(warnings_of(&session).is_empty(), "{sql}");
+        }
+    }
+}
+
+#[test]
+fn evaluated_ascii_shared_pool_zero_slots_reject_temporal_constructors_sql_columns() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run(
+            "CREATE TABLE shared_temporal_constructors_zero (id INT PRIMARY KEY, y BIGINT, \
+         d BIGINT, n BIGINT, h BIGINT, m BIGINT, s VARCHAR(16), v VARBINARY(16))",
+        )
+        .unwrap();
+    session.run(
+        "INSERT INTO shared_temporal_constructors_zero VALUES (1,NULL,NULL,NULL,NULL,NULL,NULL,NULL),\
+         (2,69,1,734927,12,15,'30.1','123.4'),(3,-1,1,3652425,12,60,'0','abc'),\
+         (4,NULL,1,0,NULL,0,'abc',x'FF')",
+    ).unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    let bad_number = Some("Truncated incorrect DOUBLE value: 'abc'");
+    for (expression, id, warning) in [
+        ("MAKEDATE(y,d)", 1, None),
+        ("FROM_DAYS(n)", 1, None),
+        ("MAKETIME(h,m,s)", 1, None),
+        ("SEC_TO_TIME(v)", 1, None),
+        ("MAKEDATE(y,d)", 2, None),
+        ("FROM_DAYS(n)", 2, None),
+        ("MAKETIME(h,m,s)", 2, None),
+        ("SEC_TO_TIME(v)", 2, None),
+        ("MAKEDATE(y,d)", 3, None),
+        ("FROM_DAYS(n)", 3, None),
+        ("MAKETIME(h,m,s)", 3, None),
+        ("SEC_TO_TIME(v)", 3, bad_number),
+        ("FROM_DAYS(n)", 4, None),
+        ("MAKETIME(h,m,s)", 4, bad_number),
+        ("SEC_TO_TIME(v)", 4, None),
+    ] {
+        let sql =
+            format!("SELECT {expression} FROM shared_temporal_constructors_zero WHERE id={id}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => {
+                panic!("temporal constructors must reach the zero-slot pool: {sql}: {other:?}")
+            }
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        if let Some(message) = warning {
+            assert_eq!(
+                session.warnings(),
+                &[SqlWarning {
+                    level: WarningLevel::Warning,
+                    code: 1292,
+                    message: message.to_owned(),
+                }],
+                "{sql}"
+            );
+        } else {
+            assert!(warnings_of(&session).is_empty(), "{sql}");
+        }
+    }
+}

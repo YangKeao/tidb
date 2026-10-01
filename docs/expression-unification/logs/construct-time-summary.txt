@@ -1,0 +1,70 @@
+Checkpoint: construct-time-four-39; previous: week-auth-five-38. Four families MAKEDATE/FROM_DAYS/MAKETIME/SEC_TO_TIME and four operations; functional124->128/245, final acceptance0/245.
+COUNTS: seven test-Cargo attempts/seven actual test runs =five green+two CURRENT baseline non-green full runs. Test-Cargo compilefail0/launchfail0/retry0/new-product-RED0; metadata commands0. Staticproof correction1 (first check exit1); fmtfail0; all_checks_firstpass=false.
+PROVENANCE: parent owns source/gates/exits/proof/coverage; writer globbed, grepped/read and sha256sum-hashed seven current logs (exit0), without build/test/fmt/index/Plan/additional source audit. RAW=/home/agent/tidb/expression-unification/logs.
+JAN CWD=/home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv pin nightly-2026-01-30-x86_64-unknown-linux-gnu.
+AUG CWD=/home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb pin nightly-2026-08-22-x86_64-unknown-linux-gnu.
+Exact template: set -o pipefail; <COMMAND> 2>&1 | tee <OUTPUT> >/dev/null; OUTPUT=../logs/<LOG> JAN or ../../logs/<LOG> AUG. Full output retained, terminal suppressed. All seven commands --locked --lib and --test-threads=1; no --exact. Finished timings are not benchmarks.
+No standalone native make/from/sec source filter was run: their actual execution is inside the CURRENT full expr suite. Do not turn contained tests into extra Cargo gates. No parser/auth or metadata command this round.
+
+LOG [JAN]: construct-time-tikv-time.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib codec::mysql::time:: -- --test-threads=1
+EXIT: 0; compile2.05s; test result: ok. 51 passed; 0 failed; 0 ignored; 0 measured; 361 filtered out; finished in 0.01s
+SHA256: d0bb39490aad2092af7ccdde39a3fbed0fb04fd56130385fcfb3a03da4c59518
+LOG [JAN]: construct-time-tikv-local.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+EXIT: 0; compile8.98s; 267 discovered, ignore preexisting; test result: ok. 266 passed; 0 failed; 1 ignored; 0 measured; 499 filtered out; finished in 0.19s
+SHA256: 3d686c8344785078e041bea6cf1974af587ea23c8e66463acbb427fa28fb6652
+LOG [JAN]: construct-time-tikv-kernels.log
+COMMAND: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_time:: -- --test-threads=1
+EXIT: 0; compile0.12s; test result: ok. 65 passed; 0 failed; 0 ignored; 0 measured; 701 filtered out; finished in 0.01s
+SHA256: 2cb42fb9b24b4f2bd57eaeabe22aee1758334fdf8ab3b38a4ead2d745cb64156
+LOG [AUG]: construct-time-sql.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ -- --test-threads=1
+EXIT: 0; compile18.80s; test result: ok. 83 passed; 0 failed; 0 ignored; 0 measured; 2078 filtered out; finished in 1.26s
+SHA256: 972af56e327a1a25d36301644ac8c9cc17887f46a401021c86c29d1cc3a267df
+LOG [AUG]: construct-time-dispatch.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib construct_time_dispatch_ -- --test-threads=1
+EXIT: 0; compile13.87s; test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1562 filtered out; finished in 0.00s
+SHA256: 9b7d887cceeb5f52e032feab61637631489ed7766be9b8f8126da978ac7f2bfe
+LOG [AUG / CURRENT baseline non-green]: construct-time-expr-full.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+EXIT: 101; compile0.13s; 1565 discovered; test result: FAILED. 1467 passed; 4 failed; 94 ignored; 0 measured; 0 filtered out; finished in 10.39s
+SHA256: 42b4b388f074ea9be3badd75fbce009db489c61625756cb880f46b8816688269
+LOG [AUG / CURRENT baseline non-green]: construct-time-unistore-full.log
+COMMAND: ../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+EXIT: 101; compile5.17s; 207 discovered; test result: FAILED. 193 passed; 1 failed; 13 ignored; 0 measured; 0 filtered out; finished in 2.99s
+SHA256: b41043b8ba1c9aca4fa9dc8c84c75175daaa1ea6e9d711424021c505ffea5165
+
+FOUR PRIVATE RECIPES / REAL VALUES
+MakeDateNative/make_date_native_fn_meta: nullable Int2->OwnBytes; native year pivot, original ordinary i64 days_from_civil(year,1,1)+day-1 order and result-year guard, no overflow repair or wire day-bound substitution.
+FromDaysNative/from_days_native_fn_meta: nullable Int->OwnBytes; 366..3652424 civil(n-719528), 3652425..3652499 NULL band, other non-NULL values actual canonical0000-00-00 date text. Native result packer restores zero-Time only from the computed text, not input-number business classification or a validity marker; other computed dates remain their original String kind. NULL remains NULL.
+MakeTimePartsNative/make_time_parts_native_fn_meta: sole NEW typed role, physical[Bytes9(LEi64 hour+unsignedbyte0/1),Int minute,Bytes8 IEEE second]. Present shapes/flags independently validate; NULL/range/NaN follows original native policy. UInt-wrapped negative hour clamps positive, signed hour preserves sign; hour_abs/overflow/total arithmetic unchanged. Existing OwnIeee754Bits output is the actual signed total-seconds value in LE8, not a marker or ordinary-byte argument hack.
+SecToTimeNative/sec_to_time_native_fn_meta: existing Ieee754Int physical[IEEE8 seconds,Int actual FSP]->OwnBytes. (None,None) means NULL seconds and FSP NOT DEMANDED; Some/Some requires nonnegative usize-representable scale, not6/u8. Transport wording jointly absent/present is intentional; it does not reinterpret FSP absence as SQL NULL.
+MAKETIME first finishes its Parts worker call. Only Some actual seconds then demands original duration_precision on the original seconds (third-argument) Datum, then calls SecToTime through a second full call; no recursion during coercion/packing. Invalid/NULL Parts does not demand FSP. Explicit cost: extra transport/two sequential leases on success; without a capability, two one-shots. First admission can precede still-undemanded FSP; not a zero-cost or single-lease claim.
+Native format_duration body was deleted; one CPP private format_native_duration owns both families' rendering. Keep838:59:59 clamp, shortest decimal digits, half-up, second-only carry (NO minute/hour normalization), NaN/inf/-0 and actual FSP7. FSP/int_arg/number_arg retain original policies, including raw Duration scale/no added validation, Time7 and the bad-Duration panic during original number_arg. No provider-generated expected output or policy fix.
+Original SQL typed-result parsing uses original context. Time::native_civil_from_days is the sole native inverse owner with a native thin delegate; distinct wire day-number/domain policy is not merged. No new result kind/report/cause/driver/PB/legacy route, and three preexisting wire date/time bodies remain.
+
+C/D/E EVIDENCE AND ORACLE LIMITS
+SQL83 includes three new E tests: strict NO_ZERO_DATE zero result is a genuine Time datum without warnings; date window/pivot/leap/from-days NULL band; decimal FSP, UInt max, actual Duration and unchanged original typed-result parsing.
+Original front conversions remain left-to-right: early MAKETIME NULL does not prevent the third argument's1292. SEC_TO_TIME('123x') retains old whole-string parse0+1292; invalid UTF-8 bytes retain0 without warning. ALL15 new zero-slot invocations return Resource1105, exactly2 with original1292 and13 with empty warnings. Not all warnings empty.
+D3 tests the two facades separately; observer values are not a cumulative total. Its public raw FSP7 witness is SEC_TO_TIME on zero-Time bits0b1111 ONLY, not a broad MAKETIME/SQL FSP7 claim. Source-compatible date and Duration preparation ordering, genuine zero-Time reconstruction and two complete sequential worker calls are covered.
+C3 has original source literals plus explicitly HAND-DERIVED policy literals:3020399 seconds bits,0/FSP7 seven zeros,MAKEDATE(2012,1). These are new hand-derived tests, not falsely attributed to old fixtures and not generated by the new provider. A's00:00:60.0000000/FSP7 expectation is likewise derived from the original second-only-carry algorithm, not a minute-normalization fix. No existing expected fixture was changed.
+Current full expr actually contains the old make/from/sec source fixtures; there was no additional filtered invocation. Current full unistore is also an actual run, not a copied historical result.
+
+STATIC CORRECTION / SOURCE / FORMATTING
+ONE staticproof correction: inverse-civil freefn-to-impl-method body comparison initially asserted/exit1 because it missed the method's extra4 leading spaces. Removing precisely that structural indentation gave an empty diff and exact body bytes; no source repair. This is the only failing proof check credited here; all_checks_firstpass=false even though all Cargo launches compiled.
+Parent confirms original duration_precision/int_arg/number_arg bodies byte-identical. scalar_function.rs, arg_eval_type.rs, time_fn/tests.rs and PB/coph files (five whole files) byte-identical to baseline0c2b. Shared formatter equals the old body ONLY after removing comments/whitespace, not a raw-byte claim; old native formatter deleted. Three old wire date/time bodies byte-identical.
+Parent changed transport diagnostic wording jointly NULL->jointly absent/present to preserve FSP-not-demanded meaning, without normal-algorithm changes. Fourteen Rust sources (TiKV8/native6) pinned-format checks and both repository diffs passed FIRST checks; fmtfail0. Zero manifest changes; BOTH locks byte-identical to HEAD. ZERO metadata commands this round.
+Round39's parser all compilefail1/isolated auth20 and SM3-doc proof correction remain HISTORY, not Round40 gates/failures/credits. Parser all is still historically unrepaired; do not claim its restoration or import Round38/39 formatter/compiler counts. Source-stage missing guessed fixture path was only a corrected RO discovery, never a Cargo attempt.
+
+CURRENT COMPLETE FAILURE COMPARISONS
+Parent compares each complete failure section to its week-auth predecessor, normalizing ONLY panic-heading thread IDs. No source-location mapping; normalized section hashes below are NOT whole-log hashes. Both current full suites remain non-green despite identical baseline failures.
+EXPR normalized-section SHA256:80be9bda05e5bf630e9c246ca9523d23f82c122eaaeec6e220b1b00cec436615; same four failures:
+- pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation
+- tests::builtin_info_json_math_source::exp (original EXP(100_000.0) FloatOverflow assertion)
+- tests::builtin_math_misc_op_source::vectorized_builtin_op_func (crates/tidb-datatype/src/duration.rs:212:55; TryFromIntError(NegOverflow), no mapping)
+- time_fn::tests::str_to_date_partial_formats_follow_no_zero_date
+UNISTORE normalized-section SHA256:e285bfdba646f2d01f85b485ae317cc07c51b78cf0ae6d664c0fb2bc39259759; same tests_mockstore_part1_go_parity::closure_executor_selection_over_point_range_answers_zero_rows, TruncatedWrongValue("Truncated incorrect DECIMAL value: 'abc'"), crates/tidb-unistore/src/tests_mockstore_part1_go_parity.rs:194:5 unchanged. Current193/1/13, exit101.
+
+FREEZE / LIMITS
+Only construct-time-checkpoint.md and this summary were written under this authorization. No new source audit/source/build/test/fmt/index/Plan/manifest/lock/other-doc/old-expected edits by writer. Entire workspace/Go-package/temporal acceptance, lint, release/profile/panic-test adaptation, allocation/OOM peak, performance/zero-copy and M6 remain unverified. Functional128/245, FINAL0/245; not PR readiness.

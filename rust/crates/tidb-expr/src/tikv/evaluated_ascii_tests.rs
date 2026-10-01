@@ -1179,6 +1179,12 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::Sm3Native => {
             panic!("week and auth calls need their original argument domains")
         }
+        EvaluatedBytesOp::MakeDateNative
+        | EvaluatedBytesOp::FromDaysNative
+        | EvaluatedBytesOp::MakeTimePartsNative
+        | EvaluatedBytesOp::SecToTimeNative => {
+            panic!("temporal construction needs its original numeric and precision domains")
+        }
         EvaluatedBytesOp::CompressGoNative | EvaluatedBytesOp::UncompressNative => {
             panic!("compression calls need their original nullable bytes")
         }
@@ -1436,6 +1442,353 @@ fn week_auth_pb(
         field,
         args,
     )
+}
+
+#[derive(Default)]
+struct ConstructTimeWarnings(RefCell<Vec<(u16, String, bool)>>);
+
+impl Columns for ConstructTimeWarnings {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        None
+    }
+    fn append_warning(&self, code: u16, message: &str) {
+        let before_admission = EVAL_ONE_OBSERVATION.with(|slot| {
+            slot.borrow().as_ref().is_some_and(|value| {
+                value.facade_entries == 0
+                    && value.before_kernel_invocations.is_none()
+                    && value.after_kernel_invocations.is_none()
+            })
+        });
+        self.0
+            .borrow_mut()
+            .push((code, message.to_owned(), before_admission));
+    }
+}
+
+fn construct_time_function(
+    name: &str,
+    values: Vec<Datum>,
+    result_code: FieldTypeCode,
+) -> crate::scalar_function::ScalarFunction {
+    let args = values
+        .into_iter()
+        .map(|value| {
+            crate::expression::Expression::Constant(Constant::new(
+                value,
+                FieldType::new(FieldTypeCode::LongLong),
+            ))
+        })
+        .collect();
+    crate::scalar_function::ScalarFunction::new(
+        tidb_ast::CiString::new(name),
+        FieldType::new(result_code).with_decimal(0),
+        args,
+    )
+}
+
+#[test]
+fn construct_time_dispatch_keeps_date_source_values_and_real_zero_time_carriers() {
+    let native = ConstructTimeWarnings::default();
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let zero = Datum::Time(Time::new(CoreTime::default(), TimeType::Date, 0).unwrap());
+    scope.with_columns(&native, |columns| {
+        // Original go_test_makedate/from_days_source_vectors. The exception
+        // band's final point and following zero are fixed old source rules,
+        // not expectations computed by the migrated date provider.
+        for (name, values, expected) in [
+            ("MAKEDATE", vec![Datum::Int(69), Datum::Int(1)], Datum::new_string("2069-01-01")),
+            ("MAKEDATE", vec![Datum::Int(70), Datum::Int(1)], Datum::new_string("1970-01-01")),
+            ("MAKEDATE", vec![Datum::Real(71.1), Datum::Real(1.89)], Datum::new_string("1971-01-02")),
+            ("MAKEDATE", vec![Datum::Int(2060), Datum::Int(2_900_026)], Datum::Null),
+            ("MAKEDATE", vec![Datum::Null, Datum::Int(1)], Datum::Null),
+            ("FROM_DAYS", vec![Datum::Int(735_000)], Datum::new_string("2012-05-12")),
+            ("FROM_DAYS", vec![Datum::new_string("6500z")], Datum::new_string("0017-10-18")),
+            ("FROM_DAYS", vec![Datum::Int(-140)], zero.clone()),
+            ("FROM_DAYS", vec![Datum::Int(3_652_425)], Datum::Null),
+            ("FROM_DAYS", vec![Datum::Int(3_652_499)], Datum::Null),
+            ("FROM_DAYS", vec![Datum::Int(3_652_500)], zero.clone()),
+            ("FROM_DAYS", vec![Datum::Null], Datum::Null),
+        ] {
+            let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch(name, &values, columns).unwrap());
+            assert_eq!(result, Ok(expected), "{name}: FROM_DAYS keeps integer-prefix coercion and String/NULL/actual Time distinct");
+            assert_wide_math_c4(observation);
+        }
+        let (result, observation) = observe_wide_math(|| crate::func::eval_func_values("FROM_DAYS", &[Datum::Int(735_000)], columns).unwrap());
+        assert_eq!(result, Ok(Datum::new_string("2012-05-12")));
+        assert_wide_math_c4(observation);
+        let (result, observation) = observe_wide_math(|| calendar_fields_ast("FROM_DAYS(-140)", columns));
+        assert_eq!(result, Ok(zero.clone()));
+        assert_wide_math_c4(observation);
+        for (name, values, code, expected) in [
+            ("FROM_DAYS", vec![Datum::Int(735_000)], FieldTypeCode::Date, Datum::Time(Time::new(CoreTime::from_date(2012, 5, 12, 0, 0, 0, 0), TimeType::Date, 0).unwrap())),
+            ("FROM_DAYS", vec![Datum::Int(-140)], FieldTypeCode::Date, zero.clone()),
+            ("MAKEDATE", vec![Datum::Int(71), Datum::Int(1)], FieldTypeCode::Datetime, Datum::Time(Time::new(CoreTime::from_date(1971, 1, 1, 0, 0, 0, 0), TimeType::DateTime, 0).unwrap())),
+        ] {
+            let function = construct_time_function(name, values, code);
+            let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert_eq!(result, Ok(expected), "the unchanged temporal return-type parser receives the actual worker value");
+            assert_wide_math_c4(observation);
+        }
+        assert!(native.0.borrow().is_empty(), "a real zero Time does not acquire the string zero-date warning");
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn construct_time_dispatch_keeps_duration_source_values_and_sequential_fsp_demand() {
+    let native = ConstructTimeWarnings::default();
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        // Original MakeTime and SecToTime literals, including the UInt type
+        // signal and the shortest-decimal half-up result, not a new oracle.
+        for (name, values, expected, calls) in [
+            (
+                "MAKETIME",
+                vec![Datum::Int(12), Datum::Int(15), Datum::Int(30)],
+                Datum::new_string("12:15:30"),
+                2,
+            ),
+            (
+                "MAKETIME",
+                vec![Datum::Int(-25), Datum::Int(15), Datum::Int(30)],
+                Datum::new_string("-25:15:30"),
+                2,
+            ),
+            (
+                "MAKETIME",
+                vec![Datum::UInt(u64::MAX), Datum::Int(0), Datum::Int(0)],
+                Datum::new_string("838:59:59"),
+                2,
+            ),
+            (
+                "MAKETIME",
+                vec![
+                    Datum::Int(1000),
+                    Datum::Int(1),
+                    Datum::Decimal(crate::Decimal::from_literal("1.0")),
+                ],
+                Datum::new_string("838:59:59.0"),
+                2,
+            ),
+            (
+                "MAKETIME",
+                vec![Datum::Int(12), Datum::Int(15), Datum::Real(30.000_000_5)],
+                Datum::new_string("12:15:30.000001"),
+                2,
+            ),
+            (
+                "MAKETIME",
+                vec![Datum::Int(12), Datum::Int(15), Datum::new_string("30.10")],
+                Datum::new_string("12:15:30.100000"),
+                2,
+            ),
+            (
+                "MAKETIME",
+                vec![Datum::Null, Datum::Int(15), Datum::Int(0)],
+                Datum::Null,
+                1,
+            ),
+            (
+                "MAKETIME",
+                vec![Datum::Int(12), Datum::Int(60), Datum::Int(0)],
+                Datum::Null,
+                1,
+            ),
+            (
+                "SEC_TO_TIME",
+                vec![Datum::Int(2378)],
+                Datum::new_string("00:39:38"),
+                1,
+            ),
+            (
+                "SEC_TO_TIME",
+                vec![Datum::Decimal(crate::Decimal::from_literal("86401.4"))],
+                Datum::new_string("24:00:01.4"),
+                1,
+            ),
+            (
+                "SEC_TO_TIME",
+                vec![Datum::new_string("123.4")],
+                Datum::new_string("00:02:03.400000"),
+                1,
+            ),
+            ("SEC_TO_TIME", vec![Datum::Null], Datum::Null, 1),
+            // Tiny original source rules: NaN fails MakeTime's seconds range;
+            // the formatter's saturating cast yields zero, Inf clamps, and
+            // its seconds<0 sign check does not render a minus for negative zero.
+            (
+                "MAKETIME",
+                vec![Datum::Int(0), Datum::Int(0), Datum::Real(f64::NAN)],
+                Datum::Null,
+                1,
+            ),
+            (
+                "SEC_TO_TIME",
+                vec![Datum::Real(f64::NAN)],
+                Datum::new_string("00:00:00.000000"),
+                1,
+            ),
+            (
+                "SEC_TO_TIME",
+                vec![Datum::Real(f64::INFINITY)],
+                Datum::new_string("838:59:59.000000"),
+                1,
+            ),
+            (
+                "SEC_TO_TIME",
+                vec![Datum::Real(-0.0)],
+                Datum::new_string("00:00:00.000000"),
+                1,
+            ),
+        ] {
+            let (result, observation) =
+                observe_wide_math(|| crate::time_fn::dispatch(name, &values, columns).unwrap());
+            assert_eq!(
+                result,
+                Ok(expected),
+                "{name}: retain raw IEEE values rather than introducing SQL-Real validation"
+            );
+            if calls == 2 {
+                assert_week_auth_two_calls(observation);
+            } else {
+                assert_wide_math_c4(observation);
+            }
+        }
+        // Parent-locked policy-derived literal, NOT an existing fixture row:
+        // public raw metadata 1111 is zero Timestamp/FSP7; zero to_number is
+        // safe, and the original formatter retains all seven requested digits.
+        let raw_zero_fsp7 = Datum::Time(Time::from_go_raw_like_go(0b1111));
+        let (result, observation) = observe_wide_math(|| {
+            crate::time_fn::dispatch("SEC_TO_TIME", &[raw_zero_fsp7], columns).unwrap()
+        });
+        assert_eq!(result, Ok(Datum::new_string("00:00:00.0000000")));
+        assert_wide_math_c4(observation);
+        assert!(native.0.borrow().is_empty());
+        for (hour, expected, calls) in [
+            (Datum::Null, Datum::Null, 1),
+            (Datum::Int(0), Datum::new_string("00:00:00.000000"), 2),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::time_fn::dispatch(
+                    "MAKETIME",
+                    &[hour, Datum::Int(0), Datum::new_string("x")],
+                    columns,
+                )
+                .unwrap()
+            });
+            assert_eq!(result, Ok(expected));
+            if calls == 2 {
+                assert_week_auth_two_calls(observation);
+            } else {
+                assert_wide_math_c4(observation);
+            }
+            assert_eq!(
+                native.0.replace(Vec::new()),
+                [(
+                    1292,
+                    "Truncated incorrect DOUBLE value: 'x'".to_owned(),
+                    true
+                )],
+                "the third conversion still warns after an earlier NULL, before the first worker"
+            );
+        }
+        let function = construct_time_function(
+            "MAKETIME",
+            vec![Datum::Int(12), Datum::Int(15), Datum::Int(30)],
+            FieldTypeCode::Duration,
+        );
+        let (result, observation) =
+            observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+        assert_eq!(
+            result,
+            Ok(Datum::Duration(
+                tidb_datatype::MySqlDuration::new(12, 15, 30, 0, 0).unwrap()
+            ))
+        );
+        assert_week_auth_two_calls(observation);
+        assert!(native.0.borrow().is_empty());
+    });
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn construct_time_dispatch_keeps_preparation_errors_and_warnings_before_refusal() {
+    let native = ConstructTimeWarnings::default();
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&native, |columns| {
+        for (name, normal, nulls, invalid) in [
+            ("MAKEDATE", vec![Datum::Int(71), Datum::Int(1)], vec![Datum::Null, Datum::Int(1)], vec![Datum::Int(10_000), Datum::Int(1)]),
+            ("FROM_DAYS", vec![Datum::Int(735_000)], vec![Datum::Null], vec![Datum::new_bytes([0xff])]),
+            ("MAKETIME", vec![Datum::Int(12), Datum::Int(15), Datum::Int(30)], vec![Datum::Null, Datum::Int(15), Datum::Int(0)], vec![Datum::Int(12), Datum::Int(60), Datum::Int(0)]),
+            ("SEC_TO_TIME", vec![Datum::Int(2378)], vec![Datum::Null], vec![Datum::new_bytes([0xff])]),
+        ] {
+            for values in [normal, nulls, invalid] {
+                let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch(name, &values, columns).unwrap());
+                assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource), "normal/NULL/invalid results require admission; FROM_DAYS is not int_arg and SEC_TO_TIME invalid UTF8 is silently numeric zero");
+                assert_eq!(observation.facade_entries, 0);
+                assert_eq!(observation.before_kernel_invocations, None);
+                assert_eq!(observation.after_kernel_invocations, None);
+            }
+            let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch(name, &[], columns).unwrap());
+            assert_eq!(result, Err(EvalError::Unsupported("bad function arity")));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        for (name, values, expected) in [
+            ("MAKEDATE", vec![Datum::Null, Datum::MinNotNull], EvalError::Unsupported("range sentinel time argument")),
+            ("MAKEDATE", vec![Datum::new_bytes([0xff]), Datum::MinNotNull], EvalError::Unsupported("invalid UTF-8 byte datum")),
+            ("MAKETIME", vec![Datum::Null, Datum::MinNotNull, Datum::new_string("x")], EvalError::Unsupported("range sentinel time argument")),
+            ("MAKETIME", vec![Datum::Null, Datum::Int(0), Datum::MinNotNull], EvalError::Unsupported("range sentinel numeric argument")),
+            ("SEC_TO_TIME", vec![Datum::MinNotNull], EvalError::Unsupported("range sentinel numeric argument")),
+        ] {
+            let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch(name, &values, columns).unwrap());
+            assert_eq!(result, Err(expected), "tuple coercions continue after NULL but stop at the first actual error");
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+            assert!(native.0.borrow().is_empty(), "a minute coercion error prevents the third argument's warning");
+        }
+        for (name, values, message) in [
+            ("MAKETIME", vec![Datum::Null, Datum::Int(0), Datum::new_string("x")], "Truncated incorrect DOUBLE value: 'x'"),
+            ("SEC_TO_TIME", vec![Datum::new_string("abc")], "Truncated incorrect DOUBLE value: 'abc'"),
+        ] {
+            let (result, observation) = observe_wide_math(|| crate::time_fn::dispatch(name, &values, columns).unwrap());
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+            assert_eq!(native.0.replace(Vec::new()), [(1292, message.to_owned(), true)]);
+        }
+        let (result, observation) = observe_wide_math(|| crate::func::eval_func_values("FROM_DAYS", &[Datum::Int(3_652_425)], columns).unwrap());
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+        for (name, values, code) in [
+            ("FROM_DAYS", vec![Datum::Int(-140)], FieldTypeCode::Date),
+            ("MAKETIME", vec![Datum::Int(12), Datum::Int(15), Datum::Int(30)], FieldTypeCode::Duration),
+        ] {
+            let function = construct_time_function(name, values, code);
+            let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        assert!(native.0.borrow().is_empty());
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
 }
 
 #[test]
