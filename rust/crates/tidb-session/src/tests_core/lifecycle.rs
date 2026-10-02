@@ -9363,6 +9363,155 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_clock_context_preserves_pinned_time_zone_fsp_and_lifecycle() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("SET time_zone='+08:00'").unwrap();
+    session.run("SET timestamp=1700000000.654321").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // SET timestamp's source f64 split gives 654320955 nanoseconds. The two
+    // duration families first truncate to microseconds before explicit-FSP
+    // rounding, whereas UTC_TIMESTAMP rounds the original nanoseconds.
+    let StmtOutput::Rows { columns, rows, .. } = session.run_with_columns(
+        "SELECT CURTIME(),CURTIME(0),CURTIME(6),CURRENT_TIME(3),UTC_TIME(),UTC_TIME(0),UTC_TIME(6),UTC_DATE(),UTC_TIMESTAMP(6),UTC_TIMESTAMP()",
+    ).unwrap() else { panic!("expected four current-clock families") };
+    let temporal_text = |value: &Datum| match value {
+        Datum::Time(value) => value.to_string(),
+        Datum::Duration(value) => value.to_string(),
+        other => panic!("clock lost its native temporal domain: {other:?}"),
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].iter().map(&temporal_text).collect::<Vec<_>>(),
+        vec![
+            "06:13:20",
+            "06:13:21",
+            "06:13:20.654320",
+            "06:13:20.654",
+            "22:13:20",
+            "22:13:21",
+            "22:13:20.654320",
+            "2023-11-14",
+            "2023-11-14 22:13:20.654321",
+            "2023-11-14 22:13:21",
+        ]
+    );
+    for index in 0..7 {
+        assert!(
+            matches!(rows[0][index], Datum::Duration(_)),
+            "column {index}"
+        );
+    }
+    for index in [7, 8, 9] {
+        assert!(matches!(rows[0][index], Datum::Time(_)), "column {index}");
+    }
+    // Preserve the original native SQL metadata, not only rendered strings.
+    for (index, code, flen, decimal) in [
+        (2, tidb_datatype::FieldTypeCode::Duration, 15, 6),
+        (3, tidb_datatype::FieldTypeCode::Duration, 12, 3),
+        (6, tidb_datatype::FieldTypeCode::Duration, 15, 6),
+        (7, tidb_datatype::FieldTypeCode::Date, 10, 0),
+        (8, tidb_datatype::FieldTypeCode::Datetime, 26, 6),
+    ] {
+        assert_eq!(columns[index].1.code(), code);
+        assert_eq!(
+            (columns[index].1.flen(), columns[index].1.decimal()),
+            (flen, decimal)
+        );
+    }
+    assert!(session.warnings().is_empty());
+    // One day and one second later, with a different session offset. Every
+    // literal below is independent of another clock function's answer.
+    session.run("SET time_zone='+00:00'").unwrap();
+    session.run("SET timestamp=1700086401").unwrap();
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns(
+            "SELECT CURTIME(6),CURRENT_TIME(),UTC_TIME(6),UTC_DATE(),UTC_TIMESTAMP(6)",
+        )
+        .unwrap()
+    else {
+        panic!("expected refreshed statement clock")
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].iter().map(&temporal_text).collect::<Vec<_>>(),
+        vec![
+            "22:13:21.000000",
+            "22:13:21",
+            "22:13:21.000000",
+            "2023-11-15",
+            "2023-11-15 22:13:21.000000",
+        ]
+    );
+    assert!(session.warnings().is_empty());
+    // parse_datetime_precision_func accepts only an IntLit precision. The
+    // value-entry UTC_TIME NULL profile is not admitted by this SQL grammar;
+    // this rejection is deliberately NOT counted as worker-admission proof.
+    let mysql = session
+        .run_with_columns("SELECT UTC_TIME(NULL)")
+        .expect_err("NULL precision is outside the SQL parser domain")
+        .to_mysql_error();
+    assert_eq!(mysql.code, 1064);
+    assert!(!mysql.is_from_evaluation());
+}
+
+#[test]
+fn evaluated_ascii_clock_context_zero_slots_require_each_family() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("SET time_zone='+08:00'").unwrap();
+    session.run("SET timestamp=1700000000.654321").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // Eleven direct calls cover exactly four families and their six SQL-value
+    // profiles, including CURRENT_TIME. The seventh NULL profile is unit-only.
+    // No formatting/cast wrapper or unrelated clock can mask root admission.
+    for expression in [
+        "CURTIME()",
+        "CURTIME(0)",
+        "CURTIME(6)",
+        "CURRENT_TIME()",
+        "CURRENT_TIME(3)",
+        "UTC_TIME()",
+        "UTC_TIME(0)",
+        "UTC_TIME(6)",
+        "UTC_DATE()",
+        "UTC_TIMESTAMP()",
+        "UTC_TIMESTAMP(6)",
+    ] {
+        let sql = format!("SELECT {expression}");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("current-clock family bypassed its worker: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(session.warnings().is_empty(), "{sql}");
+    }
+}
+
+#[test]
 fn evaluated_ascii_json_unquote_preserves_stored_text_and_json_policies() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();

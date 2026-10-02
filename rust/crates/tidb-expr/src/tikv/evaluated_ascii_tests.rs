@@ -1389,6 +1389,15 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::JsonUnquoteTextNative | EvaluatedBytesOp::JsonUnquoteBinaryNative => {
             panic!("JSON_UNQUOTE needs its actual text or binary document domain")
         }
+        EvaluatedBytesOp::UtcDateNative
+        | EvaluatedBytesOp::UtcTimestampNative
+        | EvaluatedBytesOp::CurrentTimeWithoutFspNative
+        | EvaluatedBytesOp::CurrentTimeWithFspNative
+        | EvaluatedBytesOp::UtcTimeWithoutFspNative
+        | EvaluatedBytesOp::UtcTimeWithFspNative
+        | EvaluatedBytesOp::UtcTimeNullNative => {
+            panic!("clock functions need actual UTC clock fields, precision and NULL demand")
+        }
         EvaluatedBytesOp::TidbShardNative => "TIDB_SHARD",
         EvaluatedBytesOp::VitessHashNative => "VITESS_HASH",
         EvaluatedBytesOp::FormatBytesNative => "FORMAT_BYTES",
@@ -1925,6 +1934,209 @@ fn binary_arithmetic_dispatch_keeps_profiles_and_legacy_presence() {
     });
     assert!(!scope.busy.get());
     assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn clock_sdk_preserves_actual_clock_fields_and_native_precision_policies() {
+    use EvaluatedBytesOp::*;
+
+    let EvaluatedArgs::Bytes(Some(raw)) =
+        super::super::prepare_clock_args((i64::MIN, u32::MAX, i32::MIN), None).unwrap()
+    else {
+        panic!("unparameterized clock must use one actual byte owner");
+    };
+    assert_eq!(raw.len(), 16);
+    assert_eq!(&raw[..8], &i64::MIN.to_le_bytes());
+    assert_eq!(&raw[8..12], &u32::MAX.to_le_bytes());
+    assert_eq!(&raw[12..], &i32::MIN.to_le_bytes());
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (operation, clock, fsp, expected) in [
+            (UtcDateNative, (-1, 999_999_500, 1), None, "1969-12-31"),
+            (
+                UtcTimestampNative,
+                (-1, 999_999_500, 1),
+                Some(6),
+                "1970-01-01 00:00:00.000000",
+            ),
+            (
+                CurrentTimeWithoutFspNative,
+                (-1, 999_999_500, 1),
+                None,
+                "00:00:00",
+            ),
+            (
+                CurrentTimeWithFspNative,
+                (-1, 999_999_500, 1),
+                Some(6),
+                "00:00:00.999999",
+            ),
+            (
+                UtcTimeWithoutFspNative,
+                (-1, 999_999_500, 1),
+                None,
+                "23:59:59",
+            ),
+            (
+                UtcTimeWithFspNative,
+                (-1, 999_999_500, 1),
+                Some(6),
+                "23:59:59.999999",
+            ),
+            (
+                UtcTimeWithFspNative,
+                (-1, 999_999_500, 1),
+                Some(0),
+                "00:00:00",
+            ),
+            // Ignored raw fields are transported, not normalized or rejected.
+            (UtcDateNative, (0, u32::MAX, i32::MIN), None, "1970-01-01"),
+            (
+                UtcTimeWithoutFspNative,
+                (0, u32::MAX, i32::MIN),
+                None,
+                "00:00:00",
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || super::super::prepare_clock_args(clock, fsp),
+                    |computed| {
+                        Ok(computed
+                            .into_bytes()?
+                            .map_or(Datum::Null, Datum::new_string))
+                    },
+                )
+            });
+            assert_eq!(result, Ok(Datum::new_string(expected)));
+            assert_wide_math_c4(observation);
+            assert_eq!(
+                scope
+                    .lease
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .worker
+                    .as_ref()
+                    .unwrap()
+                    .operation(),
+                operation
+            );
+        }
+        let (result, observation) = observe_wide_math(|| {
+            evaluate_args_in(
+                UtcTimeNullNative,
+                columns,
+                || Ok(EvaluatedArgs::NullWitness(None)),
+                |computed| {
+                    Ok(computed
+                        .into_bytes()?
+                        .map_or(Datum::Null, Datum::new_string))
+                },
+            )
+        });
+        assert_eq!(result, Ok(Datum::Null));
+        assert_wide_math_c4(observation);
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn clock_sdk_rejects_invalid_precision_roles_and_zero_slot_answers() {
+    use EvaluatedBytesOp::*;
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (operation, args) in [
+            (UtcDateNative, EvaluatedArgs::Bytes(Some(vec![0; 15]))),
+            (UtcTimestampNative, EvaluatedArgs::Bytes(Some(vec![0; 16]))),
+            (
+                CurrentTimeWithFspNative,
+                EvaluatedArgs::BytesInt(Some(vec![0; 16]), Some(-1)),
+            ),
+            (UtcTimeWithoutFspNative, EvaluatedArgs::Bytes(None)),
+            (UtcTimeNullNative, EvaluatedArgs::NoArgs),
+            (UtcTimeNullNative, EvaluatedArgs::NullWitness(Some(0))),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || Ok(args),
+                    EvaluatedBytesResult::into_bytes,
+                )
+            });
+            assert!(matches!(
+                result,
+                Err(EvalError::ExpressionRuntimeFailure(_))
+            ));
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(
+                observation.before_kernel_invocations,
+                observation.after_kernel_invocations
+            );
+        }
+        for operation in [
+            UtcTimestampNative,
+            CurrentTimeWithFspNative,
+            UtcTimeWithFspNative,
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || super::super::prepare_clock_args((0, 0, 0), Some(7)),
+                    EvaluatedBytesResult::into_bytes,
+                )
+            });
+            assert!(matches!(
+                result,
+                Err(EvalError::ExpressionRuntimeFailure(_))
+            ));
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(
+                observation.before_kernel_invocations,
+                observation.after_kernel_invocations
+            );
+        }
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for operation in [UtcDateNative, UtcTimestampNative, CurrentTimeWithoutFspNative, CurrentTimeWithFspNative, UtcTimeWithoutFspNative, UtcTimeWithFspNative, UtcTimeNullNative] {
+            let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                operation, columns,
+                || if operation == UtcTimeNullNative {
+                    Ok(EvaluatedArgs::NullWitness(None))
+                } else {
+                    let fsp = if matches!(operation, UtcTimestampNative | CurrentTimeWithFspNative | UtcTimeWithFspNative) { Some(6) } else { None };
+                    super::super::prepare_clock_args((-1, 999_999_500, 1), fsp)
+                },
+                EvaluatedBytesResult::into_bytes,
+            ));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
     drop(scope);
     execution.close();
 }

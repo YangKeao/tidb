@@ -1,0 +1,46 @@
+clock-four-60 / round61; previous json-unquote-59.196/245functional(80%),strict0,target221,25more needed,49eligible remain.
+Onlycurtime(aliascurrent_time),utc_time,utc_date,utc_timestamp credited. NOW/CURDATE/SYSDATE onlyshareformatters, publichelpers/liveclocknotclaimedclosed.
+
+Rawlogs /home/agent/tidb/expression-unification/logs/clock-four-<id>.log.
+T cwd=/home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv (nightly-2026-01-30).
+N cwd=/home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb (nightly-2026-08-22).
+Exactcommand pattern: set -o pipefail; <wrapper> test --locked -p <package> --lib [filter] -- --test-threads=1 2>&1 | tee <rawlog> >/dev/null.
+T tee ../logs/; N ../../logs/.599CPP2;600native2+initialSQLRED(set-e stoppedremaining2);601full2(collectstatuses);602correctedSQL+2originalconsumers.
+Counts passed/failed/ignored/filtered_out;measured0. Times compile/testseconds. Everylistedcommandactuallyran.
+
+1 tikv-core: T tidb_query_expr native_clock;4/0/0/872;13.13/0.00;exit0
+ SHA256 618b86613220ec30dfb512c66731cd581a824aaa26060f41971e171e523259b1
+2 tikv-local: T tidb_query_expr local;307/0/1/568;0.12/0.21;exit0
+ SHA256 5ba11a2df72a1329d34a2d4c93ef70a597243171a189041b4c26c6fb7f1549a3
+3 native-clock: N tidb-expr clock;14/0/0/1610;15.60/0.00;exit0
+ SHA256 e34a477cab65af1c4f76d4f268d0a682ee04e824e50c2c1ce6e603c6ef488a08
+4 native-rounding: N tidb-expr current_time_truncates_to_microseconds_before_fsp_rounding;1/0/0/1623;0.12/0.00;exit0
+ SHA256 76904771f03462013439cb6ae3b49046f417e818f0214e6e22ed94f5a1eebb75
+5 sql: N tidb-session evaluated_ascii_clock_context_;0/2/0/2197;24.24/0.02;exit101 INITIALRED
+ SHA256 67593b485dcf2cc4a78dffe381b7179cc55a818e21cc56717fc78bd68d9523aa
+6 expr-full: N tidb-expr [nofilter];1526/4old/94/0;0.13/13.56;exit101
+ SHA256 8c40a8945e2091bcce422c85c29f41f373bec5c1e26b3bd1ba7f3e3706b9dfc7
+7 unistore-full: N tidb-unistore [nofilter];206/1old/13/0;5.82/3.01;exit101
+ SHA256 47e4a5f37278ec68503048994fa063eab74cb8947bc858a133c58953be2306a2
+8 sql-retry: N tidb-session evaluated_ascii_clock_context_;2/0/0/2197;3.38/0.02;exit0 FINALCORRECTEDTEST
+ SHA256 aacda3c29ce5ebdfb72d63936663c65ddb53de2bef6cc938943f85025918cb69
+9 sql-existing: N tidb-session current_clock_builtins_return_native_temporal_values;1/0/0/2198;0.13/0.01;exit0
+ SHA256 48bb34cbed8da390bc3db45e3046dc998a4f569b2631a7e0aaf3253d84e41f90
+10 sql-sysdate-consumer: N tidb-session sysdate_is_now_uses_the_statement_clock;1/0/0/2198;0.13/0.01;exit0
+ SHA256 cb4163ae1fe7c13bd1f4670fb707ed652dced65ef984f3a411f403f3695674f7
+
+10actualruns=7green+1initialnewtestRED(2functions)+2oldfullRED.1testretry;0compile/0zero-match/0non-test/0metadata/lock attempts. All11addedtests finalpass; finalproduction unchangedafterfullsuites, only2newSQLtests corrected. Ignorednotpasses, NOTallchecksfirstpass/green.
+SQLREDactualreason:UTC_TIME(NULL) Parse(line1col103 inpositiveSELECT;line1col20 inzeroquery), so noUNULLworkerexecuted. Sourceexpr/func.rs872-898 TokenKindIntLit requirement; parserunchanged. Removeunadmittedinput+associatedNULLexpected/indexesONLYfromnewtests; allotherliteraloraclesretained; add1064non-evaluation rejection. Finalpositive10initial+5fresh/daychanged outputs+5metadata,11directzero-slotqueriescover6SQLprofiles. SeventhNULLprofilecheckedviarealvalue-entry/SDK/C4, NOT claimedSQLadmitted. No productionrepair/oldfixturemodification/provider-as-oracle/recording.
+
+Wholefailuresections+finallists vsjson-unquote-59: ONLY numericpanicthreadIDs normalized(<id>), no sourcemapping:
+ expression SHA256 27654f2c0ad2971242c00f50182467598cdfd9c2c65e5bf5a32e683708448637
+ unistore SHA256 b64dcced405c699c11b72ee31888c58e491b4e5b4e74fa2d445454e1d1e146e9
+Old4expr(IFNULLcollation/EXP/vectorizeddurationFSP/STR_TO_DATE)+old1unistore(point-rangeclosureselection) retainedexactly. PriorR60extraJSON_KEYS aggregateREDNOTRERUN/NOTRESOLVED/NOTclaimedgreen.
+
+Staticproof:13Rust CPP7/native6,1newnative_clock.rs,11newtests;13pinnedrustfmt --edition2021 --config skip_children=true --check +bothdiffchecks pass; Fcorrectedfile re-formatted/check.196uniqueledger/192priorobjectsexact. Originalnativeclocktests prefix/inlineclock_source_tests andCPPwiretests exact; NOW/CURDATE/FSPparse bodiesexact; libpublichelper/SYSDATE/PB/legacy/scalar/arg_eval_type/evaluator paths byteexact.6nativeformatterbodies removed;2imports supplysharedformatters foruncreditedconsumers. No manifests/dependencies/locks/Go/Bazelchanges.
+Parentproofselectorfirstassumedmodtests insteadactualclock_source_tests:ValueError exit1, correctedselectorretrypassed; nosemanticassertionmismatch/sourcefix. Nonexistentsourcelookups4(parentguessedGo parser.y1;ROtime.rs1/vectorpaths2) correctedglob/source; Fskillcatalogunknown resolvedchecked-in guide. No fmtfailures. Seven-vs-five profilediscussion settledbeforewrites; final7 uses16bytes+separateInt, NOToptional20frame.
+
+Boundary: 6valueprofiles actuali64utcsecs/u32rawns/i32offset LE16; actualFSP0..6 separateInt(2columns). GenuineNullWitness(None) ownUTCtimeNULL op(1nullableInt), noNoArgs/dummyclock. Gwidth/FSPvalidatorssharedfacade/official; Cextraexpr_eval leaseonlyguard+nullwhitelist, no driver/kind/carrier/binding. Workerowns offset/microtruncate/halfup/carry/widecivilcalendar/format; prepkeepsarity/FSP/errornames/UIntwrap thenoneclockgetter, NULLnone. Originalrawintegers unvalidated, originalpanicbehavior/sourceprofilepreserved; resourcecanpreemptkernelpanic. No newscopedclockoverflowexperiment; existingdriverpanic regressionrerunsinfullExpr. OwnBytescomputedString only; typedtemporalparse/metadatastayold. Primitiveepochformatter notchrono/bitpackedTime substitute; wireSYSDATEunchanged.
+
+Guides/architecture reviewedforownership+admission correction; no newnormativepolicy/PRgate. PairedCPPfirstDCOcommitpush→nativeexactSHA+commonPlanhash, noforce/noPR, oldBUILDexcluded.
+DeferredM6/defaultNoColumnswhole-root/workspace/lint/dev/bazel_prepare/release/perf/zero-copy/physicalheap/peak/OOM/exhaustivecontext-domain-wire-150row-TiFlash-FIPS/priorparserGBvectorExtremeDecimal/extraJSON_KEYSaggregate. True49remainingfrozenfamilies, priornarrationomitted6candidatesnotledger. NextROmergepair/identitypair/CRC32, noadvancecredit. Goalactive, noGo-package transcreation/PRreadiness/overallcompletion.

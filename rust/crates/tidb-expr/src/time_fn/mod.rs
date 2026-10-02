@@ -30,13 +30,15 @@ pub(crate) mod duration_parse;
 pub(crate) mod extract;
 pub(crate) mod session_tz;
 
-use self::calendar::civil_from_days;
 #[cfg(test)]
 use self::calendar::week_of_year;
 use crate::coerce::coerce_str;
 use crate::{Columns, Datum, EvalError};
 #[cfg(test)]
 use tidb_query_datatype::codec::mysql::Time as TikvTime;
+use tidb_query_expr::{
+    native_format_clock_date as format_date, native_format_clock_datetime as format_datetime,
+};
 
 /// Dispatches this family's builtins; `None` if `name` isn't one of them.
 pub(crate) fn dispatch(
@@ -228,11 +230,22 @@ fn now(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
 /// `builtinUTCTimestampWithArgSig` / `builtinUTCTimestampWithoutArgSig`:
 /// raw UTC statement time, always rounding fractional seconds half-up.
 fn utc_timestamp(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    let fsp = parse_fsp_with_null_as_zero(vals, "utc_timestamp")?.unwrap_or(0);
-    let (utc_secs, nanos, _) = cols.now().ok_or(no_clock_err())?;
-    Ok(Datum::new_string(format_datetime(
-        utc_secs, nanos, fsp, true,
-    )))
+    crate::tikv::evaluate_prepared_args_in(
+        cols,
+        || {
+            let fsp = parse_fsp_with_null_as_zero(vals, "utc_timestamp")?.unwrap_or(0);
+            let clock = cols.now().ok_or(no_clock_err())?;
+            Ok((
+                crate::tikv::EvaluatedBytesOp::UtcTimestampNative,
+                crate::tikv::prepare_clock_args(clock, Some(fsp))?,
+            ))
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 
 /// `builtinCurrentDateSig`: local statement date. `CURDATE` and
@@ -249,11 +262,24 @@ fn current_date(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> 
 
 /// `builtinUTCDateSig`: raw UTC statement date with no arguments.
 fn utc_date(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    if !vals.is_empty() {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let (utc_secs, _, _) = cols.now().ok_or(no_clock_err())?;
-    Ok(Datum::new_string(format_date(utc_secs)))
+    crate::tikv::evaluate_prepared_args_in(
+        cols,
+        || {
+            if !vals.is_empty() {
+                return Err(EvalError::Unsupported("bad function arity"));
+            }
+            let clock = cols.now().ok_or(no_clock_err())?;
+            Ok((
+                crate::tikv::EvaluatedBytesOp::UtcDateNative,
+                crate::tikv::prepare_clock_args(clock, None)?,
+            ))
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 
 /// `builtinCurrentTime0ArgSig` / `builtinCurrentTime1ArgSig`: local
@@ -264,39 +290,56 @@ fn current_time(
     function: &'static str,
     cols: &dyn Columns,
 ) -> Result<Datum, EvalError> {
-    let fsp = parse_fsp_with_null_as_zero(vals, function)?;
-    let (utc_secs, nanos, tz_offset) = cols.now().ok_or(no_clock_err())?;
-    // builtinCurrentTime1ArgSig first renders TimeFSPFormat (six digits,
-    // truncating sub-microsecond nanoseconds) and only then ParseDuration
-    // rounds to the requested FSP. Preserve that two-stage source algorithm;
-    // it is observably different from UTC_TIMESTAMP's direct half-up path.
-    let nanos = fsp.map_or(nanos, |_| nanos / 1_000 * 1_000);
-    Ok(Datum::new_string(format_time_only(
-        utc_secs + i64::from(tz_offset),
-        nanos,
-        fsp.unwrap_or(0),
-        fsp.is_some(),
-    )))
+    crate::tikv::evaluate_prepared_args_in(
+        cols,
+        || {
+            let fsp = parse_fsp_with_null_as_zero(vals, function)?;
+            let clock = cols.now().ok_or(no_clock_err())?;
+            let operation = if fsp.is_some() {
+                crate::tikv::EvaluatedBytesOp::CurrentTimeWithFspNative
+            } else {
+                crate::tikv::EvaluatedBytesOp::CurrentTimeWithoutFspNative
+            };
+            // Preserve the original instant and offset. The worker owns local
+            // adjustment and the explicit-FSP microsecond-then-round policy.
+            Ok((operation, crate::tikv::prepare_clock_args(clock, fsp)?))
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 
 /// `builtinUTCTimeWithoutArgSig` / `builtinUTCTimeWithArgSig`: raw UTC
 /// statement time with the same zero-argument-truncate / explicit-FSP-round
 /// split as [`current_time`].
 fn utc_time(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    if matches!(vals, [Datum::Null]) {
-        return Ok(Datum::Null);
-    }
-    let fsp = parse_fsp_for(vals, "utc_time")?;
-    let (utc_secs, nanos, _) = cols.now().ok_or(no_clock_err())?;
-    // builtinUTCTimeWithArgSig has the identical TimeFSPFormat-then-parse
-    // conversion as CURRENT_TIME's explicit signature.
-    let nanos = fsp.map_or(nanos, |_| nanos / 1_000 * 1_000);
-    Ok(Datum::new_string(format_time_only(
-        utc_secs,
-        nanos,
-        fsp.unwrap_or(0),
-        fsp.is_some(),
-    )))
+    crate::tikv::evaluate_prepared_args_in(
+        cols,
+        || {
+            if matches!(vals, [Datum::Null]) {
+                return Ok((
+                    crate::tikv::EvaluatedBytesOp::UtcTimeNullNative,
+                    crate::tikv::EvaluatedArgs::NullWitness(None),
+                ));
+            }
+            let fsp = parse_fsp_for(vals, "utc_time")?;
+            let clock = cols.now().ok_or(no_clock_err())?;
+            let operation = if fsp.is_some() {
+                crate::tikv::EvaluatedBytesOp::UtcTimeWithFspNative
+            } else {
+                crate::tikv::EvaluatedBytesOp::UtcTimeWithoutFspNative
+            };
+            Ok((operation, crate::tikv::prepare_clock_args(clock, fsp)?))
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 
 /// `builtinMicroSecondSig.evalInt`: read the fractional component of the
@@ -373,66 +416,6 @@ fn parse_fsp_with_null_as_zero(
     } else {
         parse_fsp_for(vals, function)
     }
-}
-
-/// Renders an epoch second as a Gregorian `YYYY-MM-DD` date.
-fn format_date(secs: i64) -> String {
-    let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
-    format!("{y:04}-{m:02}-{d:02}")
-}
-
-fn format_hms(secs: i64) -> String {
-    let secs_of_day = secs.rem_euclid(86_400);
-    let (hour, minute, second) = (
-        secs_of_day / 3_600,
-        (secs_of_day % 3_600) / 60,
-        secs_of_day % 60,
-    );
-    format!("{hour:02}:{minute:02}:{second:02}")
-}
-
-fn frac_suffix(nanos: u32, fsp: u32) -> String {
-    if fsp == 0 {
-        return String::new();
-    }
-    let fraction = nanos / 10u32.pow(9 - fsp);
-    format!(".{fraction:0width$}", width = fsp as usize)
-}
-
-/// TiDB's `types.ModeHalfUp` rounding at the requested FSP.
-fn round_nanos(nanos: u32, fsp: u32) -> (i64, u32) {
-    let scale = 10u32.pow(9 - fsp);
-    let half_up = nanos + scale / 2;
-    if half_up >= 1_000_000_000 {
-        (1, 0)
-    } else {
-        (0, (half_up / scale) * scale)
-    }
-}
-
-fn format_datetime(secs: i64, nanos: u32, fsp: u32, round: bool) -> String {
-    let (carry, nanos) = if round {
-        round_nanos(nanos, fsp)
-    } else {
-        (0, nanos)
-    };
-    let secs = secs + carry;
-    format!(
-        "{} {}{}",
-        format_date(secs),
-        format_hms(secs),
-        frac_suffix(nanos, fsp)
-    )
-}
-
-fn format_time_only(secs: i64, nanos: u32, fsp: u32, round: bool) -> String {
-    let (carry, nanos) = if round {
-        round_nanos(nanos, fsp)
-    } else {
-        (0, nanos)
-    };
-    let secs = secs + carry;
-    format!("{}{}", format_hms(secs), frac_suffix(nanos, fsp))
 }
 
 /// `builtinMonthSig.evalInt` in `pkg/expression/builtin_time.go`.

@@ -1356,3 +1356,200 @@ fn period_arithmetic_retains_go_unsigned_wrapping() {
         Datum::Int(1_106_804_644_422_549_462)
     );
 }
+
+struct SelectedWorkerClock {
+    instant: Option<(i64, u32, i32)>,
+    reads: std::cell::Cell<usize>,
+}
+
+impl Columns for SelectedWorkerClock {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        None
+    }
+
+    fn now(&self) -> Option<(i64, u32, i32)> {
+        self.reads.set(self.reads.get() + 1);
+        self.instant
+    }
+}
+
+fn selected_clock_scope_owner(slots: usize) -> crate::AsciiPoolOwner {
+    crate::AsciiPoolOwner::new(
+        crate::AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 8, 1 << 16)
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn selected_clock_workers_preserve_precision_and_day_boundaries() {
+    let instant = (86_399, 999_999_600, 3_600);
+    let cases = [
+        ("CURTIME", vec![], Some("00:59:59"), instant),
+        ("CURTIME", vec![Datum::Int(0)], Some("01:00:00"), instant),
+        ("CURRENT_TIME", vec![Datum::Null], Some("01:00:00"), instant),
+        (
+            "CURRENT_TIME",
+            vec![Datum::Int(6)],
+            Some("00:59:59.999999"),
+            instant,
+        ),
+        ("UTC_TIME", vec![], Some("23:59:59"), instant),
+        ("UTC_TIME", vec![Datum::Int(0)], Some("00:00:00"), instant),
+        (
+            "UTC_TIME",
+            vec![Datum::Int(6)],
+            Some("23:59:59.999999"),
+            instant,
+        ),
+        ("UTC_TIME", vec![Datum::Null], None, instant),
+        ("UTC_DATE", vec![], Some("1970-01-01"), instant),
+        (
+            "UTC_TIMESTAMP",
+            vec![],
+            Some("1970-01-02 00:00:00"),
+            instant,
+        ),
+        (
+            "UTC_TIMESTAMP",
+            vec![Datum::Null],
+            Some("1970-01-02 00:00:00"),
+            instant,
+        ),
+        (
+            "UTC_TIMESTAMP",
+            vec![Datum::Int(6)],
+            Some("1970-01-02 00:00:00.000000"),
+            instant,
+        ),
+        ("UTC_DATE", vec![], Some("1969-12-31"), (-1, 0, 3_600)),
+        ("UTC_TIME", vec![], Some("23:59:59"), (-1, 0, 3_600)),
+        // Keep the existing integer-calendar text domain, not wire Time's
+        // SQL-year restriction or an eagerly constructed host Time value.
+        (
+            "UTC_DATE",
+            vec![],
+            Some("10000-01-01"),
+            (253_402_300_800, 0, 0),
+        ),
+    ];
+    for slots in [0, 1] {
+        let owner = selected_clock_scope_owner(slots);
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        for (name, args, expected, instant) in &cases {
+            let clock = SelectedWorkerClock {
+                instant: Some(*instant),
+                reads: std::cell::Cell::new(0),
+            };
+            let result = scope.with_columns(&clock, |ctx| dispatch(name, args, ctx).unwrap());
+            if slots == 0 {
+                assert!(
+                    matches!(
+                        result,
+                        Err(EvalError::ExpressionAdapterFailure(ref failure))
+                            if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource
+                    ),
+                    "{name}: {result:?}"
+                );
+            } else {
+                assert_eq!(
+                    result,
+                    Ok(expected.map_or(Datum::Null, Datum::new_string)),
+                    "{name} {args:?}",
+                );
+            }
+            assert_eq!(clock.reads.get(), usize::from(expected.is_some()), "{name}");
+        }
+        drop(scope);
+        execution.close();
+    }
+}
+
+#[test]
+fn selected_clock_preparation_preserves_error_and_getter_demand() {
+    let cases = [
+        (
+            "CURTIME",
+            vec![Datum::Int(7)],
+            EvalError::TooBigFsp {
+                fsp: 7,
+                function: "curtime",
+            },
+        ),
+        (
+            "CURRENT_TIME",
+            vec![Datum::UInt(u64::MAX)],
+            EvalError::TooBigFsp {
+                fsp: -1,
+                function: "current_time",
+            },
+        ),
+        (
+            "UTC_TIMESTAMP",
+            vec![Datum::Int(-1)],
+            EvalError::Unsupported("bad fractional-seconds-precision argument"),
+        ),
+        (
+            "UTC_TIME",
+            vec![string_datum("3")],
+            EvalError::Unsupported("bad fractional-seconds-precision argument"),
+        ),
+        (
+            "UTC_DATE",
+            vec![Datum::Null],
+            EvalError::Unsupported("bad function arity"),
+        ),
+        (
+            "UTC_TIMESTAMP",
+            vec![Datum::Null, Datum::Int(0)],
+            EvalError::Unsupported("bad fractional-seconds-precision argument"),
+        ),
+    ];
+    for slots in [0, 1] {
+        let owner = selected_clock_scope_owner(slots);
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        let clock = SelectedWorkerClock {
+            instant: None,
+            reads: std::cell::Cell::new(0),
+        };
+        scope.with_columns(&clock, |ctx| {
+            for (name, args, expected) in &cases {
+                assert_eq!(dispatch(name, args, ctx).unwrap(), Err(expected.clone()));
+                assert_eq!(
+                    clock.reads.get(),
+                    0,
+                    "invalid precision/arity read the clock"
+                );
+            }
+            let null_result = utc_time(&[Datum::Null], ctx);
+            if slots == 0 {
+                assert!(matches!(
+                    null_result,
+                    Err(EvalError::ExpressionAdapterFailure(ref failure))
+                        if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource
+                ));
+            } else {
+                assert_eq!(null_result, Ok(Datum::Null));
+            }
+            assert_eq!(clock.reads.get(), 0, "UTC_TIME(NULL) demanded the clock");
+            for name in [
+                "CURTIME",
+                "CURRENT_TIME",
+                "UTC_TIME",
+                "UTC_DATE",
+                "UTC_TIMESTAMP",
+            ] {
+                clock.reads.set(0);
+                assert_eq!(
+                    dispatch(name, &[], ctx).unwrap(),
+                    Err(EvalError::Unsupported("no session clock (SET timestamp)")),
+                );
+                assert_eq!(clock.reads.get(), 1, "{name} read the clock more than once");
+            }
+        });
+        drop(scope);
+        execution.close();
+    }
+}

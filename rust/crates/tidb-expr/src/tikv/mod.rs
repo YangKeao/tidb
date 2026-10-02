@@ -130,6 +130,28 @@ pub(crate) fn prepare_grouping_args(
     })
 }
 
+/// Transport the actual UTC seconds, nanoseconds and offset without clock math.
+/// Fractional precision is a separate operand; validation belongs to the recipe.
+pub(crate) fn prepare_clock_args(
+    clock: (i64, u32, i32),
+    fsp: Option<u32>,
+) -> Result<EvaluatedArgs, crate::EvalError> {
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(16).map_err(|error| {
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+            LocalError::ResourceLimit(format!("clock input allocation failed: {error}").into()),
+            None,
+        ))
+    })?;
+    bytes.extend_from_slice(&clock.0.to_le_bytes());
+    bytes.extend_from_slice(&clock.1.to_le_bytes());
+    bytes.extend_from_slice(&clock.2.to_le_bytes());
+    Ok(match fsp {
+        None => EvaluatedArgs::Bytes(Some(bytes)),
+        Some(fsp) => EvaluatedArgs::BytesInt(Some(bytes), Some(i64::from(fsp))),
+    })
+}
+
 /// Serialize already-coerced serde documents and the actual optional path.
 /// This transports data only; SQL validation and worker evaluation remain separate.
 pub(crate) fn prepare_json_serde_args(

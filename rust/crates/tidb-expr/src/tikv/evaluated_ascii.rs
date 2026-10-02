@@ -2153,6 +2153,13 @@ fn materialize_computed(
             | EvaluatedBytesOp::JsonValueAbsentLegacy
             | EvaluatedBytesOp::JsonUnquoteTextNative
             | EvaluatedBytesOp::JsonUnquoteBinaryNative
+            | EvaluatedBytesOp::UtcDateNative
+            | EvaluatedBytesOp::UtcTimestampNative
+            | EvaluatedBytesOp::CurrentTimeWithoutFspNative
+            | EvaluatedBytesOp::CurrentTimeWithFspNative
+            | EvaluatedBytesOp::UtcTimeWithoutFspNative
+            | EvaluatedBytesOp::UtcTimeWithFspNative
+            | EvaluatedBytesOp::UtcTimeNullNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative
