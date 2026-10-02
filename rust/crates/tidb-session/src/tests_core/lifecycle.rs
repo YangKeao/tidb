@@ -9363,6 +9363,113 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_json_unquote_preserves_stored_text_and_json_policies() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_json_unquote_sql (quoted_text VARCHAR(32), encoded_doc VARCHAR(64), jpayload JSON, plain_text VARCHAR(32), incomplete_text VARCHAR(32), empty_text VARCHAR(1), object_doc JSON, null_doc JSON, null_text VARCHAR(32), null_json JSON, bad_escape VARCHAR(32), multi_root VARCHAR(32), compact_array VARCHAR(32))").unwrap();
+    // Hex literals first enter VARCHAR. A direct BinaryLiteral-to-JSON insert
+    // is rejected by the existing binary-charset conversion policy.
+    session.run(r#"INSERT INTO shared_json_unquote_sql VALUES (X'225c6e22',X'225c225c5c6e5c2222',NULL,'{bad',X'2278','','{"b":2,"a":1}','null',NULL,NULL,X'225c7122',X'22612220226222','[1,2]')"#).unwrap();
+    session
+        .run("UPDATE shared_json_unquote_sql SET jpayload=encoded_doc")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // Both quoted_text and jpayload's decoded string carry 22 5c 6e 22.
+    // Native SQL text parses the escape once; native typed JSON returns its
+    // four payload bytes verbatim, unlike BinaryJSON::unquote's second decode.
+    let StmtOutput::Rows { rows, .. } = session.run_with_columns(
+        "SELECT JSON_UNQUOTE(quoted_text),JSON_UNQUOTE(jpayload),JSON_UNQUOTE(plain_text),JSON_UNQUOTE(incomplete_text),JSON_UNQUOTE(empty_text),JSON_UNQUOTE(object_doc),JSON_UNQUOTE(null_doc),JSON_UNQUOTE(null_text),JSON_UNQUOTE(null_json),JSON_UNQUOTE(compact_array) FROM shared_json_unquote_sql",
+    ).unwrap() else { panic!("expected stored UNQUOTE inputs") };
+    assert_eq!(
+        rows,
+        vec![vec![
+            Datum::new_string("\n"),
+            Datum::new_string("\"\\n\""),
+            Datum::new_string("{bad"),
+            Datum::new_string("\"x"),
+            Datum::new_string(""),
+            Datum::new_string("{\"a\": 1, \"b\": 2}"),
+            Datum::new_string("null"),
+            Datum::Null,
+            Datum::Null,
+            Datum::new_string("[1,2]"),
+        ]]
+    );
+    assert!(session.warnings().is_empty());
+    // Fully double-quoted SQL text must parse as one JSON string. These
+    // literal unknown-escape and multiple-root inputs are InvalidText, not
+    // the separate EXEC invalid-path diagnostic used by JSON path functions.
+    for column in ["bad_escape", "multi_root"] {
+        let sql = format!("SELECT JSON_UNQUOTE({column}) FROM shared_json_unquote_sql");
+        let mysql = session
+            .run_with_columns(&sql)
+            .expect_err(&sql)
+            .to_mysql_error();
+        assert_eq!(mysql.code, 3140, "{sql}: {mysql:?}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+    }
+}
+
+#[test]
+fn evaluated_ascii_json_unquote_zero_slots_require_direct_input_workers() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_json_unquote_zero (quoted_text VARCHAR(32), encoded_doc VARCHAR(64), jpayload JSON, plain_text VARCHAR(32), incomplete_text VARCHAR(32), empty_text VARCHAR(1), object_doc JSON, null_doc JSON, null_text VARCHAR(32), null_json JSON)").unwrap();
+    session.run(r#"INSERT INTO shared_json_unquote_zero VALUES (X'225c6e22',X'225c225c5c6e5c2222',NULL,'{bad',X'2278','','{"b":2,"a":1}','null',NULL,NULL)"#).unwrap();
+    session
+        .run("UPDATE shared_json_unquote_zero SET jpayload=encoded_doc")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // Exactly nine direct, single-column probes. No CAST, QUOTE, EXTRACT,
+    // WHERE or ORDER BY can contribute an unrelated worker failure. Strict
+    // invalid quoted text is intentionally outside this admission matrix.
+    for column in [
+        "quoted_text",
+        "jpayload",
+        "plain_text",
+        "incomplete_text",
+        "empty_text",
+        "object_doc",
+        "null_doc",
+        "null_text",
+        "null_json",
+    ] {
+        let sql = format!("SELECT JSON_UNQUOTE({column}) FROM shared_json_unquote_zero");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("UNQUOTE bypassed its own worker: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(session.warnings().is_empty(), "{sql}");
+    }
+}
+
+#[test]
 fn evaluated_ascii_json_paths_preserve_native_selection_mutation_and_errors() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();

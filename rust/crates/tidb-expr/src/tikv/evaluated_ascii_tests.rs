@@ -1386,6 +1386,9 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::JsonValueAbsentLegacy => {
             panic!("legacy JSON outputs need original raw values and observed presence")
         }
+        EvaluatedBytesOp::JsonUnquoteTextNative | EvaluatedBytesOp::JsonUnquoteBinaryNative => {
+            panic!("JSON_UNQUOTE needs its actual text or binary document domain")
+        }
         EvaluatedBytesOp::TidbShardNative => "TIDB_SHARD",
         EvaluatedBytesOp::VitessHashNative => "VITESS_HASH",
         EvaluatedBytesOp::FormatBytesNative => "FORMAT_BYTES",
@@ -1922,6 +1925,189 @@ fn binary_arithmetic_dispatch_keeps_profiles_and_legacy_presence() {
     });
     assert!(!scope.busy.get());
     assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn json_unquote_sdk_keeps_text_and_binary_domains_separate() {
+    use tidb_datatype::BinaryJSON;
+    use EvaluatedBytesOp::*;
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (input, expected) in [
+            ("plain", "plain"),
+            ("\"a\\n\"", "a\n"),
+            (" \"a\" ", " \"a\" "),
+            ("\"incomplete", "\"incomplete"),
+            ("", ""),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    JsonUnquoteTextNative,
+                    columns,
+                    || Ok(EvaluatedArgs::Bytes(Some(input.as_bytes().to_vec()))),
+                    |computed| {
+                        Ok(computed
+                            .into_bytes()?
+                            .map_or(Datum::Null, Datum::new_string))
+                    },
+                )
+            });
+            assert_eq!(result, Ok(Datum::new_string(expected)));
+            assert_wide_math_c4(observation);
+            assert_eq!(owner.snapshot().unwrap().factory_successes, 1);
+        }
+        let quoted_payload = "\"a\\n\"";
+        for (document, expected) in [
+            (
+                BinaryJSON::from_value(&serde_json::Value::String(quoted_payload.to_owned()))
+                    .unwrap(),
+                quoted_payload,
+            ),
+            (BinaryJSON::parse("{\"a\":1}").unwrap(), "{\"a\": 1}"),
+            // Original raw Display writes nothing for an invalid non-string.
+            (BinaryJSON::from_encoded_parts(0xff, Vec::new()), ""),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    JsonUnquoteBinaryNative,
+                    columns,
+                    || super::super::prepare_json_binary_args(&document),
+                    |computed| {
+                        Ok(computed
+                            .into_bytes()?
+                            .map_or(Datum::Null, Datum::new_string))
+                    },
+                )
+            });
+            assert_eq!(result, Ok(Datum::new_string(expected)));
+            assert_wide_math_c4(observation);
+            assert_eq!(owner.snapshot().unwrap().factory_successes, 2);
+        }
+        let (result, observation) = observe_wide_math(|| {
+            evaluate_args_in(
+                JsonOutputNullNative,
+                columns,
+                || Ok(EvaluatedArgs::NullWitness(None)),
+                |computed| {
+                    Ok(computed
+                        .into_bytes()?
+                        .map_or(Datum::Null, Datum::new_string))
+                },
+            )
+        });
+        assert_eq!(result, Ok(Datum::Null));
+        assert_wide_math_c4(observation);
+        assert_eq!(owner.snapshot().unwrap().factory_successes, 3);
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn json_unquote_sdk_preserves_refusals_and_raw_display_panic_lifecycle() {
+    use tidb_datatype::BinaryJSON;
+    use EvaluatedBytesOp::*;
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (operation, bytes) in [
+            (JsonUnquoteTextNative, vec![0xff]),
+            (JsonUnquoteTextNative, b"\"a\" \"b\"".to_vec()),
+            (JsonUnquoteBinaryNative, Vec::new()),
+            (
+                JsonUnquoteBinaryNative,
+                vec![tidb_datatype::JSON_TYPE_CODE_STRING, 1, 0xff],
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || Ok(EvaluatedArgs::Bytes(Some(bytes))),
+                    EvaluatedBytesResult::into_bytes,
+                )
+            });
+            assert!(matches!(
+                result,
+                Err(EvalError::ExpressionRuntimeFailure(_))
+            ));
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(
+                observation.before_kernel_invocations,
+                observation.after_kernel_invocations
+            );
+        }
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+
+    let nan = BinaryJSON::from_encoded_parts(
+        tidb_datatype::JSON_TYPE_CODE_FLOAT64,
+        f64::NAN.to_le_bytes().to_vec(),
+    );
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for operation in [JsonUnquoteTextNative, JsonUnquoteBinaryNative, JsonOutputNullNative] {
+            let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                operation, columns,
+                || match operation {
+                    JsonUnquoteTextNative => Ok(EvaluatedArgs::Bytes(Some(b"\"ok\"".to_vec()))),
+                    JsonUnquoteBinaryNative => super::super::prepare_json_binary_args(&nan),
+                    JsonOutputNullNative => Ok(EvaluatedArgs::NullWitness(None)),
+                    _ => unreachable!(),
+                },
+                EvaluatedBytesResult::into_bytes,
+            ));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    // Catch only OUTSIDE the unchanged driver. The actual raw Display error
+    // panics in the kernel, then its normal drop guards poison and retire.
+    arm_eval_one_observation();
+    let panic = catch_unwind(AssertUnwindSafe(|| {
+        scope.with_columns(&crate::NoColumns, |columns| {
+            evaluate_args_in(
+                JsonUnquoteBinaryNative,
+                columns,
+                || super::super::prepare_json_binary_args(&nan),
+                EvaluatedBytesResult::into_bytes,
+            )
+        })
+    }));
+    let observation = take_eval_one_observation();
+    assert!(panic.is_err());
+    assert_eq!(observation.facade_entries, 1);
+    assert_eq!(observation.before_kernel_invocations, Some(0));
+    assert_eq!(observation.after_kernel_invocations, None);
+    assert!(scope.poisoned.get());
+    assert!(scope.lease.borrow().is_none());
+    let disposed = owner.snapshot().unwrap();
+    assert_eq!((disposed.live, disposed.idle, disposed.retired), (0, 0, 1));
+    assert_eq!(disposed.reserved_bytes, disposed.base_bytes);
+    assert!(matches!(scope.evaluate_value(&Datum::Null),
+        Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopePoisoned));
+    assert_eq!(owner.snapshot().unwrap(), disposed);
     drop(scope);
     execution.close();
 }

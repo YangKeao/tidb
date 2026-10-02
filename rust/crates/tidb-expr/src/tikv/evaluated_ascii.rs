@@ -2151,6 +2151,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::JsonArrayAppendRawLegacy
             | EvaluatedBytesOp::JsonArrayAppendEmptyLegacy
             | EvaluatedBytesOp::JsonValueAbsentLegacy
+            | EvaluatedBytesOp::JsonUnquoteTextNative
+            | EvaluatedBytesOp::JsonUnquoteBinaryNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative

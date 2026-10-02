@@ -19,8 +19,10 @@ use std::fmt;
 use serde_json::{Map, Number, Value};
 use tidb_query_datatype::codec::mysql::json::{
     compare_native_binary_json, decode_native_binary_json_node, decode_native_binary_json_value,
-    decode_native_json_uvarint, encode_native_binary_json_node, native_binary_json_type_name,
-    native_json_opaque, write_native_binary_json_header, NativeBinaryJsonEncodeError,
+    decode_native_json_escaped_unicode, encode_native_binary_json_node,
+    native_binary_json_string_bytes, native_binary_json_type_name, native_json_opaque,
+    quote_native_json_string, unquote_native_json_escaped_string, unquote_native_json_string,
+    write_native_binary_json_header, write_native_binary_json_text, NativeBinaryJsonEncodeError,
     NativeBinaryJsonError, NativeJsonNode,
 };
 
@@ -355,11 +357,7 @@ impl BinaryJSON {
 
     /// Returns string bytes.
     pub fn as_string(&self) -> Option<&[u8]> {
-        if self.type_code != JSON_TYPE_CODE_STRING {
-            return None;
-        }
-        let (length, prefix) = decode_uvarint(&self.value).ok()?;
-        self.value.get(prefix..prefix + length)
+        native_binary_json_string_bytes(self.type_code, &self.value)
     }
 
     /// Decodes an opaque value without changing its bytes.
@@ -381,6 +379,8 @@ impl BinaryJSON {
 
     /// Implements JSON_UNQUOTE for one binary JSON value.
     pub fn unquote(&self) -> Result<String, BinaryJSONError> {
+        // Shared projection, escapes, and Display retain the SDK's original
+        // UTF-8 admission and possible second unescape (unlike SQL Json input).
         match self.as_string() {
             Some(bytes) => {
                 let text =
@@ -444,167 +444,23 @@ fn typed_value_to_node(value: &BinaryJSONValue) -> Result<JSONNode, BinaryJSONEr
 
 impl fmt::Display for BinaryJSON {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Ok(opaque) = self.opaque() {
-            return write!(
-                formatter,
-                "\"base64:type{}:{}\"",
-                opaque.type_code,
-                encode_base64(&opaque.bytes)
-            );
-        }
-        if let Ok(mut time) = self.as_time(6) {
-            let _ = time.set_fsp(6);
-            return formatter.write_str(&quote_json_string(&time.to_string()));
-        }
-        if let Ok(duration) = self.as_duration() {
-            let duration = MySqlDuration::from_nanoseconds(duration.nanoseconds(), 6)
-                .map_err(|_| fmt::Error)?;
-            return formatter.write_str(&quote_json_string(&duration.to_string()));
-        }
-        if let Some(value) = self.as_f64() {
-            return formatter.write_str(&format_float64(value).ok_or(fmt::Error)?);
-        }
-        if matches!(self.type_code, JSON_TYPE_CODE_ARRAY | JSON_TYPE_CODE_OBJECT) {
-            return match self.to_node() {
-                Ok(node) => formatter.write_str(&format_node(&node)),
-                Err(_) => Ok(()),
-            };
-        }
-        match self.to_value() {
-            Ok(value) => formatter.write_str(&format_value(&value)),
-            Err(_) => Ok(()),
-        }
+        write_native_binary_json_text(formatter, self.type_code, &self.value)
     }
-}
-
-/// Formats a JSON double using TiDB's MySQL-compatible exponent boundary.
-///
-/// This is the source `marshalFloat64To` rule: fixed notation is used in
-/// `[1e-15, 1e15)`, scientific notation outside it, and fixed integral doubles
-/// retain `.0`.
-fn format_float64(value: f64) -> Option<String> {
-    if !value.is_finite() {
-        return None;
-    }
-    let absolute = value.abs();
-    if absolute != 0.0 && !(1e-15..1e15).contains(&absolute) {
-        return Some(format!("{value:e}"));
-    }
-    let mut output = value.to_string();
-    if !output.contains('.') {
-        output.push_str(".0");
-    }
-    Some(output)
 }
 
 /// Removes surrounding quotes and MySQL JSON escape sequences.
 pub fn unquote_string(text: &str) -> Result<String, BinaryJSONError> {
-    if text.len() >= 2 && text.starts_with('"') && text.ends_with('"') {
-        return unquote_json_string(&text[1..text.len() - 1]);
-    }
-    Ok(text.to_owned())
+    unquote_native_json_string(text).map_err(|_| BinaryJSONError::InvalidText)
 }
 
 /// Quotes a JSON path key, leaving an unescaped ECMAScript identifier bare.
 pub fn quote_json_string(text: &str) -> String {
-    let quoted = marshal_json_string(text);
-    if is_ecmascript_identifier(text)
-        && quoted.as_bytes()[1..quoted.len() - 1] == text.as_bytes()[..]
-    {
-        text.to_owned()
-    } else {
-        quoted
-    }
-}
-
-/// Marshals a JSON string with Go's `jsonMarshalStringTo` safety escapes.
-/// `serde_json` deliberately emits U+2028 and U+2029 as raw UTF-8, while Go
-/// escapes both separators so a JSON document remains safe when embedded in
-/// JSONP/JavaScript. All other escaping stays delegated to `serde_json`.
-fn marshal_json_string(text: &str) -> String {
-    let quoted = serde_json::to_string(text).expect("Rust string is valid JSON text");
-    if !quoted
-        .chars()
-        .any(|ch| matches!(ch, '\u{2028}' | '\u{2029}'))
-    {
-        return quoted;
-    }
-    let mut escaped = String::with_capacity(quoted.len() + 5);
-    for ch in quoted.chars() {
-        match ch {
-            '\u{2028}' => escaped.push_str("\\u2028"),
-            '\u{2029}' => escaped.push_str("\\u2029"),
-            _ => escaped.push(ch),
-        }
-    }
-    escaped
+    quote_native_json_string(text)
 }
 
 /// Decodes MySQL's JSON_UNQUOTE escape syntax.
 pub fn unquote_json_string(text: &str) -> Result<String, BinaryJSONError> {
-    let mut output = String::with_capacity(text.len());
-    let mut chars = text.char_indices().peekable();
-    while let Some((_, ch)) = chars.next() {
-        if ch != '\\' {
-            output.push(ch);
-            continue;
-        }
-        let (_, escaped) = chars.next().ok_or(BinaryJSONError::InvalidText)?;
-        match escaped {
-            '"' => output.push('"'),
-            'b' => output.push('\u{8}'),
-            'f' => output.push('\u{c}'),
-            'n' => output.push('\n'),
-            'r' => output.push('\r'),
-            't' => output.push('\t'),
-            '\\' => output.push('\\'),
-            'u' => {
-                let mut first = [0_u8; 4];
-                for byte in &mut first {
-                    *byte = chars
-                        .next()
-                        .and_then(|(_, ch)| ch.is_ascii().then_some(ch as u8))
-                        .ok_or(BinaryJSONError::InvalidText)?;
-                }
-                let first = decode_hex_u16(&first)?;
-                // Go `decodeOneEscapedUnicode`: a surrogate rune has no
-                // direct UTF-8 form, so the caller combines an ADJACENT `\u`
-                // escape via `utf16.DecodeRune`, which substitutes U+FFFD
-                // for an invalid pair
-                // (`json_binary_functions.go:136-160`). No adjacent escape
-                // means the decode error propagates.
-                let scalar = if (0xd800..=0xdbff).contains(&first)
-                    || (0xdc00..=0xdfff).contains(&first)
-                {
-                    // Go only consumes the ADJACENT `\u` escape for a
-                    // surrogate first rune (`json_binary_functions.go:140`).
-                    let adjacent_escape = chars.next().map(|(_, ch)| ch) == Some('\\')
-                        && chars.next().map(|(_, ch)| ch) == Some('u');
-                    if !adjacent_escape {
-                        return Err(BinaryJSONError::InvalidText);
-                    }
-                    let mut second = [0_u8; 4];
-                    for byte in &mut second {
-                        *byte = chars
-                            .next()
-                            .and_then(|(_, ch)| ch.is_ascii().then_some(ch as u8))
-                            .ok_or(BinaryJSONError::InvalidText)?;
-                    }
-                    let second = decode_hex_u16(&second)?;
-                    if (0xd800..=0xdbff).contains(&first) && (0xdc00..=0xdfff).contains(&second) {
-                        0x10000 + ((u32::from(first) - 0xd800) << 10) + (u32::from(second) - 0xdc00)
-                    } else {
-                        0xFFFD
-                    }
-                } else {
-                    u32::from(first)
-                };
-                output.push(char::from_u32(scalar).ok_or(BinaryJSONError::InvalidText)?);
-            }
-            other => output.push(other),
-        }
-    }
-    Ok(output)
+    unquote_native_json_escaped_string(text).map_err(|_| BinaryJSONError::InvalidText)
 }
 
 /// Rewrites the `\uXXXX` surrogate escapes that Go `encoding/json` decodes
@@ -662,81 +518,7 @@ fn replace_lone_surrogate_escapes(text: &str) -> String {
 
 /// Decodes one four- or eight-hex-digit escaped Unicode value.
 pub fn decode_escaped_unicode(hex: &[u8]) -> Result<([u8; 4], usize, bool), BinaryJSONError> {
-    if hex.len() != 4 && hex.len() != 8 {
-        return Err(BinaryJSONError::InvalidText);
-    }
-    let first = decode_hex_u16(hex.get(..4).ok_or(BinaryJSONError::InvalidText)?)?;
-    // Go `utf16.DecodeRune` (`json_binary_functions.go:166`) substitutes
-    // U+FFFD for a lone surrogate or an invalid pair instead of failing.
-    let scalar = if hex.len() == 8 {
-        let second = decode_hex_u16(hex.get(4..).ok_or(BinaryJSONError::InvalidText)?)?;
-        if (0xd800..=0xdbff).contains(&first) && (0xdc00..=0xdfff).contains(&second) {
-            0x10000 + ((u32::from(first) - 0xd800) << 10) + (u32::from(second) - 0xdc00)
-        } else {
-            0xFFFD
-        }
-    } else if (0xd800..=0xdfff).contains(&first) {
-        0xFFFD
-    } else {
-        u32::from(first)
-    };
-    let ch = char::from_u32(scalar).ok_or(BinaryJSONError::InvalidText)?;
-    let mut output = [0_u8; 4];
-    let size = ch.encode_utf8(&mut output).len();
-    Ok((output, size, false))
-}
-
-fn decode_hex_u16(hex: &[u8]) -> Result<u16, BinaryJSONError> {
-    if hex.len() != 4 {
-        return Err(BinaryJSONError::InvalidText);
-    }
-    hex.iter().try_fold(0_u16, |value, byte| {
-        let digit = (*byte as char)
-            .to_digit(16)
-            .ok_or(BinaryJSONError::InvalidText)?;
-        Ok((value << 4) | digit as u16)
-    })
-}
-
-fn is_ecmascript_identifier(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    let Some(&first) = bytes.first() else {
-        return false;
-    };
-    let is_letter = |byte: u8| {
-        byte.is_ascii_alphabetic()
-            || matches!(
-                byte,
-                0xAA | 0xB5 | 0xBA | 0xC0..=0xD6 | 0xD8..=0xF6 | 0xF8..=0xFF
-            )
-    };
-    (is_letter(first) || first == b'$' || first == b'_')
-        && bytes[1..]
-            .iter()
-            .all(|byte| is_letter(*byte) || byte.is_ascii_digit() || matches!(byte, b'$' | b'_'))
-}
-
-fn encode_base64(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let value = (u32::from(chunk[0]) << 16)
-            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
-            | u32::from(*chunk.get(2).unwrap_or(&0));
-        output.push(TABLE[((value >> 18) & 0x3f) as usize] as char);
-        output.push(TABLE[((value >> 12) & 0x3f) as usize] as char);
-        output.push(if chunk.len() > 1 {
-            TABLE[((value >> 6) & 0x3f) as usize] as char
-        } else {
-            '='
-        });
-        output.push(if chunk.len() > 2 {
-            TABLE[(value & 0x3f) as usize] as char
-        } else {
-            '='
-        });
-    }
-    output
+    decode_native_json_escaped_unicode(hex).map_err(|_| BinaryJSONError::InvalidText)
 }
 
 /// Compares two binary JSON values using TiDB's JSON precedence and scalar rules.
@@ -915,65 +697,6 @@ fn encode_uvarint(mut value: usize, output: &mut Vec<u8>) {
         value >>= 7;
     }
     output.push(value as u8);
-}
-
-fn decode_uvarint(bytes: &[u8]) -> Result<(usize, usize), BinaryJSONError> {
-    decode_native_json_uvarint(bytes).map_err(|_| BinaryJSONError::InvalidBinary)
-}
-
-fn format_value(value: &Value) -> String {
-    match value {
-        Value::Null => "null".to_owned(),
-        Value::Bool(value) => value.to_string(),
-        Value::Number(value) => value.to_string(),
-        Value::String(value) => marshal_json_string(value),
-        Value::Array(values) => format!(
-            "[{}]",
-            values
-                .iter()
-                .map(format_value)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        Value::Object(values) => {
-            let mut entries: Vec<_> = values.iter().collect();
-            entries.sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
-            format!(
-                "{{{}}}",
-                entries
-                    .into_iter()
-                    .map(|(key, value)| format!(
-                        "{}: {}",
-                        marshal_json_string(key),
-                        format_value(value)
-                    ))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        }
-    }
-}
-
-fn format_node(value: &JSONNode) -> String {
-    match value {
-        JSONNode::Scalar(value) => value.to_string(),
-        JSONNode::Array(values) => format!(
-            "[{}]",
-            values
-                .iter()
-                .map(format_node)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        JSONNode::Object(values) => format!(
-            "{{{}}}",
-            values
-                .iter()
-                .map(|(key, value)| format!("{}: {}", marshal_json_string(key), format_node(value)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    }
 }
 
 #[cfg(test)]

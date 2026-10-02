@@ -647,28 +647,12 @@ impl Time {
 
 impl fmt::Display for Time {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
+        tidb_query_datatype::codec::mysql::Time::write_native_core_display(
+            self.core.raw(),
+            self.kind == TimeType::Date,
+            self.fsp,
             formatter,
-            "{:04}-{:02}-{:02}",
-            self.core.year(),
-            self.core.month(),
-            self.core.day()
-        )?;
-        if self.kind == TimeType::Date {
-            return Ok(());
-        }
-        write!(
-            formatter,
-            " {:02}:{:02}:{:02}",
-            self.core.hour(),
-            self.core.minute(),
-            self.core.second()
-        )?;
-        if self.fsp > 0 {
-            let fraction = format!("{:06}", self.core.microsecond());
-            write!(formatter, ".{}", &fraction[..usize::from(self.fsp)])?;
-        }
-        Ok(())
+        )
     }
 }
 

@@ -2417,3 +2417,104 @@ fn shared_json_modification_routes_preserve_preparation_order_and_scope() {
         execution.close();
     }
 }
+
+#[test]
+fn shared_json_unquote_preserves_text_binary_and_scalar_context() {
+    use crate::column::Column;
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    use tidb_ast::CiString;
+    use tidb_datatype::{BinaryJSON, FieldType, FieldTypeCode};
+
+    let cases = [
+        (s(""), s("")),
+        (s("\""), s("\"")),
+        (s("\"a"), s("\"a")),
+        (s(" \"a\" "), s(" \"a\" ")),
+        (s(r#""a\nb""#), s("a\nb")),
+        // A decoded JSON string containing quotes and a backslash is returned
+        // verbatim, not put through either strict text or SDK second unescaping.
+        (j(r#""\"a\\nb\"""#), s(r#""a\nb""#)),
+        (Datum::new_bytes(b"\"b\"".to_vec()), s("b")),
+        (j("null"), s("null")),
+        (j(r#"{"a":[1,2]}"#), s(r#"{"a": [1, 2]}"#)),
+        // The original malformed non-string Display writes no bytes. This is
+        // a present empty string, not SQL NULL or generic raw-validation error.
+        (
+            Datum::Json(BinaryJSON::from_encoded_parts(0xff, Vec::<u8>::new())),
+            s(""),
+        ),
+        (Datum::Null, Datum::Null),
+    ];
+    for slots in [0, 1] {
+        let owner = json_scope_owner(slots);
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        scope.with_columns(&crate::NoColumns, |ctx| {
+            for (value, expected) in &cases {
+                assert_json_scope_result(
+                    super::dispatch_in("JSON_UNQUOTE", std::slice::from_ref(value), ctx).unwrap(),
+                    expected,
+                    slots,
+                );
+                let code = match value {
+                    Datum::Json(_) => FieldTypeCode::Json,
+                    Datum::Null => FieldTypeCode::Null,
+                    _ => FieldTypeCode::VarString,
+                };
+                let mut column = Column::new(1, FieldType::new(code));
+                column.index = 0;
+                let function = ScalarFunction::new(
+                    CiString::new("JSON_UNQUOTE"),
+                    FieldType::new(FieldTypeCode::LongBlob),
+                    vec![Expression::Column(column)],
+                );
+                let row = tidb_chunk::mutrow::MutRow::from_datums(std::slice::from_ref(value));
+                assert_json_scope_result(function.eval(ctx, row.to_row()), expected, slots);
+            }
+        });
+        drop(scope);
+        execution.close();
+    }
+}
+
+#[test]
+fn shared_json_unquote_preparation_errors_precede_admission() {
+    use crate::{EvalError, JsonError};
+    use tidb_datatype::BinaryJSON;
+
+    let string_code = BinaryJSON::parse(r#""x""#).unwrap().type_code();
+    let cases = [
+        (
+            Datum::new_bytes(vec![0xff]),
+            EvalError::Unsupported("invalid UTF-8 string datum"),
+        ),
+        (
+            Datum::Json(BinaryJSON::from_encoded_parts(string_code, vec![1, 0xff])),
+            EvalError::Unsupported("invalid UTF-8 JSON string"),
+        ),
+        (
+            Datum::Int(1),
+            EvalError::Unsupported("JSON_UNQUOTE requires string"),
+        ),
+        (s(r#""a\q""#), EvalError::Json(JsonError::InvalidText)),
+        (s(r#""a" "b""#), EvalError::Json(JsonError::InvalidText)),
+        (s(r#""\uD800""#), EvalError::Json(JsonError::InvalidText)),
+        (s("\"a\nb\""), EvalError::Json(JsonError::InvalidText)),
+    ];
+    for slots in [0, 1] {
+        let owner = json_scope_owner(slots);
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        scope.with_columns(&crate::NoColumns, |ctx| {
+            for (value, expected) in &cases {
+                assert_eq!(
+                    super::dispatch_in("JSON_UNQUOTE", std::slice::from_ref(value), ctx).unwrap(),
+                    Err(expected.clone()),
+                );
+            }
+        });
+        drop(scope);
+        execution.close();
+    }
+}

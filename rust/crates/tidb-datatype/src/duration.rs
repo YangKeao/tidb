@@ -267,25 +267,7 @@ impl MySqlDuration {
 
 impl fmt::Display for MySqlDuration {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.nanoseconds < 0 {
-            formatter.write_str("-")?;
-        }
-        write!(
-            formatter,
-            "{:02}:{:02}:{:02}",
-            self.hour(),
-            self.minute(),
-            self.second()
-        )?;
-        if self.fsp > 0 {
-            let fraction = format!("{:06}", self.microsecond());
-            write!(
-                formatter,
-                ".{}",
-                &fraction[..usize::try_from(self.fsp).expect("positive duration FSP")]
-            )?;
-        }
-        Ok(())
+        SharedDuration::write_native_display(self.nanoseconds, self.fsp, formatter)
     }
 }
 

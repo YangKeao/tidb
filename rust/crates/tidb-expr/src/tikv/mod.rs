@@ -193,6 +193,18 @@ pub(crate) fn prepare_json_path_values_args(
     )
 }
 
+/// Transport one actual raw JSON document without selecting an identity recipe.
+pub(crate) fn prepare_json_binary_args(
+    document: &tidb_datatype::BinaryJSON,
+) -> Result<EvaluatedArgs, crate::EvalError> {
+    tidb_query_expr::local::prepare_json_raw_identity_args((document.type_code(), document.value()))
+        .map_err(|error| {
+            crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+                error, None,
+            ))
+        })
+}
+
 /// Preserve each actual BinaryJSON type code and payload without serde conversion.
 pub(crate) fn prepare_json_binary_pair_args(
     first: &tidb_datatype::BinaryJSON,

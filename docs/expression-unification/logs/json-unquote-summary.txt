@@ -1,0 +1,52 @@
+json-unquote-59 / round60; previous json-raw-values-58.
+192/245functional,strict0,target221,29more needed,53eligible remain. Onlyjson_unquote credited; sharedtemporalDisplay earnsNOtemporal-expressioncredit.
+
+Rawlogs /home/agent/tidb/expression-unification/logs/json-unquote-<id>.log.
+T cwd=/home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv (nightly-2026-01-30).
+N cwd=/home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb (nightly-2026-08-22).
+Commands use set -o pipefail; <wrapper> test --locked -p <package> <target/filter> -- --test-threads=1 2>&1 | tee <rawlog> >/dev/null.
+T tee ../logs/; N ../../logs/. Jobs594CPP,595nativegates+badtarget(set-e),596correctedaggregate+fullsuites(collect3statuses,exit101).
+Counts pass/fail/ignore/filtered (measured0); times compile/test seconds.
+
+1 tikv-datatype: T tidb_query_datatype --lib native_;40/0/0/395;2.12/0.00;exit0
+ SHA256 2d9d99d3b742377236f2492d55d72a4f6e36ec74d98c2539e199c0d61e7ab718
+2 tikv-json: T tidb_query_expr --lib native_json;18/0/0/853;14.16/0.00;exit0
+ SHA256 a878a3a1f8d1ea5036ebcd787de0bb369b0fb370d208f9ea6c372e329655feb7
+3 tikv-local: T tidb_query_expr --lib local;306/0/1/564;0.12/0.21;exit0
+ SHA256 37e24d92c64c3c41f435811d11cc750a4239ba77e4b6b2f0806fe39c614e4e98
+4 native-datatype: N tidb-datatype --lib;445/0/0/0;2.59/22.70;exit0
+ SHA256 8f6ac3bf417610163fee7ae6328d93dcbf5bdbc7f1c7bf41a2ffd53cb8e3a5a3
+5 native-expr: N tidb-expr --lib unquote;6/0/0/1614;17.43/0.00;exit0
+ SHA256 45b700177f9e57082dd4a85cefd6829b8397bbaf1ce0332046cc174095693798
+6 legacy-scope: N tidb-unistore --lib legacy_json_raw_workers;1/0/0/219;7.21/0.00;exit0
+ SHA256 81895c5f68e191bd719d126cf3965569759db72b624e1bae8f10d7d237d3a77b
+7 sql: N tidb-session --lib evaluated_ascii_json_unquote_;2/0/0/2195;29.74/0.04;exit0
+ SHA256 835bb040380939b391a28aa7f73a9a5caeb41dfc9350325f5de5e1e0f1827a2c
+8 sql-existing: N tidb-session --lib tests_json::json_value_functions;1/0/0/2196;0.13/0.07;exit0
+ SHA256 865dcd15f0becc2b77a107ffd3347b77914ff8d176cab5d8edb8b8fef91ad5ab
+9 sql-integration: N tidb-session --test json_introspection_source;exit101 BEFOREtests/build; nonexistenttesttarget
+ SHA256 d3285bfc81edd6232685ea4ea7ba6c93f0df0fd5595718d2b61c8a54f7151beb
+10 sql-integration-retry: N tidb-session --test all json_introspection_and_unquote;0/1/0/335;5.16/0.01;exit101
+ SHA256 bd95ce44d1e5e7868140f838a71c25a741e5b8183ad8b836304035ff804adbe1
+11 expr-full: N tidb-expr --lib;1522/4old/94/0;0.12/13.66;exit101
+ SHA256 df1e22ee8a1870e0944e8a18e120a77729192783187a698908256d2a14f32215
+12 unistore-full: N tidb-unistore --lib;206/1old/13/0;0.12/3.01;exit101
+ SHA256 1ced18753358d3ddba4cac1c1b12bd4b8098dfc460856023457d8a9570e3a170
+
+12attempts=11actualruns+1Cargo targetselectionfailure.8green,3non-green.0compilerfailures,0newtest-functionfailures,0sourcefixes,0zero-match,0metadata/lockresolutionattempts;1correctedtargetretry. FullNativeDatatype isintentionalgeneralTime/Duration Display gate. All15addedtests ran/pass. Ignorednotpasses; gatecollectionNOTGREEN.
+
+Wholefailuresections+finallists vsjson-raw-values-58, ONLY numericpanicthreadIDs normalized(<id>), no sourcemapping:
+ expression SHA256 27654f2c0ad2971242c00f50182467598cdfd9c2c65e5bf5a32e683708448637
+ unistore SHA256 b64dcced405c699c11b72ee31888c58e491b4e5b4e74fa2d445454e1d1e146e9
+Old4expression(IFNULLcollation/EXP/vectorizeddurationFSP/STR_TO_DATE) +old1unistore(point-rangeclosureselection) retainedexactly.
+
+AdditionalintegrationRED isNEWLYEXERCISED, notruntime-baselinedoldfailure: correctedtargetrunsfirstJSON_KEYS assertion at tests/json_introspection_source.rs:36; actual Json(BinaryJSON{type_code:3,value:[2,0,0,0,22,0,0,0,12,18,0,0,0,12,20,0,0,0,1,97,1,98]}) vs expected s:["a", "b"]. UNQUOTE statementsNEVERreached. CannotclaimthisasUNQUOTEpass. Cargo.toml autotests=false/buildaggregate andtests/all.rs verifiedafterbadinvocation; correct--testallfilter isnowrecorded. Sourcefixture/aggregate/manifest/JSON_KEYS pathbyteexactHEAD, butNORUNTIMEbaseline rerun. Noexpectationorfixturechanged; issueexplicitlydeferred. DirectUNQUOTEunit/SQLproofsremainindependent.
+
+Staticproof:20Rust(10CPP/10native),1newsource,15newtests; all20pinnedrustfmt --edition2021 --config skip_children=true --check andbothdiffchecks pass.192uniqueledger/191priorobjectsexact. OldbinaryJSONtestsuffix+nativeexpressionJSONtestprefixexact; CPPwireTime/DurationDisplay exact. PB/scalar/arg_eval_type/legacy/pathparser/rawmutationSDK/context sourceunchanged. Native7privateformat/escapehelpers deleted, generalnativeTime/DurationDisplay thinforward, frontendUNQUOTE noformat/quoteedge/parse body. No manifest/dependency/lock/Go/Bazelchange.
+
+Boundaryproof: sharedrawDisplay preservesopaque/base64/objectencodedorder+duplicates/U2028/rawtemporal/float/malformedempty; rootNaNfmtError→realpanic distinctnestedNaNempty. SDK optionalsecondunescape separatefromstrictSQLStringparser anddirectrawcontentverbatim. Unitvisitorvalidation(noIgnoredAny/ownedanswer) beforeadmission; originalunsupported/UTF8names; genuineNULLwitnessnotfake. Actual2unitBytes1→OwnBytesplainstring, rawpackrepresentationreusednoidentityop. Zero9directstoredcolumnSQLcases noCAST/QUOTE/EXTRACT/otherworkermasking. HexsetupviaVARCHAR→UPDATEJSON BEFOREpolicy (BinaryLiteralJSONrejected). ActualSDKrootNaNpanic caughtONLYinTESToutsideunchangeddriver: scopepoison/leasegone/live0/idle0/retired1; subsequentScopePoisoned/noalternateworker. Resource0 canpreemptkernelpanic, explicitlynotclaimidenticalpanicprecedenceunderrefusal.
+
+ROincidents:1parentnonexistentguidepath src/repo-overview correctedbyglobto guideROOT; initialparentpaniccaptureassumptionwithdrawnafterEsourceconfirmedNOproductioncatch(native+CPP). Neitherrequiredsourcefix/testoraclechange. Noformatter/staticsemanticproof failures. Eightexclusivewriters; parentgates/docs/publish.
+
+Architecture/CPPguide reviewedperagents-review: ownershipandpanicpolicyupdated, no newnormativepolicy/PRgate/shellsnippet; existingpaths+newnative_text compiled. Evidence/README/checkpoint/ledger/Plan retainallfailures. PairedCPPfirstsignedpush, thennativeexactSHA+Planhash; noforce/noPR; preexistinguntrackedBUILDexcluded.
+Deferred: extraJSON_KEYS integrationtypeassertion(notUNQUOTEproof), strictM6/broaderdefaultNoColumns requestroot/workspace/lint/dev/bazel_prepare/release/perf/zero-copy/physicalheap/peak/OOM/exhaustivecontext/domain/wire/150row/TiFlash/FIPS/priorparserGBvectorExtremeDecimal. No wholeGo-package transcreation/PRreadiness/goalcompletion. Temporalsharingnottemporal-familycredit. Goalactive.

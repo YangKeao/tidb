@@ -24,9 +24,7 @@
 //! double-quoted JSON string. The constructors take VALUE arguments, so
 //! `JSON_ARRAY('[1]')` is a one-element array holding the string `"[1]"`.
 
-use serde_json::Value as Json;
-
-use super::value::{json_argument, json_sql_string, parse_json, StringArgument};
+use super::value::{json_argument, json_sql_string, StringArgument};
 use crate::coerce::coerce_str;
 use crate::{Datum, EvalError, JsonError};
 use tidb_datatype::FieldType;
@@ -59,37 +57,51 @@ pub(super) fn json_quote(v: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, E
     )
 }
 
-/// `JSON_UNQUOTE(str)`, port of `builtinJSONUnquoteSig.evalString` plus
-/// `types.UnquoteString`.  The initial document-validity gate is important:
-/// a double-quoted value followed by another root value is an error, not an
-/// almost-unquoted string (`TestJSONUnquote`).
-pub(super) fn json_unquote(v: &Datum) -> Result<Datum, EvalError> {
-    // Go's `builtinJSONUnquoteSig` reads a BinaryJSON argument: a JSON
-    // string scalar unquotes to its content, and any other document
-    // unquotes to its own canonical text.
-    if let Datum::Json(document) = v {
-        return match document.as_string() {
-            Some(bytes) => match std::str::from_utf8(bytes) {
-                Ok(text) => Ok(Datum::new_string(text)),
-                Err(_) => Err(EvalError::Unsupported("invalid UTF-8 JSON string")),
-            },
-            None => Ok(Datum::new_string(document.to_string())),
-        };
-    }
-    let Some(text) = json_sql_string(v)? else {
-        return if *v == Datum::Null {
-            Ok(Datum::Null)
-        } else {
-            Err(EvalError::Unsupported("JSON_UNQUOTE requires string"))
-        };
-    };
-    if text.len() < 2 || !text.starts_with('"') || !text.ends_with('"') {
-        return Ok(Datum::new_string(text));
-    }
-    let Json::String(unquoted) = parse_json(text)? else {
-        return Err(EvalError::Json(JsonError::InvalidText));
-    };
-    Ok(Datum::new_string(unquoted))
+/// SQL text uses the shared strict quote-bounded policy; a direct BinaryJSON
+/// string retains its decoded bytes verbatim, without SDK second unescaping.
+/// Only input validation precedes admission. The worker owns the final text,
+/// including raw non-string formatting and its original panic behavior.
+pub(super) fn json_unquote(v: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp as Op, NativeJsonError};
+    crate::tikv::evaluate_prepared_args_in(
+        ctx,
+        || {
+            if let Datum::Json(document) = v {
+                if let Some(bytes) = document.as_string() {
+                    std::str::from_utf8(bytes)
+                        .map_err(|_| EvalError::Unsupported("invalid UTF-8 JSON string"))?;
+                }
+                return Ok((
+                    Op::JsonUnquoteBinaryNative,
+                    crate::tikv::prepare_json_binary_args(document)?,
+                ));
+            }
+            let Some(text) = json_sql_string(v)? else {
+                return if *v == Datum::Null {
+                    Ok((Op::JsonOutputNullNative, EvaluatedArgs::NullWitness(None)))
+                } else {
+                    Err(EvalError::Unsupported("JSON_UNQUOTE requires string"))
+                };
+            };
+            tidb_query_expr::validate_native_json_unquote_text(text).map_err(|error| {
+                EvalError::Json(match error {
+                    NativeJsonError::EmptyText => JsonError::EmptyText,
+                    NativeJsonError::InvalidText | NativeJsonError::InvalidBinary => {
+                        JsonError::InvalidText
+                    }
+                })
+            })?;
+            Ok((
+                Op::JsonUnquoteTextNative,
+                EvaluatedArgs::Bytes(Some(text.as_bytes().to_vec())),
+            ))
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 
 /// `JSON_ARRAY(value [, value] ...)`, port of `jsonArrayFunctionClass` and
