@@ -9363,6 +9363,144 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_json_paths_preserve_native_selection_mutation_and_errors() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_json_paths_sql (d JSON, arr JSON, scalar_doc JSON, child_doc JSON, nd JSON, pa VARCHAR(32), pn VARCHAR(32), deep_path VARCHAR(32), missing VARCHAR(32), pzero VARCHAR(32), pone VARCHAR(32), np VARCHAR(32), badpath VARCHAR(32), wild VARCHAR(32), rootpath VARCHAR(32), txt VARCHAR(16), vb VARBINARY(8), v INT, w INT, nv INT)").unwrap();
+    session.run(r#"INSERT INTO shared_json_paths_sql VALUES ('{"a":1,"b":[2,3]}','[1,2,3]','1','{"x":1}',NULL,'$.a','$.new','$.absent.child','$.absent','$[0]','$[1]',NULL,'bad path','$.*','$','[9]','ab',9,8,NULL)"#).unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // Literal goldens follow tests_json::json_mutation_functions and the native
+    // JSON source vectors. These assert native policies, NOT legacy APPEND's
+    // non-array rejection or raw extraction's different duplicate policy.
+    let json = |text: &str| Datum::Json(tidb_datatype::BinaryJSON::parse(text).unwrap());
+    let mut check = |sql: &str, expected: Vec<Datum>| {
+        let StmtOutput::Rows { rows, .. } = session.run_with_columns(sql).unwrap() else {
+            panic!("expected JSON path rows: {sql}")
+        };
+        assert_eq!(rows, vec![expected], "{sql}");
+        assert!(session.warnings().is_empty(), "{sql}");
+    };
+    check(
+        "SELECT JSON_SET(d,pa,v,pn,child_doc),JSON_INSERT(d,pa,v,pn,txt),JSON_REPLACE(d,pa,v,pn,nv) FROM shared_json_paths_sql",
+        vec![json(r#"{"a":9,"b":[2,3],"new":{"x":1}}"#), json(r#"{"a":1,"b":[2,3],"new":"[9]"}"#), json(r#"{"a":9,"b":[2,3]}"#)],
+    );
+    check(
+        "SELECT JSON_SET(arr,pzero,v,'$[0][0]',w),JSON_ARRAY_INSERT(arr,pzero,v,pzero,w),JSON_REMOVE(arr,pzero,pone),JSON_ARRAY_APPEND(arr,rootpath,v,pzero,w) FROM shared_json_paths_sql",
+        vec![json("[8,2,3]"), json("[8,9,1,2,3]"), json("[2]"), json("[[1,8],2,3,9]")],
+    );
+    check(
+        "SELECT JSON_SET(d,deep_path,v),JSON_INSERT(d,deep_path,v),JSON_ARRAY_INSERT(d,'$.a[1]',v),JSON_ARRAY_APPEND(d,missing,v),JSON_EXTRACT(d,deep_path) FROM shared_json_paths_sql",
+        vec![json(r#"{"a":1,"b":[2,3]}"#), json(r#"{"a":1,"b":[2,3]}"#), json(r#"{"a":1,"b":[2,3]}"#), json(r#"{"a":1,"b":[2,3]}"#), Datum::Null],
+    );
+    check(
+        "SELECT JSON_SET(d,'$.a',nv),JSON_INSERT(d,'$.new',vb),JSON_REPLACE(d,'$.a',w<v),JSON_ARRAY_INSERT(arr,pzero,child_doc),JSON_ARRAY_APPEND(scalar_doc,rootpath,txt) FROM shared_json_paths_sql",
+        vec![json(r#"{"a":null,"b":[2,3]}"#), json(r#"{"a":1,"b":[2,3],"new":"base64:type15:YWI="}"#), json(r#"{"a":true,"b":[2,3]}"#), json(r#"[{"x":1},1,2,3]"#), json(r#"[1,"[9]"]"#)],
+    );
+    check(
+        "SELECT JSON_EXTRACT(d,pa,pa),JSON_EXTRACT(d,wild),JSON_EXTRACT(arr,'$[last]'),JSON_ARRAY_INSERT(arr,'$[last]',v),JSON_ARRAY_INSERT(arr,'$[last-9]',v) FROM shared_json_paths_sql",
+        vec![json("[1,1]"), json("[1,[2,3]]"), json("3"), json("[1,2,9,3]"), json("[9,1,2,3]")],
+    );
+    check(
+        "SELECT JSON_EXTRACT(nd,pa),JSON_EXTRACT(d,np),JSON_SET(nd,'$.a',v),JSON_INSERT(d,NULL,v),JSON_REPLACE(nd,'$.a',v),JSON_REMOVE(d,np),JSON_ARRAY_APPEND(d,np,v),JSON_ARRAY_INSERT(nd,pzero,v) FROM shared_json_paths_sql",
+        vec![Datum::Null; 8],
+    );
+    for (expression, code) in [
+        ("JSON_ARRAY_INSERT(arr,rootpath,v)", 3165),
+        ("JSON_ARRAY_INSERT(d,pa,v)", 3165),
+        ("JSON_SET(d,wild,v)", 3149),
+        ("JSON_ARRAY_INSERT(arr,wild,v)", 3149),
+        ("JSON_REMOVE(d,rootpath)", 3153),
+        // Column EXEC path failures use 1105, not PLAN's nominal 3143.
+        ("JSON_EXTRACT(d,badpath)", 1105),
+        ("JSON_ARRAY_INSERT(arr,'$[-1]',v)", 1105),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_json_paths_sql");
+        let mysql = session
+            .run_with_columns(&sql)
+            .expect_err(&sql)
+            .to_mysql_error();
+        assert_eq!(mysql.code, code, "{sql}: {mysql:?}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+    }
+}
+
+#[test]
+fn evaluated_ascii_json_paths_zero_slots_cover_dynamic_cached_null_and_noop_inputs() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_json_paths_zero (d JSON, arr JSON, nd JSON, pa VARCHAR(32), pzero VARCHAR(32), missing VARCHAR(32), deep_path VARCHAR(32), np VARCHAR(32), v INT, nv INT)").unwrap();
+    session.run(r#"INSERT INTO shared_json_paths_zero VALUES ('{"a":1}','[1,2]',NULL,'$.a','$[0]','$.absent','$.absent.child',NULL,9,NULL)"#).unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // No WHERE, ORDER BY, CAST or unrelated worker can mask the root family.
+    // Constant paths exercise the context cache with real stored documents.
+    for expression in [
+        "JSON_EXTRACT(d,pa)",
+        "JSON_EXTRACT(nd,pa)",
+        "JSON_EXTRACT(d,np)",
+        "JSON_EXTRACT(d,missing)",
+        "JSON_SET(d,pa,v)",
+        "JSON_SET(d,'$.a',nv)",
+        "JSON_SET(nd,'$.a',v)",
+        "JSON_SET(d,NULL,v)",
+        "JSON_SET(d,deep_path,v)",
+        "JSON_INSERT(d,pa,v)",
+        "JSON_INSERT(d,'$.new',nv)",
+        "JSON_INSERT(nd,'$.a',v)",
+        "JSON_INSERT(d,np,v)",
+        "JSON_REPLACE(d,pa,v)",
+        "JSON_REPLACE(d,'$.a',nv)",
+        "JSON_REPLACE(nd,'$.a',v)",
+        "JSON_REPLACE(d,NULL,v)",
+        "JSON_REPLACE(d,missing,v)",
+        "JSON_REMOVE(arr,pzero)",
+        "JSON_REMOVE(nd,pa)",
+        "JSON_REMOVE(d,np)",
+        "JSON_REMOVE(d,missing)",
+        "JSON_ARRAY_APPEND(arr,pzero,nv)",
+        "JSON_ARRAY_APPEND(nd,pa,v)",
+        "JSON_ARRAY_APPEND(d,np,v)",
+        "JSON_ARRAY_APPEND(d,missing,v)",
+        "JSON_ARRAY_INSERT(arr,pzero,nv)",
+        "JSON_ARRAY_INSERT(nd,pzero,v)",
+        "JSON_ARRAY_INSERT(arr,np,v)",
+        "JSON_ARRAY_INSERT(d,'$.a[1]',v)",
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_json_paths_zero");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("JSON path family bypassed its worker: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(session.warnings().is_empty(), "{sql}");
+    }
+}
+
+#[test]
 fn evaluated_ascii_json_values_preserve_constructors_keys_pretty_and_types() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();

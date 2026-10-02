@@ -1,0 +1,58 @@
+json-paths-57 / round58; previous json-values-56.
+189/245 functional; strict0; target221;32 more needed,56 eligible remain.
+Credit5: json_extract,json_insert,json_set,json_remove,json_array_insert.
+NativeREPLACE/ARRAY_APPEND also use workers but legacy evaluator closure is NOT migrated: NO family credit for those2. UNQUOTE remains deferred.
+
+Raw logs: /home/agent/tidb/expression-unification/logs/json-paths-<id>.log
+T cwd=/home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv (nightly-2026-01-30).
+N cwd=/home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb (nightly-2026-08-22).
+Each command: set -o pipefail; <wrapper> test --locked -p <package> --lib [filter] -- --test-threads=1 2>&1 | tee <raw-log> >/dev/null.
+T tee path ../logs/; N ../../logs/. Focused groups set-e. Parent builds serialized:579 rawSDK/parser,580 CPP,581/582 failed newtest compilations,583 native gates,584 both full suites (collect each exit before returning101).
+Counts passed/failed/ignored/filtered; measured0. Times are measured Cargo compile/test elapsed.
+
+1 native-datatype: N tidb-datatype binary_json_ops;22/0/0/423;3.22s/0.00s;exit0
+ SHA256 8c813269ff0209ca5a296d9762688720fc70da2dd82f2d4a3c64694a1db99da2
+2 native-parser: N tidb-datatype json_path;5/0/0/440;0.09s/0.00s;exit0
+ SHA256 f520234e8aa1f16031318360293b21df67e214741c26f98d52523a07926f7f85
+3 tikv-json: T tidb_query_expr native_json;10/0/0/850;14.45s/0.00s;exit0
+ SHA256 1c3b5789dec3473dbb7c0058bd3cf9ab51f89147158bba78b192ab8d2f360ae3
+4 tikv-local: T tidb_query_expr local;303/0/1/556;0.12s/0.20s;exit0
+ SHA256 3e00429a5f2db951a7b25040bcff14c9cba9fed5bc2899d01786e4d3447031a5
+5 native-sdk: N tidb-expr json_path_sdk;COMPILE FAILURE E0432;0tests;exit101
+ SHA256 93ba4d8927d806035d354e429cf3575928dc65fbd4f6b341c87e3c07d0c865c3
+6 native-sdk-retry: SAMEcommand;COMPILE FAILURE E0308;0tests;exit101
+ SHA256 18c73407ca8da409413cbdc6745e5a7baa21771f3709ff91d87f2597a1eb9943
+7 native-sdk-retry2: SAMEcommand;2/0/0/1612;8.20s/0.00s;exit0
+ SHA256 536f223ad0cf627cda5f1fa9b38f25f69936dc32e6b4011e02c340ee3c1eb07e
+8 native-context: N tidb-expr shared_json_modif;2/0/0/1612;0.12s/0.00s;exit0
+ SHA256 b7d883ad4cbcfd33d56bbaeb3f4d53d9a825af7f1612241bc34293c6b1e4a557
+9 native-pb: N tidb-expr protobuf_json_replace_append;1/0/0/1613;0.12s/0.00s;exit0
+ SHA256 7e8175011cfb6f98b4f884db0e5fd1ff8049caf6e31165b86c024e67956f97e4
+10 legacy: N tidb-unistore json_value_functions_compose_over_the_json_channel;1/0/0/218;8.47s/0.00s;exit0
+ SHA256 82a12985bed93cfda63b9a9b2d7271548a2783c735a60521332c478748d174b5
+11 sql: N tidb-session evaluated_ascii_json_paths_;2/0/0/2193;32.36s/0.08s;exit0
+ SHA256 4174d3d8bea464f08d9f785028fdef855fe4c8babe5bac965b6ca687167fdaab
+12 expr-full: N tidb-expr (no filter);1516/4old/94/0;0.13s/13.92s;exit101
+ SHA256 787755d7bd138f9b9ca9e5cd3eee6463221843816e4e70fea4b53d74e86d6610
+13 unistore-full: N tidb-unistore (no filter);205/1old/13/0;0.12s/3.01s;exit101
+ SHA256 1e3d60e7bb8ac92514f8e00be499f9966379a2c22fe151d8d1993f43412d5d2f
+
+13 attempts=11 actual runs+2 compile failures.9 final focused green;2 known-baseline non-green full suites.0 new-test RED,2 repeated commands,0 zero-match/metadata/lock-resolution attempts. Ignored tests are NOT passes; full suites are NOT GREEN.
+Entire failure sections+final lists compare with ONLY numeric panic-heading thread IDs ->(<id>), no source mapping:
+ expr vs json-values-56 SHA256 27654f2c0ad2971242c00f50182467598cdfd9c2c65e5bf5a32e683708448637
+ unistore vs json-nullsafe-55 SHA256 b64dcced405c699c11b72ee31888c58e491b4e5b4e74fa2d445454e1d1e146e9
+Expression retains IFNULL collation, EXP, vectorized duration FSP panic, STR_TO_DATE partial format. Unistore retains point-range closure selection failure; it was not rerun in json-values-56, hence explicit older baseline.
+
+Actual corrections/incidents:
+- NEW PB test imported crate::{Column,Constant,Expression}, but expression.rs32/33/71 owns/reexports them. Parent corrected to crate::expression::{...}, leavingNoColumns atroot. E0432,0tests, noexpected/productionchange.
+- Next compiler exposed NEW test column.index usize assignment although field is i64; 5-element enumerated index now index as i64 (sameboundedtype as neighboringColumn::new). E0308,0tests, noexpected/productionchange.
+- Parent2 nonexistent lookup incidents: guide omitted src/; expression module guessedasdirectory ratherthanexpression.rs. glob/grep locatedactualpaths; no policy bypass and no test RED.
+- E's initially truncated RO message-literal check was completed against parent's pre-edit read: original modification paths/arity and ARRAY_APPEND/ARRAY_INSERT arity strings confirmed exactly. No source repair or semantic change.
+
+23Rust=CPP10/native13,2new shared modules native_path_ops.rs/native_json_modify.rs,15 additive tests. No newdependency/manifest/lock change. All23 pinned rustfmt --edition2021 --config skip_children=true --check and bothgitdiffchecks pass. Prior184 familyobjects exact;189unique, Replace/Append absentledger. Native mutation/extraction/index/selector helper copies absent. Originaljson/value.rs,construct.rs,datatypebinary_json.rs,cophandler.rs,executor exec.rs,expr/context.rs exactHEAD. pb_builtin.rs originalPRODUCTIONprefix exact; admitted JSON dispatch changes are in json/mod.rs. H pre-format source comparison found7serdehelpers byte-identical andapplyloop onlymode-renamed. No provider fixtures/re-recording/oraclechanges.
+
+Core tests preserve actualcachedAST metadata/flags (no text reconstruction), samecontextcachehits/changedparams/cachedNone/failure retries/clonereset, documentbeforecontextgetter/cache, freshvalues/noopcoercion, allpaths-first vs perpair demands, root/missing/scalarautowrap/removal shifts, native-vsraw negative policies, rawglobaldedup/duplicatefirst/quotedstar flags, stagedSDKencoding/errors/skippedreplacement/nooprawbytes, actual5argPBcastflags+eagerchildren, malformedpackets/roles andgenuineNULL.30 direct SQL0slot cases have no unrelated worker masking.
+
+Credit boundary: 7nativeprofiles,5completefamilies. LegacyReplace fullrawpair ordering and legacyAppend per-step/nonarrayNULL demand stillneedactual evaluator workers; pureSDKsharingdoesnotearnthosefamilies. Callbackwalk/searchfoundationnotfamilycredit. Genericcodecsremainstagedrepresentation, no newencoder.
+Architecture/guide review: ownership/API mapsupdated, staleEXTRACT-deferrednote removed; no newnormativepolicy/PR/buildgate, no Go/Bazel changes. Requiredguide index/overview/subsystem source-read; exactnewpaths compile. No whole Go-package transcreation or PRreadiness claim.
+Deferred: strictM6/wholeworkspace/make lint/dev/bazel_prepare/release/perf/zero-copy/physicalheap/peak/OOM/exhaustivecontext/domain/wire/150row/TiFlash/FIPS, priorparser/GB/vector/extremeDecimal and broaderdefaultNoColumns gaps. Intentionalactualcontextresourceactivation andpriorrowctx/floatfeature surfaces remainexplicit. Goal active.

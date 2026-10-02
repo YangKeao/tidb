@@ -667,3 +667,185 @@ fn cast_types(sig: ScalarFuncSig) -> Option<(EvalType, EvalType)> {
         _ => return None,
     })
 }
+
+#[cfg(test)]
+mod json_path_worker_tests {
+    use super::*;
+    use crate::expression::{Column, Constant, Expression};
+    use crate::NoColumns;
+    use tidb_datatype::{BinaryJSON, FieldTypeCode, FieldTypeFlags};
+
+    #[test]
+    fn protobuf_json_replace_append_keep_five_arg_cast_demand_and_worker_scope() {
+        let json = |text: &str| Datum::Json(BinaryJSON::parse(text).unwrap());
+        let json_type = FieldType::new(FieldTypeCode::Json);
+        let text_type = FieldType::new(FieldTypeCode::VarString);
+        let literal = |value: Datum, field: &FieldType| {
+            Expression::Constant(Constant::new(value, field.clone()))
+        };
+        let selected = |sig, args| {
+            ScalarFunction::from_pb(PbBuiltin::new(sig).unwrap(), json_type.clone(), args)
+        };
+        let owner = crate::AsciiPoolOwner::new(
+            crate::AsciiPoolPolicy::checked(
+                0,
+                0,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let execution = owner.begin_execution().unwrap();
+        // These are the two EXISTING PB signatures, each with the admitted
+        // five-argument shape. Other JSON signatures are deliberately absent.
+        for (sig, document, expected, null_value) in [
+            (
+                ScalarFuncSig::JsonReplaceSig,
+                r#"{"a":1}"#,
+                r#"{"a":9}"#,
+                r#"{"a":null}"#,
+            ),
+            (
+                ScalarFuncSig::JsonArrayAppendSig,
+                r#"{"a":[1]}"#,
+                r#"{"a":[1,9]}"#,
+                r#"{"a":[1,null]}"#,
+            ),
+        ] {
+            for cached_paths in [false, true] {
+                for (doc, path, value, want) in [
+                    (
+                        json(document),
+                        Datum::new_string("$.a"),
+                        json("9"),
+                        json(expected),
+                    ),
+                    (
+                        json(r#"{"z":0}"#),
+                        Datum::new_string("$.a"),
+                        json("9"),
+                        json(r#"{"z":0}"#),
+                    ),
+                    (
+                        Datum::Null,
+                        Datum::new_string("$.a"),
+                        json("9"),
+                        Datum::Null,
+                    ),
+                    (json(document), Datum::Null, json("9"), Datum::Null),
+                    (
+                        json(document),
+                        Datum::new_string("$.a"),
+                        Datum::Null,
+                        json(null_value),
+                    ),
+                ] {
+                    let values = [doc, path, value, Datum::new_string("$.missing"), json("2")];
+                    let fields = [&json_type, &text_type, &json_type, &text_type, &json_type];
+                    let args = fields
+                        .iter()
+                        .enumerate()
+                        .map(|(index, field)| {
+                            if cached_paths && (index == 1 || index == 3) {
+                                literal(values[index].clone(), field)
+                            } else {
+                                let mut column = Column::new(index as i64 + 1, (*field).clone());
+                                column.index = index as i64;
+                                Expression::Column(column)
+                            }
+                        })
+                        .collect();
+                    let function = selected(sig, args);
+                    assert_eq!(function.pb_signature(), Some(sig));
+                    let row = tidb_chunk::mutrow::MutRow::from_datums(&values);
+                    assert_eq!(
+                        function.eval(&NoColumns, row.to_row()).unwrap(),
+                        want,
+                        "{sig:?}, cached={cached_paths}"
+                    );
+                    // Reuse the same selected node after warming its path cache;
+                    // document/path NULL and no-op results still need the root worker.
+                    execution.scope().with_columns(&NoColumns, |columns| {
+                        let error = function
+                            .eval(columns, row.to_row())
+                            .expect_err("selected JSON PB requires worker");
+                        let EvalError::ExpressionAdapterFailure(failure) = error else {
+                            panic!("PB JSON lost infrastructure cause: {error:?}")
+                        };
+                        assert_eq!(
+                            failure.class(),
+                            crate::ExpressionAdapterFailureClass::PoolResource
+                        );
+                        assert_eq!(
+                            failure.origin(),
+                            crate::ExpressionAdapterFailureOrigin::Pool
+                        );
+                    });
+                }
+            }
+            for (parse_document, replace_want, append_want) in [
+                (false, r#"{"a":"1"}"#, r#"{"a":["1"]}"#),
+                (true, r#"{"a":1}"#, r#"{"a":[1]}"#),
+            ] {
+                let mut cast_type = json_type.clone();
+                if parse_document {
+                    cast_type.add_flags(FieldTypeFlags::PARSE_TO_JSON);
+                }
+                let cast = Expression::ScalarFunction(ScalarFunction::from_pb(
+                    PbBuiltin::new(ScalarFuncSig::CastStringAsJson).unwrap(),
+                    cast_type,
+                    vec![literal(Datum::new_string("1"), &text_type)],
+                ));
+                let (doc, want) = if sig == ScalarFuncSig::JsonReplaceSig {
+                    (r#"{"a":0}"#, replace_want)
+                } else {
+                    (r#"{"a":[]}"#, append_want)
+                };
+                let function = selected(
+                    sig,
+                    vec![
+                        literal(json(doc), &json_type),
+                        literal(Datum::new_string("$.a"), &text_type),
+                        cast,
+                        literal(Datum::new_string("$.missing"), &text_type),
+                        literal(json("2"), &json_type),
+                    ],
+                );
+                let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+                assert_eq!(
+                    function.eval(&NoColumns, empty.to_row()).unwrap(),
+                    json(want)
+                );
+            }
+            // Kernel::Json eagerly evaluates every child even after document
+            // and path NULL. The real cast error must win before the value kernel.
+            let mut cast_type = json_type.clone();
+            cast_type.add_flags(FieldTypeFlags::PARSE_TO_JSON);
+            let bad_cast = Expression::ScalarFunction(ScalarFunction::from_pb(
+                PbBuiltin::new(ScalarFuncSig::CastStringAsJson).unwrap(),
+                cast_type,
+                vec![literal(Datum::new_string("{"), &text_type)],
+            ));
+            let function = selected(
+                sig,
+                vec![
+                    literal(Datum::Null, &json_type),
+                    literal(Datum::Null, &text_type),
+                    bad_cast,
+                    literal(Datum::new_string("$.missing"), &text_type),
+                    literal(json("2"), &json_type),
+                ],
+            );
+            let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+            assert!(matches!(
+                function.eval(&NoColumns, empty.to_row()),
+                Err(EvalError::Json(crate::JsonError::InvalidText))
+            ));
+        }
+    }
+}

@@ -1,27 +1,27 @@
 # Expression unification experiment
 
-Checkpoint `json-values-56` (previous `json-nullsafe-55`). **184/245 functional families; target221; strict final acceptance0.** Added JSON_ARRAY, JSON_OBJECT, JSON_KEYS and JSON_PRETTY;37 more needed. Incomplete, not PR-ready.
+Paired branch: `expression-unification-demo` in YangKeao/tidb and YangKeao/tikv.
+Current checkpoint: **json-paths-57**. Previous: **json-values-56**.
 
-Paired branches: [TiDB](https://github.com/YangKeao/tidb/tree/expression-unification-demo) · [TiKV](https://github.com/YangKeao/tikv/tree/expression-unification-demo). Matching Plan snapshots accompany both commits; no force-push or automatic PR.
+## Progress
 
-## This checkpoint
-- Workers construct arrays/objects from actual ordered operands, including empty lists; duplicate-key resolution is no longer native.
-- Both KEYS arities use shared workers. The public raw SDK algorithm also delegates, retaining duplicate keys and its different nonobject-empty-array policy.
-- Exact native JSON/pretty formatting moves to shared code. Computed JSON retains the old BinaryJSON parse/encoding boundary; PRETTY remains text. Generic codecs are not falsely claimed migrated.
-- Actual context now reaches typed constructor/pretty dispatch. Resource admission activation is intentional and verified, including genuine zero-argument calls and NULL outcomes.
-- No new driver/carrier/kind/binding or PB/legacy admission. EXTRACT and UNQUOTE remain uncredited pending their distinct raw policies.
+Frozen denominator245; target221. Functional delegation plus native algorithm deletion: **189/245**. Strict final-audited acceptance: **0**; goal remains active. Five complete families added: EXTRACT, INSERT, SET, REMOVE, ARRAY_INSERT.56 eligible remain;32 more functional migrations needed.
 
-## Validation
-| Gates | Result |
-|---|---|
-| CPP JSON / local | 6 / 301 passed; local1 ignored |
-| Native raw SDK / result SDK / context | 20 / 2 / 2 passed |
-| SQL | 2 passed;22 direct zero-slot cases |
-| Full expression | **1511 passed,4 old failures,94 ignored; exit101** |
+Native REPLACE/ARRAY_APPEND also use workers, but their legacy evaluators remain open: **neither gets family credit**. Shared raw SDK algorithms alone do not close those evaluator routes. UNQUOTE remains deferred.
 
-Seven actual runs: six focused green, no compile failures/new REDs/retries. Complete expression failure details match the previous checkpoint. Unistore full was not rerun; its prior failure remains unresolved.22 Rust sources,12 additive tests, no manifest/dependency/lock changes. One parent static-check invocation used a nonexistent context path; the corrected proof passed without source changes.
+## Boundaries
 
-[Review map and semantic boundaries](evidence/json-values-checkpoint.md) · [commands and hashes](logs/json-values-summary.txt) · `checkpoint.json` · root Plan. Historical manifests remain in Git; cumulative records remain in `migration-progress.json` with the prior180 objects unchanged.
+- Seven fixed unit byte-result identities carry actual documents, parsed selector ASTs and ordered values through existing Values/Bytes2/Bytes3/OwnBytes. Original cached multiple-selection metadata is retained, with no reconstructed path text or action program. Existing genuine-NULL terminal is reused; no new result kind/driver/carrier/binding/admission.
+- Shared serde mutation cores apply the original ordered operations and serialize only the final value. Frontend coercion orders remain all-paths-before-values versus per-pair-path-before-value; no-op targets still demand their values.
+- One guarded cached facade retains document-before-context/cache demand, observed NULL, same-context hits, failed-parse retry and clone reset. Existing PB signatures, five-argument lowering, cast flags and eager children stay unchanged.
+- Separate raw datatype cores preserve cross-path identity dedup, ranges/flags/duplicate policy and original SDK codec stages. ARRAY_INSERT still skips replacement decoding on early no-op and returns original bytes. Callback walk/search share selectors without earning family credit. No new raw encoder.
 
-## Remaining work
-61 eligible families remain. Shared leaves alone earn no credit. EXTRACT/UNQUOTE, IntDIV and IN/INTERVAL native answers are still open. Whole workspace/lint/dev/bazel_prepare, strictM6/release/performance/zero-copy/physical heap/peak/OOM and exhaustive compatibility gates remain deferred. Prior request-root/context, float feature, parser/GB/vector/extreme Decimal exceptions stay explicit. No whole-package transcreation or PR-readiness claim.
+## Evidence
+
+[Review map and contracts](evidence/json-paths-checkpoint.md), [commands/hashes/incidents](logs/json-paths-summary.txt), [manifest](checkpoint.json), [sole cumulative ledger](migration-progress.json). Parent manages eight exclusive contributors and serialized gates;23 Rust files,2 new shared modules,15 additive tests, unchanged manifests/locks.
+
+13 Cargo attempts:11 actual runs and2 new-test compile failures corrected without expectation changes. Nine final focused gates pass: native SDK22/parser5, CPP JSON10/local303+1ignored, native result SDK2/cache2/PB1, legacy1, SQL2 with30 direct zero-slot cases. Full expression **1516/4old/94ignored** and unistore **205/1old/13ignored** remain non-green; entire failure sections match their prior receipts after only thread-ID normalization. All23 scoped formatter checks pass. Two parent nonexistent source/guide lookups were corrected by discovery.
+
+StrictM6, whole workspace/lint/dev/bazel_prepare, release/performance/zero-copy/physical heap/peak/OOM, exhaustive context/domain/wire/differential/TiFlash/FIPS and prior parser/GB/vector/extreme Decimal exceptions remain deferred. Actual context resource activation and previous row-context/float-feature surfaces are explicit. No whole Go-package transcreation, PR readiness, force push or overall completion claim.
+
+`checkpoint.json` pins the exact paired TiKV commit and common Plan SHA256. Both tracked Plans must equal the root Plan; publication remains TiKV first, then TiDB with the paired SHA and Plan. History/evidence from earlier checkpoints is retained. The pre-existing untracked client differential `BUILD.bazel` is excluded.

@@ -15,23 +15,18 @@
 use std::collections::HashSet;
 
 use serde_json::Value;
-use tidb_query_datatype::codec::mysql::json::native_json_depth_from_children;
+use tidb_query_datatype::codec::mysql::json::{
+    extract_native_json_node, insert_native_json_array_node, modify_native_json_node,
+    native_json_array_insert_index, native_json_depth_from_children, remove_native_json_node,
+    select_native_json_nodes,
+};
 
 use crate::{
     binary_json::JSONNode, compare_binary_json, BinaryJSON, BinaryJSONError,
     JSONPathArraySelection, JSONPathExpression, JSONPathLeg,
 };
 
-/// JSON modification mode.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum JSONModifyType {
-    /// Insert only when the path does not exist.
-    Insert,
-    /// Replace only when the path exists.
-    Replace,
-    /// Insert or replace.
-    Set,
-}
+pub use tidb_query_datatype::codec::mysql::json::NativeBinaryJsonModifyType as JSONModifyType;
 
 /// JSON_SEARCH match cardinality.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -49,18 +44,13 @@ impl BinaryJSON {
         paths: &[JSONPathExpression],
     ) -> Result<Option<BinaryJSON>, BinaryJSONError> {
         let root = self.to_node()?;
-        let mut matches = Vec::new();
-        let mut seen = HashSet::new();
-        for path in paths {
-            extract_value(&root, path.legs(), &mut matches, &mut seen);
-        }
-        if matches.is_empty() {
-            return Ok(None);
-        }
-        if paths.len() == 1 && !paths[0].could_match_multiple_values() && matches.len() == 1 {
-            return BinaryJSON::from_node(matches.remove(0)).map(Some);
-        }
-        BinaryJSON::from_node(&JSONNode::Array(matches.into_iter().cloned().collect())).map(Some)
+        let paths = paths
+            .iter()
+            .map(|path| (path.legs(), path.could_match_multiple_values()))
+            .collect::<Vec<_>>();
+        extract_native_json_node(&root, &paths)
+            .map(|value| BinaryJSON::from_node(&value))
+            .transpose()
     }
 
     /// Returns sorted object keys as a JSON array, or an empty array otherwise.
@@ -153,7 +143,7 @@ impl BinaryJSON {
             if path.contains_any_asterisk() || path.contains_any_range() {
                 return Err(BinaryJSONError::InvalidPath);
             }
-            document = modify_node(document, path.legs(), value.to_node()?, mode);
+            document = modify_native_json_node(document, path.legs(), value.to_node()?, mode);
         }
         BinaryJSON::from_node(&document)
     }
@@ -175,26 +165,16 @@ impl BinaryJSON {
         let Some(parent_value) = self.extract(std::slice::from_ref(&parent))? else {
             return Ok(self.clone());
         };
-        let JSONNode::Array(mut array) = parent_value.to_node()? else {
+        let parent_node = parent_value.to_node()?;
+        if native_json_array_insert_index(&parent_node, index).is_none() {
             return Ok(self.clone());
-        };
-        let index = if index < 0 {
-            let Some(index) = i64::try_from(array.len())
-                .ok()
-                .and_then(|length| length.checked_add(index))
-                .and_then(|index| usize::try_from(index).ok())
-            else {
-                return Ok(self.clone());
-            };
-            index
-        } else {
-            usize::try_from(index).unwrap_or(usize::MAX)
         }
-        .min(array.len());
-        array.insert(index, value.to_node()?);
+        // The probe must precede replacement decoding. Keep both original
+        // intermediate codecs: selected parent above, then inserted array here.
+        let array = insert_native_json_array_node(parent_node, index, value.to_node()?);
         self.modify(
             &[parent],
-            &[BinaryJSON::from_node(&JSONNode::Array(array))?],
+            &[BinaryJSON::from_node(&array)?],
             JSONModifyType::Set,
         )
     }
@@ -206,7 +186,7 @@ impl BinaryJSON {
             if path.legs().is_empty() || path.contains_any_asterisk() || path.contains_any_range() {
                 return Err(BinaryJSONError::InvalidPath);
             }
-            remove_node(&mut document, path.legs());
+            remove_native_json_node(&mut document, path.legs());
         }
         BinaryJSON::from_node(&document)
     }
@@ -241,11 +221,10 @@ impl BinaryJSON {
             roots.push((JSONPathExpression::default(), &root));
         } else {
             for path in paths {
-                select_walk_roots(
-                    &root,
-                    path.legs(),
-                    JSONPathExpression::default(),
-                    &mut roots,
+                roots.extend(
+                    select_native_json_nodes(&root, path.legs())
+                        .into_iter()
+                        .map(|(legs, value)| (selected_path(legs), value)),
                 );
             }
         }
@@ -267,16 +246,9 @@ impl BinaryJSON {
         path: &JSONPathExpression,
     ) -> Result<Vec<(JSONPathExpression, BinaryJSON)>, BinaryJSONError> {
         let root = self.to_node()?;
-        let mut matches = Vec::new();
-        select_walk_roots(
-            &root,
-            path.legs(),
-            JSONPathExpression::default(),
-            &mut matches,
-        );
-        matches
+        select_native_json_nodes(&root, path.legs())
             .into_iter()
-            .map(|(path, value)| Ok((path, BinaryJSON::from_node(value)?)))
+            .map(|(legs, value)| Ok((selected_path(legs), BinaryJSON::from_node(value)?)))
             .collect()
     }
 
@@ -411,149 +383,15 @@ pub fn merge_patch_binary_json(
     BinaryJSON::from_node(&result).map(Some)
 }
 
-fn extract_value<'a>(
-    value: &'a JSONNode,
-    legs: &[JSONPathLeg],
-    output: &mut Vec<&'a JSONNode>,
-    seen: &mut HashSet<*const JSONNode>,
-) {
-    let Some((leg, remain)) = legs.split_first() else {
-        if seen.insert(value) {
-            output.push(value);
-        }
-        return;
-    };
-    match leg {
-        JSONPathLeg::Key(key) if key == "*" => {
-            if let JSONNode::Object(values) = value {
-                let mut entries = values.iter().collect::<Vec<_>>();
-                entries.sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
-                for (_, value) in entries {
-                    extract_value(value, remain, output, seen);
-                }
-            }
-        }
-        JSONPathLeg::Key(key) => {
-            if let JSONNode::Object(values) = value {
-                if let Some((_, value)) = values.iter().find(|(name, _)| name == key) {
-                    extract_value(value, remain, output, seen);
-                }
-            }
-        }
-        JSONPathLeg::Array(selection) => {
-            if let JSONNode::Array(values) = value {
-                for index in selected_indices(selection, values.len()) {
-                    extract_value(&values[index], remain, output, seen);
-                }
-            } else if autowraps_non_array(selection) {
-                extract_value(value, remain, output, seen);
-            }
-        }
-        JSONPathLeg::DoubleAsterisk => {
-            extract_value(value, remain, output, seen);
-            match value {
-                JSONNode::Array(values) => {
-                    for value in values {
-                        extract_descendants(value, remain, output, seen);
-                    }
-                }
-                JSONNode::Object(values) => {
-                    let mut entries = values.iter().collect::<Vec<_>>();
-                    entries
-                        .sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
-                    for (_, value) in entries {
-                        extract_descendants(value, remain, output, seen);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-fn extract_descendants<'a>(
-    value: &'a JSONNode,
-    remain: &[JSONPathLeg],
-    output: &mut Vec<&'a JSONNode>,
-    seen: &mut HashSet<*const JSONNode>,
-) {
-    extract_value(value, remain, output, seen);
-    match value {
-        JSONNode::Array(values) => {
-            for value in values {
-                extract_descendants(value, remain, output, seen);
-            }
-        }
-        JSONNode::Object(values) => {
-            let mut entries = values.iter().collect::<Vec<_>>();
-            entries.sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
-            for (_, value) in entries {
-                extract_descendants(value, remain, output, seen);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn select_walk_roots<'a>(
-    value: &'a JSONNode,
-    legs: &[JSONPathLeg],
-    path: JSONPathExpression,
-    output: &mut Vec<(JSONPathExpression, &'a JSONNode)>,
-) {
-    let Some((leg, remain)) = legs.split_first() else {
-        output.push((path, value));
-        return;
-    };
-    match leg {
-        JSONPathLeg::Key(key) if key == "*" => {
-            if let JSONNode::Object(values) = value {
-                let mut values = values.iter().collect::<Vec<_>>();
-                values.sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
-                for (key, value) in values {
-                    select_walk_roots(value, remain, path.push_back_key(key), output);
-                }
-            }
-        }
-        JSONPathLeg::Key(key) => {
-            if let JSONNode::Object(values) = value {
-                if let Some((_, value)) = values.iter().find(|(name, _)| name == key) {
-                    select_walk_roots(value, remain, path.push_back_key(key), output);
-                }
-            }
-        }
-        JSONPathLeg::Array(selection) => {
-            if let JSONNode::Array(values) = value {
-                for index in selected_indices(selection, values.len()) {
-                    select_walk_roots(
-                        &values[index],
-                        remain,
-                        path.push_back_index(index as i64),
-                        output,
-                    );
-                }
-            }
-        }
-        JSONPathLeg::DoubleAsterisk => {
-            select_walk_roots(value, remain, path.clone(), output);
-            match value {
-                JSONNode::Array(values) => {
-                    for (index, value) in values.iter().enumerate() {
-                        select_walk_roots(value, legs, path.push_back_index(index as i64), output);
-                    }
-                }
-                JSONNode::Object(values) => {
-                    let mut values = values.iter().collect::<Vec<_>>();
-                    values
-                        .sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
-                    for (key, value) in values {
-                        select_walk_roots(value, legs, path.push_back_key(key), output);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
+// The shared selector already computed these concrete legs. Rebuild only the
+// native path representation, retaining its original flag/Display behavior.
+fn selected_path(legs: Vec<JSONPathLeg>) -> JSONPathExpression {
+    legs.into_iter()
+        .fold(JSONPathExpression::default(), |path, leg| match leg {
+            JSONPathLeg::Key(key) => path.push_back_key(key),
+            JSONPathLeg::Array(selection) => path.push_back_array_selection(selection),
+            JSONPathLeg::DoubleAsterisk => unreachable!("shared selector returns concrete paths"),
+        })
 }
 
 fn walk_value(
@@ -616,71 +454,6 @@ fn shared_like_json_trailing_escape_policy() {
             "text={text:?}, pattern={pattern:?}, escape={escape:?}"
         );
     }
-}
-
-fn selected_indices(selection: &JSONPathArraySelection, length: usize) -> Vec<usize> {
-    match selection {
-        JSONPathArraySelection::Asterisk => (0..length).collect(),
-        JSONPathArraySelection::Index(index) => {
-            normalize_index(*index, length).into_iter().collect()
-        }
-        JSONPathArraySelection::Range { start, end } => {
-            if length == 0 {
-                return Vec::new();
-            }
-            let Some(start) = normalize_range_start(*start, length) else {
-                return Vec::new();
-            };
-            let end = normalize_range_end(*end, length);
-            if start > end {
-                Vec::new()
-            } else {
-                (start..=end).collect()
-            }
-        }
-    }
-}
-
-fn normalize_range_start(index: i64, length: usize) -> Option<usize> {
-    if index >= 0 {
-        return usize::try_from(index).ok().filter(|index| *index < length);
-    }
-    Some(i64::try_from(length).ok()?.saturating_add(index).max(0) as usize)
-}
-
-fn normalize_range_end(index: i64, length: usize) -> usize {
-    if index >= 0 {
-        return usize::try_from(index).unwrap_or(usize::MAX).min(length - 1);
-    }
-    i64::try_from(length)
-        .unwrap_or(i64::MAX)
-        .saturating_add(index)
-        .max(0) as usize
-}
-
-/// Whether an array selection applied to a non-array autowraps it, i.e. selects
-/// the value itself as if it were a one-element array.
-///
-/// The source rule is stated on the selection, not on a synthesised one-element
-/// array: `[0]` and `[last]` autowrap, `[0 to <non-negative>]` and `[0 to last]`
-/// autowrap, and `[*]` never does. A range starting past `0`, or ending before
-/// `last`, therefore selects nothing even though it would select index 0 of a
-/// real one-element array.
-fn autowraps_non_array(selection: &JSONPathArraySelection) -> bool {
-    match selection {
-        JSONPathArraySelection::Asterisk => false,
-        JSONPathArraySelection::Index(index) => *index == 0 || *index == -1,
-        JSONPathArraySelection::Range { start, end } => *start == 0 && *end >= -1,
-    }
-}
-
-fn normalize_index(index: i64, length: usize) -> Option<usize> {
-    let index = if index < 0 {
-        i64::try_from(length).ok()?.checked_add(index)?
-    } else {
-        index
-    };
-    usize::try_from(index).ok().filter(|index| *index < length)
 }
 
 /// Go `MergeBinaryJSON` groups each adjacent run of objects before flattening
@@ -836,105 +609,210 @@ fn decode_uvarint_for_peek(bytes: &[u8]) -> Result<(usize, usize), BinaryJSONErr
     Err(BinaryJSONError::InvalidBinary)
 }
 
-fn modify_node(
-    mut document: JSONNode,
-    legs: &[JSONPathLeg],
-    replacement: JSONNode,
-    mode: JSONModifyType,
-) -> JSONNode {
-    let Some((leg, remain)) = legs.split_first() else {
-        return match mode {
-            JSONModifyType::Insert => document,
-            JSONModifyType::Replace | JSONModifyType::Set => replacement,
-        };
-    };
-    match leg {
-        JSONPathLeg::Key(key) => {
-            let JSONNode::Object(values) = &mut document else {
-                return document;
-            };
-            let position = values.iter().position(|(name, _)| name == key);
-            if remain.is_empty() {
-                match (position.is_some(), mode) {
-                    (true, JSONModifyType::Insert) | (false, JSONModifyType::Replace) => {}
-                    _ => {
-                        if let Some(position) = position {
-                            values[position].1 = replacement;
-                        } else {
-                            values.push((key.clone(), replacement));
-                        }
-                    }
-                }
-            } else if let Some(position) = position {
-                let (_, value) = values.remove(position);
-                values.push((key.clone(), modify_node(value, remain, replacement, mode)));
-            }
-            document
-        }
-        JSONPathLeg::Array(JSONPathArraySelection::Index(index)) => {
-            if let JSONNode::Array(values) = &mut document {
-                if let Some(index) = normalize_index(*index, values.len()) {
-                    if remain.is_empty() && mode == JSONModifyType::Insert {
-                        return document;
-                    }
-                    let value = values.remove(index);
-                    values.insert(index, modify_node(value, remain, replacement, mode));
-                } else if remain.is_empty() && mode != JSONModifyType::Replace {
-                    // Go `binaryModifier.doInsert`: when the path selected no
-                    // cell, the new value is APPENDED to the parent array.
-                    // Which cell it named does not matter, so `$[last]` on an
-                    // empty array appends exactly like `$[7]` does.
-                    values.push(replacement);
-                }
-                return document;
-            }
+#[cfg(test)]
+mod shared_path_ops_tests {
+    use super::*;
+    use crate::{parse_json_path_expr, Opaque, JSON_TYPE_CODE_ARRAY, JSON_TYPE_CODE_OBJECT};
 
-            if normalize_index(*index, 1) == Some(0) {
-                return modify_node(document, remain, replacement, mode);
-            }
-            if remain.is_empty() && mode != JSONModifyType::Replace {
-                // Go `doInsert` again, its non-array arm: a document that is
-                // not an array becomes `[document, value]`. `$[last-1]` names
-                // no cell of a one-element autowrap, so it lands here.
-                return JSONNode::Array(vec![document, replacement]);
-            }
-            document
-        }
-        JSONPathLeg::Array(_) | JSONPathLeg::DoubleAsterisk => document,
+    fn json(text: &str) -> BinaryJSON {
+        BinaryJSON::parse(text).unwrap()
     }
-}
+    fn path(text: &str) -> JSONPathExpression {
+        parse_json_path_expr(text).unwrap()
+    }
 
-fn remove_node(document: &mut JSONNode, legs: &[JSONPathLeg]) {
-    let Some((leg, remain)) = legs.split_first() else {
-        return;
-    };
-    match leg {
-        JSONPathLeg::Key(key) => {
-            let JSONNode::Object(values) = document else {
-                return;
-            };
-            if remain.is_empty() {
-                if let Some(position) = values.iter().position(|(name, _)| name == key) {
-                    values.remove(position);
-                }
-            } else if let Some((_, value)) = values.iter_mut().find(|(name, _)| name == key) {
-                remove_node(value, remain);
-            }
+    #[test]
+    fn sdk_path_selection_keeps_cross_path_identity_flags_ranges_and_duplicates() {
+        let document = json(r#"{"a":[10,20]}"#);
+        let repeated = [path("$.a[0]"), path("$.a[0]")];
+        assert_eq!(
+            document
+                .extract(&repeated)
+                .unwrap()
+                .unwrap()
+                .to_value()
+                .unwrap(),
+            serde_json::json!([10])
+        );
+        assert_eq!(
+            json("[10,20]")
+                .extract(&[path("$[last-10 to last]")])
+                .unwrap()
+                .unwrap()
+                .to_value()
+                .unwrap(),
+            serde_json::json!([10, 20])
+        );
+        let quoted_star = path("$.\"*\"");
+        let wildcard = path("$.*");
+        assert_eq!(quoted_star.legs(), wildcard.legs());
+        assert!(!quoted_star.could_match_multiple_values());
+        assert!(wildcard.could_match_multiple_values());
+        assert_eq!(
+            json(r#"{"actual":7}"#)
+                .extract(&[quoted_star])
+                .unwrap()
+                .unwrap()
+                .to_value()
+                .unwrap(),
+            serde_json::json!(7)
+        );
+        assert_eq!(
+            json(r#"{"actual":7}"#)
+                .extract(&[wildcard])
+                .unwrap()
+                .unwrap()
+                .to_value()
+                .unwrap(),
+            serde_json::json!([7])
+        );
+        assert_eq!(json("4").extract(&[path("$[0]")]).unwrap(), Some(json("4")));
+        assert!(json("4").extract_matches(&path("$[0]")).unwrap().is_empty());
+        let selected = document.extract_matches(&path("$.a[*]")).unwrap();
+        assert_eq!(
+            selected
+                .iter()
+                .map(|(path, _)| path.to_string())
+                .collect::<Vec<_>>(),
+            vec!["$.a[0]", "$.a[1]"]
+        );
+        let duplicate = BinaryJSON::from_node(&JSONNode::Object(vec![
+            ("a".to_owned(), json(r#"{"x":1}"#).to_node().unwrap()),
+            ("a".to_owned(), json(r#"{"x":2}"#).to_node().unwrap()),
+        ]))
+        .unwrap();
+        assert_eq!(
+            duplicate.extract(&[path("$.a.x")]).unwrap(),
+            Some(json("1"))
+        );
+        let modified = duplicate
+            .modify(&[path("$.a.x")], &[json("3")], JSONModifyType::Set)
+            .unwrap();
+        let entries = modified.object_entries().unwrap();
+        assert_eq!(entries[0].1, json(r#"{"x":2}"#));
+        assert_eq!(entries[1].1, json(r#"{"x":3}"#));
+        assert_eq!(
+            duplicate
+                .remove(&[path("$.a")])
+                .unwrap()
+                .object_entries()
+                .unwrap()[0]
+                .1,
+            json(r#"{"x":2}"#)
+        );
+        assert_eq!(
+            json("[0,1,2]")
+                .remove(&[path("$[0]"), path("$[0]")])
+                .unwrap(),
+            json("[2]")
+        );
+    }
+
+    #[test]
+    fn sdk_array_insert_preserves_noop_bytes_and_codec_decode_order() {
+        let bad = BinaryJSON::from_encoded_parts(JSON_TYPE_CODE_ARRAY, Vec::new());
+        for (document, selection) in [
+            (json(r#"{"a":[1]}"#), "$.missing[0]"),
+            (json(r#"{"a":1}"#), "$.a[0]"),
+            (json(r#"{"a":[1]}"#), "$.a[last-3]"),
+        ] {
+            assert_eq!(
+                document.array_insert(&path(selection), &bad).unwrap(),
+                document
+            );
         }
-        JSONPathLeg::Array(JSONPathArraySelection::Index(index)) => {
-            let JSONNode::Array(values) = document else {
-                return;
-            };
-            let Some(index) = normalize_index(*index, values.len()) else {
-                return;
-            };
-            if remain.is_empty() {
-                values.remove(index);
-            } else {
-                remove_node(&mut values[index], remain);
-            }
-        }
-        JSONPathLeg::Array(_) | JSONPathLeg::DoubleAsterisk => {}
+        assert_eq!(
+            json("[1]").array_insert(&path("$[0]"), &bad),
+            Err(BinaryJSONError::InvalidBinary)
+        );
+        assert_eq!(
+            bad.array_insert(&path("$"), &json("1")),
+            Err(BinaryJSONError::InvalidPath)
+        );
+        assert_eq!(
+            bad.remove(&[path("$")]),
+            Err(BinaryJSONError::InvalidBinary)
+        );
+        assert_eq!(
+            bad.modify(&[path("$.a")], &[], JSONModifyType::Set),
+            Err(BinaryJSONError::InvalidPath)
+        );
+        assert_eq!(
+            json("{}").modify(
+                &[path("$.a"), path("$.*")],
+                &[bad.clone(), json("1")],
+                JSONModifyType::Set
+            ),
+            Err(BinaryJSONError::InvalidBinary)
+        );
+        assert_eq!(
+            json("{}").modify(&[path("$.*")], &[bad.clone()], JSONModifyType::Set),
+            Err(BinaryJSONError::InvalidPath)
+        );
+        // pop_last recomputes the quoted-star parent's flags. The final modify
+        // rejects it, but only AFTER replacement decoding and the array codec.
+        let star_document = json(r#"{"*":[1]}"#);
+        assert_eq!(
+            star_document.array_insert(&path("$.\"*\"[0]"), &bad),
+            Err(BinaryJSONError::InvalidBinary)
+        );
+        assert_eq!(
+            star_document.array_insert(&path("$.\"*\"[0]"), &json("2")),
+            Err(BinaryJSONError::InvalidPath)
+        );
+        let unsorted = BinaryJSON::from_encoded_parts(
+            JSON_TYPE_CODE_OBJECT,
+            vec![
+                2,
+                0,
+                0,
+                0,
+                32,
+                0,
+                0,
+                0,
+                30,
+                0,
+                0,
+                0,
+                1,
+                0,
+                31,
+                0,
+                0,
+                0,
+                1,
+                0,
+                crate::JSON_TYPE_CODE_LITERAL,
+                1,
+                0,
+                0,
+                0,
+                crate::JSON_TYPE_CODE_LITERAL,
+                2,
+                0,
+                0,
+                0,
+                b'z',
+                b'a',
+            ],
+        );
+        assert_eq!(
+            unsorted
+                .array_insert(&path("$.missing[0]"), &bad)
+                .unwrap()
+                .encoded(),
+            unsorted.encoded()
+        );
+        let opaque = BinaryJSON::from_opaque(Opaque {
+            type_code: 15,
+            bytes: vec![0xff, 0],
+        });
+        let array = BinaryJSON::from_node(&JSONNode::Array(vec![JSONNode::Scalar(opaque.clone())]))
+            .unwrap();
+        let inserted = array.array_insert(&path("$[99]"), &json("2")).unwrap();
+        assert_eq!(inserted.array_get(0).unwrap(), Some(opaque));
+        assert_eq!(inserted.array_get(1).unwrap(), Some(json("2")));
     }
 }
 

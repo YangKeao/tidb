@@ -2889,19 +2889,12 @@ impl ScalarFunction {
                         .all(|argument| argument.const_level() >= ConstLevel::ONLY_IN_CONTEXT)
             })
         {
-            let Some(document) = crate::builtin_ext::parse_json_document_argument(&vals[0])? else {
-                return Ok(Datum::Null);
-            };
-            let paths = self
-                .json_modify_path_cache
-                .get_or_init_cache(ctx.context_id(), || {
-                    crate::builtin_ext::parse_json_modify_paths(&vals)
-                })?;
-            let Some(paths) = paths.as_ref() else {
-                return Ok(Datum::Null);
-            };
-            return crate::builtin_ext::json_dispatch_typed_with_paths_and_document(
-                &upper, &vals, &arg_types, paths, document,
+            return crate::builtin_ext::json_dispatch_typed_cached_in(
+                &upper,
+                &vals,
+                &arg_types,
+                &self.json_modify_path_cache,
+                ctx,
             )
             .expect("the native JSON modification family is registered");
         }

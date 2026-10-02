@@ -2127,3 +2127,293 @@ fn shared_json_constructor_keys_pretty_empty_null_and_direct_scope_admission() {
         execution.close();
     }
 }
+
+#[test]
+fn shared_json_modify_cache_preserves_document_getter_and_value_demand() {
+    use crate::column::Column;
+    use crate::constant::{Constant, ParamMarker};
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    use crate::{Columns, EvalError, JsonError};
+    use std::cell::{Cell, RefCell};
+    use tidb_ast::CiString;
+    use tidb_datatype::{FieldType, FieldTypeCode};
+
+    struct Probe {
+        id: Cell<u64>,
+        getters: Cell<usize>,
+        reads: RefCell<Vec<usize>>,
+        path: RefCell<Datum>,
+        value: RefCell<Datum>,
+    }
+    impl Columns for Probe {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn context_id(&self) -> u64 {
+            self.getters.set(self.getters.get() + 1);
+            self.id.get()
+        }
+        fn param_value(&self, order: usize) -> Result<Datum, EvalError> {
+            self.reads.borrow_mut().push(order);
+            Ok(match order {
+                0 => self.path.borrow().clone(),
+                1 => self.value.borrow().clone(),
+                _ => unreachable!("only two fixture parameters"),
+            })
+        }
+    }
+    let function = |name| {
+        let text = FieldType::new(FieldTypeCode::VarString);
+        let mut column = Column::new(1, text.clone());
+        column.index = 0;
+        let mut path = Constant::new(s("$.seed"), text);
+        path.param_marker = Some(ParamMarker { order: 0 });
+        let mut value = Constant::new(Datum::Int(1), FieldType::new(FieldTypeCode::LongLong));
+        value.param_marker = Some(ParamMarker { order: 1 });
+        ScalarFunction::new(
+            CiString::new(name),
+            FieldType::new(FieldTypeCode::Json),
+            vec![
+                Expression::Column(column),
+                Expression::Constant(path),
+                Expression::Constant(value),
+            ],
+        )
+    };
+    let probe = Probe {
+        id: Cell::new(11),
+        getters: Cell::new(0),
+        reads: RefCell::new(vec![]),
+        path: RefCell::new(s("$.a")),
+        value: RefCell::new(Datum::Int(1)),
+    };
+    let owner = json_scope_owner(1);
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let run = |function: &ScalarFunction, document: Datum, getters| {
+        probe.getters.set(0);
+        probe.reads.borrow_mut().clear();
+        let row = tidb_chunk::mutrow::MutRow::from_datums(&[document]);
+        let result = scope.with_columns(&probe, |ctx| function.eval(ctx, row.to_row()));
+        assert_eq!(probe.getters.get(), getters);
+        // Native children remain eager even when the document or path is NULL.
+        assert_eq!(*probe.reads.borrow(), vec![0, 1]);
+        result
+    };
+    let set = function("json_set");
+    assert_eq!(run(&set, Datum::Null, 0), Ok(Datum::Null));
+    *probe.path.borrow_mut() = s("$.b");
+    assert_eq!(run(&set, s("{}"), 1), Ok(j(r#"{"b":1}"#)));
+    *probe.path.borrow_mut() = Datum::Bytes(vec![0xff]);
+    *probe.value.borrow_mut() = Datum::Int(2);
+    assert_eq!(run(&set, s("{}"), 1), Ok(j(r#"{"b":2}"#)));
+    assert_eq!(
+        run(&set, s("{"), 0),
+        Err(EvalError::Json(JsonError::InvalidText))
+    );
+
+    probe.id.set(12);
+    *probe.path.borrow_mut() = Datum::Null;
+    *probe.value.borrow_mut() = Datum::Bytes(vec![0xff]);
+    assert_eq!(run(&set, s("{}"), 1), Ok(Datum::Null));
+    *probe.path.borrow_mut() = s("$.ignored");
+    assert_eq!(run(&set, s("{}"), 1), Ok(Datum::Null));
+    probe.id.set(13);
+    *probe.path.borrow_mut() = s("bad");
+    assert!(matches!(
+        run(&set, s("{}"), 1),
+        Err(EvalError::Json(JsonError::InvalidPath(_)))
+    ));
+    *probe.path.borrow_mut() = s("$.c");
+    *probe.value.borrow_mut() = Datum::Int(3);
+    assert_eq!(run(&set, s("{}"), 1), Ok(j(r#"{"c":3}"#)));
+    let cloned = set.clone();
+    *probe.path.borrow_mut() = s("$.z");
+    *probe.value.borrow_mut() = Datum::Int(4);
+    assert_eq!(run(&set, s("{}"), 1), Ok(j(r#"{"c":4}"#)));
+    assert_eq!(run(&cloned, s("{}"), 1), Ok(j(r#"{"z":4}"#)));
+
+    // A no-op is decided by the worker, after the original value coercion.
+    *probe.path.borrow_mut() = s("$.a");
+    *probe.value.borrow_mut() = Datum::Bytes(vec![0xff]);
+    for (name, document) in [("json_insert", r#"{"a":1}"#), ("json_replace", "{}")] {
+        assert_eq!(
+            run(&function(name), s(document), 1),
+            Err(EvalError::Unsupported("invalid UTF-8 string datum"))
+        );
+    }
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn shared_json_modification_routes_preserve_preparation_order_and_scope() {
+    use crate::column::Column;
+    use crate::constant::Constant;
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    use crate::{EvalError, JsonError};
+    use tidb_ast::CiString;
+    use tidb_datatype::{FieldType, FieldTypeCode};
+
+    let cases = [
+        ("JSON_EXTRACT", r#"{"a":1}"#, "$.a", false, j("1")),
+        ("JSON_INSERT", "{}", "$.a", true, j(r#"{"a":1}"#)),
+        ("JSON_SET", r#"{"a":0}"#, "$.a", true, j(r#"{"a":1}"#)),
+        ("JSON_REPLACE", r#"{"a":0}"#, "$.a", true, j(r#"{"a":1}"#)),
+        ("JSON_REMOVE", r#"{"a":1}"#, "$.a", false, j("{}")),
+        (
+            "JSON_ARRAY_APPEND",
+            r#"{"a":[]}"#,
+            "$.a",
+            true,
+            j(r#"{"a":[1]}"#),
+        ),
+        ("JSON_ARRAY_INSERT", "[0]", "$[0]", true, j("[1,0]")),
+    ];
+    for slots in [0, 1] {
+        let owner = json_scope_owner(slots);
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        scope.with_columns(&crate::NoColumns, |ctx| {
+            for (name, document, path, has_value, answer) in &cases {
+                for (document, path, expected) in [
+                    (s(document), s(path), answer.clone()),
+                    (Datum::Null, s("bad"), Datum::Null),
+                    (s(document), Datum::Null, Datum::Null),
+                ] {
+                    let mut values = vec![document, path];
+                    if *has_value {
+                        values.push(Datum::Int(1));
+                    }
+                    assert_json_scope_result(
+                        super::dispatch_in(name, &values, ctx).unwrap(),
+                        &expected,
+                        slots,
+                    );
+                    // Test both direct column paths and constant-path cache
+                    // selection; no argument expression calls another worker.
+                    for constant_path in [false, true] {
+                        let args = values
+                            .iter()
+                            .enumerate()
+                            .map(|(index, value)| {
+                                let code = if index == 2 {
+                                    FieldTypeCode::LongLong
+                                } else {
+                                    FieldTypeCode::VarString
+                                };
+                                let field = FieldType::new(code);
+                                if constant_path && index == 1 {
+                                    Expression::Constant(Constant::new(value.clone(), field))
+                                } else {
+                                    let mut column = Column::new(index as i64 + 1, field);
+                                    column.index = index as i64;
+                                    Expression::Column(column)
+                                }
+                            })
+                            .collect();
+                        let function = ScalarFunction::new(
+                            CiString::new(*name),
+                            FieldType::new(FieldTypeCode::Json),
+                            args,
+                        );
+                        let row = tidb_chunk::mutrow::MutRow::from_datums(&values);
+                        assert_json_scope_result(
+                            function.eval(ctx, row.to_row()),
+                            &expected,
+                            slots,
+                        );
+                    }
+                }
+            }
+
+            // Preparation errors precede worker admission even with zero slots.
+            for name in ["JSON_SET", "JSON_INSERT", "JSON_REPLACE"] {
+                let values = [
+                    s("{}"),
+                    s("$.a"),
+                    Datum::Bytes(vec![0xff]),
+                    s("bad"),
+                    Datum::Int(2),
+                ];
+                assert!(matches!(
+                    super::dispatch_in(name, &values, ctx).unwrap(),
+                    Err(EvalError::Json(JsonError::InvalidPath(_)))
+                ));
+                let values = [
+                    s("{}"),
+                    s("$.a"),
+                    Datum::Bytes(vec![0xff]),
+                    Datum::Null,
+                    Datum::Int(2),
+                ];
+                assert_json_scope_result(
+                    super::dispatch_in(name, &values, ctx).unwrap(),
+                    &Datum::Null,
+                    slots,
+                );
+            }
+            for (name, path) in [("JSON_ARRAY_APPEND", "$.a"), ("JSON_ARRAY_INSERT", "$[0]")] {
+                for later_path in [s("bad"), Datum::Null] {
+                    let values = [
+                        s("{}"),
+                        s(path),
+                        Datum::Bytes(vec![0xff]),
+                        later_path,
+                        Datum::Int(2),
+                    ];
+                    assert_eq!(
+                        super::dispatch_in(name, &values, ctx).unwrap(),
+                        Err(EvalError::Unsupported("invalid UTF-8 string datum"))
+                    );
+                }
+            }
+            let paths = vec![super::parse_path("$.a").unwrap()];
+            let values = [
+                s("{}"),
+                s("$.a"),
+                Datum::Int(1),
+                s("$.b"),
+                Datum::Bytes(vec![0xff]),
+            ];
+            let types = vec![None; values.len()];
+            // The already-parsed-document route retains its original zip; the
+            // with-paths route retains its distinct path-count validation.
+            assert_json_scope_result(
+                super::dispatch_typed_with_paths_and_document(
+                    "JSON_SET",
+                    &values,
+                    &types,
+                    &paths,
+                    json!({}),
+                    ctx,
+                )
+                .unwrap(),
+                &j(r#"{"a":1}"#),
+                slots,
+            );
+            assert_eq!(
+                super::dispatch_typed_with_paths_in("JSON_SET", &values, &types, Some(&paths), ctx)
+                    .unwrap(),
+                Err(EvalError::Unsupported("JSON modification paths"))
+            );
+            let malformed = [Datum::Null, s("$.a"), Datum::Int(1), s("$.b")];
+            let types = vec![None; malformed.len()];
+            let cache = crate::builtin_ext::BuiltinFuncCache::default();
+            assert_json_scope_result(
+                super::dispatch_typed_cached_in("JSON_SET", &malformed, &types, &cache, ctx)
+                    .unwrap(),
+                &Datum::Null,
+                slots,
+            );
+            assert_eq!(
+                super::dispatch_typed_in("JSON_SET", &malformed, &types, ctx).unwrap(),
+                Err(EvalError::Unsupported("JSON modification arity"))
+            );
+        });
+        drop(scope);
+        execution.close();
+    }
+}

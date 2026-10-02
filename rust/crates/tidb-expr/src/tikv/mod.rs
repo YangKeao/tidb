@@ -164,6 +164,33 @@ pub(crate) fn prepare_json_object_args(
     })
 }
 
+/// Transport original parsed path legs/metadata without reparsing cached text.
+pub(crate) fn prepare_json_paths_args(
+    document: &serde_json::Value,
+    paths: &[tidb_query_expr::NativeJsonPath],
+) -> Result<EvaluatedArgs, crate::EvalError> {
+    tidb_query_expr::local::prepare_json_paths_args(document, paths).map_err(|error| {
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+            error, None,
+        ))
+    })
+}
+
+/// Preserve the ordered actual path/value list; no mutation or zip truncation.
+pub(crate) fn prepare_json_path_values_args(
+    document: &serde_json::Value,
+    paths: &[tidb_query_expr::NativeJsonPath],
+    values: &[serde_json::Value],
+) -> Result<EvaluatedArgs, crate::EvalError> {
+    tidb_query_expr::local::prepare_json_path_values_args(document, paths, values).map_err(
+        |error| {
+            crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+                error, None,
+            ))
+        },
+    )
+}
+
 /// Preserve each actual BinaryJSON type code and payload without serde conversion.
 pub(crate) fn prepare_json_binary_pair_args(
     first: &tidb_datatype::BinaryJSON,

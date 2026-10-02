@@ -19,32 +19,10 @@ use tidb_kvcache::SimpleLruCache;
 
 const PATH_CACHE_CAPACITY: usize = 1000;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// Selection inside one JSON array path leg.
-pub enum JSONPathArraySelection {
-    /// Select every element.
-    Asterisk,
-    /// Select one zero-based index; negative values count from the end.
-    Index(i64),
-    /// Select an inclusive range.
-    Range {
-        /// Inclusive first index.
-        start: i64,
-        /// Inclusive last index.
-        end: i64,
-    },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// One parsed JSON path leg.
-pub enum JSONPathLeg {
-    /// Object member name; `*` represents every member.
-    Key(String),
-    /// Array element selection.
-    Array(JSONPathArraySelection),
-    /// Recursive descent.
-    DoubleAsterisk,
-}
+pub use tidb_query_datatype::codec::mysql::json::{
+    NativeBinaryJsonArraySelection as JSONPathArraySelection,
+    NativeBinaryJsonPathLeg as JSONPathLeg,
+};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 /// Parsed TiDB/MySQL JSON path expression.

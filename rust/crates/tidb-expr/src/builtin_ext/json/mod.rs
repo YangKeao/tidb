@@ -56,7 +56,7 @@ use construct::{
 use merge::{json_merge, json_merge_patch};
 use modify::{
     json_array_append, json_array_insert, json_modify, json_modify_with_document,
-    json_modify_with_paths, json_remove, JsonModifyMode,
+    json_modify_with_paths, json_remove, prepare_json_modify_with_document, JsonModifyMode,
 };
 use path::json_extract;
 use predicate::{json_contains, json_contains_path, json_member_of, json_overlaps};
@@ -93,28 +93,31 @@ pub(crate) fn dispatch_in(
         ("JSON_ARRAY", 0..) => Some(json_array(vals, &no_arg_types(vals.len()), ctx)),
         ("JSON_OBJECT", 0..) => Some(json_object(vals, &no_arg_types(vals.len()), ctx)),
         ("JSON_LENGTH", 1 | 2) => Some(json_length(vals, ctx)),
-        ("JSON_EXTRACT", 2..) => Some(json_extract(vals)),
+        ("JSON_EXTRACT", 2..) => Some(json_extract(vals, ctx)),
         ("JSON_MEMBER_OF" | "json_member_of", 2) => Some(json_member_of(vals, ctx)),
         ("JSON_CONTAINS", 2 | 3) => Some(json_contains(vals, ctx)),
         ("JSON_CONTAINS_PATH", 3..) => Some(json_contains_path(vals, ctx)),
         ("JSON_KEYS", 1 | 2) => Some(json_keys(vals, ctx)),
-        ("JSON_REMOVE", 2..) => Some(json_remove(vals)),
-        ("JSON_ARRAY_APPEND", 3..) => Some(json_array_append(vals, &no_arg_types(vals.len()))),
-        ("JSON_ARRAY_INSERT", 3..) => Some(json_array_insert(vals, &no_arg_types(vals.len()))),
+        ("JSON_REMOVE", 2..) => Some(json_remove(vals, ctx)),
+        ("JSON_ARRAY_APPEND", 3..) => Some(json_array_append(vals, &no_arg_types(vals.len()), ctx)),
+        ("JSON_ARRAY_INSERT", 3..) => Some(json_array_insert(vals, &no_arg_types(vals.len()), ctx)),
         ("JSON_SET", 3..) => Some(json_modify(
             vals,
             &no_arg_types(vals.len()),
             JsonModifyMode::Set,
+            ctx,
         )),
         ("JSON_INSERT", 3..) => Some(json_modify(
             vals,
             &no_arg_types(vals.len()),
             JsonModifyMode::Insert,
+            ctx,
         )),
         ("JSON_REPLACE", 3..) => Some(json_modify(
             vals,
             &no_arg_types(vals.len()),
             JsonModifyMode::Replace,
+            ctx,
         )),
         ("JSON_MERGE", 2..) => Some(json_merge(vals, "json_merge")),
         ("JSON_MERGE_PRESERVE", 2..) => Some(json_merge(vals, "json_merge_preserve")),
@@ -185,22 +188,67 @@ pub(crate) fn dispatch_typed_with_paths_in(
         ("JSON_ARRAY", 0..) => Some(json_array(vals, arg_types, ctx)),
         ("JSON_OBJECT", 0..) => Some(json_object(vals, arg_types, ctx)),
         ("JSON_SET", 3..) => Some(match cached_paths {
-            Some(paths) => json_modify_with_paths(vals, arg_types, JsonModifyMode::Set, paths),
-            None => json_modify(vals, arg_types, JsonModifyMode::Set),
+            Some(paths) => json_modify_with_paths(vals, arg_types, JsonModifyMode::Set, paths, ctx),
+            None => json_modify(vals, arg_types, JsonModifyMode::Set, ctx),
         }),
         ("JSON_INSERT", 3..) => Some(match cached_paths {
-            Some(paths) => json_modify_with_paths(vals, arg_types, JsonModifyMode::Insert, paths),
-            None => json_modify(vals, arg_types, JsonModifyMode::Insert),
+            Some(paths) => {
+                json_modify_with_paths(vals, arg_types, JsonModifyMode::Insert, paths, ctx)
+            }
+            None => json_modify(vals, arg_types, JsonModifyMode::Insert, ctx),
         }),
         ("JSON_REPLACE", 3..) => Some(match cached_paths {
-            Some(paths) => json_modify_with_paths(vals, arg_types, JsonModifyMode::Replace, paths),
-            None => json_modify(vals, arg_types, JsonModifyMode::Replace),
+            Some(paths) => {
+                json_modify_with_paths(vals, arg_types, JsonModifyMode::Replace, paths, ctx)
+            }
+            None => json_modify(vals, arg_types, JsonModifyMode::Replace, ctx),
         }),
-        ("JSON_ARRAY_APPEND", 3..) => Some(json_array_append(vals, arg_types)),
-        ("JSON_ARRAY_INSERT", 3..) => Some(json_array_insert(vals, arg_types)),
+        ("JSON_ARRAY_APPEND", 3..) => Some(json_array_append(vals, arg_types, ctx)),
+        ("JSON_ARRAY_INSERT", 3..) => Some(json_array_insert(vals, arg_types, ctx)),
         ("JSON_PRETTY", 1) => Some(json_pretty(&vals[0], ctx)),
         _ => None,
     }
+}
+
+/// Prepare a context-cached modification under the caller's original guard.
+/// Document NULL/error precedes the context getter and path cache; cached NULL
+/// paths suppress value coercion but still submit the observed NULL to C4.
+pub(crate) fn dispatch_typed_cached_in(
+    name: &str,
+    vals: &[Datum],
+    arg_types: &[Option<FieldType>],
+    cache: &crate::builtin_ext::BuiltinFuncCache<Option<Vec<JsonPath>>>,
+    ctx: &dyn crate::Columns,
+) -> Option<Result<Datum, EvalError>> {
+    // Do not gate on arity here: the original cached route parsed the document
+    // before parse_json_modify_paths checked its argument count.
+    let mode = match name {
+        "JSON_SET" => JsonModifyMode::Set,
+        "JSON_INSERT" => JsonModifyMode::Insert,
+        "JSON_REPLACE" => JsonModifyMode::Replace,
+        _ => return None,
+    };
+    Some(crate::tikv::evaluate_prepared_args_in(
+        ctx,
+        || {
+            let Some(document) = parse_json_document_argument(&vals[0])? else {
+                return Ok((
+                    crate::tikv::EvaluatedBytesOp::JsonOutputNullNative,
+                    crate::tikv::EvaluatedArgs::NullWitness(None),
+                ));
+            };
+            let paths =
+                cache.get_or_init_cache(ctx.context_id(), || parse_json_modify_paths(vals))?;
+            let Some(paths) = paths.as_ref() else {
+                return Ok((
+                    crate::tikv::EvaluatedBytesOp::JsonOutputNullNative,
+                    crate::tikv::EvaluatedArgs::NullWitness(None),
+                ));
+            };
+            prepare_json_modify_with_document(document, vals, arg_types, mode, paths)
+        },
+        crate::tikv::EvaluatedBytesResult::into_json_datum,
+    ))
 }
 
 /// Typed JSON dispatch for a cached path list and an already parsed document.
@@ -212,6 +260,7 @@ pub(crate) fn dispatch_typed_with_paths_and_document(
     arg_types: &[Option<FieldType>],
     paths: &[JsonPath],
     document: serde_json::Value,
+    ctx: &dyn crate::Columns,
 ) -> Option<Result<Datum, EvalError>> {
     debug_assert_eq!(vals.len(), arg_types.len());
     match (name, vals.len()) {
@@ -221,6 +270,7 @@ pub(crate) fn dispatch_typed_with_paths_and_document(
             arg_types,
             JsonModifyMode::Set,
             paths,
+            ctx,
         )),
         ("JSON_INSERT", 3..) => Some(json_modify_with_document(
             document,
@@ -228,6 +278,7 @@ pub(crate) fn dispatch_typed_with_paths_and_document(
             arg_types,
             JsonModifyMode::Insert,
             paths,
+            ctx,
         )),
         ("JSON_REPLACE", 3..) => Some(json_modify_with_document(
             document,
@@ -235,6 +286,7 @@ pub(crate) fn dispatch_typed_with_paths_and_document(
             arg_types,
             JsonModifyMode::Replace,
             paths,
+            ctx,
         )),
         _ => None,
     }
@@ -325,20 +377,13 @@ pub(crate) fn eval_pb(
         ScalarFuncSig::JsonMemberOfSig => json_member_of(vals, ctx),
         ScalarFuncSig::JsonReplaceSig => {
             if let Some(cache) = paths_cache {
-                let Some(document) = parse_json_document_argument(&vals[0])? else {
-                    return Ok(Datum::Null);
-                };
-                let paths =
-                    cache.get_or_init_cache(ctx.context_id(), || parse_json_modify_paths(vals))?;
-                let Some(paths) = paths.as_ref() else {
-                    return Ok(Datum::Null);
-                };
-                json_modify_with_document(document, vals, arg_types, JsonModifyMode::Replace, paths)
+                dispatch_typed_cached_in("JSON_REPLACE", vals, arg_types, cache, ctx)
+                    .expect("JSON_REPLACE has a cached modification recipe")
             } else {
-                json_modify(vals, arg_types, JsonModifyMode::Replace)
+                json_modify(vals, arg_types, JsonModifyMode::Replace, ctx)
             }
         }
-        ScalarFuncSig::JsonArrayAppendSig => json_array_append(vals, arg_types),
+        ScalarFuncSig::JsonArrayAppendSig => json_array_append(vals, arg_types, ctx),
         ScalarFuncSig::JsonMergePatchSig => json_merge_patch(vals),
         _ => Err(EvalError::Unsupported("unknown JSON protobuf signature")),
     }

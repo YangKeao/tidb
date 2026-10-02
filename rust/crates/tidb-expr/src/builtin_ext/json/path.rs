@@ -24,39 +24,43 @@
 //! flag that decides whether a caller may treat a selection as one value
 //! (`JSON_LENGTH`, `JSON_KEYS`, `JSON_SET`) or must raise 3149.
 
-use super::value::{
-    binary_json_datum, parse_json_document_argument, parse_json_document_argument_strict,
-};
+use super::value::{parse_json_document_argument, parse_json_document_argument_strict};
 use crate::coerce::coerce_str;
 use crate::{Datum, EvalError, JsonError};
 
 pub(crate) use tidb_query_expr::NativeJsonPath as JsonPath;
 pub(super) use tidb_query_expr::{
-    native_json_array_range as array_range, native_json_extract as extract,
+    native_json_array_range as array_range,
     native_json_is_ecmascript_identifier as is_ecmascript_identifier,
     NativeJsonArraySelection as ArraySelection, NativeJsonPathLeg as PathLeg,
 };
 
 /// `JSON_EXTRACT(json_doc, path [, path] ...)`, port of
 /// `builtinJSONExtractSig.evalJSON` and `types.BinaryJSON.Extract`.
-pub(super) fn json_extract(vals: &[Datum]) -> Result<Datum, EvalError> {
-    // A NUMERIC scalar document argument is go's ErrInvalidTypeForJSON
-    // (3146, argument 1, json_extract), captured on the oracle.
-    parse_json_document_argument_strict(&vals[0], 1, "json_extract")?;
-    let Some(document) = parse_json_document_argument(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    let mut paths = Vec::with_capacity(vals.len() - 1);
-    for value in &vals[1..] {
-        let Some(path) = coerce_str(value)? else {
-            return Ok(Datum::Null);
-        };
-        paths.push(parse_path(&path)?);
-    }
-    match extract(&document, &paths) {
-        Some(value) => binary_json_datum(value),
-        None => Ok(Datum::Null),
-    }
+pub(super) fn json_extract(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+    use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp as Op};
+    crate::tikv::evaluate_prepared_args_in(
+        ctx,
+        || {
+            // Preserve the strict document error before any path demand.
+            parse_json_document_argument_strict(&vals[0], 1, "json_extract")?;
+            let Some(document) = parse_json_document_argument(&vals[0])? else {
+                return Ok((Op::JsonOutputNullNative, EvaluatedArgs::NullWitness(None)));
+            };
+            let mut paths = Vec::with_capacity(vals.len() - 1);
+            for value in &vals[1..] {
+                let Some(path) = coerce_str(value)? else {
+                    return Ok((Op::JsonOutputNullNative, EvaluatedArgs::NullWitness(None)));
+                };
+                paths.push(parse_path(&path)?);
+            }
+            Ok((
+                Op::JsonExtractSerdeNative,
+                crate::tikv::prepare_json_paths_args(&document, &paths)?,
+            ))
+        },
+        crate::tikv::EvaluatedBytesResult::into_json_datum,
+    )
 }
 
 /// Preserve the source's rune-position SQL diagnostic while the shared parser

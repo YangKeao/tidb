@@ -1371,6 +1371,15 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::JsonOutputNullNative => {
             panic!("JSON outputs need their actual argument list, document/path or NULL witness")
         }
+        EvaluatedBytesOp::JsonExtractSerdeNative
+        | EvaluatedBytesOp::JsonInsertSerdeNative
+        | EvaluatedBytesOp::JsonSetSerdeNative
+        | EvaluatedBytesOp::JsonReplaceSerdeNative
+        | EvaluatedBytesOp::JsonRemoveSerdeNative
+        | EvaluatedBytesOp::JsonArrayAppendSerdeNative
+        | EvaluatedBytesOp::JsonArrayInsertSerdeNative => {
+            panic!("JSON path operations need actual parsed paths and ordered values")
+        }
         EvaluatedBytesOp::TidbShardNative => "TIDB_SHARD",
         EvaluatedBytesOp::VitessHashNative => "VITESS_HASH",
         EvaluatedBytesOp::FormatBytesNative => "FORMAT_BYTES",
@@ -1907,6 +1916,241 @@ fn binary_arithmetic_dispatch_keeps_profiles_and_legacy_presence() {
     });
     assert!(!scope.busy.get());
     assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn json_path_sdk_preserves_selection_and_ordered_mutation_results() {
+    use serde_json::json;
+    use EvaluatedBytesOp::*;
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (operation, document, path_texts, values, expected) in [
+            (
+                JsonExtractSerdeNative,
+                json!({"a": 1}),
+                vec!["$.a", "$.a"],
+                vec![],
+                Some("[1, 1]"),
+            ),
+            (
+                JsonExtractSerdeNative,
+                json!([1]),
+                vec!["$[*]"],
+                vec![],
+                Some("[1]"),
+            ),
+            (
+                JsonExtractSerdeNative,
+                json!({}),
+                vec!["$.missing"],
+                vec![],
+                None,
+            ),
+            (
+                JsonInsertSerdeNative,
+                json!({"a": 1}),
+                vec!["$.a", "$.b"],
+                vec![json!(2), json!(3)],
+                Some("{\"a\": 1, \"b\": 3}"),
+            ),
+            (
+                JsonSetSerdeNative,
+                json!({}),
+                vec!["$.a", "$.a.b"],
+                vec![json!({}), json!(1)],
+                Some("{\"a\": {\"b\": 1}}"),
+            ),
+            (
+                JsonReplaceSerdeNative,
+                json!({"a": 1}),
+                vec!["$.a", "$.missing"],
+                vec![json!(2), json!(3)],
+                Some("{\"a\": 2}"),
+            ),
+            (
+                JsonRemoveSerdeNative,
+                json!([0, 1, 2, 3]),
+                vec!["$[1]", "$[1]"],
+                vec![],
+                Some("[0, 3]"),
+            ),
+            // Actual empty low-level path list, not an invented SQL call arity.
+            (
+                JsonRemoveSerdeNative,
+                json!({"a": 1}),
+                vec![],
+                vec![],
+                Some("{\"a\": 1}"),
+            ),
+            (
+                JsonArrayAppendSerdeNative,
+                json!(1),
+                vec!["$"],
+                vec![json!(2)],
+                Some("[1, 2]"),
+            ),
+            (
+                JsonArrayInsertSerdeNative,
+                json!([1, 2]),
+                vec!["$[last]", "$[last-9]"],
+                vec![json!(9), json!(8)],
+                Some("[8, 1, 9, 2]"),
+            ),
+        ] {
+            let paths: Vec<_> = path_texts
+                .into_iter()
+                .map(|path| tidb_query_expr::parse_native_json_path(path).unwrap())
+                .collect();
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || {
+                        if matches!(operation, JsonExtractSerdeNative | JsonRemoveSerdeNative) {
+                            super::super::prepare_json_paths_args(&document, &paths)
+                        } else {
+                            super::super::prepare_json_path_values_args(&document, &paths, &values)
+                        }
+                    },
+                    EvaluatedBytesResult::into_json_datum,
+                )
+            });
+            let expected = expected.map_or(Datum::Null, |text| {
+                Datum::Json(tidb_datatype::BinaryJSON::parse(text).unwrap())
+            });
+            assert_eq!(result, Ok(expected));
+            assert_wide_math_c4(observation);
+            assert_eq!(
+                scope
+                    .lease
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .worker
+                    .as_ref()
+                    .unwrap()
+                    .operation(),
+                operation
+            );
+        }
+        let (result, observation) = observe_wide_math(|| {
+            evaluate_args_in(
+                JsonOutputNullNative,
+                columns,
+                || Ok(EvaluatedArgs::NullWitness(None)),
+                EvaluatedBytesResult::into_json_datum,
+            )
+        });
+        assert_eq!(result, Ok(Datum::Null));
+        assert_wide_math_c4(observation);
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn json_path_sdk_rejects_bad_roles_counts_and_zero_slot_fallbacks() {
+    use EvaluatedBytesOp::*;
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (operation, args) in [
+            (
+                JsonExtractSerdeNative,
+                EvaluatedArgs::Bytes2(Some(b"{}".to_vec()), Some(Vec::new())),
+            ),
+            (JsonRemoveSerdeNative, EvaluatedArgs::NoArgs),
+            (JsonSetSerdeNative, EvaluatedArgs::NullWitness(None)),
+            (JsonOutputNullNative, EvaluatedArgs::NullWitness(Some(0))),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || Ok(args),
+                    EvaluatedBytesResult::into_json_datum,
+                )
+            });
+            assert!(matches!(
+                result,
+                Err(EvalError::ExpressionRuntimeFailure(_))
+            ));
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(
+                observation.before_kernel_invocations,
+                observation.after_kernel_invocations
+            );
+        }
+        for (operation, path_text, values) in [
+            (JsonRemoveSerdeNative, "$", Vec::new()),
+            (
+                JsonArrayInsertSerdeNative,
+                "$.a",
+                vec![serde_json::json!(1)],
+            ),
+            (JsonSetSerdeNative, "$.a", Vec::new()),
+        ] {
+            let paths = [tidb_query_expr::parse_native_json_path(path_text).unwrap()];
+            let document = serde_json::json!({});
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || {
+                        if operation == JsonRemoveSerdeNative {
+                            super::super::prepare_json_paths_args(&document, &paths)
+                        } else {
+                            super::super::prepare_json_path_values_args(&document, &paths, &values)
+                        }
+                    },
+                    EvaluatedBytesResult::into_json_datum,
+                )
+            });
+            assert!(matches!(
+                result,
+                Err(EvalError::ExpressionRuntimeFailure(_))
+            ));
+            assert_eq!(
+                observation.before_kernel_invocations,
+                observation.after_kernel_invocations
+            );
+        }
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for operation in [JsonExtractSerdeNative, JsonInsertSerdeNative, JsonSetSerdeNative, JsonReplaceSerdeNative, JsonRemoveSerdeNative, JsonArrayAppendSerdeNative, JsonArrayInsertSerdeNative, JsonOutputNullNative] {
+            let document = serde_json::json!([1, 2]);
+            let paths = [tidb_query_expr::parse_native_json_path("$[0]").unwrap()];
+            let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                operation, columns,
+                || match operation {
+                    JsonOutputNullNative => Ok(EvaluatedArgs::NullWitness(None)),
+                    JsonExtractSerdeNative | JsonRemoveSerdeNative => super::super::prepare_json_paths_args(&document, &paths),
+                    _ => super::super::prepare_json_path_values_args(&document, &paths, &[serde_json::json!(9)]),
+                },
+                EvaluatedBytesResult::into_json_datum,
+            ));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
     drop(scope);
     execution.close();
 }
