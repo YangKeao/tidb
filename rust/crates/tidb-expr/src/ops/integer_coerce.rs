@@ -124,6 +124,9 @@ pub(crate) fn integer_binary(
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
     use BinaryOp::*;
+    if comparison_operation(op).is_some() {
+        return eval_comparison_int_in(op, a, b, ctx);
+    }
     if matches!(op, Plus | Minus | Mul | Mod) {
         let unsigned_result = std::cell::Cell::new(false);
         return crate::tikv::evaluate_prepared_args_in(
@@ -174,12 +177,7 @@ pub(crate) fn integer_binary(
         BitAnd | BitOr | BitXor | LeftShift | RightShift => {
             return eval_bitwise_binary_in(op, Some(bits_a as i64), Some(bits_b as i64), ctx);
         }
-        Eq => bool_int(integer_cmp(a, b).is_eq()),
-        Ge => bool_int(integer_cmp(a, b).is_ge()),
-        Gt => bool_int(integer_cmp(a, b).is_gt()),
-        Le => bool_int(integer_cmp(a, b).is_le()),
-        Lt => bool_int(integer_cmp(a, b).is_lt()),
-        Ne => bool_int(!integer_cmp(a, b).is_eq()),
+        Eq | Ne | Lt | Le | Gt | Ge => unreachable!("worker comparison dispatched above"),
         Div => unreachable!("handled above"),
         LogicAnd | LogicOr | LogicXor | NullEq => unreachable!("handled above"),
     })

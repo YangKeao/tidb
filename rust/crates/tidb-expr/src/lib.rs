@@ -405,13 +405,15 @@ pub use row::{compare_datums, compare_datums_with_collation};
 pub(crate) use tidb_datatype::{Datum, Decimal};
 pub use tidb_util::mathutil::MysqlRng;
 pub use tikv::{
-    eval_legacy_decimal_arithmetic_in, eval_legacy_decimal_division_in,
-    eval_legacy_integer_arithmetic_in, eval_legacy_like_in, eval_legacy_real_arithmetic_in,
+    eval_legacy_bytes_comparison_in, eval_legacy_decimal_arithmetic_in,
+    eval_legacy_decimal_comparison_in, eval_legacy_decimal_division_in,
+    eval_legacy_integer_arithmetic_in, eval_legacy_integer_comparison_in, eval_legacy_like_in,
+    eval_legacy_real_arithmetic_in, eval_legacy_real_comparison_in, eval_legacy_time_comparison_in,
     eval_regexp_legacy_ready_in, AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy,
-    AsciiScope, BinaryArithmeticOperation, ExpressionAdapterFailure, ExpressionAdapterFailureClass,
-    ExpressionAdapterFailureOrigin, ExpressionRuntimeFailure, ExpressionRuntimeFailureClass,
-    ExpressionRuntimeFailurePhase, LegacyBinaryArgs, LegacyIntegerArithmetic, LegacyLikeArgs,
-    RegexpLegacyInput, ScopedAsciiColumns,
+    AsciiScope, BinaryArithmeticOperation, ComparisonOp, ExpressionAdapterFailure,
+    ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin, ExpressionRuntimeFailure,
+    ExpressionRuntimeFailureClass, ExpressionRuntimeFailurePhase, LegacyBinaryArgs,
+    LegacyIntegerArithmetic, LegacyLikeArgs, RegexpLegacyInput, ScopedAsciiColumns,
 };
 
 use tidb_ast::{CastStyle, Expr, GetFormatSelector, IsTarget};
@@ -463,7 +465,7 @@ use ops::{
     effective_div_precision_increment, eval_binary, eval_binary_with_div_precision, eval_unary,
     logic_and,
 };
-use row::row_compare;
+use row::row_compare_in;
 use string_fn::{position_in, trim_value_in};
 
 /// Evaluates a constant expression, or returns why it is out of scope.
@@ -1457,7 +1459,7 @@ pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
                 .iter()
                 .map(|e| eval_in(e, cols))
                 .collect::<Result<_, _>>()?;
-            row_compare(*op, &lv, &rv)
+            row_compare_in(*op, &lv, &rv, cols)
         }
         Expr::Binary(op, l, r) => {
             // Go's `DefaultTypeForValue` gives a BIT literal a SIGNED field

@@ -49,7 +49,7 @@ use tidb_query_expr::local::{
     JsonReportOutcome, LocalCompileContext, NativeDecimalDivisionDisposition, UncompressOutcome,
 };
 use tidb_query_expr::{
-    BinaryArithmeticErrorKind, BinaryArithmeticOperation, NativeDecimalFastOutcome,
+    BinaryArithmeticErrorKind, BinaryArithmeticOperation, ComparisonOp, NativeDecimalFastOutcome,
     NativeDecimalFastValue, NativeLikeInvocation,
 };
 
@@ -1959,6 +1959,21 @@ fn materialize_computed(
             | EvaluatedBytesOp::ModIntUuNative
             | EvaluatedBytesOp::BinaryArithmeticNullNative
             | EvaluatedBytesOp::BinaryArithmeticMissingLegacy
+            | EvaluatedBytesOp::CompareIntSsNative(_)
+            | EvaluatedBytesOp::CompareIntSuNative(_)
+            | EvaluatedBytesOp::CompareIntUsNative(_)
+            | EvaluatedBytesOp::CompareIntUuNative(_)
+            | EvaluatedBytesOp::CompareInt128Legacy(_)
+            | EvaluatedBytesOp::CompareRealNative(_)
+            | EvaluatedBytesOp::CompareRealLegacy(_)
+            | EvaluatedBytesOp::CompareDecimalNative(_)
+            | EvaluatedBytesOp::CompareBytesNative(_)
+            | EvaluatedBytesOp::CompareVectorNative(_)
+            | EvaluatedBytesOp::CompareTimeCoreNative(_)
+            | EvaluatedBytesOp::CompareDurationNative(_)
+            | EvaluatedBytesOp::CompareJsonNative(_)
+            | EvaluatedBytesOp::CompareNullNative
+            | EvaluatedBytesOp::CompareMissingLegacy
             | EvaluatedBytesOp::AbsIntNative
             | EvaluatedBytesOp::AbsUIntNative
             | EvaluatedBytesOp::CeilIntNative
@@ -2391,6 +2406,166 @@ fn arithmetic_null_witness(value: Option<i64>) -> Result<EvaluatedArgs, EvalErro
         .into_eval_error());
     }
     Ok(EvaluatedArgs::NullWitness(None))
+}
+
+fn legacy_comparison_result(computed: EvaluatedBytesResult) -> Result<Option<i128>, EvalError> {
+    match computed.into_boolean_datum()? {
+        Datum::Null => Ok(None),
+        Datum::Int(value) => Ok(Some(i128::from(value))),
+        _ => Err(result_kind_error().into_eval_error()),
+    }
+}
+
+/// Compare the actual full-width legacy integer pair under the caller's scope.
+pub fn eval_legacy_integer_comparison_in(
+    operation: ComparisonOp,
+    args: LegacyBinaryArgs<i128>,
+    ctx: &dyn Columns,
+) -> Result<Option<i128>, EvalError> {
+    evaluate_prepared_args_in(
+        ctx,
+        || match args {
+            LegacyBinaryArgs::Missing => Ok((
+                EvaluatedBytesOp::CompareMissingLegacy,
+                EvaluatedArgs::NoArgs,
+            )),
+            LegacyBinaryArgs::NullWitness(value) => Ok((
+                EvaluatedBytesOp::CompareNullNative,
+                arithmetic_null_witness(value)?,
+            )),
+            LegacyBinaryArgs::Values(left, right) => Ok((
+                EvaluatedBytesOp::CompareInt128Legacy(operation),
+                EvaluatedArgs::Int1282(Some(left), Some(right)),
+            )),
+        },
+        legacy_comparison_result,
+    )
+}
+
+/// Preserve legacy total ordering over the actual raw IEEE operands.
+pub fn eval_legacy_real_comparison_in(
+    operation: ComparisonOp,
+    args: LegacyBinaryArgs<f64>,
+    ctx: &dyn Columns,
+) -> Result<Option<i128>, EvalError> {
+    evaluate_prepared_args_in(
+        ctx,
+        || match args {
+            LegacyBinaryArgs::Missing => Ok((
+                EvaluatedBytesOp::CompareMissingLegacy,
+                EvaluatedArgs::NoArgs,
+            )),
+            LegacyBinaryArgs::NullWitness(value) => Ok((
+                EvaluatedBytesOp::CompareNullNative,
+                arithmetic_null_witness(value)?,
+            )),
+            LegacyBinaryArgs::Values(left, right) => Ok((
+                EvaluatedBytesOp::CompareRealLegacy(operation),
+                EvaluatedArgs::Ieee754Bits2 {
+                    left: super::ReadyIeee754Arg::Value(Some(left.to_bits())),
+                    right: super::ReadyIeee754Arg::Value(Some(right.to_bits())),
+                },
+            )),
+        },
+        legacy_comparison_result,
+    )
+}
+
+/// Resolve the legacy collation once, only for an actual demanded byte pair.
+pub fn eval_legacy_bytes_comparison_in(
+    operation: ComparisonOp,
+    args: LegacyBinaryArgs<Vec<u8>>,
+    collation_id: i32,
+    ctx: &dyn Columns,
+) -> Result<Option<i128>, EvalError> {
+    evaluate_prepared_args_in(
+        ctx,
+        || match args {
+            LegacyBinaryArgs::Missing => Ok((
+                EvaluatedBytesOp::CompareMissingLegacy,
+                EvaluatedArgs::NoArgs,
+            )),
+            LegacyBinaryArgs::NullWitness(value) => Ok((
+                EvaluatedBytesOp::CompareNullNative,
+                arithmetic_null_witness(value)?,
+            )),
+            LegacyBinaryArgs::Values(left, right) => {
+                // Preserve the registry's global-enabled decision and unknown-ID
+                // fallback; neither may be replaced with the raw SQL ID.
+                let collation = match tidb_datatype::get_collator_by_id(collation_id) {
+                    tidb_datatype::Collator::DerivedBinary => super::NativeCollation::Binary,
+                    tidb_datatype::Collator::New(collation) => collation.native_policy(),
+                };
+                Ok((
+                    EvaluatedBytesOp::CompareBytesNative(operation),
+                    EvaluatedArgs::CollatedBytes2 {
+                        left: Some(left),
+                        right: Some(right),
+                        collation,
+                    },
+                ))
+            }
+        },
+        legacy_comparison_result,
+    )
+}
+
+/// Adapt real decimal owners losslessly before the comparison worker is admitted.
+pub fn eval_legacy_decimal_comparison_in(
+    operation: ComparisonOp,
+    args: LegacyBinaryArgs<tidb_datatype::Decimal>,
+    ctx: &dyn Columns,
+) -> Result<Option<i128>, EvalError> {
+    evaluate_prepared_args_in(
+        ctx,
+        || match args {
+            LegacyBinaryArgs::Missing => Ok((
+                EvaluatedBytesOp::CompareMissingLegacy,
+                EvaluatedArgs::NoArgs,
+            )),
+            LegacyBinaryArgs::NullWitness(value) => Ok((
+                EvaluatedBytesOp::CompareNullNative,
+                arithmetic_null_witness(value)?,
+            )),
+            LegacyBinaryArgs::Values(left, right) => Ok((
+                EvaluatedBytesOp::CompareDecimalNative(operation),
+                EvaluatedArgs::Decimal2 {
+                    left: Some(super::prepare_math_decimal(&left)?),
+                    right: Some(super::prepare_math_decimal(&right)?),
+                },
+            )),
+        },
+        legacy_comparison_result,
+    )
+}
+
+/// Forward actual legacy temporal cores without host comparison or repacking.
+pub fn eval_legacy_time_comparison_in(
+    operation: ComparisonOp,
+    args: LegacyBinaryArgs<Time>,
+    ctx: &dyn Columns,
+) -> Result<Option<i128>, EvalError> {
+    evaluate_prepared_args_in(
+        ctx,
+        || match args {
+            LegacyBinaryArgs::Missing => Ok((
+                EvaluatedBytesOp::CompareMissingLegacy,
+                EvaluatedArgs::NoArgs,
+            )),
+            LegacyBinaryArgs::NullWitness(value) => Ok((
+                EvaluatedBytesOp::CompareNullNative,
+                arithmetic_null_witness(value)?,
+            )),
+            LegacyBinaryArgs::Values(left, right) => Ok((
+                EvaluatedBytesOp::CompareTimeCoreNative(operation),
+                EvaluatedArgs::TimeCoreBits2(
+                    Some(left.core_time().raw()),
+                    Some(right.core_time().raw()),
+                ),
+            )),
+        },
+        legacy_comparison_result,
+    )
 }
 
 /// Evaluate only the caller's explicit legacy integer signature and presence.

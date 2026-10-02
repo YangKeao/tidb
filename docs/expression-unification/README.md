@@ -1,28 +1,28 @@
 # Expression unification experiment
 
-Checkpoint-ID: `compare-substrate-52` (previous `aes-two-51`).
-**166/245 functional families; target221; strict final acceptance0.** This datatype substrate adds **zero** evaluator families. Incomplete, not PR-ready.
-Paired branches: [TiDB](https://github.com/YangKeao/tidb/tree/expression-unification-demo) · [TiKV](https://github.com/YangKeao/tikv/tree/expression-unification-demo). Each checkpoint includes the same Plan; no force-push or automatic PR.
+Checkpoint-ID: `compare-six-53` (previous `compare-substrate-52`).
+**172/245 functional families; target221; strict final acceptance0.** Added EQ/NE/LT/LE/GT/GE. Incomplete, not PR-ready.
+Paired branches: [TiDB](https://github.com/YangKeao/tidb/tree/expression-unification-demo) · [TiKV](https://github.com/YangKeao/tikv/tree/expression-unification-demo). Matching Plan snapshots accompany both commits; no force-push or automatic PR.
 
-## Shared comparison substrate
-- Native raw JSON comparison and its lossless/serde decoder closure now live in TiKV. Native BinaryJSON delegates, with a shared data-only node and structural scalar adaptation. Duplicate-key/count/key-order behavior, exact versus epsilon numeric comparison, opaque/temporal ranks, malformed fallback and distinct decoder depth/slice behavior remain unchanged; wire JSON comparison is not substituted.
-- Native calendar comparison calls `Time::native_core_compare`, reusing existing wire raw ordering while ignoring the low four metadata bits. Numeric datetime conversion remains unchanged.
-- Native Decimal Ord calls allocation-free borrowed `native_decimal_cmp`. Hidden storage scale and original coefficient policy remain intact; no fallible owned bridge or wire Decimal change is introduced.
+## Shared comparison evaluators
+13 explicit profiles carrying finite `ComparisonOp` select78 fixed kernels, with unit runtime metadata and separate real-NULL/missing terminals. Native preparation submits actual signed/unsigned, IEEE, Decimal, collated-byte, vector, calendar, duration or raw JSON values. Native IEEE and legacy total float order remain distinct. Raw JSON reuses the preceding native-policy substrate, not wire ordering or canonical text.
 
-No runtime predicate recipes, carriers, bindings, driver, PB or legacy admission are added. Full six-family comparison routing—including numeric batch and context-aware row paths—remains the next integration step. JSON encoders/renderers/parsers and complete type/package migration are not claimed.
+Typed, numeric batch/filter, existing PB and30 legacy signatures now use shared bool production. Row predicates compose actual shared results and shared NOT; NaN Eq-then-Lt/NOT behavior is preserved. No new carrier, driver, binding or PB/legacy admission. Old native six-predicate calculations are removed; NullEq and nonexpression sorting utilities remain separate.
+
+**Explicit compatibility change:** row preparation now observes statement truncation/date-mode/timezone/warning context rather than NoColumns defaults and silence. This is not full old-row-context equivalence. Original row collation, precision4, literal descriptors and empty structural identities remain; tests pin context activation. Wider request-root closure remains unfinished.
 
 ## Validation
 | Gate | Result |
 |---|---|
-| Shared JSON / Decimal / Time | 37 / 89 / 55 passed |
-| Native binary JSON / Decimal / core time | 32 / 25 / 15 passed |
-| Existing expression comparisons / SQL | 67 / 19 passed; expression5 ignored |
-| Full expression | **1494 passed,4 old failures,94 ignored; exit101** |
-| Full unistore | **201 passed,1 old failure,13 ignored; exit101** |
+| TiKV comparison kernels / local | 29 / 295 passed; local1 ignored |
+| Native profiles / existing comparisons | 24 / 67 passed; existing5 ignored |
+| Legacy / SQL / NOT instrumentation | 2 / 2 / 1 passed |
+| Final full expression | **1498 passed,4 old failures,94 ignored; exit101** |
+| Full unistore | **203 passed,1 old failure,13 ignored; exit101** |
 
-Ten test commands: eight focused gates pass first attempt; two full failure sections equal the previous checkpoint after thread IDs only. No Cargo/compile/new-test failure, retry or lock change. Four additive shared tests; all original test bodies and expectations preserved. Eight Rust sources pass pinned formatter checks. Three non-Cargo lookup/verification mistakes were corrected without source changes and are recorded, not counted as test failures.
+Twelve attempts: eleven actual runs plus one compile failure. Seven final focused gates pass. Two actual test-red runs were repaired: wide test fixtures used a wire parser instead of Grow construction, and an old instrumentation test needed source-derived counts for newly shared IN/BETWEEN comparisons. Three private collation-path compile errors were fixed through existing public exports. Original SQL expected values remain unchanged; no fixtures regenerated. Final complete failure sections equal the previous checkpoint after thread IDs only.21 Rust sources,13 new tests, no dependency/lock changes.
 
-Exact commands, incidents and hashes: [summary](logs/compare-substrate-summary.txt). Ownership and preserved contracts: [evidence](evidence/compare-substrate-checkpoint.md), `checkpoint.json`, and the root Plan. Previous AES family evidence remains [here](evidence/aes-two-checkpoint.md).
+Exact commands and hashes: [summary](logs/compare-six-summary.txt). Review map, compatibility boundary and deferred work: [evidence](evidence/compare-six-checkpoint.md), `checkpoint.json`, and the root Plan.
 
 ## Remaining work
-79 eligible families remain; target needs55. Next: all six comparisons, now that the raw JSON prerequisite is shared; IntDIV remains separate. Native IEEE versus legacy total float order, actual inputs and demand, typed/batch/PB/legacy/row paths must all be preserved before family credit. Broader request-root integration, physical heap/peak/OOM, differential/M6/TiFlash, release/performance, whole workspace and lint remain unverified. Existing parser/full-suite failures and extreme Decimal release-shape exceptions remain unresolved. No complete Go-package/type-domain or FIPS claim.
+73 eligible families remain; target needs49. IntDIV and further comparison/control consumers remain candidates, not completed families. Whole workspace/lint, release/performance, zero-copy, physical heap/peak/OOM/M6, broader request-root and exhaustive compatibility/differential gates are unverified. Existing parser/GB/ignored-vector/extreme Decimal exceptions remain. No complete Go-package/type-domain or FIPS claim.

@@ -9363,6 +9363,177 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_comparison_sql_values_typed_filters_and_row_tuples() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_comparison_sql (id INT PRIMARY KEY, a BIGINT, b BIGINT, u BIGINT UNSIGNED, v BIGINT UNSIGNED, r DOUBLE, t DOUBLE, d DECIMAL(30,2), e DECIMAL(30,2), s VARCHAR(8) COLLATE utf8mb4_general_ci, q VARCHAR(8) COLLATE utf8mb4_general_ci, x VARBINARY(8), y VARBINARY(8), j JSON, k JSON, vec VECTOR, other VECTOR, dt DATETIME(6), later DATETIME(6), tm TIME(6), endtm TIME(6))").unwrap();
+    session.run("INSERT INTO shared_comparison_sql VALUES (1,-1,1,18446744073709551615,1,1.5e0,2e0,9007199254740993.25,9007199254740993.26,'A ','a',X'41',X'61','[1,2]','[1,3]','[1,2]','[1,3]','2024-01-01 00:00:00.000001','2024-01-01 00:00:00.000002','-01:00:00','01:00:00'),(2,1,1,1,1,2e0,2e0,1.25,1.25,'a','a',X'61',X'61','[1,3]','[1,3]','[1,3]','[1,3]','2024-01-01 00:00:00.000002','2024-01-01 00:00:00.000002','01:00:00','01:00:00'),(3,NULL,1,NULL,1,NULL,2e0,NULL,1.25,NULL,'a',NULL,X'61',NULL,'[1,3]',NULL,'[1,3]',NULL,'2024-01-01 00:00:00.000002',NULL,'01:00:00')").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // Fixed truth tables: less, greater, equal, then SQL NULL. Expected values
+    // are literals, never another comparison implementation used as an oracle.
+    for (left, right, first) in [
+        ("a", "b", [0, 1, 1, 1, 0, 0]),
+        ("u", "v", [0, 1, 0, 0, 1, 1]),
+        ("a", "u", [0, 1, 1, 1, 0, 0]),
+        ("r", "t", [0, 1, 1, 1, 0, 0]),
+        ("d", "e", [0, 1, 1, 1, 0, 0]),
+        ("s", "q", [1, 0, 0, 1, 0, 1]),
+        ("x", "y", [0, 1, 1, 1, 0, 0]),
+        ("j", "k", [0, 1, 1, 1, 0, 0]),
+        ("vec", "other", [0, 1, 1, 1, 0, 0]),
+        ("dt", "later", [0, 1, 1, 1, 0, 0]),
+        ("tm", "endtm", [0, 1, 1, 1, 0, 0]),
+    ] {
+        let projection = ["=", "!=", "<", "<=", ">", ">="]
+            .map(|op| format!("{left}{op}{right}"))
+            .join(",");
+        let sql = format!("SELECT {projection} FROM shared_comparison_sql ORDER BY id");
+        let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+            panic!("{sql}")
+        };
+        assert_eq!(
+            rows,
+            vec![
+                first.into_iter().map(Datum::Int).collect::<Vec<_>>(),
+                vec![
+                    Datum::Int(1),
+                    Datum::Int(0),
+                    Datum::Int(0),
+                    Datum::Int(1),
+                    Datum::Int(0),
+                    Datum::Int(1)
+                ],
+                vec![Datum::Null; 6],
+            ],
+            "{sql}"
+        );
+        assert!(session.warnings().is_empty(), "{sql}");
+    }
+    // Actual numeric-column filters exercise the typed batch selection path;
+    // row tuples also reach scalar comparison helpers without changing admission.
+    for (op, expected) in [
+        ("=", vec![2]),
+        ("!=", vec![1]),
+        ("<", vec![1]),
+        ("<=", vec![1, 2]),
+        (">", vec![]),
+        (">=", vec![2]),
+    ] {
+        for (left, right) in [("a", "b"), ("d", "e"), ("(a,b)", "(b,a)")] {
+            let sql =
+                format!("SELECT id FROM shared_comparison_sql WHERE {left}{op}{right} ORDER BY id");
+            let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+                panic!("{sql}")
+            };
+            assert_eq!(
+                rows,
+                expected
+                    .iter()
+                    .map(|id| vec![Datum::Int(*id)])
+                    .collect::<Vec<_>>(),
+                "{sql}"
+            );
+            assert!(session.warnings().is_empty(), "{sql}");
+        }
+    }
+}
+
+#[test]
+fn evaluated_ascii_comparison_zero_slots_reject_direct_columns_and_filters() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    let domains = [
+        ("BIGINT", "-1", "1"),
+        ("BIGINT UNSIGNED", "18446744073709551615", "1"),
+        ("DOUBLE", "1.5e0", "2e0"),
+        (
+            "DECIMAL(30,2)",
+            "9007199254740993.25",
+            "9007199254740993.26",
+        ),
+        ("VARCHAR(8) COLLATE utf8mb4_general_ci", "'A '", "'a'"),
+        ("VARBINARY(8)", "X'41'", "X'61'"),
+        ("JSON", "'[1,2]'", "'[1,3]'"),
+        ("VECTOR", "'[1,2]'", "'[1,3]'"),
+        (
+            "DATETIME(6)",
+            "'2024-01-01 00:00:00.000001'",
+            "'2024-01-01 00:00:00.000002'",
+        ),
+        ("TIME(6)", "'-01:00:00'", "'01:00:00'"),
+    ];
+    for (index, (ty, left, right)) in domains.iter().enumerate() {
+        session
+            .run(&format!(
+                "CREATE TABLE shared_comparison_zero_{index} (l {ty}, r {ty}, n {ty})"
+            ))
+            .unwrap();
+        session
+            .run(&format!(
+                "INSERT INTO shared_comparison_zero_{index} VALUES ({left},{right},NULL)"
+            ))
+            .unwrap();
+    }
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    for index in 0..domains.len() {
+        for op in ["=", "!=", "<", "<=", ">", ">="] {
+            for (left, right) in [("l", "r"), ("n", "r"), ("l", "n")] {
+                // No folded constants or another migrated wrapper can supply
+                // the refusal: this is the comparison itself over stored columns.
+                let sql = format!("SELECT {left}{op}{right} FROM shared_comparison_zero_{index}");
+                let error = session.run_with_columns(&sql).expect_err(&sql);
+                match &error {
+                    DriverError::Exec(tidb_executor::ExecError::Eval(
+                        tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                    )) => {
+                        assert_eq!(
+                            failure.class(),
+                            tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                        );
+                        assert_eq!(
+                            failure.origin(),
+                            tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                        );
+                    }
+                    other => panic!("comparison bypassed its worker: {sql}: {other:?}"),
+                }
+                let mysql = error.to_mysql_error();
+                assert_eq!(mysql.code, 1105, "{sql}");
+                assert_eq!(mysql.state, *b"HY000", "{sql}");
+                assert!(mysql.is_from_evaluation(), "{sql}");
+                assert!(session.warnings().is_empty(), "{sql}");
+            }
+            if index == 0 || index == 3 {
+                for predicate in [
+                    format!("l{op}r"),
+                    format!("n{op}r"),
+                    format!("(l,r){op}(r,l)"),
+                ] {
+                    let sql =
+                        format!("SELECT l FROM shared_comparison_zero_{index} WHERE {predicate}");
+                    let error = session.run_with_columns(&sql).expect_err(&sql);
+                    assert!(
+                        matches!(&error, DriverError::Exec(tidb_executor::ExecError::Eval(tidb_executor::EvalError::ExpressionAdapterFailure(failure))) if failure.class() == tidb_executor::ExpressionAdapterFailureClass::PoolResource && failure.origin() == tidb_executor::ExpressionAdapterFailureOrigin::Pool),
+                        "{sql}: {error:?}"
+                    );
+                    assert!(session.warnings().is_empty(), "{sql}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_aes_sql_preserves_twelve_mode_goldens_demand_and_diagnostics() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();

@@ -33,7 +33,7 @@ use tidb_ast::BinaryOp;
 
 use crate::coerce::bool_int;
 use crate::ops::eval_binary;
-use crate::{Datum, EvalError};
+use crate::{Columns, Datum, EvalError};
 
 /// Total order over two same-typed scalar datums, matching Go
 /// `pkg/util/chunk/compare.go` `GetCompareFunc`.
@@ -47,6 +47,8 @@ use crate::{Datum, EvalError};
 /// cross-kind through MySQL's promotion rules (Int/UInt/Decimal exactly,
 /// Real via `f64`); string-vs-numeric compares as MySQL real coercion.
 /// Errors surface for operand kinds the evaluator does not order.
+/// This contextless SDK utility serves sorting/grouping, not runtime row-value
+/// predicates; those use `row_compare_in` with the statement's real context.
 pub fn compare_datums(l: &Datum, r: &Datum) -> Result<Ordering, EvalError> {
     compare_datums_with_collation(l, r, crate::ops::DERIVATION_FREE_COLLATION)
 }
@@ -96,21 +98,52 @@ pub fn compare_datums_with_collation(
 /// at the first `NULL` — matching real SQL `AND`'s own semantics
 /// (`FALSE AND NULL` is `FALSE`, not `NULL`, regardless of which
 /// operand is evaluated first).
-fn row_eq(l: &[Datum], r: &[Datum]) -> Result<Datum, EvalError> {
-    let mut any_null = false;
+fn row_eq_in(l: &[Datum], r: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    let mut null_result = None;
+    let mut last_true = None;
     for (lv, rv) in l.iter().zip(r) {
-        match eval_binary(BinaryOp::Eq, lv.clone(), rv.clone())? {
-            Datum::Int(0) => return Ok(Datum::Int(0)),
-            Datum::Null => any_null = true,
-            Datum::Int(1) => {}
-            _ => unreachable!("eval_binary(Eq, ...) only ever returns Int(0/1) or Null"),
+        let computed = row_scalar_compare_in(BinaryOp::Eq, lv, rv, ctx)?;
+        match computed {
+            Datum::Int(0) => return Ok(computed),
+            Datum::Null => null_result = Some(computed),
+            Datum::Int(1) => last_true = Some(computed),
+            _ => unreachable!("comparison worker returns only Int(0/1) or NULL"),
         }
     }
-    Ok(if any_null { Datum::Null } else { Datum::Int(1) })
+    Ok(null_result
+        .or(last_true)
+        .expect("nonempty row has a computed leaf"))
+}
+
+fn row_scalar_compare_in(
+    op: BinaryOp,
+    left: &Datum,
+    right: &Datum,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    crate::ops::eval_comparison_values_in(
+        op,
+        left.clone(),
+        right.clone(),
+        crate::ops::DERIVATION_FREE_COLLATION,
+        crate::ops::Operands::LITERALS,
+        ctx,
+    )
+}
+
+fn negate_row_predicate_in(value: Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    if value.is_null() {
+        return Ok(value);
+    }
+    crate::eval_boolean_ready_in(
+        crate::BooleanFunction::UnaryNot,
+        crate::truthy_of(&value)?,
+        ctx,
+    )
 }
 
 /// `l <op> r` for two same-arity row values, `op` one of
-/// `Eq`/`Ne`/`NullEq`/`Lt`/`Gt`/`Le`/`Ge` — see [`row_eq`]'s own doc for
+/// `Eq`/`Ne`/`NullEq`/`Lt`/`Gt`/`Le`/`Ge` — see [`row_eq_in`]'s own doc for
 /// equality; the four ordering operators are LEXICOGRAPHIC (confirmed
 /// via `gorun`: the FIRST position where the two rows differ decides
 /// the whole comparison, regardless of what follows — `ROW(2,1) <
@@ -121,51 +154,89 @@ fn row_eq(l: &[Datum], r: &[Datum]) -> Result<Datum, EvalError> {
 /// — modelled here as `Unsupported` too, matching this crate's own
 /// convention for other rare-but-real SQL error conditions (e.g.
 /// `crate::eval_in`'s own scalar-subquery-with-multiple-columns case).
-pub(crate) fn row_compare(op: BinaryOp, l: &[Datum], r: &[Datum]) -> Result<Datum, EvalError> {
+///
+/// The live context now reaches scalar preparation as well as the worker:
+/// unlike the former `NoColumns` route, temporal parsing observes session date
+/// modes/timezone and mixed numeric text observes statement warning/error policy.
+/// Collation remains the original derivation-free collation for this AST tier.
+pub(crate) fn row_compare_in(
+    op: BinaryOp,
+    l: &[Datum],
+    r: &[Datum],
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
     if l.len() != r.len() {
         return Err(EvalError::Unsupported("row value arity mismatch"));
     }
+    if l.is_empty() {
+        // Preserve the original zero-operand tuple identities. This structural
+        // edge has no scalar leaf to submit and invents no comparison witness.
+        return match op {
+            BinaryOp::Eq
+            | BinaryOp::Ne
+            | BinaryOp::NullEq
+            | BinaryOp::Lt
+            | BinaryOp::Gt
+            | BinaryOp::Le
+            | BinaryOp::Ge => Ok(bool_int(matches!(
+                op,
+                BinaryOp::Eq | BinaryOp::NullEq | BinaryOp::Le | BinaryOp::Ge
+            ))),
+            _ => Err(EvalError::Unsupported("row value comparison operator")),
+        };
+    }
     match op {
-        BinaryOp::Eq => row_eq(l, r),
-        BinaryOp::Ne => Ok(match row_eq(l, r)? {
-            Datum::Int(v) => Datum::Int(1 - v),
-            Datum::Null => Datum::Null,
-            _ => unreachable!("row_eq only ever returns Int or Null"),
-        }),
+        BinaryOp::Eq => row_eq_in(l, r, ctx),
+        BinaryOp::Ne => negate_row_predicate_in(row_eq_in(l, r, ctx)?, ctx),
         // Go `constructBinaryOpFunction` rewrites row `<=>` into one scalar
         // `<=>` per position and ComposeCNFCondition over those results.
+        // NULL-safe equality is outside the six ordinary comparison profiles.
         BinaryOp::NullEq => {
+            let mut last_true = None;
             for (lv, rv) in l.iter().zip(r) {
-                match eval_binary(BinaryOp::NullEq, lv.clone(), rv.clone())? {
-                    Datum::Int(0) => return Ok(Datum::Int(0)),
-                    Datum::Int(1) => {}
+                let computed = crate::ops::eval_binary_full(
+                    BinaryOp::NullEq,
+                    lv.clone(),
+                    rv.clone(),
+                    4,
+                    crate::ops::DERIVATION_FREE_COLLATION,
+                    crate::ops::Operands::LITERALS,
+                    ctx,
+                )?;
+                match computed {
+                    Datum::Int(0) => return Ok(computed),
+                    Datum::Int(1) => last_true = Some(computed),
                     _ => unreachable!("scalar NullEq only ever returns Int(0/1)"),
                 }
             }
-            Ok(Datum::Int(1))
+            Ok(last_true.expect("nonempty row has a computed leaf"))
         }
         BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge => {
+            let mut last_true = None;
             for (lv, rv) in l.iter().zip(r) {
-                match eval_binary(BinaryOp::Eq, lv.clone(), rv.clone())? {
-                    Datum::Null => return Ok(Datum::Null),
-                    Datum::Int(1) => continue, // equal here — the deciding position is later
+                let computed = row_scalar_compare_in(BinaryOp::Eq, lv, rv, ctx)?;
+                match computed {
+                    Datum::Null => return Ok(computed),
+                    Datum::Int(1) => last_true = Some(computed),
                     Datum::Int(0) => {
-                        let is_lt = match eval_binary(BinaryOp::Lt, lv.clone(), rv.clone())? {
-                            Datum::Int(v) => v == 1,
-                            Datum::Null => return Ok(Datum::Null),
+                        let less = row_scalar_compare_in(BinaryOp::Lt, lv, rv, ctx)?;
+                        // Retain the original Eq-then-Lt composition, including
+                        // NaN: GT/GE here are !Lt, not direct scalar GT/GE.
+                        return match op {
+                            BinaryOp::Lt | BinaryOp::Le => Ok(less),
+                            BinaryOp::Gt | BinaryOp::Ge => negate_row_predicate_in(less, ctx),
                             _ => unreachable!(),
                         };
-                        return Ok(bool_int(match op {
-                            BinaryOp::Lt | BinaryOp::Le => is_lt,
-                            BinaryOp::Gt | BinaryOp::Ge => !is_lt,
-                            _ => unreachable!(),
-                        }));
                     }
-                    _ => unreachable!("eval_binary(Eq, ...) only ever returns Int(0/1) or Null"),
+                    _ => unreachable!("comparison worker returns only Int(0/1) or NULL"),
                 }
             }
-            // Every position was equal — decides `<=`/`>=` (true) vs `<`/`>` (false).
-            Ok(bool_int(matches!(op, BinaryOp::Le | BinaryOp::Ge)))
+            let equal = last_true.expect("nonempty row has a computed leaf");
+            if matches!(op, BinaryOp::Le | BinaryOp::Ge) {
+                Ok(equal)
+            } else {
+                negate_row_predicate_in(equal, ctx)
+            }
         }
         _ => Err(EvalError::Unsupported("row value comparison operator")),
     }
@@ -175,6 +246,127 @@ pub(crate) fn row_compare(op: BinaryOp, l: &[Datum], r: &[Datum]) -> Result<Datu
 mod tests {
     use super::compare_datums_with_collation;
     use tidb_datatype::{parse_datetime, Collation, Datum};
+
+    #[test]
+    fn row_comparison_keeps_nan_composition_nulls_and_empty_identities() {
+        use super::row_compare_in;
+        use tidb_ast::BinaryOp;
+
+        for (op, nan_result, equal_result) in [
+            (BinaryOp::Eq, 0, 1),
+            (BinaryOp::Ne, 1, 0),
+            (BinaryOp::Lt, 0, 0),
+            (BinaryOp::Le, 0, 1),
+            (BinaryOp::Gt, 1, 0),
+            (BinaryOp::Ge, 1, 1),
+        ] {
+            assert_eq!(
+                row_compare_in(
+                    op,
+                    &[Datum::Real(f64::NAN)],
+                    &[Datum::Real(2.0)],
+                    &crate::NoColumns
+                )
+                .unwrap(),
+                Datum::Int(nan_result),
+            );
+            assert_eq!(
+                row_compare_in(op, &[Datum::Int(2)], &[Datum::Int(2)], &crate::NoColumns).unwrap(),
+                Datum::Int(equal_result),
+            );
+            // Empty tuples have no leaf: these are structural identities, not
+            // fabricated scalar operands submitted as a comparison witness.
+            assert_eq!(
+                row_compare_in(op, &[], &[], &crate::NoColumns).unwrap(),
+                Datum::Int(equal_result)
+            );
+        }
+        let left = [Datum::Null, Datum::Int(1)];
+        let right = [Datum::Int(0), Datum::Int(2)];
+        assert_eq!(
+            row_compare_in(BinaryOp::Eq, &left, &right, &crate::NoColumns).unwrap(),
+            Datum::Int(0)
+        );
+        assert_eq!(
+            row_compare_in(BinaryOp::Ne, &left, &right, &crate::NoColumns).unwrap(),
+            Datum::Int(1)
+        );
+        assert_eq!(
+            row_compare_in(BinaryOp::Gt, &left, &right, &crate::NoColumns).unwrap(),
+            Datum::Null
+        );
+        assert_eq!(
+            row_compare_in(BinaryOp::NullEq, &[], &[], &crate::NoColumns).unwrap(),
+            Datum::Int(1)
+        );
+        assert!(row_compare_in(BinaryOp::Eq, &[], &[Datum::Null], &crate::NoColumns).is_err());
+    }
+
+    #[test]
+    fn row_comparison_activates_statement_coercion_context() {
+        use super::row_compare_in;
+        use std::cell::{Cell, RefCell};
+        use tidb_ast::BinaryOp;
+
+        #[derive(Default)]
+        struct Statement {
+            truncations: Cell<usize>,
+            date_reads: Cell<usize>,
+            zone_reads: Cell<usize>,
+            warnings: RefCell<Vec<(u16, String)>>,
+        }
+        impl crate::Columns for Statement {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn truncate_level(&self) -> crate::ErrorLevel {
+                self.truncations.set(self.truncations.get() + 1);
+                crate::ErrorLevel::Error
+            }
+            fn date_modes(&self) -> tidb_datatype::DateModes {
+                self.date_reads.set(self.date_reads.get() + 1);
+                tidb_datatype::DateModes::TIDB_DEFAULT_SQL_MODE
+            }
+            fn time_zone(&self) -> crate::SessionTimeZone {
+                self.zone_reads.set(self.zone_reads.get() + 1);
+                crate::SessionTimeZone::Fixed {
+                    name: "UTC".to_owned(),
+                    offset_secs: 0,
+                }
+            }
+            fn append_warning(&self, code: u16, message: &str) {
+                self.warnings.borrow_mut().push((code, message.to_owned()));
+            }
+        }
+        let ctx = Statement::default();
+        let time = Datum::new_time(
+            parse_datetime("2026-08-14 12:00:00", &chrono_tz::UTC, true, false)
+                .unwrap()
+                .time,
+        );
+        for op in [BinaryOp::Eq, BinaryOp::NullEq] {
+            assert!(matches!(
+                row_compare_in(op, &[Datum::Int(12)], &[Datum::new_string("12x")], &ctx),
+                Err(crate::EvalError::TruncatedWrongValue(_)),
+            ));
+            let (text, expected) = if op == BinaryOp::NullEq {
+                ("2026-08-14 12:00:00", Datum::Int(1))
+            } else {
+                ("not-a-time", Datum::Null)
+            };
+            assert_eq!(
+                row_compare_in(op, &[time.clone()], &[Datum::new_string(text)], &ctx).unwrap(),
+                expected,
+            );
+        }
+        assert_eq!(ctx.truncations.get(), 2);
+        assert_eq!(ctx.date_reads.get(), 2);
+        assert_eq!(ctx.zone_reads.get(), 2);
+        assert_eq!(
+            *ctx.warnings.borrow(),
+            vec![(1292, "Incorrect datetime value: 'not-a-time'".to_owned()),]
+        );
+    }
 
     #[test]
     fn invalid_temporal_comparison_returns_an_error_instead_of_panicking() {

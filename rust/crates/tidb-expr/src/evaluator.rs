@@ -205,7 +205,7 @@ fn filter_physical_rows<C: Columns>(
                     true
                 }
                 Expression::ScalarFunction(function) => {
-                    function.vec_eval_bool(input, &sel, &mut is_zero)?
+                    function.vec_eval_bool(input, &sel, &mut is_zero, ctx)?
                 }
                 Expression::Column(_) | Expression::Constant(_) => false,
             }

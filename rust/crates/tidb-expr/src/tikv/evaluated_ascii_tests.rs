@@ -1285,6 +1285,23 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::RegexpMissingLegacyNative => {
             panic!("regexp calls need their actual arguments, demand and cache handles")
         }
+        EvaluatedBytesOp::CompareIntSsNative(_)
+        | EvaluatedBytesOp::CompareIntSuNative(_)
+        | EvaluatedBytesOp::CompareIntUsNative(_)
+        | EvaluatedBytesOp::CompareIntUuNative(_)
+        | EvaluatedBytesOp::CompareInt128Legacy(_)
+        | EvaluatedBytesOp::CompareRealNative(_)
+        | EvaluatedBytesOp::CompareRealLegacy(_)
+        | EvaluatedBytesOp::CompareDecimalNative(_)
+        | EvaluatedBytesOp::CompareBytesNative(_)
+        | EvaluatedBytesOp::CompareVectorNative(_)
+        | EvaluatedBytesOp::CompareTimeCoreNative(_)
+        | EvaluatedBytesOp::CompareDurationNative(_)
+        | EvaluatedBytesOp::CompareJsonNative(_)
+        | EvaluatedBytesOp::CompareNullNative
+        | EvaluatedBytesOp::CompareMissingLegacy => {
+            panic!("comparison needs its actual domain pair, finite predicate and NULL demand")
+        }
         EvaluatedBytesOp::VecAsTextNative => "VEC_AS_TEXT",
         EvaluatedBytesOp::VecDimsNative => "VEC_DIMS",
         EvaluatedBytesOp::VecFromTextNative => "VEC_FROM_TEXT",
@@ -1864,6 +1881,202 @@ fn binary_arithmetic_dispatch_keeps_profiles_and_legacy_presence() {
     });
     assert!(!scope.busy.get());
     assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn comparison_sdk_payload_identity_controls_scope_and_pool_reuse() {
+    use tidb_query_expr::ComparisonOp::{Eq, Ne};
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (predicate, expected, factories) in [(Eq, 1, 1), (Eq, 1, 1), (Ne, 0, 2), (Eq, 1, 3)] {
+            let operation = EvaluatedBytesOp::CompareIntSsNative(predicate);
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || Ok(EvaluatedArgs::Int2(Some(7), Some(7))),
+                    EvaluatedBytesResult::into_boolean_datum,
+                )
+            });
+            assert_eq!(result, Ok(Datum::Int(expected)));
+            assert_wide_math_c4(observation);
+            assert_eq!(
+                scope
+                    .lease
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .worker
+                    .as_ref()
+                    .unwrap()
+                    .operation(),
+                operation
+            );
+            assert_eq!(owner.snapshot().unwrap().factory_successes, factories);
+        }
+    });
+    drop(scope);
+    // Same full identity reuses the idle worker. A different payload of the
+    // same enum variant evicts it; switching back cannot reuse the Ne kernel.
+    for (predicate, expected, factories) in [(Eq, 1, 3), (Ne, 0, 4), (Eq, 1, 5)] {
+        let scope = execution.scope();
+        scope.with_columns(&crate::NoColumns, |columns| {
+            let operation = EvaluatedBytesOp::CompareIntSsNative(predicate);
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || Ok(EvaluatedArgs::Int2(Some(7), Some(7))),
+                    EvaluatedBytesResult::into_boolean_datum,
+                )
+            });
+            assert_eq!(result, Ok(Datum::Int(expected)));
+            assert_wide_math_c4(observation);
+            assert_eq!(
+                scope
+                    .lease
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .worker
+                    .as_ref()
+                    .unwrap()
+                    .operation(),
+                operation
+            );
+            assert_eq!(owner.snapshot().unwrap().factory_successes, factories);
+        });
+        assert!(!scope.poisoned.get());
+        drop(scope);
+    }
+    execution.close();
+}
+
+#[test]
+fn comparison_sdk_keeps_ieee_legacy_order_presence_and_infrastructure_distinct() {
+    use tidb_query_expr::ComparisonOp::{Eq, Ge, Gt, Le, Lt, Ne};
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        // Fixed source-policy answers, not a host comparison used as an oracle.
+        // Positive quiet NaN sorts after zero only in legacy total ordering;
+        // native IEEE predicates are unordered, and native +/-0 compare equal.
+        let nan = 0x7ff8_0000_0000_0001_u64;
+        for (left, right, native, legacy) in [
+            (nan, 0.0_f64.to_bits(), [0, 1, 0, 0, 0, 0], [0, 1, 0, 0, 1, 1]),
+            (nan, nan, [0, 1, 0, 0, 0, 0], [1, 0, 0, 1, 0, 1]),
+            ((-0.0_f64).to_bits(), 0.0_f64.to_bits(), [1, 0, 0, 1, 0, 1], [0, 1, 1, 1, 0, 0]),
+        ] {
+            for (index, predicate) in [Eq, Ne, Lt, Le, Gt, Ge].into_iter().enumerate() {
+                for (operation, expected) in [
+                    (EvaluatedBytesOp::CompareRealNative(predicate), native[index]),
+                    (EvaluatedBytesOp::CompareRealLegacy(predicate), legacy[index]),
+                ] {
+                    let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                        operation, columns,
+                        || Ok(EvaluatedArgs::Ieee754Bits2 {
+                            left: super::super::ReadyIeee754Arg::Value(Some(left)),
+                            right: super::super::ReadyIeee754Arg::Value(Some(right)),
+                        }),
+                        EvaluatedBytesResult::into_boolean_datum,
+                    ));
+                    assert_eq!(result, Ok(Datum::Int(expected)));
+                    assert_wide_math_c4(observation);
+                }
+            }
+        }
+        let earlier = Time::new(CoreTime::from_date(2024, 1, 1, 0, 0, 0, 0), TimeType::DateTime, 0).unwrap();
+        let later = Time::new(CoreTime::from_date(2024, 1, 2, 0, 0, 0, 0), TimeType::DateTime, 0).unwrap();
+        for (result, observation) in [
+            observe_wide_math(|| eval_legacy_integer_comparison_in(Lt,
+                LegacyBinaryArgs::Values(1_i128 << 100, (1_i128 << 100) + 1), columns)),
+            observe_wide_math(|| eval_legacy_real_comparison_in(Lt,
+                LegacyBinaryArgs::Values(-0.0, 0.0), columns)),
+            observe_wide_math(|| eval_legacy_bytes_comparison_in(Gt,
+                LegacyBinaryArgs::Values(b"a ".to_vec(), b"a".to_vec()), 63, columns)),
+            observe_wide_math(|| eval_legacy_decimal_comparison_in(Eq,
+                LegacyBinaryArgs::Values(tidb_datatype::Decimal::from_literal("1.00"), tidb_datatype::Decimal::from_literal("1.0")), columns)),
+            observe_wide_math(|| eval_legacy_time_comparison_in(Lt,
+                LegacyBinaryArgs::Values(earlier, later), columns)),
+        ] {
+            assert_eq!(result, Ok(Some(1)));
+            assert_wide_math_c4(observation);
+        }
+        for missing in [false, true] {
+            for (result, observation) in [
+                observe_wide_math(|| eval_legacy_integer_comparison_in(Eq,
+                    if missing { LegacyBinaryArgs::Missing } else { LegacyBinaryArgs::NullWitness(None) }, columns)),
+                observe_wide_math(|| eval_legacy_real_comparison_in(Eq,
+                    if missing { LegacyBinaryArgs::Missing } else { LegacyBinaryArgs::NullWitness(None) }, columns)),
+                observe_wide_math(|| eval_legacy_bytes_comparison_in(Eq,
+                    if missing { LegacyBinaryArgs::Missing } else { LegacyBinaryArgs::NullWitness(None) }, i32::MAX, columns)),
+                observe_wide_math(|| eval_legacy_decimal_comparison_in(Eq,
+                    if missing { LegacyBinaryArgs::Missing } else { LegacyBinaryArgs::NullWitness(None) }, columns)),
+                observe_wide_math(|| eval_legacy_time_comparison_in(Eq,
+                    if missing { LegacyBinaryArgs::Missing } else { LegacyBinaryArgs::NullWitness(None) }, columns)),
+            ] {
+                assert_eq!(result, Ok(None));
+                assert_wide_math_c4(observation);
+            }
+        }
+        let (result, observation) = observe_wide_math(|| eval_legacy_integer_comparison_in(
+            Eq, LegacyBinaryArgs::NullWitness(Some(0)), columns,
+        ));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract));
+        assert_eq!(observation.facade_entries, 0);
+        for (operation, args) in [
+            (EvaluatedBytesOp::CompareNullNative, EvaluatedArgs::NullWitness(None)),
+            (EvaluatedBytesOp::CompareMissingLegacy, EvaluatedArgs::NoArgs),
+        ] {
+            let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                operation, columns, || Ok(args), EvaluatedBytesResult::into_boolean_datum,
+            ));
+            assert_eq!(result, Ok(Datum::Null));
+            assert_wide_math_c4(observation);
+        }
+        for (operation, args) in [
+            (EvaluatedBytesOp::CompareRealNative(Eq), EvaluatedArgs::Int2(Some(0), Some(0))),
+            (EvaluatedBytesOp::CompareNullNative, EvaluatedArgs::NullWitness(Some(0))),
+        ] {
+            let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                operation, columns, || Ok(args), EvaluatedBytesResult::into_boolean_datum,
+            ));
+            assert!(matches!(result, Err(EvalError::ExpressionRuntimeFailure(_))));
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(observation.before_kernel_invocations, observation.after_kernel_invocations);
+        }
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (operation, args) in [
+            (EvaluatedBytesOp::CompareIntSsNative(Eq), EvaluatedArgs::Int2(Some(7), Some(7))),
+            (EvaluatedBytesOp::CompareIntSsNative(Ne), EvaluatedArgs::Int2(Some(7), Some(7))),
+            (EvaluatedBytesOp::CompareNullNative, EvaluatedArgs::NullWitness(None)),
+            (EvaluatedBytesOp::CompareMissingLegacy, EvaluatedArgs::NoArgs),
+        ] {
+            let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                operation, columns, || Ok(args), EvaluatedBytesResult::into_boolean_datum,
+            ));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
     drop(scope);
     execution.close();
 }
@@ -11838,10 +12051,12 @@ fn boolean_dispatch_preserves_pb_warnings_and_native_predicate_wrappers() {
             Err(EvalError::Unsupported("range sentinel expression operand"))
         );
         for (sql, expected, facades, single_worker_calls) in [
-            ("1 NOT IN (1, 2)", Datum::Int(0), 1, Some(1)),
-            // Instrumentation changes from one facade to two: AND then NOT.
-            // Their different workers' getter snapshots are not a total delta.
-            ("1 NOT BETWEEN 0 AND 2", Datum::Int(0), 2, None),
+            // eval_in_list visits both items even after a match: Eq, Eq, NOT.
+            // The two Eq calls share a worker, but NOT replaces that worker;
+            // first/last getter snapshots are not a cumulative kernel delta.
+            ("1 NOT IN (1, 2)", Datum::Int(0), 3, None),
+            // AST BETWEEN eagerly evaluates Ge and Le, then AND and NOT.
+            ("1 NOT BETWEEN 0 AND 2", Datum::Int(0), 4, None),
             // LIKE's real NULL witness now precedes the independent NOT worker.
             ("NULL NOT LIKE '%'", Datum::Null, 2, None),
             // REGEXP now dispatches too, before the independent NOT worker.
@@ -11902,11 +12117,12 @@ fn boolean_dispatch_vector_fallback_keeps_the_explicit_root() {
     let mut chunk = tidb_chunk::chunk::Chunk::new_with_capacity(&[field], 2);
     chunk.append_null(0);
     chunk.append_int64(0, 0);
+    let ctx = crate::NoColumns;
     for function in [&isnull, &not] {
         let mut untouched = vec![42];
         arm_eval_one_observation();
         assert_eq!(
-            function.vec_eval_bool(&chunk, &[0, 1], &mut untouched),
+            function.vec_eval_bool(&chunk, &[0, 1], &mut untouched, &ctx),
             Ok(false)
         );
         let observation = take_eval_one_observation();

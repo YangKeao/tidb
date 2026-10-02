@@ -4191,6 +4191,21 @@ pub fn eval_expr(
         .map_err(LegacyEvalError::into_message)
 }
 
+fn legacy_comparison_args<T>(
+    child_count: usize,
+    left: Option<T>,
+    right: Option<T>,
+) -> tidb_expr::LegacyBinaryArgs<T> {
+    if child_count < 2 {
+        tidb_expr::LegacyBinaryArgs::Missing
+    } else {
+        match (left, right) {
+            (Some(left), Some(right)) => tidb_expr::LegacyBinaryArgs::Values(left, right),
+            _ => tidb_expr::LegacyBinaryArgs::NullWitness(None),
+        }
+    }
+}
+
 impl LegacyEvaluator<'_> {
     fn eval_expr(&self, expr: &SimpleExpr) -> LegacyResult<Option<i128>> {
         use tidb_datatype::Datum;
@@ -4574,22 +4589,28 @@ impl LegacyEvaluator<'_> {
                     | SimpleSig::GeReal
                     | SimpleSig::EqReal
                     | SimpleSig::NeReal => {
-                        let (Some(left), Some(right)) = (
+                        use tidb_expr::ComparisonOp;
+                        // NULL still demands the RHS; a propagated LHS error
+                        // stops it, matching the original tuple's ? ordering.
+                        let (left, right) = (
                             self.eval_real(children.first())?,
                             self.eval_real(children.get(1))?,
-                        ) else {
-                            return Ok(None);
+                        );
+                        let op = match sig {
+                            SimpleSig::LtReal => ComparisonOp::Lt,
+                            SimpleSig::LeReal => ComparisonOp::Le,
+                            SimpleSig::GtReal => ComparisonOp::Gt,
+                            SimpleSig::GeReal => ComparisonOp::Ge,
+                            SimpleSig::EqReal => ComparisonOp::Eq,
+                            _ => ComparisonOp::Ne,
                         };
-                        let ordering = left.total_cmp(&right);
-                        let truth = match sig {
-                            SimpleSig::LtReal => ordering.is_lt(),
-                            SimpleSig::LeReal => ordering.is_le(),
-                            SimpleSig::GtReal => ordering.is_gt(),
-                            SimpleSig::GeReal => ordering.is_ge(),
-                            SimpleSig::EqReal => ordering.is_eq(),
-                            _ => !ordering.is_eq(),
-                        };
-                        Some(i128::from(truth))
+                        // Raw IEEE bits reach the legacy total-order profile,
+                        // not native SQL's IEEE equality/relational profile.
+                        tidb_expr::eval_legacy_real_comparison_in(
+                            op,
+                            legacy_comparison_args(children.len(), left, right),
+                            self.raw_columns,
+                        )?
                     }
                     SimpleSig::PlusReal
                     | SimpleSig::MinusReal
@@ -4610,45 +4631,53 @@ impl LegacyEvaluator<'_> {
                     | SimpleSig::GeInt
                     | SimpleSig::EqInt
                     | SimpleSig::NeInt => {
+                        use tidb_expr::ComparisonOp;
+                        // Execute both children BEFORE the original left-then-
+                        // right SQL-only folds. Infrastructure remains an error.
                         let (left, right) = (child(0), child(1));
-                        let (Some(left), Some(right)) = (
+                        let (left, right) = (
                             fold_legacy_sql(left)?.flatten(),
                             fold_legacy_sql(right)?.flatten(),
-                        ) else {
-                            return Ok(None);
+                        );
+                        let op = match sig {
+                            SimpleSig::LtInt => ComparisonOp::Lt,
+                            SimpleSig::LeInt => ComparisonOp::Le,
+                            SimpleSig::GtInt => ComparisonOp::Gt,
+                            SimpleSig::GeInt => ComparisonOp::Ge,
+                            SimpleSig::EqInt => ComparisonOp::Eq,
+                            _ => ComparisonOp::Ne,
                         };
-                        let truth = match sig {
-                            SimpleSig::LtInt => left < right,
-                            SimpleSig::LeInt => left <= right,
-                            SimpleSig::GtInt => left > right,
-                            SimpleSig::GeInt => left >= right,
-                            SimpleSig::EqInt => left == right,
-                            SimpleSig::NeInt => left != right,
-                            _ => unreachable!(),
-                        };
-                        Some(i128::from(truth))
+                        tidb_expr::eval_legacy_integer_comparison_in(
+                            op,
+                            legacy_comparison_args(children.len(), left, right),
+                            self.raw_columns,
+                        )?
                     }
                     SimpleSig::LtString(collation)
                     | SimpleSig::LeString(collation)
                     | SimpleSig::GtString(collation)
                     | SimpleSig::GeString(collation)
-                    | SimpleSig::EqString(collation) => {
-                        let (Some(left), Some(right)) = (
+                    | SimpleSig::EqString(collation)
+                    | SimpleSig::NeString(collation) => {
+                        use tidb_expr::ComparisonOp;
+                        let (left, right) = (
                             self.eval_bytes(children.first())?,
                             self.eval_bytes(children.get(1))?,
-                        ) else {
-                            return Ok(None);
+                        );
+                        let op = match sig {
+                            SimpleSig::LtString(_) => ComparisonOp::Lt,
+                            SimpleSig::LeString(_) => ComparisonOp::Le,
+                            SimpleSig::GtString(_) => ComparisonOp::Gt,
+                            SimpleSig::GeString(_) => ComparisonOp::Ge,
+                            SimpleSig::EqString(_) => ComparisonOp::Eq,
+                            _ => ComparisonOp::Ne,
                         };
-                        let ordering =
-                            tidb_datatype::get_collator_by_id(*collation).compare(&left, &right);
-                        let truth = match sig {
-                            SimpleSig::LtString(_) => ordering.is_lt(),
-                            SimpleSig::LeString(_) => ordering.is_le(),
-                            SimpleSig::GtString(_) => ordering.is_gt(),
-                            SimpleSig::GeString(_) => ordering.is_ge(),
-                            _ => ordering.is_eq(),
-                        };
-                        Some(i128::from(truth))
+                        tidb_expr::eval_legacy_bytes_comparison_in(
+                            op,
+                            legacy_comparison_args(children.len(), left, right),
+                            *collation,
+                            self.raw_columns,
+                        )?
                     }
                     SimpleSig::LtDecimal
                     | SimpleSig::LeDecimal
@@ -4656,22 +4685,24 @@ impl LegacyEvaluator<'_> {
                     | SimpleSig::GeDecimal
                     | SimpleSig::EqDecimal
                     | SimpleSig::NeDecimal => {
-                        let (Some(left), Some(right)) = (
+                        use tidb_expr::ComparisonOp;
+                        let (left, right) = (
                             self.eval_decimal(children.first())?,
                             self.eval_decimal(children.get(1))?,
-                        ) else {
-                            return Ok(None);
+                        );
+                        let op = match sig {
+                            SimpleSig::LtDecimal => ComparisonOp::Lt,
+                            SimpleSig::LeDecimal => ComparisonOp::Le,
+                            SimpleSig::GtDecimal => ComparisonOp::Gt,
+                            SimpleSig::GeDecimal => ComparisonOp::Ge,
+                            SimpleSig::EqDecimal => ComparisonOp::Eq,
+                            _ => ComparisonOp::Ne,
                         };
-                        let ordering = left.cmp(&right);
-                        let truth = match sig {
-                            SimpleSig::LtDecimal => ordering.is_lt(),
-                            SimpleSig::LeDecimal => ordering.is_le(),
-                            SimpleSig::GtDecimal => ordering.is_gt(),
-                            SimpleSig::GeDecimal => ordering.is_ge(),
-                            SimpleSig::EqDecimal => ordering.is_eq(),
-                            _ => !ordering.is_eq(),
-                        };
-                        Some(i128::from(truth))
+                        tidb_expr::eval_legacy_decimal_comparison_in(
+                            op,
+                            legacy_comparison_args(children.len(), left, right),
+                            self.raw_columns,
+                        )?
                     }
                     SimpleSig::LtTime
                     | SimpleSig::LeTime
@@ -4679,34 +4710,24 @@ impl LegacyEvaluator<'_> {
                     | SimpleSig::GeTime
                     | SimpleSig::EqTime
                     | SimpleSig::NeTime => {
-                        let (Some(left), Some(right)) = (
+                        use tidb_expr::ComparisonOp;
+                        let (left, right) = (
                             self.eval_time(children.first())?,
                             self.eval_time(children.get(1))?,
-                        ) else {
-                            return Ok(None);
+                        );
+                        let op = match sig {
+                            SimpleSig::LtTime => ComparisonOp::Lt,
+                            SimpleSig::LeTime => ComparisonOp::Le,
+                            SimpleSig::GtTime => ComparisonOp::Gt,
+                            SimpleSig::GeTime => ComparisonOp::Ge,
+                            SimpleSig::EqTime => ComparisonOp::Eq,
+                            _ => ComparisonOp::Ne,
                         };
-                        let ordering = left.compare(right);
-                        let truth = match sig {
-                            SimpleSig::LtTime => ordering.is_lt(),
-                            SimpleSig::LeTime => ordering.is_le(),
-                            SimpleSig::GtTime => ordering.is_gt(),
-                            SimpleSig::GeTime => ordering.is_ge(),
-                            SimpleSig::EqTime => ordering.is_eq(),
-                            _ => !ordering.is_eq(),
-                        };
-                        Some(i128::from(truth))
-                    }
-                    SimpleSig::NeString(collation) => {
-                        let (Some(left), Some(right)) = (
-                            self.eval_bytes(children.first())?,
-                            self.eval_bytes(children.get(1))?,
-                        ) else {
-                            return Ok(None);
-                        };
-                        let equal = tidb_datatype::get_collator_by_id(*collation)
-                            .compare(&left, &right)
-                            .is_eq();
-                        Some(i128::from(!equal))
+                        tidb_expr::eval_legacy_time_comparison_in(
+                            op,
+                            legacy_comparison_args(children.len(), left, right),
+                            self.raw_columns,
+                        )?
                     }
                     SimpleSig::LogicalAnd => {
                         // MySQL: FALSE dominates NULL.
@@ -10150,6 +10171,393 @@ mod tests {
                 assert_eq!(child_only.eval_expr(&extra).unwrap(), Some(1));
             });
         }
+    }
+
+    #[test]
+    fn legacy_comparison_fixed_domains_and_real_total_order() {
+        use tidb_datatype::{Datum, Decimal, Time, TimeType};
+        let time_zone = zone();
+        let row = [Datum::UInt(u64::MAX)];
+        let evaluator = LegacyEvaluator::new(&row, 4, &time_zone);
+        assert!(matches!(
+            legacy_comparison_args::<i128>(1, None, None),
+            tidb_expr::LegacyBinaryArgs::Missing
+        ));
+        assert!(matches!(
+            legacy_comparison_args(2, None, Some(7_i128)),
+            tidb_expr::LegacyBinaryArgs::NullWitness(None)
+        ));
+        assert!(matches!(
+            legacy_comparison_args(2, Some(7_i128), None),
+            tidb_expr::LegacyBinaryArgs::NullWitness(None)
+        ));
+        for (op, expected) in [
+            (tidb_expr::ComparisonOp::Eq, 0),
+            (tidb_expr::ComparisonOp::Ne, 1),
+            (tidb_expr::ComparisonOp::Lt, 0),
+            (tidb_expr::ComparisonOp::Le, 0),
+            (tidb_expr::ComparisonOp::Gt, 1),
+            (tidb_expr::ComparisonOp::Ge, 1),
+        ] {
+            assert_eq!(
+                tidb_expr::eval_legacy_integer_comparison_in(
+                    op,
+                    tidb_expr::LegacyBinaryArgs::Values(i128::MAX, i128::MIN),
+                    &tidb_expr::NoColumns,
+                )
+                .unwrap(),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            tidb_expr::eval_legacy_integer_comparison_in(
+                tidb_expr::ComparisonOp::Lt,
+                tidb_expr::LegacyBinaryArgs::Values(i128::MIN, -1),
+                &tidb_expr::NoColumns,
+            )
+            .unwrap(),
+            Some(1)
+        );
+        let time = |micros| {
+            SimpleExpr::Time(
+                Time::from_date_checked(2024, 1, 1, 0, 0, 0, micros, TimeType::DateTime, 6)
+                    .unwrap(),
+            )
+        };
+        let cases = [
+            (
+                [
+                    SimpleSig::EqInt,
+                    SimpleSig::NeInt,
+                    SimpleSig::LtInt,
+                    SimpleSig::LeInt,
+                    SimpleSig::GtInt,
+                    SimpleSig::GeInt,
+                ],
+                SimpleExpr::Column(0),
+                SimpleExpr::Int(-1),
+                [0, 1, 0, 0, 1, 1],
+            ),
+            (
+                [
+                    SimpleSig::EqReal,
+                    SimpleSig::NeReal,
+                    SimpleSig::LtReal,
+                    SimpleSig::LeReal,
+                    SimpleSig::GtReal,
+                    SimpleSig::GeReal,
+                ],
+                SimpleExpr::Real(-0.0),
+                SimpleExpr::Real(0.0),
+                [0, 1, 1, 1, 0, 0],
+            ),
+            (
+                [
+                    SimpleSig::EqString(45),
+                    SimpleSig::NeString(45),
+                    SimpleSig::LtString(45),
+                    SimpleSig::LeString(45),
+                    SimpleSig::GtString(45),
+                    SimpleSig::GeString(45),
+                ],
+                SimpleExpr::Bytes(b"A ".to_vec()),
+                SimpleExpr::Bytes(b"a".to_vec()),
+                [1, 0, 0, 1, 0, 1],
+            ),
+            (
+                [
+                    SimpleSig::EqDecimal,
+                    SimpleSig::NeDecimal,
+                    SimpleSig::LtDecimal,
+                    SimpleSig::LeDecimal,
+                    SimpleSig::GtDecimal,
+                    SimpleSig::GeDecimal,
+                ],
+                SimpleExpr::Decimal(Decimal::parse_mysql("9007199254740993.25").0),
+                SimpleExpr::Decimal(Decimal::parse_mysql("9007199254740993.26").0),
+                [0, 1, 1, 1, 0, 0],
+            ),
+            (
+                [
+                    SimpleSig::EqTime,
+                    SimpleSig::NeTime,
+                    SimpleSig::LtTime,
+                    SimpleSig::LeTime,
+                    SimpleSig::GtTime,
+                    SimpleSig::GeTime,
+                ],
+                time(1),
+                time(2),
+                [0, 1, 1, 1, 0, 0],
+            ),
+        ];
+        for (signatures, left, right, expected) in cases {
+            for (sig, expected) in signatures.into_iter().zip(expected) {
+                let call = SimpleExpr::Func(sig.clone(), vec![left.clone(), right.clone()]);
+                assert_eq!(
+                    evaluator.eval_expr(&call).unwrap(),
+                    Some(expected),
+                    "{call:?}"
+                );
+                for children in [
+                    vec![],
+                    vec![left.clone()],
+                    vec![SimpleExpr::Null, right.clone()],
+                    vec![left.clone(), SimpleExpr::Null],
+                ] {
+                    assert_eq!(
+                        evaluator
+                            .eval_expr(&SimpleExpr::Func(sig.clone(), children))
+                            .unwrap(),
+                        None
+                    );
+                }
+            }
+        }
+        // Literal IEEE total-order facts, not native IEEE equality or a second
+        // call into the same comparison provider used as an expected-value oracle.
+        for (sig, left_bits, right_bits, expected) in [
+            (
+                SimpleSig::EqReal,
+                0x7ff8_0000_0000_0001,
+                0x7ff8_0000_0000_0001,
+                1,
+            ),
+            (
+                SimpleSig::NeReal,
+                0x7ff8_0000_0000_0001,
+                0x7ff8_0000_0000_0002,
+                1,
+            ),
+            (
+                SimpleSig::LtReal,
+                0x7ff8_0000_0000_0001,
+                0x7ff8_0000_0000_0002,
+                1,
+            ),
+            (
+                SimpleSig::GtReal,
+                0x7ff8_0000_0000_0001,
+                0x7ff0_0000_0000_0000,
+                1,
+            ),
+            (
+                SimpleSig::LtReal,
+                0xfff8_0000_0000_0001,
+                0xfff0_0000_0000_0000,
+                1,
+            ),
+            (SimpleSig::EqReal, 0x8000_0000_0000_0000, 0, 0),
+        ] {
+            let call = SimpleExpr::Func(
+                sig,
+                vec![
+                    SimpleExpr::Real(f64::from_bits(left_bits)),
+                    SimpleExpr::Real(f64::from_bits(right_bits)),
+                ],
+            );
+            assert_eq!(evaluator.eval_expr(&call).unwrap(), Some(expected));
+        }
+        for (collation, expected) in [(45, 1), (46, 0), (63, 0)] {
+            let call = SimpleExpr::Func(
+                SimpleSig::EqString(collation),
+                vec![
+                    SimpleExpr::Bytes(b"A ".to_vec()),
+                    SimpleExpr::Bytes(b"a".to_vec()),
+                ],
+            );
+            assert_eq!(evaluator.eval_expr(&call).unwrap(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn legacy_comparison_presence_and_eager_demand_keep_pool_failures() {
+        use tidb_datatype::{Decimal, Time, TimeType};
+        let time_zone = zone();
+        let owner = tidb_expr::AsciiPoolOwner::new(
+            tidb_expr::AsciiPoolPolicy::checked(
+                0,
+                0,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let shared = convert_expr(&tipb::Expr {
+            tp: Some(tipb::ExprType::ScalarFunc as i32),
+            sig: Some(tipb::ScalarFuncSig::IntIsNull as i32),
+            field_type: Some(tipb::FieldType {
+                tp: Some(8),
+                ..Default::default()
+            }),
+            children: vec![tipb::Expr {
+                tp: Some(tipb::ExprType::Null as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+        let assert_pool = |error| match error {
+            LegacyEvalError::Infrastructure(tidb_expr::EvalError::ExpressionAdapterFailure(
+                failure,
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_expr::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_expr::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("comparison lost pool cause: {other:?}"),
+        };
+        execution
+            .scope()
+            .with_columns(&tidb_expr::NoColumns, |columns| {
+                let scoped = LegacyEvaluator {
+                    raw_columns: columns,
+                    ..LegacyEvaluator::new(&[], 4, &time_zone)
+                };
+                let child_only = LegacyEvaluator {
+                    shared_override: Some(columns),
+                    ..LegacyEvaluator::new(&[], 4, &time_zone)
+                };
+                let families = [
+                    (
+                        [
+                            SimpleSig::EqInt,
+                            SimpleSig::NeInt,
+                            SimpleSig::LtInt,
+                            SimpleSig::LeInt,
+                            SimpleSig::GtInt,
+                            SimpleSig::GeInt,
+                        ],
+                        SimpleExpr::Int(1),
+                    ),
+                    (
+                        [
+                            SimpleSig::EqReal,
+                            SimpleSig::NeReal,
+                            SimpleSig::LtReal,
+                            SimpleSig::LeReal,
+                            SimpleSig::GtReal,
+                            SimpleSig::GeReal,
+                        ],
+                        SimpleExpr::Real(1.0),
+                    ),
+                    (
+                        [
+                            SimpleSig::EqString(45),
+                            SimpleSig::NeString(45),
+                            SimpleSig::LtString(45),
+                            SimpleSig::LeString(45),
+                            SimpleSig::GtString(45),
+                            SimpleSig::GeString(45),
+                        ],
+                        SimpleExpr::Bytes(b"a".to_vec()),
+                    ),
+                    (
+                        [
+                            SimpleSig::EqDecimal,
+                            SimpleSig::NeDecimal,
+                            SimpleSig::LtDecimal,
+                            SimpleSig::LeDecimal,
+                            SimpleSig::GtDecimal,
+                            SimpleSig::GeDecimal,
+                        ],
+                        SimpleExpr::Decimal(Decimal::parse_mysql("1").0),
+                    ),
+                    (
+                        [
+                            SimpleSig::EqTime,
+                            SimpleSig::NeTime,
+                            SimpleSig::LtTime,
+                            SimpleSig::LeTime,
+                            SimpleSig::GtTime,
+                            SimpleSig::GeTime,
+                        ],
+                        SimpleExpr::Time(
+                            Time::from_date_checked(2024, 1, 1, 0, 0, 0, 0, TimeType::DateTime, 0)
+                                .unwrap(),
+                        ),
+                    ),
+                ];
+                for (signatures, value) in families {
+                    for sig in signatures {
+                        for children in [
+                            vec![value.clone(), value.clone()],
+                            vec![SimpleExpr::Null, value.clone()],
+                            vec![value.clone(), SimpleExpr::Null],
+                            vec![],
+                            vec![value.clone()],
+                            vec![SimpleExpr::Null],
+                        ] {
+                            let call = SimpleExpr::Func(sig.clone(), children);
+                            assert_pool(
+                                scoped
+                                    .eval_expr(&call)
+                                    .expect_err("every presence requires comparison worker"),
+                            );
+                            assert_pool(
+                                scoped
+                                    .folded_int(Some(&call))
+                                    .expect_err("infrastructure never folds to NULL"),
+                            );
+                        }
+                        // Only child evaluation sees the failing scope: NULL on the
+                        // left must not suppress the right for any legacy domain.
+                        for children in [
+                            vec![SimpleExpr::Null, shared.clone()],
+                            vec![shared.clone(), SimpleExpr::Null],
+                            vec![shared.clone()],
+                        ] {
+                            assert_pool(
+                                child_only
+                                    .eval_expr(&SimpleExpr::Func(sig.clone(), children))
+                                    .expect_err("demanded child"),
+                            );
+                        }
+                        let extra = SimpleExpr::Func(
+                            sig,
+                            vec![value.clone(), value.clone(), shared.clone()],
+                        );
+                        assert!(
+                            child_only.eval_expr(&extra).is_ok(),
+                            "extra child stays undemanded"
+                        );
+                    }
+                }
+                let sql_overflow = SimpleExpr::Func(
+                    SimpleSig::PlusInt,
+                    vec![SimpleExpr::Int(i64::MAX), SimpleExpr::Int(1)],
+                );
+                for sig in [
+                    SimpleSig::EqInt,
+                    SimpleSig::NeInt,
+                    SimpleSig::LtInt,
+                    SimpleSig::LeInt,
+                    SimpleSig::GtInt,
+                    SimpleSig::GeInt,
+                ] {
+                    let both =
+                        SimpleExpr::Func(sig.clone(), vec![sql_overflow.clone(), shared.clone()]);
+                    assert_pool(
+                        child_only
+                            .eval_expr(&both)
+                            .expect_err("integer RHS executes before LHS SQL error folds"),
+                    );
+                    let folded =
+                        SimpleExpr::Func(sig, vec![sql_overflow.clone(), SimpleExpr::Int(1)]);
+                    assert_eq!(child_only.eval_expr(&folded).unwrap(), None);
+                }
+            });
     }
 
     #[test]

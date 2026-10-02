@@ -18,7 +18,7 @@ use tidb_ast::{BinaryOp, Expr};
 
 use crate::coerce::{bool_int, truthy_of};
 use crate::eval_in;
-use crate::row::row_compare;
+use crate::row::row_compare_in;
 use crate::string_fn::{
     ascii, bin, bit_count, bit_length_in, case_convert_in, char_func_with_context,
     concat_with_context, concat_ws_with_context, elt_in, export_set_in, field, format_num,
@@ -1014,7 +1014,7 @@ pub(crate) fn eval_in_list(
                 .iter()
                 .map(|e| eval_in(e, cols))
                 .collect::<Result<_, _>>()?;
-            match row_compare(BinaryOp::Eq, &lv, &rv)? {
+            match row_compare_in(BinaryOp::Eq, &lv, &rv, cols)? {
                 Datum::Int(0) => {}
                 Datum::Null => found_null = true,
                 _ => found_match = true,

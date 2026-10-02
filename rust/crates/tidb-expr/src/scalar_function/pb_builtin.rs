@@ -295,6 +295,10 @@ impl PbBuiltin {
                             | BinaryOp::Div
                     ) {
                         crate::ops::eval_binary_arithmetic_null_in(ctx)
+                    } else if matches!(op, BinaryOp::Eq | BinaryOp::Gt) {
+                        // These are the only comparison signatures admitted
+                        // above. Preserve PB's left-NULL stop before RHS demand.
+                        crate::ops::eval_comparison_null_in(op, ctx)
                     } else {
                         Ok(Datum::Null)
                     };

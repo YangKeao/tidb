@@ -1373,6 +1373,19 @@ impl ScalarFunction {
                 .is_some_and(|field| !field.is_unsigned())
         });
         let (lhs, rhs) = crate::binary_literal::cast_signed_literal_operands(op, lhs, rhs, signed);
+        if matches!(
+            op,
+            BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
+        ) {
+            return crate::ops::eval_comparison_values_in(
+                op,
+                lhs,
+                rhs,
+                self.derived_collation(),
+                crate::ops::Operands::of(&self.args[0], &self.args[1]),
+                ctx,
+            );
+        }
         if op == BinaryOp::IntDiv {
             if let (Datum::Decimal(left), Datum::Decimal(right)) = (&lhs, &rhs) {
                 let unsigned = self
@@ -3156,10 +3169,16 @@ enum CompareValue {
 }
 
 impl CompareValue {
-    fn cmp(self, other: Self) -> std::cmp::Ordering {
+    fn eval_in(self, op: BinaryOp, other: Self, ctx: &dyn Columns) -> Result<Datum, EvalError> {
         match (self, other) {
-            (Self::Int(a), Self::Int(b)) => crate::coerce::integer_cmp(a, b),
-            (a, b) => a.to_my_decimal().compare(&b.to_my_decimal()),
+            (Self::Int(a), Self::Int(b)) => crate::ops::eval_comparison_int_in(op, a, b, ctx),
+            (a, b) => {
+                // Preserve the chunk comparison's MyDecimal conversion policy;
+                // transport those actual values rather than a host Ordering.
+                let left = tidb_datatype::Decimal::from_my_decimal(&a.to_my_decimal());
+                let right = tidb_datatype::Decimal::from_my_decimal(&b.to_my_decimal());
+                crate::ops::eval_comparison_decimal_in(op, &left, &right, ctx)
+            }
         }
     }
 
@@ -3295,6 +3314,7 @@ impl ScalarFunction {
         input: &Chunk,
         sel: &[usize],
         is_zero: &mut Vec<i8>,
+        ctx: &dyn Columns,
     ) -> Result<bool, EvalError> {
         if self.args.len() != 2 {
             return Ok(false);
@@ -3329,20 +3349,17 @@ impl ScalarFunction {
         is_zero.clear();
         is_zero.reserve(sel.len());
         for &physical in sel {
-            let (Some(a), Some(b)) = (lhs.get(physical), rhs.get(physical)) else {
-                is_zero.push(-1);
-                continue;
+            let computed = match (lhs.get(physical), rhs.get(physical)) {
+                (Some(a), Some(b)) => a.eval_in(op, b, ctx)?,
+                _ => crate::ops::eval_comparison_null_in(op, ctx)?,
             };
-            let ordering = a.cmp(b);
-            let truth = match op {
-                BinaryOp::Eq => ordering.is_eq(),
-                BinaryOp::Ne => !ordering.is_eq(),
-                BinaryOp::Lt => ordering.is_lt(),
-                BinaryOp::Le => ordering.is_le(),
-                BinaryOp::Gt => ordering.is_gt(),
-                _ => ordering.is_ge(),
-            };
-            is_zero.push(i8::from(truth));
+            // VecEvalBool only projects the worker's predicate; it does not
+            // compare values or reconstruct a predicate from host ordering.
+            is_zero.push(match computed {
+                Datum::Null => -1,
+                Datum::Int(value @ (0 | 1)) => value as i8,
+                _ => unreachable!("comparison worker returns only Int(0/1) or NULL"),
+            });
         }
         Ok(true)
     }
@@ -3356,11 +3373,12 @@ impl ScalarFunction {
         input: &Chunk,
         sel: &[usize],
         is_zero: &mut Vec<i8>,
+        ctx: &dyn Columns,
     ) -> Result<bool, EvalError> {
         if matches!(self.func_name.lowercase(), "not" | "isnull") {
             return Ok(false);
         }
-        self.vec_eval_numeric_compare(input, sel, is_zero)
+        self.vec_eval_numeric_compare(input, sel, is_zero, ctx)
     }
 }
 

@@ -35,8 +35,10 @@ pub(crate) use evaluated_ascii::{
     RegexpFunction,
 };
 pub use evaluated_ascii::{
-    eval_legacy_decimal_arithmetic_in, eval_legacy_decimal_division_in,
-    eval_legacy_integer_arithmetic_in, eval_legacy_like_in, eval_legacy_real_arithmetic_in,
+    eval_legacy_bytes_comparison_in, eval_legacy_decimal_arithmetic_in,
+    eval_legacy_decimal_comparison_in, eval_legacy_decimal_division_in,
+    eval_legacy_integer_arithmetic_in, eval_legacy_integer_comparison_in, eval_legacy_like_in,
+    eval_legacy_real_arithmetic_in, eval_legacy_real_comparison_in, eval_legacy_time_comparison_in,
     eval_regexp_legacy_ready_in, AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy,
     AsciiScope, LegacyBinaryArgs, LegacyIntegerArithmetic, LegacyLikeArgs, RegexpLegacyInput,
     ScopedAsciiColumns,
@@ -69,7 +71,7 @@ use tidb_query_expr::local::{
     prepare_field_real_args as prepare_field_real_args_local,
     prepare_make_set_args as prepare_make_set_args_local,
 };
-pub use tidb_query_expr::BinaryArithmeticOperation;
+pub use tidb_query_expr::{BinaryArithmeticOperation, ComparisonOp};
 pub(crate) use tidb_query_expr::{NativeDecimalFastOutcome, NativeDecimalFastValue};
 
 /// Builds only the opaque constant-list key owner, without a runtime scope.

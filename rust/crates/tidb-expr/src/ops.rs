@@ -654,6 +654,383 @@ fn finish_arithmetic_result(
     Ok(value)
 }
 
+/// Only these six predicates enter the shared comparison family. Null-safe
+/// equality retains its distinct, preexisting NULL semantics below.
+fn comparison_operation(op: BinaryOp) -> Option<tidb_query_expr::ComparisonOp> {
+    use tidb_query_expr::ComparisonOp;
+    Some(match op {
+        BinaryOp::Eq => ComparisonOp::Eq,
+        BinaryOp::Ne => ComparisonOp::Ne,
+        BinaryOp::Lt => ComparisonOp::Lt,
+        BinaryOp::Le => ComparisonOp::Le,
+        BinaryOp::Gt => ComparisonOp::Gt,
+        BinaryOp::Ge => ComparisonOp::Ge,
+        _ => return None,
+    })
+}
+
+fn comparison_null_args() -> (crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs) {
+    (
+        crate::tikv::EvaluatedBytesOp::CompareNullNative,
+        crate::tikv::EvaluatedArgs::NullWitness(None),
+    )
+}
+
+fn prepare_comparison_int(
+    op: tidb_query_expr::ComparisonOp,
+    left: Integer,
+    right: Integer,
+) -> (crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs) {
+    use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp as Op};
+    let operation = match (left, right) {
+        (Integer::Signed(_), Integer::Signed(_)) => Op::CompareIntSsNative(op),
+        (Integer::Signed(_), Integer::Unsigned(_)) => Op::CompareIntSuNative(op),
+        (Integer::Unsigned(_), Integer::Signed(_)) => Op::CompareIntUsNative(op),
+        (Integer::Unsigned(_), Integer::Unsigned(_)) => Op::CompareIntUuNative(op),
+    };
+    (
+        operation,
+        EvaluatedArgs::Int2(
+            Some(integer_bits(left) as i64),
+            Some(integer_bits(right) as i64),
+        ),
+    )
+}
+
+fn prepare_comparison_decimal(
+    op: tidb_query_expr::ComparisonOp,
+    left: &Decimal,
+    right: &Decimal,
+) -> Result<(crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs), EvalError> {
+    Ok((
+        crate::tikv::EvaluatedBytesOp::CompareDecimalNative(op),
+        crate::tikv::EvaluatedArgs::Decimal2 {
+            left: Some(crate::tikv::prepare_math_decimal(left)?),
+            right: Some(crate::tikv::prepare_math_decimal(right)?),
+        },
+    ))
+}
+
+fn prepare_comparison_real(
+    op: tidb_query_expr::ComparisonOp,
+    left: f64,
+    right: f64,
+) -> (crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs) {
+    (
+        crate::tikv::EvaluatedBytesOp::CompareRealNative(op),
+        crate::tikv::EvaluatedArgs::Ieee754Bits2 {
+            left: crate::tikv::ReadyIeee754Arg::Value(Some(left.to_bits())),
+            right: crate::tikv::ReadyIeee754Arg::Value(Some(right.to_bits())),
+        },
+    )
+}
+
+/// Compare actual integer operands; signedness selects a recipe, never an answer.
+pub(crate) fn eval_comparison_int_in(
+    op: BinaryOp,
+    left: Integer,
+    right: Integer,
+    ctx: &dyn crate::context::Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_prepared_args_in(
+        ctx,
+        || {
+            let op =
+                comparison_operation(op).ok_or(EvalError::Unsupported("comparison operator"))?;
+            Ok(prepare_comparison_int(op, left, right))
+        },
+        crate::tikv::EvaluatedBytesResult::into_boolean_datum,
+    )
+}
+
+/// The fallible decimal bridge is preparation under the caller's scope guard.
+pub(crate) fn eval_comparison_decimal_in(
+    op: BinaryOp,
+    left: &Decimal,
+    right: &Decimal,
+    ctx: &dyn crate::context::Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_prepared_args_in(
+        ctx,
+        || {
+            let op =
+                comparison_operation(op).ok_or(EvalError::Unsupported("comparison operator"))?;
+            prepare_comparison_decimal(op, left, right)
+        },
+        crate::tikv::EvaluatedBytesResult::into_boolean_datum,
+    )
+}
+
+/// An actual input or coercion NULL, without fabricating an undemanded operand.
+pub(crate) fn eval_comparison_null_in(
+    op: BinaryOp,
+    ctx: &dyn crate::context::Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_prepared_args_in(
+        ctx,
+        || {
+            comparison_operation(op).ok_or(EvalError::Unsupported("comparison operator"))?;
+            Ok(comparison_null_args())
+        },
+        crate::tikv::EvaluatedBytesResult::into_boolean_datum,
+    )
+}
+
+/// Preserve native comparison domain selection and coercion demand, while the
+/// shared worker alone computes the selected predicate's boolean result.
+pub(crate) fn eval_comparison_values_in(
+    op: BinaryOp,
+    l: Datum,
+    r: Datum,
+    collation: tidb_datatype::Collation,
+    operands: Operands<'_>,
+    ctx: &dyn crate::context::Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_prepared_args_in(
+        ctx,
+        || {
+            let op =
+                comparison_operation(op).ok_or(EvalError::Unsupported("comparison operator"))?;
+            prepare_comparison(op, l, r, collation, operands, ctx)
+        },
+        crate::tikv::EvaluatedBytesResult::into_boolean_datum,
+    )
+}
+
+fn prepare_comparison(
+    op: tidb_query_expr::ComparisonOp,
+    l: Datum,
+    r: Datum,
+    collation: tidb_datatype::Collation,
+    operands: Operands<'_>,
+    ctx: &dyn crate::context::Columns,
+) -> Result<(crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs), EvalError> {
+    use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp as Op};
+    if l.is_range_sentinel() || r.is_range_sentinel() {
+        return Err(EvalError::Unsupported("range sentinel expression operand"));
+    }
+    let l = unsigned_operand(l, operands.lhs);
+    let r = unsigned_operand(r, operands.rhs);
+    if matches!(l, Datum::VectorFloat32(_)) || matches!(r, Datum::VectorFloat32(_)) {
+        if l.is_null() || r.is_null() {
+            return Ok(comparison_null_args());
+        }
+        let left = binary_vector_operand(l)?;
+        let right = binary_vector_operand(r)?;
+        return Ok((
+            Op::CompareVectorNative(op),
+            EvaluatedArgs::NativeVector2(Some(left), Some(right)),
+        ));
+    }
+    if matches!(l, Datum::Json(_)) || matches!(r, Datum::Json(_)) {
+        if l.is_null() || r.is_null() {
+            return Ok(comparison_null_args());
+        }
+        let parse_string_side = |value: Datum| -> Result<Datum, EvalError> {
+            let text: &[u8] = match &value {
+                Datum::String(text) => text.bytes(),
+                Datum::Bytes(text) => text,
+                _ => return Ok(value),
+            };
+            let text =
+                std::str::from_utf8(text).map_err(|_| EvalError::Unsupported("JSON comparison"))?;
+            tidb_datatype::BinaryJSON::parse(text)
+                .map(Datum::Json)
+                .map_err(|_| EvalError::Json(crate::JsonError::InvalidText))
+        };
+        let l = parse_string_side(l)?;
+        let r = parse_string_side(r)?;
+        let left = l
+            .to_mysql_json()
+            .map_err(|_| EvalError::Unsupported("JSON comparison"))?;
+        let right = r
+            .to_mysql_json()
+            .map_err(|_| EvalError::Unsupported("JSON comparison"))?;
+        return Ok((
+            Op::CompareJsonNative(op),
+            EvaluatedArgs::Bytes2(Some(left.encoded()), Some(right.encoded())),
+        ));
+    }
+    if let (Some(left), Some(right)) = (string_cmp_operand(&l, true), string_cmp_operand(&r, true))
+    {
+        return Ok((
+            Op::CompareBytesNative(op),
+            EvaluatedArgs::CollatedBytes2 {
+                left: Some(left.to_vec()),
+                right: Some(right.to_vec()),
+                collation: collation.native_policy(),
+            },
+        ));
+    }
+    if matches!(l, Datum::Raw(_) | Datum::VectorFloat32(_))
+        || matches!(r, Datum::Raw(_) | Datum::VectorFloat32(_))
+    {
+        return Err(EvalError::UnsupportedOperandPair(l.kind(), r.kind()));
+    }
+    let numeric_partner = |value: &Datum| {
+        matches!(
+            value,
+            Datum::Int(_) | Datum::UInt(_) | Datum::Decimal(_) | Datum::Real(_) | Datum::Float32(_)
+        )
+    };
+    if (matches!(l, Datum::Time(_)) || matches!(r, Datum::Time(_)))
+        && !(matches!(l, Datum::Time(_)) && numeric_partner(&r))
+        && !(matches!(r, Datum::Time(_)) && numeric_partner(&l))
+    {
+        if l.is_null() || r.is_null() {
+            return Ok(comparison_null_args());
+        }
+        let (left, right) = match (&l, &r) {
+            (Datum::Time(left), Datum::Time(right)) => (*left, *right),
+            (Datum::Time(left), other) => {
+                let Some(right) = parse_time_comparison_operand(*left, other, ctx)? else {
+                    return Ok(comparison_null_args());
+                };
+                (*left, right)
+            }
+            (other, Datum::Time(right)) => {
+                let Some(left) = parse_time_comparison_operand(*right, other, ctx)? else {
+                    return Ok(comparison_null_args());
+                };
+                (left, *right)
+            }
+            _ => unreachable!("one comparison operand is a Time"),
+        };
+        return Ok((
+            Op::CompareTimeCoreNative(op),
+            EvaluatedArgs::TimeCoreBits2(
+                Some(left.core_time().raw()),
+                Some(right.core_time().raw()),
+            ),
+        ));
+    }
+    let duration_vs_constant = (operands.lhs.is_duration_column() && operands.rhs.is_constant())
+        || (operands.rhs.is_duration_column() && operands.lhs.is_constant());
+    if duration_vs_constant {
+        if l.is_null() || r.is_null() {
+            return Ok(comparison_null_args());
+        }
+        if let (Datum::Duration(left), Datum::Duration(right)) = (&l, &r) {
+            return Ok((
+                Op::CompareDurationNative(op),
+                EvaluatedArgs::Int2(Some(left.nanoseconds()), Some(right.nanoseconds())),
+            ));
+        }
+        let text_side = |value: &Datum| match value {
+            Datum::String(value) => Some(String::from_utf8_lossy(value.bytes()).into_owned()),
+            Datum::Bytes(value) => Some(String::from_utf8_lossy(value).into_owned()),
+            _ => None,
+        };
+        let pair = match (&l, &r) {
+            (Datum::Duration(value), other) => text_side(other).map(|text| (*value, text, false)),
+            (other, Datum::Duration(value)) => text_side(other).map(|text| (*value, text, true)),
+            _ => None,
+        };
+        if let Some((duration, text, reversed)) = pair {
+            let parsed = match tidb_datatype::parse_duration(text.as_bytes(), 6) {
+                Ok(value) => value,
+                Err(_) => {
+                    ctx.append_warning(1292, &format!("Incorrect time value: '{text}'"));
+                    return Ok(comparison_null_args());
+                }
+            };
+            let (left, right) = if reversed {
+                (parsed.nanoseconds(), duration.nanoseconds())
+            } else {
+                (duration.nanoseconds(), parsed.nanoseconds())
+            };
+            return Ok((
+                Op::CompareDurationNative(op),
+                EvaluatedArgs::Int2(Some(left), Some(right)),
+            ));
+        }
+    }
+    // Non-column duration/text comparisons keep their formatted-string domain.
+    let is_text = |value: &Datum| matches!(value, Datum::String(_) | Datum::Bytes(_));
+    let rewritten = match (&l, &r) {
+        (Datum::Duration(value), other) if is_text(other) => Some((
+            Datum::new_collation_string(value.to_string(), collation),
+            r.clone(),
+        )),
+        (other, Datum::Duration(value)) if is_text(other) => Some((
+            l.clone(),
+            Datum::new_collation_string(value.to_string(), collation),
+        )),
+        _ => None,
+    };
+    if let Some((left, right)) = rewritten {
+        return prepare_comparison(op, left, right, collation, operands, ctx);
+    }
+    if matches!(l, Datum::Time(_) | Datum::Duration(_))
+        || matches!(r, Datum::Time(_) | Datum::Duration(_))
+    {
+        return prepare_comparison(
+            op,
+            numeric_context_value(l),
+            numeric_context_value(r),
+            collation,
+            operands,
+            ctx,
+        );
+    }
+    if matches!(l, Datum::String(_) | Datum::Bytes(_))
+        || matches!(r, Datum::String(_) | Datum::Bytes(_))
+    {
+        if l.is_null() || r.is_null() {
+            return Ok(comparison_null_args());
+        }
+        let decimal_vs_const_string = |numeric: Operand<'_>, text: Operand<'_>| {
+            numeric.eval_type() == Some(tidb_datatype::EvalType::Decimal)
+                && !numeric.is_constant()
+                && text.is_string_kind()
+                && text.is_constant()
+        };
+        if decimal_vs_const_string(operands.lhs, operands.rhs)
+            || decimal_vs_const_string(operands.rhs, operands.lhs)
+        {
+            let as_decimal = |value: Datum| -> Result<Datum, EvalError> {
+                if !matches!(value, Datum::String(_) | Datum::Bytes(_)) {
+                    return Ok(value);
+                }
+                let converted = value
+                    .to_decimal()
+                    .map_err(|_| EvalError::Unsupported("string operand"))?;
+                if converted.event.is_some() {
+                    ctx.handle_truncate(&format!(
+                        "Truncated incorrect DECIMAL value: '{}'",
+                        string_operand_text(&value)
+                    ))?;
+                }
+                Ok(Datum::Decimal(converted.value))
+            };
+            let left = as_decimal(l)?;
+            let right = as_decimal(r)?;
+            return prepare_comparison_decimal(op, &to_decimal(left), &to_decimal(right));
+        }
+        return Ok(prepare_comparison_real(
+            op,
+            to_f64_with_mysql_string(&l, ctx)?,
+            to_f64_with_mysql_string(&r, ctx)?,
+        ));
+    }
+    if l.is_null() || r.is_null() {
+        return Ok(comparison_null_args());
+    }
+    if matches!(l, Datum::Real(_) | Datum::Float32(_))
+        || matches!(r, Datum::Real(_) | Datum::Float32(_))
+    {
+        return Ok(prepare_comparison_real(op, to_f64(l), to_f64(r)));
+    }
+    if matches!(l, Datum::Decimal(_)) || matches!(r, Datum::Decimal(_)) {
+        return prepare_comparison_decimal(op, &to_decimal(l), &to_decimal(r));
+    }
+    let (left, right) = match (integer_of(&l)?, integer_of(&r)?) {
+        (Some(left), Some(right)) => (left, right),
+        _ => return Err(EvalError::UnsupportedOperandPair(l.kind(), r.kind())),
+    };
+    Ok(prepare_comparison_int(op, left, right))
+}
+
 pub(crate) fn eval_binary_full(
     op: BinaryOp,
     mut l: Datum,
@@ -666,6 +1043,9 @@ pub(crate) fn eval_binary_full(
     use BinaryOp::*;
     if matches!(op, Plus | Minus | Mul | Mod | Div) {
         return eval_binary_arithmetic_in(op, l, r, div_precision_increment, operands, ctx);
+    }
+    if comparison_operation(op).is_some() {
+        return eval_comparison_values_in(op, l, r, collation, operands, ctx);
     }
     if l.is_range_sentinel() || r.is_range_sentinel() {
         return Err(EvalError::Unsupported("range sentinel expression operand"));
@@ -710,7 +1090,7 @@ pub(crate) fn eval_binary_full(
     // operand, while a non-vector text/integer conversion reports the source
     // value-domain error instead of falling through to numeric comparison.
     if (matches!(l, Datum::VectorFloat32(_)) || matches!(r, Datum::VectorFloat32(_)))
-        && matches!(op, Eq | Ne | Lt | Le | Gt | Ge | NullEq)
+        && op == NullEq
     {
         if l == Datum::Null || r == Datum::Null {
             return Ok(Datum::Null);
@@ -745,7 +1125,7 @@ pub(crate) fn eval_binary_full(
     // comment on that `unreachable!` claimed the upstream guards excluded
     // everything; they covered Str/Float/Decimal and NOT Json.
     if matches!(l, Datum::Json(_)) || matches!(r, Datum::Json(_)) {
-        if !matches!(op, Eq | Ge | Gt | Le | Lt | Ne | NullEq) {
+        if op != NullEq {
             if !matches!(op, BitAnd | BitOr | BitXor | LeftShift | RightShift) {
                 return Err(EvalError::Unsupported("JSON operand"));
             }
@@ -809,7 +1189,7 @@ pub(crate) fn eval_binary_full(
     // arguments into the signature's numeric domain first (see the
     // string-operand arm further down), so `'1231' % '12'` is 7, not a
     // collation comparison that has no definition for `%`.
-    let comparison = matches!(op, Eq | Ge | Gt | Le | Lt | Ne | NullEq);
+    let comparison = op == NullEq;
     if comparison {
         if let (Some(a), Some(b)) = (
             string_cmp_operand(&l, comparison),
@@ -871,7 +1251,7 @@ pub(crate) fn eval_binary_full(
             Datum::Int(_) | Datum::UInt(_) | Datum::Decimal(_) | Datum::Real(_) | Datum::Float32(_)
         )
     };
-    if matches!(op, Eq | Ge | Gt | Le | Lt | Ne | NullEq)
+    if op == NullEq
         && (matches!(l, Datum::Time(_)) || matches!(r, Datum::Time(_)))
         && !(matches!(l, Datum::Time(_)) && numeric_partner(&r))
         && !(matches!(r, Datum::Time(_)) && numeric_partner(&l))
@@ -912,7 +1292,7 @@ pub(crate) fn eval_binary_full(
     // ```
     let duration_vs_constant = (operands.lhs.is_duration_column() && operands.rhs.is_constant())
         || (operands.rhs.is_duration_column() && operands.lhs.is_constant());
-    if duration_vs_constant && matches!(op, Eq | Ge | Gt | Le | Lt | Ne | NullEq) {
+    if duration_vs_constant && op == NullEq {
         if l == Datum::Null || r == Datum::Null {
             return Ok(if op == NullEq {
                 Datum::Int(0)
@@ -955,7 +1335,7 @@ pub(crate) fn eval_binary_full(
     // form and re-entering is what keeps the collation, the PAD rule and the
     // `<=>` handling single-sourced in the string branch above rather than
     // reimplemented here.
-    if matches!(op, Eq | Ge | Gt | Le | Lt | Ne | NullEq) {
+    if op == NullEq {
         let is_text = |value: &Datum| matches!(value, Datum::String(_) | Datum::Bytes(_));
         let as_text = |duration: &tidb_datatype::MySqlDuration| {
             Datum::new_collation_string(duration.to_string(), collation)
@@ -999,7 +1379,7 @@ pub(crate) fn eval_binary_full(
     if matches!(l, Datum::String(_) | Datum::Bytes(_))
         || matches!(r, Datum::String(_) | Datum::Bytes(_))
     {
-        if matches!(op, Eq | Ge | Gt | Le | Lt | Ne | NullEq) {
+        if op == NullEq {
             if l == Datum::Null || r == Datum::Null {
                 return Ok(Datum::Null);
             }
@@ -1259,7 +1639,7 @@ pub(crate) fn integer_binary_typed(
         if matches!(op, BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul) {
             return eval_binary_arithmetic_null_in(ctx).map(Some);
         }
-        return Ok(Some(Datum::Null));
+        return eval_comparison_null_in(op, ctx).map(Some);
     }
     let reinterpret = |value: Datum, operand_signed: bool| match value {
         Datum::Int(bits) if !operand_signed => Datum::UInt(bits as u64),
@@ -1381,6 +1761,16 @@ fn decimal_binary(
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
     use BinaryOp::*;
+    if comparison_operation(op).is_some() {
+        return eval_comparison_values_in(
+            op,
+            l,
+            r,
+            DERIVATION_FREE_COLLATION,
+            Operands::LITERALS,
+            ctx,
+        );
+    }
     if op == NullEq {
         return Ok(match (&l, &r) {
             (Datum::Null, Datum::Null) => Datum::Int(1),
@@ -1398,12 +1788,7 @@ fn decimal_binary(
     let b = to_decimal(r);
     Ok(match op {
         Plus | Minus | Mul => unreachable!("worker arithmetic dispatched before this ladder"),
-        Eq => bool_int(a == b),
-        Ge => bool_int(a >= b),
-        Gt => bool_int(a > b),
-        Le => bool_int(a <= b),
-        Lt => bool_int(a < b),
-        Ne => bool_int(a != b),
+        Eq | Ne | Lt | Le | Gt | Ge => unreachable!("worker comparison dispatched above"),
         Div => unreachable!("handled above"),
         // The bounded decimal kernel preserves warnings before ToInt/ToUint.
         IntDiv => decimal_integer_division(&a, &b, unsigned_pair, ctx)?,
@@ -1488,18 +1873,10 @@ fn time_compare(
     Ok(ordering_to_bool(op, ordering))
 }
 
-/// A resolved ordering read as the comparison operator's boolean result.
+/// The separate NullEq family retains its legacy equality projection.
 fn ordering_to_bool(op: BinaryOp, ordering: std::cmp::Ordering) -> Datum {
-    use BinaryOp::*;
-    match op {
-        Eq | NullEq => bool_int(ordering.is_eq()),
-        Ne => bool_int(!ordering.is_eq()),
-        Lt => bool_int(ordering.is_lt()),
-        Le => bool_int(ordering.is_le()),
-        Gt => bool_int(ordering.is_gt()),
-        Ge => bool_int(ordering.is_ge()),
-        _ => unreachable!("only comparisons resolve to an ordering"),
-    }
+    debug_assert_eq!(op, BinaryOp::NullEq);
+    bool_int(ordering.is_eq())
 }
 
 /// A temporal value in the numeric context Go's `numericContextResultType`
@@ -1526,6 +1903,15 @@ fn time_compare_ordering(
     other: &Datum,
     ctx: &dyn crate::context::Columns,
 ) -> Result<Option<std::cmp::Ordering>, EvalError> {
+    // This ordering helper is retained only by the distinct NullEq family.
+    Ok(parse_time_comparison_operand(time, other, ctx)?.map(|other| time.compare(other)))
+}
+
+fn parse_time_comparison_operand(
+    time: tidb_datatype::Time,
+    other: &Datum,
+    ctx: &dyn crate::context::Columns,
+) -> Result<Option<tidb_datatype::Time>, EvalError> {
     let text = match other {
         Datum::String(value) => String::from_utf8_lossy(value.bytes()).into_owned(),
         Datum::Bytes(value) => String::from_utf8_lossy(value).into_owned(),
@@ -1543,13 +1929,16 @@ fn time_compare_ordering(
     };
     let modes = ctx.date_modes();
     let timezone = ctx.time_zone();
-    match time.compare_string(
+    match tidb_datatype::parse_time(
         &text,
+        time.kind(),
+        6,
+        false,
         !modes.no_zero_in_date,
         modes.allow_invalid_dates,
         &timezone,
     ) {
-        Ok(ordering) => Ok(Some(ordering)),
+        Ok(parsed) => Ok(Some(parsed.time)),
         Err(_) => {
             ctx.append_warning(1292, &format!("Incorrect datetime value: '{text}'"));
             Ok(None)
@@ -1656,17 +2045,10 @@ fn string_compare(
     b: &[u8],
     collation: tidb_datatype::Collation,
 ) -> Result<Datum, EvalError> {
-    use BinaryOp::*;
-    let ord = collation.compare(a, b);
-    Ok(match op {
-        Eq | NullEq => bool_int(ord == std::cmp::Ordering::Equal),
-        Ne => bool_int(ord != std::cmp::Ordering::Equal),
-        Lt => bool_int(ord == std::cmp::Ordering::Less),
-        Le => bool_int(ord != std::cmp::Ordering::Greater),
-        Gt => bool_int(ord == std::cmp::Ordering::Greater),
-        Ge => bool_int(ord != std::cmp::Ordering::Less),
-        _ => return Err(EvalError::Unsupported("string arithmetic")),
-    })
+    if op != BinaryOp::NullEq {
+        return Err(EvalError::Unsupported("string arithmetic"));
+    }
+    Ok(bool_int(collation.compare(a, b).is_eq()))
 }
 
 /// FALSE dominates; otherwise NULL propagates if either side is unknown.

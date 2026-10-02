@@ -46,6 +46,16 @@ pub(super) fn float_binary(
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
     use BinaryOp::*;
+    if comparison_operation(op).is_some() {
+        return eval_comparison_values_in(
+            op,
+            l,
+            r,
+            DERIVATION_FREE_COLLATION,
+            Operands::LITERALS,
+            ctx,
+        );
+    }
     if op == NullEq {
         return Ok(match (&l, &r) {
             (Datum::Null, Datum::Null) => Datum::Int(1),
@@ -66,12 +76,7 @@ pub(super) fn float_binary(
         Div => unreachable!("worker arithmetic dispatched before this ladder"),
         IntDiv => unreachable!("DIV evaluates decimal operands before real dispatch"),
         Mod => unreachable!("worker arithmetic dispatched before this ladder"),
-        Eq => bool_int(a == b),
-        Ge => bool_int(a >= b),
-        Gt => bool_int(a > b),
-        Le => bool_int(a <= b),
-        Lt => bool_int(a < b),
-        Ne => bool_int(a != b),
+        Eq | Ne | Lt | Le | Gt | Ge => unreachable!("worker comparison dispatched above"),
         BitAnd | BitOr | BitXor | LeftShift | RightShift => {
             let (ai, bi) = match (
                 f64_to_i64(a.round_ties_even()),
@@ -265,17 +270,10 @@ pub(crate) fn raise_truncated_double(
     ctx.handle_truncate(&format!("Truncated incorrect DOUBLE value: '{text}'"))
 }
 
+/// Only the distinct null-safe equality ladder uses this value helper.
 pub(super) fn real_compare(op: BinaryOp, a: f64, b: f64) -> Result<Datum, EvalError> {
-    use BinaryOp::*;
-    Ok(match op {
-        Eq | NullEq => bool_int(a == b),
-        Ge => bool_int(a >= b),
-        Gt => bool_int(a > b),
-        Le => bool_int(a <= b),
-        Lt => bool_int(a < b),
-        Ne => bool_int(a != b),
-        _ => unreachable!("caller restricts this helper to comparison operators"),
-    })
+    debug_assert_eq!(op, BinaryOp::NullEq);
+    Ok(bool_int(a == b))
 }
 
 /// Wraps a finite `f64` as [`Datum::Real`], or reports the overflow
