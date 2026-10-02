@@ -19,7 +19,8 @@ use std::fmt;
 use serde_json::{Map, Number, Value};
 use tidb_query_datatype::codec::mysql::json::{
     compare_native_binary_json, decode_native_binary_json_node, decode_native_binary_json_value,
-    decode_native_json_uvarint, native_binary_json_type_name, native_json_opaque,
+    decode_native_json_uvarint, encode_native_binary_json_node, native_binary_json_type_name,
+    native_json_opaque, write_native_binary_json_header, NativeBinaryJsonEncodeError,
     NativeBinaryJsonError, NativeJsonNode,
 };
 
@@ -321,7 +322,9 @@ impl BinaryJSON {
     }
 
     pub(crate) fn from_node(node: &JSONNode) -> Result<Self, BinaryJSONError> {
-        encode_node(node, 0)
+        encode_native_binary_json_node(node, |value| (value.type_code(), value.value()))
+            .map(|(type_code, value)| Self::from_encoded_parts(type_code, value))
+            .map_err(native_binary_json_encode_error)
     }
 
     /// Returns a signed integer payload.
@@ -748,6 +751,14 @@ fn native_binary_json_error(error: NativeBinaryJsonError) -> BinaryJSONError {
     }
 }
 
+fn native_binary_json_encode_error(error: NativeBinaryJsonEncodeError) -> BinaryJSONError {
+    match error {
+        NativeBinaryJsonEncodeError::InvalidBinary => BinaryJSONError::InvalidBinary,
+        NativeBinaryJsonEncodeError::TooDeep => BinaryJSONError::TooDeep,
+        NativeBinaryJsonEncodeError::KeyTooLong => BinaryJSONError::KeyTooLong,
+    }
+}
+
 // Only the owned scalar carrier changes here; shared decoding owns all binary
 // validation and structure. Neither bytes nor object entries are normalized.
 fn native_json_node(node: NativeJsonNode<(u8, Vec<u8>)>) -> JSONNode {
@@ -765,100 +776,6 @@ fn native_json_node(node: NativeJsonNode<(u8, Vec<u8>)>) -> JSONNode {
                 .collect(),
         ),
     }
-}
-
-fn encode_node(node: &JSONNode, depth: usize) -> Result<BinaryJSON, BinaryJSONError> {
-    if depth > MAX_JSON_DEPTH {
-        return Err(BinaryJSONError::TooDeep);
-    }
-    match node {
-        JSONNode::Scalar(value) => Ok(value.clone()),
-        JSONNode::Array(values) => {
-            let values = values
-                .iter()
-                .map(|value| encode_node(value, depth + 1))
-                .collect::<Result<Vec<_>, _>>()?;
-            encode_binary_array(&values)
-        }
-        JSONNode::Object(values) => {
-            let values = values
-                .iter()
-                .map(|(key, value)| Ok((key.as_str(), encode_node(value, depth + 1)?)))
-                .collect::<Result<Vec<_>, BinaryJSONError>>()?;
-            encode_binary_object(&values)
-        }
-    }
-}
-
-fn encode_binary_array(values: &[BinaryJSON]) -> Result<BinaryJSON, BinaryJSONError> {
-    let data_start = HEADER_SIZE + values.len() * VALUE_ENTRY_SIZE;
-    let mut output = vec![0; data_start];
-    let mut payload = Vec::new();
-    for (index, value) in values.iter().enumerate() {
-        let entry = HEADER_SIZE + index * VALUE_ENTRY_SIZE;
-        output[entry] = value.type_code;
-        if value.type_code == JSON_TYPE_CODE_LITERAL {
-            output[entry + 1] = *value.value.first().ok_or(BinaryJSONError::InvalidBinary)?;
-        } else {
-            let offset = u32::try_from(data_start + payload.len())
-                .map_err(|_| BinaryJSONError::InvalidBinary)?;
-            output[entry + 1..entry + 5].copy_from_slice(&offset.to_le_bytes());
-            payload.extend_from_slice(&value.value);
-        }
-    }
-    output.extend_from_slice(&payload);
-    write_header(&mut output, values.len())?;
-    Ok(BinaryJSON {
-        type_code: JSON_TYPE_CODE_ARRAY,
-        value: output,
-    })
-}
-
-fn encode_binary_object(values: &[(&str, BinaryJSON)]) -> Result<BinaryJSON, BinaryJSONError> {
-    let mut values = values.to_vec();
-    values.sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
-    let key_entry_start = HEADER_SIZE;
-    let value_entry_start = key_entry_start + values.len() * KEY_ENTRY_SIZE;
-    let key_data_start = value_entry_start + values.len() * VALUE_ENTRY_SIZE;
-    let key_bytes = values.iter().try_fold(0_usize, |total, (key, _)| {
-        if key.len() > u16::MAX as usize {
-            Err(BinaryJSONError::KeyTooLong)
-        } else {
-            total
-                .checked_add(key.len())
-                .ok_or(BinaryJSONError::InvalidBinary)
-        }
-    })?;
-    let value_data_start = key_data_start + key_bytes;
-    let mut output = vec![0; key_data_start];
-    let mut keys = Vec::with_capacity(key_bytes);
-    let mut payload = Vec::new();
-    for (index, (key, value)) in values.iter().enumerate() {
-        let key_entry = key_entry_start + index * KEY_ENTRY_SIZE;
-        let key_offset = u32::try_from(key_data_start + keys.len())
-            .map_err(|_| BinaryJSONError::InvalidBinary)?;
-        output[key_entry..key_entry + 4].copy_from_slice(&key_offset.to_le_bytes());
-        output[key_entry + 4..key_entry + 6].copy_from_slice(&(key.len() as u16).to_le_bytes());
-        keys.extend_from_slice(key.as_bytes());
-
-        let value_entry = value_entry_start + index * VALUE_ENTRY_SIZE;
-        output[value_entry] = value.type_code;
-        if value.type_code == JSON_TYPE_CODE_LITERAL {
-            output[value_entry + 1] = *value.value.first().ok_or(BinaryJSONError::InvalidBinary)?;
-        } else {
-            let offset = u32::try_from(value_data_start + payload.len())
-                .map_err(|_| BinaryJSONError::InvalidBinary)?;
-            output[value_entry + 1..value_entry + 5].copy_from_slice(&offset.to_le_bytes());
-            payload.extend_from_slice(&value.value);
-        }
-    }
-    output.extend_from_slice(&keys);
-    output.extend_from_slice(&payload);
-    write_header(&mut output, values.len())?;
-    Ok(BinaryJSON {
-        type_code: JSON_TYPE_CODE_OBJECT,
-        value: output,
-    })
 }
 
 fn encode_value(value: &Value, depth: usize) -> Result<BinaryJSON, BinaryJSONError> {
@@ -989,11 +906,7 @@ fn encode_object(values: &Map<String, Value>, depth: usize) -> Result<BinaryJSON
 }
 
 fn write_header(output: &mut [u8], count: usize) -> Result<(), BinaryJSONError> {
-    let count = u32::try_from(count).map_err(|_| BinaryJSONError::InvalidBinary)?;
-    let size = u32::try_from(output.len()).map_err(|_| BinaryJSONError::InvalidBinary)?;
-    output[..4].copy_from_slice(&count.to_le_bytes());
-    output[4..8].copy_from_slice(&size.to_le_bytes());
-    Ok(())
+    write_native_binary_json_header(output, count).map_err(native_binary_json_encode_error)
 }
 
 fn encode_uvarint(mut value: usize, output: &mut Vec<u8>) {

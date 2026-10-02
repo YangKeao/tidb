@@ -33,6 +33,10 @@
 mod analyze;
 mod eval_context;
 
+#[cfg(test)]
+#[path = "cophandler/json_raw_worker_tests.rs"]
+mod json_raw_worker_tests;
+
 use eval_context::{RequestEvalContext, SharedExpression};
 use std::sync::Arc;
 
@@ -3133,55 +3137,66 @@ impl LegacyEvaluator<'_> {
                 };
                 match sig {
                     SimpleSig::JsonReplaceSig => {
-                        let doc = legacy_some!(self.eval_json(children.first())?);
+                        let Some(doc) = self.eval_json(children.first())? else {
+                            return Ok(tidb_expr::eval_legacy_json_output_none_in(
+                                self.raw_columns,
+                            )?);
+                        };
+                        // Preserve full pair preparation before any replacement
+                        // work. A dangling path is not a demanded operand.
                         let mut paths = Vec::new();
                         let mut values = Vec::new();
                         let mut index = 1;
                         while index + 1 < children.len() {
-                            let (path, value) = legacy_some!(pair(index)?);
+                            let Some((path, value)) = pair(index)? else {
+                                return Ok(tidb_expr::eval_legacy_json_output_none_in(
+                                    self.raw_columns,
+                                )?);
+                            };
                             paths.push(path);
                             values.push(value);
                             index += 2;
                         }
-                        doc.modify(&paths, &values, tidb_datatype::JSONModifyType::Replace)
-                            .ok()
+                        // Even an empty list performs the original raw
+                        // decode/re-encode; it is not APPEND's empty identity.
+                        tidb_expr::eval_legacy_json_replace_in(
+                            &doc,
+                            &paths,
+                            &values,
+                            self.raw_columns,
+                        )?
                     }
                     SimpleSig::JsonArrayAppendSig => {
-                        let mut doc = legacy_some!(self.eval_json(children.first())?);
+                        let Some(mut doc) = self.eval_json(children.first())? else {
+                            return Ok(tidb_expr::eval_legacy_json_output_none_in(
+                                self.raw_columns,
+                            )?);
+                        };
+                        if children.len() < 3 {
+                            // Zero complete pairs preserve the raw document,
+                            // including malformed bytes, through the worker.
+                            return Ok(tidb_expr::eval_legacy_json_array_append_step_in(
+                                &doc,
+                                None,
+                                self.raw_columns,
+                            )?);
+                        }
                         let mut index = 1;
                         while index + 1 < children.len() {
-                            let (path, value) = legacy_some!(pair(index)?);
-                            if path.could_match_multiple_values() {
-                                // Go: `ErrInvalidJSONPathMultipleSelection`.
-                                return Ok(None);
-                            }
-                            let Some(target) =
-                                doc.extract(std::slice::from_ref(&path)).ok().flatten()
-                            else {
-                                // Go: a missing path is a no-op.
-                                index += 2;
-                                continue;
+                            let Some((path, value)) = pair(index)? else {
+                                return Ok(tidb_expr::eval_legacy_json_output_none_in(
+                                    self.raw_columns,
+                                )?);
                             };
-                            if target.type_code() != tidb_datatype::JSON_TYPE_CODE_ARRAY {
-                                // Go: `ErrInvalidJSONPathArrayCell` folded.
-                                return Ok(None);
-                            }
-                            let count = legacy_some!(target.element_count().ok());
-                            let mut items = Vec::with_capacity(count + 1);
-                            for cell in 0..count {
-                                let element = legacy_some!(target.array_get(cell).ok())
-                                    .expect("within count");
-                                items.push(tidb_datatype::BinaryJSONValue::Binary(element));
-                            }
-                            items.push(tidb_datatype::BinaryJSONValue::Binary(value));
-                            let appended =
-                                legacy_some!(tidb_datatype::BinaryJSON::from_typed_value(
-                                    &tidb_datatype::BinaryJSONValue::Array(items),
-                                )
-                                .ok());
-                            doc = legacy_some!(doc
-                                .modify(&[path], &[appended], tidb_datatype::JSONModifyType::Set)
-                                .ok());
+                            // Only the current pair is demanded. The worker's
+                            // actual NULL outcome suppresses every later pair;
+                            // otherwise its computed raw document is the next
+                            // pair's input (including missing-path no-ops).
+                            doc = legacy_some!(tidb_expr::eval_legacy_json_array_append_step_in(
+                                &doc,
+                                Some((&path, &value)),
+                                self.raw_columns,
+                            )?);
                             index += 2;
                         }
                         Some(doc)

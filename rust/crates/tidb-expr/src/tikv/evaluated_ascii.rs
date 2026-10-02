@@ -2147,6 +2147,10 @@ fn materialize_computed(
             | EvaluatedBytesOp::JsonRemoveSerdeNative
             | EvaluatedBytesOp::JsonArrayAppendSerdeNative
             | EvaluatedBytesOp::JsonArrayInsertSerdeNative
+            | EvaluatedBytesOp::JsonReplaceRawLegacy
+            | EvaluatedBytesOp::JsonArrayAppendRawLegacy
+            | EvaluatedBytesOp::JsonArrayAppendEmptyLegacy
+            | EvaluatedBytesOp::JsonValueAbsentLegacy
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative
@@ -2485,6 +2489,114 @@ pub fn eval_legacy_json_member_of_in(
             )),
         },
         legacy_comparison_result,
+    )
+}
+
+// A raw result owns its original type byte and payload. Never decode, validate
+// or render it: an empty-pair append may intentionally return malformed raw data.
+fn legacy_json_output_result(
+    computed: EvaluatedBytesResult,
+) -> Result<Option<tidb_datatype::BinaryJSON>, EvalError> {
+    let Some(mut bytes) = computed.into_bytes()? else {
+        return Ok(None);
+    };
+    if bytes.is_empty() {
+        return Err(AsciiBoundaryError::Scope {
+            kind: ScopeFailureKind::Contract,
+            reason: "computed raw JSON result lacks a type byte",
+        }
+        .into_eval_error());
+    }
+    let type_code = bytes.remove(0);
+    Ok(Some(tidb_datatype::BinaryJSON::from_encoded_parts(
+        type_code, bytes,
+    )))
+}
+
+/// Replace over the actual raw document and already-demanded ordered pairs.
+/// Original child errors stay with the caller; only transport is prepared here.
+pub fn eval_legacy_json_replace_in(
+    document: &tidb_datatype::BinaryJSON,
+    paths: &[tidb_datatype::JSONPathExpression],
+    values: &[tidb_datatype::BinaryJSON],
+    ctx: &dyn Columns,
+) -> Result<Option<tidb_datatype::BinaryJSON>, EvalError> {
+    evaluate_prepared_args_in(
+        ctx,
+        || {
+            let args = tidb_query_expr::local::prepare_json_raw_paths_values_args(
+                (document.type_code(), document.value()),
+                paths
+                    .iter()
+                    .map(|path| (path.legs(), path.could_match_multiple_values())),
+                values
+                    .iter()
+                    .map(|value| (value.type_code(), value.value())),
+            )
+            .map_err(|error| {
+                EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+                    error, None,
+                ))
+            })?;
+            Ok((EvaluatedBytesOp::JsonReplaceRawLegacy, args))
+        },
+        legacy_json_output_result,
+    )
+}
+
+/// Execute exactly one append pair; `None` means the actual zero-pair identity,
+/// not an absent legacy value. Demand another pair only after this returns Some.
+pub fn eval_legacy_json_array_append_step_in(
+    document: &tidb_datatype::BinaryJSON,
+    pair: Option<(
+        &tidb_datatype::JSONPathExpression,
+        &tidb_datatype::BinaryJSON,
+    )>,
+    ctx: &dyn Columns,
+) -> Result<Option<tidb_datatype::BinaryJSON>, EvalError> {
+    evaluate_prepared_args_in(
+        ctx,
+        || {
+            let raw_document = (document.type_code(), document.value());
+            let (operation, args) = match pair {
+                Some((path, value)) => (
+                    EvaluatedBytesOp::JsonArrayAppendRawLegacy,
+                    tidb_query_expr::local::prepare_json_raw_paths_values_args(
+                        raw_document,
+                        std::iter::once((path.legs(), path.could_match_multiple_values())),
+                        std::iter::once((value.type_code(), value.value())),
+                    ),
+                ),
+                None => (
+                    EvaluatedBytesOp::JsonArrayAppendEmptyLegacy,
+                    tidb_query_expr::local::prepare_json_raw_identity_args(raw_document),
+                ),
+            };
+            let args = args.map_err(|error| {
+                EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+                    error, None,
+                ))
+            })?;
+            Ok((operation, args))
+        },
+        legacy_json_output_result,
+    )
+}
+
+/// Preserve an actually observed legacy no-value outcome without claiming a
+/// SQL NULL witness; missing/type/decoding outcomes share this legacy boundary.
+pub fn eval_legacy_json_output_none_in(
+    ctx: &dyn Columns,
+) -> Result<Option<tidb_datatype::BinaryJSON>, EvalError> {
+    evaluate_prepared_args_in(
+        ctx,
+        || {
+            Ok((
+                EvaluatedBytesOp::JsonValueAbsentLegacy,
+                EvaluatedArgs::NoArgs,
+            ))
+        },
+        legacy_json_output_result,
     )
 }
 

@@ -1380,6 +1380,12 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::JsonArrayInsertSerdeNative => {
             panic!("JSON path operations need actual parsed paths and ordered values")
         }
+        EvaluatedBytesOp::JsonReplaceRawLegacy
+        | EvaluatedBytesOp::JsonArrayAppendRawLegacy
+        | EvaluatedBytesOp::JsonArrayAppendEmptyLegacy
+        | EvaluatedBytesOp::JsonValueAbsentLegacy => {
+            panic!("legacy JSON outputs need original raw values and observed presence")
+        }
         EvaluatedBytesOp::TidbShardNative => "TIDB_SHARD",
         EvaluatedBytesOp::VitessHashNative => "VITESS_HASH",
         EvaluatedBytesOp::FormatBytesNative => "FORMAT_BYTES",
@@ -1916,6 +1922,229 @@ fn binary_arithmetic_dispatch_keeps_profiles_and_legacy_presence() {
     });
     assert!(!scope.busy.get());
     assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn legacy_json_output_sdk_preserves_raw_identity_steps_and_path_metadata() {
+    use tidb_datatype::{parse_json_path_expr, BinaryJSON, JSONPathExpression};
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        let document = BinaryJSON::parse("{\"a\":1,\"b\":2}").unwrap();
+        let paths = [
+            parse_json_path_expr("$.a").unwrap(),
+            parse_json_path_expr("$.missing").unwrap(),
+        ];
+        let values = [
+            BinaryJSON::parse("9").unwrap(),
+            BinaryJSON::parse("0").unwrap(),
+        ];
+        let (result, observation) = observe_wide_math(|| {
+            crate::eval_legacy_json_replace_in(&document, &paths, &values, columns)
+        });
+        assert_eq!(
+            result,
+            Ok(Some(BinaryJSON::parse("{\"a\":9,\"b\":2}").unwrap()))
+        );
+        assert_wide_math_c4(observation);
+        let wide = BinaryJSON::from_typed_value(&tidb_datatype::BinaryJSONValue::Uint64(u64::MAX))
+            .unwrap();
+        let root = [parse_json_path_expr("$").unwrap()];
+        let (result, observation) = observe_wide_math(|| {
+            crate::eval_legacy_json_replace_in(
+                &document,
+                &root,
+                std::slice::from_ref(&wide),
+                columns,
+            )
+        });
+        let actual = result.unwrap().unwrap();
+        assert_eq!(
+            (actual.type_code(), actual.value()),
+            (wide.type_code(), wide.value())
+        );
+        assert_wide_math_c4(observation);
+
+        let path = parse_json_path_expr("$.a").unwrap();
+        let json_null = BinaryJSON::parse("null").unwrap();
+        let document = BinaryJSON::parse("{\"a\":[1]}").unwrap();
+        let (result, observation) = observe_wide_math(|| {
+            crate::eval_legacy_json_array_append_step_in(
+                &document,
+                Some((&path, &json_null)),
+                columns,
+            )
+        });
+        let appended = result.unwrap().unwrap();
+        assert_eq!(appended, BinaryJSON::parse("{\"a\":[1,null]}").unwrap());
+        assert_wide_math_c4(observation);
+        let three = BinaryJSON::parse("3").unwrap();
+        let (result, observation) = observe_wide_math(|| {
+            crate::eval_legacy_json_array_append_step_in(&appended, Some((&path, &three)), columns)
+        });
+        assert_eq!(
+            result,
+            Ok(Some(BinaryJSON::parse("{\"a\":[1,null,3]}").unwrap()))
+        );
+        assert_wide_math_c4(observation);
+
+        let document = BinaryJSON::parse("{\"*\":[1]}").unwrap();
+        let quoted = parse_json_path_expr("$.\"*\"").unwrap();
+        let flagged = JSONPathExpression::default().push_back_key("*");
+        assert_eq!(quoted.legs(), flagged.legs());
+        assert!(!quoted.could_match_multiple_values());
+        assert!(flagged.could_match_multiple_values());
+        for (path, expected) in [
+            (&quoted, Some(BinaryJSON::parse("{\"*\":[1,3]}").unwrap())),
+            (&flagged, None),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                crate::eval_legacy_json_array_append_step_in(
+                    &document,
+                    Some((path, &three)),
+                    columns,
+                )
+            });
+            assert_eq!(result, Ok(expected));
+            assert_wide_math_c4(observation);
+        }
+        let raw = BinaryJSON::from_encoded_parts(0xff, vec![7, 8]);
+        let (result, observation) =
+            observe_wide_math(|| crate::eval_legacy_json_array_append_step_in(&raw, None, columns));
+        let actual = result.unwrap().unwrap();
+        assert_eq!(
+            (actual.type_code(), actual.value()),
+            (raw.type_code(), raw.value())
+        );
+        assert_wide_math_c4(observation);
+        // REPLACE with no pairs still decodes, unlike APPEND's raw identity.
+        let (result, observation) =
+            observe_wide_math(|| crate::eval_legacy_json_replace_in(&raw, &[], &[], columns));
+        assert_eq!(result, Ok(None));
+        assert_wide_math_c4(observation);
+        let (result, observation) =
+            observe_wide_math(|| crate::eval_legacy_json_output_none_in(columns));
+        assert_eq!(result, Ok(None));
+        assert_wide_math_c4(observation);
+        assert_eq!(
+            scope
+                .lease
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .worker
+                .as_ref()
+                .unwrap()
+                .operation(),
+            EvaluatedBytesOp::JsonValueAbsentLegacy
+        );
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn legacy_json_output_sdk_distinguishes_business_none_packets_and_zero_slots() {
+    use tidb_datatype::{parse_json_path_expr, BinaryJSON};
+    use EvaluatedBytesOp::*;
+
+    assert!(
+        matches!(legacy_json_output_result(EvaluatedBytesResult::Bytes(Some(Vec::new()))),
+        Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract)
+    );
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        let path = parse_json_path_expr("$.a").unwrap();
+        let value = BinaryJSON::parse("2").unwrap();
+        let scalar = BinaryJSON::parse("{\"a\":1}").unwrap();
+        let (result, observation) = observe_wide_math(|| {
+            eval_legacy_json_array_append_step_in(&scalar, Some((&path, &value)), columns)
+        });
+        assert_eq!(result, Ok(None)); // Legacy APPEND does not wrap a scalar target.
+        assert_wide_math_c4(observation);
+        let malformed = BinaryJSON::from_encoded_parts(0xff, vec![7]);
+        let (result, observation) = observe_wide_math(|| {
+            eval_legacy_json_array_append_step_in(&malformed, Some((&path, &value)), columns)
+        });
+        let actual = result.unwrap().unwrap(); // Extract failure is the old no-op.
+        assert_eq!(
+            (actual.type_code(), actual.value()),
+            (malformed.type_code(), malformed.value())
+        );
+        assert_wide_math_c4(observation);
+        for (operation, args) in [
+            (
+                JsonReplaceRawLegacy,
+                EvaluatedArgs::Bytes3([Some(Vec::new()), Some(Vec::new()), Some(Vec::new())]),
+            ),
+            (
+                JsonArrayAppendRawLegacy,
+                EvaluatedArgs::Bytes2(Some(vec![0xff]), Some(Vec::new())),
+            ),
+            (
+                JsonArrayAppendEmptyLegacy,
+                EvaluatedArgs::Bytes(Some(Vec::new())),
+            ),
+            (JsonValueAbsentLegacy, EvaluatedArgs::NullWitness(None)),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(operation, columns, || Ok(args), legacy_json_output_result)
+            });
+            assert!(matches!(
+                result,
+                Err(EvalError::ExpressionRuntimeFailure(_))
+            ));
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(
+                observation.before_kernel_invocations,
+                observation.after_kernel_invocations
+            );
+        }
+        let (result, observation) = observe_wide_math(|| {
+            eval_legacy_json_replace_in(&scalar, std::slice::from_ref(&path), &[], columns)
+        });
+        assert!(matches!(
+            result,
+            Err(EvalError::ExpressionRuntimeFailure(_))
+        ));
+        assert_eq!(
+            observation.before_kernel_invocations,
+            observation.after_kernel_invocations
+        );
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        let document = BinaryJSON::parse("{\"a\":[1]}").unwrap();
+        let path = parse_json_path_expr("$.a").unwrap();
+        let value = BinaryJSON::parse("2").unwrap();
+        for operation in [JsonReplaceRawLegacy, JsonArrayAppendRawLegacy, JsonArrayAppendEmptyLegacy, JsonValueAbsentLegacy] {
+            let (result, observation) = observe_wide_math(|| match operation {
+                JsonReplaceRawLegacy => eval_legacy_json_replace_in(&document, std::slice::from_ref(&path), std::slice::from_ref(&value), columns),
+                JsonArrayAppendRawLegacy => eval_legacy_json_array_append_step_in(&document, Some((&path, &value)), columns),
+                JsonArrayAppendEmptyLegacy => eval_legacy_json_array_append_step_in(&document, None, columns),
+                JsonValueAbsentLegacy => eval_legacy_json_output_none_in(columns),
+                _ => unreachable!(),
+            });
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
     drop(scope);
     execution.close();
 }

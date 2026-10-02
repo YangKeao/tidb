@@ -1,0 +1,51 @@
+json-raw-values-58 / round59; previous json-paths-57.
+191/245 functional,strict0;target221;30more needed,54eligible remain.
+Credit2: json_replace,json_array_append. NativeAST/SQL/PB alreadyC4 in57; thisbatch closeslegacyactualraw evaluators and removeshostbusiness. UNQUOTE remainsdeferred, no admissionexpansion.
+
+Rawlogs /home/agent/tidb/expression-unification/logs/json-raw-values-<id>.log
+T cwd=/home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv (nightly-2026-01-30).
+N cwd=/home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb (nightly-2026-08-22).
+Eachcommand: set -o pipefail; <wrapper> test --locked -p <package> --lib [filter] -- --test-threads=1 2>&1 | tee <rawlog> >/dev/null.
+T tee ../logs/; N ../../logs/. Focusedgroups set-e; serializedjobs587nativecodec,588CPPcodec,589CPPjson/local,590SDK/legacy/context/PB/SQL,591bothfullsuites (collecteachstatus thenexit101).
+Counts passed/failed/ignored/filtered; measured0. Times Cargo compile/test elapsed.
+
+1 native-datatype: N tidb-datatype binary_json;35/0/0/410;3.13s/0.00s;exit0
+ SHA256 f5d964c37fe0544b215fd76d3442a824f840330f849c936b1fa5dad4f15acad6
+2 tikv-codec: T tidb_query_datatype native_codec;2/0/0/429;3.23s/0.00s;exit0
+ SHA256 5194b7bdc837d7c4fd1c05726cf5eee354e4bbfe006adda023390089b6810559
+3 tikv-json: T tidb_query_expr native_json;14/0/0/852;15.01s/0.00s;exit0
+ SHA256 a1d3ae04bb02c6392cfa40ecfe261f0c673a15049d94c7f71668a5a93d725190
+4 tikv-local: T tidb_query_expr local;305/0/1/560;0.12s/0.20s;exit0
+ SHA256 4ade6e7873ab05007ffd109e2b55a8cf23501d841b7d984c9363858f914a6a9a
+5 native-sdk: N tidb-expr legacy_json_output_sdk;2/0/0/1614;17.56s/0.00s;exit0
+ SHA256 1d970c2ee472607ef279b5eb626aee00e4c03fa1408a2a0a7b197042cb579844
+6 legacy-scope: N tidb-unistore legacy_json_raw_workers;1/0/0/219;8.55s/0.00s;exit0
+ SHA256 a6c13bfa38cfce37e465d25037debe6f99d27afca2ba05fa8003c7b5d8f7e1e6
+7 legacy-existing: N tidb-unistore json_value_functions_compose_over_the_json_channel;1/0/0/219;0.12s/0.00s;exit0
+ SHA256 ae2015268c320572a347744364c5016ae50e89792c0cc6afd24f9b92b456896a
+8 native-context: N tidb-expr shared_json_modif;2/0/0/1614;0.12s/0.00s;exit0
+ SHA256 7863267bf8a546a634a08696183d00b9fbffca2ae53bed3546d4c5efbfe24cf3
+9 native-pb: N tidb-expr protobuf_json_replace_append;1/0/0/1615;0.12s/0.00s;exit0
+ SHA256 3bc011de8a1314336aae7493ea049452046ffcd8c65300efe3b29af5079e24d5
+10 sql: N tidb-session evaluated_ascii_json_paths_;2/0/0/2193;32.37s/0.07s;exit0
+ SHA256 5a26a8d0d5d484f0f0d3c0dc903f185f79bfe13b86d4aebd59c6dce8b792d571
+11 expr-full: N tidb-expr (no filter);1518/4old/94/0;0.13s/13.64s;exit101
+ SHA256 c396e663a6c171dfec85741feaba42649ec301a894e2a31662a9ad6151a11646
+12 unistore-full: N tidb-unistore (no filter);206/1old/13/0;0.12s/2.99s;exit101
+ SHA256 c1d32e11885a62daebc08278ec3db8fd8e0893f81ad89d747c3bd86fcf7252f2
+
+12attempts=12 actualruns.10 focused green;2 currentoldfullfailures.0 compilefailure/newtestRED/retry/zero-match/metadata/lock-resolution attempts. IgnoredareNOTpasses; fullsuitesNOTGREEN.
+Entirefailuresections+finallists vsjson-paths-57, ONLYnumericpanicthreadIDs normalizedto(<id>), no sourcemapping:
+ expr SHA256 27654f2c0ad2971242c00f50182467598cdfd9c2c65e5bf5a32e683708448637
+ unistore SHA256 b64dcced405c699c11b72ee31888c58e491b4e5b4e74fa2d445454e1d1e146e9
+Retainedexpression IFNULL collation/EXP/vectorizeddurationFSP/STR_TO_DATE; retainedunistore point-rangeclosureselection.
+
+18Rust=CPP11/native7;3newfiles,11newtests. All18pinned rustfmt --edition2021 --config skip_children=true --check, bothgitdiffchecks pass. No dependency/manifest/lock/Go/Bazelchanges. Ccompile.rs only2existingNoArgs whitelist additions; no new driver.
+Staticproof: prior189familyobjects exact,191unique,addsReplace+Append only. Native7 JSONmodify/path/dispatch/construct/scalar/PB production,rawjson_path.rs/binary_json_ops.rs,legacy eval_context andexpr context exactHEAD. cophandler outside2arms+cfgtestmodule unchanged (blankline normalization only), originaljson_arg/pair/prep anderrorclasses untouched. Allhostextract/count/array_get/arrayconstruction/modify removedfrom2arms. Oldnativeencode_node/encode_binary_array/encode_binary_object definitions absent; oldserdeencode_value/number/array/object conversion-order bodies exactHEAD, header nowsharedthinforward. Originalexpectedvalues/fixtures/provideroracles unchanged. No static/formatter/source-lookup incidents or fixes thisround.
+
+Concreteproof: actualrawtypedopaque/date/UIntMAX bytes; header/literal/duplicatekeys/depth/keylength/order; flagsretainedindependently (quotedstar), paddingnormalizationvsrawidentity; malformedextractfailureidentityvsREPLACEfailureNone; skippedrawreplacementdecode; currentvalue versusfuturepairdemand, danglingignored; literallNULLJSONnull vscol/computedNULLabsence. Root0slot checks eval_json/eval_expr/folded_int withplainleaves (nootherworkermasking). Shared_override isseparate CHILD-only actualsharedcallee probe, raw_columns remainsroot SDKcontext. R58nativecache/PB/SQL rerunsinclude30SQLdirect0slot cases (notnewtests).
+
+Designlock: use3narrowexisting-style BYVALUE SDKs, notFnOncegenericE ornewrootdriver. Legacyordinaryinputprepare/errorflow retained; everyactualNone observation entersJsonValueAbsentLegacy NoArgs, neverfakeSQLNULLwitness; onlycheckedtransport+execution usesexistingguard. Actualresulttypebyte+payload transferredwithoutserde/parse/Display/semanticvalidation. Scalarencoderfnptr isrepresentation-only, notRPNmetadata/callbackexecutor; nativefrom_node andCPPtupleworker shareONErawencoder. Originalserdecodecprofiles retain different conversion/errororder. No wirebuilder substitution.
+
+Ownershipdocs updatedforrawencoder/stagedworker/byvalueboundary; agents-review checklist no newnormativepolicy/PRgate/shellsnippet, existingpaths+3newpaths compile. No wholeGo-package transcreation/PRreadiness/goalcompletion claim. Plan mirrored+pairedCPP SHA publishedfirst, noforce/noPR; prioruntrackedBUILDexcluded.
+Deferred: UNQUOTE strictSQLtext/directJSONcontent/SDKsecondescape/rawDisplay/temporalprecision; strictM6/broaderdefaultNoColumns requestroot/workspace/make lint/dev/bazel_prepare/release/perf/zero-copy/physicalheap/peak/OOM/exhaustivecontext/domain/wire/150row/TiFlash/FIPS andpriorparser/GB/vector/extremeDecimal exceptions. fnptr/transportallocation performanceunmeasured. Goalactive.
