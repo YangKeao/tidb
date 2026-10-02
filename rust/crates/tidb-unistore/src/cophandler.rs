@@ -4930,15 +4930,16 @@ impl LegacyEvaluator<'_> {
                         ))
                     }
                     SimpleSig::JsonMemberOfSig => {
-                        // Go `builtinJSONMemberOfSig.evalInt`: the target (any
-                        // scalar, coerced through `CreateBinaryJSON`) equals the
-                        // doc, or equals ANY element of an ARRAY doc.
+                        use tidb_expr::LegacyBinaryArgs;
+                        // Preserve CreateBinaryJSON target conversion and its
+                        // early NULL/missing stop BEFORE demanding the document.
                         let target = match children.first().map(|c| self.eval_datum(c)) {
                             Some(Ok(datum)) => {
-                                // A NULL datum is SQL NULL: the answer is NULL,
-                                // not a JSON `null` document.
                                 if matches!(datum, tidb_datatype::Datum::Null) {
-                                    return Ok(None);
+                                    return Ok(tidb_expr::eval_legacy_json_member_of_in(
+                                        LegacyBinaryArgs::NullWitness(None),
+                                        self.raw_columns,
+                                    )?);
                                 }
                                 match datum_to_json_value(&datum) {
                                     Some(value) => {
@@ -4958,25 +4959,30 @@ impl LegacyEvaluator<'_> {
                                 }
                             }
                             Some(Err(message)) => return Err(message),
-                            None => return Ok(None),
-                        };
-                        let Some(obj) = self.eval_json(children.get(1))? else {
-                            return Ok(None);
-                        };
-                        let member = if obj.type_code() == tidb_datatype::JSON_TYPE_CODE_ARRAY {
-                            match obj.element_count() {
-                                Ok(count) => (0..count).any(|index| {
-                                    obj.array_get(index).ok().flatten().is_some_and(|element| {
-                                        tidb_datatype::compare_binary_json(&element, &target)
-                                            .is_eq()
-                                    })
-                                }),
-                                Err(_) => return Err("invalid json array".to_owned().into()),
+                            None => {
+                                return Ok(tidb_expr::eval_legacy_json_member_of_in(
+                                    LegacyBinaryArgs::Missing,
+                                    self.raw_columns,
+                                )?);
                             }
-                        } else {
-                            tidb_datatype::compare_binary_json(&obj, &target).is_eq()
                         };
-                        Some(i128::from(member))
+                        let document = self.eval_json(children.get(1))?;
+                        let args = match document {
+                            Some(document) => {
+                                // The original element_count fully decoded the
+                                // array before examining ANY member. Retain that
+                                // representation validation and exact SQL error.
+                                if document.type_code() == tidb_datatype::JSON_TYPE_CODE_ARRAY {
+                                    document.element_count().map_err(|_| {
+                                        LegacyEvalError::Sql("invalid json array".to_owned())
+                                    })?;
+                                }
+                                LegacyBinaryArgs::Values(target, document)
+                            }
+                            None if children.len() < 2 => LegacyBinaryArgs::Missing,
+                            None => LegacyBinaryArgs::NullWitness(None),
+                        };
+                        tidb_expr::eval_legacy_json_member_of_in(args, self.raw_columns)?
                     }
                     SimpleSig::Like(collation) => {
                         use tidb_expr::LegacyLikeArgs;
@@ -6840,6 +6846,135 @@ mod tests {
                 Err("a computed aggregate argument is a later course".to_owned())
             );
         }
+    }
+
+    #[test]
+    fn legacy_json_member_of_fixed_raw_values_and_array_validation_order() {
+        use tidb_datatype::{BinaryJSON, Datum, Decimal};
+        let time_zone = zone();
+        let evaluator = LegacyEvaluator::new(&[], 4, &time_zone);
+        let json = |text: &str| SimpleExpr::Json(BinaryJSON::parse(text).unwrap());
+        for (target, document, expected) in [
+            (SimpleExpr::Int(1), "[1,2]", Some(1)),
+            (SimpleExpr::Real(1.0), "[1]", Some(1)),
+            (SimpleExpr::Bytes(b"1".to_vec()), "[1]", Some(0)),
+            (SimpleExpr::Bytes(b"1".to_vec()), "[\"1\"]", Some(1)),
+            (SimpleExpr::Int(1), "[[1]]", Some(0)),
+            (json("[1]"), "[[1]]", Some(1)),
+            (json("{\"a\":1}"), "{\"a\":1}", Some(1)),
+            (json("null"), "[null]", Some(1)),
+            (SimpleExpr::Null, "[null]", None),
+        ] {
+            let call = SimpleExpr::Func(SimpleSig::JsonMemberOfSig, vec![target, json(document)]);
+            assert_eq!(evaluator.eval_expr(&call).unwrap(), expected, "{call:?}");
+        }
+        let row = [Datum::UInt(u64::MAX)];
+        let wide = LegacyEvaluator::new(&row, 4, &time_zone);
+        let call = SimpleExpr::Func(
+            SimpleSig::JsonMemberOfSig,
+            vec![SimpleExpr::Column(0), json("[18446744073709551615]")],
+        );
+        assert_eq!(wide.eval_expr(&call).unwrap(), Some(1));
+        // Existing element_count decodes the ENTIRE array before membership.
+        // A matching first element cannot hide an invalid later child type.
+        let good = BinaryJSON::parse("[1,2]").unwrap();
+        let mut bad_later_child = good.value().to_vec();
+        bad_later_child[13] = 0xff; // 8-byte header, then 5-byte value entries.
+        for payload in [Vec::new(), bad_later_child] {
+            let bad = SimpleExpr::Json(BinaryJSON::from_encoded_parts(
+                tidb_datatype::JSON_TYPE_CODE_ARRAY,
+                payload,
+            ));
+            let call = SimpleExpr::Func(
+                SimpleSig::JsonMemberOfSig,
+                vec![SimpleExpr::Int(1), bad.clone()],
+            );
+            assert!(
+                matches!(evaluator.eval_expr(&call), Err(LegacyEvalError::Sql(message)) if message == "invalid json array")
+            );
+            let null = SimpleExpr::Func(
+                SimpleSig::JsonMemberOfSig,
+                vec![SimpleExpr::Null, bad.clone()],
+            );
+            assert_eq!(evaluator.eval_expr(&null).unwrap(), None);
+            let unsupported = SimpleExpr::Func(
+                SimpleSig::JsonMemberOfSig,
+                vec![SimpleExpr::Decimal(Decimal::parse_mysql("1").0), bad],
+            );
+            assert!(
+                matches!(evaluator.eval_expr(&unsupported), Err(LegacyEvalError::Sql(message)) if message == "this MEMBER OF target kind is a later course")
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_json_member_of_presence_scope_and_lazy_target_demand() {
+        use tidb_datatype::{BinaryJSON, Decimal};
+        let time_zone = zone();
+        let doc = SimpleExpr::Json(BinaryJSON::parse("[1]").unwrap());
+        let call = |children| SimpleExpr::Func(SimpleSig::JsonMemberOfSig, children);
+        let owner = tidb_expr::AsciiPoolOwner::new(
+            tidb_expr::AsciiPoolPolicy::checked(
+                0,
+                0,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let shared = convert_expr(&tipb::Expr {
+            tp: Some(tipb::ExprType::ScalarFunc as i32),
+            sig: Some(tipb::ScalarFuncSig::IntIsNull as i32),
+            field_type: Some(tipb::FieldType {
+                tp: Some(8),
+                ..Default::default()
+            }),
+            children: vec![tipb::Expr {
+                tp: Some(tipb::ExprType::Null as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+        let assert_pool = |error| match error {
+            LegacyEvalError::Infrastructure(tidb_expr::EvalError::ExpressionAdapterFailure(
+                failure,
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_expr::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_expr::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("MEMBER OF lost pool cause: {other:?}"),
+        };
+        execution.scope().with_columns(&tidb_expr::NoColumns, |columns| {
+            let scoped = LegacyEvaluator { raw_columns: columns, ..LegacyEvaluator::new(&[], 4, &time_zone) };
+            for children in [vec![], vec![SimpleExpr::Null], vec![SimpleExpr::Int(1)], vec![SimpleExpr::Null, doc.clone()], vec![SimpleExpr::Int(1), SimpleExpr::Null], vec![SimpleExpr::Int(1), doc.clone()], vec![SimpleExpr::Int(2), doc.clone()]] {
+                let expr = call(children);
+                assert_pool(scoped.eval_expr(&expr).expect_err("each real presence enters MEMBER worker"));
+                assert_pool(scoped.folded_int(Some(&expr)).expect_err("infrastructure cannot fold to NULL"));
+            }
+            let child_only = LegacyEvaluator { shared_override: Some(columns), ..LegacyEvaluator::new(&[], 4, &time_zone) };
+            assert_eq!(child_only.eval_expr(&call(vec![SimpleExpr::Null, shared.clone()])).unwrap(), None);
+            assert_eq!(child_only.eval_expr(&call(vec![])).unwrap(), None);
+            assert_pool(child_only.eval_expr(&call(vec![SimpleExpr::Int(1), shared.clone()])).expect_err("nonNULL target demands RHS"));
+            assert_pool(child_only.eval_expr(&call(vec![shared.clone(), SimpleExpr::Null])).expect_err("target executes first"));
+            assert_eq!(child_only.eval_expr(&call(vec![SimpleExpr::Int(1), doc, shared.clone()])).unwrap(), Some(1));
+            let unsupported = call(vec![SimpleExpr::Decimal(Decimal::parse_mysql("1").0), shared]);
+            assert!(matches!(child_only.eval_expr(&unsupported), Err(LegacyEvalError::Sql(message)) if message == "this MEMBER OF target kind is a later course"));
+            let bad = SimpleExpr::Json(BinaryJSON::from_encoded_parts(tidb_datatype::JSON_TYPE_CODE_ARRAY, Vec::new()));
+            assert!(matches!(scoped.eval_expr(&call(vec![SimpleExpr::Int(1), bad])), Err(LegacyEvalError::Sql(message)) if message == "invalid json array"));
+        });
     }
 
     #[test]

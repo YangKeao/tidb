@@ -14,8 +14,8 @@
 //! The `ETReal` half of operator evaluation, split out of `ops.rs`.
 //!
 //! Everything an operand does once MySQL's promotion hierarchy has decided the
-//! pair is a FLOAT pair: the `f64` arithmetic and comparison
-//! ([`float_binary`], [`real_compare`]), the coercions that get a `Datum`
+//! pair is a FLOAT pair: the arithmetic and shared-comparison dispatch
+//! ([`float_binary`]), the coercions that get a `Datum`
 //! there ([`to_f64`], [`to_f64_with_mysql_string`], `bytes_to_f64` -- Go's
 //! `types.StrToFloat` numeric-prefix scan and the `1292 Truncated incorrect
 //! DOUBLE value` it raises), and the bounded `f64` -> integer conversions the
@@ -57,11 +57,13 @@ pub(super) fn float_binary(
         );
     }
     if op == NullEq {
-        return Ok(match (&l, &r) {
-            (Datum::Null, Datum::Null) => Datum::Int(1),
-            (Datum::Null, _) | (_, Datum::Null) => Datum::Int(0),
-            _ => bool_int(to_f64(l) == to_f64(r)),
-        });
+        return eval_null_safe_eq_values_in(
+            l,
+            r,
+            DERIVATION_FREE_COLLATION,
+            Operands::LITERALS,
+            ctx,
+        );
     }
     if l == Datum::Null || r == Datum::Null {
         if matches!(op, BitAnd | BitOr | BitXor | LeftShift | RightShift) {
@@ -268,12 +270,6 @@ pub(crate) fn raise_truncated_double(
     text: &str,
 ) -> Result<(), EvalError> {
     ctx.handle_truncate(&format!("Truncated incorrect DOUBLE value: '{text}'"))
-}
-
-/// Only the distinct null-safe equality ladder uses this value helper.
-pub(super) fn real_compare(op: BinaryOp, a: f64, b: f64) -> Result<Datum, EvalError> {
-    debug_assert_eq!(op, BinaryOp::NullEq);
-    Ok(bool_int(a == b))
 }
 
 /// Wraps a finite `f64` as [`Datum::Real`], or reports the overflow

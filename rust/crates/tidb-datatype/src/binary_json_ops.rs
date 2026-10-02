@@ -353,7 +353,20 @@ pub fn contains_binary_json(
     object: &BinaryJSON,
     target: &BinaryJSON,
 ) -> Result<bool, BinaryJSONError> {
-    contains_node(&object.to_node()?, &target.to_node()?)
+    tidb_query_datatype::codec::mysql::json::contains_native_binary_json(
+        object.type_code(),
+        object.value(),
+        target.type_code(),
+        target.value(),
+    )
+    .map_err(|error| match error {
+        tidb_query_datatype::codec::mysql::json::NativeBinaryJsonError::InvalidBinary => {
+            BinaryJSONError::InvalidBinary
+        }
+        tidb_query_datatype::codec::mysql::json::NativeBinaryJsonError::TooDeep => {
+            BinaryJSONError::TooDeep
+        }
+    })
 }
 
 /// Implements MySQL JSON_OVERLAPS structural overlap.
@@ -361,7 +374,20 @@ pub fn overlaps_binary_json(
     object: &BinaryJSON,
     target: &BinaryJSON,
 ) -> Result<bool, BinaryJSONError> {
-    overlaps_node(&object.to_node()?, &target.to_node()?)
+    tidb_query_datatype::codec::mysql::json::overlaps_native_binary_json(
+        object.type_code(),
+        object.value(),
+        target.type_code(),
+        target.value(),
+    )
+    .map_err(|error| match error {
+        tidb_query_datatype::codec::mysql::json::NativeBinaryJsonError::InvalidBinary => {
+            BinaryJSONError::InvalidBinary
+        }
+        tidb_query_datatype::codec::mysql::json::NativeBinaryJsonError::TooDeep => {
+            BinaryJSONError::TooDeep
+        }
+    })
 }
 
 /// Implements MySQL JSON_MERGE_PRESERVE.
@@ -658,93 +684,6 @@ fn normalize_index(index: i64, length: usize) -> Option<usize> {
         index
     };
     usize::try_from(index).ok().filter(|index| *index < length)
-}
-
-fn contains_node(object: &JSONNode, target: &JSONNode) -> Result<bool, BinaryJSONError> {
-    Ok(match (object, target) {
-        (JSONNode::Object(object), JSONNode::Object(target)) => {
-            target.iter().all(|(key, target)| {
-                object
-                    .iter()
-                    .find(|(name, _)| name == key)
-                    .is_some_and(|(_, object)| contains_node(object, target).unwrap_or(false))
-            })
-        }
-        (JSONNode::Array(object), JSONNode::Array(target)) => target.iter().all(|target| {
-            object
-                .iter()
-                .any(|object| contains_node(object, target).unwrap_or(false))
-        }),
-        (JSONNode::Array(object), target) => object
-            .iter()
-            .any(|object| contains_node(object, target).unwrap_or(false)),
-        _ => {
-            let object = BinaryJSON::from_node(object)?;
-            let target = BinaryJSON::from_node(target)?;
-            compare_binary_json(&object, &target).is_eq()
-        }
-    })
-}
-
-/// Go `OverlapsBinaryJSON` (`pkg/types/json_binary_functions.go`).
-///
-/// Overlap is decided ONE level down and by whole-value equality: two objects
-/// overlap when they share a key whose values compare equal, two arrays when
-/// they share an equal element. It does not recurse. `{"a":[1,2]}` and
-/// `{"a":[2]}` do NOT overlap, and neither do `[[1,2]]` and `[1,2]` — the
-/// shared `2` is one level too deep in both.
-fn overlaps_node(left: &JSONNode, right: &JSONNode) -> Result<bool, BinaryJSONError> {
-    // Go's single normalisation: a non-array against an array is answered as
-    // that array against the non-array, so only one asymmetric arm exists.
-    let (object, target) = match (left, right) {
-        (left @ (JSONNode::Object(_) | JSONNode::Scalar(_)), right @ JSONNode::Array(_)) => {
-            (right, left)
-        }
-        _ => (left, right),
-    };
-    Ok(match (object, target) {
-        (JSONNode::Object(object), JSONNode::Object(target)) => {
-            target.iter().try_fold(false, |found, (key, value)| {
-                if found {
-                    return Ok(true);
-                }
-                match object.iter().find(|(name, _)| name == key) {
-                    Some((_, existing)) => nodes_equal(existing, value),
-                    None => Ok(false),
-                }
-            })?
-        }
-        // Go returns false for an object against anything that is not an
-        // object, which the equality below also answers.
-        (JSONNode::Object(_), _) => false,
-        (JSONNode::Array(object), JSONNode::Array(target)) => {
-            object.iter().try_fold(false, |found, element| {
-                if found {
-                    return Ok(true);
-                }
-                target.iter().try_fold(false, |found, other| {
-                    if found {
-                        return Ok(true);
-                    }
-                    nodes_equal(element, other)
-                })
-            })?
-        }
-        (JSONNode::Array(object), target) => object.iter().try_fold(false, |found, element| {
-            if found {
-                return Ok(true);
-            }
-            nodes_equal(element, target)
-        })?,
-        (object, target) => nodes_equal(object, target)?,
-    })
-}
-
-/// Go `CompareBinaryJSON(a, b) == 0`, the only comparison overlap uses.
-fn nodes_equal(left: &JSONNode, right: &JSONNode) -> Result<bool, BinaryJSONError> {
-    let left = BinaryJSON::from_node(left)?;
-    let right = BinaryJSON::from_node(right)?;
-    Ok(compare_binary_json(&left, &right).is_eq())
 }
 
 /// Go `MergeBinaryJSON` groups each adjacent run of objects before flattening

@@ -1,27 +1,27 @@
 # Expression unification experiment
 
-Checkpoint-ID: `grouping-between-54` (previous `compare-six-53`).
-**174/245 functional families; target221; strict final acceptance0.** Added GROUPING and BETWEEN;47 more needed. Incomplete, not PR-ready.
+Checkpoint `json-nullsafe-55` (previous `grouping-between-54`). **180/245 functional families; target221; strict final acceptance0.** Added NullEq and five JSON families;41 more needed. Incomplete, not PR-ready.
+
 Paired branches: [TiDB](https://github.com/YangKeao/tidb/tree/expression-unification-demo) · [TiKV](https://github.com/YangKeao/tikv/tree/expression-unification-demo). Matching Plan snapshots accompany both commits; no force-push or automatic PR.
 
 ## This checkpoint
-GROUPING's unique bit/set algorithm and public metadata/function types now live in TiKV. Native helpers alias them; real scalar execution submits actual gid/mark-set bytes to three fixed mode kernels, or a genuine NULL witness before metadata lookup. Checked packing preserves raw unsigned bits, empty sets and more-than64-mark wrapping. No new driver, carrier, binding or wire admission.
-
-BETWEEN already composes shared comparison/logical workers after the preceding migration. New evidence closes its remaining family without another kernel: AST selector-once/eager bounds and rewritten lazy bounds retain their existing negated/NaN and collation differences. SQL tests include existing GROUPING rollup admission and isolated direct-column zero-slot failures.
+- NullEq composes existing presence/Eq/IsTrue workers. Duration warning+false, Time NULL and row behavior remain distinct.
+- JSON_CONTAINS, OVERLAPS, MEMBER_OF, CONTAINS_PATH and LENGTH use fixed shared workers. Native serde equality, raw SDK policies and legacy membership remain separate. Native public raw containment/overlap algorithms are also deleted.
+- The shared path parser/walker replaces native copies. Contains-path preserves lazy path coercion and projects actual per-path worker results; JSON_EXTRACT receives foundation reuse but no family credit.
+- No new driver/result kind/carrier/binding or wire admission. One existing serde_json feature is enabled explicitly for bit-exact float transport; wider standalone CPP rounding effects are disclosed, not claimed equivalent.
 
 ## Validation
-| Gate | Result |
+| Final focused gates | Result |
 |---|---|
-| TiKV GROUPING / local | 4 / 297 passed; local1 ignored |
-| Native GROUPING / BETWEEN | 6 / 3 passed |
-| SQL BETWEEN and GROUPING | 2 passed |
-| Full expression | **1502 passed,4 old failures,94 ignored; exit101** |
+| CPP raw / new JSON / local / ordinary JSON | 1 / 3 / 299 / 21 passed; local1 ignored |
+| Native profiles / NullEq / raw SDK | 3 / 2 / 19 passed |
+| Legacy / SQL | 2 / 2 passed |
+| Full expression | **1507 passed,4 old failures,94 ignored; exit101** |
+| Full unistore | **205 passed,1 old failure,13 ignored; exit101** |
 
-Nine attempts: eight actual runs plus one compile failure. Five final focused gates pass. Two new-test REDs were corrected from source: a typed error-decoration expectation and undeclared temporal fixture FSP. Missing timezone/type annotations caused the compile failure. No original expected values or fixtures changed. Full failure details equal the preceding checkpoint after thread IDs only.14 Rust sources,10 new tests; no dependency/lock changes.
+15 attempts:14 actual runs plus1 new-fixture compile failure. Nine final focused gates pass. One new SQL fixture used planning3143 instead of the unchanged execution-tier1105; corrected from source, not recorded output. No old expected values/fixtures changed. Complete full-suite failure details match prior checkpoints.24 Rust sources,15 new tests, one manifest feature change; no new dependencies or lock changes.
 
-[Exact commands and hashes](logs/grouping-between-summary.txt) · [review map, corrections and exclusions](evidence/grouping-between-checkpoint.md) · `checkpoint.json` · root Plan.
+[Review map and semantic boundaries](evidence/json-nullsafe-checkpoint.md) · [commands and hashes](logs/json-nullsafe-summary.txt) · `checkpoint.json` · root Plan. The current manifest is compacted; historical manifests remain in Git, cumulative records in `migration-progress.json`.
 
-## Remaining work and risks
-IntDIV was investigated, not implemented or counted. Its mutable precision/warning/legacy exact-division behavior needs a separate bounded change. IN/INTERVAL/NullEq still have native computation; shared comparison leaves alone earn no credit.71 eligible families remain.
-
-The prior row-comparison context activation remains an explicit compatibility change, not old-NoColumns equivalence. Broader request-root closure, whole workspace/lint/dev/bazel_prepare, release/performance/zero-copy, physical heap/peak/OOM/M6 and exhaustive compatibility/differential gates are unverified. Full unistore was not rerun here because legacy production was untouched. Existing parser/GB/ignored-vector/extreme Decimal exceptions remain. No whole Go-package/type-domain or FIPS claim.
+## Remaining work
+65 eligible families remain. IntDIV is still unimplemented; IN/INTERVAL retain native answers. Shared leaves alone do not earn credit. Whole workspace/lint/dev/bazel_prepare, strictM6/release/performance/zero-copy/physical heap/peak/OOM and exhaustive compatibility gates remain deferred. Prior request-root/context, parser/GB/vector/extreme Decimal exceptions remain explicit. No whole-package transcreation or PR-readiness claim.

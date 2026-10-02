@@ -407,10 +407,11 @@ pub use tidb_util::mathutil::MysqlRng;
 pub use tikv::{
     eval_legacy_bytes_comparison_in, eval_legacy_decimal_arithmetic_in,
     eval_legacy_decimal_comparison_in, eval_legacy_decimal_division_in,
-    eval_legacy_integer_arithmetic_in, eval_legacy_integer_comparison_in, eval_legacy_like_in,
-    eval_legacy_real_arithmetic_in, eval_legacy_real_comparison_in, eval_legacy_time_comparison_in,
-    eval_regexp_legacy_ready_in, AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy,
-    AsciiScope, BinaryArithmeticOperation, ComparisonOp, ExpressionAdapterFailure,
+    eval_legacy_integer_arithmetic_in, eval_legacy_integer_comparison_in,
+    eval_legacy_json_member_of_in, eval_legacy_like_in, eval_legacy_real_arithmetic_in,
+    eval_legacy_real_comparison_in, eval_legacy_time_comparison_in, eval_regexp_legacy_ready_in,
+    AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy, AsciiScope,
+    BinaryArithmeticOperation, ComparisonOp, ExpressionAdapterFailure,
     ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin, ExpressionRuntimeFailure,
     ExpressionRuntimeFailureClass, ExpressionRuntimeFailurePhase, LegacyBinaryArgs,
     LegacyIntegerArithmetic, LegacyLikeArgs, RegexpLegacyInput, ScopedAsciiColumns,
@@ -1896,6 +1897,273 @@ fn literal_charset(expr: &Expr) -> Option<&str> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod null_safe_composition_tests {
+    use super::*;
+    use crate::ops::{eval_binary_full, Operands};
+    use std::cell::RefCell;
+    use tidb_ast::BinaryOp;
+    use tidb_datatype::{Collation, FieldType, FieldTypeCode, MySqlDuration, VectorFloat32};
+
+    #[derive(Default)]
+    struct Warnings(RefCell<Vec<(u16, String)>>);
+
+    impl Columns for Warnings {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.0.borrow_mut().push((code, message.to_owned()));
+        }
+    }
+
+    fn owner(slots: usize) -> AsciiPoolOwner {
+        AsciiPoolOwner::new(
+            AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 8, 1 << 16)
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn assert_admission(result: Result<Datum, EvalError>, expected: Datum, slots: usize) {
+        if slots == 0 {
+            assert!(
+                matches!(result, Err(EvalError::ExpressionAdapterFailure(failure))
+                if failure.class() == ExpressionAdapterFailureClass::PoolResource)
+            );
+        } else {
+            assert_eq!(result, Ok(expected));
+        }
+    }
+
+    #[test]
+    fn null_safe_composition_actual_presence_domains_and_sentinel_precedence() {
+        let decimal = |text| Datum::Decimal(Decimal::parse_mysql(text).0);
+        let vector = |values| Datum::new_vector_float32(VectorFloat32::must_create(values));
+        let json = |text| Datum::Json(tidb_datatype::BinaryJSON::parse(text).unwrap());
+        let cases = vec![
+            (Datum::Null, Datum::Null, Collation::Utf8Mb4Bin, 1),
+            (Datum::Null, Datum::Int(0), Collation::Utf8Mb4Bin, 0),
+            (Datum::Int(0), Datum::Null, Collation::Utf8Mb4Bin, 0),
+            // Presence-only input must not be truth-coerced or kind-rejected.
+            (
+                Datum::Raw(vec![0xff]),
+                Datum::Null,
+                Collation::Utf8Mb4Bin,
+                0,
+            ),
+            (
+                Datum::Null,
+                Datum::Raw(vec![0xff]),
+                Collation::Utf8Mb4Bin,
+                0,
+            ),
+            (
+                Datum::Null,
+                Datum::new_string("not-json"),
+                Collation::Utf8Mb4Bin,
+                0,
+            ),
+            (
+                Datum::Int(-1),
+                Datum::UInt(u64::MAX),
+                Collation::Utf8Mb4Bin,
+                0,
+            ),
+            (
+                Datum::UInt(u64::MAX),
+                Datum::UInt(u64::MAX),
+                Collation::Utf8Mb4Bin,
+                1,
+            ),
+            (
+                Datum::Real(f64::NAN),
+                Datum::Real(f64::NAN),
+                Collation::Utf8Mb4Bin,
+                0,
+            ),
+            (
+                Datum::Real(-0.0),
+                Datum::Real(0.0),
+                Collation::Utf8Mb4Bin,
+                1,
+            ),
+            (decimal("1.500"), decimal("1.50"), Collation::Utf8Mb4Bin, 1),
+            (
+                Datum::new_string("a "),
+                Datum::new_string("a"),
+                Collation::Utf8Mb4Bin,
+                1,
+            ),
+            (
+                Datum::new_bytes(b"a ".to_vec()),
+                Datum::new_bytes(b"a".to_vec()),
+                Collation::Binary,
+                0,
+            ),
+            (
+                json("{\"x\":1}"),
+                Datum::new_string("{\"x\":1}"),
+                Collation::Utf8Mb4Bin,
+                1,
+            ),
+            (
+                vector(vec![1.0, 2.0]),
+                vector(vec![1.0, 3.0]),
+                Collation::Utf8Mb4Bin,
+                0,
+            ),
+        ];
+        for slots in [0, 1] {
+            let pool = owner(slots);
+            let execution = pool.begin_execution().unwrap();
+            let scope = execution.scope();
+            let warnings = Warnings::default();
+            scope.with_columns(&warnings, |ctx| {
+                for (left, right, collation, expected) in &cases {
+                    assert_admission(
+                        eval_binary_full(
+                            BinaryOp::NullEq,
+                            left.clone(),
+                            right.clone(),
+                            4,
+                            *collation,
+                            Operands::LITERALS,
+                            ctx,
+                        ),
+                        Datum::Int(*expected),
+                        slots,
+                    );
+                }
+                for sentinel in [Datum::MinNotNull, Datum::MaxValue] {
+                    for (left, right) in [(sentinel.clone(), Datum::Null), (Datum::Null, sentinel)]
+                    {
+                        assert_eq!(
+                            eval_binary_full(
+                                BinaryOp::NullEq,
+                                left,
+                                right,
+                                4,
+                                Collation::Utf8Mb4Bin,
+                                Operands::LITERALS,
+                                ctx
+                            ),
+                            Err(EvalError::Unsupported("range sentinel expression operand")),
+                        );
+                    }
+                }
+            });
+            assert!(warnings.0.borrow().is_empty());
+            drop(scope);
+            execution.close();
+        }
+    }
+
+    #[test]
+    fn null_safe_composition_preserves_duration_false_and_time_null() {
+        use crate::column::Column;
+        use crate::constant::Constant;
+        use crate::expression::Expression;
+        let duration_column = Expression::Column(Column::new(
+            1,
+            FieldType::new(FieldTypeCode::Duration).with_decimal(0),
+        ));
+        let duration =
+            Datum::new_duration(MySqlDuration::from_nanoseconds(3_600_000_000_000, 0).unwrap());
+        let time = Datum::new_time(
+            tidb_datatype::parse_datetime("2026-08-14 12:00:00", &chrono_tz::UTC, true, false)
+                .unwrap()
+                .time,
+        );
+        for slots in [0, 1] {
+            let pool = owner(slots);
+            let execution = pool.begin_execution().unwrap();
+            let scope = execution.scope();
+            let warnings = Warnings::default();
+            scope.with_columns(&warnings, |ctx| {
+                for (text, expected, warning) in [("bad", 0, true), ("1:00:00", 1, false)] {
+                    let text_value = Datum::new_string(text);
+                    let constant = Expression::Constant(Constant::new(
+                        text_value.clone(),
+                        FieldType::new(FieldTypeCode::VarString),
+                    ));
+                    for reversed in [false, true] {
+                        warnings.0.borrow_mut().clear();
+                        let (left, right, operands) = if reversed {
+                            (
+                                text_value.clone(),
+                                duration.clone(),
+                                Operands::of(&constant, &duration_column),
+                            )
+                        } else {
+                            (
+                                duration.clone(),
+                                text_value.clone(),
+                                Operands::of(&duration_column, &constant),
+                            )
+                        };
+                        assert_admission(
+                            eval_binary_full(
+                                BinaryOp::NullEq,
+                                left,
+                                right,
+                                4,
+                                Collation::Utf8Mb4Bin,
+                                operands,
+                                ctx,
+                            ),
+                            Datum::Int(expected),
+                            slots,
+                        );
+                        let expected_warnings = if warning {
+                            vec![(1292, "Incorrect time value: 'bad'".to_owned())]
+                        } else {
+                            vec![]
+                        };
+                        assert_eq!(*warnings.0.borrow(), expected_warnings);
+                    }
+                }
+                warnings.0.borrow_mut().clear();
+                // Without the duration-column/constant gate, formatted strings
+                // still compare directly: no parse and no warning.
+                assert_admission(
+                    eval_binary_full(
+                        BinaryOp::NullEq,
+                        duration.clone(),
+                        Datum::new_string("1:00:00"),
+                        4,
+                        Collation::Utf8Mb4Bin,
+                        Operands::LITERALS,
+                        ctx,
+                    ),
+                    Datum::Int(0),
+                    slots,
+                );
+                assert!(warnings.0.borrow().is_empty());
+                assert_admission(
+                    eval_binary_full(
+                        BinaryOp::NullEq,
+                        time.clone(),
+                        Datum::new_string("bad"),
+                        4,
+                        Collation::Utf8Mb4Bin,
+                        Operands::LITERALS,
+                        ctx,
+                    ),
+                    Datum::Null,
+                    slots,
+                );
+                assert_eq!(
+                    *warnings.0.borrow(),
+                    vec![(1292, "Incorrect datetime value: 'bad'".to_owned())]
+                );
+            });
+            drop(scope);
+            execution.close();
+        }
+    }
+}
 
 #[cfg(test)]
 mod between_composition_tests {

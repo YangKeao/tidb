@@ -1978,6 +1978,16 @@ fn materialize_computed(
             | EvaluatedBytesOp::GroupingNumericCmpNative
             | EvaluatedBytesOp::GroupingNumericSetNative
             | EvaluatedBytesOp::GroupingNullNative
+            | EvaluatedBytesOp::JsonContainsSerdeNative
+            | EvaluatedBytesOp::JsonContainsPathSerdeNative
+            | EvaluatedBytesOp::JsonOverlapsSerdeNative
+            | EvaluatedBytesOp::JsonMemberOfSerdeNative
+            | EvaluatedBytesOp::JsonLengthSerdeNative
+            | EvaluatedBytesOp::JsonLengthPathSerdeNative
+            | EvaluatedBytesOp::JsonPathExistsSerdeNative
+            | EvaluatedBytesOp::JsonMemberOfBinaryLegacy
+            | EvaluatedBytesOp::JsonPredicateNullNative
+            | EvaluatedBytesOp::JsonPredicateMissingLegacy
             | EvaluatedBytesOp::AbsIntNative
             | EvaluatedBytesOp::AbsUIntNative
             | EvaluatedBytesOp::CeilIntNative
@@ -2418,6 +2428,33 @@ fn legacy_comparison_result(computed: EvaluatedBytesResult) -> Result<Option<i12
         Datum::Int(value) => Ok(Some(i128::from(value))),
         _ => Err(result_kind_error().into_eval_error()),
     }
+}
+
+/// Evaluate legacy binary JSON membership without substituting serde equality.
+/// Values carry the actual target and document; caller-side array representation
+/// validation and its original SQL error precedence remain with the caller.
+pub fn eval_legacy_json_member_of_in(
+    args: LegacyBinaryArgs<tidb_datatype::BinaryJSON>,
+    ctx: &dyn Columns,
+) -> Result<Option<i128>, EvalError> {
+    evaluate_prepared_args_in(
+        ctx,
+        || match args {
+            LegacyBinaryArgs::Missing => Ok((
+                EvaluatedBytesOp::JsonPredicateMissingLegacy,
+                EvaluatedArgs::NoArgs,
+            )),
+            LegacyBinaryArgs::NullWitness(value) => Ok((
+                EvaluatedBytesOp::JsonPredicateNullNative,
+                arithmetic_null_witness(value)?,
+            )),
+            LegacyBinaryArgs::Values(target, document) => Ok((
+                EvaluatedBytesOp::JsonMemberOfBinaryLegacy,
+                super::prepare_json_binary_pair_args(&target, &document)?,
+            )),
+        },
+        legacy_comparison_result,
+    )
 }
 
 /// Compare the actual full-width legacy integer pair under the caller's scope.

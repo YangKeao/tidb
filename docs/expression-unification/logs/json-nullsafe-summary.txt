@@ -1,0 +1,57 @@
+json-nullsafe-55 / round56; previous grouping-between-54.
+180/245 functional, strict0, target221: +nulleq,json_contains,json_overlaps,json_member_of,json_contains_path,json_length.65 eligible remain,41 more needed. Not PR-ready.
+
+Raw logs: /home/agent/tidb/expression-unification/logs/json-nullsafe-<id>.log
+T cwd=/home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv (nightly-2026-01-30).
+N cwd=/home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb (nightly-2026-08-22).
+Each command: set -o pipefail; <wrapper> test --locked -p <package> --lib [filter] -- --test-threads=1 2>&1 | tee <raw-log> >/dev/null.
+T tee path ../logs/; N ../../logs/. Grouped focused commands use set-e; full baseline command deliberately collects both known-non-green suites and datatype tests, returns nonzero if any run fails.
+Counts passed/failed/ignored/filtered; measured0. Exact compile/test seconds and phases in checkpoint.json. Whole raw-log SHA256 follows.
+
+1 tikv-datatype: T tidb_query_datatype native_predicate_tests;1/0/0/428;exit0
+ 0fd493d533ad64eb3821c2307668e9340ade1df8c8f19525a68255645c59604f
+2 tikv-json: T tidb_query_expr native_json;3/0/0/846;exit0; BEFORE late float regression row
+ 97bee006d93e93a564d99981e222518e93c3fdf34f19034ba5b6fd0bf6c4321e
+3 tikv-local: T tidb_query_expr local;299/0/1/549;exit0
+ 19e2fe993aa2728fb94c4ba829c01bb1ca0a7fa52bbc2f6e1512eb24d12aa743
+4 native-json: N tidb-expr json;127/1old/5/1472;exit101; broad filter also matches old builtin_info_json_math_source::exp
+ 11b90fb8e1782437e947aa77a92f5a3348ebf58f86e3e768085025a48cd2d75f
+5 tikv-json-final: T tidb_query_expr native_json;3/0/0/846;exit0; final float row included
+ 91f3fb54f3c38587214e0bfb0e1ac6d583b175c1b415eed0398a2d1f79111a46
+6 native-profiles: N tidb-expr json_predicate;3/0/0/1602;exit0
+ d9fb0978f36f6f02df19ae8e5a4bb637d270b3412aecaa267f21bd8a9f458830
+7 native-nulleq: N tidb-expr null_safe_composition;2/0/0/1603;exit0
+ 51234caab181e38c8098f5b91e801d299f6365eab9c2875751890c5103b12eeb
+8 legacy: N tidb-unistore legacy_json_member_of;2/0/0/217;exit0
+ a3c05de69e8b2213047aa682901272ae7ec900e89c06a46b3ac2c3565b8dbd5b
+9 sql: N tidb-session evaluated_ascii_json_predicates_;COMPILE FAILURE E0382;0tests;exit101
+ f802b1cb81ef9870665fb9f3b89f1e1c137229cfcc93ec7083220e1ab6890d36
+10 expr-full: N tidb-expr (no filter);1507/4old/94/0;exit101
+ ecbe23da49f9a69d74b944fa82e32723f4e6bbaa717a6b2b505b8d9e5f6bfc5f
+11 unistore-full: N tidb-unistore (no filter);205/1old/13/0;exit101
+ e16ee178dd6a5d46947422ab481cab18549ef12d159731b9b706e2405a2f0e2e
+12 native-datatype: N tidb-datatype binary_json_ops;19/0/0/423;exit0
+ 78c705eb823ced3e8584573d07fd3d26028a8118533af6e22f99f70fa4343afe
+13 sql-retry: N tidb-session evaluated_ascii_json_predicates_;1/1new/0/2189;exit101
+ 3cdf5b19917bc7727439b0c27752af6810353c5670bdc9a16fb74296a8374bbf
+14 tikv-existing-json: T tidb_query_expr impl_json::tests;21/0/0/828;exit0
+ b2111d070cf7b45bcd9bc0c690659d4b19fdab3de5fd693556cdd88f9422685f
+15 sql-final: N tidb-session evaluated_ascii_json_predicates_;2/0/0/2189;exit0
+ a68c16b075e8a82498188f10d46c03ec14037d19c755591fc356890735c197bb
+
+15 attempts=14 actual runs+1 compile failure.10 green runs (9 final focused plus initial CPP JSON),1 actual new-test RED,3 known-old non-green (broad EXP+2 full).3 repeated commands (float final,SQLretry,SQLfinal); narrowed native filter is separate, not zero-match. No metadata/lock-resolution runs. Ignored/skipped are not passes; full suites are NOT GREEN.
+Full failure sections match previous manifests after ONLY numeric panic-heading thread IDs ->(<id>), no source mapping:
+ expr vs grouping-between-54 SHA27654f2c0ad2971242c00f50182467598cdfd9c2c65e5bf5a32e683708448637
+ unistore vs compare-six-53 SHAb64dcced405c699c11b72ee31888c58e491b4e5b4e74fa2d445454e1d1e146e9
+The old expression failures remain IFNULL collation, EXP, vectorized duration FSP panic and STR_TO_DATE partial format; old unistore closure point-range selection remains. Full unistore was not rerun in grouping-between-54, hence explicit earlier baseline.
+
+Actual corrections, not fabricated production bugs:
+- E0382: NEW diagnostic formatted DriverError after consuming to_mysql_error(self). Verified driver/errors/mod.rs194, now formats MysqlError instead; no expected change,0tests in failed compile.
+- NEW stored-column path fixture wrongly expected planning code3143. Unchanged driver/errors/exec.rs141-150 explicitly maps runtime typed InvalidPath to1105; context.rs362-367 documents the split. Changed only NEW expected code to1105; other3140/3146/3149/3154 source-verified. Executor/context files byte-equal to prior HEAD. E's path error stays typed and AsciiBoundaryError::Frontend unwraps it verbatim. No runtime SQL divergence silently fixed; no provider re-recording.
+- Standalone CPP serde_json now explicitly enables existing float_roundtrip feature; native tidb-model already enables it. Source-known serde_json1.0.150 tests/test.rs957-979 regression literal51.24817837550540_4 added to first existing NEW kernel test. Final repeat covers actualValue text roundtrip bit identity. This is a compatibility surface for all unified CPP serde readers, not a whole-wire equivalence claim;21 old ordinary JSON tests pass. No new dependency/version; both lockfiles unchanged.
+- RO corrections: element_count and array_get use FULL to_node, not header-only decode; malformed later child fails before earlier membership match. Raw SDK contains/overlaps are in binary_json_ops.rs, not absent because binary_json.rs lacks methods. Identifier policy is ASCII unquoted/Unicode quoted. All code follows actual source, not initial RO guesses.
+- Parent2 nonexistent-path source lookups (error.rs and misplaced coverage-baseline.json) failed and were located with glob; F/G each needed one read-observation refresh. No formatting/static proof failures or file-policy workarounds.
+
+24 Rust sources=CPP11/native13,1 new source(native_json.rs),1 manifest feature change. All24 pinned rustfmt --edition2021 --config skip_children=true --check pass; both diff checks pass. Old174 family objects unchanged;180 unique. Native NullEq, serde predicate/path and public raw contains/overlaps algorithm bodies deleted/shared.15 additive tests; original SQL/expected/fixtures unchanged. SQL zero-slot coverage19 JSON+50 NullEq direct-column calls without unrelated WHERE/ORDER/wrapper workers; positive source error tests may use WHERE to select rows.
+
+Deferred: wholeworkspace/lint/dev/bazel_prepare, strictM6/release/performance/zero-copy/physicalheap/peak/OOM, exhaustivewire/domain/context/150row differential/TiFlash/FIPS; prior parser/GB/ignored-vector/extremeDecimal exceptions; broader defaultNoColumns request-root closure. IntDIV phases not implemented; JSON_EXTRACT gets shared parser/walker foundation but no family credit. IN/INTERVAL still native membership/search. Historical bulky manifest details compacted to exact Git predecessor reference, not discarded or re-labelled current.

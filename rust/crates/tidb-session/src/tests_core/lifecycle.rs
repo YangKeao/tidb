@@ -9363,6 +9363,218 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_json_predicates_and_nulleq_preserve_fixed_values_and_errors() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_json_predicate_sql (id INT PRIMARY KEY, d JSON, arr JSON, overlap_doc JSON, candidate VARCHAR(32), p VARCHAR(32), missing VARCHAR(32), badp VARCHAR(32), wild VARCHAR(32), mode VARCHAR(8), badmode VARCHAR(8), bad_doc VARCHAR(32), target BIGINT, n BIGINT, np VARCHAR(32))").unwrap();
+    session.run(r#"INSERT INTO shared_json_predicate_sql VALUES (1,'{"a":[1,2],"n":null}','[1,2]','{"n":null}','2','$.a','$.missing','bad path','$.*','one','bad','nope',2,NULL,NULL),(2,'[1,3]','[1,3]','[2,4]','2','$[0]','$.missing','bad path','$.*','one','bad','nope',2,NULL,NULL),(3,NULL,NULL,NULL,NULL,NULL,'$.missing','bad path','$.*',NULL,'bad','nope',NULL,NULL,NULL)"#).unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // Fixed literals from the established JSON source/SQL tables: containment,
+    // shallow overlap, value-vs-document MEMBER semantics, and scalar length.
+    let StmtOutput::Rows { rows, .. } = session.run_with_columns(
+        "SELECT JSON_CONTAINS(arr,candidate),JSON_CONTAINS(d,candidate,p),JSON_OVERLAPS(d,overlap_doc),target MEMBER OF(arr),JSON_CONTAINS_PATH(d,mode,p),JSON_LENGTH(d),JSON_LENGTH(d,p) FROM shared_json_predicate_sql ORDER BY id",
+    ).unwrap() else { panic!("expected five JSON predicate/report families") };
+    assert_eq!(
+        rows,
+        vec![
+            vec![
+                Datum::Int(1),
+                Datum::Int(1),
+                Datum::Int(1),
+                Datum::Int(1),
+                Datum::Int(1),
+                Datum::Int(2),
+                Datum::Int(2)
+            ],
+            vec![
+                Datum::Int(0),
+                Datum::Int(0),
+                Datum::Int(0),
+                Datum::Int(0),
+                Datum::Int(1),
+                Datum::Int(2),
+                Datum::Int(1)
+            ],
+            vec![Datum::Null; 7],
+        ]
+    );
+    assert!(session.warnings().is_empty());
+    let StmtOutput::Rows { rows, .. } = session.run_with_columns(
+        "SELECT candidate MEMBER OF(arr),target<=>target,target<=>n,n<=>n,d<=>d FROM shared_json_predicate_sql ORDER BY id",
+    ).unwrap() else { panic!("expected value casts and NULL-safe equality") };
+    assert_eq!(
+        rows,
+        vec![
+            vec![
+                Datum::Int(0),
+                Datum::Int(1),
+                Datum::Int(0),
+                Datum::Int(1),
+                Datum::Int(1)
+            ],
+            vec![
+                Datum::Int(0),
+                Datum::Int(1),
+                Datum::Int(0),
+                Datum::Int(1),
+                Datum::Int(1)
+            ],
+            vec![
+                Datum::Null,
+                Datum::Int(1),
+                Datum::Int(1),
+                Datum::Int(1),
+                Datum::Int(1)
+            ],
+        ]
+    );
+    assert!(session.warnings().is_empty());
+    let StmtOutput::Rows { rows, .. } = session.run_with_columns(
+        "SELECT JSON_CONTAINS_PATH(d,'one',p,badp),JSON_CONTAINS_PATH(d,'all',missing,badp),JSON_CONTAINS_PATH(d,'one',p,np),JSON_LENGTH(d,missing) FROM shared_json_predicate_sql WHERE id=1",
+    ).unwrap() else { panic!("expected original path parsing short circuit") };
+    assert_eq!(
+        rows,
+        vec![vec![
+            Datum::Int(1),
+            Datum::Int(0),
+            Datum::Int(1),
+            Datum::Null
+        ]]
+    );
+    assert!(session.warnings().is_empty());
+    for (expression, code) in [
+        ("JSON_CONTAINS(d,candidate,wild)", 3149),
+        ("JSON_LENGTH(d,wild)", 3149),
+        ("JSON_CONTAINS_PATH(d,badmode,p)", 3154),
+        // Existing EXEC-tier InvalidPath mapping is 1105 for stored columns;
+        // the nominal 3143 applies to the PLAN-tier constant-folding route.
+        ("JSON_CONTAINS_PATH(d,mode,missing,badp)", 1105),
+        ("JSON_LENGTH(bad_doc,np)", 3140),
+        ("JSON_CONTAINS_PATH(bad_doc,np,p)", 3140),
+        ("JSON_CONTAINS(target,candidate)", 3146),
+        ("target MEMBER OF(target)", 3146),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_json_predicate_sql WHERE id=1");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, code, "{sql}: {mysql:?}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+    }
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns("SELECT id FROM shared_json_predicate_sql WHERE target<=>n ORDER BY id")
+        .unwrap()
+    else {
+        panic!("expected typed NULL-safe filter")
+    };
+    assert_eq!(rows, vec![vec![Datum::Int(3)]]);
+    assert!(session.warnings().is_empty());
+}
+
+#[test]
+fn evaluated_ascii_json_predicates_and_nulleq_zero_slots_require_actual_workers() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_json_predicate_zero (d JSON, c JSON, n JSON, p VARCHAR(32), mode VARCHAR(8), np VARCHAR(32))").unwrap();
+    session
+        .run("INSERT INTO shared_json_predicate_zero VALUES ('[1,2]','1',NULL,'$','one',NULL)")
+        .unwrap();
+    let domains = [
+        ("BIGINT", "-1", "1"),
+        ("BIGINT UNSIGNED", "18446744073709551615", "1"),
+        ("DOUBLE", "1.5e0", "2e0"),
+        (
+            "DECIMAL(30,2)",
+            "9007199254740993.25",
+            "9007199254740993.26",
+        ),
+        ("VARCHAR(8) COLLATE utf8mb4_general_ci", "'A '", "'a'"),
+        ("VARBINARY(8)", "X'41'", "X'61'"),
+        ("JSON", "'[1,2]'", "'[1,3]'"),
+        ("VECTOR", "'[1,2]'", "'[1,3]'"),
+        (
+            "DATETIME(6)",
+            "'2024-01-01 00:00:00.000001'",
+            "'2024-01-01 00:00:00.000002'",
+        ),
+        ("TIME(6)", "'-01:00:00'", "'01:00:00'"),
+    ];
+    for (index, (ty, left, right)) in domains.iter().enumerate() {
+        session.run(&format!("CREATE TABLE shared_nulleq_zero_{index} (l {ty}, r {ty}, n {ty}, nn {ty}, sameval {ty})")).unwrap();
+        session
+            .run(&format!(
+                "INSERT INTO shared_nulleq_zero_{index} VALUES ({left},{right},NULL,NULL,{left})"
+            ))
+            .unwrap();
+    }
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    let mut queries = [
+        "JSON_CONTAINS(d,c)",
+        "JSON_CONTAINS(n,c)",
+        "JSON_CONTAINS(d,n)",
+        "JSON_CONTAINS(d,c,p)",
+        "JSON_CONTAINS(d,c,np)",
+        "JSON_OVERLAPS(d,c)",
+        "JSON_OVERLAPS(n,c)",
+        "JSON_OVERLAPS(d,n)",
+        "c MEMBER OF(d)",
+        "n MEMBER OF(d)",
+        "c MEMBER OF(n)",
+        "JSON_CONTAINS_PATH(d,mode,p)",
+        "JSON_CONTAINS_PATH(n,mode,p)",
+        "JSON_CONTAINS_PATH(d,np,p)",
+        "JSON_CONTAINS_PATH(d,mode,np)",
+        "JSON_LENGTH(d)",
+        "JSON_LENGTH(n)",
+        "JSON_LENGTH(d,p)",
+        "JSON_LENGTH(d,np)",
+    ]
+    .map(|expression| format!("SELECT {expression} FROM shared_json_predicate_zero"))
+    .to_vec();
+    for index in 0..domains.len() {
+        for expression in ["l<=>r", "l<=>sameval", "n<=>r", "l<=>n", "n<=>nn"] {
+            queries.push(format!(
+                "SELECT {expression} FROM shared_nulleq_zero_{index}"
+            ));
+        }
+    }
+    for sql in queries {
+        // Direct stored inputs, no WHERE-id lookup, ORDER BY, or another
+        // migrated wrapper can mask the selected family's worker entry.
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("JSON/NULL-safe predicate bypassed worker: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(session.warnings().is_empty(), "{sql}");
+    }
+}
+
+#[test]
 fn evaluated_ascii_comparison_sql_values_typed_filters_and_row_tuples() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();

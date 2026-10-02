@@ -254,31 +254,33 @@ pub(super) fn json_type(v: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError
 /// `JSON_LENGTH(json_doc [, path])`, port of `builtinJSONLengthSig.evalInt`.
 /// As in TiDB, a wildcard/range path is a true SQL error rather than a length
 /// of an implicitly auto-wrapped selection.
-pub(super) fn json_length(vals: &[Datum]) -> Result<Datum, EvalError> {
-    let Some(document) = parse_json_document_argument(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    let target = if let Some(path_value) = vals.get(1) {
-        let Some(path) = coerce_str(path_value)? else {
-            return Ok(Datum::Null);
-        };
-        let path = parse_path(&path)?;
-        if path.could_match_multiple {
-            return Err(EvalError::Json(JsonError::InvalidPathMultipleSelection));
-        }
-        let Some(extracted) = extract(&document, &[path]) else {
-            return Ok(Datum::Null);
-        };
-        extracted
-    } else {
-        document
-    };
-    let len = match target {
-        Json::Array(values) => values.len(),
-        Json::Object(values) => values.len(),
-        Json::Null | Json::Bool(_) | Json::Number(_) | Json::String(_) => 1,
-    };
-    Ok(Datum::Int(len as i64))
+pub(super) fn json_length(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    use crate::tikv::EvaluatedBytesOp as Op;
+    crate::tikv::evaluate_prepared_args_in(
+        ctx,
+        || {
+            let Some(document) = parse_json_document_argument(&vals[0])? else {
+                return Ok(super::predicate::json_predicate_null_args());
+            };
+            if let Some(path_value) = vals.get(1) {
+                let Some(path) = coerce_str(path_value)? else {
+                    return Ok(super::predicate::json_predicate_null_args());
+                };
+                if parse_path(&path)?.could_match_multiple {
+                    return Err(EvalError::Json(JsonError::InvalidPathMultipleSelection));
+                }
+                return Ok((
+                    Op::JsonLengthPathSerdeNative,
+                    crate::tikv::prepare_json_serde_args(&document, None, Some(&path))?,
+                ));
+            }
+            Ok((
+                Op::JsonLengthSerdeNative,
+                crate::tikv::prepare_json_serde_args(&document, None, None)?,
+            ))
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
 }
 
 /// `JSON_KEYS(json_doc [, path])`, port of

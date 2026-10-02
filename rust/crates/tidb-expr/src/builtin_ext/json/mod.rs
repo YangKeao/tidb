@@ -90,11 +90,11 @@ pub(crate) fn dispatch_in(
         ("JSON_UNQUOTE", 1) => Some(json_unquote(&vals[0])),
         ("JSON_ARRAY", 0..) => Some(json_array(vals, &no_arg_types(vals.len()))),
         ("JSON_OBJECT", 0..) => Some(json_object(vals, &no_arg_types(vals.len()))),
-        ("JSON_LENGTH", 1 | 2) => Some(json_length(vals)),
+        ("JSON_LENGTH", 1 | 2) => Some(json_length(vals, ctx)),
         ("JSON_EXTRACT", 2..) => Some(json_extract(vals)),
-        ("JSON_MEMBER_OF" | "json_member_of", 2) => Some(json_member_of(vals)),
-        ("JSON_CONTAINS", 2 | 3) => Some(json_contains(vals)),
-        ("JSON_CONTAINS_PATH", 3..) => Some(json_contains_path(vals)),
+        ("JSON_MEMBER_OF" | "json_member_of", 2) => Some(json_member_of(vals, ctx)),
+        ("JSON_CONTAINS", 2 | 3) => Some(json_contains(vals, ctx)),
+        ("JSON_CONTAINS_PATH", 3..) => Some(json_contains_path(vals, ctx)),
         ("JSON_KEYS", 1 | 2) => Some(json_keys(vals)),
         ("JSON_REMOVE", 2..) => Some(json_remove(vals)),
         ("JSON_ARRAY_APPEND", 3..) => Some(json_array_append(vals, &no_arg_types(vals.len()))),
@@ -120,7 +120,7 @@ pub(crate) fn dispatch_in(
         ("JSON_SEARCH", 3..) => Some(json_search(vals)),
         ("JSON_PRETTY", 1) => Some(json_pretty(&vals[0])),
         ("JSON_SUM_CRC32", 1) => Some(json_sum_crc32(&vals[0])),
-        ("JSON_OVERLAPS", 2) => Some(json_overlaps(vals)),
+        ("JSON_OVERLAPS", 2) => Some(json_overlaps(vals, ctx)),
         _ => None,
     }
 }
@@ -237,6 +237,65 @@ fn no_arg_types(len: usize) -> Vec<Option<FieldType>> {
 #[path = "tests.rs"]
 mod tests;
 
+#[cfg(test)]
+mod predicate_preparation_tests {
+    use super::*;
+
+    #[test]
+    fn shared_json_predicates_preserve_null_error_and_path_demand_order() {
+        assert!(super::predicate::json_equal(
+            &serde_json::json!(1),
+            &serde_json::json!(1.0),
+        ));
+        let call = |name, values: &[Datum]| dispatch_in(name, values, &crate::NoColumns).unwrap();
+        assert_eq!(
+            call("JSON_OVERLAPS", &[Datum::Null, Datum::new_string("{")]),
+            Ok(Datum::Null)
+        );
+        assert_eq!(
+            call("JSON_CONTAINS", &[Datum::new_string("{"), Datum::Null]),
+            Ok(Datum::Null)
+        );
+        assert!(matches!(
+            call(
+                "JSON_MEMBER_OF",
+                &[Datum::Real(f64::INFINITY), Datum::Int(1)]
+            ),
+            Err(EvalError::Json(crate::JsonError::InvalidTypeForJson {
+                argument: 2,
+                function: "member of",
+            }))
+        ));
+        assert!(matches!(
+            call(
+                "JSON_CONTAINS",
+                &[Datum::new_string("{}"), Datum::new_string("{"), Datum::Null],
+            ),
+            Err(EvalError::Json(crate::JsonError::InvalidText))
+        ));
+        // Children are already values here. A decisive first path must not
+        // coerce the invalid-UTF8 suffix or parse its invalid path successor.
+        for (document, mode, first, expected) in [
+            ("{\"x\":null}", "OnE", "$.x", 1),
+            ("{}", "ALL", "$.missing", 0),
+        ] {
+            assert_eq!(
+                call(
+                    "JSON_CONTAINS_PATH",
+                    &[
+                        Datum::new_string(document),
+                        Datum::new_string(mode),
+                        Datum::new_string(first),
+                        Datum::Bytes(vec![0xff]),
+                        Datum::new_string("invalid path"),
+                    ],
+                ),
+                Ok(Datum::Int(expected))
+            );
+        }
+    }
+}
+
 /// Protobuf-selected JSON builtins share the root task's value kernels and
 /// constant-path cache. Dynamic paths keep their ordinary per-row validation.
 pub(crate) fn eval_pb(
@@ -248,7 +307,7 @@ pub(crate) fn eval_pb(
 ) -> Result<Datum, EvalError> {
     use tidb_proto::tipb::ScalarFuncSig;
     match sig {
-        ScalarFuncSig::JsonMemberOfSig => json_member_of(vals),
+        ScalarFuncSig::JsonMemberOfSig => json_member_of(vals, ctx),
         ScalarFuncSig::JsonReplaceSig => {
             if let Some(cache) = paths_cache {
                 let Some(document) = parse_json_document_argument(&vals[0])? else {

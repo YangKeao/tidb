@@ -18,8 +18,7 @@
 use tidb_ast::{BinaryOp, UnaryOp};
 
 use crate::coerce::{
-    bool_int, integer_bits, integer_cmp, integer_of, integer_to_decimal, integer_to_f64, truthy_of,
-    Integer,
+    integer_bits, integer_of, integer_to_decimal, integer_to_f64, truthy_of, Integer,
 };
 use crate::{Datum, Decimal, EvalError};
 use tidb_datatype::{div_int64, div_int_with_uint, div_uint_with_int};
@@ -797,6 +796,67 @@ pub(crate) fn eval_comparison_values_in(
     )
 }
 
+/// NULL-safe equality composes existing presence/equality workers. Only the
+/// duration-column/constant-text signature normalizes a failed conversion to
+/// false; the legacy Time/text NULL result deliberately remains NULL.
+pub(crate) fn eval_null_safe_eq_values_in(
+    l: Datum,
+    r: Datum,
+    collation: tidb_datatype::Collation,
+    operands: Operands<'_>,
+    ctx: &dyn crate::context::Columns,
+) -> Result<Datum, EvalError> {
+    let mut duration_text = false;
+    let computed = crate::tikv::evaluate_prepared_args_in(
+        ctx,
+        || {
+            // This rejection precedes actual-NULL handling in the old ladder.
+            if l.is_range_sentinel() || r.is_range_sentinel() {
+                return Err(EvalError::Unsupported("range sentinel expression operand"));
+            }
+            let other = if l.is_null() {
+                Some(&r)
+            } else if r.is_null() {
+                Some(&l)
+            } else {
+                None
+            };
+            if let Some(other) = other {
+                // IsNull's documented presence-only transport: None means this
+                // actual operand is NULL; Some(0) means it is present. This is
+                // not a numeric predicate or a fabricated NullWitness.
+                return Ok((
+                    crate::tikv::EvaluatedBytesOp::IsNull,
+                    crate::tikv::EvaluatedArgs::Int((!other.is_null()).then_some(0)),
+                ));
+            }
+            duration_text = matches!(
+                (&l, &r),
+                (Datum::Duration(_), Datum::String(_) | Datum::Bytes(_))
+                    | (Datum::String(_) | Datum::Bytes(_), Datum::Duration(_))
+            ) && ((operands.lhs.is_duration_column()
+                && operands.rhs.is_constant())
+                || (operands.rhs.is_duration_column() && operands.lhs.is_constant()));
+            prepare_comparison(
+                tidb_query_expr::ComparisonOp::Eq,
+                l,
+                r,
+                collation,
+                operands,
+                ctx,
+            )
+        },
+        crate::tikv::EvaluatedBytesResult::into_boolean_datum,
+    )?;
+    if duration_text {
+        // The input is the actual computed Eq value (including its genuine
+        // conversion NULL), not a host-precomputed NULL-safe answer.
+        crate::eval_boolean_ready_in(crate::BooleanFunction::IsTrue, truthy_of(&computed)?, ctx)
+    } else {
+        Ok(computed)
+    }
+}
+
 fn prepare_comparison(
     op: tidb_query_expr::ComparisonOp,
     l: Datum,
@@ -1047,6 +1107,9 @@ pub(crate) fn eval_binary_full(
     if comparison_operation(op).is_some() {
         return eval_comparison_values_in(op, l, r, collation, operands, ctx);
     }
+    if op == NullEq {
+        return eval_null_safe_eq_values_in(l, r, collation, operands, ctx);
+    }
     if l.is_range_sentinel() || r.is_range_sentinel() {
         return Err(EvalError::Unsupported("range sentinel expression operand"));
     }
@@ -1073,32 +1136,6 @@ pub(crate) fn eval_binary_full(
         || matches!(r, Datum::UInt(_))
         || operands.lhs.is_unsigned()
         || operands.rhs.is_unsigned();
-    // `<=>` never propagates NULL.  Handle its NULL cases before selecting a
-    // comparison type, matching `compareFunctionClass` in
-    // `pkg/expression/builtin_compare.go`; this also lets `NULL <=> '1'`
-    // return false instead of being rejected by the mixed-string guard below.
-    if op == NullEq {
-        match (&l, &r) {
-            (Datum::Null, Datum::Null) => return Ok(Datum::Int(1)),
-            (Datum::Null, _) | (_, Datum::Null) => return Ok(Datum::Int(0)),
-            _ => {}
-        }
-    }
-    // Arithmetic selected its worker above; the remaining comparisons select
-    // a vector signature as soon as EITHER argument is `ETVectorFloat32`, then cast
-    // BOTH inputs into that domain. Vector text is therefore an ordinary
-    // operand, while a non-vector text/integer conversion reports the source
-    // value-domain error instead of falling through to numeric comparison.
-    if (matches!(l, Datum::VectorFloat32(_)) || matches!(r, Datum::VectorFloat32(_)))
-        && op == NullEq
-    {
-        if l == Datum::Null || r == Datum::Null {
-            return Ok(Datum::Null);
-        }
-        let left = binary_vector_operand(l)?;
-        let right = binary_vector_operand(r)?;
-        return Ok(ordering_to_bool(op, left.compare(&right)));
-    }
     // Go builds AND/OR/XOR with ETInt arguments, so each operand first takes
     // MySQL's numeric-prefix truthiness path. This must precede the ordinary
     // string comparison branch: string-vs-string is a binary collation
@@ -1109,248 +1146,28 @@ pub(crate) fn eval_binary_full(
         LogicXor => return logic_xor(l, r, ctx),
         _ => {}
     }
-    // A JSON operand compares in the JSON domain, and it has to be intercepted
-    // HERE -- above the string branch -- because Go's `GetCmpFunction` picks
-    // the JSON comparer as soon as EITHER side is ETJson, coercing the other
-    // side to JSON rather than the reverse. The ordering itself is Go's
-    // `CompareBinaryJSON` (`pkg/types/json_binary_functions.go`), reached
-    // through `Datum.compareMysqlJSON`, which is what `Datum::compare` already
-    // ports: values of different JSON types order by TYPE PRECEDENCE first, so
-    // over `'"a"','"B"','1','{"a":1}','[1,2]'` the minimum is the number `1`
-    // and the maximum is an array -- exactly what TiDB records for issue
-    // 31640's `select min(a)/max(a) from t` (`tests/integrationtest`).
-    //
-    // Until this arm existed the pair fell through every guard below to the
-    // integer-only path, whose `unreachable!` then aborted the process. The
-    // comment on that `unreachable!` claimed the upstream guards excluded
-    // everything; they covered Str/Float/Decimal and NOT Json.
+    // Comparisons were dispatched above. The remaining JSON bit signatures
+    // keep their original cast-through-JSON-text policy and diagnostics.
     if matches!(l, Datum::Json(_)) || matches!(r, Datum::Json(_)) {
-        if op != NullEq {
-            if !matches!(op, BitAnd | BitOr | BitXor | LeftShift | RightShift) {
-                return Err(EvalError::Unsupported("JSON operand"));
-            }
-            // go's bit signatures declare ETInt arguments, so a JSON operand
-            // reaches them through `WrapWithCastAsInt`:
-            // `builtinCastJSONAsIntSig` re-reads the document's MarshalJSON
-            // text as an integer -- StrToInt, go's 1292 truncation warning
-            // included -- so `bitand(j, j)` over `{}` answers 0 (warned) and
-            // over the JSON number `3` it answers 3. Rewriting both sides to
-            // their text here hands them to the string-operand arm below,
-            // which is exactly that cast.
-            let to_text = |value: Datum| match value {
-                Datum::Json(value) => Datum::new_string(value.to_string()),
-                other => other,
-            };
-            l = to_text(l);
-            r = to_text(r);
-        } else {
-            if l == Datum::Null || r == Datum::Null {
-                return Ok(Datum::Null);
-            }
-            // The STRING side of a JSON comparison is PARSED as a JSON document,
-            // not wrapped as a JSON string scalar: Go's `GetCmpFunction` wraps
-            // both operands with `WrapWithCastAsJSON`, and EVERY string-to-JSON
-            // cast that builder constructs carries `mysql.ParseToJSONFlag`
-            // (`castAsJSONFunctionClass.getFunction`'s `types.ETString` arm), so
-            // `castStringAsJSONSig` takes its `ParseBinaryJSONFromString` branch.
-            // Without the parse, `json_remove(..) = cast('{}' as json)` compared
-            // an OBJECT against the string scalar `"{}"` and answered 0 -- which
-            // broke the NULLIF collapse `ALTER USER ... DISCARD OLD PASSWORD`
-            // relies on. Non-string operands keep `Datum::to_mysql_json`'s
-            // wrapping, which is those casts' `CreateBinaryJSON` arm.
-            let parse_string_side = |value: Datum| -> Result<Datum, EvalError> {
-                let text: &[u8] = match &value {
-                    Datum::String(text) => text.bytes(),
-                    Datum::Bytes(text) => text,
-                    _ => return Ok(value),
-                };
-                let text = std::str::from_utf8(text)
-                    .map_err(|_| EvalError::Unsupported("JSON comparison"))?;
-                // Go's parse failure here is ErrInvalidJSONText (3140), the same
-                // error the explicit CAST raises.
-                tidb_datatype::BinaryJSON::parse(text)
-                    .map(Datum::Json)
-                    .map_err(|_| EvalError::Json(crate::JsonError::InvalidText))
-            };
-            let l = parse_string_side(l)?;
-            let r = parse_string_side(r)?;
-            let ordering = l
-                .compare(&r, collation)
-                .map_err(|_| EvalError::Unsupported("JSON comparison"))?;
-            return Ok(ordering_to_bool(op, ordering));
+        if !matches!(op, BitAnd | BitOr | BitXor | LeftShift | RightShift) {
+            return Err(EvalError::Unsupported("JSON operand"));
         }
+        let to_text = |value: Datum| match value {
+            Datum::Json(value) => Datum::new_string(value.to_string()),
+            other => other,
+        };
+        l = to_text(l);
+        r = to_text(r);
     }
-    // Two strings compare under the collation the expression derivation
-    // aggregated for THIS comparison (byte order and PAD SPACE for
-    // `utf8mb4_bin`, case folding for a `_ci` collation, NO PAD for `binary`).
-    //
-    // ONLY a comparison takes this branch. An arithmetic or bitwise operator
-    // over two strings is not a collation question at all -- Go casts both
-    // arguments into the signature's numeric domain first (see the
-    // string-operand arm further down), so `'1231' % '12'` is 7, not a
-    // collation comparison that has no definition for `%`.
-    let comparison = op == NullEq;
-    if comparison {
-        if let (Some(a), Some(b)) = (
-            string_cmp_operand(&l, comparison),
-            string_cmp_operand(&r, comparison),
-        ) {
-            return string_compare(op, a, b, collation);
-        }
-    }
-    // `Raw` and `VectorFloat32` are the two kinds that no dispatch below
-    // claims, and they are rejected HERE -- as one guard, above every
-    // numeric path -- rather than at each of the places they would otherwise
-    // land, because those places do not fail alike:
-    //
-    //   * a `Div` or a `Decimal` operand reaches [`to_decimal`], whose
-    //     fallback `.expect()` PANICS on either kind;
-    //   * a comparison against a string reaches
-    //     [`to_f64_with_mysql_string`], which used to substitute `0.0` for
-    //     either kind -- a wrong ANSWER, which is worse -- and now returns
-    //     the same statement error this guard does;
-    //   * everything else reaches the integer residue at the bottom.
-    //
-    // One guard makes all three the same statement error. `Raw` compared
-    // with `Raw` (or with a string) is deliberately still handled by the
-    // branch just above, since `as_raw_bytes` gives it real byte semantics.
-    //
-    // Go reaches neither kind by this route: `KindRaw` is internal encoding
-    // state that `Datum.Compare` answers 0 for out of its `default` arm, and
-    // a vector column's comparisons go through `compareVectorFloat32`, which
-    // this evaluator has not ported. Returning an error says exactly that,
-    // and says it without taking the process down.
+    // All comparison domains were dispatched above. Reject unsupported
+    // arithmetic/bitwise carriers before numeric conversion can panic.
     if matches!(l, Datum::Raw(_) | Datum::VectorFloat32(_))
         || matches!(r, Datum::Raw(_) | Datum::VectorFloat32(_))
     {
         return Err(EvalError::UnsupportedOperandPair(l.kind(), r.kind()));
     }
-    // A datetime/date value compares in the TIME domain against another
-    // temporal value or a STRING: Go's `getBaseCmpType` gives ETString for a
-    // pair whose eval types are both string-kind (datetime IS string-kind),
-    // and `GetAccurateCmpType` then upgrades ETString-with-a-time to
-    // ETDatetime, so `'2024-12-31'` is parsed into a Time first rather than
-    // compared by its NUMERIC PREFIX (2024.0) -- the silent wrong-row bug for
-    // the `WHERE created <= 'date'` every application writes.
-    //
-    // Against a NUMBER, Go compares in the REAL domain instead:
-    // `getBaseCmpType(ETDatetime, ETInt)` is ETReal, so `datetime_col <
-    // 20231310` is `20230809000000 < 20231310`, NOT a datetime parse of
-    // 20231310 that fails and drops the row. A numeric CONSTANT that DOES
-    // convert to a datetime has already been rewritten to a datetime constant
-    // by `refine_comparisons` (Go's `refineNumericConstantCmpDatetime`), so it
-    // reaches here as a `Time` and takes this datetime path; every numeric
-    // operand that remains -- a non-convertible constant, or a bigint column
-    // -- is one Go also compares as real, and so falls through to the
-    // `numeric_context_value` promotion below.
-    // (Time ARITHMETIC -- `created + 1` -- falls through the same way, which
-    // is also what Go's non-comparison paths do.)
-    let numeric_partner = |value: &Datum| {
-        matches!(
-            value,
-            Datum::Int(_) | Datum::UInt(_) | Datum::Decimal(_) | Datum::Real(_) | Datum::Float32(_)
-        )
-    };
-    if op == NullEq
-        && (matches!(l, Datum::Time(_)) || matches!(r, Datum::Time(_)))
-        && !(matches!(l, Datum::Time(_)) && numeric_partner(&r))
-        && !(matches!(r, Datum::Time(_)) && numeric_partner(&l))
-    {
-        if l == Datum::Null || r == Datum::Null {
-            return Ok(if op == NullEq {
-                Datum::Int(0)
-            } else {
-                Datum::Null
-            });
-        }
-        return time_compare(op, &l, &r, ctx);
-    }
-    // A `TIME` compared with a string compares in the DURATION domain -- but
-    // only for the ONE pairing Go's `GetAccurateCmpType` upgrades:
-    //
-    // ```go
-    // } else if isTemporalColumn(ctx, lhs) && isRHSConst ||
-    //     isTemporalColumn(ctx, rhs) && isLHSConst {
-    //     col, isLHSColumn := lhs.(*Column)
-    //     if !isLHSColumn { col = rhs.(*Column) }
-    //     if col.GetType(ctx).GetType() == mysql.TypeDuration { cmpType = types.ETDuration }
-    // }
-    // ```
-    // (`pkg/expression/builtin_compare.go:1467-1483`). A `TIME` COLUMN against
-    // a CONSTANT is a duration comparison; ANY other duration-vs-text pairing
-    // keeps `getBaseCmpType`'s answer, which is ETString because ETDuration is
-    // string-kind -- so the duration compares by its own FORMATTED TEXT.
-    //
-    // That is not a distinction without a difference. Captured from a real
-    // TiDB over `t TIME '01:00:00', v VARCHAR '1:00:00'`:
-    //
-    // ```text
-    // select t = '1:00:00' from tt                 1   duration compare
-    // select t = concat('1:00',':00') from tt      1   folded to a constant
-    // select t = v from tt                         0   STRING '01:00:00' vs '1:00:00'
-    // select time'01:00:00' = '1:00:00'            0   no column, so string too
-    // ```
-    let duration_vs_constant = (operands.lhs.is_duration_column() && operands.rhs.is_constant())
-        || (operands.rhs.is_duration_column() && operands.lhs.is_constant());
-    if duration_vs_constant && op == NullEq {
-        if l == Datum::Null || r == Datum::Null {
-            return Ok(if op == NullEq {
-                Datum::Int(0)
-            } else {
-                Datum::Null
-            });
-        }
-        if let (Datum::Duration(a), Datum::Duration(b)) = (&l, &r) {
-            return Ok(ordering_to_bool(op, a.compare(*b)));
-        }
-        let text_side = |value: &Datum| match value {
-            Datum::String(value) => Some(String::from_utf8_lossy(value.bytes()).into_owned()),
-            Datum::Bytes(value) => Some(String::from_utf8_lossy(value).into_owned()),
-            _ => None,
-        };
-        let pair = match (&l, &r) {
-            (Datum::Duration(a), other) => text_side(other).map(|text| (*a, text, false)),
-            (other, Datum::Duration(b)) => text_side(other).map(|text| (*b, text, true)),
-            _ => None,
-        };
-        if let Some((duration, text, reversed)) = pair {
-            let ordering = match duration.compare_string(&text) {
-                Ok(ordering) if reversed => ordering.reverse(),
-                Ok(ordering) => ordering,
-                Err(_) => {
-                    ctx.append_warning(1292, &format!("Incorrect time value: '{text}'"));
-                    return Ok(if op == NullEq {
-                        Datum::Int(0)
-                    } else {
-                        Datum::Null
-                    });
-                }
-            };
-            return Ok(ordering_to_bool(op, ordering));
-        }
-    }
-    // The other half of that rule: an ungated duration-vs-text COMPARISON is
-    // `getBaseCmpType`'s ETString (both eval types are string-kind), so the
-    // duration is compared as the TEXT it prints as. Substituting its string
-    // form and re-entering is what keeps the collation, the PAD rule and the
-    // `<=>` handling single-sourced in the string branch above rather than
-    // reimplemented here.
-    if op == NullEq {
-        let is_text = |value: &Datum| matches!(value, Datum::String(_) | Datum::Bytes(_));
-        let as_text = |duration: &tidb_datatype::MySqlDuration| {
-            Datum::new_collation_string(duration.to_string(), collation)
-        };
-        let rewritten = match (&l, &r) {
-            (Datum::Duration(a), other) if is_text(other) => Some((as_text(a), r.clone())),
-            (other, Datum::Duration(b)) if is_text(other) => Some((l.clone(), as_text(b))),
-            _ => None,
-        };
-        if let Some((l, r)) = rewritten {
-            return eval_binary_full(op, l, r, div_precision_increment, collation, operands, ctx);
-        }
-    }
-    // Every remaining use of a temporal operand -- arithmetic, and comparing
-    // two `TIME`s -- evaluates it in its NUMERIC context, which is what Go's
+    // Remaining arithmetic uses of a temporal operand evaluate it in its
+    // NUMERIC context, which is what Go's
     // `numericContextResultType` (`pkg/expression/builtin_arithmetic.go:80`)
     // gives a temporal type: ETDecimal when it carries fractional seconds,
     // ETInt otherwise. So `DATETIME '2020-01-02 03:04:05' + 0` is
@@ -1371,73 +1188,9 @@ pub(crate) fn eval_binary_full(
             ctx,
         );
     }
-    // `getBaseCmpType` in `builtin_compare.go` selects ETReal whenever a
-    // string is compared with a numeric value.  Thus both operands use the
-    // same MySQL numeric-prefix coercion as `EvalReal`; this is comparison
-    // semantics only, not a claim that arbitrary string arithmetic is in
-    // scope for this compact value evaluator.
     if matches!(l, Datum::String(_) | Datum::Bytes(_))
         || matches!(r, Datum::String(_) | Datum::Bytes(_))
     {
-        if op == NullEq {
-            if l == Datum::Null || r == Datum::Null {
-                return Ok(Datum::Null);
-            }
-            // ONE pairing escapes that ETReal, and `f64`'s 53-bit mantissa is
-            // why:
-            //
-            // ```go
-            // if (lhsEvalType == types.ETDecimal && !isLHSConst && rhsEvalType.IsStringKind() && isRHSConst) ||
-            //     (rhsEvalType == types.ETDecimal && !isRHSConst && lhsEvalType.IsStringKind() && isLHSConst) {
-            //     // Do comparison as decimal rather than float, in order not to lose precision.
-            //     cmpType = types.ETDecimal
-            // }
-            // ```
-            // (`pkg/expression/builtin_compare.go:1457-1466`). Captured over
-            // `d DECIMAL(19,0)` holding 1234567890123456789:
-            // `d = '1234567890123456788'` is 0 in Go and was 1 here -- both
-            // operands round to the same `f64` -- while the all-constant
-            // `1234567890123456789 = '1234567890123456788'` stays ETReal and
-            // really is 1. The asymmetric `!isConst` test is the whole rule:
-            // it fires only when the DECIMAL side is a column or an
-            // expression over one.
-            let decimal_vs_const_string = |numeric: Operand<'_>, text: Operand<'_>| {
-                numeric.eval_type() == Some(tidb_datatype::EvalType::Decimal)
-                    && !numeric.is_constant()
-                    && text.is_string_kind()
-                    && text.is_constant()
-            };
-            if decimal_vs_const_string(operands.lhs, operands.rhs)
-                || decimal_vs_const_string(operands.rhs, operands.lhs)
-            {
-                // Go's ETDecimal comparer reaches its operands through
-                // `WrapWithCastAsDecimal`, so the STRING side takes
-                // `builtinCastStringAsDecimalSig` -- `StrToDecimal` plus the
-                // DECIMAL-worded 1292 the `DIV` cast below raises from the
-                // same place.
-                let as_decimal = |d: Datum| -> Result<Datum, EvalError> {
-                    if !matches!(d, Datum::String(_) | Datum::Bytes(_)) {
-                        return Ok(d);
-                    }
-                    let converted = d
-                        .to_decimal()
-                        .map_err(|_| EvalError::Unsupported("string operand"))?;
-                    if converted.event.is_some() {
-                        ctx.handle_truncate(&format!(
-                            "Truncated incorrect DECIMAL value: '{}'",
-                            string_operand_text(&d)
-                        ))?;
-                    }
-                    Ok(Datum::Decimal(converted.value))
-                };
-                return decimal_binary(op, as_decimal(l)?, as_decimal(r)?, unsigned_pair, ctx);
-            }
-            return real_compare(
-                op,
-                to_f64_with_mysql_string(&l, ctx)?,
-                to_f64_with_mysql_string(&r, ctx)?,
-            );
-        }
         // `Datum::Bytes` used to be REFUSED here, on the reasoning that it was
         // the AST tier's binary-literal carrier and that reading those octets
         // as TEXT would answer `0x20000000000000 + 1` with 1 instead of
@@ -1557,9 +1310,6 @@ pub(crate) fn eval_binary_full(
     // implicit rule) arithmetics/compares exactly; handles its own NullEq.
     if matches!(l, Datum::Decimal(_)) || matches!(r, Datum::Decimal(_)) {
         return decimal_binary(op, l, r, unsigned_pair, ctx);
-    }
-    if op == NullEq {
-        return null_safe_eq(l, r);
     }
     // By this point `l`/`r` should only be an integral value or `Null`: `Str`
     // is guarded out at the very top, `Float`/`Decimal`/`Div`/`Json`/temporal
@@ -1772,11 +1522,13 @@ fn decimal_binary(
         );
     }
     if op == NullEq {
-        return Ok(match (&l, &r) {
-            (Datum::Null, Datum::Null) => Datum::Int(1),
-            (Datum::Null, _) | (_, Datum::Null) => Datum::Int(0),
-            _ => bool_int(to_decimal(l) == to_decimal(r)),
-        });
+        return eval_null_safe_eq_values_in(
+            l,
+            r,
+            DERIVATION_FREE_COLLATION,
+            Operands::LITERALS,
+            ctx,
+        );
     }
     if l == Datum::Null || r == Datum::Null {
         if matches!(op, BitAnd | BitOr | BitXor | LeftShift | RightShift) {
@@ -1840,45 +1592,6 @@ fn decimal_bit_operand(
     Ok(value.round_to_i64_saturating())
 }
 
-/// Coerces a non-`NULL` value to [`Decimal`] (an `Int` promotes to scale 0);
-/// `Str`/`Float` are unreachable here — `eval_binary` guards both out
-/// before dispatching to decimal handling (`Float` takes priority over
-/// `Decimal`, so a `Float` operand never reaches this function at all).
-/// Also reused by `func::extremum` (only when no argument is `Float`, so
-/// the same invariant holds there too).
-/// Compares in the time domain, parsing the non-`Time` side.
-///
-/// Captured from TiDB: `'2024-12-31'` against a DATETIME column means that
-/// date's midnight, a bare number `20241231` parses as a date too, and a
-/// string that is not a datetime at all filters every row with warning 1292
-/// `Incorrect datetime value` -- the comparison itself yields NULL.
-fn time_compare(
-    op: BinaryOp,
-    l: &Datum,
-    r: &Datum,
-    ctx: &dyn crate::context::Columns,
-) -> Result<Datum, EvalError> {
-    let ordering = match (l, r) {
-        (Datum::Time(a), Datum::Time(b)) => a.compare(*b),
-        (Datum::Time(a), other) => match time_compare_ordering(*a, other, ctx)? {
-            Some(ordering) => ordering,
-            None => return Ok(Datum::Null),
-        },
-        (other, Datum::Time(b)) => match time_compare_ordering(*b, other, ctx)? {
-            Some(ordering) => ordering.reverse(),
-            None => return Ok(Datum::Null),
-        },
-        _ => unreachable!("one side is a Time"),
-    };
-    Ok(ordering_to_bool(op, ordering))
-}
-
-/// The separate NullEq family retains its legacy equality projection.
-fn ordering_to_bool(op: BinaryOp, ordering: std::cmp::Ordering) -> Datum {
-    debug_assert_eq!(op, BinaryOp::NullEq);
-    bool_int(ordering.is_eq())
-}
-
 /// A temporal value in the numeric context Go's `numericContextResultType`
 /// (`pkg/expression/builtin_arithmetic.go:80`) gives it: a DECIMAL when it
 /// carries fractional seconds, an INT otherwise. Every other datum is already
@@ -1898,15 +1611,6 @@ fn numeric_context_value(value: Datum) -> Datum {
 
 /// `time` compared against a non-time datum, parsed into the time domain.
 /// `None` is an unparseable value, which warns 1292 and compares as NULL.
-fn time_compare_ordering(
-    time: tidb_datatype::Time,
-    other: &Datum,
-    ctx: &dyn crate::context::Columns,
-) -> Result<Option<std::cmp::Ordering>, EvalError> {
-    // This ordering helper is retained only by the distinct NullEq family.
-    Ok(parse_time_comparison_operand(time, other, ctx)?.map(|other| time.compare(other)))
-}
-
 fn parse_time_comparison_operand(
     time: tidb_datatype::Time,
     other: &Datum,
@@ -2033,24 +1737,6 @@ fn string_cmp_operand(value: &Datum, comparison: bool) -> Option<&[u8]> {
     }
 }
 
-/// Compares two strings under `collation`.
-///
-/// The PAD SPACE vs NO PAD rule is the collation's own (`Collation::compare`
-/// transcreates each collator's `Compare`, including `utf8mb4_bin`'s trailing-
-/// space trim and `binary`'s lack of one), so this function no longer decides
-/// it. Only comparison operators are defined on strings here.
-fn string_compare(
-    op: BinaryOp,
-    a: &[u8],
-    b: &[u8],
-    collation: tidb_datatype::Collation,
-) -> Result<Datum, EvalError> {
-    if op != BinaryOp::NullEq {
-        return Err(EvalError::Unsupported("string arithmetic"));
-    }
-    Ok(bool_int(collation.compare(a, b).is_eq()))
-}
-
 /// FALSE dominates; otherwise NULL propagates if either side is unknown.
 /// Also called directly from `crate::eval_in`'s `BETWEEN` handling (`x >= lo
 /// AND x <= hi`), not just from `eval_binary`'s `LogicAnd` arm.
@@ -2094,45 +1780,6 @@ fn logic_xor(l: Datum, r: Datum, ctx: &dyn crate::context::Columns) -> Result<Da
         crate::LogicalArgs::Both(truthy_of(&l)?, truthy_of(&r)?),
         ctx,
     )
-}
-
-/// Called from `eval_binary`'s own `NullEq` arm, after its `Str`/`Float`/
-/// `Decimal`/`Json`/temporal guards have run.
-///
-/// The comment this replaces claimed the survivors "can only be `Int` or
-/// `Null`". That was FALSE, and asserted without a capture. `Enum`, `Set`,
-/// `Bit` and `BinaryLiteral` all reach here -- none is a string by
-/// `as_raw_bytes`, and none has a numeric guard above -- and every one of
-/// them hit the `unreachable!` and ABORTED THE PROCESS. `e <=> 2` on an
-/// `enum` column was a one-query kill switch for the whole server.
-///
-/// The four are integral values, which is exactly what [`integer_of`]
-/// already says about them, matching the `default` arms of Go's
-/// `compareMysqlEnum`/`compareMysqlSet`/`compareBinaryLiteral` (all of which
-/// fall through to a numeric comparison for a non-string operand). Captured
-/// via `gorun` for `enum('a','b','c') e` = `'b'`, `set('x','y') s` = `'x'`,
-/// `bit(8) b` = `b'00000010'`: `e <=> 2` is 1, `e <=> 5` is 0,
-/// `e <=> null` is 0, `s <=> 1` is 1, `b <=> 2` is 1.
-///
-/// (`e <=> 'b'` is 1 too, but that pair never arrives here -- comparing an
-/// enum with a string is a NAME comparison resolved by
-/// [`string_cmp_operand`] further up.)
-///
-/// `<=>` is the one comparison with no NULL result: an operand that is NULL
-/// makes the answer 0, or 1 when both are, and never propagates.
-fn null_safe_eq(l: Datum, r: Datum) -> Result<Datum, EvalError> {
-    match (&l, &r) {
-        (Datum::Null, Datum::Null) => return Ok(Datum::Int(1)),
-        (Datum::Null, _) | (_, Datum::Null) => return Ok(Datum::Int(0)),
-        _ => {}
-    }
-    match (integer_of(&l)?, integer_of(&r)?) {
-        (Some(a), Some(b)) => Ok(bool_int(integer_cmp(a, b).is_eq())),
-        // The residue is an error, not a panic, for the reason recorded on
-        // `eval_binary_full`'s own residue: the previous assertion that this
-        // point was unreachable was wrong, and being wrong cost the process.
-        _ => Err(EvalError::UnsupportedOperandPair(l.kind(), r.kind())),
-    }
 }
 
 #[cfg(test)]
