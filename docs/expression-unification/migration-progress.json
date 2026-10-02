@@ -1,7 +1,11 @@
 {
-  "checkpoint_id": "compare-six-53",
-  "new_migration_ids": ["eq", "ne", "lt", "le", "gt", "ge"],
-  "latest_functional_migration_checkpoint": "compare-six-53",
+  "checkpoint_id": "grouping-between-54",
+  "new_migration_ids": ["grouping", "between"],
+  "latest_functional_migration_checkpoint": "grouping-between-54",
+  "grouping_shared_api_and_unique_algorithm": true,
+  "grouping_closed_mode_kernels_and_actual_metadata_packets": true,
+  "between_existing_shared_composition_verified_without_new_kernel": true,
+  "between_ast_and_rewritten_demand_nan_collation_differences_preserved": true,
   "comparison_substrate_checkpoint": "compare-substrate-52",
   "comparison_substrate_added_family_credit": 0,
   "comparison_substrate_shared_json_decoder_time_core_and_borrowed_decimal": true,
@@ -14,7 +18,7 @@
   "comparison_nullsafe_and_broader_request_root_not_complete": true,
   "frozen_denominator": 245,
   "required_families": 221,
-  "functional_delegation_and_native_deletion_count": 172,
+  "functional_delegation_and_native_deletion_count": 174,
   "fully_final_audited_count": 0,
   "final_performance_and_workspace_gates_complete": false,
   "families": [
@@ -189,9 +193,11 @@
     {"id":"lt","status":"functional_tikv_only","native_algorithm_deleted":true,"all_native_value_domains_and_existing_legacy_signatures_use_fixed_workers":true,"typed_batch_filter_and_row_paths_connected":true,"actual_null_and_missing_recipes":true,"native_ieee_and_legacy_total_order_distinct":true,"raw_json_native_policy_not_wire_substitution":true,"row_context_activation_compatibility_change":true,"no_new_carrier_driver_binding_or_wire_admission":true},
     {"id":"le","status":"functional_tikv_only","native_algorithm_deleted":true,"all_native_value_domains_and_existing_legacy_signatures_use_fixed_workers":true,"typed_batch_filter_and_row_paths_connected":true,"actual_null_and_missing_recipes":true,"native_ieee_and_legacy_total_order_distinct":true,"raw_json_native_policy_not_wire_substitution":true,"row_context_activation_compatibility_change":true,"no_new_carrier_driver_binding_or_wire_admission":true},
     {"id":"gt","status":"functional_tikv_only","native_algorithm_deleted":true,"all_native_value_domains_and_existing_legacy_signatures_use_fixed_workers":true,"typed_batch_filter_pb_and_row_paths_connected":true,"actual_null_and_missing_recipes":true,"native_ieee_and_legacy_total_order_distinct":true,"raw_json_native_policy_not_wire_substitution":true,"row_context_activation_compatibility_change":true,"no_new_carrier_driver_binding_or_wire_admission":true},
-    {"id":"ge","status":"functional_tikv_only","native_algorithm_deleted":true,"all_native_value_domains_and_existing_legacy_signatures_use_fixed_workers":true,"typed_batch_filter_and_row_paths_connected":true,"actual_null_and_missing_recipes":true,"native_ieee_and_legacy_total_order_distinct":true,"raw_json_native_policy_not_wire_substitution":true,"row_context_activation_compatibility_change":true,"no_new_carrier_driver_binding_or_wire_admission":true}
+    {"id":"ge","status":"functional_tikv_only","native_algorithm_deleted":true,"all_native_value_domains_and_existing_legacy_signatures_use_fixed_workers":true,"typed_batch_filter_and_row_paths_connected":true,"actual_null_and_missing_recipes":true,"native_ieee_and_legacy_total_order_distinct":true,"raw_json_native_policy_not_wire_substitution":true,"row_context_activation_compatibility_change":true,"no_new_carrier_driver_binding_or_wire_admission":true},
+    {"id":"grouping","status":"functional_tikv_only","native_algorithm_deleted":true,"native_public_metadata_helpers_alias_shared_api":true,"three_mode_kernels_and_real_null_terminal":true,"actual_gid_and_mark_set_packet_not_precomputed_result":true,"checked_packing_and_shared_admission_validator":true,"full_unsigned_bits_and_more_than_64_mark_wrapping_preserved":true,"child_null_and_metadata_error_demand_preserved":true,"existing_rollup_sql_verified":true,"no_new_carrier_driver_binding_or_wire_admission":true},
+    {"id":"between","status":"functional_tikv_only","native_algorithm_deleted":true,"existing_comparison_logical_and_not_workers_own_final_answers":true,"no_new_between_kernel_needed":true,"ast_single_selector_eager_bounds_preserved":true,"rewritten_lazy_bounds_repeated_selector_and_negated_disjunction_preserved":true,"nan_negation_and_collation_differences_preserved":true,"all_six_common_domains_and_unsigned_verified":true,"direct_column_zero_slot_scope_verified":true,"no_new_carrier_driver_binding_or_wire_admission":true}
   ],
-  "shared_evidence": "evidence/compare-six-checkpoint.md",
+  "shared_evidence": "evidence/grouping-between-checkpoint.md",
   "aes_completed_functional_checkpoint": "aes-two-51",
   "aes_new_value_recipes": 24,
   "aes_new_null_witness_recipes": 1,

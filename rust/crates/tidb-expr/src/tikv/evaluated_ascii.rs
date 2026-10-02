@@ -1974,6 +1974,10 @@ fn materialize_computed(
             | EvaluatedBytesOp::CompareJsonNative(_)
             | EvaluatedBytesOp::CompareNullNative
             | EvaluatedBytesOp::CompareMissingLegacy
+            | EvaluatedBytesOp::GroupingBitAndNative
+            | EvaluatedBytesOp::GroupingNumericCmpNative
+            | EvaluatedBytesOp::GroupingNumericSetNative
+            | EvaluatedBytesOp::GroupingNullNative
             | EvaluatedBytesOp::AbsIntNative
             | EvaluatedBytesOp::AbsUIntNative
             | EvaluatedBytesOp::CeilIntNative

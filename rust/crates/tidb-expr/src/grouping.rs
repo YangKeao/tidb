@@ -15,195 +15,57 @@
 //! Scalar `GROUPING` metadata and grouping-id evaluation.
 //!
 //! TiDB rewrites a user-facing `GROUPING(...)` expression into a grouping-id
-//! column plus this metadata before execution.  This leaf deliberately owns
-//! only the pure bit calculation: the planner rewrite, tipb metadata, session
-//! context, and vectorized chunk path remain outside the seed evaluator.
+//! column plus validated metadata. Public types alias the shared pure core;
+//! runtime evaluation sends the actual id and marks through the guarded worker.
+//! Planner rewriting and protobuf admission remain unchanged.
 
+#[cfg(test)]
 use std::collections::BTreeSet;
 
-/// The three grouping-id comparison algorithms used by TiDB's tipb payload.
-///
-/// The discriminants match `tipb.GroupingMode` (`1`, `2`, and `3`) so a
-/// future wire-format adapter can convert without changing the calculation
-/// itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum GroupingMode {
-    /// A grouping mark is present when `grouping_id & mark == 0`.
-    BitAnd = 1,
-    /// A grouping mark is present when `grouping_id <= mark`.
-    NumericCmp = 2,
-    /// A grouping mark is present when `grouping_id` is absent from the set.
-    NumericSet = 3,
+pub use tidb_query_expr::{
+    GroupingFunction, GroupingMetadata, GroupingMetadataError, GroupingMode,
+};
+
+/// Execute only an actual grouping id and validated planner metadata. Input
+/// serialization is guarded; neither marks nor the final answer are computed here.
+pub(crate) fn eval_grouping_in(
+    grouping_id: u64,
+    metadata: &GroupingMetadata,
+    ctx: &dyn crate::Columns,
+) -> Result<crate::Datum, crate::EvalError> {
+    use crate::tikv::EvaluatedBytesOp;
+    crate::tikv::evaluate_prepared_args_in(
+        ctx,
+        || {
+            let operation = match metadata.mode() {
+                GroupingMode::BitAnd => EvaluatedBytesOp::GroupingBitAndNative,
+                GroupingMode::NumericCmp => EvaluatedBytesOp::GroupingNumericCmpNative,
+                GroupingMode::NumericSet => EvaluatedBytesOp::GroupingNumericSetNative,
+            };
+            Ok((
+                operation,
+                crate::tikv::prepare_grouping_args(grouping_id, metadata)?,
+            ))
+        },
+        crate::tikv::EvaluatedBytesResult::into_uint_bits_datum,
+    )
 }
 
-impl TryFrom<u8> for GroupingMode {
-    type Error = GroupingMetadataError;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            1 => Ok(Self::BitAnd),
-            2 => Ok(Self::NumericCmp),
-            3 => Ok(Self::NumericSet),
-            other => Err(GroupingMetadataError::InvalidMode(other)),
-        }
-    }
-}
-
-/// Errors raised while constructing or using grouping metadata.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GroupingMetadataError {
-    /// `GROUPING` was evaluated before planner metadata was installed.
-    Uninitialized,
-    /// A wire mode did not map to one of TiDB's supported algorithms.
-    InvalidMode(u8),
-    /// Bit-and and numeric-compare require exactly one mark per argument.
-    InvalidGroupingMarkCount {
-        /// The mode whose mark cardinality was invalid.
-        mode: GroupingMode,
-        /// Zero-based argument position of the invalid mark.
-        index: usize,
-        /// Number of grouping ids supplied for that argument.
-        count: usize,
-    },
-}
-
-/// Validated metadata attached to one scalar grouping function.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GroupingMetadata {
-    mode: GroupingMode,
-    grouping_marks: Vec<BTreeSet<u64>>,
-}
-
-impl GroupingMetadata {
-    /// Validates and stores the source `GroupingMode` and grouping marks.
-    pub fn new(
-        mode: GroupingMode,
-        grouping_marks: Vec<BTreeSet<u64>>,
-    ) -> Result<Self, GroupingMetadataError> {
-        if matches!(mode, GroupingMode::BitAnd | GroupingMode::NumericCmp) {
-            for (index, mark) in grouping_marks.iter().enumerate() {
-                if mark.len() != 1 {
-                    return Err(GroupingMetadataError::InvalidGroupingMarkCount {
-                        mode,
-                        index,
-                        count: mark.len(),
-                    });
-                }
-            }
-        }
-        Ok(Self {
-            mode,
-            grouping_marks,
-        })
-    }
-
-    /// Returns the selected source algorithm.
-    pub fn mode(&self) -> GroupingMode {
-        self.mode
-    }
-
-    /// Returns the validated mark sets in argument order.
-    pub fn grouping_marks(&self) -> &[BTreeSet<u64>] {
-        &self.grouping_marks
-    }
-
-    /// Evaluates one grouping id using this validated metadata.
-    pub fn eval(&self, grouping_id: u64) -> u64 {
-        let mut result = 0u64;
-        match self.mode {
-            GroupingMode::BitAnd => {
-                for mark in &self.grouping_marks {
-                    result <<= 1;
-                    let key = *mark
-                        .iter()
-                        .next()
-                        .expect("validated bit-and mark has one element");
-                    if grouping_id & key == 0 {
-                        result += 1;
-                    }
-                }
-            }
-            GroupingMode::NumericCmp => {
-                for mark in &self.grouping_marks {
-                    result <<= 1;
-                    let key = *mark
-                        .iter()
-                        .next()
-                        .expect("validated numeric-compare mark has one element");
-                    if grouping_id <= key {
-                        result += 1;
-                    }
-                }
-            }
-            GroupingMode::NumericSet => {
-                for mark in &self.grouping_marks {
-                    result <<= 1;
-                    if !mark.contains(&grouping_id) {
-                        result += 1;
-                    }
-                }
-            }
-        }
-        result
-    }
-}
-
-/// Pure scalar implementation of TiDB's rewritten `GROUPING` function.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct GroupingFunction {
-    metadata: Option<GroupingMetadata>,
-}
-
-impl GroupingFunction {
-    /// Constructs an uninitialized function, matching a freshly built Go
-    /// `BuiltinGroupingImplSig` before `SetMetadata` runs.
-    pub fn uninitialized() -> Self {
-        Self::default()
-    }
-
-    /// Constructs a function with validated planner metadata.
-    pub fn with_metadata(
-        mode: GroupingMode,
-        grouping_marks: Vec<BTreeSet<u64>>,
-    ) -> Result<Self, GroupingMetadataError> {
-        let mut function = Self::uninitialized();
-        function.set_metadata(mode, grouping_marks)?;
-        Ok(function)
-    }
-
-    /// Installs planner metadata.  A failed replacement leaves the function
-    /// uninitialized, matching Go's `SetMetadata` failure state.
-    pub fn set_metadata(
-        &mut self,
-        mode: GroupingMode,
-        grouping_marks: Vec<BTreeSet<u64>>,
-    ) -> Result<(), GroupingMetadataError> {
-        self.metadata = None;
-        let metadata = GroupingMetadata::new(mode, grouping_marks)?;
-        self.metadata = Some(metadata);
-        Ok(())
-    }
-
-    /// Returns validated metadata, or the source uninitialized error.
-    pub fn metadata(&self) -> Result<&GroupingMetadata, GroupingMetadataError> {
-        self.metadata
-            .as_ref()
-            .ok_or(GroupingMetadataError::Uninitialized)
-    }
-
-    /// Returns the selected mode, if metadata has been installed.
-    pub fn mode(&self) -> Result<GroupingMode, GroupingMetadataError> {
-        Ok(self.metadata()?.mode())
-    }
-
-    /// Evaluates one grouping id using the source algorithm.
-    ///
-    /// The Go signature returns an `int64` carrying an unsigned result flag;
-    /// this typed leaf exposes the same bits directly as `u64`.
-    pub fn eval(&self, grouping_id: u64) -> Result<u64, GroupingMetadataError> {
-        Ok(self.metadata()?.eval(grouping_id))
-    }
+/// NULL is observed before any metadata demand, so it carries no fabricated
+/// grouping id or metadata; its own closed worker returns the nullable result.
+pub(crate) fn eval_grouping_null_in(
+    ctx: &dyn crate::Columns,
+) -> Result<crate::Datum, crate::EvalError> {
+    crate::tikv::evaluate_prepared_args_in(
+        ctx,
+        || {
+            Ok((
+                crate::tikv::EvaluatedBytesOp::GroupingNullNative,
+                crate::tikv::EvaluatedArgs::NullWitness(None),
+            ))
+        },
+        crate::tikv::EvaluatedBytesResult::into_uint_bits_datum,
+    )
 }
 
 #[cfg(test)]

@@ -1,0 +1,43 @@
+grouping-between-54 / round55; previous compare-six-53
+GROUPING unique shared core/runtime plus complete BETWEEN composition evidence: functional174/245, strict0, target221.71 eligible remain,47 more required. Not PR-ready.
+Raw logs /home/agent/tidb/expression-unification/logs.
+T cwd=/home/agent/tidb/expression-unification/tikv, ../tools/cargo-tikv (nightly-2026-01-30).
+N cwd=/home/agent/tidb/expression-unification/tidb/rust, ../../tools/cargo-tidb (nightly-2026-08-22).
+Each command: set -o pipefail; <wrapper> <args> 2>&1 | tee <log> >/dev/null. T uses ../logs/, N ../../logs/. Grouped calls use set -e, stop on failure.
+Counts passed/failed/ignored/filtered; measured0. Compile/test times seconds; SHA256 of complete raw logs.
+
+1 T test --locked -p tidb_query_expr --lib grouping -- --test-threads=1
+ grouping-between-tikv-grouping.log;4/0/0/840;12.98/.00s;exit0;8cbab456137784b3e4af5192fa53d6d08d1d9882cbecfd75e1a0b24b8b156346
+2 T test --locked -p tidb_query_expr --lib local -- --test-threads=1
+ grouping-between-tikv-local.log;297/0/1/546;.12/.20s;exit0;cd5478f72627d36d264afa6d5d266242613a000420be1b8c0cb3d5478006d370
+3 N test --locked -p tidb-expr --lib grouping -- --test-threads=1
+ grouping-between-native-grouping.log;COMPILE FAILURE,0tests,E0046+E0271;exit101;2e32e805b2b17d4d5d8929dda6cb8bcfc2e8f015971aa0b65212ff0b08bda4d4
+4 N test --locked -p tidb-expr --lib grouping -- --test-threads=1
+ grouping-between-native-grouping-retry.log;5/1/0/1594;8.62/.00s;exit101;b53e202ddad7c47c2960ad186971e36d450c66d312aee07918825fff3f4351f9
+5 N test --locked -p tidb-expr --lib grouping -- --test-threads=1
+ grouping-between-native-grouping-final.log;6/0/0/1594;3.44/.00s;exit0;18bc3a89890aa4b2a5e3b494dd0d8f0c4968f624b8fa3aa760ae2d6330b8fef5
+6 N test --locked -p tidb-expr --lib between -- --test-threads=1
+ grouping-between-native-between.log;2/1/0/1597;.12/.01s;exit101;4f429bc08d5d01cc17a4961a90dd71c0131308be7a0de87a55a6936acf1bac0b
+7 N test --locked -p tidb-expr --lib between -- --test-threads=1
+ grouping-between-native-between-retry.log;3/0/0/1597;3.44/.01s;exit0;8355a27468908e42b1594fe9c962616209003bf3e322abeeb0753ccfc9171e50
+8 N test --locked -p tidb-session --lib evaluated_ascii_between_ -- --test-threads=1
+ grouping-between-sql.log;2/0/0/2187;25.51/.07s;exit0;cb1f6284ca5ae6c00312c45e6dade69801d806f1ee3137a9d8ecfefc7756572c
+9 N test --locked -p tidb-expr --lib -- --test-threads=1
+ grouping-between-expr-full.log;1502/4/94/0;.12/13.65s;exit101;ae3e3cbb2a33664b78c583372738ce68da01fad1271c162aa999a7555aa3f651
+
+9 Cargo attempts=8 actual runs+1 compile failure.5 final focused green,2 actual new-test RED,1 final baseline-only non-green full run.3 retry commands, no metadata/lock-resolution commands or zero-match runs. Ignored are not passes; full suite is not green. No current full unistore run (legacy production untouched); prior203/1/13 is historical only.
+
+Actual incidents and SOURCE-based repairs:
+- New BETWEEN test Inputs ColumnResolver lacked time_zone and duration helper seconds inferred i32. E0046+E0271 fixed by forwarding existing Columns::time_zone and annotating i64. No tests executed in that attempt.
+- New grouping child-error test expected primitive IntOverflow, but typed arithmetic decorates it. Source scalar_function.rs1519-1527 -> arithmetic_overflow_error522-540, formatting505-519, Plus322-324, Intconstant339-342 specifies DataOutOfRange{value:"BIGINT",expression:"(9223372036854775807 + 1)"}. Corrected that NEW expected error from source, not provider recording. Kept actual C4 and child-error-before-metadata proof; no production change.
+- New Duration fixture declared default FSP-1 despite actualFSP0: field_type/mod.rs575-584, column.rs238-250, chunk/row.rs99-100, chunk/column.rs635-636 stamp missing declaredFSP into duration; rewriter wrapping does not normalize an already-Duration expression. Duration to_number then hits the old duration.rs164 nonnegative-FSP panic. Set NEW Duration/Datetime FieldType decimal0 to match their unchanged actualvalues; retained both domains and every literal expected result. Old production panic remains unchanged in full baseline.
+- Parent first formatter command used root-prefixed git diff names from rust/; rustfmt rejected7 missing paths and exited1 before ANY Cargo. Corrected to git diff --relative. This is one invocation failure, not a Rust compile/test failure or seven failures.
+- Separate E read-only discovery ls unmatchedglob exited2, then actual root Plan located/read; no code impact. Pre-gate RO corrections: private exact-quotient API is not test-only; one closed-plus lowering rejection is not universal PB rejection. Neither is a test failure.
+
+Original native grouping #[cfg(test)] module suffix byte-equal SHA256351f7599b5e243e994883f20b5497db9b570e91ae4d3cda38cff23b19128e586. No original tests/SQL expected values changed or fixtures regenerated;10newtests CPPkernels2/local2/nativeSDK2/BETWEEN2/SQL2. New packet/metadata fixtures are independent fixed inputs.14 existing Rust files=CPP7/native7; no source/dependency/manifest/lock additions. All14 pinned rustfmt --edition2021 --config skip_children=true --check pass; both diff checks pass.
+
+Full expression COMPLETE failure section matches compare-six-53 after ONLY numeric panic-heading thread IDs ->(<id>), no source-address mapping; SHA27654f2c0ad2971242c00f50182467598cdfd9c2c65e5bf5a32e683708448637. Four old failures retained: ifnull_string_column_literal_uses_go_signature_and_column_collation; builtin_info_json_math_source::exp; builtin_math_misc_op_source::vectorized_builtin_op_func; str_to_date_partial_formats_follow_no_zero_date.
+
+Coverage: GROUPING3modes/fullunsignedbits/64ones/>64wrap/zero+emptysets/singletonchecks/orderedmarks/realNULL/missingmetadata/childerror/actualscope0slots/cachemodechanges; purehelper APIs share sameCPPalgorithm. BETWEEN actualcomparison/logical composition,6native common domains/unsigned/collation/ASTeageronce vs rewrittenlazyrepeated/NaNnegated difference. SQL6domains×10 fixed expected forms,24 direct BETWEEN zero-slot calls plus1 existing GROUPING rollup projection; no unrelated WHERE/ORDER/CAST/aggregate can mask failure.
+
+Deferred: IntDIV actual getter/warning/legacy-exact phase work; IN/INTERVAL/NullEq and other71 eligible families; wholeworkspace/lint/dev/bazel_prepare, release/performance/zero-copy, physicalheap/peak/OOM/M6, exhaustive domain/context/differential/TiFlash/FIPS and existing parser/GB/ignored-vector/extremeDecimal exceptions. No package or full old-row-context equivalence claim.

@@ -1612,24 +1612,21 @@ impl ScalarFunction {
         if name == "json_schema_valid" {
             return self.json_schema_cache.eval(&self.args, ctx, row);
         }
-        // Go `BuiltinGroupingImplSig.evalInt`: the planner installs grouping
-        // metadata before execution, the grouping-id argument is evaluated
-        // as an int64 carrier, and NULL propagates without invoking the
-        // grouping algorithm.
+        // Keep GROUPING's original argument and metadata demand order: NULL
+        // never reads planner metadata, but still reaches its genuine NULL worker.
         if name == "grouping" {
             let [argument] = self.args.as_slice() else {
                 return Err(EvalError::WrongParameterCount("grouping"));
             };
             let grouping_id = crate::arg_eval_type::eval_int(&argument.eval(ctx, row)?)?;
             let Some(grouping_id) = grouping_id else {
-                return Ok(Datum::Null);
+                return crate::grouping::eval_grouping_null_in(ctx);
             };
             let metadata = self
                 .grouping_metadata
                 .as_ref()
                 .ok_or(EvalError::Unsupported("Meta data is not initialized"))?;
-            let result = metadata.eval(grouping_id as u64);
-            return Ok(Datum::UInt(result));
+            return crate::grouping::eval_grouping_in(grouping_id as u64, metadata, ctx);
         }
         if let Some(op) = binary_op_for_name(name) {
             if self.args.len() == 2 {

@@ -1896,3 +1896,372 @@ fn literal_charset(expr: &Expr) -> Option<&str> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod between_composition_tests {
+    use super::*;
+    use crate::rewriter::{rewrite_expr_resolved, ColumnResolver};
+    use std::cell::RefCell;
+    use tidb_ast::{QueryStmt, SelectField, Stmt};
+    use tidb_datatype::{FieldType, FieldTypeCode, FieldTypeFlags, MySqlDuration};
+
+    struct Inputs {
+        values: [Datum; 3],
+        types: [FieldType; 3],
+        assignments: RefCell<Vec<String>>,
+    }
+
+    impl Inputs {
+        fn new(values: [Datum; 3], field: FieldType) -> Self {
+            Self {
+                values,
+                types: [field.clone(), field.clone(), field],
+                assignments: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn index(name: &str) -> Option<usize> {
+            ["v", "l", "h"]
+                .iter()
+                .position(|candidate| *candidate == name)
+        }
+
+        fn assert_assignments(&self, expected: &[&str]) {
+            let actual = self.assignments.borrow();
+            assert_eq!(
+                actual.iter().map(String::as_str).collect::<Vec<_>>(),
+                expected
+            );
+        }
+    }
+
+    impl Columns for Inputs {
+        fn get(&self, path: &[String]) -> Option<Datum> {
+            Some(self.values[Self::index(path.last()?)?].clone())
+        }
+
+        fn set_uservar(&self, name: &str, _: Datum) {
+            self.assignments.borrow_mut().push(name.to_owned());
+        }
+
+        fn truncate_level(&self) -> ErrorLevel {
+            ErrorLevel::Error
+        }
+    }
+
+    impl ColumnResolver for Inputs {
+        fn resolve(&self, path: &[String]) -> Option<(usize, FieldType, i64)> {
+            let index = Self::index(path.last()?)?;
+            Some((index, self.types[index].clone(), index as i64 + 1))
+        }
+
+        fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+            Columns::time_zone(self)
+        }
+    }
+
+    fn parsed(sql: &str) -> Expr {
+        let Stmt::Query(query) = tidb_parser::parse(&format!("select {sql}")).unwrap() else {
+            panic!("expected query");
+        };
+        let QueryStmt::Select(select) = query.into_inner() else {
+            panic!("expected select");
+        };
+        let SelectField::Expr { expr, .. } = &select.fields[0] else {
+            panic!("expected expression");
+        };
+        expr.clone()
+    }
+
+    fn pool_owner(slots: usize) -> AsciiPoolOwner {
+        // Explicit test ledger allowances, not physical allocation bounds.
+        AsciiPoolOwner::new(
+            AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 8, 1 << 16)
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn between_composition_preserves_ast_and_rewritten_demand_and_nan() {
+        let owner = pool_owner(1);
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        // Fixed answers, not one frontend used as the other's oracle. SETVAR
+        // witnesses real child demand; assigning NULL intentionally emits no write.
+        for (values, code, not, ast_answer, rewritten_answer, ast_writes, rewritten_writes) in [
+            (
+                [Datum::Int(5), Datum::Int(6), Datum::Int(10)],
+                FieldTypeCode::LongLong,
+                false,
+                Datum::Int(0),
+                Datum::Int(0),
+                vec!["v", "l", "h"],
+                vec!["v", "l"],
+            ),
+            (
+                [Datum::Int(5), Datum::Int(1), Datum::Int(10)],
+                FieldTypeCode::LongLong,
+                false,
+                Datum::Int(1),
+                Datum::Int(1),
+                vec!["v", "l", "h"],
+                vec!["v", "l", "v", "h"],
+            ),
+            (
+                [Datum::Int(5), Datum::Null, Datum::Int(10)],
+                FieldTypeCode::LongLong,
+                false,
+                Datum::Null,
+                Datum::Null,
+                vec!["v", "h"],
+                vec!["v", "v", "h"],
+            ),
+            (
+                [Datum::Int(5), Datum::Null, Datum::Int(4)],
+                FieldTypeCode::LongLong,
+                false,
+                Datum::Int(0),
+                Datum::Int(0),
+                vec!["v", "h"],
+                vec!["v", "v", "h"],
+            ),
+            (
+                [Datum::Int(5), Datum::Int(6), Datum::Int(10)],
+                FieldTypeCode::LongLong,
+                true,
+                Datum::Int(1),
+                Datum::Int(1),
+                vec!["v", "l", "h"],
+                vec!["v", "l"],
+            ),
+            (
+                [Datum::Int(5), Datum::Int(1), Datum::Int(10)],
+                FieldTypeCode::LongLong,
+                true,
+                Datum::Int(0),
+                Datum::Int(0),
+                vec!["v", "l", "h"],
+                vec!["v", "l", "v", "h"],
+            ),
+            (
+                [Datum::Real(f64::NAN), Datum::Real(1.0), Datum::Real(10.0)],
+                FieldTypeCode::Double,
+                false,
+                Datum::Int(0),
+                Datum::Int(0),
+                vec!["v", "l", "h"],
+                vec!["v", "l"],
+            ),
+            // Preserve NOT(Ge AND Le) versus (Lt OR Gt), including their
+            // pre-existing IEEE unordered difference. Do not normalize the AST.
+            (
+                [Datum::Real(f64::NAN), Datum::Real(1.0), Datum::Real(10.0)],
+                FieldTypeCode::Double,
+                true,
+                Datum::Int(1),
+                Datum::Int(0),
+                vec!["v", "l", "h"],
+                vec!["v", "l", "v", "h"],
+            ),
+        ] {
+            let input = Inputs::new(values, FieldType::new(code));
+            let ast = parsed(&format!(
+                "(@v := v) {}between (@l := l) and (@h := h)",
+                if not { "not " } else { "" }
+            ));
+            let rewritten = rewrite_expr_resolved(&ast, &input).unwrap();
+            let row = tidb_chunk::mutrow::MutRow::from_datums(&input.values);
+            input.assignments.borrow_mut().clear();
+            scope.with_columns(&input, |ctx| {
+                assert_eq!(eval_in(&ast, ctx).unwrap(), ast_answer);
+                input.assert_assignments(&ast_writes);
+                input.assignments.borrow_mut().clear();
+                assert_eq!(rewritten.eval(ctx, row.to_row()).unwrap(), rewritten_answer);
+                input.assert_assignments(&rewritten_writes);
+            });
+        }
+
+        // A false lower comparison suppresses an upper conversion error only
+        // in the rewritten tree; NULL does not short-circuit either frontend.
+        for low in [Datum::Int(6), Datum::Null] {
+            let null_low = low.is_null();
+            let mut input = Inputs::new(
+                [Datum::Int(5), low, Datum::new_string("bad")],
+                FieldType::new(FieldTypeCode::LongLong),
+            );
+            input.types[2] = FieldType::new(FieldTypeCode::VarString);
+            let ast = parsed("(@v := v) between (@l := l) and cast((@h := h) as signed)");
+            let rewritten = rewrite_expr_resolved(&ast, &input).unwrap();
+            let row = tidb_chunk::mutrow::MutRow::from_datums(&input.values);
+            input.assignments.borrow_mut().clear();
+            scope.with_columns(&input, |ctx| {
+                assert!(matches!(
+                    eval_in(&ast, ctx),
+                    Err(EvalError::TruncatedWrongValue(_))
+                ));
+                input.assert_assignments(if null_low {
+                    &["v", "h"]
+                } else {
+                    &["v", "l", "h"]
+                });
+                input.assignments.borrow_mut().clear();
+                let result = rewritten.eval(ctx, row.to_row());
+                if null_low {
+                    assert!(matches!(result, Err(EvalError::TruncatedWrongValue(_))));
+                    input.assert_assignments(&["v", "v", "h"]);
+                } else {
+                    assert_eq!(result, Ok(Datum::Int(0)));
+                    input.assert_assignments(&["v", "l"]);
+                }
+            });
+        }
+        drop(scope);
+        execution.close();
+    }
+
+    #[test]
+    fn between_composition_domains_and_direct_column_scope_admission() {
+        let integer = FieldType::new(FieldTypeCode::LongLong);
+        let mut unsigned = integer.clone();
+        unsigned.add_flags(FieldTypeFlags::UNSIGNED);
+        let mut decimal = FieldType::new(FieldTypeCode::NewDecimal);
+        decimal.set_flen(12);
+        decimal.set_decimal(2);
+        let mut padded = FieldType::new(FieldTypeCode::VarString);
+        padded.set_charset_name("utf8mb4".to_owned());
+        padded.set_collation_name("utf8mb4_bin");
+        let mut binary = FieldType::new(FieldTypeCode::VarString);
+        binary.set_charset_name("binary".to_owned());
+        binary.set_collation_name("binary");
+        let dec = |text| Datum::Decimal(Decimal::parse_mysql(text).0);
+        let duration = |seconds: i64| {
+            Datum::new_duration(
+                MySqlDuration::from_nanoseconds(seconds * 1_000_000_000, 0).unwrap(),
+            )
+        };
+        let time = |text| {
+            Datum::new_time(
+                tidb_datatype::parse_datetime(text, &chrono_tz::UTC, true, false)
+                    .unwrap()
+                    .time,
+            )
+        };
+        let owner = pool_owner(1);
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        for (field, values, ast_answer, rewritten_answer) in [
+            (
+                integer.clone(),
+                [Datum::Int(5), Datum::Int(1), Datum::Int(10)],
+                1,
+                1,
+            ),
+            (
+                unsigned,
+                [
+                    Datum::UInt(u64::MAX),
+                    Datum::UInt(i64::MAX as u64),
+                    Datum::UInt(u64::MAX),
+                ],
+                1,
+                1,
+            ),
+            (
+                FieldType::new(FieldTypeCode::Double),
+                [Datum::Real(1.5), Datum::Real(1.0), Datum::Real(2.0)],
+                1,
+                1,
+            ),
+            (decimal, [dec("1.50"), dec("1.40"), dec("1.60")], 1, 1),
+            (
+                padded,
+                [
+                    Datum::new_string("a "),
+                    Datum::new_string("a"),
+                    Datum::new_string("a"),
+                ],
+                1,
+                1,
+            ),
+            // The AST keeps its derivation-free PAD collation; rewritten
+            // columns carry binary NO PAD. Both fixed policies remain intact.
+            (
+                binary,
+                [
+                    Datum::new_bytes(b"a ".to_vec()),
+                    Datum::new_bytes(b"a".to_vec()),
+                    Datum::new_bytes(b"a".to_vec()),
+                ],
+                1,
+                0,
+            ),
+            (
+                // Chunk duration cells store only nanoseconds; reads stamp
+                // the declared FSP, which must match these FSP-0 fixtures.
+                FieldType::new(FieldTypeCode::Duration).with_decimal(0),
+                [duration(2), duration(1), duration(3)],
+                1,
+                1,
+            ),
+            (
+                FieldType::new(FieldTypeCode::Datetime).with_decimal(0),
+                [
+                    time("2026-08-14 12:00:00"),
+                    time("2026-08-14 11:00:00"),
+                    time("2026-08-14 13:00:00"),
+                ],
+                1,
+                1,
+            ),
+        ] {
+            let input = Inputs::new(values, field);
+            for (sql, expected_ast, expected_rewritten) in [
+                ("v between l and h", ast_answer, rewritten_answer),
+                (
+                    "v not between l and h",
+                    1 - ast_answer,
+                    1 - rewritten_answer,
+                ),
+            ] {
+                let ast = parsed(sql);
+                let rewritten = rewrite_expr_resolved(&ast, &input).unwrap();
+                let row = tidb_chunk::mutrow::MutRow::from_datums(&input.values);
+                scope.with_columns(&input, |ctx| {
+                    assert_eq!(eval_in(&ast, ctx), Ok(Datum::Int(expected_ast)), "{sql}");
+                    assert_eq!(
+                        rewritten.eval(ctx, row.to_row()),
+                        Ok(Datum::Int(expected_rewritten)),
+                        "{sql}"
+                    );
+                });
+            }
+        }
+        drop(scope);
+        execution.close();
+
+        // Fresh zero-slot root, plain typed integer columns only: no CAST,
+        // assignment, logical sibling or unrelated worker can refuse first.
+        let denied_owner = pool_owner(0);
+        let denied_execution = denied_owner.begin_execution().unwrap();
+        let denied_scope = denied_execution.scope();
+        for value in [Datum::Int(5), Datum::Null] {
+            let input = Inputs::new([value, Datum::Int(1), Datum::Int(10)], integer.clone());
+            let row = tidb_chunk::mutrow::MutRow::from_datums(&input.values);
+            for sql in ["v between l and h", "v not between l and h"] {
+                let ast = parsed(sql);
+                let rewritten = rewrite_expr_resolved(&ast, &input).unwrap();
+                denied_scope.with_columns(&input, |ctx| {
+                    for result in [eval_in(&ast, ctx), rewritten.eval(ctx, row.to_row())] {
+                        assert!(
+                            matches!(result, Err(EvalError::ExpressionAdapterFailure(failure))
+                            if failure.class() == ExpressionAdapterFailureClass::PoolResource)
+                        );
+                    }
+                });
+            }
+        }
+        drop(denied_scope);
+        denied_execution.close();
+    }
+}

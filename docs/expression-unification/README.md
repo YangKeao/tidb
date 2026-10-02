@@ -1,28 +1,27 @@
 # Expression unification experiment
 
-Checkpoint-ID: `compare-six-53` (previous `compare-substrate-52`).
-**172/245 functional families; target221; strict final acceptance0.** Added EQ/NE/LT/LE/GT/GE. Incomplete, not PR-ready.
+Checkpoint-ID: `grouping-between-54` (previous `compare-six-53`).
+**174/245 functional families; target221; strict final acceptance0.** Added GROUPING and BETWEEN;47 more needed. Incomplete, not PR-ready.
 Paired branches: [TiDB](https://github.com/YangKeao/tidb/tree/expression-unification-demo) · [TiKV](https://github.com/YangKeao/tikv/tree/expression-unification-demo). Matching Plan snapshots accompany both commits; no force-push or automatic PR.
 
-## Shared comparison evaluators
-13 explicit profiles carrying finite `ComparisonOp` select78 fixed kernels, with unit runtime metadata and separate real-NULL/missing terminals. Native preparation submits actual signed/unsigned, IEEE, Decimal, collated-byte, vector, calendar, duration or raw JSON values. Native IEEE and legacy total float order remain distinct. Raw JSON reuses the preceding native-policy substrate, not wire ordering or canonical text.
+## This checkpoint
+GROUPING's unique bit/set algorithm and public metadata/function types now live in TiKV. Native helpers alias them; real scalar execution submits actual gid/mark-set bytes to three fixed mode kernels, or a genuine NULL witness before metadata lookup. Checked packing preserves raw unsigned bits, empty sets and more-than64-mark wrapping. No new driver, carrier, binding or wire admission.
 
-Typed, numeric batch/filter, existing PB and30 legacy signatures now use shared bool production. Row predicates compose actual shared results and shared NOT; NaN Eq-then-Lt/NOT behavior is preserved. No new carrier, driver, binding or PB/legacy admission. Old native six-predicate calculations are removed; NullEq and nonexpression sorting utilities remain separate.
-
-**Explicit compatibility change:** row preparation now observes statement truncation/date-mode/timezone/warning context rather than NoColumns defaults and silence. This is not full old-row-context equivalence. Original row collation, precision4, literal descriptors and empty structural identities remain; tests pin context activation. Wider request-root closure remains unfinished.
+BETWEEN already composes shared comparison/logical workers after the preceding migration. New evidence closes its remaining family without another kernel: AST selector-once/eager bounds and rewritten lazy bounds retain their existing negated/NaN and collation differences. SQL tests include existing GROUPING rollup admission and isolated direct-column zero-slot failures.
 
 ## Validation
 | Gate | Result |
 |---|---|
-| TiKV comparison kernels / local | 29 / 295 passed; local1 ignored |
-| Native profiles / existing comparisons | 24 / 67 passed; existing5 ignored |
-| Legacy / SQL / NOT instrumentation | 2 / 2 / 1 passed |
-| Final full expression | **1498 passed,4 old failures,94 ignored; exit101** |
-| Full unistore | **203 passed,1 old failure,13 ignored; exit101** |
+| TiKV GROUPING / local | 4 / 297 passed; local1 ignored |
+| Native GROUPING / BETWEEN | 6 / 3 passed |
+| SQL BETWEEN and GROUPING | 2 passed |
+| Full expression | **1502 passed,4 old failures,94 ignored; exit101** |
 
-Twelve attempts: eleven actual runs plus one compile failure. Seven final focused gates pass. Two actual test-red runs were repaired: wide test fixtures used a wire parser instead of Grow construction, and an old instrumentation test needed source-derived counts for newly shared IN/BETWEEN comparisons. Three private collation-path compile errors were fixed through existing public exports. Original SQL expected values remain unchanged; no fixtures regenerated. Final complete failure sections equal the previous checkpoint after thread IDs only.21 Rust sources,13 new tests, no dependency/lock changes.
+Nine attempts: eight actual runs plus one compile failure. Five final focused gates pass. Two new-test REDs were corrected from source: a typed error-decoration expectation and undeclared temporal fixture FSP. Missing timezone/type annotations caused the compile failure. No original expected values or fixtures changed. Full failure details equal the preceding checkpoint after thread IDs only.14 Rust sources,10 new tests; no dependency/lock changes.
 
-Exact commands and hashes: [summary](logs/compare-six-summary.txt). Review map, compatibility boundary and deferred work: [evidence](evidence/compare-six-checkpoint.md), `checkpoint.json`, and the root Plan.
+[Exact commands and hashes](logs/grouping-between-summary.txt) · [review map, corrections and exclusions](evidence/grouping-between-checkpoint.md) · `checkpoint.json` · root Plan.
 
-## Remaining work
-73 eligible families remain; target needs49. IntDIV and further comparison/control consumers remain candidates, not completed families. Whole workspace/lint, release/performance, zero-copy, physical heap/peak/OOM/M6, broader request-root and exhaustive compatibility/differential gates are unverified. Existing parser/GB/ignored-vector/extreme Decimal exceptions remain. No complete Go-package/type-domain or FIPS claim.
+## Remaining work and risks
+IntDIV was investigated, not implemented or counted. Its mutable precision/warning/legacy exact-division behavior needs a separate bounded change. IN/INTERVAL/NullEq still have native computation; shared comparison leaves alone earn no credit.71 eligible families remain.
+
+The prior row-comparison context activation remains an explicit compatibility change, not old-NoColumns equivalence. Broader request-root closure, whole workspace/lint/dev/bazel_prepare, release/performance/zero-copy, physical heap/peak/OOM/M6 and exhaustive compatibility/differential gates are unverified. Full unistore was not rerun here because legacy production was untouched. Existing parser/GB/ignored-vector/extreme Decimal exceptions remain. No whole Go-package/type-domain or FIPS claim.

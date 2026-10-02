@@ -9534,6 +9534,178 @@ fn evaluated_ascii_comparison_zero_slots_reject_direct_columns_and_filters() {
 }
 
 #[test]
+fn evaluated_ascii_between_sql_fixed_domains_and_existing_grouping_rollup() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    let domains = [
+        ("BIGINT", "0", "-1", "1"),
+        (
+            "BIGINT UNSIGNED",
+            "18446744073709551614",
+            "18446744073709551613",
+            "18446744073709551615",
+        ),
+        ("DOUBLE", "1.5e0", "1e0", "2e0"),
+        (
+            "DECIMAL(30,2)",
+            "9007199254740993.25",
+            "9007199254740993.24",
+            "9007199254740993.26",
+        ),
+        (
+            "VARCHAR(8) COLLATE utf8mb4_general_ci",
+            "'B '",
+            "'a'",
+            "'c'",
+        ),
+        ("VARBINARY(8)", "X'42'", "X'41'", "X'43'"),
+    ];
+    for (index, (ty, value, lower, upper)) in domains.iter().enumerate() {
+        session
+            .run(&format!(
+                "CREATE TABLE shared_between_sql_{index} (v {ty}, lo {ty}, hi {ty}, n {ty})"
+            ))
+            .unwrap();
+        session
+            .run(&format!(
+                "INSERT INTO shared_between_sql_{index} VALUES ({value},{lower},{upper},NULL)"
+            ))
+            .unwrap();
+    }
+    session
+        .run("CREATE TABLE shared_grouping_sql (a BIGINT)")
+        .unwrap();
+    session
+        .run("INSERT INTO shared_grouping_sql VALUES (1)")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    for index in 0..domains.len() {
+        // Every operand is stored. These fixed answers cover inclusive bounds,
+        // reversed bounds, NOT BETWEEN, and NULL with a true other comparison.
+        let sql = format!(
+            "SELECT v BETWEEN lo AND hi, v NOT BETWEEN lo AND hi, \
+             lo BETWEEN lo AND hi, hi BETWEEN lo AND hi, \
+             v BETWEEN hi AND lo, v NOT BETWEEN hi AND lo, \
+             n BETWEEN lo AND hi, n NOT BETWEEN lo AND hi, \
+             v BETWEEN n AND hi, v BETWEEN lo AND n FROM shared_between_sql_{index}"
+        );
+        let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+            panic!("{sql}")
+        };
+        assert_eq!(
+            rows,
+            vec![vec![
+                Datum::Int(1),
+                Datum::Int(0),
+                Datum::Int(1),
+                Datum::Int(1),
+                Datum::Int(0),
+                Datum::Int(1),
+                Datum::Null,
+                Datum::Null,
+                Datum::Null,
+                Datum::Null,
+            ]],
+            "{sql}"
+        );
+        assert!(session.warnings().is_empty(), "{sql}");
+    }
+    // This exact simple rollup projection is already admitted by the existing
+    // grouping_with_rollup suite. Sort only the returned rows, not the SQL.
+    let mut rows =
+        row_text(session.run("SELECT GROUPING(a) FROM shared_grouping_sql GROUP BY a WITH ROLLUP"));
+    rows.sort();
+    assert_eq!(rows, [["0"], ["1"]]);
+    assert!(session.warnings().is_empty());
+}
+
+#[test]
+fn evaluated_ascii_between_zero_slots_reject_only_direct_family_work() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    let domains = [
+        ("BIGINT", "0", "-1", "1"),
+        ("DECIMAL(30,2)", "1.25", "1.24", "1.26"),
+        (
+            "VARCHAR(8) COLLATE utf8mb4_general_ci",
+            "'B '",
+            "'a'",
+            "'c'",
+        ),
+    ];
+    for (index, (ty, value, lower, upper)) in domains.iter().enumerate() {
+        session
+            .run(&format!(
+                "CREATE TABLE shared_between_zero_{index} (v {ty}, lo {ty}, hi {ty}, n {ty})"
+            ))
+            .unwrap();
+        session
+            .run(&format!(
+                "INSERT INTO shared_between_zero_{index} VALUES ({value},{lower},{upper},NULL)"
+            ))
+            .unwrap();
+    }
+    session
+        .run("CREATE TABLE shared_grouping_zero (a BIGINT)")
+        .unwrap();
+    session
+        .run("INSERT INTO shared_grouping_zero VALUES (1)")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    let mut queries = Vec::new();
+    for index in 0..domains.len() {
+        for op in ["BETWEEN", "NOT BETWEEN"] {
+            for (value, lower, upper) in [
+                ("v", "lo", "hi"),
+                ("n", "lo", "hi"),
+                ("v", "n", "hi"),
+                ("v", "lo", "n"),
+            ] {
+                // No WHERE/ORDER BY, constants, casts, or wrapper builtins can
+                // supply this refusal: only BETWEEN's comparison/logical work.
+                queries.push(format!(
+                    "SELECT {value} {op} {lower} AND {upper} FROM shared_between_zero_{index}"
+                ));
+            }
+        }
+    }
+    queries.push("SELECT GROUPING(a) FROM shared_grouping_zero GROUP BY a WITH ROLLUP".to_owned());
+    for sql in queries {
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("BETWEEN/GROUPING bypassed its worker: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(session.warnings().is_empty(), "{sql}");
+    }
+}
+
+#[test]
 fn evaluated_ascii_aes_sql_preserves_twelve_mode_goldens_demand_and_diagnostics() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();

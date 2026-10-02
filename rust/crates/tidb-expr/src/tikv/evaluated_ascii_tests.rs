@@ -1345,6 +1345,12 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::AesNullNative => {
             panic!("AES needs its original data/key/IV and genuine NULL demand")
         }
+        EvaluatedBytesOp::GroupingBitAndNative
+        | EvaluatedBytesOp::GroupingNumericCmpNative
+        | EvaluatedBytesOp::GroupingNumericSetNative
+        | EvaluatedBytesOp::GroupingNullNative => {
+            panic!("GROUPING needs its actual grouping id, mark sets and NULL demand")
+        }
         EvaluatedBytesOp::TidbShardNative => "TIDB_SHARD",
         EvaluatedBytesOp::VitessHashNative => "VITESS_HASH",
         EvaluatedBytesOp::FormatBytesNative => "FORMAT_BYTES",
@@ -1881,6 +1887,293 @@ fn binary_arithmetic_dispatch_keeps_profiles_and_legacy_presence() {
     });
     assert!(!scope.busy.get());
     assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn grouping_sdk_preserves_source_modes_unsigned_bits_and_wrapping_marks() {
+    use EvaluatedBytesOp::{
+        GroupingBitAndNative, GroupingNumericCmpNative, GroupingNumericSetNative,
+    };
+
+    // The checked shared helper transports actual id/counts/ascending marks,
+    // never the recipe opcode or a precomputed GROUPING result.
+    let prepare_marks = |operation, gid, groups: &[Vec<u64>]| {
+        let mode = match operation {
+            GroupingBitAndNative => tidb_query_expr::GroupingMode::BitAnd,
+            GroupingNumericCmpNative => tidb_query_expr::GroupingMode::NumericCmp,
+            GroupingNumericSetNative => tidb_query_expr::GroupingMode::NumericSet,
+            _ => panic!("test requires a value grouping profile"),
+        };
+        let metadata = tidb_query_expr::GroupingMetadata::new(
+            mode,
+            groups
+                .iter()
+                .map(|group| group.iter().copied().collect())
+                .collect(),
+        )
+        .unwrap();
+        super::super::prepare_grouping_args(gid, &metadata)
+    };
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let mut wrapped = vec![Vec::new()];
+    wrapped.extend(vec![vec![1]; 64]);
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (operation, gid, marks, expected) in [
+            // Original source mode rows composed in argument order: 001/0011/101.
+            (
+                GroupingBitAndNative,
+                1_u64,
+                vec![vec![1], vec![3], vec![6]],
+                1_u64,
+            ),
+            (
+                GroupingNumericCmpNative,
+                2,
+                vec![vec![0], vec![1], vec![2], vec![3]],
+                3,
+            ),
+            (
+                GroupingNumericSetNative,
+                2,
+                vec![vec![1, 3], vec![2, 3], Vec::new()],
+                5,
+            ),
+            (GroupingNumericSetNative, 1, vec![Vec::new(); 64], u64::MAX),
+            (GroupingNumericSetNative, 1, wrapped, 0),
+            (
+                GroupingNumericCmpNative,
+                u64::MAX,
+                vec![vec![u64::MAX - 1], vec![u64::MAX]],
+                1,
+            ),
+            (
+                GroupingBitAndNative,
+                1_u64 << 63,
+                vec![vec![1_u64 << 63], vec![1]],
+                1,
+            ),
+            (
+                GroupingNumericSetNative,
+                u64::MAX,
+                vec![vec![u64::MAX], Vec::new()],
+                1,
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || prepare_marks(operation, gid, &marks),
+                    EvaluatedBytesResult::into_uint_bits_datum,
+                )
+            });
+            assert_eq!(result, Ok(Datum::UInt(expected)));
+            assert_wide_math_c4(observation);
+            assert_eq!(
+                scope
+                    .lease
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .worker
+                    .as_ref()
+                    .unwrap()
+                    .operation(),
+                operation
+            );
+        }
+        let factories = owner.snapshot().unwrap().factory_successes;
+        for (operation, expected, added_factories) in [
+            (GroupingNumericCmpNative, 1, 1),
+            (GroupingNumericCmpNative, 1, 1),
+            (GroupingBitAndNative, 0, 2),
+            (GroupingNumericCmpNative, 1, 3),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || prepare_marks(operation, 1, &[vec![1]]),
+                    EvaluatedBytesResult::into_uint_bits_datum,
+                )
+            });
+            assert_eq!(result, Ok(Datum::UInt(expected)));
+            assert_wide_math_c4(observation);
+            assert_eq!(
+                owner.snapshot().unwrap().factory_successes,
+                factories + added_factories
+            );
+        }
+        let (result, observation) = observe_wide_math(|| {
+            evaluate_args_in(
+                EvaluatedBytesOp::GroupingNullNative,
+                columns,
+                || Ok(EvaluatedArgs::NullWitness(None)),
+                EvaluatedBytesResult::into_uint_bits_datum,
+            )
+        });
+        assert_eq!(result, Ok(Datum::Null));
+        assert_wide_math_c4(observation);
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn grouping_sdk_rejects_false_presence_and_preserves_zero_slot_refusals() {
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    use EvaluatedBytesOp::{
+        GroupingBitAndNative, GroupingNullNative, GroupingNumericCmpNative,
+        GroupingNumericSetNative,
+    };
+
+    let typed_grouping = |value: Datum| {
+        ScalarFunction::new(
+            tidb_ast::CiString::new("grouping"),
+            FieldType::new(FieldTypeCode::LongLong).with_unsigned(true),
+            vec![Expression::Constant(Constant::new(
+                value,
+                FieldType::new(FieldTypeCode::LongLong),
+            ))],
+        )
+    };
+    let null_without_metadata = typed_grouping(Datum::Null);
+    let value_without_metadata = typed_grouping(Datum::Int(1));
+    let mut value_with_metadata = typed_grouping(Datum::Int(1));
+    value_with_metadata
+        .set_grouping_metadata(
+            crate::grouping::GroupingMode::NumericSet,
+            vec![BTreeSet::new(); 64],
+        )
+        .unwrap();
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (operation, args) in [
+            (
+                GroupingBitAndNative,
+                EvaluatedArgs::Bytes2(None, Some(0_u64.to_le_bytes().to_vec())),
+            ),
+            (
+                GroupingNumericCmpNative,
+                EvaluatedArgs::Bytes2(Some(vec![0; 7]), Some(0_u64.to_le_bytes().to_vec())),
+            ),
+            (
+                GroupingNumericSetNative,
+                EvaluatedArgs::Bytes2(Some(vec![0; 8]), Some(Vec::new())),
+            ),
+            (GroupingNullNative, EvaluatedArgs::NullWitness(Some(0))),
+            (GroupingNullNative, EvaluatedArgs::NoArgs),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || Ok(args),
+                    EvaluatedBytesResult::into_uint_bits_datum,
+                )
+            });
+            assert!(matches!(
+                result,
+                Err(EvalError::ExpressionRuntimeFailure(_))
+            ));
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(
+                observation.before_kernel_invocations,
+                observation.after_kernel_invocations
+            );
+        }
+        for (function, expected) in [
+            (&null_without_metadata, Datum::Null),
+            (&value_with_metadata, Datum::UInt(u64::MAX)),
+        ] {
+            let (result, observation) =
+                observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert_eq!(result, Ok(expected));
+            assert_wide_math_c4(observation);
+        }
+        let (result, observation) = observe_wide_math(|| {
+            value_without_metadata.eval(columns, tidb_chunk::row::Row::empty())
+        });
+        assert_eq!(
+            result,
+            Err(EvalError::Unsupported("Meta data is not initialized"))
+        );
+        assert_eq!(observation.facade_entries, 0);
+        // A failing real child is demanded before metadata and remains the error.
+        let overflow_child = ScalarFunction::new(
+            tidb_ast::CiString::new("plus"),
+            FieldType::new(FieldTypeCode::LongLong),
+            [i64::MAX, 1]
+                .into_iter()
+                .map(|value| {
+                    Expression::Constant(Constant::new(
+                        Datum::Int(value),
+                        FieldType::new(FieldTypeCode::LongLong),
+                    ))
+                })
+                .collect(),
+        );
+        let child_before_metadata = ScalarFunction::new(
+            tidb_ast::CiString::new("grouping"),
+            FieldType::new(FieldTypeCode::LongLong).with_unsigned(true),
+            vec![Expression::ScalarFunction(overflow_child)],
+        );
+        let (result, observation) = observe_wide_math(|| {
+            child_before_metadata.eval(columns, tidb_chunk::row::Row::empty())
+        });
+        // ScalarFunction decorates the kernel's integer overflow with the
+        // child's declared signed class and rendered operands before GROUPING.
+        assert_eq!(
+            result,
+            Err(EvalError::DataOutOfRange {
+                value: "BIGINT",
+                expression: "(9223372036854775807 + 1)".to_owned(),
+            })
+        );
+        assert_wide_math_c4(observation);
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for function in [&null_without_metadata, &value_with_metadata] {
+            let (result, observation) = observe_wide_math(|| function.eval(columns, tidb_chunk::row::Row::empty()));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+        }
+        let (result, observation) = observe_wide_math(|| value_without_metadata.eval(columns, tidb_chunk::row::Row::empty()));
+        assert_eq!(result, Err(EvalError::Unsupported("Meta data is not initialized")));
+        assert_eq!(observation.facade_entries, 0);
+        for operation in [GroupingBitAndNative, GroupingNumericCmpNative, GroupingNumericSetNative, GroupingNullNative] {
+            let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                operation, columns,
+                || Ok(if operation == GroupingNullNative {
+                    EvaluatedArgs::NullWitness(None)
+                } else {
+                    EvaluatedArgs::Bytes2(Some(u64::MAX.to_le_bytes().to_vec()), Some(0_u64.to_le_bytes().to_vec()))
+                }),
+                EvaluatedBytesResult::into_uint_bits_datum,
+            ));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
     drop(scope);
     execution.close();
 }
