@@ -395,9 +395,7 @@ fn str_datetime_add_duration(
         let trimmed = text.trim();
         if !trimmed.is_empty()
             && trimmed.bytes().all(|b| b.is_ascii_digit())
-            && trimmed
-                .parse::<i64>()
-                .map_or(true, |n| n > 99_991_231)
+            && trimmed.parse::<i64>().map_or(true, |n| n > 99_991_231)
         {
             cols.append_warning(1292, &format!("Incorrect time value: '{text}'"));
             return Ok(Datum::Null);
@@ -654,42 +652,55 @@ fn number_of(value: &Datum) -> Result<Option<f64>, EvalError> {
 /// was taken earlier. With `tidb_sysdate_is_now=ON`, Go builds `NOW` instead,
 /// including its truncating FSP behavior.
 pub(crate) fn sysdate(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    if cols.sysdate_is_now() {
-        return super::now(vals, cols);
-    }
-    if vals.len() > 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let fsp = match vals.first() {
-        None | Some(Datum::Null) => 0,
-        Some(Datum::Int(value)) if (0..=i64::from(MAX_FSP)).contains(value) => *value as u32,
-        Some(Datum::UInt(value)) if *value <= MAX_FSP as u64 => *value as u32,
-        Some(value) => {
-            let converted = value
-                .to_i64()
-                .map_err(|_| EvalError::Unsupported("bad fractional-seconds-precision argument"))?;
-            if !(0..=i64::from(MAX_FSP)).contains(&converted.value) {
-                return Err(EvalError::Unsupported(
-                    "bad fractional-seconds-precision argument",
-                ));
+    crate::tikv::evaluate_prepared_args_in(
+        cols,
+        || {
+            if cols.sysdate_is_now() {
+                return super::prepare_now_args(vals, cols);
             }
-            converted.value as u32
-        }
-    };
-    // Only the ZONE comes from the statement clock; the instant does not.
-    let (_, _, tz_offset) = cols.now().ok_or(EvalError::Unsupported(
-        "SYSDATE needs the session clock, which is not wired here",
-    ))?;
-    let elapsed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| EvalError::Unsupported("the host clock is before the Unix epoch"))?;
-    let secs = elapsed.as_secs() as i64 + i64::from(tz_offset);
-    Ok(Datum::new_string(super::format_datetime(
-        secs,
-        elapsed.subsec_nanos(),
-        fsp,
-        true,
-    )))
+            if vals.len() > 1 {
+                return Err(EvalError::Unsupported("bad function arity"));
+            }
+            let fsp = match vals.first() {
+                None | Some(Datum::Null) => 0,
+                Some(Datum::Int(value)) if (0..=i64::from(MAX_FSP)).contains(value) => {
+                    *value as u32
+                }
+                Some(Datum::UInt(value)) if *value <= MAX_FSP as u64 => *value as u32,
+                Some(value) => {
+                    let converted = value.to_i64().map_err(|_| {
+                        EvalError::Unsupported("bad fractional-seconds-precision argument")
+                    })?;
+                    if !(0..=i64::from(MAX_FSP)).contains(&converted.value) {
+                        return Err(EvalError::Unsupported(
+                            "bad fractional-seconds-precision argument",
+                        ));
+                    }
+                    converted.value as u32
+                }
+            };
+            // Retain the statement's frozen offset, but capture the actual
+            // live instant. The worker owns offset addition and half-up rounding.
+            let (_, _, tz_offset) = cols.now().ok_or(EvalError::Unsupported(
+                "SYSDATE needs the session clock, which is not wired here",
+            ))?;
+            let elapsed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| EvalError::Unsupported("the host clock is before the Unix epoch"))?;
+            Ok((
+                crate::tikv::EvaluatedBytesOp::SysdateNative,
+                crate::tikv::prepare_clock_args(
+                    (elapsed.as_secs() as i64, elapsed.subsec_nanos(), tz_offset),
+                    Some(fsp),
+                )?,
+            ))
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 
 #[cfg(test)]

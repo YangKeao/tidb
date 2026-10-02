@@ -1,0 +1,58 @@
+clock-three-62 / round63; all commands serialized by parent, --locked, --test-threads=1.
+TiKV workdir /home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv pins nightly-2026-01-30.
+Native workdir /home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb pins nightly-2026-08-22.
+Raw logs: /home/agent/tidb/expression-unification/logs/<name>.log. Hashes refer to complete raw stdout/stderr logs, not this summary.
+
+1. Native BEFORE migration, temporary CRC32 quoted-SQL admission probe:
+../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_json_sum_crc32_quoted_sql_values -- --test-threads=1
+json-crc32-sql-before.log sha256 1662c9119c131e32b07c78fe172229ad65bebdc882f747e25b15202796050f1f
+compile10.24s; 0passed/1failed/0ignored/2201filtered,0.01s; exit101. First SELECT failed FunctionNotExists("test.json_sum_crc32"). Temporary probe alone removed; no CRC32 migration/admission/credit.
+
+2. TiKV shared kernels and related clock tests:
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib clock -- --test-threads=1
+clock-three-tikv-core.log sha256 7c5fbd5e364aa3447cab0143ab1ae167e7b34e4f1771478e3cf539cf2deb42a8
+compile10.97s; 13/0/0/875filtered,0.00s; exit0.
+
+3. TiKV local lifecycle filter (also matches new native_local* pure tests):
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local -- --test-threads=1
+clock-three-tikv-local.log sha256 a36eaa489e68cf9c07eda6929f08f5b7c05bb10730e98b386a9c88174d938b1a
+compile0.12s; 311/0/1/576filtered,0.21s; exit0. Ignored != passed.
+
+4. Native clock adapters/SDK:
+../../tools/cargo-tidb test --locked -p tidb-expr --lib clock -- --test-threads=1
+clock-three-native-clock.log sha256 da2fdfaa5c15ec32ad08928d46dde4c00f24adb59c1e784fcccdec82f980b51f
+compile13.92s; 19/0/0/1615filtered,0.01s; exit0.
+
+5. Original typed public-helper bank plus one new boundary test:
+../../tools/cargo-tidb test --locked -p tidb-expr --lib helper_current_timestamp_source -- --test-threads=1
+clock-three-native-helper.log sha256 52dfa951c5b44549e272449865e5c816baca35daa6753ec72941b42261172f5b
+compile0.12s; 5/0/0/1629filtered,0.00s; exit0.
+
+6. Existing/live SYSDATE and new precision/context tests:
+../../tools/cargo-tidb test --locked -p tidb-expr --lib sysdate -- --test-threads=1
+clock-three-native-sysdate.log sha256 61c30de515a9816590fc1902463d74864770726e922805892fcda73152f0ff51
+compile0.12s; 7/0/0/1627filtered,0.00s; exit0.
+
+7. New pinned SQL/native metadata and direct-root proofs:
+../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_clock_now_date_sysdate_ -- --test-threads=1
+clock-three-sql.log sha256 3fc54e06c03d19b14a337bf02d7dc0ac1d9b2ecc42665bea964e34d3ad37d2a0
+compile18.35s; 2/0/0/2201filtered,0.03s; exit0.
+
+8. Existing statement-clock SYS flag integration:
+../../tools/cargo-tidb test --locked -p tidb-session --lib sysdate_is_now_uses_the_statement_clock -- --test-threads=1
+clock-three-sql-existing.log sha256 7098b26503718f5dcfa7aeae3317971e47d85bcec8d42dcc129dcfe5af92bd10
+compile0.13s; 1/0/0/2202filtered,0.01s; exit0.
+
+9. Full expression regression:
+../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+clock-three-expr-full.log sha256 2e602ed59478d5352c286c29826404a797ba6360565a098b56a36b405ef901cd
+compile0.12s;1536/4old/94ignored/0filtered,13.70s;exit101.
+
+10. Full unistore regression:
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+clock-three-unistore-full.log sha256 fc56520e0c995baabbe3492eb439498713721619ecc41b0c2884c8ffe28e7582
+compile5.20s;207/1old/13ignored/0filtered,3.01s;exit101.
+
+Complete full-suite failure sections/lists match json-merge-pair-61 after ONLY numeric panic-heading thread-ID normalization. Expr section sha256 27654f2c0ad2971242c00f50182467598cdfd9c2c65e5bf5a32e683708448637; unistore b64dcced405c699c11b72ee31888c58e491b4e5b4e74fa2d445454e1d1e146e9.
+All15 changed Rust files checked using /home/agent/tidb/expression-reuse/rustup-home/toolchains/<pinned-toolchain>-x86_64-unknown-linux-gnu/bin/rustfmt --edition 2021 --config skip_children=true --check <changed-files>; git diff --check in both worktrees passed. Parent audit corrected a guessed new_function path and test-stripping selectors; final original helper/SQL test contents and protected code comparisons pass, no source correction involved.
+10 actual nonzero completed harness runs:7green/2old-full-RED/1rejected-probe-RED. No compile failure/interruption/zero-match/retry.14 permanent tests all pass; temporary failed probe is neither retained nor credited. No production/test changes after first clock gate, no fixture rerecording. Prior extra JSON_KEYS integration mismatch not rerun/resolved. User-prioritized bounded core validation: no whole workspace/lint/dev/bazel_prepare, release/performance/zero-copy/physical heap/peak/OOM/exhaustive differential/TiFlash/FIPS claim; goal active201/245 strict0.

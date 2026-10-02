@@ -1403,6 +1403,11 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::JsonMergePatchRawLegacy => {
             panic!("JSON merge needs its actual ordered values and presence frame")
         }
+        EvaluatedBytesOp::NowNative
+        | EvaluatedBytesOp::CurrentDateNative
+        | EvaluatedBytesOp::SysdateNative => {
+            panic!("local clock functions need the original clock tuple and precision")
+        }
         EvaluatedBytesOp::TidbShardNative => "TIDB_SHARD",
         EvaluatedBytesOp::VitessHashNative => "VITESS_HASH",
         EvaluatedBytesOp::FormatBytesNative => "FORMAT_BYTES",
@@ -2139,6 +2144,179 @@ fn json_merge_sdk_rejects_bad_frames_and_preserves_empty_patch_panic() {
     assert!(matches!(scope.evaluate_value(&Datum::Null),
         Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopePoisoned));
     assert_eq!(owner.snapshot().unwrap(), disposed);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn local_clock_sdk_keeps_now_truncation_sysdate_rounding_and_date_offsets() {
+    use EvaluatedBytesOp::*;
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (operation, clock, fsp, expected) in [
+            (
+                NowNative,
+                (-1, 500_000_000, 1),
+                Some(0),
+                "1970-01-01 00:00:00",
+            ),
+            (
+                NowNative,
+                (86_399, 999_999_500, 0),
+                Some(6),
+                "1970-01-01 23:59:59.999999",
+            ),
+            (
+                SysdateNative,
+                (-1, 500_000_000, 1),
+                Some(0),
+                "1970-01-01 00:00:01",
+            ),
+            (
+                SysdateNative,
+                (86_399, 999_999_500, 0),
+                Some(6),
+                "1970-01-02 00:00:00.000000",
+            ),
+            (CurrentDateNative, (0, u32::MAX, -1), None, "1969-12-31"),
+            (CurrentDateNative, (86_399, 0, 1), None, "1970-01-02"),
+            (
+                NowNative,
+                (0, 0, 19_800),
+                Some(4),
+                "1970-01-01 05:30:00.0000",
+            ),
+            (
+                SysdateNative,
+                (0, 123_500_000, -3_600),
+                Some(3),
+                "1969-12-31 23:00:00.124",
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || super::super::prepare_clock_args(clock, fsp),
+                    |computed| {
+                        Ok(computed
+                            .into_bytes()?
+                            .map_or(Datum::Null, Datum::new_string))
+                    },
+                )
+            });
+            assert_eq!(result, Ok(Datum::new_string(expected)));
+            assert_wide_math_c4(observation);
+            assert_eq!(
+                scope
+                    .lease
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .worker
+                    .as_ref()
+                    .unwrap()
+                    .operation(),
+                operation
+            );
+        }
+        // The original clock/FSP data may change without changing recipe identity.
+        assert_eq!(owner.snapshot().unwrap().factory_successes, 5);
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn local_clock_sdk_rejects_wrong_roles_precision_and_zero_slot_fallbacks() {
+    use EvaluatedBytesOp::*;
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (operation, args) in [
+            (CurrentDateNative, EvaluatedArgs::Bytes(Some(vec![0; 17]))),
+            (
+                CurrentDateNative,
+                EvaluatedArgs::BytesInt(Some(vec![0; 16]), Some(0)),
+            ),
+            (NowNative, EvaluatedArgs::Bytes(Some(vec![0; 16]))),
+            (
+                SysdateNative,
+                EvaluatedArgs::BytesInt(Some(vec![0; 16]), None),
+            ),
+            (
+                SysdateNative,
+                EvaluatedArgs::BytesInt(Some(vec![0; 16]), Some(-1)),
+            ),
+            (NowNative, EvaluatedArgs::NullWitness(None)),
+            (CurrentDateNative, EvaluatedArgs::NoArgs),
+            (SysdateNative, EvaluatedArgs::NoArgs),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || Ok(args),
+                    EvaluatedBytesResult::into_bytes,
+                )
+            });
+            assert!(matches!(
+                result,
+                Err(EvalError::ExpressionRuntimeFailure(_))
+            ));
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(
+                observation.before_kernel_invocations,
+                observation.after_kernel_invocations
+            );
+        }
+        for operation in [NowNative, SysdateNative] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || super::super::prepare_clock_args((0, 0, 0), Some(7)),
+                    EvaluatedBytesResult::into_bytes,
+                )
+            });
+            assert!(matches!(
+                result,
+                Err(EvalError::ExpressionRuntimeFailure(_))
+            ));
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(
+                observation.before_kernel_invocations,
+                observation.after_kernel_invocations
+            );
+        }
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for operation in [NowNative, CurrentDateNative, SysdateNative] {
+            let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                operation, columns,
+                || super::super::prepare_clock_args((-1, 999_999_500, 1), if operation == CurrentDateNative { None } else { Some(6) }),
+                EvaluatedBytesResult::into_bytes,
+            ));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
     drop(scope);
     execution.close();
 }

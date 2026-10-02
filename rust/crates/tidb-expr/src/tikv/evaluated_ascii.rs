@@ -2160,6 +2160,9 @@ fn materialize_computed(
             | EvaluatedBytesOp::UtcTimeWithoutFspNative
             | EvaluatedBytesOp::UtcTimeWithFspNative
             | EvaluatedBytesOp::UtcTimeNullNative
+            | EvaluatedBytesOp::NowNative
+            | EvaluatedBytesOp::CurrentDateNative
+            | EvaluatedBytesOp::SysdateNative
             | EvaluatedBytesOp::JsonMergeSerdeNative
             | EvaluatedBytesOp::JsonMergePatchSerdeNative
             | EvaluatedBytesOp::JsonMergePatchRawLegacy

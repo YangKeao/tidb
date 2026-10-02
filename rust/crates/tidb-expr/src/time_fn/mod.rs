@@ -36,9 +36,8 @@ use crate::coerce::coerce_str;
 use crate::{Columns, Datum, EvalError};
 #[cfg(test)]
 use tidb_query_datatype::codec::mysql::Time as TikvTime;
-use tidb_query_expr::{
-    native_format_clock_date as format_date, native_format_clock_datetime as format_datetime,
-};
+#[cfg(test)]
+use tidb_query_expr::native_format_clock_datetime as format_datetime;
 
 /// Dispatches this family's builtins; `None` if `name` isn't one of them.
 pub(crate) fn dispatch(
@@ -217,14 +216,29 @@ pub(crate) fn date(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalErro
 /// (`time_zone`-adjusted) statement time, always truncating fractional
 /// seconds. `CURRENT_TIMESTAMP` is the same function class.
 fn now(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_prepared_args_in(
+        cols,
+        || prepare_now_args(vals, cols),
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
+}
+
+/// Nonexecuting preparation shared with SYSDATE's statement-clock alias.
+/// The caller owns the single guard; precision errors precede clock demand.
+pub(super) fn prepare_now_args(
+    vals: &[Datum],
+    cols: &dyn Columns,
+) -> Result<(crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs), EvalError> {
     let fsp = parse_fsp_with_null_as_zero(vals, "now")?.unwrap_or(0);
-    let (utc_secs, nanos, tz_offset) = cols.now().ok_or(no_clock_err())?;
-    Ok(Datum::new_string(format_datetime(
-        utc_secs + i64::from(tz_offset),
-        nanos,
-        fsp,
-        false,
-    )))
+    let clock = cols.now().ok_or(no_clock_err())?;
+    Ok((
+        crate::tikv::EvaluatedBytesOp::NowNative,
+        crate::tikv::prepare_clock_args(clock, Some(fsp))?,
+    ))
 }
 
 /// `builtinUTCTimestampWithArgSig` / `builtinUTCTimestampWithoutArgSig`:
@@ -251,13 +265,24 @@ fn utc_timestamp(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError>
 /// `builtinCurrentDateSig`: local statement date. `CURDATE` and
 /// `CURRENT_DATE` share this signature and accept no argument.
 fn current_date(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    if !vals.is_empty() {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let (utc_secs, _, tz_offset) = cols.now().ok_or(no_clock_err())?;
-    Ok(Datum::new_string(format_date(
-        utc_secs + i64::from(tz_offset),
-    )))
+    crate::tikv::evaluate_prepared_args_in(
+        cols,
+        || {
+            if !vals.is_empty() {
+                return Err(EvalError::Unsupported("bad function arity"));
+            }
+            let clock = cols.now().ok_or(no_clock_err())?;
+            Ok((
+                crate::tikv::EvaluatedBytesOp::CurrentDateNative,
+                crate::tikv::prepare_clock_args(clock, None)?,
+            ))
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
 }
 
 /// `builtinUTCDateSig`: raw UTC statement date with no arguments.

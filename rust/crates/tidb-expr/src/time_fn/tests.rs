@@ -1553,3 +1553,189 @@ fn selected_clock_preparation_preserves_error_and_getter_demand() {
         execution.close();
     }
 }
+
+struct CurrentClockTrace {
+    instant: Option<(i64, u32, i32)>,
+    sysdate_alias: bool,
+    events: std::cell::RefCell<Vec<&'static str>>,
+}
+
+impl Columns for CurrentClockTrace {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        None
+    }
+
+    fn now(&self) -> Option<(i64, u32, i32)> {
+        self.events.borrow_mut().push("clock");
+        self.instant
+    }
+
+    fn sysdate_is_now(&self) -> bool {
+        self.events.borrow_mut().push("flag");
+        self.sysdate_alias
+    }
+
+    fn time_zone(&self) -> crate::SessionTimeZone {
+        panic!("SQL clocks must use their captured offset, not read a new zone")
+    }
+}
+
+#[test]
+fn current_clock_workers_preserve_local_literals_and_sysdate_alias() {
+    for slots in [0, 1] {
+        let owner = selected_clock_scope_owner(slots);
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        for name in [
+            "NOW",
+            "CURRENT_TIMESTAMP",
+            "LOCALTIME",
+            "LOCALTIMESTAMP",
+            "SYSDATE",
+        ] {
+            for (args, expected) in [
+                (vec![], "1970-01-02 00:59:59"),
+                (vec![Datum::Null], "1970-01-02 00:59:59"),
+                (vec![Datum::Int(0)], "1970-01-02 00:59:59"),
+                (vec![Datum::Int(6)], "1970-01-02 00:59:59.999999"),
+            ] {
+                let clock = CurrentClockTrace {
+                    instant: Some((86_399, 999_999_600, 3_600)),
+                    sysdate_alias: true,
+                    events: std::cell::RefCell::new(Vec::new()),
+                };
+                let result = scope.with_columns(&clock, |ctx| dispatch(name, &args, ctx).unwrap());
+                if slots == 0 {
+                    assert!(matches!(
+                        result,
+                        Err(EvalError::ExpressionAdapterFailure(ref failure))
+                            if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource
+                    ));
+                } else {
+                    assert_eq!(result, Ok(Datum::new_string(expected)), "{name} {args:?}");
+                }
+                let expected_events = if name == "SYSDATE" {
+                    vec!["flag", "clock"]
+                } else {
+                    vec!["clock"]
+                };
+                assert_eq!(*clock.events.borrow(), expected_events, "{name}");
+            }
+        }
+        for name in ["CURDATE", "CURRENT_DATE"] {
+            let clock = CurrentClockTrace {
+                instant: Some((86_399, 999_999_600, 3_600)),
+                sysdate_alias: false,
+                events: std::cell::RefCell::new(Vec::new()),
+            };
+            let result = scope.with_columns(&clock, |ctx| dispatch(name, &[], ctx).unwrap());
+            if slots == 0 {
+                assert!(matches!(
+                    result,
+                    Err(EvalError::ExpressionAdapterFailure(ref failure))
+                        if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource
+                ));
+            } else {
+                assert_eq!(result, Ok(Datum::new_string("1970-01-02")));
+            }
+            assert_eq!(*clock.events.borrow(), vec!["clock"]);
+        }
+        drop(scope);
+        execution.close();
+    }
+}
+
+#[test]
+fn current_clock_preparation_preserves_sysdate_flag_and_error_priority() {
+    for slots in [0, 1] {
+        let owner = selected_clock_scope_owner(slots);
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        for alias in [false, true] {
+            let clock = CurrentClockTrace {
+                instant: None,
+                sysdate_alias: alias,
+                events: std::cell::RefCell::new(Vec::new()),
+            };
+            scope.with_columns(&clock, |ctx| {
+                let expected = if alias {
+                    EvalError::TooBigFsp {
+                        fsp: 7,
+                        function: "now",
+                    }
+                } else {
+                    EvalError::Unsupported("bad fractional-seconds-precision argument")
+                };
+                assert_eq!(add_sub::sysdate(&[Datum::Int(7)], ctx), Err(expected));
+                assert_eq!(*clock.events.borrow(), vec!["flag"]);
+                clock.events.borrow_mut().clear();
+                let expected = if alias {
+                    "bad fractional-seconds-precision argument"
+                } else {
+                    "bad function arity"
+                };
+                assert_eq!(
+                    add_sub::sysdate(&[Datum::Null, Datum::Int(0)], ctx),
+                    Err(EvalError::Unsupported(expected)),
+                );
+                assert_eq!(*clock.events.borrow(), vec!["flag"]);
+                clock.events.borrow_mut().clear();
+                let expected = if alias {
+                    "bad fractional-seconds-precision argument"
+                } else {
+                    "SYSDATE needs the session clock, which is not wired here"
+                };
+                assert_eq!(
+                    add_sub::sysdate(&[string_datum("6")], ctx),
+                    Err(EvalError::Unsupported(expected)),
+                );
+                assert_eq!(
+                    *clock.events.borrow(),
+                    if alias {
+                        vec!["flag"]
+                    } else {
+                        vec!["flag", "clock"]
+                    },
+                );
+                for name in ["NOW", "CURDATE"] {
+                    clock.events.borrow_mut().clear();
+                    assert_eq!(
+                        dispatch(name, &[], ctx).unwrap(),
+                        Err(EvalError::Unsupported("no session clock (SET timestamp)")),
+                    );
+                    assert_eq!(*clock.events.borrow(), vec!["clock"]);
+                }
+                clock.events.borrow_mut().clear();
+                assert_eq!(
+                    current_date(&[Datum::Null], ctx),
+                    Err(EvalError::Unsupported("bad function arity")),
+                );
+                assert!(clock.events.borrow().is_empty());
+            });
+        }
+        // Exercise the live branch without an exact wall-clock instant oracle.
+        // The original live-clock interval tests remain unchanged in add_sub.
+        let clock = CurrentClockTrace {
+            instant: Some((0, 0, 3_600)),
+            sysdate_alias: false,
+            events: std::cell::RefCell::new(Vec::new()),
+        };
+        let result = scope.with_columns(&clock, |ctx| add_sub::sysdate(&[Datum::Int(6)], ctx));
+        if slots == 0 {
+            assert!(matches!(
+                result,
+                Err(EvalError::ExpressionAdapterFailure(ref failure))
+                    if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource
+            ));
+        } else {
+            let Datum::String(text) = result.unwrap() else {
+                panic!("live SYSDATE must produce its actual datetime string");
+            };
+            assert_eq!(text.bytes().len(), 26);
+            assert_eq!(text.bytes()[19], b'.');
+        }
+        assert_eq!(*clock.events.borrow(), vec!["flag", "clock"]);
+        drop(scope);
+        execution.close();
+    }
+}

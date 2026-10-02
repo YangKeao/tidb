@@ -250,6 +250,141 @@ fn test_get_time_value_build_context_helper() {
     }
 }
 
+#[test]
+fn typed_clock_helper_preserves_getter_order_and_marker_boundaries() {
+    use std::cell::{Cell, RefCell};
+    use tidb_datatype::{DateModes, TimeType};
+
+    struct ObservedClock {
+        clock: Cell<Option<(i64, u32, i32)>>,
+        events: RefCell<Vec<&'static str>>,
+    }
+    impl Columns for ObservedClock {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn now(&self) -> Option<(i64, u32, i32)> {
+            self.events.borrow_mut().push("now");
+            self.clock.get()
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            self.events.borrow_mut().push("zone");
+            SessionTimeZone::Fixed {
+                name: "session".to_owned(),
+                offset_secs: 3_600,
+            }
+        }
+        fn date_modes(&self) -> DateModes {
+            self.events.borrow_mut().push("modes");
+            DateModes::default()
+        }
+    }
+    let ctx = ObservedClock {
+        clock: Cell::new(Some((1234, 987_654_321, -7_200))),
+        events: RefCell::new(Vec::new()),
+    };
+    let owner = crate::AsciiPoolOwner::new(
+        crate::AsciiPoolPolicy::checked(
+            0,
+            0,
+            16 * 1024 * 1024,
+            4 * 1024 * 1024,
+            4 * 1024 * 1024,
+            64,
+            8,
+            4 * 1024 * 1024,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let execution = owner.begin_execution().unwrap();
+    // These typed SDK helpers remain pure: a zero-slot context still succeeds.
+    // SQL NOW/CURDATE/SYSDATE worker admission is tested at its own root.
+    execution.scope().with_columns(&ctx, |columns| {
+        let timestamp = tidb_ast::Expr::RawString("current_timestamp".to_owned());
+        let date = tidb_ast::Expr::RawString("current_date".to_owned());
+        let value = get_time_value(columns, &timestamp, TimeType::DateTime, 3, None).unwrap();
+        assert_eq!(value.sql_string().unwrap(), "1970-01-01 01:20:34.987");
+        assert_eq!(ctx.events.take(), ["zone", "modes", "now", "zone"]);
+
+        // The explicit parser zone and tuple offset do not select the clock's
+        // zone. The sentinel still reads the actual session zone after now().
+        let explicit = SessionTimeZone::Fixed { name: "parse-only".to_owned(), offset_secs: -3_600 };
+        let value = get_time_value(columns, &timestamp, TimeType::DateTime, -1, Some(&explicit)).unwrap();
+        assert_eq!(value.sql_string().unwrap(), "1970-01-01 01:20:34");
+        assert_eq!(ctx.events.take(), ["modes", "now", "zone"]);
+
+        let Datum::Time(value) = get_time_value(columns, &timestamp, TimeType::Date, 3, None).unwrap() else {
+            panic!("typed helper must return Time")
+        };
+        assert_eq!(value.kind(), TimeType::Date);
+        assert_eq!(value.fsp(), 0);
+        let core = value.core_time();
+        assert_eq!((core.hour(), core.minute(), core.second(), core.microsecond()), (1, 20, 34, 987_000));
+        assert_eq!(ctx.events.take(), ["zone", "modes", "now", "zone"]);
+
+        let Datum::Time(value) = get_time_value(columns, &date, TimeType::Timestamp, 7, None).unwrap() else {
+            panic!("typed date helper must return Time")
+        };
+        assert_eq!(value.kind(), TimeType::Timestamp);
+        assert_eq!(value.fsp(), 6);
+        assert_eq!(value.to_string(), "1970-01-01 00:00:00.000000");
+        let core = value.core_time();
+        assert_eq!((core.hour(), core.minute(), core.second(), core.microsecond()), (0, 0, 0, 0));
+        assert_eq!(ctx.events.take(), ["zone", "modes", "now", "zone"]);
+
+        ctx.clock.set(None);
+        assert!(matches!(
+            get_time_value(columns, &timestamp, TimeType::Date, -2, None),
+            Err(EvalError::TruncatedWrongValue(message)) if message == "Invalid fsp -2"
+        ));
+        assert_eq!(ctx.events.take(), ["zone", "modes"]);
+        assert!(matches!(
+            get_time_value(columns, &timestamp, TimeType::DateTime, 0, None),
+            Err(EvalError::Unsupported("no statement clock for GetTimeValue"))
+        ));
+        assert_eq!(ctx.events.take(), ["zone", "modes", "now"]);
+        ctx.clock.set(Some((i64::MAX, 0, 0)));
+        assert!(matches!(
+            get_time_value(columns, &timestamp, TimeType::DateTime, 0, None),
+            Err(EvalError::Unsupported("statement clock is out of range"))
+        ));
+        assert_eq!(ctx.events.take(), ["zone", "modes", "now"]);
+
+        // Even CURRENT_DATE must validate the complete leap-second value
+        // before its clock fields are cleared by the shared date projection.
+        ctx.clock.set(Some((59, 1_500_000_000, 0)));
+        assert!(matches!(
+            get_time_value(columns, &date, TimeType::DateTime, 6, None),
+            Err(EvalError::TruncatedWrongValue(message)) if message == "time microsecond is out of range"
+        ));
+        assert_eq!(ctx.events.take(), ["zone", "modes", "now", "zone"]);
+
+        ctx.clock.set(None);
+        for name in ["current_timestamp", "current_date"] {
+            let marker = tidb_ast::Expr::Func {
+                name: name.to_owned(),
+                args: vec![tidb_ast::Expr::Func {
+                    name: "unreachable_helper_argument".to_owned(),
+                    args: vec![],
+                    origin_position: 0,
+                }],
+                origin_position: 0,
+            };
+            assert_eq!(
+                get_time_value(columns, &marker, TimeType::DateTime, -2, None).unwrap(),
+                Datum::new_string(name.to_ascii_uppercase())
+            );
+            assert_eq!(ctx.events.take(), ["zone", "modes"]);
+        }
+        // A normal string spelling is parsed, never promoted to a clock call.
+        assert!(get_time_value(columns, &tidb_ast::Expr::String("CURRENT_TIMESTAMP".to_owned()), TimeType::DateTime, 0, None).is_err());
+        assert_eq!(ctx.events.take(), ["zone", "modes"]);
+        assert_eq!(get_time_value(columns, &tidb_ast::Expr::Null, TimeType::DateTime, 0, None).unwrap(), Datum::Null);
+        assert_eq!(ctx.events.take(), ["zone", "modes"]);
+    });
+}
+
 /// Go `pkg/expression/helper_test.go:127 TestIsCurrentTimestampExpr`.
 #[test]
 fn test_is_current_timestamp_expr_predicate() {

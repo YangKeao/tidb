@@ -9363,6 +9363,157 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_clock_now_date_sysdate_preserves_pinned_context_and_types() {
+    use tidb_datatype::FieldTypeCode::{Date, Datetime};
+
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("SET time_zone='+08:00'").unwrap();
+    session.run("SET timestamp=1700000000.654321").unwrap();
+    session.run("SET tidb_sysdate_is_now=ON").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // The source f64 timestamp split gives 654320955ns. NOW and aliased
+    // SYSDATE truncate to .654320, not UTC_TIMESTAMP's .654321 rounding.
+    // The fixed +08 offset moves the local date into November 15.
+    let StmtOutput::Rows { columns, rows, .. } = session.run_with_columns(
+        "SELECT NOW(),NOW(3),NOW(6),CURRENT_TIMESTAMP(6),LOCALTIME(3),LOCALTIMESTAMP(6),CURDATE(),CURRENT_DATE(),SYSDATE(),SYSDATE(3),SYSDATE(6)",
+    ).unwrap() else { panic!("expected pinned local-clock rows") };
+    let time_text = |value: &Datum| match value {
+        Datum::Time(value) => value.to_string(),
+        other => panic!("local clock lost its native Time domain: {other:?}"),
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].iter().map(&time_text).collect::<Vec<_>>(),
+        vec![
+            "2023-11-15 06:13:20",
+            "2023-11-15 06:13:20.654",
+            "2023-11-15 06:13:20.654320",
+            "2023-11-15 06:13:20.654320",
+            "2023-11-15 06:13:20.654",
+            "2023-11-15 06:13:20.654320",
+            "2023-11-15",
+            "2023-11-15",
+            "2023-11-15 06:13:20",
+            "2023-11-15 06:13:20.654",
+            "2023-11-15 06:13:20.654320",
+        ]
+    );
+    for (index, (code, flen, decimal)) in [
+        (Datetime, 19, 0),
+        (Datetime, 23, 3),
+        (Datetime, 26, 6),
+        (Datetime, 26, 6),
+        (Datetime, 23, 3),
+        (Datetime, 26, 6),
+        (Date, 10, 0),
+        (Date, 10, 0),
+        (Datetime, 19, 0),
+        (Datetime, 23, 3),
+        (Datetime, 26, 6),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(columns[index].1.code(), code, "column {index}");
+        assert_eq!(
+            (columns[index].1.flen(), columns[index].1.decimal()),
+            (flen, decimal),
+            "column {index}"
+        );
+    }
+    assert!(warnings_of(&session).is_empty());
+    // Refresh both context inputs: the timestamp advances one second, while
+    // changing to UTC takes the local date back to November 14.
+    session.run("SET time_zone='+00:00'").unwrap();
+    session.run("SET timestamp=1700000001").unwrap();
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns("SELECT NOW(6),CURDATE(),SYSDATE(6)")
+        .unwrap()
+    else {
+        panic!("expected refreshed local-clock rows")
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].iter().map(&time_text).collect::<Vec<_>>(),
+        vec![
+            "2023-11-14 22:13:21.000000",
+            "2023-11-14",
+            "2023-11-14 22:13:21.000000",
+        ]
+    );
+    assert!(warnings_of(&session).is_empty());
+}
+
+#[test]
+fn evaluated_ascii_clock_now_date_sysdate_zero_slots_cover_aliases_and_live_mode() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("SET time_zone='+08:00'").unwrap();
+    session.run("SET timestamp=1700000000.654321").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // Ten direct calls under ON exercise NOW/CURDATE and their aliases;
+    // three additional OFF calls must reach the real SYSDATE worker. No
+    // formatter, CAST, comparison or unrelated worker can mask these roots.
+    // OFF uses a captured live instant, so no fixed wall-time oracle is used.
+    let modes: [(&str, &[&str]); 2] = [
+        (
+            "ON",
+            &[
+                "NOW()",
+                "NOW(0)",
+                "NOW(6)",
+                "CURRENT_TIMESTAMP(6)",
+                "LOCALTIME(3)",
+                "LOCALTIMESTAMP(6)",
+                "CURDATE()",
+                "CURRENT_DATE()",
+                "SYSDATE()",
+                "SYSDATE(6)",
+            ],
+        ),
+        ("OFF", &["SYSDATE()", "SYSDATE(0)", "SYSDATE(6)"]),
+    ];
+    for (mode, expressions) in modes {
+        session
+            .run(&format!("SET tidb_sysdate_is_now={mode}"))
+            .unwrap();
+        for expression in expressions {
+            let sql = format!("SELECT {expression}");
+            let error = session.run_with_columns(&sql).expect_err(&sql);
+            match &error {
+                DriverError::Exec(tidb_executor::ExecError::Eval(
+                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                )) => {
+                    assert_eq!(
+                        failure.class(),
+                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                    );
+                    assert_eq!(
+                        failure.origin(),
+                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                    );
+                }
+                other => panic!("local-clock worker bypass: mode {mode}, {sql}: {other:?}"),
+            }
+            let mysql = error.to_mysql_error();
+            assert_eq!(mysql.code, 1105, "mode {mode}: {sql}");
+            assert_eq!(mysql.state, *b"HY000", "mode {mode}: {sql}");
+            assert!(mysql.is_from_evaluation(), "mode {mode}: {sql}");
+            assert!(warnings_of(&session).is_empty(), "mode {mode}: {sql}");
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_json_merge_preserves_order_null_domains_errors_and_warning() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();

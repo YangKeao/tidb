@@ -1,28 +1,26 @@
 # Expression unification experiment
 
-Paired branch: `expression-unification-demo` in YangKeao/tidb and YangKeao/tikv.
-Current checkpoint: **json-merge-pair-61**; previous: **clock-four-60**.
+Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
+Current checkpoint: **clock-three-62**, following **json-merge-pair-61**.
 
 ## Progress
 
-Functional delegation plus native algorithm deletion: **198/245**. Target221:23 more needed,47 eligible remain. Strict final-audited acceptance stays **0**; overall goal remains active. New whole families: JSON_MERGE (including PRESERVE) and JSON_MERGE_PATCH.
+Functional delegation plus native algorithm deletion: **201/245**. Target221 needs20 more;44 eligible families remain. Strict final-audited acceptance stays **0**; overall goal remains active.
 
-## What changed
+NOW (including timestamp/localtime aliases), CURDATE/CURRENT_DATE and SYSDATE now use three fixed actual-clock workers. NOW truncates; live SYSDATE rounds and uses its captured instant plus the frozen statement offset. Its true flag shares NOW preparation without nested guards. Native offset/formatting work is removed.
 
-One generic node merge/patch implementation now serves both serde and raw JSON. The serde wrapper retains nullable reset sequencing; raw SDK wrappers retain distinct codec stages, duplicate keys and opaque payloads. Native algorithms are deleted. Three fixed workers consume actual ordered documents, never a host merge answer or reset selection. Existing PB context and legacy child-demand paths are connected without expanding admission.
+The distinct public GetTimeValue raw-sentinel helpers also share their calendar/truncation/date projection through `native_typed_clock.rs`. Their getter order, markers, non-sentinels and pure SDK surface remain unchanged. Native Time/TimeType/SessionTimeZone are not wire aliases: the unchanged native checked constructor is the final representation/bit-width codec. Date clearing still follows complete time validation.
 
-Native empty PB PATCH still panics; raw empty PATCH still returns None. SQL NULL differs from JSON null. Only raw codec errors fold into legacy None; infrastructure errors propagate. The original JSON_MERGE warning owner remains unchanged.
+## Evidence and limits
 
-## Validation and limitations
+[Evidence](evidence/clock-three-checkpoint.md), [exact commands and hashes](logs/clock-three-summary.txt), [manifest](checkpoint.json), [cumulative ledger](migration-progress.json).
 
-[Evidence](evidence/json-merge-pair-checkpoint.md), [commands/hashes](logs/json-merge-pair-summary.txt), [manifest](checkpoint.json), [cumulative ledger](migration-progress.json).
+Eight exclusive writers;15 Rust files;one new source;14 permanent tests pass. Ten Cargo runs:seven green clock gates, two known full-suite RED runs and one failed exploratory CRC32 SQL probe. No compile failure, interruption, zero-match or retry. No clock production/test repair after its first gate.
 
-Eight exclusive writers;21 Rust files,2 new sources,15 new tests passing in the final state.13 Cargo attempts:11 nonzero runs (7 green,2 known full-suite RED,1 initial SQL RED,1 interrupted),1 compile failure and1 zero-match harness run. None of the interrupted/zero-match/ignored cases is counted as passing.
+TiKV clock13/local311+1ignored; native clock19/helper5/sysdate7; SQL2+original1 pass. SQL includes14 fixed results and13 direct zero-slot probes. Full expression **1536/4old/94ignored**, unistore **207/1old/13ignored** retain complete prior failure sections after only thread-ID normalization. Original oracles are unchanged; prior extra JSON_KEYS aggregate mismatch remains unresolved and was not rerun.
 
-The new deep raw test exposed impractical work in an unchanged double-pass decoder; only the new test was bounded, leaving deep runtime/performance validation deferred. A PB test's private snapshot calls were removed without widening APIs. SQL numeric3146 cases now allow the original statement diagnostics while forbidding deprecation1681, based on existing source policy. All fixed values and old fixtures remain unchanged. The wrong-package zero-match command is disclosed; the two intended original fixtures already passed within the12-test native expression gate.
+Quoted CRC32 SQL was rejected as a UDF (`FunctionNotExists`); the temporary test alone was removed and its RED receipt retained. No CRC32 production change, admission expansion or credit.
 
-Final CPP raw2/core22/local308+1ignored; native SDK1/expression12/legacy1/SQL2 pass. Full expression **1531/4old/94ignored**, unistore **207/1old/13ignored** retain complete prior failure sections after only thread-ID normalization. Prior extra JSON_KEYS aggregate mismatch remains unresolved and was not rerun.
+M6, broader default-NoColumns roots, workspace/lint/dev/bazel_prepare, release/performance/zero-copy/physical heap/peak/OOM, exhaustive differential/TiFlash/FIPS and prior parser/GB/vector/Decimal/deep-JSON exceptions remain deferred. No package-transcreation, PR-readiness or performance-neutrality claim.
 
-StrictM6, broader default-NoColumns root closure, workspace/lint/dev/bazel_prepare, release/performance/zero-copy/physical heap/peak/OOM, exhaustive context/domain/wire/differential/TiFlash/FIPS and prior parser/GB/vector/extreme Decimal exceptions remain deferred. Tree conversion/key-search costs are unmeasured. No package-transcreation, PR readiness or overall completion claim.
-
-The manifest pins the paired TiKV commit and common Plan hash. Both tracked Plans equal the root Plan; publication is TiKV first, then TiDB with exact paired SHA. No force push or automatic PR; the old untracked client differential `BUILD.bazel` remains excluded. Next read-only candidates are clock3 plus typed GetTimeValue closure, CRC32 with exact number spelling and a still-unverified quoted SQL entry, and all19-kind identity families. No advance credit.
+Both tracked Plans equal the root Plan; the manifest pins their hash and exact paired TiKV commit. TiKV publishes first, then TiDB; no force push or automatic PR. The old untracked client-differential BUILD.bazel stays excluded. Next read-only candidates: DATE, paired TIME/MICROSECOND parser closure, and literal-time families with separate text-parser prerequisites; none receives advance credit.

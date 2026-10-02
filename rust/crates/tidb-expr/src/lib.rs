@@ -627,26 +627,23 @@ fn current_time_value(
     kind: tidb_datatype::TimeType,
     fsp: i64,
 ) -> Result<tidb_datatype::Time, EvalError> {
-    use chrono::{Datelike, Timelike};
-
     let normalized_fsp = tidb_datatype::check_fsp(fsp)
         .map_err(|error| EvalError::TruncatedWrongValue(error.to_string()))?;
     let (seconds, nanos, _) = cols.now().ok_or(EvalError::Unsupported(
         "no statement clock for GetTimeValue",
     ))?;
-    let instant = chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, nanos)
-        .ok_or(EvalError::Unsupported("statement clock is out of range"))?
-        .with_timezone(&cols.time_zone());
-    let quantum = 10_u32.pow((9 - normalized_fsp) as u32);
-    let nanos = (instant.nanosecond() / quantum) * quantum;
+    let instant = tidb_query_expr::native_typed_clock_utc(seconds, nanos)
+        .ok_or(EvalError::Unsupported("statement clock is out of range"))?;
+    let [year, month, day, hour, minute, second, microsecond] =
+        tidb_query_expr::native_typed_clock_fields(instant, &cols.time_zone(), normalized_fsp);
     tidb_datatype::Time::from_date_checked(
-        instant.year(),
-        instant.month() as i32,
-        instant.day() as i32,
-        instant.hour() as i32,
-        instant.minute() as i32,
-        instant.second() as i32,
-        (nanos / 1_000) as i32,
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        microsecond,
         kind,
         normalized_fsp,
     )
@@ -659,15 +656,16 @@ fn current_date_value(
     fsp: i64,
 ) -> Result<tidb_datatype::Time, EvalError> {
     let current = current_time_value(cols, kind, fsp)?;
-    let core = current.core_time();
+    let [year, month, day, hour, minute, second, microsecond] =
+        tidb_query_expr::native_typed_date_fields(current.core_time().raw());
     tidb_datatype::Time::from_date_checked(
-        core.year(),
-        core.month() as i32,
-        core.day() as i32,
-        0,
-        0,
-        0,
-        0,
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        microsecond,
         kind,
         fsp,
     )
