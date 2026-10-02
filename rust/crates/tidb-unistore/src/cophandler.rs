@@ -4854,29 +4854,10 @@ impl LegacyEvaluator<'_> {
                         Some(i128::from(duration.nanoseconds() != 0))
                     }
                     SimpleSig::Date => {
-                        let Some(time) = self.eval_time(children.first())? else {
-                            return Ok(None);
-                        };
-                        let core = time.core_time();
-                        let Some(date) = tidb_datatype::Time::new(
-                            tidb_datatype::CoreTime::from_date(
-                                core.year() as u16,
-                                core.month(),
-                                core.day(),
-                                0,
-                                0,
-                                0,
-                                0,
-                            ),
-                            tidb_datatype::TimeType::Date,
-                            0,
-                        )
-                        .ok() else {
-                            return Ok(None);
-                        };
-                        // A bare date as a condition answers ToBool of its
-                        // numeric form; comparisons read it as a decimal.
-                        Some(i128::from(!date.to_number().is_zero()))
+                        let core = self
+                            .eval_time(children.first())?
+                            .map(|time| time.core_time().raw());
+                        tidb_expr::eval_legacy_date_in(core, self.raw_columns)?.map(i128::from)
                     }
                     SimpleSig::Hour | SimpleSig::Minute | SimpleSig::Second => {
                         let nanos = self
@@ -8470,6 +8451,189 @@ mod tests {
                 assert_eq!(evaluator.eval_expr(&call).unwrap(), None);
             }
         }
+    }
+
+    #[test]
+    fn legacy_date_worker_preserves_raw_predicate_presence_and_first_child_demand() {
+        use tidb_datatype::{CoreTime, Datum, Time, TimeType};
+        struct NoDateModes;
+        impl tidb_expr::Columns for NoDateModes {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn date_modes(&self) -> tidb_datatype::DateModes {
+                panic!("legacy DATE must not read native date modes")
+            }
+        }
+        let zone = zone();
+        let normal =
+            Time::from_date_checked(2024, 3, 5, 14, 30, 45, 123456, TimeType::DateTime, 6).unwrap();
+        let clock = CoreTime::from_date(0, 0, 0, 12, 34, 56, 123456);
+        let hidden_date = Time::new(clock, TimeType::Date, 0).unwrap();
+        let hidden_datetime = Time::new(clock, TimeType::DateTime, 6).unwrap();
+        let zero = Time::new(
+            CoreTime::from_date(0, 0, 0, 0, 0, 0, 0),
+            TimeType::DateTime,
+            6,
+        )
+        .unwrap();
+        let high_year = Time::new(
+            CoreTime::from_date(16383, 0, 0, 0, 0, 0, 0),
+            TimeType::DateTime,
+            0,
+        )
+        .unwrap();
+        let partial = Time::new(
+            CoreTime::from_date(2024, 0, 5, 12, 0, 0, 0),
+            TimeType::DateTime,
+            0,
+        )
+        .unwrap();
+        let row = [Datum::Time(normal), Datum::Null];
+        let call = |children| SimpleExpr::Func(SimpleSig::Date, children);
+        let assert_pool = |error| match error {
+            LegacyEvalError::Infrastructure(tidb_expr::EvalError::ExpressionAdapterFailure(
+                failure,
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_expr::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_expr::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("legacy DATE infrastructure was softened: {other:?}"),
+        };
+        // Twelve real leaf/presence cases exercise both the one-slot result
+        // path and the root's own zero-slot refusal. Hidden clocks must be
+        // removed before boolean conversion; high/partial years stay legal
+        // in this legacy predicate policy, independently of native SQL modes.
+        for slots in [1, 0] {
+            let owner = tidb_expr::AsciiPoolOwner::new(
+                tidb_expr::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    64,
+                    8,
+                    4 * 1024 * 1024,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let execution = owner.begin_execution().unwrap();
+            execution.scope().with_columns(&NoDateModes, |columns| {
+                let evaluator = LegacyEvaluator {
+                    raw_columns: columns,
+                    ..LegacyEvaluator::new(&row, 4, &zone)
+                };
+                for (children, expected) in [
+                    (vec![SimpleExpr::Time(normal)], Some(1)),
+                    (vec![SimpleExpr::Time(hidden_date)], Some(0)),
+                    (vec![SimpleExpr::Time(hidden_datetime)], Some(0)),
+                    (vec![SimpleExpr::Time(zero)], Some(0)),
+                    (vec![SimpleExpr::Time(high_year)], Some(1)),
+                    (vec![SimpleExpr::Time(partial)], Some(1)),
+                    (vec![], None),
+                    (vec![SimpleExpr::Null], None),
+                    (vec![SimpleExpr::Column(0)], Some(1)),
+                    (vec![SimpleExpr::Column(1)], None),
+                    (vec![SimpleExpr::Column(99)], None),
+                    (vec![SimpleExpr::Int(1)], None),
+                ] {
+                    let expression = call(children);
+                    if slots == 1 {
+                        assert_eq!(
+                            evaluator.eval_expr(&expression).unwrap(),
+                            expected,
+                            "{expression:?}"
+                        );
+                        assert_eq!(
+                            evaluator.folded_int(Some(&expression)).unwrap(),
+                            expected,
+                            "{expression:?}"
+                        );
+                    } else {
+                        assert_pool(
+                            evaluator
+                                .eval_expr(&expression)
+                                .expect_err("DATE root must acquire its worker"),
+                        );
+                        assert_pool(
+                            evaluator
+                                .folded_int(Some(&expression))
+                                .expect_err("fold retains DATE infrastructure"),
+                        );
+                    }
+                }
+                // DATE's temporal-answer channel was never admitted here.
+                assert_eq!(
+                    evaluator
+                        .eval_time(Some(&call(vec![SimpleExpr::Time(normal)])))
+                        .unwrap(),
+                    None
+                );
+            });
+        }
+        // The child-only failed scope is independent of the root's scope.
+        // Extra children remain unread; a demanded first Shared child still
+        // propagates its original infrastructure error before the DATE worker.
+        let owner = tidb_expr::AsciiPoolOwner::new(
+            tidb_expr::AsciiPoolPolicy::checked(
+                0,
+                0,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let execution = owner.begin_execution().unwrap();
+        execution.scope().with_columns(&NoDateModes, |columns| {
+            let shared = convert_expr(&tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(tipb::ScalarFuncSig::IntIsNull as i32),
+                field_type: Some(tipb::FieldType {
+                    tp: Some(8),
+                    ..Default::default()
+                }),
+                children: vec![tipb::Expr {
+                    tp: Some(tipb::ExprType::Null as i32),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+            .unwrap();
+            let evaluator = LegacyEvaluator {
+                shared_override: Some(columns),
+                ..LegacyEvaluator::new(&row, 4, &zone)
+            };
+            assert_eq!(
+                evaluator
+                    .eval_expr(&call(vec![SimpleExpr::Time(normal), shared.clone()]))
+                    .unwrap(),
+                Some(1)
+            );
+            assert_eq!(
+                evaluator
+                    .eval_expr(&call(vec![SimpleExpr::Null, shared.clone()]))
+                    .unwrap(),
+                None
+            );
+            assert_pool(
+                evaluator
+                    .eval_expr(&call(vec![shared, SimpleExpr::Time(normal)]))
+                    .expect_err("DATE demands its first child"),
+            );
+        });
     }
 
     #[test]

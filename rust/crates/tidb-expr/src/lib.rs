@@ -405,7 +405,7 @@ pub use row::{compare_datums, compare_datums_with_collation};
 pub(crate) use tidb_datatype::{Datum, Decimal};
 pub use tidb_util::mathutil::MysqlRng;
 pub use tikv::{
-    eval_legacy_bytes_comparison_in, eval_legacy_decimal_arithmetic_in,
+    eval_legacy_bytes_comparison_in, eval_legacy_date_in, eval_legacy_decimal_arithmetic_in,
     eval_legacy_decimal_comparison_in, eval_legacy_decimal_division_in,
     eval_legacy_integer_arithmetic_in, eval_legacy_integer_comparison_in,
     eval_legacy_json_array_append_step_in, eval_legacy_json_member_of_in,

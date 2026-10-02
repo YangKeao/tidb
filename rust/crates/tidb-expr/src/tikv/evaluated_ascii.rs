@@ -1703,6 +1703,22 @@ impl EvaluatedBytesResult {
         }
     }
 
+    /// Reconstruct the DATE representation from the worker's actual core bits.
+    /// The signed carrier preserves all 64 bits, including the high year bit.
+    pub(crate) fn into_date_core_datum(self) -> Result<Datum, EvalError> {
+        match self.into_int_datum()? {
+            Datum::Null => Ok(Datum::Null),
+            Datum::Int(bits) => Time::new(
+                tidb_datatype::CoreTime::from_raw(bits as u64),
+                tidb_datatype::TimeType::Date,
+                0,
+            )
+            .map(Datum::Time)
+            .map_err(|_| result_kind_error().into_eval_error()),
+            _ => Err(result_kind_error().into_eval_error()),
+        }
+    }
+
     /// Pack only a computed boolean carrier; do not recalculate its truth.
     pub(crate) fn into_boolean_datum(self) -> Result<Datum, EvalError> {
         match self {
@@ -1929,6 +1945,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::DateDiffTextNative
             | EvaluatedBytesOp::DateDiffNullNative
             | EvaluatedBytesOp::DateDiffCoreNative
+            | EvaluatedBytesOp::DateCoreNative
+            | EvaluatedBytesOp::DateCorePredicateLegacy
             | EvaluatedBytesOp::ToDaysTextNative
             | EvaluatedBytesOp::ToSecondsTextNative
             | EvaluatedBytesOp::TsoLogicalNative
@@ -2652,6 +2670,24 @@ pub fn eval_legacy_json_merge_patch_in(
             Ok((EvaluatedBytesOp::JsonMergePatchRawLegacy, args))
         },
         legacy_json_output_result,
+    )
+}
+
+/// Evaluate the legacy DATE predicate over the actual nullable temporal core.
+pub fn eval_legacy_date_in(core: Option<u64>, ctx: &dyn Columns) -> Result<Option<i64>, EvalError> {
+    evaluate_prepared_args_in(
+        ctx,
+        || {
+            Ok((
+                EvaluatedBytesOp::DateCorePredicateLegacy,
+                EvaluatedArgs::TimeCoreBits(core),
+            ))
+        },
+        |computed| match computed.into_boolean_datum()? {
+            Datum::Null => Ok(None),
+            Datum::Int(value) => Ok(Some(value)),
+            _ => Err(result_kind_error().into_eval_error()),
+        },
     )
 }
 

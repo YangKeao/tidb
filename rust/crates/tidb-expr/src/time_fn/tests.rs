@@ -1739,3 +1739,205 @@ fn current_clock_preparation_preserves_sysdate_flag_and_error_priority() {
         execution.close();
     }
 }
+
+struct DateWorkerContext {
+    modes: tidb_datatype::DateModes,
+    level: crate::ErrorLevel,
+    events: std::cell::RefCell<Vec<&'static str>>,
+    warnings: std::cell::RefCell<Vec<(u16, String)>>,
+}
+
+impl DateWorkerContext {
+    fn new(flags: u8, level: crate::ErrorLevel) -> Self {
+        Self {
+            modes: tidb_datatype::DateModes {
+                no_zero_date: flags & 1 != 0,
+                no_zero_in_date: flags & 2 != 0,
+                allow_invalid_dates: flags & 4 != 0,
+            },
+            level,
+            events: std::cell::RefCell::new(Vec::new()),
+            warnings: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl Columns for DateWorkerContext {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        None
+    }
+
+    fn date_modes(&self) -> tidb_datatype::DateModes {
+        self.events.borrow_mut().push("modes");
+        self.modes
+    }
+
+    fn truncate_level(&self) -> crate::ErrorLevel {
+        self.events.borrow_mut().push("level");
+        self.level
+    }
+
+    fn append_warning(&self, code: u16, message: &str) {
+        self.events.borrow_mut().push("warning");
+        self.warnings.borrow_mut().push((code, message.to_owned()));
+    }
+}
+
+#[test]
+fn date_worker_preserves_raw_year_bits_and_clears_hidden_clock() {
+    use tidb_datatype::{CoreTime, Time, TimeType};
+
+    let cases = [
+        (
+            CoreTime::from_raw(CoreTime::from_date(2024, 2, 29, 23, 59, 59, 987654).raw() | 15),
+            CoreTime::from_date(2024, 2, 29, 0, 0, 0, 0),
+        ),
+        (
+            CoreTime::from_raw(CoreTime::from_date(16383, 15, 31, 31, 63, 63, 1048575).raw() | 15),
+            CoreTime::from_date(16383, 15, 31, 0, 0, 0, 0),
+        ),
+    ];
+    for slots in [0, 1] {
+        let owner = selected_clock_scope_owner(slots);
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        for flags in 0..8 {
+            for kind in [TimeType::Date, TimeType::DateTime, TimeType::Timestamp] {
+                for (core, expected) in cases {
+                    let ctx = DateWorkerContext::new(flags, crate::ErrorLevel::Error);
+                    let input = Datum::Time(Time::new(core, kind, 6).unwrap());
+                    let result = scope.with_columns(&ctx, |ctx| date(&[input], ctx));
+                    if slots == 0 {
+                        assert!(matches!(
+                            result,
+                            Err(EvalError::ExpressionAdapterFailure(ref failure))
+                                if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource
+                        ));
+                    } else {
+                        let Datum::Time(value) = result.unwrap() else {
+                            panic!("DATE must return its computed native Time representation");
+                        };
+                        assert_eq!(value.core_time().raw(), expected.raw());
+                        assert_eq!(value.kind(), TimeType::Date);
+                        assert_eq!(value.fsp(), 0);
+                    }
+                    assert_eq!(*ctx.events.borrow(), vec!["modes"]);
+                    assert!(ctx.warnings.borrow().is_empty());
+                }
+            }
+        }
+        drop(scope);
+        execution.close();
+    }
+}
+
+#[test]
+fn date_preparation_keeps_zero_policy_diagnostics_and_null_getter_order() {
+    use tidb_datatype::{CoreTime, Time, TimeType};
+
+    // Bit n in reject_modes is the literal expected rejection for mode n.
+    // Visible-zero cores carrying reserved/clock bits are NOT whole-value zero.
+    let cases = [
+        (
+            CoreTime::from_raw(0),
+            TimeType::DateTime,
+            0xaa_u8,
+            "0000-00-00 00:00:00.000000",
+        ),
+        (CoreTime::from_raw(1), TimeType::Date, 0xcc, "0000-00-00"),
+        (
+            CoreTime::from_date(0, 0, 0, 1, 0, 0, 0),
+            TimeType::Date,
+            0xcc,
+            "0000-00-00",
+        ),
+        (
+            CoreTime::from_date(2024, 0, 1, 0, 0, 0, 0),
+            TimeType::Timestamp,
+            0xcc,
+            "2024-00-01 00:00:00.000000",
+        ),
+        (
+            CoreTime::from_date(2024, 2, 31, 0, 0, 0, 0),
+            TimeType::DateTime,
+            0,
+            "2024-02-31 00:00:00.000000",
+        ),
+    ];
+    for slots in [0, 1] {
+        let owner = selected_clock_scope_owner(slots);
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        for flags in 0..8 {
+            for level in [
+                crate::ErrorLevel::Ignore,
+                crate::ErrorLevel::Warn,
+                crate::ErrorLevel::Error,
+            ] {
+                for (core, kind, reject_modes, display) in cases {
+                    let ctx = DateWorkerContext::new(flags, level);
+                    let input = Datum::Time(Time::new(core, kind, 6).unwrap());
+                    let rejects = reject_modes & (1 << flags) != 0;
+                    let message = format!("Incorrect datetime value: '{display}'");
+                    let result = scope.with_columns(&ctx, |ctx| date(&[input], ctx));
+                    if rejects && level == crate::ErrorLevel::Error {
+                        assert_eq!(result, Err(EvalError::TruncatedWrongValue(message.clone())));
+                    } else if slots == 0 {
+                        assert!(matches!(
+                            result,
+                            Err(EvalError::ExpressionAdapterFailure(ref failure))
+                                if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource
+                        ));
+                    } else if rejects {
+                        assert_eq!(result, Ok(Datum::Null));
+                    } else {
+                        assert!(matches!(result, Ok(Datum::Time(_))));
+                    }
+                    let expected_events = if !rejects {
+                        vec!["modes"]
+                    } else if level == crate::ErrorLevel::Warn {
+                        vec!["modes", "level", "warning"]
+                    } else {
+                        vec!["modes", "level"]
+                    };
+                    assert_eq!(*ctx.events.borrow(), expected_events);
+                    let expected_warnings = if rejects && level == crate::ErrorLevel::Warn {
+                        vec![(1292, message)]
+                    } else {
+                        Vec::new()
+                    };
+                    assert_eq!(*ctx.warnings.borrow(), expected_warnings);
+                }
+            }
+        }
+        let ctx = DateWorkerContext::new(7, crate::ErrorLevel::Error);
+        scope.with_columns(&ctx, |ctx| {
+            for args in [vec![], vec![Datum::Null, Datum::Null]] {
+                assert_eq!(
+                    date(&args, ctx),
+                    Err(EvalError::Unsupported("bad function arity"))
+                );
+            }
+            assert_eq!(
+                date(&[Datum::Int(1)], ctx),
+                Err(EvalError::Unsupported(
+                    "DATE argument reached the signature without its ETDatetime cast",
+                )),
+            );
+            let result = date(&[Datum::Null], ctx);
+            if slots == 0 {
+                assert!(matches!(
+                    result,
+                    Err(EvalError::ExpressionAdapterFailure(ref failure))
+                        if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource
+                ));
+            } else {
+                assert_eq!(result, Ok(Datum::Null));
+            }
+        });
+        assert!(ctx.events.borrow().is_empty());
+        assert!(ctx.warnings.borrow().is_empty());
+        drop(scope);
+        execution.close();
+    }
+}

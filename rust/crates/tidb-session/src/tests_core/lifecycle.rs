@@ -9363,6 +9363,121 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_date_preserves_typed_casts_zero_modes_and_metadata() {
+    let mut session = Session::new();
+    session.run("SET time_zone='+00:00'").unwrap();
+    session.run("SET sql_mode=''").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_date_sql (dt DATETIME(6), d DATE, ts TIMESTAMP(6), txt VARCHAR(40), num BIGINT, nd DATETIME, z DATETIME, p DATETIME)").unwrap();
+    session.run("INSERT INTO shared_date_sql VALUES ('2024-03-05 14:30:45.123456','2024-02-29','2024-03-04 23:30:00','2024-02-29 23:59:59.654321',20240315123045,NULL,'0000-00-00 00:00:00','2024-00-05 12:34:56')").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // DATE's original ETDatetime adaptation passes temporal/NULL values
+    // through; VARCHAR and BIGINT exercise its existing implicit casts.
+    let StmtOutput::Rows { columns, rows, .. } = session.run_with_columns(
+        "SELECT DATE(dt),DATE(d),DATE(ts),DATE(txt),DATE(num),DATE(nd),DATE(z),DATE(p) FROM shared_date_sql",
+    ).unwrap() else { panic!("expected typed DATE rows") };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].iter().map(cell_text).collect::<Vec<_>>(),
+        vec![
+            "2024-03-05",
+            "2024-02-29",
+            "2024-03-04",
+            "2024-02-29",
+            "2024-03-15",
+            "NULL",
+            "0000-00-00",
+            "2024-00-05",
+        ]
+    );
+    for (index, (_, field)) in columns.iter().enumerate() {
+        assert_eq!(
+            field.code(),
+            tidb_datatype::FieldTypeCode::Date,
+            "column {index}"
+        );
+        assert_eq!((field.flen(), field.decimal()), (10, 0), "column {index}");
+        if index == 5 {
+            assert_eq!(rows[0][index], Datum::Null);
+        } else {
+            assert!(matches!(rows[0][index], Datum::Time(_)), "column {index}");
+        }
+    }
+    assert!(warnings_of(&session).is_empty());
+    // Stored typed values avoid cast warnings: these two diagnostics belong
+    // to DATE's own mode validator and retain the original, untrimmed clock.
+    session
+        .run("SET sql_mode='NO_ZERO_DATE,NO_ZERO_IN_DATE'")
+        .unwrap();
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns("SELECT DATE(z),DATE(p) FROM shared_date_sql")
+        .unwrap()
+    else {
+        panic!("expected soft DATE mode failures")
+    };
+    assert_eq!(rows, vec![vec![Datum::Null, Datum::Null]]);
+    assert_eq!(
+        warnings_of(&session),
+        vec![
+            (
+                1292,
+                "Incorrect datetime value: '0000-00-00 00:00:00'".to_owned()
+            ),
+            (
+                1292,
+                "Incorrect datetime value: '2024-00-05 12:34:56'".to_owned()
+            ),
+        ]
+    );
+}
+
+#[test]
+fn evaluated_ascii_date_zero_slots_require_direct_temporal_inputs() {
+    let mut session = Session::new();
+    session.run("SET time_zone='+00:00'").unwrap();
+    session.run("SET sql_mode=''").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_date_zero (dt DATETIME(6), d DATE, ts TIMESTAMP(6), nd DATETIME, z DATETIME, p DATETIME)").unwrap();
+    session.run("INSERT INTO shared_date_zero VALUES ('2024-03-05 14:30:45.123456','2024-02-29','2024-03-04 23:30:00',NULL,'0000-00-00 00:00:00','2024-00-05 12:34:56')").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // Exactly six direct roots. cast_arg_as_datetime passes Datum::Time and
+    // Datum::Null through, so no cast worker can supply this refusal. The
+    // permissive mode also keeps pre-admission mode diagnostics out of scope.
+    for column in ["dt", "d", "ts", "nd", "z", "p"] {
+        let sql = format!("SELECT DATE({column}) FROM shared_date_zero");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("DATE bypassed its own worker: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+}
+
+#[test]
 fn evaluated_ascii_clock_now_date_sysdate_preserves_pinned_context_and_types() {
     use tidb_datatype::FieldTypeCode::{Date, Datetime};
 

@@ -177,39 +177,43 @@ fn tidb_bounded_staleness(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, E
 /// a typed temporal value. The function applies its own zero-date SQL-mode
 /// checks, clears the clock, and changes the result domain to `DATE`.
 pub(crate) fn date(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    let Datum::Time(mut value) = value else {
-        return if matches!(value, Datum::Null) {
-            Ok(Datum::Null)
-        } else {
-            Err(EvalError::Unsupported(
-                "DATE argument reached the signature without its ETDatetime cast",
+    crate::tikv::evaluate_prepared_args_in(
+        cols,
+        || {
+            let [value] = vals else {
+                return Err(EvalError::Unsupported("bad function arity"));
+            };
+            let Datum::Time(value) = value else {
+                return if matches!(value, Datum::Null) {
+                    Ok((
+                        crate::tikv::EvaluatedBytesOp::DateDiffNullNative,
+                        crate::tikv::EvaluatedArgs::NullWitness(None),
+                    ))
+                } else {
+                    Err(EvalError::Unsupported(
+                        "DATE argument reached the signature without its ETDatetime cast",
+                    ))
+                };
+            };
+            let core = value.core_time().raw();
+            let modes = cols.date_modes();
+            if tidb_query_datatype::codec::mysql::Time::native_date_rejects_zero(
+                core,
+                modes.no_zero_date,
+                modes.no_zero_in_date,
+            ) {
+                cols.handle_truncate(&format!("Incorrect datetime value: '{value}'"))?;
+            }
+            // Even a soft-rejected non-NULL retains its actual core and modes.
+            // The worker owns the nullable decision and unconditional midnight
+            // projection, including hidden clock bits in a Date-kind input.
+            Ok((
+                crate::tikv::EvaluatedBytesOp::DateCoreNative,
+                crate::tikv::prepare_date_args(core, modes)?,
             ))
-        };
-    };
-
-    let modes = cols.date_modes();
-    if (value.is_zero() && modes.no_zero_date)
-        || (!value.is_zero() && value.invalid_zero() && modes.no_zero_in_date)
-    {
-        cols.handle_truncate(&format!("Incorrect datetime value: '{value}'"))?;
-        return Ok(Datum::Null);
-    }
-
-    let core = value.core_time();
-    value.set_core_time(tidb_datatype::CoreTime::from_date(
-        u16::try_from(core.year()).expect("a typed temporal value has a nonnegative year"),
-        core.month(),
-        core.day(),
-        0,
-        0,
-        0,
-        0,
-    ));
-    value.set_kind(tidb_datatype::TimeType::Date);
-    Ok(Datum::Time(value))
+        },
+        crate::tikv::EvaluatedBytesResult::into_date_core_datum,
+    )
 }
 
 /// `builtinNowWithArgSig` / `builtinNowWithoutArgSig`: local

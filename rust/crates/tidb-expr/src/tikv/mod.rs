@@ -35,7 +35,7 @@ pub(crate) use evaluated_ascii::{
     RegexpFunction,
 };
 pub use evaluated_ascii::{
-    eval_legacy_bytes_comparison_in, eval_legacy_decimal_arithmetic_in,
+    eval_legacy_bytes_comparison_in, eval_legacy_date_in, eval_legacy_decimal_arithmetic_in,
     eval_legacy_decimal_comparison_in, eval_legacy_decimal_division_in,
     eval_legacy_integer_arithmetic_in, eval_legacy_integer_comparison_in,
     eval_legacy_json_array_append_step_in, eval_legacy_json_member_of_in,
@@ -128,6 +128,25 @@ pub(crate) fn prepare_grouping_args(
             error, None,
         ))
     })
+}
+
+/// Transport the actual temporal core and the original three DATE mode bits.
+pub(crate) fn prepare_date_args(
+    core: u64,
+    modes: tidb_datatype::DateModes,
+) -> Result<EvaluatedArgs, crate::EvalError> {
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(8).map_err(|error| {
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+            LocalError::ResourceLimit(format!("DATE core input allocation failed: {error}").into()),
+            None,
+        ))
+    })?;
+    bytes.extend_from_slice(&core.to_le_bytes());
+    let flags = i64::from(modes.no_zero_date)
+        | (i64::from(modes.no_zero_in_date) << 1)
+        | (i64::from(modes.allow_invalid_dates) << 2);
+    Ok(EvaluatedArgs::BytesInt(Some(bytes), Some(flags)))
 }
 
 /// Transport the actual UTC seconds, nanoseconds and offset without clock math.

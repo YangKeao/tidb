@@ -1408,6 +1408,9 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::SysdateNative => {
             panic!("local clock functions need the original clock tuple and precision")
         }
+        EvaluatedBytesOp::DateCoreNative | EvaluatedBytesOp::DateCorePredicateLegacy => {
+            panic!("DATE needs its original temporal core and mode or nullable predicate role")
+        }
         EvaluatedBytesOp::TidbShardNative => "TIDB_SHARD",
         EvaluatedBytesOp::VitessHashNative => "VITESS_HASH",
         EvaluatedBytesOp::FormatBytesNative => "FORMAT_BYTES",
@@ -2144,6 +2147,148 @@ fn json_merge_sdk_rejects_bad_frames_and_preserves_empty_patch_panic() {
     assert!(matches!(scope.evaluate_value(&Datum::Null),
         Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopePoisoned));
     assert_eq!(owner.snapshot().unwrap(), disposed);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn date_core_sdk_preserves_computed_bits_modes_nullable_predicate_and_refusals() {
+    use tidb_datatype::{CoreTime, DateModes, TimeType};
+    let modes = |no_zero_date, no_zero_in_date, allow_invalid_dates| DateModes {
+        no_zero_date,
+        no_zero_in_date,
+        allow_invalid_dates,
+    };
+    let high = CoreTime::from_date(9000, 1, 2, 23, 59, 59, 123456).raw() | 15;
+    let midnight = CoreTime::from_date(9000, 1, 2, 0, 0, 0, 0).raw();
+    assert_ne!(high & (1_u64 << 63), 0);
+    let EvaluatedArgs::BytesInt(Some(bytes), Some(flags)) =
+        super::super::prepare_date_args(high, modes(true, true, true)).unwrap()
+    else {
+        panic!("DATE requires its actual core and three mode bits");
+    };
+    assert_eq!(bytes, high.to_le_bytes().to_vec());
+    assert_eq!(flags, 7);
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (core, mode, expected) in [
+            (high, modes(true, true, true), Some(midnight)),
+            (0, modes(false, false, false), Some(0)),
+            (0, modes(true, false, false), None),
+            // The original reserved bit makes this nonzero before DATE projection.
+            (1, modes(true, false, true), Some(0)),
+            (1, modes(false, true, true), None),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    EvaluatedBytesOp::DateCoreNative,
+                    columns,
+                    || super::super::prepare_date_args(core, mode),
+                    EvaluatedBytesResult::into_date_core_datum,
+                )
+            });
+            match (result.unwrap(), expected) {
+                (Datum::Time(value), Some(bits)) => {
+                    assert_eq!(value.core_time().raw(), bits);
+                    assert_eq!(value.kind(), TimeType::Date);
+                    assert_eq!(value.fsp(), 0);
+                }
+                (Datum::Null, None) => {}
+                other => panic!("unexpected DATE projection {other:?}"),
+            }
+            assert_wide_math_c4(observation);
+        }
+        for (core, expected) in [
+            (None, None),
+            (Some(0), Some(0)),
+            (Some(1), Some(0)),
+            (Some(high), Some(1)),
+        ] {
+            let (result, observation) =
+                observe_wide_math(|| crate::eval_legacy_date_in(core, columns));
+            assert_eq!(result, Ok(expected));
+            assert_wide_math_c4(observation);
+            assert_eq!(
+                scope
+                    .lease
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .worker
+                    .as_ref()
+                    .unwrap()
+                    .operation(),
+                EvaluatedBytesOp::DateCorePredicateLegacy
+            );
+        }
+        let (result, observation) = observe_wide_math(|| {
+            evaluate_args_in(
+                EvaluatedBytesOp::DateDiffNullNative,
+                columns,
+                || Ok(EvaluatedArgs::NullWitness(None)),
+                EvaluatedBytesResult::into_date_core_datum,
+            )
+        });
+        assert_eq!(result, Ok(Datum::Null));
+        assert_wide_math_c4(observation);
+        for args in [
+            EvaluatedArgs::BytesInt(Some(vec![0; 7]), Some(0)),
+            EvaluatedArgs::BytesInt(Some(vec![0; 8]), Some(8)),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    EvaluatedBytesOp::DateCoreNative,
+                    columns,
+                    || Ok(args),
+                    EvaluatedBytesResult::into_date_core_datum,
+                )
+            });
+            assert!(matches!(
+                result,
+                Err(EvalError::ExpressionRuntimeFailure(_))
+            ));
+            assert_eq!(
+                observation.before_kernel_invocations,
+                observation.after_kernel_invocations
+            );
+        }
+    });
+    assert!(
+        matches!(EvaluatedBytesResult::Bytes(None).into_date_core_datum(),
+        Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract)
+    );
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for operation in [EvaluatedBytesOp::DateCoreNative, EvaluatedBytesOp::DateDiffNullNative] {
+            let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                operation, columns,
+                || if operation == EvaluatedBytesOp::DateCoreNative {
+                    super::super::prepare_date_args(high, DateModes::default())
+                } else {
+                    Ok(EvaluatedArgs::NullWitness(None))
+                },
+                EvaluatedBytesResult::into_date_core_datum,
+            ));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+        }
+        for core in [None, Some(high)] {
+            let (result, observation) = observe_wide_math(|| crate::eval_legacy_date_in(core, columns));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
     drop(scope);
     execution.close();
 }

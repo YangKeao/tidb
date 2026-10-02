@@ -373,6 +373,11 @@ impl PbBuiltin {
                             // the migrated nullable signature actually enter C4.
                             return eval_pb_char_length(&value, binary, ctx);
                         }
+                        if self.signature == ScalarFuncSig::Date {
+                            // Only the observed NULL is handed off: do not coerce
+                            // the prefix, demand suffixes, or inspect their arity.
+                            return crate::time_fn::date(std::slice::from_ref(&value), ctx);
+                        }
                         if self.signature == ScalarFuncSig::Month {
                             // Only the observed NULL enters MONTH's typed core;
                             // earlier values stay uncoerced and later children unread.
@@ -674,6 +679,148 @@ mod json_path_worker_tests {
     use crate::expression::{Column, Constant, Expression};
     use crate::NoColumns;
     use tidb_datatype::{BinaryJSON, FieldTypeCode, FieldTypeFlags};
+
+    #[test]
+    fn protobuf_date_keeps_hidden_clock_and_observed_null_demand() {
+        use std::cell::Cell;
+        use tidb_datatype::{DateModes, Time, TimeType};
+
+        struct Modes(Cell<usize>);
+        impl Columns for Modes {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn date_modes(&self) -> DateModes {
+                self.0.set(self.0.get() + 1);
+                DateModes::default()
+            }
+        }
+        let date_type = FieldType::new(FieldTypeCode::Date).with_decimal(0);
+        let datetime_type = FieldType::new(FieldTypeCode::Datetime).with_decimal(6);
+        let text_type = FieldType::new(FieldTypeCode::VarString);
+        let literal = |value: Datum, field: &FieldType| {
+            Expression::Constant(Constant::new(value, field.clone()))
+        };
+        let selected = |args| {
+            ScalarFunction::from_pb(
+                PbBuiltin::new(ScalarFuncSig::Date).unwrap(),
+                date_type.clone(),
+                args,
+            )
+        };
+        let pool = |slots| {
+            crate::AsciiPoolOwner::new(
+                crate::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    64,
+                    8,
+                    4 * 1024 * 1024,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let resource_error = |result: Result<Datum, EvalError>| {
+            let error =
+                result.expect_err("DATE's actual root must use the supplied zero-slot scope");
+            let EvalError::ExpressionAdapterFailure(failure) = error else {
+                panic!("DATE lost its infrastructure cause: {error:?}")
+            };
+            assert_eq!(
+                failure.class(),
+                crate::ExpressionAdapterFailureClass::PoolResource
+            );
+            assert_eq!(
+                failure.origin(),
+                crate::ExpressionAdapterFailureOrigin::Pool
+            );
+        };
+        let bad_child = || {
+            let mut cast_type = FieldType::new(FieldTypeCode::Json);
+            cast_type.add_flags(FieldTypeFlags::PARSE_TO_JSON);
+            Expression::ScalarFunction(ScalarFunction::from_pb(
+                PbBuiltin::new(ScalarFuncSig::CastStringAsJson).unwrap(),
+                cast_type,
+                vec![literal(Datum::new_string("{"), &text_type)],
+            ))
+        };
+        let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+        for (owner, available) in [(pool(1), true), (pool(0), false)] {
+            let execution = owner.begin_execution().unwrap();
+            let ctx = Modes(Cell::new(0));
+            for kind in [TimeType::Date, TimeType::DateTime] {
+                // This is a real typed value, not a synthetic PB clock function.
+                // DATE-kind storage can retain clock fields hidden by Display.
+                let time = Time::from_date_checked(2024, 5, 6, 7, 8, 9, 987_654, kind, 6).unwrap();
+                let field = if kind == TimeType::Date {
+                    &date_type
+                } else {
+                    &datetime_type
+                };
+                let function = selected(vec![literal(Datum::Time(time), field)]);
+                assert_eq!(function.pb_signature(), Some(ScalarFuncSig::Date));
+                ctx.0.set(0);
+                let result = execution
+                    .scope()
+                    .with_columns(&ctx, |columns| function.eval(columns, empty.to_row()));
+                if available {
+                    let Datum::Time(date) = result.unwrap() else {
+                        panic!("DATE must return typed Time")
+                    };
+                    assert_eq!(date.kind(), TimeType::Date);
+                    assert_eq!(date.fsp(), 0);
+                    assert_eq!(date.to_string(), "2024-05-06");
+                    let core = date.core_time();
+                    assert_eq!(
+                        (
+                            core.hour(),
+                            core.minute(),
+                            core.second(),
+                            core.microsecond()
+                        ),
+                        (0, 0, 0, 0)
+                    );
+                } else {
+                    resource_error(result);
+                }
+                assert_eq!(ctx.0.get(), 1);
+            }
+            for with_prefix in [false, true] {
+                let mut args = Vec::new();
+                if with_prefix {
+                    // The old early-NULL boundary never coerced this prefix or
+                    // checked non-NULL DATE arity after observing its NULL child.
+                    args.push(literal(Datum::new_string("uncoerced prefix"), &text_type));
+                }
+                args.push(literal(Datum::Null, &datetime_type));
+                args.push(bad_child());
+                let function = selected(args);
+                ctx.0.set(0);
+                let result = execution
+                    .scope()
+                    .with_columns(&ctx, |columns| function.eval(columns, empty.to_row()));
+                if available {
+                    assert_eq!(result.unwrap(), Datum::Null);
+                } else {
+                    resource_error(result);
+                }
+                assert_eq!(ctx.0.get(), 0, "observed NULL must not read DATE modes");
+            }
+            // In the other order, the original failing child remains primary;
+            // a later NULL must not turn a child SQL error into a worker result.
+            let function = selected(vec![bad_child(), literal(Datum::Null, &datetime_type)]);
+            assert!(matches!(
+                execution
+                    .scope()
+                    .with_columns(&ctx, |columns| function.eval(columns, empty.to_row())),
+                Err(EvalError::Json(crate::JsonError::InvalidText))
+            ));
+        }
+    }
 
     #[test]
     fn protobuf_json_merge_patch_keeps_three_arg_demand_and_worker_scope() {

@@ -1,0 +1,48 @@
+date-core-63 / round64. Parent serialized all --locked commands, --test-threads=1.
+TiKV cwd /home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv pins nightly-2026-01-30.
+Native cwd /home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb pins nightly-2026-08-22.
+Complete raw stdout/stderr logs under /home/agent/tidb/expression-unification/logs/date-core-<id>.log; hashes below refer to those logs.
+
+1 datatype: ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_date -- --test-threads=1
+tikv-datatype sha256 a524b80506bca6e75c1f2ca9229c6bc45776544c7cb3121ebf8b471b966f6134
+compile2.03s;1passed/0failed/0ignored/437filtered,0.00s;exit0.
+
+2 kernels/profile: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib date_core -- --test-threads=1
+tikv-core sha256 928a66b1a0a8b70b80ebe24fea8d1f52d963a53785e2ab703e5a20787681dd80
+compile12.27s;2/0/0/888filtered,0.00s;exit0.
+
+3 prior typed SDK: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_typed_clock -- --test-threads=1
+tikv-typed sha256 30e5c2ead24bd4f9153ab7269a1f93d5683a4385655c65f3ddb7eeb7a98763b5
+compile0.12s;2/0/0/888filtered,0.00s;exit0.
+
+4 local lifecycle: ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local -- --test-threads=1
+tikv-local sha256 72b91458135df4bcec789259ff7fa0dbb40169e301437446bfeabc1bb411f6a4
+compile0.12s;312/0/1/577filtered,0.21s;exit0. Ignored is not a pass.
+
+5 native SDK: ../../tools/cargo-tidb test --locked -p tidb-expr --lib date_core -- --test-threads=1
+native-sdk sha256 71f5daa6f840e06d9f21a9ef333099ffa9db38695886589dcf5cd1b4128f930c
+compile15.09s;1/0/0/1637filtered,0.00s;exit0.
+
+6 unchanged typed-helper bank: ../../tools/cargo-tidb test --locked -p tidb-expr --lib helper_current_timestamp_source -- --test-threads=1
+native-typed sha256 faa2303e20771aec37900c156205f7fcebb5d3fefec452931a700477de916915
+compile0.12s;5/0/0/1633filtered,0.00s;exit0.
+
+7 legacy DATE: ../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_date_worker -- --test-threads=1
+native-legacy sha256 50c20963cb4dcf8b4a6b37eaea774df1d9b3bdedaac5fed4c1d391ddfe81df47
+compile5.47s;1/0/0/221filtered,0.00s;exit0.
+
+8 SQL DATE: ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_date_ -- --test-threads=1
+sql sha256 47cff6342def0135bd76d1d3bf678b1d93756959883adcd8148678e885ac44e6
+compile19.59s;2/0/0/2203filtered,0.03s;exit0.
+
+9 full expression: ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+expr-full sha256 7ae78c2e1e6d03cdd3c9562e05a219b1b3b55357afe217175d982495b65c66be
+compile0.12s;1540/4old/94ignored/0filtered,13.70s;exit101. All four new expression tests explicitly verified ok in this log (SDK, two value/preparation tests, PB); no extra targeted invocation is claimed.
+
+10 full unistore: ../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+unistore-full sha256 42cf47dadf36ee23327e48cc63d8b54f2ae50d251e2f49409a80897824e5cfde
+compile0.12s;208/1old/13ignored/0filtered,3.01s;exit101.
+
+Entire failure sections/lists equal clock-three-62 after ONLY numeric panic-heading thread-ID normalization: expr sha256 27654f2c0ad2971242c00f50182467598cdfd9c2c65e5bf5a32e683708448637; unistore b64dcced405c699c11b72ee31888c58e491b4e5b4e74fa2d445454e1d1e146e9.
+All17 changed Rust files pass /home/agent/tidb/expression-reuse/rustup-home/toolchains/<pinned-toolchain>-x86_64-unknown-linux-gnu/bin/rustfmt --edition 2021 --config skip_children=true --check <changed-files>. git diff --check passed in both worktrees. Static comparisons preserve all old test bodies, SQL source, R63 helper bodies, constructors/casts/catalog/legacy time channels/wire DATE and locks. No original oracle/fixture rerecording.
+10 completed nonzero runs =8green+2old-full-RED;0compilefail/interruption/zero-match/retry.10newtests all pass. No source/test repair after first gate. No new Rust source/dependency/lock/Go/Bazel changes. A file-observation prerequisite and RO path guess were corrected before gates, not runtime failures. Prior extra JSON_KEYS mismatch not rerun/resolved. No workspace/lint/dev/bazel_prepare, release/performance/zero-copy/physical heap/peak/OOM/exhaustive differential/TiFlash/FIPS completion claim; goal active202/245 strict0.
