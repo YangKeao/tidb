@@ -39,11 +39,11 @@ pub use evaluated_ascii::{
     eval_legacy_decimal_comparison_in, eval_legacy_decimal_division_in,
     eval_legacy_integer_arithmetic_in, eval_legacy_integer_comparison_in,
     eval_legacy_json_array_append_step_in, eval_legacy_json_member_of_in,
-    eval_legacy_json_output_none_in, eval_legacy_json_replace_in, eval_legacy_like_in,
-    eval_legacy_real_arithmetic_in, eval_legacy_real_comparison_in, eval_legacy_time_comparison_in,
-    eval_regexp_legacy_ready_in, AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy,
-    AsciiScope, LegacyBinaryArgs, LegacyIntegerArithmetic, LegacyLikeArgs, RegexpLegacyInput,
-    ScopedAsciiColumns,
+    eval_legacy_json_merge_patch_in, eval_legacy_json_output_none_in, eval_legacy_json_replace_in,
+    eval_legacy_like_in, eval_legacy_real_arithmetic_in, eval_legacy_real_comparison_in,
+    eval_legacy_time_comparison_in, eval_regexp_legacy_ready_in, AsciiExecution, AsciiOwnerError,
+    AsciiPoolOwner, AsciiPoolPolicy, AsciiScope, LegacyBinaryArgs, LegacyIntegerArithmetic,
+    LegacyLikeArgs, RegexpLegacyInput, ScopedAsciiColumns,
 };
 pub(crate) use tidb_query_datatype::codec::mysql::json::{
     parse_native_json_document, NativeJsonError,
@@ -160,6 +160,17 @@ pub(crate) fn prepare_json_serde_args(
     path: Option<&str>,
 ) -> Result<EvaluatedArgs, crate::EvalError> {
     tidb_query_expr::local::prepare_json_serde_args(first, second, path).map_err(|error| {
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+            error, None,
+        ))
+    })
+}
+
+/// Preserve each actual SQL-NULL presence bit separately from a JSON null value.
+pub(crate) fn prepare_json_merge_patch_args(
+    values: &[Option<serde_json::Value>],
+) -> Result<EvaluatedArgs, crate::EvalError> {
+    tidb_query_expr::local::prepare_json_nullable_values_args(values).map_err(|error| {
         crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
             error, None,
         ))

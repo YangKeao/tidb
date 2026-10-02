@@ -1,0 +1,53 @@
+json-merge-pair-61 / round62; previous clock-four-60.198/245 functional, strict0,target221,23needed,47eligible remain.
+Two whole IDs json_merge(alias json_merge_preserve),json_merge_patch. Eight exclusive writers,21Rust(CPP9/native12),2newsource,15newtests finalpass.
+
+Rawlogs /home/agent/tidb/expression-unification/logs/json-merge-pair-<id>.log.
+T cwd=/home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv nightly-2026-01-30.
+N cwd=/home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb nightly-2026-08-22.
+Command: set -o pipefail; <wrapper> test --locked -p <package> <target> [filter] -- --test-threads=1 2>&1 | tee <rawlog> >/dev/null.
+T rawlog=../logs/; N rawlog=../../logs/. All targets --lib except explicitly --test all. Counts passed/failed/ignored/filtered_out; measured0. Times compile/testseconds.
+
+1 tikv-raw: T tidb_query_datatype native_merge; INTERRUPTED SIGTERM, compile1.86; one test printedok, depth100 raw test unfinished; NO final result.
+ SHA256 af6a32a030d1cd508894d5523a75d108a57728f3f309512c5aff13deb07b7a29
+2 tikv-raw-retry: T tidb_query_datatype native_merge;2/0/0/435;1.80/0.00;exit0
+ SHA256 c7df2923b6b4f44e42c767e257530fee4e20bff11fe1b5c0f491714f023c11bd
+3 tikv-core: T tidb_query_expr native_json;22/0/0/859;13.72/0.00;exit0
+ SHA256 c685bd7effcad78b5d6dbfb30815ddfec6485baf258758ce0689152b49407c95
+4 tikv-local: T tidb_query_expr local;308/0/1/572;0.12/0.20;exit0
+ SHA256 f3b383fb31dfab0f130f9809a3cb3d9489151bafd5c16251796bfa25cf1ac6c9
+5 native-sdk: N tidb-datatype merge;1/0/0/444;2.53/0.00;exit0
+ SHA256 ea3ddb08fcda16fe5ae63ad43fed6eb7d42f84410764e1e390618a54cda7eb95
+6 native-expr: N tidb-expr json_merge; COMPILE FAILURE E0624 five private snapshot calls; no tests ran;exit101
+ SHA256 66f0923dd18951c724348bc4b98a5608e823b676e79f290b0909607c1bbf3d61
+7 native-expr-retry: N tidb-expr json_merge;12/0/0/1617;8.15/0.02;exit0
+ SHA256 87db642650c28ad1d17db2b4086a9ecd47ff45db96f4ac4e61173a4b187c781d
+8 native-legacy: N tidb-unistore legacy_json_merge_patch_worker;1/0/0/220;7.45/0.00;exit0
+ SHA256 70a6bc9559adbd71522d2000588978b07de2000b1381aa2694fafe832ab61045
+9 sql: N tidb-session evaluated_ascii_json_merge_;1/1/0/2199;29.98/0.05;exit101 NEW WARNING-ASSERTION RED
+ SHA256 b6f293156e8a239e1fef3b047baf6518ddda27175205563fd002e4fecbf24af5
+10 expr-full: N tidb-expr [no filter];1531/4old/94/0;0.13/13.67;exit101
+ SHA256 35e79d0b0967c443d08c13079b5465ff97da9949b062238a6c9537a31e04e140
+11 unistore-full: N tidb-unistore [no filter];207/1old/13/0;0.12/3.01;exit101
+ SHA256 5a9867df0b85e3c3bc51220993b506f5d5ccc67179015b15d2b07b06c20349da
+12 sql-retry: N tidb-session evaluated_ascii_json_merge_;2/0/0/2199;3.81/0.05;exit0
+ SHA256 952f8e00512f6d9f184ec18db47b9affa9779f901e99916f92e23ed2941a19bb
+13 sql-existing: N tidb-session --test all json_merge_patch_integration_source;0/0/0/336;4.36/0.00;exit0 ZERO MATCH NOT PASS
+ SHA256 81715a1c15ab9017f0722d1fee60a02eabb869999e4d84cc3210a8d618566f07
+
+13 attempts=11nonzero test runs(7green+2oldfullRED+1newSQLRED+1interrupted)+1compilefailure+1zero-match harness.10completed nonzero results.3retries. No metadata/lock attempts. No production repairs after initial gates. All15final newtests pass; original fixtures unchanged. Interrupted/ignored/zero-match are NOTpasses.
+605 interrupted first CPP command before later2 launch;606 bounded raw retry+core/local;607 SDKgreen+exprcompileRED before later3 launch;608 exprretry+legacygreen+SQLRED before all-target launch;609 full2 statuses101;610 correctedSQLgreen+wrong-package zero-match.
+
+Interrupt root cause: unchanged native_policy.rs803-805 child-depth0 decode followed by caller723/752 outerdecode repeats exponentially on100deepchain. NEWtest changed to pure genericNode merge→encoder TooDeep plus shallow raw bad-input check; production decoder/performance unchanged. Deep raw error precedence runtime deferred, source staging retained; NO retrospective pass for interrupted test.
+Compile correction: remove ONLY5 newPBtest private owner.snapshot assertions; no visibility widening/driver changes. RealPB results/refusals/demand/nextscope still tested, factory/idle counters coveredSDK/local instead.
+SQL correction: first12fixedoutputs and code3146/evalorigin alreadypassed, failurewas emptywarnings assertion fornumericarg. Original session lib.rs2257-2287 finish_statement records3146 diagnostic;3140 exclusion differs. ONLYtwo newnumericcases now forbid1681 rather than forbidallold diagnostics; four3140 remainempty; all12oracles/6errorcases/13zeroprobes unchanged, parser/production notmodified.
+Zero-match correction: fixtures are tidb-expr/src/tests/json_merge_patch_integration_source.rs, NOTsessionall; both column_table and expression_table appear OK in native-expr-retry12 and fullExpr. No redundant rerun; noSQLexisting-target pass claimed.
+Parentstaticproof initial selector slicedparse_json_merge_argument throughEOF, includingfollowingwrapper:assertionfailed; exactfn-end selector retry provesbodyidentical. Source remained unchanged. No formatter failures.
+
+Fullfailuresections/list vsclock-four-60: only numericpanicthreadIDs normalized(<id>), no source mapping:
+ expression SHA256 27654f2c0ad2971242c00f50182467598cdfd9c2c65e5bf5a32e683708448637
+ unistore SHA256 b64dcced405c699c11b72ee31888c58e491b4e5b4e74fa2d445454e1d1e146e9
+Old4 IFNULLcollation/EXP/vectorizeddurationFSP/STR_TO_DATE and old1 point-range closure unchanged. R60 extraJSON_KEYS aggregate type mismatch NOTRERUN/NOTRESOLVED.
+
+Static:7nativehelpers+inlinepatchresetdeleted; ONLYonegenericpreserve/onegenericpatch. Coercion function exact; oldnativeJSONtestprefix/CPPoldworker+wire suffix exact; func warningowner/admission/catalog/decoder/codec/compile/officialguard/locks unchanged.21pinnedrustfmt checks andbothdiff checks; no manifests/dependencies/Go/Bazel edits. Cchanged4files, officialguard reusedwithout edit. Full suites after finalproduction and before finalSQLtest-only correction.
+Runtime:3unitBytes1OwnBytes profiles actualordered/plainnullable/rawdocument packets, no mode/answer/resetchoice. Shared bounded validators, count0admitted: nativePBpatch originalpanic withSDKpoison/retire, rawemptyNone. Legacy30plainrootzero checks/7separatechilddemand probes; SQL13directzero statements/12valuepins/6diagnosticcases; PB3arg results/NULL/errors/rootproof. CodecErrorONLY foldsrawNone, notinfra. No newdriver/kind/carrier/binding/cause/NoArgs/PB/legacy admission.
+Deferred: deeprawdecode/performance, conversionalloc/keysearchcost, M6/defaultNoColumnswhole-root/workspace/lint/dev/bazel_prepare/release/zero-copy/physicalheap/peak/OOM/exhaustivecontext-domain-wire-differential/TiFlash/FIPS/priorparserGBvectorExtremeDecimal/JSON_KEYSaggregate. No wholeGo-package transcreation/PRreadiness/overallcompletion. NextROclock3 typedGetTimeValue seam/CRC32 exactnumberspelling and unverifiedquotedSQL/19Datumidentity, noadvancecredit.

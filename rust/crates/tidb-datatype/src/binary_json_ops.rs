@@ -16,9 +16,10 @@ use std::collections::HashSet;
 
 use serde_json::Value;
 use tidb_query_datatype::codec::mysql::json::{
-    extract_native_json_node, insert_native_json_array_node, modify_native_json_node,
-    native_json_array_insert_index, native_json_depth_from_children, remove_native_json_node,
-    select_native_json_nodes,
+    extract_native_json_node, insert_native_json_array_node, merge_native_binary_json,
+    merge_patch_native_binary_json, modify_native_json_node, native_json_array_insert_index,
+    native_json_depth_from_children, remove_native_json_node, select_native_json_nodes,
+    NativeBinaryJsonEncodeError,
 };
 
 use crate::{
@@ -363,24 +364,32 @@ pub fn overlaps_binary_json(
 pub fn merge_binary_json(values: &[BinaryJSON]) -> Result<BinaryJSON, BinaryJSONError> {
     let values = values
         .iter()
-        .map(BinaryJSON::to_node)
-        .collect::<Result<Vec<_>, _>>()?;
-    let merged = merge_binary_nodes(&values);
-    BinaryJSON::from_node(&merged)
+        .map(|value| (value.type_code(), value.value()))
+        .collect::<Vec<_>>();
+    merge_native_binary_json(&values)
+        .map(|(kind, value)| BinaryJSON::from_encoded_parts(kind, value))
+        .map_err(merge_binary_json_error)
 }
 
 /// Implements RFC 7396 JSON merge-patch.
 pub fn merge_patch_binary_json(
     values: &[BinaryJSON],
 ) -> Result<Option<BinaryJSON>, BinaryJSONError> {
-    let Some(first) = values.first() else {
-        return Ok(None);
-    };
-    let mut result = first.to_node()?;
-    for patch in &values[1..] {
-        result = merge_patch_node(result, patch.to_node()?);
+    let values = values
+        .iter()
+        .map(|value| (value.type_code(), value.value()))
+        .collect::<Vec<_>>();
+    merge_patch_native_binary_json(&values)
+        .map(|value| value.map(|(kind, value)| BinaryJSON::from_encoded_parts(kind, value)))
+        .map_err(merge_binary_json_error)
+}
+
+fn merge_binary_json_error(error: NativeBinaryJsonEncodeError) -> BinaryJSONError {
+    match error {
+        NativeBinaryJsonEncodeError::InvalidBinary => BinaryJSONError::InvalidBinary,
+        NativeBinaryJsonEncodeError::TooDeep => BinaryJSONError::TooDeep,
+        NativeBinaryJsonEncodeError::KeyTooLong => BinaryJSONError::KeyTooLong,
     }
-    BinaryJSON::from_node(&result).map(Some)
 }
 
 // The shared selector already computed these concrete legs. Rebuild only the
@@ -456,91 +465,6 @@ fn shared_like_json_trailing_escape_policy() {
     }
 }
 
-/// Go `MergeBinaryJSON` groups each adjacent run of objects before flattening
-/// the remaining arrays. A left fold is observably different when an array
-/// interrupts two objects: the objects after that array still merge with each
-/// other, but never with the earlier array element.
-fn merge_binary_nodes(values: &[JSONNode]) -> JSONNode {
-    if values.is_empty() {
-        return JSONNode::Array(Vec::new());
-    }
-
-    let mut results = Vec::with_capacity(values.len());
-    let mut index = 0;
-    while index < values.len() {
-        if matches!(values[index], JSONNode::Object(_)) {
-            let start = index;
-            while index < values.len() && matches!(values[index], JSONNode::Object(_)) {
-                index += 1;
-            }
-            results.push(merge_binary_objects(&values[start..index]));
-        } else {
-            results.push(values[index].clone());
-            index += 1;
-        }
-    }
-
-    if results.len() == 1 {
-        return results.pop().expect("one merge result");
-    }
-    let mut flattened = Vec::new();
-    for result in results {
-        match result {
-            JSONNode::Array(values) => flattened.extend(values),
-            value => flattened.push(value),
-        }
-    }
-    JSONNode::Array(flattened)
-}
-
-/// Go `mergeBinaryObject`: duplicate keys recursively use the same adjacent
-/// object/array grouping rules, and the final object is bytewise key-sorted.
-fn merge_binary_objects(objects: &[JSONNode]) -> JSONNode {
-    let mut entries: Vec<(String, JSONNode)> = Vec::new();
-    for object in objects {
-        let JSONNode::Object(values) = object else {
-            unreachable!("merge_binary_objects receives only objects");
-        };
-        for (key, value) in values {
-            if let Some(index) = entries.iter().position(|(name, _)| name == key) {
-                let previous = entries[index].1.clone();
-                entries[index].1 = merge_binary_nodes(&[previous, value.clone()]);
-            } else {
-                entries.push((key.clone(), value.clone()));
-            }
-        }
-    }
-    entries.sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
-    JSONNode::Object(entries)
-}
-
-fn merge_patch_node(target: JSONNode, patch: JSONNode) -> JSONNode {
-    let JSONNode::Object(patch) = patch else {
-        return patch;
-    };
-    let mut target = match target {
-        JSONNode::Object(target) => target,
-        _ => Vec::new(),
-    };
-    for (key, patch) in patch {
-        if node_is_null(&patch) {
-            if let Some(index) = target.iter().position(|(name, _)| name == &key) {
-                target.remove(index);
-            }
-        } else {
-            let current = target
-                .iter()
-                .position(|(name, _)| name == &key)
-                .map(|index| target.remove(index).1)
-                .unwrap_or_else(|| {
-                    JSONNode::Scalar(BinaryJSON::parse("null").expect("static JSON null"))
-                });
-            target.push((key, merge_patch_node(current, patch)));
-        }
-    }
-    JSONNode::Object(target)
-}
-
 fn append_hash_value(value: &BinaryJSON, output: &mut Vec<u8>) -> Result<(), BinaryJSONError> {
     if let Some(integer) = value.as_i64() {
         if significant_fraction_bits(integer.unsigned_abs()) <= 52 {
@@ -587,15 +511,6 @@ fn significant_fraction_bits(value: u64) -> u32 {
     } else {
         64 - value.leading_zeros() - value.trailing_zeros() - 1
     }
-}
-
-fn node_is_null(value: &JSONNode) -> bool {
-    matches!(
-        value,
-        JSONNode::Scalar(value)
-            if value.type_code() == crate::JSON_TYPE_CODE_LITERAL
-                && value.value() == [crate::JSON_LITERAL_NULL]
-    )
 }
 
 fn decode_uvarint_for_peek(bytes: &[u8]) -> Result<(usize, usize), BinaryJSONError> {

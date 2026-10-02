@@ -1398,6 +1398,11 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::UtcTimeNullNative => {
             panic!("clock functions need actual UTC clock fields, precision and NULL demand")
         }
+        EvaluatedBytesOp::JsonMergeSerdeNative
+        | EvaluatedBytesOp::JsonMergePatchSerdeNative
+        | EvaluatedBytesOp::JsonMergePatchRawLegacy => {
+            panic!("JSON merge needs its actual ordered values and presence frame")
+        }
         EvaluatedBytesOp::TidbShardNative => "TIDB_SHARD",
         EvaluatedBytesOp::VitessHashNative => "VITESS_HASH",
         EvaluatedBytesOp::FormatBytesNative => "FORMAT_BYTES",
@@ -1934,6 +1939,206 @@ fn binary_arithmetic_dispatch_keeps_profiles_and_legacy_presence() {
     });
     assert!(!scope.busy.get());
     assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn json_merge_sdk_preserves_nullable_documents_and_raw_codec_results() {
+    use serde_json::json;
+    use tidb_datatype::BinaryJSON;
+    use EvaluatedBytesOp::*;
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (values, expected) in [
+            (Vec::new(), "[]"),
+            (
+                vec![json!({"a":1}), json!({"a":2}), json!([3]), json!({"b":4})],
+                "[{\"a\":[1,2]},3,{\"b\":4}]",
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    JsonMergeSerdeNative,
+                    columns,
+                    || super::super::prepare_json_array_args(&values),
+                    EvaluatedBytesResult::into_json_datum,
+                )
+            });
+            assert_eq!(
+                result,
+                Ok(Datum::Json(BinaryJSON::parse(expected).unwrap()))
+            );
+            assert_wide_math_c4(observation);
+        }
+        for (values, expected) in [
+            (vec![Some(json!({"a":1})), None, Some(json!({"b":2}))], None),
+            (
+                vec![None, Some(json!(null)), Some(json!({"b":2}))],
+                Some("{\"b\":2}"),
+            ),
+            (
+                vec![Some(json!({"a":1})), Some(json!({"a":null,"b":2}))],
+                Some("{\"b\":2}"),
+            ),
+            (vec![Some(json!(null))], Some("null")),
+            (vec![None], None),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    JsonMergePatchSerdeNative,
+                    columns,
+                    || super::super::prepare_json_merge_patch_args(&values),
+                    EvaluatedBytesResult::into_json_datum,
+                )
+            });
+            assert_eq!(
+                result,
+                Ok(expected.map_or(Datum::Null, |text| Datum::Json(
+                    BinaryJSON::parse(text).unwrap()
+                )))
+            );
+            assert_wide_math_c4(observation);
+        }
+        for (values, expected) in [
+            (Vec::new(), None),
+            (
+                vec![
+                    BinaryJSON::parse("{\"a\":1}").unwrap(),
+                    BinaryJSON::parse("{\"a\":null,\"b\":2}").unwrap(),
+                ],
+                Some(BinaryJSON::parse("{\"b\":2}").unwrap()),
+            ),
+            (vec![BinaryJSON::from_encoded_parts(0xff, vec![7])], None),
+        ] {
+            let (result, observation) =
+                observe_wide_math(|| crate::eval_legacy_json_merge_patch_in(&values, columns));
+            assert_eq!(result, Ok(expected));
+            assert_wide_math_c4(observation);
+        }
+        let wide = BinaryJSON::from_typed_value(&tidb_datatype::BinaryJSONValue::Uint64(u64::MAX))
+            .unwrap();
+        let (result, observation) = observe_wide_math(|| {
+            crate::eval_legacy_json_merge_patch_in(std::slice::from_ref(&wide), columns)
+        });
+        let actual = result.unwrap().unwrap();
+        assert_eq!(
+            (actual.type_code(), actual.value()),
+            (wide.type_code(), wide.value())
+        );
+        assert_wide_math_c4(observation);
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn json_merge_sdk_rejects_bad_frames_and_preserves_empty_patch_panic() {
+    use EvaluatedBytesOp::*;
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        let mut bad_presence = 1_u64.to_le_bytes().to_vec();
+        bad_presence.push(2);
+        let mut empty_raw_value = 1_u64.to_le_bytes().to_vec();
+        empty_raw_value.extend_from_slice(&0_u64.to_le_bytes());
+        for (operation, args) in [
+            (JsonMergeSerdeNative, EvaluatedArgs::Bytes(Some(Vec::new()))),
+            (
+                JsonMergePatchSerdeNative,
+                EvaluatedArgs::Bytes(Some(bad_presence)),
+            ),
+            (
+                JsonMergePatchRawLegacy,
+                EvaluatedArgs::Bytes(Some(empty_raw_value)),
+            ),
+            (JsonMergePatchSerdeNative, EvaluatedArgs::NullWitness(None)),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || Ok(args),
+                    EvaluatedBytesResult::into_bytes,
+                )
+            });
+            assert!(matches!(
+                result,
+                Err(EvalError::ExpressionRuntimeFailure(_))
+            ));
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(
+                observation.before_kernel_invocations,
+                observation.after_kernel_invocations
+            );
+        }
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for operation in [JsonMergeSerdeNative, JsonMergePatchSerdeNative] {
+            let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                operation, columns,
+                || if operation == JsonMergeSerdeNative {
+                    super::super::prepare_json_array_args(&[])
+                } else {
+                    super::super::prepare_json_merge_patch_args(&[])
+                },
+                EvaluatedBytesResult::into_bytes,
+            ));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        let (result, observation) = observe_wide_math(|| crate::eval_legacy_json_merge_patch_in(&[], columns));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+        assert_eq!(observation.facade_entries, 0);
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    // The old empty native PATCH indexes its empty list. Keep that real panic,
+    // caught only outside the driver, rather than inventing a SQL NULL result.
+    arm_eval_one_observation();
+    let panic = catch_unwind(AssertUnwindSafe(|| {
+        scope.with_columns(&crate::NoColumns, |columns| {
+            evaluate_args_in(
+                JsonMergePatchSerdeNative,
+                columns,
+                || super::super::prepare_json_merge_patch_args(&[]),
+                EvaluatedBytesResult::into_bytes,
+            )
+        })
+    }));
+    let observation = take_eval_one_observation();
+    assert!(panic.is_err());
+    assert_eq!(observation.facade_entries, 1);
+    assert_eq!(observation.before_kernel_invocations, Some(0));
+    assert_eq!(observation.after_kernel_invocations, None);
+    assert!(scope.poisoned.get());
+    assert!(scope.lease.borrow().is_none());
+    let disposed = owner.snapshot().unwrap();
+    assert_eq!((disposed.live, disposed.idle, disposed.retired), (0, 0, 1));
+    assert_eq!(disposed.reserved_bytes, disposed.base_bytes);
+    assert!(matches!(scope.evaluate_value(&Datum::Null),
+        Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopePoisoned));
+    assert_eq!(owner.snapshot().unwrap(), disposed);
     drop(scope);
     execution.close();
 }

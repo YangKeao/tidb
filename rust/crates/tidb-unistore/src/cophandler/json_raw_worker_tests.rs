@@ -17,6 +17,196 @@ use tidb_datatype::{BinaryJSON, BinaryJSONValue, Datum, Opaque, SessionTimeZone,
 use tidb_proto::tipb;
 
 #[test]
+fn legacy_json_merge_patch_worker_preserves_raw_order_absence_and_child_demand() {
+    let zone = SessionTimeZone::utc();
+    let row = [Datum::Null];
+    let evaluator = LegacyEvaluator::new(&row, 4, &zone);
+    let json = |text: &str| BinaryJSON::parse(text).unwrap();
+    let leaf = |text: &str| SimpleExpr::Json(json(text));
+    let call = |children| SimpleExpr::Func(SimpleSig::JsonMergePatchSig, children);
+    let bad = BinaryJSON::from_encoded_parts(tidb_datatype::JSON_TYPE_CODE_ARRAY, Vec::new());
+    // These are fixed documents, not answers obtained from another provider.
+    for (children, expected) in [
+        (
+            vec![
+                leaf("{\"a\":1,\"b\":2}"),
+                leaf("{\"a\":null}"),
+                leaf("{\"a\":3}"),
+            ],
+            Some(json("{\"a\":3,\"b\":2}")),
+        ),
+        (
+            vec![
+                leaf("{\"a\":1,\"b\":2}"),
+                leaf("{\"a\":3}"),
+                leaf("{\"a\":null}"),
+            ],
+            Some(json("{\"b\":2}")),
+        ),
+        (vec![leaf("[1,2]"), leaf("[3]")], Some(json("[3]"))),
+        (
+            vec![leaf("null"), leaf("{\"a\":1}")],
+            Some(json("{\"a\":1}")),
+        ),
+        (vec![leaf("{\"a\":1}"), leaf("null")], Some(json("null"))),
+        // Legacy stops at SQL NULL; it cannot adopt native PATCH's recovery
+        // from SQL NULL followed by a non-object JSON document.
+        (
+            vec![SimpleExpr::Null, leaf("null"), leaf("{\"a\":1}")],
+            None,
+        ),
+        (
+            vec![SimpleExpr::Column(0), leaf("null"), leaf("{\"a\":1}")],
+            None,
+        ),
+        (vec![], None),
+        (vec![leaf("{\"a\":1}")], Some(json("{\"a\":1}"))),
+        // The raw codec validates the first document before a later scalar
+        // can replace it. Its business error becomes absence inside the worker.
+        (vec![SimpleExpr::Json(bad.clone()), leaf("null")], None),
+    ] {
+        let expression = call(children);
+        assert_eq!(
+            evaluator.eval_json(Some(&expression)).unwrap(),
+            expected,
+            "{expression:?}"
+        );
+    }
+    let absent = call(vec![]);
+    assert_eq!(evaluator.eval_expr(&absent).unwrap(), Some(0));
+    assert_eq!(evaluator.folded_int(Some(&absent)).unwrap(), Some(0));
+    let present = call(vec![leaf("null")]);
+    assert_eq!(evaluator.eval_expr(&present).unwrap(), Some(1));
+    let time =
+        Time::from_date_checked(2024, 1, 2, 3, 4, 5, 600_000, TimeType::DateTime, 6).unwrap();
+    for value in [
+        BinaryJSON::from_opaque(Opaque {
+            type_code: 233,
+            bytes: vec![1, 2, 3],
+        }),
+        BinaryJSON::from_time(time),
+        BinaryJSON::from_typed_value(&BinaryJSONValue::Uint64(u64::MAX)).unwrap(),
+    ] {
+        let expression = call(vec![leaf("0"), SimpleExpr::Json(value.clone())]);
+        let result = evaluator.eval_json(Some(&expression)).unwrap().unwrap();
+        // Input payload identity, not a Display or mutation-helper oracle.
+        assert_eq!(result.type_code(), value.type_code());
+        assert_eq!(result.value(), value.value());
+    }
+    let owner = tidb_expr::AsciiPoolOwner::new(
+        tidb_expr::AsciiPoolPolicy::checked(
+            0,
+            0,
+            16 * 1024 * 1024,
+            4 * 1024 * 1024,
+            4 * 1024 * 1024,
+            64,
+            8,
+            4 * 1024 * 1024,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let assert_pool = |error| match error {
+        LegacyEvalError::Infrastructure(tidb_expr::EvalError::ExpressionAdapterFailure(
+            failure,
+        )) => {
+            assert_eq!(
+                failure.class(),
+                tidb_expr::ExpressionAdapterFailureClass::PoolResource
+            );
+            assert_eq!(
+                failure.origin(),
+                tidb_expr::ExpressionAdapterFailureOrigin::Pool
+            );
+        }
+        other => panic!("merge-patch infrastructure error was softened: {other:?}"),
+    };
+    execution
+        .scope()
+        .with_columns(&tidb_expr::NoColumns, |columns| {
+            let scoped = LegacyEvaluator {
+                raw_columns: columns,
+                ..LegacyEvaluator::new(&row, 4, &zone)
+            };
+            // Ten root-only cases use actual raw/plain leaves, never a different
+            // worker child that could supply the expected resource error.
+            for children in [
+                vec![],
+                vec![leaf("{}")],
+                vec![leaf("[1,2]"), leaf("[3]")],
+                vec![SimpleExpr::Null],
+                vec![SimpleExpr::Column(0)],
+                vec![SimpleExpr::Column(9)],
+                vec![SimpleExpr::Int(1)],
+                vec![SimpleExpr::Json(bad.clone()), leaf("null")],
+                vec![leaf("{}"), SimpleExpr::Null, leaf("[1]")],
+                vec![leaf("null"), leaf("{\"a\":1}")],
+            ] {
+                let expression = call(children);
+                assert_pool(
+                    scoped
+                        .eval_json(Some(&expression))
+                        .expect_err("raw PATCH requires its own worker"),
+                );
+                assert_pool(
+                    scoped
+                        .eval_expr(&expression)
+                        .expect_err("predicate must keep infrastructure"),
+                );
+                assert_pool(
+                    scoped
+                        .folded_int(Some(&expression))
+                        .expect_err("fold must keep infrastructure"),
+                );
+            }
+            // Separate child-only scope: the root retains its normal raw_columns.
+            let shared = convert_expr(&tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(tipb::ScalarFuncSig::IntIsNull as i32),
+                field_type: Some(tipb::FieldType {
+                    tp: Some(8),
+                    ..Default::default()
+                }),
+                children: vec![tipb::Expr {
+                    tp: Some(tipb::ExprType::Null as i32),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+            .unwrap();
+            let child_only = LegacyEvaluator {
+                shared_override: Some(columns),
+                ..LegacyEvaluator::new(&row, 4, &zone)
+            };
+            for children in [
+                vec![SimpleExpr::Null, shared.clone()],
+                vec![leaf("{}"), SimpleExpr::Column(0), shared.clone()],
+                vec![SimpleExpr::Column(9), shared.clone()],
+                vec![
+                    SimpleExpr::Json(bad.clone()),
+                    SimpleExpr::Null,
+                    shared.clone(),
+                ],
+            ] {
+                assert_eq!(child_only.eval_json(Some(&call(children))).unwrap(), None);
+            }
+            for children in [
+                vec![leaf("{}"), shared.clone(), SimpleExpr::Null],
+                vec![SimpleExpr::Json(bad.clone()), shared.clone()],
+                vec![shared.clone(), SimpleExpr::Null],
+            ] {
+                assert_pool(
+                    child_only
+                        .eval_json(Some(&call(children)))
+                        .expect_err("demanded child precedes raw codec and later NULL"),
+                );
+            }
+        });
+}
+
+#[test]
 fn legacy_json_raw_workers_preserve_values_presence_codecs_and_child_demand() {
     let zone = SessionTimeZone::utc();
     let row = [Datum::Null];

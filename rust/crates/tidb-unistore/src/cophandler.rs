@@ -3204,9 +3204,17 @@ impl LegacyEvaluator<'_> {
                     SimpleSig::JsonMergePatchSig => {
                         let mut values = Vec::with_capacity(children.len());
                         for index in 0..children.len() {
-                            values.push(legacy_some!(self.eval_json(children.get(index))?));
+                            let Some(value) = self.eval_json(children.get(index))? else {
+                                return Ok(tidb_expr::eval_legacy_json_output_none_in(
+                                    self.raw_columns,
+                                )?);
+                            };
+                            values.push(value);
                         }
-                        legacy_some!(tidb_datatype::merge_patch_binary_json(&values).ok())
+                        // Prepare every demanded child before the raw worker
+                        // decodes documents; only worker business errors fold
+                        // to absence, never infrastructure failures.
+                        tidb_expr::eval_legacy_json_merge_patch_in(&values, self.raw_columns)?
                     }
                     _ => None,
                 }

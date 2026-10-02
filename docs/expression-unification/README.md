@@ -1,26 +1,28 @@
 # Expression unification experiment
 
 Paired branch: `expression-unification-demo` in YangKeao/tidb and YangKeao/tikv.
-Current checkpoint: **clock-four-60**. Previous: **json-unquote-59**.
+Current checkpoint: **json-merge-pair-61**; previous: **clock-four-60**.
 
 ## Progress
 
-Frozen denominator245; target221. Functional delegation plus native algorithm deletion: **196/245 (80%)**. Strict final-audited acceptance: **0**; goal remains active. CURTIME/CURRENT_TIME, UTC_TIME, UTC_DATE and UTC_TIMESTAMP add four whole families.49 eligible remain;25 more functional migrations needed. NOW/CURDATE/SYSDATE formatter sharing earns no family credit.
+Functional delegation plus native algorithm deletion: **198/245**. Target221:23 more needed,47 eligible remain. Strict final-audited acceptance stays **0**; overall goal remains active. New whole families: JSON_MERGE (including PRESERVE) and JSON_MERGE_PATCH.
 
 ## What changed
 
-- TiKV `native_clock.rs` owns the six relocated epoch-formatting bodies and six fixed family entrypoints. It reuses the wide civil-calendar helper, not chrono or bitpacked Time normalization. Native keeps two aliases for unmigrated consumers.
-- Seven unit workers consume actual clock bytes plus a separate precision value where needed. Guarded preparation retains arity/FSP errors and captures the original clock once; the worker performs offset arithmetic, microsecond truncation, half-up carry and formatting.
-- Zero-argument time truncates; explicit time precision truncates submicroseconds before rounding; UTC_TIMESTAMP rounds original nanoseconds. Genuine UTC_TIME NULL value-entry uses its own worker without reading the clock. No host formatted answer, new kind/carrier/driver/binding or PB/legacy admission.
+One generic node merge/patch implementation now serves both serde and raw JSON. The serde wrapper retains nullable reset sequencing; raw SDK wrappers retain distinct codec stages, duplicate keys and opaque payloads. Native algorithms are deleted. Three fixed workers consume actual ordered documents, never a host merge answer or reset selection. Existing PB context and legacy child-demand paths are connected without expanding admission.
 
-## Validation, including the initial failure
+Native empty PB PATCH still panics; raw empty PATCH still returns None. SQL NULL differs from JSON null. Only raw codec errors fold into legacy None; infrastructure errors propagate. The original JSON_MERGE warning owner remains unchanged.
 
-[Review evidence](evidence/clock-four-checkpoint.md), [exact commands/hashes](logs/clock-four-summary.txt), [manifest](checkpoint.json), [sole cumulative ledger](migration-progress.json). Six exclusive writers;13 Rust files,1 new source,11 added tests all passing in the final state. All13 formatter checks pass; no dependency/manifest/lock changes.
+## Validation and limitations
 
-Ten actual Cargo runs: **7 green,1 initial new SQL RED,2 old full-suite RED**. Green: CPP clocks4/local307+1ignored; native clocks14/original rounding1; corrected SQL2/original typed-clock1/original SYSDATE consumer1. Full expression **1526/4old/94ignored** and unistore **206/1old/13ignored** retain complete prior failure sections after only thread-ID normalization.
+[Evidence](evidence/json-merge-pair-checkpoint.md), [commands/hashes](logs/json-merge-pair-summary.txt), [manifest](checkpoint.json), [cumulative ledger](migration-progress.json).
 
-The initial SQL tests incorrectly assumed `UTC_TIME(NULL)` was parser-admitted. It is not: existing precision grammar accepts integer literals only. Only the two new tests were corrected, preserving all other fixed outputs and old tests; parser rejection1064 is now explicit. Final SQL has11 direct zero-slot probes covering six SQL value profiles; the seventh NULL profile is verified through native value-entry/SDK/C4. No parser expansion or production repair. Initial0/2 failure receipts remain published. The prior extra JSON_KEYS aggregate type-assertion failure remains unresolved and was not rerun.
+Eight exclusive writers;21 Rust files,2 new sources,15 new tests passing in the final state.13 Cargo attempts:11 nonzero runs (7 green,2 known full-suite RED,1 initial SQL RED,1 interrupted),1 compile failure and1 zero-match harness run. None of the interrupted/zero-match/ignored cases is counted as passing.
 
-StrictM6, broader default-NoColumns request-root integration, workspace/lint/dev/bazel_prepare, release/performance/zero-copy/physical heap/peak/OOM, exhaustive context/domain/wire/differential/TiFlash/FIPS and prior parser/GB/vector/extreme Decimal exceptions remain deferred. No whole Go-package transcreation, PR readiness or overall completion claim.
+The new deep raw test exposed impractical work in an unchanged double-pass decoder; only the new test was bounded, leaving deep runtime/performance validation deferred. A PB test's private snapshot calls were removed without widening APIs. SQL numeric3146 cases now allow the original statement diagnostics while forbidding deprecation1681, based on existing source policy. All fixed values and old fixtures remain unchanged. The wrong-package zero-match command is disclosed; the two intended original fixtures already passed within the12-test native expression gate.
 
-`checkpoint.json` pins the paired TiKV commit and common Plan SHA256. Both tracked Plans equal the root Plan. Publication is TiKV first, then TiDB with exact paired SHA/Plan; no force push or automatic PR. The pre-existing untracked client differential `BUILD.bazel` stays excluded. Next read-only candidates: MERGE/PATCH, ANY_VALUE/NAME_CONST and JSON_SUM_CRC32, with their full domain/SDK/admission constraints; no advance credit.
+Final CPP raw2/core22/local308+1ignored; native SDK1/expression12/legacy1/SQL2 pass. Full expression **1531/4old/94ignored**, unistore **207/1old/13ignored** retain complete prior failure sections after only thread-ID normalization. Prior extra JSON_KEYS aggregate mismatch remains unresolved and was not rerun.
+
+StrictM6, broader default-NoColumns root closure, workspace/lint/dev/bazel_prepare, release/performance/zero-copy/physical heap/peak/OOM, exhaustive context/domain/wire/differential/TiFlash/FIPS and prior parser/GB/vector/extreme Decimal exceptions remain deferred. Tree conversion/key-search costs are unmeasured. No package-transcreation, PR readiness or overall completion claim.
+
+The manifest pins the paired TiKV commit and common Plan hash. Both tracked Plans equal the root Plan; publication is TiKV first, then TiDB with exact paired SHA. No force push or automatic PR; the old untracked client differential `BUILD.bazel` remains excluded. Next read-only candidates are clock3 plus typed GetTimeValue closure, CRC32 with exact number spelling and a still-unverified quoted SQL entry, and all19-kind identity families. No advance credit.

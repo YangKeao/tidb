@@ -2518,3 +2518,178 @@ fn shared_json_unquote_preparation_errors_precede_admission() {
         execution.close();
     }
 }
+
+#[test]
+fn shared_json_merges_preserve_ordered_documents_and_nullable_patch_resets() {
+    let preserve = [
+        (
+            vec![
+                s(r#"{"a":1}"#),
+                s(r#"{"b":2}"#),
+                s("0"),
+                s(r#"{"a":3}"#),
+                s(r#"{"b":4}"#),
+            ],
+            j(r#"[{"a":1,"b":2},0,{"a":3,"b":4}]"#),
+        ),
+        (
+            vec![j(r#"{"a":[1]}"#), j(r#"{"a":[2]}"#)],
+            j(r#"{"a":[1,2]}"#),
+        ),
+        (vec![s("[1,2]"), s("3"), s("[4]")], j("[1,2,3,4]")),
+        (vec![Datum::Null, s("not-json")], Datum::Null),
+    ];
+    let patch = [
+        (
+            vec![
+                s(r#"{"a":{"x":1,"y":2},"b":1}"#),
+                s(r#"{"a":{"x":null,"z":3},"b":null}"#),
+            ],
+            j(r#"{"a":{"y":2,"z":3}}"#),
+        ),
+        (vec![Datum::Null, s(r#"{"a":1}"#)], Datum::Null),
+        (vec![j("null"), s(r#"{"a":1}"#)], j(r#"{"a":1}"#)),
+        (vec![Datum::Null, s("{}"), s("[2]")], j("[2]")),
+        (
+            vec![
+                s(r#"{"discarded":1}"#),
+                Datum::Null,
+                s("2"),
+                s(r#"{"a":3}"#),
+            ],
+            j(r#"{"a":3}"#),
+        ),
+        (vec![s("{}"), s("null"), Datum::Null], Datum::Null),
+    ];
+    for slots in [0, 1] {
+        let owner = json_scope_owner(slots);
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        scope.with_columns(&crate::NoColumns, |ctx| {
+            for name in ["JSON_MERGE", "JSON_MERGE_PRESERVE"] {
+                for (values, expected) in &preserve {
+                    assert_json_scope_result(
+                        super::dispatch_in(name, values, ctx).unwrap(),
+                        expected,
+                        slots,
+                    );
+                }
+            }
+            for (values, expected) in &patch {
+                assert_json_scope_result(
+                    super::dispatch_in("JSON_MERGE_PATCH", values, ctx).unwrap(),
+                    expected,
+                    slots,
+                );
+            }
+        });
+        drop(scope);
+        execution.close();
+    }
+}
+
+#[test]
+fn shared_json_merges_keep_preparation_errors_and_post_result_warning_order() {
+    use crate::{Columns, EvalError, JsonError};
+
+    #[derive(Default)]
+    struct Warnings(std::cell::RefCell<Vec<(u16, String)>>);
+    impl Columns for Warnings {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.0.borrow_mut().push((code, message.to_owned()));
+        }
+    }
+
+    for slots in [0, 1] {
+        let owner = json_scope_owner(slots);
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        let warnings = Warnings::default();
+        scope.with_columns(&warnings, |ctx| {
+            for (name, function) in [
+                ("JSON_MERGE", "json_merge"),
+                ("JSON_MERGE_PRESERVE", "json_merge_preserve"),
+                ("JSON_MERGE_PATCH", "json_merge_patch"),
+            ] {
+                assert_eq!(
+                    super::dispatch_in(name, &[s("{}"), Datum::Int(3)], ctx).unwrap(),
+                    Err(EvalError::Json(JsonError::InvalidTypeForJson {
+                        argument: 2,
+                        function
+                    })),
+                );
+                assert_eq!(
+                    super::dispatch_in(name, &[s("not-json"), Datum::Null], ctx).unwrap(),
+                    Err(EvalError::Json(JsonError::InvalidText)),
+                );
+                assert_eq!(
+                    super::dispatch_in(name, &[Datum::new_bytes(vec![0xff]), Datum::Null], ctx)
+                        .unwrap(),
+                    Err(EvalError::Unsupported("invalid UTF-8 string datum")),
+                );
+            }
+            // PATCH must read every document even when a later scalar would
+            // reset the target, and even after an earlier SQL NULL operand.
+            for values in [
+                vec![Datum::Null, s("not-json"), s("2")],
+                vec![s("not-json"), s("2")],
+            ] {
+                assert_eq!(
+                    super::dispatch_in("JSON_MERGE_PATCH", &values, ctx).unwrap(),
+                    Err(EvalError::Json(JsonError::InvalidText)),
+                );
+            }
+            assert_eq!(
+                super::dispatch_in("JSON_MERGE_PATCH", &[Datum::Null, Datum::Int(3)], ctx).unwrap(),
+                Err(EvalError::Json(JsonError::InvalidTypeForJson {
+                    argument: 2,
+                    function: "json_merge_patch",
+                })),
+            );
+            for name in ["JSON_MERGE", "JSON_MERGE_PRESERVE"] {
+                warnings.0.borrow_mut().clear();
+                assert_json_scope_result(
+                    crate::func::eval_func_values_in(name, &[s("{}"), s(r#"{"a":1}"#)], ctx)
+                        .unwrap(),
+                    &j(r#"{"a":1}"#),
+                    slots,
+                );
+                let expected = if slots == 1 && name == "JSON_MERGE" {
+                    vec![(
+                        1681,
+                        "JSON_MERGE is deprecated and will be removed in a future release."
+                            .to_owned(),
+                    )]
+                } else {
+                    Vec::new()
+                };
+                assert_eq!(*warnings.0.borrow(), expected);
+                warnings.0.borrow_mut().clear();
+                assert_json_scope_result(
+                    crate::func::eval_func_values_in(
+                        name,
+                        &[Datum::Null, Datum::new_bytes(vec![0xff])],
+                        ctx,
+                    )
+                    .unwrap(),
+                    &Datum::Null,
+                    slots,
+                );
+                assert_eq!(
+                    crate::func::eval_func_values_in(name, &[s("not-json"), Datum::Null], ctx)
+                        .unwrap(),
+                    Err(EvalError::Json(JsonError::InvalidText)),
+                );
+                assert!(
+                    warnings.0.borrow().is_empty(),
+                    "{name} warned on NULL/error"
+                );
+            }
+        });
+        drop(scope);
+        execution.close();
+    }
+}

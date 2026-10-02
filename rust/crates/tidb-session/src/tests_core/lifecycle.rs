@@ -9363,6 +9363,158 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_json_merge_preserves_order_null_domains_errors_and_warning() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_json_merge_sql (a JSON, patch_doc JSON, last_doc JSON, arr1 JSON, arr2 JSON, jnull JSON, nil JSON, obj JSON, bad VARCHAR(16), num INT)").unwrap();
+    session.run(r#"INSERT INTO shared_json_merge_sql VALUES ('{"a":1,"b":2}','{"a":null}','{"a":3}','[1,2]','[3]','null',NULL,'{"c":4}','nope',3)"#).unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let json = |text: &str| Datum::Json(tidb_datatype::BinaryJSON::parse(text).unwrap());
+    // One stored row, twelve literal output pins. SQL NULL truncation is not
+    // interchangeable with JSON null, and PATCH can recover from the former
+    // when a later non-object JSON document resets its target.
+    for (expression, expected, deprecated) in [
+        (
+            "JSON_MERGE_PATCH(a,patch_doc,last_doc)",
+            json(r#"{"a":3,"b":2}"#),
+            false,
+        ),
+        ("JSON_MERGE_PATCH(arr1,arr2)", json("[3]"), false),
+        ("JSON_MERGE_PATCH(nil,obj)", Datum::Null, false),
+        ("JSON_MERGE_PATCH(nil,jnull,obj)", json(r#"{"c":4}"#), false),
+        ("JSON_MERGE_PATCH(a,jnull)", json("null"), false),
+        (
+            "JSON_MERGE_PRESERVE(a,last_doc)",
+            json(r#"{"a":[1,3],"b":2}"#),
+            false,
+        ),
+        ("JSON_MERGE_PRESERVE(arr1,arr2)", json("[1,2,3]"), false),
+        (
+            "JSON_MERGE_PRESERVE(a,jnull)",
+            json(r#"[{"a":1,"b":2},null]"#),
+            false,
+        ),
+        (
+            "JSON_MERGE_PRESERVE(a,arr1,obj)",
+            json(r#"[{"a":1,"b":2},1,2,{"c":4}]"#),
+            false,
+        ),
+        ("JSON_MERGE_PRESERVE(nil,bad)", Datum::Null, false),
+        ("JSON_MERGE(a,last_doc)", json(r#"{"a":[1,3],"b":2}"#), true),
+        ("JSON_MERGE(nil,bad)", Datum::Null, false),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_json_merge_sql");
+        let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+            panic!("expected merge rows: {sql}")
+        };
+        assert_eq!(rows, vec![vec![expected]], "{sql}");
+        let expected_warnings = if deprecated {
+            vec![(
+                1681,
+                "JSON_MERGE is deprecated and will be removed in a future release.".to_owned(),
+            )]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(warnings_of(&session), expected_warnings, "{sql}");
+    }
+    // PATCH prepares all actual documents before considering a later reset;
+    // PRESERVE/MERGE stop parsing document VALUES at the first SQL NULL.
+    // The bad numeric argument is second, avoiding first-argument PLAN type
+    // validation; these failures are from the existing native execution path.
+    // Session statement completion records 3146 as its own Error diagnostic,
+    // unlike 3140. That pre-existing diagnostic is not a MERGE deprecation.
+    for (expression, code) in [
+        ("JSON_MERGE(a,bad)", 3140),
+        ("JSON_MERGE_PRESERVE(a,bad)", 3140),
+        ("JSON_MERGE_PATCH(nil,bad)", 3140),
+        ("JSON_MERGE_PATCH(bad,jnull)", 3140),
+        ("JSON_MERGE_PATCH(a,num)", 3146),
+        ("JSON_MERGE_PRESERVE(a,num)", 3146),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_json_merge_sql");
+        let mysql = session
+            .run_with_columns(&sql)
+            .expect_err(&sql)
+            .to_mysql_error();
+        assert_eq!(mysql.code, code, "{sql}: {mysql:?}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        let warnings = warnings_of(&session);
+        if code == 3140 {
+            assert!(warnings.is_empty(), "{sql}: {warnings:?}");
+        } else {
+            // Do not suppress the statement's original diagnostics: the
+            // warning contract under test excludes only deprecation 1681.
+            assert!(
+                warnings.iter().all(|(code, _)| *code != 1681),
+                "{sql}: {warnings:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn evaluated_ascii_json_merge_zero_slots_require_each_root() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_json_merge_zero (a JSON, last_doc JSON, arr1 JSON, arr2 JSON, nil JSON, obj JSON, jnull JSON)").unwrap();
+    session.run(r#"INSERT INTO shared_json_merge_zero VALUES ('{"a":1,"b":2}','{"a":3}','[1,2]','[3]',NULL,'{"c":4}','null')"#).unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // Thirteen direct-column calls, without CAST/EXTRACT/WHERE/ORDER or any
+    // other worker. Malformed text/type preparation errors are not part of
+    // this admission matrix. Even deprecated MERGE must leave no warning on
+    // an infrastructure failure, whether its business value is NULL or JSON.
+    for expression in [
+        "JSON_MERGE(a,last_doc)",
+        "JSON_MERGE(arr1,arr2)",
+        "JSON_MERGE(nil,obj)",
+        "JSON_MERGE(a,jnull)",
+        "JSON_MERGE_PRESERVE(a,last_doc)",
+        "JSON_MERGE_PRESERVE(arr1,arr2)",
+        "JSON_MERGE_PRESERVE(nil,obj)",
+        "JSON_MERGE_PRESERVE(a,jnull)",
+        "JSON_MERGE_PATCH(a,last_doc)",
+        "JSON_MERGE_PATCH(arr1,arr2)",
+        "JSON_MERGE_PATCH(nil,obj)",
+        "JSON_MERGE_PATCH(a,jnull)",
+        "JSON_MERGE_PATCH(nil,jnull,obj)",
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_json_merge_zero");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("merge family bypassed its own worker: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+}
+
+#[test]
 fn evaluated_ascii_clock_context_preserves_pinned_time_zone_fsp_and_lifecycle() {
     let mut session = Session::new();
     session

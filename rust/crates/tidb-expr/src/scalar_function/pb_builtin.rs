@@ -676,6 +676,149 @@ mod json_path_worker_tests {
     use tidb_datatype::{BinaryJSON, FieldTypeCode, FieldTypeFlags};
 
     #[test]
+    fn protobuf_json_merge_patch_keeps_three_arg_demand_and_worker_scope() {
+        let json = |text: &str| Datum::Json(BinaryJSON::parse(text).unwrap());
+        let json_type = FieldType::new(FieldTypeCode::Json);
+        let text_type = FieldType::new(FieldTypeCode::VarString);
+        let literal = |value: Datum, field: &FieldType| {
+            Expression::Constant(Constant::new(value, field.clone()))
+        };
+        let selected = |args| {
+            ScalarFunction::from_pb(
+                PbBuiltin::new(ScalarFuncSig::JsonMergePatchSig).unwrap(),
+                json_type.clone(),
+                args,
+            )
+        };
+        let pool = |slots| {
+            crate::AsciiPoolOwner::new(
+                crate::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    64,
+                    8,
+                    4 * 1024 * 1024,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let blocked_owner = pool(0);
+        let blocked_execution = blocked_owner.begin_execution().unwrap();
+        let owner = pool(1);
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        let function = selected(
+            (0..3)
+                .map(|index| {
+                    let mut column = Column::new(index + 1, json_type.clone());
+                    column.index = index;
+                    Expression::Column(column)
+                })
+                .collect(),
+        );
+        assert_eq!(
+            function.pb_signature(),
+            Some(ScalarFuncSig::JsonMergePatchSig)
+        );
+        let cases = [
+            (
+                [
+                    json(r#"{"a":1,"keep":true}"#),
+                    json(r#"{"a":null}"#),
+                    json(r#"{"b":2}"#),
+                ],
+                json(r#"{"b":2,"keep":true}"#),
+            ),
+            ([Datum::Null, json("{}"), json(r#"{"b":2}"#)], Datum::Null),
+            ([Datum::Null, json("{}"), json("7")], json("7")),
+            (
+                [json(r#"{"a":1}"#), json(r#"{"a":2}"#), Datum::Null],
+                Datum::Null,
+            ),
+            (
+                [json("null"), json("{}"), json(r#"{"b":2}"#)],
+                json(r#"{"b":2}"#),
+            ),
+        ];
+        for (values, expected) in &cases {
+            let row = tidb_chunk::mutrow::MutRow::from_datums(values);
+            scope.with_columns(&NoColumns, |columns| {
+                assert_eq!(function.eval(columns, row.to_row()).unwrap(), *expected);
+            });
+            // Plain JSON/NULL columns do not execute child workers: a zero-slot
+            // failure therefore proves the selected PATCH root owns its result.
+            blocked_execution
+                .scope()
+                .with_columns(&NoColumns, |columns| {
+                    let error = function
+                        .eval(columns, row.to_row())
+                        .expect_err("PB PATCH, including SQL NULL, needs its worker");
+                    let EvalError::ExpressionAdapterFailure(failure) = error else {
+                        panic!("PB PATCH lost its infrastructure cause: {error:?}")
+                    };
+                    assert_eq!(
+                        failure.class(),
+                        crate::ExpressionAdapterFailureClass::PoolResource
+                    );
+                    assert_eq!(
+                        failure.origin(),
+                        crate::ExpressionAdapterFailureOrigin::Pool
+                    );
+                });
+        }
+        // Private pool accounting is covered by the SDK tests; this PB test
+        // observes successful evaluation again after releasing its first scope.
+        drop(scope);
+        let row = tidb_chunk::mutrow::MutRow::from_datums(&cases[0].0);
+        execution.scope().with_columns(&NoColumns, |columns| {
+            assert_eq!(function.eval(columns, row.to_row()).unwrap(), cases[0].1);
+        });
+
+        let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+        // PATCH prepares every document, even after SQL NULL. The real UTF-8
+        // error precedes worker acquisition rather than becoming computed NULL.
+        let bad_text = selected(vec![
+            literal(Datum::Null, &json_type),
+            literal(json("{}"), &json_type),
+            literal(Datum::Bytes(vec![0xff]), &text_type),
+        ]);
+        blocked_execution
+            .scope()
+            .with_columns(&NoColumns, |columns| {
+                assert!(matches!(
+                    bad_text.eval(columns, empty.to_row()),
+                    Err(EvalError::Unsupported("invalid UTF-8 string datum"))
+                ));
+            });
+        // Kernel::Json must also demand a failing child after NULL, even when
+        // the final scalar would replace every prior document during merging.
+        let mut cast_type = json_type.clone();
+        cast_type.add_flags(FieldTypeFlags::PARSE_TO_JSON);
+        let bad_cast = Expression::ScalarFunction(ScalarFunction::from_pb(
+            PbBuiltin::new(ScalarFuncSig::CastStringAsJson).unwrap(),
+            cast_type,
+            vec![literal(Datum::new_string("{"), &text_type)],
+        ));
+        let bad_child = selected(vec![
+            literal(Datum::Null, &json_type),
+            bad_cast,
+            literal(json("7"), &json_type),
+        ]);
+        blocked_execution
+            .scope()
+            .with_columns(&NoColumns, |columns| {
+                assert!(matches!(
+                    bad_child.eval(columns, empty.to_row()),
+                    Err(EvalError::Json(crate::JsonError::InvalidText))
+                ));
+            });
+    }
+
+    #[test]
     fn protobuf_json_replace_append_keep_five_arg_cast_demand_and_worker_scope() {
         let json = |text: &str| Datum::Json(BinaryJSON::parse(text).unwrap());
         let json_type = FieldType::new(FieldTypeCode::Json);

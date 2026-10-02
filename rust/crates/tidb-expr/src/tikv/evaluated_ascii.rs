@@ -2160,6 +2160,9 @@ fn materialize_computed(
             | EvaluatedBytesOp::UtcTimeWithoutFspNative
             | EvaluatedBytesOp::UtcTimeWithFspNative
             | EvaluatedBytesOp::UtcTimeNullNative
+            | EvaluatedBytesOp::JsonMergeSerdeNative
+            | EvaluatedBytesOp::JsonMergePatchSerdeNative
+            | EvaluatedBytesOp::JsonMergePatchRawLegacy
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative
@@ -2604,6 +2607,46 @@ pub fn eval_legacy_json_output_none_in(
                 EvaluatedBytesOp::JsonValueAbsentLegacy,
                 EvaluatedArgs::NoArgs,
             ))
+        },
+        legacy_json_output_result,
+    )
+}
+
+/// Merge-patch the caller's actual ordered raw JSON operands. Child demand and
+/// its original errors remain with the caller; semantic codec failures are the
+/// worker's computed absent result, not transport failures.
+pub fn eval_legacy_json_merge_patch_in(
+    values: &[tidb_datatype::BinaryJSON],
+    ctx: &dyn Columns,
+) -> Result<Option<tidb_datatype::BinaryJSON>, EvalError> {
+    evaluate_prepared_args_in(
+        ctx,
+        || {
+            let mut raw_values = Vec::new();
+            raw_values
+                .try_reserve_exact(values.len())
+                .map_err(|error| {
+                    EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+                        tidb_query_expr::local::LocalError::ResourceLimit(
+                            format!("raw JSON operand references allocation failed: {error}")
+                                .into(),
+                        ),
+                        None,
+                    ))
+                })?;
+            raw_values.extend(
+                values
+                    .iter()
+                    .map(|value| (value.type_code(), value.value())),
+            );
+            let args = tidb_query_expr::local::prepare_json_raw_values_args(&raw_values).map_err(
+                |error| {
+                    EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+                        error, None,
+                    ))
+                },
+            )?;
+            Ok((EvaluatedBytesOp::JsonMergePatchRawLegacy, args))
         },
         legacy_json_output_result,
     )
