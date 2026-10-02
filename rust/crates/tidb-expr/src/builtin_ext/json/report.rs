@@ -27,8 +27,8 @@
 
 use serde_json::{Number, Value as Json};
 
-use super::path::{extract, parse_path};
-use super::value::{binary_json_datum, json_document_string, parse_json_document_argument};
+use super::path::parse_path;
+use super::value::{json_document_string, parse_json_document_argument};
 use crate::builtin_ext::BuiltinFuncCache;
 use crate::coerce::coerce_str;
 use crate::expression::{ConstLevel, Expression};
@@ -288,40 +288,34 @@ pub(super) fn json_length(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, Ev
 /// selected object's keys, in BinaryJSON's byte-sorted object order.  A
 /// scalar, array, missing path, or selected non-object is SQL NULL; a path
 /// that could select more than one value is an error.
-pub(super) fn json_keys(vals: &[Datum]) -> Result<Datum, EvalError> {
-    let Some(document) = parse_json_document_argument(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    let target = if let Some(path_value) = vals.get(1) {
-        let Some(path) = coerce_str(path_value)? else {
-            return Ok(Datum::Null);
-        };
-        let path = parse_path(&path)?;
-        if path.could_match_multiple {
-            return Err(EvalError::Json(JsonError::InvalidPathMultipleSelection));
-        }
-        let Some(extracted) = extract(&document, &[path]) else {
-            return Ok(Datum::Null);
-        };
-        extracted
-    } else {
-        document
-    };
-    let Json::Object(object) = target else {
-        return Ok(Datum::Null);
-    };
-
-    // BinaryJSON objects are encoded with keys sorted by their UTF-8 bytes;
-    // serde_json may preserve insertion order, so sort explicitly before
-    // constructing the result array.
-    let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
-    keys.sort_unstable();
-    let keys = Json::Array(
-        keys.into_iter()
-            .map(|key| Json::String(key.to_owned()))
-            .collect(),
-    );
-    binary_json_datum(keys)
+pub(super) fn json_keys(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp as Op};
+    crate::tikv::evaluate_prepared_args_in(
+        ctx,
+        || {
+            let null = || (Op::JsonOutputNullNative, EvaluatedArgs::NullWitness(None));
+            let Some(document) = parse_json_document_argument(&vals[0])? else {
+                return Ok(null());
+            };
+            if let Some(path_value) = vals.get(1) {
+                let Some(path) = coerce_str(path_value)? else {
+                    return Ok(null());
+                };
+                if parse_path(&path)?.could_match_multiple {
+                    return Err(EvalError::Json(JsonError::InvalidPathMultipleSelection));
+                }
+                return Ok((
+                    Op::JsonKeysPathSerdeNative,
+                    crate::tikv::prepare_json_serde_args(&document, None, Some(&path))?,
+                ));
+            }
+            Ok((
+                Op::JsonKeysSerdeNative,
+                crate::tikv::prepare_json_serde_args(&document, None, None)?,
+            ))
+        },
+        crate::tikv::EvaluatedBytesResult::into_json_datum,
+    )
 }
 
 /// `JSON_SUM_CRC32(json_doc)`, port of `builtinJSONSumCRC32Sig.evalInt` in

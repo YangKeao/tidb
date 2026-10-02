@@ -1363,6 +1363,14 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::JsonPredicateMissingLegacy => {
             panic!("JSON predicates need actual documents, paths and presence")
         }
+        EvaluatedBytesOp::JsonArraySerdeNative
+        | EvaluatedBytesOp::JsonObjectSerdeNative
+        | EvaluatedBytesOp::JsonKeysSerdeNative
+        | EvaluatedBytesOp::JsonKeysPathSerdeNative
+        | EvaluatedBytesOp::JsonPrettySerdeNative
+        | EvaluatedBytesOp::JsonOutputNullNative => {
+            panic!("JSON outputs need their actual argument list, document/path or NULL witness")
+        }
         EvaluatedBytesOp::TidbShardNative => "TIDB_SHARD",
         EvaluatedBytesOp::VitessHashNative => "VITESS_HASH",
         EvaluatedBytesOp::FormatBytesNative => "FORMAT_BYTES",
@@ -1899,6 +1907,222 @@ fn binary_arithmetic_dispatch_keeps_profiles_and_legacy_presence() {
     });
     assert!(!scope.busy.get());
     assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn json_output_sdk_owns_arrays_objects_keys_and_native_pretty_text() {
+    use serde_json::json;
+    use EvaluatedBytesOp::*;
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let expected_json = |text| Datum::Json(tidb_datatype::BinaryJSON::parse(text).unwrap());
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (values, expected) in [
+            (Vec::new(), "[]"),
+            (
+                vec![json!(null), json!(1.0), json!(u64::MAX), json!("1")],
+                "[null, 1.0, 18446744073709551615, \"1\"]",
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    JsonArraySerdeNative,
+                    columns,
+                    || super::super::prepare_json_array_args(&values),
+                    EvaluatedBytesResult::into_json_datum,
+                )
+            });
+            assert_eq!(result, Ok(expected_json(expected)));
+            assert_wide_math_c4(observation);
+        }
+        for (pairs, expected) in [
+            (Vec::new(), "{}"),
+            (
+                vec![
+                    ("b".to_owned(), json!(1)),
+                    ("a".to_owned(), json!(2)),
+                    ("b".to_owned(), json!(3)),
+                ],
+                "{\"a\": 2, \"b\": 3}",
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    JsonObjectSerdeNative,
+                    columns,
+                    || super::super::prepare_json_object_args(&pairs),
+                    EvaluatedBytesResult::into_json_datum,
+                )
+            });
+            assert_eq!(result, Ok(expected_json(expected)));
+            assert_wide_math_c4(observation);
+        }
+        for (operation, document, path, expected) in [
+            (
+                JsonKeysSerdeNative,
+                json!({"b": 1, "a": 2}),
+                None,
+                expected_json("[\"a\", \"b\"]"),
+            ),
+            (
+                JsonKeysPathSerdeNative,
+                json!({"outer": {"z": 1, "a": 0}}),
+                Some("$.outer"),
+                expected_json("[\"a\", \"z\"]"),
+            ),
+            (
+                JsonKeysPathSerdeNative,
+                json!({"a": 1}),
+                Some("$.missing"),
+                Datum::Null,
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || super::super::prepare_json_serde_args(&document, None, path),
+                    EvaluatedBytesResult::into_json_datum,
+                )
+            });
+            assert_eq!(result, Ok(expected));
+            assert_wide_math_c4(observation);
+        }
+        // Fixed native float-format cutoffs, not serde's generic pretty printer.
+        let document: serde_json::Value = serde_json::from_str("[1e-16,1e-15,1e15,1.0]").unwrap();
+        let (result, observation) = observe_wide_math(|| {
+            evaluate_args_in(
+                JsonPrettySerdeNative,
+                columns,
+                || super::super::prepare_json_serde_args(&document, None, None),
+                |computed| {
+                    Ok(computed
+                        .into_bytes()?
+                        .map_or(Datum::Null, Datum::new_string))
+                },
+            )
+        });
+        assert_eq!(
+            result,
+            Ok(Datum::new_string(
+                "[\n  1e-16,\n  0.000000000000001,\n  1e15,\n  1.0\n]"
+            ))
+        );
+        assert_wide_math_c4(observation);
+        let (result, observation) = observe_wide_math(|| {
+            evaluate_args_in(
+                JsonOutputNullNative,
+                columns,
+                || Ok(EvaluatedArgs::NullWitness(None)),
+                EvaluatedBytesResult::into_json_datum,
+            )
+        });
+        assert_eq!(result, Ok(Datum::Null));
+        assert_wide_math_c4(observation);
+    });
+    // Projection-only edge: a present JSON null must never become SQL NULL.
+    assert_eq!(
+        EvaluatedBytesResult::Bytes(Some(b"null".to_vec())).into_json_datum(),
+        Ok(expected_json("null"))
+    );
+    assert_eq!(
+        EvaluatedBytesResult::Bytes(None).into_json_datum(),
+        Ok(Datum::Null)
+    );
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn json_output_sdk_keeps_projection_contracts_and_zero_slot_refusals() {
+    use EvaluatedBytesOp::*;
+
+    assert!(
+        matches!(EvaluatedBytesResult::Bytes(Some(vec![0xff])).into_json_datum(),
+        Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract)
+    );
+    assert_eq!(
+        EvaluatedBytesResult::Bytes(Some(b"{".to_vec())).into_json_datum(),
+        Err(EvalError::Json(crate::JsonError::InvalidText))
+    );
+    assert!(
+        matches!(EvaluatedBytesResult::JsonReport(crate::tikv::JsonReportOutcome::Null).into_json_datum(),
+        Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract)
+    );
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (operation, args) in [
+            (JsonArraySerdeNative, EvaluatedArgs::Bytes(Some(Vec::new()))),
+            (
+                JsonObjectSerdeNative,
+                EvaluatedArgs::Bytes(Some(1_u64.to_le_bytes().to_vec())),
+            ),
+            (JsonArraySerdeNative, EvaluatedArgs::NoArgs),
+            (
+                JsonKeysPathSerdeNative,
+                EvaluatedArgs::Bytes2(Some(b"{}".to_vec()), Some(b"$[*]".to_vec())),
+            ),
+            (
+                JsonPrettySerdeNative,
+                EvaluatedArgs::Bytes(Some(b"{".to_vec())),
+            ),
+            (JsonOutputNullNative, EvaluatedArgs::NullWitness(Some(0))),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || Ok(args),
+                    EvaluatedBytesResult::into_bytes,
+                )
+            });
+            assert!(matches!(
+                result,
+                Err(EvalError::ExpressionRuntimeFailure(_))
+            ));
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(
+                observation.before_kernel_invocations,
+                observation.after_kernel_invocations
+            );
+        }
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for operation in [JsonArraySerdeNative, JsonObjectSerdeNative, JsonKeysSerdeNative, JsonKeysPathSerdeNative, JsonPrettySerdeNative, JsonOutputNullNative] {
+            let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                operation, columns,
+                || match operation {
+                    JsonArraySerdeNative => super::super::prepare_json_array_args(&[]),
+                    JsonObjectSerdeNative => super::super::prepare_json_object_args(&[]),
+                    JsonKeysSerdeNative | JsonPrettySerdeNative => super::super::prepare_json_serde_args(&serde_json::json!({}), None, None),
+                    JsonKeysPathSerdeNative => super::super::prepare_json_serde_args(&serde_json::json!({}), None, Some("$")),
+                    JsonOutputNullNative => Ok(EvaluatedArgs::NullWitness(None)),
+                    _ => unreachable!(),
+                },
+                EvaluatedBytesResult::into_bytes,
+            ));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
     drop(scope);
     execution.close();
 }

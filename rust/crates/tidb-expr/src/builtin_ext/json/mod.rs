@@ -50,7 +50,9 @@ mod search;
 mod text;
 mod value;
 
-use construct::{json_array, json_object, json_quote, json_unquote};
+use construct::{
+    json_array_in as json_array, json_object_in as json_object, json_quote, json_unquote,
+};
 use merge::{json_merge, json_merge_patch};
 use modify::{
     json_array_append, json_array_insert, json_modify, json_modify_with_document,
@@ -88,14 +90,14 @@ pub(crate) fn dispatch_in(
         ("JSON_TYPE", 1) => Some(json_type(&vals[0], ctx)),
         ("JSON_QUOTE", 1) => Some(json_quote(&vals[0], ctx)),
         ("JSON_UNQUOTE", 1) => Some(json_unquote(&vals[0])),
-        ("JSON_ARRAY", 0..) => Some(json_array(vals, &no_arg_types(vals.len()))),
-        ("JSON_OBJECT", 0..) => Some(json_object(vals, &no_arg_types(vals.len()))),
+        ("JSON_ARRAY", 0..) => Some(json_array(vals, &no_arg_types(vals.len()), ctx)),
+        ("JSON_OBJECT", 0..) => Some(json_object(vals, &no_arg_types(vals.len()), ctx)),
         ("JSON_LENGTH", 1 | 2) => Some(json_length(vals, ctx)),
         ("JSON_EXTRACT", 2..) => Some(json_extract(vals)),
         ("JSON_MEMBER_OF" | "json_member_of", 2) => Some(json_member_of(vals, ctx)),
         ("JSON_CONTAINS", 2 | 3) => Some(json_contains(vals, ctx)),
         ("JSON_CONTAINS_PATH", 3..) => Some(json_contains_path(vals, ctx)),
-        ("JSON_KEYS", 1 | 2) => Some(json_keys(vals)),
+        ("JSON_KEYS", 1 | 2) => Some(json_keys(vals, ctx)),
         ("JSON_REMOVE", 2..) => Some(json_remove(vals)),
         ("JSON_ARRAY_APPEND", 3..) => Some(json_array_append(vals, &no_arg_types(vals.len()))),
         ("JSON_ARRAY_INSERT", 3..) => Some(json_array_insert(vals, &no_arg_types(vals.len()))),
@@ -118,7 +120,7 @@ pub(crate) fn dispatch_in(
         ("JSON_MERGE_PRESERVE", 2..) => Some(json_merge(vals, "json_merge_preserve")),
         ("JSON_MERGE_PATCH", 2..) => Some(json_merge_patch(vals)),
         ("JSON_SEARCH", 3..) => Some(json_search(vals)),
-        ("JSON_PRETTY", 1) => Some(json_pretty(&vals[0])),
+        ("JSON_PRETTY", 1) => Some(json_pretty(&vals[0], ctx)),
         ("JSON_SUM_CRC32", 1) => Some(json_sum_crc32(&vals[0])),
         ("JSON_OVERLAPS", 2) => Some(json_overlaps(vals, ctx)),
         _ => None,
@@ -148,27 +150,40 @@ pub(crate) fn dispatch(name: &str, vals: &[Datum]) -> Option<Result<Datum, EvalE
 /// `JSON_EXTRACT`, `JSON_MEMBER_OF`, ...) -- a plan-build-time check this
 /// evaluator does not perform, and out of scope here since it never reaches
 /// this Datum-only dispatch either way.
+pub(crate) fn dispatch_typed_in(
+    name: &str,
+    vals: &[Datum],
+    arg_types: &[Option<FieldType>],
+    ctx: &dyn crate::Columns,
+) -> Option<Result<Datum, EvalError>> {
+    dispatch_typed_with_paths_in(name, vals, arg_types, None, ctx)
+}
+
+/// Compatibility entry for the original value-only test vectors. SQL callers
+/// use `dispatch_typed_in` with their actual execution capability.
+#[cfg(test)]
 pub(crate) fn dispatch_typed(
     name: &str,
     vals: &[Datum],
     arg_types: &[Option<FieldType>],
 ) -> Option<Result<Datum, EvalError>> {
-    dispatch_typed_with_paths(name, vals, arg_types, None)
+    dispatch_typed_in(name, vals, arg_types, &crate::NoColumns)
 }
 
 /// Typed JSON dispatch with an optional context-cached path list for the three
 /// `JSON_{SET,INSERT,REPLACE}` modifiers. All other families keep the ordinary
 /// typed path, and a missing path cache falls back to per-call parsing.
-pub(crate) fn dispatch_typed_with_paths(
+pub(crate) fn dispatch_typed_with_paths_in(
     name: &str,
     vals: &[Datum],
     arg_types: &[Option<FieldType>],
     cached_paths: Option<&[JsonPath]>,
+    ctx: &dyn crate::Columns,
 ) -> Option<Result<Datum, EvalError>> {
     debug_assert_eq!(vals.len(), arg_types.len());
     match (name, vals.len()) {
-        ("JSON_ARRAY", 0..) => Some(json_array(vals, arg_types)),
-        ("JSON_OBJECT", 0..) => Some(json_object(vals, arg_types)),
+        ("JSON_ARRAY", 0..) => Some(json_array(vals, arg_types, ctx)),
+        ("JSON_OBJECT", 0..) => Some(json_object(vals, arg_types, ctx)),
         ("JSON_SET", 3..) => Some(match cached_paths {
             Some(paths) => json_modify_with_paths(vals, arg_types, JsonModifyMode::Set, paths),
             None => json_modify(vals, arg_types, JsonModifyMode::Set),
@@ -183,7 +198,7 @@ pub(crate) fn dispatch_typed_with_paths(
         }),
         ("JSON_ARRAY_APPEND", 3..) => Some(json_array_append(vals, arg_types)),
         ("JSON_ARRAY_INSERT", 3..) => Some(json_array_insert(vals, arg_types)),
-        ("JSON_PRETTY", 1) => Some(json_pretty(&vals[0])),
+        ("JSON_PRETTY", 1) => Some(json_pretty(&vals[0], ctx)),
         _ => None,
     }
 }
@@ -227,7 +242,7 @@ pub(crate) fn dispatch_typed_with_paths_and_document(
 
 /// An all-`None` `arg_types` slice for [`dispatch_in`]'s untyped callers, so
 /// [`json_array`]/[`json_object`]/[`json_modify`]/[`json_array_append`]/
-/// [`json_array_insert`] share one implementation with [`dispatch_typed`]
+/// [`json_array_insert`] share one implementation with [`dispatch_typed_in`]
 /// instead of duplicating the plain-text path.
 fn no_arg_types(len: usize) -> Vec<Option<FieldType>> {
     vec![None; len]

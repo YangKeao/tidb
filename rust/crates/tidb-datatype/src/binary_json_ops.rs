@@ -65,16 +65,13 @@ impl BinaryJSON {
 
     /// Returns sorted object keys as a JSON array, or an empty array otherwise.
     pub fn keys(&self) -> Result<BinaryJSON, BinaryJSONError> {
-        let keys = match self.to_node()? {
-            JSONNode::Object(values) => {
-                let mut keys = values.into_iter().map(|(key, _)| key).collect::<Vec<_>>();
-                keys.sort_unstable_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
-                keys.into_iter()
-                    .map(|key| BinaryJSON::from_value(&Value::String(key)).map(JSONNode::Scalar))
-                    .collect::<Result<Vec<_>, _>>()?
-            }
-            _ => Vec::new(),
-        };
+        use tidb_query_datatype::codec::mysql::json::native_json_sorted_object_keys;
+        // JSONNode aliases the shared lossless node. Keep the original decoder
+        // and use the old constructors only to encode the computed key strings.
+        let keys = native_json_sorted_object_keys(&self.to_node()?)
+            .into_iter()
+            .map(|key| BinaryJSON::from_value(&Value::String(key)).map(JSONNode::Scalar))
+            .collect::<Result<Vec<_>, _>>()?;
         BinaryJSON::from_node(&JSONNode::Array(keys))
     }
 
@@ -938,6 +935,84 @@ fn remove_node(document: &mut JSONNode, legs: &[JSONPathLeg]) {
             }
         }
         JSONPathLeg::Array(_) | JSONPathLeg::DoubleAsterisk => {}
+    }
+}
+
+#[cfg(test)]
+mod shared_keys_tests {
+    use super::*;
+    use crate::{JSON_TYPE_CODE_LITERAL, JSON_TYPE_CODE_OBJECT};
+
+    #[test]
+    fn sdk_keys_keeps_duplicates_nonobject_empty_and_full_decode_errors() {
+        let raw = vec![
+            3,
+            0,
+            0,
+            0,
+            44,
+            0,
+            0,
+            0,
+            41,
+            0,
+            0,
+            0,
+            1,
+            0,
+            42,
+            0,
+            0,
+            0,
+            1,
+            0,
+            43,
+            0,
+            0,
+            0,
+            1,
+            0,
+            JSON_TYPE_CODE_LITERAL,
+            1,
+            0,
+            0,
+            0,
+            JSON_TYPE_CODE_LITERAL,
+            2,
+            0,
+            0,
+            0,
+            JSON_TYPE_CODE_LITERAL,
+            0,
+            0,
+            0,
+            0,
+            b'z',
+            b'a',
+            b'a',
+        ];
+        let document = BinaryJSON::from_encoded_parts(JSON_TYPE_CODE_OBJECT, raw.clone());
+        assert_eq!(
+            document.keys().unwrap().to_value().unwrap(),
+            serde_json::json!(["a", "a", "z"])
+        );
+        for text in ["1", "null", "[1,2]", "{}"] {
+            assert_eq!(
+                BinaryJSON::parse(text)
+                    .unwrap()
+                    .keys()
+                    .unwrap()
+                    .to_value()
+                    .unwrap(),
+                serde_json::json!([])
+            );
+        }
+        let mut malformed = raw;
+        malformed[26] = 0xff;
+        assert_eq!(
+            BinaryJSON::from_encoded_parts(JSON_TYPE_CODE_OBJECT, malformed).keys(),
+            Err(BinaryJSONError::InvalidBinary)
+        );
     }
 }
 

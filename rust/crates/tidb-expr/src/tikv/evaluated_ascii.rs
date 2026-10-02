@@ -1745,6 +1745,24 @@ impl EvaluatedBytesResult {
         }
     }
 
+    /// Represent only the worker's computed JSON text as native BinaryJSON.
+    /// JSON `null` is a present document; only absent computed bytes are SQL NULL.
+    pub(crate) fn into_json_datum(self) -> Result<Datum, EvalError> {
+        let Some(bytes) = self.into_bytes()? else {
+            return Ok(Datum::Null);
+        };
+        let text = std::str::from_utf8(&bytes).map_err(|_| {
+            AsciiBoundaryError::Scope {
+                kind: ScopeFailureKind::Contract,
+                reason: "computed JSON text is not UTF-8",
+            }
+            .into_eval_error()
+        })?;
+        tidb_datatype::BinaryJSON::parse(text)
+            .map(Datum::Json)
+            .map_err(|_| EvalError::Json(crate::JsonError::InvalidText))
+    }
+
     /// Move only the kernel's decoded outcome; do not inspect input or bytes.
     pub(crate) fn into_uncompress(self) -> Result<UncompressOutcome, EvalError> {
         match self {
@@ -2116,6 +2134,12 @@ fn materialize_computed(
             | EvaluatedBytesOp::AesDecrypt192CfbNative
             | EvaluatedBytesOp::AesDecrypt256CfbNative
             | EvaluatedBytesOp::AesNullNative
+            | EvaluatedBytesOp::JsonArraySerdeNative
+            | EvaluatedBytesOp::JsonObjectSerdeNative
+            | EvaluatedBytesOp::JsonKeysSerdeNative
+            | EvaluatedBytesOp::JsonKeysPathSerdeNative
+            | EvaluatedBytesOp::JsonPrettySerdeNative
+            | EvaluatedBytesOp::JsonOutputNullNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative

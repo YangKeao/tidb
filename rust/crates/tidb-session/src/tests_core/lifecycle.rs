@@ -9363,6 +9363,138 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_json_values_preserve_constructors_keys_pretty_and_types() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_json_values_sql (ival INT, other INT, vb VARBINARY(8), fb BINARY(3), bl BLOB, doc JSON, s VARCHAR(32), n INT, nj JSON, jnull JSON, p VARCHAR(32), missing VARCHAR(32), wild VARCHAR(32), badpath VARCHAR(32), np VARCHAR(32), ka VARCHAR(8), kb VARCHAR(8), firstval INT, lastval INT, emptyarr JSON, emptyobj JSON, floats JSON, badtext VARCHAR(8))").unwrap();
+    session.run(r#"INSERT INTO shared_json_values_sql VALUES (1,2,'ab','ab','ab','{"a":{"z":1,"A":2},"b":[1,2]}','[1]',NULL,NULL,'null','$.a','$.missing','$.*','bad path',NULL,'z','A',1,3,'[]','{}','[1.0,1e15,1e-16,0.000000000000001]','nope')"#).unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // These are literal fixtures, not another provider used as an oracle.
+    // Constructor/opaque/key vectors come from the immutable native JSON
+    // tables; PRETTY spacing and float cutoffs follow text.rs's source policy.
+    let json = |text: &str| Datum::Json(tidb_datatype::BinaryJSON::parse(text).unwrap());
+    let mut check = |sql: &str, expected: Vec<Datum>| {
+        let StmtOutput::Rows { rows, .. } = session.run_with_columns(sql).unwrap() else {
+            panic!("expected JSON value rows: {sql}")
+        };
+        assert_eq!(rows, vec![expected], "{sql}");
+        assert!(session.warnings().is_empty(), "{sql}");
+    };
+    check(
+        "SELECT JSON_ARRAY(ival<other,vb,fb,bl,doc,s,n) FROM shared_json_values_sql",
+        vec![json(
+            r#"[true,"base64:type15:YWI=","base64:type254:YWIA","base64:type252:YWI=",{"a":{"A":2,"z":1},"b":[1,2]},"[1]",null]"#,
+        )],
+    );
+    check(
+        "SELECT JSON_OBJECT(ka,firstval,kb,other,ka,lastval),JSON_OBJECT(ka,n),JSON_OBJECT(ka,ival<other),JSON_ARRAY(nj,jnull) FROM shared_json_values_sql",
+        vec![json(r#"{"A":2,"z":3}"#), json(r#"{"z":null}"#), json(r#"{"z":true}"#), json("[null,null]")],
+    );
+    check(
+        "SELECT JSON_ARRAY(),JSON_OBJECT(),JSON_ARRAY(s),JSON_OBJECT(ka,doc) FROM shared_json_values_sql",
+        vec![json("[]"), json("{}"), json(r#"["[1]"]"#), json(r#"{"z":{"a":{"A":2,"z":1},"b":[1,2]}}"#)],
+    );
+    check(
+        "SELECT JSON_KEYS(doc),JSON_KEYS(doc,p),JSON_KEYS(doc,missing),JSON_KEYS(doc,np),JSON_KEYS(emptyarr),JSON_KEYS(emptyobj),JSON_KEYS(ival),JSON_KEYS(nj) FROM shared_json_values_sql",
+        vec![json(r#"["a","b"]"#), json(r#"["A","z"]"#), Datum::Null, Datum::Null, Datum::Null, json("[]"), Datum::Null, Datum::Null],
+    );
+    check(
+        "SELECT JSON_PRETTY(doc),JSON_PRETTY(emptyarr),JSON_PRETTY(emptyobj),JSON_PRETTY(jnull),JSON_PRETTY(nj),JSON_PRETTY(ival) FROM shared_json_values_sql",
+        vec![Datum::new_string("{\n  \"a\": {\n    \"A\": 2,\n    \"z\": 1\n  },\n  \"b\": [\n    1,\n    2\n  ]\n}"), Datum::new_string("[]"), Datum::new_string("{}"), Datum::new_string("null"), Datum::Null, Datum::new_string("1")],
+    );
+    check(
+        "SELECT JSON_PRETTY(floats) FROM shared_json_values_sql",
+        vec![Datum::new_string(
+            "[\n  1.0,\n  1e15,\n  1e-16,\n  0.000000000000001\n]",
+        )],
+    );
+    for (expression, code) in [
+        ("JSON_KEYS(doc,wild)", 3149),
+        // Existing column-sourced EXEC InvalidPath policy, not PLAN's 3143.
+        ("JSON_KEYS(doc,badpath)", 1105),
+        ("JSON_PRETTY(badtext)", 3140),
+        ("JSON_OBJECT(np,ival)", 3158),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_json_values_sql");
+        let mysql = session
+            .run_with_columns(&sql)
+            .expect_err(&sql)
+            .to_mysql_error();
+        assert_eq!(mysql.code, code, "{sql}: {mysql:?}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+    }
+}
+
+#[test]
+fn evaluated_ascii_json_values_zero_slots_require_constructor_keys_pretty_workers() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_json_values_zero (d JSON, nj JSON, jnull JSON, emptyobj JSON, emptyarr JSON, p VARCHAR(32), missing VARCHAR(32), np VARCHAR(32), k VARCHAR(8), s VARCHAR(8), vb VARBINARY(8), n INT)").unwrap();
+    session.run(r#"INSERT INTO shared_json_values_zero VALUES ('{"a":{"z":1}}',NULL,'null','{}','[]','$.a','$.missing',NULL,'key','[1]','ab',NULL)"#).unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // Each SELECT names only the family under test over stored inputs, with
+    // no WHERE, ORDER BY, CAST, or other worker that could mask its entry.
+    // Empty constructors must also enter with their actual zero arguments.
+    for expression in [
+        "JSON_ARRAY()",
+        "JSON_OBJECT()",
+        "JSON_ARRAY(d)",
+        "JSON_ARRAY(s)",
+        "JSON_ARRAY(vb)",
+        "JSON_ARRAY(n)",
+        "JSON_ARRAY(nj,jnull)",
+        "JSON_OBJECT(k,d)",
+        "JSON_OBJECT(k,n)",
+        "JSON_OBJECT(k,vb)",
+        "JSON_KEYS(d)",
+        "JSON_KEYS(d,p)",
+        "JSON_KEYS(d,missing)",
+        "JSON_KEYS(d,np)",
+        "JSON_KEYS(emptyobj)",
+        "JSON_KEYS(emptyarr)",
+        "JSON_KEYS(nj)",
+        "JSON_PRETTY(d)",
+        "JSON_PRETTY(emptyobj)",
+        "JSON_PRETTY(emptyarr)",
+        "JSON_PRETTY(nj)",
+        "JSON_PRETTY(jnull)",
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_json_values_zero");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("JSON value family bypassed its worker: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(session.warnings().is_empty(), "{sql}");
+    }
+}
+
+#[test]
 fn evaluated_ascii_json_predicates_and_nulleq_preserve_fixed_values_and_errors() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();

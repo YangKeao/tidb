@@ -1932,3 +1932,198 @@ fn cast_as_json_typed_renders_binary_charset_argument_as_opaque() {
     // valid JSON text, so this errors instead of guessing Opaque.
     assert!(cast_as_json_typed(&Datum::Bytes(b"ab".to_vec()), None).is_err());
 }
+
+fn json_scope_owner(slots: usize) -> crate::AsciiPoolOwner {
+    crate::AsciiPoolOwner::new(
+        crate::AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 8, 1 << 16)
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+fn assert_json_scope_result(
+    result: Result<Datum, crate::EvalError>,
+    expected: &Datum,
+    slots: usize,
+) {
+    if slots == 0 {
+        assert!(
+            matches!(result, Err(crate::EvalError::ExpressionAdapterFailure(failure))
+            if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource)
+        );
+    } else {
+        assert_eq!(result, Ok(expected.clone()));
+    }
+}
+
+#[test]
+fn shared_json_constructors_preserve_typed_values_and_scalar_context() {
+    use crate::column::Column;
+    use crate::constant::Constant;
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    use tidb_ast::CiString;
+    use tidb_datatype::{Collation, FieldType, FieldTypeCode, FieldTypeFlags};
+
+    let mut boolean = FieldType::new(FieldTypeCode::LongLong);
+    boolean.add_flags(FieldTypeFlags::IS_BOOLEAN);
+    let binary = FieldType::new(FieldTypeCode::Varchar).with_collation(Collation::Binary);
+    let json_type = FieldType::new(FieldTypeCode::Json);
+    let text_type = FieldType::new(FieldTypeCode::VarString);
+    let values = vec![
+        Datum::Int(1),
+        Datum::new_bytes(b"ab".to_vec()),
+        s("[1]"),
+        Datum::Null,
+        s("[1]"),
+    ];
+    let types = vec![
+        Some(boolean.clone()),
+        Some(binary.clone()),
+        Some(json_type.clone()),
+        None,
+        Some(text_type.clone()),
+    ];
+    let mut boolean_column = Column::new(1, boolean);
+    boolean_column.index = 0;
+    let mut binary_column = Column::new(2, binary);
+    binary_column.index = 1;
+    let args = vec![
+        Expression::Column(boolean_column),
+        Expression::Column(binary_column),
+        Expression::Constant(Constant::new(s("[1]"), json_type.clone())),
+        Expression::Constant(Constant::new(
+            Datum::Null,
+            FieldType::new(FieldTypeCode::Null),
+        )),
+        Expression::Constant(Constant::new(s("[1]"), text_type.clone())),
+    ];
+    let array = ScalarFunction::new(CiString::new("json_array"), json_type.clone(), args.clone());
+    let mut object_values = Vec::new();
+    let mut object_types = Vec::new();
+    let mut object_args = Vec::new();
+    for (index, key) in ["b", "bin", "j", "n", "text"].iter().enumerate() {
+        object_values.extend([s(key), values[index].clone()]);
+        object_types.extend([Some(text_type.clone()), types[index].clone()]);
+        object_args.push(Expression::Constant(Constant::new(
+            s(key),
+            text_type.clone(),
+        )));
+        object_args.push(args[index].clone());
+    }
+    let object = ScalarFunction::new(CiString::new("json_object"), json_type, object_args);
+    let row = tidb_chunk::mutrow::MutRow::from_datums(&values[..2]);
+    let expected_array = j(r#"[true,"base64:type15:YWI=",[1],null,"[1]"]"#);
+    let expected_object =
+        j(r#"{"b":true,"bin":"base64:type15:YWI=","j":[1],"n":null,"text":"[1]"}"#);
+    for slots in [0, 1] {
+        let owner = json_scope_owner(slots);
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        scope.with_columns(&crate::NoColumns, |ctx| {
+            assert_json_scope_result(
+                super::dispatch_typed_in("JSON_ARRAY", &values, &types, ctx).unwrap(),
+                &expected_array,
+                slots,
+            );
+            assert_json_scope_result(
+                super::dispatch_typed_in("JSON_OBJECT", &object_values, &object_types, ctx)
+                    .unwrap(),
+                &expected_object,
+                slots,
+            );
+            // Column reads, unlike nested worker expressions, cannot mask an
+            // accidental NoColumns escape at the typed dispatch boundary.
+            assert_json_scope_result(array.eval(ctx, row.to_row()), &expected_array, slots);
+            assert_json_scope_result(object.eval(ctx, row.to_row()), &expected_object, slots);
+        });
+        drop(scope);
+        execution.close();
+    }
+}
+
+#[test]
+fn shared_json_constructor_keys_pretty_empty_null_and_direct_scope_admission() {
+    use crate::constant::Constant;
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    use tidb_ast::CiString;
+    use tidb_datatype::{FieldType, FieldTypeCode};
+
+    let cases = vec![
+        ("JSON_ARRAY", vec![], j("[]")),
+        ("JSON_OBJECT", vec![], j("{}")),
+        ("JSON_ARRAY", vec![Datum::Null], j("[null]")),
+        ("JSON_OBJECT", vec![s("n"), Datum::Null], j(r#"{"n":null}"#)),
+        (
+            "JSON_OBJECT",
+            vec![s("k"), Datum::Int(1), s("k"), Datum::Int(2)],
+            j(r#"{"k":2}"#),
+        ),
+        ("JSON_KEYS", vec![Datum::Null], Datum::Null),
+        ("JSON_KEYS", vec![j("null")], Datum::Null),
+        ("JSON_KEYS", vec![s("{}")], j("[]")),
+        ("JSON_KEYS", vec![s(r#"{"b":1,"a":2}"#)], j(r#"["a","b"]"#)),
+        ("JSON_KEYS", vec![s(r#"{"o":{}}"#), s("$.o")], j("[]")),
+        ("JSON_KEYS", vec![s("{}"), s("$.missing")], Datum::Null),
+        ("JSON_KEYS", vec![s("{}"), Datum::Null], Datum::Null),
+        ("JSON_PRETTY", vec![Datum::Null], Datum::Null),
+        ("JSON_PRETTY", vec![j("null")], s("null")),
+        ("JSON_PRETTY", vec![s("{}")], s("{}")),
+        (
+            "JSON_PRETTY",
+            vec![s(r#"{"b":[],"a":{}}"#)],
+            s("{\n  \"a\": {},\n  \"b\": []\n}"),
+        ),
+        (
+            "JSON_PRETTY",
+            vec![s("[1e-16,1e-15,1e14,1e15,-0.0]")],
+            s("[\n  1e-16,\n  0.000000000000001,\n  100000000000000.0,\n  1e15,\n  -0.0\n]"),
+        ),
+        (
+            "JSON_PRETTY",
+            vec![s("\"<\u{2028}>\"")],
+            s("\"<\u{2028}>\""),
+        ),
+    ];
+    for slots in [0, 1] {
+        let owner = json_scope_owner(slots);
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        scope.with_columns(&crate::NoColumns, |ctx| {
+            for (name, values, expected) in &cases {
+                assert_json_scope_result(
+                    super::dispatch_in(name, values, ctx).unwrap(),
+                    expected,
+                    slots,
+                );
+                let args = values
+                    .iter()
+                    .map(|value| {
+                        let code = match value {
+                            Datum::Json(_) => FieldTypeCode::Json,
+                            Datum::Int(_) => FieldTypeCode::LongLong,
+                            Datum::Null => FieldTypeCode::Null,
+                            _ => FieldTypeCode::VarString,
+                        };
+                        Expression::Constant(Constant::new(value.clone(), FieldType::new(code)))
+                    })
+                    .collect();
+                let code = if *name == "JSON_PRETTY" {
+                    FieldTypeCode::LongBlob
+                } else {
+                    FieldTypeCode::Json
+                };
+                let function =
+                    ScalarFunction::new(CiString::new(*name), FieldType::new(code), args);
+                assert_json_scope_result(
+                    function.eval(ctx, tidb_chunk::row::Row::empty()),
+                    expected,
+                    slots,
+                );
+            }
+        });
+        drop(scope);
+        execution.close();
+    }
+}

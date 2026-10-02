@@ -2905,7 +2905,9 @@ impl ScalarFunction {
             )
             .expect("the native JSON modification family is registered");
         }
-        if let Some(result) = crate::builtin_ext::json_dispatch_typed(&upper, &vals, &arg_types) {
+        if let Some(result) =
+            crate::builtin_ext::json_dispatch_typed_in(&upper, &vals, &arg_types, ctx)
+        {
             return result;
         }
         // `ADDTIME`/`SUBTIME` are the other family Go types from the

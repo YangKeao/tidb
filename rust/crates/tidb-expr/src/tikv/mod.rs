@@ -142,6 +142,28 @@ pub(crate) fn prepare_json_serde_args(
     })
 }
 
+/// Pack actual ARRAY arguments without constructing the computed JSON array.
+pub(crate) fn prepare_json_array_args(
+    values: &[serde_json::Value],
+) -> Result<EvaluatedArgs, crate::EvalError> {
+    tidb_query_expr::local::prepare_json_array_args(values).map_err(|error| {
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+            error, None,
+        ))
+    })
+}
+
+/// Keep OBJECT pair order and duplicate keys in the checked argument frame.
+pub(crate) fn prepare_json_object_args(
+    pairs: &[(String, serde_json::Value)],
+) -> Result<EvaluatedArgs, crate::EvalError> {
+    tidb_query_expr::local::prepare_json_object_args(pairs).map_err(|error| {
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+            error, None,
+        ))
+    })
+}
+
 /// Preserve each actual BinaryJSON type code and payload without serde conversion.
 pub(crate) fn prepare_json_binary_pair_args(
     first: &tidb_datatype::BinaryJSON,

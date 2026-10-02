@@ -26,8 +26,7 @@
 
 use serde_json::Value as Json;
 
-use super::text::format_json;
-use super::value::{binary_json_datum, json_argument, json_sql_string, parse_json, StringArgument};
+use super::value::{json_argument, json_sql_string, parse_json, StringArgument};
 use crate::coerce::coerce_str;
 use crate::{Datum, EvalError, JsonError};
 use tidb_datatype::FieldType;
@@ -96,18 +95,30 @@ pub(super) fn json_unquote(v: &Datum) -> Result<Datum, EvalError> {
 /// `JSON_ARRAY(value [, value] ...)`, port of `jsonArrayFunctionClass` and
 /// `builtinJSONArraySig` in `pkg/expression/builtin_json.go`.  SQL strings
 /// remain JSON strings, while numeric and NULL datums become their matching
-/// JSON scalar values.  Typed boolean/BinaryJSON arguments are outside this
-/// evaluator's value domain and are not inferred from an integer or string.
-pub(super) fn json_array(
+/// JSON scalar values. Boolean and binary-source policies come from the
+/// original argument field types, never an inference from its printed value.
+pub(super) fn json_array_in(
     vals: &[Datum],
     arg_types: &[Option<FieldType>],
+    ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
-    let values = vals
-        .iter()
-        .zip(arg_types.iter())
-        .map(|(v, ft)| json_argument(v, StringArgument::Value, ft.as_ref()))
-        .collect::<Result<Vec<_>, _>>()?;
-    binary_json_datum(Json::Array(values))
+    crate::tikv::evaluate_prepared_args_in(
+        ctx,
+        || {
+            // These are ordered input values, including real JSON nulls, not
+            // the final array. The worker owns construction, including [].
+            let values = vals
+                .iter()
+                .zip(arg_types.iter())
+                .map(|(v, ft)| json_argument(v, StringArgument::Value, ft.as_ref()))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok((
+                crate::tikv::EvaluatedBytesOp::JsonArraySerdeNative,
+                crate::tikv::prepare_json_array_args(&values)?,
+            ))
+        },
+        crate::tikv::EvaluatedBytesResult::into_json_datum,
+    )
 }
 
 /// `JSON_OBJECT(key, value [, key, value] ...)`, port of
@@ -115,29 +126,52 @@ pub(super) fn json_array(
 /// `pkg/expression/builtin_json.go`.  Keys are SQL-string-coerced, NULL keys
 /// are rejected, and values follow the scalar JSON value boundary used by
 /// `JSON_ARRAY`.
-pub(super) fn json_object(
+pub(super) fn json_object_in(
     vals: &[Datum],
     arg_types: &[Option<FieldType>],
+    ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
-    if !vals.len().is_multiple_of(2) {
-        return Err(EvalError::Unsupported(
-            "JSON_OBJECT requires key/value pairs",
-        ));
-    }
-    let mut object = serde_json::Map::new();
-    for (pair, types) in vals
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .zip(arg_types.as_chunks::<2>().0)
-    {
-        let Some(key) = coerce_str(&pair[0])? else {
-            return Err(EvalError::Json(JsonError::NullMemberName));
-        };
-        let value = json_argument(&pair[1], StringArgument::Value, types[1].as_ref())?;
-        object.insert(key, value);
-    }
-    binary_json_datum(Json::Object(object))
+    crate::tikv::evaluate_prepared_args_in(
+        ctx,
+        || {
+            if !vals.len().is_multiple_of(2) {
+                return Err(EvalError::Unsupported(
+                    "JSON_OBJECT requires key/value pairs",
+                ));
+            }
+            let mut pairs = Vec::new();
+            for (pair, types) in vals
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .zip(arg_types.as_chunks::<2>().0)
+            {
+                let Some(key) = coerce_str(&pair[0])? else {
+                    return Err(EvalError::Json(JsonError::NullMemberName));
+                };
+                let value = json_argument(&pair[1], StringArgument::Value, types[1].as_ref())?;
+                // Preserve duplicates and source order as actual operands;
+                // only the worker constructs the last-key-wins object.
+                pairs.push((key, value));
+            }
+            Ok((
+                crate::tikv::EvaluatedBytesOp::JsonObjectSerdeNative,
+                crate::tikv::prepare_json_object_args(&pairs)?,
+            ))
+        },
+        crate::tikv::EvaluatedBytesResult::into_json_datum,
+    )
+}
+
+// Preserve the original direct-test API without retaining a host implementation.
+#[cfg(test)]
+fn json_array(vals: &[Datum], arg_types: &[Option<FieldType>]) -> Result<Datum, EvalError> {
+    json_array_in(vals, arg_types, &crate::NoColumns)
+}
+
+#[cfg(test)]
+fn json_object(vals: &[Datum], arg_types: &[Option<FieldType>]) -> Result<Datum, EvalError> {
+    json_object_in(vals, arg_types, &crate::NoColumns)
 }
 
 #[cfg(test)]

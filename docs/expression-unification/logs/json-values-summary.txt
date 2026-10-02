@@ -1,0 +1,41 @@
+json-values-56 / round57; previous json-nullsafe-55.
+184/245 functional; strict0; target221;37 more required,61 eligible remain.
+New complete functional families: json_array,json_object,json_keys,json_pretty.
+EXTRACT/UNQUOTE are explicitly deferred whole families, not partial credit.
+
+Raw logs: /home/agent/tidb/expression-unification/logs/json-values-<id>.log
+T cwd=/home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv (nightly-2026-01-30).
+N cwd=/home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb (nightly-2026-08-22).
+Each command: set -o pipefail; <wrapper> test --locked -p <package> --lib [filter] -- --test-threads=1 2>&1 | tee <raw-log> >/dev/null.
+T tee path ../logs/; N ../../logs/. Focused command groups use set-e. Serialized parent jobs574(2CPP),575(4native),576(full expression).
+Counts passed/failed/ignored/filtered; measured0. Seconds are Cargo compile/test elapsed, not wall-time estimates.
+
+1 tikv-json: T tidb_query_expr native_json;6/0/0/848;compile13.01s/test0.00s;exit0
+ SHA256 e0539e11df2a829466d1996e0923d63b6e8db24616cf72a65ec6b74d1bfa9635
+2 tikv-local: T tidb_query_expr local;301/0/1/552;compile0.13s/test0.20s;exit0
+ SHA256 30bcc329bdc29a2a02681f44458cb4a3486a494730ab9c8343af4ac40ac83ec2
+3 native-datatype: N tidb-datatype binary_json_ops;20/0/0/423;compile2.02s/test0.00s;exit0
+ SHA256 81606a54136fae62f7150c8b19f942f7eb44a5482bff6ced925f7da4c50eda3b
+4 native-sdk: N tidb-expr json_output_sdk;2/0/0/1607;compile16.70s/test0.00s;exit0
+ SHA256 f52796e170ee2a96cc1c78779e6bafd0b6d2254d02bab47bc04eaa9fe30c6874
+5 native-context: N tidb-expr shared_json_constructor;2/0/0/1607;compile0.12s/test0.00s;exit0
+ SHA256 93a12081c0dc523cd4cdb442891a305a19e378a35acc6684a0adb0a281782ff1
+6 sql: N tidb-session evaluated_ascii_json_values_;2/0/0/2191;compile28.69s/test0.06s;exit0
+ SHA256 556a97c345f2340b72173a2d279efae23d0b3652971974875a19fe1135fd2720
+7 expr-full: N tidb-expr (no filter);1511/4old/94/0;compile0.12s/test13.82s;exit101
+ SHA256 6939b480b7e5810dff9c7ce010478ea9e734ac37e580aa1354491a6066f92245
+
+7 attempts=7 actual runs.6 final focused green,1 known-baseline non-green full suite.0 compile failures,0 new REDs,0 Cargo retries,0 zero-match,0 metadata/lock-resolution attempts. Ignored are not passes; full suite is NOT GREEN.
+Entire failure sections and final list equal json-nullsafe-55 after ONLY numeric panic-heading thread IDs ->(<id>), no source mapping:
+ SHA256 27654f2c0ad2971242c00f50182467598cdfd9c2c65e5bf5a32e683708448637
+Remaining old failures: IFNULL collation, EXP, vectorized duration FSP panic, STR_TO_DATE partial format. Unistore full NOT RERUN this step; no legacy/coprocessor change, prior failure remains unresolved (json-nullsafe-55 full receipt205/1old/13 is historical, not a current pass).
+
+22Rust sources=CPP10/native12.12 additive tests (B/G/C/D/A/F2each;E0). No source/dependency/manifest/lock additions. Both pinned rustfmt --edition2021 --config skip_children=true --check over all22 and both git diff --check pass. Old180 family objects exact;184unique. Original constructor test suffix SHAfff29cfd336f8db9dccce81779531a5c921b2556a64dc521720f18add2f28978 exact after formatting. Original json/value.rs,path.rs,datatype binary_json.rs,cophandler.rs,executor driver/errors/exec.rs,expr/context.rs unchanged. Native constructor map/array answers, key algorithm and text-format closure removed/delegated; codec wrappers remain expressly representation boundaries.
+One parent post-gate static-validation invocation failed because it named nonexistent tidb-executor/src/context.rs. glob found no such file; grep located tidb-expr/src/context.rs. Corrected proof passed unchanged-source and new-test checks. This is1 source-path/invocation incident, NOT a Cargo compile or semantic test failure; no source/expected-value repair. Formatter checks in both invocations passed; no semantic assertion failed.
+
+Core coverage: truecount0 []/{}, actualorderedpairs+duplicate-lastwins, SQLNULLvalue asJSONnull, typedboolean/BINARY opaque type15/254/252+padding/ETJson, rawSDKduplicatekeys/nonobject[]/fullmalformedchilddecode, SQLKEYS nonobject/missingNULL, exact native float cutoffs/signedzero/escaping/two-space formatting, genuineNullWitness vsJSONnull, malformedframe/falseNULL/wrongresultkind, context ownership.22 SQL zero-slot cases use actual direct columns or truezeroargs, no unrelated WHERE/ORDER/CAST/function worker; all fail typed PoolResource as intended. Old expectations/fixtures unchanged, no re-recording.
+
+Compatibility: typedARRAY/OBJECT/PRETTY now obey actual context resource admission (intentional observable activation); SQL value/coercion policy retained. Previous row-context and serde float_roundtrip surfaces remain disclosed. Generic BinaryJSON encoders remain representation codecs, not falsely claimed migrated. RawEXTRACT globaldedup/range and UNQUOTE strict/direct/secondaryescape/rawdisplay closures remain uncredited.
+
+Architecture-index review: added ownership/boundary paragraph only; no normative policy/build/PR changes, no moved/deleted paths, no new shell snippets. New shared/native API paths verified through source reads, compile and immutable-boundary checks; review-guide scope preserved. Not a whole Go-package transcreation claim.
+Deferred: wholeworkspace/make lint/dev/bazel_prepare, strictM6/release/perf/zero-copy/physicalheap/peak/OOM/exhaustivedomain/context/wire/150row/TiFlash/FIPS; prior parser/GB/vector/extremeDecimal and broader defaultNoColumns request-root exceptions. Not PR-ready; overall goal active.
