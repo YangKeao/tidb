@@ -9363,6 +9363,223 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_identity_values_preserve_types_labels_and_name_const_gate() {
+    use tidb_datatype::{
+        BinaryJSON, BinaryLiteral, Collation, Decimal, FieldTypeCode, MySqlDuration, MysqlEnum,
+        MysqlSet, Time, TimeType,
+    };
+
+    let mut session = Session::new();
+    session
+        .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+        .unwrap();
+    session.run("SET time_zone='+00:00'").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_identity_sql (i BIGINT, u BIGINT UNSIGNED, r DOUBLE, f FLOAT, dec_value DECIMAL(8,3), s VARCHAR(8) COLLATE utf8mb4_general_ci, b VARBINARY(3), dt DATETIME(6), tm TIME(6), j JSON, en ENUM('a','b') COLLATE utf8mb4_bin, st SET('a','b') COLLATE utf8mb4_bin, bits BIT(8), nullable_value INT)").unwrap();
+    session.run("INSERT INTO shared_identity_sql VALUES (-153,18446744073709551615,3.1415926,1.5,123.123,'TiDB',X'00ff80','2024-01-02 03:04:05.600000','12:34:56.700000','{\"a\":1}','b','a,b',b'00000001',NULL)").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    // Fixed identity vectors, not answers obtained from another evaluator.
+    // Existing SQL boundary: generic post-derivation overwrites these string
+    // result types with the connection collation, after identity type cloning
+    // (collation_derive::default_collation/apply_derived_collation). This is an
+    // existing gap from Go's final type clone, not a compatibility fix here.
+    // Chunk materialization stamps that result collation and the declared
+    // decimal shape; SDK tests separately pin the worker's exact Datum metadata.
+    let expected = vec![
+        Datum::Int(-153),
+        Datum::UInt(u64::MAX),
+        Datum::Real(3.1415926),
+        Datum::Float32(1.5),
+        Datum::Decimal(Decimal::from_literal("123.123").with_declared_shape(8, 3)),
+        Datum::new_collation_string(b"TiDB".to_vec(), Collation::Utf8Mb4Bin),
+        Datum::new_collation_string(vec![0, 0xff, 0x80], Collation::Utf8Mb4Bin),
+        Datum::Time(
+            Time::from_date_checked(2024, 1, 2, 3, 4, 5, 600_000, TimeType::DateTime, 6).unwrap(),
+        ),
+        Datum::Duration(MySqlDuration::new(12, 34, 56, 700_000, 6).unwrap()),
+        Datum::Json(BinaryJSON::parse(r#"{"a":1}"#).unwrap()),
+        Datum::new_enum(MysqlEnum::new("b", 2), Collation::Utf8Mb4Bin),
+        Datum::new_set(MysqlSet::new("a,b", 3), Collation::Utf8Mb4Bin),
+        Datum::Bit(BinaryLiteral::from(vec![1])),
+        Datum::Null,
+    ];
+    let StmtOutput::Rows { columns, rows } = session.run_with_columns("SELECT aNy_VaLuE(i),ANY_VALUE(u),ANY_VALUE(r),ANY_VALUE(f),ANY_VALUE(dec_value),ANY_VALUE(s) AS kept_text,ANY_VALUE(b),ANY_VALUE(dt),ANY_VALUE(tm),ANY_VALUE(j),ANY_VALUE(en),ANY_VALUE(st),ANY_VALUE(bits),ANY_VALUE(nullable_value) FROM shared_identity_sql").unwrap() else {
+        panic!("expected typed ANY_VALUE row")
+    };
+    assert_eq!(rows, vec![expected.clone()]);
+    let codes = [
+        FieldTypeCode::LongLong,
+        FieldTypeCode::LongLong,
+        FieldTypeCode::Double,
+        FieldTypeCode::Float,
+        FieldTypeCode::NewDecimal,
+        FieldTypeCode::Varchar,
+        FieldTypeCode::Varchar,
+        FieldTypeCode::Datetime,
+        FieldTypeCode::Duration,
+        FieldTypeCode::Json,
+        FieldTypeCode::Enum,
+        FieldTypeCode::Set,
+        FieldTypeCode::Bit,
+        FieldTypeCode::Long,
+    ];
+    assert_eq!(columns.len(), codes.len());
+    for ((_, field), code) in columns.iter().zip(codes) {
+        assert_eq!(field.code(), code);
+    }
+    assert!(!columns[0].1.is_unsigned());
+    assert!(columns[1].1.is_unsigned());
+    assert_eq!((columns[4].1.flen(), columns[4].1.decimal()), (8, 3));
+    assert_eq!(columns[5].0, "kept_text");
+    assert_eq!(columns[5].1.charset_name(), "utf8mb4");
+    assert_eq!(columns[5].1.collation_name(), "utf8mb4_bin");
+    assert_eq!(columns[6].1.charset_name(), "utf8mb4");
+    assert_eq!(columns[6].1.collation_name(), "utf8mb4_bin");
+    assert_eq!(columns[6].1.flen(), 3);
+    assert_eq!(columns[7].1.decimal(), 6);
+    assert_eq!(columns[8].1.decimal(), 6);
+    for index in [10, 11] {
+        assert_eq!(
+            columns[index]
+                .1
+                .elems_snapshot()
+                .iter()
+                .map(|element| element.as_bytes().to_vec())
+                .collect::<Vec<_>>(),
+            vec![b"a".to_vec(), b"b".to_vec()]
+        );
+        assert_eq!(columns[index].1.collation_name(), "utf8mb4_bin");
+    }
+    assert_eq!(columns[12].1.flen(), 8);
+    assert!(warnings_of(&session).is_empty());
+
+    // NAME_CONST allows a top-level unary value. Unary plus is erased by the
+    // existing rewriter, leaving a typed column and no cast/arithmetic worker.
+    // Its first literal names the result; an explicit alias takes precedence.
+    let StmtOutput::Rows { columns, rows } = session.run_with_columns("SELECT nAmE_cOnSt('named_signed',+i),NAME_CONST('named_binary',+b),NAME_CONST('named_decimal',+dec_value),NAME_CONST('named_time',+dt),NAME_CONST('named_json',+j),NAME_CONST('named_null',+nullable_value) AS renamed FROM shared_identity_sql").unwrap() else {
+        panic!("expected typed NAME_CONST row")
+    };
+    assert_eq!(
+        rows,
+        vec![vec![
+            expected[0].clone(),
+            expected[6].clone(),
+            expected[4].clone(),
+            expected[7].clone(),
+            expected[9].clone(),
+            expected[13].clone()
+        ]]
+    );
+    assert_eq!(
+        columns
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "named_signed",
+            "named_binary",
+            "named_decimal",
+            "named_time",
+            "named_json",
+            "renamed"
+        ]
+    );
+    for ((_, field), code) in columns.iter().zip([
+        FieldTypeCode::LongLong,
+        FieldTypeCode::Varchar,
+        FieldTypeCode::NewDecimal,
+        FieldTypeCode::Datetime,
+        FieldTypeCode::Json,
+        FieldTypeCode::Long,
+    ]) {
+        assert_eq!(field.code(), code);
+    }
+    assert_eq!(columns[1].1.charset_name(), "utf8mb4");
+    assert_eq!(columns[1].1.collation_name(), "utf8mb4_bin");
+    assert_eq!(columns[1].1.flen(), 3);
+    assert_eq!((columns[2].1.flen(), columns[2].1.decimal()), (8, 3));
+    assert_eq!(columns[3].1.decimal(), 6);
+    assert!(warnings_of(&session).is_empty());
+
+    // Preserve the existing source-shape gate, rather than expanding it to
+    // arbitrary column/function expressions to make worker tests convenient.
+    for expression in [
+        "NAME_CONST('bad',i)",
+        "NAME_CONST(i,1)",
+        "NAME_CONST('bad',1+1)",
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_identity_sql");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1210, "{sql}");
+        assert_eq!(mysql.message, "Incorrect arguments to NAME_CONST", "{sql}");
+    }
+}
+
+#[test]
+fn evaluated_ascii_identity_zero_slots_require_each_root() {
+    let mut session = Session::new();
+    session
+        .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+        .unwrap();
+    session.run("SET time_zone='+00:00'").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_identity_zero (i BIGINT, dec_value DECIMAL(8,3), s VARCHAR(8), b VARBINARY(3), dt DATETIME(6), j JSON, en ENUM('a','b'), nullable_value INT)").unwrap();
+    session.run("INSERT INTO shared_identity_zero VALUES (-153,123.123,'TiDB',X'00ff80','2024-01-02 03:04:05.600000','{\"a\":1}','b',NULL)").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // Eight genuine typed operands, including SQL NULL, for each fixed worker
+    // profile. Unary plus creates no child worker; there are no CAST, HEX,
+    // formatting, filter or sort expressions to mask either identity root.
+    for column in [
+        "i",
+        "dec_value",
+        "s",
+        "b",
+        "dt",
+        "j",
+        "en",
+        "nullable_value",
+    ] {
+        for expression in [
+            format!("aNy_VaLuE({column})"),
+            format!("nAmE_cOnSt('named',+{column})"),
+        ] {
+            let sql = format!("SELECT {expression} AS kept FROM shared_identity_zero");
+            let error = session.run_with_columns(&sql).expect_err(&sql);
+            match &error {
+                DriverError::Exec(tidb_executor::ExecError::Eval(
+                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                )) => {
+                    assert_eq!(
+                        failure.class(),
+                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                    );
+                    assert_eq!(
+                        failure.origin(),
+                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                    );
+                }
+                other => panic!("identity root bypassed its worker: {sql}: {other:?}"),
+            }
+            let mysql = error.to_mysql_error();
+            assert_eq!(mysql.code, 1105, "{sql}");
+            assert_eq!(mysql.state, *b"HY000", "{sql}");
+            assert!(mysql.is_from_evaluation(), "{sql}");
+            assert!(warnings_of(&session).is_empty(), "{sql}");
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_weight_string_format_preserve_typed_columns_padding_locales_and_warnings() {
     // Chunk string cells carry their declared collation; inspect the payload
     // directly, including invalid UTF-8 binary prefixes, without HEX or a

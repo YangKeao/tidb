@@ -145,6 +145,14 @@ pub fn truncate_datetime_fraction<TZ: TimeZone>(
 }
 
 impl Time {
+    /// Reconstructs an exact temporal representation returned by value transport.
+    /// Preserves every core bit, kind and raw FSP without calendar validation or
+    /// normalization. This is not a SQL constructor and does not change the
+    /// admission rules of [`Self::new`] or the temporal parsers.
+    pub fn from_raw_parts(core: CoreTime, kind: TimeType, fsp: u8) -> Self {
+        Self { core, kind, fsp }
+    }
+
     /// Constructs a temporal value from its internal calendar fields.
     pub fn new(core: CoreTime, kind: TimeType, fsp: i64) -> Result<Self, TimeError> {
         let fsp = if kind == TimeType::Date {
@@ -1798,5 +1806,47 @@ mod tests {
             .unwrap()
             .validate(false, false, &chrono_tz::UTC)
             .is_ok());
+    }
+}
+
+#[cfg(test)]
+mod raw_representation_tests {
+    use super::{CoreTime, Time, TimeType};
+
+    #[test]
+    fn raw_time_parts_keep_core_clock_kind_and_unchecked_fsp() {
+        let raw = (2025_u64 << 50)
+            | (9_u64 << 46)
+            | (6_u64 << 41)
+            | (13_u64 << 36)
+            | (47_u64 << 30)
+            | (23_u64 << 24)
+            | (654321_u64 << 4)
+            | 5;
+        for kind in [TimeType::Date, TimeType::DateTime, TimeType::Timestamp] {
+            for fsp in [0, 7, u8::MAX] {
+                let value = Time::from_raw_parts(CoreTime::from_raw(raw), kind, fsp);
+                assert_eq!(value.core_time().raw(), raw);
+                assert_eq!(value.clock(), (13, 47, 23));
+                assert_eq!(value.kind(), kind);
+                assert_eq!(value.fsp(), fsp);
+            }
+        }
+        let malformed = Time::from_raw_parts(CoreTime::from_raw(u64::MAX), TimeType::Date, 7);
+        assert_eq!(malformed.core_time().raw(), u64::MAX);
+        assert_eq!(malformed.fsp(), 7);
+        // The SQL constructor still forces DATE FSP zero and clamps FSP 7 to 6.
+        assert_eq!(
+            Time::new(CoreTime::from_raw(raw), TimeType::Date, 7)
+                .unwrap()
+                .fsp(),
+            0
+        );
+        assert_eq!(
+            Time::new(CoreTime::from_raw(raw), TimeType::DateTime, 7)
+                .unwrap()
+                .fsp(),
+            6
+        );
     }
 }

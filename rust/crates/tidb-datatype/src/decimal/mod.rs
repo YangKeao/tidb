@@ -177,6 +177,29 @@ pub enum DecimalParseError {
 }
 
 impl Decimal {
+    /// Reconstructs an exact decimal representation returned by value transport.
+    /// Does not validate or normalize coefficient bytes, sign or either scale;
+    /// unlike a SQL constructor, it also preserves noncanonical representations.
+    /// The caller restores declared column shape separately with
+    /// [`Self::with_declared_shape`]. Arithmetic and text APIs retain their own
+    /// representation preconditions.
+    pub fn from_raw_parts(negative: bool, digits: Vec<u8>, scale: u32, storage_scale: u32) -> Self {
+        Self {
+            negative,
+            digits: DecimalDigits(SmallVec::from_vec(digits)),
+            scale,
+            storage_scale,
+            declared_shape: None,
+        }
+    }
+
+    /// Returns exact coefficient storage without ASCII or UTF-8 validation.
+    /// This representation accessor is for lossless value transport, not text
+    /// formatting or admission to decimal arithmetic.
+    pub fn coefficient_bytes(&self) -> &[u8] {
+        &self.digits.0
+    }
+
     /// Copies the exact coefficient into the shared native-math value domain.
     /// `limit` bounds each materialized buffer's logical data bytes, not SQL
     /// precision or the combined physical peak. Declared column shape is not
@@ -2021,6 +2044,36 @@ mod native_math_bridge_tests {
             assert!(result.is_zero());
             assert!(!result.is_negative());
             assert_eq!(result.declared_shape(), None);
+        }
+    }
+}
+
+#[cfg(test)]
+mod raw_representation_tests {
+    use super::Decimal;
+
+    #[test]
+    fn raw_decimal_parts_keep_sign_scales_shape_and_arbitrary_bytes() {
+        for (negative, digits, scale, storage_scale, shape) in [
+            (true, b"0000".as_slice(), 2, 4, (0, 0)),
+            (false, b"00123".as_slice(), 1, 3, (-1, i64::MAX)),
+            (true, b"\xff\0\xc3".as_slice(), u32::MAX, 0, (i64::MIN, -7)),
+            (false, b"".as_slice(), 0, u32::MAX, (10, 2)),
+        ] {
+            let value = Decimal::from_raw_parts(negative, digits.to_vec(), scale, storage_scale);
+            assert_eq!(value.coefficient_bytes(), digits);
+            assert_eq!(value.is_negative(), negative);
+            assert_eq!(value.scale(), scale);
+            assert_eq!(value.storage_scale(), storage_scale);
+            assert_eq!(value.declared_shape(), None);
+            let shaped = value.with_declared_shape(shape.0, shape.1);
+            assert_eq!(shaped.declared_shape(), Some(shape));
+            assert_eq!(shaped.coefficient_bytes(), digits);
+            assert_eq!(shaped.is_negative(), negative);
+            assert_eq!(
+                (shaped.scale(), shaped.storage_scale()),
+                (scale, storage_scale)
+            );
         }
     }
 }

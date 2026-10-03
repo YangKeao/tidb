@@ -633,6 +633,211 @@ fn benchmark_vectorized_builtin_math_func() {}
 // pkg/expression/builtin_miscellaneous_test.go (items 200–217)
 // ---------------------------------------------------------------------------
 
+#[test]
+fn identity_workers_preserve_name_value_demand_and_null_boundaries() {
+    use std::cell::Cell;
+    use tidb_ast::Expr;
+    struct Demand {
+        fail: Cell<Option<usize>>,
+        reads: RefCell<Vec<usize>>,
+    }
+    impl Columns for Demand {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn get_param_value(&self, index: usize) -> Result<Datum, EvalError> {
+            self.reads.borrow_mut().push(index);
+            if self.fail.get() == Some(index) {
+                return Err(EvalError::Unsupported(if index == 0 {
+                    "identity name child"
+                } else {
+                    "identity value child"
+                }));
+            }
+            Ok(Datum::new_string(if index == 0 {
+                "label"
+            } else {
+                "payload"
+            }))
+        }
+    }
+    let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    // Direct evaluator trees deliberately exercise the existing wider helper
+    // surface; NAME_CONST's SQL rewrite literal checks are left unchanged.
+    let evaluate = |typed: bool, name: &str, positions: &[Option<usize>], columns: &dyn Columns| {
+        if typed {
+            let args = positions
+                .iter()
+                .map(|index| match index {
+                    None => const_arg(Datum::Null),
+                    Some(index) => Expression::ScalarFunction(ScalarFunction::new(
+                        CiString::new("getparam"),
+                        text_ft(),
+                        vec![const_arg(Datum::Int(*index as i64))],
+                    )),
+                })
+                .collect();
+            ScalarFunction::new(CiString::new(name), text_ft(), args).eval(columns, empty.to_row())
+        } else {
+            let args = positions
+                .iter()
+                .map(|index| match index {
+                    None => Expr::Null,
+                    Some(index) => Expr::Func {
+                        name: "getparam".to_owned(),
+                        args: vec![Expr::Int(index.to_string())],
+                        origin_position: 0,
+                    },
+                })
+                .collect();
+            crate::eval_in(
+                &Expr::Func {
+                    name: name.to_owned(),
+                    args,
+                    origin_position: 0,
+                },
+                columns,
+            )
+        }
+    };
+    let cases: [(&str, &[Option<usize>], &[usize], bool); 5] = [
+        ("ANY_VALUE", &[Some(1)], &[1], false),
+        ("ANY_VALUE", &[None], &[], true),
+        ("NAME_CONST", &[Some(0), Some(1)], &[0, 1], false),
+        ("NAME_CONST", &[None, Some(1)], &[1], false),
+        ("NAME_CONST", &[Some(0), None], &[0], true),
+    ];
+    for slots in [1, 0] {
+        let owner = crate::AsciiPoolOwner::new(
+            crate::AsciiPoolPolicy::checked(
+                slots,
+                slots,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let ctx = Demand {
+            fail: Cell::new(None),
+            reads: RefCell::new(Vec::new()),
+        };
+        let resource_error = |result: Result<Datum, EvalError>| {
+            let error = result.expect_err("identity root must retain the caller's zero-slot scope");
+            let EvalError::ExpressionAdapterFailure(failure) = error else {
+                panic!("{error:?}")
+            };
+            assert_eq!(
+                failure.class(),
+                crate::ExpressionAdapterFailureClass::PoolResource
+            );
+            assert_eq!(
+                failure.origin(),
+                crate::ExpressionAdapterFailureOrigin::Pool
+            );
+        };
+        for name in ["ANY_VALUE", "NAME_CONST"] {
+            for value in [Datum::Null, Datum::Int(7)] {
+                let args = if name == "ANY_VALUE" {
+                    vec![value.clone()]
+                } else {
+                    vec![Datum::MinNotNull, value.clone()]
+                };
+                let result = execution.scope().with_columns(&ctx, |columns| {
+                    misc_dispatch_in(name, &args, columns).unwrap()
+                });
+                if slots == 1 {
+                    assert_eq!(result.unwrap(), value);
+                } else {
+                    resource_error(result);
+                }
+            }
+        }
+        execution.scope().with_columns(&ctx, |columns| {
+            assert!(misc_dispatch_in("ANY_VALUE", &[], columns).is_none());
+            assert!(misc_dispatch_in("NAME_CONST", &[Datum::Null], columns).is_none());
+        });
+        for typed in [false, true] {
+            for (name, positions, reads, null) in cases {
+                let result = execution
+                    .scope()
+                    .with_columns(&ctx, |columns| evaluate(typed, name, positions, columns));
+                if slots == 1 {
+                    let value = result.unwrap();
+                    if null {
+                        assert_eq!(value, Datum::Null);
+                    } else {
+                        assert_eq!(value.sql_string().unwrap(), "payload");
+                    }
+                } else {
+                    resource_error(result);
+                }
+                assert_eq!(ctx.reads.take(), reads);
+            }
+            for failed in [0, 1] {
+                ctx.fail.set(Some(failed));
+                let result = execution.scope().with_columns(&ctx, |columns| {
+                    evaluate(typed, "NAME_CONST", &[Some(0), Some(1)], columns)
+                });
+                assert!(
+                    matches!(result, Err(EvalError::Unsupported(message)) if message == if failed == 0 { "identity name child" } else { "identity value child" })
+                );
+                assert_eq!(
+                    ctx.reads.take(),
+                    if failed == 0 { vec![0] } else { vec![0, 1] }
+                );
+            }
+            ctx.fail.set(Some(1));
+            assert!(matches!(
+                execution.scope().with_columns(&ctx, |columns| evaluate(
+                    typed,
+                    "NAME_CONST",
+                    &[None, Some(1)],
+                    columns
+                )),
+                Err(EvalError::Unsupported("identity value child"))
+            ));
+            assert_eq!(ctx.reads.take(), [1]);
+            ctx.fail.set(None);
+        }
+        for (name, positions) in [
+            ("ANY_VALUE", vec![Some(0), Some(1)]),
+            ("NAME_CONST", vec![Some(0)]),
+        ] {
+            // The existing AST path uppercases the name before looking it up
+            // in the lowercase registry. That miss leaves these children eager;
+            // preserve the gap rather than repairing production arity here.
+            assert!(matches!(
+                execution
+                    .scope()
+                    .with_columns(&ctx, |columns| evaluate(false, name, &positions, columns)),
+                Err(EvalError::Unsupported(_))
+            ));
+            assert_eq!(
+                ctx.reads.take(),
+                positions.iter().copied().flatten().collect::<Vec<_>>(),
+                "AST registry miss retains eager demand before the leaf declines arity"
+            );
+            assert!(matches!(
+                execution
+                    .scope()
+                    .with_columns(&ctx, |columns| evaluate(true, name, &positions, columns)),
+                Err(EvalError::Unsupported(_))
+            ));
+            assert_eq!(
+                ctx.reads.take(),
+                positions.iter().copied().flatten().collect::<Vec<_>>(),
+                "manual typed nodes retain their eager demand before the leaf declines arity"
+            );
+        }
+    }
+}
+
 /// Go `pkg/expression/builtin_miscellaneous_test.go:144 TestUUID`: every
 /// generator builtin emits canonical five-group hex spelling whose group
 /// lengths are 8/4/4/4/12 and whose version nibble matches 1/4/7.

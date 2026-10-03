@@ -1418,6 +1418,9 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::FormatLocaleNative => {
             panic!("weight and locale formatting need their original operands and metadata")
         }
+        EvaluatedBytesOp::AnyValueNative | EvaluatedBytesOp::NameConstNative => {
+            panic!("identity needs the selected actual Datum payload and metadata")
+        }
         EvaluatedBytesOp::TidbShardNative => "TIDB_SHARD",
         EvaluatedBytesOp::VitessHashNative => "VITESS_HASH",
         EvaluatedBytesOp::FormatBytesNative => "FORMAT_BYTES",
@@ -2154,6 +2157,301 @@ fn json_merge_sdk_rejects_bad_frames_and_preserves_empty_patch_panic() {
     assert!(matches!(scope.evaluate_value(&Datum::Null),
         Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopePoisoned));
     assert_eq!(owner.snapshot().unwrap(), disposed);
+    drop(scope);
+    execution.close();
+}
+
+fn assert_identity_datum_bits(actual: &Datum, expected: &Datum) {
+    use Datum::*;
+    assert_eq!(actual.kind(), expected.kind());
+    match (actual, expected) {
+        (Null, Null) | (MinNotNull, MinNotNull) | (MaxValue, MaxValue) => {}
+        (Int(a), Int(b)) => assert_eq!(a, b),
+        (UInt(a), UInt(b)) => assert_eq!(a, b),
+        (Real(a), Real(b)) | (Float32(a), Float32(b)) => assert_eq!(a.to_bits(), b.to_bits()),
+        (Decimal(a), Decimal(b)) => {
+            assert_eq!(a.coefficient_bytes(), b.coefficient_bytes());
+            assert_eq!(
+                (
+                    a.is_negative(),
+                    a.scale(),
+                    a.storage_scale(),
+                    a.declared_shape()
+                ),
+                (
+                    b.is_negative(),
+                    b.scale(),
+                    b.storage_scale(),
+                    b.declared_shape()
+                )
+            );
+        }
+        (String(a), String(b)) => {
+            assert_eq!(a.bytes(), b.bytes());
+            assert_eq!(a.collation(), b.collation());
+        }
+        (Bytes(a), Bytes(b)) | (Raw(a), Raw(b)) => assert_eq!(a, b),
+        (BinaryLiteral(a), BinaryLiteral(b)) | (Bit(a), Bit(b)) => {
+            assert_eq!(a.as_bytes(), b.as_bytes())
+        }
+        (Duration(a), Duration(b)) => {
+            assert_eq!((a.nanoseconds(), a.fsp()), (b.nanoseconds(), b.fsp()))
+        }
+        (Enum(a, ac), Enum(b, bc)) => {
+            assert_eq!(
+                (a.name_bytes(), a.value(), ac),
+                (b.name_bytes(), b.value(), bc)
+            );
+        }
+        (Set(a, ac), Set(b, bc)) => {
+            assert_eq!(
+                (a.name_bytes(), a.value(), ac),
+                (b.name_bytes(), b.value(), bc)
+            );
+        }
+        (Time(a), Time(b)) => assert_eq!(
+            (a.core_time().raw(), a.kind(), a.fsp()),
+            (b.core_time().raw(), b.kind(), b.fsp())
+        ),
+        (Json(a), Json(b)) => assert_eq!((a.type_code(), a.value()), (b.type_code(), b.value())),
+        (VectorFloat32(a), VectorFloat32(b)) => {
+            assert_eq!(a.len(), b.len());
+            for (left, right) in a.elements().iter().zip(b.elements()) {
+                assert_eq!(left.to_bits(), right.to_bits());
+            }
+        }
+        _ => panic!("identity changed the selected Datum kind"),
+    }
+}
+
+#[test]
+fn datum_identity_sdk_returns_all_original_value_bits_through_both_workers() {
+    use tidb_datatype::{
+        BinaryJSON, BinaryLiteral, Collation, CoreTime, Decimal, MySqlDuration, MysqlEnum,
+        MysqlSet, StringDatum, Time, TimeType, VectorFloat32,
+    };
+    let mut vector = VectorFloat32::init(tidb_datatype::MAX_VECTOR_DIMENSION + 1);
+    vector.elements_mut()[0] = f32::from_bits(0x7fc0_1234);
+    vector.elements_mut()[1] = -0.0;
+    vector.elements_mut()[2] = f32::INFINITY;
+    let values = vec![
+        Datum::Null,
+        Datum::MinNotNull,
+        Datum::MaxValue,
+        Datum::Int(i64::MIN),
+        Datum::UInt(u64::MAX),
+        Datum::Decimal(
+            Decimal::from_raw_parts(true, b"0000123456".to_vec(), 2, 9)
+                .with_declared_shape(i64::MIN, i64::MAX),
+        ),
+        Datum::Real(f64::from_bits(0x7ff8_0000_0000_1234)),
+        Datum::Float32(f64::from_bits(0x3ff0_0000_0000_0001)),
+        Datum::String(StringDatum::new(
+            vec![0xff, 0, b'a'],
+            Collation::Utf8Mb4GeneralCi,
+        )),
+        Datum::Bytes(vec![0, 0xff]),
+        Datum::BinaryLiteral(BinaryLiteral::from(vec![0, 0x80, 0xff])),
+        Datum::Duration(MySqlDuration::from_raw_parts(i64::MIN, i64::MAX)),
+        Datum::Enum(
+            MysqlEnum::new(vec![0xff, 0, b'e'], u64::MAX),
+            Collation::Utf8Mb4Bin,
+        ),
+        Datum::Bit(BinaryLiteral::from(vec![0, 0, 0x80])),
+        Datum::Set(
+            MysqlSet::new(vec![0xfe, b',', 0], u64::MAX),
+            Collation::Binary,
+        ),
+        Datum::Time(Time::from_raw_parts(
+            CoreTime::from_raw(u64::MAX),
+            TimeType::Timestamp,
+            7,
+        )),
+        Datum::Json(BinaryJSON::from_encoded_parts(0xff, vec![0, 0xfe])),
+        Datum::Raw(vec![0xff, 0, 0x80]),
+        Datum::VectorFloat32(vector),
+        Datum::Real(-0.0),
+        Datum::Float32(f64::from_bits(0xfff8_0000_0000_5678)),
+        Datum::Decimal(Decimal::from_raw_parts(
+            true,
+            vec![0xff, 0, b'0'],
+            u32::MAX,
+            0,
+        )),
+        Datum::Time(Time::from_raw_parts(
+            CoreTime::from_raw(0x0123_4567_89ab_cdef),
+            TimeType::Date,
+            0,
+        )),
+    ];
+    // Keep the beyond-SQL-dimension vector within a deliberately adequate call
+    // budget; this proves representation identity, not a waived resource gate.
+    let policy = AsciiPoolPolicy::checked(
+        1,
+        1,
+        TEST_POOL_BYTES,
+        TEST_WORKER_CAP,
+        TEST_CREATION_RESERVATION,
+        64,
+        8,
+        8 * TEST_CALL_BYTES,
+    )
+    .unwrap();
+    let owner = AsciiPoolOwner::new(policy).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (index, operation) in [
+            EvaluatedBytesOp::AnyValueNative,
+            EvaluatedBytesOp::NameConstNative,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for value in &values {
+                let (result, observation) = observe_wide_math(|| {
+                    evaluate_args_in(
+                        operation,
+                        columns,
+                        || super::super::prepare_datum_identity_args(value),
+                        EvaluatedBytesResult::into_identity_datum,
+                    )
+                });
+                assert_identity_datum_bits(&result.unwrap(), value);
+                assert_wide_math_c4(observation);
+                assert_eq!(
+                    scope
+                        .lease
+                        .borrow()
+                        .as_ref()
+                        .unwrap()
+                        .worker
+                        .as_ref()
+                        .unwrap()
+                        .operation(),
+                    operation
+                );
+                assert_eq!(
+                    owner.snapshot().unwrap().factory_successes,
+                    (index + 1) as u64
+                );
+            }
+        }
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for operation in [EvaluatedBytesOp::AnyValueNative, EvaluatedBytesOp::NameConstNative] {
+            for value in &values {
+                let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                    operation, columns, || super::super::prepare_datum_identity_args(value),
+                    EvaluatedBytesResult::into_identity_datum,
+                ));
+                assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+                assert_eq!(observation.facade_entries, 0);
+                assert_eq!(observation.before_kernel_invocations, None);
+                assert_eq!(observation.after_kernel_invocations, None);
+            }
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn datum_identity_sdk_rejects_malformed_present_frames_without_null_fallbacks() {
+    use tidb_query_expr::{encode_native_identity, NativeIdentityRef};
+    let mut bad_shape_presence = encode_native_identity(NativeIdentityRef::Decimal {
+        negative: false,
+        scale: 0,
+        storage_scale: 0,
+        declared_shape: Some((1, 0)),
+        coefficient: b"0",
+    })
+    .unwrap();
+    // Shared codec schema: byte 10 is the shape-presence bit. Clearing it
+    // while retaining nonzero shape fields violates canonical physical absence.
+    bad_shape_presence[10] = 0;
+    let mut bad_sign = encode_native_identity(NativeIdentityRef::Decimal {
+        negative: false,
+        scale: 0,
+        storage_scale: 0,
+        declared_shape: None,
+        coefficient: b"0",
+    })
+    .unwrap();
+    bad_sign[1] = 2;
+    let frames = vec![
+        Vec::new(),
+        vec![0],
+        vec![19],
+        vec![255],
+        vec![1, 0],
+        vec![2, 0],  // sentinels have no payload
+        vec![3, 0],  // missing seven actual integer bytes
+        vec![8, 16], // invalid collation representation
+        vec![18, 0], // partial f32 word, not a NULL vector
+        bad_shape_presence,
+        bad_sign,
+    ];
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for operation in [
+            EvaluatedBytesOp::AnyValueNative,
+            EvaluatedBytesOp::NameConstNative,
+        ] {
+            for frame in &frames {
+                let (result, observation) = observe_wide_math(|| {
+                    evaluate_args_in(
+                        operation,
+                        columns,
+                        || Ok(EvaluatedArgs::Bytes(Some(frame.clone()))),
+                        EvaluatedBytesResult::into_identity_datum,
+                    )
+                });
+                assert!(matches!(
+                    result,
+                    Err(EvalError::ExpressionRuntimeFailure(_))
+                ));
+                assert_eq!(observation.facade_entries, 1);
+                assert_eq!(
+                    observation.before_kernel_invocations,
+                    observation.after_kernel_invocations
+                );
+            }
+            // Real SQL NULL is the worker's physical nullable input and output,
+            // and remains distinct from every malformed present frame above.
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || super::super::prepare_datum_identity_args(&Datum::Null),
+                    EvaluatedBytesResult::into_identity_datum,
+                )
+            });
+            assert_eq!(result, Ok(Datum::Null));
+            assert_wide_math_c4(observation);
+        }
+    });
+    for frame in frames {
+        assert!(
+            matches!(EvaluatedBytesResult::Bytes(Some(frame)).into_identity_datum(),
+            Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract)
+        );
+    }
+    assert!(
+        matches!(EvaluatedBytesResult::Int(Datum::Null).into_identity_datum(),
+        Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract)
+    );
+    assert!(!scope.poisoned.get());
     drop(scope);
     execution.close();
 }

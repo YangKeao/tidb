@@ -41,16 +41,29 @@ pub(crate) fn dispatch_in(
         ("UUID", []) => Some(uuid_v1()),
         ("UUID_V4", []) => Some(uuid_v4()),
         ("UUID_V7", []) => Some(uuid_v7()),
-        ("ANY_VALUE", [value]) => Some(Ok(value.clone())),
-        // Go's nameConstFunctionClass selects a typed signature from the
-        // second argument and every builtinNameConst*Sig evaluator returns
-        // that argument directly.  The first argument is column-label
-        // metadata, not part of the scalar value.  This value-only leaf can
-        // therefore preserve every representable Datum without converting
-        // it through a text or numeric signature.  ETDatetime, ETDuration,
-        // ETJson, and ETVectorFloat32 remain explicit boundaries because the
-        // seed Datum domain intentionally has no corresponding variants.
-        ("NAME_CONST", [_, value]) => Some(Ok(value.clone())),
+        ("ANY_VALUE", [value]) => Some(crate::tikv::evaluate_prepared_args_in(
+            ctx,
+            || {
+                Ok((
+                    crate::tikv::EvaluatedBytesOp::AnyValueNative,
+                    crate::tikv::prepare_datum_identity_args(value)?,
+                ))
+            },
+            crate::tikv::EvaluatedBytesResult::into_identity_datum,
+        )),
+        // Callers already evaluated both operands in their original order.
+        // The name is label metadata, not an input to the scalar identity;
+        // preserve every Datum kind without coercing or encoding that name.
+        ("NAME_CONST", [_, value]) => Some(crate::tikv::evaluate_prepared_args_in(
+            ctx,
+            || {
+                Ok((
+                    crate::tikv::EvaluatedBytesOp::NameConstNative,
+                    crate::tikv::prepare_datum_identity_args(value)?,
+                ))
+            },
+            crate::tikv::EvaluatedBytesResult::into_identity_datum,
+        )),
         ("IS_UUID", [value]) => Some(is_uuid(value, ctx)),
         ("UUID_VERSION", [value]) => Some(uuid_version(value, ctx)),
         ("UUID_TIMESTAMP", [value]) => Some(uuid_timestamp(value, ctx)),
@@ -472,9 +485,8 @@ mod tests {
     /// `builtinNameConst*Sig` returns its second argument without changing the
     /// payload; this direct table keeps NULL, signed/unsigned integers,
     /// real, string, binary, and decimal values in their original Datum
-    /// domains.  Go's typed temporal/duration/JSON/vector signatures and
-    /// FieldType/column-label metadata are deliberately not fabricated here:
-    /// the seed Datum domain has no representable variants for them.
+    /// domains. Full Datum transport and FieldType/column-label metadata are
+    /// covered separately; this table retains the original scalar source rows.
     #[test]
     fn name_const_preserves_representable_value_domains() {
         let decimal = crate::Decimal::from_literal("123.123");

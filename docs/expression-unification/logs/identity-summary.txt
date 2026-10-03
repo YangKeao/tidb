@@ -1,0 +1,45 @@
+identity-65 / round66. Parent serialized Cargo; all --locked and --test-threads=1. Raw stdout/stderr: /home/agent/tidb/expression-unification/logs/identity-<id>.log. Full raw SHA256 below.
+Toolchains: cargo-tikv nightly-2026-01-30; cargo-tidb nightly-2026-08-22.
+
+First2 commands cwd /home/agent/tidb/expression-unification/tikv:
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib identity -- --test-threads=1
+tikv sha256 0631149e87ae4aa77abd89b44776f1c756b809a73a80ff66ed29172855f709de
+compile12.82s;12passed/0failed/0ignored/885filtered,0.00s;exit0.
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local -- --test-threads=1
+tikv-local sha256 19e7a58840f34db1beffa3b464c24acc66c51fbe8d20de275f7bfc158e486916
+compile0.16s;316/0/1/580filtered,0.21s;exit0. Filters overlap; ignored is not passing.
+
+Remaining9 launches cwd /home/agent/tidb/expression-unification/tidb/rust:
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib raw_time_parts -- --test-threads=1
+native-time sha256 a4c70453ed965e10878594551f5a427a4df22fde3d7d1ab39624af3d9ba40554
+compile2.54s;0/1NEW/0/446filtered,0.00s;exit101. New test guessed Time::new(DateTime,7) rejects; unchanged fsp.rs64-77 clamps to6. Only new assertion/comment corrected, same input.
+SAME command rerun:
+native-time-r2 sha256 9c8d832c6346afaa66cb802fc98d46d9c61453b4eb0709394bdf708cbdfdff1e
+compile1.03s;1/0/0/446filtered,0.00s;exit0.
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib raw_decimal_parts -- --test-threads=1
+native-decimal sha256 f88093a3ad4419f30228e24e385392cdbca2bbee62b9dd6eef0bd11eff758b75
+compile0.09s;1/0/0/446filtered,0.00s;exit0.
+../../tools/cargo-tidb test --locked -p tidb-expr --lib identity -- --test-threads=1
+native sha256 006f4d4f82338272cfc7a7981940b0601fd258e112c7ff606e2404b103a0b30c
+compile16.71s;18/1NEW/1/1628filtered,0.01s;exit101. New AST test assumed arity rejects before children. Actual unchanged func42/57 uppercases while registry389-396/403/424-426 looks up lowercase case-sensitively; miss means eager children then Unsupported. New assertion/read-count/comment corrected to source behavior; production gap retained.
+SAME command rerun:
+native-r2 sha256 585bf4acdd44afb87941ff90ced582a2847c67ef2eeac9c48c9dd0ea8dcc8b79
+compile3.21s;19/0/1/1628filtered,0.01s;exit0.
+../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_identity -- --test-threads=1
+sql sha256 14cb8be522ba4e4d83191b82c796ad535b464a8197165a651a5eee401cb0b651
+compile26.47s;1/1NEW/0/2207filtered,0.04s;exit101. All16zero-slot probes already pass. New value fixture omitted chunk Decimal declared shape and expected Go-like string collation. Unchanged rewriter1139-1163 +collation_derive676/682-698/718-726 override copied string return metadata with connection collation; driver/record_set90-104 +chunk/row64-76 materialize from that output type; chunk/row102-112 attaches Decimal shape. Source-backed corrections ONLYnew expected fields and explicitmetadata pins/comments: Decimal(8,3), both strings utf8mb4_bin, output charset utf8mb4. Samebytes/types/20values/3gates/16zeros; no bytes-only weakening or provider-output oracle. Existing Go metadata gap documented/not repaired.
+../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+expr-full sha256 35758266558b86759b6b8fcf613dcb6d59143e650d0d08940b69e4ae561d083d
+compile0.13s;1550/4old/94ignored/0filtered,14.19s;exit101. All4newexpressiontests explicitlyok.
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+unistore-full sha256 7465483c25a0c73fa2d89746bb0e5e4b2e7ab6da0cb34bf4fe98c34de88ddcc0
+compile6.32s;208/1old/13ignored/0filtered,3.01s;exit101.
+SQL SAME command rerun after full regressions and fixture correction:
+../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_identity -- --test-threads=1
+sql-r2 sha256 14675e333b55590515cfdebc682a699d45dab5ec0dc40caaace7117fff71035c
+compile3.40s;2/0/0/2207filtered,0.04s;exit0.
+
+Whole failure sections/list equal weight-format-64 after ONLY numeric panic-thread-ID normalization: expr sha256 27654f2c0ad2971242c00f50182467598cdfd9c2c65e5bf5a32e683708448637; unistore b64dcced405c699c11b72ee31888c58e491b4e5b4e74fa2d445454e1d1e146e9.
+11Cargo attempts=11completed nonzero test runs(6green+3newRED+2oldRED).0compilefail/interruption/zero-match,3retrycommands.11newtests finallypassed; runtimeproductionrepairs0. Oldtestbodies/oracles byte-exact; nofixturerecording. Initial RO claims FSP7rejects/ASTprechildaritygate/SQLwholeFieldTypeGoidentity withdrawn and replaced by explicit source findings.
+All16Rust files passed pinned rustfmt --edition 2021 --config skip_children=true --check; both git diff --check pass. CPP existing any_value_bytes body exact. Caller/fold/type/arity/PB/legacy/FSP/chunk logic, manifests/locks/generated tables unchanged. No generator/dependency/Go/Bazel changes or Cargo metadata resolution. Minor read-before-write/stale-observation/source-path mistakes were resolved via actual reads, not access workarounds; E completed newfile license header before final freeze.
+No whole workspace/lint/dev/bazel_prepare/release/performance/zero-copy/physicalheap/peak/OOM/exhaustive differential/TiFlash/FIPS/M6/whole-package completion. Prior JSON_KEYS mismatch not rerun/resolved. Existing AST uppercase arity lookup and SQL post-derived collation gaps preserved. Functional206/245 strict0; goal active.

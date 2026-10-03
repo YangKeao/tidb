@@ -26,6 +26,7 @@ mod catalog;
 mod context;
 // The closed ready-argument families share this value boundary and one pool.
 mod evaluated_ascii;
+mod identity_value;
 pub use adapter_failure::{
     ExpressionAdapterFailure, ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,
 };
@@ -128,6 +129,13 @@ pub(crate) fn prepare_grouping_args(
             error, None,
         ))
     })
+}
+
+/// Encode only the selected actual value for the fixed identity worker.
+pub(crate) fn prepare_datum_identity_args(
+    value: &tidb_datatype::Datum,
+) -> Result<EvaluatedArgs, crate::EvalError> {
+    identity_value::encode(value).map(EvaluatedArgs::Bytes)
 }
 
 /// Transfer the actual bytes and original unpadded collation metadata.
