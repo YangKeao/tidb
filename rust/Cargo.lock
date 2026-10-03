@@ -5231,6 +5231,7 @@ name = "tidb-mysql"
 version = "0.0.0"
 dependencies = [
  "tidb-error",
+ "tidb_query_datatype",
 ]
 
 [[package]]

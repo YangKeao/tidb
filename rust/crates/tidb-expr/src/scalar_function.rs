@@ -2744,7 +2744,10 @@ impl ScalarFunction {
                     // lets AS BINARY replace it with the binary-padding
                     // signature. AS CHAR deliberately does not replace it.
                     if arg_type.code().is_type_numeric() && !matches!(padding, Some((true, _))) {
-                        return Ok(Datum::Null);
+                        return crate::string_packet::weight_string_numeric_type(
+                            arg_type.code(),
+                            ctx,
+                        );
                     }
                     let value = self.args[0].eval(ctx, row)?;
                     let value = crate::cast::cast_arg_as_string(&value, Some(&arg_type), ctx)?;

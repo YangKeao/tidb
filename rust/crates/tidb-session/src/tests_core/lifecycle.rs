@@ -9363,6 +9363,186 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_weight_string_format_preserve_typed_columns_padding_locales_and_warnings() {
+    // Chunk string cells carry their declared collation; inspect the payload
+    // directly, including invalid UTF-8 binary prefixes, without HEX or a
+    // collation/key provider used to manufacture the expected answer.
+    fn payload(value: &Datum) -> Option<&[u8]> {
+        match value {
+            Datum::String(value) => Some(value.bytes()),
+            Datum::Bytes(value) => Some(value.as_slice()),
+            Datum::Null => None,
+            other => panic!("expected string bytes or SQL NULL: {other:?}"),
+        }
+    }
+    let mut session = Session::new();
+    session
+        .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+        .unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_weight_format_sql (s VARCHAR(8) COLLATE utf8mb4_bin, npad VARCHAR(8) COLLATE utf8mb4_0900_bin, ci VARCHAR(8) COLLATE utf8mb4_general_ci, uni VARCHAR(8) COLLATE utf8mb4_bin, ns VARCHAR(8), i INT, n DECIMAL(20,3), p INT, de VARCHAR(16), india VARCHAR(16), unknown_locale VARCHAR(16), null_locale VARCHAR(16), nn DECIMAL(20,3), pn INT, neg DECIMAL(2,1), zp INT)").unwrap();
+    session.run("INSERT INTO shared_weight_format_sql VALUES ('ab','ab','A','中文',NULL,7,1234567.891,2,'de_DE','en_IN','not_REAL',NULL,NULL,NULL,-2.5,0)").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // Literal byte vectors from the original WEIGHT_STRING source tests.
+    // Typed numeric AS BINARY overrides the numeric NULL signature; the AST
+    // value-only policy is different and must not be imported into this path.
+    let weight_cases: [(&str, Option<&[u8]>, Option<&str>); 12] = [
+        ("WEIGHT_STRING(s)", Some(&[0x61, 0x62]), None),
+        ("WEIGHT_STRING(s AS CHAR(1))", Some(&[0x61]), None),
+        ("WEIGHT_STRING(s AS CHAR(4))", Some(&[0x61, 0x62]), None),
+        (
+            "WEIGHT_STRING(s AS BINARY(4))",
+            Some(&[0x61, 0x62, 0, 0]),
+            None,
+        ),
+        (
+            "WEIGHT_STRING(npad AS CHAR(4))",
+            Some(&[0x61, 0x62, 0x20, 0x20]),
+            None,
+        ),
+        ("WEIGHT_STRING(ci)", Some(&[0, 0x41]), None),
+        (
+            "WEIGHT_STRING(uni AS CHAR(1))",
+            Some(&[0xe4, 0xb8, 0xad]),
+            None,
+        ),
+        (
+            "WEIGHT_STRING(uni AS BINARY(1))",
+            Some(&[0xe4]),
+            Some("Truncated incorrect BINARY(1) value: '中文'"),
+        ),
+        ("WEIGHT_STRING(i)", None, None),
+        ("WEIGHT_STRING(i AS CHAR(2))", None, None),
+        ("WEIGHT_STRING(i AS BINARY(2))", Some(&[0x37, 0]), None),
+        ("WEIGHT_STRING(ns)", None, None),
+    ];
+    for (expression, expected, warning) in weight_cases {
+        let sql = format!("SELECT {expression} FROM shared_weight_format_sql");
+        let StmtOutput::Rows { columns, rows, .. } = session.run_with_columns(&sql).unwrap() else {
+            panic!("expected weight rows: {sql}")
+        };
+        assert_eq!(rows.len(), 1, "{sql}");
+        assert_eq!(rows[0].len(), 1, "{sql}");
+        assert_eq!(payload(&rows[0][0]), expected, "{sql}");
+        assert_eq!(
+            columns[0].1.code(),
+            tidb_datatype::FieldTypeCode::VarString,
+            "{sql}"
+        );
+        assert_eq!(columns[0].1.charset_name(), "binary", "{sql}");
+        assert_eq!(
+            columns[0].1.collation(),
+            tidb_datatype::Collation::Binary,
+            "{sql}"
+        );
+        let expected_warnings = warning
+            .map(|message| vec![(1292, message.to_owned())])
+            .unwrap_or_default();
+        assert_eq!(warnings_of(&session), expected_warnings, "{sql}");
+    }
+    // Original locale/rounding literals. A NULL locale is not a NULL result;
+    // NULL number or precision does suppress the locale warning entirely.
+    let format_cases: [(&str, Option<&str>, Option<&str>); 8] = [
+        ("FORMAT(n,p)", Some("1,234,567.89"), None),
+        ("FORMAT(n,p,de)", Some("1.234.567,89"), None),
+        ("FORMAT(n,p,india)", Some("12,34,567.89"), None),
+        (
+            "FORMAT(n,p,unknown_locale)",
+            Some("1,234,567.89"),
+            Some("Unknown locale: 'not_REAL'"),
+        ),
+        (
+            "FORMAT(n,p,null_locale)",
+            Some("1,234,567.89"),
+            Some("Unknown locale: 'NULL'"),
+        ),
+        ("FORMAT(nn,p,unknown_locale)", None, None),
+        ("FORMAT(n,pn,null_locale)", None, None),
+        ("FORMAT(neg,zp)", Some("-3"), None),
+    ];
+    for (expression, expected, warning) in format_cases {
+        let sql = format!("SELECT {expression} FROM shared_weight_format_sql");
+        let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
+            panic!("expected FORMAT rows: {sql}")
+        };
+        assert_eq!(rows.len(), 1, "{sql}");
+        assert_eq!(rows[0].len(), 1, "{sql}");
+        assert_eq!(payload(&rows[0][0]), expected.map(str::as_bytes), "{sql}");
+        let expected_warnings = warning
+            .map(|message| vec![(1649, message.to_owned())])
+            .unwrap_or_default();
+        assert_eq!(warnings_of(&session), expected_warnings, "{sql}");
+    }
+}
+
+#[test]
+fn evaluated_ascii_weight_string_format_zero_slots_require_direct_roots() {
+    let mut session = Session::new();
+    session
+        .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+        .unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_weight_format_zero (s VARCHAR(8), empty_s VARCHAR(8), ns VARCHAR(8), i INT, n DECIMAL(20,3), p INT, de VARCHAR(16), nn DECIMAL(20,3), pn INT, null_locale VARCHAR(16), unknown_locale VARCHAR(16))").unwrap();
+    session.run("INSERT INTO shared_weight_format_zero VALUES ('ab','',NULL,7,1234567.891,2,'de_DE',NULL,NULL,NULL,'not_REAL')").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // Eight WEIGHT_STRING roots, four ordinary FORMAT roots and two locale
+    // timing witnesses. No HEX, CAST, key expression, WHERE or ORDER BY can
+    // supply an unrelated worker failure. AS clauses are builtin parameters.
+    for (expression, warning) in [
+        ("WEIGHT_STRING(s)", None),
+        ("WEIGHT_STRING(s AS CHAR(4))", None),
+        ("WEIGHT_STRING(s AS BINARY(4))", None),
+        ("WEIGHT_STRING(empty_s)", None),
+        ("WEIGHT_STRING(ns)", None),
+        ("WEIGHT_STRING(i)", None),
+        ("WEIGHT_STRING(i AS CHAR(2))", None),
+        ("WEIGHT_STRING(i AS BINARY(2))", None),
+        ("FORMAT(n,p)", None),
+        ("FORMAT(n,p,de)", None),
+        ("FORMAT(nn,p)", None),
+        ("FORMAT(n,pn)", None),
+        // NULL locale warns after successful number/precision preparation,
+        // before admission; unknown non-NULL locale warns only after a result.
+        ("FORMAT(n,p,null_locale)", Some("Unknown locale: 'NULL'")),
+        ("FORMAT(n,p,unknown_locale)", None),
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_weight_format_zero");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("weight/FORMAT root bypassed its worker: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        let expected_warnings = warning
+            .map(|message| vec![(1649, message.to_owned())])
+            .unwrap_or_default();
+        assert_eq!(warnings_of(&session), expected_warnings, "{sql}");
+    }
+}
+
+#[test]
 fn evaluated_ascii_date_preserves_typed_casts_zero_modes_and_metadata() {
     let mut session = Session::new();
     session.run("SET time_zone='+00:00'").unwrap();

@@ -251,55 +251,88 @@ pub(crate) fn weight_string(
     collation: tidb_datatype::Collation,
     ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
-    let Some(bytes) = coerce_str_bytes(value)? else {
-        return Ok(Datum::Null);
-    };
-    let (bytes, collation) = match padding {
-        None => (bytes, collation),
-        Some((false, length)) => {
-            let length = usize::try_from(length).unwrap_or(0);
-            let runes: Vec<char> = String::from_utf8_lossy(&bytes).chars().collect();
-            if length < runes.len() {
-                (
-                    runes[..length].iter().collect::<String>().into_bytes(),
-                    collation,
-                )
+    crate::tikv::evaluate_prepared_args_in(
+        ctx,
+        || {
+            let Some(bytes) = coerce_str_bytes(value)? else {
+                return Ok((
+                    EvaluatedBytesOp::GetFormatNullNative,
+                    EvaluatedArgs::Bytes(None),
+                ));
+            };
+            let tag = collation.native_policy().tag();
+            let Some((binary, length)) = padding else {
+                return Ok((
+                    EvaluatedBytesOp::WeightStringNative,
+                    crate::tikv::prepare_weight_string_args(
+                        bytes,
+                        tag,
+                        tidb_datatype::new_collation_enabled(),
+                    )?,
+                ));
+            };
+            // Shared classification is used here only to preserve packet getter
+            // and warning demand. Original bytes and length enter the worker.
+            let delta = if binary {
+                tidb_query_expr::native_weight_binary_padding(&bytes, length)
             } else {
-                if (length - runes.len()) as u64 > ctx.max_allowed_packet() {
-                    ctx.handle_allowed_packet_overflowed("weight_string")?;
-                    return Ok(Datum::Null);
+                tidb_query_expr::native_weight_char_padding(&bytes, length)
+            };
+            let mut suppressed = false;
+            let budget = if let Some(delta) = delta {
+                let budget = ctx.max_allowed_packet();
+                if delta > budget {
+                    ctx.handle_allowed_packet_overflowed(if binary {
+                        "cast_as_binary"
+                    } else {
+                        "weight_string"
+                    })?;
+                    suppressed = true;
                 }
-                let mut padded = bytes;
-                padded.extend(std::iter::repeat_n(b' ', length - runes.len()));
-                (padded, collation)
-            }
-        }
-        Some((true, length)) => {
-            let length = usize::try_from(length).unwrap_or(0);
-            if length < bytes.len() {
-                ctx.append_warning(
-                    1292,
-                    &format!(
-                        "Truncated incorrect BINARY({length}) value: '{}'",
-                        tidb_datatype::warning_subject_byte_cap(&String::from_utf8_lossy(&bytes))
-                    ),
-                );
-                (bytes[..length].to_vec(), tidb_datatype::Collation::Binary)
+                Some(budget)
             } else {
-                if (length - bytes.len()) as u64 > ctx.max_allowed_packet() {
-                    // Go names this one `cast_as_binary`, not `weight_string`.
-                    ctx.handle_allowed_packet_overflowed("cast_as_binary")?;
-                    return Ok(Datum::Null);
+                if binary {
+                    let length = usize::try_from(length).unwrap_or(0);
+                    ctx.append_warning(
+                        1292,
+                        &format!(
+                            "Truncated incorrect BINARY({length}) value: '{}'",
+                            tidb_datatype::warning_subject_byte_cap(&String::from_utf8_lossy(
+                                &bytes
+                            ))
+                        ),
+                    );
                 }
-                let mut padded = bytes;
-                padded.resize(length, 0);
-                (padded, tidb_datatype::Collation::Binary)
-            }
-        }
-    };
-    Ok(Datum::new_bytes(
-        tidb_datatype::get_collator(collation.name()).key(&bytes),
-    ))
+                None
+            };
+            // The original collator lookup happened after callbacks, and never
+            // happened on packet suppression. The worker rechecks the real cap.
+            let new_mode = (!suppressed).then(tidb_datatype::new_collation_enabled);
+            Ok((
+                if binary {
+                    EvaluatedBytesOp::WeightStringBinaryNative
+                } else {
+                    EvaluatedBytesOp::WeightStringCharNative
+                },
+                crate::tikv::prepare_weight_padded_args(bytes, length, budget, tag, new_mode)?,
+            ))
+        },
+        |computed| Ok(computed.into_bytes()?.map_or(Datum::Null, Datum::new_bytes)),
+    )
+}
+
+/// The numeric NULL signature consumes real type metadata, not a made-up NULL
+/// value: the typed caller must not evaluate its numeric child at all.
+pub(crate) fn weight_string_numeric_type(
+    code: tidb_datatype::FieldTypeCode,
+    ctx: &dyn crate::Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        EvaluatedBytesOp::WeightStringNumericNative,
+        ctx,
+        || Ok(EvaluatedArgs::Int(Some(i64::from(code.mysql_type())))),
+        |computed| Ok(computed.into_bytes()?.map_or(Datum::Null, Datum::new_bytes)),
+    )
 }
 /// Go `mysql.MaxBytesOfCharacter`: the widest a single character can encode
 /// to, which `builtinLpadUTF8Sig`/`builtinRpadUTF8Sig` multiply the requested
@@ -635,6 +668,164 @@ mod weight_string_source_tests {
     use super::weight_string;
     use crate::{Datum, NoColumns};
     use tidb_datatype::Collation;
+
+    #[test]
+    fn weight_workers_preserve_raw_bytes_packet_demand_and_diagnostics() {
+        use crate::{Columns, EvalError};
+        use std::cell::{Cell, RefCell};
+        struct Context {
+            budget: Cell<u64>,
+            strict: Cell<bool>,
+            events: RefCell<Vec<String>>,
+        }
+        impl Columns for Context {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn max_allowed_packet(&self) -> u64 {
+                self.events.borrow_mut().push("packet".to_owned());
+                self.budget.get()
+            }
+            fn append_warning(&self, code: u16, message: &str) {
+                self.events.borrow_mut().push(format!("{code}:{message}"));
+            }
+            fn handle_allowed_packet_overflowed(&self, name: &str) -> Result<(), EvalError> {
+                self.events.borrow_mut().push(format!("overflow:{name}"));
+                if self.strict.get() {
+                    Err(EvalError::Unsupported("strict weight packet"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let ctx = Context {
+            budget: Cell::new(0),
+            strict: Cell::new(false),
+            events: RefCell::new(Vec::new()),
+        };
+        let bytes = |value: &[u8]| Datum::new_bytes(value.to_vec());
+        let cases = [
+            (bytes(b"a "), None, 0, bytes(b"a "), vec![]),
+            (
+                bytes(&[0xff, b'a']),
+                Some((false, 1)),
+                0,
+                bytes(b"\xef\xbf\xbd"),
+                vec![],
+            ),
+            (
+                bytes(&[0xff]),
+                Some((false, 1)),
+                0,
+                bytes(&[0xff]),
+                vec!["packet"],
+            ),
+            (
+                bytes(&[0xff]),
+                Some((false, 3)),
+                2,
+                bytes(&[0xff, b' ', b' ']),
+                vec!["packet"],
+            ),
+            (
+                bytes(b"ab"),
+                Some((true, 1)),
+                0,
+                bytes(b"a"),
+                vec!["1292:Truncated incorrect BINARY(1) value: 'ab'"],
+            ),
+            (
+                bytes(b"ab"),
+                Some((true, 4)),
+                2,
+                bytes(b"ab\0\0"),
+                vec!["packet"],
+            ),
+            (
+                bytes(b"ab"),
+                Some((true, 4)),
+                1,
+                Datum::Null,
+                vec!["packet", "overflow:cast_as_binary"],
+            ),
+            (
+                bytes(b"ab"),
+                Some((false, 4)),
+                1,
+                Datum::Null,
+                vec!["packet", "overflow:weight_string"],
+            ),
+            (bytes(b""), Some((false, -1)), 0, bytes(b""), vec!["packet"]),
+            (Datum::Null, Some((true, 100)), 0, Datum::Null, vec![]),
+        ];
+        for slots in [1, 0] {
+            let owner = crate::AsciiPoolOwner::new(
+                crate::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    64,
+                    8,
+                    4 * 1024 * 1024,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let execution = owner.begin_execution().unwrap();
+            for (value, padding, budget, expected, events) in &cases {
+                ctx.budget.set(*budget);
+                let result = execution.scope().with_columns(&ctx, |columns| {
+                    weight_string(value, *padding, Collation::Binary, columns)
+                });
+                if slots == 1 {
+                    assert_eq!(result.unwrap(), *expected);
+                } else {
+                    let error = result.expect_err("all WEIGHT results require the actual worker");
+                    let EvalError::ExpressionAdapterFailure(failure) = error else {
+                        panic!("{error:?}")
+                    };
+                    assert_eq!(
+                        failure.class(),
+                        crate::ExpressionAdapterFailureClass::PoolResource
+                    );
+                    assert_eq!(
+                        failure.origin(),
+                        crate::ExpressionAdapterFailureOrigin::Pool
+                    );
+                }
+                assert_eq!(ctx.events.take(), *events);
+            }
+            ctx.budget.set(0);
+            ctx.strict.set(true);
+            assert!(matches!(
+                execution
+                    .scope()
+                    .with_columns(&ctx, |columns| weight_string(
+                        &bytes(b"a"),
+                        Some((false, 2)),
+                        Collation::Binary,
+                        columns
+                    )),
+                Err(EvalError::Unsupported("strict weight packet"))
+            ));
+            assert_eq!(ctx.events.take(), ["packet", "overflow:weight_string"]);
+            ctx.strict.set(false);
+            assert!(matches!(
+                execution
+                    .scope()
+                    .with_columns(&ctx, |columns| weight_string(
+                        &Datum::MinNotNull,
+                        None,
+                        Collation::Binary,
+                        columns
+                    )),
+                Err(EvalError::Unsupported("range sentinel byte coercion"))
+            ));
+            assert!(ctx.events.take().is_empty());
+        }
+    }
 
     type SourceCase = (&'static str, Option<(bool, i64)>, &'static [u8]);
 

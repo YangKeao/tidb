@@ -17,7 +17,7 @@
 use tidb_datatype::Collation;
 
 use crate::coerce::{coerce_str, coerce_str_bytes};
-use crate::string_fn::{format_num_locale, substring_with_contexts};
+use crate::string_fn::substring_with_contexts;
 use crate::string_signature::{is_binary_str, normalize_utf8_go};
 use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp, NativeCollation, ReadyBytesArg, ReadyIntArg};
 use crate::{Datum, EvalError};
@@ -200,10 +200,9 @@ fn locate3(vals: &[Datum]) -> Result<Datum, EvalError> {
 /// `FORMAT(x, d, locale)`, ported from `builtinFormatWithLocaleSig` in
 /// `pkg/expression/builtin_string.go`. A `NULL` locale warns 1649 naming the
 /// literal text `NULL` and then falls back to `en_US`; an unrecognized one
-/// warns 1649 naming itself. [`format_num_locale`] owns both.
+/// warns 1649 naming itself. The shared guarded preparation owns both phases.
 fn format_with_locale(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    let locale = coerce_str(&vals[2])?;
-    format_num_locale(vals, locale.as_deref(), ctx)
+    crate::string_fn::format_num_with_locale_prepare(vals, || coerce_str(&vals[2]), ctx)
 }
 
 /// `FIND_IN_SET(str, strlist)`, ported from `builtinFindInSetSig.evalInt` in
@@ -1538,5 +1537,208 @@ mod tests {
             char_func(&[Datum::Int(-1), Datum::Null]).unwrap(),
             Datum::new_bytes(vec![0xff; 4])
         );
+    }
+}
+
+#[cfg(test)]
+mod format_worker_tests {
+    use crate::{Columns, Datum, ErrorLevel, EvalError};
+
+    #[derive(Default)]
+    struct Sink {
+        strict: bool,
+        warnings: std::cell::RefCell<Vec<(u16, String)>>,
+    }
+
+    impl Columns for Sink {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn truncate_level(&self) -> ErrorLevel {
+            if self.strict {
+                ErrorLevel::Error
+            } else {
+                ErrorLevel::Warn
+            }
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.warnings.borrow_mut().push((code, message.to_owned()));
+        }
+    }
+
+    fn owner(slots: usize) -> crate::AsciiPoolOwner {
+        crate::AsciiPoolOwner::new(
+            crate::AsciiPoolPolicy::checked(
+                slots,
+                slots,
+                16 << 20,
+                1 << 20,
+                2 << 20,
+                64,
+                8,
+                1 << 16,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn s(value: &str) -> Datum {
+        Datum::new_string(value)
+    }
+
+    fn eval(values: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+        crate::func::eval_func_values_in("FORMAT", values, ctx).unwrap()
+    }
+
+    fn assert_scoped(result: Result<Datum, EvalError>, expected: Datum, slots: usize) {
+        if slots == 0 {
+            assert!(matches!(
+                result,
+                Err(EvalError::ExpressionAdapterFailure(ref failure))
+                    if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource
+            ));
+        } else {
+            assert_eq!(result, Ok(expected));
+        }
+    }
+
+    #[test]
+    fn format_scoped_root_returns_worker_rounded_and_grouped_bytes() {
+        let cases = [
+            (vec![Datum::Real(2.5), Datum::Int(0)], Some("3")),
+            (vec![Datum::Real(-2.5), Datum::Int(0)], Some("-3")),
+            (vec![Datum::Real(1.9999), Datum::Int(2)], Some("2.00")),
+            (vec![Datum::Real(123.5), Datum::UInt(u64::MAX)], Some("124")),
+            (
+                vec![Datum::Int(1), Datum::Int(35)],
+                Some("1.000000000000000000000000000000"),
+            ),
+            (vec![Datum::Int(1), Datum::Real(2.5)], Some("1.00")),
+            (vec![Datum::Int(1), Datum::Real(3.5)], Some("1.0000")),
+            (vec![Datum::Real(-0.0), Datum::Int(2)], Some("-0.00")),
+            (vec![Datum::Real(f64::NAN), Datum::Int(2)], Some("0.00")),
+            (
+                vec![Datum::Real(f64::NEG_INFINITY), Datum::Int(2)],
+                Some("-0.00"),
+            ),
+            (
+                vec![Datum::Real(1_234_567.891), Datum::Int(2), s("en_IN")],
+                Some("12,34,567.89"),
+            ),
+            (
+                vec![Datum::Real(1_234_567.891), Datum::Int(2), s("RU_ru")],
+                Some("1 234 567,89"),
+            ),
+            (vec![Datum::Null, Datum::MaxValue], None),
+            (vec![Datum::Int(1), Datum::Null], None),
+        ];
+        for slots in [0, 1] {
+            let owner = owner(slots);
+            let execution = owner.begin_execution().unwrap();
+            let scope = execution.scope();
+            let sink = Sink::default();
+            scope.with_columns(&sink, |ctx| {
+                for (values, expected) in &cases {
+                    assert_scoped(
+                        eval(values, ctx),
+                        expected.map_or(Datum::Null, |text| {
+                            Datum::new_bytes(text.as_bytes().to_vec())
+                        }),
+                        slots,
+                    );
+                }
+            });
+            assert!(sink.warnings.borrow().is_empty());
+            drop(scope);
+            execution.close();
+        }
+    }
+
+    #[test]
+    fn format_scoped_root_preserves_coercion_and_locale_warning_phases() {
+        let double_warning = (
+            1292,
+            "Truncated incorrect DOUBLE value: '12tail'".to_owned(),
+        );
+        let integer_warning = (
+            1292,
+            "Truncated incorrect INTEGER value: '2tail'".to_owned(),
+        );
+        for slots in [0, 1] {
+            let owner = owner(slots);
+            let execution = owner.begin_execution().unwrap();
+            let scope = execution.scope();
+            for (locale, locale_warning) in [
+                (Datum::Null, Some("NULL")),
+                (s("no_SUCH_locale"), Some("no_SUCH_locale")),
+                (s("en_US"), None),
+            ] {
+                let sink = Sink::default();
+                let result = scope.with_columns(&sink, |ctx| {
+                    eval(&[s("12tail"), s("2tail"), locale.clone()], ctx)
+                });
+                assert_scoped(result, Datum::new_bytes(b"12.00".to_vec()), slots);
+                let mut expected = vec![double_warning.clone(), integer_warning.clone()];
+                if let Some(locale_warning) = locale_warning {
+                    if locale == Datum::Null || slots == 1 {
+                        expected.push((1649, format!("Unknown locale: '{locale_warning}'")));
+                    }
+                }
+                assert_eq!(*sink.warnings.borrow(), expected);
+            }
+            let sink = Sink::default();
+            scope.with_columns(&sink, |ctx| {
+                // Locale coercion precedes even a NULL numeric prefix and
+                // prevents either numeric conversion from emitting warnings.
+                assert_eq!(
+                    eval(
+                        &[Datum::Null, Datum::MaxValue, Datum::new_bytes(vec![0xff])],
+                        ctx
+                    ),
+                    Err(EvalError::Unsupported("invalid UTF-8 byte datum")),
+                );
+                assert_eq!(
+                    eval(
+                        &[s("12tail"), s("2tail"), Datum::new_bytes(vec![0xff])],
+                        ctx
+                    ),
+                    Err(EvalError::Unsupported("invalid UTF-8 byte datum")),
+                );
+                for locale in [Datum::Null, s("no_SUCH_locale")] {
+                    assert_scoped(
+                        eval(&[Datum::Null, Datum::MaxValue, locale], ctx),
+                        Datum::Null,
+                        slots,
+                    );
+                }
+            });
+            assert!(sink.warnings.borrow().is_empty());
+            scope.with_columns(&sink, |ctx| {
+                assert_scoped(
+                    eval(&[s("12tail"), Datum::Null, Datum::Null], ctx),
+                    Datum::Null,
+                    slots,
+                );
+            });
+            assert_eq!(*sink.warnings.borrow(), vec![double_warning.clone()]);
+            let strict = Sink {
+                strict: true,
+                ..Sink::default()
+            };
+            scope.with_columns(&strict, |ctx| {
+                assert_eq!(
+                    eval(&[s("12tail"), s("2tail"), Datum::Null], ctx),
+                    Err(EvalError::TruncatedWrongValue(double_warning.1.clone())),
+                );
+                assert_eq!(
+                    eval(&[Datum::Int(1), Datum::MaxValue, Datum::Null], ctx),
+                    Err(EvalError::Unsupported("range sentinel FORMAT precision")),
+                );
+            });
+            assert!(strict.warnings.borrow().is_empty());
+            drop(scope);
+            execution.close();
+        }
     }
 }

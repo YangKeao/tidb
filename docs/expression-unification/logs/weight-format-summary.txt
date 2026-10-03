@@ -1,0 +1,55 @@
+weight-format-64 / round65. Parent serialized Cargo, all --locked and --test-threads=1. Raw logs: /home/agent/tidb/expression-unification/logs/weight-format-<id>.log. Hashes below cover full raw stdout/stderr.
+Toolchains: cargo-tikv nightly-2026-01-30; cargo-tidb nightly-2026-08-22.
+
+TiKV datatype command cwd /home/agent/tidb/expression-unification/tidb:
+../tools/cargo-tikv test --manifest-path ../tikv/Cargo.toml --locked -p tidb_query_datatype --lib locale -- --test-threads=1
+tikv-datatype sha256 8c43ebb6c4b87c23d8e1ed8fad6a175a81e9adc1505b1b1901820dfa4e4c4d82
+compile3.49s;1passed/0failed/0ignored/438filtered,0.00s;exit0.
+
+Next3 cwd /home/agent/tidb/expression-unification/tikv:
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib weight -- --test-threads=1
+tikv-weight sha256 9a5af840d515d37f502acea437bb41046df4687918f8fb0aa489860844e68071
+compile16.06s;3/0/0/891filtered,0.00s;exit0.
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_format -- --test-threads=1
+tikv-format sha256 37f49fb92c048bec14316bdee31e1b1b86e7dc0edb09ec51615328daccb3046f
+compile0.13s;3/0/0/891filtered,0.00s;exit0.
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local -- --test-threads=1
+tikv-local sha256 b93e771095c6fdd2d1fa8255187519aca7094638d935892fbb33a21dc500b19e
+compile0.13s;315/0/1/578filtered,0.21s;exit0. Ignored is not passing; filters overlap and locale names also match local.
+
+Remaining8 launches cwd /home/agent/tidb/expression-unification/tidb/rust:
+../../tools/cargo-tidb test --locked -p tidb-mysql --test parser_mysql_package_source locale -- --test-threads=1
+native-locale sha256 9d0df40235f4f96640a3cc48492c019ba353d8855ec022396e71fba8ce8d0a71
+compile1.67s;2/0/0/17filtered,0.00s;exit0.
+../../tools/cargo-tidb test --locked -p tidb-expr --lib weight_format_sdk -- --test-threads=1
+native-sdk sha256 c07850c2f9c9cf30efc07bc00e37a73fcf2a58c04b3f88ea9f6aa5129b0183e7
+compile20.80s;2/0/0/1642filtered,0.00s;exit0.
+../../tools/cargo-tidb test --locked -p tidb-expr --lib format_scoped_root -- --test-threads=1
+native-format sha256 246c4d796f53645c1f3d9ebfe253da53e57b3e7dd6d7fe8c4f468eb95b3e548b
+compile0.13s;1/1NEW/0/1642filtered,0.00s;exit101. New test wrote string-datum error for actual DatumBytes. Source coerce.rs134-140 requires byte-datum error; only two NEW expected literals repaired.
+SAME exact command rerun:
+native-format-r2 sha256 9e14a71138a363350bd4fde0daffa33190e7f5a688c101271ff46051558e6a4f
+compile3.06s;2/0/0/1642filtered,0.00s;exit0.
+../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_weight_string_format -- --test-threads=1
+sql sha256 bee9b52d9bcb75c61bbd8a47640e7f38b25fdc2c2320a555be500ae305ee1b96
+COMPILE FAILURE E0599 StringDatum.as_bytes nonexistent; no test result/pass. Actual bytes() source datum/mod.rs185-188; only new accessor repaired, no expected output changed.
+SAME exact command rerun:
+sql-r2 sha256 d4aa92626da09e7457be7777809e00ac68656aa43c2145ab22d1e3f647afadc3
+compile8.98s;2/0/0/2205filtered,0.06s;exit0.
+../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+expr-full sha256 0b6b470e0cd0c3e12b66af8be277d82470e6677a45f281b1437f839dc7781015
+compile0.20s;1546/4old/94ignored/0filtered,14.00s;exit101. All six new expression tests checked as ok, including WEIGHT source/demand tests not separately filtered.
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+unistore-full sha256 c0d4dfb863d126ea4652da9a0676a31833a3d96e2ad2356c5ed531aad887e5d6
+compile9.73s;208/1old/13ignored/0filtered,3.02s;exit101.
+
+Whole failure sections/list equal date-core-63 after ONLY numeric panic-thread-ID normalization: expr sha256 27654f2c0ad2971242c00f50182467598cdfd9c2c65e5bf5a32e683708448637; unistore b64dcced405c699c11b72ee31888c58e491b4e5b4e74fa2d445454e1d1e146e9.
+12Cargo launches =11completed nonzero runs(8green+2oldRED+1newRED)+1compilefail.0interruption/zero-match.2retry commands;0runtimeproductionrepairs;2new-test repairs.13newtests finally pass. Old test bodies/oracles unchanged; no fixture rerecording.
+
+Dependency command cwd native rust: ../../tools/cargo-tidb metadata --offline --format-version 1 > ../../logs/weight-format-metadata.json (one successful resolution, only tidb-mysql adding existing tidb_query_datatype in lock; no versions changed). Initial audit assumed version0.1.0, corrected to actual0.0.0; not a Cargo failure.
+Generator cwd /home/agent/tidb/expression-unification/tidb:
+GOTOOLCHAIN=go1.26.0 python3 rust/scripts/generate-parser-mysql-unicode.py --decimal-only
+GOTOOLCHAIN=go1.26.0 python3 rust/scripts/generate-parser-mysql-unicode.py --decimal-only --check
+Initial generation/check passed; post-format check in bash-626 failed because rustfmt wrapped generated header. Script template corrected, generation/check rerun, final check also passed (6invocations total:2generation,4checks with1formatter-stale failure). Output log variants generation/generation-check/generation-r2/generation-check-r2 are empty on success; do not confuse command checks with test counts. Pins unchanged;64Nd ranges exact old table,711graph exact. No hand-edited generated table. System Go1.26.5 differed; GOTOOLCHAIN=go1.26.0 go version initially denied outside-workspace cache write, exact approved retry installed pinned1.26.0. Policy later became no-prompts; no further escalation.
+All23Rust files passed pinned rustfmt --edition 2021 --config skip_children=true --check; both git diff --check pass. Original precision helpers and moved round bodies compare byte-exact; casts/catalog/PB/legacy/collation kernels and unrelated generated tables unchanged.
+No whole workspace/lint/dev/bazel_prepare/release/performance/zero-copy/physicalheap/peak/OOM/exhaustive differential/TiFlash/FIPS/M6/whole-package completion. Prior JSON_KEYS mismatch not rerun/resolved. Functional204/245 strict0; goal active.

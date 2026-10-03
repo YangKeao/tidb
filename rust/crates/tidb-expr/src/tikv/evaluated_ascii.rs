@@ -2184,6 +2184,11 @@ fn materialize_computed(
             | EvaluatedBytesOp::JsonMergeSerdeNative
             | EvaluatedBytesOp::JsonMergePatchSerdeNative
             | EvaluatedBytesOp::JsonMergePatchRawLegacy
+            | EvaluatedBytesOp::WeightStringNative
+            | EvaluatedBytesOp::WeightStringCharNative
+            | EvaluatedBytesOp::WeightStringBinaryNative
+            | EvaluatedBytesOp::WeightStringNumericNative
+            | EvaluatedBytesOp::FormatLocaleNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative

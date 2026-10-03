@@ -130,6 +130,64 @@ pub(crate) fn prepare_grouping_args(
     })
 }
 
+/// Transfer the actual bytes and original unpadded collation metadata.
+pub(crate) fn prepare_weight_string_args(
+    bytes: Vec<u8>,
+    tag: i64,
+    new_mode: bool,
+) -> Result<EvaluatedArgs, crate::EvalError> {
+    if !(0..=15).contains(&tag) {
+        return Err(crate::EvalError::ExpressionAdapterFailure(
+            ExpressionAdapterFailure::from_scope(
+                adapter_failure::ScopeFailureKind::Contract,
+                "weight collation tag is outside its transport domain",
+            ),
+        ));
+    }
+    let mut metadata = Vec::new();
+    metadata.try_reserve_exact(2).map_err(|error| {
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+            LocalError::ResourceLimit(format!("weight metadata allocation failed: {error}").into()),
+            None,
+        ))
+    })?;
+    metadata.extend_from_slice(&[tag as u8, u8::from(new_mode)]);
+    Ok(EvaluatedArgs::Bytes2(Some(bytes), Some(metadata)))
+}
+
+/// Transfer actual padding inputs, including source getters that were not demanded.
+pub(crate) fn prepare_weight_padded_args(
+    bytes: Vec<u8>,
+    rawlen: i64,
+    budget: Option<u64>,
+    tag: i64,
+    new_mode: Option<bool>,
+) -> Result<EvaluatedArgs, crate::EvalError> {
+    if !(0..=15).contains(&tag) {
+        return Err(crate::EvalError::ExpressionAdapterFailure(
+            ExpressionAdapterFailure::from_scope(
+                adapter_failure::ScopeFailureKind::Contract,
+                "padded weight collation tag is outside its transport domain",
+            ),
+        ));
+    }
+    let mut metadata = Vec::new();
+    metadata.try_reserve_exact(19).map_err(|error| {
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+            LocalError::ResourceLimit(
+                format!("padded weight metadata allocation failed: {error}").into(),
+            ),
+            None,
+        ))
+    })?;
+    metadata.extend_from_slice(&rawlen.to_le_bytes());
+    metadata.push(u8::from(budget.is_some()));
+    metadata.extend_from_slice(&budget.unwrap_or(0).to_le_bytes());
+    metadata.push(tag as u8);
+    metadata.push(new_mode.map_or(2, u8::from));
+    Ok(EvaluatedArgs::Bytes2(Some(bytes), Some(metadata)))
+}
+
 /// Transport the actual temporal core and the original three DATE mode bits.
 pub(crate) fn prepare_date_args(
     core: u64,

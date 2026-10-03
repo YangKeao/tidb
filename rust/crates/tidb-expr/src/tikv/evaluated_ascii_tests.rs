@@ -1411,6 +1411,13 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::DateCoreNative | EvaluatedBytesOp::DateCorePredicateLegacy => {
             panic!("DATE needs its original temporal core and mode or nullable predicate role")
         }
+        EvaluatedBytesOp::WeightStringNative
+        | EvaluatedBytesOp::WeightStringCharNative
+        | EvaluatedBytesOp::WeightStringBinaryNative
+        | EvaluatedBytesOp::WeightStringNumericNative
+        | EvaluatedBytesOp::FormatLocaleNative => {
+            panic!("weight and locale formatting need their original operands and metadata")
+        }
         EvaluatedBytesOp::TidbShardNative => "TIDB_SHARD",
         EvaluatedBytesOp::VitessHashNative => "VITESS_HASH",
         EvaluatedBytesOp::FormatBytesNative => "FORMAT_BYTES",
@@ -2147,6 +2154,277 @@ fn json_merge_sdk_rejects_bad_frames_and_preserves_empty_patch_panic() {
     assert!(matches!(scope.evaluate_value(&Datum::Null),
         Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopePoisoned));
     assert_eq!(owner.snapshot().unwrap(), disposed);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn weight_format_sdk_preserves_original_metadata_and_nullable_locale_outputs() {
+    use EvaluatedBytesOp::*;
+    let numeric_code = i64::from(tidb_datatype::FieldTypeCode::LongLong.mysql_type());
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (new_mode, expected) in [(true, vec![0, 65]), (false, vec![b'A'])] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    WeightStringNative,
+                    columns,
+                    || super::super::prepare_weight_string_args(b"A".to_vec(), 7, new_mode),
+                    |computed| Ok(computed.into_bytes()?.map_or(Datum::Null, Datum::new_bytes)),
+                )
+            });
+            assert_eq!(result, Ok(Datum::new_bytes(expected)));
+            assert_wide_math_c4(observation);
+            assert_eq!(owner.snapshot().unwrap().factory_successes, 1);
+        }
+        for (operation, args, expected) in [
+            (
+                WeightStringCharNative,
+                super::super::prepare_weight_padded_args(
+                    b"ab".to_vec(),
+                    4,
+                    Some(u64::MAX),
+                    6,
+                    Some(true),
+                )
+                .unwrap(),
+                Some(b"ab".to_vec()),
+            ),
+            (
+                WeightStringCharNative,
+                super::super::prepare_weight_padded_args(
+                    "中文".as_bytes().to_vec(),
+                    1,
+                    None,
+                    0,
+                    Some(true),
+                )
+                .unwrap(),
+                Some("中".as_bytes().to_vec()),
+            ),
+            (
+                WeightStringCharNative,
+                super::super::prepare_weight_padded_args(
+                    b"ab".to_vec(),
+                    i64::MIN,
+                    None,
+                    0,
+                    Some(false),
+                )
+                .unwrap(),
+                Some(Vec::new()),
+            ),
+            // Original stub-collation metadata is retained: BINARY selects its
+            // own key policy, and packet overflow never demands any key policy.
+            (
+                WeightStringBinaryNative,
+                super::super::prepare_weight_padded_args(
+                    b"ab".to_vec(),
+                    4,
+                    Some(2),
+                    11,
+                    Some(true),
+                )
+                .unwrap(),
+                Some(vec![b'a', b'b', 0, 0]),
+            ),
+            (
+                WeightStringBinaryNative,
+                super::super::prepare_weight_padded_args(b"ab".to_vec(), 1, None, 11, Some(true))
+                    .unwrap(),
+                Some(vec![b'a']),
+            ),
+            (
+                WeightStringCharNative,
+                super::super::prepare_weight_padded_args(b"ab".to_vec(), 4, Some(1), 11, None)
+                    .unwrap(),
+                None,
+            ),
+            (
+                WeightStringBinaryNative,
+                super::super::prepare_weight_padded_args(b"ab".to_vec(), 4, Some(1), 11, None)
+                    .unwrap(),
+                None,
+            ),
+            (
+                WeightStringNumericNative,
+                EvaluatedArgs::Int(Some(numeric_code)),
+                None,
+            ),
+            (GetFormatNullNative, EvaluatedArgs::Bytes(None), None),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || Ok(args),
+                    |computed| Ok(computed.into_bytes()?.map_or(Datum::Null, Datum::new_bytes)),
+                )
+            });
+            assert_eq!(result, Ok(expected.map_or(Datum::Null, Datum::new_bytes)));
+            assert_wide_math_c4(observation);
+            assert_eq!(
+                scope
+                    .lease
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .worker
+                    .as_ref()
+                    .unwrap()
+                    .operation(),
+                operation
+            );
+        }
+        for (number, locale, precision, expected) in [
+            ("1234.5", None, 2, "1,234.50"),
+            ("1234.5", Some("de_DE"), 2, "1.234,50"),
+            ("1234.5", Some("unknown"), i64::MIN, "1,235"),
+            (
+                "1",
+                Some("en_US"),
+                i64::MAX,
+                "1.000000000000000000000000000000",
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    FormatLocaleNative,
+                    columns,
+                    || {
+                        Ok(EvaluatedArgs::BytesBytesInt(
+                            Some(number.as_bytes().to_vec()),
+                            locale.map(|value| value.as_bytes().to_vec()),
+                            Some(precision),
+                        ))
+                    },
+                    |computed| Ok(computed.into_bytes()?.map_or(Datum::Null, Datum::new_bytes)),
+                )
+            });
+            assert_eq!(result, Ok(Datum::new_bytes(expected.as_bytes().to_vec())));
+            assert_wide_math_c4(observation);
+        }
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn weight_format_sdk_rejects_bad_metadata_and_zero_slot_fallbacks() {
+    use EvaluatedBytesOp::*;
+    let EvaluatedArgs::Bytes2(_, Some(metadata)) =
+        super::super::prepare_weight_padded_args(Vec::new(), i64::MIN, None, 15, None).unwrap()
+    else {
+        panic!("padded weights require actual byte metadata");
+    };
+    assert_eq!(metadata.len(), 19);
+    assert_eq!(&metadata[..8], &i64::MIN.to_le_bytes());
+    assert_eq!(&metadata[8..17], &[0; 9]);
+    assert_eq!(&metadata[17..], &[15, 2]);
+    for tag in [-1, 16, 256, i64::MAX] {
+        assert!(
+            matches!(super::super::prepare_weight_string_args(Vec::new(), tag, true),
+            Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract)
+        );
+        assert!(
+            matches!(super::super::prepare_weight_padded_args(Vec::new(), 0, Some(0), tag, Some(true)),
+            Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract)
+        );
+    }
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (operation, args) in [
+            (
+                WeightStringNative,
+                EvaluatedArgs::Bytes2(Some(Vec::new()), Some(vec![0, 2])),
+            ),
+            (
+                WeightStringCharNative,
+                super::super::prepare_weight_padded_args(b"ab".to_vec(), 4, None, 0, Some(true))
+                    .unwrap(),
+            ),
+            (
+                WeightStringBinaryNative,
+                super::super::prepare_weight_padded_args(b"ab".to_vec(), 1, Some(0), 0, Some(true))
+                    .unwrap(),
+            ),
+            (
+                WeightStringCharNative,
+                super::super::prepare_weight_padded_args(b"ab".to_vec(), 4, Some(1), 0, Some(true))
+                    .unwrap(),
+            ),
+            (
+                WeightStringBinaryNative,
+                super::super::prepare_weight_padded_args(b"ab".to_vec(), 1, None, 0, None).unwrap(),
+            ),
+            (WeightStringNumericNative, EvaluatedArgs::Int(None)),
+            (
+                WeightStringNumericNative,
+                EvaluatedArgs::Int(Some(i64::from(
+                    tidb_datatype::FieldTypeCode::VarString.mysql_type(),
+                ))),
+            ),
+            (
+                FormatLocaleNative,
+                EvaluatedArgs::BytesBytesInt(Some(vec![0xff]), None, Some(0)),
+            ),
+            (
+                FormatLocaleNative,
+                EvaluatedArgs::BytesBytesInt(Some(vec![b'1']), Some(vec![0xff]), Some(0)),
+            ),
+            (
+                FormatLocaleNative,
+                EvaluatedArgs::BytesBytesInt(Some(vec![b'1']), None, None),
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || Ok(args),
+                    EvaluatedBytesResult::into_bytes,
+                )
+            });
+            assert!(matches!(
+                result,
+                Err(EvalError::ExpressionRuntimeFailure(_))
+            ));
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(
+                observation.before_kernel_invocations,
+                observation.after_kernel_invocations
+            );
+        }
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (operation, args) in [
+            (WeightStringNative, super::super::prepare_weight_string_args(b"a".to_vec(), 0, true).unwrap()),
+            (WeightStringCharNative, super::super::prepare_weight_padded_args(b"a".to_vec(), 2, Some(0), 0, None).unwrap()),
+            (WeightStringBinaryNative, super::super::prepare_weight_padded_args(b"a".to_vec(), 2, Some(1), 0, Some(true)).unwrap()),
+            (WeightStringNumericNative, EvaluatedArgs::Int(Some(i64::from(tidb_datatype::FieldTypeCode::LongLong.mysql_type())))),
+            (FormatLocaleNative, EvaluatedArgs::BytesBytesInt(Some(vec![b'1']), None, Some(0))),
+            (GetFormatNullNative, EvaluatedArgs::Bytes(None)),
+        ] {
+            let (result, observation) = observe_wide_math(|| evaluate_args_in(operation, columns, || Ok(args), EvaluatedBytesResult::into_bytes));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
     drop(scope);
     execution.close();
 }

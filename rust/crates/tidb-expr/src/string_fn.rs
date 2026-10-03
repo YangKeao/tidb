@@ -2022,11 +2022,10 @@ pub(crate) fn format_num(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Dat
 /// if !isNull && !found { tc.AppendWarning(errUnknownLocale.FastGenByArgs(locale)) }
 /// ```
 ///
-/// The grouping itself is `tidb_mysql::locale::format_by_locale`, the
-/// complete port of `pkg/parser/mysql/locale_format.go` -- which is where
-/// the `found` flag comes from, and why the unknown-locale warning is
-/// reachable at all now. A second, less faithful locale table used to live
-/// here beside it; it had no `found` flag and so could not raise 1649.
+/// The worker owns numeric rounding and locale grouping. The public
+/// `tidb_mysql::locale` facade exposes the same shared locale table; this
+/// frontend uses only its `found` flag after a successful computed result
+/// to retain the original unknown-locale warning phase.
 ///
 /// `locale` is `None` for the NULL a three-argument `FORMAT` evaluated to,
 /// which Go warns about with the literal text `NULL` BEFORE it falls back to
@@ -2041,37 +2040,61 @@ pub(crate) fn format_num_locale(
     locale: Option<&str>,
     ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
-    let [number, precision, ..] = vals else {
-        return Err(EvalError::Unsupported("bad FORMAT arguments"));
-    };
-    let Some(number) = format_number_text(number, ctx)? else {
-        return Ok(Datum::Null);
-    };
-    let Some(precision) = format_precision(precision, ctx)? else {
-        return Ok(Datum::Null);
-    };
-    // `evalNumDecArgsForFormat`: `d` is clamped, the number is rounded to it,
-    // and BOTH cross into `FormatByLocale` as decimal strings.
-    let precision = precision.clamp(0, FORMAT_MAX_DECIMALS) as usize;
-    let rounded = round_format_args(&number, precision);
-    let (locale, is_null_locale) = match locale {
-        Some(locale) => (locale, false),
-        None => ("en_US", true),
-    };
-    if is_null_locale {
-        append_unknown_locale_warning(ctx, "NULL");
-    }
-    let (formatted, found) =
-        tidb_mysql::locale::format_by_locale(&rounded, &precision.to_string(), locale)
-            .map_err(|_| EvalError::Unsupported("bad FORMAT arguments"))?;
-    if !is_null_locale && !found {
-        append_unknown_locale_warning(ctx, locale);
-    }
-    Ok(Datum::new_bytes(formatted))
+    format_num_with_locale_prepare(vals, || Ok(locale.map(str::to_owned)), ctx)
 }
 
-/// Go `formatMaxDecimals` (`pkg/expression/builtin_string.go`).
-const FORMAT_MAX_DECIMALS: i64 = 30;
+/// Locale coercion precedes numeric preparation in FORMAT/3. Only the actual
+/// source locale is retained for its post-result diagnostic; the worker owns
+/// precision clamping, rounding, fallback locale selection, and grouping.
+pub(crate) fn format_num_with_locale_prepare(
+    vals: &[Datum],
+    prepare_locale: impl FnOnce() -> Result<Option<String>, EvalError>,
+    ctx: &dyn crate::Columns,
+) -> Result<Datum, EvalError> {
+    let result_locale = std::cell::RefCell::new(None::<String>);
+    crate::tikv::evaluate_prepared_args_in(
+        ctx,
+        || {
+            let locale = prepare_locale()?;
+            let [number, precision, ..] = vals else {
+                return Err(EvalError::Unsupported("bad FORMAT arguments"));
+            };
+            let Some(number) = format_number_text(number, ctx)? else {
+                return Ok((
+                    crate::tikv::EvaluatedBytesOp::GetFormatNullNative,
+                    crate::tikv::EvaluatedArgs::Bytes(None),
+                ));
+            };
+            let Some(precision) = format_precision(precision, ctx)? else {
+                return Ok((
+                    crate::tikv::EvaluatedBytesOp::GetFormatNullNative,
+                    crate::tikv::EvaluatedArgs::Bytes(None),
+                ));
+            };
+            if locale.is_none() {
+                append_unknown_locale_warning(ctx, "NULL");
+            }
+            let args = crate::tikv::EvaluatedArgs::BytesBytesInt(
+                Some(number.into_bytes()),
+                locale.as_ref().map(|locale| locale.as_bytes().to_vec()),
+                Some(precision),
+            );
+            *result_locale.borrow_mut() = locale;
+            Ok((crate::tikv::EvaluatedBytesOp::FormatLocaleNative, args))
+        },
+        |computed| {
+            let Some(bytes) = computed.into_bytes()? else {
+                return Ok(Datum::Null);
+            };
+            if let Some(locale) = result_locale.borrow().as_deref() {
+                if !tidb_mysql::locale::locale_format_style(locale).1 {
+                    append_unknown_locale_warning(ctx, locale);
+                }
+            }
+            Ok(Datum::new_bytes(bytes))
+        },
+    )
+}
 
 /// Go `errUnknownLocale` (`ErrUnknownLocale`, 1649).
 fn append_unknown_locale_warning(ctx: &dyn crate::Columns, locale: &str) {
@@ -2130,72 +2153,6 @@ fn round_float_to_i64_saturating(value: f64) -> i64 {
     } else {
         rounded as i64
     }
-}
-
-fn round_format_args(number: &str, precision: usize) -> String {
-    let (negative, number) = number
-        .strip_prefix('-')
-        .map_or((false, number), |n| (true, n));
-    let (mut integer, fraction) = number.split_once('.').unwrap_or((number, ""));
-    if !integer.bytes().all(|digit| digit.is_ascii_digit())
-        || !fraction.bytes().all(|digit| digit.is_ascii_digit())
-    {
-        integer = "0";
-    }
-    let mut fraction: Vec<u8> = fraction.bytes().take(precision).collect();
-    while fraction.len() < precision {
-        fraction.push(b'0');
-    }
-    let round_up = number
-        .split_once('.')
-        .and_then(|(_, f)| f.as_bytes().get(precision))
-        .is_some_and(|d| *d >= b'5');
-    if round_up {
-        let mut carry = true;
-        for digit in fraction.iter_mut().rev() {
-            if *digit == b'9' {
-                *digit = b'0';
-            } else {
-                *digit += 1;
-                carry = false;
-                break;
-            }
-        }
-        if carry {
-            let mut digits = integer.as_bytes().to_vec();
-            for digit in digits.iter_mut().rev() {
-                if *digit == b'9' {
-                    *digit = b'0';
-                } else {
-                    *digit += 1;
-                    carry = false;
-                    break;
-                }
-            }
-            if carry {
-                return format_number_parts(
-                    negative,
-                    format!("1{}", "0".repeat(integer.len())),
-                    fraction,
-                );
-            }
-            return format_number_parts(negative, String::from_utf8(digits).unwrap(), fraction);
-        }
-    }
-    format_number_parts(negative, integer.to_string(), fraction)
-}
-
-fn format_number_parts(negative: bool, integer: String, fraction: Vec<u8>) -> String {
-    let mut out = String::new();
-    if negative {
-        out.push('-');
-    }
-    out.push_str(&integer);
-    if !fraction.is_empty() {
-        out.push('.');
-        out.push_str(std::str::from_utf8(&fraction).unwrap());
-    }
-    out
 }
 
 /// `CHAR(n1, n2, ...)` (parser-renamed `CHAR_FUNC`) ported from

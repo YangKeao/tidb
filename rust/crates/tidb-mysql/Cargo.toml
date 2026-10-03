@@ -12,3 +12,4 @@ workspace = true
 
 [dependencies]
 tidb-error = { path = "../tidb-error" }
+tidb_query_datatype.workspace = true

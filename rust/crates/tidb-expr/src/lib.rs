@@ -1755,15 +1755,15 @@ pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
         // static type -- the chunk tier reads the real derived one.
         Expr::WeightString { expr, as_type } => {
             let value = eval_in(expr, cols)?;
-            if matches!(
-                value,
-                Datum::Int(_)
-                    | Datum::UInt(_)
-                    | Datum::Real(_)
-                    | Datum::Float32(_)
-                    | Datum::Decimal(_)
-            ) {
-                return Ok(Datum::Null);
+            let numeric_type = match &value {
+                Datum::Int(_) | Datum::UInt(_) => Some(tidb_datatype::FieldTypeCode::LongLong),
+                Datum::Real(_) => Some(tidb_datatype::FieldTypeCode::Double),
+                Datum::Float32(_) => Some(tidb_datatype::FieldTypeCode::Float),
+                Datum::Decimal(_) => Some(tidb_datatype::FieldTypeCode::NewDecimal),
+                _ => None,
+            };
+            if let Some(code) = numeric_type {
+                return string_packet::weight_string_numeric_type(code, cols);
             }
             let collation = match &value {
                 Datum::String(text) => text.collation(),
