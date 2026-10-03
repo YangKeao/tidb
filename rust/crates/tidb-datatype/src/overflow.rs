@@ -184,39 +184,23 @@ pub fn mul_integer(lhs: u64, rhs: i64) -> Result<u64, OverflowError> {
 
 /// Divides two signed BIGINT values, rejecting `MIN / -1`.
 pub fn div_int64(lhs: i64, rhs: i64) -> Result<i64, OverflowError> {
+    // Keep the native SDK's zero-divisor panic. With a nonzero divisor, the
+    // shared kernel can only report overflow; retain native kind/operand text
+    // rather than adopting the wire codec's different diagnostic wording.
     assert_ne!(rhs, 0, "integer divide by zero");
-    if lhs == i64::MIN && rhs == -1 {
-        return Err(signed_error(lhs, rhs as i128));
-    }
-    Ok(lhs / rhs)
+    tidb_query_datatype::codec::div_i64(lhs, rhs).map_err(|_| signed_error(lhs, rhs as i128))
 }
 
 /// Divides an unsigned BIGINT by a signed BIGINT, returning unsigned output.
 pub fn div_uint_with_int(lhs: u64, rhs: i64) -> Result<u64, OverflowError> {
     assert_ne!(rhs, 0, "integer divide by zero");
-    if rhs < 0 {
-        let magnitude = rhs.unsigned_abs();
-        if lhs != 0 && magnitude <= lhs {
-            return Err(unsigned_error(lhs, rhs as i128));
-        }
-        return Ok(0);
-    }
-    Ok(lhs / rhs as u64)
+    tidb_query_datatype::codec::div_u64_with_i64(lhs, rhs)
+        .map_err(|_| unsigned_error(lhs, rhs as i128))
 }
 
 /// Divides a signed BIGINT by an unsigned BIGINT, returning unsigned output.
 pub fn div_int_with_uint(lhs: i64, rhs: u64) -> Result<u64, OverflowError> {
     assert_ne!(rhs, 0, "integer divide by zero");
-    if lhs < 0 {
-        let magnitude = lhs.unsigned_abs();
-        if magnitude >= rhs {
-            return Err(OverflowError::new(
-                OverflowType::BigIntUnsigned,
-                lhs as i128,
-                rhs as i128,
-            ));
-        }
-        return Ok(0);
-    }
-    Ok(lhs as u64 / rhs)
+    tidb_query_datatype::codec::div_i64_with_u64(lhs, rhs)
+        .map_err(|_| OverflowError::new(OverflowType::BigIntUnsigned, lhs as i128, rhs as i128))
 }

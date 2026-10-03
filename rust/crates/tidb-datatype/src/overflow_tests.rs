@@ -173,6 +173,67 @@ fn test_mul() {
 }
 
 #[test]
+fn shared_division_adapters_preserve_native_errors_bounds_and_zero_panics() {
+    for (error, kind, text) in [
+        (
+            div_int64(i64::MIN, -1).unwrap_err(),
+            OverflowType::BigInt,
+            "BIGINT value is out of range in '(-9223372036854775808, -1)'",
+        ),
+        (
+            div_uint_with_int(u64::MAX, -1).unwrap_err(),
+            OverflowType::BigIntUnsigned,
+            "BIGINT UNSIGNED value is out of range in '(18446744073709551615, -1)'",
+        ),
+        (
+            div_uint_with_int(1u64 << 63, i64::MIN).unwrap_err(),
+            OverflowType::BigIntUnsigned,
+            "BIGINT UNSIGNED value is out of range in '(9223372036854775808, -9223372036854775808)'",
+        ),
+        (
+            div_int_with_uint(i64::MIN, 1u64 << 63).unwrap_err(),
+            OverflowType::BigIntUnsigned,
+            "BIGINT UNSIGNED value is out of range in '(-9223372036854775808, 9223372036854775808)'",
+        ),
+    ] {
+        assert_eq!(error.kind(), kind);
+        assert_eq!(error.to_string(), text);
+    }
+    assert_eq!(div_int64(i64::MIN, 1), Ok(i64::MIN));
+    assert_eq!(div_int64(i64::MAX, -1), Ok(-i64::MAX));
+    assert_eq!(div_int64(-7, 3), Ok(-2));
+    assert_eq!(div_int64(7, -3), Ok(-2));
+    assert_eq!(div_uint_with_int(u64::MAX, 1), Ok(u64::MAX));
+    assert_eq!(div_uint_with_int(i64::MAX as u64, i64::MIN), Ok(0));
+    assert_eq!(div_uint_with_int(0, -1), Ok(0));
+    assert_eq!(div_int_with_uint(i64::MIN, (1u64 << 63) + 1), Ok(0));
+    assert_eq!(div_int_with_uint(-1, 2), Ok(0));
+    assert_eq!(div_int_with_uint(i64::MAX, u64::MAX), Ok(0));
+    assert_eq!(div_int_with_uint(0, u64::MAX), Ok(0));
+    let zero_divisors: [fn(); 3] = [
+        || {
+            let _ = div_int64(1, 0);
+        },
+        || {
+            let _ = div_uint_with_int(1, 0);
+        },
+        || {
+            let _ = div_int_with_uint(-1, 0);
+        },
+    ];
+    for divide in zero_divisors {
+        let payload = std::panic::catch_unwind(divide)
+            .expect_err("the native SDK retains its zero-divisor assertion");
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .expect("the original assertion has a string panic payload");
+        assert!(message.contains("integer divide by zero"), "{message}");
+    }
+}
+
+#[test]
 fn test_div() {
     for (lhs, rhs, want, overflow) in [
         (i64::MAX, 1, i64::MAX, false),

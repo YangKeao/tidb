@@ -777,13 +777,11 @@ impl Decimal {
     }
 
     pub fn coefficient_i128(&self) -> Option<(i128, u32)> {
-        let magnitude = self.digits.as_str().parse::<i128>().ok()?;
-        let value = if self.negative {
-            magnitude.checked_neg()?
-        } else {
-            magnitude
-        };
-        Some((value, self.storage_scale))
+        SharedDecimal::native_raw_coefficient_i128(
+            self.negative,
+            &self.digits.0,
+            self.storage_scale,
+        )
     }
 
     #[cfg(test)]
@@ -1211,40 +1209,27 @@ impl Decimal {
     /// Source `MyDecimal.ToInt`: truncates toward zero and reports a non-zero
     /// discarded fraction separately from overflow.
     pub fn to_i64_trunc(&self) -> (i64, Option<DecimalIntegerWarning>) {
-        let split = self.digits.len() - self.storage_scale as usize;
-        let integer = self.digits[..split].trim_start_matches('0');
-        let integer = if integer.is_empty() { "0" } else { integer };
-        let magnitude = integer.parse::<u64>();
-        let value = match (self.negative, magnitude) {
-            (false, Ok(value)) if value <= i64::MAX as u64 => value as i64,
-            (true, Ok(value)) if value <= i64::MIN.unsigned_abs() => {
-                if value == i64::MIN.unsigned_abs() {
-                    i64::MIN
-                } else {
-                    -(value as i64)
-                }
+        match SharedDecimal::native_to_i64_trunc(self.negative, &self.digits.0, self.storage_scale)
+        {
+            SharedDecimalResult::Ok(value) => (value, None),
+            SharedDecimalResult::Truncated(value) => {
+                (value, Some(DecimalIntegerWarning::Truncated))
             }
-            (false, _) => return (i64::MAX, Some(DecimalIntegerWarning::Overflow)),
-            (true, _) => return (i64::MIN, Some(DecimalIntegerWarning::Overflow)),
-        };
-        let truncated = self.digits[split..].bytes().any(|digit| digit != b'0');
-        (value, truncated.then_some(DecimalIntegerWarning::Truncated))
+            SharedDecimalResult::Overflow(value) => (value, Some(DecimalIntegerWarning::Overflow)),
+        }
     }
 
     /// Source `MyDecimal.ToUint`: truncates toward zero, rejects negatives,
     /// and saturates positive overflow.
     pub fn to_u64_trunc(&self) -> (u64, Option<DecimalIntegerWarning>) {
-        if self.negative {
-            return (0, Some(DecimalIntegerWarning::Overflow));
+        match SharedDecimal::native_to_u64_trunc(self.negative, &self.digits.0, self.storage_scale)
+        {
+            SharedDecimalResult::Ok(value) => (value, None),
+            SharedDecimalResult::Truncated(value) => {
+                (value, Some(DecimalIntegerWarning::Truncated))
+            }
+            SharedDecimalResult::Overflow(value) => (value, Some(DecimalIntegerWarning::Overflow)),
         }
-        let split = self.digits.len() - self.storage_scale as usize;
-        let integer = self.digits[..split].trim_start_matches('0');
-        let integer = if integer.is_empty() { "0" } else { integer };
-        let Ok(value) = integer.parse::<u64>() else {
-            return (u64::MAX, Some(DecimalIntegerWarning::Overflow));
-        };
-        let truncated = self.digits[split..].bytes().any(|digit| digit != b'0');
-        (value, truncated.then_some(DecimalIntegerWarning::Truncated))
     }
 
     /// Like [`Decimal::round_to_i64`], but CLAMPS to `i64::MIN`/`MAX`
@@ -2045,6 +2030,83 @@ mod native_math_bridge_tests {
             assert!(!result.is_negative());
             assert_eq!(result.declared_shape(), None);
         }
+    }
+}
+
+#[cfg(test)]
+mod shared_raw_integer_projection_tests {
+    use super::{Decimal, DecimalIntegerWarning};
+
+    #[test]
+    fn raw_integer_facades_ignore_visible_shape_and_preserve_signed_parser() {
+        use DecimalIntegerWarning::{Overflow, Truncated};
+
+        let value = Decimal::from_raw_parts(false, b"1".to_vec(), u32::MAX, 0)
+            .with_declared_shape(i64::MIN, i64::MAX);
+        assert_eq!(value.coefficient_i128(), Some((1, 0)));
+        assert_eq!(value.to_i64_trunc(), (1, None));
+        assert_eq!(value.to_u64_trunc(), (1, None));
+        let hidden = Decimal::from_raw_parts(true, b"12340".to_vec(), 1, 3);
+        assert_eq!(hidden.coefficient_i128(), Some((-12340, 3)));
+        assert_eq!(hidden.to_i64_trunc(), (-12, Some(Truncated)));
+        assert_eq!(hidden.to_u64_trunc(), (0, Some(Overflow)));
+        let zero = Decimal::from_raw_parts(true, b"000".to_vec(), 1, 3);
+        assert_eq!(zero.coefficient_i128(), Some((0, 3)));
+        assert_eq!(zero.to_i64_trunc(), (0, None));
+        assert_eq!(zero.to_u64_trunc(), (0, Some(Overflow)));
+        let raw_minimum = b"-170141183460469231731687303715884105728".to_vec();
+        assert_eq!(
+            Decimal::from_raw_parts(false, raw_minimum.clone(), 0, 9).coefficient_i128(),
+            Some((i128::MIN, 9))
+        );
+        assert_eq!(
+            Decimal::from_raw_parts(true, raw_minimum, 0, 9).coefficient_i128(),
+            None
+        );
+        assert_eq!(
+            Decimal::from_raw_parts(
+                true,
+                b"170141183460469231731687303715884105728".to_vec(),
+                0,
+                0
+            )
+            .coefficient_i128(),
+            None
+        );
+        let overflow = Decimal::from_raw_parts(false, b"18446744073709551616x".to_vec(), 0, 1);
+        assert_eq!(overflow.to_i64_trunc(), (i64::MAX, Some(Overflow)));
+        assert_eq!(overflow.to_u64_trunc(), (u64::MAX, Some(Overflow)));
+        let fraction = Decimal::from_raw_parts(false, "é".as_bytes().to_vec(), 0, 2);
+        assert_eq!(fraction.to_i64_trunc(), (0, Some(Truncated)));
+        assert_eq!(fraction.to_u64_trunc(), (0, Some(Truncated)));
+    }
+
+    #[test]
+    fn raw_integer_facades_keep_utf8_scale_and_slice_panic_domains() {
+        use std::panic::catch_unwind;
+
+        for (digits, scale) in [
+            (b"\xff".as_slice(), 0),
+            (b"1".as_slice(), 2),
+            ("é".as_bytes(), 1),
+        ] {
+            let value = Decimal::from_raw_parts(false, digits.to_vec(), 0, scale);
+            assert!(catch_unwind(|| value.to_i64_trunc()).is_err());
+            assert!(catch_unwind(|| value.to_u64_trunc()).is_err());
+            let negative = Decimal::from_raw_parts(true, digits.to_vec(), 0, scale);
+            assert_eq!(
+                negative.to_u64_trunc(),
+                (0, Some(DecimalIntegerWarning::Overflow))
+            );
+        }
+        let invalid = Decimal::from_raw_parts(false, vec![0xff], 0, 0);
+        let panic = catch_unwind(|| invalid.coefficient_i128()).unwrap_err();
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap();
+        assert!(message.starts_with("decimal coefficients are ASCII digits"));
     }
 }
 

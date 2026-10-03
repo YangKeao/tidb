@@ -1,0 +1,34 @@
+intdiv-sdk-67 / round68. SDK prerequisites ONLY; functional208/245 strict0 unchanged; no INTDIV evaluator credit. Parent serialized Cargo; all commands --locked and --test-threads=1. Raw logs /home/agent/tidb/expression-unification/logs/intdiv-sdk-<id>.log. Full raw SHA256 below. cargo-tikv nightly-2026-01-30; cargo-tidb nightly-2026-08-22.
+
+First2 actual commands cwd /home/agent/tidb/expression-unification/tikv:
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_raw_integer_projection_tests -- --test-threads=1
+tikv-raw sha256 e15d5041a6ca2f858fbfdd2e71757b4cf8de95e7dccc8a06a015be4affbacc3b
+compile2.42s;2passed/0failed/0ignored/440filtered,0.00s;exit0.
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local -- --test-threads=1
+tikv-local sha256 0795bdff9aacd93f00dc1beac0f3c71963e65a6f0aa9e44a99784a3f57833c8c
+compile6.70s;317/0/1/583filtered,0.22s;exit0. Existing lifecycle regression, not new profiles.
+
+Remaining6 actual launches cwd /home/agent/tidb/expression-unification/tidb/rust:
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib decimal -- --test-threads=1
+native-decimal sha256 f70b89cc94963411142fdee30281b0a7a531547afec968c43bd5d05ab1524ce2
+compile2.50s;97/0/0/354filtered,22.37s;exit0.
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib overflow -- --test-threads=1
+native-overflow sha256 ed29ef3a3f4a3cc2381f7fb93a6255595cf33be7e589ed98a53c065a61d1b4ef
+compile0.10s;18/0/0/433filtered,0.00s;exit0.
+../../tools/cargo-tidb test --locked -p tidb-expr --lib integer_division -- --test-threads=1
+native-expr sha256 6b91bc0149e0585ff9c67df1f17416d6cf1ebe804d38de2cbf4f41d649afac3d
+compile8.99s;2/0/0/1650filtered,0.00s;exit0.
+../../tools/cargo-tidb test --locked -p tidb-session --lib real_integer_division_uses_decimal_operands_in_sql -- --test-threads=1
+sql sha256 f0ec5136d7e52a73c506e9b6bb802bf22f50283f935f5a99ed715bfa6a85a0f0
+compile15.70s;1/0/0/2210filtered,0.01s;exit0. Existing regression executes four original queries across both vector modes; no new SQL/root evidence.
+../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+expr-full sha256 c04d81a4902b600322fc51f39dc58f77ab70d35a99f433a119d9933305088838
+compile0.15s;1554/4OLD/94ignored/0filtered,14.30s;exit101.
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+unistore-full sha256 10de33776f038d3277ec19d7dc7186591fdc466ffc25394ef674d56adccd8cca
+compile4.82s;208/1OLD/13ignored/0filtered,3.05s;exit101.
+
+Whole failure sections/list match tso-timediff-66 after ONLY numeric panic-thread-ID normalization. Prior canonical hashes remain expr27654f2c0ad2971242c00f50182467598cdfd9c2c65e5bf5a32e683708448637; unistoreb64dcced405c699c11b72ee31888c58e491b4e5b4e74fa2d445454e1d1e146e9.
+8launches=8completednonzero runs:6green+2oldRED.0newRED/compilefail/interruption/zero-match/retry.5newSDKtests explicitlygreen; oldtestbodies byte-exact. Filters overlap; ignored is not passing. No expected-value recording or test oracle changes.
+All4Rust(1CPP/3native) passed pinned rustfmt --edition 2021 --config skip_children=true --check; both git diff --check pass. No newsource/manifests/locks/generated/dependency/Go/Bazel/evaluator changes or Cargo metadata resolution. Before compile, source grep found the proposed static projection name collided with an old private method; only new API/calls/tests renamed native_raw_coefficient_i128. No failed-build or runtime repair.
+Six SDK implementations now have TiKV authority. All208 prior family objects unchanged; INTDIV evaluator/getter/diagnostic/NULL-root/exact-division closure remains pending. Latest functional migration stays tso-timediff-66. No whole workspace/lint/dev/bazel_prepare/release/performance/zero-copy/physicalheap/peak/OOM/exhaustive differential/TiFlash/FIPS/M6/whole-package completion. Prior JSON_KEYS/AST/SQL metadata gaps not repaired.37families remain/13needed; goal active.
