@@ -9363,6 +9363,144 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_integer_div_preserves_signedness_nulls_and_query_diagnostics() {
+    let mut session = Session::new();
+    session
+        .run("SET sql_mode='STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO'")
+        .unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_integer_div_sql (a BIGINT, b BIGINT, u BIGINT UNSIGNED, v BIGINT UNSIGNED, umax BIGINT UNSIGNED, uone BIGINT UNSIGNED, neg BIGINT, neg_one BIGINT, neg_two BIGINT, n BIGINT, z BIGINT, min_i BIGINT)").unwrap();
+    session.run("INSERT INTO shared_integer_div_sql VALUES (13,11,13,11,18446744073709551615,1,-13,-1,-2,NULL,0,-9223372036854775808)").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    // Only the existing integer DIV slice: SS/US/SU/UU, including present
+    // UINT64_MAX bits and negative quotients truncated toward zero. Decimal DIV
+    // remains a separate native path and is not claimed by these SQL probes.
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        let StmtOutput::Rows { columns, rows } = session.run_with_columns("SELECT a DIV b,u DIV b,a DIV v,umax DIV uone,neg DIV b,uone DIV neg_two,neg_one DIV v,n DIV b,a DIV n,a DIV z FROM shared_integer_div_sql").unwrap() else {
+            panic!("expected integer DIV rows")
+        };
+        assert_eq!(
+            rows,
+            vec![vec![
+                Datum::Int(1),
+                Datum::UInt(1),
+                Datum::UInt(1),
+                Datum::UInt(18_446_744_073_709_551_615),
+                Datum::Int(-1),
+                Datum::UInt(0),
+                Datum::UInt(0),
+                Datum::Null,
+                Datum::Null,
+                Datum::Null,
+            ]],
+            "vectorized={vectorized}"
+        );
+        assert_eq!(columns.len(), 10);
+        for ((_, field), unsigned) in columns.iter().zip([
+            false, true, true, true, false, true, true, false, false, false,
+        ]) {
+            assert_eq!(field.code(), tidb_datatype::FieldTypeCode::LongLong);
+            assert_eq!((field.flen(), field.decimal()), (20, 0));
+            assert_eq!(field.is_unsigned(), unsigned);
+            assert_eq!(field.charset_name(), "binary");
+            assert_eq!(field.collation_name(), "binary");
+        }
+        // A SELECT warns even in strict mode. NULL operands do not add a
+        // diagnostic; only the final, non-NULL dividend / zero divisor does.
+        assert_eq!(
+            warnings_of(&session),
+            vec![(1365, "Division by 0".to_owned())],
+            "vectorized={vectorized}"
+        );
+    }
+
+    // One ordered diagnostic witness, with direct operands and one row. The
+    // integer overflow caller renders an operand tuple, not decimal DIV text.
+    let error = session
+        .run_with_columns("SELECT a DIV z,min_i DIV neg_one FROM shared_integer_div_sql")
+        .expect_err("signed DIV overflow");
+    let mysql = error.to_mysql_error();
+    assert_eq!(mysql.code, 1690);
+    assert_eq!(
+        mysql.message,
+        "BIGINT value is out of range in '(-9223372036854775808, -1)'"
+    );
+    assert!(mysql.is_from_evaluation());
+    assert_eq!(
+        warnings_of(&session),
+        vec![(1365, "Division by 0".to_owned())]
+    );
+}
+
+#[test]
+fn evaluated_ascii_integer_div_zero_slots_require_signed_pairs_and_null_routes() {
+    let mut session = Session::new();
+    session
+        .run("SET sql_mode='STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO'")
+        .unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_integer_div_zero (a BIGINT, b BIGINT, u BIGINT UNSIGNED, v BIGINT UNSIGNED, umax BIGINT UNSIGNED, uone BIGINT UNSIGNED, n BIGINT, z BIGINT)").unwrap();
+    session.run("INSERT INTO shared_integer_div_zero VALUES (13,11,13,11,18446744073709551615,1,NULL,0)").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // Seven scalar roots plus the vector integer-NULL route. Plain columns
+    // cannot hide the root behind CAST, arithmetic children, WHERE or ORDER BY.
+    // Zero-divisor diagnostics follow the worker result, so admission failure
+    // must precede the native 1365 replay and leave the warning buffer empty.
+    for (vectorized, expression) in [
+        (0, "a DIV b"),
+        (0, "u DIV b"),
+        (0, "a DIV v"),
+        (0, "umax DIV uone"),
+        (0, "n DIV b"),
+        (0, "a DIV n"),
+        (0, "a DIV z"),
+        (1, "n DIV b"),
+    ] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        let sql = format!("SELECT {expression} FROM shared_integer_div_zero");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("integer DIV root bypassed its worker: {sql}/{vectorized}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
+        assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
+        assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+    }
+}
+
+#[test]
 fn evaluated_ascii_tso_timediff_preserve_native_values_metadata_and_zone() {
     use tidb_datatype::{FieldTypeCode, MySqlDuration, Time, TimeType};
 

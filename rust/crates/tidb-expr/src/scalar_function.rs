@@ -1649,6 +1649,7 @@ impl ScalarFunction {
                             | BinaryOp::Mul
                             | BinaryOp::Mod
                             | BinaryOp::Div
+                            | BinaryOp::IntDiv
                     ) {
                         crate::ops::eval_binary_arithmetic_null_in(ctx)
                     } else {
@@ -3976,7 +3977,11 @@ fn eval_integer_batch(
                     )?,
                     _ if matches!(
                         op,
-                        BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul | BinaryOp::Mod
+                        BinaryOp::Plus
+                            | BinaryOp::Minus
+                            | BinaryOp::Mul
+                            | BinaryOp::Mod
+                            | BinaryOp::IntDiv
                     ) =>
                     {
                         bits(crate::ops::eval_binary_arithmetic_null_in(ctx)?)?
@@ -4477,6 +4482,125 @@ mod tests {
     use crate::column::Column;
     use crate::constant::Constant;
     use tidb_datatype::{Datum, FieldType, FieldTypeCode};
+
+    #[test]
+    fn intdiv_null_typed_and_integer_batch_preserve_demand_and_actual_root() {
+        struct Context {
+            events: RefCell<Vec<&'static str>>,
+            fail_right: std::cell::Cell<bool>,
+        }
+        impl crate::Columns for Context {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                self.events.borrow_mut().push("get");
+                None
+            }
+            fn param_value(&self, order: usize) -> Result<Datum, EvalError> {
+                self.events
+                    .borrow_mut()
+                    .push(if order == 0 { "left" } else { "right" });
+                if order == 1 && self.fail_right.get() {
+                    return Err(EvalError::Unsupported("right DIV operand demanded"));
+                }
+                Ok(Datum::Null)
+            }
+            fn div_precision_increment(&self) -> u32 {
+                self.events.borrow_mut().push("precision");
+                4
+            }
+            fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+                self.events.borrow_mut().push("zone");
+                crate::Columns::time_zone(&crate::NoColumns)
+            }
+            fn type_flags(&self) -> tidb_datatype::ConversionFlags {
+                self.events.borrow_mut().push("flags");
+                crate::Columns::type_flags(&crate::NoColumns)
+            }
+            fn append_warning(&self, _: u16, _: &str) {
+                self.events.borrow_mut().push("warning");
+            }
+        }
+        let field = FieldType::new(FieldTypeCode::LongLong);
+        let arguments = (0..2)
+            .map(|order| {
+                let mut value = Constant::new(Datum::Null, field.clone());
+                value.param_marker = Some(crate::constant::ParamMarker { order });
+                Expression::Constant(value)
+            })
+            .collect();
+        let expression = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("intdiv"),
+            field.clone(),
+            arguments,
+        ));
+        let mut chunk = Chunk::new_with_capacity(&[field], 3);
+        for _ in 0..3 {
+            chunk.append_datum(0, &Datum::Int(7));
+        }
+        for slots in [1, 0] {
+            let owner = crate::AsciiPoolOwner::new(
+                crate::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 << 20,
+                    1 << 20,
+                    2 << 20,
+                    64,
+                    8,
+                    1 << 16,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let execution = owner.begin_execution().unwrap();
+            let scope = execution.scope();
+            let ctx = Context {
+                events: RefCell::new(Vec::new()),
+                fail_right: std::cell::Cell::new(true),
+            };
+            let typed = scope.with_columns(&ctx, |columns| expression.eval(columns, Row::empty()));
+            if slots == 0 {
+                assert!(
+                    matches!(typed, Err(EvalError::ExpressionAdapterFailure(failure))
+                    if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource)
+                );
+            } else {
+                assert_eq!(typed, Ok(Datum::Null));
+            }
+            // ParamMarker's original type probe and value read both remain.
+            // The typed NULL exits before RHS, precision, conversion or warnings.
+            assert_eq!(ctx.events.borrow().as_slice(), ["left", "left"]);
+            ctx.events.borrow_mut().clear();
+            ctx.fail_right.set(false);
+            let batch = scope.with_columns(&ctx, |columns| {
+                try_eval_numeric_batch(&expression, columns, &chunk)
+            });
+            if slots == 0 {
+                assert!(
+                    matches!(batch, Err(EvalError::ExpressionAdapterFailure(failure))
+                    if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource)
+                );
+            } else {
+                assert_eq!(batch, Ok(Some(vec![Datum::Null; 3])));
+            }
+            // Each constant broadcasts its entire batch before the next child;
+            // NULL left rows do not suppress right type/value reads.
+            assert_eq!(
+                ctx.events.borrow().as_slice(),
+                ["left", "left", "right", "right"]
+            );
+            ctx.events.borrow_mut().clear();
+            ctx.fail_right.set(true);
+            assert_eq!(
+                scope.with_columns(&ctx, |columns| {
+                    try_eval_numeric_batch(&expression, columns, &chunk)
+                }),
+                Err(EvalError::Unsupported("right DIV operand demanded"))
+            );
+            assert_eq!(ctx.events.borrow().as_slice(), ["left", "left", "right"]);
+            drop(scope);
+            execution.close();
+        }
+    }
 
     #[test]
     fn string_division_preserves_go_decimal_parser_diagnostics() {

@@ -1349,6 +1349,10 @@ impl<'a> Invocation<'a> {
                         | EvaluatedBytesOp::SubIntUuForcedNative
                         | EvaluatedBytesOp::MulIntSignedNative
                         | EvaluatedBytesOp::MulIntUnsignedNative
+                        | EvaluatedBytesOp::IntDivIntSsNative
+                        | EvaluatedBytesOp::IntDivIntUsNative
+                        | EvaluatedBytesOp::IntDivIntSuNative
+                        | EvaluatedBytesOp::IntDivIntUuNative
                         | EvaluatedBytesOp::AddRealNative
                         | EvaluatedBytesOp::SubRealNative
                         | EvaluatedBytesOp::MulRealNative
@@ -1381,6 +1385,17 @@ impl<'a> Invocation<'a> {
                             return AsciiBoundaryError::Scope {
                                 kind: ScopeFailureKind::Contract,
                                 reason: "native division failure receipt has an unexpected cause",
+                            };
+                        }
+                        if matches!(operation,
+                            EvaluatedBytesOp::IntDivIntSsNative | EvaluatedBytesOp::IntDivIntUsNative
+                                | EvaluatedBytesOp::IntDivIntSuNative | EvaluatedBytesOp::IntDivIntUuNative)
+                            && (cause.operation != BinaryArithmeticOperation::IntDivide
+                                || cause.kind != BinaryArithmeticErrorKind::IntOverflow)
+                        {
+                            return AsciiBoundaryError::Scope {
+                                kind: ScopeFailureKind::Contract,
+                                reason: "native integer division failure receipt has an unexpected cause",
                             };
                         }
                         return AsciiBoundaryError::Frontend(match cause.kind {
@@ -1420,7 +1435,7 @@ impl<'a> Invocation<'a> {
                                     reason: "legacy modulo has no arithmetic SQL failure",
                                 };
                             }
-                            BinaryArithmeticOperation::Divide => {
+                            BinaryArithmeticOperation::Divide | BinaryArithmeticOperation::IntDivide => {
                                 return AsciiBoundaryError::Scope {
                                     kind: ScopeFailureKind::Contract,
                                     reason: "legacy division has no integer arithmetic SQL failure",
@@ -1998,6 +2013,10 @@ fn materialize_computed(
             | EvaluatedBytesOp::ModIntSuNative
             | EvaluatedBytesOp::ModIntUsNative
             | EvaluatedBytesOp::ModIntUuNative
+            | EvaluatedBytesOp::IntDivIntSsNative
+            | EvaluatedBytesOp::IntDivIntUsNative
+            | EvaluatedBytesOp::IntDivIntSuNative
+            | EvaluatedBytesOp::IntDivIntUuNative
             | EvaluatedBytesOp::BinaryArithmeticNullNative
             | EvaluatedBytesOp::BinaryArithmeticMissingLegacy
             | EvaluatedBytesOp::CompareIntSsNative(_)
@@ -2379,7 +2398,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::SubInt128RejectRightLegacy
             | EvaluatedBytesOp::MulInt128SignedLegacy
             | EvaluatedBytesOp::MulInt128UnsignedLegacy
-            | EvaluatedBytesOp::ModInt128Legacy,
+            | EvaluatedBytesOp::ModInt128Legacy
+            | EvaluatedBytesOp::IntDivInt128Legacy,
             ComputedValue::Int128(value),
         ) => {
             match value.metadata() {
@@ -2482,6 +2502,8 @@ pub enum LegacyIntegerArithmetic {
     MulUnsigned,
     /// All four legacy wire labels share the full-i128 remainder profile.
     Modulo,
+    /// Legacy integer DIV keeps its original full-i128 ordinary quotient policy.
+    IntDivide,
 }
 
 /// Missing children and an actually evaluated SQL NULL have distinct recipes.
@@ -2902,6 +2924,7 @@ pub fn eval_legacy_integer_arithmetic_in(
                         EvaluatedBytesOp::MulInt128UnsignedLegacy
                     }
                     LegacyIntegerArithmetic::Modulo => EvaluatedBytesOp::ModInt128Legacy,
+                    LegacyIntegerArithmetic::IntDivide => EvaluatedBytesOp::IntDivInt128Legacy,
                 };
                 Ok((operation, EvaluatedArgs::Int1282(Some(left), Some(right))))
             }
@@ -2937,6 +2960,13 @@ pub fn eval_legacy_real_arithmetic_in(
                     BinaryArithmeticOperation::Multiply => EvaluatedBytesOp::MulRealLegacy,
                     BinaryArithmeticOperation::Modulo => EvaluatedBytesOp::ModRealLegacy,
                     BinaryArithmeticOperation::Divide => EvaluatedBytesOp::DivRealLegacy,
+                    BinaryArithmeticOperation::IntDivide => {
+                        return Err(AsciiBoundaryError::Scope {
+                            kind: ScopeFailureKind::Contract,
+                            reason: "integer division is not a legacy REAL arithmetic profile",
+                        }
+                        .into_eval_error());
+                    }
                 };
                 Ok((
                     operation,
@@ -2967,6 +2997,13 @@ pub fn eval_legacy_decimal_arithmetic_in(
         BinaryArithmeticOperation::Subtract => EvaluatedBytesOp::SubDecimalLegacy,
         BinaryArithmeticOperation::Multiply => EvaluatedBytesOp::MulDecimalLegacy,
         BinaryArithmeticOperation::Modulo => EvaluatedBytesOp::ModDecimalNative,
+        BinaryArithmeticOperation::IntDivide => {
+            return Err(AsciiBoundaryError::Scope {
+                kind: ScopeFailureKind::Contract,
+                reason: "integer division is not a legacy decimal arithmetic profile",
+            }
+            .into_eval_error());
+        }
         BinaryArithmeticOperation::Divide => {
             return Err(AsciiBoundaryError::Scope {
                 kind: ScopeFailureKind::Contract,
@@ -3061,7 +3098,7 @@ pub(crate) fn eval_arithmetic_decimal_fast_in(
             }
             .into_eval_error());
         }
-        BinaryArithmeticOperation::Divide => {
+        BinaryArithmeticOperation::Divide | BinaryArithmeticOperation::IntDivide => {
             return Err(AsciiBoundaryError::Scope {
                 kind: ScopeFailureKind::Contract,
                 reason: "division is unsupported by the decimal fast contract",

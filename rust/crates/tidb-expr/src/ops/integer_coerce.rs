@@ -107,6 +107,12 @@ pub(super) fn prepare_integer_arithmetic(
             (true, false) => Op::ModIntUsNative,
             (true, true) => Op::ModIntUuNative,
         },
+        BinaryOp::IntDiv => match (left_unsigned, right_unsigned) {
+            (false, false) => Op::IntDivIntSsNative,
+            (false, true) => Op::IntDivIntSuNative,
+            (true, false) => Op::IntDivIntUsNative,
+            (true, true) => Op::IntDivIntUuNative,
+        },
         _ => unreachable!("only worker arithmetic families prepare here"),
     };
     unsigned_result.set(if op == BinaryOp::Mod {
@@ -127,7 +133,7 @@ pub(crate) fn integer_binary(
     if comparison_operation(op).is_some() {
         return eval_comparison_int_in(op, a, b, ctx);
     }
-    if matches!(op, Plus | Minus | Mul | Mod) {
+    if matches!(op, Plus | Minus | Mul | Mod | IntDiv) {
         let unsigned_result = std::cell::Cell::new(false);
         return crate::tikv::evaluate_prepared_args_in(
             ctx,
@@ -144,43 +150,16 @@ pub(crate) fn integer_binary(
     }
     let bits_a = integer_bits(a);
     let bits_b = integer_bits(b);
-    Ok(match op {
+    match op {
         Plus | Minus | Mul => unreachable!("worker arithmetic dispatched above"),
-        // `DIV`/`MOD` by zero yield NULL in MySQL. `DIV` truncates toward zero.
-        IntDiv => {
-            if bits_b == 0 {
-                ctx.handle_division_by_zero()?;
-                Datum::Null
-            } else {
-                // Go selects a different checked helper for every signedness
-                // pair.  In particular, a mixed signed/unsigned quotient is
-                // an unsigned result and rejects a negative quotient instead
-                // of dividing the raw two's-complement bit patterns.
-                let quotient = match (a, b) {
-                    (Integer::Unsigned(lhs), Integer::Unsigned(rhs)) => lhs / rhs,
-                    (Integer::Unsigned(lhs), Integer::Signed(rhs)) => {
-                        div_uint_with_int(lhs, rhs).map_err(|_| EvalError::IntOverflow)?
-                    }
-                    (Integer::Signed(lhs), Integer::Unsigned(rhs)) => {
-                        div_int_with_uint(lhs, rhs).map_err(|_| EvalError::IntOverflow)?
-                    }
-                    (Integer::Signed(lhs), Integer::Signed(rhs)) => {
-                        return div_int64(lhs, rhs)
-                            .map(Datum::Int)
-                            .map_err(|_| EvalError::IntOverflow);
-                    }
-                };
-                Datum::UInt(quotient)
-            }
-        }
-        Mod => unreachable!("worker arithmetic dispatched above"),
+        IntDiv | Mod => unreachable!("worker arithmetic dispatched above"),
         BitAnd | BitOr | BitXor | LeftShift | RightShift => {
-            return eval_bitwise_binary_in(op, Some(bits_a as i64), Some(bits_b as i64), ctx);
+            eval_bitwise_binary_in(op, Some(bits_a as i64), Some(bits_b as i64), ctx)
         }
         Eq | Ne | Lt | Le | Gt | Ge => unreachable!("worker comparison dispatched above"),
         Div => unreachable!("handled above"),
         LogicAnd | LogicOr | LogicXor | NullEq => unreachable!("handled above"),
-    })
+    }
 }
 
 #[cfg(test)]

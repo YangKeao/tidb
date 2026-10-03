@@ -4375,18 +4375,24 @@ impl LegacyEvaluator<'_> {
                             self.raw_columns,
                         )?
                     }
-                    // `types.IntDivide`: truncated division, NULL on a zero
-                    // divisor, sign of the dividend. The four unsigned-flag
-                    // pairings divide the same values, so one i128 arm serves;
-                    // Go's `MinInt / -1` panic is unreachable at this width.
+                    // All five labels retain the same full-width i128 policy.
+                    // A JSON-to-int child can produce i128::MIN, so MIN / -1
+                    // remains an actual division panic, not a SQL overflow.
                     SimpleSig::IntDivideInt
                     | SimpleSig::IntDivideIntUnsignedUnsigned
                     | SimpleSig::IntDivideIntUnsignedSigned
                     | SimpleSig::IntDivideIntSignedSigned
-                    | SimpleSig::IntDivideIntSignedUnsigned => match (child(0)?, child(1)?) {
-                        (Some(left), Some(right)) if right != 0 => Some(left / right),
-                        _ => None,
-                    },
+                    | SimpleSig::IntDivideIntSignedUnsigned => {
+                        // NULL on the left still demands the right child;
+                        // an error on the left returns before evaluating it.
+                        let (left, right) = (child(0)?, child(1)?);
+                        let args = legacy_comparison_args(children.len(), left, right);
+                        tidb_expr::eval_legacy_integer_arithmetic_in(
+                            tidb_expr::LegacyIntegerArithmetic::IntDivide,
+                            args,
+                            self.raw_columns,
+                        )?
+                    }
                     SimpleSig::IntDivideDecimal => {
                         // Go `EvalIntDivideDecimal`: `DecimalDiv` then `ToInt` --
                         // the quotient truncated to the integer part, NULL on a
@@ -6467,6 +6473,142 @@ mod tests {
             SimpleExpr::Real(value) => assert_eq!(value, 1.5),
             other => panic!("unexpected leaf: {other:?}"),
         }
+    }
+
+    #[test]
+    fn legacy_integer_division_worker_keeps_full_width_demand_and_panic() {
+        use tidb_datatype::{BinaryJSON, BinaryJSONValue, Datum};
+        struct NoGetters;
+        impl tidb_expr::Columns for NoGetters {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn div_precision_increment(&self) -> u32 {
+                panic!("legacy integer DIV does not read precision")
+            }
+            fn no_unsigned_subtraction(&self) -> bool {
+                panic!("legacy integer DIV ignores unsigned subtraction mode")
+            }
+            fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+                panic!("legacy integer DIV does not read the session zone")
+            }
+            fn handle_division_by_zero(&self) -> Result<(), tidb_expr::EvalError> {
+                panic!("legacy integer DIV returns NULL without a zero diagnostic")
+            }
+            fn append_warning(&self, _: u16, _: &str) {
+                panic!("legacy integer DIV does not emit warnings")
+            }
+        }
+        let pool = |slots| {
+            tidb_expr::AsciiPoolOwner::new(
+                tidb_expr::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 << 20,
+                    4 << 20,
+                    4 << 20,
+                    64,
+                    8,
+                    4 << 20,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let json_int = |value| {
+            SimpleExpr::Func(
+                SimpleSig::CastJsonAsInt,
+                vec![SimpleExpr::Json(
+                    BinaryJSON::from_typed_value(&BinaryJSONValue::Float64(value)).unwrap(),
+                )],
+            )
+        };
+        let minimum = json_int(-1e100);
+        let panic_child = SimpleExpr::Func(
+            SimpleSig::IntDivideInt,
+            vec![minimum.clone(), SimpleExpr::Int(-1)],
+        );
+        let sql_error = SimpleExpr::Func(
+            SimpleSig::CastRealAsInt,
+            vec![SimpleExpr::Real(f64::INFINITY)],
+        );
+        let time_zone = zone();
+        let row = [Datum::UInt(u64::MAX)];
+        for slots in [0, 1] {
+            let owner = pool(slots);
+            let execution = owner.begin_execution().unwrap();
+            let scope = execution.scope();
+            scope.with_columns(&NoGetters, |columns| {
+                let evaluator = LegacyEvaluator {
+                    raw_columns: columns,
+                    ..LegacyEvaluator::new(&row, 4, &time_zone)
+                };
+                assert_eq!(evaluator.eval_expr(&minimum).unwrap(), Some(i128::MIN));
+                for sig in [
+                    SimpleSig::IntDivideInt,
+                    SimpleSig::IntDivideIntUnsignedUnsigned,
+                    SimpleSig::IntDivideIntUnsignedSigned,
+                    SimpleSig::IntDivideIntSignedSigned,
+                    SimpleSig::IntDivideIntSignedUnsigned,
+                ] {
+                    for (children, expected) in [
+                        (vec![SimpleExpr::Int(-7), SimpleExpr::Int(2)], Some(-3)),
+                        (vec![SimpleExpr::Int(i64::MIN), SimpleExpr::Int(-1)], Some(1_i128 << 63)),
+                        (vec![SimpleExpr::Column(0), SimpleExpr::Int(1)], Some(i128::from(u64::MAX))),
+                        (vec![json_int(1e100), SimpleExpr::Int(1)], Some(i128::MAX)),
+                        (vec![minimum.clone(), SimpleExpr::Int(1)], Some(i128::MIN)),
+                        (vec![SimpleExpr::Int(1), SimpleExpr::Int(-2)], Some(0)),
+                        (vec![SimpleExpr::Int(7), SimpleExpr::Int(0)], None),
+                        (vec![SimpleExpr::Null, SimpleExpr::Int(2)], None),
+                        (vec![SimpleExpr::Int(2), SimpleExpr::Null], None),
+                        (vec![], None),
+                        (vec![SimpleExpr::Int(1)], None),
+                        (vec![SimpleExpr::Int(7), SimpleExpr::Int(2), panic_child.clone()], Some(3)),
+                    ] {
+                        let result = evaluator.eval_expr(&SimpleExpr::Func(sig.clone(), children));
+                        if slots == 0 {
+                            assert!(matches!(
+                                result,
+                                Err(LegacyEvalError::Infrastructure(
+                                    tidb_expr::EvalError::ExpressionAdapterFailure(ref failure)
+                                )) if failure.class() == tidb_expr::ExpressionAdapterFailureClass::PoolResource
+                            ));
+                        } else {
+                            assert_eq!(result.unwrap(), expected);
+                        }
+                    }
+                    // The original tuple demands RHS after NULL, but an LHS
+                    // error returns before the RHS (which would otherwise panic).
+                    for children in [
+                        vec![SimpleExpr::Null, sql_error.clone()],
+                        vec![SimpleExpr::Int(1), sql_error.clone()],
+                        vec![sql_error.clone(), panic_child.clone()],
+                    ] {
+                        assert!(matches!(
+                            evaluator.eval_expr(&SimpleExpr::Func(sig.clone(), children)),
+                            Err(LegacyEvalError::Sql(message)) if message.contains("overflows bigint")
+                        ));
+                    }
+                }
+            });
+            drop(scope);
+            execution.close();
+        }
+        // A fresh execution isolates the intentional panic and its poisoned
+        // scope. Only this test catches it; production keeps the raw operator.
+        let owner = pool(1);
+        let execution = owner.begin_execution().unwrap();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            execution.scope().with_columns(&NoGetters, |columns| {
+                LegacyEvaluator {
+                    raw_columns: columns,
+                    ..LegacyEvaluator::new(&row, 4, &time_zone)
+                }
+                .eval_expr(&panic_child)
+            })
+        }));
+        assert!(outcome.is_err());
+        execution.close();
     }
 
     #[test]

@@ -1424,6 +1424,13 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::TidbParseTsoNative | EvaluatedBytesOp::TimeDiffTextNative => {
             panic!("TSO and TIMEDIFF need their actual operands and conditional demand")
         }
+        EvaluatedBytesOp::IntDivIntSsNative
+        | EvaluatedBytesOp::IntDivIntUsNative
+        | EvaluatedBytesOp::IntDivIntSuNative
+        | EvaluatedBytesOp::IntDivIntUuNative
+        | EvaluatedBytesOp::IntDivInt128Legacy => {
+            panic!("integer DIV needs both original operands and its signedness policy")
+        }
         EvaluatedBytesOp::TidbShardNative => "TIDB_SHARD",
         EvaluatedBytesOp::VitessHashNative => "VITESS_HASH",
         EvaluatedBytesOp::FormatBytesNative => "FORMAT_BYTES",
@@ -2144,6 +2151,153 @@ fn json_merge_sdk_rejects_bad_frames_and_preserves_empty_patch_panic() {
                 columns,
                 || super::super::prepare_json_merge_patch_args(&[]),
                 EvaluatedBytesResult::into_bytes,
+            )
+        })
+    }));
+    let observation = take_eval_one_observation();
+    assert!(panic.is_err());
+    assert_eq!(observation.facade_entries, 1);
+    assert_eq!(observation.before_kernel_invocations, Some(0));
+    assert_eq!(observation.after_kernel_invocations, None);
+    assert!(scope.poisoned.get());
+    assert!(scope.lease.borrow().is_none());
+    let disposed = owner.snapshot().unwrap();
+    assert_eq!((disposed.live, disposed.idle, disposed.retired), (0, 0, 1));
+    assert_eq!(disposed.reserved_bytes, disposed.base_bytes);
+    assert!(matches!(scope.evaluate_value(&Datum::Null),
+        Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopePoisoned));
+    assert_eq!(owner.snapshot().unwrap(), disposed);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn integer_div_sdk_preserves_signed_pair_policy_and_full_legacy_quotients() {
+    use EvaluatedBytesOp::*;
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (operation, left, right, expected) in [
+            (IntDivIntSsNative, -13, 11, Ok(Datum::Int(-1))),
+            (IntDivIntSsNative, i64::MIN, -1, Err(EvalError::IntOverflow)),
+            (IntDivIntUsNative, -1, 1, Ok(Datum::UInt(u64::MAX))),
+            (IntDivIntUsNative, 1, -2, Ok(Datum::UInt(0))),
+            (IntDivIntUsNative, 13, -11, Err(EvalError::IntOverflow)),
+            (IntDivIntSuNative, -1, 2, Ok(Datum::UInt(0))),
+            (IntDivIntSuNative, -13, 11, Err(EvalError::IntOverflow)),
+            (IntDivIntUuNative, -1, 1, Ok(Datum::UInt(u64::MAX))),
+        ] {
+            let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                operation, columns, || Ok(EvaluatedArgs::Int2(Some(left), Some(right))),
+                |computed| if operation == IntDivIntSsNative { computed.into_int_datum() } else { computed.into_uint_bits_datum() },
+            ));
+            assert_eq!(result, expected);
+            assert_wide_math_c4(observation);
+        }
+        for operation in [IntDivIntSsNative, IntDivIntUsNative, IntDivIntSuNative, IntDivIntUuNative] {
+            let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                operation, columns, || Ok(EvaluatedArgs::Int2(Some(i64::MIN), Some(0))),
+                |computed| if operation == IntDivIntSsNative { computed.into_int_datum() } else { computed.into_uint_bits_datum() },
+            ));
+            assert_eq!(result, Ok(Datum::Null));
+            assert_wide_math_c4(observation);
+            assert_eq!(scope.lease.borrow().as_ref().unwrap().worker.as_ref().unwrap().operation(), operation);
+        }
+        for (args, expected, operation) in [
+            (LegacyBinaryArgs::Values(i128::MAX, 1), Some(i128::MAX), IntDivInt128Legacy),
+            (LegacyBinaryArgs::Values(i128::MIN, 1), Some(i128::MIN), IntDivInt128Legacy),
+            (LegacyBinaryArgs::Values(-13, 11), Some(-1), IntDivInt128Legacy),
+            (LegacyBinaryArgs::Values(i128::MAX, 0), None, IntDivInt128Legacy),
+            (LegacyBinaryArgs::Missing, None, BinaryArithmeticMissingLegacy),
+            (LegacyBinaryArgs::NullWitness(None), None, BinaryArithmeticNullNative),
+        ] {
+            let (result, observation) = observe_wide_math(|| eval_legacy_integer_arithmetic_in(LegacyIntegerArithmetic::IntDivide, args, columns));
+            assert_eq!(result, Ok(expected));
+            assert_wide_math_c4(observation);
+            assert_eq!(scope.lease.borrow().as_ref().unwrap().worker.as_ref().unwrap().operation(), operation);
+        }
+        // The new operation identity cannot silently select old REAL, decimal,
+        // or fast-decimal '/' policies through their general arithmetic SDKs.
+        assert!(matches!(eval_legacy_real_arithmetic_in(BinaryArithmeticOperation::IntDivide,
+            LegacyBinaryArgs::Values(1.0, 1.0), columns),
+            Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract));
+        assert!(matches!(eval_legacy_decimal_arithmetic_in(BinaryArithmeticOperation::IntDivide,
+            LegacyBinaryArgs::Values(crate::Decimal::from_literal("1"), crate::Decimal::from_literal("1")), columns),
+            Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract));
+        assert!(matches!(eval_arithmetic_decimal_fast_in(BinaryArithmeticOperation::IntDivide, None, None, columns),
+            Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract));
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn integer_div_sdk_keeps_refusals_and_legacy_overflow_panic_retirement() {
+    use EvaluatedBytesOp::*;
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for operation in [IntDivIntSsNative, IntDivIntUsNative, IntDivIntSuNative, IntDivIntUuNative, IntDivInt128Legacy] {
+            let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                operation, columns,
+                || Ok(if operation == IntDivInt128Legacy {
+                    EvaluatedArgs::Int1282(None, Some(1))
+                } else {
+                    EvaluatedArgs::Int2(None, Some(1))
+                }),
+                |_| -> Result<Datum, EvalError> { panic!("refused operand presence must not reach packing") },
+            ));
+            assert!(matches!(result, Err(EvalError::ExpressionRuntimeFailure(_))));
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(observation.before_kernel_invocations, observation.after_kernel_invocations);
+        }
+        assert!(matches!(eval_legacy_integer_arithmetic_in(LegacyIntegerArithmetic::IntDivide,
+            LegacyBinaryArgs::NullWitness(Some(0)), columns),
+            Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract));
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for operation in [IntDivIntSsNative, IntDivIntUsNative, IntDivIntSuNative, IntDivIntUuNative] {
+            let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                operation, columns, || Ok(EvaluatedArgs::Int2(Some(i64::MIN), Some(-1))),
+                EvaluatedBytesResult::into_int_datum,
+            ));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        for args in [LegacyBinaryArgs::Values(i128::MIN, -1), LegacyBinaryArgs::Values(1, 0), LegacyBinaryArgs::Missing, LegacyBinaryArgs::NullWitness(None)] {
+            let (result, observation) = observe_wide_math(|| eval_legacy_integer_arithmetic_in(LegacyIntegerArithmetic::IntDivide, args, columns));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    arm_eval_one_observation();
+    let panic = catch_unwind(AssertUnwindSafe(|| {
+        scope.with_columns(&crate::NoColumns, |columns| {
+            eval_legacy_integer_arithmetic_in(
+                LegacyIntegerArithmetic::IntDivide,
+                LegacyBinaryArgs::Values(i128::MIN, -1),
+                columns,
             )
         })
     }));

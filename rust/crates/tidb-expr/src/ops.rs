@@ -21,7 +21,6 @@ use crate::coerce::{
     integer_bits, integer_of, integer_to_decimal, integer_to_f64, truthy_of, Integer,
 };
 use crate::{Datum, Decimal, EvalError};
-use tidb_datatype::{div_int64, div_int_with_uint, div_uint_with_int};
 
 mod integer_coerce;
 mod operand;
@@ -639,7 +638,7 @@ fn eval_binary_arithmetic_in(
     )
 }
 
-/// A non-NULL MOD or / input pair yields NULL only when the worker found
+/// A non-NULL MOD, / or integer DIV pair yields NULL only when the worker found
 /// division by zero. Genuine input NULL and failed admission never warn.
 fn finish_arithmetic_result(
     op: BinaryOp,
@@ -647,7 +646,10 @@ fn finish_arithmetic_result(
     input_was_null: bool,
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
-    if matches!(op, BinaryOp::Mod | BinaryOp::Div) && !input_was_null && value.is_null() {
+    if matches!(op, BinaryOp::Mod | BinaryOp::Div | BinaryOp::IntDiv)
+        && !input_was_null
+        && value.is_null()
+    {
         ctx.handle_division_by_zero()?;
     }
     Ok(value)
@@ -1270,11 +1272,11 @@ pub(crate) fn eval_binary_full(
         // while casting to Decimal, before the ordinary real promotion below.
         if op == IntDiv {
             if l == Datum::Null {
-                return Ok(Datum::Null);
+                return eval_binary_arithmetic_null_in(ctx);
             }
             let a = decimal_div_operand(l, operands.lhs, ctx)?;
             if r == Datum::Null {
-                return Ok(Datum::Null);
+                return eval_binary_arithmetic_null_in(ctx);
             }
             let b = decimal_div_operand(r, operands.rhs, ctx)?;
             return decimal_integer_division(&a, &b, unsigned_pair, ctx);
@@ -1328,6 +1330,9 @@ pub(crate) fn eval_binary_full(
     if l == Datum::Null || r == Datum::Null {
         if matches!(op, BitAnd | BitOr | BitXor | LeftShift | RightShift) {
             return eval_bitwise_binary_in(op, None, None, ctx);
+        }
+        if op == IntDiv {
+            return eval_binary_arithmetic_null_in(ctx);
         }
         return Ok(Datum::Null);
     }
@@ -1533,6 +1538,9 @@ fn decimal_binary(
     if l == Datum::Null || r == Datum::Null {
         if matches!(op, BitAnd | BitOr | BitXor | LeftShift | RightShift) {
             return eval_bitwise_binary_in(op, None, None, ctx);
+        }
+        if op == IntDiv {
+            return eval_binary_arithmetic_null_in(ctx);
         }
         return Ok(Datum::Null);
     }
@@ -2595,6 +2603,263 @@ mod tests {
                 Err(EvalError::DecimalOverflow),
                 "op={op:?}"
             );
+        }
+    }
+
+    #[test]
+    fn integer_division_workers_preserve_scope_flags_and_warning_demand() {
+        use crate::context::ErrorLevel;
+        use std::cell::{Cell, RefCell};
+        struct Demand {
+            precision: Cell<usize>,
+            zero: Cell<usize>,
+            strict: bool,
+            warnings: RefCell<Vec<(u16, String)>>,
+        }
+        impl crate::Columns for Demand {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn div_precision_increment(&self) -> u32 {
+                self.precision.set(self.precision.get() + 1);
+                4
+            }
+            fn no_unsigned_subtraction(&self) -> bool {
+                panic!("DIV must not read subtraction mode")
+            }
+            fn division_by_zero_level(&self) -> ErrorLevel {
+                self.zero.set(self.zero.get() + 1);
+                if self.strict {
+                    ErrorLevel::Error
+                } else {
+                    ErrorLevel::Warn
+                }
+            }
+            fn truncate_level(&self) -> ErrorLevel {
+                if self.strict {
+                    ErrorLevel::Error
+                } else {
+                    ErrorLevel::Warn
+                }
+            }
+            fn append_warning(&self, code: u16, message: &str) {
+                self.warnings.borrow_mut().push((code, message.to_owned()));
+            }
+        }
+        let demand = |strict| Demand {
+            precision: Cell::new(0),
+            zero: Cell::new(0),
+            strict,
+            warnings: RefCell::new(Vec::new()),
+        };
+        let resource = |result: Result<Datum, EvalError>| {
+            let error = result.expect_err("integer DIV and observed NULL roots retain their scope");
+            let EvalError::ExpressionAdapterFailure(failure) = error else {
+                panic!("{error:?}")
+            };
+            assert_eq!(
+                failure.class(),
+                crate::ExpressionAdapterFailureClass::PoolResource
+            );
+            assert_eq!(
+                failure.origin(),
+                crate::ExpressionAdapterFailureOrigin::Pool
+            );
+        };
+        let cases = [
+            (Datum::Int(-13), Datum::Int(11), Ok(Datum::Int(-1))),
+            (
+                Datum::Int(i64::MIN),
+                Datum::Int(1),
+                Ok(Datum::Int(i64::MIN)),
+            ),
+            (
+                Datum::Int(i64::MIN),
+                Datum::Int(-1),
+                Err(EvalError::IntOverflow),
+            ),
+            (Datum::UInt(1), Datum::Int(-2), Ok(Datum::UInt(0))),
+            (Datum::UInt(1), Datum::Int(-1), Err(EvalError::IntOverflow)),
+            (Datum::UInt(0), Datum::Int(i64::MIN), Ok(Datum::UInt(0))),
+            (Datum::Int(-1), Datum::UInt(2), Ok(Datum::UInt(0))),
+            (
+                Datum::Int(i64::MIN),
+                Datum::UInt(u64::MAX),
+                Ok(Datum::UInt(0)),
+            ),
+            (
+                Datum::Int(i64::MIN),
+                Datum::UInt(1 << 63),
+                Err(EvalError::IntOverflow),
+            ),
+            (
+                Datum::UInt(u64::MAX),
+                Datum::UInt(1),
+                Ok(Datum::UInt(u64::MAX)),
+            ),
+        ];
+        for slots in [1, 0] {
+            let owner = crate::AsciiPoolOwner::new(
+                crate::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    64,
+                    8,
+                    4 * 1024 * 1024,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let execution = owner.begin_execution().unwrap();
+            for (left, right, expected) in &cases {
+                let ctx = demand(false);
+                let result = execution.scope().with_columns(&ctx, |columns| {
+                    super::eval_binary_in(BinaryOp::IntDiv, left.clone(), right.clone(), columns)
+                });
+                if slots == 1 {
+                    assert_eq!(&result, expected);
+                } else {
+                    resource(result);
+                }
+                assert_eq!(ctx.precision.get(), 1);
+                assert_eq!(ctx.zero.get(), 0);
+                assert!(ctx.warnings.borrow().is_empty());
+            }
+            // A typed unsigned field can carry signed raw bits (e.g. YEAR).
+            let unsigned = crate::expression::Expression::Column(crate::column::Column::new(
+                1,
+                tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::LongLong)
+                    .with_added_flags(tidb_datatype::FieldTypeFlags::UNSIGNED),
+            ));
+            let signed = crate::expression::Expression::Column(crate::column::Column::new(
+                2,
+                tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::LongLong),
+            ));
+            let ctx = demand(false);
+            let result = execution.scope().with_columns(&ctx, |columns| {
+                eval_binary_full(
+                    BinaryOp::IntDiv,
+                    Datum::Int(-1),
+                    Datum::Int(1),
+                    4,
+                    DERIVATION_FREE_COLLATION,
+                    Operands::of(&unsigned, &signed),
+                    columns,
+                )
+            });
+            if slots == 1 {
+                assert_eq!(result.unwrap(), Datum::UInt(u64::MAX));
+            } else {
+                resource(result);
+            }
+            assert_eq!(
+                ctx.precision.get(),
+                0,
+                "explicit-precision entry does not add a getter"
+            );
+            for strict in [false, true] {
+                for left in [Datum::Int(7), Datum::UInt(7)] {
+                    for right in [Datum::Int(0), Datum::UInt(0)] {
+                        let ctx = demand(strict);
+                        let result = execution.scope().with_columns(&ctx, |columns| {
+                            super::eval_binary_in(BinaryOp::IntDiv, left.clone(), right, columns)
+                        });
+                        if slots == 0 {
+                            resource(result);
+                        } else if strict {
+                            assert_eq!(result, Err(EvalError::DivisionByZero));
+                        } else {
+                            assert_eq!(result, Ok(Datum::Null));
+                        }
+                        assert_eq!(ctx.precision.get(), 1);
+                        assert_eq!(ctx.zero.get(), usize::from(slots == 1));
+                        let warnings = ctx.warnings.take();
+                        if slots == 1 && !strict {
+                            assert_eq!(warnings, [(1365, "Division by 0".to_owned())]);
+                        } else {
+                            assert!(warnings.is_empty());
+                        }
+                    }
+                }
+            }
+            for (left, right) in [
+                (Datum::Null, Datum::Int(0)),
+                (Datum::Int(0), Datum::Null),
+                (Datum::Decimal(Decimal::from_int(1)), Datum::Null),
+                (Datum::Null, Datum::Real(f64::NAN)),
+                (Datum::Real(1.5), Datum::Null),
+            ] {
+                let ctx = demand(false);
+                let result = execution.scope().with_columns(&ctx, |columns| {
+                    super::eval_binary_in(BinaryOp::IntDiv, left, right, columns)
+                });
+                if slots == 1 {
+                    assert_eq!(result, Ok(Datum::Null));
+                } else {
+                    resource(result);
+                }
+                assert_eq!(ctx.precision.get(), 1);
+                assert_eq!(ctx.zero.get(), 0);
+                assert!(ctx.warnings.borrow().is_empty());
+            }
+            for strict in [false, true] {
+                let ctx = demand(strict);
+                let result = execution.scope().with_columns(&ctx, |columns| {
+                    super::eval_binary_in(
+                        BinaryOp::IntDiv,
+                        Datum::new_string("bad"),
+                        Datum::Null,
+                        columns,
+                    )
+                });
+                if strict {
+                    assert!(
+                        matches!(result, Err(EvalError::TruncatedWrongValue(message)) if message == "Truncated incorrect DECIMAL value: 'bad'")
+                    );
+                    assert!(ctx.warnings.borrow().is_empty());
+                } else {
+                    if slots == 1 {
+                        assert_eq!(result, Ok(Datum::Null));
+                    } else {
+                        resource(result);
+                    }
+                    assert_eq!(
+                        ctx.warnings.take(),
+                        [(1292, "Truncated incorrect DECIMAL value: 'bad'".to_owned())]
+                    );
+                }
+                assert_eq!(ctx.precision.get(), 1);
+                assert_eq!(ctx.zero.get(), 0);
+            }
+            let ctx = demand(false);
+            assert!(matches!(
+                execution
+                    .scope()
+                    .with_columns(&ctx, |columns| super::eval_binary_in(
+                        BinaryOp::IntDiv,
+                        Datum::MinNotNull,
+                        Datum::Null,
+                        columns,
+                    )),
+                Err(EvalError::Unsupported("range sentinel expression operand"))
+            ));
+            assert!(matches!(
+                execution
+                    .scope()
+                    .with_columns(&ctx, |columns| super::eval_binary_in(
+                        BinaryOp::IntDiv,
+                        Datum::Raw(vec![]),
+                        Datum::Null,
+                        columns,
+                    )),
+                Err(EvalError::UnsupportedOperandPair(_, _))
+            ));
+            assert_eq!(ctx.precision.get(), 2);
+            assert_eq!(ctx.zero.get(), 0);
+            assert!(ctx.warnings.borrow().is_empty());
         }
     }
 

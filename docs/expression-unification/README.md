@@ -1,26 +1,24 @@
 # Expression unification experiment
 
 Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
-Current checkpoint: **intdiv-sdk-67**, following **tso-timediff-66**.
+Current checkpoint: **intdiv-integer-68**, following **intdiv-sdk-67**.
 
 ## Progress
 
-Functional migration remains **208/245**; strict final-audited count stays **0**. Target221 still needs13 more families;37 eligible families remain. Latest functional migration: tso-timediff-66.
+Functional migration remains **208/245**; strict final-audited count **0**. Target221 needs13 more families;37 eligible families remain. Latest whole-family migration: tso-timediff-66.
 
-This step shares **six type/SDK implementations**, not the INTDIV evaluator: three original raw Decimal projections/conversions move to TiKV, and three native signed/mixed division helpers delegate to existing TiKV codec implementations. Native methods retain representation/error adaptation only. No family credit is added; no evaluator, profile, carrier, binding or admission changes.
+This partial evaluator step takes over native integer DIV's four signedness combinations and legacy full-width i128 DIV, removes their duplicate quotient bodies, and connects actual scalar/vector NULL paths to the existing worker. Five fixed profiles use existing carriers/results and the existing arithmetic cause, with a distinct IntDivide operation identity. Actual zero divisors reach computation before native warning replay; legacy MIN/-1 still panics, with existing poisoned-worker retirement. Original coercion, getter and child-demand order remain.
 
-## Evidence and limits
+**No INTDIV family credit yet:** non-NULL native bounded Decimal, legacy exact Decimal and public exact-div/rem SDK still require closure. Their implementation blocks are byte-exact, not silently replaced by integer policy. No new PB/parser/wire admission, binding, driver, carrier, result kind or cause type.
 
-[Evidence](evidence/intdiv-sdk-checkpoint.md), [exact commands and hashes](logs/intdiv-sdk-summary.txt), [manifest](checkpoint.json), [cumulative ledger](migration-progress.json).
+## Validation and evidence
 
-Eight agents mapped the closure; two exclusive writers changed4 Rust files. All5 new SDK tests passed on their first gates. Eight Cargo launches: six green gates and two unchanged old full-suite REDs; no new RED, compile failure, retry or zero-match run. Original test bodies/oracles remain byte-exact.
+[Evidence](evidence/intdiv-integer-checkpoint.md), [exact commands/hashes](logs/intdiv-integer-summary.txt), [manifest](checkpoint.json), [cumulative ledger](migration-progress.json).
 
-CPP raw2/local317+1ignored; native Decimal97/overflow18/expression2/SQL1 pass (filters overlap). The existing SQL test checks four original queries across both vector modes, not new worker takeover. Full expression **1554/4old/94ignored**, unistore **208/1old/13ignored** match prior complete failure sections after only thread-ID normalization.
+Eight agents, exclusive files;12 Rust files changed,11 new tests passed on first gates. Eight Cargo launches: six green gates plus two unchanged old full-suite REDs; no compile failure/new RED/Cargo retry/zero-match. CPP integer4/local319+1ignored; native expression5/NULL1/legacy1/SQL2 pass (overlapping filters).
 
-Raw SDK behavior is not narrowed through the normalized math bridge: signed-text i128 projection, visible-scale independence, unsigned-negative early return, UTF8/slicing/scale panics and native diagnostic wording stay. Error-string allocation equivalence and performance are unverified. A new helper name collision was corrected before compilation without changing the old private method.
+SQL:10 fixed integer results in both modes=20 observations, eight direct zero-slot probes, one warning-before-overflow check. Plain typed columns, no masking wrapper. This proves the integer slice, not Decimal or whole INTDIV. Full expression **1558/4old/94ignored**, unistore **209/1old/13ignored** retain identical failure sections after thread-ID normalization. Original test bodies/oracles remain unchanged. One source-audit endpoint typo was corrected after grep/read; no production or test repair.
 
-INTDIV still needs exact division SDK closure, native/legacy evaluator policies, original precision-getter demand, warning-before-integer-overflow ordering and scalar/vector NULL roots. Its reachable legacy i128 MIN/-1 panic must not be hidden. A future two-stage design must explicitly share the existing scope; no ABI is approved by this checkpoint.
+No dependency/generated/Go/Bazel changes. Whole workspace/lint/dev/bazel_prepare, release/performance/zero-copy/physical heap/peak/OOM, exhaustive differential/TiFlash/FIPS, M6/default-NoColumns and prior JSON_KEYS/AST/SQL metadata/parser/GB/vector/Decimal gaps remain deferred. This is neither a whole-package transcreation nor a PR-readiness claim.
 
-Prior JSON_KEYS and AST/SQL compatibility gaps remain. M6/default-NoColumns whole roots, workspace/lint/dev/bazel_prepare, release/performance/zero-copy/physical heap/peak/OOM, exhaustive differential/TiFlash/FIPS and previous parser/GB/vector/Decimal exceptions are deferred. No dependency/generated/Go/Bazel changes or package-transcreation/PR-readiness claim.
-
-Three Plans agree; manifest pins their hash and paired TiKV commit. TiKV publishes first, then TiDB, without force push or PR. The old untracked client-differential BUILD.bazel stays excluded. Overall goal continues.
+Three Plans agree; manifest pins their hash and paired TiKV commit. TiKV publishes first, then TiDB, without force push or PR. Old untracked client-differential BUILD.bazel stays excluded. Overall goal continues.
