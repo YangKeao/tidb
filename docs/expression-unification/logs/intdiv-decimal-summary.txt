@@ -1,0 +1,59 @@
+intdiv-decimal-69 / round70. INTDIV functional closure:209/245, strict0;36 eligible remain,12 needed to221. Eight exclusive agents; parent serialized Cargo, --locked --test-threads=1 throughout. Raw logs: /home/agent/tidb/expression-unification/logs/intdiv-decimal-<id>.log. The ordering below is the actual14 launches; commands skipped after set-e failures are not launches/passes. cargo-tikv nightly-2026-01-30; cargo-tidb nightly-2026-08-22.
+
+TIKV cwd /home/agent/tidb/expression-unification/tikv:
+1. ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_exact_integer_division_tests -- --test-threads=1
+id=tikv-datatype sha256=48a773a67661c958c4f521af8db8c8db0aeec9f859f5be8c2269bf5ad48b08c0
+compile3.05s;1passed/1failed/0ignored/442filtered;elapsed0.00s;exit101. NEW TEST RED: expected visible text from storage-string API. Source write_storage/frac_cnt proves1.250 rather than1.25; only4 new-test literals/comment changed, field assertions/production/old tests untouched.
+2. ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_exact_integer_division_tests -- --test-threads=1
+id=tikv-datatype-r2 sha256=c6ff5c1ac162605e532995657c5b3c02bc01610b6cb28858e64d26cdbaaff81e
+compile2.00s;2/0/0/442;elapsed0.00s;exit0.
+
+NATIVE cwd /home/agent/tidb/expression-unification/tidb/rust:
+3. ../../tools/cargo-tidb test --locked -p tidb-datatype --lib decimal -- --test-threads=1
+id=native-datatype sha256=73560946f69a38947686bc195ec3b19308adbedcc1117fe8ca36fd59a7704322
+compile2.85s;99/0/0/354;elapsed23.18s;exit0.
+
+TIKV cwd as above:
+4. ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_intdiv -- --test-threads=1
+id=tikv-core sha256=31909587811fd03265779ef25a7b201d4a46b0160627fb9cd6c6950a80b842da
+compile15.64s;2/0/0/909;elapsed0.00s;exit0.
+5. ../tools/cargo-tikv test --locked -p tidb_query_expr --lib decimal_integer_division_wrapper_tests -- --test-threads=1
+id=tikv-wrappers sha256=7308a0e5bfb06281f657c7a965bd28bc8d870c77f754cef8ef6c6985fb75d8d5
+compile0.12s;2/0/0/909;elapsed0.00s;exit0.
+6. ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local -- --test-threads=1
+id=tikv-local sha256=8b6bc575e6015e4f2ce3cf44cbc4f5a567e0c58440bc64baa4c86084b3cb9dcc
+compile0.13s;321/0/1/589;elapsed0.22s;exit0.
+
+NATIVE cwd as above:
+7. ../../tools/cargo-tidb test --locked -p tidb-expr --lib decimal_integer_div -- --test-threads=1
+id=native-expr sha256=418fb19b3483f749acf0a7f749cf555a032218db2579d1e606f42fe34fdb5367
+COMPILEFAIL E0433 new encoder LocalError unqualified; no tests. Cargo did not report completed compile/test timing. Only the type path was fully qualified. Later legacy/SQL/integerSQL commands in this set-e sequence did not launch.
+8. ../../tools/cargo-tidb test --locked -p tidb-expr --lib decimal_integer_div -- --test-threads=1
+id=native-expr-r2 sha256=644cc54f5811b89dc175965c8558f6a943504c3009d4e35737713e178957bf25
+compile8.98s;0/4/0/1655;elapsed0.00s;exit101. REAL PRODUCTION RED including unchanged old small-coefficient test. Native factory max_nodes default4 could not hold5 physical operands+call. Only2 new native profiles joined the existing6-node arm; default4/depth3/legacy/oracles unchanged. Later3 commands again did not launch.
+9. ../../tools/cargo-tidb test --locked -p tidb-expr --lib decimal_integer_div -- --test-threads=1
+id=native-expr-r3 sha256=4b0c546ec82e0effae9d7d1b302b716c001cc758159892e73d048cbfaa40e00c
+compile4.50s;4/0/0/1655;elapsed0.02s;exit0. Original r2 oracles now pass.
+10. ../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_decimal_integer_division -- --test-threads=1
+id=native-legacy sha256=5226bcd383328adc4c74d433497eeacfb272f81914682cffd217573cf6d47605
+compile7.60s;1/0/0/223;elapsed0.00s;exit0.
+11. ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_decimal_div -- --test-threads=1
+id=sql sha256=18adb78d1b8240d5c3217f8351ca44ccfb780f43435147e4bc97d97e0faa6e4d
+compile31.26s;2/0/0/2213;elapsed0.04s;exit0.8 fixed Decimal DIV results x2vector modes=16 observations,8 direct zero-slot executions; fixed LongLong metadata/UInt flags, actual zero warning, no masking wrappers.
+12. ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_integer_div -- --test-threads=1
+id=sql-integer sha256=09519c84d7f9fece4b08b1d0bdcb3b2da907843f27188092bd29a96e860cd379
+compile0.14s;2/0/0/2213;elapsed0.04s;exit0. Prior integer SQL closure rechecked unchanged.
+13. ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+id=expr-full sha256=b25271cd8a54726e1908da3219d761543bd5dd8a7af401762e53432aa4580eab
+compile0.12s;1561/4OLD/94ignored/0filtered;elapsed13.91s;exit101.
+14. ../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+id=unistore-full sha256=3094be02613761296ace6bb114cf09cafa8f31a80bf331443365fdebd021767b
+compile0.13s;210/1OLD/13ignored/0filtered;elapsed3.02s;exit101.
+
+Full failure sections AND final lists compare byte-equal to intdiv-integer-68, changing ONLY numeric panic thread IDs. This audit extracts from the leading newline before failures: to the newline before test result: and uses (THREAD) as sentinel: current/previous identical expression digest411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95; unistore2f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1. Historical canonical receipts27654f2c0ad2971242c00f50182467598cdfd9c2c65e5bf5a32e683708448637 / b64dcced405c699c11b72ee31888c58e491b4e5b4e74fa2d445454e1d1e146e9 remain historical; the extraction/sentinel representation above explains a different digest, not different failures.
+
+14launches=13nonzero runs:9green+2newRED+2oldRED;1compile failure;3retry commands;0interrupted/zero-match. Filters overlap, ignored is not passing.16new tests ultimately pass, not all first-gate green. No provider/actual output used as oracle. One new-test API expectation correction, one missing type qualification and one real narrow factory-node production fix; original test functions byte-exact and fixtures not regenerated.
+
+Source audit compared every original #[test] function body in all changed files to HEAD, confirmed16 added tests and old bodies unchanged.17Rust files=9CPP(including1new module)/8native. Pinned rustfmt --edition 2021 --config skip_children=true --check on all17 passed; both git diff --check passed. scalar_function.rs and integer_coerce.rs untouched; no tracked manifest/lock/generated/dependency/Go/Bazel changes. Architecture-index review: path-only module guidance, no policy change; paths verified against current source, no stale deletion/reference introduced.
+
+Known explicit gap: raw-empty lhs / nonzero rhs previously exact zero now shared math InvalidInput (infallible SDK panic/evaluated infrastructure failure). Zero RHS before invalid LHS still preserved and tested. No native fallback or arbitrary invalid-raw math equality claim. Existing per-buffer/scratch/output bounds are not aggregate physical allocator-peak accounting. Whole-workspace/lint/dev/bazel_prepare/release/performance/zero-copy/OOM/exhaustive differential/TiFlash/FIPS/M6/default-NoColumns and prior JSON_KEYS/AST/SQLmetadata/parser/GB/vector/Decimal gaps remain unverified. No complete-package transcreation, strict-completion or PR-ready claim. Goal active.

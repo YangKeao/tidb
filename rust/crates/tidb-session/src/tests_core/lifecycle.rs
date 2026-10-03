@@ -9363,6 +9363,129 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_decimal_div_preserves_fast_bounded_unsigned_and_null_values() {
+    let mut session = Session::new();
+    session
+        .run("SET sql_mode='STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO'")
+        .unwrap();
+    session.run("SET div_precision_increment=4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_decimal_div_sql (f DECIMAL(10,2), fd DECIMAL(10,2), b DECIMAL(20,4), bd DECIMAL(20,4), u DECIMAL(22,2) UNSIGNED, ud DECIMAL(22,2), neg DECIMAL(10,2), eleven DECIMAL(10,2), small_neg DECIMAL(10,2), ueleven DECIMAL(10,2) UNSIGNED, n DECIMAL(10,2), z DECIMAL(10,2))").unwrap();
+    session.run("INSERT INTO shared_decimal_div_sql VALUES (11.01,1.10,0.3000,0.1000,18446744073709551615.00,1.50,-13.00,11.00,-1.00,11.00,NULL,0.00)").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    // Matching storage scales 2 fit the existing i128 fast policy. Scale 4
+    // deliberately selects bounded DecimalDiv instead; both operands are
+    // already DECIMAL columns, so no other arithmetic/cast worker intervenes.
+    // These expected integers are literal source vectors, not another DIV call.
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        let StmtOutput::Rows { columns, rows } = session.run_with_columns("SELECT f DIV fd,b DIV bd,u DIV ud,neg DIV eleven,small_neg DIV ueleven,n DIV fd,f DIV n,f DIV z FROM shared_decimal_div_sql").unwrap() else {
+            panic!("expected decimal DIV rows")
+        };
+        assert_eq!(
+            rows,
+            vec![vec![
+                Datum::Int(10),
+                Datum::Int(3),
+                Datum::UInt(12_297_829_382_473_034_410),
+                Datum::Int(-1),
+                Datum::UInt(0),
+                Datum::Null,
+                Datum::Null,
+                Datum::Null,
+            ]],
+            "vectorized={vectorized}"
+        );
+        assert_eq!(columns.len(), 8);
+        for ((_, field), unsigned) in columns
+            .iter()
+            .zip([false, false, true, false, true, false, false, false])
+        {
+            assert_eq!(field.code(), tidb_datatype::FieldTypeCode::LongLong);
+            assert_eq!((field.flen(), field.decimal()), (20, 0));
+            assert_eq!(field.is_unsigned(), unsigned);
+            assert_eq!(field.charset_name(), "binary");
+            assert_eq!(field.collation_name(), "binary");
+        }
+        // SELECT retains its warning policy even under this strict SQL mode;
+        // only the non-NULL zero divisor warns, not either NULL operand case.
+        assert_eq!(
+            warnings_of(&session),
+            vec![(1365, "Division by 0".to_owned())],
+            "vectorized={vectorized}"
+        );
+    }
+}
+
+#[test]
+fn evaluated_ascii_decimal_div_zero_slots_require_fast_bounded_and_null_roots() {
+    let mut session = Session::new();
+    session
+        .run("SET sql_mode='STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO'")
+        .unwrap();
+    session.run("SET div_precision_increment=4").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_decimal_div_zero (f DECIMAL(10,2), fd DECIMAL(10,2), b DECIMAL(20,4), bd DECIMAL(20,4), u DECIMAL(22,2) UNSIGNED, ud DECIMAL(22,2), n DECIMAL(10,2), z DECIMAL(10,2))").unwrap();
+    session.run("INSERT INTO shared_decimal_div_zero VALUES (11.01,1.10,0.3000,0.1000,18446744073709551615.00,1.50,NULL,0.00)").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // Six scalar roots and two vector routes. All operands are direct typed
+    // columns; no CAST, other function, unary minus, WHERE or ORDER BY can
+    // provide a substitute failure. Division-by-zero warning replay follows a
+    // worker result, so admission refusal must leave even that case warning-free.
+    for (vectorized, expression) in [
+        (0, "f DIV fd"),
+        (0, "b DIV bd"),
+        (0, "u DIV ud"),
+        (0, "f DIV z"),
+        (0, "n DIV fd"),
+        (0, "f DIV n"),
+        (1, "b DIV bd"),
+        (1, "n DIV fd"),
+    ] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        let sql = format!("SELECT {expression} FROM shared_decimal_div_zero");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("decimal DIV root bypassed its worker: {sql}/{vectorized}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
+        assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
+        assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+    }
+}
+
+#[test]
 fn evaluated_ascii_integer_div_preserves_signedness_nulls_and_query_diagnostics() {
     let mut session = Session::new();
     session

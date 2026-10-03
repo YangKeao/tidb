@@ -31,20 +31,21 @@ pub use adapter_failure::{
     ExpressionAdapterFailure, ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,
 };
 pub(crate) use evaluated_ascii::{
-    eval_arithmetic_decimal_fast_in, evaluate_args_in, evaluate_ascii_in, evaluate_bytes_in,
-    evaluate_logical_in, evaluate_prepared_args_in, evaluate_regexp_in, EvaluatedBytesResult,
-    RegexpFunction,
+    eval_arithmetic_decimal_fast_in, eval_decimal_integer_division_in, evaluate_args_in,
+    evaluate_ascii_in, evaluate_bytes_in, evaluate_logical_in, evaluate_prepared_args_in,
+    evaluate_regexp_in, EvaluatedBytesResult, RegexpFunction,
 };
 pub use evaluated_ascii::{
     eval_legacy_bytes_comparison_in, eval_legacy_date_in, eval_legacy_decimal_arithmetic_in,
     eval_legacy_decimal_comparison_in, eval_legacy_decimal_division_in,
-    eval_legacy_integer_arithmetic_in, eval_legacy_integer_comparison_in,
-    eval_legacy_json_array_append_step_in, eval_legacy_json_member_of_in,
-    eval_legacy_json_merge_patch_in, eval_legacy_json_output_none_in, eval_legacy_json_replace_in,
-    eval_legacy_like_in, eval_legacy_real_arithmetic_in, eval_legacy_real_comparison_in,
-    eval_legacy_time_comparison_in, eval_regexp_legacy_ready_in, AsciiExecution, AsciiOwnerError,
-    AsciiPoolOwner, AsciiPoolPolicy, AsciiScope, LegacyBinaryArgs, LegacyIntegerArithmetic,
-    LegacyLikeArgs, RegexpLegacyInput, ScopedAsciiColumns,
+    eval_legacy_decimal_integer_division_in, eval_legacy_integer_arithmetic_in,
+    eval_legacy_integer_comparison_in, eval_legacy_json_array_append_step_in,
+    eval_legacy_json_member_of_in, eval_legacy_json_merge_patch_in,
+    eval_legacy_json_output_none_in, eval_legacy_json_replace_in, eval_legacy_like_in,
+    eval_legacy_real_arithmetic_in, eval_legacy_real_comparison_in, eval_legacy_time_comparison_in,
+    eval_regexp_legacy_ready_in, AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy,
+    AsciiScope, LegacyBinaryArgs, LegacyIntegerArithmetic, LegacyLikeArgs, RegexpLegacyInput,
+    ScopedAsciiColumns,
 };
 pub(crate) use tidb_query_datatype::codec::mysql::json::{
     parse_native_json_document, NativeJsonError,

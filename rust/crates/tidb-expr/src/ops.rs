@@ -1438,67 +1438,7 @@ pub(crate) fn decimal_integer_division(
     unsigned: bool,
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
-    if b.is_zero() {
-        ctx.handle_division_by_zero()?;
-        return Ok(Datum::Null);
-    }
-    // With matching scales <= 3 and i128 coefficients, the quotient has at
-    // most 39 integer digits (five words). Go's division increment <= 30
-    // needs at most four fraction words here, so DecimalDiv cannot truncate
-    // or overflow its nine-word buffer. ToInt/ToUint therefore equal exact
-    // coefficient division truncated toward zero, including (-1, 0] -> 0.
-    if a.storage_scale() <= 3
-        && a.storage_scale() == b.storage_scale()
-        && effective_div_precision_increment(ctx.div_precision_increment()) <= 30
-    {
-        if let (Some((left, _)), Some((right, _))) = (a.coefficient_i128(), b.coefficient_i128()) {
-            let quotient = left.checked_div(right).ok_or(EvalError::IntOverflow)?;
-            return if unsigned {
-                u64::try_from(quotient)
-                    .map(Datum::UInt)
-                    .map_err(|_| EvalError::IntOverflow)
-            } else {
-                i64::try_from(quotient)
-                    .map(Datum::Int)
-                    .map_err(|_| EvalError::IntOverflow)
-            };
-        }
-    }
-    let (quotient, warning) = a
-        .div_mysql_with_warning(
-            b,
-            effective_div_precision_increment(ctx.div_precision_increment()),
-        )
-        .expect("nonzero decimal divisor was checked");
-    // MyDecimal.String cannot pad resultFrac beyond the remaining nine-word
-    // buffer after DecimalDiv truncated its fractional storage.
-    let quotient = if warning == Some(tidb_datatype::DecimalCodecWarning::Truncated) {
-        let (precision, fraction) = quotient.precision_and_frac();
-        let integer_words = (precision - fraction + 8) / 9;
-        quotient.truncate_to_scale(((9 - integer_words).max(0) * 9).min(quotient.scale() as i32))
-    } else {
-        quotient
-    };
-    if warning.is_some() {
-        ctx.handle_truncate(&format!("Truncated incorrect DECIMAL value: '{quotient}'"))?;
-    }
-    if unsigned {
-        let (value, warning) = quotient.to_u64_trunc();
-        if warning == Some(tidb_datatype::DecimalIntegerWarning::Overflow) {
-            if quotient.to_i64_trunc() == (0, Some(tidb_datatype::DecimalIntegerWarning::Truncated))
-            {
-                return Ok(Datum::UInt(0));
-            }
-            return Err(EvalError::IntOverflow);
-        }
-        Ok(Datum::UInt(value))
-    } else {
-        let (value, warning) = quotient.to_i64_trunc();
-        if warning == Some(tidb_datatype::DecimalIntegerWarning::Overflow) {
-            return Err(EvalError::IntOverflow);
-        }
-        Ok(Datum::Int(value))
-    }
+    crate::tikv::eval_decimal_integer_division_in(a, b, unsigned, ctx)
 }
 
 /// Decimal comparisons and remaining arithmetic: an `Int` operand promotes
@@ -2900,6 +2840,218 @@ mod tests {
                 expression: "--9223372036854775808".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn decimal_integer_division_worker_preserves_precision_and_warning_priority() {
+        use crate::context::ErrorLevel;
+        use std::cell::{Cell, RefCell};
+        struct Demand {
+            increments: Vec<u32>,
+            reads: RefCell<Vec<u32>>,
+            zero: Cell<usize>,
+            truncation: Cell<usize>,
+            strict: bool,
+            warnings: RefCell<Vec<(u16, String)>>,
+        }
+        impl crate::Columns for Demand {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn div_precision_increment(&self) -> u32 {
+                let mut reads = self.reads.borrow_mut();
+                let value = *self
+                    .increments
+                    .get(reads.len())
+                    .expect("unexpected precision getter");
+                reads.push(value);
+                value
+            }
+            fn division_by_zero_level(&self) -> ErrorLevel {
+                self.zero.set(self.zero.get() + 1);
+                if self.strict {
+                    ErrorLevel::Error
+                } else {
+                    ErrorLevel::Warn
+                }
+            }
+            fn truncate_level(&self) -> ErrorLevel {
+                self.truncation.set(self.truncation.get() + 1);
+                if self.strict {
+                    ErrorLevel::Error
+                } else {
+                    ErrorLevel::Warn
+                }
+            }
+            fn append_warning(&self, code: u16, message: &str) {
+                self.warnings.borrow_mut().push((code, message.to_owned()));
+            }
+        }
+        let context = |increments: &[u32], strict| Demand {
+            increments: increments.to_vec(),
+            reads: RefCell::new(Vec::new()),
+            zero: Cell::new(0),
+            truncation: Cell::new(0),
+            strict,
+            warnings: RefCell::new(Vec::new()),
+        };
+        let resource = |result: Result<Datum, EvalError>| {
+            let error = result.expect_err("decimal DIV must retain the caller's zero-slot scope");
+            let EvalError::ExpressionAdapterFailure(failure) = error else {
+                panic!("{error:?}")
+            };
+            assert_eq!(
+                failure.class(),
+                crate::ExpressionAdapterFailureClass::PoolResource
+            );
+            assert_eq!(
+                failure.origin(),
+                crate::ExpressionAdapterFailureOrigin::Pool
+            );
+        };
+        let raw_min = || Decimal::from_raw_parts(false, i128::MIN.to_string().into_bytes(), 0, 0);
+        let wide = Decimal::from_literal(&format!("1{}", "0".repeat(70)));
+        let three = Decimal::from_int(3);
+        let cases = [
+            (
+                Decimal::from_int(7),
+                Decimal::from_int(2),
+                false,
+                vec![0],
+                Ok(Datum::Int(3)),
+            ),
+            (
+                Decimal::from_int(7),
+                Decimal::from_int(2),
+                false,
+                vec![31, 4],
+                Ok(Datum::Int(3)),
+            ),
+            (
+                Decimal::from_literal("-0.0001"),
+                Decimal::from_int(1),
+                true,
+                vec![4],
+                Ok(Datum::UInt(0)),
+            ),
+            (
+                Decimal::from_scaled_i128(i128::MIN, 0),
+                Decimal::from_scaled_i128(i128::MIN, 0),
+                false,
+                vec![4, 30],
+                Ok(Datum::Int(1)),
+            ),
+            (raw_min(), raw_min(), false, vec![4], Ok(Datum::Int(1))),
+            (
+                wide.clone(),
+                three.clone(),
+                false,
+                vec![30, 4],
+                Err(EvalError::IntOverflow),
+            ),
+        ];
+        let warning = format!(
+            "Truncated incorrect DECIMAL value: '{}.{}'",
+            "3".repeat(70),
+            "3".repeat(9)
+        );
+        for slots in [1, 0] {
+            let owner = crate::AsciiPoolOwner::new(
+                crate::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    64,
+                    8,
+                    4 * 1024 * 1024,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let execution = owner.begin_execution().unwrap();
+            for (left, right, unsigned, increments, expected) in &cases {
+                let ctx = context(increments, false);
+                let result = execution.scope().with_columns(&ctx, |columns| {
+                    super::decimal_integer_division(left, right, *unsigned, columns)
+                });
+                if slots == 1 {
+                    assert_eq!(&result, expected);
+                } else {
+                    resource(result);
+                }
+                assert_eq!(&ctx.reads.take(), increments);
+                assert_eq!(ctx.zero.get(), 0);
+                assert_eq!(ctx.truncation.get(), 0);
+                assert!(ctx.warnings.borrow().is_empty());
+            }
+            // The second observation, not the eligibility probe, controls the
+            // bounded quotient and its source nine-word warning spelling.
+            for strict in [false, true] {
+                let ctx = context(&[4, 30], strict);
+                let result = execution.scope().with_columns(&ctx, |columns| {
+                    super::decimal_integer_division(&wide, &three, false, columns)
+                });
+                if slots == 0 {
+                    resource(result);
+                } else if strict {
+                    assert_eq!(result, Err(EvalError::TruncatedWrongValue(warning.clone())));
+                } else {
+                    assert_eq!(result, Err(EvalError::IntOverflow));
+                }
+                assert_eq!(ctx.reads.take(), [4, 30]);
+                assert_eq!(ctx.zero.get(), 0);
+                assert_eq!(ctx.truncation.get(), usize::from(slots == 1));
+                if slots == 1 && !strict {
+                    assert_eq!(ctx.warnings.take(), [(1292, warning.clone())]);
+                } else {
+                    assert!(ctx.warnings.borrow().is_empty());
+                }
+            }
+            // is_zero examines all coefficient bytes, including empty and
+            // noncanonical multiple-zero storage, without reading precision.
+            for digits in [vec![], b"0".to_vec(), b"00".to_vec()] {
+                let zero = Decimal::from_raw_parts(false, digits, 0, 0);
+                for strict in [false, true] {
+                    let ctx = context(&[], strict);
+                    let result = execution.scope().with_columns(&ctx, |columns| {
+                        super::decimal_integer_division(&three, &zero, false, columns)
+                    });
+                    if slots == 0 {
+                        resource(result);
+                    } else if strict {
+                        assert_eq!(result, Err(EvalError::DivisionByZero));
+                    } else {
+                        assert_eq!(result, Ok(Datum::Null));
+                    }
+                    assert!(ctx.reads.borrow().is_empty());
+                    assert_eq!(ctx.zero.get(), usize::from(slots == 1));
+                    assert_eq!(ctx.truncation.get(), 0);
+                    if slots == 1 && !strict {
+                        assert_eq!(ctx.warnings.take(), [(1365, "Division by 0".to_owned())]);
+                    } else {
+                        assert!(ctx.warnings.borrow().is_empty());
+                    }
+                }
+            }
+            let invalid = Decimal::from_raw_parts(false, vec![0xff], 0, 0);
+            for (left, right, increments) in
+                [(&three, &invalid, vec![]), (&invalid, &three, vec![4])]
+            {
+                let ctx = context(&increments, false);
+                assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    execution.scope().with_columns(&ctx, |columns| {
+                        super::decimal_integer_division(left, right, false, columns)
+                    })
+                }))
+                .is_err());
+                assert_eq!(ctx.reads.take(), increments);
+                assert_eq!(ctx.zero.get(), 0);
+                assert_eq!(ctx.truncation.get(), 0);
+                assert!(ctx.warnings.borrow().is_empty());
+            }
+        }
     }
 
     /// The coefficient optimization must preserve bounded DecimalDiv warnings

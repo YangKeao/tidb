@@ -1061,14 +1061,20 @@ impl Decimal {
         if other.is_zero() {
             return None;
         }
-        let storage_scale = self.storage_scale.max(other.storage_scale);
-        let scale = self.scale.max(other.scale);
-        let a = pad_scale(&self.digits, self.storage_scale, storage_scale);
-        let b = pad_scale(&other.digits, other.storage_scale, storage_scale);
-        let (q_digits, r_digits) = digit_divmod(&a, &b);
-        let quotient = Decimal::new_with_storage(self.negative != other.negative, q_digits, 0, 0);
-        let remainder = Decimal::new_with_storage(self.negative, r_digits, scale, storage_scale);
-        Some((quotient, remainder))
+        let (quotient, remainder) = self
+            .try_to_shared_math(usize::MAX)
+            .and_then(|left| {
+                other
+                    .try_to_shared_math(usize::MAX)
+                    .and_then(|right| left.try_native_div_rem_exact(&right))
+            })
+            .expect("shared native exact decimal division failed")?;
+        Some((
+            Self::try_from_shared_math(&quotient, usize::MAX)
+                .expect("shared native exact decimal quotient result failed"),
+            Self::try_from_shared_math(&remainder, usize::MAX)
+                .expect("shared native exact decimal remainder result failed"),
+        ))
     }
 
     /// Source `DecimalMod`, without routing the discarded quotient through
@@ -1738,6 +1744,59 @@ pub(crate) mod codec;
 use codec::{digits_to_words, MyDecimalWords, CODEC_POWERS10, CODEC_WORD_BUF_LEN, DIGITS_PER_WORD};
 
 pub use codec::{decimal_bin_size, DecimalCodecError, DecimalCodecFailure, DecimalCodecWarning};
+
+#[cfg(test)]
+mod shared_exact_integer_division_tests {
+    use super::Decimal;
+
+    #[test]
+    fn exact_division_facade_keeps_value_scales_signs_and_fresh_shape() {
+        for (left_negative, right_negative, expected_negative) in [
+            (false, false, false),
+            (true, false, true),
+            (false, true, true),
+            (true, true, false),
+        ] {
+            let left = Decimal::from_raw_parts(left_negative, b"5250".to_vec(), 1, 3)
+                .with_declared_shape(20, 1);
+            let right = Decimal::from_raw_parts(right_negative, b"200".to_vec(), 2, 2)
+                .with_declared_shape(20, 2);
+            let (quotient, remainder) = left.div_rem_unbounded(&right).unwrap();
+            assert_eq!(quotient.coefficient_digits(), "2");
+            assert_eq!((quotient.storage_scale(), quotient.scale()), (0, 0));
+            assert_eq!(quotient.is_negative(), expected_negative);
+            assert_eq!(remainder.coefficient_digits(), "1250");
+            assert_eq!((remainder.storage_scale(), remainder.scale()), (3, 2));
+            assert_eq!(remainder.is_negative(), left_negative);
+            assert_eq!(quotient.declared_shape(), None);
+            assert_eq!(remainder.declared_shape(), None);
+        }
+    }
+
+    #[test]
+    fn exact_division_facade_keeps_zero_short_circuit_and_i64_narrowing() {
+        let one = Decimal::from_int(1);
+        let zero = Decimal::from_raw_parts(true, b"0000".to_vec(), 2, 3);
+        let invalid = Decimal::from_raw_parts(false, vec![0xff], 0, 0);
+        assert!(invalid.div_rem_unbounded(&zero).is_none());
+        assert!(invalid.div_rem(&zero).is_none());
+        assert!(std::panic::catch_unwind(|| invalid.div_rem_unbounded(&one)).is_err());
+        let (quotient, remainder) = zero.div_rem_unbounded(&one).unwrap();
+        assert_eq!(quotient.coefficient_digits(), "0");
+        assert_eq!((quotient.storage_scale(), quotient.scale()), (0, 0));
+        assert_eq!((remainder.storage_scale(), remainder.scale()), (3, 2));
+        assert!(!quotient.is_negative() && !remainder.is_negative());
+        let minimum = Decimal::from_int(i64::MIN);
+        assert_eq!(minimum.div_rem(&one).unwrap().0, i64::MIN);
+        let minus_one = Decimal::from_int(-1);
+        assert!(minimum.div_rem(&minus_one).is_none());
+        let (quotient, remainder) = minimum.div_rem_unbounded(&minus_one).unwrap();
+        assert_eq!(quotient.coefficient_digits(), "9223372036854775808");
+        assert_eq!((quotient.storage_scale(), quotient.scale()), (0, 0));
+        assert!(!quotient.is_negative());
+        assert!(remainder.is_zero());
+    }
+}
 
 #[cfg(test)]
 mod native_mysql_division_tests {

@@ -4394,21 +4394,18 @@ impl LegacyEvaluator<'_> {
                         )?
                     }
                     SimpleSig::IntDivideDecimal => {
-                        // Go `EvalIntDivideDecimal`: `DecimalDiv` then `ToInt` --
-                        // the quotient truncated to the integer part, NULL on a
-                        // zero divisor. A quotient wider than BIGINT errors in
-                        // Go where this seam answers NULL (`div_rem` folds both)
-                        // -- a narrowing, not a value change inside BIGINT.
-                        let (Some(left), Some(right)) = (
+                        // Preserve both demanded decimal children, even after
+                        // left NULL. Child SQL folding stays inside eval_decimal;
+                        // infrastructure errors still propagate before admission.
+                        let (left, right) = (
                             self.eval_decimal(children.first())?,
                             self.eval_decimal(children.get(1))?,
-                        ) else {
-                            return Ok(None);
-                        };
-                        let Some((quotient, _)) = left.div_rem(&right) else {
-                            return Ok(None);
-                        };
-                        Some(i128::from(quotient))
+                        );
+                        let args = legacy_comparison_args(children.len(), left, right);
+                        // This legacy profile truncates the exact quotient and
+                        // returns NULL for zero or signed-i64 overflow, without
+                        // MySQL division precision, unsignedness, or warnings.
+                        tidb_expr::eval_legacy_decimal_integer_division_in(args, self.raw_columns)?
                     }
                     // Go `builtinCast*AsIntSig` under `AS SIGNED`:
                     // `ConvertFloatToInt`/decimal truncation -- the REAL source
@@ -6608,6 +6605,186 @@ mod tests {
             })
         }));
         assert!(outcome.is_err());
+        execution.close();
+    }
+
+    #[test]
+    fn legacy_decimal_integer_division_preserves_exact_values_and_demand() {
+        use tidb_datatype::{BinaryJSON, BinaryJSONValue, Datum, Decimal};
+        struct NoGetters;
+        impl tidb_expr::Columns for NoGetters {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn div_precision_increment(&self) -> u32 {
+                panic!("legacy decimal DIV does not read precision")
+            }
+            fn no_unsigned_subtraction(&self) -> bool {
+                panic!("legacy decimal DIV does not read unsigned modes")
+            }
+            fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+                panic!("legacy decimal DIV does not read the session zone")
+            }
+            fn handle_division_by_zero(&self) -> Result<(), tidb_expr::EvalError> {
+                panic!("legacy decimal DIV returns zero-divisor NULL silently")
+            }
+            fn append_warning(&self, _: u16, _: &str) {
+                panic!("legacy decimal DIV does not emit warnings")
+            }
+        }
+        let pool = |slots| {
+            tidb_expr::AsciiPoolOwner::new(
+                tidb_expr::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 << 20,
+                    4 << 20,
+                    4 << 20,
+                    64,
+                    8,
+                    4 << 20,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let decimal = |text: &str| SimpleExpr::Decimal(Decimal::from_literal(text));
+        let call = |children| SimpleExpr::Func(SimpleSig::IntDivideDecimal, children);
+        let assert_pool = |result: LegacyResult<Option<i128>>| {
+            assert!(matches!(
+                result,
+                Err(LegacyEvalError::Infrastructure(
+                    tidb_expr::EvalError::ExpressionAdapterFailure(ref failure)
+                )) if failure.class() == tidb_expr::ExpressionAdapterFailureClass::PoolResource
+            ));
+        };
+        let time_zone = zone();
+        let wide = "9".repeat(90);
+        let row = [Datum::Decimal(Decimal::from_literal("-9.5")), Datum::Int(9)];
+        let folded_error = SimpleExpr::Func(
+            SimpleSig::CastIntAsDecimal,
+            vec![SimpleExpr::Func(
+                SimpleSig::CastRealAsInt,
+                vec![SimpleExpr::Real(f64::INFINITY)],
+            )],
+        );
+        for slots in [0, 1] {
+            let owner = pool(slots);
+            let execution = owner.begin_execution().unwrap();
+            let scope = execution.scope();
+            scope.with_columns(&NoGetters, |columns| {
+                let evaluator = LegacyEvaluator {
+                    raw_columns: columns,
+                    ..LegacyEvaluator::new(&row, 4, &time_zone)
+                };
+                for (children, expected) in [
+                    (vec![SimpleExpr::Column(0), decimal("2")], Some(-4_i128)),
+                    (vec![decimal("9.9"), decimal("0.2")], Some(49)),
+                    (vec![decimal("-0.75"), decimal("1")], Some(0)),
+                    (vec![decimal(&wide), decimal(&wide)], Some(1)),
+                    (vec![decimal(&wide), decimal("1")], None),
+                    (
+                        vec![decimal("9223372036854775807"), decimal("1")],
+                        Some(i128::from(i64::MAX)),
+                    ),
+                    (vec![decimal("9223372036854775808"), decimal("1")], None),
+                    (
+                        vec![decimal("-9223372036854775808"), decimal("1")],
+                        Some(i128::from(i64::MIN)),
+                    ),
+                    // Unlike the legacy integer operator, decimal overflow is NULL.
+                    (vec![decimal("-9223372036854775808"), decimal("-1")], None),
+                    (
+                        vec![
+                            SimpleExpr::Decimal(Decimal::from_raw_parts(
+                                false,
+                                b"1999".to_vec(),
+                                0,
+                                3,
+                            )),
+                            decimal("2"),
+                        ],
+                        Some(0),
+                    ),
+                    (vec![decimal("7"), decimal("0")], None),
+                    (vec![SimpleExpr::Null, decimal("2")], None),
+                    (vec![decimal("2"), SimpleExpr::Null], None),
+                    (vec![], None),
+                    (vec![decimal("1")], None),
+                    // No new implicit conversion for integer literals or columns.
+                    (vec![SimpleExpr::Int(9), decimal("2")], None),
+                    (vec![SimpleExpr::Column(1), decimal("2")], None),
+                    (vec![folded_error.clone(), decimal("2")], None),
+                ] {
+                    let result = evaluator.eval_expr(&call(children));
+                    if slots == 0 {
+                        assert_pool(result);
+                    } else {
+                        assert_eq!(result.unwrap(), expected);
+                    }
+                }
+            });
+            drop(scope);
+            execution.close();
+        }
+        let shared = convert_expr(&tipb::Expr {
+            tp: Some(tipb::ExprType::ScalarFunc as i32),
+            sig: Some(tipb::ScalarFuncSig::IntIsNull as i32),
+            field_type: Some(tipb::FieldType {
+                tp: Some(8),
+                ..Default::default()
+            }),
+            children: vec![tipb::Expr {
+                tp: Some(tipb::ExprType::Null as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .expect("already-admitted shared child");
+        assert!(matches!(&shared, SimpleExpr::Shared(_)));
+        let panic_decimal = SimpleExpr::Func(
+            SimpleSig::CastIntAsDecimal,
+            vec![SimpleExpr::Func(
+                SimpleSig::IntDivideInt,
+                vec![
+                    SimpleExpr::Func(
+                        SimpleSig::CastJsonAsInt,
+                        vec![SimpleExpr::Json(
+                            BinaryJSON::from_typed_value(&BinaryJSONValue::Float64(-1e100))
+                                .unwrap(),
+                        )],
+                    ),
+                    SimpleExpr::Int(-1),
+                ],
+            )],
+        );
+        let owner = pool(0);
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        scope.with_columns(&NoGetters, |columns| {
+            // Only the shared children see the zero-slot scope. The root has
+            // its existing one-shot route, distinguishing demand from admission.
+            let evaluator = LegacyEvaluator {
+                shared_override: Some(columns),
+                ..LegacyEvaluator::new(&row, 4, &time_zone)
+            };
+            for children in [
+                vec![SimpleExpr::Null, shared.clone()],
+                vec![folded_error, shared.clone()],
+                vec![decimal("1"), shared.clone()],
+                // An infrastructure error on the left must prevent this panic.
+                vec![shared.clone(), panic_decimal],
+            ] {
+                assert_pool(evaluator.eval_expr(&call(children)));
+            }
+            assert_eq!(
+                evaluator
+                    .eval_expr(&call(vec![decimal("7"), decimal("2"), shared,]))
+                    .unwrap(),
+                Some(3)
+            );
+        });
+        drop(scope);
         execution.close();
     }
 

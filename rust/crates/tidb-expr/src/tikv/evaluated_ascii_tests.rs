@@ -1424,7 +1424,10 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::TidbParseTsoNative | EvaluatedBytesOp::TimeDiffTextNative => {
             panic!("TSO and TIMEDIFF need their actual operands and conditional demand")
         }
-        EvaluatedBytesOp::IntDivIntSsNative
+        EvaluatedBytesOp::IntDivDecimalSignedNative
+        | EvaluatedBytesOp::IntDivDecimalUnsignedNative
+        | EvaluatedBytesOp::IntDivDecimalLegacy
+        | EvaluatedBytesOp::IntDivIntSsNative
         | EvaluatedBytesOp::IntDivIntUsNative
         | EvaluatedBytesOp::IntDivIntSuNative
         | EvaluatedBytesOp::IntDivIntUuNative
@@ -2167,6 +2170,301 @@ fn json_merge_sdk_rejects_bad_frames_and_preserves_empty_patch_panic() {
     assert!(matches!(scope.evaluate_value(&Datum::Null),
         Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopePoisoned));
     assert_eq!(owner.snapshot().unwrap(), disposed);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn decimal_integer_div_sdk_captures_raw_precision_and_preserves_legacy_zero_order() {
+    use tidb_datatype::Decimal;
+    struct Precision {
+        raw: [u32; 2],
+        reads: Cell<usize>,
+        zeros: Cell<usize>,
+    }
+    impl Columns for Precision {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn div_precision_increment(&self) -> u32 {
+            let index = self.reads.get();
+            self.reads.set(index + 1);
+            self.raw[index]
+        }
+        fn handle_division_by_zero(&self) -> Result<(), EvalError> {
+            self.zeros.set(self.zeros.get() + 1);
+            Ok(())
+        }
+    }
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    for (left, right, unsigned, raw, reads, expected) in [
+        ("7", "2", false, [0, 99], 1, Datum::Int(3)),
+        ("7", "2", false, [31, 4], 2, Datum::Int(3)),
+        ("7.0000", "2", false, [4, 99], 1, Datum::Int(3)),
+        (
+            "18446744073709551615",
+            "1",
+            true,
+            [4, 99],
+            1,
+            Datum::UInt(u64::MAX),
+        ),
+        ("-0.9", "1", true, [4, 99], 1, Datum::UInt(0)),
+        ("7", "0", false, [u32::MAX, u32::MAX], 0, Datum::Null),
+    ] {
+        let ctx = Precision {
+            raw,
+            reads: Cell::new(0),
+            zeros: Cell::new(0),
+        };
+        scope.with_columns(&ctx, |columns| {
+            let (result, observation) = observe_wide_math(|| {
+                eval_decimal_integer_division_in(
+                    &Decimal::from_literal(left),
+                    &Decimal::from_literal(right),
+                    unsigned,
+                    columns,
+                )
+            });
+            assert_eq!(result, Ok(expected));
+            assert_wide_math_c4(observation);
+        });
+        assert_eq!(ctx.reads.get(), reads);
+        assert_eq!(ctx.zeros.get(), usize::from(right == "0"));
+    }
+    let ctx = Precision {
+        raw: [0, 0],
+        reads: Cell::new(0),
+        zeros: Cell::new(0),
+    };
+    scope.with_columns(&ctx, |columns| {
+        for (left, right, expected) in [
+            ("-7.9", "2", Some(-3)),
+            ("9223372036854775807", "1", Some(i128::from(i64::MAX))),
+            ("-9223372036854775808", "1", Some(i128::from(i64::MIN))),
+            ("9223372036854775808", "1", None),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                eval_legacy_decimal_integer_division_in(
+                    LegacyBinaryArgs::Values(
+                        Decimal::from_literal(left),
+                        Decimal::from_literal(right),
+                    ),
+                    columns,
+                )
+            });
+            assert_eq!(result, Ok(expected));
+            assert_wide_math_c4(observation);
+        }
+        for coefficient in [Vec::new(), vec![0xff]] {
+            for zero in [Vec::new(), b"000".to_vec()] {
+                let (result, observation) = observe_wide_math(|| {
+                    eval_legacy_decimal_integer_division_in(
+                        LegacyBinaryArgs::Values(
+                            Decimal::from_raw_parts(false, coefficient.clone(), 0, 0),
+                            Decimal::from_raw_parts(false, zero, 0, 0),
+                        ),
+                        columns,
+                    )
+                });
+                assert_eq!(result, Ok(None));
+                assert_wide_math_c4(observation);
+                assert_eq!(
+                    scope
+                        .lease
+                        .borrow()
+                        .as_ref()
+                        .unwrap()
+                        .worker
+                        .as_ref()
+                        .unwrap()
+                        .operation(),
+                    EvaluatedBytesOp::IntDivDecimalLegacy
+                );
+            }
+        }
+        // Nonzero arithmetic still has the documented shared-math input domain;
+        // invalid raw storage is an actual failure, never a substituted zero.
+        let (result, observation) = observe_wide_math(|| {
+            eval_legacy_decimal_integer_division_in(
+                LegacyBinaryArgs::Values(
+                    Decimal::from_raw_parts(false, Vec::new(), 0, 0),
+                    Decimal::from_literal("1"),
+                ),
+                columns,
+            )
+        });
+        assert!(matches!(
+            result,
+            Err(EvalError::ExpressionRuntimeFailure(_))
+        ));
+        assert_wide_math_c4(observation);
+        for (args, operation) in [
+            (
+                LegacyBinaryArgs::Missing,
+                EvaluatedBytesOp::BinaryArithmeticMissingLegacy,
+            ),
+            (
+                LegacyBinaryArgs::NullWitness(None),
+                EvaluatedBytesOp::BinaryArithmeticNullNative,
+            ),
+        ] {
+            let (result, observation) =
+                observe_wide_math(|| eval_legacy_decimal_integer_division_in(args, columns));
+            assert_eq!(result, Ok(None));
+            assert_wide_math_c4(observation);
+            assert_eq!(
+                scope
+                    .lease
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .worker
+                    .as_ref()
+                    .unwrap()
+                    .operation(),
+                operation
+            );
+        }
+    });
+    assert_eq!(ctx.reads.get(), 0);
+    assert_eq!(ctx.zeros.get(), 0);
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn decimal_integer_div_sdk_refuses_false_presence_budget_and_invalid_reports() {
+    use tidb_datatype::Decimal;
+    struct Observed {
+        reads: Cell<usize>,
+        diagnostics: Cell<usize>,
+    }
+    impl Columns for Observed {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn div_precision_increment(&self) -> u32 {
+            self.reads.set(self.reads.get() + 1);
+            4
+        }
+        fn handle_division_by_zero(&self) -> Result<(), EvalError> {
+            self.diagnostics.set(self.diagnostics.get() + 1);
+            Ok(())
+        }
+        fn handle_truncate(&self, _: &str) -> Result<(), EvalError> {
+            self.diagnostics.set(self.diagnostics.get() + 1);
+            Ok(())
+        }
+    }
+    let ctx = Observed {
+        reads: Cell::new(0),
+        diagnostics: Cell::new(0),
+    };
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&ctx, |columns| {
+        for operation in [EvaluatedBytesOp::IntDivDecimalSignedNative, EvaluatedBytesOp::IntDivDecimalUnsignedNative] {
+            let frame = || Some(encode_decimal_intdiv_operand(decimal_intdiv_view(&Decimal::from_literal("1"))).unwrap());
+            let (result, observation) = observe_wide_math(|| evaluate_args_in(operation, columns,
+                || Ok(EvaluatedArgs::BytesIntIntBytes(frame(), None, None, frame())),
+                |computed| finish_decimal_integer_division(computed, false, columns),
+            ));
+            assert!(matches!(result, Err(EvalError::ExpressionRuntimeFailure(_))));
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(observation.before_kernel_invocations, observation.after_kernel_invocations);
+        }
+        let (result, observation) = observe_wide_math(|| eval_legacy_decimal_integer_division_in(LegacyBinaryArgs::NullWitness(Some(0)), columns));
+        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract));
+        assert_eq!(observation.facade_entries, 0);
+        for computed in [EvaluatedBytesResult::Bytes(None), EvaluatedBytesResult::Bytes(Some(Vec::new())),
+            EvaluatedBytesResult::Bytes(Some(vec![0xff])), EvaluatedBytesResult::Int(Datum::Null)] {
+            assert!(matches!(finish_decimal_integer_division(computed, false, columns),
+                Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract));
+        }
+    });
+    assert_eq!(ctx.reads.get(), 0);
+    assert_eq!(ctx.diagnostics.get(), 0);
+    drop(scope);
+    execution.close();
+
+    for policy in [
+        test_policy(0, 0),
+        AsciiPoolPolicy::checked(
+            1,
+            1,
+            TEST_POOL_BYTES,
+            TEST_WORKER_CAP,
+            TEST_CREATION_RESERVATION,
+            64,
+            8,
+            0,
+        )
+        .unwrap(),
+    ] {
+        let no_slots = policy.max_workers == 0;
+        let owner = AsciiPoolOwner::new(policy).unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        scope.with_columns(&ctx, |columns| {
+            for unsigned in [false, true] {
+                let (result, observation) = observe_wide_math(|| eval_decimal_integer_division_in(
+                    &Decimal::from_literal("7"), &Decimal::from_literal("2"), unsigned, columns,
+                ));
+                if no_slots {
+                    assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+                    assert_eq!(observation.facade_entries, 0);
+                } else {
+                    assert!(matches!(result, Err(EvalError::ExpressionRuntimeFailure(_))));
+                    assert_eq!(observation.before_kernel_invocations, observation.after_kernel_invocations);
+                }
+            }
+            let (result, observation) = observe_wide_math(|| eval_legacy_decimal_integer_division_in(
+                LegacyBinaryArgs::Values(Decimal::from_raw_parts(false, vec![0xff], 0, 0), Decimal::from_literal("0")), columns,
+            ));
+            if no_slots {
+                assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+                assert_eq!(observation.facade_entries, 0);
+            } else {
+                assert!(matches!(result, Err(EvalError::ExpressionRuntimeFailure(_))));
+                assert_eq!(observation.before_kernel_invocations, observation.after_kernel_invocations);
+            }
+        });
+        assert!(!scope.poisoned.get());
+        drop(scope);
+        execution.close();
+    }
+    assert_eq!(ctx.reads.get(), 4);
+    assert_eq!(ctx.diagnostics.get(), 0);
+
+    // Raw RHS UTF-8 is demanded by the original zero predicate before any
+    // precision read, admission or worker call, under the native scope guard.
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    arm_eval_one_observation();
+    let panic = catch_unwind(AssertUnwindSafe(|| {
+        scope.with_columns(&ctx, |columns| {
+            eval_decimal_integer_division_in(
+                &Decimal::from_literal("1"),
+                &Decimal::from_raw_parts(false, vec![0xff], 0, 0),
+                false,
+                columns,
+            )
+        })
+    }));
+    let observation = take_eval_one_observation();
+    assert!(panic.is_err());
+    assert_eq!(ctx.reads.get(), 4);
+    assert_eq!(observation.facade_entries, 0);
+    assert_eq!(observation.before_kernel_invocations, None);
+    assert_eq!(observation.after_kernel_invocations, None);
+    assert!(scope.poisoned.get());
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
     drop(scope);
     execution.close();
 }

@@ -796,7 +796,9 @@ impl Creation {
                     // Widen only the exact closed recipes needing additional
                     // argument nodes. All retain the original depth allowance.
                     max_nodes: match self.operation {
-                        EvaluatedBytesOp::RegexpSubstrNative => 6,
+                        EvaluatedBytesOp::RegexpSubstrNative
+                        | EvaluatedBytesOp::IntDivDecimalSignedNative
+                        | EvaluatedBytesOp::IntDivDecimalUnsignedNative => 6,
                         EvaluatedBytesOp::RegexpInstrNative
                         | EvaluatedBytesOp::RegexpReplaceNative => 7,
                         EvaluatedBytesOp::LpadBytesNative
@@ -2017,6 +2019,7 @@ fn materialize_computed(
             | EvaluatedBytesOp::IntDivIntUsNative
             | EvaluatedBytesOp::IntDivIntSuNative
             | EvaluatedBytesOp::IntDivIntUuNative
+            | EvaluatedBytesOp::IntDivDecimalLegacy
             | EvaluatedBytesOp::BinaryArithmeticNullNative
             | EvaluatedBytesOp::BinaryArithmeticMissingLegacy
             | EvaluatedBytesOp::CompareIntSsNative(_)
@@ -2215,6 +2218,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::FormatLocaleNative
             | EvaluatedBytesOp::AnyValueNative
             | EvaluatedBytesOp::NameConstNative
+            | EvaluatedBytesOp::IntDivDecimalSignedNative
+            | EvaluatedBytesOp::IntDivDecimalUnsignedNative
             | EvaluatedBytesOp::TidbParseTsoNative
             | EvaluatedBytesOp::TimeDiffTextNative
             | EvaluatedBytesOp::FormatBytesNative
@@ -3038,6 +3043,141 @@ pub fn eval_legacy_decimal_arithmetic_in(
         |computed| match computed {
             EvaluatedBytesResult::Int(Datum::Null) => Ok(None),
             EvaluatedBytesResult::Decimal { value, .. } => Ok(value),
+            _ => Err(result_kind_error().into_eval_error()),
+        },
+    )
+}
+
+fn decimal_intdiv_view(value: &tidb_datatype::Decimal) -> tidb_query_expr::NativeIdentityRef<'_> {
+    tidb_query_expr::NativeIdentityRef::Decimal {
+        negative: value.is_negative(),
+        scale: value.scale(),
+        storage_scale: value.storage_scale(),
+        declared_shape: value.declared_shape(),
+        coefficient: value.coefficient_bytes(),
+    }
+}
+
+fn encode_decimal_intdiv_operand(
+    view: tidb_query_expr::NativeIdentityRef<'_>,
+) -> Result<Vec<u8>, EvalError> {
+    tidb_query_expr::encode_native_identity(view).map_err(|error| match error {
+        tidb_query_expr::NativeIdentityFrameError::Invalid => result_kind_error().into_eval_error(),
+        tidb_query_expr::NativeIdentityFrameError::Capacity => {
+            EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+                tidb_query_expr::local::LocalError::ResourceLimit(
+                    "native decimal INTDIV frame allocation or size failed".into(),
+                ),
+                None,
+            ))
+        }
+    })
+}
+
+fn finish_decimal_integer_division(
+    computed: EvaluatedBytesResult,
+    unsigned: bool,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    let bytes = computed
+        .into_bytes()?
+        .ok_or_else(|| result_kind_error().into_eval_error())?;
+    let report = tidb_query_expr::decode_native_intdiv_report(&bytes)
+        .ok_or_else(|| result_kind_error().into_eval_error())?;
+    // The worker supplied the actual bounded-division warning, including its
+    // original text. A strict warning must win over any later integer overflow.
+    if let Some(warning) = report.warning {
+        ctx.handle_truncate(warning)?;
+    }
+    match report.outcome {
+        tidb_query_expr::NativeIntDivOutcome::ZeroDivisor => {
+            ctx.handle_division_by_zero()?;
+            Ok(Datum::Null)
+        }
+        tidb_query_expr::NativeIntDivOutcome::Value(bits) => Ok(if unsigned {
+            Datum::UInt(bits as u64)
+        } else {
+            Datum::Int(bits)
+        }),
+        tidb_query_expr::NativeIntDivOutcome::IntOverflow => Err(EvalError::IntOverflow),
+    }
+}
+
+/// Native Decimal DIV: capture only demanded raw precision reads, then run one
+/// closed worker. The shared classifier and worker own all arithmetic policy.
+pub(crate) fn eval_decimal_integer_division_in(
+    left: &tidb_datatype::Decimal,
+    right: &tidb_datatype::Decimal,
+    unsigned: bool,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    evaluate_prepared_args_in(
+        ctx,
+        || {
+            let left = decimal_intdiv_view(left);
+            let right = decimal_intdiv_view(right);
+            // Borrowed raw views avoid validating UTF-8 or allocating frames
+            // before the original RHS-zero check and conditional getter reads.
+            let needs_probe = tidb_query_expr::native_intdiv_needs_probe(left, right)
+                .ok_or_else(|| result_kind_error().into_eval_error())?;
+            let probe = if needs_probe {
+                Some(i64::from(ctx.div_precision_increment()))
+            } else {
+                None
+            };
+            let needs_fallback = tidb_query_expr::native_intdiv_needs_fallback(left, right, probe)
+                .ok_or_else(|| result_kind_error().into_eval_error())?;
+            let fallback = if needs_fallback {
+                Some(i64::from(ctx.div_precision_increment()))
+            } else {
+                None
+            };
+            Ok((
+                if unsigned {
+                    EvaluatedBytesOp::IntDivDecimalUnsignedNative
+                } else {
+                    EvaluatedBytesOp::IntDivDecimalSignedNative
+                },
+                EvaluatedArgs::BytesIntIntBytes(
+                    Some(encode_decimal_intdiv_operand(left)?),
+                    probe,
+                    fallback,
+                    Some(encode_decimal_intdiv_operand(right)?),
+                ),
+            ))
+        },
+        |computed| finish_decimal_integer_division(computed, unsigned, ctx),
+    )
+}
+
+/// Legacy exact Decimal DIV keeps raw operands until the worker's RHS-zero
+/// check, then returns only its actual signed i64 result widened to i128.
+pub fn eval_legacy_decimal_integer_division_in(
+    args: LegacyBinaryArgs<tidb_datatype::Decimal>,
+    ctx: &dyn Columns,
+) -> Result<Option<i128>, EvalError> {
+    evaluate_prepared_args_in(
+        ctx,
+        || match args {
+            LegacyBinaryArgs::Missing => Ok((
+                EvaluatedBytesOp::BinaryArithmeticMissingLegacy,
+                EvaluatedArgs::NoArgs,
+            )),
+            LegacyBinaryArgs::NullWitness(value) => Ok((
+                EvaluatedBytesOp::BinaryArithmeticNullNative,
+                arithmetic_null_witness(value)?,
+            )),
+            LegacyBinaryArgs::Values(left, right) => Ok((
+                EvaluatedBytesOp::IntDivDecimalLegacy,
+                EvaluatedArgs::Bytes2(
+                    Some(encode_decimal_intdiv_operand(decimal_intdiv_view(&left))?),
+                    Some(encode_decimal_intdiv_operand(decimal_intdiv_view(&right))?),
+                ),
+            )),
+        },
+        |computed| match computed.into_int_datum()? {
+            Datum::Null => Ok(None),
+            Datum::Int(value) => Ok(Some(i128::from(value))),
             _ => Err(result_kind_error().into_eval_error()),
         },
     )
