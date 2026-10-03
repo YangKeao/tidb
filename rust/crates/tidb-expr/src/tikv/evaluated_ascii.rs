@@ -2196,6 +2196,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::FormatLocaleNative
             | EvaluatedBytesOp::AnyValueNative
             | EvaluatedBytesOp::NameConstNative
+            | EvaluatedBytesOp::TidbParseTsoNative
+            | EvaluatedBytesOp::TimeDiffTextNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative

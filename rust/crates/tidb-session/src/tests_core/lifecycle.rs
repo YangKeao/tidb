@@ -9363,6 +9363,153 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_tso_timediff_preserve_native_values_metadata_and_zone() {
+    use tidb_datatype::{FieldTypeCode, MySqlDuration, Time, TimeType};
+
+    let mut session = Session::new();
+    session.run("SET time_zone='+00:00'").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_tso_timediff_sql (tso BIGINT, tso_text VARCHAR(30), one_tso BIGINT, zero_tso BIGINT, negative_tso BIGINT, null_tso BIGINT, a DATETIME(3), b DATETIME(3), x TIME, y TIME, nd DATETIME(3))").unwrap();
+    session.run("INSERT INTO shared_tso_timediff_sql VALUES (404411537129996288,'404411537129996288',1,0,-1,NULL,'2024-01-02 00:00:00.123','2024-01-01 23:59:59.120','10:10:10','10:09:00',NULL)").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    // Original tidb_parse_tso_source integration pins: the SQL return type is
+    // DATETIME(0), flen 10, while the actual native Time deliberately has FSP 6.
+    // Chunk Time materialization retains that value precision, unlike Duration.
+    let timestamp = Datum::Time(
+        Time::from_date_checked(2018, 11, 20, 9, 53, 4, 877_000, TimeType::DateTime, 6).unwrap(),
+    );
+    let StmtOutput::Rows { columns, rows } = session.run_with_columns("SELECT TIDB_PARSE_TSO(tso),TIDB_PARSE_TSO(tso_text),TIDB_PARSE_TSO(one_tso),TIDB_PARSE_TSO(zero_tso),TIDB_PARSE_TSO(negative_tso),TIDB_PARSE_TSO(null_tso) FROM shared_tso_timediff_sql").unwrap() else {
+        panic!("expected TSO rows")
+    };
+    assert_eq!(
+        rows,
+        vec![vec![
+            timestamp.clone(),
+            timestamp,
+            Datum::Time(
+                Time::from_date_checked(1970, 1, 1, 0, 0, 0, 0, TimeType::DateTime, 6).unwrap()
+            ),
+            Datum::Null,
+            Datum::Null,
+            Datum::Null
+        ]]
+    );
+    assert_eq!(columns.len(), 6);
+    for (_, field) in &columns {
+        assert_eq!(field.code(), FieldTypeCode::Datetime);
+        assert_eq!((field.flen(), field.decimal()), (10, 0));
+        assert_eq!(field.charset_name(), "binary");
+        assert_eq!(field.collation_name(), "binary");
+    }
+    assert!(warnings_of(&session).is_empty());
+
+    // The fixed 1.003-second boundary is the existing temporal_types SQL
+    // vector; the 70-second TIME pair is the original time_diff_source_vectors
+    // row. Typed columns make the declared FSP explicit, without SQL CASTs.
+    let StmtOutput::Rows { columns, rows } = session.run_with_columns("SELECT TIMEDIFF(a,b),TIMEDIFF(b,a),TIMEDIFF(x,y),TIMEDIFF(a,x),TIMEDIFF(nd,b),TIMEDIFF(a,nd) FROM shared_tso_timediff_sql").unwrap() else {
+        panic!("expected TIMEDIFF rows")
+    };
+    assert_eq!(
+        rows,
+        vec![vec![
+            Datum::Duration(MySqlDuration::from_nanoseconds(1_003_000_000, 3).unwrap()),
+            Datum::Duration(MySqlDuration::from_nanoseconds(-1_003_000_000, 3).unwrap()),
+            Datum::Duration(MySqlDuration::from_nanoseconds(70_000_000_000, 0).unwrap()),
+            Datum::Null,
+            Datum::Null,
+            Datum::Null,
+        ]]
+    );
+    assert_eq!(columns.len(), 6);
+    for ((_, field), shape) in
+        columns
+            .iter()
+            .zip([(14, 3), (14, 3), (10, 0), (14, 3), (14, 3), (14, 3)])
+    {
+        assert_eq!(field.code(), FieldTypeCode::Duration);
+        assert_eq!((field.flen(), field.decimal()), shape);
+        assert_eq!(field.charset_name(), "binary");
+        assert_eq!(field.collation_name(), "binary");
+    }
+    assert!(warnings_of(&session).is_empty());
+
+    session.run("SET time_zone='+08:00'").unwrap();
+    let StmtOutput::Rows { columns, rows } = session
+        .run_with_columns("SELECT TIDB_PARSE_TSO(tso) FROM shared_tso_timediff_sql")
+        .unwrap()
+    else {
+        panic!("expected zoned TSO row")
+    };
+    assert_eq!(
+        rows,
+        vec![vec![Datum::Time(
+            Time::from_date_checked(2018, 11, 20, 17, 53, 4, 877_000, TimeType::DateTime, 6)
+                .unwrap()
+        )]]
+    );
+    assert_eq!(columns[0].1.code(), FieldTypeCode::Datetime);
+    assert_eq!((columns[0].1.flen(), columns[0].1.decimal()), (10, 0));
+    assert!(warnings_of(&session).is_empty());
+}
+
+#[test]
+fn evaluated_ascii_tso_timediff_zero_slots_require_direct_roots() {
+    let mut session = Session::new();
+    session.run("SET time_zone='+00:00'").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_tso_timediff_zero (tso BIGINT, one_tso BIGINT, zero_tso BIGINT, negative_tso BIGINT, null_tso BIGINT, a DATETIME(3), b DATETIME(3), x TIME, y TIME, nd DATETIME(3))").unwrap();
+    session.run("INSERT INTO shared_tso_timediff_zero VALUES (404411537129996288,1,0,-1,NULL,'2024-01-02 00:00:00.123','2024-01-01 23:59:59.120','10:10:10','10:09:00',NULL)").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // TSO's ETInt wrapper passes Int/NULL through; TIMEDIFF has no argument
+    // cast wrapper. Its existing typed Duration post-cast runs only after the
+    // root returns. No other function, arithmetic, filter or sort can mask it.
+    for expression in [
+        "TIDB_PARSE_TSO(tso)",
+        "TIDB_PARSE_TSO(one_tso)",
+        "TIDB_PARSE_TSO(zero_tso)",
+        "TIDB_PARSE_TSO(negative_tso)",
+        "TIDB_PARSE_TSO(null_tso)",
+        "TIMEDIFF(a,b)",
+        "TIMEDIFF(x,y)",
+        "TIMEDIFF(a,x)",
+        "TIMEDIFF(nd,b)",
+        "TIMEDIFF(a,nd)",
+    ] {
+        let sql = format!("SELECT {expression} FROM shared_tso_timediff_zero");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("TSO/TIMEDIFF root bypassed its worker: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+}
+
+#[test]
 fn evaluated_ascii_identity_values_preserve_types_labels_and_name_const_gate() {
     use tidb_datatype::{
         BinaryJSON, BinaryLiteral, Collation, Decimal, FieldTypeCode, MySqlDuration, MysqlEnum,

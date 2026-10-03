@@ -1,0 +1,43 @@
+tso-timediff-66 / round67. Parent serialized Cargo; every command --locked and --test-threads=1. Raw stdout/stderr: /home/agent/tidb/expression-unification/logs/tso-timediff-<id>.log. Full SHA256 below. Toolchains: cargo-tikv nightly-2026-01-30; cargo-tidb nightly-2026-08-22.
+
+First4 actual commands cwd /home/agent/tidb/expression-unification/tikv:
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_core_from_fields -- --test-threads=1
+tikv-datatype sha256 21e5b0c09a100e5e0d16dadf0889a6bfdacdaa731b135730d6a14b24cb14daf3
+compile2.20s;1passed/0failed/0ignored/439filtered,0.00s;exit0.
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib tso -- --test-threads=1
+tikv-tso sha256 20af44340e012aa32b56e4e7e492cbe153b0207bf8df2f1601221964a8d69354
+compile12.71s;5/0/0/896filtered,0.00s;exit0.
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib time_diff -- --test-threads=1
+tikv-diff sha256 b51dd5b456cd5c3664d6914e13fd2185e351bc28289319f78cabe4317f3289fd
+compile0.16s;7/0/0/894filtered,0.00s;exit0.
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local -- --test-threads=1
+tikv-local sha256 679b32d02a2eb311e79b047459bd3e9168e6400c3fa4bd99918959b9c84eff85
+compile0.13s;317/0/1/583filtered,0.21s;exit0. Filters overlap; ignored is not passing.
+
+Remaining7 actual launches cwd /home/agent/tidb/expression-unification/tidb/rust:
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib from_date_keeps_const_raw_field_masking -- --test-threads=1
+native-datatype sha256 8fc93e2add14a488b14964fff9603b7a7778ce11464677771d82d41f83998e01
+compile2.11s;1/0/0/447filtered,0.00s;exit0.
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tso -- --test-threads=1
+native-tso sha256 dd628f85ef69ea4dbf1bd3971fe80f6379a526d0b5b83a70651e76cf0698ceb5
+compile16.08s;8/0/0/1644filtered,0.00s;exit0.
+../../tools/cargo-tidb test --locked -p tidb-expr --lib time_diff -- --test-threads=1
+native-diff sha256 fd2518d7cc9ea4742e2c5fc105d38d6d2592ca4c4786db9d08da8bdb170a2f34
+compile0.16s;1/1NEW/0/1650filtered,0.00s;exit101. New test wrongly unwrapped None from partial func::eval_func_values_in table. Original func304–318/460–490 routes temporal calls separately. Only new test entry changed to time_fn::dispatch; no cases/assertions/production change. Later SQL command in this set-e shell was NOT launched.
+SAME time_diff command rerun:
+native-diff-r2 sha256 31c607571faad36f946381cb1b2eb05675e62fba6cb03eb3ea0928f9e354a0b5
+compile3.11s;2/0/0/1650filtered,0.00s;exit0.
+../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_tso_timediff -- --test-threads=1
+sql sha256 d2993fcf7cc626a1fa05638fa6ce37a97f18d16d8d76944b5d16f7e0ee9d0df9
+compile20.61s;2/0/0/2209filtered,0.04s;exit0.13fixedvalues+10directzeros; metadata/warnings pinned.
+../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+expr-full sha256 122b18b4665dc75c271e872838257867a39ada7c631f85332d70ae3dad8fbf9c
+compile0.13s;1554/4OLD/94ignored/0filtered,13.86s;exit101. All4newexpressiontests explicitlyok.
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+unistore-full sha256 5df4ad9d97171170fcec3d98e17894e5af6a16323ce077a1c38d3c2522339c83
+compile5.42s;208/1OLD/13ignored/0filtered,3.02s;exit101.
+
+Whole failure sections/list match identity-65 after ONLY numeric panic-thread-ID normalization. Prior canonical hashes remain expr27654f2c0ad2971242c00f50182467598cdfd9c2c65e5bf5a32e683708448637; unistoreb64dcced405c699c11b72ee31888c58e491b4e5b4e74fa2d445454e1d1e146e9.
+11launches=11completednonzero runs:8green+1correctednewRED+2oldRED.0compilefail/interruption/zero-match;1retry;0runtimeproductionrepairs.12newtests finallygreen; oldtestbodies byte-exact; no provider/actual oracle recording.
+All15Rust(9CPP/6native) passed pinned rustfmt --edition 2021 --config skip_children=true --check; both git diff --check pass.1newsource. No manifests/locks/generated/dependency/Go/Bazel changes or Cargo metadata resolution. Guides updated reading/ownership map without introducing policy.
+No whole-workspace/lint/dev/bazel_prepare/release/performance/zero-copy/physicalheap/peak/OOM/exhaustive differential/TiFlash/FIPS/M6/whole-package completion. Prior JSON_KEYS and AST/SQL metadata gaps not repaired. TSO output codec failure uses actual existing RPN Evaluation channel, not host ResourceLimit; allocation fault injection deferred. Functional208/245 strict0;37remain/13needed; goal active.

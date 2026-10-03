@@ -1421,6 +1421,9 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::AnyValueNative | EvaluatedBytesOp::NameConstNative => {
             panic!("identity needs the selected actual Datum payload and metadata")
         }
+        EvaluatedBytesOp::TidbParseTsoNative | EvaluatedBytesOp::TimeDiffTextNative => {
+            panic!("TSO and TIMEDIFF need their actual operands and conditional demand")
+        }
         EvaluatedBytesOp::TidbShardNative => "TIDB_SHARD",
         EvaluatedBytesOp::VitessHashNative => "VITESS_HASH",
         EvaluatedBytesOp::FormatBytesNative => "FORMAT_BYTES",
@@ -2157,6 +2160,212 @@ fn json_merge_sdk_rejects_bad_frames_and_preserves_empty_patch_panic() {
     assert!(matches!(scope.evaluate_value(&Datum::Null),
         Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopePoisoned));
     assert_eq!(owner.snapshot().unwrap(), disposed);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn tso_timediff_sdk_preserves_actual_offsets_nullable_demand_and_computed_outputs() {
+    use tidb_datatype::{CoreTime, Time, TimeType};
+    use EvaluatedBytesOp::*;
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (tso, offset, expected) in [
+            (None, None, None),
+            (Some(0), None, None),
+            (Some(i64::MIN), None, None),
+            (
+                Some(1),
+                Some(0),
+                Some(CoreTime::from_date(1970, 1, 1, 0, 0, 0, 0)),
+            ),
+            (
+                Some(1001_i64 << 18),
+                Some(0),
+                Some(CoreTime::from_date(1970, 1, 1, 0, 0, 1, 1000)),
+            ),
+            (
+                Some(1_i64 << 18),
+                Some(-1),
+                Some(CoreTime::from_date(1969, 12, 31, 23, 59, 59, 1000)),
+            ),
+            (
+                Some(1),
+                Some(i32::MAX),
+                Some(CoreTime::from_date(2038, 1, 19, 3, 14, 7, 0)),
+            ),
+            (
+                Some(1),
+                Some(i32::MIN),
+                Some(CoreTime::from_date(1901, 12, 13, 20, 45, 52, 0)),
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    TidbParseTsoNative,
+                    columns,
+                    || Ok(EvaluatedArgs::Int2(tso, offset.map(i64::from))),
+                    EvaluatedBytesResult::into_identity_datum,
+                )
+            });
+            let expected = expected.map_or(Datum::Null, |core| {
+                Datum::Time(Time::new(core, TimeType::DateTime, 6).unwrap())
+            });
+            assert_identity_datum_bits(&result.unwrap(), &expected);
+            assert_wide_math_c4(observation);
+            assert_eq!(owner.snapshot().unwrap().factory_successes, 1);
+        }
+        for (left, right, expected) in [
+            (None, None, None),
+            (Some("not-a-time"), None, None),
+            (Some("  "), None, None),
+            (Some("01:00:00"), None, None),
+            (Some("01:00:00"), Some("bad"), None),
+            (Some("2000-01-01"), Some("01:00:00"), None),
+            (
+                Some("10:00:00.100"),
+                Some("01:02:03.4"),
+                Some("08:57:56.700"),
+            ),
+            (Some("-10:00:00"), Some("01:00:00"), Some("-11:00:00")),
+            (
+                Some("00:00:00"),
+                Some("00:00:00.000001"),
+                Some("-00:00:00.000001"),
+            ),
+            (
+                Some("900:00:00.123"),
+                Some("00:00:00"),
+                Some("838:59:59.000"),
+            ),
+            (
+                Some("2000-01-01 00:00:00.1"),
+                Some("1999-12-31 23:59:59.09"),
+                Some("00:00:01.01"),
+            ),
+            (Some("2001-00-02"), Some("2001-00-01"), Some("24:00:00")),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    TimeDiffTextNative,
+                    columns,
+                    || {
+                        Ok(EvaluatedArgs::Bytes2(
+                            left.map(|s| s.as_bytes().to_vec()),
+                            right.map(|s| s.as_bytes().to_vec()),
+                        ))
+                    },
+                    |computed| {
+                        Ok(computed
+                            .into_bytes()?
+                            .map_or(Datum::Null, Datum::new_string))
+                    },
+                )
+            });
+            assert_eq!(result, Ok(expected.map_or(Datum::Null, Datum::new_string)));
+            assert_wide_math_c4(observation);
+            assert_eq!(owner.snapshot().unwrap().factory_successes, 2);
+        }
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn tso_timediff_sdk_rejects_false_presence_and_preserves_preparation_and_zero_slots() {
+    use EvaluatedBytesOp::*;
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for (operation, args) in [
+            (TidbParseTsoNative, EvaluatedArgs::Int2(None, Some(0))),
+            (TidbParseTsoNative, EvaluatedArgs::Int2(Some(0), Some(0))),
+            (TidbParseTsoNative, EvaluatedArgs::Int2(Some(1), None)),
+            (
+                TidbParseTsoNative,
+                EvaluatedArgs::Int2(Some(1), Some(i64::from(i32::MAX) + 1)),
+            ),
+            (
+                TidbParseTsoNative,
+                EvaluatedArgs::Int2(Some(1), Some(i64::from(i32::MIN) - 1)),
+            ),
+            (TidbParseTsoNative, EvaluatedArgs::Bytes(None)),
+            (
+                TimeDiffTextNative,
+                EvaluatedArgs::Bytes2(None, Some(b"01:00:00".to_vec())),
+            ),
+            (
+                TimeDiffTextNative,
+                EvaluatedArgs::Bytes2(Some(b"bad".to_vec()), Some(b"01:00:00".to_vec())),
+            ),
+            (
+                TimeDiffTextNative,
+                EvaluatedArgs::Bytes2(Some(vec![0xff]), None),
+            ),
+            (
+                TimeDiffTextNative,
+                EvaluatedArgs::Bytes2(Some(b"01:00:00".to_vec()), Some(vec![0xff])),
+            ),
+            (TimeDiffTextNative, EvaluatedArgs::Int2(None, None)),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || Ok(args),
+                    EvaluatedBytesResult::into_bytes,
+                )
+            });
+            assert!(matches!(
+                result,
+                Err(EvalError::ExpressionRuntimeFailure(_))
+            ));
+            assert_eq!(observation.facade_entries, 1);
+            assert_eq!(
+                observation.before_kernel_invocations,
+                observation.after_kernel_invocations
+            );
+        }
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for operation in [TidbParseTsoNative, TimeDiffTextNative] {
+            let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                operation, columns, || Err(EvalError::Unsupported("original input preparation failed")),
+                EvaluatedBytesResult::into_bytes,
+            ));
+            assert_eq!(result, Err(EvalError::Unsupported("original input preparation failed")));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+        for (operation, args) in [
+            (TidbParseTsoNative, EvaluatedArgs::Int2(None, None)),
+            (TidbParseTsoNative, EvaluatedArgs::Int2(Some(-1), None)),
+            (TidbParseTsoNative, EvaluatedArgs::Int2(Some(1), Some(i64::from(i32::MAX)))),
+            (TimeDiffTextNative, EvaluatedArgs::Bytes2(None, None)),
+            (TimeDiffTextNative, EvaluatedArgs::Bytes2(Some(b"bad".to_vec()), None)),
+            (TimeDiffTextNative, EvaluatedArgs::Bytes2(Some(b"01:00:00".to_vec()), None)),
+            (TimeDiffTextNative, EvaluatedArgs::Bytes2(Some(b"01:00:00".to_vec()), Some(b"00:00:00".to_vec()))),
+        ] {
+            let (result, observation) = observe_wide_math(|| evaluate_args_in(operation, columns, || Ok(args), EvaluatedBytesResult::into_bytes));
+            assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+            assert_eq!(observation.facade_entries, 0);
+            assert_eq!(observation.before_kernel_invocations, None);
+            assert_eq!(observation.after_kernel_invocations, None);
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
     drop(scope);
     execution.close();
 }

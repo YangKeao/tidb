@@ -42,7 +42,6 @@ use super::calendar::date_format_in;
 use crate::coerce::coerce_str;
 use crate::context::SessionTimeZone;
 use crate::{Columns, Datum, Decimal, EvalError};
-use tidb_datatype::{Time, TimeType};
 
 /// MySQL 8.0.28's maximum unix timestamp: '3001-01-18 23:59:59' UTC.
 const MAX_UNIX_SECS: i64 = 32_536_771_199;
@@ -369,34 +368,41 @@ fn unix_result(micros: i64, fsp: usize) -> Datum {
 /// `TIDB_PARSE_TSO(tso)`: the physical half as a full-precision native
 /// DATETIME in the session zone.
 pub(super) fn tidb_parse_tso(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(tso) = super::int_arg(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    if tso <= 0 {
-        return Ok(Datum::Null);
-    }
-    let physical_ms = tso >> 18;
-    let secs = physical_ms.div_euclid(1000);
-    let micros = (physical_ms.rem_euclid(1000) * 1000) as u32;
-    let Some(local) = instant_to_local(secs, micros, &cols.time_zone()) else {
-        return Ok(Datum::Null);
-    };
-    let time = Time::from_date_checked(
-        local.year(),
-        local.month() as i32,
-        local.day() as i32,
-        local.hour() as i32,
-        local.minute() as i32,
-        local.second() as i32,
-        local.and_utc().timestamp_subsec_micros() as i32,
-        TimeType::DateTime,
-        6,
+    crate::tikv::evaluate_prepared_args_in(
+        cols,
+        || {
+            use chrono::{Offset, TimeZone};
+            if vals.len() != 1 {
+                return Err(EvalError::Unsupported("bad function arity"));
+            }
+            let tso = super::int_arg(&vals[0])?;
+            let offset = match tso {
+                Some(value) if value > 0 => {
+                    // Preserve the getter before UTC preparation. Fixed zones
+                    // retain their raw SDK offset, not TimeZone's clamped view.
+                    let zone = cols.time_zone();
+                    Some(match &zone {
+                        SessionTimeZone::Fixed { offset_secs, .. } => i64::from(*offset_secs),
+                        SessionTimeZone::Named(_) | SessionTimeZone::Local => {
+                            let instant = tidb_query_expr::native_tso_utc(value)
+                                .expect("a positive signed TSO is within Chrono's timestamp range");
+                            i64::from(
+                                zone.offset_from_utc_datetime(&instant.naive_utc())
+                                    .fix()
+                                    .local_minus_utc(),
+                            )
+                        }
+                    })
+                }
+                _ => None,
+            };
+            Ok((
+                crate::tikv::EvaluatedBytesOp::TidbParseTsoNative,
+                crate::tikv::EvaluatedArgs::Int2(tso, offset),
+            ))
+        },
+        crate::tikv::EvaluatedBytesResult::into_identity_datum,
     )
-    .map_err(|_| EvalError::Unsupported("TSO datetime exceeds the native temporal domain"))?;
-    Ok(Datum::Time(time))
 }
 
 #[cfg(test)]
@@ -517,6 +523,195 @@ mod tests {
                 unix_timestamp(&[s(arg)], &ParisSession).unwrap(),
                 Datum::Int(want),
                 "UNIX_TIMESTAMP({arg}) in Europe/Paris"
+            );
+        }
+    }
+
+    #[test]
+    fn tidb_parse_tso_worker_preserves_zone_demand_and_raw_offsets() {
+        use std::cell::Cell;
+        use tidb_datatype::{Time, TimeType};
+        struct Zone {
+            zone: SessionTimeZone,
+            reads: Cell<usize>,
+        }
+        impl Columns for Zone {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn time_zone(&self) -> SessionTimeZone {
+                self.reads.set(self.reads.get() + 1);
+                self.zone.clone()
+            }
+            fn now(&self) -> Option<(i64, u32, i32)> {
+                panic!("TIDB_PARSE_TSO must not read the statement clock")
+            }
+        }
+        let fixed = |offset_secs| SessionTimeZone::Fixed {
+            name: "raw SDK offset".to_owned(),
+            offset_secs,
+        };
+        let timestamp = |hour, minute, second| {
+            NaiveDate::from_ymd_opt(2020, 3, 29)
+                .unwrap()
+                .and_hms_opt(hour, minute, second)
+                .unwrap()
+                .and_utc()
+                .timestamp_millis()
+                << 18
+        };
+        let time = |[year, month, day, hour, minute, second, micros]: [i32; 7]| {
+            Datum::Time(
+                Time::from_date_checked(
+                    year,
+                    month,
+                    day,
+                    hour,
+                    minute,
+                    second,
+                    micros,
+                    TimeType::DateTime,
+                    6,
+                )
+                .unwrap(),
+            )
+        };
+        let local = instant_to_local(0, 0, &SessionTimeZone::Local).unwrap();
+        let cases = [
+            (Datum::Int(1), fixed(0), [1970, 1, 1, 0, 0, 0, 0]),
+            (Datum::Int(1), fixed(i32::MAX), [2038, 1, 19, 3, 14, 7, 0]),
+            (
+                Datum::Int(1),
+                fixed(i32::MIN),
+                [1901, 12, 13, 20, 45, 52, 0],
+            ),
+            (
+                s("404411537129996288"),
+                fixed(8 * 3600),
+                [2018, 11, 20, 17, 53, 4, 877_000],
+            ),
+            (
+                Datum::Int(timestamp(0, 59, 59)),
+                SessionTimeZone::Named(chrono_tz::Europe::Paris),
+                [2020, 3, 29, 1, 59, 59, 0],
+            ),
+            (
+                Datum::Int(timestamp(1, 0, 0)),
+                SessionTimeZone::Named(chrono_tz::Europe::Paris),
+                [2020, 3, 29, 3, 0, 0, 0],
+            ),
+            (
+                Datum::Int(1),
+                SessionTimeZone::Local,
+                [
+                    local.year(),
+                    local.month() as i32,
+                    local.day() as i32,
+                    local.hour() as i32,
+                    local.minute() as i32,
+                    local.second() as i32,
+                    0,
+                ],
+            ),
+        ];
+        for slots in [1, 0] {
+            let owner = crate::AsciiPoolOwner::new(
+                crate::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    64,
+                    8,
+                    4 * 1024 * 1024,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let execution = owner.begin_execution().unwrap();
+            let check = |result: Result<Datum, EvalError>, expected: Datum| {
+                if slots == 1 {
+                    assert_eq!(result.unwrap(), expected);
+                } else {
+                    let error = result.expect_err("every TSO root must retain the zero-slot scope");
+                    let EvalError::ExpressionAdapterFailure(failure) = error else {
+                        panic!("{error:?}")
+                    };
+                    assert_eq!(
+                        failure.class(),
+                        crate::ExpressionAdapterFailureClass::PoolResource
+                    );
+                    assert_eq!(
+                        failure.origin(),
+                        crate::ExpressionAdapterFailureOrigin::Pool
+                    );
+                }
+            };
+            for (value, zone, fields) in &cases {
+                let ctx = Zone {
+                    zone: zone.clone(),
+                    reads: Cell::new(0),
+                };
+                let result = execution.scope().with_columns(&ctx, |columns| {
+                    tidb_parse_tso(std::slice::from_ref(value), columns)
+                });
+                check(result, time(*fields));
+                assert_eq!(ctx.reads.get(), 1);
+            }
+            let ctx = Zone {
+                zone: fixed(i32::MAX),
+                reads: Cell::new(0),
+            };
+            for value in [
+                Datum::Null,
+                Datum::Int(0),
+                Datum::Int(-1),
+                Datum::UInt(u64::MAX),
+                s("bad"),
+            ] {
+                check(
+                    execution
+                        .scope()
+                        .with_columns(&ctx, |columns| tidb_parse_tso(&[value], columns)),
+                    Datum::Null,
+                );
+                assert_eq!(
+                    ctx.reads.get(),
+                    0,
+                    "NULL and nonpositive inputs do not observe the zone"
+                );
+            }
+            for args in [vec![], vec![Datum::Int(1), Datum::Int(2)]] {
+                assert!(matches!(
+                    execution
+                        .scope()
+                        .with_columns(&ctx, |columns| tidb_parse_tso(&args, columns)),
+                    Err(EvalError::Unsupported("bad function arity"))
+                ));
+            }
+            for (value, message) in [
+                (Datum::MinNotNull, "range sentinel time argument"),
+                (Datum::new_bytes(vec![0xff]), "invalid UTF-8 byte datum"),
+            ] {
+                assert!(matches!(
+                    execution.scope().with_columns(&ctx, |columns| tidb_parse_tso(&[value], columns)),
+                    Err(EvalError::Unsupported(actual)) if actual == message
+                ));
+            }
+            assert!(matches!(
+                execution
+                    .scope()
+                    .with_columns(&ctx, |columns| tidb_parse_tso(
+                        &[dec("99999999999999999999999999999999999999")],
+                        columns
+                    )),
+                Err(EvalError::IntOverflow)
+            ));
+            assert_eq!(
+                ctx.reads.get(),
+                0,
+                "arity and coercion errors precede zone demand and the worker"
             );
         }
     }

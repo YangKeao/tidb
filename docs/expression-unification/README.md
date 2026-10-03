@@ -1,24 +1,24 @@
 # Expression unification experiment
 
 Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
-Current checkpoint: **identity-65**, following **weight-format-64**.
+Current checkpoint: **tso-timediff-66**, following **identity-65**.
 
 ## Progress
 
-Functional delegation plus native algorithm deletion: **206/245**. Target221 needs15 more;39 eligible families remain. Strict final-audited acceptance stays **0**; overall goal remains active.
+Functional delegation plus native algorithm deletion: **208/245**. Target221 needs13 more;37 eligible families remain. Strict final-audited acceptance stays **0**; overall goal remains active.
 
-ANY_VALUE and NAME_CONST now reuse TiKV's unchanged nullable byte-identity leaf through two fixed profiles. All19 Datum kinds reconstruct actual worker-returned payload and metadata, without an original-value cache. Native answer clones are deleted. A single shared representation codec and narrow raw Time/Decimal constructors preserve reserved bits, raw FSP/coefficient/shape, Float32's f64 bits, raw JSON, arbitrary bytes and vector bits/dimensions. No new VM, driver, carrier, result kind, binding or PB/legacy/parser admission.
+TIDB_PARSE_TSO and TIMEDIFF now use two fixed TiKV profiles. Original TSO plus actual conditional offset produces a real Time identity frame; actual nullable TIMEDIFF texts produce the computed difference text. Native calculation/parser/formatter bodies are removed. Public CoreTime bit packing and the existing GoDuration formatter also share their single implementation. No new carrier, driver, result kind, binding or PB/legacy/parser admission.
 
 ## Evidence and limits
 
-[Evidence](evidence/identity-checkpoint.md), [exact commands and hashes](logs/identity-summary.txt), [manifest](checkpoint.json), [cumulative ledger](migration-progress.json).
+[Evidence](evidence/tso-timediff-checkpoint.md), [exact commands and hashes](logs/tso-timediff-summary.txt), [manifest](checkpoint.json), [cumulative ledger](migration-progress.json).
 
-Eight exclusive owners;16 Rust files;two new sources;11 new tests finally pass. Eleven Cargo launches include six green gates, three corrected new-test REDs and two unchanged old full-suite REDs. No compile failures or runtime production repairs. Original test bodies/oracles remain byte-exact; RED logs retained.
+Eight exclusive owners;15 Rust files;one new source;12 new tests finally pass. Eleven Cargo launches include eight green gates, one corrected new-test RED and two unchanged old full-suite REDs. No compile failures or runtime production repairs. Original test bodies/oracles remain byte-exact; the first RED log is retained.
 
-CPP identity12/local316+1ignored; native raw Time1/raw Decimal1/identity19+1ignored/SQL2 pass (filters overlap). SDK covers19 kinds+four edge fixtures through both profiles and46 zero-slot roots. SQL pins14 ANY_VALUE and six NAME_CONST values, metadata/labels, three1210 cases and16 direct zero-slot roots. Full expression **1550/4old/94ignored**, unistore **208/1old/13ignored** preserve complete prior failure sections after only thread-ID normalization.
+CPP datatype1/TSO5/TIMEDIFF7/local317+1ignored; native datatype1/TSO8/TIMEDIFF2/SQL2 pass (filters overlap). SQL pins13 values with original metadata and10 direct zero-slot roots. Full expression **1554/4old/94ignored**, unistore **208/1old/13ignored** preserve complete prior failure sections after only thread-ID normalization.
 
-The three corrected assumptions are documented, not silently repaired in production: FSP7 is clamped to6 by the old constructor; old AST uppercase arity lookup misses its lowercase registry; old SQL post-derivation overwrites copied string metadata with connection collation, and chunk materialization attaches Decimal shape. SDK metadata identity is **not** a claim of Go SQL whole-FieldType parity. All values/cases remain; only new source-backed assertions/fields/comments changed.
+The corrected test initially used a partial values table instead of the actual temporal dispatcher; only that new call changed, not production or expected values. TSO keeps full raw i32 offsets, positive-only timezone demand and value FSP6 versus SQL metadata FSP0. TIMEDIFF keeps eager children but conditional right coercion, distinct fraction grammars and its original typed Duration post-cast, including NULL timezone demand. TSO frame-encoding errors use the existing RPN Evaluation channel, not the host codec's ResourceLimit category.
 
-Prior JSON_KEYS mismatch and the newly documented caller gaps remain. M6/default-NoColumns whole roots, workspace/lint/dev/bazel_prepare, release/performance/zero-copy/physical heap/peak/OOM, exhaustive differential/TiFlash/FIPS and previous parser/GB/vector/Decimal/deep-JSON exceptions are deferred. Both manifests/locks/generated tables stay unchanged. No package-transcreation or PR-readiness claim.
+Prior JSON_KEYS mismatch and AST/SQL caller gaps remain. M6/default-NoColumns whole roots, workspace/lint/dev/bazel_prepare, release/performance/zero-copy/physical heap/peak/OOM, exhaustive differential/TiFlash/FIPS and previous parser/GB/vector/Decimal exceptions are deferred. Repeated parsing/UTC lookup and framing copies are not claimed performance-neutral. Both manifests/locks/generated tables stay unchanged. No package-transcreation or PR-readiness claim.
 
-Three Plans agree; manifest pins their hash and paired TiKV commit. TiKV publishes first, then TiDB, without force push or PR. Old untracked client-differential BUILD.bazel stays excluded. Next RO preferences: smaller TIDB_PARSE_TSO/TIMEDIFF closures, then INTDIV's four policies; TIME/MICROSECOND require parser prerequisites, plan decoders/digest substantial SDK closure. No advance credit.
+Three Plans agree; manifest pins their hash and paired TiKV commit. TiKV publishes first, then TiDB, without force push or PR. Old untracked client-differential BUILD.bazel stays excluded. Next RO: INTDIV can reuse existing exact division but needs four policies and original precision-getter demand; temporal literals need a substantial shared parser/timezone SDK plus fold-time guard, not ready host values. No advance credit.

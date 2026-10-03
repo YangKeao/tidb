@@ -87,7 +87,7 @@ pub(crate) fn dispatch(
         "TIME_FORMAT" => time_format_in(vals, cols),
         "STR_TO_DATE" => calendar::str_to_date(vals, cols),
         "FROM_DAYS" => calendar::from_days_in(vals, cols),
-        "TIMEDIFF" => time_diff(vals),
+        "TIMEDIFF" => time_diff_in(vals, cols),
         "CONVERT_TZ" => convert_tz::convert_tz(vals),
         "FROM_UNIXTIME" => session_tz::from_unixtime(vals, cols),
         "UNIX_TIMESTAMP" => session_tz::unix_timestamp(vals, cols),
@@ -952,149 +952,51 @@ fn number_arg(value: &Datum, cols: &dyn Columns) -> Result<Option<f64>, EvalErro
     })
 }
 
-enum TimeDiffValue {
-    DateTime { micros: i64, fsp: usize },
-    Duration { micros: i64, fsp: usize },
-}
-
-/// `TIMEDIFF(expr1, expr2)`, covering the string-valued signatures exercised
-/// by `builtin_time_test.go`.  Go selects among typed Time/Duration
-/// signatures before evaluation; this value-only port keeps that distinction
-/// by rejecting a mixed date-time/duration pair, while returning the canonical
-/// duration string for matching pairs.  Zero month/day components are
-/// accepted for the same `IgnoreZeroInDate` source rows and are interpreted
-/// by the source-compatible `calcDaynr` arithmetic.
+/// Retains the original private entry used by the immutable source vectors.
+#[cfg(test)]
 fn time_diff(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 2 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(left) = parse_time_diff_value(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    let Some(right) = parse_time_diff_value(&vals[1])? else {
-        return Ok(Datum::Null);
-    };
-    let (left_micros, right_micros, fsp) = match (left, right) {
-        (
-            TimeDiffValue::DateTime {
-                micros: left,
-                fsp: left_fsp,
-            },
-            TimeDiffValue::DateTime {
-                micros: right,
-                fsp: right_fsp,
-            },
-        )
-        | (
-            TimeDiffValue::Duration {
-                micros: left,
-                fsp: left_fsp,
-            },
-            TimeDiffValue::Duration {
-                micros: right,
-                fsp: right_fsp,
-            },
-        ) => (left, right, left_fsp.max(right_fsp)),
-        _ => return Ok(Datum::Null),
-    };
-    Ok(Datum::new_string(format_time_diff(
-        truncate_time_diff(left_micros.saturating_sub(right_micros)),
-        fsp,
-    )))
+    time_diff_in(vals, &crate::NoColumns)
 }
 
-fn parse_time_diff_value(value: &Datum) -> Result<Option<TimeDiffValue>, EvalError> {
-    let Some(text) = coerce_str(value)? else {
-        return Ok(None);
-    };
-    let text = text.trim();
-    if text.is_empty() {
-        return Ok(None);
-    }
-    if let Some((date, time)) = text.split_once(char::is_whitespace) {
-        return Ok(parse_datetime_diff_value(date, time.trim()));
-    }
-    if text.contains(':') {
-        return Ok(parse_duration_diff_value(text));
-    }
-    // A date-only value is a datetime at midnight.  Do not mistake a
-    // colon-separated duration for a date (`10:9:0` was handled above).
-    Ok(parse_datetime_diff_value(text, "00:00:00"))
-}
-
-fn parse_datetime_diff_value(date: &str, time: &str) -> Option<TimeDiffValue> {
-    let parts = calendar::split_numeric_components_for_time_diff(date)?;
-    let year = calendar::expand_year_for_time_diff(parts[0].0, parts[0].1);
-    let month = parts[1].0;
-    let day = parts[2].0;
-    if month > 12 || day > 31 {
-        return None;
-    }
-    if month != 0 && day > calendar::days_in_month_for_time_diff(year, month) {
-        return None;
-    }
-    let (hour, minute, second, fraction) = calendar::parse_time_with_fraction(time)?;
-    let fsp = fraction.len();
-    let microsecond = fraction.parse::<u32>().ok().unwrap_or(0) * 10u32.pow(6 - fsp as u32);
-    let micros = calendar::time_diff_daynr(year, month, day)
-        .checked_mul(86_400_000_000)?
-        .checked_add(i64::from(hour) * 3_600_000_000)?
-        .checked_add(i64::from(minute) * 60_000_000)?
-        .checked_add(i64::from(second) * 1_000_000)?
-        .checked_add(i64::from(microsecond))?;
-    Some(TimeDiffValue::DateTime { micros, fsp })
-}
-
-const MAX_TIME_DIFF_MICROS: i64 = (838 * 3_600 + 59 * 60 + 59) * 1_000_000;
-
-fn truncate_time_diff(micros: i64) -> i64 {
-    micros.clamp(-MAX_TIME_DIFF_MICROS, MAX_TIME_DIFF_MICROS)
-}
-
-fn parse_duration_diff_value(text: &str) -> Option<TimeDiffValue> {
-    let (negative, text) = text
-        .strip_prefix('-')
-        .map_or((false, text), |text| (true, text));
-    let mut fields = text.splitn(3, ':');
-    let hour = fields.next()?.parse::<i64>().ok()?;
-    let minute = fields.next()?.parse::<u32>().ok()?;
-    let second_part = fields.next()?;
-    let (second_part, fraction) = second_part.split_once('.').unwrap_or((second_part, ""));
-    let second = second_part.parse::<u32>().ok()?;
-    if minute > 59 || second > 59 || fraction.len() > 6 || !fraction.is_ascii() {
-        return None;
-    }
-    let microsecond = if fraction.is_empty() {
-        0
-    } else {
-        fraction.parse::<u32>().ok()? * 10u32.pow(6 - fraction.len() as u32)
-    };
-    let micros = hour
-        .checked_mul(3_600_000_000)?
-        .checked_add(i64::from(minute) * 60_000_000)?
-        .checked_add(i64::from(second) * 1_000_000)?
-        .checked_add(i64::from(microsecond))?;
-    Some(TimeDiffValue::Duration {
-        micros: if negative { -micros } else { micros },
-        fsp: fraction.len(),
-    })
-}
-
-fn format_time_diff(micros: i64, fsp: usize) -> String {
-    let sign = if micros < 0 { "-" } else { "" };
-    let absolute = micros.unsigned_abs();
-    let hours = absolute / 3_600_000_000;
-    let minutes = absolute / 60_000_000 % 60;
-    let seconds = absolute / 1_000_000 % 60;
-    if fsp == 0 {
-        return format!("{sign}{hours:02}:{minutes:02}:{seconds:02}");
-    }
-    let divisor = 10u64.pow(6 - fsp as u32);
-    let fraction = absolute / divisor % 10u64.pow(fsp as u32);
-    format!(
-        "{sign}{hours:02}:{minutes:02}:{seconds:02}.{fraction:0width$}",
-        width = fsp
+/// Prepare only demanded text coercions. The shared parser determines whether
+/// the original left operand permits right coercion; the worker independently
+/// parses the actual texts and owns subtraction, clamping, and formatting.
+fn time_diff_in(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_prepared_args_in(
+        cols,
+        || {
+            if vals.len() != 2 {
+                return Err(EvalError::Unsupported("bad function arity"));
+            }
+            let left = coerce_str(&vals[0])?;
+            let right = if tidb_query_expr::native_time_diff_needs_right(left.as_deref()) {
+                coerce_str(&vals[1])?
+            } else {
+                // An undemanded suffix, not a replacement for the real left
+                // operand: the worker still receives and parses invalid text.
+                None
+            };
+            Ok((
+                crate::tikv::EvaluatedBytesOp::TimeDiffTextNative,
+                crate::tikv::EvaluatedArgs::Bytes2(
+                    left.map(String::into_bytes),
+                    right.map(String::into_bytes),
+                ),
+            ))
+        },
+        |computed| {
+            Ok(match computed.into_bytes()? {
+                Some(bytes) => Datum::new_string(bytes),
+                None => Datum::Null,
+            })
+        },
     )
+}
+
+// GoDuration::format still shares this exact formatter without adopting the
+// TIMEDIFF parser or its clamp policy.
+fn format_time_diff(micros: i64, fsp: usize) -> String {
+    tidb_query_expr::native_format_time_diff(micros, fsp)
 }
 
 /// `builtinTimeToSecSig` sends the original text, not precomputed seconds.
@@ -1459,6 +1361,112 @@ mod clock_source_tests {
             ))
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn time_diff_worker_preserves_demand_and_raw_formatter_policy() {
+    struct Quiet;
+    impl Columns for Quiet {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+            panic!("untyped TIMEDIFF must not read the session time zone")
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            panic!("TIMEDIFF parsing and clamping do not emit warnings")
+        }
+    }
+    let string = |text: &str| Datum::new_string(text);
+    let cases = [
+        (Datum::Null, Datum::new_bytes(vec![255]), Datum::Null),
+        (string("bad"), Datum::new_bytes(vec![255]), Datum::Null),
+        (string("00:00:00.1234567"), Datum::MaxValue, Datum::Null),
+        // The original checked hour multiplication rejects this before the
+        // positive minute/second fields could bring a wider sum into range.
+        (string("--2562047789:59:59"), Datum::MaxValue, Datum::Null),
+        (string("10:10:10"), string("10:9:0"), string("00:01:10")),
+        (string("--1:00:00"), string("00:00:00"), string("01:00:00")),
+        (
+            string("00:00:00.+1"),
+            string("00:00:00"),
+            string("00:00:00.01"),
+        ),
+        (
+            string("2000-01-01 00:00:00.1234567"),
+            string("2000-01-01 00:00:00"),
+            string("00:00:00.123456"),
+        ),
+        (
+            string("900:00:00.1"),
+            string("00:00:00"),
+            string("838:59:59.0"),
+        ),
+        (string("10:10:10"), Datum::Null, Datum::Null),
+        (string("2000-01-01"), string("00:00:00"), Datum::Null),
+    ];
+    for slots in [0, 1] {
+        let owner = crate::AsciiPoolOwner::new(
+            crate::AsciiPoolPolicy::checked(
+                slots,
+                slots,
+                16 << 20,
+                1 << 20,
+                2 << 20,
+                64,
+                8,
+                1 << 16,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        scope.with_columns(&Quiet, |ctx| {
+            for (left, right, expected) in &cases {
+                let result =
+                    crate::time_fn::dispatch("TIMEDIFF", &[left.clone(), right.clone()], ctx)
+                        .unwrap();
+                if slots == 0 {
+                    assert!(matches!(
+                        result,
+                        Err(EvalError::ExpressionAdapterFailure(ref failure))
+                            if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource
+                    ));
+                } else {
+                    assert_eq!(result.as_ref().unwrap(), expected);
+                    if expected != &Datum::Null {
+                        assert!(matches!(result, Ok(Datum::String(_))));
+                    }
+                }
+            }
+            assert_eq!(
+                time_diff_in(&[], ctx),
+                Err(EvalError::Unsupported("bad function arity")),
+            );
+            for values in [
+                [Datum::new_bytes(vec![255]), Datum::Null],
+                [string("00:00:00"), Datum::new_bytes(vec![255])],
+            ] {
+                assert_eq!(
+                    time_diff_in(&values, ctx),
+                    Err(EvalError::Unsupported("invalid UTF-8 byte datum")),
+                );
+            }
+            assert_eq!(
+                time_diff_in(&[string("00:00:00"), Datum::MaxValue], ctx),
+                Err(EvalError::Unsupported("range sentinel string coercion")),
+            );
+        });
+        drop(scope);
+        execution.close();
+    }
+    // The forwarding formatter is shared with GoDuration, so it must not
+    // acquire TIMEDIFF's result clamp or normalize a subsecond negative sign.
+    assert_eq!(format_time_diff(3_240_000_000_000, 0), "900:00:00");
+    assert_eq!(format_time_diff(-1, 0), "-00:00:00");
+    assert_eq!(format_time_diff(-1, 6), "-00:00:00.000001");
 }
 
 #[cfg(test)]

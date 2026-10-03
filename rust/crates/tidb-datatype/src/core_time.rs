@@ -21,9 +21,6 @@ use chrono::{
 };
 use tidb_query_datatype::codec::mysql::Time as SharedTime;
 
-const YEAR_OFFSET: u64 = 50;
-const MONTH_OFFSET: u64 = 46;
-const DAY_OFFSET: u64 = 41;
 const HOUR_OFFSET: u64 = 36;
 const MINUTE_OFFSET: u64 = 30;
 const SECOND_OFFSET: u64 = 24;
@@ -56,15 +53,15 @@ impl CoreTime {
         second: u8,
         microsecond: u32,
     ) -> Self {
-        Self(
-            ((year as u64 & 0x3fff) << YEAR_OFFSET)
-                | ((month as u64 & 0x0f) << MONTH_OFFSET)
-                | ((day as u64 & 0x1f) << DAY_OFFSET)
-                | ((hour as u64 & 0x1f) << HOUR_OFFSET)
-                | ((minute as u64 & 0x3f) << MINUTE_OFFSET)
-                | ((second as u64 & 0x3f) << SECOND_OFFSET)
-                | ((microsecond as u64 & 0x0f_ffff) << MICROSECOND_OFFSET),
-        )
+        Self(SharedTime::native_core_from_fields(
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            microsecond,
+        ))
     }
 
     /// Returns the year.
@@ -791,6 +788,36 @@ fn timestamp_diff(interval: TimestampInterval, start: CoreTime, end: CoreTime) -
 mod tests {
     use super::*;
     use chrono::{Datelike, Offset};
+
+    #[test]
+    fn from_date_keeps_const_raw_field_masking() {
+        const NORMAL: CoreTime = CoreTime::from_date(1, 2, 3, 4, 5, 6, 7);
+        const MASKED: CoreTime =
+            CoreTime::from_date(0x4001, 0x12, 0x23, 0x24, 0x45, 0x46, 0x10_0007);
+        const MAXIMUM: CoreTime = CoreTime::from_date(
+            u16::MAX,
+            u8::MAX,
+            u8::MAX,
+            u8::MAX,
+            u8::MAX,
+            u8::MAX,
+            u32::MAX,
+        );
+        assert_eq!(NORMAL.raw(), 0x0004_8641_4600_0070);
+        assert_eq!(MASKED.raw(), 0x0004_8641_4600_0070);
+        assert_eq!(MAXIMUM.raw(), 0xffff_ffff_ffff_fff0);
+        assert_eq!(CoreTime::from_date(0, 0, 0, 0, 0, 0, 0).raw(), 0);
+        assert_eq!((MASKED.year(), MASKED.month(), MASKED.day()), (1, 2, 3));
+        assert_eq!(
+            (
+                MASKED.hour(),
+                MASKED.minute(),
+                MASKED.second(),
+                MASKED.microsecond()
+            ),
+            (4, 5, 6, 7)
+        );
+    }
 
     #[test]
     fn test_week_behaviour() {
