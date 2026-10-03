@@ -1,26 +1,26 @@
 # Expression unification experiment
 
 Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
-Current checkpoint: **time-microsecond-70**, following **intdiv-decimal-69**.
+Current checkpoint: **add-sub-time-71**, following **time-microsecond-70**.
 
 ## Progress
 
-Functional migration: **211/245**; strict final-audited count **0**. TIME and MICROSECOND add two families; target221 needs10 more, with34 eligible families remaining.
+Functional migration: **213/245**; strict final-audited count **0**. ADDTIME and SUBTIME add two families; target221 needs8 more, with32 eligible families remaining.
 
-The original duration grammar and wide/compact UTC datetime fallback now live in TiKV. Public compact parsing, non-Timestamp validation and exact byte-fraction parsing share their implementations; native duplicate bodies are removed. Native FspError aliases the shared type with unchanged variants/data/Display. The different wire fraction policy is untouched.
+The existing shared duration/datetime DTOs now own arithmetic, truncating formatting and predicates; native private DTOs are aliases. Day-number and bounded calendar-year helpers reuse existing cores. TiKV owns all ADDTIME/SUBTIME signature, constant-row and binary-literal policies. Two fixed-sign text profiles and one metadata-only static-NULL profile preserve original coercion/parse/warning order without fabricated NULL inputs or host-computed answers.
 
-Three fixed unary workers preserve native TIME's computed text plus warning status, native MICROSECOND's silent parse-failure NULL, and legacy MICROSECOND's full raw-i64 nanosecond projection. PB context/observed-NULL demand, true-NULL roots, typed Duration postcast and original SQL FSP metadata remain intact. CastTimeAsDuration is not SQL TIME and is unchanged. No new carrier, binding, driver, result kind or admission.
+Computed reports carry actual text or warning disposition. Native only replays original diagnostics; typed postcasts and context demand remain unchanged. Constant-row selection is not the session vectorized flag. No new PB/catalog/legacy admission, carrier, binding, driver, result kind or factory allowance. TIMESTAMP and TIMESTAMPADD are still uncredited.
 
-**Retained compatibility limitation:** prior INTDIV raw-empty coefficient lhs divided by1 used to yield exact zero; the shared math bridge rejects it (infallible SDK panic, evaluated infrastructure failure). No native fallback conceals it, and arbitrary invalid-raw mathematical parity is unclaimed.
+**Retained compatibility limitation:** prior INTDIV raw-empty coefficient lhs divided by1 used to yield exact zero; the shared math bridge rejects it (infallible SDK panic, evaluated infrastructure failure). No native fallback conceals it; arbitrary invalid-raw mathematical parity is unclaimed.
 
 ## Validation and evidence
 
-[Evidence](evidence/time-microsecond-checkpoint.md), [exact commands/hashes](logs/time-microsecond-summary.txt), [manifest](checkpoint.json), [cumulative ledger](migration-progress.json).
+[Evidence](evidence/add-sub-time-checkpoint.md), [exact commands/hashes](logs/add-sub-time-summary.txt), [manifest](checkpoint.json), [cumulative ledger](migration-progress.json).
 
-Eight agents;21 Rust files, two new parser modules,13 added tests. Sixteen Cargo launches:13 nonzero green,2 unchanged old full-suite failures and1 retained zero-match SQL target mistake—not a pass. Correcting only `--test all` to `--lib` ran both lifecycle tests successfully.
+Seven exclusive write owners plus an independent bounded reviewer;13 Rust files, one new core module,7 added tests. Eleven Cargo launches:10 nonzero green and1 unchanged old full-expression failure. No new RED, compile failure, zero-match or retry.
 
-CPP datatype1/parser3/workers2/local322+1ignored; native datatype time90/FSP14/expression7/parser1/calendar22/warning1/values1/legacy1/SQL2 pass (overlapping filters). SQL covers32 function values across8 inputs and two modes, plus8 direct zero-slot probes. Full expression **1565/4old/94ignored**, unistore **211/1old/13ignored** retain identical failure sections/list after thread-ID normalization. CPP228/native512 original test bodies and the native Timestamp validation branch are byte-identical; all21 sources pass pinned formatting and both diff checks.
+CPP SDK2/core-and-wrappers2/local323+1ignored; native root1/source52+6ignored/captured1/SDK2/calendars22/TIMESTAMP consumers1/SQL2 pass (overlapping filters). All five original ADDTIME/SUBTIME source tables ran. SQL covers32 typed results,4 constant-row control results, metadata/warnings and8 direct zero-slot probes. Full expression **1566/4old/94ignored** retains identical failure section/list after thread-ID normalization. Unistore was unchanged and not rerun.
 
-No dependency/generated/Go/Bazel changes or fixture recording. Full temporal parsing/type migration, whole workspace/lint/dev/bazel_prepare, release/performance/zero-copy/physical heap/peak/OOM, exhaustive differential/TiFlash/FIPS, M6/default-NoColumns and prior JSON_KEYS/AST/SQL metadata/parser/GB/vector/Decimal gaps remain deferred. This is neither a whole-package transcreation nor a PR-readiness claim.
+CPP182/native352 original test bodies and ten neighboring temporal functions are byte-identical; all13 sources pass pinned formatting and both diff checks. No dependency/generated/Go/Bazel edits or fixture recording. Full temporal parsing/type migration, whole workspace/lint/dev/bazel_prepare, release/performance/zero-copy/physical heap/peak/OOM, exhaustive differential/TiFlash/FIPS, M6/default-NoColumns and prior JSON_KEYS/AST/SQL metadata/parser/GB/vector/Decimal gaps remain deferred. This is neither whole-package transcreation nor PR readiness.
 
-Three Plans agree; manifest pins their hash and paired TiKV commit. TiKV publishes first, then TiDB, without force push or PR. Old untracked client-differential BUILD.bazel stays excluded. Next bounded temporal candidates may reuse this parser foundation; they receive no credit before their own evaluator closure. Overall goal continues.
+Three Plans agree; manifest pins their hash and paired TiKV commit. TiKV publishes first, then TiDB, without force push or PR. Old untracked client-differential BUILD.bazel stays excluded. TIMESTAMPADD has a bounded next-candidate closure; TIMESTAMP still needs broader generic parsing and timezone handling. Overall goal continues.

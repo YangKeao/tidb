@@ -54,25 +54,15 @@
 use tidb_datatype::{Datum, FieldType, FieldTypeCode};
 
 use super::duration_parse::{
-    self, fsp_for_time_add_sub, get_fsp, is_duration, parse_datetime, parse_duration, GoDateTime,
-    GoDuration, Truncated, MAX_FSP, MIN_FSP,
+    self, get_fsp, is_duration, parse_datetime, parse_duration, GoDateTime, GoDuration, MAX_FSP,
+    MIN_FSP,
 };
 use crate::coerce::coerce_str;
 use crate::{Columns, EvalError};
 
 /// The three temporal branches `getBf4TimeAddSub` reads off an argument's
 /// `FieldType`, plus the `default` arm that covers everything else.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TemporalKind {
-    /// `mysql.TypeDatetime` / `mysql.TypeTimestamp`.
-    Datetime,
-    /// `mysql.TypeDate`.
-    Date,
-    /// `mysql.TypeDuration`.
-    Duration,
-    /// Go's `default`: a string, a number, anything else.
-    Other,
-}
+pub(crate) use tidb_query_expr::NativeTimeAddKind as TemporalKind;
 
 /// The argument branch, taken from the static `FieldType` where the chunk
 /// tier has one and from the DATUM otherwise. The AST tier has no field
@@ -92,17 +82,6 @@ pub(crate) fn kind_of(field_type: Option<&FieldType>, value: &Datum) -> Temporal
         Datum::Duration(_) => TemporalKind::Duration,
         _ => TemporalKind::Other,
     }
-}
-
-fn truncated_time_warning(cols: &dyn Columns, value: &str) -> Datum {
-    cols.append_warning(
-        1292,
-        &format!(
-            "Truncated incorrect time value: '{}'",
-            tidb_datatype::warning_subject_byte_cap(value)
-        ),
-    );
-    Datum::Null
 }
 
 /// `ADDTIME`/`SUBTIME` where no static argument type is available: the AST
@@ -221,220 +200,344 @@ pub(crate) fn add_sub_time(
     row_path: bool,
     cols: &dyn Columns,
 ) -> Result<Datum, EvalError> {
-    if vals.len() != 2 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    // Every `...Null` signature: a DATETIME/TIMESTAMP second argument makes
-    // the result NULL whatever the first argument is.
-    if kinds[1] == TemporalKind::Datetime {
-        return Ok(Datum::Null);
-    }
-    let (Some(left), Some(right)) = (coerce_str(&vals[0])?, coerce_str(&vals[1])?) else {
-        return Ok(Datum::Null);
-    };
-    match kinds[0] {
-        // `...DatetimeAnd*`: Go's row body passes the parsed duration fsp to
-        // `Time.Add`. The vectorized DATETIME+TIME arm instead constructs
-        // `Duration{Fsp: -1}` and therefore keeps the first argument's fsp;
-        // the DATETIME+STRING vector arm keeps the parsed string fsp. Constant
-        // folding takes the row body, so preserve the right-side fractional
-        // digits there and retain that one vectorized distinction.
-        TemporalKind::Datetime => {
-            let Some(delta) = second_as_duration(&right, kinds[1], cols, false)? else {
-                return Ok(Datum::Null);
-            };
-            let delta = if !row_path && kinds[1] == TemporalKind::Duration {
-                GoDuration { fsp: -1, ..delta }
+    use tidb_query_expr::{NativeTimeAddMetadata, NativeTimeAddResult, NativeTimeAddWarning};
+
+    let sources = std::cell::RefCell::new((None, None));
+    crate::tikv::evaluate_prepared_args_in(
+        cols,
+        || {
+            if vals.len() != 2 {
+                return Err(EvalError::Unsupported("bad function arity"));
+            }
+            let metadata = NativeTimeAddMetadata {
+                left: kinds[0],
+                right: kinds[1],
+                row_path,
+                right_binary: matches!(vals[1], Datum::BinaryLiteral(_) | Datum::Bit(_)),
+            }
+            .encode();
+            if kinds[1] == TemporalKind::Datetime {
+                // This signature never coerces either value. Its real static
+                // metadata enters the worker, not a manufactured NULL operand.
+                return Ok((
+                    crate::tikv::EvaluatedBytesOp::TimeAddRightDatetimeNative,
+                    crate::tikv::EvaluatedArgs::Int(Some(metadata)),
+                ));
+            }
+            // Preserve the eager tuple: a NULL left still coerces the right,
+            // while an error on the left prevents right coercion.
+            let (left, right) = (coerce_str(&vals[0])?, coerce_str(&vals[1])?);
+            let args = crate::tikv::EvaluatedArgs::BytesBytesInt(
+                left.as_ref().map(|value| value.as_bytes().to_vec()),
+                right.as_ref().map(|value| value.as_bytes().to_vec()),
+                Some(metadata),
+            );
+            *sources.borrow_mut() = (left, right);
+            let operation = if sign < 0 {
+                crate::tikv::EvaluatedBytesOp::SubTimeNative
             } else {
-                delta
+                crate::tikv::EvaluatedBytesOp::AddTimeNative
             };
-            datetime_result(&left, delta, sign)
-        }
-        // `...DateAnd*`: `arg0.SetType(TypeDatetime)` first, so a DATE reads
-        // as midnight; the result is a STRING and the DATE's own fsp is 0,
-        // which leaves the duration's fsp deciding. The DATE+STRING row and
-        // vector bodies use `getFsp4TimeAddSub` (non-zero fraction => 6),
-        // unlike the DATETIME+STRING bodies' `GetFsp`.
-        TemporalKind::Date => {
-            let Some(delta) = second_as_duration(&right, kinds[1], cols, true)? else {
+            Ok((operation, args))
+        },
+        |computed| {
+            let Some(bytes) = computed.into_bytes()? else {
                 return Ok(Datum::Null);
             };
-            datetime_result(&left, delta, sign)
-        }
-        // `...DurationAnd*`: both operands are durations and so is the
-        // result, at the larger of the two fsps.
-        // The first operand is a TIME column here, so its fsp is its own
-        // (Go's `EvalDuration` reads the column type's decimal), NOT MaxFsp
-        // the way the string arm's `strDurationAddDuration` parses it.
-        TemporalKind::Duration => {
-            let Ok(first) = parse_duration(&left, get_fsp(&left)) else {
-                return Ok(truncated_time_warning(cols, &left));
-            };
-            let Some(delta) = second_as_duration(&right, kinds[1], cols, false)? else {
-                return Ok(Datum::Null);
-            };
-            Ok(Datum::new_string(first.combine(delta, sign).format()))
-        }
-        // `...StringAnd*`: the ONE arm that decides between the duration and
-        // the datetime reading at RUNTIME, from the first argument's text.
-        TemporalKind::Other => {
-            let delta = match kinds[1] {
-                TemporalKind::Duration => match parse_duration(&right, MAX_FSP) {
-                    Ok(delta) => delta,
-                    Err(Truncated) => return Ok(truncated_time_warning(cols, &right)),
-                },
-                _ => {
-                    // `builtinAddStringAndStringSig`: the second argument's
-                    // fsp comes from `getFsp4TimeAddSub`, not `GetFsp`.
-                    match parse_duration(&right, fsp_for_time_add_sub(&right)) {
-                        Ok(delta) => delta,
-                        Err(Truncated) => {
-                            // go's binary-literal arguments parse as
-                            // durations natively; a non-duration payload
-                            // answers NULL without the truncation warning
-                            // (captured: ADDTIME(b'1', x'41') answers NULL
-                            // silently).
-                            if !matches!(vals[1], Datum::BinaryLiteral(_) | Datum::Bit(_)) {
-                                return Ok(truncated_time_warning(cols, &right));
-                            }
-                            return Ok(Datum::Null);
-                        }
+            let report = tidb_query_expr::decode_native_time_add_result(&bytes)
+                .ok_or_else(crate::tikv::native_time_result_contract_error)?;
+            match report {
+                NativeTimeAddResult::Value(value) => Ok(Datum::new_string(value)),
+                NativeTimeAddResult::Warning(warning) => {
+                    let sources = sources.borrow();
+                    let source = match warning {
+                        NativeTimeAddWarning::TruncatedRight => sources.1.as_deref(),
+                        _ => sources.0.as_deref(),
                     }
+                    .ok_or_else(crate::tikv::native_time_result_contract_error)?;
+                    let message = match warning {
+                        NativeTimeAddWarning::TruncatedLeft
+                        | NativeTimeAddWarning::TruncatedRight => format!(
+                            "Truncated incorrect time value: '{}'",
+                            tidb_datatype::warning_subject_byte_cap(source)
+                        ),
+                        NativeTimeAddWarning::IncorrectTimeLeft => {
+                            format!("Incorrect time value: '{source}'")
+                        }
+                        NativeTimeAddWarning::IncorrectDateTimeLeft => {
+                            format!("Incorrect datetime value: '{source}'")
+                        }
+                    };
+                    // ADDTIME/SUBTIME append even in strict mode; unlike TIME,
+                    // these warnings never consult the truncation policy.
+                    cols.append_warning(1292, &message);
+                    Ok(Datum::Null)
                 }
+            }
+        },
+    )
+}
+
+#[cfg(test)]
+#[test]
+fn add_sub_workers_preserve_signatures_demand_and_direct_warnings() {
+    use std::cell::{Cell, RefCell};
+    use TemporalKind::{Date, Datetime, Duration, Other};
+    struct Policy {
+        warnings: RefCell<Vec<(u16, String)>>,
+        policy_reads: Cell<usize>,
+    }
+    impl Columns for Policy {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn now(&self) -> Option<(i64, u32, i32)> {
+            panic!("ADDTIME must not read a clock")
+        }
+        fn time_zone(&self) -> crate::context::SessionTimeZone {
+            panic!("ADDTIME leaf must not read a zone")
+        }
+        fn truncate_level(&self) -> crate::context::ErrorLevel {
+            self.policy_reads.set(self.policy_reads.get() + 1);
+            crate::context::ErrorLevel::Error
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.warnings.borrow_mut().push((code, message.to_owned()));
+        }
+    }
+    for slots in [1, 0] {
+        let owner = crate::AsciiPoolOwner::new(
+            crate::AsciiPoolPolicy::checked(
+                slots,
+                slots,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let ctx = Policy {
+            warnings: RefCell::new(Vec::new()),
+            policy_reads: Cell::new(0),
+        };
+        let check = |values: &[Datum], kinds, sign, row, expected: Datum, warning: Option<&str>| {
+            let result = execution.scope().with_columns(&ctx, |columns| {
+                add_sub_time(values, kinds, sign, row, columns)
+            });
+            if slots == 1 {
+                assert_eq!(result.unwrap(), expected, "{kinds:?} sign={sign} row={row}");
+            } else {
+                let error = result.expect_err("all add/sub outcomes must use the supplied scope");
+                let EvalError::ExpressionAdapterFailure(failure) = error else {
+                    panic!("{error:?}")
+                };
+                assert_eq!(
+                    failure.class(),
+                    crate::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    crate::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            let expected_warnings = if slots == 1 {
+                warning
+                    .map(|message| vec![(1292, message.to_owned())])
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
             };
-            // ADDTIME only (`sign > 0`): `builtinSubStringAndStringSig` has
-            // no such guard, which is why the same constant pair answers
-            // NULL under ADDTIME and a real value under SUBTIME.
-            if row_path
-                && sign > 0
-                && kinds[1] != TemporalKind::Duration
-                && trailing_dash_group(&right)
-            {
-                return Ok(Datum::Null);
+            assert_eq!(ctx.warnings.take(), expected_warnings);
+            assert_eq!(
+                ctx.policy_reads.get(),
+                0,
+                "these warnings ignore even strict truncation policy"
+            );
+        };
+        // Four left kinds crossed with the three effective right signatures.
+        for (left_kind, left, added, subtracted) in [
+            (
+                Datetime,
+                "2020-01-01 01:00:00",
+                "2020-01-01 01:00:01",
+                "2020-01-01 00:59:59",
+            ),
+            (
+                Date,
+                "2020-01-01",
+                "2020-01-01 00:00:01",
+                "2019-12-31 23:59:59",
+            ),
+            (Duration, "01:00:00", "01:00:01", "00:59:59"),
+            (Other, "01:00:00", "01:00:01", "00:59:59"),
+        ] {
+            for right_kind in [Datetime, Duration, Other] {
+                for (sign, text) in [(1, added), (-1, subtracted)] {
+                    let (right, expected) = if right_kind == Datetime {
+                        (Datum::new_bytes(vec![0xff]), Datum::Null)
+                    } else {
+                        (Datum::new_string("00:00:01"), Datum::new_string(text))
+                    };
+                    check(
+                        &[Datum::new_string(left), right],
+                        [left_kind, right_kind],
+                        sign,
+                        true,
+                        expected,
+                        None,
+                    );
+                }
             }
-            if is_duration(&left) {
-                let Ok(first) = parse_duration(&left, MAX_FSP) else {
-                    return Ok(truncated_time_warning(cols, &left));
-                };
-                let sum = first.combine(delta, sign);
-                let fsp = if sum.micro_second() == 0 {
-                    MIN_FSP
-                } else {
-                    MAX_FSP
-                };
-                return Ok(Datum::new_string(GoDuration { fsp, ..sum }.format()));
-            }
-            // `strDatetimeAddDuration`/`strDatetimeSubDuration`: the datetime
-            // is parsed at MaxFsp and the RESULT's fsp is MaxFsp only when
-            // the sum carries a microsecond.
-            str_datetime_add_duration(&left, delta, sign, cols)
         }
-    }
-}
-
-/// The second argument as a duration, for every arm whose second operand is
-/// evaluated as one. `None` means the whole call is NULL.
-fn second_as_duration(
-    text: &str,
-    kind: TemporalKind,
-    cols: &dyn Columns,
-    date_string_fsp: bool,
-) -> Result<Option<GoDuration>, EvalError> {
-    if kind != TemporalKind::Duration && !is_duration(text) {
-        // `builtin...AndStringSig`: a second argument that is not
-        // duration-shaped is NULL without a warning.
-        return Ok(None);
-    }
-    let fsp = if date_string_fsp && kind != TemporalKind::Duration {
-        fsp_for_time_add_sub(text)
-    } else {
-        get_fsp(text)
-    };
-    match parse_duration(text, fsp) {
-        Ok(duration) => Ok(Some(duration)),
-        Err(Truncated) => {
-            truncated_time_warning(cols, text);
-            Ok(None)
+        check(
+            &[Datum::new_bytes(vec![0xff]), Datum::MinNotNull],
+            [Other, Datetime],
+            1,
+            false,
+            Datum::Null,
+            None,
+        );
+        for (row, sign, expected) in [
+            (true, 1, Datum::Null),
+            (false, 1, Datum::new_string("2020-01-01 20:00:00")),
+            (true, -1, Datum::new_string("2020-01-01 00:00:00")),
+        ] {
+            check(
+                &[
+                    Datum::new_string("2020-01-01 10:00:00"),
+                    Datum::new_string("2020-01-01 10:00:00"),
+                ],
+                [Other, Other],
+                sign,
+                row,
+                expected,
+                None,
+            );
         }
-    }
-}
-
-/// `builtinAdd{Datetime,Date}And{Duration,String}Sig`: the first argument is
-/// evaluated as a DATETIME, and a zero one makes the result NULL.
-fn datetime_result(text: &str, delta: GoDuration, sign: i64) -> Result<Datum, EvalError> {
-    let Some(first) = parse_datetime(text) else {
-        return Ok(Datum::Null);
-    };
-    if first.is_zero() {
-        return Ok(Datum::Null);
-    }
-    let signed = GoDuration {
-        micros: delta.micros * sign,
-        ..delta
-    };
-    match first.add(signed) {
-        Some(result) if result.in_range() => Ok(Datum::new_string(result.format())),
-        _ => Ok(Datum::Null),
-    }
-}
-
-/// Go `strDatetimeAddDuration`/`strDatetimeSubDuration`.
-fn str_datetime_add_duration(
-    text: &str,
-    delta: GoDuration,
-    sign: i64,
-    cols: &dyn Columns,
-) -> Result<Datum, EvalError> {
-    let Some(first) = parse_datetime(text) else {
-        // go's ParseTime reads a digit-only text through the packed-numeric
-        // path first: a value beyond the YYYYMMDD range (> 99991231, which
-        // includes every i64/u64 overflow) fails there and names the value
-        // with the TIME word (`Incorrect time value`), while every other
-        // text failure -- non-digit content, or a date-range value -- names
-        // the DATETIME word.
-        let trimmed = text.trim();
-        if !trimmed.is_empty()
-            && trimmed.bytes().all(|b| b.is_ascii_digit())
-            && trimmed.parse::<i64>().map_or(true, |n| n > 99_991_231)
-        {
-            cols.append_warning(1292, &format!("Incorrect time value: '{text}'"));
-            return Ok(Datum::Null);
+        for (row, sign, fraction) in [
+            (true, 1, "100001"),
+            (false, 1, "1"),
+            (true, -1, "099999"),
+            (false, -1, "0"),
+        ] {
+            check(
+                &[
+                    Datum::new_string("2020-01-01 00:00:00.1"),
+                    Datum::new_string("00:00:00.000001"),
+                ],
+                [Datetime, Duration],
+                sign,
+                row,
+                Datum::new_string(format!("2020-01-01 00:00:00.{fraction}")),
+                None,
+            );
         }
-        // Go appends the parse error as a warning "regardless of the
-        // sql_mode, this is compatible with MySQL" and answers NULL.
-        cols.append_warning(1292, &format!("Incorrect datetime value: '{text}'"));
-        return Ok(Datum::Null);
-    };
-    let first = GoDateTime {
-        fsp: MAX_FSP,
-        ..first
-    };
-    let signed = GoDuration {
-        micros: delta.micros * sign,
-        ..delta
-    };
-    let Some(result) = first.add(signed) else {
-        return Ok(Datum::Null);
-    };
-    if !result.in_range() {
-        return Ok(Datum::Null);
+        for (left, right, kinds, warning) in [
+            (
+                "bad-left",
+                "bad-right",
+                [Duration, Other],
+                Some("Truncated incorrect time value: 'bad-left'"),
+            ),
+            (
+                "bad-left",
+                "bad-right",
+                [Other, Other],
+                Some("Truncated incorrect time value: 'bad-right'"),
+            ),
+            ("bad-left", "bad-right", [Datetime, Other], None),
+            ("bad-left", "00:00:01", [Datetime, Other], None),
+            (
+                "bad-left",
+                "839:00:00",
+                [Date, Other],
+                Some("Truncated incorrect time value: '839:00:00'"),
+            ),
+            (
+                "bad-left",
+                "00:00:01",
+                [Other, Other],
+                Some("Incorrect datetime value: 'bad-left'"),
+            ),
+            (
+                "18446744073709551616",
+                "00:00:01",
+                [Other, Other],
+                Some("Incorrect time value: '18446744073709551616'"),
+            ),
+        ] {
+            check(
+                &[Datum::new_string(left), Datum::new_string(right)],
+                kinds,
+                1,
+                true,
+                Datum::Null,
+                warning,
+            );
+        }
+        let binary = tidb_datatype::BinaryLiteral::from_uint(u64::from(b'A'), None);
+        for value in [Datum::BinaryLiteral(binary.clone()), Datum::Bit(binary)] {
+            check(
+                &[Datum::new_string("bad-left"), value.clone()],
+                [Other, Other],
+                1,
+                true,
+                Datum::Null,
+                None,
+            );
+            check(
+                &[Datum::new_string("bad-left"), value],
+                [Other, Duration],
+                1,
+                true,
+                Datum::Null,
+                Some("Truncated incorrect time value: 'A'"),
+            );
+        }
+        for values in [
+            [Datum::Null, Datum::new_string("bad-right")],
+            [Datum::new_string("bad-left"), Datum::Null],
+        ] {
+            check(&values, [Other, Other], 1, true, Datum::Null, None);
+        }
+        for values in [vec![], vec![Datum::Null], vec![Datum::Null; 3]] {
+            assert!(matches!(
+                execution.scope().with_columns(&ctx, |columns| add_sub_time(
+                    &values,
+                    [Other, Datetime],
+                    1,
+                    true,
+                    columns
+                )),
+                Err(EvalError::Unsupported("bad function arity"))
+            ));
+        }
+        for (values, expected) in [
+            (
+                [Datum::Null, Datum::new_bytes(vec![0xff])],
+                "invalid UTF-8 byte datum",
+            ),
+            (
+                [Datum::new_bytes(vec![0xff]), Datum::MinNotNull],
+                "invalid UTF-8 byte datum",
+            ),
+            (
+                [Datum::Null, Datum::MinNotNull],
+                "range sentinel string coercion",
+            ),
+        ] {
+            assert!(
+                matches!(execution.scope().with_columns(&ctx, |columns| add_sub_time(&values, [Other, Other], 1, true, columns)), Err(EvalError::Unsupported(message)) if message == expected)
+            );
+        }
+        assert!(ctx.warnings.borrow().is_empty());
+        assert_eq!(ctx.policy_reads.get(), 0);
     }
-    let fsp = if result.micros == 0 { MIN_FSP } else { MAX_FSP };
-    Ok(Datum::new_string(GoDateTime { fsp, ..result }.format()))
-}
-
-/// The tail of `builtinAddStringAndStringSig.evalString`: a second argument
-/// that reads as `<digits>-<something>` makes the result NULL. Only ADDTIME,
-/// only the row path (see the module doc).
-fn trailing_dash_group(text: &str) -> bool {
-    let trimmed = text.trim_start_matches(|c: char| c.is_ascii_whitespace());
-    let digits = trimmed
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(trimmed.len());
-    if digits == 0 {
-        return false;
-    }
-    matches!(trimmed[digits..].strip_prefix('-'), Some(rest) if !rest.is_empty())
 }
 
 /// `timestampFunctionClass`: `builtinTimestamp1ArgSig` /

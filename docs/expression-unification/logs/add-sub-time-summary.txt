@@ -1,0 +1,49 @@
+add-sub-time-71 / round72
+11 serialized Cargo launches:10 nonzero green,1 unchanged old full-expression failure. No compile/new RED/zero-match/interrupted test/retry. All7 new tests pass on first matching gates. Filters overlap; ignored is not passing.
+CPP cwd=/home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv pins nightly-2026-01-30.
+Native cwd=/home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb pins nightly-2026-08-22.
+Raw logs=/home/agent/tidb/expression-unification/logs/add-sub-time-{id}.log. Times below are Cargo compilation/test elapsed seconds, not whole shell wall time.
+
+1. ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_duration_parse -- --test-threads=1
+id=tikv-sdk sha256=dbc4ba2f51da3e278476b666f7372bf9ca95ccffb8541dfc062aa20f698bc221
+2 passed/0 failed/0 ignored/918 filtered;14.61/0.00s;exit0.
+2. ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_time_add -- --test-threads=1
+id=tikv-core sha256=e6815aaaa3cab20ce0dbac716b084424603394cec49dfdc59915fac1c708c12f
+2/0/0/918;0.15/0.00s;exit0.
+3. ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local -- --test-threads=1
+id=tikv-local sha256=ae3b0338e57486c4f0f8a354c46fa542076b63e08610605ac53e916676139721
+323/0/1/596;0.13/0.21s;exit0.
+4. ../../tools/cargo-tidb test --locked -p tidb-expr --lib add_sub_workers -- --test-threads=1
+id=native-root sha256=3626779793362748e8cf1b4302c7f07745ddb4ac5e8f11ec8db363e3a791e309
+1/0/0/1663;16.94/0.00s;exit0.
+5. ../../tools/cargo-tidb test --locked -p tidb-expr --lib builtin_string_time_source -- --test-threads=1
+id=native-source sha256=01eff353d5a814bb4741dd90b7294b13807926386374b2bf9c1058407db7ebfa
+52/0/6/1606;0.14/0.07s;exit0. All five ADDTIME/SUBTIME value/duration/typed-issue56861 source tables explicitly ran and passed; the six ignored tests are not passes.
+6. ../../tools/cargo-tidb test --locked -p tidb-expr --lib addtime_and_subtime_match_the_captured_session_answers -- --test-threads=1
+id=native-captured sha256=9bd9a1ffb12227111d3bb87e875b8ba31e28a3935754a7f0ca3b702699159928
+1/0/0/1663;0.14/0.01s;exit0.
+7. ../../tools/cargo-tidb test --locked -p tidb-expr --lib duration_parse -- --test-threads=1
+id=native-sdk sha256=13710dd864a993901ad17d979af345512a84df81ef666efd830d2cff60333abc
+2/0/0/1662;0.13/0.00s;exit0.
+8. ../../tools/cargo-tidb test --locked -p tidb-expr --lib builtin_time_calendars_source -- --test-threads=1
+id=native-calendars sha256=451e8c8f2dc13e5e730204c782bb55533c885ed4705767e9e051d8f20df81147
+22/0/0/1642;0.12/0.01s;exit0.
+9. ../../tools/cargo-tidb test --locked -p tidb-expr --lib timestamp_and_timestampadd_match_the_captured_session_answers -- --test-threads=1
+id=native-timestamp sha256=127c4cef505431f66488e63a4af88935377298f1ad78294293ab180d819ad823
+1/0/0/1663;0.12/0.01s;exit0. Shared-value consumers checked; these families are not credited.
+10. ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_addtime_subtime -- --test-threads=1
+id=sql sha256=aeed74f531b415490609a8c6d98f9a43fc0074b8cbf741828a8377c756117343
+2/0/0/2217;26.64/0.06s;exit0. Eight typed cases x2 functions x2 modes=32 results, plus4 constant-row control results and8 direct zero-slot executions. Modes are existing routes, not new vector backends.
+11. ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+id=expr-full sha256=c5b4e88c8cb06f9d905d51787b696992138b1fa5dd72da752ed4433d93d84395
+1566/4/94/0;0.12/13.99s;exit101. Four old failures only.
+
+Entire full-expression failure section and final list equal time-microsecond-70 byte-for-byte after only numeric panic-heading thread IDs become THREAD; extract from newline before failures: to newline before test result:.
+normalized sha256=411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+Unistore has no code/admission change and was not rerun; its previous result is historical, not a current pass.
+
+Source audit:8 CPP+5 native Rust files,1 new module,4 CPP+3 native new tests. CPP182/native352 original test bodies byte-identical. Ten neighboring native functions byte-identical: kind_of,add_sub_untyped,date_add_duration,timestamp,timestamp_add,add_unit_to_time,add_months,last_day_of_month,number_of,sysdate. Only the non-test dispatch_bytes_family helper gains mechanical exhaustive rejection arms. A bounded independent source review found no required semantic correction; it is not a test run.
+Pinned rustfmt --edition 2021 --config skip_children=true --check covers all13 source files; git diff --check passes both repositories. No dependency/lock/generated/Go/Bazel changes, original fixtures untouched. Architecture/coprocessor guides update ownership without new repository policy.
+
+Inverse day-number entry retains its full i64 range guard; only internal years bounded1..10000 are checked-converted to the existing i32 calendar helper. No duplicate year-length or day-number formula introduced. Range edge3652499 still yields10000-03-15 in the inverse; the separate original in_range predicate remains unchanged.
+Unclaimed: whole temporal type/parser, TIMESTAMP/TIMESTAMPADD evaluator closure, strict completion, whole workspace/lint/dev/bazel_prepare/release/exhaustive differential/TiFlash/FIPS, physical heap/peak/OOM/fault/zero-copy/performance, M6/default-NoColumns and prior JSON_KEYS/AST/SQL metadata/parser/GB/vector/Decimal/raw-math gaps. No package transcreation or PR readiness claim.

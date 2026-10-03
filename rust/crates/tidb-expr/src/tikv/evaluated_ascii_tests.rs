@@ -1429,6 +1429,11 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::MicrosecondLegacy => {
             panic!("TIME and MICROSECOND need their actual text or nullable nanoseconds")
         }
+        EvaluatedBytesOp::AddTimeNative
+        | EvaluatedBytesOp::SubTimeNative
+        | EvaluatedBytesOp::TimeAddRightDatetimeNative => {
+            panic!("ADDTIME and SUBTIME need actual coerced operands and type metadata")
+        }
         EvaluatedBytesOp::IntDivDecimalSignedNative
         | EvaluatedBytesOp::IntDivDecimalUnsignedNative
         | EvaluatedBytesOp::IntDivDecimalLegacy

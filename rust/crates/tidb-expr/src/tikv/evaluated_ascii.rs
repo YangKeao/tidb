@@ -2229,6 +2229,9 @@ fn materialize_computed(
             | EvaluatedBytesOp::TidbParseTsoNative
             | EvaluatedBytesOp::TimeDiffTextNative
             | EvaluatedBytesOp::TimeNative
+            | EvaluatedBytesOp::AddTimeNative
+            | EvaluatedBytesOp::SubTimeNative
+            | EvaluatedBytesOp::TimeAddRightDatetimeNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative

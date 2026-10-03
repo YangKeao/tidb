@@ -9363,6 +9363,224 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_addtime_subtime_preserve_static_kinds_fsp_and_constant_row_split() {
+    use tidb_datatype::{Collation, FieldTypeCode, MySqlDuration, Time, TimeType};
+
+    let mut session = Session::new();
+    session
+        .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+        .unwrap();
+    session.run("SET time_zone='+00:00'").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_add_sub_time_sql (dt DATETIME(3), date_val DATE, delta TIME(6), dur TIME(6), delta_text VARCHAR(40), dur_delta VARCHAR(40), s_dur VARCHAR(40), s_delta VARCHAR(40), s_dt VARCHAR(40), bad VARCHAR(40), n VARCHAR(40))").unwrap();
+    session.run("INSERT INTO shared_add_sub_time_sql VALUES ('2024-11-01 00:00:00.000','2024-11-01','12:00:01.341300','03:00:00.999999','12:00:01.341300','02:00:00.999998','01:00:00.000001','02:00:00.000001','2020-01-01 10:00:00','xxcvadfgasd',NULL)").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let text = |value: &str| Datum::new_collation_string(value, Collation::Utf8Mb4Bin);
+    // DATETIME + DURATION's column body preserves the left value FSP (3),
+    // although the declared result metadata takes max(3, 6). The existing
+    // postcast infers FSP from the computed text; chunk Time cells retain it.
+    let cases = [
+        (
+            "dt,delta",
+            vec![
+                Datum::Time(
+                    Time::from_date_checked(2024, 11, 1, 12, 0, 1, 341_000, TimeType::DateTime, 3)
+                        .unwrap(),
+                ),
+                Datum::Time(
+                    Time::from_date_checked(
+                        2024,
+                        10,
+                        31,
+                        11,
+                        59,
+                        58,
+                        658_000,
+                        TimeType::DateTime,
+                        3,
+                    )
+                    .unwrap(),
+                ),
+            ],
+            FieldTypeCode::Datetime,
+            26,
+            6,
+            None,
+        ),
+        (
+            "date_val,delta_text",
+            vec![
+                text("2024-11-01 12:00:01.341300"),
+                text("2024-10-31 11:59:58.658700"),
+            ],
+            FieldTypeCode::String,
+            26,
+            -1,
+            None,
+        ),
+        (
+            "dur,dur_delta",
+            vec![
+                Datum::Duration(MySqlDuration::from_nanoseconds(18_001_999_997_000, 6).unwrap()),
+                Datum::Duration(MySqlDuration::from_nanoseconds(3_600_000_001_000, 6).unwrap()),
+            ],
+            FieldTypeCode::Duration,
+            17,
+            6,
+            None,
+        ),
+        (
+            "s_dur,s_delta",
+            vec![text("03:00:00.000002"), text("-01:00:00")],
+            FieldTypeCode::String,
+            26,
+            -1,
+            None,
+        ),
+        (
+            "s_dt,s_dt",
+            vec![text("2020-01-01 20:00:00"), text("2020-01-01 00:00:00")],
+            FieldTypeCode::String,
+            26,
+            -1,
+            None,
+        ),
+        // The static DATETIME right argument wins even over a malformed left.
+        (
+            "bad,dt",
+            vec![Datum::Null, Datum::Null],
+            FieldTypeCode::String,
+            26,
+            -1,
+            None,
+        ),
+        (
+            "s_dur,bad",
+            vec![Datum::Null, Datum::Null],
+            FieldTypeCode::String,
+            26,
+            -1,
+            Some("Truncated incorrect time value: 'xxcvadfgasd'"),
+        ),
+        (
+            "n,s_delta",
+            vec![Datum::Null, Datum::Null],
+            FieldTypeCode::String,
+            26,
+            -1,
+            None,
+        ),
+    ];
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        for (args, expected, code, flen, decimal, warning) in &cases {
+            let sql =
+                format!("SELECT ADDTIME({args}),SUBTIME({args}) FROM shared_add_sub_time_sql");
+            let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap() else {
+                panic!("expected ADDTIME/SUBTIME rows: {sql}")
+            };
+            assert_eq!(rows, vec![expected.clone()], "{sql}/{vectorized}");
+            assert_eq!(columns.len(), 2);
+            for (_, field) in &columns {
+                assert_eq!(field.code(), *code, "{sql}");
+                assert_eq!((field.flen(), field.decimal()), (*flen, *decimal), "{sql}");
+                if *code == FieldTypeCode::String {
+                    assert_eq!(field.charset_name(), "utf8mb4");
+                    assert_eq!(field.collation_name(), "utf8mb4_bin");
+                } else {
+                    assert_eq!(field.charset_name(), "binary");
+                    assert_eq!(field.collation_name(), "binary");
+                }
+            }
+            let expected_warnings = warning
+                .map(|message| vec![(1292, message.to_owned()), (1292, message.to_owned())])
+                .unwrap_or_default();
+            assert_eq!(
+                warnings_of(&session),
+                expected_warnings,
+                "{sql}/{vectorized}"
+            );
+        }
+        // row_path means all-constant arguments, NOT the session vector flag.
+        // Only constant ADDTIME has the trailing-dash guard; SUBTIME does not.
+        let StmtOutput::Rows { rows, .. } = session.run_with_columns("SELECT ADDTIME('2020-01-01 10:00:00','2020-01-01 10:00:00'),SUBTIME('2020-01-01 10:00:00','2020-01-01 10:00:00')").unwrap() else {
+            panic!("expected constant ADDTIME/SUBTIME rows")
+        };
+        assert_eq!(
+            rows,
+            vec![vec![Datum::Null, text("2020-01-01 00:00:00")]],
+            "vectorized={vectorized}"
+        );
+        assert!(warnings_of(&session).is_empty());
+    }
+}
+
+#[test]
+fn evaluated_ascii_addtime_subtime_zero_slots_require_values_nulls_and_parse_errors() {
+    let mut session = Session::new();
+    session.run("SET time_zone='+00:00'").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_add_sub_time_zero (dt DATETIME(3), delta TIME(6), s_dur VARCHAR(40), s_delta VARCHAR(40), bad VARCHAR(40), n VARCHAR(40))").unwrap();
+    session.run("INSERT INTO shared_add_sub_time_zero VALUES ('2024-11-01 00:00:00.000','12:00:01.341300','01:00:00.000001','02:00:00.000001','xxcvadfgasd',NULL)").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // Success, true NULL, statically-selected NULL and parser failure must
+    // each acquire the function's worker. No child CAST/function/filter/sort
+    // can substitute for a root failure; warning replay follows admission.
+    for (vectorized, expression) in [
+        (0, "ADDTIME(dt,delta)"),
+        (0, "SUBTIME(dt,delta)"),
+        (0, "ADDTIME(n,s_delta)"),
+        (0, "SUBTIME(n,s_delta)"),
+        (0, "ADDTIME(bad,dt)"),
+        (0, "SUBTIME(bad,dt)"),
+        (1, "ADDTIME(s_dur,bad)"),
+        (1, "SUBTIME(s_dur,bad)"),
+    ] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        let sql = format!("SELECT {expression} FROM shared_add_sub_time_zero");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => {
+                panic!("ADDTIME/SUBTIME root bypassed its worker: {sql}/{vectorized}: {other:?}")
+            }
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
+        assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
+        assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+    }
+}
+
+#[test]
 fn evaluated_ascii_time_microsecond_preserve_sql_duration_shapes_and_parse_diagnostics() {
     use tidb_datatype::{FieldTypeCode, MySqlDuration};
 
