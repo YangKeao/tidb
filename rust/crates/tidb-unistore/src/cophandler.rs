@@ -4875,10 +4875,11 @@ impl LegacyEvaluator<'_> {
                             .map(i128::from)
                     }
                     SimpleSig::MicroSecond => {
-                        let Some(duration) = self.eval_duration(children.first())? else {
-                            return Ok(None);
-                        };
-                        Some(i128::from(duration.microsecond()))
+                        let nanos = self
+                            .eval_duration(children.first())?
+                            .map(tidb_datatype::MySqlDuration::nanoseconds);
+                        tidb_expr::eval_legacy_microsecond_in(nanos, self.raw_columns)?
+                            .map(i128::from)
                     }
                     SimpleSig::Month => {
                         let value = self
@@ -8953,6 +8954,198 @@ mod tests {
                     .expect_err("DATE demands its first child"),
             );
         });
+    }
+
+    #[test]
+    fn legacy_microsecond_worker_preserves_raw_nanos_and_reader_demand() {
+        use tidb_datatype::{CoreTime, Datum, MySqlDuration, Time, TimeType};
+        struct Quiet;
+        impl tidb_expr::Columns for Quiet {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+                panic!("legacy MICROSECOND does not read the session zone")
+            }
+            fn div_precision_increment(&self) -> u32 {
+                panic!("legacy MICROSECOND does not read precision")
+            }
+            fn append_warning(&self, _: u16, _: &str) {
+                panic!("legacy MICROSECOND does not add warnings")
+            }
+        }
+        let pool = |slots| {
+            tidb_expr::AsciiPoolOwner::new(
+                tidb_expr::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 << 20,
+                    4 << 20,
+                    4 << 20,
+                    64,
+                    8,
+                    4 << 20,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let assert_pool = |result: LegacyResult<Option<i128>>| {
+            assert!(matches!(
+                result,
+                Err(LegacyEvalError::Infrastructure(
+                    tidb_expr::EvalError::ExpressionAdapterFailure(ref failure)
+                )) if failure.class() == tidb_expr::ExpressionAdapterFailureClass::PoolResource
+            ));
+        };
+        let call = |children| SimpleExpr::Func(SimpleSig::MicroSecond, children);
+        let time_zone = zone();
+        let clock =
+            Time::from_date_checked(2024, 3, 5, 14, 30, 45, 123456, TimeType::DateTime, 6).unwrap();
+        let row = [
+            Datum::Time(clock),
+            Datum::Time(Time::from_raw_parts(clock.core_time(), TimeType::Date, 0)),
+            Datum::Time(Time::from_raw_parts(
+                CoreTime::from_raw(0),
+                TimeType::Date,
+                0,
+            )),
+            Datum::Int(123456),
+        ];
+        for slots in [0, 1] {
+            let owner = pool(slots);
+            let execution = owner.begin_execution().unwrap();
+            let scope = execution.scope();
+            scope.with_columns(&Quiet, |columns| {
+                for (nanos, expected) in [
+                    (0, 0_i128),
+                    (-1, 0),
+                    (-999, 0),
+                    (-1000, 1),
+                    (-1001, 1),
+                    (-1_234_567_899, 234567),
+                    (i64::MIN, 854775),
+                    (i64::MAX, 854775),
+                ] {
+                    for fsp in [-1, 0, 6, i64::MAX] {
+                        let raw_row = [Datum::Duration(MySqlDuration::from_raw_parts(nanos, fsp))];
+                        let evaluator = LegacyEvaluator {
+                            raw_columns: columns,
+                            ..LegacyEvaluator::new(&raw_row, 4, &time_zone)
+                        };
+                        let result = evaluator.eval_expr(&call(vec![SimpleExpr::Column(0)]));
+                        if slots == 0 {
+                            assert_pool(result);
+                        } else {
+                            assert_eq!(result.unwrap(), Some(expected));
+                        }
+                    }
+                }
+                let evaluator = LegacyEvaluator {
+                    raw_columns: columns,
+                    ..LegacyEvaluator::new(&row, 4, &time_zone)
+                };
+                for (children, expected) in [
+                    (vec![SimpleExpr::Column(0)], Some(123456)),
+                    // The original typed reader retains hidden DATE clock fields.
+                    (vec![SimpleExpr::Column(1)], Some(123456)),
+                    (vec![SimpleExpr::Column(2)], Some(0)),
+                    (vec![SimpleExpr::Column(3)], None),
+                    (vec![], None),
+                    (vec![SimpleExpr::Null], None),
+                    (vec![SimpleExpr::Int(123456)], None),
+                    (vec![SimpleExpr::Bytes(b"12:34:56.123456".to_vec())], None),
+                    (vec![SimpleExpr::Time(clock)], None),
+                    (
+                        vec![SimpleExpr::Func(
+                            SimpleSig::CastTimeAsDuration,
+                            vec![SimpleExpr::Column(0)],
+                        )],
+                        Some(123456),
+                    ),
+                    (
+                        vec![SimpleExpr::Func(
+                            SimpleSig::CastStringAsDuration,
+                            vec![SimpleExpr::Bytes(b"12:34:56.123456".to_vec())],
+                        )],
+                        Some(123456),
+                    ),
+                    (
+                        vec![SimpleExpr::Func(
+                            SimpleSig::CastStringAsDuration,
+                            vec![SimpleExpr::Bytes(vec![255])],
+                        )],
+                        None,
+                    ),
+                    (
+                        vec![SimpleExpr::Func(
+                            SimpleSig::CastIntAsDuration,
+                            vec![SimpleExpr::Int(123456)],
+                        )],
+                        Some(0),
+                    ),
+                    // Existing integer-cast SQL errors fold to reader NULL.
+                    (
+                        vec![SimpleExpr::Func(
+                            SimpleSig::CastIntAsDuration,
+                            vec![SimpleExpr::Func(
+                                SimpleSig::CastRealAsInt,
+                                vec![SimpleExpr::Real(f64::INFINITY)],
+                            )],
+                        )],
+                        None,
+                    ),
+                ] {
+                    let result = evaluator.eval_expr(&call(children));
+                    if slots == 0 {
+                        assert_pool(result);
+                    } else {
+                        assert_eq!(result.unwrap(), expected);
+                    }
+                }
+            });
+            drop(scope);
+            execution.close();
+        }
+        let shared = convert_expr(&tipb::Expr {
+            tp: Some(tipb::ExprType::ScalarFunc as i32),
+            sig: Some(tipb::ScalarFuncSig::IntIsNull as i32),
+            field_type: Some(tipb::FieldType {
+                tp: Some(8),
+                ..Default::default()
+            }),
+            children: vec![tipb::Expr {
+                tp: Some(tipb::ExprType::Null as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .expect("already-admitted shared child");
+        assert!(matches!(&shared, SimpleExpr::Shared(_)));
+        let owner = pool(0);
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        scope.with_columns(&Quiet, |columns| {
+            let evaluator = LegacyEvaluator {
+                shared_override: Some(columns),
+                ..LegacyEvaluator::new(&row, 4, &time_zone)
+            };
+            assert_pool(evaluator.eval_expr(&call(vec![shared.clone()])));
+            assert_eq!(
+                evaluator
+                    .eval_expr(&call(vec![SimpleExpr::Column(0), shared.clone()]))
+                    .unwrap(),
+                Some(123456)
+            );
+            assert_eq!(
+                evaluator
+                    .eval_expr(&call(vec![SimpleExpr::Null, shared]))
+                    .unwrap(),
+                None
+            );
+        });
+        drop(scope);
+        execution.close();
     }
 
     #[test]

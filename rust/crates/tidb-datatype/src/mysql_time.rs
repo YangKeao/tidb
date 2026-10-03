@@ -18,8 +18,7 @@ use std::fmt;
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, TimeZone, Timelike, Utc};
 
 use crate::{
-    check_fsp, get_last_day, CoreTime, Decimal, FspError, MySqlDuration, PackedTime,
-    TimeConversionError,
+    check_fsp, CoreTime, Decimal, FspError, MySqlDuration, PackedTime, TimeConversionError,
 };
 
 /// MySQL temporal type carried by [`Time`].
@@ -574,52 +573,23 @@ impl Time {
             return Ok(());
         }
 
-        let year = self.core.year();
-        let month = self.core.month();
-        let day = self.core.day();
-        if year == 0 && month == 0 && day == 0 {
-            return self.validate_clock();
-        }
-        if !allow_zero_in_date && (month == 0 || day == 0) {
-            return Err(TimeError::ZeroInDate);
-        }
-        if year > 9999 || month > 12 {
-            return Err(TimeError::InvalidDate);
-        }
-        let maximum_day = if allow_invalid_date || month == 0 {
-            31
-        } else {
-            get_last_day(year, month)
-        };
-        if day > maximum_day {
-            return Err(TimeError::InvalidDate);
-        }
-        // Go's `checkDateRange` compares the complete CoreTime against
-        // `MaxDatetime` (`9999-12-31 23:59:59.999999`), not just the year and
-        // month fields.  The packed microsecond field can represent values
-        // through 1,048,575, so the exact upper-bound second needs the same
-        // final precision check.  Earlier dates remain valid even when their
-        // synthetic microsecond field is above one million, matching Go's
-        // lexicographic `compareTime` ordering.
-        if year == 9999
-            && month == 12
-            && day == 31
-            && self.core.hour() == 23
-            && self.core.minute() == 59
-            && self.core.second() == 59
-            && self.core.microsecond() > 999_999
-        {
-            return Err(TimeError::InvalidDate);
-        }
-        self.validate_clock()
-    }
-
-    fn validate_clock(self) -> Result<(), TimeError> {
-        if self.core.hour() >= 24 || self.core.minute() >= 60 || self.core.second() >= 60 {
-            Err(TimeError::InvalidClock)
-        } else {
-            Ok(())
-        }
+        use tidb_query_datatype::codec::mysql::time::NativeDateTimeValidationError;
+        tidb_query_datatype::codec::mysql::Time::validate_native_datetime_fields(
+            self.core.year(),
+            self.core.month(),
+            self.core.day(),
+            self.core.hour(),
+            self.core.minute(),
+            self.core.second(),
+            self.core.microsecond(),
+            allow_zero_in_date,
+            allow_invalid_date,
+        )
+        .map_err(|error| match error {
+            NativeDateTimeValidationError::InvalidDate => TimeError::InvalidDate,
+            NativeDateTimeValidationError::InvalidClock => TimeError::InvalidClock,
+            NativeDateTimeValidationError::ZeroInDate => TimeError::ZeroInDate,
+        })
     }
 
     /// Encodes TiDB's packed temporal storage representation.

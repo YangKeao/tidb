@@ -1,0 +1,64 @@
+time-microsecond-70 / round71
+16 serialized Cargo launches:13 nonzero green,2 unchanged old full-suite failures,1 retained zero-match wrong target (not a pass). No compile failure/new RED/interrupted test. All13 added tests pass on their first matching gate. Filters overlap; do not sum as unique tests.
+CPP commands cwd=/home/agent/tidb/expression-unification/tikv, wrapper pins nightly-2026-01-30.
+Native commands cwd=/home/agent/tidb/expression-unification/tidb/rust, wrapper pins nightly-2026-08-22.
+Raw logs=/home/agent/tidb/expression-unification/logs/time-microsecond-{id}.log. Times are Cargo compilation then test elapsed seconds, not total shell wall time.
+
+1. ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_compact_parts -- --test-threads=1
+id=tikv-datatype sha256=b29599ec6913115c5b85e109159d5b9a24af9a7b064d1b2045b7e1be627b71fa
+1 passed/0 failed/0 ignored/444 filtered;4.21/0.00s;exit0.
+2. ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_duration -- --test-threads=1
+id=tikv-parser sha256=0d079ef8d92d59db8bdb7a75426accdfa7f2293145e2167cbc35b002eb69b137
+3/0/0/913;16.82/0.00s;exit0.
+3. ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_time_microsecond_tests -- --test-threads=1
+id=tikv-workers sha256=a41e749930dfca93f78ab6af8d44dd825b9b96b2a60e69a4bd46e130e4d06e01
+2/0/0/914;0.16/0.00s;exit0.
+4. ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local -- --test-threads=1
+id=tikv-local sha256=61cbe90b144880afa4a67474c359c38941a334fd6be671241540da22700515a7
+322/0/1/593;0.13/0.22s;exit0. Ignored is not a pass.
+5. ../../tools/cargo-tidb test --locked -p tidb-datatype --lib time -- --test-threads=1
+id=native-datatype-time sha256=a11817414632a68234b2e7901eb154d0e6f77844283b3a18735cb41d3deea3b4
+90/0/0/363;3.66/0.01s;exit0.
+6. ../../tools/cargo-tidb test --locked -p tidb-datatype --lib fsp -- --test-threads=1
+id=native-datatype-fsp sha256=54c2d73e8d13de44377e0b67b73419acbe1459e3a9c8dac2d8a29549e98d18cb
+14/0/0/439;0.10/0.00s;exit0.
+7. ../../tools/cargo-tidb test --locked -p tidb-expr --lib microsecond -- --test-threads=1
+id=native-expr sha256=0b0b7570d10eec5a6968a5cb966de392dada3f1a195f13eb56e260d18eb509eb
+7/0/0/1656;20.46/0.00s;exit0.
+8. ../../tools/cargo-tidb test --locked -p tidb-expr --lib shared_duration_facades -- --test-threads=1
+id=native-parser sha256=1738e01f87ca6aec609978bfc3bc9637196c7a9f164f119bd35e457d3af17e61
+1/0/0/1662;0.15/0.00s;exit0.
+9. ../../tools/cargo-tidb test --locked -p tidb-expr --lib builtin_time_calendars_source -- --test-threads=1
+id=native-calendars sha256=d470f09808052334078aeea0ec2f198c11d095ec9e710e1db894e2ed3a36f162
+22/0/0/1641;0.12/0.01s;exit0.
+10. ../../tools/cargo-tidb test --locked -p tidb-expr --lib test_clock_parts_and_invalid_time_warning -- --test-threads=1
+id=native-warning sha256=5da3892969950c64409ee31ef81d339dbfbd43e20be49ce826ddcd3258a68e5d
+1/0/0/1662;0.12/0.00s;exit0.
+11. ../../tools/cargo-tidb test --locked -p tidb-expr --lib test_time_values_and_result_type -- --test-threads=1
+id=native-values sha256=3e181f8412f08540e31d40afa1143a22f5e49f4c3baa96d53fcf806a7d6896b4
+1/0/0/1662;0.12/0.00s;exit0.
+12. ../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_microsecond_worker -- --test-threads=1
+id=native-legacy sha256=656973501159e16c905b25a3edb53f4d30c6faa13775c49c1daaf56ce1554db5
+1/0/0/224;8.95/0.00s;exit0.
+13. ../../tools/cargo-tidb test --locked -p tidb-session --test all evaluated_ascii_time_microsecond -- --test-threads=1
+id=sql sha256=b724fc10cf584386a4d453aa7465d0f92b24876862ca7f9bf1358bc6a7eab6e7
+0/0/0/336;32.40/0.00s;exit0 but ZERO MATCH, NOT A PASS. Lifecycle source is in the library target. Cargo.toml and the prior checkpoint's actual command confirmed the target correction; no test/fixture change.
+14. ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+id=expr-full sha256=a28bf1a7c1618cc7ea91e988636a38ab2ab8b85552adec995980969092827fe4
+1565/4/94/0;0.13/14.42s;exit101. Four old failures only.
+15. ../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+id=unistore-full sha256=35de23b0b08693df0e40c7b56ebec68756f9ff4015b575b34ad4253682892515
+211/1/13/0;0.13/3.01s;exit101. One old failure only.
+16. ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_time_microsecond -- --test-threads=1
+id=sql-r2 sha256=117bd7d4259f4d43c3bcfaae0e8d022f32cfa382fec01f40acf069611a57c5a2
+2/0/0/2215;7.66/0.05s;exit0. Two functions x8 inputs x2 modes=32 values plus metadata/warnings;8 direct zero-slot executions. Both modes exercise existing routes, not a new vector backend.
+
+Full failure sections, including final failed-test lists, equal intdiv-decimal-69 byte-for-byte after replacing only numeric panic-heading thread IDs by THREAD. Extract from the newline before failures: to the newline before test result:.
+expression sha256=411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+unistore sha256=2f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1
+Old test bodies: CPP228/native512 byte-identical; new tests CPP6/native7. Native Timestamp validation branch byte-identical. The first source-audit script timed out at20s due quadratic substring scanning; corrected linear masking completed, not a test run. Read-only path lookup mistakes and a reread-before-edit refusal produced no source/test failures.
+
+Scoped formatting: pinned rustfmt --edition 2021 --config skip_children=true --check on all21 changed Rust files (CPP9/native12;2 new modules); git diff --check in both repositories. No dependencies/locks/generated/Go/Bazel edits. No fixtures recorded; originals unchanged. Architecture index and coprocessor ownership guide updated, without new repository policy.
+
+Shared FSP source discovery: wire round=true is not equivalent for leading-zero fractions/carry. Existing wire code is unchanged; native byte parser/error/normalization moved once, with native public error alias and grammar facade. No expected value was calibrated from the provider.
+Unclaimed: full temporal parser/type, strict completion, make lint/dev/bazel_prepare/whole workspace/release/exhaustive differential/TiFlash/FIPS, zero-copy/performance/physical heap/peak/OOM/fault injection, broader NoColumns/M6, and previous JSON_KEYS/AST/SQL metadata/parser/GB/vector/Decimal/raw-math gaps. This is not package transcreation or PR readiness.

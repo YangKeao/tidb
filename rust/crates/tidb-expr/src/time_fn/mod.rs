@@ -60,7 +60,7 @@ pub(crate) fn dispatch(
         "CURRENT_TIME" => current_time(vals, "current_time", cols),
         "UTC_TIME" => utc_time(vals, cols),
         "DATE" => date(vals, cols),
-        "MICROSECOND" => microsecond(vals),
+        "MICROSECOND" => microsecond_in(vals, cols),
         "TIME" => time(vals, cols),
         "MONTH" => month_in(vals, cols),
         "DAY" | "DAYOFMONTH" => day_of_month_in(vals, cols),
@@ -375,39 +375,204 @@ fn utc_time(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
 /// ETDuration argument. Go deliberately suppresses a duration-cast error and
 /// returns NULL, unlike `TIME()` which reports the same truncation through the
 /// statement context.
-pub(crate) fn microsecond(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(value) = coerce_str(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    let fsp = duration_parse::get_fsp(&value);
-    Ok(match duration_parse::parse_duration(&value, fsp) {
-        Ok(duration) => Datum::Int(duration.micro_second()),
-        Err(_) => Datum::Null,
-    })
+pub(crate) fn microsecond_in(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_prepared_args_in(
+        cols,
+        || {
+            if vals.len() != 1 {
+                return Err(EvalError::Unsupported("bad function arity"));
+            }
+            Ok((
+                crate::tikv::EvaluatedBytesOp::MicrosecondNative,
+                crate::tikv::EvaluatedArgs::Bytes(coerce_str(&vals[0])?.map(String::into_bytes)),
+            ))
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
 }
 
 /// `builtinTimeSig.evalDuration`: parse the string as a TiDB duration while
 /// preserving its written FSP. `ErrTruncatedWrongVal` is a statement warning
 /// for a SELECT and leaves Go's zero-value duration as the result.
 fn time(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
+    let source = std::cell::RefCell::new(None);
+    crate::tikv::evaluate_prepared_args_in(
+        cols,
+        || {
+            if vals.len() != 1 {
+                return Err(EvalError::Unsupported("bad function arity"));
+            }
+            let text = coerce_str(&vals[0])?;
+            let bytes = text.as_ref().map(|value| value.as_bytes().to_vec());
+            // Keep the original text solely for the source diagnostic. Parsing
+            // and every result byte, including the error fallback, belong to C4.
+            *source.borrow_mut() = text;
+            Ok((
+                crate::tikv::EvaluatedBytesOp::TimeNative,
+                crate::tikv::EvaluatedArgs::Bytes(bytes),
+            ))
+        },
+        |computed| {
+            let Some(bytes) = computed.into_bytes()? else {
+                return Ok(Datum::Null);
+            };
+            let report = tidb_query_expr::decode_native_time_result(&bytes)
+                .ok_or_else(crate::tikv::native_time_result_contract_error)?;
+            if report.truncated {
+                let source = source.borrow();
+                let text = source
+                    .as_deref()
+                    .ok_or_else(crate::tikv::native_time_result_contract_error)?;
+                cols.handle_truncate(&format!(
+                    "Truncated incorrect time value: '{}'",
+                    tidb_datatype::warning_subject_byte_cap(text)
+                ))?;
+            }
+            Ok(Datum::new_string(report.value))
+        },
+    )
+}
+
+#[cfg(test)]
+#[test]
+fn time_microsecond_workers_preserve_parse_warning_and_scope_boundaries() {
+    use std::cell::RefCell;
+    struct Policy {
+        strict: bool,
+        warnings: RefCell<Vec<(u16, String)>>,
     }
-    let Some(value) = coerce_str(&vals[0])? else {
-        return Ok(Datum::Null);
+    impl Columns for Policy {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn now(&self) -> Option<(i64, u32, i32)> {
+            panic!("duration text must not read the clock")
+        }
+        fn time_zone(&self) -> crate::context::SessionTimeZone {
+            panic!("duration text must not read a session zone")
+        }
+        fn truncate_level(&self) -> crate::context::ErrorLevel {
+            if self.strict {
+                crate::context::ErrorLevel::Error
+            } else {
+                crate::context::ErrorLevel::Warn
+            }
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.warnings.borrow_mut().push((code, message.to_owned()));
+        }
+    }
+    let resource = |result: Result<Datum, EvalError>| {
+        let error = result.expect_err("duration roots must retain the zero-slot scope");
+        let EvalError::ExpressionAdapterFailure(failure) = error else {
+            panic!("{error:?}")
+        };
+        assert_eq!(
+            failure.class(),
+            crate::ExpressionAdapterFailureClass::PoolResource
+        );
+        assert_eq!(
+            failure.origin(),
+            crate::ExpressionAdapterFailureOrigin::Pool
+        );
     };
-    let fsp = duration_parse::get_fsp(&value);
-    match duration_parse::parse_duration(&value, fsp) {
-        Ok(duration) => Ok(Datum::new_string(duration.format())),
-        Err(_) => {
-            cols.handle_truncate(&format!(
-                "Truncated incorrect time value: '{}'",
-                tidb_datatype::warning_subject_byte_cap(&value)
-            ))?;
-            Ok(Datum::new_string("00:00:00".to_owned()))
+    for slots in [1, 0] {
+        let owner = crate::AsciiPoolOwner::new(
+            crate::AsciiPoolPolicy::checked(
+                slots,
+                slots,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let execution = owner.begin_execution().unwrap();
+        for strict in [false, true] {
+            let ctx = Policy {
+                strict,
+                warnings: RefCell::new(Vec::new()),
+            };
+            for (input, text, micros) in [
+                ("-00:00:00.123456", "-00:00:00.123456", 123456),
+                ("11:11:11.1 ", "11:11:11.10", 100000),
+                ("00:00:00.9999999", "00:00:01.000000", 0),
+                ("20101010111111.123456", "11:11:11.123456", 123456),
+            ] {
+                for (name, expected) in [
+                    ("TIME", Datum::new_string(text)),
+                    ("MICROSECOND", Datum::Int(micros)),
+                ] {
+                    let result = execution.scope().with_columns(&ctx, |columns| {
+                        dispatch(name, &[Datum::new_string(input)], columns).unwrap()
+                    });
+                    if slots == 1 {
+                        assert_eq!(result.unwrap(), expected);
+                    } else {
+                        resource(result);
+                    }
+                    assert!(ctx.warnings.borrow().is_empty());
+                }
+            }
+            for input in ["bad", "12:00:00..1", "838:59:59.000001", "101010111111.1"] {
+                let value = Datum::new_string(input);
+                let result = execution.scope().with_columns(&ctx, |columns| {
+                    microsecond_in(std::slice::from_ref(&value), columns)
+                });
+                if slots == 1 {
+                    assert_eq!(result.unwrap(), Datum::Null);
+                } else {
+                    resource(result);
+                }
+                assert!(ctx.warnings.borrow().is_empty());
+                let result = execution
+                    .scope()
+                    .with_columns(&ctx, |columns| time(std::slice::from_ref(&value), columns));
+                let message = format!("Truncated incorrect time value: '{input}'");
+                if slots == 0 {
+                    resource(result);
+                } else if strict {
+                    assert_eq!(result, Err(EvalError::TruncatedWrongValue(message.clone())));
+                } else {
+                    assert_eq!(result.unwrap(), Datum::new_string("00:00:00"));
+                }
+                if slots == 1 && !strict {
+                    assert_eq!(ctx.warnings.take(), [(1292, message)]);
+                } else {
+                    assert!(ctx.warnings.borrow().is_empty());
+                }
+            }
+            for name in ["TIME", "MICROSECOND"] {
+                let result = execution.scope().with_columns(&ctx, |columns| {
+                    dispatch(name, &[Datum::Null], columns).unwrap()
+                });
+                if slots == 1 {
+                    assert_eq!(result.unwrap(), Datum::Null);
+                } else {
+                    resource(result);
+                }
+                for args in [vec![], vec![Datum::Null, Datum::Null]] {
+                    assert!(matches!(
+                        execution
+                            .scope()
+                            .with_columns(&ctx, |columns| dispatch(name, &args, columns).unwrap()),
+                        Err(EvalError::Unsupported("bad function arity"))
+                    ));
+                }
+                for (value, error) in [
+                    (Datum::new_bytes(vec![0xff]), "invalid UTF-8 byte datum"),
+                    (Datum::MinNotNull, "range sentinel string coercion"),
+                ] {
+                    assert!(
+                        matches!(execution.scope().with_columns(&ctx, |columns| dispatch(name, &[value], columns).unwrap()), Err(EvalError::Unsupported(actual)) if actual == error)
+                    );
+                }
+                assert!(ctx.warnings.borrow().is_empty());
+            }
         }
     }
 }

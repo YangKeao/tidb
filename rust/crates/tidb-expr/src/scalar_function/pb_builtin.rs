@@ -157,7 +157,7 @@ impl PbBuiltin {
             Hour => Kernel::Values(crate::time_fn::calendar::hour_in),
             Minute => Kernel::Values(crate::time_fn::calendar::minute_in),
             Second => Kernel::Values(crate::time_fn::calendar::second_in),
-            MicroSecond => Kernel::Values(|values, _| crate::time_fn::microsecond(values)),
+            MicroSecond => Kernel::Values(crate::time_fn::microsecond_in),
             Month => Kernel::Values(crate::time_fn::month_in),
             WeekWithoutMode => Kernel::Values(|values, ctx| {
                 crate::time_fn::week_in(values, ctx.default_week_format(), ctx)
@@ -372,6 +372,14 @@ impl PbBuiltin {
                             // Preserve the existing child-demand order, but let
                             // the migrated nullable signature actually enter C4.
                             return eval_pb_char_length(&value, binary, ctx);
+                        }
+                        if self.signature == ScalarFuncSig::MicroSecond {
+                            // Preserve the observed NULL boundary even for an
+                            // otherwise invalid arity or an uncoerced prefix.
+                            return crate::time_fn::microsecond_in(
+                                std::slice::from_ref(&value),
+                                ctx,
+                            );
                         }
                         if self.signature == ScalarFuncSig::Date {
                             // Only the observed NULL is handed off: do not coerce
@@ -679,6 +687,128 @@ mod json_path_worker_tests {
     use crate::expression::{Column, Constant, Expression};
     use crate::NoColumns;
     use tidb_datatype::{BinaryJSON, FieldTypeCode, FieldTypeFlags};
+
+    #[test]
+    fn protobuf_microsecond_keeps_context_and_observed_null_demand() {
+        use std::cell::RefCell;
+        struct Demand(RefCell<Vec<usize>>);
+        impl Columns for Demand {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn get_param_value(&self, index: usize) -> Result<Datum, EvalError> {
+                self.0.borrow_mut().push(index);
+                if index == 1 {
+                    return Err(EvalError::Unsupported("protobuf microsecond child"));
+                }
+                Ok(Datum::new_string("10:10:10.123456"))
+            }
+            fn append_warning(&self, _: u16, _: &str) {
+                panic!("MICROSECOND suppresses duration parse errors")
+            }
+        }
+        let int_type = FieldType::new(FieldTypeCode::LongLong);
+        let text_type = FieldType::new(FieldTypeCode::VarString);
+        let literal = |value| Expression::Constant(Constant::new(value, text_type.clone()));
+        let child = |index| {
+            Expression::ScalarFunction(ScalarFunction::new(
+                tidb_ast::CiString::new("getparam"),
+                text_type.clone(),
+                vec![Expression::Constant(Constant::new(
+                    Datum::Int(index),
+                    int_type.clone(),
+                ))],
+            ))
+        };
+        let selected = |args| {
+            ScalarFunction::from_pb(
+                PbBuiltin::new(ScalarFuncSig::MicroSecond).unwrap(),
+                int_type.clone(),
+                args,
+            )
+        };
+        let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+        for slots in [1, 0] {
+            let owner = crate::AsciiPoolOwner::new(
+                crate::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    64,
+                    8,
+                    4 * 1024 * 1024,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let execution = owner.begin_execution().unwrap();
+            let ctx = Demand(RefCell::new(Vec::new()));
+            for (args, reads, expected) in [
+                (vec![child(0)], vec![0], Datum::Int(123456)),
+                (vec![literal(Datum::new_string("bad"))], vec![], Datum::Null),
+                (vec![literal(Datum::Null), child(1)], vec![], Datum::Null),
+                (
+                    vec![child(0), literal(Datum::Null), child(1)],
+                    vec![0],
+                    Datum::Null,
+                ),
+                (
+                    vec![
+                        literal(Datum::new_bytes(vec![0xff])),
+                        literal(Datum::Null),
+                        child(1),
+                    ],
+                    vec![],
+                    Datum::Null,
+                ),
+            ] {
+                let function = selected(args);
+                let result = execution
+                    .scope()
+                    .with_columns(&ctx, |columns| function.eval(columns, empty.to_row()));
+                if slots == 1 {
+                    assert_eq!(result.unwrap(), expected);
+                } else {
+                    let error = result.expect_err("MicroSecond must retain its caller's scope");
+                    let EvalError::ExpressionAdapterFailure(failure) = error else {
+                        panic!("{error:?}")
+                    };
+                    assert_eq!(
+                        failure.class(),
+                        crate::ExpressionAdapterFailureClass::PoolResource
+                    );
+                    assert_eq!(
+                        failure.origin(),
+                        crate::ExpressionAdapterFailureOrigin::Pool
+                    );
+                }
+                assert_eq!(ctx.0.take(), reads);
+            }
+            for args in [vec![], vec![child(0), child(2)]] {
+                let reads = if args.is_empty() { vec![] } else { vec![0, 2] };
+                assert!(matches!(
+                    execution
+                        .scope()
+                        .with_columns(&ctx, |columns| selected(args).eval(columns, empty.to_row())),
+                    Err(EvalError::Unsupported("bad function arity"))
+                ));
+                assert_eq!(ctx.0.take(), reads);
+            }
+            assert!(matches!(
+                execution
+                    .scope()
+                    .with_columns(&ctx, |columns| selected(vec![
+                        child(1),
+                        literal(Datum::Null)
+                    ])
+                    .eval(columns, empty.to_row())),
+                Err(EvalError::Unsupported("protobuf microsecond child"))
+            ));
+            assert_eq!(ctx.0.take(), [1]);
+        }
+    }
 
     #[test]
     fn protobuf_date_keeps_hidden_clock_and_observed_null_demand() {

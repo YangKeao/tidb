@@ -411,12 +411,13 @@ pub use tikv::{
     eval_legacy_integer_comparison_in, eval_legacy_json_array_append_step_in,
     eval_legacy_json_member_of_in, eval_legacy_json_merge_patch_in,
     eval_legacy_json_output_none_in, eval_legacy_json_replace_in, eval_legacy_like_in,
-    eval_legacy_real_arithmetic_in, eval_legacy_real_comparison_in, eval_legacy_time_comparison_in,
-    eval_regexp_legacy_ready_in, AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy,
-    AsciiScope, BinaryArithmeticOperation, ComparisonOp, ExpressionAdapterFailure,
-    ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin, ExpressionRuntimeFailure,
-    ExpressionRuntimeFailureClass, ExpressionRuntimeFailurePhase, LegacyBinaryArgs,
-    LegacyIntegerArithmetic, LegacyLikeArgs, RegexpLegacyInput, ScopedAsciiColumns,
+    eval_legacy_microsecond_in, eval_legacy_real_arithmetic_in, eval_legacy_real_comparison_in,
+    eval_legacy_time_comparison_in, eval_regexp_legacy_ready_in, AsciiExecution, AsciiOwnerError,
+    AsciiPoolOwner, AsciiPoolPolicy, AsciiScope, BinaryArithmeticOperation, ComparisonOp,
+    ExpressionAdapterFailure, ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,
+    ExpressionRuntimeFailure, ExpressionRuntimeFailureClass, ExpressionRuntimeFailurePhase,
+    LegacyBinaryArgs, LegacyIntegerArithmetic, LegacyLikeArgs, RegexpLegacyInput,
+    ScopedAsciiColumns,
 };
 
 use tidb_ast::{CastStyle, Expr, GetFormatSelector, IsTarget};

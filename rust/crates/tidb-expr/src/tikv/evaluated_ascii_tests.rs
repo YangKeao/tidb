@@ -1424,6 +1424,11 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::TidbParseTsoNative | EvaluatedBytesOp::TimeDiffTextNative => {
             panic!("TSO and TIMEDIFF need their actual operands and conditional demand")
         }
+        EvaluatedBytesOp::TimeNative
+        | EvaluatedBytesOp::MicrosecondNative
+        | EvaluatedBytesOp::MicrosecondLegacy => {
+            panic!("TIME and MICROSECOND need their actual text or nullable nanoseconds")
+        }
         EvaluatedBytesOp::IntDivDecimalSignedNative
         | EvaluatedBytesOp::IntDivDecimalUnsignedNative
         | EvaluatedBytesOp::IntDivDecimalLegacy
@@ -2172,6 +2177,57 @@ fn json_merge_sdk_rejects_bad_frames_and_preserves_empty_patch_panic() {
     assert_eq!(owner.snapshot().unwrap(), disposed);
     drop(scope);
     execution.close();
+}
+
+#[test]
+fn legacy_microsecond_sdk_preserves_nullable_nanos_fsp_inertness_and_refusals() {
+    for max_workers in [1, 0] {
+        let owner = AsciiPoolOwner::new(test_policy(max_workers, max_workers)).unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        scope.with_columns(&crate::NoColumns, |columns| {
+            for fsp in [-1, 0, 6, 7, i64::MAX] {
+                for (nanos, expected) in [
+                    (None, None),
+                    (Some(0), Some(0)),
+                    (Some(-999), Some(0)),
+                    (Some(-1_001), Some(1)),
+                    (Some(1_234_567_890), Some(234_567)),
+                    (Some(i64::MIN), Some(854_775)),
+                    (Some(i64::MAX), Some(854_775)),
+                ] {
+                    let value = nanos.map(|nanos| tidb_datatype::MySqlDuration::from_raw_parts(nanos, fsp).nanoseconds());
+                    let (result, observation) = observe_wide_math(|| eval_legacy_microsecond_in(value, columns));
+                    if max_workers == 0 {
+                        assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+                        assert_eq!(observation.facade_entries, 0);
+                        assert_eq!(observation.before_kernel_invocations, None);
+                        assert_eq!(observation.after_kernel_invocations, None);
+                    } else {
+                        assert_eq!(result, Ok(expected));
+                        assert_wide_math_c4(observation);
+                        assert_eq!(scope.lease.borrow().as_ref().unwrap().worker.as_ref().unwrap().operation(), EvaluatedBytesOp::MicrosecondLegacy);
+                    }
+                }
+            }
+            if max_workers != 0 {
+                // A successful signed result is not an ordinary byte result;
+                // refusal after the real worker does not poison or replay it.
+                let (result, observation) = observe_wide_math(|| evaluate_args_in(
+                    EvaluatedBytesOp::MicrosecondLegacy, columns,
+                    || Ok(EvaluatedArgs::Int(Some(1_001))), EvaluatedBytesResult::into_bytes,
+                ));
+                assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract));
+                assert_wide_math_c4(observation);
+            }
+        });
+        assert!(!scope.poisoned.get());
+        if max_workers == 0 {
+            assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+        }
+        drop(scope);
+        execution.close();
+    }
 }
 
 #[test]

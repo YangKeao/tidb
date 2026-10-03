@@ -1627,6 +1627,10 @@ fn result_kind_error() -> AsciiBoundaryError {
     }
 }
 
+pub(crate) fn native_time_result_contract_error() -> EvalError {
+    result_kind_error().into_eval_error()
+}
+
 fn require_computed_int(computed: ComputedValue) -> Result<ComputedInt, AsciiBoundaryError> {
     match computed {
         ComputedValue::Int(value) => Ok(value),
@@ -2020,6 +2024,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::IntDivIntSuNative
             | EvaluatedBytesOp::IntDivIntUuNative
             | EvaluatedBytesOp::IntDivDecimalLegacy
+            | EvaluatedBytesOp::MicrosecondNative
+            | EvaluatedBytesOp::MicrosecondLegacy
             | EvaluatedBytesOp::BinaryArithmeticNullNative
             | EvaluatedBytesOp::BinaryArithmeticMissingLegacy
             | EvaluatedBytesOp::CompareIntSsNative(_)
@@ -2222,6 +2228,7 @@ fn materialize_computed(
             | EvaluatedBytesOp::IntDivDecimalUnsignedNative
             | EvaluatedBytesOp::TidbParseTsoNative
             | EvaluatedBytesOp::TimeDiffTextNative
+            | EvaluatedBytesOp::TimeNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative
@@ -2711,6 +2718,24 @@ pub fn eval_legacy_json_merge_patch_in(
             Ok((EvaluatedBytesOp::JsonMergePatchRawLegacy, args))
         },
         legacy_json_output_result,
+    )
+}
+
+/// Project legacy MICROSECOND from the actual nullable nanoseconds. FSP and
+/// duration parsing remain with the caller; even NULL reaches this fixed worker.
+pub fn eval_legacy_microsecond_in(
+    value: Option<i64>,
+    ctx: &dyn Columns,
+) -> Result<Option<i64>, EvalError> {
+    evaluate_args_in(
+        EvaluatedBytesOp::MicrosecondLegacy,
+        ctx,
+        || Ok(EvaluatedArgs::Int(value)),
+        |computed| match computed.into_int_datum()? {
+            Datum::Null => Ok(None),
+            Datum::Int(value) => Ok(Some(value)),
+            _ => Err(result_kind_error().into_eval_error()),
+        },
     )
 }
 

@@ -675,6 +675,7 @@ fn parse_datetime_core<TZ: TimeZone>(
 
     let mut fields = [0_i32; 6];
     let hhmmss;
+    let mut compact_fraction = None;
     match parts.len() {
         0 => return Err(TimeError::InvalidDate),
         1 if is_float => {
@@ -703,16 +704,20 @@ fn parse_datetime_core<TZ: TimeZone>(
             hhmmss = parts[0] == "0" || (9..=14).contains(&length);
         }
         1 => {
-            let compact = &parts[0];
-            parse_compact(compact, &mut fields)?;
-            let length = compact.len();
-            hhmmss = matches!(length, 11 | 12 | 14);
-            if matches!(length, 5 | 6 | 8) && !is_float {
-                parse_compact_clock(&fraction, &mut fields[3..]);
-            } else if matches!(length, 9 | 10) {
-                fields[5] = parse_prefix(&fraction, 2).unwrap_or(0);
-                truncated |= fraction.len() > 2;
-            }
+            use tidb_query_datatype::codec::mysql::time::NativeCompactDateTimeError;
+            let compact = tidb_query_datatype::codec::mysql::Time::native_compact_datetime_parts(
+                &parts[0],
+                fraction.as_bytes(),
+                fsp as u8,
+            )
+            .map_err(|error| match error {
+                NativeCompactDateTimeError::InvalidDate => TimeError::InvalidDate,
+                NativeCompactDateTimeError::InvalidFsp(error) => TimeError::InvalidFsp(error),
+            })?;
+            fields = compact.fields;
+            hhmmss = compact.has_clock;
+            truncated |= compact.truncated;
+            compact_fraction = Some((compact.microsecond, compact.carry));
         }
         2 => return Err(TimeError::InvalidDate),
         3..=6 => {
@@ -737,7 +742,9 @@ fn parse_datetime_core<TZ: TimeZone>(
         }
     }
 
-    let (microsecond, overflow) = if hhmmss {
+    let (microsecond, overflow) = if let Some(fraction) = compact_fraction {
+        fraction
+    } else if hhmmss {
         parse_frac(fraction.as_bytes(), fsp).map_err(TimeError::InvalidFsp)?
     } else {
         (0, false)
@@ -827,52 +834,6 @@ fn split_datetime(input: &str) -> (Vec<String>, String, Option<crate::TimezoneSu
         suffix,
         truncated,
     )
-}
-
-fn parse_compact(input: &str, fields: &mut [i32; 6]) -> Result<(), TimeError> {
-    let widths: &[usize] = match input.len() {
-        14 => &[4, 2, 2, 2, 2, 2],
-        12 => &[2, 2, 2, 2, 2, 2],
-        11 => &[2, 2, 2, 2, 2, 1],
-        10 => &[2, 2, 2, 2, 2],
-        9 => &[2, 2, 2, 2, 1],
-        8 => &[4, 2, 2],
-        7 => &[2, 2, 2, 1],
-        6 => &[2, 2, 2],
-        5 => &[2, 2, 1],
-        _ => return Err(TimeError::InvalidDate),
-    };
-    let mut offset = 0;
-    for (field, width) in fields.iter_mut().zip(widths) {
-        *field = input[offset..offset + width]
-            .parse()
-            .map_err(|_| TimeError::InvalidDate)?;
-        offset += width;
-    }
-    if !matches!(input.len(), 8 | 14) {
-        fields[0] = adjust_two_digit_year(fields[0]);
-    }
-    Ok(())
-}
-
-fn parse_compact_clock(fraction: &str, clock: &mut [i32]) {
-    match fraction.len() {
-        0 => {}
-        1..=2 => clock[0] = parse_prefix(fraction, 2).unwrap_or(0),
-        3..=4 => {
-            clock[0] = parse_prefix(fraction, 2).unwrap_or(0);
-            clock[1] = fraction[2..].parse().unwrap_or(0);
-        }
-        _ => {
-            clock[0] = parse_prefix(fraction, 2).unwrap_or(0);
-            clock[1] = parse_prefix(&fraction[2..], 2).unwrap_or(0);
-            clock[2] = parse_prefix(&fraction[4..], 2).unwrap_or(0);
-        }
-    }
-}
-
-fn parse_prefix(input: &str, width: usize) -> Option<i32> {
-    input.get(..input.len().min(width))?.parse().ok()
 }
 
 fn checked_core(fields: [i32; 6], microsecond: i64) -> Result<CoreTime, TimeError> {

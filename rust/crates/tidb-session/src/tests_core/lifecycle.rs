@@ -9363,6 +9363,176 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_time_microsecond_preserve_sql_duration_shapes_and_parse_diagnostics() {
+    use tidb_datatype::{FieldTypeCode, MySqlDuration};
+
+    let mut session = Session::new();
+    session.run("SET time_zone='+00:00'").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_time_microsecond_sql (good_time TIME(6), negative_time TIME(6), day_text VARCHAR(40), compact_text VARCHAR(40), bad_text VARCHAR(40), tail_text VARCHAR(40), over_text VARCHAR(40), null_text VARCHAR(40))").unwrap();
+    session.run("INSERT INTO shared_time_microsecond_sql VALUES ('12:34:56.123456','-00:00:00.123456','1 12:34:56.123456','20171231235959.9999999','2011-11-11 10:10:10.11.12','12:34:56tail','839:00:00',NULL)").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+
+    // TIME's native leaf returns text, but the SQL scalar boundary converts it
+    // to the declared Duration type. TIME(6) columns retain six fraction digits;
+    // VARCHAR columns declare decimal=0, so their TIME result is rounded to FSP0.
+    // MICROSECOND reads the original parsed fraction, including its positive
+    // magnitude for a negative duration. Compact datetime rounding carries into
+    // 2018-01-01 before the clock fields are extracted, hence midnight here.
+    let cases = [
+        (
+            "good_time",
+            Some(45_296_123_456_000_i64),
+            6_i64,
+            Some(123_456_i64),
+            None,
+        ),
+        ("negative_time", Some(-123_456_000), 6, Some(123_456), None),
+        (
+            "day_text",
+            Some(131_696_000_000_000),
+            0,
+            Some(123_456),
+            None,
+        ),
+        ("compact_text", Some(0), 0, Some(0), None),
+        (
+            "bad_text",
+            Some(0),
+            0,
+            None,
+            Some("Truncated incorrect time value: '2011-11-11 10:10:10.11.12'"),
+        ),
+        (
+            "tail_text",
+            Some(0),
+            0,
+            None,
+            Some("Truncated incorrect time value: '12:34:56tail'"),
+        ),
+        (
+            "over_text",
+            Some(0),
+            0,
+            None,
+            Some("Truncated incorrect time value: '839:00:00'"),
+        ),
+        ("null_text", None, 0, None, None),
+    ];
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        for &(column, nanos, fsp, micros, warning) in &cases {
+            let sql = format!(
+                "SELECT TIME({column}),MICROSECOND({column}) FROM shared_time_microsecond_sql"
+            );
+            let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap() else {
+                panic!("expected TIME/MICROSECOND rows: {sql}")
+            };
+            let expected_time = nanos
+                .map(|value| Datum::Duration(MySqlDuration::from_nanoseconds(value, fsp).unwrap()))
+                .unwrap_or(Datum::Null);
+            let expected_micros = micros.map(Datum::Int).unwrap_or(Datum::Null);
+            assert_eq!(
+                rows,
+                vec![vec![expected_time, expected_micros]],
+                "{sql}/{vectorized}"
+            );
+            assert_eq!(columns.len(), 2);
+            let time_type = &columns[0].1;
+            assert_eq!(time_type.code(), FieldTypeCode::Duration);
+            assert_eq!(
+                (time_type.flen(), time_type.decimal()),
+                (if fsp == 6 { 17 } else { 10 }, fsp)
+            );
+            assert!(time_type.has_flag(tidb_datatype::FieldTypeFlags::BINARY));
+            let micro_type = &columns[1].1;
+            assert_eq!(micro_type.code(), FieldTypeCode::LongLong);
+            assert_eq!((micro_type.flen(), micro_type.decimal()), (20, 0));
+            assert!(!micro_type.is_unsigned());
+            for (_, field) in &columns {
+                assert_eq!(field.charset_name(), "binary");
+                assert_eq!(field.collation_name(), "binary");
+            }
+            // TIME contributes exactly one 1292 for a parse error; MICROSECOND
+            // suppresses that error and contributes no second diagnostic.
+            let expected_warnings = warning
+                .map(|message| vec![(1292, message.to_owned())])
+                .unwrap_or_default();
+            assert_eq!(
+                warnings_of(&session),
+                expected_warnings,
+                "{sql}/{vectorized}"
+            );
+        }
+    }
+}
+
+#[test]
+fn evaluated_ascii_time_microsecond_zero_slots_require_valid_invalid_and_null_roots() {
+    let mut session = Session::new();
+    session.run("SET time_zone='+00:00'").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_time_microsecond_zero (good_time TIME(6), bad_text VARCHAR(40), over_text VARCHAR(40), null_text VARCHAR(40))").unwrap();
+    session.run("INSERT INTO shared_time_microsecond_zero VALUES ('12:34:56.123456','2011-11-11 10:10:10.11.12','839:00:00',NULL)").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // Direct columns only: neither a CAST child nor another function can stand
+    // in for the root. Even invalid TIME must acquire its worker before native
+    // warning replay; both functions must also acquire for a NULL input.
+    for (vectorized, expression) in [
+        (0, "TIME(good_time)"),
+        (0, "MICROSECOND(good_time)"),
+        (0, "TIME(bad_text)"),
+        (0, "MICROSECOND(bad_text)"),
+        (0, "TIME(null_text)"),
+        (0, "MICROSECOND(null_text)"),
+        (1, "TIME(over_text)"),
+        (1, "MICROSECOND(over_text)"),
+    ] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        let sql = format!("SELECT {expression} FROM shared_time_microsecond_zero");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => {
+                panic!("TIME/MICROSECOND root bypassed its worker: {sql}/{vectorized}: {other:?}")
+            }
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
+        assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
+        assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+    }
+}
+
+#[test]
 fn evaluated_ascii_decimal_div_preserves_fast_bounded_unsigned_and_null_values() {
     let mut session = Session::new();
     session

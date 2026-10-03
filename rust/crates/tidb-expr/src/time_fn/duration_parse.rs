@@ -26,16 +26,10 @@
 
 use std::sync::OnceLock;
 
-use super::calendar;
-
 /// Go `types.MaxFsp`.
 pub(crate) const MAX_FSP: i32 = 6;
 /// Go `types.MinFsp`.
 pub(crate) const MIN_FSP: i32 = 0;
-/// Go `types.TimeMaxHour`.
-const TIME_MAX_HOUR: i64 = 838;
-/// Go `types.MaxTime` in microseconds (`838:59:59.000000`).
-const MAX_TIME_MICROS: i64 = (838 * 3600 + 59 * 60 + 59) * 1_000_000;
 
 /// Go `types.Duration`: a signed microsecond span plus the fsp it prints at.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,7 +41,11 @@ pub(crate) struct GoDuration {
 impl GoDuration {
     /// Go `Duration.MicroSecond`: the fractional part alone, always positive.
     pub(crate) fn micro_second(self) -> i64 {
-        self.micros.abs() % 1_000_000
+        tidb_query_expr::NativeGoDuration {
+            micros: self.micros,
+            fsp: self.fsp,
+        }
+        .micro_second()
     }
 
     /// Go `Duration.Add`/`Duration.Sub`: the sum keeps the LARGER fsp of the
@@ -256,10 +254,7 @@ pub(crate) fn fsp_for_time_add_sub(value: &str) -> i32 {
 
 /// Go `types.GetFsp`: the number of fractional digits, capped at `MaxFsp`.
 pub(crate) fn get_fsp(value: &str) -> i32 {
-    match value.find('.') {
-        None => MIN_FSP,
-        Some(dot) => (value.len() - dot - 1).min(MAX_FSP as usize) as i32,
-    }
+    tidb_query_expr::native_duration_fsp(value)
 }
 
 /// The one failure `ParseDuration` reports: `ErrTruncatedWrongVal`, which
@@ -267,323 +262,69 @@ pub(crate) fn get_fsp(value: &str) -> i32 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Truncated;
 
-fn space0(value: &str) -> &str {
-    value.trim_start_matches(|c: char| c.is_ascii_whitespace())
-}
-
-/// Go `parser.Number`: at least one leading decimal digit.
-fn number(value: &str) -> Option<(i64, &str)> {
-    let digits: &str = value
-        .split_at(
-            value
-                .find(|c: char| !c.is_ascii_digit())
-                .unwrap_or(value.len()),
-        )
-        .0;
-    if digits.is_empty() {
-        return None;
-    }
-    Some((digits.parse::<i64>().ok()?, &value[digits.len()..]))
-}
-
-/// Go `matchColon`: optional spaces, a colon, optional spaces.
-fn match_colon(value: &str) -> Option<&str> {
-    Some(space0(space0(value).strip_prefix(':')?))
-}
-
-/// Go `matchHHMMSSDelimited`.
-fn match_hhmmss_delimited(value: &str, require_colon: bool) -> Option<([i64; 3], &str)> {
-    let (hour, mut rest) = number(value)?;
-    let mut hhmmss = [hour, 0, 0];
-    for (index, slot) in hhmmss.iter_mut().enumerate().skip(1) {
-        let Some(after_colon) = match_colon(rest) else {
-            if index == 1 && require_colon {
-                return None;
-            }
-            break;
-        };
-        let (num, remain) = number(after_colon)?;
-        *slot = num;
-        rest = remain;
-    }
-    Some((hhmmss, rest))
-}
-
-/// Go `matchDayHHMMSS`: `D HH:MM:SS`, the day folded into the hours.
-fn match_day_hhmmss(value: &str) -> Option<([i64; 3], &str)> {
-    let (day, rest) = number(value)?;
-    let after_space = space0(rest);
-    if after_space.len() == rest.len() {
-        return None;
-    }
-    let (mut hhmmss, rest) = match_hhmmss_delimited(after_space, false)?;
-    hhmmss[0] += 24 * day;
-    Some((hhmmss, rest))
-}
-
-/// Go `matchHHMMSSCompact`: one run of digits read right-aligned as `HHMMSS`.
-fn match_hhmmss_compact(value: &str) -> Option<([i64; 3], &str)> {
-    let (num, rest) = number(value)?;
-    Some(([num / 10000, num / 100 % 100, num % 100], rest))
-}
-
-/// Go `types.ParseFrac`, returning `(microseconds, overflow)`.
-fn parse_frac(digits: &str, fsp: i32) -> Result<(i64, bool), Truncated> {
-    if digits.is_empty() {
-        return Ok((0, false));
-    }
-    let fsp = fsp.clamp(MIN_FSP, MAX_FSP);
-    if fsp as usize >= digits.len() {
-        let value: i64 = digits.parse().map_err(|_| Truncated)?;
-        return Ok((
-            value * 10i64.pow(MAX_FSP as u32 - digits.len() as u32),
-            false,
-        ));
-    }
-    let head: i64 = digits[..fsp as usize + 1].parse().map_err(|_| Truncated)?;
-    let rounded = (head + 5) / 10;
-    if rounded >= 10i64.pow(fsp as u32) {
-        return Ok((0, true));
-    }
-    Ok((rounded * 10i64.pow(MAX_FSP as u32 - fsp as u32), false))
-}
-
-/// Go `matchFrac`, returning `(overflow, microseconds, rest)`.
-fn match_frac(value: &str, fsp: i32) -> Result<(bool, i64, &str), Truncated> {
-    let Some(after_dot) = value.strip_prefix('.') else {
-        return Ok((false, 0, value));
-    };
-    let end = after_dot
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(after_dot.len());
-    let (frac, overflow) = parse_frac(&after_dot[..end], fsp)?;
-    Ok((overflow, frac, &after_dot[end..]))
-}
-
-/// Go `hhmmssAddOverflow`: carry one second into `HH:MM:SS`.
-fn hhmmss_add_overflow(hms: &mut [i64; 3]) {
-    let modulus = [-1, 60, 60];
-    let mut overflow = true;
-    for index in (0..3).rev() {
-        if !overflow {
-            break;
-        }
-        hms[index] += 1;
-        if hms[index] == modulus[index] {
-            hms[index] = 0;
-        } else {
-            overflow = false;
-        }
-    }
-}
-
-/// Go `matchDuration`.
-fn match_duration(value: &str, fsp: i32) -> Result<GoDuration, Truncated> {
-    if value.is_empty() {
-        return Err(Truncated);
-    }
-    let (negative, rest) = value
-        .strip_prefix('-')
-        .map_or((false, value), |rest| (true, rest));
-    let rest = space0(rest);
-    let chars_len = rest.len();
-    let (mut hhmmss, rest) = match_day_hhmmss(rest)
-        .or_else(|| match_hhmmss_delimited(rest, true))
-        .or_else(|| match_hhmmss_compact(rest))
-        .ok_or(Truncated)?;
-    let rest = space0(rest);
-    let (overflow, mut frac, rest) = match_frac(rest, fsp)?;
-    if !rest.is_empty() && chars_len >= 12 {
-        return Err(Truncated);
-    }
-    if overflow {
-        hhmmss_add_overflow(&mut hhmmss);
-        frac = 0;
-    }
-    if hhmmss[1] >= 60 || hhmmss[2] >= 60 {
-        return Err(Truncated);
-    }
-    // Go returns the CLAMPED value beside `ErrTruncatedWrongVal` here; every
-    // caller in this family treats that error as "warn and answer NULL", so
-    // the clamped value it carries is never read.
-    if hhmmss[0] > TIME_MAX_HOUR {
-        return Err(Truncated);
-    }
-    let mut micros = (hhmmss[0] * 3600 + hhmmss[1] * 60 + hhmmss[2]) * 1_000_000 + frac;
-    if negative {
-        micros = -micros;
-    }
-    if !(-MAX_TIME_MICROS..=MAX_TIME_MICROS).contains(&micros) || !rest.is_empty() {
-        return Err(Truncated);
-    }
-    Ok(GoDuration { micros, fsp })
-}
-
-/// Go `canFallbackToDateTime`.
-fn can_fall_back_to_datetime(value: &str) -> bool {
-    let Some((_, rest)) = number(value) else {
-        return false;
-    };
-    let digits = value.len() - rest.len();
-    if digits == 12 || digits == 14 {
-        return true;
-    }
-    let Some(rest) = strip_punct(rest) else {
-        return false;
-    };
-    let Some((_, rest)) = number(rest) else {
-        return false;
-    };
-    let Some(rest) = strip_punct(rest) else {
-        return false;
-    };
-    let Some((_, rest)) = number(rest) else {
-        return false;
-    };
-    rest.starts_with(' ') || rest.starts_with('T')
-}
-
-/// Go `parser.AnyPunct`, which tests one BYTE with `unicode.IsPunct`.
-fn strip_punct(value: &str) -> Option<&str> {
-    let first = *value.as_bytes().first()?;
-    if (first as char).is_ascii_punctuation() {
-        Some(&value[1..])
-    } else {
-        None
-    }
-}
-
-/// Go `types.ParseDuration`: `matchDuration`, then the datetime fallback for
-/// the shapes `canFallbackToDateTime` admits.
+/// Go `types.ParseDuration`, delegated with its original truncation result.
 pub(crate) fn parse_duration(value: &str, fsp: i32) -> Result<GoDuration, Truncated> {
-    let rest = value.trim();
-    match match_duration(rest, fsp) {
-        Ok(duration) => Ok(duration),
-        Err(Truncated) => {
-            if !can_fall_back_to_datetime(rest) {
-                return Err(Truncated);
-            }
-            let datetime = parse_datetime(rest).ok_or(Truncated)?;
-            // Go `Time.ConvertToDuration`: the clock fields alone.
-            let micros = i64::from(datetime.hour) * 3_600_000_000
-                + i64::from(datetime.minute) * 60_000_000
-                + i64::from(datetime.second) * 1_000_000
-                + i64::from(datetime.micros);
-            Ok(round_frac(
-                GoDuration {
-                    micros,
-                    fsp: datetime.fsp,
-                },
-                fsp,
-            ))
-        }
-    }
+    tidb_query_expr::parse_native_duration(value, fsp)
+        .map(|duration| GoDuration {
+            micros: duration.micros,
+            fsp: duration.fsp,
+        })
+        .map_err(|_| Truncated)
 }
 
-/// Go `Duration.RoundFrac`, half-up on the microsecond field.
-fn round_frac(duration: GoDuration, fsp: i32) -> GoDuration {
-    let fsp = fsp.clamp(MIN_FSP, MAX_FSP);
-    let unit = 10i64.pow(MAX_FSP as u32 - fsp as u32);
-    let sign = if duration.micros < 0 { -1 } else { 1 };
-    let magnitude = duration.micros.abs();
-    let rounded = (magnitude + unit / 2) / unit * unit;
-    GoDuration {
-        micros: sign * rounded,
-        fsp,
-    }
-}
-
-/// `types.ParseDatetime` reduced to the spellings this crate's temporal value
-/// domain produces and accepts elsewhere: `Y-M-D[ H:M:S[.frac]]`, with the
-/// same component splitting and two-digit-year expansion the `TIMEDIFF`
-/// signatures already use.
+/// Shared native datetime parser, including the original compact UTC path.
 pub(crate) fn parse_datetime(value: &str) -> Option<GoDateTime> {
-    let value = value.trim();
-    let (date, time) = match value.split_once(|c: char| c.is_whitespace() || c == 'T') {
-        Some((date, time)) => (date, time.trim()),
-        None => (value, ""),
-    };
-    if time.is_empty() {
-        if let Some(compact) = parse_compact_datetime(date) {
-            return Some(compact);
-        }
-    }
-    let parts = calendar::split_numeric_components_for_time_diff(date)?;
-    let year = calendar::expand_year_for_time_diff(parts[0].0, parts[0].1);
-    let month = parts[1].0;
-    let day = parts[2].0;
-    if month > 12 || day > 31 {
-        return None;
-    }
-    if month != 0 && day > calendar::days_in_month_for_time_diff(year, month) {
-        return None;
-    }
-    let (hour, minute, second, fraction) = if time.is_empty() {
-        (0, 0, 0, String::new())
-    } else {
-        calendar::parse_time_with_fraction(time)?
-    };
-    let fsp = fraction.len() as i32;
-    let micros = if fraction.is_empty() {
-        0
-    } else {
-        fraction.parse::<u32>().ok()? * 10u32.pow(6 - fsp as u32)
-    };
-    Some(GoDateTime {
-        year,
-        month,
-        day,
-        hour,
-        minute,
-        second,
-        micros,
-        fsp: fsp.min(MAX_FSP),
+    tidb_query_expr::parse_native_duration_datetime(value).map(|datetime| GoDateTime {
+        year: datetime.year,
+        month: datetime.month,
+        day: datetime.day,
+        hour: datetime.hour,
+        minute: datetime.minute,
+        second: datetime.second,
+        micros: datetime.micros,
+        fsp: datetime.fsp,
     })
 }
 
-/// Go `ParseTimeWithString` accepts packed date/datetime spellings in addition
-/// to delimited dates. The ADDTIME/SUBTIME and TIMESTAMP string signatures
-/// reach this parser after integer arguments have been cast to text, so retain
-/// Go's width table instead of treating delimiter-free digits as unsupported.
-fn parse_compact_datetime(value: &str) -> Option<GoDateTime> {
-    let (digits, fraction) = value.split_once('.').unwrap_or((value, ""));
-    if !matches!(digits.len(), 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 14) {
-        return None;
+#[cfg(test)]
+mod shared_parser_tests {
+    use super::{get_fsp, parse_datetime, parse_duration, GoDuration, Truncated};
+
+    #[test]
+    fn shared_duration_facades_keep_raw_fsp_and_distinct_datetime_fractions() {
+        assert_eq!(get_fsp("1.é"), 2);
+        assert_eq!(
+            parse_duration("1", -1),
+            Ok(GoDuration {
+                micros: 1_000_000,
+                fsp: -1
+            })
+        );
+        let negative = parse_duration("-00:00:00.1234567", 6).unwrap();
+        assert_eq!((negative.micros, negative.fsp), (-123_457, 6));
+        assert_eq!(negative.micro_second(), 123_457);
+        assert_eq!(negative.format(), "-00:00:00.123457");
+        for (text, expected_micros) in [
+            ("20170118123050.1234567", 123_457),
+            ("2017-01-18 12:30:50.1234567", 123_456),
+        ] {
+            let datetime = parse_datetime(text).unwrap();
+            assert_eq!((datetime.year, datetime.month, datetime.day), (2017, 1, 18));
+            assert_eq!(
+                (datetime.hour, datetime.minute, datetime.second),
+                (12, 30, 50)
+            );
+            assert_eq!((datetime.micros, datetime.fsp), (expected_micros, 6));
+            let duration = parse_duration(text, 6).unwrap();
+            assert_eq!(duration.micros, 45_050_000_000 + i64::from(expected_micros));
+        }
+        assert_eq!(parse_duration("838:59:59.000001", 6), Err(Truncated));
+        assert_eq!(parse_duration("1x", 0), Err(Truncated));
+        assert_eq!(
+            parse_duration("2011-11-11 10:10:10.11.12", 6),
+            Err(Truncated)
+        );
     }
-    // Go's `ParseTime` gives a suffix on a date-only compact form a different
-    // meaning (for example `20170118.5` is an hour component).  The datetime
-    // fraction rows exercised by this family are the full 14-digit form;
-    // leave shorter date forms to the ordinary delimited parser so that their
-    // signature-specific handling is not guessed here.
-    if !fraction.is_empty() && digits.len() != 14 {
-        return None;
-    }
-    if !digits.bytes().all(|byte| byte.is_ascii_digit())
-        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
-    {
-        return None;
-    }
-    let parsed = tidb_datatype::parse_time(
-        value,
-        tidb_datatype::TimeType::DateTime,
-        i64::from(get_fsp(value)),
-        false,
-        true,
-        false,
-        &chrono_tz::Tz::UTC,
-    )
-    .ok()?;
-    let core = parsed.time.core_time();
-    Some(GoDateTime {
-        year: i64::from(core.year()),
-        month: u32::from(core.month()),
-        day: u32::from(core.day()),
-        hour: u32::from(core.hour()),
-        minute: u32::from(core.minute()),
-        second: u32::from(core.second()),
-        micros: core.microsecond(),
-        fsp: parsed.time.fsp().into(),
-    })
 }
 
 #[cfg(test)]
