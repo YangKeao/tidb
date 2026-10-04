@@ -373,6 +373,17 @@ impl PbBuiltin {
                             // the migrated nullable signature actually enter C4.
                             return eval_pb_char_length(&value, binary, ctx);
                         }
+                        if matches!(
+                            self.signature,
+                            ScalarFuncSig::UnixTimestampInt | ScalarFuncSig::UnixTimestampDec
+                        ) {
+                            // Preserve the observed NULL boundary, including an
+                            // uncoerced prefix and unread extra children.
+                            return crate::time_fn::session_tz::unix_timestamp(
+                                std::slice::from_ref(&value),
+                                ctx,
+                            );
+                        }
                         if self.signature == ScalarFuncSig::MicroSecond {
                             // Preserve the observed NULL boundary even for an
                             // otherwise invalid arity or an uncoerced prefix.
@@ -687,6 +698,186 @@ mod json_path_worker_tests {
     use crate::expression::{Column, Constant, Expression};
     use crate::NoColumns;
     use tidb_datatype::{BinaryJSON, FieldTypeCode, FieldTypeFlags};
+
+    #[test]
+    fn protobuf_unix_timestamp_keeps_null_prefix_scope_and_value_policy() {
+        use std::cell::{Cell, RefCell};
+        struct Demand {
+            reads: RefCell<Vec<usize>>,
+            zones: Cell<usize>,
+        }
+        impl Columns for Demand {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn get_param_value(&self, index: usize) -> Result<Datum, EvalError> {
+                self.reads.borrow_mut().push(index);
+                match index {
+                    1 => Err(EvalError::Unsupported("protobuf unix timestamp child")),
+                    2 => Ok(Datum::new_bytes(vec![0xff])),
+                    _ => Ok(Datum::new_string("1970-01-01 00:00:01.123")),
+                }
+            }
+            fn time_zone(&self) -> crate::context::SessionTimeZone {
+                self.zones.set(self.zones.get() + 1);
+                crate::context::SessionTimeZone::utc()
+            }
+            fn now(&self) -> Option<(i64, u32, i32)> {
+                panic!("one-argument PB UNIX_TIMESTAMP has no clock demand")
+            }
+            fn date_modes(&self) -> tidb_datatype::DateModes {
+                panic!("PB UNIX_TIMESTAMP has fixed modes")
+            }
+            fn truncate_level(&self) -> crate::context::ErrorLevel {
+                panic!("PB UNIX_TIMESTAMP has no truncation-policy demand")
+            }
+            fn append_warning(&self, _: u16, _: &str) {
+                panic!("uncoerced prefixes must not warn")
+            }
+        }
+        let int_type = FieldType::new(FieldTypeCode::LongLong);
+        let text_type = FieldType::new(FieldTypeCode::VarString);
+        let literal = |value| Expression::Constant(Constant::new(value, text_type.clone()));
+        let child = |index| {
+            Expression::ScalarFunction(ScalarFunction::new(
+                tidb_ast::CiString::new("getparam"),
+                text_type.clone(),
+                vec![Expression::Constant(Constant::new(
+                    Datum::Int(index),
+                    int_type.clone(),
+                ))],
+            ))
+        };
+        let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+        for slots in [1, 0] {
+            let owner = crate::AsciiPoolOwner::new(
+                crate::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    64,
+                    8,
+                    4 * 1024 * 1024,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let execution = owner.begin_execution().unwrap();
+            let ctx = Demand {
+                reads: RefCell::new(Vec::new()),
+                zones: Cell::new(0),
+            };
+            for signature in [
+                ScalarFuncSig::UnixTimestampInt,
+                ScalarFuncSig::UnixTimestampDec,
+            ] {
+                let selected = |args| {
+                    ScalarFunction::from_pb(
+                        PbBuiltin::new(signature).unwrap(),
+                        FieldType::new(if signature == ScalarFuncSig::UnixTimestampInt {
+                            FieldTypeCode::LongLong
+                        } else {
+                            FieldTypeCode::NewDecimal
+                        }),
+                        args,
+                    )
+                };
+                for (args, reads, zones, expected) in [
+                    (
+                        vec![literal(Datum::Null), child(1)],
+                        vec![],
+                        0_usize,
+                        Datum::Null,
+                    ),
+                    (
+                        vec![child(2), literal(Datum::Null), child(1)],
+                        vec![2],
+                        0,
+                        Datum::Null,
+                    ),
+                    (
+                        vec![child(0), literal(Datum::Null), child(1)],
+                        vec![0],
+                        0,
+                        Datum::Null,
+                    ),
+                    // Both labels use the common root. ScalarFunction::eval
+                    // then preserves its existing declared-family conversion:
+                    // Decimal 1.123 becomes LongLong 1; Int 1 widens to Decimal.
+                    (
+                        vec![child(0)],
+                        vec![0],
+                        2,
+                        if signature == ScalarFuncSig::UnixTimestampInt {
+                            Datum::Int(1)
+                        } else {
+                            Datum::Decimal(tidb_datatype::Decimal::from_literal("1.123"))
+                        },
+                    ),
+                    (
+                        vec![literal(Datum::new_string("1970-01-01 00:00:01"))],
+                        vec![],
+                        2,
+                        if signature == ScalarFuncSig::UnixTimestampInt {
+                            Datum::Int(1)
+                        } else {
+                            Datum::Decimal(tidb_datatype::Decimal::from_int(1))
+                        },
+                    ),
+                ] {
+                    ctx.zones.set(0);
+                    let result = execution
+                        .scope()
+                        .with_columns(&ctx, |columns| selected(args).eval(columns, empty.to_row()));
+                    if slots == 1 {
+                        assert_eq!(result.unwrap(), expected);
+                    } else {
+                        let error = result.unwrap_err();
+                        let EvalError::ExpressionAdapterFailure(failure) = error else {
+                            panic!("{error:?}")
+                        };
+                        assert_eq!(
+                            failure.class(),
+                            crate::ExpressionAdapterFailureClass::PoolResource
+                        );
+                        assert_eq!(
+                            failure.origin(),
+                            crate::ExpressionAdapterFailureOrigin::Pool
+                        );
+                    }
+                    assert_eq!(ctx.reads.take(), reads);
+                    assert_eq!(
+                        ctx.zones.get(),
+                        if slots == 0 { zones.min(1) } else { zones }
+                    );
+                }
+                ctx.zones.set(0);
+                assert!(matches!(
+                    execution
+                        .scope()
+                        .with_columns(&ctx, |columns| selected(vec![
+                            child(1),
+                            literal(Datum::Null)
+                        ])
+                        .eval(columns, empty.to_row())),
+                    Err(EvalError::Unsupported("protobuf unix timestamp child"))
+                ));
+                assert_eq!(ctx.reads.take(), vec![1]);
+                assert_eq!(ctx.zones.get(), 0);
+                assert!(matches!(
+                    execution
+                        .scope()
+                        .with_columns(&ctx, |columns| selected(vec![child(0), child(0)])
+                            .eval(columns, empty.to_row())),
+                    Err(EvalError::Unsupported("bad function arity"))
+                ));
+                assert_eq!(ctx.reads.take(), vec![0, 0]);
+                assert_eq!(ctx.zones.get(), 0);
+            }
+        }
+    }
 
     #[test]
     fn protobuf_microsecond_keeps_context_and_observed_null_demand() {

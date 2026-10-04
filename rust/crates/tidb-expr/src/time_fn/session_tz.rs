@@ -36,7 +36,9 @@
 //! - The zero-argument `UNIX_TIMESTAMP()` needs the statement clock and
 //!   declines when [`Columns::now`] is absent.
 
-use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike, Utc};
+#[cfg(test)]
+use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDateTime, Timelike, Utc};
 
 use super::calendar::date_format_in;
 use crate::coerce::coerce_str;
@@ -45,7 +47,6 @@ use crate::{Columns, Datum, Decimal, EvalError};
 
 /// MySQL 8.0.28's maximum unix timestamp: '3001-01-18 23:59:59' UTC.
 const MAX_UNIX_SECS: i64 = 32_536_771_199;
-const MAX_UNIX_MICROS: i64 = 32_536_771_199_999_999;
 
 /// Renders the instant `secs`+`micros` (unix epoch) as a local wall clock in
 /// the session zone.
@@ -181,122 +182,79 @@ pub(crate) fn from_unixtime(vals: &[Datum], cols: &dyn Columns) -> Result<Datum,
 
 /// `UNIX_TIMESTAMP([datetime])`.
 pub(crate) fn unix_timestamp(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    match vals.len() {
-        0 => {
-            // The statement clock; absent outside a session.
-            let Some((utc_secs, nanos, _)) = cols.now() else {
-                return Err(EvalError::Unsupported("session clock"));
+    use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp as Op, EvaluatedBytesResult};
+    use tidb_query_expr::NativeUnixTimestampResult;
+    crate::tikv::evaluate_prepared_args_scoped_in(
+        cols,
+        || {
+            match vals.len() {
+                0 => {
+                    let Some((seconds, nanos, _)) = cols.now() else {
+                        return Err(EvalError::Unsupported("session clock"));
+                    };
+                    return Ok((
+                        Op::UnixTimestampNowNative,
+                        EvaluatedArgs::Int2(Some(seconds), Some(i64::from(nanos))),
+                    ));
+                }
+                1 => {}
+                _ => return Err(EvalError::Unsupported("bad function arity")),
+            }
+            let Some(text) = coerce_str(&vals[0])? else {
+                return Ok((Op::UnixTimestampNullNative, EvaluatedArgs::Bytes(None)));
             };
-            let micros = i64::from(nanos / 1000) + utc_secs * 1_000_000;
-            return Ok(unix_result(micros, 0));
-        }
-        1 => {}
-        _ => return Err(EvalError::Unsupported("bad function arity")),
-    }
-
-    let Some(text) = coerce_str(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    // Go's `UNIX_TIMESTAMP` receives a DATETIME after its argument-cast
-    // layer. Numeric and DECIMAL source values therefore use the packed
-    // float-string parser, while textual/temporal values use the ordinary
-    // string parser. The AST value tier has no static FieldType, so preserve
-    // the distinction from the runtime Datum kind here.
-    let is_float = matches!(
-        vals[0],
-        Datum::Int(_) | Datum::UInt(_) | Datum::Decimal(_) | Datum::Real(_) | Datum::Float32(_)
-    );
-    let parsed = tidb_datatype::parse_time(
-        &text,
-        tidb_datatype::TimeType::DateTime,
-        i64::from(tidb_datatype::get_fsp(&text)),
-        is_float,
-        true,
-        false,
-        &cols.time_zone(),
-    );
-    let Ok(parsed) = parsed else {
-        // go's argument-cast layer warns `Incorrect datetime value: '<text>'`
-        // before answering NULL (oracle-captured on g-fsp).
-        cols.append_warning(1292, &format!("Incorrect datetime value: '{text}'"));
-        return Ok(Datum::Null);
-    };
-    let core = parsed.time.core_time();
-    let fsp = parsed.time.fsp() as usize;
-    // Go's IgnoreZeroInDate mode lets month/day-zero values through parsing,
-    // but `GoTime` cannot represent them and the unix conversion returns the
-    // out-of-range zero sentinel rather than attempting calendar arithmetic.
-    // An all-zero date is the separate invalid-date case: Go's `EvalTime`
-    // reports it as NULL, which is distinct from a partially zero date such
-    // as `2017-00-02` returning the numeric zero sentinel.
-    if core.year() == 0 && core.month() == 0 && core.day() == 0 {
-        return Ok(Datum::Null);
-    }
-    if core.month() == 0 || core.day() == 0 {
-        return Ok(unix_result(0, fsp));
-    }
-    let Some(date) =
-        NaiveDate::from_ymd_opt(core.year(), u32::from(core.month()), u32::from(core.day()))
-    else {
-        return Ok(unix_result(0, fsp));
-    };
-    let Some(naive) = date.and_hms_micro_opt(
-        u32::from(core.hour()),
-        u32::from(core.minute()),
-        u32::from(core.second()),
-        core.microsecond(),
-    ) else {
-        return Ok(unix_result(0, fsp));
-    };
-
-    let instant = match &cols.time_zone() {
-        SessionTimeZone::Local => local_to_instant(&chrono::Local, &naive),
-        SessionTimeZone::Fixed { offset_secs, .. } => {
-            Some(naive.and_utc() - chrono::Duration::seconds(i64::from(*offset_secs)))
-        }
-        SessionTimeZone::Named(tz) => local_to_instant(tz, &naive),
-    };
-    let Some(instant) = instant else {
-        return Ok(unix_result(0, fsp));
-    };
-    Ok(unix_result(instant.timestamp_micros(), fsp))
-}
-
-/// Go `time.Date` for a NAMED zone: the instant a wall clock names.
-///
-/// chrono answers this as a three-way `LocalResult`, and mapping those three
-/// onto Go's answer case by case gets the AMBIGUOUS case wrong. On the autumn
-/// transition 02:30 occurs twice, and Go takes the SECOND occurrence --
-/// captured from a real session, `UNIX_TIMESTAMP('2025-10-26 02:30:00')` in
-/// `Europe/Paris` is 1761442200, an hour after chrono's `earliest`.
-///
-/// Go never chooses between occurrences at all, which is why a case analysis
-/// mis-models it: `time.Date` reads the offset in force at the wall clock
-/// READ AS UTC and subtracts it, re-reading the offset once if the result
-/// crossed a transition. The second occurrence is simply what that arithmetic
-/// produces. Doing the same here leaves one rule and no cases -- try that
-/// offset, then the offset at the instant it names, and take the first that
-/// renders back to the wall clock we started from.
-///
-/// A wall clock that renders back from NEITHER exists in no offset at all: it
-/// is inside a spring-forward gap, resolved by the shared legacy helper's
-/// original transition-bound search rather than the generic CoreTime policy.
-pub(super) use tidb_query_expr::native_legacy_local_to_instant as local_to_instant;
-
-/// Builds `UNIX_TIMESTAMP`'s result from epoch microseconds: TRUNCATED at
-/// fsp, integer when fsp is 0, out-of-range as 0.
-fn unix_result(micros: i64, fsp: usize) -> Datum {
-    let micros = if (1_000_000..=MAX_UNIX_MICROS).contains(&micros) {
-        micros
-    } else {
-        0
-    };
-    if fsp == 0 {
-        return Datum::Int(micros / 1_000_000);
-    }
-    let secs = micros / 1_000_000;
-    let frac = (micros % 1_000_000) / 10_i64.pow(6 - fsp as u32);
-    Datum::Decimal(Decimal::from_literal(&format!("{secs}.{frac:0fsp$}")))
+            let is_float = matches!(
+                vals[0],
+                Datum::Int(_)
+                    | Datum::UInt(_)
+                    | Datum::Decimal(_)
+                    | Datum::Real(_)
+                    | Datum::Float32(_)
+            );
+            Ok((
+                Op::UnixTimestampParseNative,
+                EvaluatedArgs::TemporalParseText {
+                    value: text.into_bytes(),
+                    is_float,
+                    zone: cols.time_zone(),
+                },
+            ))
+        },
+        |computed, scoped_cols| {
+            let Some(bytes) = computed.into_bytes()? else {
+                return Ok(Datum::Null);
+            };
+            let result = tidb_query_expr::decode_native_unix_timestamp_result(&bytes)
+                .ok_or_else(crate::tikv::native_time_result_contract_error)?;
+            match result {
+                NativeUnixTimestampResult::Value(_) => {
+                    EvaluatedBytesResult::Bytes(Some(bytes)).into_identity_datum()
+                }
+                NativeUnixTimestampResult::Warning { code, message } => {
+                    scoped_cols.append_warning(code, message);
+                    Ok(Datum::Null)
+                }
+                NativeUnixTimestampResult::Continue(_) if vals.len() == 1 && !vals[0].is_null() => {
+                    // Only the worker's actual continuation demands the second
+                    // zone. Do not cache the first getter or re-pack its frame.
+                    crate::tikv::evaluate_prepared_args_in(
+                        scoped_cols,
+                        || {
+                            Ok((
+                                Op::UnixTimestampValueNative,
+                                EvaluatedArgs::TemporalValue {
+                                    value: bytes,
+                                    zone: scoped_cols.time_zone(),
+                                },
+                            ))
+                        },
+                        EvaluatedBytesResult::into_identity_datum,
+                    )
+                }
+                _ => Err(crate::tikv::native_time_result_contract_error()),
+            }
+        },
+    )
 }
 
 /// `TIDB_PARSE_TSO(tso)`: the physical half as a full-precision native
@@ -354,6 +312,273 @@ mod tests {
 
     fn dec(v: &str) -> Datum {
         Datum::Decimal(Decimal::from_literal(v))
+    }
+
+    #[test]
+    fn unix_timestamp_workers_preserve_two_zone_demands_and_direct_warnings() {
+        use std::cell::{Cell, RefCell};
+        struct Demand {
+            zones: Cell<usize>,
+            second_offset: Cell<i32>,
+            warnings: RefCell<Vec<(u16, String)>>,
+        }
+        impl Columns for Demand {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn time_zone(&self) -> SessionTimeZone {
+                let read = self.zones.get();
+                self.zones.set(read + 1);
+                if read == 0 {
+                    SessionTimeZone::utc()
+                } else {
+                    SessionTimeZone::Fixed {
+                        name: "second actual zone".to_owned(),
+                        offset_secs: self.second_offset.get(),
+                    }
+                }
+            }
+            fn now(&self) -> Option<(i64, u32, i32)> {
+                panic!("one-argument UNIX_TIMESTAMP must not read now")
+            }
+            fn date_modes(&self) -> tidb_datatype::DateModes {
+                panic!("UNIX_TIMESTAMP has fixed parse modes")
+            }
+            fn truncate_level(&self) -> crate::context::ErrorLevel {
+                panic!("UNIX_TIMESTAMP warnings are direct")
+            }
+            fn append_warning(&self, code: u16, message: &str) {
+                self.warnings.borrow_mut().push((code, message.to_owned()));
+            }
+        }
+        for slots in [1, 0] {
+            let owner = crate::AsciiPoolOwner::new(
+                crate::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    64,
+                    8,
+                    4 * 1024 * 1024,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let execution = owner.begin_execution().unwrap();
+            let ctx = Demand {
+                zones: Cell::new(0),
+                second_offset: Cell::new(3600),
+                warnings: RefCell::new(Vec::new()),
+            };
+            for (value, expected, zones, warning) in [
+                (Datum::Null, Datum::Null, 0_usize, false),
+                (s("bad"), Datum::Null, 1, true),
+                (s("0000-00-00 01:00:00"), Datum::Null, 1, false),
+                (s("2017-00-02 00:00:00.123"), dec("0.000"), 1, false),
+                (s("0000-01-01"), Datum::Int(0), 2, false),
+                (s("1960-01-01"), Datum::Int(0), 2, false),
+                (s("1970-01-01 01:00:01"), Datum::Int(1), 2, false),
+                (s("1970-01-01 01:00:01.123"), dec("1.123"), 2, false),
+                (s("1970-01-01 03:00:01+02:00"), Datum::Int(1), 2, false),
+            ] {
+                ctx.zones.set(0);
+                ctx.warnings.borrow_mut().clear();
+                let result = execution
+                    .scope()
+                    .with_columns(&ctx, |columns| unix_timestamp(&[value], columns));
+                if slots == 0 {
+                    let error = result.unwrap_err();
+                    let EvalError::ExpressionAdapterFailure(failure) = error else {
+                        panic!("{error:?}")
+                    };
+                    assert_eq!(
+                        failure.class(),
+                        crate::ExpressionAdapterFailureClass::PoolResource
+                    );
+                    assert_eq!(
+                        failure.origin(),
+                        crate::ExpressionAdapterFailureOrigin::Pool
+                    );
+                } else {
+                    let actual = result.unwrap();
+                    assert_eq!(actual, expected);
+                    if let (Datum::Decimal(actual), Datum::Decimal(expected)) = (&actual, &expected)
+                    {
+                        assert_eq!(actual.to_string(), expected.to_string());
+                    }
+                }
+                assert_eq!(
+                    ctx.zones.get(),
+                    if slots == 0 { zones.min(1) } else { zones }
+                );
+                let expected_warnings = if slots == 1 && warning {
+                    vec![(1292, "Incorrect datetime value: 'bad'".to_owned())]
+                } else {
+                    Vec::new()
+                };
+                assert_eq!(*ctx.warnings.borrow(), expected_warnings);
+            }
+            ctx.zones.set(0);
+            ctx.second_offset.set(90000);
+            let result = execution.scope().with_columns(&ctx, |columns| {
+                unix_timestamp(&[s("1970-01-02 01:00:01")], columns)
+            });
+            if slots == 1 {
+                assert_eq!(result.unwrap(), Datum::Int(1));
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(EvalError::ExpressionAdapterFailure(_))
+                ));
+            }
+            assert_eq!(ctx.zones.get(), if slots == 1 { 2 } else { 1 });
+            for (values, message) in [
+                (
+                    vec![Datum::new_bytes(vec![0xff])],
+                    "invalid UTF-8 byte datum",
+                ),
+                (vec![Datum::Null, Datum::Null], "bad function arity"),
+            ] {
+                ctx.zones.set(0);
+                assert!(
+                    matches!(execution.scope().with_columns(&ctx, |columns| unix_timestamp(&values, columns)), Err(EvalError::Unsupported(actual)) if actual == message)
+                );
+                assert_eq!(ctx.zones.get(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn unix_timestamp_workers_preserve_raw_clock_and_decimal_scale() {
+        use std::cell::Cell;
+        struct Clock {
+            clock: Cell<Option<(i64, u32, i32)>>,
+            reads: Cell<usize>,
+            zones: Cell<usize>,
+        }
+        impl Columns for Clock {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn now(&self) -> Option<(i64, u32, i32)> {
+                self.reads.set(self.reads.get() + 1);
+                self.clock.get()
+            }
+            fn time_zone(&self) -> SessionTimeZone {
+                self.zones.set(self.zones.get() + 1);
+                SessionTimeZone::utc()
+            }
+            fn date_modes(&self) -> tidb_datatype::DateModes {
+                panic!("UNIX_TIMESTAMP has fixed parse modes")
+            }
+            fn truncate_level(&self) -> crate::context::ErrorLevel {
+                panic!("UNIX_TIMESTAMP has no truncate-policy demand")
+            }
+            fn append_warning(&self, _: u16, _: &str) {
+                panic!("valid UNIX_TIMESTAMP inputs must not warn")
+            }
+        }
+        for slots in [1, 0] {
+            let owner = crate::AsciiPoolOwner::new(
+                crate::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    64,
+                    8,
+                    4 * 1024 * 1024,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let execution = owner.begin_execution().unwrap();
+            let ctx = Clock {
+                clock: Cell::new(None),
+                reads: Cell::new(0),
+                zones: Cell::new(0),
+            };
+            let check = |result: Result<Datum, EvalError>, expected: Datum| {
+                if slots == 0 {
+                    let error = result.unwrap_err();
+                    let EvalError::ExpressionAdapterFailure(failure) = error else {
+                        panic!("{error:?}")
+                    };
+                    assert_eq!(
+                        failure.class(),
+                        crate::ExpressionAdapterFailureClass::PoolResource
+                    );
+                    assert_eq!(
+                        failure.origin(),
+                        crate::ExpressionAdapterFailureOrigin::Pool
+                    );
+                } else {
+                    let actual = result.unwrap();
+                    assert_eq!(actual, expected);
+                    if let (Datum::Decimal(actual), Datum::Decimal(expected)) = (&actual, &expected)
+                    {
+                        assert_eq!(actual.to_string(), expected.to_string());
+                    }
+                }
+            };
+            for (clock, expected) in [
+                ((0, 0, 12345), 0),
+                ((0, u32::MAX, i32::MIN), 4),
+                ((1, 999999999, i32::MAX), 1),
+                ((MAX_UNIX_SECS, 999999999, -3600), MAX_UNIX_SECS),
+                ((MAX_UNIX_SECS + 1, 0, 3600), 0),
+                ((-1, 0, 0), 0),
+            ] {
+                ctx.clock.set(Some(clock));
+                ctx.reads.set(0);
+                ctx.zones.set(0);
+                check(
+                    execution
+                        .scope()
+                        .with_columns(&ctx, |columns| unix_timestamp(&[], columns)),
+                    Datum::Int(expected),
+                );
+                assert_eq!(ctx.reads.get(), 1);
+                assert_eq!(ctx.zones.get(), 0);
+            }
+            ctx.clock.set(None);
+            ctx.reads.set(0);
+            assert!(matches!(
+                execution
+                    .scope()
+                    .with_columns(&ctx, |columns| unix_timestamp(&[], columns)),
+                Err(EvalError::Unsupported("session clock"))
+            ));
+            assert_eq!(ctx.reads.get(), 1);
+            assert_eq!(ctx.zones.get(), 0);
+            for (value, expected) in [
+                (Datum::Int(19700101000001), Datum::Int(1)),
+                (Datum::UInt(19700101000001), Datum::Int(1)),
+                (dec("19700101.5"), dec("0.0")),
+                (Datum::Real(19700101.5), dec("0.0")),
+                (Datum::Float32(700101.5), dec("0.0")),
+                (s("19700101.5"), dec("18000.0")),
+                (s("1970-01-01 00:00:01.1234567"), dec("1.123457")),
+                (s("1970-01-01 00:00:00.9999999"), dec("1.000000")),
+                (s("1969-12-31 23:59:59.123"), dec("0.000")),
+                (s("3001-01-18 23:59:59.999999"), dec("32536771199.999999")),
+                (s("3001-01-18 23:59:59.9999999"), dec("0.000000")),
+            ] {
+                ctx.reads.set(0);
+                ctx.zones.set(0);
+                check(
+                    execution
+                        .scope()
+                        .with_columns(&ctx, |columns| unix_timestamp(&[value], columns)),
+                    expected,
+                );
+                assert_eq!(ctx.reads.get(), 0);
+                assert_eq!(ctx.zones.get(), if slots == 1 { 2 } else { 1 });
+            }
+        }
     }
 
     /// Every vector is goeval output under its pinned UTC+11 session zone.

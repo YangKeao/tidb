@@ -1449,6 +1449,14 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::TimestampNullNative => {
             panic!("TIMESTAMP needs its actual parse text, computed base, or evaluated NULL")
         }
+        EvaluatedBytesOp::UnixTimestampNowNative
+        | EvaluatedBytesOp::UnixTimestampNullNative
+        | EvaluatedBytesOp::UnixTimestampParseNative
+        | EvaluatedBytesOp::UnixTimestampValueNative
+        | EvaluatedBytesOp::UnixTimestampIntLegacy
+        | EvaluatedBytesOp::UnixTimestampDecLegacy => {
+            panic!("UNIX_TIMESTAMP needs its actual clock, NULL, text or typed time and zone")
+        }
         EvaluatedBytesOp::ConvertTzNative => {
             panic!("CONVERT_TZ needs its three actual nullable coerced strings")
         }

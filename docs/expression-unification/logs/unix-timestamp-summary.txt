@@ -1,0 +1,41 @@
+UNIX_TIMESTAMP / unix-timestamp-79 / R82
+Previous: native8412d8c1941d215a10a27c817ae33c2915461b14 / CPP8ba1ff806eb2842f761bc26bcbfcf7bfef049fbb.
+220/245 functional, strict0,25eligible remain,1needed for221. One new frozen family unix_timestamp; prior219 objects unchanged.
+Eight exclusive writers plus parent. One B turn reported runtime failure; same lease resumed and existing three files frozen, no duplicate writer or lost-code claim.
+18 Rust files (9CPP/9native),2newmodules,10newtests. CPP203/native471 original test bodies byte-identical.3wire and5remaining-native production function bodies byte-identical. Dependency/lock/Go/Bazel/generated/fixture scope unchanged.
+
+Commands: all --locked --test-threads=1, serialized. Paths below explicitly scoped.
+CPP cwd=/home/agent/tidb/expression-unification/tikv:
+  ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_unix_timestamp:: -- --test-threads=1
+  ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_time::tests::test_unixtime -- --test-threads=1
+  ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local -- --test-threads=1
+Native cwd=/home/agent/tidb/expression-unification/tidb/rust:
+  ../../tools/cargo-tidb test --locked -p tidb-expr --lib unix_timestamp -- --test-threads=1
+  SAME command retry1 after source-backed NEW-test expectation correction; no production change.
+  ../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii::tests -- --test-threads=1
+  ../../tools/cargo-tidb test --locked -p tidb-unistore --lib unix_timestamp -- --test-threads=1
+  ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::evaluated_ascii_unix_timestamp_preserves_source_shapes_zero_dates_and_runtime_roots -- --test-threads=1
+  ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+  ../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+
+Raw logs=/home/agent/tidb/expression-unification/logs/unix-timestamp-{id}.log
+id | passed/failed/ignored/filtered | compile/elapsed seconds | exit | sha256
+ tikv-core |2/0/0/939|16.58/0.00|0|2c2f6c0578749b361b511a14b241ce4e70841e779c68b752368e44ff8bb49361
+ tikv-wire |2/0/0/939|0.18/0.00|0|b743284358763fb0c0fb2ad243edb354a9805ad26048ca7ad3acfcdb5a19f1e2
+ tikv-local |332/0/1/608|0.14/0.24|0|4f36df1999875fe803d618144c2e9329b91139257e3c062d8baee59ed4ded40a
+ native-root |7/1/0/1668|18.91/0.01|101|aed20d20a82aec6fe04d958b5ae771c6da3e790d6e3a04909767aca58c5984ed
+ native-root-retry1 |8/0/0/1668|3.59/0.01|0|cc623572ffbbcd0df8b3f9f3809393be1b0d205ce867f94b6f90c60f234c51d9
+ native-gateway |196/0/1/1479|0.14/0.34|0|9163cd71b8aa0e30384440467e2becced6171b84fe47378575ea70ed6c5cc247
+ legacy |2/0/0/224|7.08/0.00|0|ec8294ef69f1fdf55cfe9b5068c8842a801ea53910e035f312e537d4cde65eae
+ sql |1/0/0/2226|29.90/0.10|0|3f52e1aac7bb53b99b31cb12620fe55b0c2949f495a4cf31fe6485862821d0ae
+ expr-full |1578/4/94/0|0.17/14.71|101|7eea2ebdc2ad72d27b11a1b4e00ceec7056e7cdcaf1a003dab09a22aad51a3c1
+ unistore-full |212/1/13/0|0.15/3.06|101|d3978cbd5e4281cee8243ee9bbf7a7774223b023f610959147afa977f1584a5e
+10 launches/completed nonzero runs,7green,1new-test red attempt+retry,2unchanged old full-suite failures; no compile/zero-match/interruption.
+NEW PB test initially assumed common-root result bypassed outer declared-family conversion. Source scalar_function.rs1030/1072/1108/1194-1207 +datum_convert.rs329/502/1372 +datum/convert.rs335 proves Decimal1.123→LongLong1 and Int1→Decimal1 (unspecified precision), while same-family Decimal keeps scale3. All three production files byte-equal prior HEAD. Only two expected cases/comment in the NEW test corrected; no old oracle, production coercer, fixture or provider output used as replacement oracle. Other9newtests passed first matching gate; PB passed retry. One auxiliary nonexistent convert_to.rs lookup resolved via glob to datum_convert.rs, not a build failure.
+Full failure sections incl final list compared to timestamp logs, only numeric panic-heading thread IDs normalized to THREAD, leading newline retained:
+ expr SHA256411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+ unistore SHA2562f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1
+SQL44 SELECTs=20normal+20real-column zero-slot refusals+2filters+2controlled-clock queries.10cases×2vector flags×slots1/0; declared metadata distinct from actual scale.20normal direct results=10Decimal/4Int/6NULL;2badtext warnings;0slot warning0. Clock queries are deferred actual statements, not column-root zero-slot evidence.
+Scoped source/context tests cover fresh changing zones, no second getter on early dispositions, raw Fixed offset, clock full-u32 nanos, legacy borrowed zone instead of Columns getter, all kinds/rawfsp255 and strict gap/Decimal6-or0 policy. Kernel/wire/gateway/legacy/SQL filters overlap; do not sum them as unique tests.
+Pinned rustfmt --edition2021 --config skip_children=true and diff checks; no recording. Architecture index review: mapping-only new native_unix_timestamp.rs and tikv/unix_timestamp.rs paths exist; no policy/snippet change or new package-transcreation claim.
+FROM_UNIXTIME, M6/default-NoColumns/remaining evaluators, earlier mode forwarding/CAST diagnostic/INTDIV raw-empty/other compatibility gaps remain. Whole workspace, lint/dev/bazel_prepare/release/exhaustive differential/TiFlash/FIPS/performance/allocator/physical heap/peak/OOM/zero-copy/dual-tzdata remain unverified. Goal active, strict0, not PR-ready.

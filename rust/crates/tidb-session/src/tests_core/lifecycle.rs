@@ -9363,6 +9363,211 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_unix_timestamp_preserves_source_shapes_zero_dates_and_runtime_roots() {
+    use tidb_datatype::FieldTypeCode;
+
+    let create = "CREATE TABLE shared_unix_timestamp_sql (epoch_dt DATETIME(3), epoch_text VARCHAR(64), packed_num DECIMAL(9,1), packed_text VARCHAR(32), whole_zero VARCHAR(64), partial_zero VARCHAR(64), null_text VARCHAR(64), bad_text VARCHAR(64), epoch_whole DATETIME, gap_dt DATETIME)";
+    let insert = "INSERT INTO shared_unix_timestamp_sql VALUES ('1970-01-01 00:00:01.123','1970-01-01 00:00:01.123',19700101.5,'19700101.5','0000-00-00 00:00:00.123','2017-00-02 00:00:00.123',NULL,'not-a-date','1970-01-01 00:00:01','2025-03-30 02:30:00')";
+    // Original session_tz and calendar-source rows plus their packed parser
+    // rule: a numeric date-only fraction is ignored, while the STRING '.5'
+    // is hour 5 (18000 seconds after the UTC epoch). No provider is an oracle.
+    // Existing Decimal-family results retain their actual fractional digits;
+    // the SQL header and chunk declared_shape do not rescale that payload.
+    let cases = [
+        (
+            "epoch_dt",
+            "+00:00",
+            Some("1.123"),
+            FieldTypeCode::NewDecimal,
+            (15, 3),
+            None,
+        ),
+        (
+            "epoch_text",
+            "+00:00",
+            Some("1.123"),
+            FieldTypeCode::NewDecimal,
+            (18, 6),
+            None,
+        ),
+        (
+            "packed_num",
+            "+00:00",
+            Some("0.0"),
+            FieldTypeCode::NewDecimal,
+            (13, 1),
+            None,
+        ),
+        (
+            "packed_text",
+            "+00:00",
+            Some("18000.0"),
+            FieldTypeCode::NewDecimal,
+            (18, 6),
+            None,
+        ),
+        // All Y/M/D zero is NULL even with nonzero fractional seconds.
+        (
+            "whole_zero",
+            "+00:00",
+            None,
+            FieldTypeCode::NewDecimal,
+            (18, 6),
+            None,
+        ),
+        // A partial zero date instead keeps the parsed FSP in numeric zero.
+        (
+            "partial_zero",
+            "+00:00",
+            Some("0.000"),
+            FieldTypeCode::NewDecimal,
+            (18, 6),
+            None,
+        ),
+        (
+            "null_text",
+            "+00:00",
+            None,
+            FieldTypeCode::NewDecimal,
+            (18, 6),
+            None,
+        ),
+        (
+            "bad_text",
+            "+00:00",
+            None,
+            FieldTypeCode::NewDecimal,
+            (18, 6),
+            Some("Incorrect datetime value: 'not-a-date'"),
+        ),
+        (
+            "epoch_whole",
+            "+00:00",
+            Some("1"),
+            FieldTypeCode::LongLong,
+            (11, 0),
+            None,
+        ),
+        // Original Paris transition oracle: the missing 02:30 maps to 01:00Z.
+        (
+            "gap_dt",
+            "Europe/Paris",
+            Some("1743296400"),
+            FieldTypeCode::LongLong,
+            (11, 0),
+            None,
+        ),
+    ];
+    for slots in [1, 0] {
+        let mut session = Session::new();
+        session.run("SET time_zone='+00:00'").unwrap();
+        session.run("SET sql_mode=''").unwrap();
+        session
+            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+            .unwrap();
+        session.run(create).unwrap();
+        session.run(insert).unwrap();
+        assert!(session
+            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .unwrap());
+        for vectorized in [0, 1] {
+            session
+                .run(&format!(
+                    "SET tidb_enable_vectorized_expression={vectorized}"
+                ))
+                .unwrap();
+            for (column, zone, expected, code, shape, warning) in cases {
+                session.run(&format!("SET time_zone='{zone}'")).unwrap();
+                // No implicit ETDatetime mask exists for UNIX_TIMESTAMP;
+                // parsing belongs to this actual runtime root, not a child.
+                let sql = format!("SELECT UNIX_TIMESTAMP({column}) FROM shared_unix_timestamp_sql");
+                if slots == 1 {
+                    let StmtOutput::Rows { columns, rows } =
+                        session.run_with_columns(&sql).unwrap()
+                    else {
+                        panic!("expected UNIX_TIMESTAMP rows: {sql}")
+                    };
+                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
+                    let field = &columns[0].1;
+                    assert_eq!(field.code(), code, "{sql}/{vectorized}");
+                    assert_eq!((field.flen(), field.decimal()), shape, "{sql}/{vectorized}");
+                    assert_eq!(field.charset_name(), "binary");
+                    assert_eq!(field.collation_name(), "binary");
+                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
+                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
+                    if let Some(expected) = expected {
+                        if code == FieldTypeCode::NewDecimal {
+                            let Datum::Decimal(decimal) = &rows[0][0] else {
+                                panic!("UNIX_TIMESTAMP lost its SQL decimal carrier: {sql}")
+                            };
+                            assert_eq!(decimal.declared_shape(), Some(shape), "{sql}/{vectorized}");
+                        } else {
+                            assert!(matches!(&rows[0][0], Datum::Int(_)), "{sql}/{vectorized}");
+                        }
+                        assert_eq!(cell_text(&rows[0][0]), expected, "{sql}/{vectorized}");
+                    } else {
+                        assert_eq!(rows[0][0], Datum::Null, "{sql}/{vectorized}");
+                    }
+                    let expected_warnings = warning
+                        .map(|message| vec![(1292, message.to_owned())])
+                        .unwrap_or_default();
+                    assert_eq!(
+                        warnings_of(&session),
+                        expected_warnings,
+                        "{sql}/{vectorized}"
+                    );
+                } else {
+                    // Real column calls without WHERE, ORDER BY or other
+                    // function children: every path must enter its first
+                    // worker before parsing can warn or yield NULL/zero.
+                    let error = session.run_with_columns(&sql).expect_err(&sql);
+                    match &error {
+                        DriverError::Exec(tidb_executor::ExecError::Eval(
+                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                        )) => {
+                            assert_eq!(failure.class(), tidb_executor::ExpressionAdapterFailureClass::PoolResource);
+                            assert_eq!(failure.origin(), tidb_executor::ExpressionAdapterFailureOrigin::Pool);
+                        }
+                        other => panic!("UNIX_TIMESTAMP bypassed its runtime root: {sql}/{vectorized}: {other:?}"),
+                    }
+                    let mysql = error.to_mysql_error();
+                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
+                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
+                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
+                    assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+                }
+            }
+            if slots == 1 {
+                session.run("SET time_zone='+00:00'").unwrap();
+                let sql = "SELECT 1 FROM shared_unix_timestamp_sql WHERE UNIX_TIMESTAMP(epoch_text)=1.123";
+                let StmtOutput::Rows { rows, .. } = session.run_with_columns(sql).unwrap() else {
+                    panic!("expected UNIX_TIMESTAMP predicate rows")
+                };
+                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
+                assert!(warnings_of(&session).is_empty());
+
+                // Exercise the real statement-clock getter without wall-clock
+                // flakiness. Change its controlled input for the second mode;
+                // this deferred zero-arg call is not column-root zero-slot proof.
+                let clock = 1_700_000_000 + i64::from(vectorized);
+                session.run(&format!("SET timestamp={clock}")).unwrap();
+                let StmtOutput::Rows { columns, rows } = session
+                    .run_with_columns("SELECT UNIX_TIMESTAMP() FROM shared_unix_timestamp_sql")
+                    .unwrap()
+                else {
+                    panic!("expected statement-clock UNIX_TIMESTAMP rows")
+                };
+                assert_eq!(columns.len(), 1);
+                assert_eq!(columns[0].1.code(), FieldTypeCode::LongLong);
+                assert_eq!((columns[0].1.flen(), columns[0].1.decimal()), (11, 0));
+                assert_eq!(rows, vec![vec![Datum::Int(clock)]]);
+                assert!(warnings_of(&session).is_empty());
+            }
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_timestamp_preserves_source_kinds_staged_roots_and_declared_fsp() {
     use tidb_datatype::{FieldTypeCode, TimeType};
 

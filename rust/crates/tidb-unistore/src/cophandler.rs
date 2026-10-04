@@ -2914,33 +2914,8 @@ impl LegacyEvaluator<'_> {
             // clock in the session zone, divided by 1e6 exactly (an out-of-
             // range source answers the zero decimal, not NULL).
             SimpleExpr::Func(SimpleSig::UnixTimestampDec, children) => {
-                let time = legacy_some!(self.eval_time(children.first())?);
-                if time.is_zero() {
-                    return Ok(Some(tidb_datatype::Decimal::from_my_decimal(
-                        &tidb_datatype::MyDecimal::from_int(0),
-                    )));
-                }
-                let Ok(clock) = time.core_time().to_datetime(time_zone) else {
-                    return Ok(Some(tidb_datatype::Decimal::from_my_decimal(
-                        &tidb_datatype::MyDecimal::from_int(0),
-                    )));
-                };
-                let micros = clock.timestamp_micros();
-                if !(1_000_000..=32_536_771_199_999_999).contains(&micros) {
-                    return Ok(Some(tidb_datatype::Decimal::from_my_decimal(
-                        &tidb_datatype::MyDecimal::from_int(0),
-                    )));
-                }
-                // Go shifts the exact micros by -6 digits; render the same
-                // value as text (the in-crate shift rounds the dropped
-                // digits, Go's keeps them).
-                let text = format!(
-                    "{}.{:06}",
-                    micros.div_euclid(1_000_000),
-                    micros.rem_euclid(1_000_000)
-                );
-                let dec = tidb_datatype::MyDecimal::from_string(text.as_bytes()).0;
-                Some(tidb_datatype::Decimal::from_my_decimal(&dec))
+                let value = self.eval_time(children.first())?;
+                tidb_expr::unix_timestamp_dec_legacy_in(value, self.time_zone, self.raw_columns)?
             }
             // The `AS DECIMAL` casts answer exact decimals: Go's per-source
             // conversions, with the union clamp folded away -- the seam
@@ -5075,23 +5050,12 @@ impl LegacyEvaluator<'_> {
                         }
                     }
                     SimpleSig::UnixTimestampInt => {
-                        // Go: an invalid source answers 0 (not NULL); the
-                        // wall clock reads in the session zone; microseconds
-                        // outside Go's supported epoch range answer 0.
-                        let Some(time) = self.eval_time(children.first())? else {
-                            return Ok(None);
-                        };
-                        if time.is_zero() {
-                            return Ok(Some(0));
-                        }
-                        let Ok(clock) = time.core_time().to_datetime(time_zone) else {
-                            return Ok(Some(0));
-                        };
-                        let micros = clock.timestamp_micros();
-                        if !(1_000_000..=32_536_771_199_999_999).contains(&micros) {
-                            return Ok(Some(0));
-                        }
-                        Some(i128::from(micros.div_euclid(1_000_000)))
+                        let value = self.eval_time(children.first())?;
+                        tidb_expr::unix_timestamp_int_legacy_in(
+                            value,
+                            self.time_zone,
+                            self.raw_columns,
+                        )?
                     }
                     SimpleSig::CastJsonAsInt => {
                         // Go `ConvertJSONToInt64`: numbers truncate, strings
@@ -9897,6 +9861,257 @@ mod tests {
         // "-42" reads -42 -> true.
         let bare = SimpleExpr::Func(SimpleSig::CastIntAsString, vec![SimpleExpr::Int(-42)]);
         assert_eq!(eval_expr(&bare, &[], 4, &zone()).expect("evals"), Some(1));
+    }
+
+    #[test]
+    fn legacy_unix_timestamp_workers_keep_request_zone_scale_and_child_demand() {
+        use tidb_datatype::{CoreTime, Datum, SessionTimeZone, Time, TimeType};
+        struct Quiet;
+        impl tidb_expr::Columns for Quiet {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn time_zone(&self) -> SessionTimeZone {
+                panic!("legacy UNIX_TIMESTAMP uses the request zone, not Columns")
+            }
+            fn now(&self) -> Option<(i64, u32, i32)> {
+                panic!("legacy UNIX_TIMESTAMP never samples the clock")
+            }
+            fn date_modes(&self) -> tidb_datatype::DateModes {
+                panic!("legacy UNIX_TIMESTAMP ignores date modes")
+            }
+            fn div_precision_increment(&self) -> u32 {
+                panic!("legacy UNIX_TIMESTAMP decimal scale is not division precision")
+            }
+            fn append_warning(&self, _: u16, _: &str) {
+                panic!("legacy UNIX_TIMESTAMP does not add warnings")
+            }
+        }
+        let pool = |slots| {
+            tidb_expr::AsciiPoolOwner::new(
+                tidb_expr::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 << 20,
+                    4 << 20,
+                    4 << 20,
+                    64,
+                    8,
+                    4 << 20,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let assert_pool = |error| match error {
+            LegacyEvalError::Infrastructure(tidb_expr::EvalError::ExpressionAdapterFailure(
+                failure,
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_expr::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_expr::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("legacy UNIX_TIMESTAMP lost its infrastructure failure: {other:?}"),
+        };
+        let shanghai = SessionTimeZone::Named(chrono_tz::Asia::Shanghai);
+        let los_angeles = SessionTimeZone::Named(chrono_tz::America::Los_Angeles);
+        let one = Time::from_raw_parts(
+            CoreTime::from_date(1970, 1, 1, 8, 0, 1, 0),
+            TimeType::DateTime,
+            0,
+        );
+        let fractional_core = CoreTime::from_date(1970, 1, 1, 8, 0, 1, 123456);
+        let row = [
+            Datum::Time(one),
+            Datum::Time(Time::from_raw_parts(fractional_core, TimeType::Date, 255)),
+            Datum::Time(Time::from_raw_parts(
+                fractional_core,
+                TimeType::Timestamp,
+                255,
+            )),
+            Datum::Int(1),
+        ];
+        let gap = Time::from_raw_parts(
+            CoreTime::from_date(2021, 3, 14, 2, 30, 0, 123456),
+            TimeType::DateTime,
+            6,
+        );
+        let folded_sql = SimpleExpr::Func(
+            SimpleSig::CastIntAsTime,
+            vec![SimpleExpr::Func(
+                SimpleSig::CastRealAsInt,
+                vec![SimpleExpr::Real(f64::INFINITY)],
+            )],
+        );
+        for slots in [1, 0] {
+            let owner = pool(slots);
+            let execution = owner.begin_execution().unwrap();
+            let scope = execution.scope();
+            scope.with_columns(&Quiet, |columns| {
+                for (zone, children, expected) in [
+                    (
+                        &shanghai,
+                        vec![SimpleExpr::Time(one)],
+                        Some((1_i128, "1.000000", 6_u32)),
+                    ),
+                    (
+                        &shanghai,
+                        vec![SimpleExpr::Column(0)],
+                        Some((1, "1.000000", 6)),
+                    ),
+                    (
+                        &shanghai,
+                        vec![SimpleExpr::Column(1)],
+                        Some((1, "1.123456", 6)),
+                    ),
+                    (
+                        &shanghai,
+                        vec![SimpleExpr::Column(2)],
+                        Some((1, "1.123456", 6)),
+                    ),
+                    (
+                        &shanghai,
+                        vec![SimpleExpr::Time(Time::from_raw_parts(
+                            CoreTime::from_raw(0),
+                            TimeType::DateTime,
+                            255,
+                        ))],
+                        Some((0, "0", 0)),
+                    ),
+                    (
+                        &shanghai,
+                        vec![SimpleExpr::Time(Time::from_raw_parts(
+                            CoreTime::from_date(1970, 1, 1, 8, 0, 0, 999999),
+                            TimeType::DateTime,
+                            6,
+                        ))],
+                        Some((0, "0", 0)),
+                    ),
+                    (
+                        &shanghai,
+                        vec![SimpleExpr::Time(Time::from_raw_parts(
+                            CoreTime::from_date(2020, 2, 31, 0, 0, 0, 0),
+                            TimeType::DateTime,
+                            0,
+                        ))],
+                        Some((0, "0", 0)),
+                    ),
+                    (&los_angeles, vec![SimpleExpr::Time(gap)], Some((0, "0", 0))),
+                    (&shanghai, vec![], None),
+                    (&shanghai, vec![SimpleExpr::Null], None),
+                    (&shanghai, vec![SimpleExpr::Column(3)], None),
+                    (&shanghai, vec![SimpleExpr::Int(1)], None),
+                    (
+                        &shanghai,
+                        vec![SimpleExpr::Bytes(b"1970-01-01 08:00:01".to_vec())],
+                        None,
+                    ),
+                    (&shanghai, vec![folded_sql.clone()], None),
+                ] {
+                    let evaluator = LegacyEvaluator {
+                        raw_columns: columns,
+                        ..LegacyEvaluator::new(&row, 4, zone)
+                    };
+                    let int_call = SimpleExpr::Func(SimpleSig::UnixTimestampInt, children.clone());
+                    let decimal_call = SimpleExpr::Func(SimpleSig::UnixTimestampDec, children);
+                    let integer = evaluator.eval_expr(&int_call);
+                    let decimal = evaluator.eval_decimal(Some(&decimal_call));
+                    if slots == 0 {
+                        assert_pool(
+                            integer.expect_err("even missing and NULL int inputs need the worker"),
+                        );
+                        assert_pool(
+                            decimal
+                                .expect_err("even missing and NULL decimal inputs need the worker"),
+                        );
+                        assert_pool(
+                            evaluator
+                                .folded_int(Some(&int_call))
+                                .expect_err("SQL folding preserves infrastructure"),
+                        );
+                    } else {
+                        assert_eq!(integer.unwrap(), expected.map(|value| value.0));
+                        match (decimal.unwrap(), expected) {
+                            (Some(value), Some((_, text, scale))) => {
+                                assert_eq!(value.to_string(), text);
+                                assert_eq!(value.scale(), scale);
+                            }
+                            (None, None) => {}
+                            other => panic!("unexpected legacy decimal result: {other:?}"),
+                        }
+                    }
+                }
+            });
+            drop(scope);
+            execution.close();
+        }
+        let shared = convert_expr(&tipb::Expr {
+            tp: Some(tipb::ExprType::ScalarFunc as i32),
+            sig: Some(tipb::ScalarFuncSig::IntIsNull as i32),
+            field_type: Some(tipb::FieldType {
+                tp: Some(8),
+                ..Default::default()
+            }),
+            children: vec![tipb::Expr {
+                tp: Some(tipb::ExprType::Null as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .expect("already-admitted shared child");
+        assert!(matches!(&shared, SimpleExpr::Shared(_)));
+        let owner = pool(0);
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        scope.with_columns(&Quiet, |columns| {
+            // Only shared children see this zero-slot scope; the root retains
+            // its one-shot scope and the distinct request timezone.
+            let evaluator = LegacyEvaluator {
+                raw_columns: &Quiet,
+                shared_override: Some(columns),
+                ..LegacyEvaluator::new(&row, 4, &shanghai)
+            };
+            let int_call = SimpleExpr::Func(SimpleSig::UnixTimestampInt, vec![shared.clone()]);
+            let decimal_call = SimpleExpr::Func(SimpleSig::UnixTimestampDec, vec![shared.clone()]);
+            assert_pool(
+                evaluator
+                    .eval_expr(&int_call)
+                    .expect_err("first child infrastructure is not SQL NULL"),
+            );
+            assert_pool(
+                evaluator
+                    .eval_decimal(Some(&decimal_call))
+                    .expect_err("decimal child infrastructure is not zero"),
+            );
+            for first in [SimpleExpr::Time(one), SimpleExpr::Null] {
+                let present = matches!(&first, SimpleExpr::Time(_));
+                let int_call = SimpleExpr::Func(
+                    SimpleSig::UnixTimestampInt,
+                    vec![first.clone(), shared.clone()],
+                );
+                let decimal_call =
+                    SimpleExpr::Func(SimpleSig::UnixTimestampDec, vec![first, shared.clone()]);
+                assert_eq!(
+                    evaluator.eval_expr(&int_call).unwrap(),
+                    present.then_some(1)
+                );
+                let decimal = evaluator.eval_decimal(Some(&decimal_call)).unwrap();
+                if present {
+                    let value = decimal.unwrap();
+                    assert_eq!(value.to_string(), "1.000000");
+                    assert_eq!(value.scale(), 6);
+                } else {
+                    assert!(decimal.is_none());
+                }
+            }
+        });
+        drop(scope);
+        execution.close();
     }
 
     #[test]

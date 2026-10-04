@@ -27,6 +27,7 @@ mod context;
 // The closed ready-argument families share this value boundary and one pool.
 mod evaluated_ascii;
 mod identity_value;
+mod unix_timestamp;
 pub use adapter_failure::{
     ExpressionAdapterFailure, ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,
 };
@@ -78,6 +79,7 @@ use tidb_query_expr::local::{
 };
 pub use tidb_query_expr::{BinaryArithmeticOperation, ComparisonOp};
 pub(crate) use tidb_query_expr::{NativeDecimalFastOutcome, NativeDecimalFastValue};
+pub use unix_timestamp::{unix_timestamp_dec_legacy_in, unix_timestamp_int_legacy_in};
 
 /// Builds only the opaque constant-list key owner, without a runtime scope.
 /// The existing caller has no encoded-size SQL policy; retain the real backend

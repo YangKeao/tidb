@@ -1,27 +1,27 @@
 # Expression unification experiment
 
 Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
-Current checkpoint: **timestamp-78**, following **convert-tz-77**.
+Current checkpoint: **unix-timestamp-79**, following **timestamp-78**.
 
 ## Progress
 
-Functional migration is **219/245**, strict final-audited count **0**. New family: **timestamp**. All218 prior family objects are unchanged. Target221 needs2 more, with26 eligible families remaining; the overall goal continues.
+Functional migration is **220/245**, strict final-audited count **0**. New family: **unix_timestamp**. All219 prior family objects are unchanged. Target221 needs1 more, with25 eligible families remaining; the overall goal continues.
 
-TiKV `native_timestamp.rs` owns ordinary TIMESTAMP parsing, warning text, formatting, duration grammar/arithmetic/range/FSP. Native retains original coercion/context demand and computed projection only. Four fixed profiles handle actual NULL, one-argument head, two-argument base and duration addition. A successful two-argument base is the actual SDK Time identity frame, moved unchanged into the second worker after RHS coercion—even for yearzero. No native parser/formatter/arithmetic or host-built base remains.
+TiKV `native_unix_timestamp.rs` owns ordinary parsing/epoch/result shaping and strict-Time legacy policies. Six closed profiles cover real clock input, nullable absence, parsing, fresh-zone continuation and legacy Int/Decimal. Ordinary valid civil input demands two distinct actual zone reads; parse failure/all-zero/partial-zero paths stop before the second read. The existing same-scope callback carries the actual SDK base unchanged. Native no longer computes epoch, formats Decimal or reconstructs a parsed base.
 
-The new scoped callback shares the existing three-way router and selected scope after lease finish. It does not rediscover authority, retain worker borrows or create a second pool. NoColumns keeps its old preparation-before-allocation order, with its one-shot owner alive through both stages. Actual text/source-kind/zone uses a distinct carrier, not literal DateModes. Zone-only binding is shared while literal policies remain separate. A small datatype-owned seven-field view avoids duplicate bit masks.
+Legacy adapters consume typed Time and the original borrowed request zone, never Columns.time_zone. All raw kinds/FSP survive; strict gaps yield zero, valid Decimal has scale6 and zero has scale0. Native PB retains its ordinary route and unchanged outer declared-family coercion; observed NULL now reaches a worker. Existing wire DST/return-field policies remain distinct, sharing only the pure range predicate.
 
-Original typed post-wrapping and eager SQL child evaluation remain unchanged. No PB/legacy admission is added. FROM_UNIXTIME and UNIX_TIMESTAMP still need their actual conditional getters/clock and independent legacy policies; the staged helper alone earns neither family credit.
+TemporalValue adds a closed unary role using existing zone ownership/accounting. No pool, budget, configuration, resource cause or ordinary signature admission is widened. FROM_UNIXTIME remains unchanged and uncredited.
 
 ## Validation and evidence
 
-[Evidence](evidence/timestamp-checkpoint.md), [exact commands/hashes](logs/timestamp-summary.txt), [manifest](checkpoint.json), [cumulative ledger](migration-progress.json).
+[Evidence](evidence/unix-timestamp-checkpoint.md), [exact commands/hashes](logs/unix-timestamp-summary.txt), [manifest](checkpoint.json), [cumulative ledger](migration-progress.json).
 
-Nine locked launches: datatype1, CPPcore2/local330+1ignored, native timestamp30/gateway196+1ignored and SQL1 pass. SQL has42real-column probes:20normal,20direct target-root zero-slot refusals and2filters. Numeric-vs-string parsing, actual/declared FSP differences and warning demand are explicit. New gateway tests cover three authority routes and success/error/panic/close; real TIMESTAMP stages also run in one slot.
+Ten locked launches: CPPcore2/wire2/local332+1ignored, native Unix8/gateway196+1ignored, legacy2 and SQL1 pass. SQL44 SELECTs cover20normal,20real-column zero-slot refusals,2filters and2controlled clocks; actual decimal scale and declared metadata are distinguished.
 
-An initial compile attempt found two wrong String constructors in the new gateway test; static str fixed them without production/oracle changes. All9newtests pass their first executed matching gate. Full expression **1574/4old/94ignored** and unistore **211/1old/13ignored** retain exact normalized failure sections and remain RED. No interrupted or zero-match run.
+One NEW PB test initially omitted unchanged outer return-family conversion. Its two expected cases were corrected against unchanged source, not provider output; retry passes. No production or original test change. Full expression **1578/4old/94ignored** and unistore **212/1old/13ignored** retain exact normalized failure sections and remain RED. No compile failure, interruption or zero-match run.
 
-CPP252/native361 original test bodies are byte-identical.15Rust files, one new module, nine new tests; pinned format/diff checks pass. Dependencies/locks, Go/Bazel/generated/fixtures unchanged.
+CPP203/native471 original test bodies are byte-identical.18Rust files, two new modules, ten new tests; pinned format/diff checks pass. Dependencies/locks, Go/Bazel/generated/fixtures unchanged.
 
 M6/default-NoColumns propagation, remaining evaluator closure, old planner mode forwarding/CAST warning/INTDIV raw-empty and other compatibility gaps remain open. Whole workspace/lint/dev/bazel_prepare/release, exhaustive differential/TiFlash/FIPS, performance/allocator/physical heap/peak/OOM/zero-copy/dual-timezone footprint are deferred. No whole-package transcreation or PR-readiness claim.
 
