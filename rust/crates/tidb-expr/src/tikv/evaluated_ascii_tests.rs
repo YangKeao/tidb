@@ -1443,6 +1443,9 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::DateLiteralNative | EvaluatedBytesOp::TimestampLiteralNative => {
             panic!("temporal literals need their actual text, modes and owned session timezone")
         }
+        EvaluatedBytesOp::ConvertTzNative => {
+            panic!("CONVERT_TZ needs its three actual nullable coerced strings")
+        }
         EvaluatedBytesOp::IntDivDecimalSignedNative
         | EvaluatedBytesOp::IntDivDecimalUnsignedNative
         | EvaluatedBytesOp::IntDivDecimalLegacy

@@ -1,5 +1,11 @@
 {
-  "checkpoint_id": "temporal-literals-76",
+  "checkpoint_id": "convert-tz-77",
+  "convert_tz_completed_functional_checkpoint": "convert-tz-77",
+  "convert_tz_actual_nullable_zone_text_worker_and_scoped_roots": true,
+  "convert_tz_native_business_algorithms_deleted": true,
+  "legacy_naive_instant_helper_single_shared_implementation": true,
+  "convert_tz_system_and_named_gap_policies_kept_distinct": true,
+  "unix_time_families_credited_by_helper_sharing": 0,
   "temporal_literal_completed_functional_checkpoint": "temporal-literals-76",
   "literal_regex_parser_mode_and_hard_error_algorithms_shared": true,
   "literal_actual_zone_invocation_binding_and_capacity_accounting": true,
@@ -47,8 +53,8 @@
   "integer_division_original_precision_receipts_and_warning_priority_preserved": true,
   "integer_division_raw_invalid_math_full_parity_claimed": false,
   "integer_division_known_raw_empty_lhs_nonzero_gap": "Old exact quotient zero becomes shared math InvalidInput: infallible SDK panic, evaluated infrastructure failure; zero RHS still precedes invalid LHS. No native fallback.",
-  "new_migration_ids": ["date_literal", "timestamp_literal"],
-  "latest_functional_migration_checkpoint": "temporal-literals-76",
+  "new_migration_ids": ["convert_tz"],
+  "latest_functional_migration_checkpoint": "convert-tz-77",
   "integer_division_sdk_prerequisite_checkpoint": "intdiv-sdk-67",
   "six_integer_division_sdk_implementations_shared": true,
   "raw_decimal_projection_and_conversion_domains_preserved": true,
@@ -126,7 +132,7 @@
   "comparison_broader_request_root_not_complete": true,
   "frozen_denominator": 245,
   "required_families": 221,
-  "functional_delegation_and_native_deletion_count": 217,
+  "functional_delegation_and_native_deletion_count": 218,
   "fully_final_audited_count": 0,
   "final_performance_and_workspace_gates_complete": false,
   "families": [
@@ -346,9 +352,10 @@
     {"id":"timestampadd","status":"functional_tikv_only","native_algorithm_deleted":true,"shared_unit_rounding_month_clamp_roll_and_range_policies":true,"existing_datetime_sdk_reused_without_duplicate_arithmetic":true,"actual_prefix_null_carrier_without_unread_date_slot":true,"all_raw_coerced_ieee_bits_preserved":true,"computed_values_unknown_unit_and_input_output_warning_reports":true,"upstream_eager_children_and_datetime_wrapping_unchanged":true,"sql_values_metadata_warnings_and_zero_slot_roots_verified":true,"no_new_pb_or_legacy_admission":true},
     {"id":"json_search","status":"functional_tikv_only","native_algorithm_deleted":true,"shared_selection_walk_path_assembly_dedup_and_formatting":true,"existing_matcher_extended_with_explicit_prefix_literal_compatibility":true,"actual_document_ordered_paths_and_unicode_search_spec":true,"original_null_error_and_all_path_parse_demand_preserved":true,"one_early_stop_and_no_extract_scalar_array_autowrap":true,"computed_nohit_null_and_actual_null_both_reach_worker":true,"sql_values_string_metadata_errors_and_zero_slot_roots_verified":true,"no_new_pb_or_legacy_admission":true},
     {"id":"date_literal","status":"functional_tikv_only","native_algorithm_deleted":true,"shared_regex_parser_zero_policy_and_unpadded_hard_errors":true,"actual_text_modes_and_owned_native_zone_worker_inputs":true,"rewrite_and_odbc_constant_roots_connected":true,"raw_date_and_fieldtype_projection_preserved":true,"explicit_scope_zero_slot_and_sql_default_route_verified":true,"old_table_projection_mode_forwarding_gap_retained":true,"new_ast_pb_unistore_or_row_admission":false,"resolver_m6_ownership_propagation_claimed":false},
-    {"id":"timestamp_literal","status":"functional_tikv_only","native_algorithm_deleted":true,"shared_regex_fsp_parser_and_distinct_hard_error_codes":true,"actual_native_zone_identity_fractional_carry_and_offset_normalization":true,"rewrite_and_odbc_constant_roots_connected":true,"raw_datetime_kind_fsp_and_fieldtype_projection_preserved":true,"explicit_scope_zero_slot_and_sql_default_route_verified":true,"new_ast_pb_unistore_or_row_admission":false,"ordinary_timestamp_function_credited":false,"resolver_m6_ownership_propagation_claimed":false}
+    {"id":"timestamp_literal","status":"functional_tikv_only","native_algorithm_deleted":true,"shared_regex_fsp_parser_and_distinct_hard_error_codes":true,"actual_native_zone_identity_fractional_carry_and_offset_normalization":true,"rewrite_and_odbc_constant_roots_connected":true,"raw_datetime_kind_fsp_and_fieldtype_projection_preserved":true,"explicit_scope_zero_slot_and_sql_default_route_verified":true,"new_ast_pb_unistore_or_row_admission":false,"ordinary_timestamp_function_credited":false,"resolver_m6_ownership_propagation_claimed":false},
+    {"id":"convert_tz","status":"functional_tikv_only","native_algorithm_deleted":true,"actual_nullable_datetime_and_sql_zone_strings":true,"shared_calendar_composition_zone_conversion_and_fraction_format":true,"legacy_naive_instant_helper_shared_without_narrowing":true,"native_named_zone_identity_and_system_special_policy_preserved":true,"original_eager_coercion_zone_parse_order_and_panic_domain_preserved":true,"typed_argument_and_result_wrapping_preserved":true,"sql_real_columns_metadata_filter_and_zero_slot_roots_verified":true,"new_carrier_metadata_or_pb_legacy_admission":false,"unix_families_credited":false}
   ],
-  "shared_evidence": "evidence/temporal-literals-checkpoint.md",
+  "shared_evidence": "evidence/convert-tz-checkpoint.md",
   "aes_completed_functional_checkpoint": "aes-two-51",
   "aes_new_value_recipes": 24,
   "aes_new_null_witness_recipes": 1,
@@ -571,6 +578,7 @@
   "uuid_translate_uuid_generation_family_credit_added": false,
   "remaining_candidate_source_review_checkpoint": "json-search-73",
   "remaining_candidate_source_prerequisites": {
+    "unix_time_families": "R79 bounded review: FROM_UNIXTIME must preserve numeric/text/Decimal policies and truncate warnings before conditional zone acquisition, and delay format coercion until a valid local result. UNIX_TIMESTAMP(arg) has two actual time_zone reads, the second only after valid full core, and the results may differ; zeroarg uses actual clock and original arithmetic. Legacy UnixTimestampDec/Int have strict conversion/zero/precision policies; legacy FromUnixTime1Arg retains its existing nanos-times1000 behavior and2Arg delays layout. Generic Naive transition helper is shared, but neither evaluator family is credited. Do not widen L78 literal predicates or prefetch getters; use real staged SDK results and distinct closed policies.",
     "timestamp_and_literals": "Literal2families are now closed through actual text/mode/owned-zone workers, preserving rewrite-only folding and hard-error/type policy. Ordinary TIMESTAMP remains open: its left parse precedes right coercion; do not replace with eager Bytes2 or count it as a literal alias. Civil/instant, lexical, full parser, constructor/validation and exact0.10.4 native-zone SDKs are already shared; YEAR/INTERVAL/broader methods and resolver M6 ownership remain open. Table projection still omits date_modes forwarding and uses original strict defaults; not repaired or Go-parity claimed.",
     "plan_decoders": "Move real codec/renderers with single Explain proto generation, texttree and exact formatting; preserve text fallback, binary warning and uncaught missing-main panic domains.",
     "sql_digest": "Share lexer and normalizer, not SHA256 alone or a host-token answer.",
@@ -579,7 +587,7 @@
     "json_sum_crc32": "Correct SQL syntax is JSON_SUM_CRC32(expr AS type ARRAY); current AST/typed code rejects ARRAY. Internal scalar/text baseline exists, but no successful SQL route was established. Do not invent aliases/admission or claim runtime verification from source inspection."
   },
   "next_candidate_frozen_family_ids_not_credited": ["timestamp", "tidb_decode_plan", "tidb_decode_binary_plan", "tidb_encode_sql_digest", "validate_password_strength", "date_literal", "timestamp_literal", "json_sum_crc32"],
-  "next_candidate_constraints": "DATE_LITERAL+TIMESTAMP_LITERAL are now functionally closed through build/fold-time workers, not ready host parsed cores. Direct AST remains rejected, no per-row admission was created, and default NoColumns/M6 plus the old table-projection date_modes forwarding gap remain explicit. Ordinary TIMESTAMP still requires a complete demand-preserving worker, including conditional right coercion, shared duration/add/format and numeric-source parsing; not a third literal alias. Prefer the next bounded evaluator batch over more prerequisite-only work. INTDIV is now functionally delegated/deleted through its integer and Decimal policies and exact SDK, with the explicitly documented invalid-raw empty-lhs/nonzero compatibility limitation; it is no longer a next candidate. Shared math/raw identity domain equivalence and aggregate allocator peak remain unclaimed. TIME+MICROSECOND now share the exact duration grammar, wide/compactUTC datetime fallback, full byte-fraction SDK and non-Timestamp validator; both native workers and MICROSECOND PB/legacy paths are closed. ADDTIME/SUBTIME now share complete type/row/binary policies, value arithmetic and warning reports. TIMESTAMPADD now shares its raw-f64 unit/rounding/month-clamp-versus-roll/range and warning closure through actual main/prefix-NULL profiles, preserving upstream eager evaluation and datetime wrapping; its original numeric coercion is unchanged. TIMESTAMP can now reuse generic temporal timezone/suffix/float parsing, but its worker still needs conditional RHS coercion; the compact UTC fallback is not a replacement. Plan decoders are substantial real SDK/tree/protobuf renderers with different error/panic/warning domains, not base64-only stubs; digest requires lexer normalization, not SHA256 alone. Password lazy stages and CRC32 rejected quoted SQL remain. No other candidate is credited by the two literal migrations; wire signatures do not establish native admission.",
+  "next_candidate_constraints": "DATE_LITERAL+TIMESTAMP_LITERAL are now functionally closed through build/fold-time workers, not ready host parsed cores. Direct AST remains rejected, no per-row admission was created, and default NoColumns/M6 plus the old table-projection date_modes forwarding gap remain explicit. Ordinary TIMESTAMP still requires a complete demand-preserving worker, including conditional right coercion, shared duration/add/format and numeric-source parsing; not a third literal alias. Prefer the next bounded evaluator batch over more prerequisite-only work. INTDIV is now functionally delegated/deleted through its integer and Decimal policies and exact SDK, with the explicitly documented invalid-raw empty-lhs/nonzero compatibility limitation; it is no longer a next candidate. Shared math/raw identity domain equivalence and aggregate allocator peak remain unclaimed. TIME+MICROSECOND now share the exact duration grammar, wide/compactUTC datetime fallback, full byte-fraction SDK and non-Timestamp validator; both native workers and MICROSECOND PB/legacy paths are closed. ADDTIME/SUBTIME now share complete type/row/binary policies, value arithmetic and warning reports. TIMESTAMPADD now shares its raw-f64 unit/rounding/month-clamp-versus-roll/range and warning closure through actual main/prefix-NULL profiles, preserving upstream eager evaluation and datetime wrapping; its original numeric coercion is unchanged. TIMESTAMP can now reuse generic temporal timezone/suffix/float parsing, but its worker still needs conditional RHS coercion; the compact UTC fallback is not a replacement. Plan decoders are substantial real SDK/tree/protobuf renderers with different error/panic/warning domains, not base64-only stubs; digest requires lexer normalization, not SHA256 alone. Password lazy stages and CRC32 rejected quoted SQL remain. CONVERT_TZ is additionally closed through actual nullable zone strings and a shared broad Naive transition helper. FROM_UNIXTIME/UNIX_TIMESTAMP still need conditional getter/coercion stages and independent legacy policies; helper sharing earns neither family credit. Wire signatures do not establish native admission.",
   "later_temporal_candidates_not_credited": ["timediff", "timestampdiff"],
   "next_candidates_are_read_only_not_implemented": true,
   "other_temporal_policies_require_separate_locks": ["microsecond", "other_parser_policies"],

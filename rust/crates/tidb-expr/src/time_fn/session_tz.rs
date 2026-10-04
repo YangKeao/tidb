@@ -279,75 +279,9 @@ pub(crate) fn unix_timestamp(vals: &[Datum], cols: &dyn Columns) -> Result<Datum
 /// renders back to the wall clock we started from.
 ///
 /// A wall clock that renders back from NEITHER exists in no offset at all: it
-/// is inside a spring-forward gap, which is [`dst_gap_bound`]'s subject.
-pub(super) fn local_to_instant<TZ: chrono::TimeZone>(
-    tz: &TZ,
-    naive: &NaiveDateTime,
-) -> Option<chrono::DateTime<Utc>> {
-    let first = *naive - chrono::Duration::seconds(i64::from(offset_at(tz, naive)));
-    let second = *naive - chrono::Duration::seconds(i64::from(offset_at(tz, &first)));
-    for candidate in [first, second] {
-        if candidate.and_utc().with_timezone(tz).naive_local() == *naive {
-            return Some(candidate.and_utc());
-        }
-    }
-    dst_gap_bound(tz, naive)
-}
-
-/// The zone's offset east of UTC at a UTC instant (Go's `Location.lookup`).
-fn offset_at<TZ: chrono::TimeZone>(tz: &TZ, instant: &NaiveDateTime) -> i32 {
-    use chrono::Offset as _;
-    tz.offset_from_utc_datetime(instant).fix().local_minus_utc()
-}
-
-/// Go `types.CoreTime.AdjustedGoTime` (`pkg/types/core_time.go`), reached
-/// from `adjustTimestampErrForDST` whenever a TIMESTAMP's wall clock falls in
-/// a daylight-saving gap.
-///
-/// Go does not reject such a value. `time.Date` normalizes it into the new
-/// offset, `ZoneBounds` then names the transition either side of that
-/// instant, and the CLOSER bound becomes the answer -- unless both are more
-/// than four hours away, which is Go's own guard against a zone whose
-/// transition this heuristic would not really be describing.
-///
-/// `2025-03-30 02:30:00` in `Europe/Paris` is the recorded case: the clock
-/// jumps 02:00 -> 03:00, so the value lands on the transition itself and
-/// `UNIX_TIMESTAMP` answers 1743296400 rather than 0.
-///
-/// The transition is found by bisecting the UTC offset over the day either
-/// side of the value, because chrono-tz publishes offsets rather than the
-/// transition table itself. Within a gap the PRECEDING bound is always the
-/// nearer one -- the following transition is a season away -- so the bisection
-/// only has to find that one.
-fn dst_gap_bound<TZ: chrono::TimeZone>(
-    tz: &TZ,
-    naive: &NaiveDateTime,
-) -> Option<chrono::DateTime<Utc>> {
-    use chrono::Offset as _;
-    let offset_at =
-        |instant: &NaiveDateTime| tz.offset_from_utc_datetime(instant).fix().local_minus_utc();
-    let mut before = *naive - chrono::Duration::hours(24);
-    let mut after = *naive + chrono::Duration::hours(24);
-    let (offset_before, offset_after) = (offset_at(&before), offset_at(&after));
-    if offset_before == offset_after {
-        return None;
-    }
-    while after - before > chrono::Duration::seconds(1) {
-        let middle = before + (after - before) / 2;
-        if offset_at(&middle) == offset_before {
-            before = middle;
-        } else {
-            after = middle;
-        }
-    }
-    // Go's own normalization of the nonexistent wall clock: the instant it
-    // names using the offset still in force before the transition.
-    let normalized = *naive - chrono::Duration::seconds(i64::from(offset_before));
-    if (after - normalized).abs() > chrono::Duration::hours(4) {
-        return None;
-    }
-    Some(after.and_utc())
-}
+/// is inside a spring-forward gap, resolved by the shared legacy helper's
+/// original transition-bound search rather than the generic CoreTime policy.
+pub(super) use tidb_query_expr::native_legacy_local_to_instant as local_to_instant;
 
 /// Builds `UNIX_TIMESTAMP`'s result from epoch microseconds: TRUNCATED at
 /// fsp, integer when fsp is 0, out-of-range as 0.

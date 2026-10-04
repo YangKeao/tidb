@@ -1,0 +1,39 @@
+convert-tz-77 / R79. Previous pair nativee8f140b60f65044ad1c145fb7bec98e70c7062b4 / CPP1088be7de32b1567125b4ca6cc5bf7e4681c6fd2.
+8 serialized --locked Cargo launches:7 nonzero completed test runs,5 green,2 unchanged old full-suite failures;1 compile failure before any test, followed by1 retry. No interrupted or zero-match run. All5 new tests pass their first executed matching gate; no test/oracle correction. Counts passed/failed/ignored/filtered; timings compile/elapsed. Raw template /home/agent/tidb/expression-unification/logs/convert-tz-{id}.log.
+
+CPP cwd=/home/agent/tidb/expression-unification/tikv:
+1. ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_convert_tz -- --test-threads=1
+id=tikv-core sha256=36021de71f6a7489f57d6d3f1172138eb84b715a15e925b643af8c6260d54399
+2/0/0/931;16.74/0.00s;exit0.
+2. ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local -- --test-threads=1
+id=tikv-local sha256=b47eb8ade53dc1ea32f187eaf6fa0a888e30f85bb8b3bc922bc7ac93c8789dd0
+328/0/1/604;0.22/0.24s;exit0.
+
+Native cwd=/home/agent/tidb/expression-unification/tidb/rust:
+3. ../../tools/cargo-tidb test --locked -p tidb-expr --lib time_fn::convert_tz -- --test-threads=1
+id=native-root sha256=1b4421749db16d303ac8e850f44242357db6aee033981d9c04be1764cb5ad873
+exit101 COMPILE FAILURE E0061, no test result/profile completion time. New facade erroneously constructed Bytes3 with3arguments; existing enum takes one [Option<Vec<u8>>;3] array. Corrected only constructor parentheses to Bytes3([dt,from,to]) and formatted. Not a runtime test failure, passing run, zero-match or new protocol.
+4. ../../tools/cargo-tidb test --locked -p tidb-expr --lib time_fn::convert_tz -- --test-threads=1
+id=native-root-retry1 sha256=5de78a2668f2d104aecbd61b036c886ea4b0d2202e70633160bd24cf5cade6a4
+4/0/0/1665;10.08/0.01s;exit0.
+5. ../../tools/cargo-tidb test --locked -p tidb-expr --lib time_fn::session_tz -- --test-threads=1
+id=native-session-tz sha256=c023d8183426ebf5da678e09d29169e2d7b32ef9fa722663a327f4df7ece266a
+5/0/0/1664;0.17/0.00s;exit0.
+6. ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::evaluated_ascii_convert_tz_preserves_typed_sql_values_and_runtime_root_demand -- --test-threads=1
+id=sql sha256=2ff00a3719aab9a0a7b6d6e510bf2823867dbc29c447d20a65dab178411399dd
+1/0/0/2224;29.68/0.09s;exit0.
+7. ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+id=expr-full sha256=a09b387863bd673f218a1438f780f4126246f110f9a0c9d75f5e7ef4b2c26c9d
+1571/4/94/0;0.17/15.37s;exit101.
+8. ../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+id=unistore-full sha256=1cea90e09a50a6da6622cde1ba16be81585829ae284a07e310f6a987744ad072
+211/1/13/0;6.92/3.06s;exit101.
+
+Complete expression/unistore failure sections and final lists byte-equal R78 after replacing only numeric panic-thread IDs with THREAD (digest includes leading newline before failures:):
+expression411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+unistore2f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1
+No observed runtime regression. Prior planner mode-forwarding/CASTzero/INTDIVrawempty exceptions not repaired or separately rerun. Filters overlap; sums are not unique-test totals.
+
+SQL:12real stored-column cases×vectorflags0/1×poolslots1/0 =48directSELECT, plus2positive filter queries =50probes excluding setup. Normal24 cells:10nonNULL DateTime/fsp6 and14NULL;24zero-slot target-root refusals;2filter matches. Typed declared result Datetime26/6 binary preserved. Bad-datetime input retains pre-cast1292 warning both normal/zero (4probes); core itself adds no getters/warnings, but original SQL pre/postcasts remain contextual. No folded constants or other zero-slot roots substitute for these probes.
+
+CPP188/native368 original test bodies byte-identical;3moved transition-helper bodies byte-identical to prior native source.14Rust(8CPP/6native),1newmodule,5newtests(3CPP/1expr/1SQL). Existing dependency locks/manifests, Go/Bazel/generated/fixtures unchanged; pinned formatting/diff checks. No provider recording or changed test oracle. Deeper lint/workspace/release/performance/allocator/heap/OOM/M6 verification deferred as documented.

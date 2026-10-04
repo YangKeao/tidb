@@ -2237,6 +2237,7 @@ fn materialize_computed(
             | EvaluatedBytesOp::TimestampAddPrefixNullNative
             | EvaluatedBytesOp::DateLiteralNative
             | EvaluatedBytesOp::TimestampLiteralNative
+            | EvaluatedBytesOp::ConvertTzNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative

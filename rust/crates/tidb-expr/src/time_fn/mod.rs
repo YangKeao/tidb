@@ -88,7 +88,7 @@ pub(crate) fn dispatch(
         "STR_TO_DATE" => calendar::str_to_date(vals, cols),
         "FROM_DAYS" => calendar::from_days_in(vals, cols),
         "TIMEDIFF" => time_diff_in(vals, cols),
-        "CONVERT_TZ" => convert_tz::convert_tz(vals),
+        "CONVERT_TZ" => convert_tz::convert_tz_in(vals, cols),
         "FROM_UNIXTIME" => session_tz::from_unixtime(vals, cols),
         "UNIX_TIMESTAMP" => session_tz::unix_timestamp(vals, cols),
         "TIDB_PARSE_TSO" => session_tz::tidb_parse_tso(vals, cols),

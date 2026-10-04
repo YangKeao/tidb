@@ -9363,6 +9363,158 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_convert_tz_preserves_typed_sql_values_and_runtime_root_demand() {
+    use tidb_datatype::{FieldTypeCode, TimeType};
+
+    // All three arguments are stored STRING columns, not folded literals.
+    // The scalar caller retains its ETDatetime input cast and typed output
+    // cast; this test does not attribute those casts' context reads to the
+    // timezone-conversion worker itself.
+    let create = "CREATE TABLE shared_convert_tz_sql (dt VARCHAR(64), fraction_dt VARCHAR(64), east_dt VARCHAR(64), paris_dt VARCHAR(64), gap_dt VARCHAR(64), bad_dt VARCHAR(64), zero_zone VARCHAR(64), minus_zero_zone VARCHAR(64), ten_zone VARCHAR(64), fraction_zone VARCHAR(64), east_zone VARCHAR(64), paris_zone VARCHAR(64), utc_zone VARCHAR(64), unknown_zone VARCHAR(64), invalid_zone VARCHAR(64), empty_zone VARCHAR(64), null_text VARCHAR(64))";
+    let insert = "INSERT INTO shared_convert_tz_sql VALUES ('2004-01-01 12:00:00','2004-01-01 12:00:00.11111111111','2007-11-04 01:30:00','2025-10-26 02:30:00','2007-03-11 02:30:00','not-a-date','+00:00','-00:00','+10:00','+12:34','US/Eastern','Europe/Paris','UTC','bogus/zone','-12:88','',NULL)";
+    // Fixed original convert_tz::test_convert_tz/goeval_pinned_vectors/nulls
+    // cases. The SQL wrapper reparses the worker's string at the nonconstant
+    // argument's declared result FSP 6, so these are native DATETIME cells.
+    let cases = [
+        (
+            "dt,zero_zone,ten_zone",
+            Some("2004-01-01 22:00:00.000000"),
+            None,
+        ),
+        (
+            "fraction_dt,minus_zero_zone,fraction_zone",
+            Some("2004-01-02 00:34:00.111111"),
+            None,
+        ),
+        (
+            "east_dt,east_zone,utc_zone",
+            Some("2007-11-04 05:30:00.000000"),
+            None,
+        ),
+        (
+            "paris_dt,paris_zone,utc_zone",
+            Some("2025-10-26 01:30:00.000000"),
+            None,
+        ),
+        (
+            "gap_dt,east_zone,utc_zone",
+            Some("2007-03-11 07:00:00.000000"),
+            None,
+        ),
+        ("null_text,zero_zone,ten_zone", None, None),
+        ("dt,null_text,ten_zone", None, None),
+        ("dt,zero_zone,null_text", None, None),
+        ("dt,unknown_zone,zero_zone", None, None),
+        ("dt,minus_zero_zone,invalid_zone", None, None),
+        ("dt,empty_zone,utc_zone", None, None),
+        // The existing ETDatetime cast warns and supplies NULL, but does not
+        // skip the CONVERT_TZ root. Its diagnostic precedes zero-slot refusal.
+        (
+            "bad_dt,zero_zone,ten_zone",
+            None,
+            Some("Incorrect datetime value: 'not-a-date'"),
+        ),
+    ];
+    for slots in [1, 0] {
+        let mut session = Session::new();
+        session.run("SET time_zone='+00:00'").unwrap();
+        session.run("SET sql_mode=''").unwrap();
+        session
+            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+            .unwrap();
+        session.run(create).unwrap();
+        session.run(insert).unwrap();
+        assert!(session
+            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .unwrap());
+        for vectorized in [0, 1] {
+            session
+                .run(&format!(
+                    "SET tidb_enable_vectorized_expression={vectorized}"
+                ))
+                .unwrap();
+            for (args, expected, warning) in cases {
+                // No filter, sort, explicit CAST, or other scalar child can
+                // stand in for the conversion root in the zero-slot probes.
+                let sql = format!("SELECT CONVERT_TZ({args}) FROM shared_convert_tz_sql");
+                if slots == 1 {
+                    let StmtOutput::Rows { columns, rows } =
+                        session.run_with_columns(&sql).unwrap()
+                    else {
+                        panic!("expected CONVERT_TZ rows: {sql}")
+                    };
+                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
+                    let field = &columns[0].1;
+                    // convert_tz_return_type's nonconstant branch selects 6;
+                    // datetime_return_type explicitly writes width 26.
+                    assert_eq!(field.code(), FieldTypeCode::Datetime, "{sql}/{vectorized}");
+                    assert_eq!(
+                        (field.flen(), field.decimal()),
+                        (26, 6),
+                        "{sql}/{vectorized}"
+                    );
+                    assert_eq!(field.charset_name(), "binary");
+                    assert_eq!(field.collation_name(), "binary");
+                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
+                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
+                    if let Some(expected) = expected {
+                        let Datum::Time(time) = &rows[0][0] else {
+                            panic!("CONVERT_TZ SQL result was not native DATETIME: {sql}")
+                        };
+                        assert_eq!(time.kind(), TimeType::DateTime, "{sql}/{vectorized}");
+                        assert_eq!(time.fsp(), 6, "{sql}/{vectorized}");
+                        assert_eq!(cell_text(&rows[0][0]), expected, "{sql}/{vectorized}");
+                    } else {
+                        assert_eq!(rows[0][0], Datum::Null, "{sql}/{vectorized}");
+                    }
+                } else {
+                    let error = session.run_with_columns(&sql).expect_err(&sql);
+                    match &error {
+                        DriverError::Exec(tidb_executor::ExecError::Eval(
+                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                        )) => {
+                            assert_eq!(
+                                failure.class(),
+                                tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                            );
+                            assert_eq!(
+                                failure.origin(),
+                                tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                            );
+                        }
+                        other => panic!(
+                            "CONVERT_TZ root bypassed its worker: {sql}/{vectorized}: {other:?}"
+                        ),
+                    }
+                    let mysql = error.to_mysql_error();
+                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
+                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
+                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
+                }
+                let expected_warnings = warning
+                    .map(|message| vec![(1292, message.to_owned())])
+                    .unwrap_or_default();
+                assert_eq!(
+                    warnings_of(&session),
+                    expected_warnings,
+                    "{sql}/{vectorized}/slots={slots}"
+                );
+            }
+            if slots == 1 {
+                // One ordinary WHERE consumer of the same third, earlier-
+                // overlap case. This is not used as zero-slot root evidence.
+                let sql = "SELECT 1 FROM shared_convert_tz_sql WHERE CONVERT_TZ(east_dt,east_zone,utc_zone)='2007-11-04 05:30:00.000000'";
+                let StmtOutput::Rows { rows, .. } = session.run_with_columns(sql).unwrap() else {
+                    panic!("expected CONVERT_TZ predicate rows")
+                };
+                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
+                assert!(warnings_of(&session).is_empty());
+            }
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_temporal_literals_preserve_rewrite_folding_types_modes_and_zones() {
     use tidb_datatype::{FieldTypeCode, TimeType};
 

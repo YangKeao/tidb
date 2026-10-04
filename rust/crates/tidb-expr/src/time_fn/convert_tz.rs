@@ -33,151 +33,136 @@
 //!   arguments, and zero/invalid datetimes are all NULL;
 //! - `SYSTEM` maps to the process-local zone, matching Go's `time.Local`.
 
-use std::str::FromStr;
-use std::sync::LazyLock;
-
-use chrono::{
-    DateTime, FixedOffset, Local, LocalResult, NaiveDate, NaiveDateTime, TimeZone as _, Utc,
-};
-use chrono_tz::Tz;
-use regex::Regex;
-
-use super::calendar::{parse_date_ymd, parse_time_with_fraction};
 use crate::coerce::coerce_str;
-use crate::{Datum, EvalError};
+use crate::{Columns, Datum, EvalError};
 
-/// Go `convertTzFunctionClass`'s `tzRegex`.
-static TZ_OFFSET_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(^[-+](0?[0-9]|1[0-3]):[0-5]?\d$)|(^\+14:00?$)").unwrap());
-
-enum ConvTz {
-    Fixed(i32),
-    Named(Tz),
-    System,
-}
-
-/// Resolves a CONVERT_TZ zone argument; `None` means the Go evaluator would
-/// return NULL.
-fn parse_conv_tz(s: &str) -> Result<Option<ConvTz>, EvalError> {
-    if s.is_empty() {
-        return Ok(None);
-    }
-    if TZ_OFFSET_RE.is_match(s) {
-        // Go `timeZone2int`.
-        let sign = if s.starts_with('-') { -1 } else { 1 };
-        let body = &s[1..];
-        let (h, m) = body.split_once(':').expect("regex guarantees a colon");
-        let h: i32 = h.parse().expect("regex guarantees digits");
-        let m: i32 = m.parse().expect("regex guarantees digits");
-        return Ok(Some(ConvTz::Fixed(sign * (h * 3600 + m * 60))));
-    }
-    if s.eq_ignore_ascii_case("SYSTEM") {
-        return Ok(Some(ConvTz::System));
-    }
-    Ok(Tz::from_str(s).ok().map(ConvTz::Named))
-}
-
-/// Interprets `naive` as a local time in `tz`; `None` is NULL.
-///
-/// A named zone is Go's `time.Date`, which
-/// [`super::session_tz::local_to_instant`] already models as the single rule
-/// it is; a fixed offset has no transitions, so the wall clock names exactly
-/// one instant.
-fn local_to_instant(naive: NaiveDateTime, tz: &ConvTz) -> Option<DateTime<Utc>> {
-    match tz {
-        ConvTz::Fixed(offset) => {
-            let offset = FixedOffset::east_opt(*offset)?;
-            Some(
-                offset
-                    .from_local_datetime(&naive)
-                    .single()?
-                    .with_timezone(&Utc),
-            )
-        }
-        ConvTz::Named(tz) => super::session_tz::local_to_instant(tz, &naive),
-        ConvTz::System => match Local.from_local_datetime(&naive) {
-            LocalResult::Single(value) => Some(value.with_timezone(&Utc)),
-            // Go's `time.Date` selects the post-transition occurrence for
-            // the process-local fall-back overlap (the same normal-time
-            // choice its Europe/Amsterdam source rows pin).
-            LocalResult::Ambiguous(_, later) => Some(later.with_timezone(&Utc)),
-            LocalResult::None => None,
-        },
-    }
-}
-
-/// Parses `YYYY-MM-DD[ HH:MM[:SS[.frac]]]` into calendar fields plus the
-/// verbatim fraction text; the crate's canonical datetime-string forms.
-pub(super) fn parse_datetime(s: &str) -> Option<(NaiveDateTime, String)> {
-    let input = s.trim();
-    let (year, month, day) = parse_date_ymd(input)?;
-    let date = NaiveDate::from_ymd_opt(i32::try_from(year).ok()?, month, day)?;
-
-    let time_text = input
-        .split_once(char::is_whitespace)
-        .map(|(_, time)| time.trim());
-    let (h, mi, sec, frac) = match time_text {
-        None | Some("") => (0, 0, 0, String::new()),
-        Some(t) => parse_time_with_fraction(t)?,
-    };
-    let micros: u32 = if frac.is_empty() {
-        0
-    } else {
-        format!("{frac:0<6}").parse().ok()?
-    };
-    Some((date.and_hms_micro_opt(h, mi, sec, micros)?, frac))
-}
-
-/// `CONVERT_TZ(dt, from_tz, to_tz)`.
+/// Original one-shot helper retained for existing callers.
 pub(super) fn convert_tz(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 3 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let (Some(dt), Some(from_s), Some(to_s)) = (
-        coerce_str(&vals[0])?,
-        coerce_str(&vals[1])?,
-        coerce_str(&vals[2])?,
-    ) else {
-        return Ok(Datum::Null);
-    };
+    convert_tz_in(vals, &crate::NoColumns)
+}
 
-    let Some((naive, frac)) = parse_datetime(&dt) else {
-        return Ok(Datum::Null);
-    };
-    let (Some(from_tz), Some(to_tz)) = (parse_conv_tz(&from_s)?, parse_conv_tz(&to_s)?) else {
-        return Ok(Datum::Null);
-    };
+/// Coerce the three actual operands under one guard; the shared worker owns
+/// datetime parsing, SQL zone arguments, instant conversion, and rendering.
+pub(super) fn convert_tz_in(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_prepared_args_in(
+        cols,
+        || {
+            if vals.len() != 3 {
+                return Err(EvalError::Unsupported("bad function arity"));
+            }
+            // Preserve tuple demand: NULL does not suppress later coercions,
+            // but an earlier coercion error still stops the tuple.
+            let (dt, from, to) = (
+                coerce_str(&vals[0])?,
+                coerce_str(&vals[1])?,
+                coerce_str(&vals[2])?,
+            );
+            Ok((
+                crate::tikv::EvaluatedBytesOp::ConvertTzNative,
+                crate::tikv::EvaluatedArgs::Bytes3([
+                    dt.map(String::into_bytes),
+                    from.map(String::into_bytes),
+                    to.map(String::into_bytes),
+                ]),
+            ))
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    )
+}
 
-    let Some(instant) = local_to_instant(naive, &from_tz) else {
-        return Ok(Datum::Null);
-    };
-
-    let local = match &to_tz {
-        ConvTz::Fixed(offset) => {
-            let Some(offset) = FixedOffset::east_opt(*offset) else {
-                return Ok(Datum::Null);
-            };
-            instant.with_timezone(&offset).naive_local()
+#[cfg(test)]
+#[test]
+fn convert_tz_dispatch_worker_preserves_lifecycle_and_coercion_order() {
+    struct Quiet;
+    impl Columns for Quiet {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
         }
-        ConvTz::Named(tz) => instant.with_timezone(tz).naive_local(),
-        ConvTz::System => instant.with_timezone(&Local).naive_local(),
-    };
-
-    use chrono::{Datelike, Timelike};
-    let mut out = format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        local.year(),
-        local.month(),
-        local.day(),
-        local.hour(),
-        local.minute(),
-        local.second()
-    );
-    if !frac.is_empty() {
-        out.push('.');
-        out.push_str(&frac);
+        fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+            panic!("CONVERT_TZ uses its actual SQL zone arguments")
+        }
+        fn now(&self) -> Option<(i64, u32, i32)> {
+            panic!("CONVERT_TZ does not read the statement clock")
+        }
+        fn date_modes(&self) -> tidb_datatype::DateModes {
+            panic!("CONVERT_TZ does not read session date modes")
+        }
+        fn truncate_level(&self) -> crate::context::ErrorLevel {
+            panic!("CONVERT_TZ does not read truncation policy")
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            panic!("CONVERT_TZ does not emit warnings")
+        }
     }
-    Ok(Datum::new_string(out))
+    let s = |text: &str| Datum::new_string(text);
+    for slots in [1, 0] {
+        let owner = crate::AsciiPoolOwner::new(
+            crate::AsciiPoolPolicy::checked(
+                slots,
+                slots,
+                16 << 20,
+                4 << 20,
+                4 << 20,
+                64,
+                8,
+                4 << 20,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        scope.with_columns(&Quiet, |columns| {
+            let eval = |values: &[Datum]| {
+                crate::time_fn::dispatch("CONVERT_TZ", values, columns)
+                    .expect("existing temporal dispatcher entry")
+            };
+            for (values, expected) in [
+                ([s("2024-01-01 00:00:00.010"), s("+00:00"), s("+02:00")], s("2024-01-01 02:00:00.010")),
+                ([s("2021-03-28 02:30:00"), s("Europe/Amsterdam"), s("UTC")], s("2021-03-28 01:00:00")),
+                ([Datum::Int(20_040_101), s("+00:00"), s("+10:32")], s("2004-01-01 10:32:00")),
+                ([Datum::Null, s("+00:00"), s("+02:00")], Datum::Null),
+                ([s("2024-01-01"), Datum::Null, s("+02:00")], Datum::Null),
+                ([s("2024-01-01"), s("+00:00"), Datum::Null], Datum::Null),
+                ([s("bad date"), s("+00:00"), s("+02:00")], Datum::Null),
+                ([s("2024-01-01"), s("not-a-zone"), s("+02:00")], Datum::Null),
+                ([s("2024-01-01"), s("+00:00"), s("+14:01")], Datum::Null),
+            ] {
+                let result = eval(&values);
+                if slots == 1 {
+                    assert_eq!(result.unwrap(), expected);
+                } else {
+                    let error = result.expect_err("all business outcomes require the supplied scope");
+                    let EvalError::ExpressionAdapterFailure(failure) = error else { panic!("{error:?}"); };
+                    assert_eq!(failure.class(), crate::ExpressionAdapterFailureClass::PoolResource);
+                    assert_eq!(failure.origin(), crate::ExpressionAdapterFailureOrigin::Pool);
+                }
+            }
+            for values in [
+                vec![],
+                vec![Datum::MinNotNull],
+                vec![Datum::Null, Datum::MinNotNull],
+                vec![Datum::MinNotNull, Datum::Null, Datum::Null, Datum::Null],
+            ] {
+                assert!(matches!(eval(&values), Err(EvalError::Unsupported("bad function arity"))));
+            }
+            for (values, expected) in [
+                ([Datum::Null, Datum::new_bytes(vec![255]), Datum::MinNotNull], "invalid UTF-8 byte datum"),
+                ([Datum::Null, s("+00:00"), Datum::new_bytes(vec![255])], "invalid UTF-8 byte datum"),
+                ([Datum::new_string(vec![255]), Datum::MinNotNull, Datum::Null], "invalid UTF-8 string datum"),
+                ([Datum::MinNotNull, Datum::new_bytes(vec![255]), Datum::Null], "range sentinel string coercion"),
+                ([Datum::Null, Datum::MinNotNull, Datum::new_bytes(vec![255])], "range sentinel string coercion"),
+            ] {
+                assert!(matches!(eval(&values), Err(EvalError::Unsupported(message)) if message == expected));
+            }
+        });
+        drop(scope);
+        execution.close();
+    }
 }
 
 #[cfg(test)]
