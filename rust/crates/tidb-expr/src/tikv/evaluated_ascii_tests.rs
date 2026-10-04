@@ -1434,6 +1434,9 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::TimeAddRightDatetimeNative => {
             panic!("ADDTIME and SUBTIME need actual coerced operands and type metadata")
         }
+        EvaluatedBytesOp::TimestampAddNative | EvaluatedBytesOp::TimestampAddPrefixNullNative => {
+            panic!("TIMESTAMPADD needs actual operands or its genuine NULL prefix")
+        }
         EvaluatedBytesOp::IntDivDecimalSignedNative
         | EvaluatedBytesOp::IntDivDecimalUnsignedNative
         | EvaluatedBytesOp::IntDivDecimalLegacy

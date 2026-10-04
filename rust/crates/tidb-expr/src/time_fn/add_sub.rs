@@ -53,10 +53,7 @@
 
 use tidb_datatype::{Datum, FieldType, FieldTypeCode};
 
-use super::duration_parse::{
-    self, get_fsp, is_duration, parse_datetime, parse_duration, GoDateTime, GoDuration, MAX_FSP,
-    MIN_FSP,
-};
+use super::duration_parse::{get_fsp, is_duration, parse_duration, GoDateTime, MAX_FSP};
 use crate::coerce::coerce_str;
 use crate::{Columns, EvalError};
 
@@ -616,124 +613,292 @@ pub(crate) fn timestamp(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, Eva
 
 /// `builtinTimestampAddSig.evalString` + `addUnitToTime`.
 pub(crate) fn timestamp_add(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    if vals.len() != 3 {
-        return Err(EvalError::Unsupported("bad function arity"));
+    use tidb_query_expr::NativeTimestampAddResult;
+
+    let source = std::cell::RefCell::new(None);
+    crate::tikv::evaluate_prepared_args_in(
+        cols,
+        || {
+            if vals.len() != 3 {
+                return Err(EvalError::Unsupported("bad function arity"));
+            }
+            // A NULL unit still demands the original numeric coercion. Neither
+            // prefix NULL demands the third value's text at this leaf.
+            let (unit, amount) = (coerce_str(&vals[0])?, number_of(&vals[1])?);
+            let amount = amount.map(|value| value.to_bits() as i64);
+            if unit.is_none() || amount.is_none() {
+                return Ok((
+                    crate::tikv::EvaluatedBytesOp::TimestampAddPrefixNullNative,
+                    crate::tikv::EvaluatedArgs::BytesInt(unit.map(String::into_bytes), amount),
+                ));
+            }
+            let text = coerce_str(&vals[2])?;
+            let date = text.as_ref().map(|value| value.as_bytes().to_vec());
+            *source.borrow_mut() = text;
+            Ok((
+                crate::tikv::EvaluatedBytesOp::TimestampAddNative,
+                crate::tikv::EvaluatedArgs::BytesBytesInt(
+                    unit.map(String::into_bytes),
+                    date,
+                    amount,
+                ),
+            ))
+        },
+        |computed| {
+            let Some(bytes) = computed.into_bytes()? else {
+                return Ok(Datum::Null);
+            };
+            let report = tidb_query_expr::decode_native_timestamp_add_result(&bytes)
+                .ok_or_else(crate::tikv::native_time_result_contract_error)?;
+            match report {
+                NativeTimestampAddResult::Value(value) => Ok(Datum::new_string(value)),
+                NativeTimestampAddResult::UnknownUnit => {
+                    Err(EvalError::Unsupported("TIMESTAMPADD unit"))
+                }
+                NativeTimestampAddResult::IncorrectDateTimeInput => {
+                    let source = source.borrow();
+                    let text = source
+                        .as_deref()
+                        .ok_or_else(crate::tikv::native_time_result_contract_error)?;
+                    cols.append_warning(1292, &format!("Incorrect datetime value: '{text}'"));
+                    Ok(Datum::Null)
+                }
+                NativeTimestampAddResult::IncorrectTimeResult(message) => {
+                    cols.append_warning(1292, message);
+                    Ok(Datum::Null)
+                }
+            }
+        },
+    )
+}
+
+#[cfg(test)]
+#[test]
+fn timestamp_add_workers_preserve_numeric_coercion_null_demand_and_warnings() {
+    use std::cell::{Cell, RefCell};
+    struct Policy {
+        warnings: RefCell<Vec<(u16, String)>>,
+        policy_reads: Cell<usize>,
     }
-    let (Some(unit), Some(amount)) = (coerce_str(&vals[0])?, number_of(&vals[1])?) else {
-        return Ok(Datum::Null);
-    };
-    let Some(text) = coerce_str(&vals[2])? else {
-        return Ok(Datum::Null);
-    };
-    let Some(base) = parse_datetime(&text) else {
-        cols.append_warning(1292, &format!("Incorrect datetime value: '{text}'"));
-        return Ok(Datum::Null);
-    };
-    // Go converts the third argument through `Time.GoTime` before calling
-    // `addUnitToTime`. Zero dates and month/day-zero values therefore fail
-    // before arithmetic (for example `TIMESTAMPADD(DAY, 28768, 0)` is NULL),
-    // even though the signed day-number helper could otherwise produce a
-    // seemingly valid year-78 result.
-    if !base.in_range() {
-        cols.append_warning(1292, &format!("Incorrect datetime value: '{text}'"));
-        return Ok(Datum::Null);
+    impl Columns for Policy {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn time_zone(&self) -> crate::context::SessionTimeZone {
+            panic!("the TIMESTAMPADD leaf must not read a zone")
+        }
+        fn now(&self) -> Option<(i64, u32, i32)> {
+            panic!("the TIMESTAMPADD leaf must not read a clock")
+        }
+        fn truncate_level(&self) -> crate::context::ErrorLevel {
+            self.policy_reads.set(self.policy_reads.get() + 1);
+            crate::context::ErrorLevel::Error
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.warnings.borrow_mut().push((code, message.to_owned()));
+        }
     }
-    let unit = unit.to_ascii_uppercase();
-    let Some(result) = add_unit_to_time(&unit, base, amount) else {
-        return Err(EvalError::Unsupported("TIMESTAMPADD unit"));
-    };
-    let Some(result) = result else {
-        return Ok(Datum::Null);
-    };
-    if !result.in_range() {
-        cols.append_warning(
-            1292,
-            &format!(
-                "Incorrect time value: '{{{} {} {} {} {} {} {}}}'",
-                result.year,
-                result.month,
-                result.day,
-                result.hour,
-                result.minute,
-                result.second,
-                result.micros
+    for slots in [1, 0] {
+        let owner = crate::AsciiPoolOwner::new(
+            crate::AsciiPoolPolicy::checked(
+                slots,
+                slots,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let ctx = Policy {
+            warnings: RefCell::new(Vec::new()),
+            policy_reads: Cell::new(0),
+        };
+        let check =
+            |values: [Datum; 3], expected: Result<Datum, EvalError>, warning: Option<&str>| {
+                let result = execution
+                    .scope()
+                    .with_columns(&ctx, |columns| timestamp_add(&values, columns));
+                if slots == 1 {
+                    assert_eq!(result, expected);
+                } else {
+                    let error =
+                        result.expect_err("TIMESTAMPADD must retain the supplied zero-slot scope");
+                    let EvalError::ExpressionAdapterFailure(failure) = error else {
+                        panic!("{error:?}")
+                    };
+                    assert_eq!(
+                        failure.class(),
+                        crate::ExpressionAdapterFailureClass::PoolResource
+                    );
+                    assert_eq!(
+                        failure.origin(),
+                        crate::ExpressionAdapterFailureOrigin::Pool
+                    );
+                }
+                let expected = if slots == 1 {
+                    warning
+                        .map(|message| vec![(1292, message.to_owned())])
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                assert_eq!(ctx.warnings.take(), expected);
+                assert_eq!(ctx.policy_reads.get(), 0);
+            };
+        let base = || Datum::new_string("2020-01-01 00:00:00");
+        for (unit, amount, expected) in [
+            ("second", Datum::Int(1), "2020-01-01 00:00:01"),
+            ("MiNuTe", Datum::UInt(1), "2020-01-01 00:01:00"),
+            (
+                "SECOND",
+                Datum::Real(0.0000099999),
+                "2020-01-01 00:00:00.000009",
             ),
+            // The original Float32 arm reads its stored f64 without narrowing:
+            // narrowing this value would round it to 0.5 before unit rounding.
+            (
+                "MICROSECOND",
+                Datum::Float32(0.499999999),
+                "2020-01-01 00:00:00",
+            ),
+            (
+                "MINUTE",
+                Datum::Decimal(tidb_datatype::Decimal::from_literal("1.5")),
+                "2020-01-01 00:02:00",
+            ),
+            (
+                "MICROSECOND",
+                Datum::new_string(" 2.5 "),
+                "2020-01-01 00:00:00.000003",
+            ),
+            ("SECOND", Datum::new_string("2bad"), "2020-01-01 00:00:00"),
+            ("SECOND", Datum::Real(-0.0), "2020-01-01 00:00:00"),
+        ] {
+            check(
+                [Datum::new_string(unit), amount, base()],
+                Ok(Datum::new_string(expected)),
+                None,
+            );
+        }
+        for (unit, date, expected) in [
+            ("MONTH", "2020-01-31", "2020-02-29 00:00:00"),
+            ("YEAR", "2020-02-29", "2021-03-01 00:00:00"),
+        ] {
+            check(
+                [
+                    Datum::new_string(unit),
+                    Datum::Int(1),
+                    Datum::new_string(date),
+                ],
+                Ok(Datum::new_string(expected)),
+                None,
+            );
+        }
+        for amount in [
+            Datum::Real(f64::from_bits(0xfff8_0000_0000_1234)),
+            Datum::Real(f64::INFINITY),
+            Datum::Real(f64::NEG_INFINITY),
+            Datum::Real(f64::MAX),
+            Datum::new_string("NaN"),
+        ] {
+            check(
+                [Datum::new_string("SECOND"), amount, base()],
+                Ok(Datum::Null),
+                None,
+            );
+        }
+        for (unit, amount) in [
+            (Datum::Null, Datum::Int(1)),
+            (Datum::new_string("unknown"), Datum::Null),
+            (Datum::Null, Datum::Null),
+        ] {
+            check(
+                [unit, amount, Datum::new_bytes(vec![0xff])],
+                Ok(Datum::Null),
+                None,
+            );
+        }
+        check(
+            [Datum::new_string("unknown"), Datum::Real(f64::NAN), base()],
+            Err(EvalError::Unsupported("TIMESTAMPADD unit")),
+            None,
         );
-        return Ok(Datum::Null);
+        check(
+            [Datum::new_string("unknown"), Datum::Int(1), Datum::Null],
+            Ok(Datum::Null),
+            None,
+        );
+        for date in ["bad-date", "0000-00-00 00:00:00"] {
+            let message = format!("Incorrect datetime value: '{date}'");
+            check(
+                [
+                    Datum::new_string("unknown"),
+                    Datum::Int(1),
+                    Datum::new_string(date),
+                ],
+                Ok(Datum::Null),
+                Some(&message),
+            );
+        }
+        check(
+            [
+                Datum::new_string("SECOND"),
+                Datum::Int(1),
+                Datum::new_string("9999-12-31 23:59:59"),
+            ],
+            Ok(Datum::Null),
+            Some("Incorrect time value: '{10000 1 1 0 0 0 0}'"),
+        );
+        for (values, expected) in [
+            (
+                [Datum::Null, Datum::new_bytes(vec![0xff]), Datum::Null],
+                "invalid UTF-8 byte datum",
+            ),
+            (
+                [Datum::Null, Datum::MinNotNull, Datum::Null],
+                "range sentinel string coercion",
+            ),
+            (
+                [Datum::new_bytes(vec![0xff]), Datum::MinNotNull, Datum::Null],
+                "invalid UTF-8 byte datum",
+            ),
+            (
+                [
+                    Datum::new_string("SECOND"),
+                    Datum::new_string("bad-number"),
+                    Datum::new_bytes(vec![0xff]),
+                ],
+                "invalid UTF-8 byte datum",
+            ),
+            (
+                [
+                    Datum::new_string("SECOND"),
+                    Datum::Real(f64::NAN),
+                    Datum::MinNotNull,
+                ],
+                "range sentinel string coercion",
+            ),
+        ] {
+            assert!(
+                matches!(execution.scope().with_columns(&ctx, |columns| timestamp_add(&values, columns)), Err(EvalError::Unsupported(message)) if message == expected)
+            );
+        }
+        for values in [vec![], vec![Datum::Null; 2], vec![Datum::Null; 4]] {
+            assert!(matches!(
+                execution
+                    .scope()
+                    .with_columns(&ctx, |columns| timestamp_add(&values, columns)),
+                Err(EvalError::Unsupported("bad function arity"))
+            ));
+        }
+        assert!(ctx.warnings.borrow().is_empty());
+        assert_eq!(ctx.policy_reads.get(), 0);
     }
-    // Go: `fsp := types.DefaultFsp`, raised to `MaxFsp` when the result
-    // carries a microsecond.
-    let fsp = if result.micros == 0 { MIN_FSP } else { MAX_FSP };
-    Ok(Datum::new_string(GoDateTime { fsp, ..result }.format()))
-}
-
-/// Go `addUnitToTime`. The outer `None` is an unknown unit (Go's
-/// `ErrWrongValue`); the inner `None` is its `overflow` return.
-fn add_unit_to_time(unit: &str, base: GoDateTime, amount: f64) -> Option<Option<GoDateTime>> {
-    // Go computes BOTH: `s` is the truncated microsecond count, used only by
-    // SECOND, and `v` is the rounded whole count every other unit uses.
-    let truncated_micros = (amount * 1_000_000.0).trunc();
-    let rounded = amount.round();
-    let micros = match unit {
-        "MICROSECOND" => rounded,
-        "SECOND" => truncated_micros,
-        "MINUTE" => rounded * 60_000_000.0,
-        "HOUR" => rounded * 3_600_000_000.0,
-        "DAY" => rounded * 86_400_000_000.0,
-        "WEEK" => rounded * 7.0 * 86_400_000_000.0,
-        "MONTH" => return Some(add_months(base, rounded, true)),
-        "QUARTER" => return Some(add_months(base, rounded * 3.0, false)),
-        "YEAR" => return Some(add_months(base, rounded * 12.0, false)),
-        _ => return None,
-    };
-    if !micros.is_finite() || micros.abs() > 9e18 {
-        return Some(None);
-    }
-    Some(base.add(GoDuration {
-        micros: micros as i64,
-        fsp: base.fsp,
-    }))
-}
-
-/// The MONTH/QUARTER/YEAR arms of `addUnitToTime`. Go's MONTH arm goes
-/// through `types.AddDate`, which CLAMPS to the target month's last day
-/// (`2020-01-31 + 1 MONTH` is `2020-02-29`), while its QUARTER and YEAR arms
-/// go through Go's own `time.Time.AddDate`, which OVERFLOWS
-/// (`2020-02-29 + 1 YEAR` is `2021-03-01`). Both were captured.
-fn add_months(base: GoDateTime, months: f64, clamp: bool) -> Option<GoDateTime> {
-    if !months.is_finite() || months.abs() > 1e6 {
-        return None;
-    }
-    let total = base.year * 12 + i64::from(base.month) - 1 + months as i64;
-    if total < 0 {
-        return None;
-    }
-    let year = total / 12;
-    let month = (total % 12 + 1) as u32;
-    let day = if clamp {
-        base.day.min(last_day_of_month(year, month))
-    } else {
-        base.day
-    };
-    // A day past the target month's end rolls into the next month here,
-    // which is exactly what Go's `time.Time.AddDate` normalization does.
-    let (year, month, day) =
-        duration_parse::date_from_daynr(duration_parse::daynr(year, month, 1) + i64::from(day) - 1);
-    Some(GoDateTime {
-        year,
-        month,
-        day,
-        ..base
-    })
-}
-
-fn last_day_of_month(year: i64, month: u32) -> u32 {
-    let next = if month == 12 {
-        duration_parse::daynr(year + 1, 1, 1)
-    } else {
-        duration_parse::daynr(year, month + 1, 1)
-    };
-    (next - duration_parse::daynr(year, month, 1)) as u32
 }
 
 fn number_of(value: &Datum) -> Result<Option<f64>, EvalError> {

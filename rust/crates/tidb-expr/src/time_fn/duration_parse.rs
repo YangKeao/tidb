@@ -30,27 +30,10 @@ pub(crate) use tidb_query_expr::{
 
 /// Go `types.MaxFsp`.
 pub(crate) const MAX_FSP: i32 = 6;
-/// Go `types.MinFsp`.
-pub(crate) const MIN_FSP: i32 = 0;
-
-/// Go `calcDaynr`: days since 0000-00-00.
-pub(crate) fn daynr(year: i64, month: u32, day: u32) -> i64 {
-    GoDateTime::daynr(year, month, day)
-}
-
-/// Go `getDateFromDaynr`, with the original out-of-range zero answer.
-pub(crate) fn date_from_daynr(daynr: i64) -> (i64, u32, u32) {
-    GoDateTime::date_from_daynr(daynr)
-}
 
 /// The shared duration-shape predicate selects the ADDTIME argument domain.
 pub(crate) fn is_duration(value: &str) -> bool {
     GoDuration::is_duration(value)
-}
-
-/// Original ADDTIME/SUBTIME written-fraction precision policy.
-pub(crate) fn fsp_for_time_add_sub(value: &str) -> i32 {
-    GoDuration::fsp_for_time_add_sub(value)
 }
 
 /// Go `types.GetFsp`: the number of fractional digits, capped at `MaxFsp`.

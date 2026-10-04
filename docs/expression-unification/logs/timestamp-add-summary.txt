@@ -1,0 +1,44 @@
+timestamp-add-72 / round73 implementation continued in round74
+10 serialized Cargo launches:8 nonzero green,1 retained/resolved new SQL-test metadata RED,1 unchanged old full-expression failure. One SQL retry; no compile failure/interrupted/zero-match run. All6 new tests eventually pass, not all on their first gate. Ignored is not passing; filters overlap.
+CPP cwd=/home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv pins nightly-2026-01-30.
+Native cwd=/home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb pins nightly-2026-08-22.
+Raw logs=/home/agent/tidb/expression-unification/logs/timestamp-add-{id}.log. Times are Cargo compilation/test elapsed seconds, not shell wall time.
+
+1. ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_timestamp_add -- --test-threads=1
+id=tikv-core sha256=10fdb5da64ac4892e2f54aa53a80a249a3dd9ebc643c54d7155f7e2496f22fe7
+2 passed/0 failed/0 ignored/921 filtered;15.10/0.00s;exit0.
+2. ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local -- --test-threads=1
+id=tikv-local sha256=5d32c3a33671d3dc0da5be38207f1e36ad88a20d1b5d4e1060665938427d79a6
+324/0/1/598;0.13/0.22s;exit0.
+3. ../../tools/cargo-tidb test --locked -p tidb-expr --lib timestamp_add_workers -- --test-threads=1
+id=native-root sha256=d35007a407bee4a28e52d10a553edbeee3c6a0f1bb039d11a77ce115e4f1880e
+1/0/0/1664;18.29/0.00s;exit0.
+4. ../../tools/cargo-tidb test --locked -p tidb-expr --lib builtin_time_calendars_source -- --test-threads=1
+id=native-calendars sha256=ba0a20276d20d976fa7342b6c596307e53d3a97a6ae07883f63a14b0b4aa7206
+22/0/0/1643;0.21/0.01s;exit0.
+5. ../../tools/cargo-tidb test --locked -p tidb-expr --lib timestamp_and_timestampadd_match_the_captured_session_answers -- --test-threads=1
+id=native-captured sha256=d1d0a4866730f39d929748c447b6463b5c4dba1a105cc6d3c77c500f1352725e
+1/0/0/1664;0.14/0.01s;exit0.
+6. ../../tools/cargo-tidb test --locked -p tidb-expr --lib add_sub_workers -- --test-threads=1
+id=native-add-sub sha256=533d360dd88d1bfa68ca2052873b2b983852dadc7cc1898dbd7299637dfef271
+1/0/0/1664;0.15/0.00s;exit0.
+7. ../../tools/cargo-tidb test --locked -p tidb-expr --lib duration_parse -- --test-threads=1
+id=native-sdk sha256=28e76cbb7f1605aedf9c5d335aa977610c44c6c4d4a6d7132510b242dacb92e5
+2/0/0/1663;0.13/0.00s;exit0.
+8. ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_timestampadd -- --test-threads=1
+id=sql sha256=6759745e5db4a23d3d9a80833ac4d28c3fc673b8a05cb9c82536d8040008bf0b
+1/1/0/2219;26.90/0.04s;exit101. New positive SQL test expected metadata(5,-1), got(-1,-1). Zero-slot test passed. Retained RED; no old test/fixture changed and no provider recording.
+9. ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+id=expr-full sha256=a10d6c4065a74bde8985157ea1975cc1e57dcb01b9723e5d6eabd53252c8dc45
+1567/4/94/0;0.13/13.91s;exit101. Only four old failures.
+
+Entire full-expression failure section/final list equal add-sub-time-71 byte-for-byte after only numeric panic-heading thread IDs become THREAD; extract from newline before failures: to newline before test result:.
+normalized sha256=411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+Unistore unchanged/not rerun, no new admission. CPP183/native355 old test bodies byte-identical;7 neighboring native functions unchanged including number_of. Twelve Rust files,1 new module,6 new tests. Non-test dispatch helper only gains exhaustive rejection arms. Native cleanup removes3 dead facades and their now-unused MIN_FSP constant. Pinned formatter checks and both diff checks pass. No dependencies/locks/generated/Go/Bazel/fixtures changed.
+
+10. ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_timestampadd -- --test-threads=1
+id=sql-retry sha256=993806274bd09bff0d7ee092327907150d5a730d34c4c49a04b282ba521e0e9c
+2/0/0/2219;3.38/0.06s;exit0. Six new tests now pass. SQL8fixedcases x2modes=16 value/NULL observations plus exact metadata/warnings,1 valid-date unsupported-composite-unit probe and8 direct zero-slot executions.
+
+RED diagnosis is source-derived, not provider calibration: tidb-datatype/src/field_type/mod.rs575–585 FieldType::new applies default_length_and_decimal only to integer types. VarString starts with both UNSPECIFIED_LENGTH(-1); the separate default lookup(5,0) is not construction. tidb-expr/src/rewriter/result_type.rs1229–1232 text() merely sets decimal=-1; timestampadd uses it at1491. Only the new assertion/comment changed from(5,-1) to(-1,-1); no product behavior, old test or fixture changed. Initial failed raw log is retained.
+Unclaimed: TIMESTAMP/generic timezone parser, complete temporal/types, strict completion, M6/default-NoColumns, whole workspace/lint/dev/bazel_prepare/release, exhaustive differential/TiFlash/FIPS, allocator/fault/physical heap/peak/OOM/zero-copy/performance and prior JSON_KEYS/AST/SQL metadata/parser/GB/vector/Decimal/raw-math gaps. No package transcreation/PR readiness claim.

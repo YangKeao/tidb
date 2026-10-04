@@ -9363,6 +9363,153 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_timestampadd_preserves_calendar_rounding_nulls_and_diagnostics() {
+    use tidb_datatype::{Collation, FieldTypeCode};
+
+    let mut session = Session::new();
+    session
+        .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+        .unwrap();
+    session.run("SET time_zone='+00:00'").unwrap();
+    session.run("SET sql_mode=''").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_timestampadd_sql (one BIGINT, tiny_amount DECIMAL(12,10), half_amount DECIMAL(2,1), null_amount BIGINT, jan DATETIME, leap_day DATETIME, base DATETIME, zero_date DATETIME, max_date DATETIME)").unwrap();
+    session.run("INSERT INTO shared_timestampadd_sql VALUES (1,0.0000099999,1.5,NULL,'2024-01-31 00:00:00','2020-02-29 00:00:00','1995-05-01 00:00:00','0000-00-00 00:00:00','9999-12-31 23:59:59')").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // Bare units are syntax, not column expressions. Already-typed DATETIME
+    // operands pass through the argument cast layer, preserving the leaf's
+    // own invalid-base diagnostic rather than substituting a VARCHAR cast.
+    let cases = [
+        ("MONTH,one,jan", Some("2024-02-29 00:00:00"), None),
+        ("QUARTER,one,jan", Some("2024-05-01 00:00:00"), None),
+        ("YEAR,one,leap_day", Some("2021-03-01 00:00:00"), None),
+        (
+            "SECOND,tiny_amount,base",
+            Some("1995-05-01 00:00:00.000009"),
+            None,
+        ),
+        ("MINUTE,half_amount,base", Some("1995-05-01 00:02:00"), None),
+        ("DAY,null_amount,base", None, None),
+        // The grammar admits DAY_SECOND, but the worker does not implement
+        // it. Invalid date validation precedes that unknown-unit refusal.
+        (
+            "DAY_SECOND,one,zero_date",
+            None,
+            Some("Incorrect datetime value: '0000-00-00 00:00:00'"),
+        ),
+        // Original day-number inversion reaches year 10000 here, not its
+        // later all-zero sentinel. The diagnostic preserves these raw fields.
+        (
+            "SECOND,one,max_date",
+            None,
+            Some("Incorrect time value: '{10000 1 1 0 0 0 0}'"),
+        ),
+    ];
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        for (args, expected, warning) in cases {
+            let sql = format!("SELECT TIMESTAMPADD({args}) FROM shared_timestampadd_sql");
+            let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap() else {
+                panic!("expected TIMESTAMPADD rows: {sql}")
+            };
+            let expected = expected
+                .map(|text| Datum::new_collation_string(text, Collation::Utf8Mb4Bin))
+                .unwrap_or(Datum::Null);
+            assert_eq!(rows, vec![vec![expected]], "{sql}/{vectorized}");
+            assert_eq!(columns.len(), 1);
+            let field = &columns[0].1;
+            assert_eq!(field.code(), FieldTypeCode::VarString);
+            // text() uses FieldType::new(VarString), leaving both unspecified;
+            // the separate default-length lookup is not applied here.
+            assert_eq!((field.flen(), field.decimal()), (-1, -1));
+            assert_eq!(field.charset_name(), "utf8mb4");
+            assert_eq!(field.collation_name(), "utf8mb4_bin");
+            let expected_warnings = warning
+                .map(|message| vec![(1292, message.to_owned())])
+                .unwrap_or_default();
+            assert_eq!(
+                warnings_of(&session),
+                expected_warnings,
+                "{sql}/{vectorized}"
+            );
+        }
+    }
+    let error = session
+        .run_with_columns("SELECT TIMESTAMPADD(DAY_SECOND,one,base) FROM shared_timestampadd_sql")
+        .expect_err("unsupported unit after a valid date");
+    assert!(matches!(
+        error,
+        DriverError::Exec(tidb_executor::ExecError::Eval(
+            tidb_executor::EvalError::Unsupported("TIMESTAMPADD unit")
+        ))
+    ));
+}
+
+#[test]
+fn evaluated_ascii_timestampadd_zero_slots_require_values_prefix_null_and_date_roots() {
+    let mut session = Session::new();
+    session.run("SET time_zone='+00:00'").unwrap();
+    session.run("SET sql_mode=''").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_timestampadd_zero (one BIGINT, tiny_amount DECIMAL(12,10), half_amount DECIMAL(2,1), null_amount BIGINT, jan DATETIME, leap_day DATETIME, base DATETIME, null_date DATETIME, zero_date DATETIME)").unwrap();
+    session.run("INSERT INTO shared_timestampadd_zero VALUES (1,0.0000099999,1.5,NULL,'2024-01-31 00:00:00','2020-02-29 00:00:00','1995-05-01 00:00:00',NULL,'0000-00-00 00:00:00')").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // The amount-NULL carrier concerns only the leaf's preparation. Outer
+    // evaluation still reads all children and applies wrap_datetime_args;
+    // these Time/NULL datums take its clone path, not another worker root.
+    for (vectorized, args) in [
+        (0, "MONTH,one,jan"),
+        (0, "QUARTER,one,jan"),
+        (0, "YEAR,one,leap_day"),
+        (0, "SECOND,tiny_amount,base"),
+        (0, "MINUTE,half_amount,base"),
+        (0, "DAY,null_amount,base"),
+        (1, "DAY,one,null_date"),
+        (1, "DAY,one,zero_date"),
+    ] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        let sql = format!("SELECT TIMESTAMPADD({args}) FROM shared_timestampadd_zero");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("TIMESTAMPADD root bypassed its worker: {sql}/{vectorized}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
+        assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
+        assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+    }
+}
+
+#[test]
 fn evaluated_ascii_addtime_subtime_preserve_static_kinds_fsp_and_constant_row_split() {
     use tidb_datatype::{Collation, FieldTypeCode, MySqlDuration, Time, TimeType};
 
