@@ -9363,6 +9363,95 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn native_duration_helpers_preserve_stored_cast_and_extract_source_policy() {
+    use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
+
+    // M0 shared parser/unit-extraction consumers only. EXTRACT still owns
+    // its original native orchestration and source-type policy; there is no
+    // new family/profile claim and deliberately no zero-slot root matrix.
+    let mut session = Session::new();
+    session.run("SET sql_mode=''").unwrap();
+    session.run("SET time_zone='+00:00'").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE native_duration_helpers_sql (round_text VARCHAR(32), bad_packed BIGINT, negative_time TIME(6), day_text VARCHAR(32), datetime_text VARCHAR(32), typed_datetime DATETIME)")
+        .unwrap();
+    session
+        .run("INSERT INTO native_duration_helpers_sql VALUES ('12:59:59.9876',126060,'-25:03:04.123456','1 02:03:04','2024-03-15 02:03:04','2024-03-15 02:03:04')")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        let StmtOutput::Rows { columns, rows } = session
+            .run_with_columns("SELECT CAST(round_text AS TIME(3)), EXTRACT(HOUR FROM negative_time), EXTRACT(DAY_HOUR FROM day_text), EXTRACT(DAY_SECOND FROM datetime_text), EXTRACT(DAY_SECOND FROM typed_datetime) FROM native_duration_helpers_sql")
+            .unwrap()
+        else {
+            panic!("expected duration helper consumer rows")
+        };
+        assert_eq!(columns.len(), 5, "mode {vectorized}");
+        assert_eq!(rows.len(), 1, "mode {vectorized}");
+        assert_eq!(rows[0].len(), 5, "mode {vectorized}");
+        let time_type = &columns[0].1;
+        assert_eq!(time_type.code(), FieldTypeCode::Duration);
+        assert_eq!((time_type.flen(), time_type.decimal()), (14, 3));
+        assert!(time_type.has_flag(FieldTypeFlags::BINARY));
+        assert!(matches!(&rows[0][0], Datum::Duration(_)));
+        assert_eq!(cell_text(&rows[0][0]), "12:59:59.988", "mode {vectorized}");
+        // Typed TIME uses signed duration extraction. The mixed DAY_* text
+        // route first parses a duration, preferring a positive-year datetime
+        // only when its clock agrees. Typed DATETIME takes that route directly.
+        for (index, expected) in [(1, -25), (2, 26), (3, 15_020_304), (4, 15_020_304)] {
+            let field = &columns[index].1;
+            assert_eq!(field.code(), FieldTypeCode::LongLong);
+            assert_eq!((field.flen(), field.decimal()), (20, 0));
+            assert!(!field.is_unsigned());
+            assert_eq!(
+                rows[0][index],
+                Datum::Int(expected),
+                "field {index}/mode {vectorized}"
+            );
+        }
+        for (_, field) in &columns {
+            assert_eq!(field.charset_name(), "binary");
+            assert_eq!(field.collation_name(), "binary");
+        }
+        // RoundedToScale is successful CAST conversion, not a truncation
+        // diagnostic. No mixed-source parse above is malformed or clamped.
+        assert!(warnings_of(&session).is_empty(), "mode {vectorized}");
+
+        let StmtOutput::Rows { columns, rows } = session
+            .run_with_columns("SELECT CAST(bad_packed AS TIME) FROM native_duration_helpers_sql")
+            .unwrap()
+        else {
+            panic!("expected invalid packed-duration rows")
+        };
+        assert_eq!(columns.len(), 1);
+        let field = &columns[0].1;
+        assert_eq!(field.code(), FieldTypeCode::Duration);
+        assert_eq!((field.flen(), field.decimal()), (10, 0));
+        assert!(field.has_flag(FieldTypeFlags::BINARY));
+        assert_eq!(field.charset_name(), "binary");
+        assert_eq!(field.collation_name(), "binary");
+        // The numeric CAST signature keeps its existing NULL-on-invalid
+        // policy; it must not inherit a string-source retained-value policy.
+        assert_eq!(rows, vec![vec![Datum::Null]], "mode {vectorized}");
+        assert_eq!(
+            warnings_of(&session),
+            vec![(1292, "Truncated incorrect time value: '126060'".to_owned())],
+            "mode {vectorized}"
+        );
+    }
+}
+
+#[test]
 fn json_sum_crc32_sql_array_refusal_precedes_child_evaluation_and_pool_admission() {
     // This is a baseline SQL NON-admission witness, not a worker success or
     // zero-slot runtime-root test. The parser requires AS type ARRAY and

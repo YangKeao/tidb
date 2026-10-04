@@ -1,0 +1,55 @@
+extract-types-97 / R100 M0 foundation; no EXTRACT family/C4 admission credit.
+CPP cwd /home/agent/tidb/expression-unification/tikv
+Native cwd /home/agent/tidb/expression-unification/tidb/rust
+Raw /home/agent/tidb/expression-unification/logs/extract-types-{id}.log
+Counts passed/failed/ignored/filtered; compile/test seconds.
+
+tikv-datatype | 464/0/0/0 | 4.28/0.04 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib -- --test-threads=1
+sha256 f9cf23ad2877d164089decc9b52b67d0e9a55d1e8fa65419326a06099a787cf3
+
+tikv-local | 350/0/1/625 | 16.12/0.23 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+sha256 d684dbeb2cf437f8e1ee807c2e8f191b72e5383914ca8c3baaafb9b5103e6f29
+
+native-datatype | 461/0/0/0 | 4.09/23.07 | exit0
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+sha256 c7bb43557ac6ccab1be6d2267b333b38e5e6b483eff4c38948e9f4341205e103
+
+expr-full | 1608/4/94/0 | 19.47/14.43 | exit101
+../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+sha256 fb9455fc76acb25cda3093519e915344691f08f82edef9e9d7ac8c5d631ddcfd
+Same4 failures as R98: ifnull catalog signature, EXP FloatOverflow, negative durationFSP conversion panic, STR_TO_DATE month0 partial-format mismatch. Exact names/sourcepaths/diagnostic bodies match str-to-date-runtime-expr-full.log after excluding process ids and line offsets; duration164→168 is import-line movement, unchanged failing method. Full suite NOT GREEN.
+
+unistore-full | 220/1/13/0 | 9.10/3.04 | exit101
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+sha256 2a57d37ae8c4b295d0c819f0008771c9c7119aae3f837438a6801b01e9fa8bdf
+Same R98 closure_executor_selection_over_point_range_answers_zero_rows: TruncatedWrongValue("Truncated incorrect DECIMAL value: 'abc'"). Full suite NOT GREEN.
+
+sql | 1/0/0/2241 | 34.37/0.02 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib native_duration_helpers_preserve_stored_cast_and_extract_source_policy -- --test-threads=1
+sha256 40ce0db4e6d4cb403a4aae4fb5e43b63b1d398a077ec762edf51d37b915eb7b9
+
+sql-time-original | 1/0/0/2241 | 0.14/0.04 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::evaluated_ascii_time_microsecond_preserve_sql_duration_shapes_and_parse_diagnostics -- --exact --test-threads=1
+sha256 3a26fc780d20759cdeeef5c52a8e6bb004f0b33bf3c5b144773d635587541766
+
+sql-cast-original | 1/0/0/2241 | 0.14/0.03 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::builtins::cast_and_convert -- --exact --test-threads=1
+sha256 43059dca1c3162db91b8201b6f73a70af00528b00924b1b03ebfe4fda8bef643
+
+sql-extract-original | 1/0/0/2241 | 0.14/0.05 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::builtins::date_interval_extract_and_timestampdiff -- --exact --test-threads=1
+sha256 fe27e4f7919131a049bf63ea564a19449f63c9719444cc480bbf097c74f716a3
+
+9 locked single-threaded launches, all compiled and executed nonzero tests:7green/2knownRED. No retry/new-test failure/compile failure/zero-match/interruption. Four new tests pass first matching execution (2CPPdatatype,1nativeadapter,1SQL). All68CPP/235native original test bodies in touched files byte-identical; no fixture/provider recording or original expectation changes. Public datatype APIs affect broad consumers, so both type libs plus existing expr/unistore libs were checked, not presented as exhaustive verification.
+
+New SQL4SELECT = Q1five stored-field outputs +Q2badnumeric CAST ×2vector atpool1. TIME3 rounding, negative typedTIME HOUR=-25, mixedDAY_HOUR=26, mixed/typedDAY_SECOND=15020304, and badBIGINT126060 NULL/1292 retain original typed headers/binary metadata and warning order. Old SQL gates16TIME/MICROSECOND +19CAST(allfamilies,3TIMEqueries) +32interval/extract/timestampdiff(3EXTRACTqueries) SELECTs. These test shared type consumers, NOT new EXTRACT worker/root/zero-slot admission. No PBadmission or new vector kernel.
+
+SDKduration/native_parser.rs owns original bytegrammar/FSP/round/carry, byteLatin1 punctuation classifier, full genericTZ datetimefallback, clamp/status and rawTime→duration; NativeGoDuration/wire parsing not substituted. Existing MAX_NANOS is exact838:59:59.0. Fallback passes originalTZ/zero/invalid flags to existing native_parse_time with ignorezeroerror true, discards parsedtime.truncated exactly as before. rawzero→nanos0/fsp0 ignores inputfsp; nonzero normalizesfsp then computes rawclock without range/round.
+SDKtime/native_extract.rs owns threeASCIIupper/no-trim classifiers and rawdatetime/duration formulas. Datetime domain is date/DAY_*/YEAR_MONTH only; WEEK mode0, rawmicro retained. Duration uses existing absolute raw-nanos fields then whole-result sign, with no SQLrange/FSPgate. Original InvalidUnit spelling and private nativeOutcome0+error preserved. Original ParsedDuration/Range/Round carriers retain privatefields/Debug names; aliases share original error/event variants and event priority. Native8privatelexer helpers/bytegrammar/classification/fullfallback/clamp/rawTime conversion/rawextract bodies deleted; generic interval and independent duration rounding remain.
+
+M0-only: no recipe/carrier/whitelist/registry/PB/legacy expansion and zero family credit. EXTRACT main selector, two distinct lazy mode reads and separate wide calendar compatibility path remain native, with R1016profile contract in Plan. Functional231/245 unchanged; all231 family objects and old partial/type records exact, one6-id type record appended. strict0,14remaining. FourCPP/fournative Rust files/two new SDKmodules. No Cargo/lock/Go/Bazel changes. Pinned rustfmt skip_children/check and diff-check pass. Agent-doc updates descriptive, no new policy. E quick dependency/control-flow source review found no blocker; not a HEAD line-by-line diff or runtime review.
+
+Parent receipt comparison initially used unanchored DOTALL header and captured compiler warning separators; corrected to anchored failure-only blocks, verified4+1 exactdiagnostics. Audit-script error only, no source/test/Cargo change or additional launch. No hidden repair of pre-existing failures.
+Workspace/make lint/make dev/make bazel_prepare/release/exhaustive differential/TiFlash/FIPS/performance/physicalheap/peak/OOM/allocator/dual-tzdata/complete Go-package/PR-readiness not verified. Request-root/default-NoColumns/liveDAG/finalacceptance remain open. Paired signed-off commits carry three identical Plans.

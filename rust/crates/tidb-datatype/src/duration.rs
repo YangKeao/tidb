@@ -17,12 +17,16 @@
 use std::{cmp::Ordering, error::Error, fmt};
 
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, TimeZone};
-use tidb_query_datatype::codec::mysql::Duration as SharedDuration;
+pub use tidb_query_datatype::codec::mysql::duration::{
+    NativeDurationDateTimeFallbackKind as DurationDateTimeFallbackKind,
+    NativeDurationOverflow as DurationOverflow, NativeDurationParseError as DurationParseError,
+    NativeDurationParseEvent as DurationParseEvent, NativeDurationValueError as DurationValueError,
+};
+use tidb_query_datatype::codec::mysql::{duration as shared_duration, Duration as SharedDuration};
 
 use crate::time_parse::adjust_year_with_event;
 use crate::{
-    check_fsp, core_time_from_datetime, parse_frac, Converted, Decimal, FspError, Time, TimeError,
-    TimeType,
+    check_fsp, core_time_from_datetime, Converted, Decimal, FspError, Time, TimeError, TimeType,
 };
 
 /// The maximum SQL `TIME` hour component accepted by TiDB.
@@ -288,6 +292,15 @@ pub struct ParsedDuration {
 }
 
 impl ParsedDuration {
+    fn from_shared(value: shared_duration::NativeParsedDuration) -> Self {
+        Self {
+            nanoseconds: value.nanos,
+            fsp: value.fsp,
+            overflow: value.overflow,
+            truncated: value.truncated,
+        }
+    }
+
     /// Returns the signed nanosecond value after FSP rounding and range clamp.
     pub const fn nanoseconds(self) -> i64 {
         self.nanoseconds
@@ -310,11 +323,13 @@ impl ParsedDuration {
 
     /// Returns the pure source-side event for this parsed duration.
     pub const fn event(self) -> Option<DurationParseEvent> {
-        match self.overflow {
-            Some(direction) => Some(DurationParseEvent::Overflow(direction)),
-            None if self.truncated => Some(DurationParseEvent::Truncated),
-            None => None,
+        shared_duration::NativeParsedDuration {
+            nanos: self.nanoseconds,
+            fsp: self.fsp,
+            overflow: self.overflow,
+            truncated: self.truncated,
         }
+        .event()
     }
 }
 
@@ -328,15 +343,6 @@ impl RoundedDuration {
     pub const fn fsp(self) -> i64 {
         self.fsp
     }
-}
-
-/// Direction of a source `ErrTruncatedWrongVal` duration clamp.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DurationOverflow {
-    /// The input was above [`MAX_TIME_NANOS`].
-    Positive,
-    /// The input was below [`MIN_TIME_NANOS`].
-    Negative,
 }
 
 /// An error from source-compatible duration FSP rounding.
@@ -358,108 +364,6 @@ impl fmt::Display for DurationRoundError {
 }
 
 impl Error for DurationRoundError {}
-
-/// An error or routing signal produced while parsing a duration literal.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DurationParseError {
-    /// The requested target FSP is invalid.
-    InvalidFsp(FspError),
-    /// The duration grammar rejected an input that the source routes to its
-    /// datetime parser. The calendar conversion and session policy belong to
-    /// a higher layer; this typed signal preserves that routing decision.
-    DateTimeFallback(DurationDateTimeFallbackKind),
-    /// The literal does not match the dependency-closed duration grammar.
-    InvalidFormat,
-    /// A numeric component does not fit the parser's unsigned accumulator.
-    NumericOverflow,
-    /// The fractional byte parser rejected its input.
-    Fraction(FspError),
-}
-
-/// Error from complete duration parsing, including datetime fallback.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DurationValueError {
-    /// The duration grammar failed.
-    Duration(DurationParseError),
-    /// The datetime fallback failed.
-    Time(TimeError),
-}
-
-impl fmt::Display for DurationValueError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Duration(error) => error.fmt(formatter),
-            Self::Time(error) => error.fmt(formatter),
-        }
-    }
-}
-
-impl Error for DurationValueError {}
-
-impl fmt::Display for DurationParseError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidFsp(error) | Self::Fraction(error) => error.fmt(formatter),
-            Self::DateTimeFallback(_) => {
-                formatter.write_str("duration literal requires datetime fallback")
-            }
-            Self::InvalidFormat => formatter.write_str("invalid duration format"),
-            Self::NumericOverflow => formatter.write_str("duration component is out of range"),
-        }
-    }
-}
-
-impl Error for DurationParseError {}
-
-/// Shape selected by Go `canFallbackToDateTime` after duration parsing fails.
-///
-/// This enum intentionally carries no calendar values. A higher-level parser
-/// must perform the actual date/datetime conversion and attach SQL warning or
-/// session context policy.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DurationDateTimeFallbackKind {
-    /// A contiguous twelve-digit datetime literal.
-    Compact12,
-    /// A contiguous fourteen-digit datetime literal.
-    Compact14,
-    /// Three digit fields separated by source punctuation, followed by a
-    /// space or `T` time separator.
-    Separated,
-}
-
-/// Pure source-side event classification for duration parsing and range
-/// handling.
-///
-/// These events intentionally contain no warning text, SQL mode, or session
-/// mutation. The owning session/executor layer decides whether an event is a
-/// warning, statement error, or fallback route.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DurationParseEvent {
-    /// The duration was clamped to a MySQL `TIME` endpoint.
-    Overflow(DurationOverflow),
-    /// The source selected datetime parsing after duration parsing failed.
-    DateTimeFallback(DurationDateTimeFallbackKind),
-    /// The source returned `ErrTruncatedWrongVal` for malformed/trailing
-    /// duration input.
-    Truncated,
-}
-
-impl DurationParseError {
-    /// Returns the source-side event represented by this parse result.
-    ///
-    /// Invalid FSP is a direct parameter error, not an
-    /// `ErrTruncatedWrongVal` warning. Other parse-shape and fraction errors
-    /// follow the source's truncation branch.
-    pub const fn event(&self) -> Option<DurationParseEvent> {
-        match self {
-            Self::InvalidFsp(_) => None,
-            Self::DateTimeFallback(kind) => Some(DurationParseEvent::DateTimeFallback(*kind)),
-            Self::InvalidFormat | Self::NumericOverflow | Self::Fraction(_) => {
-                Some(DurationParseEvent::Truncated)
-            }
-        }
-    }
-}
 
 /// Result of Go `TruncateOverflowMySQLTime`'s clamp operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -486,13 +390,6 @@ impl DurationRangeResult {
             None => None,
         }
     }
-
-    const fn unchanged(value: i64) -> Self {
-        Self {
-            value,
-            overflow: None,
-        }
-    }
 }
 
 /// Clamps a duration to TiDB's MySQL `TIME` range.
@@ -502,19 +399,8 @@ impl DurationRangeResult {
 /// Turning that direction into a warning or statement error remains outside
 /// this dependency-leaf API.
 pub const fn truncate_overflow_mysql_time(value: i64) -> DurationRangeResult {
-    if value > MAX_TIME_NANOS {
-        return DurationRangeResult {
-            value: MAX_TIME_NANOS,
-            overflow: Some(DurationOverflow::Positive),
-        };
-    }
-    if value < MIN_TIME_NANOS {
-        return DurationRangeResult {
-            value: MIN_TIME_NANOS,
-            overflow: Some(DurationOverflow::Negative),
-        };
-    }
-    DurationRangeResult::unchanged(value)
+    let (value, overflow) = shared_duration::native_truncate_overflow_mysql_time(value);
+    DurationRangeResult { value, overflow }
 }
 
 /// Parses the source's dependency-closed `[-]HH:MM[:SS][.fraction]` and
@@ -529,104 +415,7 @@ pub const fn truncate_overflow_mysql_time(value: i64) -> DurationRangeResult {
 /// matching the source value/error split; callers can consume
 /// [`ParsedDuration::event`] without importing SQL warning policy.
 pub fn parse_duration(input: &[u8], target_fsp: i64) -> Result<ParsedDuration, DurationParseError> {
-    let fsp = check_fsp(target_fsp).map_err(DurationParseError::InvalidFsp)?;
-    let input = trim_ascii_space(input);
-    if input.is_empty() {
-        return Err(DurationParseError::InvalidFormat);
-    }
-    if let Some(kind) = classify_duration_datetime_fallback(input) {
-        return Err(DurationParseError::DateTimeFallback(kind));
-    }
-    let mut index = 0;
-    let negative = input.first() == Some(&b'-');
-    if negative {
-        index += 1;
-        skip_ascii_space(input, &mut index);
-    }
-
-    // Source `matchDuration` measures `charsLen` after the sign and its
-    // padding, and later uses it to decide whether trailing bytes are a
-    // warning or a NULL.
-    let chars_len = input.len() - index;
-
-    let first = parse_duration_number(input, &mut index)?;
-    let before_space = index;
-    skip_ascii_space(input, &mut index);
-    let day_form =
-        index != before_space && input.get(index).is_some_and(|byte| byte.is_ascii_digit());
-    let (mut hours, mut minutes, mut seconds) = if day_form {
-        let day = first;
-        let hour = parse_duration_number(input, &mut index)?;
-        let hours = day
-            .checked_mul(24)
-            .and_then(|value| value.checked_add(hour))
-            .ok_or(DurationParseError::NumericOverflow)?;
-        (hours, 0, 0)
-    } else {
-        (first, 0, 0)
-    };
-
-    if consume_duration_colon(input, &mut index) {
-        minutes = parse_duration_number(input, &mut index)?;
-        if consume_duration_colon(input, &mut index) {
-            seconds = parse_duration_number(input, &mut index)?;
-        }
-    } else if !day_form {
-        // Source `matchHHMMSSCompact` derives HH/MM/SS from the complete
-        // numeric token, preserving short forms such as `1`, `12`, and `112`.
-        hours = first / 10_000;
-        minutes = (first / 100) % 100;
-        seconds = first % 100;
-    }
-
-    // Source `matchDuration` applies `parser.Space0` before the fraction and
-    // never again afterwards, so trailing padding is part of the leftover.
-    skip_ascii_space(input, &mut index);
-    let mut microseconds = 0_i64;
-    if input.get(index) == Some(&b'.') {
-        index += 1;
-        let start = index;
-        while input.get(index).is_some_and(u8::is_ascii_digit) {
-            index += 1;
-        }
-        // Source `matchFrac` reads `parser.Digit(rest, 0)`, so an empty digit
-        // run is legal and `ParseFrac("")` yields a zero fraction.
-        let (fraction, overflow) =
-            parse_frac(&input[start..index], fsp).map_err(DurationParseError::Fraction)?;
-        microseconds = fraction;
-        if overflow {
-            seconds = seconds
-                .checked_add(1)
-                .ok_or(DurationParseError::NumericOverflow)?;
-            if seconds == 60 {
-                seconds = 0;
-                minutes = minutes
-                    .checked_add(1)
-                    .ok_or(DurationParseError::NumericOverflow)?;
-                if minutes == 60 {
-                    minutes = 0;
-                    // Carrying into hours is source `hhmmssAddOverflow`.
-                    hours = hours
-                        .checked_add(1)
-                        .ok_or(DurationParseError::NumericOverflow)?;
-                }
-            }
-        }
-    }
-    // Source order: the leftover verdict runs before `checkHHMMSS`. Long
-    // literals (`charsLen >= 12`) with leftover bytes are NULL; shorter ones
-    // keep the parsed value and only raise `ErrTruncatedWrongVal`.
-    let leftover = index != input.len();
-    if leftover && chars_len >= 12 {
-        return Err(DurationParseError::InvalidFormat);
-    }
-    if minutes > 59 || seconds > 59 {
-        return Err(DurationParseError::InvalidFormat);
-    }
-    let mut parsed =
-        parsed_duration_from_parts(negative, hours, minutes, seconds, microseconds, fsp)?;
-    parsed.truncated |= leftover;
-    Ok(parsed)
+    shared_duration::native_parse_duration(input, target_fsp).map(ParsedDuration::from_shared)
 }
 
 /// Parses the complete Go `ParseDuration` surface, including datetime fallback.
@@ -637,35 +426,14 @@ pub fn parse_mysql_duration<TZ: TimeZone>(
     allow_zero_in_date: bool,
     allow_invalid_date: bool,
 ) -> Result<ParsedDuration, DurationValueError> {
-    match parse_duration(input.as_bytes(), target_fsp) {
-        Ok(parsed) => Ok(parsed),
-        Err(DurationParseError::DateTimeFallback(_)) => {
-            let time = crate::parse_time(
-                input,
-                TimeType::DateTime,
-                target_fsp,
-                false,
-                allow_zero_in_date,
-                allow_invalid_date,
-                timezone,
-            )
-            .map_err(DurationValueError::Time)?
-            .time;
-            let duration = time.to_duration().map_err(DurationValueError::Time)?;
-            Ok(ParsedDuration {
-                nanoseconds: duration.nanoseconds(),
-                fsp: duration.fsp(),
-                overflow: None,
-                truncated: false,
-            })
-        }
-        // Source `ParseDuration` has exactly two malformed-input outcomes:
-        // leftover bytes after a successful grammar match keep the parsed
-        // value and warn (handled inside `parse_duration`), and every other
-        // rejection is NULL plus `ErrTruncatedWrongVal`. There is no
-        // leading-digit re-parse.
-        Err(error) => Err(DurationValueError::Duration(error)),
-    }
+    shared_duration::native_parse_mysql_duration(
+        input,
+        target_fsp,
+        timezone,
+        allow_zero_in_date,
+        allow_invalid_date,
+    )
+    .map(ParsedDuration::from_shared)
 }
 
 /// Classifies the exact shape accepted by Go `canFallbackToDateTime`.
@@ -673,180 +441,15 @@ pub fn parse_mysql_duration<TZ: TimeZone>(
 /// The input must already have the outer whitespace removed, as it is at the
 /// call site in Go `ParseDuration`. The source parser treats each byte as a
 /// Unicode code point; for the 0..255 range that means ASCII digits and the
-/// Latin-1 punctuation code points listed by [`is_source_punctuation`].
+/// Latin-1 punctuation code points in the shared source-version table.
 pub fn classify_duration_datetime_fallback(input: &[u8]) -> Option<DurationDateTimeFallbackKind> {
-    let first_len = source_digit_prefix(input);
-    if first_len == 0 {
-        return None;
-    }
-    match first_len {
-        12 => return Some(DurationDateTimeFallbackKind::Compact12),
-        14 => return Some(DurationDateTimeFallbackKind::Compact14),
-        _ => {}
-    }
-
-    let mut index = first_len;
-    if !consume_source_punctuation(input, &mut index) {
-        return None;
-    }
-    let second_len = source_digit_prefix(&input[index..]);
-    if second_len == 0 {
-        return None;
-    }
-    index += second_len;
-    if !consume_source_punctuation(input, &mut index) {
-        return None;
-    }
-    let third_len = source_digit_prefix(&input[index..]);
-    if third_len == 0 {
-        return None;
-    }
-    index += third_len;
-    match input.get(index) {
-        Some(b' ' | b'T') => Some(DurationDateTimeFallbackKind::Separated),
-        _ => None,
-    }
+    shared_duration::native_classify_duration_datetime_fallback(input)
 }
 
 /// Boolean form of [`classify_duration_datetime_fallback`] for callers that
 /// only need the source `canFallbackToDateTime` predicate.
 pub fn can_fallback_to_datetime(input: &[u8]) -> bool {
-    classify_duration_datetime_fallback(input).is_some()
-}
-
-fn source_digit_prefix(input: &[u8]) -> usize {
-    input
-        .iter()
-        .take_while(|byte| byte.is_ascii_digit())
-        .count()
-}
-
-fn consume_source_punctuation(input: &[u8], index: &mut usize) -> bool {
-    if input
-        .get(*index)
-        .is_some_and(|byte| is_source_punctuation(*byte))
-    {
-        *index += 1;
-        true
-    } else {
-        false
-    }
-}
-
-fn is_source_punctuation(byte: u8) -> bool {
-    matches!(
-        byte,
-        b'!' | b'"'
-            | b'#'
-            | b'%'
-            | b'&'
-            | b'\''
-            | b'('
-            | b')'
-            | b'*'
-            | b','
-            | b'-'
-            | b'.'
-            | b'/'
-            | b':'
-            | b';'
-            | b'?'
-            | b'@'
-            | b'['
-            | b'\\'
-            | b']'
-            | b'_'
-            | b'{'
-            | b'}'
-            | 0xA1
-            | 0xA7
-            | 0xAB
-            | 0xB6
-            | 0xB7
-            | 0xBB
-            | 0xBF
-    )
-}
-
-fn parsed_duration_from_parts(
-    negative: bool,
-    hours: u64,
-    minutes: u64,
-    seconds: u64,
-    microseconds: i64,
-    fsp: i64,
-) -> Result<ParsedDuration, DurationParseError> {
-    let magnitude = i128::from(hours) * 3_600 * 1_000_000_000
-        + i128::from(minutes) * 60 * 1_000_000_000
-        + i128::from(seconds) * 1_000_000_000
-        + i128::from(microseconds) * 1_000;
-    let signed = if negative { -magnitude } else { magnitude };
-    let range = if signed > i128::from(i64::MAX) {
-        DurationRangeResult {
-            value: MAX_TIME_NANOS,
-            overflow: Some(DurationOverflow::Positive),
-        }
-    } else if signed < i128::from(i64::MIN) {
-        DurationRangeResult {
-            value: MIN_TIME_NANOS,
-            overflow: Some(DurationOverflow::Negative),
-        }
-    } else {
-        truncate_overflow_mysql_time(signed as i64)
-    };
-    Ok(ParsedDuration {
-        nanoseconds: range.value,
-        fsp,
-        overflow: range.overflow,
-        truncated: false,
-    })
-}
-
-fn parse_duration_number(input: &[u8], index: &mut usize) -> Result<u64, DurationParseError> {
-    let start = *index;
-    let mut value = 0_u64;
-    while let Some(byte) = input.get(*index).copied() {
-        if !byte.is_ascii_digit() {
-            break;
-        }
-        value = value
-            .checked_mul(10)
-            .and_then(|value| value.checked_add(u64::from(byte - b'0')))
-            .ok_or(DurationParseError::NumericOverflow)?;
-        *index += 1;
-    }
-    if *index == start {
-        return Err(DurationParseError::InvalidFormat);
-    }
-    Ok(value)
-}
-
-fn consume_duration_colon(input: &[u8], index: &mut usize) -> bool {
-    skip_ascii_space(input, index);
-    if input.get(*index) != Some(&b':') {
-        return false;
-    }
-    *index += 1;
-    skip_ascii_space(input, index);
-    true
-}
-
-fn skip_ascii_space(input: &[u8], index: &mut usize) {
-    while input.get(*index).is_some_and(u8::is_ascii_whitespace) {
-        *index += 1;
-    }
-}
-
-fn trim_ascii_space(input: &[u8]) -> &[u8] {
-    let mut start = 0;
-    let mut end = input.len();
-    while input.get(start).is_some_and(u8::is_ascii_whitespace) {
-        start += 1;
-    }
-    while end > start && input.get(end - 1).is_some_and(u8::is_ascii_whitespace) {
-        end -= 1;
-    }
-    &input[start..end]
+    shared_duration::native_can_fallback_to_datetime(input)
 }
 
 /// Rounds duration nanoseconds using Go `Duration.RoundFrac`'s nearest-value
@@ -883,4 +486,168 @@ pub fn round_duration_fsp(
     let rounded = rounded_units * unit;
     let nanoseconds = i64::try_from(rounded).map_err(|_| DurationRoundError::Overflow)?;
     Ok(RoundedDuration { nanoseconds, fsp })
+}
+
+#[cfg(test)]
+#[test]
+fn shared_duration_extract_adapters_preserve_status_timezone_and_raw_metadata() {
+    use crate::{extract_datetime_num, extract_duration_num, CoreTime};
+    #[derive(Clone)]
+    struct NoTimezoneReads;
+    impl TimeZone for NoTimezoneReads {
+        type Offset = chrono::FixedOffset;
+        fn from_offset(_: &Self::Offset) -> Self {
+            panic!("unexpected timezone reconstruction")
+        }
+        fn offset_from_local_date(
+            &self,
+            _: &chrono::NaiveDate,
+        ) -> chrono::LocalResult<Self::Offset> {
+            panic!("unexpected local date conversion")
+        }
+        fn offset_from_local_datetime(
+            &self,
+            _: &chrono::NaiveDateTime,
+        ) -> chrono::LocalResult<Self::Offset> {
+            panic!("unexpected local clock conversion")
+        }
+        fn offset_from_utc_date(&self, _: &chrono::NaiveDate) -> Self::Offset {
+            panic!("unexpected UTC date conversion")
+        }
+        fn offset_from_utc_datetime(&self, _: &chrono::NaiveDateTime) -> Self::Offset {
+            panic!("unexpected UTC clock conversion")
+        }
+    }
+    for (input, nanos, overflow) in [
+        ("900:00:00x", MAX_TIME_NANOS, DurationOverflow::Positive),
+        ("-900:00:00x", MIN_TIME_NANOS, DurationOverflow::Negative),
+    ] {
+        let parsed = parse_mysql_duration(input, 6, &NoTimezoneReads, false, false).unwrap();
+        assert_eq!(
+            (
+                parsed.nanoseconds(),
+                parsed.fsp(),
+                parsed.overflow(),
+                parsed.truncated()
+            ),
+            (nanos, 6, Some(overflow), true)
+        );
+        assert_eq!(parsed.event(), Some(DurationParseEvent::Overflow(overflow)));
+        assert!(format!("{parsed:?}").starts_with("ParsedDuration { nanoseconds:"));
+    }
+    let invalid_fsp = parse_duration(b"not a duration", -2).unwrap_err();
+    assert!(matches!(invalid_fsp, DurationParseError::InvalidFsp(_)));
+    assert_eq!(invalid_fsp.event(), None);
+    let malformed = parse_mysql_duration("x", 0, &NoTimezoneReads, false, false).unwrap_err();
+    assert_eq!(format!("{malformed:?}"), "Duration(InvalidFormat)");
+    assert_eq!(malformed.to_string(), "invalid duration format");
+    assert_eq!(
+        classify_duration_datetime_fallback(b"2020-01-01 01:02:03"),
+        Some(DurationDateTimeFallbackKind::Separated)
+    );
+    assert!(!can_fallback_to_datetime(b" 2020-01-01 01:02:03"));
+    for (input, fsp) in [("0000-00-00 00:00:00", 0), ("2020-01-01 00:00:00", 6)] {
+        let parsed = parse_mysql_duration(input, 6, &NoTimezoneReads, true, false).unwrap();
+        assert_eq!(
+            (parsed.nanoseconds(), parsed.fsp(), parsed.event()),
+            (0, fsp, None)
+        );
+    }
+    for allow_zero in [false, true] {
+        for allow_invalid in [false, true] {
+            let partial = parse_mysql_duration(
+                "2021-02-00 01:02:03",
+                0,
+                &NoTimezoneReads,
+                allow_zero,
+                allow_invalid,
+            );
+            assert_eq!(
+                partial.map(|v| v.nanoseconds()),
+                if allow_zero {
+                    Ok(3_723_000_000_000)
+                } else {
+                    Err(DurationValueError::Time(TimeError::ZeroInDate))
+                }
+            );
+            let invalid = parse_mysql_duration(
+                "2021-02-29 01:02:03",
+                0,
+                &NoTimezoneReads,
+                allow_zero,
+                allow_invalid,
+            );
+            assert_eq!(
+                invalid.map(|v| v.nanoseconds()),
+                if allow_invalid {
+                    Ok(3_723_000_000_000)
+                } else {
+                    Err(DurationValueError::Time(TimeError::InvalidDate))
+                }
+            );
+        }
+    }
+    // A timezone-bearing fallback must use the supplied destination zone, not
+    // a hardcoded UTC substitute; ordinary duration parsing above needs none.
+    for (offset, nanos) in [(0, 82_923_000_000_000), (3_600, 123_000_000_000)] {
+        let zone = chrono::FixedOffset::east_opt(offset).unwrap();
+        let parsed =
+            parse_mysql_duration("2020-01-01 01:02:03+02:00", 0, &zone, false, false).unwrap();
+        assert_eq!(
+            (parsed.nanoseconds(), parsed.fsp(), parsed.event()),
+            (nanos, 0, None)
+        );
+    }
+    for (raw, expected_fsp) in [(0, 0), (1, 6)] {
+        let value = Time::from_raw_parts(CoreTime::from_raw(raw), TimeType::Date, 255)
+            .to_duration()
+            .unwrap();
+        assert_eq!((value.nanoseconds(), value.fsp()), (0, expected_fsp));
+    }
+    let time = Time::from_raw_parts(
+        CoreTime::from_date(2020, 1, 2, 3, 4, 5, 123456),
+        TimeType::Date,
+        0,
+    );
+    let duration = time.to_duration().unwrap();
+    assert_eq!(
+        (duration.nanoseconds(), duration.fsp()),
+        (11_045_123_456_000, 0)
+    );
+    assert_eq!(
+        extract_datetime_num(time, "day_microsecond"),
+        Ok(2_030_405_123_456)
+    );
+    assert_eq!(
+        extract_duration_num(
+            MySqlDuration::from_raw_parts(-duration.nanoseconds(), -2),
+            "DAY_MICROSECOND"
+        ),
+        Ok(-30_405_123_456)
+    );
+    let invalid = crate::time_parse::extract_datetime_num_with_error(time, " HOUR");
+    assert_eq!(
+        (invalid.value, invalid.error),
+        (0, Some(TimeError::InvalidUnit(" HOUR".to_owned())))
+    );
+    let invalid = crate::time_parse::extract_duration_num_with_error(duration, "Year");
+    assert_eq!(
+        (invalid.value, invalid.error),
+        (0, Some(TimeError::InvalidUnit("Year".to_owned())))
+    );
+    assert!(
+        crate::is_clock_unit("day_microsecond")
+            && crate::is_date_unit("day_microsecond")
+            && crate::is_microsecond_unit("day_microsecond")
+    );
+    assert!(!crate::is_clock_unit(" HOUR"));
+    const CLAMPED: DurationRangeResult = truncate_overflow_mysql_time(i64::MIN);
+    assert_eq!(
+        (CLAMPED.value(), CLAMPED.overflow(), CLAMPED.event()),
+        (
+            MIN_TIME_NANOS,
+            Some(DurationOverflow::Negative),
+            Some(DurationParseEvent::Overflow(DurationOverflow::Negative))
+        )
+    );
 }

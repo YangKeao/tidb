@@ -97,52 +97,17 @@ pub fn parse_date_format(format: &str) -> Option<Vec<String>> {
 
 /// Returns whether the interval unit contains a clock component.
 pub fn is_clock_unit(unit: &str) -> bool {
-    matches!(
-        unit.to_ascii_uppercase().as_str(),
-        "MICROSECOND"
-            | "SECOND"
-            | "MINUTE"
-            | "HOUR"
-            | "SECOND_MICROSECOND"
-            | "MINUTE_MICROSECOND"
-            | "HOUR_MICROSECOND"
-            | "DAY_MICROSECOND"
-            | "MINUTE_SECOND"
-            | "HOUR_SECOND"
-            | "DAY_SECOND"
-            | "HOUR_MINUTE"
-            | "DAY_MINUTE"
-            | "DAY_HOUR"
-    )
+    shared_time::native_is_clock_unit(unit)
 }
 
 /// Returns whether the interval unit contains a calendar component.
 pub fn is_date_unit(unit: &str) -> bool {
-    matches!(
-        unit.to_ascii_uppercase().as_str(),
-        "DAY"
-            | "WEEK"
-            | "MONTH"
-            | "QUARTER"
-            | "YEAR"
-            | "DAY_MICROSECOND"
-            | "DAY_SECOND"
-            | "DAY_MINUTE"
-            | "DAY_HOUR"
-            | "YEAR_MONTH"
-    )
+    shared_time::native_is_date_unit(unit)
 }
 
 /// Returns whether the interval unit contains microseconds.
 pub fn is_microsecond_unit(unit: &str) -> bool {
-    matches!(
-        unit.to_ascii_uppercase().as_str(),
-        "MICROSECOND"
-            | "SECOND_MICROSECOND"
-            | "MINUTE_MICROSECOND"
-            | "HOUR_MICROSECOND"
-            | "DAY_MICROSECOND"
-    )
+    shared_time::native_is_microsecond_unit(unit)
 }
 
 /// Returns whether the accepted literal shape can contain only a date.
@@ -246,33 +211,13 @@ pub fn extract_datetime_num(time: Time, unit: &str) -> Result<i64, TimeError> {
 }
 
 pub(crate) fn extract_datetime_num_with_error(time: Time, unit: &str) -> TemporalOutcome<i64> {
-    let core = time.core_time();
-    let hour = i64::from(core.hour());
-    let minute = i64::from(core.minute());
-    let second = i64::from(core.second());
-    let day = i64::from(core.day());
-    let value = match unit.to_ascii_uppercase().as_str() {
-        "DAY" => day,
-        "WEEK" => i64::from(core.week(0)),
-        "MONTH" => i64::from(core.month()),
-        "QUARTER" => (i64::from(core.month()) + 2) / 3,
-        "YEAR" => i64::from(core.year()),
-        "DAY_MICROSECOND" => {
-            (day * 1_000_000 + hour * 10_000 + minute * 100 + second) * 1_000_000
-                + i64::from(core.microsecond())
-        }
-        "DAY_SECOND" => day * 1_000_000 + hour * 10_000 + minute * 100 + second,
-        "DAY_MINUTE" => day * 10_000 + hour * 100 + minute,
-        "DAY_HOUR" => day * 100 + hour,
-        "YEAR_MONTH" => i64::from(core.year()) * 100 + i64::from(core.month()),
-        _ => {
-            return TemporalOutcome {
-                value: 0,
-                error: Some(TimeError::InvalidUnit(unit.to_owned())),
-            };
-        }
-    };
-    TemporalOutcome { value, error: None }
+    match shared_time::native_extract_datetime_num(time.core_time().raw(), unit) {
+        Ok(value) => TemporalOutcome { value, error: None },
+        Err(error) => TemporalOutcome {
+            value: 0,
+            error: Some(error),
+        },
+    }
 }
 
 /// Extracts the integer representation for a duration interval unit.
@@ -284,36 +229,13 @@ pub(crate) fn extract_duration_num_with_error(
     duration: crate::MySqlDuration,
     unit: &str,
 ) -> TemporalOutcome<i64> {
-    let hour = duration.hour();
-    let minute = duration.minute();
-    let second = duration.second();
-    let microsecond = duration.microsecond();
-    let mut value = match unit.to_ascii_uppercase().as_str() {
-        "MICROSECOND" => microsecond,
-        "SECOND" => second,
-        "MINUTE" => minute,
-        "HOUR" => hour,
-        "SECOND_MICROSECOND" => second * 1_000_000 + microsecond,
-        "MINUTE_MICROSECOND" => minute * 100_000_000 + second * 1_000_000 + microsecond,
-        "MINUTE_SECOND" => minute * 100 + second,
-        "HOUR_MICROSECOND" => {
-            hour * 10_000_000_000 + minute * 100_000_000 + second * 1_000_000 + microsecond
-        }
-        "HOUR_SECOND" | "DAY_SECOND" => hour * 10_000 + minute * 100 + second,
-        "HOUR_MINUTE" | "DAY_MINUTE" => hour * 100 + minute,
-        "DAY_MICROSECOND" => (hour * 10_000 + minute * 100 + second) * 1_000_000 + microsecond,
-        "DAY_HOUR" => hour,
-        _ => {
-            return TemporalOutcome {
-                value: 0,
-                error: Some(TimeError::InvalidUnit(unit.to_owned())),
-            };
-        }
-    };
-    if duration.nanoseconds() < 0 {
-        value = -value;
+    match shared_time::native_extract_duration_num(duration.nanoseconds(), unit) {
+        Ok(value) => TemporalOutcome { value, error: None },
+        Err(error) => TemporalOutcome {
+            value: 0,
+            error: Some(error),
+        },
     }
-    TemporalOutcome { value, error: None }
 }
 
 /// Parses a MySQL interval literal into calendar and sub-day components.

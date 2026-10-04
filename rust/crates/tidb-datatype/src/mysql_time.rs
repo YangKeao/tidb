@@ -366,17 +366,12 @@ impl Time {
 
     /// Converts DATE/DATETIME/TIMESTAMP clock fields to a MySQL duration.
     pub fn to_duration(self) -> Result<MySqlDuration, TimeError> {
-        if self.is_zero() {
-            return MySqlDuration::from_nanoseconds(0, 0).map_err(TimeError::InvalidFsp);
-        }
-        MySqlDuration::new(
-            i64::from(self.core.hour()),
-            i64::from(self.core.minute()),
-            i64::from(self.core.second()),
-            i64::from(self.core.microsecond()),
-            i64::from(self.fsp),
-        )
-        .map_err(TimeError::InvalidFsp)
+        let (nanoseconds, fsp) =
+            tidb_query_datatype::codec::mysql::duration::native_duration_from_time(
+                self.core.raw(),
+                i64::from(self.fsp),
+            )?;
+        Ok(MySqlDuration::from_raw_parts(nanoseconds, fsp))
     }
 
     /// Rounds fractional seconds with TiDB's half-up rule.
