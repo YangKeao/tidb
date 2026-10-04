@@ -4,6 +4,8 @@ Status: **226/245 functional families; strict0; overall goal active**. The froze
 
 The accepted synchronous/scoped evaluator design stays in place. No universal compiler rewrite or exhaustive performance project is required to make the next functional steps. Conversely, reaching90% does not erase the Plan's remaining core ownership/demand obligations.
 
+R91 adds a [Real/Float32→UNSIGNED CAST slice](cast-real-uint-checkpoint.md), **not a new family**. Its native rounding/wrapping/range/overflow algorithm now belongs to TiKV. Other CAST domains, outer NULL, UNION negative bypass and the native diagnostic formatter remain; legacy wire conversion has a distinct unchanged policy. All226 family objects and the19-family remainder are unchanged.
+
 ## Five core families still need closure
 
 | Families | Remaining work / source evidence |

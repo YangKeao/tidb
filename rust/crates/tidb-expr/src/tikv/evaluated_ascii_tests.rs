@@ -1478,6 +1478,9 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::NullIfNative => {
             panic!("NULLIF needs its actual first identity and completed nullable comparison")
         }
+        EvaluatedBytesOp::CastRealUnsignedNative => {
+            panic!("real-to-unsigned CAST needs the actual raw Real or Float32 identity")
+        }
         EvaluatedBytesOp::ConvertTzNative => {
             panic!("CONVERT_TZ needs its three actual nullable coerced strings")
         }

@@ -1,5 +1,7 @@
 {
-  "checkpoint_id": "nullif-87",
+  "checkpoint_id": "cast-real-uint-88",
+  "latest_partial_cast_checkpoint": "cast-real-uint-88",
+  "partial_cast_slices": [{"id":"real-float32-to-unsigned","checkpoint":"cast-real-uint-88","native_rounding_range_wrap_and_overflow_decision_deleted":true,"computed_sdk_value_and_event_report":true,"diagnostic_formatter_remains_native_adapter":true,"other_domains_null_and_union_negative_bypass_unchanged":true,"legacy_wire_policy_distinct_and_unchanged":true,"whole_cast_family_credit":false}],
   "nullif_completed_functional_checkpoint": "nullif-87",
   "nullif_eager_operands_comparison_and_actual_left_preparation_preserved": true,
   "nullif_sql_comparison_refusal_is_not_new_selector_root_proof": true,
@@ -104,7 +106,7 @@
   "integer_division_original_precision_receipts_and_warning_priority_preserved": true,
   "integer_division_raw_invalid_math_full_parity_claimed": false,
   "integer_division_known_raw_empty_lhs_nonzero_gap": "Old exact quotient zero becomes shared math InvalidInput: infallible SDK panic, evaluated infrastructure failure; zero RHS still precedes invalid LHS. No native fallback.",
-  "new_migration_ids": ["nullif"],
+  "new_migration_ids": [],
   "latest_functional_migration_checkpoint": "nullif-87",
   "integer_division_sdk_prerequisite_checkpoint": "intdiv-sdk-67",
   "six_integer_division_sdk_implementations_shared": true,

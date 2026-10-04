@@ -23,6 +23,8 @@
 mod adapter_failure;
 mod batch;
 mod case_control;
+mod cast_real_unsigned;
+pub(crate) use cast_real_unsigned::eval_cast_real_unsigned_in;
 mod catalog;
 pub(crate) use case_control::eval_case_in;
 mod coalesce;

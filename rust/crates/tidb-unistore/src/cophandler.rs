@@ -13610,4 +13610,164 @@ mod tests {
             execution.close();
         }
     }
+
+    #[test]
+    fn legacy_shared_real_unsigned_cast_keeps_rounding_and_worker_warning_order() {
+        use std::sync::Arc;
+        use tidb_datatype::{Datum, FieldTypeFlags, SessionTimeZone};
+        struct Parent;
+        impl tidb_expr::Columns for Parent {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                panic!("retain the Shared row")
+            }
+            fn time_zone(&self) -> SessionTimeZone {
+                panic!("retain Shared context authority")
+            }
+            fn truncate_level(&self) -> tidb_expr::ErrorLevel {
+                panic!("retain Shared warning policy")
+            }
+            fn append_warning(&self, _: u16, _: &str) {
+                panic!("warnings belong to the original request")
+            }
+        }
+        fn real(value: f64) -> tipb::Expr {
+            let mut bytes = Vec::new();
+            tidb_codec::encode_float(&mut bytes, value);
+            // Use the actual PB codec, including a representable negative NaN.
+            let (rest, decoded) = tidb_codec::decode_float(&bytes).unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(decoded.to_bits(), value.to_bits());
+            tipb::Expr {
+                tp: Some(tipb::ExprType::Float64 as i32),
+                val: Some(bytes),
+                field_type: Some(tipb::FieldType {
+                    tp: Some(5),
+                    flen: Some(20),
+                    decimal: Some(-1),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        }
+        fn cast(argument: tipb::Expr, unsigned: bool) -> tipb::Expr {
+            tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(tipb::ScalarFuncSig::CastRealAsInt as i32),
+                children: vec![argument],
+                field_type: Some(tipb::FieldType {
+                    tp: Some(8),
+                    flen: Some(20),
+                    decimal: Some(0),
+                    flag: Some(if unsigned {
+                        FieldTypeFlags::UNSIGNED
+                    } else {
+                        0
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        }
+        fn assert_pool<T: std::fmt::Debug>(result: LegacyResult<T>) {
+            assert!(
+                matches!(&result, Err(LegacyEvalError::Infrastructure(
+                tidb_expr::EvalError::ExpressionAdapterFailure(failure)
+            )) if failure.class() == tidb_expr::ExpressionAdapterFailureClass::PoolResource
+                && failure.origin() == tidb_expr::ExpressionAdapterFailureOrigin::Pool),
+                "{result:?}"
+            );
+        }
+        let zone = SessionTimeZone::utc();
+        // Truncation is an error, but this original overflow policy still appends
+        // 1690 directly: it must not be upgraded to a statement error.
+        let request = Arc::new(RequestEvalContext::new(zone.clone(), 4, 0));
+        assert_eq!(
+            tidb_expr::Columns::truncate_level(request.as_ref()),
+            tidb_expr::ErrorLevel::Error
+        );
+        assert!(tidb_expr::distsql_builtin::supports_signature(
+            tipb::ScalarFuncSig::CastRealAsInt
+        ));
+        for slots in [1, 0] {
+            let owner = tidb_expr::AsciiPoolOwner::new(
+                tidb_expr::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 << 20,
+                    4 << 20,
+                    4 << 20,
+                    64,
+                    8,
+                    4 << 20,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let execution = owner.begin_execution().unwrap();
+            let scope = execution.scope();
+            scope.with_columns(&Parent, |columns| {
+                let evaluator = LegacyEvaluator {
+                    raw_columns: columns,
+                    ..LegacyEvaluator::new(&[], 4, &zone)
+                };
+                for (value, expected, warning) in [
+                    (2.5, 2_u64, false),
+                    (3.5, 4, false),
+                    (-2.5, u64::MAX - 1, true),
+                    (-1e300, 1_u64 << 63, true),
+                    (18_446_744_073_709_551_616.0, u64::MAX, true),
+                    (f64::from_bits(0xfff8_0000_0000_0042), u64::MAX, true),
+                ] {
+                    let expr =
+                        convert_expr_with_context(&cast(real(value), true), &request).unwrap();
+                    assert!(
+                        matches!(&expr, SimpleExpr::Shared(_)),
+                        "not the legacy signed-only SimpleSig path"
+                    );
+                    let result = evaluator.eval_datum(&expr);
+                    if slots == 1 {
+                        assert_eq!(result.unwrap(), Datum::UInt(expected));
+                        let warnings = request.take_warnings();
+                        assert_eq!(warnings.len(), usize::from(warning));
+                        if let Some((code, message)) = warnings.first() {
+                            assert_eq!(*code, 1690);
+                            assert!(
+                                message.starts_with("constant ")
+                                    && message.ends_with(" overflows bigint")
+                            );
+                            if value == -2.5 {
+                                assert_eq!(message, "constant -2 overflows bigint");
+                            }
+                            if value.is_nan() {
+                                assert_eq!(message, "constant NaN overflows bigint");
+                            }
+                        }
+                    } else {
+                        assert_pool(result);
+                        assert!(
+                            request.take_warnings().is_empty(),
+                            "no worker report means no overflow warning"
+                        );
+                        assert_pool(evaluator.eval_decimal(Some(&expr)));
+                        assert!(
+                            request.take_warnings().is_empty(),
+                            "SQL-only folding must retain infrastructure"
+                        );
+                    }
+                }
+                // These paths are outside the migrated Real-to-UNSIGNED slice.
+                let signed = convert_expr_with_context(&cast(real(3.5), false), &request).unwrap();
+                assert_eq!(evaluator.eval_expr(&signed).unwrap(), Some(4));
+                let null = tipb::Expr {
+                    tp: Some(tipb::ExprType::Null as i32),
+                    ..Default::default()
+                };
+                let null = convert_expr_with_context(&cast(null, true), &request).unwrap();
+                assert_eq!(evaluator.eval_datum(&null).unwrap(), Datum::Null);
+                assert!(request.take_warnings().is_empty());
+            });
+            drop(scope);
+            execution.close();
+        }
+    }
 }

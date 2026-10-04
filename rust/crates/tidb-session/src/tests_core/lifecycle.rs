@@ -9363,6 +9363,155 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_real_unsigned_cast_slice_preserves_rounding_warnings_and_pool_refusals() {
+    use tidb_datatype::FieldTypeCode;
+
+    // Partial Real/Float32 -> UNSIGNED slice ONLY. This grants no whole-CAST
+    // family coverage: NULL fast paths, in-union negative handling and every
+    // other source/target remain outside this test, as do PB admission rules.
+    let create = "CREATE TABLE shared_real_unsigned_sql (double_even DOUBLE, double_odd DOUBLE, double_negative DOUBLE, double_small_negative DOUBLE, double_boundary DOUBLE, double_huge DOUBLE, float_even FLOAT, float_negative FLOAT)";
+    let insert = "INSERT INTO shared_real_unsigned_sql VALUES (2.5,3.5,-1.5,-0.4,18446744073709551616e0,1e300,2.5,-1.5)";
+    // Original cast.rs RoundToEven / ConvertFloatToUint cases and formatter
+    // literals: warnings print the ROUNDED float, not the input spelling.
+    let cases = [
+        ("double_even", 2_u64, None),
+        ("double_odd", 4_u64, None),
+        (
+            "double_negative",
+            18_446_744_073_709_551_614_u64,
+            Some("constant -2 overflows bigint"),
+        ),
+        ("double_small_negative", 0_u64, None),
+        (
+            "double_boundary",
+            18_446_744_073_709_551_615_u64,
+            Some("constant 1.8446744073709552e+19 overflows bigint"),
+        ),
+        (
+            "double_huge",
+            18_446_744_073_709_551_615_u64,
+            Some("constant 1e+300 overflows bigint"),
+        ),
+        ("float_even", 2_u64, None),
+        (
+            "float_negative",
+            18_446_744_073_709_551_614_u64,
+            Some("constant -2 overflows bigint"),
+        ),
+    ];
+    for slots in [1, 0] {
+        let mut session = Session::new();
+        session.run("SET sql_mode=''").unwrap();
+        session
+            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+            .unwrap();
+        session.run(create).unwrap();
+        session.run(insert).unwrap();
+        assert!(session
+            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .unwrap());
+        for vectorized in [0, 1] {
+            session
+                .run(&format!(
+                    "SET tidb_enable_vectorized_expression={vectorized}"
+                ))
+                .unwrap();
+            for (column, expected, warning) in cases {
+                // Actual stored floating carriers, not DECIMAL literals or a
+                // nested CAST. No condition/WHERE/sort supplies a prior worker.
+                let sql =
+                    format!("SELECT CAST({column} AS UNSIGNED) FROM shared_real_unsigned_sql");
+                if slots == 1 {
+                    let StmtOutput::Rows { columns, rows } =
+                        session.run_with_columns(&sql).unwrap()
+                    else {
+                        panic!("expected Real/Float32 unsigned CAST rows: {sql}")
+                    };
+                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
+                    let field = &columns[0].1;
+                    assert_eq!(field.code(), FieldTypeCode::LongLong, "{sql}/{vectorized}");
+                    assert_eq!(
+                        (field.flen(), field.decimal()),
+                        (20, 0),
+                        "{sql}/{vectorized}"
+                    );
+                    assert!(field.is_unsigned(), "{sql}/{vectorized}");
+                    assert_eq!(field.charset_name(), "binary");
+                    assert_eq!(field.collation_name(), "binary");
+                    assert_eq!(
+                        rows,
+                        vec![vec![Datum::UInt(expected)]],
+                        "{sql}/{vectorized}"
+                    );
+                    let expected_warnings = warning
+                        .map(|message| vec![(1690, message.to_owned())])
+                        .unwrap_or_default();
+                    assert_eq!(
+                        warnings_of(&session),
+                        expected_warnings,
+                        "{sql}/{vectorized}"
+                    );
+                } else {
+                    let error = session.run_with_columns(&sql).expect_err(&sql);
+                    match &error {
+                        DriverError::Exec(tidb_executor::ExecError::Eval(
+                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                        )) => {
+                            assert_eq!(failure.class(), tidb_executor::ExpressionAdapterFailureClass::PoolResource);
+                            assert_eq!(failure.origin(), tidb_executor::ExpressionAdapterFailureOrigin::Pool);
+                        }
+                        other => panic!("Real/Float32 unsigned CAST bypassed its slice worker: {sql}/{vectorized}: {other:?}"),
+                    }
+                    let mysql = error.to_mysql_error();
+                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
+                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
+                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
+                    // The worker computes u64 + optional overflow evidence
+                    // before the caller formats/appends 1690. Refusal cannot
+                    // expose the old native computation's warning first.
+                    assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+                }
+            }
+            if slots == 1 {
+                // append_warning is not a strict-mode error upgrade. The
+                // controlled finite 2^64 input still returns MAX with 1690.
+                session.run("SET sql_mode='STRICT_ALL_TABLES'").unwrap();
+                let StmtOutput::Rows { rows, .. } = session
+                    .run_with_columns(
+                        "SELECT CAST(double_boundary AS UNSIGNED) FROM shared_real_unsigned_sql",
+                    )
+                    .unwrap()
+                else {
+                    panic!("strict mode must retain the unsigned overflow value")
+                };
+                assert_eq!(
+                    rows,
+                    vec![vec![Datum::UInt(18_446_744_073_709_551_615_u64)]]
+                );
+                assert_eq!(
+                    warnings_of(&session),
+                    vec![(
+                        1690,
+                        "constant 1.8446744073709552e+19 overflows bigint".to_owned()
+                    )]
+                );
+                session.run("SET sql_mode=''").unwrap();
+                // A non-overflowing consumer with a small integer literal;
+                // the predicate is not used as zero-slot root evidence.
+                let StmtOutput::Rows { rows, .. } = session
+                    .run_with_columns("SELECT 1 FROM shared_real_unsigned_sql WHERE CAST(double_even AS UNSIGNED)=2")
+                    .unwrap()
+                else {
+                    panic!("expected unsigned CAST predicate rows")
+                };
+                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
+                assert!(warnings_of(&session).is_empty());
+            }
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_nullif_preserves_eager_sql_values_and_comparison_pool_refusals() {
     use tidb_datatype::{FieldTypeCode, TimeType};
 

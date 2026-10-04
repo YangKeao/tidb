@@ -76,7 +76,7 @@ pub(crate) fn eval_cast(
         CastType::Unsigned => {
             report_int_truncation(&v, ctx)?;
             report_negative_string_unsigned(&v, ctx);
-            Ok(Datum::UInt(to_u64_unsigned(&v, ctx)))
+            Ok(Datum::UInt(to_u64_unsigned_in(&v, ctx)?))
         }
         CastType::UnsignedInUnion => {
             // Every numeric/string `castAsInt` signature has an `inUnion`
@@ -90,7 +90,7 @@ pub(crate) fn eval_cast(
             } else {
                 report_int_truncation(&v, ctx)?;
                 report_negative_string_unsigned(&v, ctx);
-                Ok(Datum::UInt(to_u64_unsigned(&v, ctx)))
+                Ok(Datum::UInt(to_u64_unsigned_in(&v, ctx)?))
             }
         }
         CastType::Char { len, charset } => {
@@ -601,8 +601,8 @@ pub(crate) fn to_i64_signed_with_warnings(
 /// The result is [`Datum::UInt`], so downstream comparisons and arithmetic
 /// retain the domain instead of silently reinterpreting it as signed display
 /// text.
-fn to_u64_unsigned(v: &Datum, ctx: &dyn crate::Columns) -> u64 {
-    match v {
+fn to_u64_unsigned_in(v: &Datum, ctx: &dyn crate::Columns) -> Result<u64, EvalError> {
+    Ok(match v {
         // TiDB's integer cast reuses the low 64 bits for an ETInt source.
         // That is observable for `CAST(-5 AS UNSIGNED)`, which is
         // 18446744073709551611 rather than an error or a display-only wrap.
@@ -638,64 +638,19 @@ fn to_u64_unsigned(v: &Datum, ctx: &dyn crate::Columns) -> u64 {
         // A real rounds half-to-even then converts across the full u64 range
         // (Go `ConvertFloatToUint`), so its own upper half is kept too -- and
         // its NEGATIVE half is kept as the low 64 bits rather than clamped.
-        Datum::Real(f) | Datum::Float32(f) => real_to_u64_saturating(*f, ctx),
+        Datum::Real(_) | Datum::Float32(_) => crate::tikv::eval_cast_real_unsigned_in(ctx, v)?,
         Datum::Null | Datum::MinNotNull | Datum::MaxValue => unreachable!("guarded by caller"),
         other => other
             .to_decimal()
             .map_or(0, |converted| converted.value.round_to_u64_saturating()),
-    }
+    })
 }
 
-/// `CAST(real AS UNSIGNED)`: round half to even (Go `RoundFloat` =
-/// `math.RoundToEven`, the same rounding the signed real path uses), then Go
-/// `ConvertFloatToUint` across the full `u64` range. A magnitude past
-/// `u64::MAX` saturates to `u64::MAX` and reports overflow
-/// (`ConvertFloatToUint`'s `upperBound` clamp). Routing through the signed
-/// path instead would lose the upper half of `UNSIGNED BIGINT` at `i64::MAX`.
-///
-/// A NEGATIVE rounded value takes Go's `AllowNegativeToUnsigned` arm
-/// (`convert.go:171-176`): `uint64(int64(val))`, the SAME low-64-bit
-/// reinterpretation an integer source gets -- see [`to_u64_unsigned`]'s doc
-/// for the captures, and for why the DECIMAL source really does answer 0 here
-/// while this one does not.
-fn real_to_u64_saturating(f: f64, ctx: &dyn crate::Columns) -> u64 {
-    let rounded = f.round_ties_even();
-    if rounded < 0.0 {
-        // Go raises the overflow event on this arm and returns the value
-        // anyway. `overflow(val, tp)` prints the ROUNDED value with `%v`,
-        // which for a float64 is `strconv.FormatFloat(f, 'g', -1, 64)`.
-        // Captured under the DEFAULT (strict) sql_mode, where this is still a
-        // WARNING rather than a statement error, because
-        // `builtinCastRealAsIntSig` routes it through `HandleOverflow`.
-        ctx.append_warning(
-            1690,
-            &format!(
-                "constant {} overflows bigint",
-                tidb_datatype::format_float_g_shortest(rounded)
-            ),
-        );
-        // Rust's saturating `as i64` reproduces Go's out-of-range `int64(...)`
-        // landing on `i64::MIN`, which is what makes `cast(-1e300 as
-        // unsigned)` 9223372036854775808 rather than 0.
-        (rounded as i64) as u64
-    } else if !rounded.is_finite() || rounded >= (u64::MAX as f64) {
-        // Go's big.Float.Uint64 returns the upper bound and an overflow
-        // status for +Inf and every rounded value at or beyond 2^64.  The
-        // statement context turns that status into the 1690 warning used by
-        // `builtinCastRealAsIntSig`.
-        ctx.append_warning(
-            1690,
-            &format!(
-                "constant {} overflows bigint",
-                tidb_datatype::format_float_g_shortest(rounded)
-            ),
-        );
-        u64::MAX
-    } else {
-        // Rust's float-to-int cast is exact for the remaining in-range
-        // integral values, including the full upper half of UNSIGNED BIGINT.
-        rounded as u64
-    }
+// Preserve the original value-only test surface without a production fallback
+// or swallowing failures from the real/Float32 worker.
+#[cfg(test)]
+fn to_u64_unsigned(v: &Datum, ctx: &dyn crate::Columns) -> u64 {
+    to_u64_unsigned_in(v, ctx).expect("unsigned cast test evaluation")
 }
 
 /// Scans a MySQL-style INTEGER numeric prefix: optional leading
@@ -769,7 +724,7 @@ fn int_prefix_consumed_all(s: &str) -> bool {
 ///
 /// SIGNED only. Go's UNSIGNED target takes the other branch of the same
 /// signature (`ConvertFloatToUint`/`MyDecimal.ToUint`), whose warning
-/// [`to_u64_unsigned`] already raises -- calling both would double it.
+/// [`to_u64_unsigned_in`] already raises -- calling both would double it.
 fn report_signed_overflow(v: &Datum, ctx: &dyn crate::Columns) {
     match v {
         Datum::Real(value) | Datum::Float32(value) => {
@@ -2486,4 +2441,179 @@ mod tests {
         assert_eq!(json, Datum::Null);
         assert_eq!(warnings.0.borrow().len(), 3);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn real_unsigned_worker_keeps_rounding_overflow_and_union_boundary() {
+    use std::cell::{Cell, RefCell};
+    struct Warnings {
+        level: crate::ErrorLevel,
+        policy_reads: Cell<usize>,
+        values: RefCell<Vec<(u16, String)>>,
+    }
+    impl crate::Columns for Warnings {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("materialized real cast needs no provider")
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            self.policy_reads.set(self.policy_reads.get() + 1);
+            self.level
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.values.borrow_mut().push((code, message.to_owned()));
+        }
+        fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+            panic!("real unsigned cast does not read a timezone")
+        }
+        fn date_modes(&self) -> tidb_datatype::DateModes {
+            panic!("real unsigned cast does not read date modes")
+        }
+    }
+    fn owner(slots: usize) -> crate::AsciiPoolOwner {
+        crate::AsciiPoolOwner::new(
+            crate::AsciiPoolPolicy::checked(
+                slots,
+                slots,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+    // Expected values come from the removed native rule: ties-even, then
+    // negative signed-bit wrap or upper/nonfinite clamp. The last flag pins
+    // the separate, unchanged UNION early clamp on the unrounded source.
+    let cases = [
+        (2.5, 2, None, false),
+        (3.5, 4, None, false),
+        (f64::from_bits(2.5_f64.to_bits() + 1), 3, None, false),
+        (-0.0, 0, None, false),
+        (-0.4, 0, None, true),
+        (-0.5, 0, None, true),
+        (-1.5, u64::MAX - 1, Some("-2"), true),
+        (9223372036854775808.0, 1u64 << 63, None, false),
+        (
+            f64::from_bits(0x43efffffffffffff),
+            u64::MAX - 2047,
+            None,
+            false,
+        ),
+        (
+            18446744073709551616.0,
+            u64::MAX,
+            Some("1.8446744073709552e+19"),
+            false,
+        ),
+        (-1e300, 1u64 << 63, Some("-1e+300"), true),
+        (f64::INFINITY, u64::MAX, Some("+Inf"), false),
+        (f64::NEG_INFINITY, 1u64 << 63, Some("-Inf"), true),
+        (
+            f64::from_bits(0xfff8000012345678),
+            u64::MAX,
+            Some("NaN"),
+            false,
+        ),
+    ];
+    let pool = owner(1);
+    let execution = pool.begin_execution().unwrap();
+    for level in [crate::ErrorLevel::Warn, crate::ErrorLevel::Error] {
+        let ctx = Warnings {
+            level,
+            policy_reads: Cell::new(0),
+            values: RefCell::new(Vec::new()),
+        };
+        for (input, expected, overflow_text, negative_union) in cases {
+            for float32 in [false, true] {
+                let source = FieldType::new(if float32 {
+                    FieldTypeCode::Float
+                } else {
+                    FieldTypeCode::Double
+                });
+                for union in [false, true] {
+                    let value = if float32 {
+                        Datum::Float32(input)
+                    } else {
+                        Datum::Real(input)
+                    };
+                    let target = if union {
+                        CastType::UnsignedInUnion
+                    } else {
+                        CastType::Unsigned
+                    };
+                    let result = execution.scope().with_columns(&ctx, |columns| {
+                        eval_cast(&target, value, Some(&source), columns)
+                    });
+                    let bypass = union && negative_union;
+                    assert_eq!(
+                        result.unwrap(),
+                        Datum::UInt(if bypass { 0 } else { expected })
+                    );
+                    let warnings = if bypass {
+                        vec![]
+                    } else {
+                        overflow_text
+                            .map(|text| vec![(1690, format!("constant {text} overflows bigint"))])
+                            .unwrap_or_default()
+                    };
+                    assert_eq!(ctx.values.take(), warnings);
+                    // 1690 is append-only even in Error mode, never HandleTruncate.
+                    assert_eq!(ctx.policy_reads.get(), 0);
+                }
+            }
+        }
+    }
+    let denied_pool = owner(0);
+    let denied = denied_pool.begin_execution().unwrap();
+    let ctx = Warnings {
+        level: crate::ErrorLevel::Error,
+        policy_reads: Cell::new(0),
+        values: RefCell::new(Vec::new()),
+    };
+    for float32 in [false, true] {
+        let source = FieldType::new(if float32 {
+            FieldTypeCode::Float
+        } else {
+            FieldTypeCode::Double
+        });
+        for (input, union) in [(2.5, false), (2.5, true), (-1.5, false), (-1.5, true)] {
+            let value = if float32 {
+                Datum::Float32(input)
+            } else {
+                Datum::Real(input)
+            };
+            let target = if union {
+                CastType::UnsignedInUnion
+            } else {
+                CastType::Unsigned
+            };
+            let result = denied.scope().with_columns(&ctx, |columns| {
+                eval_cast(&target, value, Some(&source), columns)
+            });
+            if input < 0.0 && union {
+                // Explicitly outside this migration: UNION's earlier branch
+                // still returns zero without entering the real-unsigned worker.
+                assert_eq!(result.unwrap(), Datum::UInt(0));
+            } else {
+                assert!(
+                    matches!(result, Err(EvalError::ExpressionAdapterFailure(failure))
+                    if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource
+                        && failure.origin() == crate::ExpressionAdapterFailureOrigin::Pool)
+                );
+            }
+            assert!(ctx.values.take().is_empty());
+            assert_eq!(ctx.policy_reads.get(), 0);
+        }
+    }
+    assert_eq!(
+        eval_cast(&CastType::Unsigned, Datum::Real(2.5), None, &ctx).unwrap(),
+        Datum::UInt(2)
+    );
+    assert!(ctx.values.take().is_empty());
+    assert_eq!(ctx.policy_reads.get(), 0);
 }

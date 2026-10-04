@@ -1,32 +1,30 @@
 # Expression unification experiment
 
 Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
-Current checkpoint: **nullif-87**, following **case-86**.
+Current checkpoint: **cast-real-uint-88**, following **nullif-87**.
 
-Functional coverage: **226/245 (92.24%)**; strict final-audited count: **0**. All225 prior family objects are byte-identical; only NULLIF is added. **The overall goal remains active.**
+**Partial CAST step, not a new completed family.** Functional coverage stays **226/245 (92.24%)**, strict final-audited count **0**. All226 family objects and the19-family remainder are unchanged. The overall goal remains active.
 
-## NULLIF result selection belongs to TiKV
+## Real/Float32→UNSIGNED
 
-Original eager operands, clones and equality once are retained. `tikv/null_if.rs` completes comparison before encoding the actual left, even when equal. `NullIfNative` uses existing BytesInt transport. One TiKV borrowed selector supplies both actual kernel execution and exact reply-length preflight; the dispatcher still runs and NULL output does not erase left input capacity.
+TiKV now owns the deleted native rounding, negative wrapping, range/nonfinite handling and overflow decision. `native_cast.rs` produces a computed u64 plus optional rounded overflow bits; `tikv/cast_real_unsigned.rs` strictly decodes that report and presents the original1690 warning. It does not calculate a native answer or swallow infrastructure failures.
 
-No synthetic operand, cached native answer, new carrier, driver or PB admission. SQL already supports NULLIF through direct rewriter construction; a separate registry-based FunctionBuilder still rejects it. Every successful equality domain already uses a Compare worker, so **SQL zero-slot refusal is comparison-stage evidence, not proof of the new NULLIF selector**. Direct bridge/dispatch tests isolate that selector.
+The diagnostic `format_float_g_shortest` remains a native adapter. Signed/other casts, outer NULL and UNION's negative early-zero branch stay unchanged. Legacy TiKV wire casting has different rounding/clipping/boundary/NaN policy and is not substituted for the frozen native policy. No new carrier, general driver or PB admission.
 
 ## Validation
 
-[Evidence](evidence/nullif-checkpoint.md), [exact commands/hashes](logs/nullif-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
+[Evidence](evidence/cast-real-uint-checkpoint.md), [exact commands/hashes](logs/cast-real-uint-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
 
-Six new tests finally pass. One new SQL expectation initially failed: VARCHAR arg0 metadata is8/0, not the derived-string8/-1 used by CASE/IF. Corrected only from DDL default/type-clone source; production and old tests unchanged, initial RED retained.
+Seven new tests pass on first matching execution. SQL36SELECT probes:32stored DOUBLE/FLOAT cases (16slice-root zero-slot refusals),2strict-mode warning checks,2filters. Existing unsigned CastRealAsInt PBShared is covered; its signed/NULL cases remain outside this slice. Zero slots produce no1690 because there is no computed SDK event.
 
-SQL38SELECT probes:32stored-column cases (16positive,16comparison-stage zero-slot),4eager RHS errors including NULLlhs,2filters. No new selector-root SQL claim.
+Nine locked launches:7green,2unchanged old full RED. CPP core1/local341+1ignored; native cast21, bridge1, gateway196+1ignored; legacy1 and SQL1 pass. Full expression **1598/4old/94ignored**, unistore **219/1old/13ignored** retain identical normalized failure sections. No compile failure, new failure, oracle correction, zero-match, interruption or fixture recording.
 
-Nine locked launches:6green,1new-test-oracle RED,2unchanged old full RED. CPP core1/local339+1ignored; native root2 including old NULLIF rows, bridge1, gateway196+1ignored; corrected SQL1 pass. Full expression **1596/4old/94ignored**, unistore **218/1old/13ignored** retain identical normalized failure sections. No compile failure, zero-match, interrupted test or fixture recording.
-
-Pinned formatting/diff checks cover6native/8TiKV Rust files; one new native module.130CPP/378native original test bodies are byte-identical, with3CPP/3native new tests. No Cargo/lock, Go/Bazel or generated changes; `compile.rs` and PB/legacy admission are unchanged.
+Pinned formatting/diff checks cover7native/8TiKV Rust files and2new modules.205CPP/493native original test bodies are byte-identical;3CPP/4native new tests. No Cargo/lock, Go/Bazel or generated changes; `compile.rs` unchanged.
 
 ## Remaining acceptance
 
-[Remaining review](evidence/remaining-acceptance.md): **5core**, **8ordinary pending**, **6complex exception candidates**, not19approved exceptions. Continue ordinary CAST/M2, IN/extrema/INTERVAL, actual request-owner lifecycle and final cross-entry evidence.
+[Remaining review](evidence/remaining-acceptance.md): **5core**, **8ordinary pending**, **6complex exception candidates**, not19approved exceptions. Continue other CAST/M2 domains and the diagnostic formatter, complete extrema/IN/INTERVAL, actual request-owner lifecycle and final cross-entry evidence.
 
-Known baseline failures and documented INTDIV/CAST/mode/JSON/vector/older Values gaps remain. Workspace/lint/dev/bazel_prepare/release, exhaustive differential/TiFlash/FIPS, performance/physical heap or stack/OOM/allocator/zero-copy/dual-timezone footprint and complete Go-package transcreation are unverified. No PR-readiness claim.
+Known baseline failures and CAST/INTDIV/mode/JSON/vector/older Values gaps remain. Workspace/lint/dev/bazel_prepare/release, exhaustive differential/TiFlash/FIPS, performance/physical heap or stack/OOM/allocator/zero-copy/dual-timezone footprint and complete Go-package transcreation are unverified. No PR-readiness claim.
 
-Three Plans agree; the manifest pins their hash and paired TiKV commit. Publish TiKV then TiDB, without force push or PR. Unrelated untracked client-differential BUILD remains excluded.
+Three Plans agree; the manifest pins their hash and paired TiKV commit. Publish TiKV then TiDB without force push or PR. Unrelated untracked client-differential BUILD remains excluded.

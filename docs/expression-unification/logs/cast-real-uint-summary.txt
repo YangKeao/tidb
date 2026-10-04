@@ -1,0 +1,55 @@
+cast-real-uint-88 / R91 / PARTIAL CAST ONLY
+CPP cwd: /home/agent/tidb/expression-unification/tikv
+Native cwd: /home/agent/tidb/expression-unification/tidb/rust
+Raw logs: /home/agent/tidb/expression-unification/logs/cast-real-uint-{id}.log
+Counts passed/failed/ignored/filtered; compile_seconds/test_seconds.
+
+tikv-core | 1/0/0/961 | 16.39/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_cast::tests -- --test-threads=1
+sha256 a67be13f161abb1f3e79d8d3f3f10609efda8b2cd315d3386acd64743e5ff6dc
+
+tikv-local | 341/0/1/620 | 0.16/0.24 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+sha256 cb77a4b19ff0fbfedfcd6617dd7f0069049278505563286a9e33fc223d8476b5
+
+native-root | 21/0/0/1675 | 19.30/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib cast:: -- --test-threads=1
+sha256 f83b47c4db991f33495d8bf95344cca356a1626632a043028b5097d87a363094
+
+native-bridge | 1/0/0/1695 | 0.14/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::cast_real_unsigned -- --test-threads=1
+sha256 afee9f20da535dfcc914148fd2e7f0e72d5731eb0913c21825baf18228523c0e
+
+native-gateway | 196/0/1/1499 | 0.14/0.36 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii -- --test-threads=1
+sha256 74cf92bf4d069d0939dbda176a37272d5a79110e8d30e24c97b8522968ea8732
+
+legacy | 1/0/0/232 | 6.97/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_shared_real_unsigned_cast -- --test-threads=1
+sha256 21f4793ba11b8d344aaa940351f2e592daee49a8132c1e7f0375c34cd173b398
+
+sql | 1/0/0/2234 | 27.92/0.06 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_real_unsigned_cast_slice -- --test-threads=1
+sha256 6a2eec7bf3cb6d8b101b4d5befd3d6473e99eb4207cfbbb5e2b676e15e7836ea
+
+expr-full | 1598/4/94/0 | 0.15/15.44 | exit101 | OLD failures unchanged
+../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+sha256 3924b92d978d1c563f336affbfebfca87fd92600932e33f087580af34306e68d
+
+unistore-full | 219/1/13/0 | 0.13/3.03 | exit101 | OLD failure unchanged
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+sha256 09b1a5a1b9a826f984852d85bc1ada6b4bcddd35fcad3bd2a94f689d067f2839
+
+Nine locked nonzero single-threaded launches:7green,2only-old full RED. All7new tests pass on first matching execution. No compile failure, new execution failure, oracle correction, zero-match, interrupted test or fixture recording. Counts overlap across filters.
+
+Entire failure sections byte-equal to nullif-87 expression/unistore sections after only numeric panic-heading thread IDs become THREAD:
+expression 411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+unistore 2f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1
+
+SQL36SELECT=8stored DOUBLE/FLOAT columns×2vector×2pool=32direct (16positive/16slice-root zero-slot refusals),2strict positive overflow-warning checks,2positive filters. No earlier function/condition/WHERE substitutes for the direct CAST slice root. FieldType is unsignedLongLong20/0/binary. Zero slot means no computed event and no1690; this is not a claim that the old native pre-worker warning preceded new admission. Strict mode still returns computed u64 and1690 after admitted execution.
+
+Existing unsigned CastRealAsInt PBShared6real literals×slots1/0 preserve old policies; negativeNaN is encoded through actual float codec with roundtrip assertion, not fabricated protocol. Signed/NULL control cases still use unchanged paths even at zero slots, and native directFloat32 tag is covered separately. No new PB admission or whole-signature migration claim.
+
+One pure SDK producer owns the deleted native real_to_u64_saturating algorithm: ties-even, negative wrapped rounded signed bits, nonfinite/at-or-beyond2^64 clamp, optional rounded overflow event. Legacy TiKV wire cast differs and remains unchanged. Frontend merely decodes9/17-byte report and projects1690 through the still-NATIVE diagnostic formatter format_float_g_shortest. Other cast domains, outerNULL and UNION negative bypass remain outside this slice. Family count226/245 and strict0 do not change; no cast family object added.
+
+Pinned rustfmt --edition 2021 --config skip_children=true --check covers8CPP files with /home/agent/tidb/expression-reuse/rustup-home/toolchains/nightly-2026-01-30-x86_64-unknown-linux-gnu/bin/rustfmt and7native files with corresponding nightly-2026-08-22 executable. Both git diff --check pass. Source audit:205CPP/493native original #[test] bodies byte-identical;3CPP/4native new tests;2new modules. Independent E production review reports no blocker. Agent-doc updates are descriptive without new policy. No Go/Bazel/Cargo/lock/generated changes; compile.rs unchanged. No workspace/lint/dev/release/performance/physical-OOM or PR-readiness claim.
