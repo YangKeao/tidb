@@ -170,45 +170,7 @@ fn pow10(exp: i32) -> f64 {
 /// digits themselves are the shortest round-tripping ones, which is what
 /// Rust's own float formatting produces.
 pub fn format_float_g_shortest(f: f64) -> String {
-    if f.is_nan() {
-        return "NaN".to_owned();
-    }
-    if f.is_infinite() {
-        return if f > 0.0 { "+Inf" } else { "-Inf" }.to_owned();
-    }
-    let sign = if f.is_sign_negative() { "-" } else { "" };
-    let magnitude = f.abs();
-    if magnitude == 0.0 {
-        return format!("{sign}0");
-    }
-    let scientific = format!("{magnitude:e}");
-    let (mantissa, exponent) = scientific
-        .split_once('e')
-        .expect("Rust LowerExp always emits an exponent");
-    let exponent: i32 = exponent.parse().expect("exponent is an integer");
-    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
-    // Source: `exp < -4 || exp >= eprec`, with `eprec` pinned to 6 for the
-    // shortest precision.
-    if !(-4..6).contains(&exponent) {
-        return format!(
-            "{sign}{mantissa}e{}{:02}",
-            if exponent < 0 { '-' } else { '+' },
-            exponent.abs()
-        );
-    }
-    let point = exponent + 1;
-    let digit_count = digits.len() as i32;
-    if point <= 0 {
-        format!("{sign}0.{}{digits}", "0".repeat((-point) as usize))
-    } else if point >= digit_count {
-        format!(
-            "{sign}{digits}{}",
-            "0".repeat((point - digit_count) as usize)
-        )
-    } else {
-        let (integral, fraction) = digits.split_at(point as usize);
-        format!("{sign}{integral}.{fraction}")
-    }
+    tidb_query_datatype::codec::mysql::Decimal::native_format_float_g_shortest(f)
 }
 
 /// Go `isSpace` (`helper.go`): only a space or a tab.
@@ -2737,4 +2699,45 @@ mod tests {
             );
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn shared_native_float_format_preserves_full_domain_and_exponent_edges() {
+    for (input, expected) in [
+        (0.0, "0"),
+        (-0.0, "-0"),
+        (f64::INFINITY, "+Inf"),
+        (f64::NEG_INFINITY, "-Inf"),
+        (f64::from_bits(0x7ff8000012345678), "NaN"),
+        (f64::from_bits(0xfff8000012345678), "NaN"),
+        (1e-5, "1e-05"),
+        (-1e-5, "-1e-05"),
+        (1e-4, "0.0001"),
+        (100_000.0, "100000"),
+        (1_000_000.0, "1e+06"),
+        (1_234_500.0, "1.2345e+06"),
+        (12.345, "12.345"),
+        (f64::from_bits(1), "5e-324"),
+        (-f64::from_bits(1), "-5e-324"),
+        (f64::MAX, "1.7976931348623157e+308"),
+        (18446744073709551616.0, "1.8446744073709552e+19"),
+    ] {
+        assert_eq!(
+            format_float_g_shortest(input),
+            expected,
+            "bits={:016x}",
+            input.to_bits()
+        );
+    }
+    // The decimal float constructor's existing Ryu entry has a different
+    // zero policy; this facade serves both conversions and diagnostics and
+    // must not silently select that entry.
+    assert_eq!(
+        tidb_query_datatype::codec::mysql::Decimal::native_format_go_shortest_float(-0.0),
+        "0"
+    );
+    let (zero, error) = MyDecimal::from_float64(-0.0);
+    assert_eq!(error, None);
+    assert_eq!(zero.to_string_bytes(), b"0");
 }

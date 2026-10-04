@@ -1319,16 +1319,10 @@ impl Decimal {
     /// MySQL-faithful, fallback for a degenerate case, not a realistic
     /// query.
     pub fn cast_to_precision(&self, flen: u32, scale: u32) -> Decimal {
-        let rounded = self.round_to_scale(scale as i32);
-        if flen == 0 {
-            return rounded;
-        }
-        let int_digits = rounded.digits.len() as u32 - rounded.scale;
-        let max_int_digits = flen.saturating_sub(scale);
-        if int_digits > max_int_digits {
-            return Decimal::new(rounded.negative, "9".repeat(flen as usize), scale);
-        }
-        rounded
+        self.try_to_shared_math(usize::MAX)
+            .and_then(|value| value.try_native_cast_to_precision(flen, scale, usize::MAX))
+            .and_then(|value| Self::try_from_shared_math(&value, usize::MAX))
+            .expect("shared native decimal precision cast failed")
     }
 
     /// Converts to the nearest `f64` — MySQL's implicit `DECIMAL`-to-
@@ -2233,5 +2227,64 @@ mod raw_representation_tests {
                 (scale, storage_scale)
             );
         }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn shared_precision_cast_preserves_requested_scale_and_value_metadata() {
+    // Fixed source rules, including malformed target behavior: clamp compares
+    // only the rounded integer width with flen.saturating_sub(requested_scale).
+    for (input, flen, scale, expected, result_scale) in [
+        ("2.5", 2, 0, "3", 0),
+        ("-2.5", 2, 0, "-3", 0),
+        ("99.994", 4, 2, "99.99", 2),
+        ("99.995", 4, 2, "99.99", 2),
+        ("99.995", 0, 2, "100.00", 2),
+        ("-99.995", 4, 2, "-99.99", 2),
+        ("1.23", 1, 2, "0.09", 2),
+        ("0.12", 1, 2, "0.12", 2),
+        ("1.23", 2, 2, "0.99", 2),
+        ("0.00", 1, 2, "0.00", 2),
+        ("12344", 0, u32::MAX, "12340", 0),
+        ("12344", 0, u32::MAX - 1, "12300", 0),
+        ("1.234", u32::MAX, 2, "1.23", 2),
+    ] {
+        let source = Decimal::from_literal(input).with_declared_shape(20, 7);
+        let value = source.cast_to_precision(flen, scale);
+        assert_eq!(value.to_string(), expected, "{input} ({flen},{scale})");
+        assert_eq!(
+            (value.scale(), value.storage_scale()),
+            (result_scale, result_scale)
+        );
+        assert_eq!(value.declared_shape(), None);
+        assert_eq!(source.declared_shape(), Some((20, 7)));
+    }
+    for (negative, digits, expected_digits, expected_negative) in [
+        (false, b"00012499".as_slice(), b"125".as_slice(), false),
+        (true, b"00012499".as_slice(), b"125".as_slice(), true),
+        (true, b"00000000".as_slice(), b"00".as_slice(), false),
+    ] {
+        let source = Decimal::from_raw_parts(negative, digits.to_vec(), 1, 4)
+            .with_declared_shape(i64::MIN, i64::MAX);
+        let value = source.cast_to_precision(0, 2);
+        assert_eq!(value.coefficient_bytes(), expected_digits);
+        assert_eq!(value.is_negative(), expected_negative);
+        assert_eq!((value.scale(), value.storage_scale()), (2, 2));
+        assert_eq!(value.declared_shape(), None);
+        assert_eq!(source.coefficient_bytes(), digits);
+        assert_eq!(source.is_negative(), negative);
+        assert_eq!((source.scale(), source.storage_scale()), (1, 4));
+        assert_eq!(source.declared_shape(), Some((i64::MIN, i64::MAX)));
+    }
+    // This pure value API does not introduce SQL's precision/scale caps or
+    // route the coefficient through the fixed nine-word decimal constructor.
+    let digits = "1234567890".repeat(9);
+    let wide = Decimal::from_literal(&digits).with_declared_shape(120, 0);
+    for (flen, expected) in [(100, format!("{digits}00")), (90, "9".repeat(90))] {
+        let value = wide.cast_to_precision(flen, 2);
+        assert_eq!(value.coefficient_bytes(), expected.as_bytes());
+        assert_eq!((value.scale(), value.storage_scale()), (2, 2));
+        assert_eq!(value.declared_shape(), None);
     }
 }

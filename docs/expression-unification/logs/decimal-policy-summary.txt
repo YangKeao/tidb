@@ -1,0 +1,53 @@
+decimal-policy-89 / R92 / M2 TYPE DEDUPLICATION ONLY
+CPP cwd: /home/agent/tidb/expression-unification/tikv
+Native cwd: /home/agent/tidb/expression-unification/tidb/rust
+Raw logs: /home/agent/tidb/expression-unification/logs/decimal-policy-{id}.log
+Counts passed/failed/ignored/filtered; compile_seconds/test_seconds.
+
+tikv-decimal | 97/0/0/361 | 3.18/0.01 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib codec::mysql::decimal:: -- --test-threads=1
+sha256 0a7af6f970f1d73a61f62a4ae725456baea90bc9c8aea5dd9002cef6bf623a8a
+
+native-datatype | 103/0/0/354 | 3.35/23.33 | exit0
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib decimal -- --test-threads=1
+sha256 a8a0e156eaef024db2533e720576062bda2d66889d8067ed3a70250a2d6c9f0d
+
+native-cast | 21/0/0/1675 | 16.11/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib cast:: -- --test-threads=1
+sha256 f642c4f9ffdd7c0af5732a500bdcd17d6c40bb8026d0c06b803eb7129844f4e1
+
+native-bridge | 1/0/0/1695 | 0.14/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::cast_real_unsigned -- --test-threads=1
+sha256 af6cef377579a16a8ff2533d3c323ff87d311a25e5a39291283949d279f2c7df
+
+legacy | 1/0/0/232 | 6.84/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_shared_real_unsigned_cast -- --test-threads=1
+sha256 cae0529af4cb32c8a245ca78f32ff862221f77c27c8a474f684d9475ad561137
+
+sql | 1/0/0/2235 | 25.31/0.04 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib native_type_helpers_preserve_decimal_cast_values_and_float_diagnostics -- --test-threads=1
+sha256 93fcac1c30b6b653621d07016560d03bc2201efcc540442e7af7d3dc389bf5ff
+
+prior-sql | 1/0/0/2235 | 0.23/0.07 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_real_unsigned_cast_slice -- --test-threads=1
+sha256 3bddf1fae84e5d9f1b8456053e5c89852cb50859be06980e4e9a7df9ea596b3a
+
+expr-full | 1598/4/94/0 | 0.16/14.83 | exit101 | OLD failures unchanged
+../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+sha256 24c2e83eb5cdf8adbef986743d0c4a11bd4b1f5db70cb788843951f7e4c87880
+
+unistore-full | 219/1/13/0 | 0.14/3.07 | exit101 | OLD failure unchanged
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+sha256 d67ae1168430fece096c6ad5b6ddeb62951d191b0a7d29db72bb00c756d72afc
+
+Nine locked nonzero single-threaded launches:7green,2only-old full RED. All5new tests pass on first matching execution. No compile failure, new execution failure, oracle correction, zero-match, interrupted test or fixture recording. Counts overlap across filters.
+
+Entire failure sections byte-equal to cast-real-uint-88 expression/unistore sections after only numeric panic-heading thread IDs become THREAD:
+expression 411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+unistore 2f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1
+
+NEW SQL20SELECT=10cases×2vector modes, normal pool only:16Decimal value/precision/warning/metadata probes (including FLOAT-to-DECIMAL as a real formatter value consumer),4floating diagnostic probes (negative UNSIGNED and large SIGNED). Existing CAST warning overflow-before-truncation classification stays with its caller. No new zero-slot/root/admission claim. PRIOR SQL36SELECT rerun separately and not counted as new.
+
+Deleted native algorithm bodies: mydecimal::format_float_g_shortest and Decimal::cast_to_precision. New TiKV datatype APIs: Decimal::native_format_float_g_shortest and try_native_cast_to_precision. Full LowerExp/NaN/Inf/signed-zero policy remains distinct from the existing finite Ryu/zero0 policy; one shared layout renderer, no unproved generator substitution. Formatter serves MyDecimal/Datum value conversion as well as diagnostics. Precision uses existing rounding and canonical coefficient projection, keeps original scale cast, shape clearing, malformed-target fallback and wide storage. No nine-word/SQL precision cap, new C4 profile/carrier or family credit. Existing infallible conversion refusal remains panic, never native fallback.
+
+Pinned rustfmt --edition 2021 --config skip_children=true --check covers1CPP file with /home/agent/tidb/expression-reuse/rustup-home/toolchains/nightly-2026-01-30-x86_64-unknown-linux-gnu/bin/rustfmt and3native files with corresponding nightly-2026-08-22 executable. Both git diff --check pass. Source audit:95CPP/203native original #[test] bodies byte-identical;2CPP/3native new tests;0new modules. Independent D production review reports no blocker. Agent-doc updates are descriptive without new policy. No Go/Bazel/Cargo/lock/generated changes. No workspace/lint/dev/release/performance/physical-OOM or PR-readiness claim. Functional226/245 and strict0 remain unchanged; overall goal active.

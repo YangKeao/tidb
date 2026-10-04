@@ -9363,6 +9363,150 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn native_type_helpers_preserve_decimal_cast_values_and_float_diagnostics() {
+    use tidb_datatype::FieldTypeCode;
+
+    // M2 type-helper consumers only: no new C4 profile, zero-pool proof,
+    // CAST/extrema family credit, or claim about the separate legacy Ryu
+    // formatter. These cases use the existing normal runtime policy.
+    let mut session = Session::new();
+    session.run("SET sql_mode=''").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE native_type_helpers_sql (d_positive DECIMAL(8,0), d_negative DECIMAL(8,0), d_carry DECIMAL(6,3), d_zero DECIMAL(3,0), d_pad DECIMAL(4,1), d_ordinary DECIMAL(7,2), f_small FLOAT, r_negative DOUBLE, r_huge DOUBLE)")
+        .unwrap();
+    session
+        .run("INSERT INTO native_type_helpers_sql VALUES (123456,-123456,9.995,0,1.5,123.45,2.5,-1.5,1e300)")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // cast.rs applies cast_to_precision and then report_decimal_production:
+    // overflow suppresses truncation, whose text otherwise retains the
+    // ORIGINAL decimal. No diagnostic is invented by the new helper.
+    let decimal_cases = [
+        (
+            "CAST(d_positive AS DECIMAL(5,2))",
+            (5, 2),
+            "999.99",
+            Some((1690, "DECIMAL value is out of range in '(5, 2)'")),
+        ),
+        (
+            "CAST(d_negative AS DECIMAL(5,2))",
+            (5, 2),
+            "-999.99",
+            Some((1690, "DECIMAL value is out of range in '(5, 2)'")),
+        ),
+        (
+            "CAST(d_carry AS DECIMAL(5,2))",
+            (5, 2),
+            "10.00",
+            Some((1292, "Truncated incorrect DECIMAL value: '9.995'")),
+        ),
+        (
+            "CAST(d_carry AS DECIMAL(3,2))",
+            (3, 2),
+            "9.99",
+            Some((1690, "DECIMAL value is out of range in '(3, 2)'")),
+        ),
+        ("CAST(d_zero AS DECIMAL(5,2))", (5, 2), "0.00", None),
+        ("CAST(d_pad AS DECIMAL(8,4))", (8, 4), "1.5000", None),
+        ("CAST(d_ordinary AS DECIMAL(8,2))", (8, 2), "123.45", None),
+        // Float32's cast fallback calls Datum::to_decimal, then
+        // MyDecimal::from_float64 -> format_float_g_shortest. Unlike the
+        // DOUBLE cast's separate to_string arm, this is a value consumer of
+        // the migrated formatter as well as the precision helper.
+        ("CAST(f_small AS DECIMAL(5,2))", (5, 2), "2.50", None),
+    ];
+    let diagnostic_cases = [
+        (
+            "CAST(r_negative AS UNSIGNED)",
+            true,
+            "18446744073709551614",
+            "constant -2 overflows bigint",
+        ),
+        (
+            "CAST(r_huge AS SIGNED)",
+            false,
+            "9223372036854775807",
+            "constant 1e+300 overflows bigint",
+        ),
+    ];
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        for (expression, shape, expected, warning) in decimal_cases {
+            let sql = format!("SELECT {expression} FROM native_type_helpers_sql");
+            let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap() else {
+                panic!("expected decimal helper consumer rows: {sql}")
+            };
+            assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
+            let field = &columns[0].1;
+            assert_eq!(
+                field.code(),
+                FieldTypeCode::NewDecimal,
+                "{sql}/{vectorized}"
+            );
+            assert_eq!((field.flen(), field.decimal()), shape, "{sql}/{vectorized}");
+            assert_eq!(field.charset_name(), "binary");
+            assert_eq!(field.collation_name(), "binary");
+            assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
+            assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
+            let Datum::Decimal(decimal) = &rows[0][0] else {
+                panic!(
+                    "decimal helper changed SQL carrier: {sql}: {:?}",
+                    rows[0][0]
+                )
+            };
+            assert_eq!(decimal.declared_shape(), Some(shape), "{sql}/{vectorized}");
+            assert_eq!(decimal.to_string(), expected, "{sql}/{vectorized}");
+            let expected_warnings = warning
+                .map(|(code, message)| vec![(code, message.to_owned())])
+                .unwrap_or_default();
+            assert_eq!(
+                warnings_of(&session),
+                expected_warnings,
+                "{sql}/{vectorized}"
+            );
+        }
+        for (expression, unsigned, expected, warning) in diagnostic_cases {
+            let sql = format!("SELECT {expression} FROM native_type_helpers_sql");
+            let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap() else {
+                panic!("expected floating diagnostic consumer rows: {sql}")
+            };
+            assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
+            let field = &columns[0].1;
+            assert_eq!(field.code(), FieldTypeCode::LongLong, "{sql}/{vectorized}");
+            assert_eq!((field.flen(), field.decimal()), (20, 0));
+            assert_eq!(field.is_unsigned(), unsigned);
+            assert_eq!(field.charset_name(), "binary");
+            assert_eq!(field.collation_name(), "binary");
+            assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
+            assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
+            assert!(
+                matches!(
+                    (unsigned, &rows[0][0]),
+                    (true, Datum::UInt(_)) | (false, Datum::Int(_))
+                ),
+                "unexpected diagnostic consumer carrier: {sql}: {:?}",
+                rows[0][0]
+            );
+            assert_eq!(cell_text(&rows[0][0]), expected, "{sql}/{vectorized}");
+            assert_eq!(
+                warnings_of(&session),
+                vec![(1690, warning.to_owned())],
+                "{sql}/{vectorized}"
+            );
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_real_unsigned_cast_slice_preserves_rounding_warnings_and_pool_refusals() {
     use tidb_datatype::FieldTypeCode;
 

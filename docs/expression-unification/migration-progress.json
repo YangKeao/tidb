@@ -1,5 +1,8 @@
 {
-  "checkpoint_id": "cast-real-uint-88",
+  "checkpoint_id": "decimal-policy-89",
+  "latest_type_deduplication_checkpoint": "decimal-policy-89",
+  "type_deduplication_steps": [{"checkpoint":"decimal-policy-89","ids":["native-float-g-format-policy","decimal-precision-cast-policy"],"native_algorithm_bodies_deleted":true,"shared_layout_preserves_lowerexp_and_ryu_policies":true,"new_c4_profile":false,"new_family_credit":false}],
+  "partial_slice_records_are_checkpoint_local": true,
   "latest_partial_cast_checkpoint": "cast-real-uint-88",
   "partial_cast_slices": [{"id":"real-float32-to-unsigned","checkpoint":"cast-real-uint-88","native_rounding_range_wrap_and_overflow_decision_deleted":true,"computed_sdk_value_and_event_report":true,"diagnostic_formatter_remains_native_adapter":true,"other_domains_null_and_union_negative_bypass_unchanged":true,"legacy_wire_policy_distinct_and_unchanged":true,"whole_cast_family_credit":false}],
   "nullif_completed_functional_checkpoint": "nullif-87",
