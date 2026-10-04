@@ -9363,6 +9363,158 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_timestamp_preserves_source_kinds_staged_roots_and_declared_fsp() {
+    use tidb_datatype::{FieldTypeCode, TimeType};
+
+    let create = "CREATE TABLE shared_timestamp_sql (packed_num DECIMAL(9,1), packed_str VARCHAR(32), base_dt DATETIME(3), negative_duration TIME(1), base_text VARCHAR(32), day_duration VARCHAR(32), date_duration VARCHAR(32), null_text VARCHAR(32), bad_text VARCHAR(32), zero_year VARCHAR(32), one_year VARCHAR(32), long_duration VARCHAR(32))";
+    let insert = "INSERT INTO shared_timestamp_sql VALUES (20240315.5,'20240315.5','2020-01-01 00:00:00.000','-01:00:00.0','2020-01-01','1 05:00:00','2020-01-01 05:00:00',NULL,'bad','0000-12-31 00:00:00','0001-01-01 00:00:00','838:00:00')";
+    // Fixed original tests/datetime and builtin_time_calendars_source rows.
+    // Header FSP is max(time_argument_fsp): DECIMAL scale 1, temporal scales
+    // 3/1, and VARCHAR's unspecified scale clamped to 0. By contrast, the
+    // scalar wrapper's postparse uses None and preserves the value's own FSP.
+    let cases = [
+        (
+            "packed_num",
+            Some("2024-03-15 00:00:00.0"),
+            (21, 1),
+            1,
+            None,
+        ),
+        (
+            "packed_str",
+            Some("2024-03-15 05:00:00.0"),
+            (19, 0),
+            1,
+            None,
+        ),
+        // The original midnight-minus-one-hour case, with stored temporal
+        // scales making max(3, 1) observable in both the header and the value.
+        (
+            "base_dt,negative_duration",
+            Some("2019-12-31 23:00:00.000"),
+            (23, 3),
+            3,
+            None,
+        ),
+        (
+            "base_text,day_duration",
+            Some("2020-01-02 05:00:00"),
+            (19, 0),
+            0,
+            None,
+        ),
+        ("base_text,date_duration", None, (19, 0), 0, None),
+        ("null_text", None, (19, 0), 0, None),
+        ("base_text,null_text", None, (19, 0), 0, None),
+        (
+            "bad_text,null_text",
+            None,
+            (19, 0),
+            0,
+            Some("Incorrect datetime value: 'bad'"),
+        ),
+        // Adding 838 hours would cross into year 1, but the original year-0
+        // gate rejects before adding; the neighbouring year-1 row succeeds.
+        ("zero_year,long_duration", None, (19, 0), 0, None),
+        (
+            "one_year,long_duration",
+            Some("0001-02-04 22:00:00"),
+            (19, 0),
+            0,
+            None,
+        ),
+    ];
+    for slots in [1, 0] {
+        let mut session = Session::new();
+        session.run("SET time_zone='+00:00'").unwrap();
+        session.run("SET sql_mode=''").unwrap();
+        session
+            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+            .unwrap();
+        session.run(create).unwrap();
+        session.run(insert).unwrap();
+        assert!(session
+            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .unwrap());
+        for vectorized in [0, 1] {
+            session
+                .run(&format!(
+                    "SET tidb_enable_vectorized_expression={vectorized}"
+                ))
+                .unwrap();
+            for (args, expected, shape, value_fsp, warning) in cases {
+                // Ordinary TIMESTAMP(), not a typed literal: all operands
+                // are columns and the target itself must run. Child expression
+                // evaluation is still eager; this is not a lazy-child claim.
+                let sql = format!("SELECT TIMESTAMP({args}) FROM shared_timestamp_sql");
+                if slots == 1 {
+                    let StmtOutput::Rows { columns, rows } =
+                        session.run_with_columns(&sql).unwrap()
+                    else {
+                        panic!("expected ordinary TIMESTAMP rows: {sql}")
+                    };
+                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
+                    let field = &columns[0].1;
+                    assert_eq!(field.code(), FieldTypeCode::Datetime, "{sql}/{vectorized}");
+                    assert_eq!((field.flen(), field.decimal()), shape, "{sql}/{vectorized}");
+                    assert_eq!(field.charset_name(), "binary");
+                    assert_eq!(field.collation_name(), "binary");
+                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
+                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
+                    if let Some(expected) = expected {
+                        let Datum::Time(time) = &rows[0][0] else {
+                            panic!("ordinary TIMESTAMP lost its native DATETIME cell: {sql}")
+                        };
+                        assert_eq!(time.kind(), TimeType::DateTime, "{sql}/{vectorized}");
+                        assert_eq!(time.fsp(), value_fsp, "{sql}/{vectorized}");
+                        assert_eq!(cell_text(&rows[0][0]), expected, "{sql}/{vectorized}");
+                    } else {
+                        assert_eq!(rows[0][0], Datum::Null, "{sql}/{vectorized}");
+                    }
+                    let expected_warnings = warning
+                        .map(|message| vec![(1292, message.to_owned())])
+                        .unwrap_or_default();
+                    assert_eq!(
+                        warnings_of(&session),
+                        expected_warnings,
+                        "{sql}/{vectorized}"
+                    );
+                } else {
+                    // No filter, sort or function child can supply the error.
+                    // Even bad-left parsing is inside the first worker: unlike
+                    // CONVERT_TZ's pre-cast, it cannot warn before this refusal.
+                    let error = session.run_with_columns(&sql).expect_err(&sql);
+                    match &error {
+                        DriverError::Exec(tidb_executor::ExecError::Eval(
+                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                        )) => {
+                            assert_eq!(failure.class(), tidb_executor::ExpressionAdapterFailureClass::PoolResource);
+                            assert_eq!(failure.origin(), tidb_executor::ExpressionAdapterFailureOrigin::Pool);
+                        }
+                        other => panic!("ordinary TIMESTAMP bypassed its first worker: {sql}/{vectorized}: {other:?}"),
+                    }
+                    let mysql = error.to_mysql_error();
+                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
+                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
+                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
+                    assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+                }
+            }
+            if slots == 1 {
+                // Reuse the packed STRING value as one ordinary predicate
+                // consumer; this is not used as zero-slot root evidence.
+                let sql = "SELECT 1 FROM shared_timestamp_sql WHERE TIMESTAMP(packed_str)='2024-03-15 05:00:00.0'";
+                let StmtOutput::Rows { rows, .. } = session.run_with_columns(sql).unwrap() else {
+                    panic!("expected ordinary TIMESTAMP predicate rows")
+                };
+                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
+                assert!(warnings_of(&session).is_empty());
+            }
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_convert_tz_preserves_typed_sql_values_and_runtime_root_demand() {
     use tidb_datatype::{FieldTypeCode, TimeType};
 

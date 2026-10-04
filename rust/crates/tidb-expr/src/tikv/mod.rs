@@ -33,7 +33,8 @@ pub use adapter_failure::{
 pub(crate) use evaluated_ascii::{
     eval_arithmetic_decimal_fast_in, eval_decimal_integer_division_in, evaluate_args_in,
     evaluate_ascii_in, evaluate_bytes_in, evaluate_logical_in, evaluate_prepared_args_in,
-    evaluate_regexp_in, native_time_result_contract_error, EvaluatedBytesResult, RegexpFunction,
+    evaluate_prepared_args_scoped_in, evaluate_regexp_in, native_time_result_contract_error,
+    EvaluatedBytesResult, RegexpFunction,
 };
 pub use evaluated_ascii::{
     eval_legacy_bytes_comparison_in, eval_legacy_date_in, eval_legacy_decimal_arithmetic_in,

@@ -53,7 +53,7 @@
 
 use tidb_datatype::{Datum, FieldType, FieldTypeCode};
 
-use super::duration_parse::{get_fsp, is_duration, parse_duration, GoDateTime, MAX_FSP};
+use super::duration_parse::MAX_FSP;
 use crate::coerce::coerce_str;
 use crate::{Columns, EvalError};
 
@@ -542,73 +542,307 @@ fn add_sub_workers_preserve_signatures_demand_and_direct_warnings() {
 /// argument's own; the second argument is a DURATION added to it, and it is
 /// rejected outright when it carries a date part.
 pub(crate) fn timestamp(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    if vals.is_empty() || vals.len() > 2 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(text) = coerce_str(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    // Go selects `ParseTimeFromFloatString` for numeric and DECIMAL
-    // signatures, even though all signatures first call EvalString.  That
-    // parser treats a suffix after a packed date as a fractional second and
-    // preserves zero-date DECIMAL values (for example `0.123`).  String and
-    // temporal signatures use `ParseTime`; retaining the source-kind bit here
-    // keeps the date-only compact suffix (`20240315.5`) as an hour for STRING
-    // but as a fractional second for numeric values.
-    let is_float = matches!(
-        vals[0],
-        Datum::Int(_) | Datum::UInt(_) | Datum::Decimal(_) | Datum::Real(_) | Datum::Float32(_)
-    );
-    let parsed = tidb_datatype::parse_time(
-        &text,
-        tidb_datatype::TimeType::DateTime,
-        i64::from(get_fsp(&text)),
-        is_float,
-        true,
-        false,
-        &cols.time_zone(),
-    );
-    let Ok(parsed) = parsed else {
-        cols.append_warning(1292, &format!("Incorrect datetime value: '{text}'"));
-        return Ok(Datum::Null);
-    };
-    let core = parsed.time.core_time();
-    let base = GoDateTime {
-        year: i64::from(core.year()),
-        month: u32::from(core.month()),
-        day: u32::from(core.day()),
-        hour: u32::from(core.hour()),
-        minute: u32::from(core.minute()),
-        second: u32::from(core.second()),
-        micros: core.microsecond(),
-        fsp: parsed.time.fsp().into(),
-    };
-    if vals.len() == 1 {
-        return Ok(Datum::new_string(base.format()));
-    }
-    let Some(second) = coerce_str(&vals[1])? else {
-        return Ok(Datum::Null);
-    };
-    // `builtinTimestamp2ArgsSig`: a second argument that is not
-    // duration-shaped is NULL before any parse is attempted, and so is a
-    // first argument with a zero year ("MySQL won't evaluate add for date
-    // with zero year").
-    if base.year == 0 || !is_duration(&second) {
-        return Ok(Datum::Null);
-    }
-    let Ok(delta) = parse_duration(&second, get_fsp(&second)) else {
-        return Ok(Datum::Null);
-    };
-    match base.add(delta) {
-        Some(result) if result.in_range() => Ok(Datum::new_string(
-            GoDateTime {
-                fsp: base.fsp.max(delta.fsp),
-                ..result
+    use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp as Op};
+    use tidb_query_expr::NativeTimestampResult;
+    crate::tikv::evaluate_prepared_args_scoped_in(
+        cols,
+        || {
+            if vals.is_empty() || vals.len() > 2 {
+                return Err(EvalError::Unsupported("bad function arity"));
             }
-            .format(),
-        )),
-        _ => Ok(Datum::Null),
+            let Some(text) = coerce_str(&vals[0])? else {
+                return Ok((Op::TimestampNullNative, EvaluatedArgs::Bytes(None)));
+            };
+            // This is actual source metadata, not a parsed value. The worker
+            // owns the float-string versus ordinary temporal parser decision.
+            let is_float = matches!(
+                vals[0],
+                Datum::Int(_)
+                    | Datum::UInt(_)
+                    | Datum::Decimal(_)
+                    | Datum::Real(_)
+                    | Datum::Float32(_)
+            );
+            Ok((
+                if vals.len() == 1 {
+                    Op::Timestamp1Native
+                } else {
+                    Op::Timestamp2BaseNative
+                },
+                EvaluatedArgs::TemporalParseText {
+                    value: text.into_bytes(),
+                    is_float,
+                    zone: cols.time_zone(),
+                },
+            ))
+        },
+        |computed, scoped_cols| {
+            let Some(bytes) = computed.into_bytes()? else {
+                return Ok(Datum::Null);
+            };
+            let result = tidb_query_expr::decode_native_timestamp_result(&bytes)
+                .ok_or_else(crate::tikv::native_time_result_contract_error)?;
+            match result {
+                NativeTimestampResult::Value(value) if vals.len() == 1 => {
+                    Ok(Datum::new_string(value))
+                }
+                NativeTimestampResult::Base(_) if vals.len() == 2 => {
+                    // Preserve both stage ordering and the same owner/scope,
+                    // including a one-shot invocation originating at NoColumns.
+                    // A zero year still demands RHS coercion before its gate.
+                    crate::tikv::evaluate_prepared_args_in(
+                        scoped_cols,
+                        || {
+                            let second = coerce_str(&vals[1])?;
+                            Ok((
+                                Op::Timestamp2AddNative,
+                                EvaluatedArgs::Bytes2(Some(bytes), second.map(String::into_bytes)),
+                            ))
+                        },
+                        |computed| {
+                            Ok(computed
+                                .into_bytes()?
+                                .map_or(Datum::Null, Datum::new_string))
+                        },
+                    )
+                }
+                NativeTimestampResult::Warning { code, message } => {
+                    scoped_cols.append_warning(code, message);
+                    Ok(Datum::Null)
+                }
+                _ => Err(crate::tikv::native_time_result_contract_error()),
+            }
+        },
+    )
+}
+
+#[cfg(test)]
+#[test]
+fn timestamp_workers_preserve_scoped_stage_demand_and_warnings() {
+    use std::cell::{Cell, RefCell};
+    struct Demand {
+        zones: Cell<usize>,
+        warnings: RefCell<Vec<(u16, String)>>,
     }
+    impl Columns for Demand {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn time_zone(&self) -> crate::context::SessionTimeZone {
+            self.zones.set(self.zones.get() + 1);
+            crate::context::SessionTimeZone::utc()
+        }
+        fn now(&self) -> Option<(i64, u32, i32)> {
+            panic!("TIMESTAMP has no clock demand")
+        }
+        fn date_modes(&self) -> tidb_datatype::DateModes {
+            panic!("TIMESTAMP has no date-mode demand")
+        }
+        fn truncate_level(&self) -> crate::context::ErrorLevel {
+            panic!("TIMESTAMP warnings are direct")
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.warnings.borrow_mut().push((code, message.to_owned()));
+        }
+    }
+    let s = |text: &str| Datum::new_string(text);
+    let invalid = || Datum::new_bytes(vec![0xff]);
+    let resource = |error: EvalError| {
+        let EvalError::ExpressionAdapterFailure(failure) = error else {
+            panic!("{error:?}")
+        };
+        assert_eq!(
+            failure.class(),
+            crate::ExpressionAdapterFailureClass::PoolResource
+        );
+        assert_eq!(
+            failure.origin(),
+            crate::ExpressionAdapterFailureOrigin::Pool
+        );
+    };
+    for slots in [1, 0] {
+        let owner = crate::AsciiPoolOwner::new(
+            crate::AsciiPoolPolicy::checked(
+                slots,
+                slots,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let ctx = Demand {
+            zones: Cell::new(0),
+            warnings: RefCell::new(Vec::new()),
+        };
+        for (values, zones, warning) in [
+            (vec![Datum::Null], 0, false),
+            (vec![Datum::Null, invalid()], 0, false),
+            (vec![s("bad")], 1, true),
+            (vec![s("bad"), invalid()], 1, true),
+            (vec![s("bad"), Datum::Null], 1, true),
+            (vec![s("2020-01-01"), Datum::Null], 1, false),
+            (vec![s("2020-01-01"), s("bad")], 1, false),
+            (vec![s("0000-12-31"), s("838:00:00")], 1, false),
+        ] {
+            ctx.zones.set(0);
+            ctx.warnings.borrow_mut().clear();
+            let result = execution
+                .scope()
+                .with_columns(&ctx, |columns| timestamp(&values, columns));
+            if slots == 0 {
+                resource(result.unwrap_err());
+            } else {
+                assert_eq!(result.unwrap(), Datum::Null);
+            }
+            assert_eq!(ctx.zones.get(), zones);
+            let expected = if slots == 1 && warning {
+                vec![(1292, "Incorrect datetime value: 'bad'".to_owned())]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(*ctx.warnings.borrow(), expected);
+        }
+        // Every successfully parsed head demands RHS coercion, including year
+        // zero. A denied head must never reach this second-stage conversion.
+        for left in ["2020-01-01", "0000-00-00"] {
+            ctx.zones.set(0);
+            ctx.warnings.borrow_mut().clear();
+            let result = execution
+                .scope()
+                .with_columns(&ctx, |columns| timestamp(&[s(left), invalid()], columns));
+            if slots == 0 {
+                resource(result.unwrap_err());
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(EvalError::Unsupported("invalid UTF-8 byte datum"))
+                ));
+            }
+            assert_eq!(ctx.zones.get(), 1);
+            assert!(ctx.warnings.borrow().is_empty());
+        }
+        // These original prepare errors precede the head guard altogether.
+        for (values, error) in [
+            (vec![], "bad function arity"),
+            (
+                vec![Datum::Null, Datum::Null, invalid()],
+                "bad function arity",
+            ),
+            (vec![invalid(), Datum::Null], "invalid UTF-8 byte datum"),
+        ] {
+            ctx.zones.set(0);
+            assert!(
+                matches!(execution.scope().with_columns(&ctx, |columns| timestamp(&values, columns)), Err(EvalError::Unsupported(message)) if message == error)
+            );
+            assert_eq!(ctx.zones.get(), 0);
+            assert!(ctx.warnings.borrow().is_empty());
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn timestamp_workers_keep_source_kind_values_and_single_slot_continuation() {
+    struct Quiet;
+    impl Columns for Quiet {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn time_zone(&self) -> crate::context::SessionTimeZone {
+            crate::context::SessionTimeZone::utc()
+        }
+        fn now(&self) -> Option<(i64, u32, i32)> {
+            panic!("TIMESTAMP has no clock demand")
+        }
+        fn date_modes(&self) -> tidb_datatype::DateModes {
+            panic!("TIMESTAMP has no date-mode demand")
+        }
+        fn truncate_level(&self) -> crate::context::ErrorLevel {
+            panic!("TIMESTAMP has no truncation-policy demand")
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            panic!("valid heads and invalid durations must not warn")
+        }
+    }
+    let s = |text: &str| Datum::new_string(text);
+    let owner = crate::AsciiPoolOwner::new(
+        crate::AsciiPoolPolicy::checked(
+            1,
+            1,
+            16 * 1024 * 1024,
+            4 * 1024 * 1024,
+            4 * 1024 * 1024,
+            64,
+            8,
+            4 * 1024 * 1024,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let ctx = Quiet;
+    for (values, expected) in [
+        (vec![Datum::Int(20240315123045)], s("2024-03-15 12:30:45")),
+        (vec![Datum::UInt(20240315123045)], s("2024-03-15 12:30:45")),
+        (
+            vec![Datum::Decimal(tidb_datatype::Decimal::from_literal(
+                "20240315.5",
+            ))],
+            s("2024-03-15 00:00:00.0"),
+        ),
+        (vec![Datum::Real(20240315.5)], s("2024-03-15 00:00:00.0")),
+        (vec![Datum::Float32(0.125)], s("0000-00-00 00:00:00.125")),
+        (vec![s("20240315.5")], s("2024-03-15 05:00:00.0")),
+        (
+            vec![s("2020-01-01"), s("01:00:00")],
+            s("2020-01-01 01:00:00"),
+        ),
+        (
+            vec![s("2020-01-01"), s("-01:00:00")],
+            s("2019-12-31 23:00:00"),
+        ),
+        (
+            vec![s("2020-01-01 10:00:00"), s("01:00:00.5")],
+            s("2020-01-01 11:00:00.5"),
+        ),
+        (
+            vec![s("2020-01-01"), s("1 05:00:00")],
+            s("2020-01-02 05:00:00"),
+        ),
+        (
+            vec![s("2020-01-01"), s("100:00:00")],
+            s("2020-01-05 04:00:00"),
+        ),
+        (
+            vec![s("0001-01-01"), s("838:00:00")],
+            s("0001-02-04 22:00:00"),
+        ),
+        (vec![s("0000-12-31"), s("838:00:00")], Datum::Null),
+        (vec![s("2020-01-01"), s("2020-01-01 05:00:00")], Datum::Null),
+        (vec![s("2020-01-01"), s("bad")], Datum::Null),
+        (vec![s("9999-12-31 23:59:59"), s("00:00:01")], Datum::Null),
+    ] {
+        assert_eq!(
+            execution
+                .scope()
+                .with_columns(&ctx, |columns| timestamp(&values, columns))
+                .unwrap(),
+            expected,
+            "{values:?}"
+        );
+    }
+    // The ordinary one-shot facade also needs the head's scoped continuation,
+    // rather than opening another NoColumns invocation for the addition.
+    assert_eq!(
+        timestamp(&[s("2020-01-01"), s("01:00:00")], &crate::NoColumns).unwrap(),
+        s("2020-01-01 01:00:00")
+    );
 }
 
 /// `builtinTimestampAddSig.evalString` + `addUnitToTime`.

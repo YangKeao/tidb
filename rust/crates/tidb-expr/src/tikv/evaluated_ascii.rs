@@ -2238,6 +2238,10 @@ fn materialize_computed(
             | EvaluatedBytesOp::DateLiteralNative
             | EvaluatedBytesOp::TimestampLiteralNative
             | EvaluatedBytesOp::ConvertTzNative
+            | EvaluatedBytesOp::Timestamp1Native
+            | EvaluatedBytesOp::Timestamp2BaseNative
+            | EvaluatedBytesOp::Timestamp2AddNative
+            | EvaluatedBytesOp::TimestampNullNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative
@@ -2446,7 +2450,7 @@ fn materialize_computed(
 fn evaluate_scoped_args<T>(
     scope: &AsciiScope,
     prepare: impl FnOnce() -> Result<(EvaluatedBytesOp, EvaluatedArgs), EvalError>,
-    pack: impl FnOnce(EvaluatedBytesResult) -> Result<T, EvalError>,
+    pack: impl FnOnce(EvaluatedBytesResult, &AsciiScope) -> Result<T, EvalError>,
 ) -> Result<T, AsciiBoundaryError> {
     let mut guard = NativeGuard::new(scope);
     let result = (|| {
@@ -2457,7 +2461,8 @@ fn evaluate_scoped_args<T>(
         let result = invocation.run_args(operation, ready);
         let computed = invocation.finish(result)?;
         // No worker/cell/mutex borrow surrounds original native result packing.
-        pack(materialize_computed(operation, computed)?).map_err(AsciiBoundaryError::Frontend)
+        pack(materialize_computed(operation, computed)?, scope)
+            .map_err(AsciiBoundaryError::Frontend)
     })();
     guard.disarm(); // ordinary Result::Err is never an unwind or native replay
     result
@@ -2467,6 +2472,31 @@ pub(crate) fn evaluate_prepared_args_in<T>(
     ctx: &dyn Columns,
     prepare: impl FnOnce() -> Result<(EvaluatedBytesOp, EvaluatedArgs), EvalError>,
     pack: impl FnOnce(EvaluatedBytesResult) -> Result<T, EvalError>,
+) -> Result<T, EvalError> {
+    route_prepared_args_in(ctx, prepare, |computed, _scope| pack(computed))
+}
+
+/// Lend the selected authority to a dependent stage after the first lease has
+/// finished and its result is owned. The existing guard and one-shot owner
+/// remain alive through this callback; no worker borrow crosses it.
+///
+/// Bind directly rather than rediscovering a possibly different scope through
+/// `with_columns`. Callers must use these columns for their dependent stage.
+pub(crate) fn evaluate_prepared_args_scoped_in<T>(
+    ctx: &dyn Columns,
+    prepare: impl FnOnce() -> Result<(EvaluatedBytesOp, EvaluatedArgs), EvalError>,
+    pack: impl FnOnce(EvaluatedBytesResult, &dyn Columns) -> Result<T, EvalError>,
+) -> Result<T, EvalError> {
+    route_prepared_args_in(ctx, prepare, |computed, scope| {
+        let columns = ScopedAsciiColumns { native: ctx, scope };
+        pack(computed, &columns)
+    })
+}
+
+fn route_prepared_args_in<T>(
+    ctx: &dyn Columns,
+    prepare: impl FnOnce() -> Result<(EvaluatedBytesOp, EvaluatedArgs), EvalError>,
+    pack: impl FnOnce(EvaluatedBytesResult, &AsciiScope) -> Result<T, EvalError>,
 ) -> Result<T, EvalError> {
     if let Some(scope) = ctx.evaluated_ascii_scope() {
         return evaluate_scoped_args(scope, prepare, pack)

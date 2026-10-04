@@ -1443,6 +1443,12 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::DateLiteralNative | EvaluatedBytesOp::TimestampLiteralNative => {
             panic!("temporal literals need their actual text, modes and owned session timezone")
         }
+        EvaluatedBytesOp::Timestamp1Native
+        | EvaluatedBytesOp::Timestamp2BaseNative
+        | EvaluatedBytesOp::Timestamp2AddNative
+        | EvaluatedBytesOp::TimestampNullNative => {
+            panic!("TIMESTAMP needs its actual parse text, computed base, or evaluated NULL")
+        }
         EvaluatedBytesOp::ConvertTzNative => {
             panic!("CONVERT_TZ needs its three actual nullable coerced strings")
         }
@@ -2194,6 +2200,251 @@ fn json_merge_sdk_rejects_bad_frames_and_preserves_empty_patch_panic() {
     assert_eq!(owner.snapshot().unwrap(), disposed);
     drop(scope);
     execution.close();
+}
+
+#[test]
+fn scoped_prepared_gateway_keeps_authority_through_nested_pack_and_cleanup() {
+    struct Authority<'a> {
+        scope: Option<&'a AsciiScope>,
+        execution: &'a AsciiExecution,
+        scope_reads: Cell<usize>,
+        execution_reads: Cell<usize>,
+    }
+    impl Columns for Authority<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            Some(Datum::Int(77))
+        }
+        fn evaluated_ascii_scope(&self) -> Option<&AsciiScope> {
+            let reads = self.scope_reads.replace(self.scope_reads.get() + 1);
+            assert_eq!(
+                reads, 0,
+                "the original scope authority must not be rediscovered"
+            );
+            self.scope
+        }
+        fn evaluated_ascii_execution(&self) -> Option<&AsciiExecution> {
+            let reads = self.execution_reads.replace(self.execution_reads.get() + 1);
+            assert_eq!(
+                reads, 0,
+                "the original execution authority must not be rediscovered"
+            );
+            Some(self.execution)
+        }
+    }
+    // Each route gets the same one-slot, actual computed-bytes pipeline.
+    // Actions cover success, a nested frontend Err, callback unwind and an
+    // epoch closed by the callback before its second-stage admission.
+    for route in 0..3 {
+        for action in 0..4 {
+            let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+            let execution = owner.begin_execution().unwrap();
+            let scope = execution.scope();
+            let decoy_owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+            let decoy_execution = decoy_owner.begin_execution().unwrap();
+            let authority = Authority {
+                scope: (route == 1).then_some(&scope),
+                execution: if route == 1 {
+                    &decoy_execution
+                } else {
+                    &execution
+                },
+                scope_reads: Cell::new(0),
+                execution_reads: Cell::new(0),
+            };
+            let columns: &dyn Columns = if route == 0 {
+                &crate::NoColumns
+            } else {
+                &authority
+            };
+            let seen_execution = RefCell::new(None::<AsciiExecution>);
+            let prepares = Cell::new(0);
+            let packs = Cell::new(0);
+            let frontend = EvalError::Unsupported("nested frontend sentinel");
+            arm_eval_one_observation();
+            let caught = catch_unwind(AssertUnwindSafe(|| {
+                evaluate_prepared_args_scoped_in(
+                    columns,
+                    || {
+                        prepares.set(prepares.get() + 1);
+                        Ok((
+                            EvaluatedBytesOp::Reverse,
+                            EvaluatedArgs::Bytes(Some(b"abc".to_vec())),
+                        ))
+                    },
+                    |computed, bound| {
+                        packs.set(packs.get() + 1);
+                        let head = computed.into_bytes()?;
+                        assert_eq!(head.as_deref(), Some(b"cba".as_slice()));
+                        let selected = bound.evaluated_ascii_scope().unwrap();
+                        let selected_execution = bound.evaluated_ascii_execution().unwrap();
+                        assert!(Arc::ptr_eq(
+                            &selected.execution.core,
+                            &selected_execution.core
+                        ));
+                        assert_eq!(selected.execution.epoch, selected_execution.epoch);
+                        if route != 0 {
+                            assert!(Arc::ptr_eq(&selected_execution.core, &execution.core));
+                            assert_eq!(selected_execution.epoch, execution.epoch);
+                        }
+                        if route == 1 {
+                            assert!(std::ptr::eq(selected, &scope));
+                        }
+                        assert_eq!(
+                            bound.get(&[]),
+                            if route == 0 {
+                                None
+                            } else {
+                                Some(Datum::Int(77))
+                            }
+                        );
+                        assert!(!selected.busy.get());
+                        assert!(selected.lease.try_borrow_mut().is_ok());
+                        *seen_execution.borrow_mut() = Some(selected_execution.clone());
+                        match action {
+                            0 => {
+                                let first = scope_worker_observation(selected);
+                                let result = evaluate_prepared_args_scoped_in(
+                                    bound,
+                                    || Ok((EvaluatedBytesOp::Reverse, EvaluatedArgs::Bytes(head))),
+                                    |computed, nested| {
+                                        assert!(std::ptr::eq(
+                                            nested.evaluated_ascii_scope().unwrap(),
+                                            selected
+                                        ));
+                                        let nested_execution =
+                                            nested.evaluated_ascii_execution().unwrap();
+                                        assert!(Arc::ptr_eq(
+                                            &nested_execution.core,
+                                            &selected_execution.core
+                                        ));
+                                        assert_eq!(
+                                            nested_execution.epoch,
+                                            selected_execution.epoch
+                                        );
+                                        computed.into_bytes()
+                                    },
+                                )?;
+                                let second = scope_worker_observation(selected);
+                                assert_eq!(first.0, second.0);
+                                assert_eq!(second.1, first.1 + 1);
+                                Ok(result)
+                            }
+                            1 => evaluate_prepared_args_scoped_in(
+                                bound,
+                                || Err(frontend.clone()),
+                                |_, _| -> Result<Option<Vec<u8>>, EvalError> {
+                                    panic!("failed preparation must not pack")
+                                },
+                            ),
+                            2 => panic!("native callback unwind after the first parked result"),
+                            3 => {
+                                selected_execution.close();
+                                evaluate_prepared_args_scoped_in(
+                                    bound,
+                                    || Ok((EvaluatedBytesOp::Reverse, EvaluatedArgs::Bytes(head))),
+                                    |_, _| -> Result<Option<Vec<u8>>, EvalError> {
+                                        panic!("closed second stage must not pack")
+                                    },
+                                )
+                            }
+                            _ => unreachable!(),
+                        }
+                    },
+                )
+            }));
+            let observation = take_eval_one_observation();
+            assert_eq!((prepares.get(), packs.get()), (1, 1));
+            assert_eq!(
+                (authority.scope_reads.get(), authority.execution_reads.get()),
+                match route {
+                    0 => (0, 0),
+                    1 => (1, 0),
+                    2 => (1, 1),
+                    _ => unreachable!(),
+                }
+            );
+            assert_eq!(observation.facade_entries, if action == 0 { 2 } else { 1 });
+            assert_eq!(observation.before_kernel_invocations, Some(0));
+            assert_eq!(
+                observation.after_kernel_invocations,
+                Some(if action == 0 { 2 } else { 1 })
+            );
+            match action {
+                0 => assert_eq!(caught.unwrap(), Ok(Some(b"abc".to_vec()))),
+                1 => assert_eq!(caught.unwrap(), Err(frontend)),
+                2 => assert!(caught.is_err()),
+                3 => assert!(
+                    matches!(caught.unwrap(), Err(EvalError::ExpressionAdapterFailure(failure))
+                    if failure.class() == crate::ExpressionAdapterFailureClass::PoolClosed)
+                ),
+                _ => unreachable!(),
+            }
+            let selected_execution = seen_execution.into_inner().unwrap();
+            let selected_owner = AsciiPoolOwner {
+                core: Arc::clone(&selected_execution.core),
+            };
+            assert_eq!(selected_owner.snapshot().unwrap().factory_successes, 1);
+            assert_eq!(
+                selected_execution
+                    .core
+                    .check_epoch(selected_execution.epoch)
+                    .is_ok(),
+                route != 0 && action != 3
+            );
+            if route == 1 {
+                assert_eq!(scope.poisoned.get(), action >= 2);
+            }
+            assert_eq!(decoy_owner.snapshot().unwrap().factory_attempts, 0);
+            if route == 0 {
+                assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+            }
+            drop(scope);
+            selected_execution.close();
+            execution.close();
+            decoy_execution.close();
+            let snapshot = selected_owner.snapshot().unwrap();
+            assert_eq!(
+                (
+                    snapshot.live,
+                    snapshot.idle,
+                    snapshot.creating,
+                    snapshot.retiring,
+                    snapshot.uncertain
+                ),
+                (0, 0, 0, 0, 0)
+            );
+            assert_eq!(snapshot.retired, 1);
+            assert_eq!(snapshot.reserved_bytes, snapshot.base_bytes);
+        }
+    }
+    // Both entry points preserve the original frontend error before any C4
+    // work on the genuine no-capability route, without calling the packer.
+    for scoped in [false, true] {
+        let frontend = EvalError::Unsupported("prepare before one-shot allocation");
+        let (result, observation) = observe_wide_math(|| {
+            if scoped {
+                evaluate_prepared_args_scoped_in(
+                    &crate::NoColumns,
+                    || Err(frontend.clone()),
+                    |_, _| -> Result<Option<Vec<u8>>, EvalError> {
+                        panic!("frontend error must not pack")
+                    },
+                )
+            } else {
+                evaluate_prepared_args_in(
+                    &crate::NoColumns,
+                    || Err(frontend.clone()),
+                    |_| -> Result<Option<Vec<u8>>, EvalError> {
+                        panic!("frontend error must not pack")
+                    },
+                )
+            }
+        });
+        assert_eq!(result, Err(frontend));
+        assert_eq!(observation.facade_entries, 0);
+        assert_eq!(observation.before_kernel_invocations, None);
+        assert_eq!(observation.after_kernel_invocations, None);
+    }
 }
 
 #[test]

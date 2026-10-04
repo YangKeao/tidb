@@ -1,0 +1,44 @@
+timestamp-78 / R80. Previous pair native46720d55e4197e75f0c320600533aa9c8c8f48ff / CPPaa4082fa46ade513a58dc57b9cd2d712b41d69ac.
+9 serialized --locked Cargo launches:8 nonzero completed test runs,6 green,2 unchanged old full-suite failures;1 compile failure before tests and1 retry. No interrupted or zero-match run. All9 new tests pass their first executed matching gate; no runtime assertion or oracle correction. Counts passed/failed/ignored/filtered; timings compile/elapsed. Raw template /home/agent/tidb/expression-unification/logs/timestamp-{id}.log.
+
+CPP cwd=/home/agent/tidb/expression-unification/tikv:
+1. ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_core_fields -- --test-threads=1
+id=tikv-datatype sha256=c20656f9d82064120c1299e9446620e556029c6556b0d78c1a6461dabf41922a
+1/0/0/452;2.87/0.00s;exit0.
+2. ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_timestamp:: -- --test-threads=1
+id=tikv-core sha256=7fddce8f6f9b036e51334cdba62f15a34ecfb3d50b71a803df6e0c71920883fd
+2/0/0/935;17.68/0.00s;exit0.
+3. ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local -- --test-threads=1
+id=tikv-local sha256=46639efe66a8cc2047b0c41888317d107c7e65b0720a95bb6a006ca9e4246af2
+330/0/1/606;0.15/0.23s;exit0.
+
+Native cwd=/home/agent/tidb/expression-unification/tidb/rust:
+4. ../../tools/cargo-tidb test --locked -p tidb-expr --lib timestamp -- --test-threads=1
+id=native-root sha256=add8f32eb0bab254d0d8ed968ddbb879e4754beb3e27bdd53615670acd2a09b3
+exit101 COMPILE FAILURE two E0308 in the new gateway test. EvalError::Unsupported takes &'static str, not String; removed only two .to_owned() constructor calls. No test result/profile completion time and no production/oracle correction. Not a passing run or zero-match.
+5. ../../tools/cargo-tidb test --locked -p tidb-expr --lib timestamp -- --test-threads=1
+id=native-root-retry1 sha256=a7e1d416972bdaa95c757d257ff381d397847b9699539f865bdae978fb4aa823
+30/0/0/1642;10.00/0.03s;exit0.
+6. ../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii::tests -- --test-threads=1
+id=native-gateway sha256=a088c13296a65519abdfc6973ecb9e0befc0f64984fa92321e62260069ebde9c
+196/0/1/1475;0.20/0.36s;exit0.
+7. ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::evaluated_ascii_timestamp_preserves_source_kinds_staged_roots_and_declared_fsp -- --test-threads=1
+id=sql sha256=24699bd6e923b67dedbf9f8d56d169b13091bbae785a44764bd44d02561e3a49
+1/0/0/2225;31.48/0.09s;exit0.
+8. ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+id=expr-full sha256=8a154d9eb939a83e2316b4bd0e8bad36716e45cbac278e6d376467f2abb625e8
+1574/4/94/0;0.19/14.73s;exit101.
+9. ../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+id=unistore-full sha256=d23abc7d669e8d6a94eb30799b93839c81f3158d7c1eb0cabdd7d780d87022a1
+211/1/13/0;7.04/3.06s;exit101.
+
+Complete expression/unistore failure sections and final lists byte-equal R79 after replacing only numeric panic-thread IDs with THREAD (digest includes leading newline before failures:):
+expression411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+unistore2f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1
+No observed runtime regression. Prior planner mode-forwarding/CASTzero/INTDIVrawempty exceptions not repaired or separately rerun. Filters overlap; sums are not unique-test totals.
+
+SQL:10real stored-column cases×vectorflags0/1×poolslots1/0=40directSELECT plus2positive filters=42probes excluding setup. Normal20cells:10nonNULL DateTime and10NULL;20zero-slot target-root refusals;2filter matches. Numeric DECIMAL header21/1 vs packed VARCHAR19/0 with actualfsp1 preserves the old header/value distinction; typed DATETIME3+TIME1 yields23/3/fsp3. Two normal bad-left+NULL-right queries warn1292; all20zero-slot queries warn nothing, including that case. SQL children remain eager; only leaf RHS coercion is conditional. No added ETDatetime argument cast or PB/legacy admission.
+
+New gateway test covers3authority routes×4actions: trueNoColumns, explicitScope overriding conflicting0slotExecution, executionOnly; success/nestedfrontendErr/callbackpanic/close-before-secondstage. Actual Reverse output feeds second Reverse; same scope/core/epoch/worker, one original discovery, one factory/slot, callback afterfinish without busy lease. One-shot closes on success/error/panic; borrowed owner is not silently closed. Final retired1/reservedbase and live/idle/creating/retiring/uncertain0. Native TIMESTAMP tests additionally execute real differing head/add profiles in one slot and preserve all RHS/warning demand, including yearzero.
+
+CPP252/native361 original test bodies byte-identical.15Rust(10CPP/5native),1newmodule,9newtests(1datatype/4CPPexpr/3nativeexpr/1SQL). Time::native_core_fields only reuses existing getters; native_date_fields still clears clock first. No bit-layout reimplementation, calendar validation, dependency/lock/Go/Bazel/generated/fixture change. Final pinned format check initially found one new match-arm line-wrap difference in local/batch.rs; a second formatting pass and immediate check corrected only that layout. Final formatting/diff checks pass; no provider recording. An auxiliary source lookup initially used time_fn/datetime.rs; glob corrected it to src/tests/datetime.rs before inspection, unrelated to Cargo/runtime. Historical paperwork correction: R79 used8 exclusive subagents, not7; R80 uses7 plus parent integration. Deeper lint/workspace/release/performance/allocator/heap/OOM/M6 verification deferred.
