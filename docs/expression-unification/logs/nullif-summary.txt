@@ -1,0 +1,55 @@
+nullif-87 / R90
+CPP cwd: /home/agent/tidb/expression-unification/tikv
+Native cwd: /home/agent/tidb/expression-unification/tidb/rust
+Raw logs: /home/agent/tidb/expression-unification/logs/nullif-{id}.log
+Counts passed/failed/ignored/filtered; compile_seconds/test_seconds.
+
+tikv-core | 1/0/0/958 | 11.64/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_if::tests::null_if -- --test-threads=1
+sha256 c92af913698588712c4cfa6ba4f154e06e4bc6d6edb679eb8691ed77973dbebf
+
+tikv-local | 339/0/1/619 | 0.13/0.23 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+sha256 e9bd23bda4da3a42fb568c476435644732bc7bd2725a13ffffe76ef6b88bd5cd
+
+native-root | 2/0/0/1692 | 16.25/0.01 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib nullif_ -- --test-threads=1
+sha256 1f652d30a3f555ec0f1786c09b0f680001db5be160feb75d499da7649dedd02e
+
+native-bridge | 1/0/0/1693 | 0.13/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib null_if_bridge -- --test-threads=1
+sha256 828e96566fc6617dcad107cba6fdd4f40d7578096e403b687eeeb3a84508696c
+
+native-gateway | 196/0/1/1497 | 0.13/0.34 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii -- --test-threads=1
+sha256 cdb4f1b64279aee8f128ad1abb60c67e54998e317e6a4bd86d995c2a42e4e5da
+
+sql | 0/1/0/2233 | 21.92/0.03 | exit101 | NEW test oracle error
+../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_nullif_preserves -- --test-threads=1
+sha256 c6a306006e8c9fa5883e09b24186eabc24ee4f123839229dc8192270abd6ef8b
+
+expr-full | 1596/4/94/0 | 0.14/14.95 | exit101 | OLD failures unchanged
+../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+sha256 abc082116ca25af169443db45828c26988bd3df12643ae2feeb27e4ed371bcf5
+
+unistore-full | 218/1/13/0 | 6.29/3.06 | exit101 | OLD failure unchanged
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+sha256 acb8ebd26994479592f49b7a47f7bf0b6a6a220e3afbc4742ed3b0afff6c7363
+
+sql-final | 1/0/0/2233 | 4.02/0.07 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_nullif_preserves -- --test-threads=1
+sha256 4604da75a4a8ded897c5a7cadf3fd0e18e4001666cae62077a0022592ca9a01f
+
+Nine locked nonzero launches:6green,1new-test-oracle RED,2only-old full RED. All6new tests pass finally;5first matching executions pass, SQL passes after source-derived expectation correction. No compile failure, zero-match, interrupted test or fixture recording. Counts overlap across filters.
+
+SQL initial failure lifecycle.rs9452: expected VARCHAR first-column metadata(8,-1), actual(8,0). Correction is NOT re-recorded from output: tidb-executor/src/ddl/column_field_type.rs254-256 sets declared flen8,286-289 substitutes default_decimal and316 stores it; tidb-datatype/src/field_type/mod.rs311 sets Varchar/VarString default decimal0; tidb-expr/src/rewriter/result_type.rs1610 clones NULLIF arg0 type. Derived String IF/CASE policy is different. Only this new expected pair and its source comment changed; production and old tests remain unchanged. Both initial and final logs retained.
+
+Entire failure sections byte-equal to case-86 expression/unistore sections after only numeric panic-heading thread IDs become THREAD:
+expression 411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+unistore 2f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1
+
+native-root explicitly passes func::nullif_workers_keep_eager_operands_comparison_policy_and_left_identity AND existing tests::compare_time_builtin_rows_source::test_compare_builtin_nullif_rows. Separate native-bridge isolates the new selector using completed comparison callbacks with no earlier worker; real dispatcher tests validate actual left even when equal and input capacity charging for NULL output.
+
+SQL38SELECT=8stored pairs×2vector×2pool=32direct (16positive/16EXISTING-COMPARISON-stage zero-slot refusals)+4positive-only eager RHS invalid-regexp errors (including NULLlhs)+2positive filters. The16SQL zero-slot refusals do NOT prove new NULLIF-selector-root admission; selector-root SQL proof count=0. Original eager operand behavior and first-argument Decimal8/1, VARCHAR8/0 and Datetime19/0 metadata stay intact. SQL rewriter directly constructs ScalarFunction after unknown-name count validation succeeds; separate registered FunctionBuilder still rejects NULLIF. No registry or PB/legacy admission added.
+
+Pinned rustfmt --edition 2021 --config skip_children=true --check:8CPP files with /home/agent/tidb/expression-reuse/rustup-home/toolchains/nightly-2026-01-30-x86_64-unknown-linux-gnu/bin/rustfmt;6native files with corresponding nightly-2026-08-22 executable. Both git diff --check pass. Source audit:130CPP/378native original #[test] bodies byte-identical;3CPP/3native new tests. Independent E production review reports no blocker. Agent-doc review remains descriptive, without new policy. No Go/Bazel/Cargo/lock/generated changes; compile.rs unchanged. No lint/dev/workspace/release/performance/physical-OOM or PR-readiness claim.

@@ -9363,6 +9363,184 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_nullif_preserves_eager_sql_values_and_comparison_pool_refusals() {
+    use tidb_datatype::{FieldTypeCode, TimeType};
+
+    // SQL's existing Expr::Func rewrite constructs ScalarFunction directly;
+    // this test does not add a registry entry or change FunctionBuilder's
+    // separate refusal. Both arguments remain eagerly evaluated.
+    let create = "CREATE TABLE shared_nullif_sql (lhs_i BIGINT, rhs_equal BIGINT, rhs_unequal BIGINT, null_i BIGINT, lhs_d DECIMAL(8,1), rhs_d DECIMAL(10,3), lhs_s VARCHAR(8), rhs_s VARCHAR(12), lhs_t DATETIME, rhs_t DATETIME(3), lhs_j JSON, rhs_j JSON, subject VARCHAR(8), bad_pattern VARCHAR(8))";
+    let insert = "INSERT INTO shared_nullif_sql VALUES (1,1,2,NULL,1.5,123.123,'abc','xyz','2020-10-10 12:59:59','2020-10-10 12:59:59.123','[1]','[2]','x','[')";
+    // Fixed original NULLIF rule: equality returns NULL, otherwise the actual
+    // first value survives. Its type is arg0's, NOT a merged CASE branch type.
+    let cases = [
+        (
+            "lhs_i,rhs_equal",
+            FieldTypeCode::LongLong,
+            Some((20, 0)),
+            None,
+        ),
+        (
+            "lhs_i,rhs_unequal",
+            FieldTypeCode::LongLong,
+            Some((20, 0)),
+            Some("1"),
+        ),
+        ("null_i,lhs_i", FieldTypeCode::LongLong, Some((20, 0)), None),
+        (
+            "lhs_i,null_i",
+            FieldTypeCode::LongLong,
+            Some((20, 0)),
+            Some("1"),
+        ),
+        (
+            "lhs_d,rhs_d",
+            FieldTypeCode::NewDecimal,
+            Some((8, 1)),
+            Some("1.5"),
+        ),
+        // DDL fills VARCHAR's default decimal with 0. NULLIF clones that
+        // column type, without the control-family String reset to -1.
+        (
+            "lhs_s,rhs_s",
+            FieldTypeCode::Varchar,
+            Some((8, 0)),
+            Some("abc"),
+        ),
+        (
+            "lhs_t,rhs_t",
+            FieldTypeCode::Datetime,
+            Some((19, 0)),
+            Some("2020-10-10 12:59:59"),
+        ),
+        ("lhs_j,rhs_j", FieldTypeCode::Json, None, Some("[1]")),
+    ];
+    // IMPORTANT: the zero-slot half below proves the EXISTING comparison
+    // stage refuses. EQ runs before NULLIF's new selector for these domains;
+    // these refusals give NO selector-specific admission/root credit.
+    for comparison_slots in [1, 0] {
+        let mut session = Session::new();
+        session
+            .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+            .unwrap();
+        session.run("SET time_zone='+00:00'").unwrap();
+        session.run("SET sql_mode=''").unwrap();
+        session
+            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+            .unwrap();
+        session.run(create).unwrap();
+        session.run(insert).unwrap();
+        assert!(session
+            .try_install_evaluated_ascii_policy(ascii_session_policy(comparison_slots))
+            .unwrap());
+        for vectorized in [0, 1] {
+            session
+                .run(&format!(
+                    "SET tidb_enable_vectorized_expression={vectorized}"
+                ))
+                .unwrap();
+            for (args, code, shape, expected) in cases {
+                let sql = format!("SELECT NULLIF({args}) FROM shared_nullif_sql");
+                if comparison_slots == 1 {
+                    let StmtOutput::Rows { columns, rows } =
+                        session.run_with_columns(&sql).unwrap()
+                    else {
+                        panic!("expected NULLIF rows: {sql}")
+                    };
+                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
+                    let field = &columns[0].1;
+                    assert_eq!(field.code(), code, "{sql}/{vectorized}");
+                    if let Some(shape) = shape {
+                        assert_eq!((field.flen(), field.decimal()), shape, "{sql}/{vectorized}");
+                    }
+                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
+                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
+                    if let Some(expected) = expected {
+                        match (&rows[0][0], code) {
+                            (Datum::Int(_), FieldTypeCode::LongLong) => {}
+                            (Datum::Decimal(decimal), FieldTypeCode::NewDecimal) => {
+                                assert_eq!(decimal.declared_shape(), Some((8, 1)));
+                            }
+                            (Datum::String(_), FieldTypeCode::Varchar) => {
+                                assert_eq!(field.charset_name(), "utf8mb4");
+                                assert_eq!(field.collation_name(), "utf8mb4_bin");
+                            }
+                            (Datum::Time(time), FieldTypeCode::Datetime) => {
+                                assert_eq!(time.kind(), TimeType::DateTime);
+                                assert_eq!(time.fsp(), 0);
+                            }
+                            (Datum::Json(_), FieldTypeCode::Json) => {}
+                            other => panic!(
+                                "NULLIF changed its surviving first carrier: {sql}: {other:?}"
+                            ),
+                        }
+                        assert_eq!(cell_text(&rows[0][0]), expected, "{sql}/{vectorized}");
+                    } else {
+                        assert_eq!(rows[0][0], Datum::Null, "{sql}/{vectorized}");
+                    }
+                } else {
+                    // Plain columns isolate the comparison from other child
+                    // operators, but cannot isolate NULLIF's later selector.
+                    let error = session.run_with_columns(&sql).expect_err(&sql);
+                    match &error {
+                        DriverError::Exec(tidb_executor::ExecError::Eval(
+                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                        )) => {
+                            assert_eq!(failure.class(), tidb_executor::ExpressionAdapterFailureClass::PoolResource);
+                            assert_eq!(failure.origin(), tidb_executor::ExpressionAdapterFailureOrigin::Pool);
+                        }
+                        other => panic!("NULLIF's existing comparison bypassed its pool: {sql}/{vectorized}: {other:?}"),
+                    }
+                    let mysql = error.to_mysql_error();
+                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
+                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
+                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
+                }
+                assert!(
+                    warnings_of(&session).is_empty(),
+                    "{sql}/{vectorized}/comparison_slots={comparison_slots}"
+                );
+            }
+            if comparison_slots == 1 {
+                // Unlike IFNULL, even a NULL lhs cannot suppress RHS evaluation.
+                // All operands are stored, so neither invalid pattern folds.
+                for lhs in ["lhs_i", "null_i"] {
+                    let sql = format!(
+                        "SELECT NULLIF({lhs},subject REGEXP bad_pattern) FROM shared_nullif_sql"
+                    );
+                    let error = session.run_with_columns(&sql).expect_err(&sql);
+                    assert!(
+                        matches!(
+                            &error,
+                            DriverError::Exec(tidb_executor::ExecError::Eval(
+                                tidb_executor::EvalError::Unsupported(
+                                    "invalid regular expression pattern"
+                                )
+                            ))
+                        ),
+                        "{error:?}"
+                    );
+                    let mysql = error.to_mysql_error();
+                    assert_eq!(mysql.code, 1105);
+                    assert_eq!(mysql.state, *b"HY000");
+                    assert_eq!(mysql.message, "invalid regular expression pattern");
+                }
+                let StmtOutput::Rows { rows, .. } = session
+                    .run_with_columns(
+                        "SELECT 1 FROM shared_nullif_sql WHERE NULLIF(lhs_i,rhs_unequal)=1",
+                    )
+                    .unwrap()
+                else {
+                    panic!("expected NULLIF predicate rows")
+                };
+                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
+                assert!(warnings_of(&session).is_empty());
+            }
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_case_preserves_sql_branch_casts_lazy_selection_and_runtime_roots() {
     use tidb_datatype::{FieldTypeCode, TimeType};
 

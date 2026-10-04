@@ -1,30 +1,32 @@
 # Expression unification experiment
 
 Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
-Current checkpoint: **case-86**, following **coalesce-85**.
+Current checkpoint: **nullif-87**, following **case-86**.
 
-Functional coverage: **225/245 (91.84%)**; strict final-audited count: **0**. All224 previous family objects are byte-identical; only CASE is added. **The overall goal remains active.**
+Functional coverage: **226/245 (92.24%)**; strict final-audited count: **0**. All225 prior family objects are byte-identical; only NULLIF is added. **The overall goal remains active.**
 
-## CASE introduces no SDK profile
+## NULLIF result selection belongs to TiKV
 
-Actual condition chains reuse IF Head/Finish. Only computed Then/Else reports select a value or request a later condition; selected NULL stops. Genuine no-ELSE exhaustion uses CoalesceEnd. A statically sole ELSE is evaluated in original preparation, then passed to AnyValue—no fabricated condition/report or admission seed.
+Original eager operands, clones and equality once are retained. `tikv/null_if.rs` completes comparison before encoding the actual left, even when equal. `NullIfNative` uses existing BytesInt transport. One TiKV borrowed selector supplies both actual kernel execution and exact reply-length preflight; the dispatcher still runs and NULL output does not erase left input capacity.
 
-AST/typed/PB selectors and pure-fold choice delegate. Three wire CASE functions share the existing IF chooser while retaining full Int and original ownership policies. Simple AST base-once (even zero WHENs/NULL base), rewritten typed per-WHEN evaluation, ordinary/PB truth conversion, fold/proof policies and original SQL branch casts remain distinct. Private IF decoding/finish helpers are reused; its existing regression passes.
+No synthetic operand, cached native answer, new carrier, driver or PB admission. SQL already supports NULLIF through direct rewriter construction; a separate registry-based FunctionBuilder still rejects it. Every successful equality domain already uses a Compare worker, so **SQL zero-slot refusal is comparison-stage evidence, not proof of the new NULLIF selector**. Direct bridge/dispatch tests isolate that selector.
 
 ## Validation
 
-[Evidence](evidence/case-checkpoint.md), [exact commands/hashes](logs/case-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
+[Evidence](evidence/nullif-checkpoint.md), [exact commands/hashes](logs/nullif-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
 
-All7new tests pass on first matching execution. SQL54SELECT probes:48searched column-root cases (24zero-slot refusals),4lazy-error checks and2positive-only simple-CASE filters. Existing SQL branch casts explain Decimal1.500/Datetime.000; simple-CASE filters are not claimed as CASE zero-slot roots or AST base-once evidence.
+Six new tests finally pass. One new SQL expectation initially failed: VARCHAR arg0 metadata is8/0, not the derived-string8/-1 used by CASE/IF. Corrected only from DDL default/type-clone source; production and old tests unchanged, initial RED retained.
 
-Ten locked launches:8green,2unchanged old full RED. CPP core1/wire2/local337+1ignored; native root18, IF regression1, gateway196+1ignored, six-signature legacy1 and SQL1 pass. Full expression **1594/4old/94ignored** and unistore **218/1old/13ignored** retain byte-identical normalized failure sections. No compile failure, new execution failure, zero-match, interrupted test or fixture recording.
+SQL38SELECT probes:32stored-column cases (16positive,16comparison-stage zero-slot),4eager RHS errors including NULLlhs,2filters. No new selector-root SQL claim.
 
-Pinned formatting/diff checks cover9native/2TiKV Rust files. One new native module and seven new tests;19CPP/318native original test bodies are byte-identical. No new profile/carrier/codec/driver/budget/PB admission, Cargo/lock, Go/Bazel or generated changes.
+Nine locked launches:6green,1new-test-oracle RED,2unchanged old full RED. CPP core1/local339+1ignored; native root2 including old NULLIF rows, bridge1, gateway196+1ignored; corrected SQL1 pass. Full expression **1596/4old/94ignored**, unistore **218/1old/13ignored** retain identical normalized failure sections. No compile failure, zero-match, interrupted test or fixture recording.
+
+Pinned formatting/diff checks cover6native/8TiKV Rust files; one new native module.130CPP/378native original test bodies are byte-identical, with3CPP/3native new tests. No Cargo/lock, Go/Bazel or generated changes; `compile.rs` and PB/legacy admission are unchanged.
 
 ## Remaining acceptance
 
-[Remaining review](evidence/remaining-acceptance.md): **6core**, **8ordinary pending**, **6complex exception candidates**—not20approved exceptions. Next NULLIF with original eager operand demand, CAST/M2, IN/extrema/INTERVAL, true request-owner lifecycle and final cross-entry evidence. Continue the accepted scoped design, not a universal compiler rewrite.
+[Remaining review](evidence/remaining-acceptance.md): **5core**, **8ordinary pending**, **6complex exception candidates**, not19approved exceptions. Continue ordinary CAST/M2, IN/extrema/INTERVAL, actual request-owner lifecycle and final cross-entry evidence.
 
-Known baseline failures and documented INTDIV/CAST/mode/JSON/vector/older Values gaps remain. Workspace/lint/dev/bazel_prepare/release, exhaustive differential/TiFlash/FIPS, performance/physical heap or stack peak/OOM/allocator/zero-copy/dual-timezone footprint and complete Go-package transcreation are unverified. No PR-readiness claim.
+Known baseline failures and documented INTDIV/CAST/mode/JSON/vector/older Values gaps remain. Workspace/lint/dev/bazel_prepare/release, exhaustive differential/TiFlash/FIPS, performance/physical heap or stack/OOM/allocator/zero-copy/dual-timezone footprint and complete Go-package transcreation are unverified. No PR-readiness claim.
 
-Three Plans agree; the manifest pins their hash and paired TiKV commit. Publish TiKV then TiDB without force push or PR. Unrelated untracked client-differential BUILD.bazel remains excluded.
+Three Plans agree; the manifest pins their hash and paired TiKV commit. Publish TiKV then TiDB, without force push or PR. Unrelated untracked client-differential BUILD remains excluded.

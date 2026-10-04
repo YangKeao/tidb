@@ -758,11 +758,9 @@ pub(crate) fn eval_func_values(
         // `a`, which `eval_binary_in`'s NULL propagation reproduces.
         "NULLIF" if vals.len() == 2 => {
             let (a, b) = (vals[0].clone(), vals[1].clone());
-            let equal = match crate::ops::eval_binary_in(BinaryOp::Eq, a.clone(), b, ctx) {
-                Ok(v) => v == Datum::Int(1),
-                Err(e) => return Some(Err(e)),
-            };
-            Ok(if equal { Datum::Null } else { a })
+            crate::tikv::eval_null_if_in(ctx, &a, |original| {
+                crate::ops::eval_binary_in(BinaryOp::Eq, a.clone(), b, original)
+            })
         }
         // ---- string functions ----
         "CONCAT" if !vals.is_empty() => concat_with_context(vals, ctx),
@@ -2075,4 +2073,306 @@ fn coalesce_workers_keep_lazy_borrowed_identity_exhaustion_and_scope() {
         crate::eval_in(&nested, &crate::NoColumns).unwrap(),
         Datum::Int(7)
     );
+}
+
+#[cfg(test)]
+#[test]
+fn nullif_workers_keep_eager_operands_comparison_policy_and_left_identity() {
+    use crate::constant::{Constant, ParamMarker};
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    use std::cell::RefCell;
+    use tidb_datatype::{Collation, CoreTime, FieldType, FieldTypeCode, Time, TimeType};
+    struct Demand {
+        values: Vec<Datum>,
+        fail: Option<usize>,
+        level: crate::ErrorLevel,
+        events: RefCell<Vec<&'static str>>,
+        warnings: RefCell<Vec<(u16, String)>>,
+    }
+    impl Columns for Demand {
+        fn get(&self, path: &[String]) -> Option<Datum> {
+            self.param_value(path[0].parse().unwrap()).ok()
+        }
+        fn param_value(&self, index: usize) -> Result<Datum, EvalError> {
+            self.events
+                .borrow_mut()
+                .push(["left", "right", "extra"][index]);
+            if self.fail == Some(index) {
+                return Err(EvalError::Unsupported("NULLIF demanded child"));
+            }
+            Ok(self.values[index].clone())
+        }
+        fn div_precision_increment(&self) -> u32 {
+            self.events.borrow_mut().push("precision");
+            4
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            self.events.borrow_mut().push("policy");
+            self.level
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.events.borrow_mut().push("warning");
+            self.warnings.borrow_mut().push((code, message.to_owned()));
+        }
+        fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+            panic!("these NULLIF comparisons do not demand a timezone")
+        }
+        fn date_modes(&self) -> tidb_datatype::DateModes {
+            panic!("these NULLIF comparisons do not demand date modes")
+        }
+    }
+    fn context(values: Vec<Datum>, fail: Option<usize>, level: crate::ErrorLevel) -> Demand {
+        Demand {
+            values,
+            fail,
+            level,
+            events: RefCell::new(Vec::new()),
+            warnings: RefCell::new(Vec::new()),
+        }
+    }
+    fn frame(value: &Datum) -> Option<Vec<u8>> {
+        let crate::tikv::EvaluatedArgs::Bytes(bytes) =
+            crate::tikv::prepare_datum_identity_args(value).unwrap()
+        else {
+            panic!("expected actual nullable identity")
+        };
+        bytes
+    }
+    fn owner(slots: usize) -> crate::AsciiPoolOwner {
+        crate::AsciiPoolOwner::new(
+            crate::AsciiPoolPolicy::checked(
+                slots,
+                slots,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+    let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    let evaluate = |mode, values: &[Datum], first_type: &FieldType, columns: &dyn Columns| {
+        if mode == 0 {
+            let args = (0..values.len())
+                .map(|index| Expr::Column(vec![index.to_string()]))
+                .collect::<Vec<_>>();
+            Some(eval_func("NULLIF", &args, columns, None))
+        } else if mode == 1 {
+            let args = (0..values.len())
+                .map(|index| {
+                    let field = if index == 0 {
+                        first_type.clone()
+                    } else {
+                        FieldType::new(FieldTypeCode::Double)
+                    };
+                    let mut constant = Constant::new(Datum::Null, field);
+                    constant.param_marker = Some(ParamMarker {
+                        order: index as i64,
+                    });
+                    Expression::Constant(constant)
+                })
+                .collect::<Vec<_>>();
+            let inferred = crate::rewriter::result_type::builtin_return_type("nullif", &args);
+            if !args.is_empty() {
+                assert_eq!(inferred.as_ref(), Some(first_type));
+            }
+            Some(
+                ScalarFunction::new(
+                    tidb_ast::CiString::new("nullif"),
+                    inferred.unwrap_or_else(|| first_type.clone()),
+                    args,
+                )
+                .eval(columns, empty.to_row()),
+            )
+        } else {
+            eval_func_values_in("NULLIF", values, columns)
+        }
+    };
+    let integer = FieldType::new(FieldTypeCode::LongLong);
+    let mut text_type = FieldType::new(FieldTypeCode::VarString).with_collation(Collation::GbkBin);
+    text_type.set_flen(13);
+    let text = Datum::new_collation_string(b"Keep".to_vec(), Collation::GbkBin);
+    let mut time_type = FieldType::new(FieldTypeCode::Datetime);
+    time_type.set_decimal(4);
+    let time = Datum::Time(Time::from_raw_parts(
+        CoreTime::from_date(2024, 1, 2, 3, 4, 5, 123456),
+        TimeType::DateTime,
+        4,
+    ));
+    let pool = owner(1);
+    let execution = pool.begin_execution().unwrap();
+    for (left, right, field, expected) in [
+        (Datum::Int(1), Datum::Int(1), integer.clone(), Datum::Null),
+        (Datum::Null, Datum::Int(9), integer.clone(), Datum::Null),
+        (Datum::Int(7), Datum::Null, integer.clone(), Datum::Int(7)),
+        (Datum::Int(7), Datum::Int(8), integer.clone(), Datum::Int(7)),
+        (
+            Datum::Int(150),
+            Datum::Real(150.0),
+            integer.clone(),
+            Datum::Null,
+        ),
+        (text.clone(), Datum::new_string("other"), text_type, text),
+        (time.clone(), Datum::Null, time_type, time),
+    ] {
+        let ctx = context(vec![left, right], None, crate::ErrorLevel::Error);
+        for mode in 0..3 {
+            let result = execution
+                .scope()
+                .with_columns(&ctx, |c| evaluate(mode, &ctx.values, &field, c))
+                .unwrap()
+                .unwrap();
+            assert_eq!(frame(&result), frame(&expected));
+            assert_eq!(
+                ctx.events.take(),
+                if mode == 2 {
+                    vec!["precision"]
+                } else {
+                    vec!["left", "right", "precision"]
+                }
+            );
+            assert!(ctx.warnings.take().is_empty());
+        }
+    }
+    // NULL on the left does not suppress the original eager RHS evaluation.
+    for failed in [0, 1] {
+        let ctx = context(
+            vec![Datum::Null, Datum::Int(1)],
+            Some(failed),
+            crate::ErrorLevel::Error,
+        );
+        for mode in 0..2 {
+            let result = execution
+                .scope()
+                .with_columns(&ctx, |c| evaluate(mode, &ctx.values, &integer, c))
+                .unwrap();
+            assert!(
+                matches!(result, Err(EvalError::Unsupported(message)) if message == if mode == 0 { "unknown column" } else { "NULLIF demanded child" })
+            );
+            assert_eq!(
+                ctx.events.take(),
+                if failed == 0 {
+                    vec!["left"]
+                } else {
+                    vec!["left", "right"]
+                }
+            );
+        }
+    }
+    for count in [0, 1, 3] {
+        let ctx = context(
+            vec![Datum::Null, Datum::Int(1), Datum::Int(2)],
+            None,
+            crate::ErrorLevel::Error,
+        );
+        for mode in 0..3 {
+            let result = execution
+                .scope()
+                .with_columns(&ctx, |c| evaluate(mode, &ctx.values[..count], &integer, c));
+            if mode == 2 {
+                assert!(result.is_none());
+            } else {
+                assert!(result.unwrap().is_err());
+            }
+            assert_eq!(
+                ctx.events.take(),
+                if mode == 2 {
+                    vec![]
+                } else {
+                    ["left", "right", "extra"][..count].to_vec()
+                }
+            );
+        }
+    }
+    let extra = context(
+        vec![Datum::Null, Datum::Int(1), Datum::Int(2)],
+        Some(2),
+        crate::ErrorLevel::Error,
+    );
+    for mode in 0..2 {
+        let result = execution
+            .scope()
+            .with_columns(&extra, |c| evaluate(mode, &extra.values, &integer, c))
+            .unwrap();
+        assert!(
+            matches!(result, Err(EvalError::Unsupported(message)) if message == if mode == 0 { "unknown column" } else { "NULLIF demanded child" })
+        );
+        assert_eq!(extra.events.take(), vec!["left", "right", "extra"]);
+    }
+    for slots in [1, 0] {
+        let pool = owner(slots);
+        let execution = pool.begin_execution().unwrap();
+        for level in [crate::ErrorLevel::Warn, crate::ErrorLevel::Error] {
+            let ctx = context(vec![Datum::new_string("1tail"), Datum::Int(2)], None, level);
+            for mode in 0..3 {
+                let result = execution
+                    .scope()
+                    .with_columns(&ctx, |c| {
+                        evaluate(
+                            mode,
+                            &ctx.values,
+                            &FieldType::new(FieldTypeCode::VarString),
+                            c,
+                        )
+                    })
+                    .unwrap();
+                let mut events = if mode == 2 {
+                    vec!["precision", "policy"]
+                } else {
+                    vec!["left", "right", "precision", "policy"]
+                };
+                if level == crate::ErrorLevel::Error {
+                    assert!(
+                        matches!(result, Err(EvalError::TruncatedWrongValue(message)) if message == "Truncated incorrect DOUBLE value: '1tail'")
+                    );
+                    assert!(ctx.warnings.take().is_empty());
+                } else {
+                    events.push("warning");
+                    assert_eq!(
+                        ctx.warnings.take(),
+                        vec![(1292, "Truncated incorrect DOUBLE value: '1tail'".to_owned())]
+                    );
+                    if slots == 1 {
+                        assert_eq!(result.unwrap(), Datum::new_string("1tail"));
+                    } else {
+                        // Existing comparison C4 refuses first: this is NOT
+                        // evidence that the new NULLIF selector was reached.
+                        assert!(
+                            matches!(result, Err(EvalError::ExpressionAdapterFailure(failure))
+                            if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource
+                                && failure.origin() == crate::ExpressionAdapterFailureOrigin::Pool)
+                        );
+                    }
+                }
+                assert_eq!(ctx.events.take(), events);
+            }
+        }
+    }
+    // No explicit owner: keep the original callback context and getter count.
+    let ctx = context(
+        vec![Datum::Int(7), Datum::Int(8)],
+        None,
+        crate::ErrorLevel::Error,
+    );
+    for mode in 0..3 {
+        assert_eq!(
+            evaluate(mode, &ctx.values, &integer, &ctx)
+                .unwrap()
+                .unwrap(),
+            Datum::Int(7)
+        );
+        assert_eq!(
+            ctx.events.take(),
+            if mode == 2 {
+                vec!["precision"]
+            } else {
+                vec!["left", "right", "precision"]
+            }
+        );
+    }
 }

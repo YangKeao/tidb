@@ -1475,6 +1475,9 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::CoalesceEndNative => {
             panic!("COALESCE end needs genuine argument exhaustion, not a fabricated value")
         }
+        EvaluatedBytesOp::NullIfNative => {
+            panic!("NULLIF needs its actual first identity and completed nullable comparison")
+        }
         EvaluatedBytesOp::ConvertTzNative => {
             panic!("CONVERT_TZ needs its three actual nullable coerced strings")
         }
