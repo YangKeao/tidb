@@ -1,32 +1,28 @@
 # Expression unification experiment
 
-Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
-Current checkpoint: **convert-charset-93**, after **charset-codec-92**.
+Paired branch: `expression-unification-demo` in YangKeao/tidb and YangKeao/tikv.
+Current checkpoint: **str-to-date-types-94**, after **convert-charset-93**.
 
-Functional coverage **229/245 (93.47%)**, strict final-audited count **0**. All228 previous family objects remain byte-identical; only `convert_charset` is added. Overall goal stays active.
+Functional coverage remains **229/245 (93.47%)**, strict final count **0**. All229 family objects are unchanged; this step adds no family/C4 credit. Overall goal remains active.
 
-## Charset evaluator now shared
+## Public STR_TO_DATE datatype policy shared
 
-`tikv/convert_charset.rs` delegates `to_binary`, `from_binary` and `CONVERT USING` to three actual SDK workers. AST, typed, public-helper and implicit binary-aware routes are connected; native encode/decode/validation/replacement/result-domain bodies are removed. Encoding name lookup is shared too.
+Native `str_to_date.rs` now contains public aliases and the original parse→Time construction→validation adapter. Parser, format classification and Go punctuation policy live in SDK `native_str_to_date.rs`.
 
-ConvertUsing requires four actual inputs: nullable bytes, exact source spelling, effective field charset and target. A closed Bytes4 carrier/profile whitelist reuses the existing four-slot ready storage; generic arity and wire/native PB admission stay unchanged.
+Raw packing, trailing-input flag, hidden fractional microseconds under FSP0, original validation order and classifier early stop are preserved. The exact Unicode dependency/version moves with the existing Go-version exclusions; lock changes are limited to dependency ownership.
 
-Direct-helper NULL→empty, caller early NULL, unknown-target-before-coercion, AST lowercase versus typed lossy spelling, and metadata passthrough remain distinct. SDK selects Bytes/retag/NULL/error; retag default collation is projected afterward using the original global GB mode. Reply precharge is a conservative `8*n+1`, not a physical heap/OOM guarantee.
+The broader public datatype grammar is **not** substituted for ordinary expression or wire parsing. Ordinary STR_TO_DATE worker migration remains next, with delayed SQL-mode/typed-result/getter contracts recorded in Plan.
 
-## Validation
+## Evidence
 
-[Evidence](evidence/convert-charset-checkpoint.md), [commands/counts/hashes](logs/convert-charset-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
+[Checkpoint](evidence/str-to-date-types-checkpoint.md), [commands/counts/hashes](logs/str-to-date-types-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
 
-Six new tests pass on first actual execution. New SQL34SELECT=32direct+2filters:14new Convert-root zero-slot refusals and2old NULL-witness refusals are separated. Seven original charset SQL tests also pass. Metadata, replacement/decode, exact/effective source names and implicit GBK→HEX integration are pinned; FromBinary has direct helper evidence, not new SQL admission.
+Four locked test commands: SDK1, native datatype8 and SQL2 pass; ordinary expression subset gives **5passed/1known old failure**. Both new tests pass on first execution. The old partial-format mismatch is unchanged against R96's diagnostic; no repair or oracle change. Full expression/unistore were not rerun this step.
 
-Thirteen Cargo launches: four compile failures from missing macro trait imports, fixed without algorithm/oracle changes; nine executed gates give seven green and two unchanged old full REDs. Full expression **1604/4old/94ignored**, unistore **220/1old/13ignored**, with identical normalized failure sections. A formatter second pass occurred before Cargo, separately recorded.
+Two existing SQL tests cover5SELECTs, constant/dynamic return metadata and DDL defaults—not new SQL probes or runtime takeover proof. Scope:2CPP/1native Rust files,1new module;52CPP/7native original tests unchanged. Pinned formatting, lock ownership checks and independent current-contract review pass.
 
-Pinned formatting/diff checks pass. Scope:9TiKV/10native Rust files,2new modules;145CPP/425native old test bodies unchanged. Independent source review found no blocker.
+## Still open
 
-## Remaining acceptance
+[Remaining acceptance](evidence/remaining-acceptance.md):5core,5ordinary,6complex candidates—not blanket exceptions—plus request-root/default-NoColumns/liveDAG/final acceptance.
 
-[Review](evidence/remaining-acceptance.md):5core,5ordinary pending,6complex exception candidates—not16approved exceptions. Request-root/default-NoColumns/live-DAG ownership, final cross-entry work and documented known gaps remain.
-
-Workspace/lint/dev/bazel_prepare/release, exhaustive differential/TiFlash/FIPS, performance/physical memory/OOM/allocator/zero-copy/dual-timezone footprint and complete Go-package transcreation are unverified. No goal-completion or PR-readiness claim.
-
-Three Plans agree; manifest pins their hash and paired TiKV commit. Publish TiKV then TiDB without force push or PR. Unrelated untracked client-differential BUILD stays excluded.
+Known gaps and workspace/lint/dev/bazel_prepare/release/exhaustive/TiFlash/FIPS/performance/physical memory/OOM/allocator/dual-tzdata/complete Go-package/PR-readiness remain unverified. Three identical Plans and paired TiKV commit are pinned in the manifest. No force push or PR; unrelated untracked BUILD excluded.

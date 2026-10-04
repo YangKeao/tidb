@@ -1,0 +1,36 @@
+str-to-date-types-94 / R97 M0 foundation only
+CPP cwd /home/agent/tidb/expression-unification/tikv
+Native cwd /home/agent/tidb/expression-unification/tidb/rust
+Raw /home/agent/tidb/expression-unification/logs/str-to-date-types-{id}.log
+Counts passed/failed/ignored/filtered; compile/test seconds.
+
+tikv-core | 1/0/0/460 | 5.71/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_str_to_date -- --test-threads=1
+sha256 51329cd395fb1e23a42d73e35e1ad6d6d410d32a0ee32c9b505a3eec4d52b9ef
+
+native-datatype | 8/0/0/452 | 4.49/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib str_to_date -- --test-threads=1
+sha256 127cf2cfc66c258959bb0d2aadcf5885deafb11e3230c6f9e040a6f3c1d88458
+
+native-expression | 5/1OLD/0/1696 | 24.86/0.00 | exit101
+../../tools/cargo-tidb test --locked -p tidb-expr --lib time_fn::tests::str_to_date_ -- --test-threads=1
+sha256 cb7952b1385ced20e46c330f2271f4648a56bc868b7a7e7f7dd9ff582b233464
+Old str_to_date_partial_formats_follow_no_zero_date line888: STR_TO_DATE("01","%d") relaxed expects String0000-00-01, current month0 sentinel returns NULL/1411. Same R96 convert-charset-expr-full.log failure. Four diagnostic lines (panic source, assertion, left, right) match after only numeric thread ID -> THREAD; sha256 be2845834c8200d7061858af936c9defe375be04d077794e11365fdd1775520c. Subset's first panic additionally prints the standard RUST_BACKTRACE hint, so whole blocks are NOT claimed identical. Initial whole-block comparison assertion failed for that hint; corrected comparison boundary is explicit, not a test retry or behavior fix.
+
+sql | 2/0/0/2237 | 44.19/0.03 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib str_to_date_ -- --test-threads=1
+sha256 3847431344b917dbd15d4d944af730da1f6d0d0f30a8c44dddb828996b9698d9
+Two original tests: tests_core::temporal_types::str_to_date_uses_the_format_to_choose_its_native_domain (4SELECT,6STR_TO_DATE calls) and tests_column_defaults::str_to_date_default_reaches_every_ddl_entry_point (1SELECT plus SHOW CREATE/DDL). Total5SELECT, no new SQL tests/probes. Constant DATE10/0, Duration17/6, DATETIME26/6 and dynamicformat DATETIME6/defaultNULL/relaxedzero-prefix are pinned; DDL CREATE/ADD/MODIFY/SET DEFAULT values unchanged. Expression six original tests contain50 direct calls in source tables, but the failing partial-format test short-circuits: do NOT claim all50 executed.
+
+Four locked single-threaded test launches,3green+1known-only subset RED. Two new tests passed first actual execution; no compile RED/new execution failure/oracle fix/zero-match/interruption/recording. Full expr/unistore NOT rerun; R96 4+1 old failures remain historical, not fresh gates.
+
+Dependency setup (NOT test launches; offline and intentionally resolve changed manifests):
+CPP: ../tools/cargo-tikv metadata --offline --format-version 1 --filter-platform x86_64-unknown-linux-gnu
+Native: ../../tools/cargo-tidb metadata --offline --format-version 1 --filter-platform x86_64-unknown-linux-gnu
+CPP adds unicode-general-category exactly1.1.0, same native locked checksum0b993bddc193ae5bd0d623b49ec06ac3e9312875fdae725a975c51db1cc1677f. Native direct/workspace declaration removed. CPP lock adds only this package+tidb_query_datatype edge; native existing package set unchanged, only edge moves tidb-datatype→tidb_query_datatype. No broad update or hand-edited lock.
+
+SDK native_parse_str_to_date returns original raw-packed NativeTemporalValue(DateTime,fsp0)+trailingbool; no early constructor/validation. Native adapter retains parse→Time::new→validate(flags,TZ). Hiddenfraction survivesfsp0; %T23+PM's35→5bit3 old behavior preserved. Native get_format_type/is_go_punctuation public aliases retain API and must_use. Classifier both-kind early stop differs from dangling%; Unicode16 dependency retains all13 Go15 punctuation exclusions. Ordinary runtime and wire parsers remain distinct and untouched. No new profile, budget mechanism or PB/legacy admission; no whole-family credit.
+
+Scope2CPP/1native Rust files;1newmodule,1newtest per repository.52CPP/7native old tests byte-identical. Pinned rustfmt --edition 2021 --config skip_children=true --check and git diff --check pass (CPPnightly2026-01-30/native2026-08-22 under /home/agent/tidb/expression-reuse/rustup-home/toolchains). Independent H current-contract review found no blocker; historical exact algorithm-body comparison is NOT claimed. Guides descriptive, Plan captures later runtime contracts. No Go/Bazel change; manifests/locks explicitly changed; unrelated BUILD excluded.
+
+Functional229/245 unchanged, strict0,16remaining; all229 family objects and old partial/type records remain byte-identical, only3type dedup IDs appended. Whole ordinary STR_TO_DATE runtime, typed late-mode decision, request-root/default-NoColumns/liveDAG/final acceptance remain pending. Known old gaps and workspace/lint/dev/bazel/release/exhaustive/TiFlash/FIPS/performance/physicalheap/OOM/allocator/dual-tzdata/Go-package/PR readiness unverified.

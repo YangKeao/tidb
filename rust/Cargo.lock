@@ -4815,7 +4815,6 @@ dependencies = [
  "tidb-mysql",
  "tidb_query_datatype",
  "tipb",
- "unicode-general-category",
 ]
 
 [[package]]
@@ -6033,6 +6032,7 @@ dependencies = [
  "tikv_alloc",
  "tikv_util",
  "tipb",
+ "unicode-general-category",
 ]
 
 [[package]]

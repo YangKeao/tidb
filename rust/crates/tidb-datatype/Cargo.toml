@@ -25,7 +25,6 @@ tidb-kvcache = { path = "../tidb-kvcache" }
 tidb-mysql = { path = "../tidb-mysql" }
 tidb_query_datatype.workspace = true
 tipb.workspace = true
-unicode-general-category.workspace = true
 
 [dev-dependencies]
 sha2 = { workspace = true }
