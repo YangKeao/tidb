@@ -2248,6 +2248,11 @@ fn materialize_computed(
             | EvaluatedBytesOp::UnixTimestampValueNative
             | EvaluatedBytesOp::UnixTimestampIntLegacy
             | EvaluatedBytesOp::UnixTimestampDecLegacy
+            | EvaluatedBytesOp::FromUnixTimeNumericNative
+            | EvaluatedBytesOp::FromUnixTimeTextNative
+            | EvaluatedBytesOp::FromUnixTimeLocalNative
+            | EvaluatedBytesOp::FromUnixTimeLegacy
+            | EvaluatedBytesOp::FromUnixTimeNullNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative

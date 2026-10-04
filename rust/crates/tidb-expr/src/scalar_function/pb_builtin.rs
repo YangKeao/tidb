@@ -384,6 +384,17 @@ impl PbBuiltin {
                                 ctx,
                             );
                         }
+                        if matches!(
+                            self.signature,
+                            ScalarFuncSig::FromUnixTime1Arg | ScalarFuncSig::FromUnixTime2Arg
+                        ) {
+                            // Only the observed NULL is prepared. Prefix values
+                            // remain uncoerced and suffix children remain unread.
+                            return crate::time_fn::session_tz::from_unixtime(
+                                std::slice::from_ref(&value),
+                                ctx,
+                            );
+                        }
                         if self.signature == ScalarFuncSig::MicroSecond {
                             // Preserve the observed NULL boundary even for an
                             // otherwise invalid arity or an uncoerced prefix.
@@ -698,6 +709,194 @@ mod json_path_worker_tests {
     use crate::expression::{Column, Constant, Expression};
     use crate::NoColumns;
     use tidb_datatype::{BinaryJSON, FieldTypeCode, FieldTypeFlags};
+
+    #[test]
+    fn protobuf_from_unixtime_keeps_null_demand_and_outer_typed_wrapping() {
+        use std::cell::{Cell, RefCell};
+        struct Demand {
+            reads: RefCell<Vec<usize>>,
+            zones: Cell<usize>,
+            modes: Cell<usize>,
+        }
+        impl Columns for Demand {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn get_param_value(&self, index: usize) -> Result<Datum, EvalError> {
+                self.reads.borrow_mut().push(index);
+                match index {
+                    1 => Err(EvalError::Unsupported("protobuf from unixtime child")),
+                    2 => Ok(Datum::new_bytes(vec![0xff])),
+                    3 => Ok(Datum::new_string("a")),
+                    _ => Ok(Datum::new_string("1.999999")),
+                }
+            }
+            fn time_zone(&self) -> crate::context::SessionTimeZone {
+                self.zones.set(self.zones.get() + 1);
+                crate::context::SessionTimeZone::utc()
+            }
+            fn date_modes(&self) -> tidb_datatype::DateModes {
+                self.modes.set(self.modes.get() + 1);
+                tidb_datatype::DateModes::default()
+            }
+            fn now(&self) -> Option<(i64, u32, i32)> {
+                panic!("FROM_UNIXTIME must not read now")
+            }
+            fn truncate_level(&self) -> crate::context::ErrorLevel {
+                panic!("NULL prefixes remain uncoerced")
+            }
+            fn append_warning(&self, _: u16, _: &str) {
+                panic!("NULL prefixes and valid postcasts must not warn")
+            }
+        }
+        let int_type = FieldType::new(FieldTypeCode::LongLong);
+        let text_type = FieldType::new(FieldTypeCode::VarString);
+        let mut time_type = FieldType::new(FieldTypeCode::Datetime);
+        time_type.set_decimal(0);
+        let literal = |value| Expression::Constant(Constant::new(value, text_type.clone()));
+        let child = |index| {
+            Expression::ScalarFunction(ScalarFunction::new(
+                tidb_ast::CiString::new("getparam"),
+                text_type.clone(),
+                vec![Expression::Constant(Constant::new(
+                    Datum::Int(index),
+                    int_type.clone(),
+                ))],
+            ))
+        };
+        let selected = |signature, ret_type, args| {
+            ScalarFunction::from_pb(PbBuiltin::new(signature).unwrap(), ret_type, args)
+        };
+        let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+        for slots in [1, 0] {
+            let owner = crate::AsciiPoolOwner::new(
+                crate::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    64,
+                    8,
+                    4 * 1024 * 1024,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let execution = owner.begin_execution().unwrap();
+            let ctx = Demand {
+                reads: RefCell::new(Vec::new()),
+                zones: Cell::new(0),
+                modes: Cell::new(0),
+            };
+            let check = |result: Result<Datum, EvalError>, expected| {
+                if slots == 1 {
+                    assert_eq!(result.unwrap(), expected);
+                } else {
+                    let error = result.unwrap_err();
+                    let EvalError::ExpressionAdapterFailure(failure) = error else {
+                        panic!("{error:?}")
+                    };
+                    assert_eq!(
+                        failure.class(),
+                        crate::ExpressionAdapterFailureClass::PoolResource
+                    );
+                    assert_eq!(
+                        failure.origin(),
+                        crate::ExpressionAdapterFailureOrigin::Pool
+                    );
+                }
+            };
+            for (signature, ret_type) in [
+                (ScalarFuncSig::FromUnixTime1Arg, time_type.clone()),
+                (ScalarFuncSig::FromUnixTime2Arg, text_type.clone()),
+            ] {
+                for (args, reads) in [
+                    (vec![literal(Datum::Null), child(1)], vec![]),
+                    (vec![child(2), literal(Datum::Null), child(1)], vec![2]),
+                    (vec![child(3), literal(Datum::Null), child(1)], vec![3]),
+                    (vec![child(0), literal(Datum::Null)], vec![0]),
+                ] {
+                    check(
+                        execution.scope().with_columns(&ctx, |columns| {
+                            selected(signature, ret_type.clone(), args)
+                                .eval(columns, empty.to_row())
+                        }),
+                        Datum::Null,
+                    );
+                    assert_eq!(ctx.reads.take(), reads);
+                    assert_eq!(ctx.zones.get(), 0);
+                    assert_eq!(ctx.modes.get(), 0);
+                }
+                assert!(matches!(
+                    execution.scope().with_columns(&ctx, |columns| selected(
+                        signature,
+                        ret_type.clone(),
+                        vec![child(1), literal(Datum::Null)]
+                    )
+                    .eval(columns, empty.to_row())),
+                    Err(EvalError::Unsupported("protobuf from unixtime child"))
+                ));
+                assert_eq!(ctx.reads.take(), vec![1]);
+                assert_eq!(ctx.zones.get(), 0);
+                assert_eq!(ctx.modes.get(), 0);
+            }
+            let rounded_time = Datum::Time(
+                tidb_datatype::Time::from_date_checked(
+                    1970,
+                    1,
+                    1,
+                    0,
+                    0,
+                    2,
+                    0,
+                    tidb_datatype::TimeType::DateTime,
+                    0,
+                )
+                .unwrap(),
+            );
+            // One-arg PB performs its existing precision-aware time parse,
+            // then every PB result still goes through outer coerce_to_ret_type.
+            for (signature, ret_type, args, expected, zones, modes) in [
+                (
+                    ScalarFuncSig::FromUnixTime1Arg,
+                    time_type.clone(),
+                    vec![child(0)],
+                    rounded_time,
+                    2,
+                    1,
+                ),
+                (
+                    ScalarFuncSig::FromUnixTime2Arg,
+                    text_type.clone(),
+                    vec![child(0), literal(Datum::new_string("%Y"))],
+                    Datum::new_string("1970"),
+                    1,
+                    0,
+                ),
+                (
+                    ScalarFuncSig::FromUnixTime2Arg,
+                    int_type.clone(),
+                    vec![child(0), literal(Datum::new_string("%Y"))],
+                    Datum::Int(1970),
+                    1,
+                    0,
+                ),
+            ] {
+                ctx.zones.set(0);
+                ctx.modes.set(0);
+                check(
+                    execution.scope().with_columns(&ctx, |columns| {
+                        selected(signature, ret_type, args).eval(columns, empty.to_row())
+                    }),
+                    expected,
+                );
+                assert_eq!(ctx.reads.take(), vec![0]);
+                assert_eq!(ctx.zones.get(), if slots == 1 { zones } else { 0 });
+                assert_eq!(ctx.modes.get(), if slots == 1 { modes } else { 0 });
+            }
+        }
+    }
 
     #[test]
     fn protobuf_unix_timestamp_keeps_null_prefix_scope_and_value_policy() {

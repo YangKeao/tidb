@@ -1,0 +1,48 @@
+FROM_UNIXTIME / from-unixtime-81 / R84
+Previous nativec55052c185e631d66d365a0c76facc8ff432a88f / CPP15c39d3836c158b3f6b1a45c2b284ba5c89f740a.
+Functional221/245 (90.20%), strict0;24eligible remain; additional functional families needed0. Prior220family objects byte-identical. new_migration_ids=[from_unixtime]. Threshold reached is not M0–M6 completion.
+8exclusivewriters+parent;18Rust(9+9),2newmodules,10newtests. CPP205/native476 original test bodies unchanged.3wire FROM production bodies and2native UNIX_TIMESTAMP/TIDB_PARSE_TSO bodies byte-identical. No dependency/lock/Go/Bazel/generated-code/fixture changes.
+
+Eleven serialized locked test launches (--test-threads=1):
+ CPP cwd=/home/agent/tidb/expression-unification/tikv:
+ ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_from_unixtime::tests -- --test-threads=1
+ ../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_time::tests::test_from_unixtime -- --test-threads=1
+ ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+ ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1 (retry1)
+ Native cwd=/home/agent/tidb/expression-unification/tidb/rust:
+ ../../tools/cargo-tidb test --locked -p tidb-expr --lib from_unixtime -- --test-threads=1
+ ../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii -- --test-threads=1
+ ../../tools/cargo-tidb test --locked -p tidb-unistore --lib from_unixtime -- --test-threads=1
+ ../../tools/cargo-tidb test --locked -p tidb-unistore --lib from_unixtime -- --test-threads=1 (retry1)
+ ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_from_unixtime -- --test-threads=1
+ ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+ ../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+
+Raw logs=/home/agent/tidb/expression-unification/logs/from-unixtime-{id}.log
+id | passed/failed/ignored/filtered | compile/elapsed seconds | exit | sha256
+ tikv-core |2/0/0/943|22.73/0.00|0|d24833728e7abacdfc1f01055200be3d346f1d8495d19e9207e53d6840ff13f7
+ tikv-wire |2/0/0/943|0.24/0.00|0|e758cc8685b3911f6e6a1090d689d62d7b8f8ceae4372c05a1a0252b8381ccbf
+ tikv-local |329/1/1/614|0.14/0.24|101|ba0d6e971dc417dbe205eab63752b80270d6d42023a0c1a4ebef98ba2b3d7346
+ tikv-local-retry1 |330/0/1/614|4.96/0.23|0|dc3700715d6b6c9656db3b4fdc5b2997151083060f757e9bda8c3a17201230f0
+ native-root |7/0/0/1673|19.56/0.01|0|cc7790ad2d1274b3597f6c1372d0f8a3c97296b5061a20ed3a56c2bec360e160
+ native-gateway |196/0/1/1483|0.16/0.38|0|fc29dbc1b5744ddad385373904e8d4811353f7122ea5adb3576e81d22c5ea235
+ legacy |0/1/0/226|7.55/0.00|101|b4d1bd0206242e8d168ae090bd07ea3a89f4c970a79949e90d6c4fd44fa5d208
+ legacy-retry1 |1/0/0/226|1.71/0.00|0|2208656c35a3f0772fe84581d7517f3f8c6578a770479ff2178381b1da8450ae
+ sql |1/0/0/2227|45.05/0.08|0|2a60061a558b77e8366a54c659f8a5685ecb2835f678238c0b1c8197b65b392e
+ expr-full |1582/4/94/0|0.19/14.79|101|e2121d27beb7adc75b934483d9293ba98092449eed66df756d36d87feff2b76e
+ unistore-full |213/1/13/0|0.15/3.06|101|759879b861d7c2ff46227469011dd4072a3064efffbe1532bf602c509107b65a
+11nonzero runs,7green,2new-test red followed by successful retries,2unchanged old full-suite red. No compile failure/interruption/zero-match. All10newtests pass finally;8pass first matching gate. Filters overlap, not unique totals.
+Current local:: selects331tests; older unix-timestamp run used plain local and selected333. Four existing outside-local:: names contain local/locale (two native_clock, native_format locale and impl_string nullable_locale); removing those4 and adding2 explains333−4+2=331. No old test deletion.
+SQL one new lifecycle test:10stored-column cases×2vector modes×slots1/0=40direct(20normal/20zero), plus2positive filters,42SELECT total excludingDDL/SET. Static datetime FSP and return metadata checked; bad text epochfsp0 is postcast toSQLfsp6, DOUBLE−0.1 originalpositivefraction, first9chars, MAXcarry, actualUInt versus textUIntMAX, valid/invalid base and nullable layouts. Zero-slot failures happen before head-produced warning; no hidden literal/cast/filter substitutes the direct root.
+
+New-test input corrections ONLY, production and expected results unchanged:
+1 CPP local legacy probe built raw coefficient b1 at storage9 and popped a coefficient byte to claim malformed identity. Raw constructor does not pad and codec only validates fixed header; empty/short coefficient remains structurally legal. Source-pinned inputs corrected to b000000001 at storage9 and truncate whole frame to26bytes (tag+required26byte header is incomplete). No shared formatter/parser repair or math admission widening. retry1 green.
+2 Legacy invalid-range probe used32536771200 as outside, but original f64 upper literal32536771199.999999 rounds to exact32536771200 (IEEE754421e4d5eea000000). At2^34 halfULP=0.0000019073486328125, greater than literal's distance0.000001; inclusive range accepts it. Corrected invalid input to32536771201, keeping expectedNULL. Original HEAD source and independent binary64 reasoning, not worker output, establish the correction. retry1 green. Original u32 nanos-times1000 bug, fsp0 hidden microseconds and wire policies remain unchanged.
+Before gates parent found ordinary Values only had generic minimum reply precharge; C added R84-only Numeric14/Textmax(14,len+64)/Null0 domain preflight in common eval_ready after actual input-capacity accounting, before witness/dispatch. Covers facade and direct ready. Local/Legacy retain existing64+zonecapacity preflight. Older generic-Values/R82 clock payload floor+postflight behavior remains deferred, not silently fixed or newly claimed bounded.
+Auxiliary source lookup: repo-overview is in maintenance-guides root, not src; glob corrected path. Not a build failure.
+
+Full failure sections incl final list equal decimal-presentation logs after only panic-heading numeric thread IDs→THREAD, retaining leading newline:
+ expr411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+ unistore2f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1
+Pinned rustfmt --edition2021 --config skip_children=true and --check on all18; bothgit diff --check and family/receipt/Plan/link audits. Guides updated as source maps only, no new policy.
+M6/default-NoColumns, legacy Shared-child own context, general type/parser work, earlier INTDIV raw-empty/modes/CAST/JSON/metadata gaps remain. Whole workspace/lint/dev/bazel_prepare/release/exhaustive differential/TiFlash/FIPS/performance/allocator/physical heap/peak/OOM/zero-copy/dual-tzdata not verified. Strict0, goal active; no whole-package transcreation or PR-ready claim.

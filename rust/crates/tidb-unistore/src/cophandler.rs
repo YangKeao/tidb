@@ -3804,24 +3804,14 @@ impl LegacyEvaluator<'_> {
             // Go `evalFromUnixTime`: a negative or too-large epoch answers
             // NULL; the split seconds render through the session zone.
             SimpleExpr::Func(SimpleSig::FromUnixTime1Arg, children) => {
-                let seconds = legacy_some!(self.eval_decimal(children.first())?);
-                let unix = seconds.to_f64();
-                if !(0.0..=32_536_771_199.999_999).contains(&unix) {
-                    return Ok(None);
-                }
-                let whole = unix.trunc();
-                let nanos = ((unix - whole) * 1e9).round() as u32;
-                use chrono::TimeZone;
-                let built = time_zone
-                    .timestamp_opt(whole as i64, nanos * 1_000)
-                    .single();
-                let naive_built = legacy_some!(built);
-                tidb_datatype::Time::new(
-                    tidb_datatype::core_time_from_datetime(naive_built),
-                    tidb_datatype::TimeType::DateTime,
-                    0,
+                let value = self.eval_decimal(children.first())?;
+                tidb_expr::eval_from_unixtime_legacy_scoped_in(
+                    value,
+                    self.time_zone,
+                    self.raw_columns,
+                    |time, _| time,
                 )
-                .ok()
+                .map_err(LegacyEvalError::from)?
             }
             // Go reads the opaque date codes and parses string contents;
             // other codes answer NULL under the folded error.
@@ -3979,15 +3969,37 @@ impl LegacyEvaluator<'_> {
             // FROM_UNIXTIME(seconds, format): the FromUnixTime datetime
             // rendered through `DateFormat`'s layout table.
             SimpleExpr::Func(SimpleSig::FromUnixTime2Arg, children) => {
-                let seconds = SimpleExpr::Func(
-                    SimpleSig::FromUnixTime1Arg,
-                    vec![children.first().expect("wire shape").clone()],
-                );
-                let time = legacy_some!(self.eval_time(Some(&seconds))?);
-                let layout = legacy_some!(self.eval_bytes(children.get(1))?);
-                let layout = String::from_utf8_lossy(&layout).into_owned();
-                let rendered = legacy_some!(time.date_format(&layout).ok());
-                Some(rendered.into_bytes())
+                let first = children.first().expect("wire shape").clone();
+                let value = self.eval_decimal(Some(&first))?;
+                tidb_expr::eval_from_unixtime_legacy_scoped_in(
+                    value,
+                    self.time_zone,
+                    self.raw_columns,
+                    |time, selected_columns| -> LegacyResult<Option<Vec<u8>>> {
+                        let Some(time) = time else {
+                            return Ok(None);
+                        };
+                        // Keep raw descendants and formatting in the selected
+                        // lifecycle; Shared expressions retain their own context.
+                        let evaluator = LegacyEvaluator {
+                            row: self.row,
+                            div_precision_increment: self.div_precision_increment,
+                            time_zone: self.time_zone,
+                            raw_columns: selected_columns,
+                            #[cfg(test)]
+                            shared_override: self.shared_override,
+                        };
+                        let layout = evaluator
+                            .eval_bytes(children.get(1))?
+                            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+                        tidb_expr::eval_legacy_date_format_in(
+                            Some((time.core_time(), layout.as_deref())),
+                            selected_columns,
+                        )
+                        .map_err(LegacyEvalError::from)
+                    },
+                )
+                .map_err(LegacyEvalError::from)??
             }
             SimpleExpr::Func(
                 sig @ (SimpleSig::Lower
@@ -10146,6 +10158,218 @@ mod tests {
                 Some(0)
             );
         }
+    }
+
+    #[test]
+    fn legacy_from_unixtime_keeps_scoped_layout_demand_and_hidden_microseconds() {
+        use tidb_datatype::{CoreTime, Datum, Decimal, SessionTimeZone, TimeType};
+        struct Quiet;
+        impl tidb_expr::Columns for Quiet {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn time_zone(&self) -> SessionTimeZone {
+                panic!("legacy FROM_UNIXTIME uses the request zone")
+            }
+            fn now(&self) -> Option<(i64, u32, i32)> {
+                panic!("legacy FROM_UNIXTIME does not read a clock")
+            }
+            fn date_modes(&self) -> tidb_datatype::DateModes {
+                panic!("legacy FROM_UNIXTIME does not read date modes")
+            }
+            fn div_precision_increment(&self) -> u32 {
+                panic!("legacy FROM_UNIXTIME does not read precision")
+            }
+            fn truncate_level(&self) -> tidb_expr::ErrorLevel {
+                panic!("legacy FROM_UNIXTIME does not read truncation policy")
+            }
+            fn append_warning(&self, _: u16, _: &str) {
+                panic!("legacy FROM_UNIXTIME does not append warnings")
+            }
+        }
+        let pool = |slots| {
+            tidb_expr::AsciiPoolOwner::new(
+                tidb_expr::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 << 20,
+                    4 << 20,
+                    4 << 20,
+                    64,
+                    8,
+                    4 << 20,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let assert_pool = |error| match error {
+            LegacyEvalError::Infrastructure(tidb_expr::EvalError::ExpressionAdapterFailure(
+                failure,
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_expr::ExpressionAdapterFailureClass::PoolResource
+                );
+            }
+            other => panic!("legacy FROM_UNIXTIME lost infrastructure: {other:?}"),
+        };
+        let decimal = |text: &str| SimpleExpr::Decimal(Decimal::from_literal(text));
+        let bytes = |text: &str| SimpleExpr::Bytes(text.as_bytes().to_vec());
+        let one = |children| SimpleExpr::Func(SimpleSig::FromUnixTime1Arg, children);
+        let two = |children| SimpleExpr::Func(SimpleSig::FromUnixTime2Arg, children);
+        let zone = SessionTimeZone::Named(chrono_tz::Asia::Shanghai);
+        let row = [
+            Datum::Decimal(Decimal::from_literal("1.000000001")),
+            Datum::Int(1),
+        ];
+        for slots in [1, 0] {
+            let owner = pool(slots);
+            let execution = owner.begin_execution().unwrap();
+            let scope = execution.scope();
+            scope.with_columns(&Quiet, |columns| {
+                let evaluator = LegacyEvaluator {
+                    raw_columns: columns,
+                    ..LegacyEvaluator::new(&row, 4, &zone)
+                };
+                for (children, expected) in [
+                    (
+                        vec![decimal("0")],
+                        Some(CoreTime::from_date(1970, 1, 1, 8, 0, 0, 0)),
+                    ),
+                    (
+                        vec![decimal("1")],
+                        Some(CoreTime::from_date(1970, 1, 1, 8, 0, 1, 0)),
+                    ),
+                    (
+                        vec![SimpleExpr::Column(0)],
+                        Some(CoreTime::from_date(1970, 1, 1, 8, 0, 1, 1)),
+                    ),
+                    (vec![decimal("-1")], None),
+                    // The original f64 upper literal rounds to32536771200;
+                    // its inclusive range therefore rejects only the next second.
+                    (vec![decimal("32536771201")], None),
+                    (vec![SimpleExpr::Null], None),
+                    (vec![SimpleExpr::Int(1)], None),
+                    (vec![SimpleExpr::Column(1)], None),
+                    (vec![bytes("1")], None),
+                    (vec![], None),
+                ] {
+                    let call = one(children);
+                    let result = evaluator.eval_time(Some(&call));
+                    if slots == 0 {
+                        assert_pool(
+                            result.expect_err("all one-argument outcomes enter the worker"),
+                        );
+                        assert_pool(
+                            fold_legacy_sql(evaluator.eval_time(Some(&call)))
+                                .expect_err("SQL folding retains SDK infrastructure"),
+                        );
+                    } else {
+                        let value = result.unwrap();
+                        assert_eq!(value.map(|time| time.core_time()), expected);
+                        if let Some(time) = value {
+                            assert_eq!(time.kind(), TimeType::DateTime);
+                            assert_eq!(time.fsp(), 0);
+                        }
+                    }
+                }
+                for (children, expected) in [
+                    (
+                        vec![decimal("1"), bytes("%Y-%m-%d %H:%i:%s")],
+                        Some("1970-01-01 08:00:01"),
+                    ),
+                    (vec![SimpleExpr::Column(0), bytes("%f")], Some("000001")),
+                    (
+                        vec![decimal("1"), SimpleExpr::Bytes(vec![255, b'%', b'f'])],
+                        Some("\u{fffd}000000"),
+                    ),
+                    (vec![decimal("1"), SimpleExpr::Null], None),
+                    (vec![decimal("1")], None),
+                    (vec![SimpleExpr::Null, bytes("%f")], None),
+                    (vec![SimpleExpr::Int(1), bytes("%f")], None),
+                    (vec![decimal("-1"), bytes("%f")], None),
+                ] {
+                    let result = evaluator.eval_bytes(Some(&two(children)));
+                    if slots == 0 {
+                        assert_pool(
+                            result.expect_err("two-argument outcomes retain the supplied scope"),
+                        );
+                    } else {
+                        assert_eq!(
+                            result.unwrap(),
+                            expected.map(|text| text.as_bytes().to_vec())
+                        );
+                    }
+                }
+                // This is the original malformed-wire panic, before any worker.
+                let missing_first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    evaluator.eval_bytes(Some(&two(vec![])))
+                }));
+                assert!(missing_first.is_err());
+            });
+            drop(scope);
+            execution.close();
+        }
+        let shared = convert_expr(&tipb::Expr {
+            tp: Some(tipb::ExprType::ScalarFunc as i32),
+            sig: Some(tipb::ScalarFuncSig::IntIsNull as i32),
+            field_type: Some(tipb::FieldType {
+                tp: Some(8),
+                ..Default::default()
+            }),
+            children: vec![tipb::Expr {
+                tp: Some(tipb::ExprType::Null as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .expect("already-admitted shared child");
+        assert!(matches!(&shared, SimpleExpr::Shared(_)));
+        let owner = pool(0);
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        scope.with_columns(&Quiet, |columns| {
+            let evaluator = LegacyEvaluator {
+                raw_columns: &Quiet,
+                shared_override: Some(columns),
+                ..LegacyEvaluator::new(&row, 4, &zone)
+            };
+            assert_pool(
+                evaluator
+                    .eval_time(Some(&one(vec![shared.clone()])))
+                    .expect_err("first decimal child infrastructure is not folded"),
+            );
+            assert_pool(
+                evaluator
+                    .eval_bytes(Some(&two(vec![decimal("1"), shared.clone()])))
+                    .expect_err("a computed base demands the layout"),
+            );
+            for base in [decimal("-1"), SimpleExpr::Null, SimpleExpr::Int(1)] {
+                assert_eq!(
+                    evaluator
+                        .eval_bytes(Some(&two(vec![base, shared.clone()])))
+                        .unwrap(),
+                    None
+                );
+            }
+            let time = evaluator
+                .eval_time(Some(&one(vec![decimal("1"), shared.clone()])))
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                time.core_time(),
+                CoreTime::from_date(1970, 1, 1, 8, 0, 1, 0)
+            );
+            assert_eq!(
+                evaluator
+                    .eval_bytes(Some(&two(vec![decimal("1"), bytes("%f"), shared])))
+                    .unwrap(),
+                Some(b"000000".to_vec())
+            );
+        });
+        drop(scope);
+        execution.close();
     }
 
     #[test]

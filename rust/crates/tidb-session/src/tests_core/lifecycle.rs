@@ -9363,6 +9363,207 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_from_unixtime_preserves_sql_wrappers_staged_layouts_and_runtime_roots() {
+    use tidb_datatype::{Collation, FieldTypeCode, TimeType};
+
+    let create = "CREATE TABLE shared_from_unixtime_sql (integer_seconds BIGINT, decimal_seconds DECIMAL(20,7), bad_text VARCHAR(64), overflow_text VARCHAR(64), unsigned_seconds BIGINT UNSIGNED, negative_real DOUBLE, prefix_text VARCHAR(64), carry_text VARCHAR(64), format_text VARCHAR(8), null_format VARCHAR(8))";
+    let insert = "INSERT INTO shared_from_unixtime_sql VALUES (1,1.1234567,'a','18446744073709551615',18446744073709551615,-0.1,'1.123456789x','32536771199.9999999','%f',NULL)";
+    // Fixed results derived from the original session_tz::unix_arg_nanos /
+    // from_unixtime policies and original from_unixtime_goeval_vectors. The
+    // ordinary SQL wrapper reparses one-arg results at their STATIC FSP; the
+    // two-arg layout result remains a string. No leaf output is an oracle.
+    let cases = [
+        (
+            "integer_seconds",
+            Some("1970-01-01 00:00:01"),
+            FieldTypeCode::Datetime,
+            (19, 0),
+            None,
+        ),
+        (
+            "decimal_seconds",
+            Some("1970-01-01 00:00:01.123457"),
+            FieldTypeCode::Datetime,
+            (26, 6),
+            None,
+        ),
+        (
+            "bad_text",
+            Some("1970-01-01 00:00:00.000000"),
+            FieldTypeCode::Datetime,
+            (26, 6),
+            Some("Truncated incorrect DECIMAL value: 'a'"),
+        ),
+        (
+            "overflow_text",
+            Some("1970-01-01 00:00:00.000000"),
+            FieldTypeCode::Datetime,
+            (26, 6),
+            Some("Truncated incorrect DECIMAL value: '18446744073709551615'"),
+        ),
+        // The identical unsigned numeric value is NULL, with no truncation
+        // warning and no live layout stage, rather than the text epoch path.
+        (
+            "unsigned_seconds,null_format",
+            None,
+            FieldTypeCode::VarString,
+            (-1, -1),
+            None,
+        ),
+        // Preserve the original negative-zero spelling bug: '-0' parses as
+        // integer zero and its positive fraction survives at the real FSP 6.
+        (
+            "negative_real",
+            Some("1970-01-01 00:00:00.100000"),
+            FieldTypeCode::Datetime,
+            (26, 6),
+            None,
+        ),
+        // Only the first nine fraction characters are inspected. The 'x'
+        // beyond them is ignored, not a new invalid-numeric rejection.
+        (
+            "prefix_text",
+            Some("1970-01-01 00:00:01.123457"),
+            FieldTypeCode::Datetime,
+            (26, 6),
+            None,
+        ),
+        // MAX_UNIX_SECS is checked before rounding, not again after carry.
+        (
+            "carry_text",
+            Some("3001-01-19 00:00:00.000000"),
+            FieldTypeCode::Datetime,
+            (26, 6),
+            None,
+        ),
+        (
+            "decimal_seconds,format_text",
+            Some("123457"),
+            FieldTypeCode::VarString,
+            (-1, -1),
+            None,
+        ),
+        (
+            "decimal_seconds,null_format",
+            None,
+            FieldTypeCode::VarString,
+            (-1, -1),
+            None,
+        ),
+    ];
+    for slots in [1, 0] {
+        let mut session = Session::new();
+        session
+            .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+            .unwrap();
+        session.run("SET time_zone='+00:00'").unwrap();
+        session.run("SET sql_mode=''").unwrap();
+        session
+            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+            .unwrap();
+        session.run(create).unwrap();
+        session.run(insert).unwrap();
+        assert!(session
+            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .unwrap());
+        for vectorized in [0, 1] {
+            session
+                .run(&format!(
+                    "SET tidb_enable_vectorized_expression={vectorized}"
+                ))
+                .unwrap();
+            for (args, expected, code, shape, warning) in cases {
+                let sql = format!("SELECT FROM_UNIXTIME({args}) FROM shared_from_unixtime_sql");
+                if slots == 1 {
+                    let StmtOutput::Rows { columns, rows } =
+                        session.run_with_columns(&sql).unwrap()
+                    else {
+                        panic!("expected FROM_UNIXTIME rows: {sql}")
+                    };
+                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
+                    let field = &columns[0].1;
+                    assert_eq!(field.code(), code, "{sql}/{vectorized}");
+                    assert_eq!((field.flen(), field.decimal()), shape, "{sql}/{vectorized}");
+                    if code == FieldTypeCode::Datetime {
+                        assert_eq!(field.charset_name(), "binary");
+                        assert_eq!(field.collation_name(), "binary");
+                    } else {
+                        assert_eq!(field.charset_name(), "utf8mb4");
+                        assert_eq!(field.collation_name(), "utf8mb4_bin");
+                    }
+                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
+                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
+                    if let Some(expected) = expected {
+                        if code == FieldTypeCode::Datetime {
+                            let Datum::Time(time) = &rows[0][0] else {
+                                panic!("one-arg FROM_UNIXTIME lost its native temporal cell: {sql}")
+                            };
+                            assert_eq!(time.kind(), TimeType::DateTime, "{sql}/{vectorized}");
+                            assert_eq!(i64::from(time.fsp()), shape.1, "{sql}/{vectorized}");
+                            assert_eq!(cell_text(&rows[0][0]), expected, "{sql}/{vectorized}");
+                        } else {
+                            assert_eq!(
+                                rows[0][0],
+                                Datum::new_collation_string(expected, Collation::Utf8Mb4Bin),
+                                "{sql}/{vectorized}"
+                            );
+                        }
+                    } else {
+                        assert_eq!(rows[0][0], Datum::Null, "{sql}/{vectorized}");
+                    }
+                    let expected_warnings = warning
+                        .map(|message| vec![(1292, message.to_owned())])
+                        .unwrap_or_default();
+                    assert_eq!(
+                        warnings_of(&session),
+                        expected_warnings,
+                        "{sql}/{vectorized}"
+                    );
+                } else {
+                    // Every operand is a stored column, with no filter, sort
+                    // or function child supplying a substitute failure. There
+                    // is no argument-cast mask: even handle_truncate follows
+                    // the first head worker and cannot warn on this refusal.
+                    let error = session.run_with_columns(&sql).expect_err(&sql);
+                    match &error {
+                        DriverError::Exec(tidb_executor::ExecError::Eval(
+                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                        )) => {
+                            assert_eq!(
+                                failure.class(),
+                                tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                            );
+                            assert_eq!(
+                                failure.origin(),
+                                tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                            );
+                        }
+                        other => panic!(
+                            "FROM_UNIXTIME bypassed its head worker: {sql}/{vectorized}: {other:?}"
+                        ),
+                    }
+                    let mysql = error.to_mysql_error();
+                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
+                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
+                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
+                    assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+                }
+            }
+            if slots == 1 {
+                // A consumer of the same Decimal case, not zero-slot evidence
+                // for either the head root or its conditional layout stage.
+                let sql = "SELECT 1 FROM shared_from_unixtime_sql WHERE FROM_UNIXTIME(decimal_seconds)='1970-01-01 00:00:01.123457'";
+                let StmtOutput::Rows { rows, .. } = session.run_with_columns(sql).unwrap() else {
+                    panic!("expected FROM_UNIXTIME predicate rows")
+                };
+                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
+                assert!(warnings_of(&session).is_empty());
+            }
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_unix_timestamp_preserves_source_shapes_zero_dates_and_runtime_roots() {
     use tidb_datatype::FieldTypeCode;
 

@@ -26,7 +26,9 @@ mod catalog;
 mod context;
 // The closed ready-argument families share this value boundary and one pool.
 mod evaluated_ascii;
+mod from_unixtime;
 mod identity_value;
+pub use from_unixtime::eval_from_unixtime_legacy_scoped_in;
 mod unix_timestamp;
 pub use adapter_failure::{
     ExpressionAdapterFailure, ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,

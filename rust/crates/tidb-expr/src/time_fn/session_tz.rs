@@ -37,147 +37,89 @@
 //!   declines when [`Columns::now`] is absent.
 
 #[cfg(test)]
-use chrono::NaiveDate;
-use chrono::{Datelike, NaiveDateTime, Timelike, Utc};
+use chrono::{Datelike, NaiveDate, Timelike};
 
 use super::calendar::date_format_in;
 use crate::coerce::coerce_str;
 use crate::context::SessionTimeZone;
-use crate::{Columns, Datum, Decimal, EvalError};
+#[cfg(test)]
+use crate::Decimal;
+use crate::{Columns, Datum, EvalError};
 
 /// MySQL 8.0.28's maximum unix timestamp: '3001-01-18 23:59:59' UTC.
+#[cfg(test)]
 const MAX_UNIX_SECS: i64 = 32_536_771_199;
 
-/// Renders the instant `secs`+`micros` (unix epoch) as a local wall clock in
-/// the session zone.
-fn instant_to_local(secs: i64, micros: u32, tz: &SessionTimeZone) -> Option<NaiveDateTime> {
-    let utc = chrono::DateTime::<Utc>::from_timestamp(secs, micros * 1000)?;
-    Some(match tz {
-        SessionTimeZone::Local => utc.with_timezone(&chrono::Local).naive_local(),
-        SessionTimeZone::Fixed { offset_secs, .. } => {
-            (utc + chrono::Duration::seconds(i64::from(*offset_secs))).naive_utc()
-        }
-        SessionTimeZone::Named(tz) => utc.with_timezone(tz).naive_local(),
-    })
-}
-
-fn format_local(local: NaiveDateTime, fsp: usize) -> String {
-    let mut out = format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        local.year(),
-        local.month(),
-        local.day(),
-        local.hour(),
-        local.minute(),
-        local.second()
-    );
-    if fsp > 0 {
-        let micros = local.and_utc().timestamp_subsec_micros();
-        let shown = micros / 10_u32.pow(6 - fsp as u32);
-        out.push('.');
-        out.push_str(&format!("{shown:0fsp$}"));
-    }
-    out
-}
-
-/// The unix-seconds argument as `(total_nanoseconds, fsp)`; `None` is NULL.
-/// Go derives fsp from the argument TYPE: int 0, decimal its capped scale,
-/// real/string `MaxFsp`; real values first pass through
-/// `MyDecimal.FromFloat64`'s shortest `%g` spelling. The nanoseconds keep the
-/// full written fraction so rounding at fsp happens on the complete value, as
-/// in `evalFromUnixTime`.
-fn unix_arg_nanos(value: &Datum, cols: &dyn Columns) -> Result<Option<(i128, usize)>, EvalError> {
-    let (text, fsp) = match value {
-        Datum::Null => return Ok(None),
-        Datum::Int(v) => (v.to_string(), 0),
-        Datum::UInt(v) => (v.to_string(), 0),
-        Datum::Decimal(d) => {
-            let text = d.to_string();
-            let scale = text.split_once('.').map_or(0, |(_, f)| f.len()).min(6);
-            (text, scale)
-        }
-        Datum::Real(v) | Datum::Float32(v) => {
-            let Some(decimal) = Decimal::from_f64(*v) else {
-                return Ok(None);
-            };
-            (decimal.to_string(), 6)
-        }
-        other => {
-            let Some(text) = coerce_str(other)? else {
-                return Ok(None);
-            };
-            // go's `builtinFromUnixTimeSig` takes an ETDecimal argument, so a
-            // textual source was already cast: a wholly non-numeric string
-            // (`'a'`) casts to 0 and answers the epoch, while a numeric
-            // spelling keeps its own scale.
-            let trimmed = text.trim();
-            let (int_part, _) = trimmed.split_once('.').unwrap_or((trimmed, ""));
-            if int_part.parse::<i64>().is_err() {
-                // go's ETDecimal argument cast runs `StrToDecimal` through
-                // `HandleTruncate`: a wholly non-numeric string warns
-                // "Truncated incorrect DECIMAL value: 'a'" on its way to the
-                // epoch answer (captured on the oracle).
-                cols.handle_truncate(&format!(
-                    "Truncated incorrect DECIMAL value: '{}'",
-                    tidb_datatype::warning_subject_byte_cap(trimmed)
-                ))?;
-                return Ok(Some((0_i128, 0)));
-            }
-            (text, 6)
-        }
-    };
-
-    let text = text.trim();
-    let (int_part, frac_part) = text.split_once('.').unwrap_or((text, ""));
-    let Ok(int_part): Result<i64, _> = int_part.parse() else {
-        return Ok(None);
-    };
-    if int_part < 0 || frac_part.starts_with('-') {
-        return Ok(None);
-    }
-    let frac_digits: String = frac_part.chars().take(9).collect();
-    if !frac_digits.bytes().all(|b| b.is_ascii_digit()) {
-        return Ok(None);
-    }
-    let frac_nanos: i128 = if frac_digits.is_empty() {
-        0
-    } else {
-        format!("{frac_digits:0<9}").parse().unwrap()
-    };
-    Ok(Some((
-        i128::from(int_part) * 1_000_000_000 + frac_nanos,
-        fsp,
-    )))
-}
+#[cfg(test)]
+use tidb_query_expr::native_from_unixtime_instant_to_local as instant_to_local;
 
 /// `FROM_UNIXTIME(unix[, format])`.
 pub(crate) fn from_unixtime(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    if !(1..=2).contains(&vals.len()) {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some((total_nanos, fsp)) = unix_arg_nanos(&vals[0], cols)? else {
-        return Ok(Datum::Null);
-    };
-    let integral = total_nanos / 1_000_000_000;
-    if integral > i128::from(MAX_UNIX_SECS) {
-        return Ok(Datum::Null);
-    }
-
-    // Round half-up at fsp over the complete value (convertTimeToMysqlTime
-    // with ModeHalfUp), carrying into the seconds when the fraction rolls.
-    let factor = 10_i128.pow(9 - fsp as u32);
-    let rounded = (total_nanos + factor / 2) / factor * factor;
-    let secs = (rounded / 1_000_000_000) as i64;
-    let micros = ((rounded % 1_000_000_000) / 1000) as u32;
-
-    let Some(local) = instant_to_local(secs, micros, &cols.time_zone()) else {
-        return Ok(Datum::Null);
-    };
-    let formatted = format_local(local, fsp);
-    if vals.len() == 2 {
-        return date_format_in(&Datum::new_string(formatted), &vals[1], cols);
-    }
-    Ok(Datum::new_string(formatted))
+    use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp as Op};
+    use tidb_query_expr::NativeFromUnixTimeResult;
+    crate::tikv::evaluate_prepared_args_scoped_in(
+        cols,
+        || {
+            if !(1..=2).contains(&vals.len()) {
+                return Err(EvalError::Unsupported("bad function arity"));
+            }
+            match &vals[0] {
+                Datum::Null => Ok((Op::FromUnixTimeNullNative, EvaluatedArgs::Bytes(None))),
+                value @ (Datum::Int(_)
+                | Datum::UInt(_)
+                | Datum::Decimal(_)
+                | Datum::Real(_)
+                | Datum::Float32(_)) => Ok((
+                    Op::FromUnixTimeNumericNative,
+                    crate::tikv::prepare_datum_identity_args(value)?,
+                )),
+                value => Ok((
+                    Op::FromUnixTimeTextNative,
+                    EvaluatedArgs::Bytes(coerce_str(value)?.map(String::into_bytes)),
+                )),
+            }
+        },
+        |computed, scoped_cols| {
+            let Some(bytes) = computed.into_bytes()? else {
+                return Ok(Datum::Null);
+            };
+            match tidb_query_expr::decode_native_from_unixtime_result(&bytes)
+                .ok_or_else(crate::tikv::native_time_result_contract_error)?
+            {
+                NativeFromUnixTimeResult::Continue(_) => {}
+                NativeFromUnixTimeResult::Truncate { message, .. } => {
+                    scoped_cols.handle_truncate(message)?;
+                }
+            }
+            // Keep the complete actual report, including a truncate report.
+            // Its policy replay must finish before the original zone demand.
+            crate::tikv::evaluate_prepared_args_scoped_in(
+                scoped_cols,
+                || {
+                    Ok((
+                        Op::FromUnixTimeLocalNative,
+                        EvaluatedArgs::TemporalValue {
+                            value: bytes,
+                            zone: scoped_cols.time_zone(),
+                        },
+                    ))
+                },
+                |computed, local_cols| {
+                    let Some(bytes) = computed.into_bytes()? else {
+                        return Ok(Datum::Null);
+                    };
+                    let value = Datum::new_string(bytes);
+                    if vals.len() == 1 {
+                        Ok(value)
+                    } else {
+                        // The existing formatter owns both conversions and its
+                        // worker, reached only after a successful local value.
+                        date_format_in(&value, &vals[1], local_cols)
+                    }
+                },
+            )
+        },
+    )
 }
 
 /// `UNIX_TIMESTAMP([datetime])`.
@@ -312,6 +254,279 @@ mod tests {
 
     fn dec(v: &str) -> Datum {
         Datum::Decimal(Decimal::from_literal(v))
+    }
+
+    #[test]
+    fn from_unixtime_workers_preserve_truncate_zone_and_late_format_order() {
+        use crate::context::ErrorLevel;
+        use std::cell::RefCell;
+        struct Policy {
+            level: ErrorLevel,
+            events: RefCell<Vec<&'static str>>,
+            warnings: RefCell<Vec<(u16, String)>>,
+        }
+        impl Columns for Policy {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn now(&self) -> Option<(i64, u32, i32)> {
+                panic!("FROM_UNIXTIME has no clock demand")
+            }
+            fn date_modes(&self) -> tidb_datatype::DateModes {
+                panic!("FROM_UNIXTIME leaf has no mode demand")
+            }
+            fn time_zone(&self) -> SessionTimeZone {
+                self.events.borrow_mut().push("zone");
+                SessionTimeZone::utc()
+            }
+            fn truncate_level(&self) -> ErrorLevel {
+                self.events.borrow_mut().push("policy");
+                self.level
+            }
+            fn append_warning(&self, code: u16, message: &str) {
+                self.events.borrow_mut().push("warning");
+                self.warnings.borrow_mut().push((code, message.to_owned()));
+            }
+        }
+        for slots in [1, 0] {
+            let owner = crate::AsciiPoolOwner::new(
+                crate::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    64,
+                    8,
+                    4 * 1024 * 1024,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let execution = owner.begin_execution().unwrap();
+            let resource = |error: EvalError| {
+                let EvalError::ExpressionAdapterFailure(failure) = error else {
+                    panic!("{error:?}")
+                };
+                assert_eq!(
+                    failure.class(),
+                    crate::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    crate::ExpressionAdapterFailureOrigin::Pool
+                );
+            };
+            for level in [ErrorLevel::Ignore, ErrorLevel::Warn, ErrorLevel::Error] {
+                let ctx = Policy {
+                    level,
+                    events: RefCell::new(Vec::new()),
+                    warnings: RefCell::new(Vec::new()),
+                };
+                for text in [" a ", ".1", "1e2", "9223372036854775808"] {
+                    for bad_format in [false, true] {
+                        ctx.events.borrow_mut().clear();
+                        ctx.warnings.borrow_mut().clear();
+                        let format = if bad_format {
+                            Datum::new_bytes(vec![0xff])
+                        } else {
+                            s("%Y")
+                        };
+                        let result = execution.scope().with_columns(&ctx, |columns| {
+                            from_unixtime(&[s(text), format], columns)
+                        });
+                        let message =
+                            format!("Truncated incorrect DECIMAL value: '{}'", text.trim());
+                        if slots == 0 {
+                            resource(result.unwrap_err());
+                        } else if level == ErrorLevel::Error {
+                            assert!(
+                                matches!(result, Err(EvalError::TruncatedWrongValue(actual)) if actual == message)
+                            );
+                        } else if bad_format {
+                            assert!(matches!(
+                                result,
+                                Err(EvalError::Unsupported("invalid UTF-8 byte datum"))
+                            ));
+                        } else {
+                            assert_eq!(result.unwrap(), s("1970"));
+                        }
+                        let events = if slots == 0 {
+                            vec![]
+                        } else if level == ErrorLevel::Error {
+                            vec!["policy"]
+                        } else if level == ErrorLevel::Warn {
+                            vec!["policy", "warning", "zone"]
+                        } else {
+                            vec!["policy", "zone"]
+                        };
+                        assert_eq!(*ctx.events.borrow(), events);
+                        let warnings = if slots == 1 && level == ErrorLevel::Warn {
+                            vec![(1292, message)]
+                        } else {
+                            Vec::new()
+                        };
+                        assert_eq!(*ctx.warnings.borrow(), warnings);
+                    }
+                }
+                for value in [
+                    Datum::Null,
+                    Datum::Int(-1),
+                    Datum::Int(MAX_UNIX_SECS + 1),
+                    Datum::UInt(u64::MAX),
+                    Datum::Real(f64::NAN),
+                    s("1.12345678X"),
+                ] {
+                    ctx.events.borrow_mut().clear();
+                    ctx.warnings.borrow_mut().clear();
+                    let result = execution.scope().with_columns(&ctx, |columns| {
+                        from_unixtime(&[value, Datum::new_bytes(vec![0xff])], columns)
+                    });
+                    if slots == 0 {
+                        resource(result.unwrap_err());
+                    } else {
+                        assert_eq!(result.unwrap(), Datum::Null);
+                    }
+                    assert!(ctx.events.borrow().is_empty());
+                    assert!(ctx.warnings.borrow().is_empty());
+                }
+                ctx.events.borrow_mut().clear();
+                let result = execution.scope().with_columns(&ctx, |columns| {
+                    from_unixtime(&[Datum::Int(1), Datum::Null], columns)
+                });
+                if slots == 0 {
+                    resource(result.unwrap_err());
+                } else {
+                    assert_eq!(result.unwrap(), Datum::Null);
+                }
+                assert_eq!(
+                    *ctx.events.borrow(),
+                    if slots == 0 { vec![] } else { vec!["zone"] }
+                );
+                for (values, message) in [
+                    (vec![], "bad function arity"),
+                    (
+                        vec![Datum::Null, Datum::Null, Datum::Null],
+                        "bad function arity",
+                    ),
+                    (
+                        vec![Datum::new_bytes(vec![0xff])],
+                        "invalid UTF-8 byte datum",
+                    ),
+                ] {
+                    ctx.events.borrow_mut().clear();
+                    assert!(
+                        matches!(execution.scope().with_columns(&ctx, |columns| from_unixtime(&values, columns)), Err(EvalError::Unsupported(actual)) if actual == message)
+                    );
+                    assert!(ctx.events.borrow().is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn from_unixtime_workers_keep_kind_fraction_range_and_scoped_formatting() {
+        use std::cell::Cell;
+        struct Zone {
+            reads: Cell<usize>,
+            offset: Cell<i32>,
+        }
+        impl Columns for Zone {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn time_zone(&self) -> SessionTimeZone {
+                self.reads.set(self.reads.get() + 1);
+                SessionTimeZone::Fixed {
+                    name: "raw offset".to_owned(),
+                    offset_secs: self.offset.get(),
+                }
+            }
+            fn now(&self) -> Option<(i64, u32, i32)> {
+                panic!("FROM_UNIXTIME has no clock demand")
+            }
+            fn date_modes(&self) -> tidb_datatype::DateModes {
+                panic!("FROM_UNIXTIME leaf has no mode demand")
+            }
+            fn truncate_level(&self) -> crate::context::ErrorLevel {
+                panic!("valid numeric inputs must not consult truncate policy")
+            }
+            fn append_warning(&self, _: u16, _: &str) {
+                panic!("valid numeric inputs must not warn")
+            }
+        }
+        let owner = crate::AsciiPoolOwner::new(
+            crate::AsciiPoolPolicy::checked(
+                1,
+                1,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let ctx = Zone {
+            reads: Cell::new(0),
+            offset: Cell::new(0),
+        };
+        for (value, expected) in [
+            (Datum::Int(1), "1970-01-01 00:00:01"),
+            (Datum::UInt(1), "1970-01-01 00:00:01"),
+            (dec("1.20"), "1970-01-01 00:00:01.20"),
+            (Datum::Real(1.2), "1970-01-01 00:00:01.200000"),
+            (Datum::Float32(1.00000049), "1970-01-01 00:00:01.000000"),
+            (s("1"), "1970-01-01 00:00:01.000000"),
+            (s("1.123456789X"), "1970-01-01 00:00:01.123457"),
+            (dec("-0.1"), "1970-01-01 00:00:00.1"),
+            (s("-0.1"), "1970-01-01 00:00:00.100000"),
+            (Datum::Real(-0.1), "1970-01-01 00:00:00.100000"),
+            (
+                Datum::Decimal(Decimal::from_raw_parts(false, b"10049".to_vec(), 2, 4)),
+                "1970-01-01 00:00:01.00",
+            ),
+            (dec("32536771199.9999999"), "3001-01-19 00:00:00.000000"),
+        ] {
+            ctx.reads.set(0);
+            assert_eq!(
+                execution
+                    .scope()
+                    .with_columns(&ctx, |columns| from_unixtime(&[value], columns))
+                    .unwrap(),
+                s(expected)
+            );
+            assert_eq!(ctx.reads.get(), 1);
+        }
+        ctx.reads.set(0);
+        assert_eq!(
+            execution
+                .scope()
+                .with_columns(&ctx, |columns| from_unixtime(
+                    &[s("1.123456789X"), s("%Y-%m-%d %H:%i:%s.%f")],
+                    columns
+                ))
+                .unwrap(),
+            s("1970-01-01 00:00:01.123457")
+        );
+        assert_eq!(ctx.reads.get(), 1);
+        ctx.offset.set(90000);
+        ctx.reads.set(0);
+        assert_eq!(
+            execution
+                .scope()
+                .with_columns(&ctx, |columns| from_unixtime(&[Datum::Int(0)], columns))
+                .unwrap(),
+            s("1970-01-02 01:00:00")
+        );
+        assert_eq!(ctx.reads.get(), 1);
+        assert_eq!(
+            from_unixtime(&[Datum::Int(0), s("%Y")], &NoColumns).unwrap(),
+            s("1970")
+        );
     }
 
     #[test]

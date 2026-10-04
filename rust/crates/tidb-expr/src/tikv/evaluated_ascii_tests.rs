@@ -1457,6 +1457,13 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::UnixTimestampDecLegacy => {
             panic!("UNIX_TIMESTAMP needs its actual clock, NULL, text or typed time and zone")
         }
+        EvaluatedBytesOp::FromUnixTimeNumericNative
+        | EvaluatedBytesOp::FromUnixTimeTextNative
+        | EvaluatedBytesOp::FromUnixTimeLocalNative
+        | EvaluatedBytesOp::FromUnixTimeLegacy
+        | EvaluatedBytesOp::FromUnixTimeNullNative => {
+            panic!("FROM_UNIXTIME needs its actual numeric, text, epoch or nullable decimal input")
+        }
         EvaluatedBytesOp::ConvertTzNative => {
             panic!("CONVERT_TZ needs its three actual nullable coerced strings")
         }

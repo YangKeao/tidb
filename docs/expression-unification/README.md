@@ -1,26 +1,28 @@
 # Expression unification experiment
 
 Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
-Current checkpoint: **decimal-presentation-80**, following **unix-timestamp-79**.
+Current checkpoint: **from-unixtime-81**, following **decimal-presentation-80**.
 
-Functional migration remains **220/245**, strict final-audited count **0**. All220 family objects are unchanged; no evaluator credit added. Target221 needs1 more, with25eligible families remaining.
+Functional migration: **221/245 (90.20%)**, strict final-audited count **0**. FROM_UNIXTIME adds one family; all prior220 objects are unchanged. The functional90% threshold is reached, but **M6 and final acceptance remain unfinished**. There are24eligible families remaining.
 
-## Shared type prerequisites
+## FROM_UNIXTIME
 
-TiKV datatype now owns native Decimal visible formatting, exact Ryu Go-g float conversion through the existing MySQL nine-word parser, and128-byte diagnostic subject clipping. Native Display/from_f64 are adapters; clipping is an alias. Raw sign/empty/leading/UTF8/panic and hidden-storage rounding policies are preserved. Finite-underflow empty-word zero is adapted only at the new float constructor boundary; general parser/shift/wire policies stay unchanged.
+Five TiKV profiles own actual numeric/text parsing, epoch/report construction, zone projection, typed legacy conversion and genuine NULL. Native code retains coercion and computed warning policy before zone demand, then lazy layout coercion after valid local output. Complete SDK epoch/report bytes are forwarded unchanged under one selected scope, reusing DATE_FORMAT workers.
 
-Ryu retains its existing1.0.23 identity. Its direct dependency moves to TiKV datatype, with offline-generated lock edges and removal of the unused native workspace declaration. No package version changes. Display now creates an intermediate String; allocation/performance equivalence is unverified.
-
-FROM_UNIXTIME's required ordinary/PB/legacy stages are source-reviewed but **not migrated**. Native general Decimal parsing, M6/default-NoColumns and remaining evaluator closure are also open.
+PB preserves observed-NULL demand, the one-argument extra Time cast and outer declared-family conversion. Legacy retains its borrowed request zone, f64 range, ordinary u32 nanos-times1000 behavior and FSP0 with hidden microseconds. Missing-first panic and delayed lossy layout remain. A scoped callback forwards raw_columns, not SimpleExpr::Shared's own context; that broader M6 gap remains explicit. Existing wire algorithms and R83 datatype/dependency policies are unchanged.
 
 ## Validation
 
-[Evidence](evidence/decimal-presentation-checkpoint.md), [exact commands/hashes](logs/decimal-presentation-summary.txt), [manifest](checkpoint.json), [cumulative ledger](migration-progress.json).
+[Evidence](evidence/from-unixtime-checkpoint.md), [exact commands/hashes](logs/from-unixtime-summary.txt), [manifest](checkpoint.json), [cumulative ledger](migration-progress.json).
 
-Seven locked test launches: CPPdecimal111/warning1, native decimal101/warning5 and existing FROM_UNIXTIME3 pass. All5newtests pass first matching gate. Full expression **1578/4old/94ignored** and unistore **212/1old/13ignored** retain exact normalized failure sections and remain RED. No compile failure, retry, expectation correction, interruption or zero-match run; no new SQL probes.
+Eleven locked launches: seven green, two new-test input failures corrected and retried, and two old full-suite failures. All10new tests finally pass. CPPcore2/wire2/local330, native root7/gateway196, legacy1 andSQL1 pass (local/gateway each retain one ignored). SQL includes42real-column SELECTs:20normal,20zero-slot and2filters.
 
-Four Rust files; CPP129/native31 original test bodies byte-identical. Eleven original parser/conversion production bodies byte-identical. Pinned format/diff checks pass. Go/Bazel/generated-code/fixtures unchanged.
+Full expression **1582/4old/94ignored** and unistore **213/1old/13ignored** retain exact normalized failure sections and remain RED. New-test corrections only change invalid input construction: raw Decimal width/header corruption and legacy's binary64 inclusive range boundary. Production and expected results were not changed to match output. No compile failure, zero-match, interruption or fixture recording.
 
-Existing raw INTDIV, mode forwarding, CAST diagnostic, JSON/metadata and other compatibility gaps remain. Whole workspace/lint/dev/bazel_prepare/release, exhaustive differential/TiFlash/FIPS, performance/allocator/physical heap/peak/OOM/zero-copy/dual-timezone footprint remain deferred. No whole-package transcreation or PR-readiness claim.
+Eighteen Rust files, two new modules; CPP205/native476 original test bodies and five other production bodies are byte-identical. Pinned format/diff checks pass; dependency/lock/Go/Bazel/generated/fixture scope is unchanged.
 
-Three Plans agree; manifest pins their hash and paired TiKV commit. Publish TiKV then TiDB without force push or PR. Old untracked client-differential BUILD.bazel stays excluded.
+## Remaining acceptance
+
+Prioritize M6/request-root/default-NoColumns integration and final type/deletion acceptance; reaching221 is not whole-goal completion. General type/parser work, legacy Shared-child context, older Values reply-floor precharge, raw INTDIV, mode forwarding, CAST diagnostic and JSON/metadata gaps remain. Whole workspace/lint/dev/bazel_prepare/release, exhaustive differential/TiFlash/FIPS and performance/allocator/physical heap/peak/OOM/zero-copy/dual-timezone footprint are deferred. No whole-package transcreation or PR-readiness claim.
+
+Three Plans agree; manifest pins their hash and paired TiKV commit. Publish TiKV then TiDB without force push or PR. The old untracked client-differential BUILD.bazel stays excluded.
