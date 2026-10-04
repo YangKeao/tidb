@@ -9363,6 +9363,120 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_extract_preserves_stored_source_policy_and_selector_root_demand() {
+    use tidb_datatype::FieldTypeCode;
+
+    let create = "CREATE TABLE shared_extract_runtime_sql (negative_time TIME(6), typed_datetime DATETIME, day_text VARCHAR(32), datetime_text VARCHAR(32), null_time TIME(6), bad_text VARCHAR(32))";
+    let insert = "INSERT INTO shared_extract_runtime_sql VALUES ('-25:03:04.123456','2024-03-15 02:03:04','1 02:03:04','2024-03-15 02:03:04',NULL,'bad')";
+    // Existing source policy: typed calendar values use calendar extraction;
+    // typed TIME retains the duration sign; mixed DAY_* text parses duration
+    // first and prefers a positive-year datetime only if its clock agrees.
+    let cases = [
+        ("YEAR", "typed_datetime", Some(2024), false),
+        ("HOUR", "negative_time", Some(-25), false),
+        ("DAY_HOUR", "day_text", Some(26), false),
+        ("DAY_SECOND", "datetime_text", Some(15_020_304), false),
+        ("DAY_SECOND", "typed_datetime", Some(15_020_304), false),
+        ("HOUR", "null_time", None, false),
+        ("DAY_HOUR", "bad_text", None, true),
+    ];
+    let invalid_time = "Truncated incorrect time value: 'bad'";
+    for slots in [1, 0] {
+        let mut session = Session::new();
+        session.run("SET sql_mode=''").unwrap();
+        session.run("SET time_zone='+00:00'").unwrap();
+        session
+            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+            .unwrap();
+        session.run(create).unwrap();
+        session.run(insert).unwrap();
+        assert!(session
+            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .unwrap());
+        for vectorized in [0, 1] {
+            session
+                .run(&format!(
+                    "SET tidb_enable_vectorized_expression={vectorized}"
+                ))
+                .unwrap();
+            for (unit, column, expected, invalid) in cases {
+                // Real stored columns only, never a CAST child. The actual
+                // EXTRACT Select worker runs before its own argument casts
+                // and mixed parser, even when the value is NULL or malformed.
+                let sql =
+                    format!("SELECT EXTRACT({unit} FROM {column}) FROM shared_extract_runtime_sql");
+                if slots == 0 {
+                    let error = session.run_with_columns(&sql).expect_err(&sql);
+                    match &error {
+                        DriverError::Exec(tidb_executor::ExecError::Eval(
+                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                        )) => {
+                            assert_eq!(failure.class(), tidb_executor::ExpressionAdapterFailureClass::PoolResource);
+                            assert_eq!(failure.origin(), tidb_executor::ExpressionAdapterFailureOrigin::Pool);
+                        }
+                        other => panic!("EXTRACT Select did not precede its cast/parse: {sql}/{vectorized}: {other:?}"),
+                    }
+                    let mysql = error.to_mysql_error();
+                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
+                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
+                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
+                    // Fourteen NEW Select refusals, including NULL and bad
+                    // text. These are not old NULL witnesses or cast roots,
+                    // and cannot publish the later mixed-parser 1292 first.
+                    assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+                } else if invalid {
+                    let error = session.run_with_columns(&sql).expect_err(&sql);
+                    assert!(
+                        matches!(
+                            &error,
+                            DriverError::Exec(tidb_executor::ExecError::Eval(
+                                tidb_executor::EvalError::Conversion(_)
+                            ))
+                        ),
+                        "expected original mixed EXTRACT hard conversion error: {error:?}"
+                    );
+                    let mysql = error.to_mysql_error();
+                    assert_eq!(mysql.code, 1292, "{sql}/{vectorized}");
+                    assert_eq!(mysql.state, *b"22007", "{sql}/{vectorized}");
+                    assert_eq!(mysql.message, invalid_time);
+                    assert!(mysql.is_from_evaluation());
+                    // This is a hard error, not NULL plus a softened warning.
+                    // Session completion records its 1292 error row once.
+                    assert_eq!(
+                        warnings_of(&session),
+                        vec![(1292, invalid_time.to_owned())],
+                        "{sql}/{vectorized}"
+                    );
+                } else {
+                    let StmtOutput::Rows { columns, rows } =
+                        session.run_with_columns(&sql).unwrap()
+                    else {
+                        panic!("expected EXTRACT rows: {sql}")
+                    };
+                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
+                    let field = &columns[0].1;
+                    assert_eq!(field.code(), FieldTypeCode::LongLong, "{sql}/{vectorized}");
+                    assert_eq!(
+                        (field.flen(), field.decimal()),
+                        (20, 0),
+                        "{sql}/{vectorized}"
+                    );
+                    assert!(!field.is_unsigned());
+                    assert_eq!(field.charset_name(), "binary");
+                    assert_eq!(field.collation_name(), "binary");
+                    assert_eq!(
+                        rows,
+                        vec![vec![expected.map_or(Datum::Null, Datum::Int)]],
+                        "{sql}/{vectorized}"
+                    );
+                    assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn native_duration_helpers_preserve_stored_cast_and_extract_source_policy() {
     use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
 

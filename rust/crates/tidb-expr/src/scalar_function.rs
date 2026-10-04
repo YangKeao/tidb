@@ -2808,7 +2808,7 @@ impl ScalarFunction {
             let unit = crate::coerce::coerce_str_bytes(&vals[0])?
                 .map(|bytes| String::from_utf8_lossy(&bytes).to_ascii_uppercase());
             let Some(unit) = unit else {
-                return Ok(Datum::Null);
+                return crate::tikv::eval_extract_null_unit_in(ctx);
             };
             return crate::time_fn::extract::extract(
                 &unit,

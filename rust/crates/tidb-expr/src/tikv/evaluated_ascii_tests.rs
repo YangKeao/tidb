@@ -1503,6 +1503,16 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::JsonSumCrc32SerdeNative => {
             panic!("JSON_SUM_CRC32 needs its actual nullable parsed serde document")
         }
+        EvaluatedBytesOp::ExtractSelectNative
+        | EvaluatedBytesOp::ExtractDatetimeNative
+        | EvaluatedBytesOp::ExtractDurationNative
+        | EvaluatedBytesOp::ExtractMixedDurationNative
+        | EvaluatedBytesOp::ExtractMixedFinishNative
+        | EvaluatedBytesOp::ExtractCompositeNative => {
+            panic!(
+                "EXTRACT needs its actual metadata, cast operand, or demanded mixed continuation"
+            )
+        }
         EvaluatedBytesOp::ConvertTzNative => {
             panic!("CONVERT_TZ needs its three actual nullable coerced strings")
         }

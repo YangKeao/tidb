@@ -38,6 +38,8 @@ pub(crate) use convert_charset::{
 };
 // The closed ready-argument families share this value boundary and one pool.
 mod evaluated_ascii;
+mod extract;
+pub(crate) use extract::{eval_extract_composite_in, eval_extract_in, eval_extract_null_unit_in};
 mod from_unixtime;
 mod identity_value;
 mod if_control;

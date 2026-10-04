@@ -2272,6 +2272,12 @@ fn materialize_computed(
             | EvaluatedBytesOp::StrToDateHeadNative
             | EvaluatedBytesOp::StrToDateFinishNative
             | EvaluatedBytesOp::StrToDateTypedFinishNative
+            | EvaluatedBytesOp::ExtractSelectNative
+            | EvaluatedBytesOp::ExtractDatetimeNative
+            | EvaluatedBytesOp::ExtractDurationNative
+            | EvaluatedBytesOp::ExtractMixedDurationNative
+            | EvaluatedBytesOp::ExtractMixedFinishNative
+            | EvaluatedBytesOp::ExtractCompositeNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative

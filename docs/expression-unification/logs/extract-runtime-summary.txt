@@ -1,0 +1,45 @@
+extract-runtime-98 / R101
+CPP cwd /home/agent/tidb/expression-unification/tikv
+Native cwd /home/agent/tidb/expression-unification/tidb/rust
+Raw /home/agent/tidb/expression-unification/logs/extract-runtime-{id}.log
+Counts passed/failed/ignored/filtered; compile/test seconds.
+
+tikv-core | 1/0/0/977 | 15.48/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_extract -- --test-threads=1
+sha256 019212c9291858c536dd9513d20ef83e32d8449cebc769a7524654b85a41afe9
+
+tikv-local | 351/0/1/626 | 0.14/0.23 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+sha256 e266f77656cfe6b002a198796f0a80336aefcb087fdaa3c945fc7735d82ca1e4
+
+native-entry | 13/0/0/1695 | 18.30/0.01 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib extract -- --test-threads=1
+sha256 1ed099f0f2bcc92bda2a0aed4734d36a49ddf94a9d27295d16493ca090203be3
+
+native-gateway | 196/0/1/1511 | 0.13/0.34 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii -- --test-threads=1
+sha256 a8d6b765825c77f64b150e44514ec0af3d9473920b777c68a8c216d5a9df7825
+
+sql | 1/0/0/2242 | 27.66/0.05 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_extract_preserves_stored_source_policy_and_selector_root_demand -- --test-threads=1
+sha256 e5aa8c9b7bdb56e1b70c3cdc279b158a5d9e624a37de10f79b05938612e8d7fc
+
+sql-original | 1/0/0/2242 | 0.15/0.05 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::builtins::date_interval_extract_and_timestampdiff -- --exact --test-threads=1
+sha256 fb1d97132ada5c57505f86d82dc922cc6436cb93a9d181d11b428f00ee385fee
+
+Six locked single-threaded launches, all green/nonzero; no compile/new-test failure, retry, interruption or zero-match. Five new tests pass first execution:2CPP,2nativeentry/bridge,1SQL. Nativeentry includes11 original tests. All137CPP/415native original test bodies in touched files byte-identical; no changed fixtures/oracles/provider recording. Full expression/unistore NOT rerun: R1004+1 failures remain historical, not current full-suite receipts.
+
+Six OwnBytes/one-call profiles: Select BytesIntInt(unit/actualoptionalFieldTypeCode/actualDatumKind), Datetime existingTimeCoreBitsBytes, Duration BytesInt(unit/nanos), MixedDuration BytesBytesInt(unit/text/freshflag1), MixedFinish BytesInt(WHOLEcomputedSDKstate/freshflag2), Composite Bytes2(unit/actualnullabletext). FiveValues plus dedicatedTimeCoreBitsBytes role; no newcarrier/factorylimit/arity/PB/legacy/vector kernel. Static role mismatch caught before builds; kept original carrier role and widened only newop whitelist. Parent's tentative case-sensitive composite reminder was wrong: gitdiff confirmed both original formula tables ASCIIuppercase; B retained source unchanged before builds. Neither static correction is a failed Cargo launch.
+
+SDK owns main signature selection, original raw-number services, mixed parsing/choice and full broad calendar compatibility parser/formulas. Native keeps actual complete source FieldType for requested generic casts and actualctx for original getters/warnings. Typed unit handling retains eager children and original lossy UTF8 conversion; actualcastNULL/unitNULL use existing true witness. No globalNULLshortcut or native selector/parse/clock-comparison fallback. Root codec strict tags0–7; error/warning text computed SDKside. Mixed report contains actualparsednanos/fsp/originalunit/text, forwarded whole, never host-reconstructed. Mode2 is separately read only after SDK requests it; original UTC/positiveyear/HMS comparison excludesmicro.
+
+Precharge bound checked actualbyte lengths+64 before producers, plus all actualinput capacities and freshreportcap. CompositeNULL may use conservativepositivebound while output actualNone costs0. ActualDatumKind covers all19 variants (0..18) withNull0/String8/Duration11/Time15; sourceUnknown uses -1-byte rather than namedDatetime aliases. Both macro fnmeta and all6 worker shapes/validators are closed; requiredpresence exceptactualoptionalsource andactualCompositeNULL.
+
+CPP direct worker tests isolate all6 roots, invalidunits produce SDK1105 rather than validation refusal, actual stage1 report feedsstage2, wrongrole/badshape/flag/workbudget0 and128Ki-cap versus64Ki-cap refuse beforeinvoke then healthyreuse. Native scoped tests include second-mode panic and warning panic poisoning, one-slot continuation and realNULL. Entry tests cover three entrypaths, differing two mode values/first failure demand, Unknown12 versus namedDatatype, actualTime hiddenmicro/negativeDurationFSP, originalunit1105/typedlossy spelling, NULL/eagerchild, original preparation errors and distinct compatibility policy. Broad u32hour/year and original ordinary i64 overflow policy are not narrowed to Time/Duration.
+
+SQL28SELECT =7storedtemplates×2vector×pool1/0. Positivepool12successfulrows (including2NULL) plus2hardbadtime failures. 14zero-slot probes isolate NEW Select root without nestedCAST, including2NULL/2badtext; do not claim SQL isolation of later finish roots. Positive results pin realInt/NULL plusLongLong20/0 signed/binarymetadata; hardmixedbadtext code1292/22007 retains1 session error-row warning, zero-slot1105 hasnone. Original SQL gate32SELECT (3EXTRACTqueries) staysgreen. No invented SQL or PB admission.
+
+7CPP/8native Rustfiles,2newmodules. Native mainselector/mixedbusiness body and calendar3exclusivehelpers deleted; sharedcalendar clockhelper retained for4 other production callers. R100 datatype services reused unchanged. Pinned rustfmt skip_children/check+git diff --check pass. E focused source review of both production modules found no blocker, not runtime endorsement. Guides descriptive, no policy/Cargo/lock/Go/Bazel change; unrelated BUILD excluded.
+
+Functional232/245=94.69%; old231 familyobjects exact, appendonlyextract. strict0;13remaining=5core+2ordinary+6complex candidates, not blanket exceptions. Old partial/type records exact, latesttypecheckpoint remains extract-types-97. Workspace/lint/dev/bazel/release/exhaustive/TiFlash/FIPS/performance/physicalheap/peak/OOM/allocator/dual-tzdata/wholeGo-package/PRready unverified. Request-root/defaultNoColumns/liveDAG/finalacceptance and all earlier domain gaps remain. Paired signed-off pushes carry three identical Plans.
