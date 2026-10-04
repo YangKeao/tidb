@@ -1440,6 +1440,9 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::TimestampAddNative | EvaluatedBytesOp::TimestampAddPrefixNullNative => {
             panic!("TIMESTAMPADD needs actual operands or its genuine NULL prefix")
         }
+        EvaluatedBytesOp::DateLiteralNative | EvaluatedBytesOp::TimestampLiteralNative => {
+            panic!("temporal literals need their actual text, modes and owned session timezone")
+        }
         EvaluatedBytesOp::IntDivDecimalSignedNative
         | EvaluatedBytesOp::IntDivDecimalUnsignedNative
         | EvaluatedBytesOp::IntDivDecimalLegacy
@@ -2186,6 +2189,171 @@ fn json_merge_sdk_rejects_bad_frames_and_preserves_empty_patch_panic() {
     assert!(matches!(scope.evaluate_value(&Datum::Null),
         Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopePoisoned));
     assert_eq!(owner.snapshot().unwrap(), disposed);
+    drop(scope);
+    execution.close();
+}
+
+#[test]
+fn temporal_literal_gateway_keeps_zone_binding_business_reports_and_refusals() {
+    use tidb_datatype::{CoreTime, SessionTimeZone, TimeType};
+    use tidb_query_expr::{decode_native_temporal_literal_result, NativeTemporalLiteralResult};
+    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        // The same compiled worker must observe each invocation's actual zone,
+        // rather than retaining the first zone in a pool key or EvalConfig.
+        for (zone, expected) in [
+            (SessionTimeZone::utc(), "2011-03-13 02:00:00.000000"),
+            (
+                SessionTimeZone::Named(chrono_tz::America::Los_Angeles),
+                "2011-03-13 03:00:00.000000",
+            ),
+            (SessionTimeZone::utc(), "2011-03-13 02:00:00.000000"),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    EvaluatedBytesOp::TimestampLiteralNative,
+                    columns,
+                    || {
+                        Ok(EvaluatedArgs::TemporalText {
+                            value: b"2011-03-13 01:59:59.9999999".to_vec(),
+                            modes: 0,
+                            zone,
+                        })
+                    },
+                    EvaluatedBytesResult::into_bytes,
+                )
+            });
+            let bytes = result
+                .unwrap()
+                .expect("a temporal literal always returns an actual report");
+            match decode_native_temporal_literal_result(&bytes).unwrap() {
+                NativeTemporalLiteralResult::Value(value) => {
+                    assert_eq!(
+                        value.kind,
+                        tidb_query_datatype::codec::mysql::TimeType::DateTime
+                    );
+                    assert_eq!(value.fsp, 6);
+                    assert_eq!(
+                        Time::from_raw_parts(
+                            CoreTime::from_raw(value.raw),
+                            TimeType::DateTime,
+                            value.fsp
+                        )
+                        .to_string(),
+                        expected
+                    );
+                }
+                NativeTemporalLiteralResult::WrongValue { .. } => {
+                    panic!("valid timestamp must return the computed Time")
+                }
+            }
+            assert_wide_math_c4(observation);
+        }
+        assert_eq!(owner.snapshot().unwrap().factory_successes, 1);
+        for (operation, code, message) in [
+            (
+                EvaluatedBytesOp::DateLiteralNative,
+                1292,
+                "Incorrect date value: 'not-a-literal'",
+            ),
+            (
+                EvaluatedBytesOp::TimestampLiteralNative,
+                1525,
+                "Incorrect datetime value: 'not-a-literal'",
+            ),
+        ] {
+            let (result, observation) = observe_wide_math(|| {
+                evaluate_args_in(
+                    operation,
+                    columns,
+                    || {
+                        Ok(EvaluatedArgs::TemporalText {
+                            value: b"not-a-literal".to_vec(),
+                            modes: 0,
+                            zone: SessionTimeZone::utc(),
+                        })
+                    },
+                    EvaluatedBytesResult::into_bytes,
+                )
+            });
+            let bytes = result
+                .unwrap()
+                .expect("business failure is a computed report, not NULL");
+            match decode_native_temporal_literal_result(&bytes).unwrap() {
+                NativeTemporalLiteralResult::WrongValue {
+                    code: actual_code,
+                    message: actual_message,
+                } => {
+                    assert_eq!(actual_code, code);
+                    assert_eq!(actual_message, message);
+                }
+                NativeTemporalLiteralResult::Value(_) => {
+                    panic!("invalid literal must preserve its hard error")
+                }
+            }
+            assert_wide_math_c4(observation);
+        }
+        for operation in [
+            EvaluatedBytesOp::DateLiteralNative,
+            EvaluatedBytesOp::TimestampLiteralNative,
+        ] {
+            for (value, modes) in [
+                (vec![0xff], 0),
+                (b"2020-01-01".to_vec(), 8),
+                (b"2020-01-01".to_vec(), -1),
+            ] {
+                let (result, observation) = observe_wide_math(|| {
+                    evaluate_args_in(
+                        operation,
+                        columns,
+                        || {
+                            Ok(EvaluatedArgs::TemporalText {
+                                value,
+                                modes,
+                                zone: SessionTimeZone::utc(),
+                            })
+                        },
+                        EvaluatedBytesResult::into_bytes,
+                    )
+                });
+                assert!(matches!(
+                    result,
+                    Err(EvalError::ExpressionRuntimeFailure(_))
+                ));
+                assert_eq!(observation.facade_entries, 1);
+                assert_eq!(
+                    observation.before_kernel_invocations,
+                    observation.after_kernel_invocations
+                );
+            }
+        }
+    });
+    assert!(!scope.poisoned.get());
+    drop(scope);
+    execution.close();
+
+    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    scope.with_columns(&crate::NoColumns, |columns| {
+        for operation in [EvaluatedBytesOp::DateLiteralNative, EvaluatedBytesOp::TimestampLiteralNative] {
+            for text in ["2020-01-01", "not-a-literal"] {
+                let (result, observation) = observe_wide_math(|| evaluate_args_in(operation, columns,
+                    || Ok(EvaluatedArgs::TemporalText {
+                        value: text.as_bytes().to_vec(), modes: 0, zone: SessionTimeZone::utc(),
+                    }), EvaluatedBytesResult::into_bytes,
+                ));
+                assert!(matches!(result, Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource));
+                assert_eq!(observation.facade_entries, 0);
+                assert_eq!(observation.before_kernel_invocations, None);
+                assert_eq!(observation.after_kernel_invocations, None);
+            }
+        }
+    });
+    assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
+    assert!(!scope.poisoned.get());
     drop(scope);
     execution.close();
 }

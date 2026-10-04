@@ -55,124 +55,59 @@
 //! fold-time sibling of the [`crate::Columns::time_zone`] the cast path
 //! consults at eval time. A literal carrying an explicit offset
 //! (`'... 14:00:00+02:00'`) normalizes into that zone, and a fractional
-//! carry rounds the INSTANT in it (see [`parse`]).
+//! carry rounds the INSTANT in it (see [`timestamp_literal_in`]).
 //!
 //! The SQL mode follows the statement too. `ALLOW_INVALID_DATES` controls
 //! calendar validation while `DATE` applies `NO_ZERO_DATE` and
 //! `NO_ZERO_IN_DATE` after parsing, in the same order as Go's literal
 //! function.
 
-use crate::EvalError;
-use regex::Regex;
-use std::sync::OnceLock;
-use tidb_datatype::{FieldType, FieldTypeCode, Time, TimeType};
+use crate::{Columns, EvalError};
+use tidb_datatype::{CoreTime, FieldType, FieldTypeCode, Time, TimeType};
 
 /// Go `mysql.MaxDateWidth`: `'YYYY-MM-DD'`.
 const MAX_DATE_WIDTH: i64 = 10;
 /// Go `mysql.MaxDatetimeWidthNoFsp`: `'YYYY-MM-DD HH:MM:SS'`.
 const MAX_DATETIME_WIDTH_NO_FSP: i64 = 19;
 
-/// Go's `timestampPattern`, transcreated character for character from
-/// `pkg/expression/builtin_time.go`. `\d` and `\s` are spelled out as their
-/// ASCII classes because RE2's are ASCII-only while Rust's are Unicode-aware.
-fn timestamp_pattern() -> &'static Regex {
-    static PATTERN: OnceLock<Regex> = OnceLock::new();
-    PATTERN.get_or_init(|| {
-        Regex::new(concat!(
-            r"^",
-            // Skip any spaces or zeros
-            r"[\t\n\x0C\r ]*0*",
-            // Year 1-4 digits
-            r"[0-9]{1,4}",
-            // 1 or 2 digit Month and Day, any non-digit as separator
-            r"([^0-9]0*[0-9]{1,2}){2}",
-            // At least one space between Date and Time parts
-            r"[\t\n\x0C\r ]+",
-            // Hour is mandatory
-            r"0*[0-9]{1,2}",
-            // Minutes or Minutes:Seconds are optional
-            r"([^0-9]0*[0-9]{1,2}){0,2}",
-            // Optional fractional seconds
-            r"(\.[0-9]*)?",
-            // Optional time zone offset, must be +/-HH:MM format
-            r"([+-][0-9]{2}[:][0-9]{2})?",
-            // Optionally ending with spaces
-            r"[\t\n\x0C\r ]*$",
-        ))
-        .expect("timestampPattern is a valid regex")
-    })
-}
-
-/// Go's `datePattern`, same source and same ASCII-class spelling.
-fn date_pattern() -> &'static Regex {
-    static PATTERN: OnceLock<Regex> = OnceLock::new();
-    PATTERN.get_or_init(|| {
-        Regex::new(
-            r"^[\t\n\x0C\r ]*((0*[0-9]{1,4}([^0-9]0*[0-9]{1,2}){2})|([0-9]{2,4}([0-9]{2}){2}))[\t\n\x0C\r ]*$",
-        )
-        .expect("datePattern is a valid regex")
-    })
-}
-
 /// Go `builtinDateLiteralSig`: the value of `DATE 'lit'`, or the error that
 /// rejects the whole statement.
 ///
-/// `zone` is inert here in practice -- `date_pattern` refuses a time part, so
-/// neither a fractional carry nor an explicit offset can reach the parse --
-/// but Go's `getFunction` passes its ctx location all the same, and so does
-/// this, so the two literals cannot drift apart.
+/// The original rewrite-time entry retains its one-shot context. Explicit
+/// callers can bind a lifecycle scope through [`date_literal_in`]; this does
+/// not claim propagation of the rewriter's statement owner.
 pub(crate) fn date_literal(
     text: &str,
     zone: &tidb_datatype::SessionTimeZone,
     modes: tidb_datatype::DateModes,
 ) -> Result<(Time, FieldType), EvalError> {
-    if !date_pattern().is_match(text) {
-        return Err(wrong_value(1292, "date", text));
-    }
-    let time = parse(text, TimeType::Date, 0, zone, modes.allow_invalid_dates).map_err(|()| {
-        // go renders a date-shaped failure through its parsed parts without
-        // zero padding (`DATE'2020-02-30'` fails `Incorrect datetime value:
-        // '2020-2-30'`); every other text keeps the raw form.
-        let message = unpadded_datetime_message(text)
-            .unwrap_or_else(|| format!("Incorrect datetime value: '{text}'"));
-        EvalError::WrongTemporalLiteral {
-            code: 1292,
-            message,
-        }
-    })?;
-    if modes.no_zero_date && time.is_zero() {
-        return Err(wrong_value(1292, "date", text));
-    }
-    if modes.no_zero_in_date && time.invalid_zero() && !time.is_zero() {
-        return Err(wrong_value(1292, "date", text));
-    }
-    // Go `setDecimalAndFlenForDate` (`pkg/expression/builtin.go:1065`):
-    // `SetDecimal(0)`, `SetFlen(mysql.MaxDateWidth)`, `SetType(mysql.TypeDate)`.
-    let mut ft = FieldType::new(FieldTypeCode::Date);
-    ft.set_decimal(0);
-    ft.set_flen(MAX_DATE_WIDTH);
-    Ok((time, ft))
+    date_literal_in(text, zone, modes, &crate::NoColumns)
 }
 
-/// go renders a date-shaped failure through its parsed parts without zero
-/// padding (`LAST_DAY('2020-02-30')` and `DATE'2020-02-30'` both name
-/// `'2020-2-30'`); every other text keeps the raw form.
-pub(crate) fn unpadded_datetime_message(text: &str) -> Option<String> {
-    let trimmed = text.trim();
-    let parts: Vec<&str> = trimmed.splitn(3, '-').collect();
-    if parts.len() == 3
-        && parts
-            .iter()
-            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
-    {
-        return Some(format!(
-            "Incorrect datetime value: '{}-{}-{}'",
-            parts[0].parse::<i64>().unwrap_or(0),
-            parts[1].parse::<i64>().unwrap_or(0),
-            parts[2].parse::<i64>().unwrap_or(0)
-        ));
-    }
-    None
+/// Execute the complete literal policy under the supplied scope. The explicit
+/// zone and modes remain authoritative; `ctx` supplies no temporal settings.
+pub(crate) fn date_literal_in(
+    text: &str,
+    zone: &tidb_datatype::SessionTimeZone,
+    modes: tidb_datatype::DateModes,
+    ctx: &dyn Columns,
+) -> Result<(Time, FieldType), EvalError> {
+    crate::tikv::evaluate_prepared_args_in(
+        ctx,
+        || {
+            Ok((
+                crate::tikv::EvaluatedBytesOp::DateLiteralNative,
+                literal_args(text, zone, modes),
+            ))
+        },
+        |computed| {
+            let time = literal_time(computed, TimeType::Date)?;
+            let mut ft = FieldType::new(FieldTypeCode::Date);
+            ft.set_decimal(0);
+            ft.set_flen(MAX_DATE_WIDTH);
+            Ok((time, ft))
+        },
+    )
 }
 
 /// Go `builtinTimestampLiteralSig`: the value of `TIMESTAMP 'lit'`, or the
@@ -186,28 +121,34 @@ pub(crate) fn timestamp_literal(
     zone: &tidb_datatype::SessionTimeZone,
     modes: tidb_datatype::DateModes,
 ) -> Result<(Time, FieldType), EvalError> {
-    if !timestamp_pattern().is_match(text) {
-        return Err(wrong_value(1525, "datetime", text));
-    }
-    let fsp = i64::from(tidb_datatype::get_fsp(text));
-    let time = parse(
-        text,
-        TimeType::DateTime,
-        fsp,
-        zone,
-        modes.allow_invalid_dates,
+    timestamp_literal_in(text, zone, modes, &crate::NoColumns)
+}
+
+/// Scoped counterpart of [`timestamp_literal`], without fetching context
+/// timezone or modes a second time after the rewriter already captured them.
+pub(crate) fn timestamp_literal_in(
+    text: &str,
+    zone: &tidb_datatype::SessionTimeZone,
+    modes: tidb_datatype::DateModes,
+    ctx: &dyn Columns,
+) -> Result<(Time, FieldType), EvalError> {
+    crate::tikv::evaluate_prepared_args_in(
+        ctx,
+        || {
+            Ok((
+                crate::tikv::EvaluatedBytesOp::TimestampLiteralNative,
+                literal_args(text, zone, modes),
+            ))
+        },
+        |computed| {
+            let time = literal_time(computed, TimeType::DateTime)?;
+            let fsp = i64::from(time.fsp());
+            let mut ft = FieldType::new(FieldTypeCode::Datetime);
+            ft.set_decimal_under_limit(fsp);
+            ft.set_flen_under_limit(MAX_DATETIME_WIDTH_NO_FSP + fsp + i64::from(fsp > 0));
+            Ok((time, ft))
+        },
     )
-    .map_err(|()| wrong_value(1292, "datetime", text))?;
-    // Go `setDecimalAndFlenForDatetime(tm.Fsp())`
-    // (`pkg/expression/builtin.go:1056`): the base type for the `ETDatetime`
-    // return is already `mysql.TypeDatetime`, and only the scale and width
-    // move -- `MaxDatetimeWidthNoFsp + fsp`, plus one for the `.` separator
-    // when there is a fraction at all.
-    let fsp = i64::from(time.fsp());
-    let mut ft = FieldType::new(FieldTypeCode::Datetime);
-    ft.set_decimal_under_limit(fsp);
-    ft.set_flen_under_limit(MAX_DATETIME_WIDTH_NO_FSP + fsp + i64::from(fsp > 0));
-    Ok((time, ft))
 }
 
 /// The parse runs in the SESSION's zone, as Go's does.
@@ -234,30 +175,227 @@ pub(crate) fn timestamp_literal(
 /// the same statement rounds identically whichever of the two paths builds
 /// it. An explicit `+HH:MM` offset in the literal likewise normalizes into
 /// this zone rather than into UTC.
-fn parse(
+fn literal_args(
     text: &str,
-    kind: TimeType,
-    fsp: i64,
     zone: &tidb_datatype::SessionTimeZone,
-    allow_invalid_dates: bool,
-) -> Result<Time, ()> {
-    tidb_datatype::parse_time(text, kind, fsp, false, true, allow_invalid_dates, zone)
-        .map(|parsed| parsed.time)
-        .map_err(|_| ())
+    modes: tidb_datatype::DateModes,
+) -> crate::tikv::EvaluatedArgs {
+    crate::tikv::EvaluatedArgs::TemporalText {
+        value: text.as_bytes().to_vec(),
+        modes: i64::from(modes.allow_invalid_dates)
+            | (i64::from(modes.no_zero_date) << 1)
+            | (i64::from(modes.no_zero_in_date) << 2),
+        zone: zone.clone(),
+    }
 }
 
-/// Go `types.ErrWrongValue`/`ErrWrongValue2`, whose message names the target
-/// type in lower case and quotes the offending literal.
-fn wrong_value(code: u16, kind: &str, text: &str) -> EvalError {
-    EvalError::WrongTemporalLiteral {
-        code,
-        message: format!("Incorrect {kind} value: '{text}'"),
+/// Decode only the shared result contract, then project its exact raw temporal
+/// value into the native representation. There is no host reparse or validation.
+fn literal_time(
+    computed: crate::tikv::EvaluatedBytesResult,
+    expected_kind: TimeType,
+) -> Result<Time, EvalError> {
+    use tidb_query_expr::NativeTemporalLiteralResult;
+    let bytes = computed
+        .into_bytes()?
+        .ok_or_else(crate::tikv::native_time_result_contract_error)?;
+    let result = tidb_query_expr::decode_native_temporal_literal_result(&bytes)
+        .ok_or_else(crate::tikv::native_time_result_contract_error)?;
+    match result {
+        NativeTemporalLiteralResult::Value(value) => {
+            if value.kind != expected_kind {
+                return Err(crate::tikv::native_time_result_contract_error());
+            }
+            Ok(Time::from_raw_parts(
+                CoreTime::from_raw(value.raw),
+                value.kind,
+                value.fsp,
+            ))
+        }
+        NativeTemporalLiteralResult::WrongValue { code, message } => {
+            Err(EvalError::WrongTemporalLiteral {
+                code,
+                message: message.to_owned(),
+            })
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn literal_workers_preserve_explicit_scope_and_captured_settings() {
+        struct ScopeOnly;
+        impl Columns for ScopeOnly {
+            fn get(&self, _: &[String]) -> Option<crate::Datum> {
+                panic!("literal has no column demand")
+            }
+            fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+                panic!("literal zone is already captured")
+            }
+            fn date_modes(&self) -> tidb_datatype::DateModes {
+                panic!("literal modes are already captured")
+            }
+            fn append_warning(&self, _: u16, _: &str) {
+                panic!("literal failures are hard errors")
+            }
+        }
+        let zone = tidb_datatype::SessionTimeZone::Named(chrono_tz::America::Los_Angeles);
+        let modes = tidb_datatype::DateModes::default();
+        for slots in [1, 0] {
+            let owner = crate::AsciiPoolOwner::new(
+                crate::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    64,
+                    8,
+                    4 * 1024 * 1024,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let execution = owner.begin_execution().unwrap();
+            let ctx = ScopeOnly;
+            for (timestamp, text, expected) in [
+                (false, "2024-01-01", Ok(("2024-01-01", 10, 0))),
+                (
+                    true,
+                    "2024-01-01 14:00:00.010",
+                    Ok(("2024-01-01 14:00:00.010", 23, 3)),
+                ),
+                (
+                    true,
+                    "2024-01-01 14:00:00+02:00",
+                    Ok(("2024-01-01 04:00:00", 19, 0)),
+                ),
+                (
+                    true,
+                    "2011-03-13 01:59:59.9999999",
+                    Ok(("2011-03-13 03:00:00.000000", 26, 6)),
+                ),
+                (
+                    false,
+                    "2024-01-01 01:12:31",
+                    Err((1292, "Incorrect date value: '2024-01-01 01:12:31'")),
+                ),
+                (
+                    false,
+                    "2020-02-30",
+                    Err((1292, "Incorrect datetime value: '2020-2-30'")),
+                ),
+                (
+                    true,
+                    "2024-01-01",
+                    Err((1525, "Incorrect datetime value: '2024-01-01'")),
+                ),
+                (
+                    true,
+                    "2024-01-01 14:00:00+14:01",
+                    Err((
+                        1292,
+                        "Incorrect datetime value: '2024-01-01 14:00:00+14:01'",
+                    )),
+                ),
+            ] {
+                let result = execution.scope().with_columns(&ctx, |columns| {
+                    if timestamp {
+                        timestamp_literal_in(text, &zone, modes, columns)
+                    } else {
+                        date_literal_in(text, &zone, modes, columns)
+                    }
+                });
+                if slots == 0 {
+                    let error = result
+                        .expect_err("guard must precede even invalid-pattern and parse policies");
+                    let EvalError::ExpressionAdapterFailure(failure) = error else {
+                        panic!("{text}: {error:?}")
+                    };
+                    assert_eq!(
+                        failure.class(),
+                        crate::ExpressionAdapterFailureClass::PoolResource
+                    );
+                    assert_eq!(
+                        failure.origin(),
+                        crate::ExpressionAdapterFailureOrigin::Pool
+                    );
+                    continue;
+                }
+                match expected {
+                    Ok((shown, flen, fsp)) => {
+                        let (time, field_type) = result.unwrap();
+                        assert_eq!(time.to_string(), shown);
+                        assert_eq!(
+                            time.kind(),
+                            if timestamp {
+                                TimeType::DateTime
+                            } else {
+                                TimeType::Date
+                            }
+                        );
+                        assert_eq!(
+                            field_type.code(),
+                            if timestamp {
+                                FieldTypeCode::Datetime
+                            } else {
+                                FieldTypeCode::Date
+                            }
+                        );
+                        assert_eq!((field_type.flen(), field_type.decimal()), (flen, fsp));
+                        assert_eq!(i64::from(time.fsp()), fsp);
+                    }
+                    Err((expected_code, expected_message)) => {
+                        let EvalError::WrongTemporalLiteral { code, message } = result.unwrap_err()
+                        else {
+                            panic!("{text}: expected original hard literal error")
+                        };
+                        assert_eq!(code, expected_code);
+                        assert_eq!(message, expected_message);
+                    }
+                }
+            }
+            if slots == 1 {
+                execution.scope().with_columns(&ctx, |columns| {
+                    let permissive = tidb_datatype::DateModes {
+                        allow_invalid_dates: true,
+                        ..modes
+                    };
+                    assert_eq!(
+                        date_literal_in("2017-2-31", &zone, permissive, columns)
+                            .unwrap()
+                            .0
+                            .to_string(),
+                        "2017-02-31"
+                    );
+                    for (text, strict) in [
+                        (
+                            "0000-00-00",
+                            tidb_datatype::DateModes {
+                                no_zero_date: true,
+                                ..modes
+                            },
+                        ),
+                        (
+                            "2007-10-00",
+                            tidb_datatype::DateModes {
+                                no_zero_in_date: true,
+                                ..modes
+                            },
+                        ),
+                    ] {
+                        assert!(matches!(
+                            date_literal_in(text, &zone, strict, columns),
+                            Err(EvalError::WrongTemporalLiteral { code: 1292, .. })
+                        ));
+                    }
+                });
+            }
+        }
+    }
 
     /// The printed value, which is all the pre-typing form of this module
     /// returned. The TYPE half is asserted separately in
@@ -360,7 +498,7 @@ mod tests {
     }
 
     /// The fold rounds in the SESSION zone, not in UTC: the capture in
-    /// [`parse`]'s doc, replayed against both zones. The instants are DST
+    /// [`literal_args`]'s doc, replayed against both zones. The instants are DST
     /// TRANSITIONS on purpose -- a probe over ordinary instants shows no
     /// difference in ANY zone and is a false negative (the same trap the
     /// sibling test in `crate::cast` documents).

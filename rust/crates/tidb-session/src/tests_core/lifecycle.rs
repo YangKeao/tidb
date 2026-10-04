@@ -9363,6 +9363,211 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_temporal_literals_preserve_rewrite_folding_types_modes_and_zones() {
+    use tidb_datatype::{FieldTypeCode, TimeType};
+
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE shared_literal_broadcast (s VARCHAR(32))")
+        .unwrap();
+    session
+        .run("INSERT INTO shared_literal_broadcast VALUES ('2024-01-01'),('2024-01-02')")
+        .unwrap();
+    // These are rewrite-time constants broadcast over two rows, NOT dynamic
+    // literal arguments or per-row worker admission. The original wrappers
+    // still use NoColumns: this does not claim statement-owner/M6 closure.
+    // Fixed values come from time_literal.rs's original tests and the existing
+    // types/time.result fixture, not from a second implementation as oracle.
+    let cases = [
+        (
+            "DATE '2024-01-01'",
+            "UTC",
+            "",
+            "2024-01-01",
+            FieldTypeCode::Date,
+            10,
+            0,
+        ),
+        (
+            "TIMESTAMP '2024-01-01 14:00:00.010'",
+            "UTC",
+            "",
+            "2024-01-01 14:00:00.010",
+            FieldTypeCode::Datetime,
+            23,
+            3,
+        ),
+        (
+            "{ts '2024-01-01 14:00:00+02:00'}",
+            "America/Los_Angeles",
+            "",
+            "2024-01-01 04:00:00",
+            FieldTypeCode::Datetime,
+            19,
+            0,
+        ),
+        (
+            "TIMESTAMP '2011-03-13 01:59:59.9999999'",
+            "America/Los_Angeles",
+            "",
+            "2011-03-13 03:00:00.000000",
+            FieldTypeCode::Datetime,
+            26,
+            6,
+        ),
+        (
+            "{ts '2011-11-06 01:59:59.9999999'}",
+            "America/Los_Angeles",
+            "",
+            "2011-11-06 01:00:00.000000",
+            FieldTypeCode::Datetime,
+            26,
+            6,
+        ),
+    ];
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        for (literal, zone, modes, expected, code, flen, decimal) in cases {
+            session.run(&format!("SET time_zone='{zone}'")).unwrap();
+            session.run(&format!("SET sql_mode='{modes}'")).unwrap();
+            let sql = format!("SELECT {literal} FROM shared_literal_broadcast");
+            let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap() else {
+                panic!("expected folded temporal literal rows: {sql}")
+            };
+            assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
+            assert_eq!(columns[0].1.code(), code, "{sql}/{vectorized}");
+            assert_eq!(
+                (columns[0].1.flen(), columns[0].1.decimal()),
+                (flen, decimal),
+                "{sql}/{vectorized}"
+            );
+            assert_eq!(rows.len(), 2, "{sql}/{vectorized}");
+            for row in &rows {
+                assert_eq!(row.len(), 1);
+                assert_eq!(cell_text(&row[0]), expected, "{sql}/{vectorized}");
+                let Datum::Time(time) = &row[0] else {
+                    panic!("folded literal lost its native temporal cell: {sql}")
+                };
+                let kind = if code == FieldTypeCode::Date {
+                    TimeType::Date
+                } else {
+                    TimeType::DateTime
+                };
+                assert_eq!(time.kind(), kind, "{sql}/{vectorized}");
+                assert_eq!(i64::from(time.fsp()), decimal, "{sql}/{vectorized}");
+            }
+            assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+        }
+
+        session.run("SET time_zone='UTC'").unwrap();
+        // These literal failures are hard errors, unlike CAST's warning/NULL
+        // policy. Keep the raw literal and the date/datetime diagnostic class.
+        // Existing PlanScopeResolver forwards the zone but not date_modes(),
+        // inheriting ColumnResolver's TIDB_DEFAULT_SQL_MODE (true,true,false).
+        // The first three cases deliberately document that old table-projection
+        // limitation, not Go mode parity. Direct root tests cover actual custom
+        // mode bits; this migration must not silently repair planner forwarding.
+        for (literal, modes, code, state, message) in [
+            (
+                "{d '2007-10-00'}",
+                "NO_ZERO_DATE",
+                1292,
+                *b"22007",
+                "Incorrect date value: '2007-10-00'",
+            ),
+            (
+                "DATE '0000-00-00'",
+                "NO_ZERO_IN_DATE",
+                1292,
+                *b"22007",
+                "Incorrect date value: '0000-00-00'",
+            ),
+            (
+                "{d '2017-2-31'}",
+                "ALLOW_INVALID_DATES",
+                1292,
+                *b"22007",
+                "Incorrect datetime value: '2017-2-31'",
+            ),
+            (
+                "DATE '0000-00-00'",
+                "NO_ZERO_DATE",
+                1292,
+                *b"22007",
+                "Incorrect date value: '0000-00-00'",
+            ),
+            (
+                "{d '2007-10-00'}",
+                "NO_ZERO_IN_DATE",
+                1292,
+                *b"22007",
+                "Incorrect date value: '2007-10-00'",
+            ),
+            (
+                "DATE '2017-2-31'",
+                "",
+                1292,
+                *b"22007",
+                "Incorrect datetime value: '2017-2-31'",
+            ),
+            (
+                "{d '2024-01-01 01:12:31'}",
+                "",
+                1292,
+                *b"22007",
+                "Incorrect date value: '2024-01-01 01:12:31'",
+            ),
+            (
+                "TIMESTAMP '2024-01-01'",
+                "",
+                1525,
+                *b"HY000",
+                "Incorrect datetime value: '2024-01-01'",
+            ),
+            (
+                "{ts '2024-01-01 14:00:00+14:01'}",
+                "",
+                1292,
+                *b"22007",
+                "Incorrect datetime value: '2024-01-01 14:00:00+14:01'",
+            ),
+        ] {
+            session.run(&format!("SET sql_mode='{modes}'")).unwrap();
+            let sql = format!("SELECT {literal} FROM shared_literal_broadcast");
+            let mysql = session
+                .run_with_columns(&sql)
+                .expect_err(&sql)
+                .to_mysql_error();
+            assert_eq!(mysql.code, code, "{sql}/{vectorized}");
+            assert_eq!(mysql.state, state, "{sql}/{vectorized}");
+            assert_eq!(mysql.message, message, "{sql}/{vectorized}");
+        }
+        // ODBC's grammar accepts a full expression, but literal_text requires
+        // a rewritten Constant. A column must not become a new runtime route.
+        let sql = "SELECT {ts s} FROM shared_literal_broadcast";
+        let mysql = session
+            .run_with_columns(sql)
+            .expect_err(sql)
+            .to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
+        assert!(
+            mysql
+                .message
+                .contains("a temporal literal whose argument is not constant"),
+            "{sql}/{vectorized}: {}",
+            mysql.message
+        );
+    }
+}
+
+#[test]
 fn evaluated_ascii_json_search_preserves_native_patterns_paths_and_string_results() {
     use tidb_datatype::{Collation, FieldTypeCode};
 

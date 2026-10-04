@@ -1,0 +1,47 @@
+temporal-literals-76 / R78. Baseline pair nativee5a05f2a5882a5759a7172f47f160f1842195b2d / CPP23eb7d830c8495fac5cbce68a0f7ab2519c73836.
+10 serialized locked Cargo test commands:6 green,2 failed new-test assumptions later corrected from prior source,2 unchanged old full-suite failures. Zero compile failure/interruption/zero-match. Both retries preserved separately. All7 new tests pass finally;5 pass first matching gate. No production correction after first gate; no original test/fixture changes. Counts below passed/failed/ignored/filtered; timings compile/elapsed. Raw log template /home/agent/tidb/expression-unification/logs/temporal-literals-{id}.log.
+
+CPP cwd=/home/agent/tidb/expression-unification/tikv:
+1. ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_time_literal -- --test-threads=1
+id=tikv-core sha256=2bf6c3c58d984a147bb8b6d21511b7c6e35c43f7d94b83708b3e1fb8138b0ef6
+2/0/0/928;21.43/0.00s;exit0.
+2. ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local -- --test-threads=1
+id=tikv-local sha256=6821fabfa5e501cafcb389731a2ead1e0b8fb8d899dd9b4e5e62ec432ac55bb5
+326/1/1/602;0.18/0.23s;exit101.
+3. ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local -- --test-threads=1
+id=tikv-local-retry1 sha256=9e8d4e2acb5fda7f1702b2a2896ac60631d58199e664ba51e35435411cdc8cdf
+327/0/1/602;6.05/0.23s;exit0.
+
+Native cwd=/home/agent/tidb/expression-unification/tidb/rust:
+4. ../../tools/cargo-tidb test --locked -p tidb-expr --lib time_literal -- --test-threads=1
+id=native-root sha256=e588fff913160adb3b526e48dd2563d5c9bbd75090e7d533a09368e378992189
+5/0/0/1663;20.07/0.00s;exit0.
+5. ../../tools/cargo-tidb test --locked -p tidb-expr --lib temporal_literal_gateway -- --test-threads=1
+id=native-gateway sha256=60bb4a3de6d6f20b45b3498f85645e2d92968fa3ef50c6875143ed0518da73ca
+1/0/0/1667;0.22/0.00s;exit0.
+6. ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::evaluated_ascii_temporal_literals_preserve_rewrite_folding_types_modes_and_zones -- --test-threads=1
+id=sql sha256=93cc2fe2bb93c2e7de7eab749308bae5ce3b7bbdf0ff133386e32b28c97ba884
+0/1/0/2223;33.05/0.02s;exit101.
+7. ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_timezone_storage::a_timestamp_literal_folds_in_the_sessions_time_zone -- --test-threads=1
+id=sql-original sha256=0f10f25e92727c45e4c62336871ea231867b5525f380c0945a385a2fc9eabf51
+1/0/0/2223;0.24/0.01s;exit0.
+8. ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+id=expr-full sha256=1947089ea2e26020dca710cefb06ee550c8f922e545307c30c6e0d6ddbbb679b
+1570/4/94/0;0.14/14.93s;exit101.
+9. ../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+id=unistore-full sha256=c7756010d41e8bebd1ed938481bcb79314b6c6ed4d6cf8d9469d25aa785c6a20
+211/1/13/0;7.28/3.07s;exit101.
+10. ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::evaluated_ascii_temporal_literals_preserve_rewrite_folding_types_modes_and_zones -- --test-threads=1
+id=sql-retry1 sha256=35fa5cb82992881623d2729dc4369b873e6c9ef32691d92702af89472bfbe991
+1/0/0/2223;4.17/0.06s;exit0.
+
+Attribution of corrected new tests, not provider-as-oracle:
+- local new oracle incorrectly said padded date diagnostic on DATE calendar parse failure. Old native time_literal.rs uses unpadded_datetime_message and datetime classification; its moved helper body is byte-identical to e5a05f2a. Corrected only the new test to exact source-derived messages (2020-2-30 vs timestamp original text). Production and old tests untouched.
+- SQL new oracle extended direct custom-DateModes tests into table projection. Actual PlanScopeResolver lacks date_modes forwarding and inherits TIDB_DEFAULT_SQL_MODE(true,true,false), despite SET sql_mode. Both its time_zone override and this missing mode override predate this change. Five relevant production files byte-equal e5a05f2a: planner/plan_builder.rs, expr/rewriter.rs, datatype/conversion_context/flags.rs, session/stmt_ctx.rs, executor/stmt_context.rs. No baseline execution replay claimed. Three permissive-mode cases now explicitly assert source-confirmed old refusal boundaries, not Go mode parity; no production repair. First failed run stopped at second positive case and later cases are not claimed exercised then.
+- Final SQL matrix:5positive+9hard-error+1ODBCnonconstant per vectorflag0/1 =30SELECT probes,20successful native Time cells, excluding setup. Of18 hard errors,6 document the old planner mode forwarding limitation. Direct native/CPP tests separately prove all actual mode bits. This is rewrite folding and constant broadcasting, never per-row literal admission/M6.
+- One preliminary auxiliary source-audit script failed from assuming stmt_context.rs lived in session; glob found executor/stmt_context.rs, corrected path and all5 unchanged-source assertions passed. No production issue or Cargo failure.
+
+Entire expression/unistore failure sections/lists byte-equal R77 after normalizing only numeric panic-thread IDs. SHA256 includes leading newline before failures:
+expression411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+unistore2f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1
+Old4expression+1unistore retained. Previous zero-date CAST warning mismatch not rerun/repaired. Filters overlap and totals are not unique tests. CPP198/native358 original test bodies byte-identical;7 newtests(4CPP/2expr/1SQL),13Rust(9CPP/4native),1newmodule. Both pinned format/diff checks; no Cargo manifest/lock/Go/Bazel/generated/fixture changes. Deferred whole-lint/workspace/release/perf/heap/OOM/M6 and other compatibility limits remain in evidence.
