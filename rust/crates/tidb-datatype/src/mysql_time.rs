@@ -17,20 +17,11 @@ use std::fmt;
 
 use chrono::{DateTime, Duration as ChronoDuration, Local, TimeZone, Timelike, Utc};
 
-use crate::{
-    check_fsp, CoreTime, Decimal, FspError, MySqlDuration, PackedTime, TimeConversionError,
-};
+use crate::{check_fsp, CoreTime, Decimal, MySqlDuration, PackedTime, TimeConversionError};
 
+use tidb_query_datatype::codec::mysql::time::NativeTemporalValue;
 /// MySQL temporal type carried by [`Time`].
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum TimeType {
-    /// `DATE`.
-    Date,
-    /// `DATETIME`.
-    DateTime,
-    /// `TIMESTAMP`.
-    Timestamp,
-}
+pub use tidb_query_datatype::codec::mysql::time::TimeType;
 
 /// TiDB date/datetime/timestamp value.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -44,51 +35,7 @@ pub struct Time {
 pub use tidb_query_datatype::codec::mysql::time::NativeTimezoneSuffix as TimezoneSuffix;
 
 /// Temporal construction or conversion failure.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum TimeError {
-    /// Fractional-seconds precision was outside TiDB's accepted domain.
-    InvalidFsp(FspError),
-    /// One calendar field exceeded its representable or valid range.
-    OutOfRange(&'static str),
-    /// Calendar-to-timezone conversion failed.
-    Conversion(TimeConversionError),
-    /// A zero month or day is forbidden by the conversion flags.
-    ZeroInDate,
-    /// An all-zero numeric date is forbidden by `FlagIgnoreZeroDateErr`.
-    ZeroDate,
-    /// Month/day fields do not form an accepted MySQL date.
-    InvalidDate,
-    /// Hour/minute/second fields exceed MySQL's clock range.
-    InvalidClock,
-    /// TIMESTAMP falls outside TiDB's UTC storage range.
-    TimestampOutOfRange,
-    /// A temporal operation received an unsupported interval unit.
-    InvalidUnit(String),
-}
-
-impl fmt::Display for TimeError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidFsp(error) => error.fmt(formatter),
-            Self::OutOfRange(field) => write!(formatter, "time {field} is out of range"),
-            Self::Conversion(error) => error.fmt(formatter),
-            Self::ZeroInDate => formatter.write_str("zero month or day in date"),
-            Self::ZeroDate => formatter.write_str("zero date"),
-            Self::InvalidDate => formatter.write_str("invalid MySQL date"),
-            Self::InvalidClock => formatter.write_str("invalid MySQL clock"),
-            Self::TimestampOutOfRange => formatter.write_str("timestamp is out of range"),
-            Self::InvalidUnit(unit) => write!(formatter, "invalid unit {unit}"),
-        }
-    }
-}
-
-impl std::error::Error for TimeError {}
-
-impl From<TimeConversionError> for TimeError {
-    fn from(error: TimeConversionError) -> Self {
-        Self::Conversion(error)
-    }
-}
+pub use tidb_query_datatype::codec::mysql::time::NativeTimeError as TimeError;
 
 /// Converts a timezone-aware value to TiDB's microsecond calendar storage.
 pub fn core_time_from_datetime<TZ: TimeZone>(value: DateTime<TZ>) -> CoreTime {
@@ -131,14 +78,21 @@ impl Time {
         Self { core, kind, fsp }
     }
 
+    fn as_shared(self) -> NativeTemporalValue {
+        NativeTemporalValue {
+            raw: self.core.raw(),
+            kind: self.kind,
+            fsp: self.fsp,
+        }
+    }
+
+    fn from_shared(value: NativeTemporalValue) -> Self {
+        Self::from_raw_parts(CoreTime::from_raw(value.raw), value.kind, value.fsp)
+    }
+
     /// Constructs a temporal value from its internal calendar fields.
     pub fn new(core: CoreTime, kind: TimeType, fsp: i64) -> Result<Self, TimeError> {
-        let fsp = if kind == TimeType::Date {
-            0
-        } else {
-            check_fsp(fsp).map_err(TimeError::InvalidFsp)? as u8
-        };
-        Ok(Self { core, kind, fsp })
+        NativeTemporalValue::new(core.raw(), kind, fsp).map(Self::from_shared)
     }
 
     /// Constructs and bit-width-checks all calendar fields.
@@ -154,32 +108,18 @@ impl Time {
         kind: TimeType,
         fsp: i64,
     ) -> Result<Self, TimeError> {
-        for (name, value, limit) in [
-            ("year", year, 1 << 14),
-            ("month", month, 1 << 4),
-            ("day", day, 1 << 5),
-            ("hour", hour, 1 << 5),
-            ("minute", minute, 1 << 6),
-            ("second", second, 1 << 6),
-            ("microsecond", microsecond, 1 << 20),
-        ] {
-            if !(0..limit).contains(&value) {
-                return Err(TimeError::OutOfRange(name));
-            }
-        }
-        Self::new(
-            CoreTime::from_date(
-                year as u16,
-                month as u8,
-                day as u8,
-                hour as u8,
-                minute as u8,
-                second as u8,
-                microsecond as u32,
-            ),
+        NativeTemporalValue::from_date_checked(
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            microsecond,
             kind,
             fsp,
         )
+        .map(Self::from_shared)
     }
 
     /// Returns the internal calendar fields.
@@ -199,10 +139,9 @@ impl Time {
 
     /// Changes the temporal type; DATE forces FSP zero.
     pub fn set_kind(&mut self, kind: TimeType) {
-        self.kind = kind;
-        if kind == TimeType::Date {
-            self.fsp = 0;
-        }
+        let mut value = self.as_shared();
+        value.set_kind(kind);
+        *self = Self::from_shared(value);
     }
 
     /// Returns fractional-seconds precision.
@@ -212,10 +151,9 @@ impl Time {
 
     /// Changes fractional-seconds precision; DATE remains zero.
     pub fn set_fsp(&mut self, fsp: i64) -> Result<(), TimeError> {
-        if self.kind == TimeType::Date {
-            return Ok(());
-        }
-        self.fsp = check_fsp(fsp).map_err(TimeError::InvalidFsp)? as u8;
+        let mut value = self.as_shared();
+        value.set_fsp(fsp)?;
+        *self = Self::from_shared(value);
         Ok(())
     }
 
@@ -540,35 +478,8 @@ impl Time {
         allow_invalid_date: bool,
         timezone: &TZ,
     ) -> Result<(), TimeError> {
-        if self.kind == TimeType::Timestamp {
-            if self.is_zero() {
-                return Ok(());
-            }
-            let utc = self.core.to_datetime(timezone)?.with_timezone(&Utc);
-            let seconds = utc.timestamp();
-            if !(1..=2_147_483_647).contains(&seconds) {
-                return Err(TimeError::TimestampOutOfRange);
-            }
-            return Ok(());
-        }
-
-        use tidb_query_datatype::codec::mysql::time::NativeDateTimeValidationError;
-        tidb_query_datatype::codec::mysql::Time::validate_native_datetime_fields(
-            self.core.year(),
-            self.core.month(),
-            self.core.day(),
-            self.core.hour(),
-            self.core.minute(),
-            self.core.second(),
-            self.core.microsecond(),
-            allow_zero_in_date,
-            allow_invalid_date,
-        )
-        .map_err(|error| match error {
-            NativeDateTimeValidationError::InvalidDate => TimeError::InvalidDate,
-            NativeDateTimeValidationError::InvalidClock => TimeError::InvalidClock,
-            NativeDateTimeValidationError::ZeroInDate => TimeError::ZeroInDate,
-        })
+        self.as_shared()
+            .validate(allow_zero_in_date, allow_invalid_date, timezone)
     }
 
     /// Encodes TiDB's packed temporal storage representation.

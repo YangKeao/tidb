@@ -1,0 +1,50 @@
+temporal-parser-75 / round77 / prerequisite, zero family credit
+10 serialized --locked Cargo test launches:9 current plus1 isolated previous-checkpoint replay. Current6 nonzero green,2 unchanged old full-suite failures,1 newly observed SQL diagnostic mismatch; isolated replay reproduces that same mismatch. No observed failure attributed to this change. No current-worktree retry; failures remain recorded, not reported green. Four new CPP tests pass first matching gate; no original test/fixture/oracle edits, compile failure, interruption or zero-match. Ignored is not passing.
+CPP cwd=/home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv pins nightly-2026-01-30.
+Native cwd=/home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb pins nightly-2026-08-22.
+Raw logs=/home/agent/tidb/expression-unification/logs/temporal-parser-{id}.log. Times=compilation/test seconds.
+
+1. ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib codec::mysql::time -- --test-threads=1
+id=tikv-time sha256=3d41e9e34fd6e9f3f7c8aed66aea8ad4b117ea57d0904942eb099cba3cfd0f23
+65 passed/0 failed/0 ignored/387 filtered;6.98/0.01s;exit0.
+2. ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+id=native-datatype sha256=70c9f055fcea90dca71b63b9638c56adcf030a02e173e36064e2df1e43182836
+453/0/0/0;4.64/23.51s;exit0.
+3. ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_timezone_storage::a_repeated_local_time_resolves_the_way_go_time_date_does -- --test-threads=1
+id=sql-repeat sha256=19657a04da7bb8ea29ddaf85e77998daa2bf3978d911d9abe3482aa19a3578e9
+1/0/0/2222;43.60/0.02s;exit0.
+4. ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_timezone_storage::a_timestamp_literal_folds_in_the_sessions_time_zone -- --test-threads=1
+id=sql-carry sha256=62fc808609aa5fbd411c10543a87b2e07960ba1188c5ed59eb2d1d80e44ff3d4
+1/0/0/2222;0.20/0.02s;exit0.
+5. ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_timestamp_range::a_dst_gap_insert_uses_the_insert_truncation_error_class -- --test-threads=1
+id=sql-gap sha256=2e6a992bac7928fbd011a3458c16994d6f58e6d04778ea9b53c326b2adc8189e
+1/0/0/2222;0.18/0.02s;exit0.
+6. ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::temporal_types::an_etdatetime_argument_is_cast_from_its_column_type -- --test-threads=1
+id=sql-integer sha256=e8737e9c640b3be8c90822ec7bfc795ac943a3d1f5db45f6bf2d0b930c9eb3f9
+1/0/0/2222;0.17/0.02s;exit0.
+7. ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_read_cast::a_cast_reads_a_zero_in_date_back_intact_and_warns_on_the_rest -- --test-threads=1
+id=sql-zero-policy sha256=bd5d4fa32141cda29757a7a38f1bc1100fc3849c5ee25c04bc2d2027f8a2cdfd
+0/1/0/2222;0.16/0.01s;exit101. SELECT CAST('0000-00-00' AS DATE) under STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE emits1292 with '0000-00-00 00:00:00.000000', expected original '0000-00-00'. Remaining cases after this assertion are not claimed exercised.
+8. ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+id=expr-full sha256=808532907385aa6916d3a9b93cd55a8fa645909400234210c24e467944d147d7
+1568/4/94/0;24.22/14.90s;exit101.
+9. ../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+id=unistore-full sha256=12a10153e7a77d8f4f12f29325833bab5636f273bc57554ab801a5797e61c1a1
+211/1/13/0;10.78/3.08s;exit101.
+
+10. Isolated cwd=/home/agent/tidb/expression-unification/baseline-replays/temporal-parser/tidb/rust:
+/home/agent/tidb/expression-unification/tools/cargo-tidb test --locked -p tidb-session --lib tests_read_cast::a_cast_reads_a_zero_in_date_back_intact_and_warns_on_the_rest -- --test-threads=1
+id=baseline-sql-zero-policy sha256=15befd3eca36586896510eadc8a8ed1bd2c7b25d21dbdf060d6414ee88269452
+0/1/0/2222;57.32/0.02s;exit101. Exact original pair: native8987c0c2540139dfa34d63c343e962736618d144 / CPPc5e3861d3d22f8e53cb601c66c0d80aa8e338121. Both detached worktrees HEADs and clean status verified after replay, then removed without force; active implementation trees never reverted. Complete SQL failure section/list byte-equal after numeric panic-thread normalization, sha256=45c0faeec3cb8fd860f1c77accbfc8f1465035a771aa0e0f995f3da5dabe32a2. Source: unchanged tidb-expr/src/cast.rs1364–1369 calls invalid_time_warning(...,6), whose1791–1799 explicitly formats the canonical zero DATETIME warning. This newly exercised old test remains RED; no assertion/fixture/production fix.
+
+Expression and unistore full failure sections/lists byte-equal to temporal-foundation-{expr,unistore}-full.log, numeric panic-heading thread IDs alone replaced by THREAD.
+Expression normalized sha256=411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95.
+Unistore normalized sha256=2f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1.
+
+Dependency resolution (not tests):
+CPP cwd above: ../tools/cargo-tikv metadata --offline --format-version 1 > ../logs/temporal-parser-tikv-metadata.json 2> ../logs/temporal-parser-tikv-metadata.log ; exit0.
+Native cwd above: ../../tools/cargo-tidb metadata --offline --format-version 1 > ../../logs/temporal-parser-native-metadata.json 2> ../../logs/temporal-parser-native-metadata.log ; exit0.
+Two generated locks, one semantic edge for exact chrono-tz-native0.10.4. CPP adds4 packages; native adds0. Seven CPP lock entries only qualify versions; no old package upgrades. Exact native/shared timezone and chrono package identity verified. Two preliminary auxiliary audit assertions failed on qualification/duplicate path-registry assumptions; corrected edge-level audit passes, no production repair.
+
+7Rust (4CPP/3native),3newmodules,4newCPPtests. CPP51/native64 original #[test] bodies byte-identical; SQL files untouched. Pinned formatting/diff checks pass. No Go/Bazel/generated/fixture changes; one manifest and both Cargo locks intentionally change. No new C4/profile/carrier/driver/admission or family credit.
+Not claimed: complete temporal types/YEAR/INTERVAL, evaluator closure, M6/default-NoColumns, full zero-policy SQL matrix after early failure, whole workspace/lint/dev/bazel_prepare/release, dual-tzdata footprint/performance, exhaustive differential/TiFlash/FIPS, allocator/fault/physical heap/peak/OOM/zero-copy, package transcreation or PR readiness. Earlier compatibility exceptions remain open.

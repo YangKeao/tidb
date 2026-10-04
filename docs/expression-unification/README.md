@@ -1,28 +1,30 @@
 # Expression unification experiment
 
 Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
-Current checkpoint: **temporal-foundation-74**, following **json-search-73**.
+Current checkpoint: **temporal-parser-75**, following **temporal-foundation-74**.
 
 ## Progress
 
-Functional migration stays **215/245**; strict final-audited count **0**. This datatype prerequisite adds **no family credit**. Target221 needs6 more, with30 eligible families remaining; all215 prior family objects are unchanged.
+Functional migration remains **215/245**, strict final-audited count **0**. This datatype prerequisite adds **no family credit**; target221 needs6 more, with30 eligible families remaining. All215 prior family objects are unchanged.
 
-TiKV datatype now owns raw-calendar validation, generic civil-to-instant/DST conversion and the original +500ns-to-raw packing. Native conversion methods are thin facades and conversion errors are aliases. Actual caller timezone types and timezone databases remain intact; wire Tz is not substituted for native SessionTimeZone. Wide/raw calendar, leap-second, repeated-time, bounded gap search and panic/cast behavior remain unchanged.
+TiKV now owns DATE/DATETIME/TIMESTAMP string/numeric parsing, construction/setter/validation policy and the original nine-cause error. Native TimeType reuses TiKV's existing enum; native Time remains a raw/kind/FSP facade. Hidden DATE clocks, FSP ordering, numeric error-side values, float casts/rounding and original Decimal Display representation are preserved.
 
-A second shared module owns lexical timezone suffixes, fraction index/source-length FSP and loose date splitting/classification. Native suffix DTOs are aliases with their original Debug label. Full parser/numeric/flag/kind policy remains native; no new evaluator profile, admission, carrier or driver is introduced. This is the foundation for subsequent TIMESTAMP/literal work, not completion of those families.
+Native SessionTimeZone/Offset are shared aliases, using a separately pinned **chrono-tz0.10.4**, not wire **0.5.3**. Both Cargo locks were generated, with no existing package upgrades; native/shared package and chrono trait identities are verified. Original raw-name/offset, conversion-only clamp, UTC-name and from_offset behavior remain. Dual timezone-database footprint/performance is unmeasured.
 
-**Retained compatibility limitation:** prior INTDIV raw-empty coefficient lhs divided by1 used to yield exact zero; shared math rejects it (infallible SDK panic, evaluated infrastructure failure). No native fallback conceals it; arbitrary invalid-raw mathematical parity is unclaimed.
+No C4 profile, admission, carrier or driver is introduced. YEAR/INTERVAL, broader temporal methods and evaluator closure remain open. This completes parser prerequisites for subsequent TIMESTAMP/literal workers, not those evaluator families.
+
+**Retained compatibility limitations:** INTDIV raw-empty coefficient lhs divided by1 previously returned exact zero, but shared math rejects it; no native fallback hides it. Newly exercised zero-date CAST warning mismatch also exists on the prior checkpoint and remains unfixed (details below).
 
 ## Validation and evidence
 
-[Evidence](evidence/temporal-foundation-checkpoint.md), [exact commands/hashes](logs/temporal-foundation-summary.txt), [manifest](checkpoint.json), [cumulative ledger](migration-progress.json).
+[Evidence](evidence/temporal-parser-checkpoint.md), [exact commands/hashes](logs/temporal-parser-summary.txt), [manifest](checkpoint.json), [cumulative ledger](migration-progress.json).
 
-Five exclusive write owners and two bounded read-only reviewers;6 Rust files,2 new modules,2 new CPP tests. Seven Cargo launches:5 nonzero green and2 unchanged old full-suite failures. No new RED, compile failure, interruption, zero-match or retry.
+Four exclusive writers plus bounded reviews;7 Rust files,3 new modules,4 new CPP tests. Ten test launches:9 current and1 isolated previous-checkpoint replay. CPP time65, native datatype453 and4 original SQL tests pass; all new tests pass first gate. Full expression **1568/4old/94ignored** and unistore **211/1old/13ignored** retain identical normalized failure sections.
 
-CPP time61 and native full datatype453 pass. Three unchanged session tests pass for LA/London repeated-time choices, timezone-suffix/fractional carry and strict/non-strict DST-gap insertion. Both new SDK tests pass on the first gate. Full expression **1568/4old/94ignored** and unistore **211/1old/13ignored** retain identical failure sections/lists after numeric thread-ID normalization.
+One additional existing SQL test remains **RED**: CAST zero-date warning uses `0000-00-00 00:00:00.000000` instead of original `0000-00-00`. Clean detached native8987c0c2/CPPc5e3861 replay reproduces the same complete failure section. No test/fixture/production repair; cases after the failing assertion are not claimed exercised. Replay worktrees were removed without touching active implementation trees.
 
-CPP51/native74 original test bodies are byte-identical; existing SQL test files are unmodified. Pinned formatting and both diff checks pass. No dependency/lock/tzdata/generated/Go/Bazel changes or fixture recording.
+CPP51/native64 original test bodies are byte-identical; SQL files unchanged. Pinned formatting and diff checks pass. Two preliminary dependency-audit scripts failed on Cargo name qualification/path-registry duplication assumptions; corrected semantic-edge audit passes. No compile failure, zero-match, interruption or current-tree test retry. One manifest/two locks intentionally change; no Go/Bazel/generated/fixture changes.
 
-Full temporal parsing/types and remaining evaluator closure, RAND state capability, password Unicode/lazy policy, lexer/digest and plan codec/proto migration, JSON_SUM_CRC32 ARRAY admission, M6/default-NoColumns and earlier compatibility gaps remain open. Whole workspace/lint/dev/bazel_prepare, release/performance/zero-copy/physical heap/peak/OOM and exhaustive differential/TiFlash/FIPS are deferred. No whole-package transcreation or PR-readiness claim.
+M6/default-NoColumns and remaining evaluator closure, RAND state, password Unicode/lazy policy, lexer/digest, plan codec/proto and JSON_SUM_CRC32 ARRAY admission remain open. Whole workspace/lint/dev/bazel_prepare/release, performance/zero-copy/heap/peak/OOM and exhaustive differential/TiFlash/FIPS remain deferred. No whole-package transcreation or PR-readiness claim.
 
-Three Plans agree; manifest pins their hash and paired TiKV commit. TiKV publishes first, then TiDB, without force push or PR. Old untracked client-differential BUILD.bazel stays excluded. Overall goal continues.
+Three Plans agree; manifest pins their hash and paired TiKV commit. Publish TiKV then TiDB without force push or PR. Old untracked client-differential BUILD.bazel stays excluded. Overall goal continues.

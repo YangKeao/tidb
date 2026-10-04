@@ -14,13 +14,14 @@
 
 //! Temporal string parsing, ported from Go `pkg/types`.
 
-use chrono::{FixedOffset, TimeZone};
-use tidb_query_datatype::codec::mysql::time::native_time_is_ascii_punctuation as is_punctuation;
+#[cfg(test)]
+use chrono::FixedOffset;
+use chrono::TimeZone;
+use tidb_query_datatype::codec::mysql::time as shared_time;
 
 use crate::{
-    check_fsp, core_time_from_datetime, get_frac_index, get_timezone, parse_frac, Converted,
-    CoreTime, FieldTypeCode, ScalarConversionError, ScalarConversionEvent, Time,
-    TimeConversionError, TimeError, TimeType, TimestampInterval,
+    Converted, CoreTime, FieldTypeCode, ScalarConversionError, ScalarConversionEvent, Time,
+    TimeError, TimeType, TimestampInterval,
 };
 
 /// Result metadata emitted while parsing a temporal literal.
@@ -60,13 +61,13 @@ pub(crate) struct TemporalOutcome<T> {
 }
 
 impl<T> TemporalOutcome<T> {
-    fn from_result(result: Result<T, TimeError>, fallback: T) -> Self {
-        match result {
-            Ok(value) => Self { value, error: None },
-            Err(error) => Self {
-                value: fallback,
-                error: Some(error),
-            },
+    fn from_shared<U>(
+        outcome: shared_time::NativeTimeParseOutcome<U>,
+        convert: impl FnOnce(U) -> T,
+    ) -> Self {
+        Self {
+            value: convert(outcome.value),
+            error: outcome.error,
         }
     }
 
@@ -521,44 +522,17 @@ pub(crate) fn parse_time_with_flags<TZ: TimeZone>(
     flags: crate::ConversionFlags,
     timezone: &TZ,
 ) -> Result<ParsedTime, TimeError> {
-    let allow_zero_in_date = flags.ignore_zero_in_date_err();
-    let allow_invalid_date = flags.ignore_invalid_date_err();
-    if is_float && input.starts_with("0.0") {
-        return Ok(ParsedTime {
-            time: Time::new(CoreTime::default(), kind, 0)?,
-            truncated: false,
-            dst_adjusted: false,
-        });
-    }
-    let fsp = check_fsp(fsp).map_err(TimeError::InvalidFsp)?;
-    let (core, truncated) = parse_datetime_core(input, fsp, is_float, flags, timezone)?;
-    let mut time = Time::new(core, kind, fsp)?;
-    let mut dst_adjusted = false;
-    match time.validate(allow_zero_in_date, allow_invalid_date, timezone) {
-        Ok(()) => {}
-        Err(TimeError::Conversion(TimeConversionError::NonexistentLocalTime))
-            if kind == TimeType::Timestamp =>
-        {
-            // Go's parseTime keeps the parsed value beside
-            // ErrTimestampInDSTTransition. `AdjustedGoTime` moves a gap to
-            // the first valid wall-clock instant after the transition; carry
-            // that value and an explicit bit so expression/write callers can
-            // apply the source warning policy without losing the value.
-            let adjusted = time
-                .core_time()
-                .adjusted_datetime(timezone)
-                .map_err(TimeError::Conversion)?;
-            time.set_core_time(core_time_from_datetime(adjusted));
-            time.validate(allow_zero_in_date, allow_invalid_date, timezone)?;
-            dst_adjusted = true;
-        }
-        Err(error) => return Err(error),
-    }
-    Ok(ParsedTime {
-        time,
-        truncated,
-        dst_adjusted,
-    })
+    shared_time::native_parse_time(
+        input,
+        kind,
+        fsp,
+        is_float,
+        flags.ignore_zero_in_date_err(),
+        flags.ignore_invalid_date_err(),
+        flags.ignore_zero_date_err(),
+        timezone,
+    )
+    .map(from_shared_parsed_time)
 }
 
 /// Parses a DATETIME using the fractional precision present in the literal.
@@ -579,217 +553,15 @@ pub fn parse_datetime<TZ: TimeZone>(
     )
 }
 
-fn parse_datetime_core<TZ: TimeZone>(
-    input: &str,
-    fsp: i64,
-    is_float: bool,
-    flags: crate::ConversionFlags,
-    timezone: &TZ,
-) -> Result<(CoreTime, bool), TimeError> {
-    let (mut parts, mut fraction, mut timezone_suffix, mut truncated) = split_datetime(input);
-    let no_absorb = |parts: &[String]| parts.len() > 5 || (parts.len() == 1 && parts[0].len() > 4);
-
-    if !fraction.is_empty() && !is_float && !no_absorb(&parts) {
-        parts.push(std::mem::take(&mut fraction));
-    }
-    if let Some(suffix) = &timezone_suffix {
-        if suffix.sign.is_some()
-            && !no_absorb(&parts)
-            && !(suffix.minute.is_some() && !suffix.has_colon)
-        {
-            if let Some(hour) = &suffix.hour {
-                parts.push(hour.clone());
-            }
-            if let Some(minute) = &suffix.minute {
-                parts.push(minute.clone());
-            }
-            timezone_suffix = None;
-        }
-    }
-
-    let mut fields = [0_i32; 6];
-    let hhmmss;
-    let mut compact_fraction = None;
-    match parts.len() {
-        0 => return Err(TimeError::InvalidDate),
-        1 if is_float => {
-            let number = parts[0]
-                .parse::<i64>()
-                .map_err(|_| TimeError::InvalidDate)?;
-            let numeric = parse_time_from_num(
-                number,
-                TimeType::DateTime,
-                0,
-                flags.ignore_zero_in_date_err(),
-                flags.ignore_invalid_date_err(),
-                flags.ignore_zero_date_err(),
-                timezone,
-            )?;
-            let core = numeric.time.core_time();
-            fields = [
-                core.year(),
-                i32::from(core.month()),
-                i32::from(core.day()),
-                i32::from(core.hour()),
-                i32::from(core.minute()),
-                i32::from(core.second()),
-            ];
-            let length = parts[0].len();
-            hhmmss = parts[0] == "0" || (9..=14).contains(&length);
-        }
-        1 => {
-            use tidb_query_datatype::codec::mysql::time::NativeCompactDateTimeError;
-            let compact = tidb_query_datatype::codec::mysql::Time::native_compact_datetime_parts(
-                &parts[0],
-                fraction.as_bytes(),
-                fsp as u8,
-            )
-            .map_err(|error| match error {
-                NativeCompactDateTimeError::InvalidDate => TimeError::InvalidDate,
-                NativeCompactDateTimeError::InvalidFsp(error) => TimeError::InvalidFsp(error),
-            })?;
-            fields = compact.fields;
-            hhmmss = compact.has_clock;
-            truncated |= compact.truncated;
-            compact_fraction = Some((compact.microsecond, compact.carry));
-        }
-        2 => return Err(TimeError::InvalidDate),
-        3..=6 => {
-            for (field, part) in fields.iter_mut().zip(&parts) {
-                *field = part.parse().map_err(|_| TimeError::InvalidDate)?;
-            }
-            hhmmss = parts.len() == 6;
-        }
-        _ => {
-            truncated = true;
-            for (field, part) in fields.iter_mut().zip(parts.iter().take(6)) {
-                *field = part.parse().map_err(|_| TimeError::InvalidDate)?;
-            }
-            hhmmss = true;
-        }
-    }
-
-    if !is_float && parts[0].len() <= 2 {
-        let all_zero = fields.iter().all(|field| *field == 0) && fraction.is_empty();
-        if !all_zero {
-            fields[0] = adjust_two_digit_year(fields[0]);
-        }
-    }
-
-    let (microsecond, overflow) = if let Some(fraction) = compact_fraction {
-        fraction
-    } else if hhmmss {
-        parse_frac(fraction.as_bytes(), fsp).map_err(TimeError::InvalidFsp)?
-    } else {
-        (0, false)
-    };
-    let mut core = checked_core(fields, microsecond)?;
-    if overflow {
-        // Go: `t1, err := tmp.GoTime(ctx.Location()); tmp = FromGoTime(t1.Add(gotime.Second))`
-        // (pkg/types/time.go::parseDatetime). The fractional carry is applied
-        // to the INSTANT in the session zone, not to the calendar fields, so
-        // when it crosses a DST transition the wall clock moves by the offset
-        // change as well: `"20110313015959.999999"` at fsp=0 parses to
-        // `2011-03-13 02:00:00` under UTC but `2011-03-13 03:00:00` under
-        // America/Los_Angeles. Field arithmetic silently produced the UTC
-        // answer for every session.
-        let carried = core.to_datetime(timezone)? + chrono::Duration::seconds(1);
-        core = core_time_from_datetime(timezone.from_utc_datetime(&carried.naive_utc()));
-    }
-
-    if let Some(suffix) = timezone_suffix {
-        if !hhmmss {
-            return Err(TimeError::InvalidDate);
-        }
-        let hour = suffix
-            .hour
-            .as_deref()
-            .unwrap_or("0")
-            .parse::<i32>()
-            .map_err(|_| TimeError::InvalidDate)?;
-        let minute = suffix
-            .minute
-            .as_deref()
-            .unwrap_or("0")
-            .parse::<i32>()
-            .map_err(|_| TimeError::InvalidDate)?;
-        if hour > 14
-            || minute > 59
-            || (hour == 14 && minute != 0)
-            || (suffix.sign == Some('-') && hour == 0 && minute == 0)
-        {
-            return Err(TimeError::InvalidDate);
-        }
-        let mut offset = hour * 3_600 + minute * 60;
-        if suffix.sign == Some('-') {
-            offset = -offset;
-        }
-        let fixed = FixedOffset::east_opt(offset).ok_or(TimeError::InvalidDate)?;
-        let source = core.to_datetime(&fixed)?;
-        core = core_time_from_datetime(source.with_timezone(timezone));
-    }
-    Ok((core, truncated))
+fn from_shared_time(value: shared_time::NativeTemporalValue) -> Time {
+    Time::from_raw_parts(CoreTime::from_raw(value.raw), value.kind, value.fsp)
 }
 
-fn split_datetime(input: &str) -> (Vec<String>, String, Option<crate::TimezoneSuffix>, bool) {
-    let mut value = input;
-    let mut suffix = get_timezone(value);
-    if let Some(timezone) = &mut suffix {
-        if timezone.index > 0 {
-            let mut index = timezone.index;
-            while index > 0 && is_punctuation(value.as_bytes()[index - 1]) {
-                index -= 1;
-            }
-            value = &value[..index];
-        } else {
-            suffix = None;
-        }
-    }
-
-    let mut fraction = String::new();
-    let mut truncated = false;
-    let fraction_index = get_frac_index(value);
-    if fraction_index > 0 {
-        let mut end = fraction_index as usize + 1;
-        while end < value.len() && value.as_bytes()[end].is_ascii_digit() {
-            end += 1;
-        }
-        truncated = end != value.len();
-        fraction.push_str(&value[fraction_index as usize + 1..end]);
-        let mut start = fraction_index as usize;
-        while start > 0 && is_punctuation(value.as_bytes()[start - 1]) {
-            start -= 1;
-        }
-        value = &value[..start];
-    }
-    (
-        parse_date_format(value).unwrap_or_default(),
-        fraction,
-        suffix,
-        truncated,
-    )
-}
-
-fn checked_core(fields: [i32; 6], microsecond: i64) -> Result<CoreTime, TimeError> {
-    Time::from_date_checked(
-        fields[0],
-        fields[1],
-        fields[2],
-        fields[3],
-        fields[4],
-        fields[5],
-        microsecond as i32,
-        TimeType::DateTime,
-        0,
-    )
-    .map(Time::core_time)
-}
-
-const fn adjust_two_digit_year(year: i32) -> i32 {
-    match year {
-        0..=69 => 2000 + year,
-        70..=99 => 1900 + year,
-        _ => year,
+fn from_shared_parsed_time(value: shared_time::NativeParsedTime) -> ParsedTime {
+    ParsedTime {
+        time: from_shared_time(value.time),
+        truncated: value.truncated,
+        dst_adjusted: value.dst_adjusted,
     }
 }
 
@@ -827,48 +599,18 @@ fn parse_time_from_num_with_error<TZ: TimeZone>(
     ignore_zero_date_err: bool,
     timezone: &TZ,
 ) -> TemporalOutcome<ParsedTime> {
-    let fallback = ParsedTime {
-        time: Time::new(CoreTime::default(), kind, 0)
-            .expect("zero target time is a valid MySQL error-side value"),
-        truncated: false,
-        dst_adjusted: false,
-    };
-    let result = (|| {
-        if number == 0 {
-            if !ignore_zero_date_err {
-                return Err(TimeError::ZeroDate);
-            }
-            return Ok(fallback);
-        }
-        let (normalized, _) = normalize_numeric_datetime(number)?;
-        let fields = numeric_fields(normalized);
-        let time = Time::from_date_checked(
-            fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], 0, kind, fsp,
-        )?;
-        let mut time = time;
-        let mut dst_adjusted = false;
-        match time.validate(allow_zero_in_date, allow_invalid_date, timezone) {
-            Ok(()) => {}
-            Err(TimeError::Conversion(TimeConversionError::NonexistentLocalTime))
-                if kind == TimeType::Timestamp =>
-            {
-                let adjusted = time
-                    .core_time()
-                    .adjusted_datetime(timezone)
-                    .map_err(TimeError::Conversion)?;
-                time.set_core_time(core_time_from_datetime(adjusted));
-                time.validate(allow_zero_in_date, allow_invalid_date, timezone)?;
-                dst_adjusted = true;
-            }
-            Err(error) => return Err(error),
-        }
-        Ok(ParsedTime {
-            time,
-            truncated: false,
-            dst_adjusted,
-        })
-    })();
-    TemporalOutcome::from_result(result, fallback)
+    TemporalOutcome::from_shared(
+        shared_time::native_parse_time_from_num(
+            number,
+            kind,
+            fsp,
+            allow_zero_in_date,
+            allow_invalid_date,
+            ignore_zero_date_err,
+            timezone,
+        ),
+        from_shared_parsed_time,
+    )
 }
 
 /// Parses an integer using TiDB's native DATE-versus-DATETIME classification.
@@ -878,16 +620,13 @@ pub fn parse_time_from_int64<TZ: TimeZone>(
     allow_invalid_date: bool,
     timezone: &TZ,
 ) -> Result<Time, TimeError> {
-    if number == 0 {
-        return Time::new(CoreTime::default(), TimeType::Date, 0);
-    }
-    let (normalized, kind) = normalize_numeric_datetime(number)?;
-    let fields = numeric_fields(normalized);
-    let time = Time::from_date_checked(
-        fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], 0, kind, 0,
-    )?;
-    time.validate(allow_zero_in_date, allow_invalid_date, timezone)?;
-    Ok(time)
+    shared_time::native_parse_time_from_int64(
+        number,
+        allow_zero_in_date,
+        allow_invalid_date,
+        timezone,
+    )
+    .map(from_shared_time)
 }
 
 /// Parses a floating-point temporal number with Go's microsecond rounding.
@@ -907,26 +646,15 @@ pub(crate) fn parse_time_from_float64_with_error<TZ: TimeZone>(
     allow_invalid_date: bool,
     timezone: &TZ,
 ) -> TemporalOutcome<Time> {
-    let result = (|| {
-        let integer = value as i64;
-        let mut time =
-            parse_time_from_int64(integer, allow_zero_in_date, allow_invalid_date, timezone)?;
-        if time.kind() == TimeType::DateTime {
-            let microsecond = ((value - integer as f64) * 1_000_000.0).round() as u32;
-            let core = time.core_time();
-            time.set_core_time(CoreTime::from_date(
-                core.year() as u16,
-                core.month(),
-                core.day(),
-                core.hour(),
-                core.minute(),
-                core.second(),
-                microsecond,
-            ));
-        }
-        Ok(time)
-    })();
-    TemporalOutcome::from_result(result, zero_datetime())
+    TemporalOutcome::from_shared(
+        shared_time::native_parse_time_from_float64(
+            value,
+            allow_zero_in_date,
+            allow_invalid_date,
+            timezone,
+        ),
+        from_shared_time,
+    )
 }
 
 /// Parses an exact decimal temporal number without floating-point rounding.
@@ -946,93 +674,15 @@ pub(crate) fn parse_time_from_decimal_with_error<TZ: TimeZone>(
     allow_invalid_date: bool,
     timezone: &TZ,
 ) -> TemporalOutcome<Time> {
-    let result = (|| {
-        let text = value.to_string();
-        let (integer_text, fraction) = text.split_once('.').unwrap_or((&text, ""));
-        let integer = integer_text
-            .parse::<i64>()
-            .map_err(|_| TimeError::InvalidDate)?;
-        let mut time =
-            parse_time_from_int64(integer, allow_zero_in_date, allow_invalid_date, timezone)?;
-        let fsp = fraction.len().min(6) as i64;
-        time.set_fsp(fsp)?;
-        if fsp > 0 && time.kind() == TimeType::DateTime {
-            let mut microsecond_text = fraction[..fsp as usize].to_owned();
-            while microsecond_text.len() < 6 {
-                microsecond_text.push('0');
-            }
-            let microsecond = microsecond_text
-                .parse::<u32>()
-                .map_err(|_| TimeError::InvalidDate)?;
-            let core = time.core_time();
-            time.set_core_time(CoreTime::from_date(
-                core.year() as u16,
-                core.month(),
-                core.day(),
-                core.hour(),
-                core.minute(),
-                core.second(),
-                microsecond,
-            ));
-        }
-        Ok(time)
-    })();
-    TemporalOutcome::from_result(result, zero_datetime())
-}
-
-fn zero_datetime() -> Time {
-    Time::new(CoreTime::default(), TimeType::DateTime, 0)
-        .expect("zero DATETIME is a valid MySQL error-side value")
-}
-
-fn normalize_numeric_datetime(mut number: i64) -> Result<(i64, TimeType), TimeError> {
-    if !(0..=99_999_999_999_999).contains(&number) {
-        return Err(TimeError::InvalidDate);
-    }
-    if number >= 10_000_101_000_000 {
-        return Ok((number, TimeType::DateTime));
-    }
-    if number < 101 {
-        return Err(TimeError::InvalidDate);
-    }
-    if number <= 691_231 {
-        return Ok(((number + 20_000_000) * 1_000_000, TimeType::Date));
-    }
-    if number < 700_101 {
-        return Err(TimeError::InvalidDate);
-    }
-    if number <= 991_231 {
-        return Ok(((number + 19_000_000) * 1_000_000, TimeType::Date));
-    }
-    if number <= 99_991_231 {
-        return Ok((number * 1_000_000, TimeType::Date));
-    }
-    if number < 101_000_000 {
-        return Err(TimeError::InvalidDate);
-    }
-    if number <= 691_231_235_959 {
-        number += 20_000_000_000_000;
-    } else if number < 700_101_000_000 {
-        return Err(TimeError::InvalidDate);
-    } else if number <= 991_231_235_959 {
-        number += 19_000_000_000_000;
-    }
-    Ok((number, TimeType::DateTime))
-}
-
-fn numeric_fields(number: i64) -> [i32; 6] {
-    let mut remainder = number;
-    let second = (remainder % 100) as i32;
-    remainder /= 100;
-    let minute = (remainder % 100) as i32;
-    remainder /= 100;
-    let hour = (remainder % 100) as i32;
-    remainder /= 100;
-    let day = (remainder % 100) as i32;
-    remainder /= 100;
-    let month = (remainder % 100) as i32;
-    let year = (remainder / 100) as i32;
-    [year, month, day, hour, minute, second]
+    TemporalOutcome::from_shared(
+        shared_time::native_parse_time_from_decimal_text(
+            &value.to_string(),
+            allow_zero_in_date,
+            allow_invalid_date,
+            timezone,
+        ),
+        from_shared_time,
+    )
 }
 
 #[cfg(test)]
