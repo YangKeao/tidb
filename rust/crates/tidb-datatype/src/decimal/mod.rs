@@ -685,11 +685,10 @@ impl Decimal {
 
     /// Source `MyDecimal.FromFloat64`.
     pub fn from_f64(value: f64) -> Option<Self> {
-        if !value.is_finite() {
-            return None;
-        }
-        let rendered = format_go_shortest_float(value);
-        Some(Self::from_signed_literal(&rendered))
+        SharedDecimal::native_from_f64(value).map(|shared| {
+            Self::try_from_shared_math(&shared, usize::MAX)
+                .expect("shared native float decimal materialization failed")
+        })
     }
 
     /// Source `MyDecimal.FromParquetArray`: decode a signed big-endian
@@ -1475,93 +1474,17 @@ impl Decimal {
     }
 }
 
-fn format_go_shortest_float(value: f64) -> String {
-    let mut buffer = ryu::Buffer::new();
-    let rendered = buffer.format_finite(value);
-    let (negative, rendered) = rendered
-        .strip_prefix('-')
-        .map_or((false, rendered), |value| (true, value));
-    let (mantissa, exponent) = rendered
-        .split_once(['e', 'E'])
-        .map_or((rendered, 0), |(mantissa, exponent)| {
-            (mantissa, exponent.parse::<i32>().expect("ryu exponent"))
-        });
-    let mantissa = mantissa.strip_suffix(".0").unwrap_or(mantissa);
-    let decimal_index = mantissa.find('.').unwrap_or(mantissa.len());
-    let digits: String = mantissa
-        .chars()
-        .filter(|character| *character != '.')
-        .collect();
-    let Some(first_nonzero) = digits.bytes().position(|digit| digit != b'0') else {
-        return "0".to_owned();
-    };
-    let significant = digits[first_nonzero..].trim_end_matches('0');
-    let exponent = exponent + decimal_index as i32 - first_nonzero as i32 - 1;
-    let prefix = if negative { "-" } else { "" };
-
-    // strconv.FormatFloat with `g`, -1 chooses scientific notation below
-    // -4 or at/above six significant-digit positions.
-    if !(-4..6).contains(&exponent) {
-        let mut output = format!("{prefix}{}", &significant[..1]);
-        if significant.len() > 1 {
-            output.push('.');
-            output.push_str(&significant[1..]);
-        }
-        output.push('e');
-        output.push(if exponent >= 0 { '+' } else { '-' });
-        output.push_str(&format!("{:02}", exponent.unsigned_abs()));
-        return output;
-    }
-
-    let digits_before_decimal = exponent + 1;
-    let mut output = prefix.to_owned();
-    if digits_before_decimal <= 0 {
-        output.push_str("0.");
-        output.push_str(&"0".repeat((-digits_before_decimal) as usize));
-        output.push_str(significant);
-    } else if digits_before_decimal as usize >= significant.len() {
-        output.push_str(significant);
-        output.push_str(&"0".repeat(digits_before_decimal as usize - significant.len()));
-    } else {
-        let split = digits_before_decimal as usize;
-        output.push_str(&significant[..split]);
-        output.push('.');
-        output.push_str(&significant[split..]);
-    }
-    output
-}
-
 impl std::fmt::Display for Decimal {
     /// The canonical string form (MyDecimal's `String()`): the sign (omitted
     /// for zero), then the digits with the decimal point inserted `scale`
     /// places from the right — omitted entirely when `scale == 0`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // MyDecimal retains full base-1e9 storage words, then rounds to its
-        // declared `resultFrac` when it becomes a SQL value. Keep that
-        // presentation rounding out of the stored payload: an enclosing AVG
-        // must still consume the hidden digits.
-        if self.storage_scale > self.scale {
-            return write!(
-                f,
-                "{}",
-                self.round_or_truncate_to_scale(self.scale as i32, true)
-            );
-        }
-        let sign = if self.negative { "-" } else { "" };
-        if self.scale == 0 {
-            let split = self.digits.len() - self.storage_scale as usize;
-            let int_part = if split == 0 {
-                "0"
-            } else {
-                &self.digits[..split]
-            };
-            return write!(f, "{sign}{int_part}");
-        }
-        let split = self.digits.len() - self.storage_scale as usize;
-        let int_part = &self.digits[..split];
-        let int_part = if int_part.is_empty() { "0" } else { int_part };
-        let frac_end = split + self.scale as usize;
-        write!(f, "{sign}{int_part}.{}", &self.digits[split..frac_end])
+        f.write_str(&SharedDecimal::native_format_visible(
+            self.negative,
+            self.coefficient_bytes(),
+            self.scale,
+            self.storage_scale,
+        ))
     }
 }
 
@@ -2166,6 +2089,120 @@ mod shared_raw_integer_projection_tests {
             .or_else(|| panic.downcast_ref::<&str>().copied())
             .unwrap();
         assert!(message.starts_with("decimal coefficients are ASCII digits"));
+    }
+}
+
+#[cfg(test)]
+mod presentation_bridge_tests {
+    use super::{Decimal, SharedDecimal};
+
+    #[test]
+    fn shared_visible_format_preserves_raw_and_hidden_decimal_representation() {
+        for (negative, digits, scale, storage, expected) in [
+            (false, b"00123".as_slice(), 2, 2, "001.23"),
+            (true, b"000".as_slice(), 2, 2, "-0.00"),
+            (true, b"0000".as_slice(), 2, 4, "0.00"),
+            (false, b"".as_slice(), 0, 0, "0"),
+            (true, b"".as_slice(), 0, 0, "-0"),
+            (false, b"0001".as_slice(), 0, 0, "0001"),
+            (false, b"123".as_slice(), 3, 3, "0.123"),
+            (false, b"12x".as_slice(), 1, 1, "12.x"),
+            (false, b"10049".as_slice(), 2, 4, "1.00"),
+            (true, b"10050".as_slice(), 2, 4, "-1.01"),
+            (false, b"99995".as_slice(), 2, 4, "10.00"),
+        ] {
+            let value = Decimal::from_raw_parts(negative, digits.to_vec(), scale, storage)
+                .with_declared_shape(17, 3);
+            assert_eq!(value.to_string(), expected);
+            assert_eq!(value.coefficient_bytes(), digits);
+            assert_eq!(value.is_negative(), negative);
+            assert_eq!((value.scale(), value.storage_scale()), (scale, storage));
+            assert_eq!(value.declared_shape(), Some((17, 3)));
+        }
+        // to_f64 still parses SQL-visible rounded text, not the hidden
+        // coefficient. The raw zero sign remains observable without rounding.
+        let hidden = Decimal::from_raw_parts(false, b"10049".to_vec(), 2, 4);
+        assert_eq!(hidden.to_f64().to_bits(), 1.0_f64.to_bits());
+        let raw_zero = Decimal::from_raw_parts(true, b"000".to_vec(), 2, 2);
+        assert_eq!(raw_zero.to_f64().to_bits(), (-0.0_f64).to_bits());
+        for (digits, scale, storage) in [
+            (b"\xff".as_slice(), 0, 0),
+            (b"1".as_slice(), 2, 2),
+            (b"123".as_slice(), 2, 1),
+            ("é".as_bytes(), 1, 1),
+        ] {
+            let value = Decimal::from_raw_parts(false, digits.to_vec(), scale, storage);
+            assert!(std::panic::catch_unwind(|| value.to_string()).is_err());
+        }
+    }
+
+    #[test]
+    fn shared_float_facade_keeps_go_g_text_and_existing_mysql_parser_projection() {
+        // These are pinned Go-g spellings, not strings computed from the
+        // result under test. Keep the native parser as an independent existing
+        // source projection; this change does not migrate that parser.
+        for (value, go_text) in [
+            (0.0, "0"),
+            (-0.0, "0"),
+            (1.25, "1.25"),
+            (-1.25, "-1.25"),
+            (0.0001, "0.0001"),
+            (0.00001, "1e-05"),
+            (999999.0, "999999"),
+            (1000000.0, "1e+06"),
+            (1000001.0, "1.000001e+06"),
+            (1.0e20, "1e+20"),
+            (f64::from_bits(1), "5e-324"),
+            (-f64::from_bits(1), "-5e-324"),
+            (f64::MIN_POSITIVE, "2.2250738585072014e-308"),
+            (f64::MAX, "1.7976931348623157e+308"),
+            (-f64::MAX, "-1.7976931348623157e+308"),
+            (f64::from(0.1_f32), "0.10000000149011612"),
+            (1.00000049, "1.00000049"),
+        ] {
+            assert_eq!(
+                SharedDecimal::native_format_go_shortest_float(value),
+                go_text
+            );
+            let expected = Decimal::from_signed_literal(go_text);
+            let actual = Decimal::from_f64(value).unwrap();
+            assert_eq!(
+                actual.coefficient_bytes(),
+                expected.coefficient_bytes(),
+                "{go_text}"
+            );
+            assert_eq!(actual.is_negative(), expected.is_negative(), "{go_text}");
+            assert_eq!(
+                (actual.scale(), actual.storage_scale()),
+                (expected.scale(), expected.storage_scale()),
+                "{go_text}"
+            );
+            assert_eq!(actual.declared_shape(), None);
+        }
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(Decimal::from_f64(value).is_none());
+        }
+        assert_eq!(Decimal::from_f64(-0.0).unwrap().to_string(), "0");
+        assert_eq!(
+            Decimal::from_f64(f64::from_bits(1)).unwrap().to_string(),
+            "0"
+        );
+        assert_eq!(
+            Decimal::from_f64(f64::MIN_POSITIVE).unwrap().to_string(),
+            "0"
+        );
+        assert_eq!(
+            Decimal::from_f64(f64::MAX).unwrap().to_string(),
+            "9".repeat(81)
+        );
+        assert_eq!(
+            Decimal::from_f64(-f64::MAX).unwrap().to_string(),
+            format!("-{}", "9".repeat(81))
+        );
+        assert_eq!(
+            Decimal::from_f64(f64::from(0.1_f32)).unwrap().to_string(),
+            "0.10000000149011612"
+        );
     }
 }
 

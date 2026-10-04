@@ -363,14 +363,7 @@ pub fn float_warning_input(input: &str) -> &str {
 /// (`"Truncated incorrect %-.64s value: '%-.128s'"`). The cut rounds down to
 /// a char boundary: identical for ASCII, multi-byte input loses the partial
 /// rune Go's byte cut would have split.
-pub fn warning_subject_byte_cap(input: &str) -> &str {
-    let end = input.len().min(128);
-    let mut cut = end;
-    while cut > 0 && !input.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    &input[..cut]
-}
+pub use tidb_query_datatype::codec::convert::native_warning_subject_byte_cap as warning_subject_byte_cap;
 
 impl NumericPrefix {
     /// Prefix accepted by Go's `strconv` call.

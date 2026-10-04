@@ -1,0 +1,42 @@
+Decimal presentation prerequisite / decimal-presentation-80 / R83
+Previous native3c76219661ff9d47dbe9d8f49a994e39471b49cb / CPP5b73ba06420a27c048b041ae4a27c078c5c93500.
+Functional220/245 strict0 unchanged;25eligible remain,1needed. All220 family objects unchanged; new_migration_ids=[]; latest functional remains unix-timestamp-79. FROM_UNIXTIME not migrated.
+2exclusive writers+1RO reviewer+parent;4Rust files/5newtests. CPP129/native31 original test bodies byte-identical. CPP6/native5 original production bodies byte-identical (wire parser/shift/from_f64/format and general native parser/to_f64). No fixture/provider recording.
+
+Metadata dependency commands (not test runs):
+ cwd=/home/agent/tidb/expression-unification/tikv:
+ ../tools/cargo-tikv metadata --offline --format-version 1 --no-deps (no lock change)
+ ../tools/cargo-tikv metadata --offline --format-version 1 (generated one Ryu edge)
+ cwd=/home/agent/tidb/expression-unification/tidb/rust:
+ ../../tools/cargo-tidb metadata --offline --format-version 1 (generated moved Ryu edge)
+ ../../tools/cargo-tidb metadata --offline --locked --format-version 1 --no-deps (after unused workspace declaration removal)
+Package identities/version/checksum/source unchanged across both locks; CPP tidb_query_datatype adds ryu, native tidb-datatype removes it and native graph tidb_query_datatype adds it.3manifest files changed, no package upgrade; Ryu remains1.0.23. Go/Bazel/generated-code artifacts unchanged.
+
+Seven serialized test launches, all --locked --test-threads=1:
+ CPP cwd=/home/agent/tidb/expression-unification/tikv:
+ ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib decimal -- --test-threads=1
+ ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_warning_subject -- --test-threads=1
+ Native cwd=/home/agent/tidb/expression-unification/tidb/rust:
+ ../../tools/cargo-tidb test --locked -p tidb-datatype --lib decimal -- --test-threads=1
+ ../../tools/cargo-tidb test --locked -p tidb-datatype --lib warning -- --test-threads=1
+ ../../tools/cargo-tidb test --locked -p tidb-expr --lib from_unixtime -- --test-threads=1
+ ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+ ../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+
+Raw logs=/home/agent/tidb/expression-unification/logs/decimal-presentation-{id}.log
+id | passed/failed/ignored/filtered | compile/elapsed seconds | exit | sha256
+ tikv-decimal |111/0/0/345|5.03/0.01|0|857abd68d6b09920b82528444a999103e271aeed7866fad9376260f5c00504f4
+ tikv-warning |1/0/0/455|0.14/0.00|0|4987b0c5eb8111078eefbe1c1a1d609f6944c7d211803b383864e9d4d3e0c458
+ native-decimal |101/0/0/354|4.81/23.21|0|4c0cf16f44652458b2935303a6c897177be43e0b6e405e4e2812da4f92820e82
+ native-warning |5/0/0/450|0.18/0.00|0|5661c493787f82acb62d2a83970e3e6532c3a50cb716e6ff6fc8058d5595a119
+ native-from-unix |3/0/0/1673|24.21/0.00|0|1d9bed0cd1e2747744368ce0fb42406bc9de6ecd7a5d3464ecc3a90834a95b0f
+ expr-full |1578/4/94/0|0.14/14.80|101|5614832a9ae467d7457066ce88b4aacda290e6a77dda1003b6b58254ef8b5197
+ unistore-full |212/1/13/0|10.92/3.06|101|9c5a2b5146dac2585084fc2044fe6874dce5bd996be46bf2d11b78e3701e012a
+Seven nonzero runs/fivegreen/two unchanged old full-suite failures. All5newtests pass first matching gate; no compile/new-test failure, retry, expectation correction, interrupted or zero-match run. Filters overlap; not unique totals.
+Full failure sections incl final list match unix-timestamp logs after only numeric panic-heading thread IDs→THREAD, retaining leading newline:
+ expr411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+ unistore2f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1
+Float tests use source-pinned Go-g strings and unchanged native parser as reference, comparing coefficient/sign/visible/storage, not just rendered output. New native constructor locally maps Mysql empty-active underflow zero to logical zero; no general parser/importer change. Direct display preserves raw -0/empty/leading/nondigitUTF8 and original invalid slicing/panic; hidden display uses original shared rounding/projection.
+Only source lookup hiccup: assumed native_decimal.rs did not exist; glob/actual decimal.rs located implementation. No build failure.
+Pinned format --edition2021 --config skip_children=true and diff checks; mapping-only architecture/maintenance updates with actual paths, no new policy. No new SQL probes or evaluator profiles. Display now has intermediate String allocation; performance/physical peak/OOM equivalence unverified.
+FROM_UNIXTIME staged warning/zone/layout and legacy nanos-times1000 remain pending. M6/default-NoColumns, earlier raw INTDIV/modes/CAST/JSON/metadata gaps, whole workspace/lint/dev/bazel_prepare/release/exhaustive differential/TiFlash/FIPS/performance/allocator/physical heap/peak/OOM/zero-copy/dual-tzdata remain unverified. Goal active; no whole-package transcreation/PR-ready claim.
