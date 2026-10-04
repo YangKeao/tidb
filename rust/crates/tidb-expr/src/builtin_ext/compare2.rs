@@ -18,6 +18,7 @@ use std::cmp::Ordering;
 
 use tidb_ast::BinaryOp;
 use tidb_datatype::{EvalType, FieldType, FieldTypeFlags, TimeType};
+use tidb_query_expr as extrema_sdk;
 
 use crate::coerce::{coerce_str, integer_cmp, integer_of};
 use crate::ops::{to_decimal, to_f64};
@@ -246,33 +247,24 @@ pub(crate) fn extremum_with_signature(
     collation: tidb_datatype::Collation,
     ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
-    if vals.is_empty() {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    if vals.contains(&Datum::Null) {
-        return Ok(Datum::Null);
-    }
-    let signature = signature.unwrap_or_else(|| value_derived_signature(vals));
-    let mode = signature.cmp_string_mode;
-    if signature.arg_type == tidb_datatype::EvalType::VectorFloat32 {
-        return extremum_vector(vals, want);
-    }
-    if signature.arg_type != tidb_datatype::EvalType::String {
-        // Go's ETDatetime/ETTimestamp arm; every other arm -- ETInt, ETReal,
-        // ETDecimal, ETDuration, ETVectorFloat32 -- shares the
-        // compare-and-return block at the bottom, which is what those five
-        // `evalXxx` bodies do once `newBaseBuiltinFuncWithTp` has cast the
-        // arguments into the domain.
-        if matches!(
-            signature.arg_type,
-            tidb_datatype::EvalType::Datetime | tidb_datatype::EvalType::Timestamp
-        ) {
-            return extremum_time(vals, want, signature.ret_date, ctx);
+    use extrema_sdk::{NativeExtremumDomain as Domain, NativeExtremumHead as Head};
+    let metadata = extremum_value_metadata(vals);
+    let cmp_as_date = match extrema_sdk::native_extremum_head(
+        &metadata,
+        signature.map(extremum_signature_metadata),
+    )
+    .map_err(extremum_policy_error)?
+    {
+        Head::Null => return Ok(Datum::Null),
+        Head::Domain(Domain::Vector) => return extremum_vector(vals, want),
+        Head::Domain(Domain::Time { ret_date }) => return extremum_time(vals, want, ret_date, ctx),
+        Head::Domain(Domain::Numeric) => {
+            return extremum_numeric(vals, want, arg_decimals, all_constant, &metadata)
         }
-        return extremum_numeric(vals, want, arg_decimals, all_constant);
-    }
-    if mode != GlCmpStringMode::Directly {
-        let cmp_as_date = mode == GlCmpStringMode::AsDate;
+        Head::Domain(Domain::StringAsTime { as_date }) => Some(as_date),
+        Head::Domain(Domain::DirectString) => None,
+    };
+    if let Some(cmp_as_date) = cmp_as_date {
         let mut best: Option<String> = None;
         for value in vals {
             let Some(text) = coerce_str(value)? else {
@@ -376,114 +368,101 @@ fn extremum_numeric(
     want: Ordering,
     arg_decimals: &[i64],
     all_constant: bool,
+    metadata: &[extrema_sdk::NativeExtremumValueMeta],
 ) -> Result<Datum, EvalError> {
-    let op = if want == Ordering::Greater {
-        BinaryOp::Gt
-    } else {
-        BinaryOp::Lt
+    use extrema_sdk::{
+        NativeExtremumComparisonOp as Op, NativeExtremumComparisonValue as Value,
+        NativeExtremumNumericCursor, NativeExtremumPromotion as Promotion,
     };
-    let mut best_index = 0usize;
-    for (index, v) in vals[1..].iter().enumerate() {
-        if eval_binary(op, v.clone(), vals[best_index].clone())? == Datum::Int(1) {
-            best_index = index + 1;
-        }
-    }
-    let best = &vals[best_index];
-    // The RESULT promotes to the widest type among ALL arguments (Float >
-    // Decimal > Int, same hierarchy `+`/`-` use) — not just whichever raw
-    // value happened to win the comparison (a real bug caught by the
-    // differential corpus, not assumed correct on the first attempt:
-    // `LEAST(1.5e2, 3.14, 2)` is `FLOAT:2`, not `INT:2`, even though the
-    // winning argument `2` was written as a bare Int literal).
-    if vals
-        .iter()
-        .any(|v| matches!(v, Datum::Real(_) | Datum::Float32(_)))
-    {
-        return Ok(Datum::Real(to_f64(best.clone())));
-    }
-    if vals.iter().any(|v| matches!(v, Datum::Decimal(_))) {
-        // Go casts every argument to DECIMAL at that argument's OWN scale
-        // (`WrapWithCastAsDecimal`: an integer argument is `SetDecimal(0)`, a
-        // decimal argument passes through as-is) and returns the winner RAW
-        // -- so the winning argument's own scale survives. The ONE exception
-        // is a fully-constant call: the planner folds it and the folded
-        // constant carries the RETURN type's scale, which
-        // `fixFlenAndDecimalForGreatestAndLeast` set to the MAX over the
-        // argument decimals. CAPTURED from real TiDB (column `i int`, column
-        // `d decimal(10,3)`, row `(-5, 2.500)`):
-        //
-        //   least(i, d)        -5      greatest(i, d)        2.500
-        //   least(1, d)        1       least(i, 2.5)         -5
-        //   least(1, 2.5)      1.0     greatest(1, 2.5)      2.5
-        //   least(1, 2.5, 3.25) 1.00   greatest(3, 2.55, 1)  3.00
-        //
-        // The all-literal rows are both all-constant AND typed, so the
-        // value-derived fallback below (no argument types at all) keeps the
-        // same max-scale answer they were pinned with.
-        let max_datum_scale = vals
-            .iter()
-            .map(|value| match value {
-                Datum::Decimal(value) => value.scale(),
-                _ => 0,
-            })
-            .max()
-            .unwrap_or(0);
-        let scale = if all_constant && arg_decimals.iter().any(|dec| *dec >= 0) {
-            arg_decimals
-                .iter()
-                .copied()
-                .filter(|dec| *dec >= 0)
-                .max()
-                .unwrap_or(0i64)
-        } else if arg_decimals.get(best_index).is_some_and(|dec| *dec >= 0) {
-            arg_decimals[best_index]
-        } else {
-            max_datum_scale as i64
+    let mut cursor =
+        NativeExtremumNumericCursor::new(vals.len(), want).map_err(extremum_policy_error)?;
+    while let Some(request) = cursor.request() {
+        let op = match request.op {
+            Op::Lt => BinaryOp::Lt,
+            Op::Gt => BinaryOp::Gt,
         };
-        return Ok(Datum::Decimal(
-            to_decimal(best.clone()).cast_to_precision(0, scale as u32),
-        ));
+        // Retain the original NoColumns comparison policy in this foundation
+        // step; the shared cursor owns demand and winner replacement only.
+        let result = eval_binary(
+            op,
+            vals[request.candidate_index].clone(),
+            vals[request.best_index].clone(),
+        )?;
+        cursor
+            .observe(match result {
+                Datum::Int(value) => Value::Int(value),
+                _ => Value::OtherValue,
+            })
+            .map_err(extremum_policy_error)?;
     }
-    // TiDB's common numeric type for a mixed signed/unsigned integer list is
-    // DECIMAL. Preserve that result domain even when the winning value is an
-    // integer: GREATEST(1, CAST(2 AS UNSIGNED)) is DEC:2, not UINT:2.
-    if vals.iter().any(|v| matches!(v, Datum::Int(_)))
-        && vals.iter().any(|v| matches!(v, Datum::UInt(_)))
-    {
-        return Ok(Datum::Decimal(to_decimal(best.clone())));
-    }
-    Ok(best.clone())
+    Ok(
+        match cursor
+            .finish(metadata, arg_decimals, all_constant)
+            .map_err(extremum_policy_error)?
+        {
+            Promotion::KeepWinner { index } => vals[index].clone(),
+            Promotion::ToReal { index } => Datum::Real(to_f64(vals[index].clone())),
+            Promotion::ToDecimal {
+                index,
+                precision_scale,
+            } => {
+                let decimal = to_decimal(vals[index].clone());
+                Datum::Decimal(match precision_scale {
+                    Some(scale) => decimal.cast_to_precision(0, scale),
+                    None => decimal,
+                })
+            }
+        },
+    )
 }
 
-/// The signature for a caller with no argument `FieldType`s at all.
-///
-/// Go always has them, so this is not a second rule but the same question
-/// asked of the only evidence the AST/value tier holds: a datum's own kind.
-/// The three answers it can give are the three Go arms this file implements,
-/// and the compare mode is `Directly` because a temporal ARGUMENT is exactly
-/// what a bare datum cannot reveal.
-fn value_derived_signature(vals: &[Datum]) -> GlSignature {
-    use tidb_datatype::EvalType;
-    let arg_type = if vals.iter().any(|v| matches!(v, Datum::VectorFloat32(_))) {
-        // `GetAccurateCmpType` selects ETVectorFloat32 as soon as either
-        // operand is vector, exactly like the binary comparison signatures.
-        EvalType::VectorFloat32
-    } else if vals.iter().all(|v| matches!(v, Datum::Time(_))) {
-        EvalType::Datetime
-    } else if vals
-        .iter()
-        .any(|v| matches!(v, Datum::String(_) | Datum::Bytes(_)))
-    {
-        EvalType::String
-    } else {
-        EvalType::Real
-    };
-    GlSignature {
-        arg_type,
-        cmp_string_mode: GlCmpStringMode::Directly,
-        ret_date: vals
-            .iter()
-            .all(|v| matches!(v, Datum::Time(time) if time.kind() == TimeType::Date)),
+/// Transport actual observations only; domain and promotion decisions live in
+/// the shared policy, including the value-only caller's fallback signature.
+fn extremum_value_metadata(vals: &[Datum]) -> Vec<extrema_sdk::NativeExtremumValueMeta> {
+    vals.iter()
+        .map(|value| extrema_sdk::NativeExtremumValueMeta {
+            kind: value.kind() as u8,
+            time_kind: match value {
+                Datum::Time(time) => Some(time.kind()),
+                _ => None,
+            },
+            decimal_scale: match value {
+                Datum::Decimal(decimal) => Some(decimal.scale()),
+                _ => None,
+            },
+        })
+        .collect()
+}
+
+fn extremum_signature_metadata(value: GlSignature) -> extrema_sdk::NativeExtremumSignature {
+    use extrema_sdk::{NativeExtremumEvalType as Type, NativeExtremumStringMode as Mode};
+    extrema_sdk::NativeExtremumSignature {
+        arg_type: match value.arg_type {
+            EvalType::Int => Type::Int,
+            EvalType::Real => Type::Real,
+            EvalType::Decimal => Type::Decimal,
+            EvalType::String => Type::String,
+            EvalType::Datetime => Type::Datetime,
+            EvalType::Timestamp => Type::Timestamp,
+            EvalType::Duration => Type::Duration,
+            EvalType::Json => Type::Json,
+            EvalType::VectorFloat32 => Type::VectorFloat32,
+        },
+        cmp_string_mode: match value.cmp_string_mode {
+            GlCmpStringMode::Directly => Mode::Directly,
+            GlCmpStringMode::AsDate => Mode::AsDate,
+            GlCmpStringMode::AsDatetime => Mode::AsDatetime,
+        },
+        ret_date: value.ret_date,
+    }
+}
+
+fn extremum_policy_error(error: extrema_sdk::NativeExtremumPolicyError) -> EvalError {
+    match error {
+        extrema_sdk::NativeExtremumPolicyError::EmptyArguments => {
+            EvalError::Unsupported("bad function arity")
+        }
+        _ => EvalError::Unsupported("invalid extremum policy state"),
     }
 }
 
@@ -1320,5 +1299,275 @@ mod tests {
                 .eval_type(),
             tidb_datatype::EvalType::VectorFloat32
         );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn extremum_policy_adapter_preserves_null_ties_scale_and_eager_demand() {
+    use crate::constant::{Constant, ParamMarker};
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    use std::cell::RefCell;
+    use tidb_datatype::{DateModes, Decimal, FieldTypeCode, SessionTimeZone};
+    #[derive(Debug, Eq, PartialEq)]
+    enum Event {
+        Child(usize),
+        Modes,
+        Zone,
+    }
+    struct Demand {
+        values: Vec<Datum>,
+        fail: Option<usize>,
+        events: RefCell<Vec<Event>>,
+    }
+    impl crate::Columns for Demand {
+        fn get(&self, path: &[String]) -> Option<Datum> {
+            self.param_value(path[0].parse().unwrap()).ok()
+        }
+        fn param_value(&self, index: usize) -> Result<Datum, EvalError> {
+            self.events.borrow_mut().push(Event::Child(index));
+            if self.fail == Some(index) {
+                return Err(EvalError::Unsupported("extremum child"));
+            }
+            Ok(self.values[index].clone())
+        }
+        fn date_modes(&self) -> DateModes {
+            self.events.borrow_mut().push(Event::Modes);
+            DateModes::default()
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            self.events.borrow_mut().push(Event::Zone);
+            SessionTimeZone::utc()
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            panic!("no caller truncation policy for these extrema")
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            panic!("these extrema do not append warnings")
+        }
+    }
+    let context = |values, fail| Demand {
+        values,
+        fail,
+        events: RefCell::new(Vec::new()),
+    };
+    let ctx = context(vec![], None);
+    let signature = |arg_type, cmp_string_mode| GlSignature {
+        arg_type,
+        cmp_string_mode,
+        ret_date: false,
+    };
+    let run = |values: &[Datum], want, sig, decimals: &[i64], constant| {
+        extremum_with_signature(
+            values,
+            want,
+            sig,
+            decimals,
+            constant,
+            crate::ops::DERIVATION_FREE_COLLATION,
+            &ctx,
+        )
+    };
+    let decimal = |s: &str| Datum::Decimal(Decimal::from_literal(s));
+    for want in [Ordering::Less, Ordering::Greater] {
+        assert_eq!(
+            run(&[], want, None, &[], false),
+            Err(EvalError::Unsupported("bad function arity"))
+        );
+        assert_eq!(
+            run(&[Datum::MaxValue], want, None, &[], false),
+            Ok(Datum::MaxValue)
+        );
+        for arg_type in EvalType::ALL {
+            assert_eq!(
+                run(
+                    &[Datum::MinNotNull, Datum::new_bytes(vec![255]), Datum::Null],
+                    want,
+                    Some(signature(arg_type, GlCmpStringMode::AsDatetime)),
+                    &[i64::MAX],
+                    true
+                ),
+                Ok(Datum::Null)
+            );
+        }
+        for (values, scales, expected) in [
+            (vec![decimal("1.0"), decimal("1.000")], vec![1, 3], "1.0"),
+            (vec![decimal("1.000"), decimal("1.0")], vec![3, 1], "1.000"),
+        ] {
+            let value = run(&values, want, None, &scales, false).unwrap();
+            assert_eq!(value.sql_string().unwrap(), expected);
+        }
+        let nan = f64::from_bits(0x7ff8_0000_0000_0123);
+        let Datum::Real(value) = run(
+            &[Datum::Real(nan), Datum::Real(1.0)],
+            want,
+            None,
+            &[],
+            false,
+        )
+        .unwrap() else {
+            panic!("real promotion");
+        };
+        assert_eq!(value.to_bits(), nan.to_bits());
+        assert_eq!(
+            run(
+                &[Datum::Real(1.0), Datum::Real(nan)],
+                want,
+                None,
+                &[],
+                false
+            ),
+            Ok(Datum::Real(1.0))
+        );
+        let Datum::Real(value) = run(
+            &[Datum::Real(-0.0), Datum::Real(0.0)],
+            want,
+            None,
+            &[],
+            false,
+        )
+        .unwrap() else {
+            panic!("real promotion");
+        };
+        assert_eq!(value.to_bits(), (-0.0f64).to_bits());
+    }
+    for (scales, constant, want, expected) in [
+        (vec![-1, -1, 4], true, Ordering::Less, "1.0000"),
+        (vec![-1, -1, 4], false, Ordering::Less, "1.0"),
+        (vec![3], false, Ordering::Less, "1.000"),
+        (vec![3], false, Ordering::Greater, "2.5"),
+        (vec![3], true, Ordering::Greater, "2.500"),
+        (vec![i64::MIN], true, Ordering::Less, "1.0"),
+        (vec![i64::from(u32::MAX) + 2], false, Ordering::Less, "1.0"),
+    ] {
+        let value = run(
+            &[Datum::Int(1), decimal("2.5")],
+            want,
+            None,
+            &scales,
+            constant,
+        )
+        .unwrap();
+        assert_eq!(value.sql_string().unwrap(), expected);
+    }
+    // Explicit numeric signature does not override the existing runtime
+    // promotion; conversely ETReal metadata does not force an integer to Real.
+    assert_eq!(
+        run(
+            &[Datum::Int(1), Datum::Real(2.0)],
+            Ordering::Less,
+            Some(signature(EvalType::Int, GlCmpStringMode::Directly)),
+            &[],
+            false
+        ),
+        Ok(Datum::Real(1.0))
+    );
+    assert_eq!(
+        run(
+            &[Datum::Int(1), Datum::Int(2)],
+            Ordering::Greater,
+            Some(signature(EvalType::Real, GlCmpStringMode::Directly)),
+            &[],
+            false
+        ),
+        Ok(Datum::Int(2))
+    );
+    assert_eq!(
+        run(
+            &[Datum::Int(1), Datum::UInt(2)],
+            Ordering::Greater,
+            None,
+            &[],
+            false
+        ),
+        Ok(decimal("2"))
+    );
+    assert!(ctx.events.borrow().is_empty());
+    let as_time = Some(signature(EvalType::String, GlCmpStringMode::AsDatetime));
+    assert_eq!(
+        run(
+            &[
+                Datum::new_string("2020-01-01"),
+                Datum::new_bytes(vec![255]),
+                Datum::new_string("later")
+            ],
+            Ordering::Greater,
+            as_time,
+            &[],
+            false
+        ),
+        Err(EvalError::Unsupported("invalid UTF-8 byte datum"))
+    );
+    assert_eq!(*ctx.events.borrow(), vec![Event::Modes, Event::Zone]);
+    ctx.events.borrow_mut().clear();
+    assert_eq!(
+        run(
+            &[Datum::new_string("2020-01-01"), Datum::new_string("bad")],
+            Ordering::Greater,
+            as_time,
+            &[],
+            false
+        ),
+        Ok(Datum::new_string("bad"))
+    );
+    assert_eq!(
+        *ctx.events.borrow(),
+        vec![Event::Modes, Event::Zone, Event::Modes, Event::Zone]
+    );
+    let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    for typed in [false, true] {
+        for (fail, null_first) in [(None, true), (Some(2), true), (None, false)] {
+            let values = if null_first {
+                vec![Datum::Null, Datum::Int(2), Datum::Int(3)]
+            } else {
+                vec![Datum::Int(1), Datum::Real(2.0), Datum::Int(3)]
+            };
+            let ctx = context(values, fail);
+            let result = if typed {
+                let args = (0..3)
+                    .map(|index| {
+                        let mut value =
+                            Constant::new(Datum::Null, FieldType::new(FieldTypeCode::LongLong));
+                        value.param_marker = Some(ParamMarker {
+                            order: i64::from(index),
+                        });
+                        Expression::Constant(value)
+                    })
+                    .collect();
+                ScalarFunction::new(
+                    tidb_ast::CiString::new("greatest"),
+                    FieldType::new(FieldTypeCode::LongLong),
+                    args,
+                )
+                .eval(&ctx, row.to_row())
+            } else {
+                let args = (0..3)
+                    .map(|index| tidb_ast::Expr::Column(vec![index.to_string()]))
+                    .collect::<Vec<_>>();
+                crate::func::eval_func("GREATEST", &args, &ctx, None)
+            };
+            if fail.is_some() {
+                assert!(result.is_err());
+            } else {
+                assert_eq!(
+                    result,
+                    Ok(if null_first {
+                        Datum::Null
+                    } else if typed {
+                        // ParamMarker supplies the Real unchanged, so the
+                        // reducer promotes to Real; ScalarFunction::eval then
+                        // projects that result to this node's declared LongLong.
+                        Datum::Int(3)
+                    } else {
+                        Datum::Real(3.0)
+                    })
+                );
+            }
+            assert_eq!(
+                *ctx.events.borrow(),
+                vec![Event::Child(0), Event::Child(1), Event::Child(2)]
+            );
+        }
     }
 }

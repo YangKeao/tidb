@@ -9363,6 +9363,112 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn native_extremum_policy_preserves_numeric_winner_scale_promotion_and_global_null() {
+    use tidb_datatype::FieldTypeCode;
+
+    // Pure head/domain/winner policy consumers, not a new C4 runtime family.
+    // Keep the native reducers and their SQL type/materialization contracts;
+    // no zero-slot claim and no manufactured NaN SQL input belong here.
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE native_extremum_policy_sql (i BIGINT, d DECIMAL(10,3), u BIGINT UNSIGNED, r DOUBLE, n BIGINT)")
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO native_extremum_policy_sql VALUES (-5,2.500,9223372036854775808,150,NULL)",
+        )
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        let StmtOutput::Rows { columns, rows } = session
+            .run_with_columns("SELECT LEAST(i,d),GREATEST(i,d),GREATEST(u,i),LEAST(u,i),LEAST(r,d,i) FROM native_extremum_policy_sql")
+            .unwrap()
+        else {
+            panic!("expected stored numeric extrema")
+        };
+        assert_eq!(columns.len(), 5);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].len(), 5);
+        // Nonconstant decimal winners keep the winning argument's OWN scale,
+        // although both i/d result headers aggregate to DECIMAL(23,3).
+        // The mixed-sign BIGINT pair promotes to DECIMAL(21,0), preserving
+        // the exact unsigned value rather than rounding it through f64.
+        for (index, text, scale, flen, decimal) in [
+            (0, "-5", 0, 23, 3),
+            (1, "2.500", 3, 23, 3),
+            (2, "9223372036854775808", 0, 21, 0),
+            (3, "-5", 0, 21, 0),
+        ] {
+            let field = &columns[index].1;
+            assert_eq!(field.code(), FieldTypeCode::NewDecimal);
+            assert_eq!((field.flen(), field.decimal()), (flen, decimal));
+            let Datum::Decimal(value) = &rows[0][index] else {
+                panic!("expected decimal field {index}/mode {vectorized}")
+            };
+            assert_eq!(value.scale(), scale, "field {index}/mode {vectorized}");
+            assert_eq!(value.to_string(), text, "field {index}/mode {vectorized}");
+        }
+        // The integer is the winner, but a REAL anywhere in the argument
+        // list promotes the result. DOUBLE's declared width/scale is 22/-1.
+        assert_eq!(columns[4].1.code(), FieldTypeCode::Double);
+        assert_eq!((columns[4].1.flen(), columns[4].1.decimal()), (22, -1));
+        assert!(matches!(&rows[0][4], Datum::Real(_)));
+        assert_eq!(rows[0][4], Datum::Real(-5.0), "mode {vectorized}");
+        for (_, field) in &columns {
+            assert!(!field.is_unsigned());
+            assert_eq!(field.charset_name(), "binary");
+            assert_eq!(field.collation_name(), "binary");
+        }
+        assert!(warnings_of(&session).is_empty(), "mode {vectorized}");
+
+        let StmtOutput::Rows { columns, rows } = session
+            .run_with_columns("SELECT LEAST(1,2.5,3.25),GREATEST(3,2.55,1),GREATEST(i,d,n),LEAST(n,u,i) FROM native_extremum_policy_sql")
+            .unwrap()
+        else {
+            panic!("expected constant-scale and global-NULL extrema")
+        };
+        assert_eq!(columns.len(), 4);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].len(), 4);
+        // Fully constant calls instead use the maximum argument scale. The
+        // literal type widths and merged scale give both headers 5/2, which
+        // constant folding preserves rather than deriving from the winner.
+        for (index, text) in [(0, "1.00"), (1, "3.00")] {
+            let Datum::Decimal(value) = &rows[0][index] else {
+                panic!("expected folded decimal field {index}/mode {vectorized}")
+            };
+            assert_eq!(value.scale(), 2);
+            assert_eq!(value.to_string(), text, "field {index}/mode {vectorized}");
+        }
+        assert_eq!(rows[0][2], Datum::Null, "late NULL/mode {vectorized}");
+        assert_eq!(rows[0][3], Datum::Null, "first NULL/mode {vectorized}");
+        for (index, (flen, decimal)) in [(5, 2), (5, 2), (23, 3), (21, 0)].into_iter().enumerate() {
+            let field = &columns[index].1;
+            assert_eq!(field.code(), FieldTypeCode::NewDecimal);
+            assert_eq!(
+                (field.flen(), field.decimal()),
+                (flen, decimal),
+                "field {index}/mode {vectorized}"
+            );
+            assert!(!field.is_unsigned());
+            assert_eq!(field.charset_name(), "binary");
+            assert_eq!(field.collation_name(), "binary");
+        }
+        assert!(warnings_of(&session).is_empty(), "mode {vectorized}");
+    }
+}
+
+#[test]
 fn evaluated_ascii_extract_preserves_stored_source_policy_and_selector_root_demand() {
     use tidb_datatype::FieldTypeCode;
 

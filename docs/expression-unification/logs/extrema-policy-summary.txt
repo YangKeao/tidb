@@ -1,0 +1,47 @@
+extrema-policy-99 / R102
+CPP cwd /home/agent/tidb/expression-unification/tikv
+Native cwd /home/agent/tidb/expression-unification/tidb/rust
+Raw /home/agent/tidb/expression-unification/logs/extrema-policy-{id}.log
+Counts passed/failed/ignored/filtered; compile/test seconds.
+
+tikv-core | 1/0/0/978 | 14.32/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_extremum_policy -- --test-threads=1
+sha256 10afd8497bbd2f69f06a500d9a35c1740e6e7e84c1eb0754abc5d2c43c39be2e
+
+native-entry | 3/1/0/1705 | 17.33/0.00 | exit101
+../../tools/cargo-tidb test --locked -p tidb-expr --lib extremum -- --test-threads=1
+sha256 76dec7ba4a7dd4c8da916e7e583b74b092ebf7afd4f057c6dd3e538068b9a3e2
+
+native-entry-retry | 4/0/0/1705 | 3.63/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib extremum -- --test-threads=1
+sha256 87b7dc01b227211632689093055f42d56a0e61c3a62d48de1382791f018164b2
+
+native-original | 1/0/0/1708 | 0.13/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tests::compare_control_source::test_greatest_least_func -- --exact --test-threads=1
+sha256 5d50ab970f8c39abd453b71c07c6de75abfccf7b4195293dbf190e822c704f8e
+
+sql | 1/0/0/2243 | 26.49/0.02 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib native_extremum_policy_preserves_numeric_winner_scale_promotion_and_global_null -- --test-threads=1
+sha256 1738666a088be2ff0f6000b17a5ab6b5b75e6d1ba6695fb7b247a2d8d8b07e66
+
+sql-original | 6/0/0/2238 | 0.15/0.09 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib greatest -- --test-threads=1
+sha256 7dcd9245340747068078f22b185ea0eaf44718a2fb458a33cc6d43fa80cd1a67
+
+Six locked single-threaded launches:5green,1new-test RED, no compile/zero-match/interruption. RED was new manual typed fixture expectedReal3 while declaring returnLongLong. Original Constant ParamMarker passesReal2 unchanged (constant.rs331–346); reducer correctlyreturnsReal3; existing ScalarFunction::eval/coerce_to_ret_type then converts toInt3 (scalar_function.rs1212–1213,1031,1072,1108). AST/directhelper remainReal3. ONLYnewtest typedexpected changed from source, not actual-output recording; no production fix or oldtest/oracle change. Retry4green includes3oldtests. Original cross-tier test1 and6originalSQLtests also green. Full expression/unistore NOT rerun; historical R1004+1 RED remains.
+
+CPP new native_extremum_policy.rs owns actual-metadata head, numeric cursor and late result promotion/scale. Head emptyarity then actualkindNULL then explicitGlSignature or original fallback; vector>alltime>string/bytes>numeric, full9EvalTypes/3stringmodes and retDate preserved. JsonNULL/zeroTime/NaN are notSQLNULL. SingletonRaw/sentinel remains identity without pair. No hostwinner/domain/NULLflags.
+
+Cursor requests originalcandidate-left/best-right and Gt onlyGreater, Lt otherwise(includingEqual). Adapter invokes unchanged eval_binary/NoColumns; actualInt(n) or OtherValue delivered, SDK onlyInt1 replaces. First equal/±0/firstNaN preserved. Error propagates before any promotion; afterallpairs SDK choosesReal>Decimal>mixedIntUInt>identity. Arbitraryarg_decimals length andallconstant policy preserved: maxnonnegative metadata forconstants, else winner's nonnegative metadata, else maxactualDecimal.scale. asu32 remains, no normalization/newcap. Native onlyactuates requested original to_f64/to_decimal/precisioncast/identity.
+
+Native fallback/head/numeric winner/promotion algorithm bodies removed. Four otherreducers and string-as-time conversion remain native; planner aggregation and returnmetadata unchanged. Pure policy API only, NOnewRPN/profile/carrier/admission/C4root/vector kernel/factorylimits. This is not wholeGREATEST/LEAST closure or mandatorymissingM0: shared timeparse/display/setkind, vector andDecimal services already suffice for next staged runtime. HistoricalNoColumns comparison semantics unchanged; future actualscope binding is RO contract, not implemented here.
+
+Three new tests (1SDK,1native,1SQL).189oldnative testbodies byte-identical; CPPtouchedlib hasnooriginaltestbodies. Existing ignoredvector tests untouched. SDK tests actualmetadata/cursor/result/scale invariants; native tests globalNULL/9signatures, singleton, NaNpayload/±0/firstequal, fullscale modes, typedvsruntime promotion and original child/getter demand. No SQLNaN invention.
+
+NewSQL4SELECT=2templates×2vector withpool1,18functioncalls. PhysicalDecimalwinner -5scale0 vs2.500scale3 retains header23/3; mixedUInt2^63/signed-5 givesDecimal scale0/header21/0; runtimeRealpresence promoteswinningInt-5 toReal/header22/-1. Constant maxscale produces1.00/3.00/header5/2. First/lateNULL retaindeclaredheaders. Signed/binarymetadata andquietwarnings pinned fromsource. No0slot/refusal/newroot credit.
+
+2CPP/2native Rustfiles,1newmodule. Pinnedrustfmt/check+gitdiffchecks pass; no Cargo/lock/Go/Bazel/generated/policy changes, unrelatedBUILD excluded. Guides updated descriptively; E source review foundno blocker, not runtime proof. Existing232 familyobjects andpriorpartial/type records exact; appendone3-id policy slice. Functional232/245=94.69%, strict0,13remaining unchanged. Three identical Plans accompany signed-off pairedpushes.
+
+Audit-script first pass had a whitespace-sensitive literal check for cursor.observe/cursor.finish; rustfmt wraps those method chains. Confirmed actual calls in source, corrected only the audit regex to accept whitespace, then full invariant audit passed. No source/test/Cargo change or extra test launch.
+
+Not verified: fullworkspace/lint/dev/bazel/release/exhaustive/TiFlash/FIPS/performance/physicalheap/peak/OOM/allocator/dual-tzdata/wholeGo-package/PRready. Request-root/defaultNoColumns/liveDAG/finalacceptance remain active. No blanketexceptions or wholeobjective completion claim.
