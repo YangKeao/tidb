@@ -1,20 +1,19 @@
 # Remaining acceptance after the functional threshold
 
-Status: **222/245 functional families; strict0; overall goal active**. The frozen denominator is unchanged. R86 closes IFNULL through staged workers and a common pure selector; see [IFNULL evidence](ifnull-checkpoint.md). The23 remaining families are not approved blanket exceptions. This review is not itself a passing test receipt.
+Status: **223/245 functional families; strict0; overall goal active**. The frozen denominator is unchanged. R86/R87 close IFNULL and IF through staged workers and shared pure selectors; see [IFNULL evidence](ifnull-checkpoint.md) and [IF evidence](if-checkpoint.md). The22 remaining families are not approved blanket exceptions. This review is not itself a passing test receipt.
 
 The accepted synchronous/scoped evaluator design stays in place. No universal compiler rewrite or exhaustive performance project is required to make the next functional steps. Conversely, reaching90% does not erase the Plan's remaining core ownership/demand obligations.
 
-## Nine core families still need closure
+## Eight core families still need closure
 
 | Families | Remaining work / source evidence |
 |---|---|
-| if | `rust/crates/tidb-expr/src/scalar_function.rs` still chooses the branch in native code; PB has a separate corresponding branch in `scalar_function/pb_builtin.rs`. Preserve ordinary truthy conversion versus PB's warning-aware string/bytes numeric coercion. Reuse staged demand, not a natively chosen answer followed by IDENTITY. IFNULL is now functionally closed. |
 | case, coalesce, nullif | Preserve selector/first-value evaluation count, lazy demand and actual nullable results across typed/PB/AST/legacy. Shared predicate/identity leaves alone do not close selection. |
 | cast | `cast.rs` and datatype `decimal/mod.rs` still own ordinary parsing/status policy. R83 float-constructor/Display sharing did not migrate general string-to-Decimal parsing. Close ordinary domains over shared SDKs; record truly exceptional domains separately. |
 | in | `func.rs` still owns found-match/found-null reduction. Its existing eager candidate/comparison side effects cannot be replaced with wire early return. |
 | greatest, least, interval | `builtin_ext/compare2.rs` retains extrema selection and INTERVAL's metadata-selected nullable-linear versus NOT_NULL-binary search. Preserve actual type, collation, precision and getter/search order. |
 
-Observed caller chain: `evaluator.rs::run_with_consumer` → `Expression::eval` → `ScalarFunction::eval` → native control branches or PB dispatch. The R85 parent read the actual CASE/IF/IFNULL/COALESCE branches; R86 removed IFNULL's runtime selection and shares its two pure optimizer selectors. Remaining conclusions are not inferred solely from registry names.
+Observed caller chain: `evaluator.rs::run_with_consumer` → `Expression::eval` → `ScalarFunction::eval` → native control branches or PB dispatch. The R85 parent read the actual CASE/IF/IFNULL/COALESCE branches; R86/R87 removed IFNULL/IF runtime selection and share their pure optimizer selectors, retaining distinct truth/error policies. Remaining conclusions are not inferred solely from registry names.
 
 ## Eight ordinary families still pending
 

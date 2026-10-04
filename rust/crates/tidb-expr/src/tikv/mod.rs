@@ -28,8 +28,10 @@ mod context;
 mod evaluated_ascii;
 mod from_unixtime;
 mod identity_value;
+mod if_control;
 mod if_null;
 pub use from_unixtime::eval_from_unixtime_legacy_scoped_in;
+pub(crate) use if_control::eval_if_in;
 pub(crate) use if_null::eval_if_null_in;
 mod unix_timestamp;
 pub use adapter_failure::{

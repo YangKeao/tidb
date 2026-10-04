@@ -12911,4 +12911,325 @@ mod tests {
             execution.close();
         }
     }
+
+    #[test]
+    fn legacy_if_shared_preserves_condition_order_and_selected_demand() {
+        use std::sync::Arc;
+        use tidb_datatype::{
+            BinaryJSON, Datum, Decimal, MySqlDuration, SessionTimeZone, Time, TimeType,
+        };
+        use tipb::ScalarFuncSig as Sig;
+        struct Parent;
+        impl tidb_expr::Columns for Parent {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                panic!("retain the actual Shared row")
+            }
+            fn time_zone(&self) -> SessionTimeZone {
+                panic!("retain the Shared request zone")
+            }
+            fn truncate_level(&self) -> tidb_expr::ErrorLevel {
+                panic!("retain Shared condition policy")
+            }
+            fn append_warning(&self, _: u16, _: &str) {
+                panic!("retain the Shared warning sink")
+            }
+        }
+        fn field(tp: i32) -> tipb::FieldType {
+            tipb::FieldType {
+                tp: Some(tp),
+                flen: Some(20),
+                decimal: Some(if tp == 246 { 2 } else { 0 }),
+                ..Default::default()
+            }
+        }
+        fn call(sig: Sig, children: Vec<tipb::Expr>, tp: i32) -> tipb::Expr {
+            tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(sig as i32),
+                children,
+                field_type: Some(field(tp)),
+                ..Default::default()
+            }
+        }
+        fn encoded(value: i64, kind: tipb::ExprType, tp: i32) -> tipb::Expr {
+            let mut val = Vec::new();
+            tidb_codec::encode_int(&mut val, value);
+            tipb::Expr {
+                tp: Some(kind as i32),
+                val: Some(val),
+                field_type: Some(field(tp)),
+                ..Default::default()
+            }
+        }
+        fn column(index: i64, tp: i32) -> tipb::Expr {
+            encoded(index, tipb::ExprType::ColumnRef, tp)
+        }
+        fn integer(value: i64) -> tipb::Expr {
+            encoded(value, tipb::ExprType::Int64, 8)
+        }
+        fn null() -> tipb::Expr {
+            tipb::Expr {
+                tp: Some(tipb::ExprType::Null as i32),
+                ..Default::default()
+            }
+        }
+        fn text(value: &str) -> tipb::Expr {
+            tipb::Expr {
+                tp: Some(tipb::ExprType::String as i32),
+                val: Some(value.as_bytes().to_vec()),
+                field_type: Some(field(253)),
+                ..Default::default()
+            }
+        }
+        fn assert_pool<T: std::fmt::Debug>(result: LegacyResult<T>) {
+            assert!(
+                matches!(&result, Err(LegacyEvalError::Infrastructure(
+                tidb_expr::EvalError::ExpressionAdapterFailure(failure)
+            )) if failure.class() == tidb_expr::ExpressionAdapterFailureClass::PoolResource
+                && failure.origin() == tidb_expr::ExpressionAdapterFailureOrigin::Pool),
+                "{result:?}"
+            );
+        }
+        let zone = SessionTimeZone::utc();
+        let request = Arc::new(RequestEvalContext::new(
+            SessionTimeZone::Named(chrono_tz::Asia::Shanghai),
+            8,
+            tidb_model::flags::FLAG_TRUNCATE_AS_WARNING,
+        ));
+        let strict = Arc::new(RequestEvalContext::new(zone.clone(), 4, 0));
+        let decode = |wire: &tipb::Expr, context: &Arc<RequestEvalContext>| {
+            let expression = convert_expr_with_context(wire, context).unwrap();
+            assert!(matches!(&expression, SimpleExpr::Shared(_)));
+            expression
+        };
+        let time = Time::from_date_checked(1970, 1, 1, 8, 0, 1, 0, TimeType::DateTime, 0).unwrap();
+        let bad = call(Sig::CastStringAsInt, vec![text("tail")], 8);
+        for slots in [1, 0] {
+            let owner = tidb_expr::AsciiPoolOwner::new(
+                tidb_expr::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 << 20,
+                    4 << 20,
+                    4 << 20,
+                    64,
+                    8,
+                    4 << 20,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let execution = owner.begin_execution().unwrap();
+            let scope = execution.scope();
+            scope.with_columns(&Parent, |columns| {
+                for (sig, tp, value) in [
+                    (Sig::IfInt, 8, Datum::Int(7)),
+                    (Sig::IfReal, 5, Datum::Real(7.5)),
+                    (
+                        Sig::IfDecimal,
+                        246,
+                        Datum::Decimal(Decimal::from_literal("7.25")),
+                    ),
+                    (Sig::IfTime, 12, Datum::Time(time)),
+                    (
+                        Sig::IfDuration,
+                        11,
+                        Datum::Duration(MySqlDuration::from_nanoseconds(1_000_000_000, 0).unwrap()),
+                    ),
+                    (
+                        Sig::IfJson,
+                        245,
+                        Datum::Json(BinaryJSON::parse("null").unwrap()),
+                    ),
+                ] {
+                    let row = [value.clone(), Datum::Null];
+                    let evaluator = LegacyEvaluator {
+                        raw_columns: columns,
+                        ..LegacyEvaluator::new(&row, 4, &zone)
+                    };
+                    for (condition, then_index, else_index, present) in [
+                        (integer(1), 0, 1, true),
+                        (integer(0), 1, 0, true),
+                        (null(), 1, 0, true),
+                        (integer(1), 1, 0, false),
+                        (integer(0), 0, 1, false),
+                        (null(), 0, 1, false),
+                    ] {
+                        let expression = decode(
+                            &call(
+                                sig,
+                                vec![condition, column(then_index, tp), column(else_index, tp)],
+                                tp,
+                            ),
+                            &request,
+                        );
+                        if slots == 0 {
+                            assert_pool(evaluator.eval_datum(&expression));
+                            assert_pool(evaluator.eval_decimal(Some(&expression)));
+                            continue;
+                        }
+                        assert_eq!(
+                            evaluator.eval_datum(&expression).unwrap(),
+                            if present { value.clone() } else { Datum::Null }
+                        );
+                        match &value {
+                            Datum::Int(v) => assert_eq!(
+                                evaluator.eval_expr(&expression).unwrap(),
+                                present.then_some(i128::from(*v))
+                            ),
+                            Datum::Real(v) => assert_eq!(
+                                evaluator.eval_real(Some(&expression)).unwrap(),
+                                present.then_some(*v)
+                            ),
+                            Datum::Decimal(v) => {
+                                let result = evaluator.eval_decimal(Some(&expression)).unwrap();
+                                assert_eq!(result, present.then(|| v.clone()));
+                                if let Some(result) = result {
+                                    assert_eq!(result.scale(), 2);
+                                }
+                            }
+                            Datum::Time(v) => assert_eq!(
+                                evaluator.eval_time(Some(&expression)).unwrap(),
+                                present.then_some(*v)
+                            ),
+                            Datum::Duration(v) => assert_eq!(
+                                evaluator.eval_duration(Some(&expression)).unwrap(),
+                                present.then_some(*v)
+                            ),
+                            Datum::Json(v) => assert_eq!(
+                                evaluator.eval_json(Some(&expression)).unwrap(),
+                                present.then(|| v.clone())
+                            ),
+                            _ => unreachable!(),
+                        }
+                    }
+                }
+                let row = [Datum::Int(-1), Datum::Time(time)];
+                let evaluator = LegacyEvaluator {
+                    raw_columns: columns,
+                    ..LegacyEvaluator::new(&row, 4, &zone)
+                };
+                let missing = decode(&call(Sig::IfInt, vec![], 8), &request);
+                assert!(matches!(
+                    evaluator.eval_expr(&missing),
+                    Err(LegacyEvalError::Sql(_))
+                ));
+                assert!(evaluator.eval_decimal(Some(&missing)).unwrap().is_none());
+                for (children, expected) in [
+                    (vec![integer(1), column(0, 8)], Some(-1)),
+                    (
+                        vec![integer(-1), column(0, 8), bad.clone(), bad.clone()],
+                        Some(-1),
+                    ),
+                    (
+                        vec![
+                            integer(0),
+                            bad.clone(),
+                            call(Sig::IntIsNull, vec![null()], 8),
+                            bad.clone(),
+                        ],
+                        Some(1),
+                    ),
+                    (
+                        vec![
+                            null(),
+                            bad.clone(),
+                            call(Sig::UnixTimestampInt, vec![column(1, 12)], 8),
+                        ],
+                        Some(1),
+                    ),
+                    (vec![integer(1)], None),
+                    (vec![integer(0), column(0, 8)], None),
+                    (vec![null(), column(0, 8)], None),
+                ] {
+                    let expression = decode(&call(Sig::IfInt, children, 8), &request);
+                    let result = evaluator.eval_expr(&expression);
+                    if slots == 0 {
+                        assert_pool(result);
+                    } else if let Some(expected) = expected {
+                        assert_eq!(result.unwrap(), Some(expected));
+                        assert!(evaluator.eval_decimal(Some(&expression)).unwrap().is_none());
+                        assert!(evaluator.eval_time(Some(&expression)).unwrap().is_none());
+                    } else {
+                        assert!(matches!(result, Err(LegacyEvalError::Sql(_))));
+                        assert!(evaluator.eval_decimal(Some(&expression)).unwrap().is_none());
+                    }
+                }
+                assert!(
+                    request.take_warnings().is_empty(),
+                    "dead branches and extra suffix stay unread"
+                );
+                let mut unsigned = call(Sig::IfInt, vec![integer(1), column(0, 8)], 8);
+                unsigned.field_type.as_mut().unwrap().flag =
+                    Some(tidb_datatype::FieldTypeFlags::UNSIGNED);
+                let unsigned = decode(&unsigned, &request);
+                if slots == 1 {
+                    assert_eq!(
+                        evaluator.eval_datum(&unsigned).unwrap(),
+                        Datum::UInt(u64::MAX)
+                    );
+                    assert_eq!(
+                        evaluator.eval_expr(&unsigned).unwrap(),
+                        Some(i128::from(u64::MAX))
+                    );
+                } else {
+                    assert_pool(evaluator.eval_datum(&unsigned));
+                }
+
+                let condition_warning = call(
+                    Sig::IfInt,
+                    vec![text("0.4tail"), integer(7), bad.clone()],
+                    8,
+                );
+                let expression = decode(&condition_warning, &request);
+                let result = evaluator.eval_expr(&expression);
+                if slots == 1 {
+                    assert_eq!(result.unwrap(), Some(7));
+                } else {
+                    assert_pool(result);
+                }
+                let warnings = request.take_warnings();
+                assert_eq!(
+                    warnings.len(),
+                    1,
+                    "condition coercion precedes head admission even with zero slots"
+                );
+                assert_eq!(warnings[0].0, 1292);
+                assert!(warnings[0].1.contains("DOUBLE"));
+                let strict_condition = decode(&condition_warning, &strict);
+                assert!(matches!(
+                    evaluator.eval_expr(&strict_condition),
+                    Err(LegacyEvalError::Sql(_))
+                ));
+                assert!(evaluator
+                    .eval_decimal(Some(&strict_condition))
+                    .unwrap()
+                    .is_none());
+
+                let selected_error = decode(
+                    &call(Sig::IfInt, vec![integer(0), integer(7), bad.clone()], 8),
+                    &strict,
+                );
+                if slots == 1 {
+                    assert!(matches!(
+                        evaluator.eval_expr(&selected_error),
+                        Err(LegacyEvalError::Sql(_))
+                    ));
+                    assert!(evaluator
+                        .eval_decimal(Some(&selected_error))
+                        .unwrap()
+                        .is_none());
+                    assert!(evaluator
+                        .eval_bytes(Some(&selected_error))
+                        .unwrap()
+                        .is_none());
+                } else {
+                    assert_pool(evaluator.eval_expr(&selected_error));
+                    assert_pool(evaluator.eval_decimal(Some(&selected_error)));
+                }
+            });
+            drop(scope);
+            execution.close();
+        }
+    }
 }

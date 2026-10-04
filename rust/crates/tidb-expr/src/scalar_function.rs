@@ -1863,13 +1863,12 @@ impl ScalarFunction {
         // Go `builtinIf*Sig` is lazy too: the condition decides which single
         // branch is evaluated, so an error in the other never surfaces.
         if name == "if" && self.args.len() == 3 {
-            let condition = self.args[0].eval(ctx, row)?;
-            let branch = if crate::truthy_of(&condition)? == Some(true) {
-                1
-            } else {
-                2
-            };
-            return self.args[branch].eval(ctx, row);
+            return crate::tikv::eval_if_in(
+                ctx,
+                |original_ctx| crate::truthy_of(&self.args[0].eval(original_ctx, row)?),
+                |scoped_ctx| self.args[1].eval(scoped_ctx, row),
+                |scoped_ctx| self.args[2].eval(scoped_ctx, row),
+            );
         }
         // Go's IFNULL and COALESCE signatures stop at the first non-NULL
         // value. Evaluate only as far as that decision requires so an error

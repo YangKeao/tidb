@@ -1467,6 +1467,11 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::IfNullHeadNative | EvaluatedBytesOp::IfNullFinishNative => {
             panic!("IFNULL needs its actual first value or original head report and demanded second value")
         }
+        EvaluatedBytesOp::IfHeadNative | EvaluatedBytesOp::IfFinishNative => {
+            panic!(
+                "IF needs its actual nullable condition or original head report and chosen value"
+            )
+        }
         EvaluatedBytesOp::ConvertTzNative => {
             panic!("CONVERT_TZ needs its three actual nullable coerced strings")
         }

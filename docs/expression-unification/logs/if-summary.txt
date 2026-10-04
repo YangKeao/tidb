@@ -1,0 +1,52 @@
+if-84 / R87
+CPP cwd: /home/agent/tidb/expression-unification/tikv
+Native cwd: /home/agent/tidb/expression-unification/tidb/rust
+Raw logs: /home/agent/tidb/expression-unification/logs/if-{id}.log
+Counts passed/failed/ignored/filtered; compile_seconds/test_seconds.
+
+tikv-core | 1/0/0/950 | 15.88/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_if::tests -- --test-threads=1
+sha256 07d18cc743d9525b7e952e69abc5beb4b3b288ab4e262365b99d0ef034ced31d
+
+tikv-wire | 4/0/0/947 | 0.19/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_control::tests -- --test-threads=1
+sha256 5c1212fcf39d684614fd832a419828a42441a03365a3a9531fee2df2cd12ea33
+
+tikv-local | 334/0/1/616 | 0.14/0.26 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+sha256 9c17895277031e970ff13dee77eb608331070b5b3dae7838c57f5b3d95fcf936
+
+native-root | 9/0/1/1676 | 19.03/0.03 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib if_ -- --test-threads=1
+sha256 1a06d6a7a5e5648c3177298ff23332a173013703b335da6d214c111cc0afed6e
+Explicitly includes the new func::if_workers_keep_ordinary_truth_domains_lazy_identity_and_scope, scalar_function::pb_builtin::json_path_worker_tests::protobuf_if_keeps_truth_warning_precedence_demand_and_outer_types, and tikv::if_control::tests::if_bridge_keeps_nullable_choice_raw_identity_and_selected_scope, all PASS. Existing ignored test is not counted as passed.
+
+native-gateway | 196/0/1/1489 | 0.21/0.35 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii -- --test-threads=1
+sha256 02cbb979a948517b1bdb7fa82059c8c3846081230947bacd992b09ef8ebe9cd7
+
+legacy | 1/0/0/229 | 7.10/0.01 | exit0
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_if_shared -- --test-threads=1
+sha256 d56191be8ce3ae625d732596143f225298033f64e757ca4bbef6bc9d11c461ad
+
+sql | 1/0/0/2230 | 28.84/0.10 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_if_preserves -- --test-threads=1
+sha256 c32b070e3ffb39123389a9182a2407942f39f94851448f6c5877e9bcaf18d8af
+
+expr-full | 1588/4/94/0 | 0.22/14.85 | exit101 | OLD failures unchanged
+../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+sha256 a99f928d751628267e4da096f3cb0e1787ccbcfad2c9445498643f208a875768
+
+unistore-full | 216/1/13/0 | 0.14/3.06 | exit101 | OLD failure unchanged
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+sha256 1a07fb1e0d6d6840990fe37b36bb80959eca91aa4c77cfe492b789aa67204f90
+
+Entire failure sections byte-equal to ifnull-83 after only numeric panic-heading thread IDs become THREAD:
+expression 411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+unistore 2f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1
+
+Nine locked nonzero launches:7green,2known full RED. All8new tests pass on first matching execution. No compile failure, new execution failure, zero-match, interrupted test or fixture recording. Filter counts overlap, not unique totals. SQL54SELECT=48direct (24positive/24zero-slot) +4lazy-error +2filters. Conditions and both branch values are stored columns, so zero-slot root checks are not substituted by a condition function/CAST/filter.
+
+Source-derived oracle note before first execution: current VectorFloat32::is_zero_value is is_empty(), not an all-zero-lane predicate. Thus empty vector is false; nonempty [0,-0] is true. Tests preserve that existing behavior despite the older coerce comment; production was not corrected to match the comment.
+
+Pinned formatting: rustfmt --edition 2021 --config skip_children=true --check on8CPP changed Rust files with /home/agent/tidb/expression-reuse/rustup-home/toolchains/nightly-2026-01-30-x86_64-unknown-linux-gnu/bin/rustfmt and11native changed Rust files with corresponding nightly-2026-08-22 executable. Both worktrees git diff --check pass. Linear-time source audit confirms123CPP/519native original #[test] bodies byte-identical; only3CPP/5native new tests. No Go/Bazel/Cargo/lock/generated changes. No lint/dev/workspace/release/performance/physical-OOM or PR-readiness claim.

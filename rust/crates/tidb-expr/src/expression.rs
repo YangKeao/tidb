@@ -483,11 +483,13 @@ fn try_fold_nullified_function(
             return None;
         };
         let condition = try_fold_nullified_constant(inner_column_ids, condition)?;
-        let take_true = crate::truthy_of(&condition.value).ok()? == Some(true);
-        return try_fold_nullified_constant(
-            inner_column_ids,
-            if take_true { when_true } else { when_false },
-        );
+        // A truth coercion error still makes the proof unknown, not ELSE.
+        let truth = crate::truthy_of(&condition.value).ok()?;
+        let selected = match tidb_query_expr::native_if_choose_branch(truth) {
+            tidb_query_expr::NativeIfBranch::Then => when_true,
+            tidb_query_expr::NativeIfBranch::Else => when_false,
+        };
+        return try_fold_nullified_constant(inner_column_ids, selected);
     }
     if name == "truncate"
         && result_type.eval_type() == tidb_datatype::EvalType::Int

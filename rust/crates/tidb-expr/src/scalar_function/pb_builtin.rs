@@ -205,14 +205,26 @@ impl PbBuiltin {
                     .first()
                     .map_or(Ok(Datum::Null), |value| value.eval(ctx, row))
             }
-            Kernel::If => {
-                let branch = if logic_truthy(&argument(0)?, ctx)? == Some(true) {
-                    1
-                } else {
-                    2
-                };
-                argument(branch)
-            }
+            Kernel::If => crate::tikv::eval_if_in(
+                ctx,
+                |original_ctx| {
+                    let value = args
+                        .first()
+                        .ok_or(EvalError::Unsupported("missing protobuf builtin argument"))?
+                        .eval(original_ctx, row)?;
+                    logic_truthy(&value, original_ctx)
+                },
+                |scoped_ctx| {
+                    args.get(1)
+                        .ok_or(EvalError::Unsupported("missing protobuf builtin argument"))?
+                        .eval(scoped_ctx, row)
+                },
+                |scoped_ctx| {
+                    args.get(2)
+                        .ok_or(EvalError::Unsupported("missing protobuf builtin argument"))?
+                        .eval(scoped_ctx, row)
+                },
+            ),
             Kernel::IfNull => crate::tikv::eval_if_null_in(
                 ctx,
                 |original_ctx| {
@@ -714,6 +726,359 @@ mod json_path_worker_tests {
     use crate::expression::{Column, Constant, Expression};
     use crate::NoColumns;
     use tidb_datatype::{BinaryJSON, FieldTypeCode, FieldTypeFlags};
+
+    #[test]
+    fn protobuf_if_keeps_truth_warning_precedence_demand_and_outer_types() {
+        use std::cell::RefCell;
+        use tidb_datatype::{CoreTime, Decimal, MySqlDuration, Time, TimeType};
+        struct Demand {
+            values: [Datum; 3],
+            level: crate::ErrorLevel,
+            events: RefCell<Vec<&'static str>>,
+            warnings: RefCell<Vec<(u16, String)>>,
+            fail: Option<usize>,
+        }
+        impl Columns for Demand {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn param_value(&self, index: usize) -> Result<Datum, EvalError> {
+                self.events.borrow_mut().push(match index {
+                    0 => "condition",
+                    1 => "then",
+                    2 => "else",
+                    _ => "extra",
+                });
+                if self.fail == Some(index) {
+                    return Err(EvalError::Unsupported("PB IF demanded child"));
+                }
+                self.values
+                    .get(index)
+                    .cloned()
+                    .ok_or(EvalError::Unsupported("PB IF extra child"))
+            }
+            fn truncate_level(&self) -> crate::ErrorLevel {
+                self.events.borrow_mut().push("policy");
+                self.level
+            }
+            fn append_warning(&self, code: u16, message: &str) {
+                self.events.borrow_mut().push("warning");
+                self.warnings.borrow_mut().push((code, message.to_owned()));
+            }
+            fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+                panic!("IF must not read timezone")
+            }
+            fn date_modes(&self) -> tidb_datatype::DateModes {
+                panic!("IF must not read date modes")
+            }
+        }
+        fn resource(result: Result<Datum, EvalError>) {
+            let error = result.expect_err("PB IF must not escape the zero-slot owner");
+            let EvalError::ExpressionAdapterFailure(failure) = error else {
+                panic!("{error:?}")
+            };
+            assert_eq!(
+                failure.class(),
+                crate::ExpressionAdapterFailureClass::PoolResource
+            );
+            assert_eq!(
+                failure.origin(),
+                crate::ExpressionAdapterFailureOrigin::Pool
+            );
+        }
+        fn frame(value: &Datum) -> Option<Vec<u8>> {
+            let crate::tikv::EvaluatedArgs::Bytes(bytes) =
+                crate::tikv::prepare_datum_identity_args(value).unwrap()
+            else {
+                panic!("expected actual nullable identity")
+            };
+            bytes
+        }
+        let child = |order| {
+            let mut constant = Constant::default();
+            constant.param_marker = Some(crate::constant::ParamMarker { order });
+            Expression::Constant(constant)
+        };
+        let build = |signature, ret_type, count| {
+            ScalarFunction::from_pb(
+                PbBuiltin::new(signature).unwrap(),
+                ret_type,
+                (0..count).map(&child).collect(),
+            )
+        };
+        let int_type = FieldType::new(FieldTypeCode::LongLong);
+        let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+        assert!(PbBuiltin::new(ScalarFuncSig::IfString).is_none());
+        for slots in [1, 0] {
+            let owner = crate::AsciiPoolOwner::new(
+                crate::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    64,
+                    8,
+                    4 * 1024 * 1024,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let execution = owner.begin_execution().unwrap();
+            for level in [
+                crate::ErrorLevel::Ignore,
+                crate::ErrorLevel::Warn,
+                crate::ErrorLevel::Error,
+            ] {
+                for (condition, yes, warning) in [
+                    (Datum::Null, false, None),
+                    (Datum::Int(1), true, None),
+                    (Datum::Float32(1e-100), true, None),
+                    (Datum::new_string(""), false, None),
+                    (
+                        Datum::new_string("1tail"),
+                        true,
+                        Some("Truncated incorrect DOUBLE value: '1tail'"),
+                    ),
+                    (
+                        Datum::new_string("abc"),
+                        false,
+                        Some("Truncated incorrect DOUBLE value: 'abc'"),
+                    ),
+                    (
+                        Datum::new_bytes(vec![b'0', 0xff]),
+                        false,
+                        Some("Truncated incorrect DOUBLE value: '0�'"),
+                    ),
+                    (
+                        Datum::new_bytes(vec![b'1', 0xff]),
+                        true,
+                        Some("Truncated incorrect DOUBLE value: '1�'"),
+                    ),
+                ] {
+                    let ctx = Demand {
+                        values: [condition, Datum::Int(11), Datum::Int(22)],
+                        level,
+                        events: RefCell::new(Vec::new()),
+                        warnings: RefCell::new(Vec::new()),
+                        fail: Some(if yes { 2 } else { 1 }),
+                    };
+                    let function = build(ScalarFuncSig::IfInt, int_type.clone(), 3);
+                    let result = execution
+                        .scope()
+                        .with_columns(&ctx, |columns| function.eval(columns, empty.to_row()));
+                    let mut expected_events = vec!["condition"];
+                    if warning.is_some() {
+                        expected_events.push("policy");
+                    }
+                    if warning.is_some() && level == crate::ErrorLevel::Warn {
+                        expected_events.push("warning");
+                    }
+                    if warning.is_some() && level == crate::ErrorLevel::Error {
+                        assert!(
+                            matches!(result, Err(EvalError::TruncatedWrongValue(ref message)) if Some(message.as_str()) == warning)
+                        );
+                    } else if slots == 0 {
+                        resource(result);
+                    } else {
+                        assert_eq!(result.unwrap(), Datum::Int(if yes { 11 } else { 22 }));
+                        expected_events.push(if yes { "then" } else { "else" });
+                    }
+                    assert_eq!(ctx.events.take(), expected_events);
+                    assert_eq!(
+                        ctx.warnings.take(),
+                        if level == crate::ErrorLevel::Warn {
+                            warning
+                                .map(|message| vec![(1292, message.to_owned())])
+                                .unwrap_or_default()
+                        } else {
+                            vec![]
+                        }
+                    );
+                }
+            }
+            for condition in [Datum::Null, Datum::Int(1), Datum::Int(0)] {
+                let yes = condition == Datum::Int(1);
+                let selected = if yes { 1 } else { 2 };
+                for count in 0..=4 {
+                    let ctx = Demand {
+                        values: [condition.clone(), Datum::Int(11), Datum::Int(22)],
+                        level: crate::ErrorLevel::Error,
+                        events: RefCell::new(Vec::new()),
+                        warnings: RefCell::new(Vec::new()),
+                        fail: Some(if yes { 2 } else { 1 }),
+                    };
+                    let function = build(ScalarFuncSig::IfInt, int_type.clone(), count);
+                    let result = execution
+                        .scope()
+                        .with_columns(&ctx, |columns| function.eval(columns, empty.to_row()));
+                    if count == 0 {
+                        assert!(matches!(
+                            result,
+                            Err(EvalError::Unsupported("missing protobuf builtin argument"))
+                        ));
+                        assert!(ctx.events.take().is_empty());
+                    } else if slots == 0 {
+                        resource(result);
+                        assert_eq!(ctx.events.take(), vec!["condition"]);
+                    } else if count <= selected {
+                        assert!(matches!(
+                            result,
+                            Err(EvalError::Unsupported("missing protobuf builtin argument"))
+                        ));
+                        assert_eq!(ctx.events.take(), vec!["condition"]);
+                    } else {
+                        assert_eq!(result.unwrap(), Datum::Int(if yes { 11 } else { 22 }));
+                        assert_eq!(
+                            ctx.events.take(),
+                            vec!["condition", if yes { "then" } else { "else" }]
+                        );
+                    }
+                }
+            }
+            let ctx = Demand {
+                values: [Datum::Raw(vec![1]), Datum::Null, Datum::Null],
+                level: crate::ErrorLevel::Warn,
+                events: RefCell::new(Vec::new()),
+                warnings: RefCell::new(Vec::new()),
+                fail: None,
+            };
+            let function = build(ScalarFuncSig::IfInt, int_type.clone(), 3);
+            assert!(matches!(
+                execution
+                    .scope()
+                    .with_columns(&ctx, |columns| function.eval(columns, empty.to_row())),
+                Err(EvalError::Unsupported("truth coercion of a non-SQL datum"))
+            ));
+            assert_eq!(ctx.events.take(), vec!["condition"]);
+            for failed in [0, 1, 2] {
+                let ctx = Demand {
+                    values: [Datum::Int(i64::from(failed != 2)), Datum::Null, Datum::Null],
+                    level: crate::ErrorLevel::Warn,
+                    events: RefCell::new(Vec::new()),
+                    warnings: RefCell::new(Vec::new()),
+                    fail: Some(failed),
+                };
+                let result = execution
+                    .scope()
+                    .with_columns(&ctx, |columns| function.eval(columns, empty.to_row()));
+                if failed == 0 || slots == 1 {
+                    assert!(matches!(
+                        result,
+                        Err(EvalError::Unsupported("PB IF demanded child"))
+                    ));
+                    assert_eq!(
+                        ctx.events.take(),
+                        if failed == 0 {
+                            vec!["condition"]
+                        } else {
+                            vec!["condition", if failed == 1 { "then" } else { "else" }]
+                        }
+                    );
+                } else {
+                    resource(result);
+                    assert_eq!(ctx.events.take(), vec!["condition"]);
+                }
+            }
+            let decimal = Datum::Decimal(Decimal::from_raw_parts(true, b"00010049".to_vec(), 2, 4));
+            let time = Datum::Time(Time::from_raw_parts(
+                CoreTime::from_raw(u64::MAX),
+                TimeType::DateTime,
+                9,
+            ));
+            let duration = Datum::Duration(MySqlDuration::from_raw_parts(-123456789, 9));
+            let json = Datum::Json(BinaryJSON::parse("false").unwrap());
+            for (signature, field, value, expected) in [
+                (
+                    ScalarFuncSig::IfInt,
+                    int_type.clone(),
+                    Datum::UInt(u64::MAX),
+                    Datum::Int(-1),
+                ),
+                (
+                    ScalarFuncSig::IfReal,
+                    FieldType::new(FieldTypeCode::Double),
+                    Datum::Float32(1.25),
+                    Datum::Real(1.25),
+                ),
+                (
+                    ScalarFuncSig::IfDecimal,
+                    FieldType::new(FieldTypeCode::NewDecimal),
+                    decimal.clone(),
+                    decimal,
+                ),
+                (
+                    ScalarFuncSig::IfTime,
+                    FieldType::new(FieldTypeCode::Datetime),
+                    time.clone(),
+                    time,
+                ),
+                (
+                    ScalarFuncSig::IfDuration,
+                    FieldType::new(FieldTypeCode::Duration),
+                    duration.clone(),
+                    duration,
+                ),
+                (
+                    ScalarFuncSig::IfJson,
+                    FieldType::new(FieldTypeCode::Json),
+                    json.clone(),
+                    json,
+                ),
+                (
+                    ScalarFuncSig::IfInt,
+                    int_type.clone().with_added_flags(FieldTypeFlags::UNSIGNED),
+                    Datum::Int(-1),
+                    Datum::UInt(u64::MAX),
+                ),
+                (
+                    ScalarFuncSig::IfInt,
+                    FieldType::new(FieldTypeCode::VarString),
+                    Datum::Int(7),
+                    Datum::new_string("7"),
+                ),
+                (
+                    ScalarFuncSig::IfInt,
+                    int_type.clone(),
+                    Datum::Raw(vec![0xff, 0]),
+                    Datum::Raw(vec![0xff, 0]),
+                ),
+                (
+                    ScalarFuncSig::IfInt,
+                    int_type.clone(),
+                    Datum::Null,
+                    Datum::Null,
+                ),
+            ] {
+                for yes in [false, true] {
+                    let ctx = Demand {
+                        values: [Datum::Int(i64::from(yes)), value.clone(), value.clone()],
+                        level: crate::ErrorLevel::Error,
+                        events: RefCell::new(Vec::new()),
+                        warnings: RefCell::new(Vec::new()),
+                        fail: Some(if yes { 2 } else { 1 }),
+                    };
+                    let function = build(signature, field.clone(), 3);
+                    let result = execution
+                        .scope()
+                        .with_columns(&ctx, |columns| function.eval(columns, empty.to_row()));
+                    if slots == 1 {
+                        assert_eq!(frame(&result.unwrap()), frame(&expected));
+                    } else {
+                        resource(result);
+                    }
+                    assert_eq!(
+                        ctx.events.take(),
+                        if slots == 1 {
+                            vec!["condition", if yes { "then" } else { "else" }]
+                        } else {
+                            vec!["condition"]
+                        }
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn protobuf_ifnull_keeps_missing_extra_demand_scope_and_outer_types() {

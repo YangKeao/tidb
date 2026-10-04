@@ -392,12 +392,11 @@ fn if_fold_handler(
     let Ok(value) = eval_once(&folded_arg0, ctx) else {
         return (expr.clone(), false);
     };
-    // Go's `EvalInt`: NULL and 0 both take the else branch.
-    let takes_then = matches!(crate::truthy_of(&value), Ok(Some(true)));
-    if takes_then {
-        fold_constant_inner(&args[1], ctx, opts)
-    } else {
-        fold_constant_inner(&args[2], ctx, opts)
+    // Preserve this fold's existing coercion-error-as-else policy, distinct
+    // from runtime IF and from the null-rejection proof helper.
+    match tidb_query_expr::native_if_choose_branch(crate::truthy_of(&value).unwrap_or(None)) {
+        tidb_query_expr::NativeIfBranch::Then => fold_constant_inner(&args[1], ctx, opts),
+        tidb_query_expr::NativeIfBranch::Else => fold_constant_inner(&args[2], ctx, opts),
     }
 }
 

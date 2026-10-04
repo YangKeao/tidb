@@ -9363,6 +9363,246 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_if_preserves_stored_conditions_branch_frames_and_runtime_root_demand() {
+    use tidb_datatype::{FieldTypeCode, TimeType};
+
+    // All three condition states are stored in one row, so each zero-slot
+    // query reaches the intended condition without a filter or scan-order
+    // assumption. Only THEN/ELSE participate in IF's result-type inference.
+    let create = "CREATE TABLE shared_if_sql (c_true BIGINT, c_false BIGINT, c_null BIGINT, i_then BIGINT, i_else BIGINT, d_then DECIMAL(8,1), d_else DECIMAL(10,3), s_then VARCHAR(8), s_else VARCHAR(12), t_then DATETIME, t_else DATETIME(3), j_then JSON, j_else JSON, n_value BIGINT, subject VARCHAR(8), bad_pattern VARCHAR(8))";
+    let insert = "INSERT INTO shared_if_sql VALUES (1,0,NULL,1,2,1.5,123.123,'abc','n','2020-10-10 12:59:59','2020-10-10 12:59:59.123','[1]','[2]',NULL,'x','[')";
+    // Fixed selected input literals, using the original control.rs IF rules
+    // and InferType4ControlFuncs widths. The original return coercion keeps
+    // same-family Decimal scales and Time FSP, rather than padding to headers.
+    let cases = [
+        (
+            "c_true,i_then,i_else",
+            FieldTypeCode::LongLong,
+            Some((20, 0)),
+            Some("1"),
+            None,
+        ),
+        (
+            "c_false,i_then,i_else",
+            FieldTypeCode::LongLong,
+            Some((20, 0)),
+            Some("2"),
+            None,
+        ),
+        (
+            "c_true,d_then,d_else",
+            FieldTypeCode::NewDecimal,
+            Some((10, 3)),
+            Some("1.5"),
+            None,
+        ),
+        (
+            "c_false,d_then,d_else",
+            FieldTypeCode::NewDecimal,
+            Some((10, 3)),
+            Some("123.123"),
+            None,
+        ),
+        (
+            "c_true,s_then,s_else",
+            FieldTypeCode::Varchar,
+            Some((12, -1)),
+            Some("abc"),
+            None,
+        ),
+        (
+            "c_false,s_then,s_else",
+            FieldTypeCode::Varchar,
+            Some((12, -1)),
+            Some("n"),
+            None,
+        ),
+        (
+            "c_true,t_then,t_else",
+            FieldTypeCode::Datetime,
+            Some((23, 3)),
+            Some("2020-10-10 12:59:59"),
+            Some(0),
+        ),
+        (
+            "c_false,t_then,t_else",
+            FieldTypeCode::Datetime,
+            Some((23, 3)),
+            Some("2020-10-10 12:59:59.123"),
+            Some(3),
+        ),
+        (
+            "c_true,j_then,j_else",
+            FieldTypeCode::Json,
+            None,
+            Some("[1]"),
+            None,
+        ),
+        (
+            "c_false,j_then,j_else",
+            FieldTypeCode::Json,
+            None,
+            Some("[2]"),
+            None,
+        ),
+        // NULL conditions select ELSE, not NULL unconditionally. A selected
+        // NULL remains NULL but retains its declared BIGINT result type.
+        (
+            "c_null,i_then,i_else",
+            FieldTypeCode::LongLong,
+            Some((20, 0)),
+            Some("2"),
+            None,
+        ),
+        (
+            "c_null,i_then,n_value",
+            FieldTypeCode::LongLong,
+            Some((20, 0)),
+            None,
+            None,
+        ),
+    ];
+    for slots in [1, 0] {
+        let mut session = Session::new();
+        session
+            .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+            .unwrap();
+        session.run("SET time_zone='+00:00'").unwrap();
+        session.run("SET sql_mode=''").unwrap();
+        session
+            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+            .unwrap();
+        session.run(create).unwrap();
+        session.run(insert).unwrap();
+        assert!(session
+            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .unwrap());
+        for vectorized in [0, 1] {
+            session
+                .run(&format!(
+                    "SET tidb_enable_vectorized_expression={vectorized}"
+                ))
+                .unwrap();
+            for (args, code, shape, expected, value_fsp) in cases {
+                // No function condition, CAST, WHERE or sort can supply a
+                // substitute worker failure for these pure column IF roots.
+                let sql = format!("SELECT IF({args}) FROM shared_if_sql");
+                if slots == 1 {
+                    let StmtOutput::Rows { columns, rows } =
+                        session.run_with_columns(&sql).unwrap()
+                    else {
+                        panic!("expected IF rows: {sql}")
+                    };
+                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
+                    let field = &columns[0].1;
+                    assert_eq!(field.code(), code, "{sql}/{vectorized}");
+                    if let Some(shape) = shape {
+                        assert_eq!((field.flen(), field.decimal()), shape, "{sql}/{vectorized}");
+                    }
+                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
+                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
+                    if let Some(expected) = expected {
+                        match (&rows[0][0], code) {
+                            (Datum::Int(_), FieldTypeCode::LongLong) => {}
+                            (Datum::Decimal(decimal), FieldTypeCode::NewDecimal) => {
+                                assert_eq!(decimal.declared_shape(), Some((10, 3)));
+                            }
+                            (Datum::String(_), FieldTypeCode::Varchar) => {
+                                assert_eq!(field.charset_name(), "utf8mb4");
+                                assert_eq!(field.collation_name(), "utf8mb4_bin");
+                            }
+                            (Datum::Time(time), FieldTypeCode::Datetime) => {
+                                assert_eq!(time.kind(), TimeType::DateTime);
+                                assert_eq!(time.fsp(), value_fsp.unwrap());
+                            }
+                            (Datum::Json(_), FieldTypeCode::Json) => {}
+                            other => panic!("IF changed its selected carrier: {sql}: {other:?}"),
+                        }
+                        assert_eq!(cell_text(&rows[0][0]), expected, "{sql}/{vectorized}");
+                    } else {
+                        assert_eq!(rows[0][0], Datum::Null, "{sql}/{vectorized}");
+                    }
+                } else {
+                    let error = session.run_with_columns(&sql).expect_err(&sql);
+                    match &error {
+                        DriverError::Exec(tidb_executor::ExecError::Eval(
+                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                        )) => {
+                            assert_eq!(
+                                failure.class(),
+                                tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                            );
+                            assert_eq!(
+                                failure.origin(),
+                                tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                            );
+                        }
+                        other => {
+                            panic!("IF bypassed its head worker: {sql}/{vectorized}: {other:?}")
+                        }
+                    }
+                    let mysql = error.to_mysql_error();
+                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
+                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
+                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
+                }
+                assert!(
+                    warnings_of(&session).is_empty(),
+                    "{sql}/{vectorized}/slots={slots}"
+                );
+            }
+            if slots == 1 {
+                // Both the condition and invalid-regexp operands are columns,
+                // so neither the condition nor the dead RHS can be folded.
+                // These child-bearing queries are positive-pool-only evidence.
+                let StmtOutput::Rows { rows, .. } = session
+                    .run_with_columns(
+                        "SELECT IF(c_true,i_then,subject REGEXP bad_pattern) FROM shared_if_sql",
+                    )
+                    .unwrap()
+                else {
+                    panic!("expected IF to skip its invalid stored RHS")
+                };
+                assert_eq!(rows, vec![vec![Datum::Int(1)]]);
+                assert!(warnings_of(&session).is_empty());
+                let error = session
+                    .run_with_columns(
+                        "SELECT IF(c_false,i_then,subject REGEXP bad_pattern) FROM shared_if_sql",
+                    )
+                    .expect_err("IF must evaluate the chosen invalid stored RHS");
+                assert!(
+                    matches!(
+                        &error,
+                        DriverError::Exec(tidb_executor::ExecError::Eval(
+                            tidb_executor::EvalError::Unsupported(
+                                "invalid regular expression pattern"
+                            )
+                        ))
+                    ),
+                    "{error:?}"
+                );
+                // Preserve native regexp::compile_error and the existing
+                // Unsupported mapping, rather than inventing Go's 1139 here.
+                let mysql = error.to_mysql_error();
+                assert_eq!(mysql.code, 1105);
+                assert_eq!(mysql.state, *b"HY000");
+                assert_eq!(mysql.message, "invalid regular expression pattern");
+                let StmtOutput::Rows { rows, .. } = session
+                    .run_with_columns(
+                        "SELECT 1 FROM shared_if_sql WHERE IF(c_false,i_then,i_else)=2",
+                    )
+                    .unwrap()
+                else {
+                    panic!("expected IF predicate rows")
+                };
+                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
+                assert!(warnings_of(&session).is_empty());
+            }
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_ifnull_preserves_stored_frames_lazy_errors_and_runtime_root_demand() {
     use tidb_datatype::{FieldTypeCode, TimeType};
 

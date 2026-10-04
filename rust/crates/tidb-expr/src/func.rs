@@ -153,12 +153,14 @@ pub(crate) fn eval_func(
         let [condition, when_true, when_false] = args else {
             return Err(EvalError::Unsupported("bad IF arguments"));
         };
-        let condition = eval_in(condition, cols)?;
-        // Go's `wrapWithIsTrue` gives the condition the same `Datum.ToBool`
-        // reading every other boolean context uses; NULL is false because
-        // `keepNull` is disabled.
-        let take_true = truthy_of(&condition)? == Some(true);
-        return eval_in(if take_true { when_true } else { when_false }, cols);
+        return crate::tikv::eval_if_in(
+            cols,
+            // Keep the ordinary Datum.ToBool coercion and its error policy;
+            // the shared head alone turns that nullable truth into branch demand.
+            |original_cols| truthy_of(&eval_in(condition, original_cols)?),
+            |scoped_cols| eval_in(when_true, scoped_cols),
+            |scoped_cols| eval_in(when_false, scoped_cols),
+        );
     }
     if name == "IFNULL" {
         let [first, fallback] = args else {
@@ -1478,6 +1480,339 @@ fn ifnull_workers_keep_actual_identity_lazy_demand_and_eager_values() {
             },
         ],
         origin_position: 0,
+    };
+    assert_eq!(
+        crate::eval_in(&nested, &crate::NoColumns).unwrap(),
+        Datum::Int(7)
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn if_workers_keep_ordinary_truth_domains_lazy_identity_and_scope() {
+    use crate::constant::{Constant, ParamMarker};
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    use std::cell::RefCell;
+    use tidb_datatype::{
+        BinaryJSON, BinaryLiteral, Collation, CoreTime, Decimal, FieldType, FieldTypeCode,
+        MySqlDuration, MysqlEnum, MysqlSet, Time, TimeType, VectorFloat32,
+    };
+
+    struct Demand {
+        values: [Datum; 3],
+        reads: RefCell<Vec<usize>>,
+        fail: Option<usize>,
+    }
+    impl Columns for Demand {
+        fn get(&self, path: &[String]) -> Option<Datum> {
+            let index = path[0].parse::<usize>().unwrap();
+            self.param_value(index).ok()
+        }
+        fn param_value(&self, index: usize) -> Result<Datum, EvalError> {
+            self.reads.borrow_mut().push(index);
+            if self.fail == Some(index) {
+                return Err(EvalError::Unsupported("IF demanded child"));
+            }
+            Ok(self.values[index].clone())
+        }
+        fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+            panic!("ordinary IF has no timezone demand")
+        }
+        fn date_modes(&self) -> tidb_datatype::DateModes {
+            panic!("ordinary IF has no date-mode demand")
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            panic!("ordinary truth coercion discards conversion events")
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            panic!("ordinary IF must not gain PB truth warnings")
+        }
+    }
+    fn frame(value: &Datum) -> Option<Vec<u8>> {
+        let crate::tikv::EvaluatedArgs::Bytes(bytes) =
+            crate::tikv::prepare_datum_identity_args(value).unwrap()
+        else {
+            panic!("expected actual nullable identity")
+        };
+        bytes
+    }
+    fn resource(result: Result<Datum, EvalError>) {
+        let error = result.expect_err("IF must retain the existing zero-slot owner");
+        let EvalError::ExpressionAdapterFailure(failure) = error else {
+            panic!("{error:?}")
+        };
+        assert_eq!(
+            failure.class(),
+            crate::ExpressionAdapterFailureClass::PoolResource
+        );
+        assert_eq!(
+            failure.origin(),
+            crate::ExpressionAdapterFailureOrigin::Pool
+        );
+    }
+    let ast_args = [0, 1, 2].map(|index| Expr::Column(vec![index.to_string()]));
+    let typed_args = [0, 1, 2].map(|order| {
+        let mut constant = Constant::default();
+        constant.param_marker = Some(ParamMarker { order });
+        Expression::Constant(constant)
+    });
+    let mut typed = ScalarFunction::new(
+        tidb_ast::CiString::new("if"),
+        FieldType::new(FieldTypeCode::LongLong),
+        typed_args.to_vec(),
+    );
+    typed.ret_type = None;
+    let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    let evaluate = |is_typed, columns: &dyn Columns| {
+        if is_typed {
+            typed.eval(columns, empty.to_row())
+        } else {
+            eval_func("IF", &ast_args, columns, None)
+        }
+    };
+    let mut zero_vector = VectorFloat32::init(2);
+    zero_vector.elements_mut().copy_from_slice(&[-0.0, 0.0]);
+    let mut nan_vector = VectorFloat32::init(1);
+    nan_vector.elements_mut()[0] = f32::from_bits(0x7fc01234);
+    let cases = vec![
+        (Datum::Null, Ok(false)),
+        (Datum::Int(0), Ok(false)),
+        (Datum::Int(-7), Ok(true)),
+        (Datum::UInt(0), Ok(false)),
+        (Datum::UInt(u64::MAX), Ok(true)),
+        (Datum::Real(-0.0), Ok(false)),
+        (Datum::Real(0.1), Ok(true)),
+        (Datum::Real(f64::NAN), Ok(true)),
+        (Datum::Real(f64::INFINITY), Ok(true)),
+        (Datum::Float32(-0.0), Ok(false)),
+        (Datum::Float32(1e-100), Ok(true)),
+        (
+            Datum::Decimal(Decimal::from_raw_parts(true, b"000".to_vec(), 2, 4)),
+            Ok(false),
+        ),
+        (
+            Datum::Decimal(Decimal::from_raw_parts(true, Vec::new(), 0, 0)),
+            Ok(false),
+        ),
+        (
+            Datum::Decimal(Decimal::from_raw_parts(false, b"000001".to_vec(), 2, 9)),
+            Ok(true),
+        ),
+        (Datum::new_string(""), Ok(false)),
+        (Datum::new_string("abc"), Ok(false)),
+        (Datum::new_string("1abc"), Ok(true)),
+        (Datum::new_string(".1"), Ok(true)),
+        (Datum::new_string("0.0"), Ok(false)),
+        (Datum::new_bytes(b"1tail".to_vec()), Ok(true)),
+        (Datum::new_bytes(vec![0xff]), Err(())),
+        (
+            Datum::new_collation_string(vec![0xff], Collation::GbkBin),
+            Err(()),
+        ),
+        (
+            Datum::BinaryLiteral(BinaryLiteral::from(vec![0])),
+            Ok(false),
+        ),
+        (
+            Datum::BinaryLiteral(BinaryLiteral::from(vec![1; 9])),
+            Ok(true),
+        ),
+        (Datum::Bit(BinaryLiteral::from(vec![0, 1])), Ok(true)),
+        (
+            Datum::Enum(MysqlEnum::new(b"nonempty".to_vec(), 0), Collation::Binary),
+            Ok(false),
+        ),
+        (
+            Datum::Set(MysqlSet::new(Vec::new(), 64), Collation::Binary),
+            Ok(true),
+        ),
+        (
+            Datum::Time(Time::from_raw_parts(
+                CoreTime::from_raw(0),
+                TimeType::DateTime,
+                0,
+            )),
+            Ok(false),
+        ),
+        (
+            Datum::Time(Time::from_raw_parts(
+                CoreTime::from_date(2024, 1, 1, 0, 0, 0, 0),
+                TimeType::DateTime,
+                0,
+            )),
+            Ok(true),
+        ),
+        (
+            Datum::Duration(MySqlDuration::from_raw_parts(0, 3)),
+            Ok(false),
+        ),
+        (
+            Datum::Duration(MySqlDuration::from_raw_parts(1, 3)),
+            Ok(true),
+        ),
+        (Datum::Json(BinaryJSON::parse("0").unwrap()), Ok(false)),
+        (Datum::Json(BinaryJSON::parse("false").unwrap()), Ok(true)),
+        (Datum::Json(BinaryJSON::parse("null").unwrap()), Ok(true)),
+        // Native VectorFloat32::is_zero_value means EMPTY, not all-zero lanes.
+        (Datum::VectorFloat32(VectorFloat32::default()), Ok(false)),
+        (Datum::VectorFloat32(zero_vector), Ok(true)),
+        (Datum::VectorFloat32(nan_vector), Ok(true)),
+        (Datum::Raw(vec![1]), Err(())),
+        (Datum::MinNotNull, Err(())),
+        (Datum::MaxValue, Err(())),
+    ];
+    for slots in [1, 0] {
+        let owner = crate::AsciiPoolOwner::new(
+            crate::AsciiPoolPolicy::checked(
+                slots,
+                slots,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let execution = owner.begin_execution().unwrap();
+        for (condition, truth) in &cases {
+            let ctx = Demand {
+                values: [
+                    condition.clone(),
+                    Datum::Raw(vec![0xfe, 0]),
+                    Datum::Raw(vec![0xff, 0]),
+                ],
+                reads: RefCell::new(Vec::new()),
+                fail: truth.ok().map(|yes| if yes { 2 } else { 1 }),
+            };
+            for is_typed in [false, true] {
+                let result = execution
+                    .scope()
+                    .with_columns(&ctx, |columns| evaluate(is_typed, columns));
+                if truth.is_err() {
+                    assert!(matches!(
+                        result,
+                        Err(EvalError::Unsupported("truth coercion of a non-SQL datum"))
+                    ));
+                    assert_eq!(ctx.reads.take(), vec![0]);
+                } else if slots == 0 {
+                    resource(result);
+                    assert_eq!(ctx.reads.take(), vec![0]);
+                } else {
+                    let branch = if truth == &Ok(true) { 1 } else { 2 };
+                    assert_eq!(frame(&result.unwrap()), frame(&ctx.values[branch]));
+                    assert_eq!(ctx.reads.take(), vec![0, branch]);
+                }
+            }
+        }
+        for value in [
+            Datum::Null,
+            Datum::Float32(f64::from_bits(0x7ff8000012345678)),
+            Datum::Decimal(
+                Decimal::from_raw_parts(true, b"00010049".to_vec(), 2, 4)
+                    .with_declared_shape(12, 2),
+            ),
+            Datum::new_collation_string(vec![0xff], Collation::GbkBin),
+        ] {
+            for yes in [false, true] {
+                let ctx = Demand {
+                    values: [Datum::Int(i64::from(yes)), value.clone(), value.clone()],
+                    reads: RefCell::new(Vec::new()),
+                    fail: Some(if yes { 2 } else { 1 }),
+                };
+                for is_typed in [false, true] {
+                    let result = execution
+                        .scope()
+                        .with_columns(&ctx, |columns| evaluate(is_typed, columns));
+                    if slots == 1 {
+                        assert_eq!(frame(&result.unwrap()), frame(&value));
+                    } else {
+                        resource(result);
+                    }
+                    assert_eq!(
+                        ctx.reads.take(),
+                        if slots == 1 {
+                            vec![0, if yes { 1 } else { 2 }]
+                        } else {
+                            vec![0]
+                        }
+                    );
+                }
+            }
+        }
+        for failed in [0, 1, 2] {
+            let ctx = Demand {
+                values: [Datum::Int(i64::from(failed != 2)), Datum::Null, Datum::Null],
+                reads: RefCell::new(Vec::new()),
+                fail: Some(failed),
+            };
+            for is_typed in [false, true] {
+                let result = execution
+                    .scope()
+                    .with_columns(&ctx, |columns| evaluate(is_typed, columns));
+                if failed == 0 || slots == 1 {
+                    assert!(
+                        matches!(result, Err(EvalError::Unsupported(message)) if message == if is_typed { "IF demanded child" } else { "unknown column" })
+                    );
+                    assert_eq!(
+                        ctx.reads.take(),
+                        if failed == 0 {
+                            vec![0]
+                        } else {
+                            vec![0, failed]
+                        }
+                    );
+                } else {
+                    resource(result);
+                    assert_eq!(ctx.reads.take(), vec![0]);
+                }
+            }
+        }
+        let ctx = Demand {
+            values: [Datum::Int(1), Datum::Int(2), Datum::Int(3)],
+            reads: RefCell::new(Vec::new()),
+            fail: None,
+        };
+        assert!(matches!(
+            execution.scope().with_columns(&ctx, |columns| eval_func(
+                "IF",
+                &ast_args[..2],
+                columns,
+                None
+            )),
+            Err(EvalError::Unsupported("bad IF arguments"))
+        ));
+        assert!(ctx.reads.take().is_empty());
+        let malformed = ScalarFunction::new(
+            tidb_ast::CiString::new("if"),
+            FieldType::new(FieldTypeCode::LongLong),
+            typed_args[..2].to_vec(),
+        );
+        assert!(execution
+            .scope()
+            .with_columns(&ctx, |columns| malformed.eval(columns, empty.to_row()))
+            .is_err());
+        assert_eq!(ctx.reads.take(), vec![0, 1]);
+    }
+    let nested = Expr::Func {
+        name: "IF".to_owned(),
+        origin_position: 0,
+        args: vec![
+            Expr::Null,
+            Expr::Column(vec!["dead".to_owned()]),
+            Expr::Func {
+                name: "IF".to_owned(),
+                origin_position: 0,
+                args: vec![
+                    Expr::Int("1".to_owned()),
+                    Expr::Int("7".to_owned()),
+                    Expr::Column(vec!["dead".to_owned()]),
+                ],
+            },
+        ],
     };
     assert_eq!(
         crate::eval_in(&nested, &crate::NoColumns).unwrap(),
