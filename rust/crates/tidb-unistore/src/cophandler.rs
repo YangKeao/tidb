@@ -2183,9 +2183,16 @@ impl LegacyEvaluator<'_> {
         let columns: &dyn tidb_expr::Columns = expr.context.as_ref();
         #[cfg(test)]
         let columns = self.shared_override.unwrap_or(columns);
-        expr.expression
-            .eval(columns, row.to_row())
-            .map_err(LegacyEvalError::from)
+        let eval = |columns: &dyn tidb_expr::Columns| expr.expression.eval(columns, row.to_row());
+        // Borrow only the parent's capability; retain the child's request semantics.
+        let result = if let Some(scope) = self.raw_columns.evaluated_ascii_scope() {
+            scope.with_columns(columns, |bound| eval(bound))
+        } else if let Some(execution) = self.raw_columns.evaluated_ascii_execution() {
+            execution.scope().with_columns(columns, |bound| eval(bound))
+        } else {
+            eval(columns)
+        };
+        result.map_err(LegacyEvalError::from)
     }
 }
 
@@ -12392,5 +12399,239 @@ mod tests {
                     );
                 }
             });
+    }
+
+    #[test]
+    fn legacy_shared_inherits_parent_capability_without_replacing_request_context() {
+        use std::sync::Arc;
+        use tidb_datatype::{Datum, Decimal, SessionTimeZone, Time, TimeType};
+        struct Parent<'a>(Option<&'a tidb_expr::AsciiExecution>);
+        impl tidb_expr::Columns for Parent<'_> {
+            fn evaluated_ascii_execution(&self) -> Option<&tidb_expr::AsciiExecution> {
+                self.0
+            }
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                panic!("Shared must retain its row and original context")
+            }
+            fn time_zone(&self) -> SessionTimeZone {
+                panic!("parent capability must not replace the child timezone")
+            }
+            fn div_precision_increment(&self) -> u32 {
+                panic!("parent capability must not replace child precision")
+            }
+            fn truncate_level(&self) -> tidb_expr::ErrorLevel {
+                panic!("parent capability must not replace child flags")
+            }
+            fn type_flags(&self) -> tidb_datatype::ConversionFlags {
+                panic!("parent capability must not replace child conversion flags")
+            }
+            fn append_warning(&self, _: u16, _: &str) {
+                panic!("Shared warnings belong to the original request context")
+            }
+        }
+        fn call(sig: tipb::ScalarFuncSig, children: Vec<tipb::Expr>, tp: i32) -> tipb::Expr {
+            tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(sig as i32),
+                children,
+                field_type: Some(tipb::FieldType {
+                    tp: Some(tp),
+                    decimal: Some(0),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        }
+        fn is_pool_failure<T>(result: &LegacyResult<T>) -> bool {
+            matches!(result, Err(LegacyEvalError::Infrastructure(
+                tidb_expr::EvalError::ExpressionAdapterFailure(failure)
+            )) if failure.class() == tidb_expr::ExpressionAdapterFailureClass::PoolResource)
+        }
+        let pool = |slots| {
+            tidb_expr::AsciiPoolOwner::new(
+                tidb_expr::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 << 20,
+                    4 << 20,
+                    4 << 20,
+                    64,
+                    8,
+                    4 << 20,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let request = Arc::new(RequestEvalContext::new(
+            SessionTimeZone::Named(chrono_tz::Asia::Shanghai),
+            8,
+            tidb_model::flags::FLAG_TRUNCATE_AS_WARNING,
+        ));
+        let is_null = call(
+            tipb::ScalarFuncSig::IntIsNull,
+            vec![tipb::Expr {
+                tp: Some(tipb::ExprType::Null as i32),
+                ..Default::default()
+            }],
+            8,
+        );
+        let shared = convert_expr_with_context(&is_null, &request).unwrap();
+        assert!(matches!(&shared, SimpleExpr::Shared(_)));
+        let warning_decimal = call(
+            tipb::ScalarFuncSig::CaseWhenDecimal,
+            vec![
+                is_null.clone(),
+                call(
+                    tipb::ScalarFuncSig::CastStringAsDecimal,
+                    vec![tipb::Expr {
+                        tp: Some(tipb::ExprType::String as i32),
+                        val: Some(b"1tail".to_vec()),
+                        ..Default::default()
+                    }],
+                    246,
+                ),
+            ],
+            246,
+        );
+        let warning_child = convert_expr_with_context(&warning_decimal, &request).unwrap();
+        assert!(matches!(&warning_child, SimpleExpr::Shared(_)));
+        let mut encoded_offset = Vec::new();
+        tidb_codec::encode_int(&mut encoded_offset, 0);
+        let mut layout = call(
+            tipb::ScalarFuncSig::CastIntAsString,
+            vec![call(
+                tipb::ScalarFuncSig::UnixTimestampInt,
+                vec![tipb::Expr {
+                    tp: Some(tipb::ExprType::ColumnRef as i32),
+                    val: Some(encoded_offset),
+                    field_type: Some(tipb::FieldType {
+                        tp: Some(12),
+                        decimal: Some(0),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                8,
+            )],
+            253,
+        );
+        // PB defaults an omitted flen to zero; that intentionally truncates
+        // CastIntAsString to empty. This context probe needs a real string width.
+        layout.field_type.as_mut().unwrap().flen = Some(20);
+        let layout = convert_expr_with_context(&layout, &request).unwrap();
+        assert!(matches!(&layout, SimpleExpr::Shared(_)));
+        let row = [Datum::Time(
+            Time::from_date_checked(1970, 1, 1, 8, 0, 1, 0, TimeType::DateTime, 0).unwrap(),
+        )];
+        let legacy_zone = SessionTimeZone::utc();
+        let trap = Parent(None);
+        // No parent capability must retain the standalone request behavior.
+        let standalone = LegacyEvaluator {
+            raw_columns: &trap,
+            ..LegacyEvaluator::new(&row, 4, &legacy_zone)
+        };
+        assert_eq!(standalone.eval_datum(&shared).unwrap(), Datum::Int(1));
+        let decimal = standalone
+            .eval_decimal(Some(&warning_child))
+            .unwrap()
+            .unwrap();
+        assert_eq!(decimal.to_f64(), 1.0);
+        let warnings = request.take_warnings();
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].0, 1292);
+        let late_layout = SimpleExpr::Func(
+            SimpleSig::FromUnixTime2Arg,
+            vec![SimpleExpr::Decimal(Decimal::from_int(1)), layout],
+        );
+        assert_eq!(
+            standalone.eval_bytes(Some(&late_layout)).unwrap(),
+            Some(b"1".to_vec())
+        );
+        let old_standalone = convert_expr(&is_null).unwrap();
+        assert_eq!(
+            standalone.eval_datum(&old_standalone).unwrap(),
+            Datum::Int(1)
+        );
+
+        let denied_owner = pool(0);
+        let denied_execution = denied_owner.begin_execution().unwrap();
+        let denied_scope = denied_execution.scope();
+        let mut leaks = Vec::new();
+        denied_scope.with_columns(&trap, |columns| {
+            let evaluator = LegacyEvaluator {
+                raw_columns: columns,
+                ..LegacyEvaluator::new(&row, 4, &legacy_zone)
+            };
+            let result = evaluator.eval_datum(&shared);
+            if !is_pool_failure(&result) {
+                leaks.push(format!("active parent scope escaped: {result:?}"));
+            }
+            let nested = SimpleExpr::Func(
+                SimpleSig::FromUnixTime2Arg,
+                vec![warning_child.clone(), SimpleExpr::Bytes(b"%f".to_vec())],
+            );
+            let result = evaluator.eval_bytes(Some(&nested));
+            assert!(is_pool_failure(&result), "{result:?}");
+            // Merely observing the root's zero-slot error is insufficient:
+            // the old detached child first succeeds and emits this warning.
+            let warnings = request.take_warnings();
+            if !warnings.is_empty() {
+                leaks.push(format!(
+                    "nested Shared ran before the parent failed: {warnings:?}"
+                ));
+            }
+        });
+        let execution_only = Parent(Some(&denied_execution));
+        let result = LegacyEvaluator {
+            raw_columns: &execution_only,
+            ..LegacyEvaluator::new(&row, 4, &legacy_zone)
+        }
+        .eval_datum(&shared);
+        if !is_pool_failure(&result) {
+            leaks.push(format!("execution-only parent escaped: {result:?}"));
+        }
+        let owner = pool(1);
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        scope.with_columns(&trap, |columns| {
+            let evaluator = LegacyEvaluator {
+                raw_columns: columns,
+                ..LegacyEvaluator::new(&row, 4, &legacy_zone)
+            };
+            assert_eq!(
+                evaluator.eval_bytes(Some(&late_layout)).unwrap(),
+                Some(b"1".to_vec())
+            );
+            assert_eq!(
+                evaluator
+                    .eval_decimal(Some(&warning_child))
+                    .unwrap()
+                    .unwrap()
+                    .to_f64(),
+                1.0
+            );
+            let warnings = request.take_warnings();
+            assert_eq!(warnings.len(), 1);
+            assert_eq!(warnings[0].0, 1292);
+            // Existing child scope precedence, including test overrides, stays.
+            denied_scope.with_columns(request.as_ref(), |child_columns| {
+                let evaluator = LegacyEvaluator {
+                    raw_columns: columns,
+                    shared_override: Some(child_columns),
+                    ..LegacyEvaluator::new(&row, 4, &legacy_zone)
+                };
+                let result = evaluator.eval_datum(&shared);
+                assert!(is_pool_failure(&result), "{result:?}");
+            });
+        });
+        drop(scope);
+        execution.close();
+        drop(denied_scope);
+        denied_execution.close();
+        assert!(
+            leaks.is_empty(),
+            "Shared dropped borrowed capabilities: {leaks:?}"
+        );
     }
 }

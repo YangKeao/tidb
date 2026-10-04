@@ -73,9 +73,10 @@ const MAX_DATETIME_WIDTH_NO_FSP: i64 = 19;
 /// Go `builtinDateLiteralSig`: the value of `DATE 'lit'`, or the error that
 /// rejects the whole statement.
 ///
-/// The original rewrite-time entry retains its one-shot context. Explicit
-/// callers can bind a lifecycle scope through [`date_literal_in`]; this does
-/// not claim propagation of the rewriter's statement owner.
+/// Test-only convenience retaining the original one-shot context. Production
+/// rewriting uses [`date_literal_in`] with its resolver's optional execution
+/// context and the same explicitly captured timezone and modes.
+#[cfg(test)]
 pub(crate) fn date_literal(
     text: &str,
     zone: &tidb_datatype::SessionTimeZone,
@@ -116,6 +117,7 @@ pub(crate) fn date_literal_in(
 /// The two codes are Go's own and are NOT interchangeable: the regex gate is
 /// `ErrWrongValue2` (1525) and the parse failure is `ErrWrongValue` (1292),
 /// which is why the recorded topic carries both against this one syntax.
+#[cfg(test)]
 pub(crate) fn timestamp_literal(
     text: &str,
     zone: &tidb_datatype::SessionTimeZone,
@@ -124,8 +126,8 @@ pub(crate) fn timestamp_literal(
     timestamp_literal_in(text, zone, modes, &crate::NoColumns)
 }
 
-/// Scoped counterpart of [`timestamp_literal`], without fetching context
-/// timezone or modes a second time after the rewriter already captured them.
+/// Builds a timestamp literal without fetching context timezone or modes a
+/// second time after the rewriter already captured them.
 pub(crate) fn timestamp_literal_in(
     text: &str,
     zone: &tidb_datatype::SessionTimeZone,

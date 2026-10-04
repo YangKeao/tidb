@@ -165,6 +165,14 @@ pub trait ColumnResolver {
         tidb_datatype::DateModes::TIDB_DEFAULT_SQL_MODE
     }
 
+    /// Borrows existing execution authority for typed temporal literal workers.
+    /// This does not replace the resolver's timezone or date-mode semantics:
+    /// those values are still captured through their original accessors.
+    /// A resolver without an owner retains the one-shot literal path.
+    fn literal_execution_context(&self) -> Option<&dyn crate::Columns> {
+        None
+    }
+
     /// Go's `BuildContext.GetCharsetInfo`: the connection charset/collation
     /// stamped onto ordinary string literals and string results with no
     /// stronger collation source.
@@ -276,6 +284,9 @@ impl<T: ColumnResolver + ?Sized> ColumnResolver for &T {
     }
     fn date_modes(&self) -> tidb_datatype::DateModes {
         (**self).date_modes()
+    }
+    fn literal_execution_context(&self) -> Option<&dyn crate::Columns> {
+        (**self).literal_execution_context()
     }
     fn connection_charset_info(&self) -> (&str, &str) {
         (**self).connection_charset_info()
@@ -2453,11 +2464,14 @@ fn rewrite_leaf_call(
             let text = literal_text(&cast.expr, resolver, purpose)?;
             let zone = resolver.time_zone();
             let modes = resolver.date_modes();
+            let context = resolver
+                .literal_execution_context()
+                .unwrap_or(&crate::NoColumns);
             let (time, ret_type) = match cast.style {
                 tidb_ast::CastStyle::DateLiteral => {
-                    crate::time_literal::date_literal(&text, &zone, modes)?
+                    crate::time_literal::date_literal_in(&text, &zone, modes, context)?
                 }
-                _ => crate::time_literal::timestamp_literal(&text, &zone, modes)?,
+                _ => crate::time_literal::timestamp_literal_in(&text, &zone, modes, context)?,
             };
             // The folded constant carries Go's OWN result type -- `TypeDate`
             // or `TypeDatetime` with the literal's fsp -- over the same

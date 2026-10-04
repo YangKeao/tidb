@@ -9363,6 +9363,132 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_temporal_literal_rewrite_uses_the_executing_session_pool() {
+    use tidb_datatype::{FieldTypeCode, TimeType};
+
+    // Session execution owns a pool before table-query planning starts.
+    // These are rewrite-time literal workers, NOT per-row literal evaluation
+    // or standalone prepare_ast(&self) calls without an execution owner.
+    let cases = [
+        (
+            "DATE '2024-01-01'",
+            "2024-01-01",
+            FieldTypeCode::Date,
+            (10, 0),
+            TimeType::Date,
+        ),
+        (
+            "TIMESTAMP '2024-01-01 01:02:03.123'",
+            "2024-01-01 01:02:03.123",
+            FieldTypeCode::Datetime,
+            (23, 3),
+            TimeType::DateTime,
+        ),
+        // The original time_literal offset case normalizes +02:00 into UTC;
+        // ODBC syntax reaches the same TimestampLiteral rewrite branch.
+        (
+            "{ts '2024-01-01 14:00:00+02:00'}",
+            "2024-01-01 12:00:00",
+            FieldTypeCode::Datetime,
+            (19, 0),
+            TimeType::DateTime,
+        ),
+    ];
+    for slots in [1, 0] {
+        let mut session = Session::new();
+        session.run("SET time_zone='+00:00'").unwrap();
+        session.run("SET sql_mode=''").unwrap();
+        session
+            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+            .unwrap();
+        session
+            .run("CREATE TABLE shared_literal_rewrite_scope (id INT)")
+            .unwrap();
+        session
+            .run("INSERT INTO shared_literal_rewrite_scope VALUES (7)")
+            .unwrap();
+        assert!(session
+            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .unwrap());
+        for vectorized in [0, 1] {
+            session
+                .run(&format!(
+                    "SET tidb_enable_vectorized_expression={vectorized}"
+                ))
+                .unwrap();
+            // Binding a zero-slot owner must not globally forbid planning or
+            // scanning ordinary stored columns. This succeeds before the
+            // baseline's first zero-slot literal unexpectedly succeeds.
+            let StmtOutput::Rows { rows, .. } = session
+                .run_with_columns("SELECT id FROM shared_literal_rewrite_scope")
+                .unwrap()
+            else {
+                panic!("expected ordinary column rows with slots={slots}")
+            };
+            assert_eq!(rows, vec![vec![Datum::Int(7)]]);
+            assert!(warnings_of(&session).is_empty());
+            for (literal, expected, code, shape, kind) in cases {
+                let sql = format!("SELECT {literal} FROM shared_literal_rewrite_scope");
+                if slots == 1 {
+                    let StmtOutput::Rows { columns, rows } =
+                        session.run_with_columns(&sql).unwrap()
+                    else {
+                        panic!("expected folded temporal literal rows: {sql}")
+                    };
+                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
+                    let field = &columns[0].1;
+                    assert_eq!(field.code(), code, "{sql}/{vectorized}");
+                    assert_eq!((field.flen(), field.decimal()), shape, "{sql}/{vectorized}");
+                    assert_eq!(field.charset_name(), "binary");
+                    assert_eq!(field.collation_name(), "binary");
+                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
+                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
+                    let Datum::Time(time) = &rows[0][0] else {
+                        panic!("rewrite lost the native temporal literal: {sql}")
+                    };
+                    assert_eq!(time.kind(), kind, "{sql}/{vectorized}");
+                    assert_eq!(i64::from(time.fsp()), shape.1, "{sql}/{vectorized}");
+                    assert_eq!(cell_text(&rows[0][0]), expected, "{sql}/{vectorized}");
+                } else {
+                    // A fresh NoColumns one-shot pool incorrectly succeeds
+                    // here; the actual executing session's pool must refuse.
+                    let error = session.run_with_columns(&sql).expect_err(&sql);
+                    match &error {
+                        DriverError::Exec(tidb_executor::ExecError::Eval(
+                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                        )) => {
+                            assert_eq!(failure.class(), tidb_executor::ExpressionAdapterFailureClass::PoolResource);
+                            assert_eq!(failure.origin(), tidb_executor::ExpressionAdapterFailureOrigin::Pool);
+                        }
+                        other => panic!("literal rewrite lost the session-pool refusal: {sql}/{vectorized}: {other:?}"),
+                    }
+                    let mysql = error.to_mysql_error();
+                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
+                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
+                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
+                }
+                assert!(
+                    warnings_of(&session).is_empty(),
+                    "{sql}/{vectorized}/slots={slots}"
+                );
+            }
+            if slots == 1 {
+                // Preserve the known PlanScopeResolver date_modes DEFAULT
+                // behavior despite sql_mode=''. Owner forwarding must not
+                // silently fix that separate compatibility gap.
+                let error = session
+                    .run_with_columns("SELECT DATE '0000-00-00' FROM shared_literal_rewrite_scope")
+                    .expect_err("the existing resolver default still rejects an all-zero DATE");
+                let mysql = error.to_mysql_error();
+                assert_eq!(mysql.code, 1292);
+                assert_eq!(mysql.state, *b"22007");
+                assert_eq!(mysql.message, "Incorrect date value: '0000-00-00'");
+            }
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_from_unixtime_preserves_sql_wrappers_staged_layouts_and_runtime_roots() {
     use tidb_datatype::{Collation, FieldTypeCode, TimeType};
 

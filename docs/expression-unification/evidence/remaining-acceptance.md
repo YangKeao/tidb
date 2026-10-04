@@ -1,0 +1,58 @@
+# Remaining acceptance after the functional threshold
+
+Status: **221/245 functional families; strict0; overall goal active**. The frozen denominator is unchanged. This is an independent source review plus parent integration follow-up, not a passing test receipt or approval to defer all24 remaining families.
+
+The accepted synchronous/scoped evaluator design stays in place. No universal compiler rewrite or exhaustive performance project is required to make the next functional steps. Conversely, reaching90% does not erase the Plan's remaining core ownership/demand obligations.
+
+## Ten core families still need closure
+
+| Families | Remaining work / source evidence |
+|---|---|
+| if, ifnull | `rust/crates/tidb-expr/src/scalar_function.rs` still chooses the branch/nonnull value in native code; PB has separate corresponding branches in `scalar_function/pb_builtin.rs`. Reuse staged demand and actual value transport; do not choose the answer natively and merely run IDENTITY. |
+| case, coalesce, nullif | Preserve selector/first-value evaluation count, lazy demand and actual nullable results across typed/PB/AST/legacy. Shared predicate/identity leaves alone do not close selection. |
+| cast | `cast.rs` and datatype `decimal/mod.rs` still own ordinary parsing/status policy. R83 float-constructor/Display sharing did not migrate general string-to-Decimal parsing. Close ordinary domains over shared SDKs; record truly exceptional domains separately. |
+| in | `func.rs` still owns found-match/found-null reduction. Its existing eager candidate/comparison side effects cannot be replaced with wire early return. |
+| greatest, least, interval | `builtin_ext/compare2.rs` retains extrema selection and INTERVAL's metadata-selected nullable-linear versus NOT_NULL-binary search. Preserve actual type, collation, precision and getter/search order. |
+
+Observed caller chain: `evaluator.rs::run_with_consumer` → `Expression::eval` → `ScalarFunction::eval` → native control branches or PB dispatch. The parent also read the actual CASE/IF/IFNULL/COALESCE branches; this conclusion is not inferred solely from registry names.
+
+## Eight ordinary families still pending
+
+| Family group | Remaining work |
+|---|---|
+| convert_charset | Actual encode/decode/replacement/retag policy in `convert_charset.rs`; shared GB leaves are prerequisites, not evaluator closure. |
+| date_add, date_sub, extract | Calendar/unit algorithms and warning/type policies remain in `time_fn/calendar.rs`. |
+| str_to_date, timestampdiff | Real format scanning and distinct errors, or civil/month difference policy; source in `time_fn/calendar.rs`. |
+| tidb_bounded_staleness | Null/invalid-zero, range check, one demanded SafeTS getter, clamp and FSP3 in `time_fn/mod.rs`. Host supplies SafeTS input, not an excuse to keep all computation native. |
+| json_sum_crc32 | Existing internal scalar-array algorithm in `builtin_ext/json/report.rs`. SQL ARRAY syntax is still rejected by the baseline; migrate the implemented domain without inventing new SQL admission. |
+
+These are pending implementations, not approved whole-family exceptions merely because they take work.
+
+## Six nontrivial exception candidates, not yet approved exceptions
+
+| Families | Concrete boundary / why leaf-only sharing is insufficient |
+|---|---|
+| rand | `Columns` exposes a host-computed f64. Evaluator ownership needs actual RNG state, atomic advancement and const-node identity; passing a computed draw through a worker earns no credit. |
+| json_schema_valid | Validator retrieval can access file/HTTP references. Document NULL/parse demand precedes construction/I/O; pure validation must not be hidden by relabeling the entire family host-only. |
+| tidb_decode_plan, tidb_decode_binary_plan | Real plan codecs, Explain protobuf/tree rendering and distinct fallback/warning/missing-main panic policies, not base64 alone. |
+| tidb_encode_sql_digest | Lexer and normalizer ownership in `tidb-parser`, not SHA256 alone. |
+| validate_password_strength | Unicode classifications plus demand-driven identity, enable, policy and dictionary getters; native precomputed scoring is not migration. |
+
+A final exception needs its supported signatures/domains, source entrypoints, minimal compatibility/effect example, retained implementation and removal condition. Current next-candidate notes are not that final approval.
+
+## Request-root work
+
+Two bounded R85 integration fixes (fail-before/pass-after receipts in [request-scope-checkpoint.md](request-scope-checkpoint.md)):
+
+1. Literal rewriting already captures timezone/modes from its resolver, but calls the NoColumns entry despite PlanScopeResolver retaining a live statement context. Route only the execution capability into the existing scoped literal helper. Preserve the old resolver's mode default and capture order.
+2. `LegacyEvaluator::eval_shared` uses the Shared expression's original context, dropping an available selected parent scope. Bind that original semantic context through existing `AsciiScope::with_columns`, preserving row/settings/warnings and active-child-scope priority. With no parent capability, keep the old standalone path.
+
+Neither target creates a live DAG request owner or closes every default/fold/DML/range/aggregate/window wrapper. `RequestEvalContext` currently has no execution capability, and production `LegacyEvaluator::new` defaults raw_columns to NoColumns. Further caller/lifecycle integration remains necessary. Before-owner standalone PREPARE and explicit NoResolver defaults must not acquire a fabricated or stale statement owner.
+
+## Final evidence still required
+
+- Source/deletion and a small cross-entry matrix for the remaining core work: real-column projection/filter, exact PB signatures, legacy, fold/default/DML and aggregate/window parameters, including warning/error order and actual result metadata.
+- Precisely classify preserved baseline versus introduced gaps: INTDIV raw-empty/nonzero behavior, zero-date CAST diagnostic, mode forwarding, JSON_KEYS aggregate, AST arity and derived collation. Do not repair original test expectations to obtain green status.
+- Keep the known expression4/unistore1 full-suite failures visible until independently resolved. A threshold or independent source review is not a full-suite pass.
+- Record dependency compile receipts and owned-transport/width-one costs without claiming benchmarks or zero-copy. Physical heap/peak/OOM, allocator fault injection, release performance, exhaustive differential/TiFlash/FIPS and dual-timezone footprint remain deferred under the user's speed preference.
+- Scope-required lint and final integration gates remain separate from these targeted implementation receipts. No whole-package Go transcreation or PR-readiness claim is made.

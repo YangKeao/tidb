@@ -1,0 +1,56 @@
+request-scope-82 / R85
+Working directory for every command: /home/agent/tidb/expression-unification/tidb/rust
+Native pinned wrapper: ../../tools/cargo-tidb (nightly-2026-08-22)
+Raw logs: /home/agent/tidb/expression-unification/logs/request-scope-{id}.log
+Counts below: passed/failed/ignored/filtered; compile_seconds/test_seconds.
+
+planner-before | 0/1/0/1054 | 12.14/0.00 | exit101 | NEW TEST SETUP FAILURE (warning_count trap, not defect reproduction)
+../../tools/cargo-tidb test --locked -p tidb-planner --lib planner_temporal_literals_keep_existing_execution_and_resolver_settings -- --test-threads=1
+sha256 43a5b3f9d236b7839c535621ece6bebd3fb10fff4ae414c58494df4ba8e2d3e4
+
+legacy-before | 0/1/0/227 | 2.62/0.00 | exit101 | NEW TEST FIXTURE FAILURE (PB flen0, not defect reproduction)
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_shared_inherits_parent_capability_without_replacing_request_context -- --test-threads=1
+sha256 d65525aac96af191b4259d311fd57fa0fcdf1a636789d6feb7edf3bcf70b1d90
+
+sql-before | 0/1/0/2228 | 12.43/0.04 | exit101 | REPRODUCED: zero-slot owner escaped to successful DATE rows
+../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_temporal_literal_rewrite_uses_the_executing_session_pool -- --test-threads=1
+sha256 71cefd92487f0a69c797f5e5ce0cd34cded87b1b3318cb472e2a645d151e147f
+
+planner-before-retry1 | 0/1/0/1054 | 3.30/0.00 | exit101 | REPRODUCED: zero-slot owner escaped to a DATE Constant
+../../tools/cargo-tidb test --locked -p tidb-planner --lib planner_temporal_literals_keep_existing_execution_and_resolver_settings -- --test-threads=1
+sha256 4073478af133177a46d142f02f09d5fcfaf8d075268f513a652190f0ea724adc
+
+legacy-before-retry1 | 0/1/0/227 | 1.75/0.00 | exit101 | REPRODUCED: scope and execution-only escaped; nested Shared warned before parent refusal
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_shared_inherits_parent_capability_without_replacing_request_context -- --test-threads=1
+sha256 fa56018045411d8dec0bf88784b0f28471c9d7755c462520d75b99f33aea5d7a
+
+planner-after | 1/0/0/1054 | 6.42/0.00 | exit0 | GREEN
+../../tools/cargo-tidb test --locked -p tidb-planner --lib planner_temporal_literals_keep_existing_execution_and_resolver_settings -- --test-threads=1
+sha256 f04c1fecc7655e1e4d018783213c7768a682ffaa919f96cd14af5063054e8280
+
+legacy-after | 1/0/0/227 | 2.19/0.00 | exit0 | GREEN
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_shared_inherits_parent_capability_without_replacing_request_context -- --test-threads=1
+sha256 612388504cf159dd6c4978ac3be9f5950c7b378f3cdfed7d70179523fe78a12a
+
+sql-after | 5/0/0/2224 | 12.69/0.13 | exit0 | GREEN (broader temporal_literal filter includes the new regression)
+../../tools/cargo-tidb test --locked -p tidb-session --lib temporal_literal -- --test-threads=1
+sha256 72f701839987cee08b2c004dafec82c250a78347f126a5b382fb59c79dbe5cc2
+
+expr-full | 1582/4/94/0 | 6.61/14.94 | exit101 | OLD FULL-SUITE FAILURES UNCHANGED
+../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+sha256 3b15fca10fa2cd90b4b6d9385db228cbf8b21691915459f92a76468d7eccaa8e
+
+unistore-full | 214/1/13/0 | 0.14/3.05 | exit101 | OLD FULL-SUITE FAILURE UNCHANGED
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+sha256 0585d6f5f6c0f88db2c7654c6bb46438c6e2e6d91c14e82deabba3bdab27cbb3
+
+Complete failure sections (including final lists, only panic-heading numeric thread IDs normalized to THREAD) byte-equal to from-unixtime-81:
+expression 411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+unistore 2f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1
+
+Pinned format check from rust/:
+/home/agent/tidb/expression-reuse/rustup-home/toolchains/nightly-2026-08-22-x86_64-unknown-linux-gnu/bin/rustfmt --edition 2021 --config skip_children=true --check crates/tidb-expr/src/rewriter.rs crates/tidb-expr/src/time_literal.rs crates/tidb-planner/src/plan_builder.rs crates/tidb-unistore/src/cophandler.rs crates/tidb-session/src/tests_core/lifecycle.rs
+Both worktrees: git diff --check
+TiKV Rust and dependency artifacts unchanged: no new TiKV Cargo run claimed.
+
+10 launches, 3 green runs, 3 genuine fail-before runs, 2 initial new-test fixture failures, 2 unchanged old full-suite failures. All3 added tests pass after the production fix. New SQL test:18SELECTs (12literal/4ordinary-column/2old-mode controls); broader filter counts are overlapping, not unique totals. No compile failure, zero-match, interruption, fixture recording or expected-result re-recording.
