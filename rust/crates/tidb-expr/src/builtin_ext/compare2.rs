@@ -16,9 +16,11 @@
 
 use std::cmp::Ordering;
 
-use tidb_datatype::{EvalType, FieldType, FieldTypeFlags};
+#[cfg(test)]
+use tidb_datatype::EvalType;
+use tidb_datatype::FieldType;
 
-use crate::coerce::{coerce_str, integer_cmp, integer_of};
+use crate::coerce::coerce_str;
 use crate::{Datum, EvalError};
 
 /// Dispatches this family's builtins; `None` if `name` isn't one of them.
@@ -266,60 +268,7 @@ pub(crate) fn extremum_with_signature(
 /// nullable signature and are skipped. The binary search intentionally keeps
 /// TiDB's documented precondition that non-NULL boundaries are sorted.
 fn interval(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    if vals.iter().any(Datum::is_range_sentinel) {
-        return Err(EvalError::Unsupported("range sentinel INTERVAL argument"));
-    }
-    if vals[0] == Datum::Null {
-        return Ok(Datum::Int(-1));
-    }
-    let nullable = vals.iter().any(|v| matches!(v, Datum::Null));
-    if vals
-        .iter()
-        .all(|v| matches!(v, Datum::Int(_) | Datum::UInt(_) | Datum::Null))
-    {
-        let target = match integer_of(&vals[0])? {
-            Some(value) => value,
-            None => unreachable!("all-int guard"),
-        };
-        let index = if nullable {
-            vals[1..]
-                .iter()
-                .position(|v| {
-                    integer_of(v)
-                        .expect("range sentinels rejected above")
-                        .is_some_and(|boundary| integer_cmp(target, boundary).is_lt())
-                })
-                .unwrap_or(vals.len() - 1)
-        } else {
-            vals[1..].partition_point(|v| {
-                integer_of(v)
-                    .expect("range sentinels rejected above")
-                    .is_some_and(|boundary| integer_cmp(boundary, target).is_le())
-            })
-        };
-        return Ok(Datum::Int(index as i64));
-    }
-
-    let target = interval_real(&vals[0], ctx)?;
-    // Every boundary is converted UP FRONT: a boundary with no ETReal
-    // reading is an error in TiDB, and an error cannot leave
-    // `partition_point`'s comparator.
-    let boundaries = vals[1..]
-        .iter()
-        .map(|boundary| match boundary {
-            Datum::Null => Ok(None),
-            other => interval_real(other, ctx).map(Some),
-        })
-        .collect::<Result<Vec<_>, EvalError>>()?;
-    let index = if nullable {
-        boundaries
-            .iter()
-            .position(|boundary| boundary.is_some_and(|value| target < value))
-            .unwrap_or(vals.len() - 1)
-    } else {
-        boundaries.partition_point(|boundary| boundary.is_some_and(|value| value <= target))
-    };
-    Ok(Datum::Int(index as i64))
+    crate::tikv::eval_interval_in(ctx, vals)
 }
 
 /// Evaluates `INTERVAL` directly from its argument expressions.
@@ -330,105 +279,11 @@ fn interval(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError
 /// warning or error from a boundary that the search never reads.
 pub(crate) fn interval_lazy(
     arg_types: &[Option<FieldType>],
-    mut eval: impl FnMut(usize) -> Result<Datum, EvalError>,
+    eval: impl FnMut(usize) -> Result<Datum, EvalError>,
     ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
     debug_assert!(arg_types.len() >= 2);
-    let all_int = arg_types.iter().all(|field_type| {
-        field_type
-            .as_ref()
-            .is_some_and(|ft| ft.eval_type() == EvalType::Int)
-    });
-    let has_nullable = arg_types.iter().any(|field_type| {
-        field_type
-            .as_ref()
-            .is_none_or(|ft| !ft.has_flag(FieldTypeFlags::NOT_NULL))
-    });
-
-    if all_int {
-        let read = |index: usize,
-                    eval: &mut dyn FnMut(usize) -> Result<Datum, EvalError>|
-         -> Result<Option<crate::coerce::Integer>, EvalError> {
-            let value = eval(index)?;
-            let value = crate::cast::cast_arg_as_int(&value, arg_types[index].as_ref(), ctx)?;
-            integer_of(&value)
-        };
-        let Some(target) = read(0, &mut eval)? else {
-            return Ok(Datum::Int(-1));
-        };
-        let index = if has_nullable {
-            let mut result = arg_types.len() - 1;
-            for index in 1..arg_types.len() {
-                if read(index, &mut eval)?
-                    .is_some_and(|boundary| integer_cmp(target, boundary).is_lt())
-                {
-                    result = index - 1;
-                    break;
-                }
-            }
-            result
-        } else {
-            let (mut low, mut high) = (1, arg_types.len());
-            while low < high {
-                let middle = low + (high - low) / 2;
-                if read(middle, &mut eval)?
-                    .is_some_and(|boundary| integer_cmp(target, boundary).is_lt())
-                {
-                    high = middle;
-                } else {
-                    low = middle + 1;
-                }
-            }
-            low - 1
-        };
-        return Ok(Datum::Int(index as i64));
-    }
-
-    let read = |index: usize,
-                eval: &mut dyn FnMut(usize) -> Result<Datum, EvalError>|
-     -> Result<Option<f64>, EvalError> {
-        let value = eval(index)?;
-        if value == Datum::Null {
-            Ok(None)
-        } else {
-            interval_real(&value, ctx).map(Some)
-        }
-    };
-    let Some(target) = read(0, &mut eval)? else {
-        return Ok(Datum::Int(-1));
-    };
-    let index = if has_nullable {
-        let mut result = arg_types.len() - 1;
-        for index in 1..arg_types.len() {
-            if read(index, &mut eval)?.is_some_and(|boundary| target < boundary) {
-                result = index - 1;
-                break;
-            }
-        }
-        result
-    } else {
-        let (mut low, mut high) = (1, arg_types.len());
-        while low < high {
-            let middle = low + (high - low) / 2;
-            if read(middle, &mut eval)?.is_some_and(|boundary| target < boundary) {
-                high = middle;
-            } else {
-                low = middle + 1;
-            }
-        }
-        low - 1
-    };
-    Ok(Datum::Int(index as i64))
-}
-
-/// TiDB's real signature evaluates every argument as `ETReal`, which is the
-/// same coercion `eval_binary` performs when a string meets a number -- down
-/// to `INTERVAL('b', ...)` reading `'b'` as 0 (`TestIntervalFunc`). Sharing
-/// that one port instead of keeping a second copy of the numeric-prefix rule
-/// here is what makes an invalid-UTF-8 boundary read its prefix rather than
-/// silently sort as zero.
-fn interval_real(value: &Datum, ctx: &dyn crate::Columns) -> Result<f64, EvalError> {
-    crate::ops::to_f64_with_mysql_string(value, ctx)
+    crate::tikv::eval_interval_lazy_in(ctx, arg_types, eval)
 }
 
 /// `INET_ATON(expr)`: the frontend retains checked text conversion and the
@@ -1521,6 +1376,243 @@ fn extremum_runtime_entries_keep_five_domains_static_metadata_and_getter_order()
                 assert!(evaluate(entry, case, &ctx, &ctx).is_err());
                 assert_eq!(*ctx.events.borrow(), vec![Event::Child(0), Event::Child(1)]);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn interval_entries_preserve_eager_and_lazy_search_demand() {
+    use crate::constant::{Constant, ParamMarker};
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    use std::cell::RefCell;
+    use tidb_datatype::{FieldTypeCode as Code, FieldTypeFlags};
+
+    #[derive(Debug, Eq, PartialEq)]
+    enum Event {
+        Child(usize),
+        Level,
+        Warning(u16, String),
+    }
+    struct Probe {
+        values: Vec<Datum>,
+        fail: Option<usize>,
+        level: crate::ErrorLevel,
+        events: RefCell<Vec<Event>>,
+    }
+    impl crate::Columns for Probe {
+        fn get(&self, path: &[String]) -> Option<Datum> {
+            self.param_value(path[0].parse().unwrap()).ok()
+        }
+        fn param_value(&self, index: usize) -> Result<Datum, EvalError> {
+            self.events.borrow_mut().push(Event::Child(index));
+            if self.fail == Some(index) {
+                return Err(EvalError::Unsupported("INTERVAL child"));
+            }
+            Ok(self.values[index].clone())
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            self.events.borrow_mut().push(Event::Level);
+            self.level
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.events
+                .borrow_mut()
+                .push(Event::Warning(code, message.to_owned()));
+        }
+        fn date_modes(&self) -> tidb_datatype::DateModes {
+            panic!("no date policy for these INTERVAL arguments")
+        }
+        fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+            panic!("no timezone for these INTERVAL arguments")
+        }
+    }
+    let probe = |values, fail, level| Probe {
+        values,
+        fail,
+        level,
+        events: RefCell::new(Vec::new()),
+    };
+    let fields = |code, nullable, len| {
+        let field = FieldType::new(code);
+        vec![
+            Some(if nullable {
+                field
+            } else {
+                field.with_added_flags(FieldTypeFlags::NOT_NULL)
+            });
+            len
+        ]
+    };
+    let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    let evaluate = |entry, types: &[Option<FieldType>], ctx: &Probe| match entry {
+        0 => dispatch("INTERVAL", &ctx.values, ctx).unwrap(),
+        1 => {
+            let args = (0..ctx.values.len())
+                .map(|index| tidb_ast::Expr::Column(vec![index.to_string()]))
+                .collect::<Vec<_>>();
+            crate::func::eval_func("INTERVAL", &args, ctx, None)
+        }
+        2 => interval_lazy(types, |index| crate::Columns::param_value(ctx, index), ctx),
+        _ => {
+            let args = types
+                .iter()
+                .enumerate()
+                .map(|(index, field)| {
+                    let mut value = Constant::new(Datum::Null, FieldType::new(Code::LongLong));
+                    value.ret_type = field.clone();
+                    value.param_marker = Some(ParamMarker {
+                        order: i64::try_from(index).unwrap(),
+                    });
+                    Expression::Constant(value)
+                })
+                .collect();
+            ScalarFunction::new(
+                tidb_ast::CiString::new("interval"),
+                FieldType::new(Code::LongLong),
+                args,
+            )
+            .eval(ctx, row.to_row())
+        }
+    };
+    let children = |entry, len, lazy: &[usize]| -> Vec<Event> {
+        match entry {
+            0 => vec![],
+            1 => (0..len).map(Event::Child).collect(),
+            _ => lazy.iter().copied().map(Event::Child).collect(),
+        }
+    };
+    for entry in 0..4 {
+        // Eager's boundary <= target and lazy's target < boundary are NOT
+        // interchangeable on unordered IEEE operands.
+        for (values, lazy_result, visits) in [
+            (
+                vec![Datum::Real(f64::NAN), Datum::Real(1.0), Datum::Real(2.0)],
+                2,
+                vec![0, 2],
+            ),
+            (
+                vec![Datum::Real(0.0), Datum::Real(f64::NAN), Datum::Real(2.0)],
+                1,
+                vec![0, 2, 1],
+            ),
+        ] {
+            let ctx = probe(values, None, crate::ErrorLevel::Warn);
+            assert_eq!(
+                evaluate(entry, &fields(Code::Double, false, 3), &ctx),
+                Ok(Datum::Int(if entry < 2 { 0 } else { lazy_result }))
+            );
+            assert_eq!(*ctx.events.borrow(), children(entry, 3, &visits));
+        }
+        // Actual NULL selects eager linear search. Lazy search instead obeys
+        // declared nullability, even when a NOT_NULL boundary returns NULL.
+        for nullable in [false, true] {
+            let ctx = probe(
+                vec![Datum::Int(0), Datum::Int(1), Datum::Null, Datum::Int(5)],
+                None,
+                crate::ErrorLevel::Warn,
+            );
+            assert_eq!(
+                evaluate(entry, &fields(Code::LongLong, nullable, 4), &ctx),
+                Ok(Datum::Int(if entry < 2 || nullable { 0 } else { 2 }))
+            );
+            let visited: &[usize] = if nullable { &[0, 1] } else { &[0, 2, 3] };
+            assert_eq!(*ctx.events.borrow(), children(entry, 4, visited));
+        }
+        // Datum integer kinds preserve unsigned order and precision. Missing
+        // lazy metadata selects Real; eager classification still sees Ints.
+        for (values, exact, real) in [
+            (
+                vec![
+                    Datum::UInt(9_007_199_254_740_992),
+                    Datum::UInt(9_007_199_254_740_993),
+                ],
+                0,
+                1,
+            ),
+            (vec![Datum::Int(-1), Datum::UInt(0)], 0, 0),
+            (vec![Datum::UInt(u64::MAX), Datum::Int(-1)], 1, 1),
+        ] {
+            for typed in [false, true] {
+                let types = if typed {
+                    fields(Code::LongLong, false, 2)
+                } else {
+                    vec![None, None]
+                };
+                let ctx = probe(values.clone(), None, crate::ErrorLevel::Warn);
+                assert_eq!(
+                    evaluate(entry, &types, &ctx),
+                    Ok(Datum::Int(if entry < 2 || typed { exact } else { real }))
+                );
+                assert_eq!(*ctx.events.borrow(), children(entry, 2, &[0, 1]));
+            }
+        }
+        let ctx = probe(
+            vec![Datum::Null, Datum::MaxValue],
+            None,
+            crate::ErrorLevel::Warn,
+        );
+        assert_eq!(
+            evaluate(entry, &fields(Code::LongLong, false, 2), &ctx),
+            if entry < 2 {
+                Err(EvalError::Unsupported("range sentinel INTERVAL argument"))
+            } else {
+                Ok(Datum::Int(-1))
+            }
+        );
+        assert_eq!(*ctx.events.borrow(), children(entry, 2, &[0]));
+
+        // Eager converts ALL boundaries before search. Nullable lazy stops at
+        // index 1; NOT_NULL lazy visits index 2 first, warning/error included.
+        for nullable in [false, true] {
+            for level in [crate::ErrorLevel::Warn, crate::ErrorLevel::Error] {
+                let ctx = probe(
+                    vec![
+                        Datum::Real(0.0),
+                        Datum::Real(1.0),
+                        Datum::new_string("2tail"),
+                    ],
+                    None,
+                    level,
+                );
+                let demanded = entry < 2 || !nullable;
+                let message = "Truncated incorrect DOUBLE value: '2tail'";
+                let expected = if demanded && level == crate::ErrorLevel::Error {
+                    Err(EvalError::TruncatedWrongValue(message.to_owned()))
+                } else {
+                    Ok(Datum::Int(0))
+                };
+                assert_eq!(
+                    evaluate(entry, &fields(Code::Double, nullable, 3), &ctx),
+                    expected
+                );
+                let mut events = children(entry, 3, if nullable { &[0, 1] } else { &[0, 2] });
+                if demanded {
+                    events.push(Event::Level);
+                    if level == crate::ErrorLevel::Warn {
+                        events.push(Event::Warning(1292, message.to_owned()));
+                    }
+                    if entry >= 2 && level == crate::ErrorLevel::Warn {
+                        events.push(Event::Child(1));
+                    }
+                }
+                assert_eq!(*ctx.events.borrow(), events);
+            }
+        }
+        if entry != 0 {
+            let ctx = probe(
+                vec![Datum::Real(0.0), Datum::Real(1.0), Datum::Real(2.0)],
+                Some(2),
+                crate::ErrorLevel::Warn,
+            );
+            let result = evaluate(entry, &fields(Code::Double, true, 3), &ctx);
+            if entry == 1 {
+                assert!(result.is_err());
+            } else {
+                assert_eq!(result, Ok(Datum::Int(0)));
+            }
+            assert_eq!(*ctx.events.borrow(), children(entry, 3, &[0, 1]));
         }
     }
 }

@@ -1,0 +1,49 @@
+interval-runtime-101 / R104
+CPP cwd /home/agent/tidb/expression-unification/tikv
+Native cwd /home/agent/tidb/expression-unification/tidb/rust
+Raw /home/agent/tidb/expression-unification/logs/interval-runtime-{id}.log
+Counts passed/failed/ignored/filtered; compile/test seconds.
+
+tikv-core | 1/0/0/982 | 15.64/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_interval -- --test-threads=1
+sha256 3e603e6ad8048ce9b1d2090164913e3b2d3f63bc276a2eb45dfbd5cf816ae9b2
+
+tikv-local | 353/0/1/629 | 0.13/0.24 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+sha256 b3faf2faf5acb5012b1af0bba02308778db63d0a5d84587ff2c4504f51cf4b63
+
+native-entry | 9/0/0/1704 | 18.54/0.02 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib interval -- --test-threads=1
+sha256 e77ba9a1095f78e5dec0d9e519686561ba07bd8d7b88b38a8c3587241198f76c
+
+native-gateway | 196/0/1/1516 | 0.12/0.33 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii -- --test-threads=1
+sha256 26f9873ee950da9d006f3596d0f6cfabb5d79607feacedcb31f47992ca0455d9
+
+native-original | 13/0/0/1700 | 0.13/0.02 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib builtin_ext::compare2 -- --test-threads=1
+sha256 c7a869bbc0a711acb5a0ca5bbddb9b270d9dabff5906e7e03cfda74c59bb0579
+
+sql | 11/0/0/2235 | 27.99/0.29 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib interval -- --test-threads=1
+sha256 7d4ffd50f2aa20654438c8477bdaf2486dabdb1cbba0bcf42c6ac56220e4be6d
+
+Six actual locked serial launches allgreen firsttime; no compile/newtest/product failure, zero-match, interrupted run or retry. Five new tests:2CPP/2native/1SQL.139CPP/390native prior test bodies byte-identical, including R102/R103 changes in touched files. Existing ignored vector tests stayignored, notpasses. No old oracle/fixture/body edits or provider recording.
+
+SDKnew test preserves eager actual-allInt/nullable vs lazy optional9ET/fullflags, sentinel-beforeNULL, exact UIntMAX/signed comparisons, eagerNaNtarget0 vs lazy2 andNaNboundary0 vs1, eagerallcasts/error-suffixrequest, actualNULL underNOTNULL, metadataNone→real, whole-state validation and1000NULLrun retainedbound. Integer comparers reuseexistingSDK implementations; no new M0 prerequisite. OriginalRustslice.partition_point retained for eager nonmonotonic/NaN behavior.
+
+Three directprofiles useactualSDK-produced continuation reports andactualInt/UInt/Real/None values. Allsuccessful reportsSome, includingIntIndex(-1). Each ownedheadpacket/state/value capacity128Ki vs64Ki refusesbeforeinvoke, thenhealthyreuse; wrongrole/packet/stage andmax_steps0 checks preservestorage. CPPinstruction0 isnotfrontendpool0. Tests followrequestedindices, do nothostsearch/forgecursor/winner/SQLcomparison proof.
+
+Native4entry test: ready/helper +AST eager versus lazyhelper/manualtyped; NaN andactualNULL undernullable-vsNOTNULL metadata differ intentionally, unsigned>2^53 remains exact, missingmetadata selectsreal, NULLtarget+sentinel eagererror versuslazy-1 onlyindex0, oldwarning/strict-error/child ordering. Bridge test3profiles/pool0and1, lazyvisited[0,3,2] skipsunvisitederrors, eagerrealfullwarnings preserveoriginalctx, ordinaryvisitederror leaveshealthyreuse, actuallargeHead budget refuses/reuses, child/coercionpanic poisons, NoColumns entry. LazyHeadNEWresourcegate precedeseval0; no claim allchild errors precedehead. Head→Step staysselected; broaderrequest-root/defaultNoCols propagation isstillopen.
+
+Old native interval_scope_does_not_raise_child_warnings_during_fold, logical_and_interval_skip_unreachable_warning_arguments, test_interval_func andtest_compare_builtin_interval_rows allgreen. Originalcompare2 module13 includesotherexisting functions plusnewentry, not13newtests. Sessioninterval-filter11 includesone new32SELECT test andtenexisting interval-named tests (someunrelatedconfig/index/partition/window names); not11 function-specificSQL gates.
+
+NewSQL32SELECT=8storedtemplates×2vector×pool1/0:16positiveInt results/16NEWHeadrefusals. NNintegerbinary2, nullableinteger skipNULL2, UInt2^63 with+1 boundary exact2, NNrealbinary skipsbadstring quiet2, samevaluesnullablelinear readsbad andexactone1292 Truncated incorrect DOUBLE value: 'bad', nullableReal skipNULL2, NULLtarget-1quiet, firstgreater0quiet skipsbadtail. Signed/binaryLongLong20/0. Allstoredoperands, nonestedCAST/functionchildren/NaN SQL; Headzeros proveonlyhead, nottargetreadcounts/alllaterroots. SQLoracles fromoldsearch/coercion andreturndefaultmetadata, notactualoutput.
+
+ThreeValues/OwnBytes/onecall profiles: IntervalEagerHeadNative Bytes(actualnullableidentitylist), IntervalLazyHeadNative Bytes(actualoptional9ET/fullu32flags list), IntervalStepNative Bytes2(wholeSDKreport,actualcastidentity-orNULL). SDKallclassification/search/nextindices; eagerhead IntIndex|SentinelsError|ReqReal0, lazyhead onlyReqInt/Real0, step Index|ReqInt/Realnext; noouterNone andnoStepSentinelsError. Originalminarity2, typesmissingnotassumedInt, NOTNULL doesnotrejectactualNULL. DonlygenericcastsourceFT/originalctx andreturnprojection, nohostnullable/domain/NaNscreen/search/reconstructedstate. EagerASTchildrenbeforehead; lazychildrenonlyondemand afterhead. Eagerrealallnonnullconversionsbeforesearch, thennullablelinear< ornonnullpartition_point<=; lazybinarytarget< elsegoright. No newcarrier/compilearity/factorylimit/role/wire/PB/legacy/specializedvectorkernel/physicaltransport.
+
+Finalbound checkedlen1+len2+256; eagerstateNULLmask plusconverted-onlyVec<u64> grows8B perstep, longNULLgap onlymovesSDKindex. TerminaltemporaryVec<Option<f64>> feedsoriginalpartition_point butisnotretainedreply orphysicalpeak guarantee. Allactualcapacities checked. No totalheap/OOM/allocator/perfclaim.
+
+SevenCPP/sixnative Rustfiles,two newmodules; nativeclassification/search/coercion loops andinterval_real removed, genericops reuse. Pinnedfmt/check+gitdiffchecks pass; guides descriptive, no Cargo/lock/Go/Bazel/AGENTpolicy changes. UnrelatedBUILD excluded.234previousfamily objects/allpriorpartial+type records exact; appendinterval only. Functional235/245=95.92%, strict0, remaining10=2core+2ordinary+6complex candidates; latesttype extrema-policy-99 unchanged. ThreeidenticalPlans andsigned-off pairedpushes.
+
+No full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/TiFlash/FIPS/performance/physicalheap/peak/OOM/allocator/dual-tzdata/wholeGo-package/PR-ready verification. R1004+1 failures historical/unrepaired; no blanketexceptions oroverallgoal completion. M6/request-root/defaultNoColumns/liveDAG/finalacceptance continue.

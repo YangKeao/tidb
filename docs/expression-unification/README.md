@@ -1,26 +1,24 @@
 # Expression unification experiment
 
 Paired branch: `expression-unification-demo` in YangKeao/tidb and YangKeao/tikv.
-Current checkpoint: **extrema-runtime-100**, after **extrema-policy-99**.
+Current checkpoint: **interval-runtime-101**, after **extrema-runtime-100**.
 
-Functional **234/245 (95.51%)**, strict **0**, remaining11. Only `greatest`/`least` are added;232 previous family objects are unchanged. Overall goal remains active.
+Functional **235/245 (95.92%)**, strict **0**, remaining10. Only `interval` is added;234 previous family objects are unchanged. Overall goal remains active.
 
-## GREATEST/LEAST takeover
+## INTERVAL takeover
 
-Eight SDK profiles now own all five native domains: numeric, temporal, vector, direct string and string-as-time. Duplicate reducers and temporal-text conversion are removed from `compare2.rs`; `tikv/extremum.rs` performs SDK-requested original preparation and materialization.
+Three SDK profiles own eager and lazy classification/search. `compare2.rs` now delegates through `tikv/interval.rs`; duplicate native loops are removed.
 
-Numeric NoColumns semantics retain selected execution authority. Other casts/getters use the original context. Complete actual identities, effective collator mode, per-item mode/timezone order, global NULL, first ties and Decimal scale are preserved. No new carrier, PB/legacy admission or specialized vector kernel.
+Eager sentinel-before-NULL and complete real conversion remain distinct from lazy metadata-driven child demand. Exact signed/unsigned comparison, NaN predicate differences and original warning/cast context are preserved. Lazy Head now admits before target callback, so resource refusal may precede a child error. No new PB/legacy admission, carrier or vector kernel.
 
 ## Evidence
 
-[Checkpoint](evidence/extrema-runtime-checkpoint.md), [commands/counts/hashes](logs/extrema-runtime-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
+[Checkpoint](evidence/interval-runtime-checkpoint.md), [commands/counts/hashes](logs/interval-runtime-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
 
-Ten launches:9green/1retained product-regression run. Native testing caught a vector identity/storage-prefix mix-up missed by new direct fixtures. The consumer and only new fixture preparation were corrected from source; old native tests/oracles were unchanged. All final gates pass.
-
-New SQL28SELECT includes14 isolated Head refusals across both vector settings, all five domains, quiet invalid-time fallback and NULL. Prior four-SELECT policy test and six original SQL tests also pass.151CPP/388native old test bodies remain identical. NineCPP/six native Rust files, two new modules.
+Six locked serial launches pass on first execution. New SQL32SELECT has16 Head refusals and16 positive results across both vector settings; warning demand changes with real nullability metadata. Old constant-fold/unreachable-warning and cross-tier regressions pass.139CPP/390native old test bodies remain identical.
 
 ## Still open
 
-[Remaining acceptance](evidence/remaining-acceptance.md):3core,2ordinary,6complex candidates—not blanket exceptions—plus request-root/default-NoColumns/liveDAG/final acceptance.
+[Remaining acceptance](evidence/remaining-acceptance.md):2core,2ordinary,6complex candidates—not blanket exceptions—plus request-root/default-NoColumns/liveDAG/final acceptance.
 
 Full expression/unistore were not rerun; historical4+1 failures remain. Workspace/lint/dev/bazel/release/exhaustive/TiFlash/FIPS/performance/physical memory/OOM/allocator/dual-tzdata/whole Go-package/PR readiness remain unverified. Manifest pins paired TiKV and three identical Plans. No force push or PR; unrelated BUILD excluded.

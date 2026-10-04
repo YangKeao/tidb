@@ -2286,6 +2286,9 @@ fn materialize_computed(
             | EvaluatedBytesOp::ExtremumTimeTextNative
             | EvaluatedBytesOp::ExtremumTimeContextNative
             | EvaluatedBytesOp::ExtremumFinishNative
+            | EvaluatedBytesOp::IntervalEagerHeadNative
+            | EvaluatedBytesOp::IntervalLazyHeadNative
+            | EvaluatedBytesOp::IntervalStepNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative

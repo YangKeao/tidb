@@ -46,6 +46,8 @@ mod from_unixtime;
 mod identity_value;
 mod if_control;
 mod if_null;
+mod interval;
+pub(crate) use interval::{eval_interval_in, eval_interval_lazy_in};
 mod json_sum_crc32;
 pub(crate) use json_sum_crc32::eval_json_sum_crc32_in;
 mod null_if;

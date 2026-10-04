@@ -9363,6 +9363,112 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_interval_preserves_nullable_search_demand_and_head_pool_refusals() {
+    use tidb_datatype::FieldTypeCode;
+
+    let create = "CREATE TABLE shared_interval_runtime_sql (i BIGINT NOT NULL, lo BIGINT NOT NULL, hi BIGINT NOT NULL, neg BIGINT NOT NULL, u BIGINT UNSIGNED NOT NULL, uhi BIGINT UNSIGNED NOT NULL, ni BIGINT, null_i BIGINT, r DOUBLE NOT NULL, rhi DOUBLE NOT NULL, bad_nn VARCHAR(8) NOT NULL, nr DOUBLE, nrlo DOUBLE, nrhi DOUBLE, null_r DOUBLE, bad_nullable VARCHAR(8))";
+    let insert = "INSERT INTO shared_interval_runtime_sql VALUES (1,0,2,-1,9223372036854775808,9223372036854775809,1,NULL,1.5,2.5,'bad',1.5,0.5,2.5,NULL,'bad')";
+    // The static NOT_NULL flags, not the row's actual non-NULL values, choose
+    // binary versus linear search. Integer and real signatures both return
+    // the index of the first greater boundary; equal boundaries are passed.
+    let cases = [
+        ("INTERVAL(i,lo,i,hi)", 2, false),
+        ("INTERVAL(ni,lo,null_i,hi)", 2, false),
+        ("INTERVAL(u,neg,u,uhi)", 2, false),
+        // Same real target and boundary values below. The NOT NULL version
+        // probes argument indices 2 then 3, never converting bad_nn at 1.
+        // Even its numeric reading (0) would keep the boundaries sorted.
+        ("INTERVAL(r,bad_nn,r,rhi)", 2, false),
+        // Nullable metadata instead requires the linear scan to visit 1,
+        // converting 'bad' to 0 and publishing exactly one DOUBLE warning.
+        ("INTERVAL(nr,bad_nullable,nr,nrhi)", 2, true),
+        ("INTERVAL(nr,nrlo,null_r,nrhi)", 2, false),
+        // NULL target is -1, not NULL, and demands no boundary conversion.
+        ("INTERVAL(null_i,nrhi,bad_nullable)", -1, false),
+        // Linear search also stops early; the later bad boundary stays quiet.
+        ("INTERVAL(nr,nrhi,bad_nullable)", 0, false),
+    ];
+    for slots in [1, 0] {
+        let mut session = Session::new();
+        session.run("SET sql_mode=''").unwrap();
+        session
+            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+            .unwrap();
+        session.run(create).unwrap();
+        session.run(insert).unwrap();
+        assert!(session
+            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .unwrap());
+        for vectorized in [0, 1] {
+            session
+                .run(&format!(
+                    "SET tidb_enable_vectorized_expression={vectorized}"
+                ))
+                .unwrap();
+            for (expression, expected, warns) in cases {
+                // Stored operands only: no CAST/function child can consume
+                // the pool on behalf of this new INTERVAL Head root.
+                let sql = format!("SELECT {expression} FROM shared_interval_runtime_sql");
+                if slots == 0 {
+                    let error = session.run_with_columns(&sql).expect_err(&sql);
+                    match &error {
+                        DriverError::Exec(tidb_executor::ExecError::Eval(
+                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                        )) => {
+                            assert_eq!(
+                                failure.class(),
+                                tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                            );
+                            assert_eq!(
+                                failure.origin(),
+                                tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                            );
+                        }
+                        other => {
+                            panic!("INTERVAL Head bypassed the pool: {sql}/{vectorized}: {other:?}")
+                        }
+                    }
+                    let mysql = error.to_mysql_error();
+                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
+                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
+                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
+                    // Sixteen new Head refusals, including NULL target and
+                    // the normally warning-producing linear real search.
+                    // SQL does not separately prove callback read indices or
+                    // isolate the later search worker's pool acquisitions.
+                    assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+                    continue;
+                }
+                let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap()
+                else {
+                    panic!("expected INTERVAL index rows: {sql}")
+                };
+                assert_eq!(columns.len(), 1);
+                let field = &columns[0].1;
+                // The planner's INTERVAL return type is its ordinary int()
+                // helper: LongLong 20/0, signed even for unsigned operands.
+                assert_eq!(field.code(), FieldTypeCode::LongLong);
+                assert_eq!((field.flen(), field.decimal()), (20, 0));
+                assert!(!field.is_unsigned());
+                assert_eq!(field.charset_name(), "binary");
+                assert_eq!(field.collation_name(), "binary");
+                assert_eq!(rows, vec![vec![Datum::Int(expected)]], "{sql}/{vectorized}");
+                let expected_warnings = if warns {
+                    vec![(1292, "Truncated incorrect DOUBLE value: 'bad'".to_owned())]
+                } else {
+                    Vec::new()
+                };
+                assert_eq!(
+                    warnings_of(&session),
+                    expected_warnings,
+                    "{sql}/{vectorized}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_extremum_preserves_five_domains_and_global_head_pool_demand() {
     use tidb_datatype::{FieldTypeCode, VectorFloat32};
 

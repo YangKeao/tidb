@@ -1523,6 +1523,13 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::ExtremumFinishNative => {
             panic!("extremum needs actual identities or its SDK-requested streaming continuation")
         }
+        EvaluatedBytesOp::IntervalEagerHeadNative
+        | EvaluatedBytesOp::IntervalLazyHeadNative
+        | EvaluatedBytesOp::IntervalStepNative => {
+            panic!(
+                "INTERVAL needs its actual identities, field metadata, or requested continuation"
+            )
+        }
         EvaluatedBytesOp::ConvertTzNative => {
             panic!("CONVERT_TZ needs its three actual nullable coerced strings")
         }
