@@ -2268,6 +2268,9 @@ fn materialize_computed(
             | EvaluatedBytesOp::ToBinaryNative
             | EvaluatedBytesOp::FromBinaryNative
             | EvaluatedBytesOp::ConvertUsingNative
+            | EvaluatedBytesOp::StrToDateHeadNative
+            | EvaluatedBytesOp::StrToDateFinishNative
+            | EvaluatedBytesOp::StrToDateTypedFinishNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative

@@ -2981,21 +2981,16 @@ impl ScalarFunction {
                 | "CONVERT_TZ"
                 | "FROM_UNIXTIME"
         ) {
-            let mut result = crate::time_fn::dispatch(&upper, &vals, ctx)
-                .expect("the native temporal family is registered")?;
-            if upper == "STR_TO_DATE"
-                && self.get_static_type().map(FieldType::code)
-                    == Some(tidb_datatype::FieldTypeCode::Datetime)
-            {
-                if let Ok(text) = result.sql_string() {
-                    if text.contains(':') && !text.contains('-') {
-                        if ctx.date_modes().no_zero_date {
-                            return Ok(Datum::Null);
-                        }
-                        result = Datum::new_string(format!("0000-00-00 {text}"));
-                    }
-                }
-            }
+            let result = if upper == "STR_TO_DATE" {
+                crate::time_fn::calendar::str_to_date_typed(
+                    &vals,
+                    ctx,
+                    self.get_static_type().map(FieldType::code),
+                )?
+            } else {
+                crate::time_fn::dispatch(&upper, &vals, ctx)
+                    .expect("the native temporal family is registered")?
+            };
             return match self.get_static_type().map(FieldType::code) {
                 Some(tidb_datatype::FieldTypeCode::Datetime) => crate::cast::parse_computed_time(
                     &result,

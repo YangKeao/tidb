@@ -1493,6 +1493,13 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::ConvertUsingNative => {
             panic!("charset conversion needs actual nullable bytes and exact/effective charset metadata")
         }
+        EvaluatedBytesOp::StrToDateHeadNative
+        | EvaluatedBytesOp::StrToDateFinishNative
+        | EvaluatedBytesOp::StrToDateTypedFinishNative => {
+            panic!(
+                "STR_TO_DATE needs actual text, result metadata, or the demanded SDK continuation"
+            )
+        }
         EvaluatedBytesOp::ConvertTzNative => {
             panic!("CONVERT_TZ needs its three actual nullable coerced strings")
         }

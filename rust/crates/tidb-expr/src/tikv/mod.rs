@@ -47,6 +47,8 @@ pub use from_unixtime::eval_from_unixtime_legacy_scoped_in;
 pub(crate) use if_control::eval_if_in;
 pub(crate) use if_null::eval_if_null_in;
 pub(crate) use null_if::eval_null_if_in;
+mod str_to_date;
+pub(crate) use str_to_date::eval_str_to_date_in;
 mod timestamp_diff;
 pub use timestamp_diff::{eval_legacy_timestamp_diff_in, LegacyTimestampDiffArgs};
 pub(crate) use timestamp_diff::{eval_timestamp_diff_in, eval_timestamp_diff_null_in};

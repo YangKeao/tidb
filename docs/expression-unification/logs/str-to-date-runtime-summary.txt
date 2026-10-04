@@ -1,0 +1,61 @@
+str-to-date-runtime-95 / R98
+CPP cwd /home/agent/tidb/expression-unification/tikv
+Native cwd /home/agent/tidb/expression-unification/tidb/rust
+Raw /home/agent/tidb/expression-unification/logs/str-to-date-runtime-{id}.log
+Counts passed/failed/ignored/filtered; compile/test seconds.
+
+tikv-core | 1/0/0/973 | 23.04/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_str_to_date -- --test-threads=1
+sha256 6e9113da7daf018d9723a108ef0ac50550849c9cb1a9ceb1e28b2c85280d3ad6
+
+tikv-local-new-test-failure | 348/1/1/624 | 0.25/0.25 | exit101
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+sha256 f252aec99387cb4a0dc4184b8e5b78d57ecf9a1b6a41c55d1269b71f33829d39
+New test incorrectly expected Head NeedTypedDateMode("0000-00-00 20:23:10"). Frozen contract and original scalar_function2995 place prefix AFTER the late mode getter, so corrected ONLY this new intermediate expectation to NeedTypedDateMode("20:23:10"). TypedFinish's prefixed expectation remains. No production or original test/oracle changed, no provider-output recording. Failure retained, not claimed first-run green.
+
+tikv-local | 349/0/1/624 | 5.08/0.24 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+sha256 70ad1fc1c307fa6ff9f7d392e43a44cb87b93c6ab2f99b83ca205a442e3fdbe5
+
+native-entry | 1/0/0/1703 | 19.74/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib str_to_date_entries_keep_lazy_modes_warnings_and_duration_null_cast -- --test-threads=1
+sha256 4edb44a20c254b710b3493ee888f8b06e9a208741a6fb7429ba898c97512ad2d
+
+native-bridge | 1/0/0/1703 | 0.18/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib str_to_date_bridge_preserves_late_modes_warnings_and_scoped_continuations -- --test-threads=1
+sha256 232b3ed23cc2bb7a5f2cf6fecac9704293668139ba39dbc105a2395ea362dbd2
+
+native-gateway | 196/0/1/1507 | 0.14/0.36 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii -- --test-threads=1
+sha256 0c598c4b10cb148336cd042c9fe3e1b47f4e496517a7dab5197537e467240744
+
+sql | 1/0/0/2239 | 29.48/0.11 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_str_to_date_preserves_stored_formats_modes_and_distinct_pool_paths -- --test-threads=1
+sha256 64d2f2f1d532bdf2d4644e26709995309ac90c185fe608f2ef9a374830ef870d
+
+sql-original | 1/0/0/2239 | 0.19/0.02 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib str_to_date_uses_the_format -- --test-threads=1
+sha256 233187ecd4b4c1f61098eb546144b99aa21c1ff459c6bd5c8d40b4e068932437
+
+expr-full | 1606/4old/94/0 | 0.14/15.08 | exit101
+../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+sha256 27e77a00f99d5ed99fdc668d78895c30ad859708d17a0f64c7bf530d52641fe9
+
+unistore-full | 220/1old/13/0 | 10.80/3.05 | exit101
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+sha256 de0a8fbef757124187d2080139bcf429d8975a6620afaf9020f6dcdf401e038f
+
+Ten locked single-threaded Cargo launches, all nonzero executed tests:7green/2only-old full RED/1new-test RED corrected from original staged contract. Six new tests finally pass, NOT all first-run green. No compile RED, zero-match, interrupted run or original oracle change. Whole failures byte-equal to R96 convert-charset-{expr,unistore}-full.log after only numeric panic-heading thread IDs -> THREAD:
+expression 411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+unistore 2f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1
+Known %d input01 relaxed/month0 mismatch remains NULL/1411, not repaired.
+
+New SQL34SELECT=8storedcases×2vector×pool1/0=32direct+2positive Datefilters.14NEW nonNULLHead refusals include parser warnings and typed-mode computedNULL;2OLD actualNULL-witness refusals labeled separately. Values/headers DATE10/0, Duration17/6, DATETIME26/6, full Unicode-punctuation date,1292 badmonth/1411 yearonly, dynamicdefaultNULL and relaxedzero-prefix pinned. StoredVARCHAR coercion/static format metadata introduce no earlier worker. Positive filters do not claim isolated Finish refusal. Old classifier test4SELECT also passes. CPP tests separately isolate each stage with max_steps0 (not frontend pool0), whole tagged report preservation, flags/type metadata validation, day999 width,128Ki actualcapacity vs64Ki cap preinvoke refusal and healthy reuse.
+
+Three one-call Values/OwnBytes profiles: Head existingBytesBytesInt(input,format,actualnullabletypeenum), DateFinish newnarrowBytesIntInt(wholeopaqueState,actualnoZeroDate01,actualallowInvalid01), TypedFinish existingBytesInt(wholetypedState,actualnoZeroDate01). Generic arity1..3 and nativefactory4nodes unchanged. Named target variants use mysql_type0..255; actual Unknown(byte) uses -1-byte, preserving Unknown(12) != Datetime(+12), not hidden origin or host-answer flag.
+Reports:tag0UTF8value,1warning1292,2warning1411,3NeedDateModes wide state+originalinput,4NeedTypedDateMode clock. Full original reports, includingtags, move to continuations without stripping/repacking. DateFinish onlySomeValue/Warning; TypedFinish onlyValue/quietNone. SDK owns scan/validation/render/warnings/late-prefix; native invokes original getters only on corresponding Need reports and uses original append_warning without truncate-policy escalation. Caller actualNULL uses old genuine witness before either coercion, but both children already evaluated. Generic CAST remains; Duration(NULL) timezone read preserved, Date/Datetime NULL no extra getter/C4. R97 public datatype and original wire grammars remain distinct.
+Uniform checked first.len+64 bounds retained output before producer (headinput/finishstate/typedreport), all actual capacities accounted, fresh exact reserve+realcap verified. Temporary Vec<char>/format allocations, physical heap/peak/OOM and allocator behavior unclaimed.
+
+7CPP/7native Rust files,2newmodules,3newtests each.134CPP/411native original test bodies byte-identical. Native ParsedDateTime/innerparser/month0sentinel/6privatehelpers deleted; scalar contains/zeroPrefix logic deleted; shared calendar helpers retained. Pinned rustfmt --edition2021 --config skip_children=true --check and git diff --check pass (CPPnightly2026-01-30/native2026-08-22 in expression-reuse/rustup-home/toolchains). Independent E source review no blocker. No Cargo/lock/Go/Bazel change; guides descriptive, unrelated BUILD excluded.
+
+Functional230/245=93.88%, strict0,15remaining=5core+4ordinary+6complex candidates.229 previous family objects and all previous partial/type records unchanged; onlystr_to_date added; latesttype remainsstr-to-date-types-94. Request-root/default-NoColumns/liveDAG/final acceptance and known gaps remain. Workspace/lint/dev/bazel/release/exhaustive/TiFlash/FIPS/performance/physicalheap/OOM/allocator/dual-tzdata/completeGo-package/PR readiness unverified. Paired signed-off commits carry three identical Plan snapshots.

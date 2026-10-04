@@ -1350,23 +1350,6 @@ fn time_parts_with_micros(time_suffix: Option<&str>) -> Option<(u32, u32, u32, u
     Some((hour, minute, second, microsecond))
 }
 
-#[derive(Default)]
-struct ParsedDateTime {
-    year: i64,
-    month: u32,
-    day: u32,
-    hour: u32,
-    minute: u32,
-    second: u32,
-    microsecond: u32,
-    saw_date: bool,
-    saw_time: bool,
-    saw_fraction: bool,
-    saw_24_hour: bool,
-    saw_12_hour: bool,
-    am_pm: Option<bool>,
-}
-
 /// `STR_TO_DATE(date, format)`, ported from `types.Time.StrToDate` and the
 /// `builtinStrToDate*Sig` family in `pkg/expression/builtin_time.go`.
 ///
@@ -1409,459 +1392,15 @@ struct ParsedDateTime {
 /// relaxed mode, and answered `0000-05-01` for `str_to_date('01,5','%d,%m')`
 /// where the default mode's TiDB answers NULL.
 pub(crate) fn str_to_date(vals: &[Datum], cols: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    if vals.len() != 2 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    // A NULL operand answers NULL silently; go's StrToDate FAILURE lands on
-    // the zero time whose cast warns `Incorrect datetime value:
-    // '0000-00-00 00:00:00'` (1292) — handled by the wrapper below.
-    if matches!(vals[0], Datum::Null) || matches!(vals[1], Datum::Null) {
-        return Ok(Datum::Null);
-    }
-    let result = str_to_date_inner(vals, cols)?;
-    match result {
-        // go `mysqlTimeFix`: the month-0 results (no %m/%c token parsed)
-        // raise ErrWrongValueForFunction (1411) naming the INPUT text and
-        // the function (oracle-captured on g-fsp).
-        Datum::Bytes(bytes) if bytes.is_empty() => {
-            if let Ok(Some(input)) = coerce_str(&vals[0]) {
-                cols.append_warning(
-                    1411,
-                    &format!("Incorrect datetime value: '{input}' for function str_to_date"),
-                );
-            }
-            return Ok(Datum::Null);
-        }
-        // The token-parse failures (`str_to_date('a', '%d')`,
-        // `'2020-99-99'` with the month 99) land on the ZERO time, whose
-        // cast warns the zero-time text under 1292 (oracle-captured on
-        // m1-errors/g-tz).
-        Datum::Null => {
-            cols.append_warning(1292, "Incorrect datetime value: '0000-00-00 00:00:00'");
-            return Ok(Datum::Null);
-        }
-        other => return Ok(other),
-    }
+    crate::tikv::eval_str_to_date_in(cols, vals, None)
 }
 
-fn str_to_date_inner(vals: &[Datum], cols: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    let (Some(date), Some(format)) = (coerce_str(&vals[0])?, coerce_str(&vals[1])?) else {
-        return Ok(Datum::Null);
-    };
-    let date: Vec<char> = date.chars().collect();
-    let format: Vec<char> = format.chars().collect();
-    let mut value = ParsedDateTime::default();
-    let mut date_pos = 0;
-    let mut format_pos = 0;
-    while format_pos < format.len() {
-        skip_parser_whitespace(&date, &mut date_pos);
-        skip_parser_whitespace(&format, &mut format_pos);
-        if format_pos >= format.len() {
-            break;
-        }
-        let token = format[format_pos];
-        format_pos += 1;
-        if token != '%' {
-            if date.get(date_pos) != Some(&token) {
-                return Ok(month_zero_sentinel(&value));
-            }
-            date_pos += 1;
-            continue;
-        }
-        let Some(specifier) = format.get(format_pos).copied() else {
-            return Ok(month_zero_sentinel(&value));
-        };
-        format_pos += 1;
-        if date_pos >= date.len() {
-            // Go's `strToDate` records the current token with value zero and
-            // stops when the input is exhausted. `mysqlTimeFix` relies on the
-            // presence of `%p` and `%H` to reject that pairing; an absent `%p`
-            // after a 12-hour clock is treated as AM.
-            match specifier {
-                'p' => {
-                    value.am_pm = Some(false);
-                    break;
-                }
-                'H' | 'k' => {
-                    value.saw_24_hour = true;
-                    break;
-                }
-                'h' | 'I' | 'l' => {
-                    value.saw_12_hour = true;
-                    break;
-                }
-                // `%f` accepts an empty digit run, and the skip classes are
-                // no-ops on an exhausted input; retain their source behavior.
-                'f' | '@' | '#' | '.' => {}
-                _ => break,
-            }
-        }
-        match specifier {
-            'Y' => {
-                let Some((raw, consumed)) = parse_ascii_digits(&date[date_pos..], 4) else {
-                    return Ok(month_zero_sentinel(&value));
-                };
-                value.year = expand_year(raw, consumed);
-                value.saw_date = true;
-                date_pos += consumed;
-            }
-            'y' => {
-                let Some((raw, consumed)) = parse_ascii_digits(&date[date_pos..], 2) else {
-                    return Ok(month_zero_sentinel(&value));
-                };
-                value.year = expand_year(raw, consumed);
-                value.saw_date = true;
-                date_pos += consumed;
-            }
-            'm' | 'c' => {
-                let Some((month, consumed)) = parse_ascii_digits(&date[date_pos..], 2) else {
-                    return Ok(month_zero_sentinel(&value));
-                };
-                // Assign BEFORE the range check: a parsed-but-out-of-range
-                // month (99) is the zero-time failure (1292), while an
-                // ABSENT month (0) is the ErrWrongValueForFunction sentinel
-                // (1411) -- distinct oracle behaviors.
-                value.month = month;
-                value.saw_date = true;
-                date_pos += consumed;
-                if month > 12 {
-                    return Ok(month_zero_sentinel(&value));
-                }
-            }
-            'd' | 'e' => {
-                let Some((day, consumed)) = parse_ascii_digits(&date[date_pos..], 2) else {
-                    return Ok(month_zero_sentinel(&value));
-                };
-                if day > 31 {
-                    return Ok(month_zero_sentinel(&value));
-                }
-                value.day = day;
-                value.saw_date = true;
-                date_pos += consumed;
-            }
-            'j' => {
-                // go `strToDate`'s %j: the day-of-year lands in the DAY slot
-                // and the month stays unset -- `mysqlTimeFix` then answers
-                // ErrWrongValueForFunction (1411) for the month-0 result
-                // (oracle: `STR_TO_DATE('2020 13 02', '%Y %j %d')`).
-                let Some((doy, consumed)) = parse_ascii_digits(&date[date_pos..], 3) else {
-                    return Ok(month_zero_sentinel(&value));
-                };
-                value.day = doy;
-                value.saw_date = true;
-                date_pos += consumed;
-            }
-            'H' | 'k' => {
-                let Some((hour, consumed)) = parse_ascii_digits(&date[date_pos..], 2) else {
-                    return Ok(month_zero_sentinel(&value));
-                };
-                if hour > 23 {
-                    return Ok(month_zero_sentinel(&value));
-                }
-                value.hour = hour;
-                value.saw_time = true;
-                value.saw_24_hour = true;
-                date_pos += consumed;
-            }
-            'h' | 'I' | 'l' => {
-                let Some((hour, consumed)) = parse_ascii_digits(&date[date_pos..], 2) else {
-                    return Ok(month_zero_sentinel(&value));
-                };
-                if hour == 0 || hour > 12 {
-                    return Ok(month_zero_sentinel(&value));
-                }
-                value.hour = hour;
-                value.saw_time = true;
-                value.saw_12_hour = true;
-                date_pos += consumed;
-            }
-            'i' => {
-                let Some((minute, consumed)) = parse_ascii_digits(&date[date_pos..], 2) else {
-                    return Ok(month_zero_sentinel(&value));
-                };
-                if minute > 59 {
-                    return Ok(month_zero_sentinel(&value));
-                }
-                value.minute = minute;
-                value.saw_time = true;
-                date_pos += consumed;
-            }
-            's' | 'S' => {
-                let Some((second, consumed)) = parse_ascii_digits(&date[date_pos..], 2) else {
-                    return Ok(month_zero_sentinel(&value));
-                };
-                if second > 59 {
-                    return Ok(month_zero_sentinel(&value));
-                }
-                value.second = second;
-                value.saw_time = true;
-                date_pos += consumed;
-            }
-            'f' => {
-                let (microsecond, consumed) = parse_ascii_digits(&date[date_pos..], 6)
-                    .map_or((0, 0), |(raw, consumed)| {
-                        (raw * 10u32.pow(6 - consumed as u32), consumed)
-                    });
-                value.microsecond = microsecond;
-                value.saw_fraction = true;
-                value.saw_time = true;
-                date_pos += consumed;
-            }
-            'p' => {
-                let Some(am_pm) = parse_am_pm(&date[date_pos..]) else {
-                    return Ok(month_zero_sentinel(&value));
-                };
-                if value.saw_24_hour {
-                    return Ok(month_zero_sentinel(&value));
-                }
-                value.am_pm = Some(am_pm);
-                date_pos += 2;
-            }
-            'r' => {
-                let Some((hour, minute, second, am_pm, consumed)) =
-                    parse_time_12(&date[date_pos..])
-                else {
-                    return Ok(month_zero_sentinel(&value));
-                };
-                value.hour = hour;
-                value.minute = minute;
-                value.second = second;
-                value.saw_time = true;
-                value.saw_12_hour = true;
-                value.am_pm = am_pm;
-                date_pos += consumed;
-            }
-            'T' => {
-                let Some((hour, minute, second, consumed)) = parse_time_24(&date[date_pos..])
-                else {
-                    return Ok(month_zero_sentinel(&value));
-                };
-                value.hour = hour;
-                value.minute = minute;
-                value.second = second;
-                value.saw_time = true;
-                value.saw_24_hour = true;
-                date_pos += consumed;
-            }
-            '@' => skip_parser_class(&date, &mut date_pos, |c| c.is_ascii_alphabetic()),
-            '#' => skip_parser_class(&date, &mut date_pos, |c| c.is_ascii_digit()),
-            '.' => skip_parser_class(&date, &mut date_pos, tidb_datatype::is_go_punctuation),
-            _ => return Ok(Datum::Null),
-        }
-    }
-
-    if let Some(am_pm) = value.am_pm {
-        if value.saw_24_hour || !value.saw_12_hour {
-            return Ok(month_zero_sentinel(&value));
-        }
-        value.hour = if value.hour == 12 {
-            if am_pm {
-                12
-            } else {
-                0
-            }
-        } else if am_pm {
-            value.hour + 12
-        } else {
-            value.hour
-        };
-    }
-    if value.saw_date {
-        // `types.checkMonthDay`, the one calendar rejection `Time.Check`
-        // still applies with `allowZeroInDate`: a zero month keeps Go's
-        // `maxDay = 31` initializer (the `if month > 0` guard skips the
-        // per-month table), and `ALLOW_INVALID_DATES` keeps it for every
-        // month.
-        let modes = cols.date_modes();
-        if value.month == 0 {
-            // go `mysqlTimeFix`: the month-0 results raise
-            // ErrWrongValueForFunction (1411) naming the input -- the
-            // empty-bytes sentinel the wrapper translates (the %j
-            // day-of-year path leaves the month unset).
-            return Ok(Datum::Bytes(Vec::new()));
-        }
-        let max_day = if modes.allow_invalid_dates || value.month == 0 {
-            31
-        } else {
-            days_in_month(value.year, value.month)
-        };
-        if value.month > 12 || value.day > max_day {
-            return Ok(month_zero_sentinel(&value));
-        }
-        // The DATE/DATETIME signatures' own `NO_ZERO_DATE` rejection; see
-        // this function's doc.
-        if modes.no_zero_date && (value.year == 0 || value.month == 0 || value.day == 0) {
-            return Ok(month_zero_sentinel(&value));
-        }
-        if value.year == 0 && value.month == 0 && value.day == 0 {
-            // go `mysqlTimeFix`: the month-0 results raise
-            // ErrWrongValueForFunction (1411) naming the input -- the empty-
-            // bytes sentinel the wrapper translates (the string results are
-            // never empty, so this cannot collide).
-            return Ok(Datum::Bytes(Vec::new()));
-        }
-        let date = format!("{:04}-{:02}-{:02}", value.year, value.month, value.day);
-        // go's `Time.String` renders the time-of-day for ANY datetime-kind
-        // result: a `%f`-bearing format forces the full
-        // `0000-00-00 00:00:00.000000` shape even without a time specifier
-        // (oracle-captured on g-fsp's zero-value rows).
-        if value.saw_time || value.saw_fraction {
-            return Ok(Datum::new_string(if value.saw_fraction {
-                format!(
-                    "{date} {:02}:{:02}:{:02}.{:06}",
-                    value.hour, value.minute, value.second, value.microsecond
-                )
-            } else {
-                format!(
-                    "{date} {:02}:{:02}:{:02}",
-                    value.hour, value.minute, value.second
-                )
-            }));
-        }
-        return Ok(Datum::new_string(date));
-    }
-    if value.saw_time {
-        return Ok(Datum::new_string(if value.saw_fraction {
-            format!(
-                "{:02}:{:02}:{:02}.{:06}",
-                value.hour, value.minute, value.second, value.microsecond
-            )
-        } else {
-            format!("{:02}:{:02}:{:02}", value.hour, value.minute, value.second)
-        }));
-    }
-    Ok(Datum::Null)
-}
-
-/// go `mysqlTimeFix`: a str_to_date result whose month token never parsed
-/// (the month stays 0 — the %j day-of-year path or a short input) raises
-/// ErrWrongValueForFunction (1411) naming the INPUT text; the wrapper
-/// translates this empty-bytes sentinel. Every other failure is the plain
-/// NULL (the token-parse failures answer the zero time whose cast warns
-/// 1292 with the zero-time text).
-fn month_zero_sentinel(value: &ParsedDateTime) -> Datum {
-    if value.saw_date && value.month == 0 {
-        return Datum::Bytes(Vec::new());
-    }
-    Datum::Null
-}
-
-fn skip_parser_whitespace(input: &[char], position: &mut usize) {
-    while input
-        .get(*position)
-        .is_some_and(|character| character.is_whitespace())
-    {
-        *position += 1;
-    }
-}
-
-fn parse_ascii_digits(input: &[char], limit: usize) -> Option<(u32, usize)> {
-    let mut value = 0u32;
-    let mut consumed = 0;
-    while consumed < limit {
-        let Some(character) = input.get(consumed) else {
-            break;
-        };
-        let Some(digit) = character.to_digit(10).filter(|_| character.is_ascii()) else {
-            break;
-        };
-        value = value.checked_mul(10)?.checked_add(digit)?;
-        consumed += 1;
-    }
-    (consumed > 0).then_some((value, consumed))
-}
-
-fn skip_parser_class(input: &[char], position: &mut usize, predicate: fn(char) -> bool) {
-    while input
-        .get(*position)
-        .is_some_and(|character| predicate(*character))
-    {
-        *position += 1;
-    }
-}
-
-fn parse_am_pm(input: &[char]) -> Option<bool> {
-    let [first, second, ..] = input else {
-        return None;
-    };
-    match (first.to_ascii_lowercase(), second.to_ascii_lowercase()) {
-        ('a', 'm') => Some(false),
-        ('p', 'm') => Some(true),
-        _ => None,
-    }
-}
-
-fn parse_time_24(input: &[char]) -> Option<(u32, u32, u32, usize)> {
-    let mut position = 0;
-    let (hour, consumed) = parse_ascii_digits(&input[position..], 2)?;
-    if hour > 23 {
-        return None;
-    }
-    position += consumed;
-    skip_parser_whitespace(input, &mut position);
-    if input.get(position) != Some(&':') {
-        return None;
-    }
-    position += 1;
-    skip_parser_whitespace(input, &mut position);
-    let (minute, consumed) = parse_ascii_digits(&input[position..], 2)?;
-    if minute > 59 {
-        return None;
-    }
-    position += consumed;
-    skip_parser_whitespace(input, &mut position);
-    if input.get(position) != Some(&':') {
-        return None;
-    }
-    position += 1;
-    skip_parser_whitespace(input, &mut position);
-    let (second, consumed) = parse_ascii_digits(&input[position..], 2)?;
-    if second > 59 {
-        return None;
-    }
-    position += consumed;
-    Some((hour, minute, second, position))
-}
-
-fn parse_time_12(input: &[char]) -> Option<(u32, u32, u32, Option<bool>, usize)> {
-    let mut position = 0;
-    let (hour, consumed) = parse_ascii_digits(&input[position..], 2)?;
-    if hour == 0 || hour > 12 {
-        return None;
-    }
-    position += consumed;
-    skip_parser_whitespace(input, &mut position);
-    if input.get(position) != Some(&':') {
-        return None;
-    }
-    position += 1;
-    skip_parser_whitespace(input, &mut position);
-    let (minute, consumed) = parse_ascii_digits(&input[position..], 2)?;
-    if minute > 59 {
-        return None;
-    }
-    position += consumed;
-    skip_parser_whitespace(input, &mut position);
-    if input.get(position) != Some(&':') {
-        return None;
-    }
-    position += 1;
-    skip_parser_whitespace(input, &mut position);
-    let (second, consumed) = parse_ascii_digits(&input[position..], 2)?;
-    if second > 59 {
-        return None;
-    }
-    position += consumed;
-    skip_parser_whitespace(input, &mut position);
-    let am_pm = if let Some(am_pm) = parse_am_pm(&input[position..]) {
-        position += 2;
-        Some(am_pm)
-    } else if position == input.len() {
-        None
-    } else {
-        return None;
-    };
-    Some((hour, minute, second, am_pm, position))
+pub(crate) fn str_to_date_typed(
+    vals: &[Datum],
+    cols: &dyn crate::Columns,
+    target: Option<tidb_datatype::FieldTypeCode>,
+) -> Result<Datum, EvalError> {
+    crate::tikv::eval_str_to_date_in(cols, vals, target)
 }
 
 /// `DATE_ADD`/`DATE_SUB` with an `INTERVAL n {HOUR,MINUTE,SECOND}`: unlike
@@ -2497,4 +2036,248 @@ fn timestamp_diff_entries_keep_cast_order_and_protobuf_null_demand() {
             if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource)
     );
     assert_eq!(*ctx.events.borrow(), vec!["unit"]);
+}
+
+#[cfg(test)]
+#[test]
+fn str_to_date_entries_keep_lazy_modes_warnings_and_duration_null_cast() {
+    use crate::constant::{Constant, ParamMarker};
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    use std::cell::RefCell;
+    use tidb_datatype::{DateModes, FieldType, FieldTypeCode, SessionTimeZone};
+    struct Demand {
+        values: [Datum; 2],
+        fail_format: bool,
+        no_zero: bool,
+        events: RefCell<Vec<&'static str>>,
+        warnings: RefCell<Vec<(u16, String)>>,
+    }
+    impl Columns for Demand {
+        fn get(&self, path: &[String]) -> Option<Datum> {
+            self.param_value(path[0].parse().unwrap()).ok()
+        }
+        fn param_value(&self, index: usize) -> Result<Datum, EvalError> {
+            self.events
+                .borrow_mut()
+                .push(if index == 0 { "input" } else { "format" });
+            if index == 1 && self.fail_format {
+                return Err(EvalError::Unsupported("STR_TO_DATE child"));
+            }
+            Ok(self.values[index].clone())
+        }
+        fn date_modes(&self) -> DateModes {
+            self.events.borrow_mut().push("modes");
+            DateModes {
+                no_zero_date: self.no_zero,
+                ..DateModes::default()
+            }
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            self.events.borrow_mut().push("zone");
+            SessionTimeZone::utc()
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.events.borrow_mut().push("warning");
+            self.warnings.borrow_mut().push((code, message.to_owned()));
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            panic!("STR_TO_DATE warnings append directly")
+        }
+    }
+    let context = |values, fail_format, no_zero| Demand {
+        values,
+        fail_format,
+        no_zero,
+        events: RefCell::new(Vec::new()),
+        warnings: RefCell::new(Vec::new()),
+    };
+    let text = |value: &str| Datum::new_string(value);
+    let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    let evaluate = |mode, values: &[Datum], columns: &dyn Columns| {
+        if mode == 0 {
+            return str_to_date(values, columns);
+        }
+        if mode == 1 {
+            let args = (0..2)
+                .map(|index| tidb_ast::Expr::Column(vec![index.to_string()]))
+                .collect::<Vec<_>>();
+            return crate::func::eval_func("STR_TO_DATE", &args, columns, None);
+        }
+        let args = (0..2)
+            .map(|index| {
+                let mut value =
+                    Constant::new(Datum::Null, FieldType::new(FieldTypeCode::VarString));
+                value.param_marker = Some(ParamMarker { order: index });
+                Expression::Constant(value)
+            })
+            .collect();
+        let target = match mode {
+            3 => FieldTypeCode::Duration,
+            4 => FieldTypeCode::Datetime,
+            5 => FieldTypeCode::Date,
+            6 => FieldTypeCode::Unknown(12),
+            _ => FieldTypeCode::VarString,
+        };
+        ScalarFunction::new(
+            tidb_ast::CiString::new("str_to_date"),
+            FieldType::new(target).with_decimal(0),
+            args,
+        )
+        .eval(columns, row.to_row())
+    };
+    let owner = |slots| {
+        crate::AsciiPoolOwner::new(
+            crate::AsciiPoolPolicy::checked(
+                slots,
+                slots,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let pool = owner(1);
+    let execution = pool.begin_execution().unwrap();
+    for mode in 0..7 {
+        for values in [
+            [Datum::Null, Datum::new_bytes(vec![255])],
+            [Datum::new_bytes(vec![255]), Datum::Null],
+        ] {
+            let ctx = context(values, false, true);
+            assert_eq!(
+                execution.scope().with_columns(&ctx, |columns| evaluate(
+                    mode,
+                    &ctx.values,
+                    columns
+                )),
+                Ok(Datum::Null)
+            );
+            let mut expected = if mode == 0 {
+                vec![]
+            } else {
+                vec!["input", "format"]
+            };
+            if mode == 3 {
+                expected.push("zone");
+            }
+            assert_eq!(*ctx.events.borrow(), expected);
+            assert!(ctx.warnings.borrow().is_empty());
+        }
+        let ctx = context([Datum::new_bytes(vec![255]), text("%Y")], false, true);
+        assert!(execution
+            .scope()
+            .with_columns(&ctx, |columns| evaluate(mode, &ctx.values, columns))
+            .is_err());
+        assert_eq!(
+            *ctx.events.borrow(),
+            if mode == 0 {
+                vec![]
+            } else {
+                vec!["input", "format"]
+            }
+        );
+        assert!(ctx.warnings.borrow().is_empty());
+        for (input, format, code, needs_modes) in [
+            ("x", "%m", 1292, false),
+            ("2020x", "%Y-%m", 1411, false),
+            ("01", "%d", 1411, true),
+        ] {
+            // The last row deliberately preserves the current month-zero
+            // sentinel, rather than correcting the known older test mismatch.
+            let ctx = context([text(input), text(format)], false, false);
+            assert_eq!(
+                execution.scope().with_columns(&ctx, |columns| evaluate(
+                    mode,
+                    &ctx.values,
+                    columns
+                )),
+                Ok(Datum::Null)
+            );
+            let mut expected = if mode == 0 {
+                vec![]
+            } else {
+                vec!["input", "format"]
+            };
+            if needs_modes {
+                expected.push("modes");
+            }
+            expected.push("warning");
+            if mode == 3 {
+                expected.push("zone");
+            }
+            assert_eq!(*ctx.events.borrow(), expected);
+            assert_eq!(
+                *ctx.warnings.borrow(),
+                vec![(
+                    code,
+                    if code == 1411 {
+                        format!("Incorrect datetime value: '{input}' for function str_to_date")
+                    } else {
+                        "Incorrect datetime value: '0000-00-00 00:00:00'".to_owned()
+                    }
+                )]
+            );
+        }
+    }
+    for mode in 1..7 {
+        let ctx = context([Datum::Null, text("%Y")], true, true);
+        let result = execution
+            .scope()
+            .with_columns(&ctx, |columns| evaluate(mode, &ctx.values, columns));
+        if mode == 1 {
+            assert!(result.is_err());
+        } else {
+            assert_eq!(result, Err(EvalError::Unsupported("STR_TO_DATE child")));
+        }
+        assert_eq!(*ctx.events.borrow(), vec!["input", "format"]);
+    }
+    // Unknown(12) is not the actual Datetime enum variant even though its
+    // payload equals the MySQL DATETIME byte; it must not request modes/prefix.
+    for mode in [0, 1, 2, 3, 4, 6] {
+        for no_zero in [false, true] {
+            let ctx = context([text("12:34:56"), text("%H:%i:%s")], false, no_zero);
+            let result = execution
+                .scope()
+                .with_columns(&ctx, |columns| evaluate(mode, &ctx.values, columns))
+                .unwrap();
+            let mut expected = if mode == 0 {
+                vec![]
+            } else {
+                vec!["input", "format"]
+            };
+            if mode == 4 {
+                expected.push("modes");
+                if no_zero {
+                    assert_eq!(result, Datum::Null);
+                } else {
+                    expected.extend(["modes", "zone"]);
+                    assert!(matches!(result, Datum::Time(_)));
+                    assert_eq!(result.sql_string().unwrap(), "0000-00-00 12:34:56");
+                }
+            } else {
+                if mode == 3 {
+                    expected.push("zone");
+                    assert!(matches!(result, Datum::Duration(_)));
+                }
+                assert_eq!(result.sql_string().unwrap(), "12:34:56");
+            }
+            assert_eq!(*ctx.events.borrow(), expected);
+            assert!(ctx.warnings.borrow().is_empty());
+        }
+    }
+    let denied_pool = owner(0);
+    let denied = denied_pool.begin_execution().unwrap();
+    let ctx = context([Datum::Null, text("%H")], false, true);
+    assert!(
+        matches!(denied.scope().with_columns(&ctx, |columns| evaluate(3, &ctx.values, columns)),
+        Err(EvalError::ExpressionAdapterFailure(failure))
+            if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource)
+    );
+    assert_eq!(*ctx.events.borrow(), vec!["input", "format"]); // No cast timezone after a worker error.
 }

@@ -9363,6 +9363,233 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_str_to_date_preserves_stored_formats_modes_and_distinct_pool_paths() {
+    use tidb_datatype::{FieldTypeCode, TimeType};
+
+    let create = "CREATE TABLE shared_str_to_date_sql (punct_text VARCHAR(32), datetime_text VARCHAR(40), fraction_time VARCHAR(32), plain_time VARCHAR(32), bad_month VARCHAR(32), year_only VARCHAR(32), null_text VARCHAR(32), time_format VARCHAR(32))";
+    let insert = "INSERT INTO shared_str_to_date_sql VALUES ('2024¿02¿29','2024-02-29 12:34:56.123456','12:34:56.123456','12:34:56','2024-99-29','2024',NULL,'%H:%i:%s')";
+    // Constant formats select DATE, DATETIME or Duration. A stored format
+    // selects DATETIME(6) even when its actual text describes only a clock.
+    // Complete Unicode-punctuation DATE input avoids the pre-existing typed
+    // day-zero mismatch; this test does not change that older boundary.
+    let cases = [
+        (
+            "punct_text,'%Y%.%m%.%d'",
+            FieldTypeCode::Date,
+            (10, 0),
+            Some("2024-02-29"),
+            None,
+            "NO_ZERO_DATE",
+            false,
+        ),
+        (
+            "datetime_text,'%Y-%m-%d %H:%i:%s.%f'",
+            FieldTypeCode::Datetime,
+            (26, 6),
+            Some("2024-02-29 12:34:56.123456"),
+            None,
+            "NO_ZERO_DATE",
+            false,
+        ),
+        (
+            "fraction_time,'%H:%i:%s.%f'",
+            FieldTypeCode::Duration,
+            (17, 6),
+            Some("12:34:56.123456"),
+            None,
+            "NO_ZERO_DATE",
+            false,
+        ),
+        (
+            "bad_month,'%Y-%m-%d'",
+            FieldTypeCode::Date,
+            (10, 0),
+            None,
+            Some((1292, "Incorrect datetime value: '0000-00-00 00:00:00'")),
+            "NO_ZERO_DATE",
+            false,
+        ),
+        (
+            "year_only,'%Y'",
+            FieldTypeCode::Date,
+            (10, 0),
+            None,
+            Some((
+                1411,
+                "Incorrect datetime value: '2024' for function str_to_date",
+            )),
+            "NO_ZERO_DATE",
+            false,
+        ),
+        (
+            "null_text,'%Y-%m-%d'",
+            FieldTypeCode::Date,
+            (10, 0),
+            None,
+            None,
+            "NO_ZERO_DATE",
+            true,
+        ),
+        (
+            "plain_time,time_format",
+            FieldTypeCode::Datetime,
+            (26, 6),
+            None,
+            None,
+            "NO_ZERO_DATE",
+            false,
+        ),
+        (
+            "plain_time,time_format",
+            FieldTypeCode::Datetime,
+            (26, 6),
+            Some("0000-00-00 12:34:56.000000"),
+            None,
+            "",
+            false,
+        ),
+    ];
+    for slots in [1, 0] {
+        let mut session = Session::new();
+        session
+            .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+            .unwrap();
+        session.run("SET time_zone='+00:00'").unwrap();
+        session.run("SET sql_mode=''").unwrap();
+        session
+            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+            .unwrap();
+        session.run(create).unwrap();
+        session.run(insert).unwrap();
+        assert!(session
+            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .unwrap());
+        for vectorized in [0, 1] {
+            session
+                .run(&format!(
+                    "SET tidb_enable_vectorized_expression={vectorized}"
+                ))
+                .unwrap();
+            for (args, code, shape, expected, warning, sql_mode, caller_null) in cases {
+                session.run(&format!("SET sql_mode='{sql_mode}'")).unwrap();
+                // Input text and dynamic format are actual stored strings.
+                // Constant format classification and string pass-through do
+                // not spend a worker slot before the new Head.
+                let sql = format!("SELECT STR_TO_DATE({args}) FROM shared_str_to_date_sql");
+                if slots == 1 {
+                    let StmtOutput::Rows { columns, rows } =
+                        session.run_with_columns(&sql).unwrap()
+                    else {
+                        panic!("expected STR_TO_DATE rows: {sql}")
+                    };
+                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}/{sql_mode}");
+                    let field = &columns[0].1;
+                    assert_eq!(field.code(), code, "{sql}/{vectorized}/{sql_mode}");
+                    assert_eq!(
+                        (field.flen(), field.decimal()),
+                        shape,
+                        "{sql}/{vectorized}/{sql_mode}"
+                    );
+                    assert_eq!(field.charset_name(), "binary");
+                    assert_eq!(field.collation_name(), "binary");
+                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}/{sql_mode}");
+                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}/{sql_mode}");
+                    if let Some(expected) = expected {
+                        match (&rows[0][0], code) {
+                            (Datum::Time(time), FieldTypeCode::Date) => {
+                                assert_eq!(time.kind(), TimeType::Date);
+                                assert_eq!(time.fsp(), 0);
+                            }
+                            (Datum::Time(time), FieldTypeCode::Datetime) => {
+                                assert_eq!(time.kind(), TimeType::DateTime);
+                                assert_eq!(time.fsp(), 6);
+                            }
+                            (Datum::Duration(_), FieldTypeCode::Duration) => {}
+                            other => {
+                                panic!("STR_TO_DATE changed its typed carrier: {sql}: {other:?}")
+                            }
+                        }
+                        assert_eq!(
+                            cell_text(&rows[0][0]),
+                            expected,
+                            "{sql}/{vectorized}/{sql_mode}"
+                        );
+                    } else {
+                        assert_eq!(rows[0][0], Datum::Null, "{sql}/{vectorized}/{sql_mode}");
+                    }
+                    let expected_warnings = warning
+                        .map(|(code, message)| vec![(code, message.to_owned())])
+                        .unwrap_or_default();
+                    assert_eq!(
+                        warnings_of(&session),
+                        expected_warnings,
+                        "{sql}/{vectorized}/{sql_mode}"
+                    );
+                } else {
+                    // Fourteen zero-slot probes reach the NEW non-NULL Head,
+                    // even when parsing or the late typed mode yields NULL.
+                    // Only two input-NULL probes use the OLD DateDiff witness;
+                    // neither those nor a later typed NULL cast proves Head.
+                    let stage = if caller_null {
+                        "existing input-NULL DateDiff witness"
+                    } else {
+                        "STR_TO_DATE non-NULL Head"
+                    };
+                    let error = session.run_with_columns(&sql).expect_err(&sql);
+                    match &error {
+                        DriverError::Exec(tidb_executor::ExecError::Eval(
+                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                        )) => {
+                            assert_eq!(
+                                failure.class(),
+                                tidb_executor::ExpressionAdapterFailureClass::PoolResource,
+                                "{stage}: {sql}/{vectorized}/{sql_mode}"
+                            );
+                            assert_eq!(
+                                failure.origin(),
+                                tidb_executor::ExpressionAdapterFailureOrigin::Pool,
+                                "{stage}: {sql}/{vectorized}/{sql_mode}"
+                            );
+                        }
+                        other => panic!(
+                            "{stage} bypassed its pool: {sql}/{vectorized}/{sql_mode}: {other:?}"
+                        ),
+                    }
+                    let mysql = error.to_mysql_error();
+                    assert_eq!(mysql.code, 1105, "{stage}: {sql}/{vectorized}/{sql_mode}");
+                    assert_eq!(
+                        mysql.state, *b"HY000",
+                        "{stage}: {sql}/{vectorized}/{sql_mode}"
+                    );
+                    assert!(
+                        mysql.is_from_evaluation(),
+                        "{stage}: {sql}/{vectorized}/{sql_mode}"
+                    );
+                    // Refusal precedes both old diagnostic projections.
+                    assert!(
+                        warnings_of(&session).is_empty(),
+                        "{stage}: {sql}/{vectorized}/{sql_mode}"
+                    );
+                }
+                session.run("SET sql_mode=''").unwrap();
+            }
+            if slots == 1 {
+                // Positive DATE consumer only; this does not prove a Finish
+                // refusal or count the late mode getter. No PB/legacy claim.
+                let StmtOutput::Rows { rows, .. } = session
+                    .run_with_columns("SELECT 1 FROM shared_str_to_date_sql WHERE STR_TO_DATE(punct_text,'%Y%.%m%.%d')='2024-02-29'")
+                    .unwrap()
+                else {
+                    panic!("expected STR_TO_DATE predicate rows")
+                };
+                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
+                assert!(warnings_of(&session).is_empty());
+            }
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_convert_using_preserves_charset_bytes_and_distinct_null_pool_paths() {
     use tidb_datatype::{Collation, FieldTypeCode};
 
