@@ -297,6 +297,23 @@ pub(crate) fn prepare_json_paths_args(
     })
 }
 
+/// Transport the actual JSON search operands and parsed path metadata only.
+pub(crate) fn prepare_json_search_args(
+    document: &serde_json::Value,
+    paths: &[tidb_query_expr::NativeJsonPath],
+    one: bool,
+    pattern: &str,
+    escape: char,
+) -> Result<EvaluatedArgs, crate::EvalError> {
+    tidb_query_expr::local::prepare_json_search_args(document, paths, one, pattern, escape).map_err(
+        |error| {
+            crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+                error, None,
+            ))
+        },
+    )
+}
+
 /// Preserve the ordered actual path/value list; no mutation or zip truncation.
 pub(crate) fn prepare_json_path_values_args(
     document: &serde_json::Value,

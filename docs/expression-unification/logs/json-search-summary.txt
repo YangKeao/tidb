@@ -1,0 +1,37 @@
+json-search-73 / round75
+8 serialized Cargo launches:6 nonzero green,1 retained/resolved new SQL expectation RED,1 unchanged old full-expression failure. One SQL retry; no compile failure/interrupted/zero-match run. All7 new tests eventually pass, not all on the first gate. Ignored is not passing; filters overlap.
+CPP cwd=/home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv pins nightly-2026-01-30.
+Native cwd=/home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb pins nightly-2026-08-22.
+Raw logs=/home/agent/tidb/expression-unification/logs/json-search-{id}.log. Times are Cargo compilation/test elapsed seconds, not shell wall time.
+
+1. ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib codec::collation::pattern::tests -- --test-threads=1
+id=tikv-pattern sha256=ccc9da7e712762a7fc5c7201bfe63a3c618ff965f965e63a8859aa043e1aa4ef
+6 passed/0 failed/0 ignored/440 filtered;2.88/0.01s;exit0.
+2. ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_json_search -- --test-threads=1
+id=tikv-core sha256=ecac1f76bb8d493aa571dd6772615708415a95700e0358e4bd7f450027be1eac
+2/0/0/924;15.55/0.00s;exit0.
+3. ../tools/cargo-tikv test --locked -p tidb_query_expr --lib local -- --test-threads=1
+id=tikv-local sha256=ff2bce6f0f6a09bb06ac4e72864a966a5bea3ac0db263997299cbf876dd36084
+325/0/1/600;0.16/0.22s;exit0.
+4. ../../tools/cargo-tidb test --locked -p tidb-expr --lib json_search -- --test-threads=1
+id=native sha256=3d8c7951bca59ad89ff8e22f2767a164b88dd0f56520fe2da3f73bed0078b8b6
+4/0/0/1662;20.05/0.00s;exit0. Includes original vectors/walk/source and new root.
+5. ../../tools/cargo-tidb test --locked -p tidb-expr --lib like -- --test-threads=1
+id=native-like sha256=41a0c3e64296d966ad339842811cde0c45e061fe3f4b6f44499f5f8e0eda3603
+61/0/9/1596;0.17/0.22s;exit0.
+6. ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_json_search -- --test-threads=1
+id=sql sha256=2230180b448a40532c631d5e59cb683852fd24307e228197d8b1e20487f9b1aa
+1/1/0/2221;32.60/0.10s;exit101. New positive test expected3143 for a column-sourced bad later path, got1105. All28 prior value/metadata/warning observations and3150 invalid-mode check reached; zero-slot test passed. Retained RED, no old fixture/production change.
+7. ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+id=expr-full sha256=ded46884da283d5408eeef9e1380966d4a16ac972b1818045029b42b2c7d3ca2
+1568/4/94/0;0.16/14.21s;exit101. Only four old failures.
+8. ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_json_search -- --test-threads=1
+id=sql-retry sha256=f9ec8324c5e4ddf71f0198a76c94c727172eeed204670a10bc462877601ae111
+2/0/0/2221;3.52/0.08s;exit0. All7 new tests now pass.
+
+RED source proof: native json/path.rs maps parse errors to EvalError::Json(JsonError::InvalidPath(position)); no Unsupported error or parser regression. tidb-executor/src/driver/errors/exec.rs141–160 deliberately maps execution-time InvalidPath to1105 and retains evaluation origin. Nominal3143 belongs to the planning/folding conversion. Only the new case/comment changed3143→1105; evaluation-origin assertion retained. Initial raw failure log is kept, no provider calibration or product correction.
+SQL14fixedcases x2modes=28value/NULL observations plus VarString(-1,-1)/connectionCI metadata and warnings;2 standalone3150/1105 evaluation errors;8 exact direct zero-slot executions (6mode0/2mode1). Search remains case-sensitive under a CI session, including Unicode pattern/escape; observed SQLNULL, computed no-hit and array-no-autowrap remain distinct roots.
+Full-expression failure section/final list equal timestamp-add-72 byte-for-byte after only numeric panic-heading thread IDs become THREAD; extract from newline before failures: to newline before test result:.
+normalized sha256=411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+Unistore unchanged/not rerun. CPP98/native353 original #[test] bodies byte-identical. Fifteen Rust sources (8CPP/7native),1 new module,7 new tests. Pinned formatter checks and both diff checks pass. No dependency/lock/generated/Go/Bazel/old fixture changes. Native local walk/matcher/format algorithm removed;2 unused path-helper reexports deleted. types/expr_eval.rs needs no change: existing Bytes3 JSON dispatch reuses the new selector/validator.
+Unclaimed: full temporal/types, RAND actual-state capability, password Unicode/lazy policy, lexer/digest and plan codec/proto, JSON_SUM_CRC32 ARRAY admission, strict completion/M6/default-NoColumns, whole workspace/lint/dev/bazel_prepare/release, exhaustive differential/TiFlash/FIPS, allocator/fault/physical heap/peak/OOM/zero-copy/performance and prior compatibility gaps. No package transcreation/PR readiness claim.

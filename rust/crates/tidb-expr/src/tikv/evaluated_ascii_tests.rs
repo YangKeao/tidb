@@ -1371,6 +1371,9 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::JsonOutputNullNative => {
             panic!("JSON outputs need their actual argument list, document/path or NULL witness")
         }
+        EvaluatedBytesOp::JsonSearchSerdeNative => {
+            panic!("JSON_SEARCH needs the actual document, parsed paths and matching inputs")
+        }
         EvaluatedBytesOp::JsonExtractSerdeNative
         | EvaluatedBytesOp::JsonInsertSerdeNative
         | EvaluatedBytesOp::JsonSetSerdeNative

@@ -30,8 +30,6 @@ use crate::{Datum, EvalError, JsonError};
 
 pub(crate) use tidb_query_expr::NativeJsonPath as JsonPath;
 pub(super) use tidb_query_expr::{
-    native_json_array_range as array_range,
-    native_json_is_ecmascript_identifier as is_ecmascript_identifier,
     NativeJsonArraySelection as ArraySelection, NativeJsonPathLeg as PathLeg,
 };
 

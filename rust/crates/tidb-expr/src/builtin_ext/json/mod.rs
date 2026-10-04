@@ -122,7 +122,7 @@ pub(crate) fn dispatch_in(
         ("JSON_MERGE", 2..) => Some(json_merge(vals, "json_merge", ctx)),
         ("JSON_MERGE_PRESERVE", 2..) => Some(json_merge(vals, "json_merge_preserve", ctx)),
         ("JSON_MERGE_PATCH", 2..) => Some(json_merge_patch(vals, ctx)),
-        ("JSON_SEARCH", 3..) => Some(json_search(vals)),
+        ("JSON_SEARCH", 3..) => Some(json_search(vals, ctx)),
         ("JSON_PRETTY", 1) => Some(json_pretty(&vals[0], ctx)),
         ("JSON_SUM_CRC32", 1) => Some(json_sum_crc32(&vals[0])),
         ("JSON_OVERLAPS", 2) => Some(json_overlaps(vals, ctx)),

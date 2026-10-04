@@ -2192,6 +2192,7 @@ fn materialize_computed(
             | EvaluatedBytesOp::JsonPrettySerdeNative
             | EvaluatedBytesOp::JsonOutputNullNative
             | EvaluatedBytesOp::JsonExtractSerdeNative
+            | EvaluatedBytesOp::JsonSearchSerdeNative
             | EvaluatedBytesOp::JsonInsertSerdeNative
             | EvaluatedBytesOp::JsonSetSerdeNative
             | EvaluatedBytesOp::JsonReplaceSerdeNative

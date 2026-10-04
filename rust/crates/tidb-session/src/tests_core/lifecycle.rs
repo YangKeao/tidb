@@ -9363,6 +9363,171 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_json_search_preserves_native_patterns_paths_and_string_results() {
+    use tidb_datatype::{Collation, FieldTypeCode};
+
+    let mut session = Session::new();
+    session
+        .run("SET NAMES utf8mb4 COLLATE utf8mb4_general_ci")
+        .unwrap();
+    session.run("SET sql_mode='NO_BACKSLASH_ESCAPES'").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_json_search_sql (doc_main VARCHAR(256), doc_escape VARCHAR(256), doc_keys VARCHAR(256), doc_unicode VARCHAR(64), doc_trailing VARCHAR(64), mode_one VARCHAR(8), mode_all VARCHAR(8), mode_bad VARCHAR(8), pattern_text VARCHAR(16), pattern_escaped VARCHAR(16), pattern_unicode_escape VARCHAR(16), pattern_unicode VARCHAR(16), pattern_x VARCHAR(4), pattern_slash VARCHAR(4), pattern_miss VARCHAR(8), esc_unicode VARCHAR(4), esc_empty VARCHAR(4), esc_null VARCHAR(4), path_star VARCHAR(32), path_wild VARCHAR(32), path_recursive VARCHAR(32), path_a VARCHAR(32), path_array VARCHAR(32), path_root VARCHAR(32), path_bad VARCHAR(32), null_text VARCHAR(64))").unwrap();
+    // Raw SQL plus NO_BACKSLASH_ESCAPES makes the stored JSON and pattern
+    // backslashes explicit, without a CHAR/CAST/function child in any probe.
+    session.run(r#"INSERT INTO shared_json_search_sql VALUES ('["abc", [{"k":"10"}, "def"], {"x":"abc"}, {"y":"bcd"}]','["abc", [{"k":"10"}, "def"], {"x":"ab%d"}, {"y":"abcd"}]','{"*":"x","a":{"a":"x","b":"x"},"n":7,"t":true}','["é中","É中"]','["\\x"]','OnE','AlL','wrong','abc','ab\%d','ab中%d','é_','x','\','ghi','中','',NULL,'$."*"','$.*','$**.a','$.a','$[0].a','$','not_a_path',NULL)"#).unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // Fixed native search.rs / original TestJSONSearch values. These are JSON
+    // path TEXT cells, not Datum::Json and not another evaluator as an oracle.
+    let cases = [
+        ("doc_main,mode_one,pattern_text", Some(r#""$[0]""#)),
+        (
+            "doc_main,mode_all,pattern_text",
+            Some(r#"["$[0]", "$[2].x"]"#),
+        ),
+        ("doc_escape,mode_all,pattern_escaped", Some(r#""$[2].x""#)),
+        (
+            "doc_escape,mode_all,pattern_escaped,esc_null",
+            Some(r#""$[2].x""#),
+        ),
+        (
+            "doc_escape,mode_all,pattern_escaped,esc_empty",
+            Some(r#""$[2].x""#),
+        ),
+        (
+            "doc_escape,mode_all,pattern_unicode_escape,esc_unicode",
+            Some(r#""$[2].x""#),
+        ),
+        // Unicode scalar '_' and case-sensitive matching, despite a CI
+        // connection collation. JSON_SEARCH never asks the LIKE collation.
+        ("doc_unicode,mode_all,pattern_unicode", Some(r#""$[0]""#)),
+        (
+            "doc_keys,mode_all,pattern_x,esc_null,path_star",
+            Some(r#""$.\"*\"""#),
+        ),
+        (
+            "doc_keys,mode_all,pattern_x,esc_null,path_wild",
+            Some(r#"["$.\"*\"", "$.a.a", "$.a.b"]"#),
+        ),
+        (
+            "doc_keys,mode_all,pattern_x,esc_null,path_recursive,path_a",
+            Some(r#"["$.a.a", "$.a.b"]"#),
+        ),
+        ("doc_keys,mode_all,pattern_x,esc_null,path_array", None),
+        // Preserve the native trailing-escape behavior: it matches the
+        // current escape character without requiring the remaining 'x' end.
+        ("doc_trailing,mode_all,pattern_slash", Some(r#""$[0]""#)),
+        ("doc_main,mode_all,pattern_miss", None),
+        ("null_text,mode_all,pattern_text", None),
+    ];
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        for (args, expected) in cases {
+            let sql = format!("SELECT JSON_SEARCH({args}) FROM shared_json_search_sql");
+            let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap() else {
+                panic!("expected JSON_SEARCH rows: {sql}")
+            };
+            let expected = expected
+                .map(|text| Datum::new_collation_string(text, Collation::Utf8Mb4GeneralCi))
+                .unwrap_or(Datum::Null);
+            assert_eq!(rows, vec![vec![expected]], "{sql}/{vectorized}");
+            assert_eq!(columns.len(), 1);
+            let field = &columns[0].1;
+            assert_eq!(field.code(), FieldTypeCode::VarString);
+            // text() uses FieldType::new(VarString), whose noninteger
+            // dimensions remain unspecified; the separate default lookup
+            // is not applied by that constructor.
+            assert_eq!((field.flen(), field.decimal()), (-1, -1));
+            assert_eq!(field.charset_name(), "utf8mb4");
+            assert_eq!(field.collation_name(), "utf8mb4_general_ci");
+            assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+        }
+    }
+    // Mode validation uses native 3150, not JSON_CONTAINS_PATH's 3154.
+    // Every path is parsed before one-mode can stop at its first matching leaf.
+    // The existing EXEC-tier mapper uses 1105 for column-sourced InvalidPath;
+    // the nominal 3143 belongs to the separate planning/folding conversion.
+    for (args, code) in [
+        ("doc_main,mode_bad,pattern_text", 3150),
+        (
+            "doc_main,mode_one,pattern_text,esc_null,path_root,path_bad",
+            1105,
+        ),
+    ] {
+        let sql = format!("SELECT JSON_SEARCH({args}) FROM shared_json_search_sql");
+        let mysql = session
+            .run_with_columns(&sql)
+            .expect_err(&sql)
+            .to_mysql_error();
+        assert_eq!(mysql.code, code, "{sql}");
+        assert!(mysql.is_from_evaluation(), "{sql}");
+    }
+}
+
+#[test]
+fn evaluated_ascii_json_search_zero_slots_require_hits_no_hits_and_actual_nulls() {
+    let mut session = Session::new();
+    session.run("SET sql_mode='NO_BACKSLASH_ESCAPES'").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session.run("CREATE TABLE shared_json_search_zero (doc_main VARCHAR(256), doc_keys VARCHAR(256), mode_one VARCHAR(8), mode_all VARCHAR(8), pattern_text VARCHAR(16), pattern_x VARCHAR(4), pattern_miss VARCHAR(8), null_text VARCHAR(64), esc_null VARCHAR(4), path_array VARCHAR(32))").unwrap();
+    session.run(r#"INSERT INTO shared_json_search_zero VALUES ('["abc", [{"k":"10"}, "def"], {"x":"abc"}, {"y":"bcd"}]','{"*":"x","a":{"a":"x","b":"x"},"n":7,"t":true}','OnE','AlL','abc','x','ghi',NULL,NULL,'$[0].a')"#).unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+    // The no-hit nullable byte result is distinct from actual-NULL preparation.
+    // Both must acquire a worker, with plain columns and no child function,
+    // CAST, WHERE or ORDER BY able to supply a substitute failure.
+    for (vectorized, args) in [
+        (0, "doc_main,mode_one,pattern_text"),
+        (0, "doc_main,mode_all,pattern_text"),
+        (0, "doc_main,mode_all,pattern_miss"),
+        (0, "null_text,mode_all,pattern_text"),
+        (0, "doc_main,null_text,pattern_text"),
+        (0, "doc_main,mode_all,null_text"),
+        (1, "doc_main,mode_all,pattern_text,esc_null,null_text"),
+        (1, "doc_keys,mode_all,pattern_x,esc_null,path_array"),
+    ] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        let sql = format!("SELECT JSON_SEARCH({args}) FROM shared_json_search_zero");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+            )) => {
+                assert_eq!(
+                    failure.class(),
+                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                );
+                assert_eq!(
+                    failure.origin(),
+                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                );
+            }
+            other => panic!("JSON_SEARCH root bypassed its worker: {sql}/{vectorized}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
+        assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
+        assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
+        assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+    }
+}
+
+#[test]
 fn evaluated_ascii_timestampadd_preserves_calendar_rounding_nulls_and_diagnostics() {
     use tidb_datatype::{Collation, FieldTypeCode};
 
