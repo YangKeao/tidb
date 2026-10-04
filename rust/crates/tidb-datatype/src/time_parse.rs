@@ -15,6 +15,7 @@
 //! Temporal string parsing, ported from Go `pkg/types`.
 
 use chrono::{FixedOffset, TimeZone};
+use tidb_query_datatype::codec::mysql::time::native_time_is_ascii_punctuation as is_punctuation;
 
 use crate::{
     check_fsp, core_time_from_datetime, get_frac_index, get_timezone, parse_frac, Converted,
@@ -77,29 +78,6 @@ impl<T> TemporalOutcome<T> {
     }
 }
 
-/// Go `isDigit`.
-const fn is_digit(c: u8) -> bool {
-    c.is_ascii_digit()
-}
-
-/// Go `isPunctuation`: an ASCII punctuation character (printable, non-alnum).
-const fn is_punctuation(c: u8) -> bool {
-    matches!(c, 0x21..=0x2F | 0x3A..=0x40 | 0x5B..=0x60 | 0x7B..=0x7E)
-}
-
-/// Go `isValidSeparator`: punctuation is a valid separator anywhere; space and
-/// `T` (and the other ASCII whitespace) separate only between the date and time
-/// (`prevParts == 2`); after five parts any non-digit ends the field.
-const fn is_valid_separator(c: u8, prev_parts: usize) -> bool {
-    if is_punctuation(c) {
-        return true;
-    }
-    if prev_parts == 2 && matches!(c, b'T' | b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r') {
-        return true;
-    }
-    prev_parts > 4 && !is_digit(c)
-}
-
 /// Faithful port of Go `types.ParseDateFormat`: splits a date/time literal into
 /// its numeric field strings, or returns `None` (Go's `nil`) when the literal
 /// does not begin with a digit or contains an out-of-place non-digit.
@@ -113,46 +91,7 @@ const fn is_valid_separator(c: u8, prev_parts: usize) -> bool {
 /// fails downstream numeric parsing identically to Go's raw-byte string.
 #[must_use]
 pub fn parse_date_format(format: &str) -> Option<Vec<String>> {
-    let format = format.trim();
-    let bytes = format.as_bytes();
-    if bytes.is_empty() {
-        return None;
-    }
-    // Date format must start with a number.
-    if !is_digit(bytes[0]) {
-        return None;
-    }
-
-    let mut seps: Vec<String> = Vec::with_capacity(6);
-    let mut start = 0usize;
-    let mut i = 1usize;
-    // Go: `for i := 1; i < len(format)-1; i++` — the final byte is never
-    // examined and always joins the trailing field.
-    while i + 1 < bytes.len() {
-        if is_valid_separator(bytes[i], seps.len()) {
-            let prev_parts = seps.len();
-            seps.push(String::from_utf8_lossy(&bytes[start..i]).into_owned());
-            start = i + 1;
-            // Consume further consecutive separators.
-            let mut j = i + 1;
-            while j < bytes.len() {
-                if !is_valid_separator(bytes[j], prev_parts) {
-                    break;
-                }
-                start += 1;
-                i += 1;
-                j += 1;
-            }
-            i += 1;
-            continue;
-        }
-        if !is_digit(bytes[i]) {
-            return None;
-        }
-        i += 1;
-    }
-    seps.push(String::from_utf8_lossy(&bytes[start..]).into_owned());
-    Some(seps)
+    tidb_query_datatype::codec::mysql::time::native_parse_date_format(format)
 }
 
 /// Returns whether the interval unit contains a clock component.
@@ -207,12 +146,7 @@ pub fn is_microsecond_unit(unit: &str) -> bool {
 
 /// Returns whether the accepted literal shape can contain only a date.
 pub fn is_date_format(format: &str) -> bool {
-    let format = format.trim();
-    match parse_date_format(format).map_or(0, |parts| parts.len()) {
-        1 => matches!(format.len(), 5 | 6 | 8),
-        3 => true,
-        _ => false,
-    }
+    tidb_query_datatype::codec::mysql::time::native_is_date_format(format)
 }
 
 /// Parses MySQL's one-, two-, or four-digit YEAR representation.

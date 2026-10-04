@@ -1,0 +1,33 @@
+temporal-foundation-74 / round76 / SDK prerequisite, zero family credit
+7 serialized Cargo launches:5 nonzero green,2 unchanged old full-suite failures. No new RED, compile failure, interrupted, zero-match or retry. Both new CPP tests pass on their first matching gate; ignored is not passing.
+CPP cwd=/home/agent/tidb/expression-unification/tikv; ../tools/cargo-tikv pins nightly-2026-01-30.
+Native cwd=/home/agent/tidb/expression-unification/tidb/rust; ../../tools/cargo-tidb pins nightly-2026-08-22.
+Raw logs=/home/agent/tidb/expression-unification/logs/temporal-foundation-{id}.log. Times are Cargo compilation/test elapsed seconds, not shell wall time.
+
+1. ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib codec::mysql::time -- --test-threads=1
+id=tikv-time sha256=8dfa69e715c72939e0d9031739602695708a884e10cd83f3bf07dc98eb16504c
+61 passed/0 failed/0 ignored/387 filtered;4.58/0.01s;exit0. Includes both new SDK matrices and existing time/wire tests.
+2. ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+id=native-datatype sha256=367ba14a35a04373eced76dfa8a7caf13fc027d020595ae72ca1428c60220c76
+453/0/0/0;4.02/23.69s;exit0. Original full datatype suite, including timezone/fraction/date splitting and conversion tables.
+3. ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_timezone_storage::a_repeated_local_time_resolves_the_way_go_time_date_does -- --test-threads=1
+id=sql-repeat sha256=4aa4c0dcbfb0f9b22aba060e79e172bad80dea92b85010c83f0da52bef631d21
+1/0/0/2222;35.21/0.02s;exit0. Original LA early versus London late repeated-time storage answers.
+4. ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_timezone_storage::a_timestamp_literal_folds_in_the_sessions_time_zone -- --test-threads=1
+id=sql-carry sha256=cdcbad0dbb44e8840632c7a3e4cd1bdb563f1b28d63ea4658a67f05e1e7f9926
+1/0/0/2222;0.26/0.01s;exit0. Original literal timezone suffix and fractional carry across gap/repeat.
+5. ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_timestamp_range::a_dst_gap_insert_uses_the_insert_truncation_error_class -- --test-threads=1
+id=sql-gap sha256=946f4565250dfb3f1ae016ddf0410fa6fe44d4f11f5d2a2ef67b629bfcc0d7de
+1/0/0/2222;0.15/0.02s;exit0. Original strict1292 and nonstrict warning plus adjusted03:00:00 value.
+6. ../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+id=expr-full sha256=86ddc4e4fa3afd8958813653cfd3a4b6c407354c57be99711fc5b2c4e4814886
+1568/4/94/0;20.36/14.90s;exit101. Four old failures only.
+7. ../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+id=unistore-full sha256=2241820f298a57a77663ebc72a5ed7ff4910f76e54ad54f89e9159444c55d124
+211/1/13/0;10.03/3.04s;exit101. One old closure-executor selection failure only.
+
+Entire failure section/final list compared byte-for-byte, replacing only numeric panic-heading thread IDs with THREAD; extract from newline before failures: to newline before test result:.
+Expression compared with json-search-expr-full.log; normalized sha256=411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95.
+Unistore compared with time-microsecond-unistore-full.log; normalized sha256=2f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1.
+Six Rust files (3CPP/3native),2 new modules,2 new CPP tests,0 new native/SQL tests. CPP51/native74 original #[test] bodies byte-identical; existing SQL files unmodified. Pinned formatting and both diff checks pass. No manifests/locks/dependency/tzdata/generated/Go/Bazel/fixture changes. Native SessionTimeZone and wire Tz unchanged; only conversion-error and suffix DTO aliases. No C4/admission/profile/carrier/driver/result/budget changes or new family credit.
+Not claimed: full parser/numeric/kind/flag or whole temporal type migration, remaining evaluator closure, strict completion/M6/default-NoColumns, whole workspace/lint/dev/bazel_prepare/release, exhaustive differential/TiFlash/FIPS, allocator/fault/physical heap/peak/OOM/zero-copy/performance, package transcreation or PR readiness. Prior compatibility exceptions remain open.

@@ -15,7 +15,7 @@
 use std::cmp::Ordering;
 use std::fmt;
 
-use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Local, TimeZone, Timelike, Utc};
 
 use crate::{
     check_fsp, CoreTime, Decimal, FspError, MySqlDuration, PackedTime, TimeConversionError,
@@ -41,19 +41,7 @@ pub struct Time {
 }
 
 /// Parsed trailing timezone fields from a temporal literal.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TimezoneSuffix {
-    /// Byte index at which the suffix begins.
-    pub index: usize,
-    /// `+` or `-`, absent for `Z`.
-    pub sign: Option<char>,
-    /// Two-digit hour, absent for `Z`.
-    pub hour: Option<String>,
-    /// Whether the source used `:`.
-    pub has_colon: bool,
-    /// Two-digit minute when present.
-    pub minute: Option<String>,
-}
+pub use tidb_query_datatype::codec::mysql::time::NativeTimezoneSuffix as TimezoneSuffix;
 
 /// Temporal construction or conversion failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -104,16 +92,7 @@ impl From<TimeConversionError> for TimeError {
 
 /// Converts a timezone-aware value to TiDB's microsecond calendar storage.
 pub fn core_time_from_datetime<TZ: TimeZone>(value: DateTime<TZ>) -> CoreTime {
-    let value = value + ChronoDuration::nanoseconds(500);
-    CoreTime::from_date(
-        value.year() as u16,
-        value.month() as u8,
-        value.day() as u8,
-        value.hour() as u8,
-        value.minute() as u8,
-        value.second() as u8,
-        value.nanosecond() / 1_000,
-    )
+    CoreTime::from_raw(tidb_query_datatype::codec::mysql::time::native_core_from_datetime(value))
 }
 
 /// Rounds a timezone-aware datetime to TiDB's fractional precision.
@@ -637,77 +616,17 @@ impl fmt::Display for Time {
 /// Returns Go `GetFsp`'s byte count after the selected fraction dot, capped at
 /// six. The source deliberately includes trailing text and timezone bytes.
 pub fn get_fsp(value: &str) -> u8 {
-    let index = get_frac_index(value);
-    if index < 0 {
-        return 0;
-    }
-    (value.len() - index as usize - 1).min(6) as u8
+    tidb_query_datatype::codec::mysql::time::native_get_time_fsp(value)
 }
 
 /// Returns the byte index of the fraction dot, or `-1`.
 pub fn get_frac_index(value: &str) -> isize {
-    let bytes = value.as_bytes();
-    let end = get_timezone(value).map_or(bytes.len(), |timezone| timezone.index);
-    for index in (0..end).rev() {
-        let byte = bytes[index];
-        if byte != b'+' && byte != b'-' && is_ascii_punctuation(byte) {
-            return if byte == b'.' { index as isize } else { -1 };
-        }
-    }
-    -1
+    tidb_query_datatype::codec::mysql::time::native_get_frac_index(value)
 }
 
 /// Parses TiDB's supported trailing `Z`, `+HH`, `+HHMM`, and `+HH:MM` forms.
 pub fn get_timezone(value: &str) -> Option<TimezoneSuffix> {
-    let bytes = value.as_bytes();
-    if bytes.last() == Some(&b'Z') {
-        return Some(TimezoneSuffix {
-            index: bytes.len() - 1,
-            sign: None,
-            hour: None,
-            has_colon: false,
-            minute: None,
-        });
-    }
-
-    for suffix_length in [6_usize, 5, 3] {
-        if bytes.len() < suffix_length {
-            continue;
-        }
-        let index = bytes.len() - suffix_length;
-        let sign = match bytes[index] {
-            b'+' => '+',
-            b'-' => '-',
-            _ => continue,
-        };
-        let suffix = &bytes[index + 1..];
-        let (hour, has_colon, minute) = match suffix_length {
-            3 if suffix.iter().all(u8::is_ascii_digit) => (&suffix[..2], false, None),
-            5 if suffix.iter().all(u8::is_ascii_digit) => {
-                (&suffix[..2], false, Some(&suffix[2..4]))
-            }
-            6 if suffix[2] == b':'
-                && suffix[..2].iter().all(u8::is_ascii_digit)
-                && suffix[3..].iter().all(u8::is_ascii_digit) =>
-            {
-                (&suffix[..2], true, Some(&suffix[3..5]))
-            }
-            _ => continue,
-        };
-        return Some(TimezoneSuffix {
-            index,
-            sign: Some(sign),
-            hour: Some(String::from_utf8(hour.to_vec()).expect("ASCII digits")),
-            has_colon,
-            minute: minute
-                .map(|minute| String::from_utf8(minute.to_vec()).expect("ASCII timezone minute")),
-        });
-    }
-    None
-}
-
-const fn is_ascii_punctuation(byte: u8) -> bool {
-    matches!(byte, 0x21..=0x2f | 0x3a..=0x40 | 0x5b..=0x60 | 0x7b..=0x7e)
+    tidb_query_datatype::codec::mysql::time::native_get_timezone(value)
 }
 
 /// Returns the uncapped suffix length after the last decimal point.
