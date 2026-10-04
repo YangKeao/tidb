@@ -1,20 +1,20 @@
 # Remaining acceptance after the functional threshold
 
-Status: **221/245 functional families; strict0; overall goal active**. The frozen denominator is unchanged. This is an independent source review plus parent integration follow-up, not a passing test receipt or approval to defer all24 remaining families.
+Status: **222/245 functional families; strict0; overall goal active**. The frozen denominator is unchanged. R86 closes IFNULL through staged workers and a common pure selector; see [IFNULL evidence](ifnull-checkpoint.md). The23 remaining families are not approved blanket exceptions. This review is not itself a passing test receipt.
 
 The accepted synchronous/scoped evaluator design stays in place. No universal compiler rewrite or exhaustive performance project is required to make the next functional steps. Conversely, reaching90% does not erase the Plan's remaining core ownership/demand obligations.
 
-## Ten core families still need closure
+## Nine core families still need closure
 
 | Families | Remaining work / source evidence |
 |---|---|
-| if, ifnull | `rust/crates/tidb-expr/src/scalar_function.rs` still chooses the branch/nonnull value in native code; PB has separate corresponding branches in `scalar_function/pb_builtin.rs`. Reuse staged demand and actual value transport; do not choose the answer natively and merely run IDENTITY. |
+| if | `rust/crates/tidb-expr/src/scalar_function.rs` still chooses the branch in native code; PB has a separate corresponding branch in `scalar_function/pb_builtin.rs`. Preserve ordinary truthy conversion versus PB's warning-aware string/bytes numeric coercion. Reuse staged demand, not a natively chosen answer followed by IDENTITY. IFNULL is now functionally closed. |
 | case, coalesce, nullif | Preserve selector/first-value evaluation count, lazy demand and actual nullable results across typed/PB/AST/legacy. Shared predicate/identity leaves alone do not close selection. |
 | cast | `cast.rs` and datatype `decimal/mod.rs` still own ordinary parsing/status policy. R83 float-constructor/Display sharing did not migrate general string-to-Decimal parsing. Close ordinary domains over shared SDKs; record truly exceptional domains separately. |
 | in | `func.rs` still owns found-match/found-null reduction. Its existing eager candidate/comparison side effects cannot be replaced with wire early return. |
 | greatest, least, interval | `builtin_ext/compare2.rs` retains extrema selection and INTERVAL's metadata-selected nullable-linear versus NOT_NULL-binary search. Preserve actual type, collation, precision and getter/search order. |
 
-Observed caller chain: `evaluator.rs::run_with_consumer` → `Expression::eval` → `ScalarFunction::eval` → native control branches or PB dispatch. The parent also read the actual CASE/IF/IFNULL/COALESCE branches; this conclusion is not inferred solely from registry names.
+Observed caller chain: `evaluator.rs::run_with_consumer` → `Expression::eval` → `ScalarFunction::eval` → native control branches or PB dispatch. The R85 parent read the actual CASE/IF/IFNULL/COALESCE branches; R86 removed IFNULL's runtime selection and shares its two pure optimizer selectors. Remaining conclusions are not inferred solely from registry names.
 
 ## Eight ordinary families still pending
 
@@ -44,8 +44,8 @@ A final exception needs its supported signatures/domains, source entrypoints, mi
 
 Two bounded R85 integration fixes (fail-before/pass-after receipts in [request-scope-checkpoint.md](request-scope-checkpoint.md)):
 
-1. Literal rewriting already captures timezone/modes from its resolver, but calls the NoColumns entry despite PlanScopeResolver retaining a live statement context. Route only the execution capability into the existing scoped literal helper. Preserve the old resolver's mode default and capture order.
-2. `LegacyEvaluator::eval_shared` uses the Shared expression's original context, dropping an available selected parent scope. Bind that original semantic context through existing `AsciiScope::with_columns`, preserving row/settings/warnings and active-child-scope priority. With no parent capability, keep the old standalone path.
+1. Literal rewriting formerly called the NoColumns entry despite PlanScopeResolver retaining a live statement context. R85 routes that capability into the existing scoped literal helper, preserving resolver timezone/modes, the old mode default and capture order.
+2. `LegacyEvaluator::eval_shared` formerly dropped an available selected parent scope. R85 binds the original semantic context through existing `AsciiScope::with_columns`, preserving row/settings/warnings and active-child-scope priority. With no parent capability, the old standalone path remains.
 
 Neither target creates a live DAG request owner or closes every default/fold/DML/range/aggregate/window wrapper. `RequestEvalContext` currently has no execution capability, and production `LegacyEvaluator::new` defaults raw_columns to NoColumns. Further caller/lifecycle integration remains necessary. Before-owner standalone PREPARE and explicit NoResolver defaults must not acquire a fabricated or stale statement owner.
 

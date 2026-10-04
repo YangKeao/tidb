@@ -2253,6 +2253,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::FromUnixTimeLocalNative
             | EvaluatedBytesOp::FromUnixTimeLegacy
             | EvaluatedBytesOp::FromUnixTimeNullNative
+            | EvaluatedBytesOp::IfNullHeadNative
+            | EvaluatedBytesOp::IfNullFinishNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative

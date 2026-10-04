@@ -1,0 +1,59 @@
+ifnull-83 / R86
+CPP working directory: /home/agent/tidb/expression-unification/tikv
+Native working directory: /home/agent/tidb/expression-unification/tidb/rust
+Raw logs: /home/agent/tidb/expression-unification/logs/ifnull-{id}.log
+Counts: passed/failed/ignored/filtered; compile_seconds/test_seconds.
+
+tikv-core | 1/0/0/947 | 16.06/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_if_null::tests -- --test-threads=1
+sha256 53f6c9b0c7fc57d2b5642a25bc3931e02b9b9e0a097c7c0278dac303436e61b1
+
+tikv-wire | 4/0/0/944 | 0.23/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_control::tests -- --test-threads=1
+sha256 29c593c947e832a332d2ae9f2589ab8074e0aedb7c4c8587d21b32891b63acd4
+
+tikv-local | 332/0/1/615 | 0.15/0.25 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+sha256 32f830aa2564493519a87e0bc3a32f3fd3a44d7bdd48e23ac67646dab75d0057
+
+native-root | 6/1/0/1676 | 18.86/0.01 | exit101 | OLD catalog failure selected by this filter
+../../tools/cargo-tidb test --locked -p tidb-expr --lib ifnull -- --test-threads=1
+sha256 4b945a9e793af14ef7b7aee5763595a3703a9d3f87713455d25e0c77888b87ae
+Both new frontend tests pass. The failing pushdown_catalog::tests::ifnull_string_column_literal_uses_go_signature_and_column_collation already fails in the previous full-suite receipt; its reverse literal/column admission assertion is not repaired or re-recorded.
+
+native-bridge | 1/0/0/1682 | 0.21/0.01 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib if_null_bridge -- --test-threads=1
+sha256 a813d9eaeab5e3d2284d4120a65d13d48c1e5460f784328bc6b59c4ddd2516f1
+
+native-gateway | 196/0/1/1486 | 0.16/0.35 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii -- --test-threads=1
+sha256 7abd2559483f1c0005cb91259ec47ebb048f990e54a5c3cf76bdd79c311d0fe5
+
+legacy | 1/0/0/228 | 7.38/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_ifnull_shared -- --test-threads=1
+sha256 d63b4fa6437d89bf45b81eb107fe8ac78f3470a1a525077433be8f3c26a11d4f
+
+sql | 1/0/0/2229 | 29.39/0.09 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_ifnull -- --test-threads=1
+sha256 554fa33030dabbf72dcd436232d17f0a6883b2ad44817c3a620f9df9b86cd94d
+
+expr-full | 1585/4/94/0 | 0.21/14.70 | exit101 | OLD full failures unchanged
+../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+sha256 390c8add52d1f3d01817081c9b55ee4fe39e2cc5ca6541b01b4d62c42723bbfc
+
+unistore-full | 215/1/13/0 | 0.14/3.04 | exit101 | OLD full failure unchanged
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+sha256 12d53f97082b8b68ee5e5ca196130010da00251025e24c7adfc64184a976683f
+
+native-bridge-final | 1/0/0/1682 | 7.18/0.01 | exit0 | narrow internal re-export cleanup
+../../tools/cargo-tidb test --locked -p tidb-expr --lib if_null_bridge -- --test-threads=1
+sha256 2690ebcb4bdc71b49e81dcc52ead5ad76cc4c1201d2d336ea12a8161c87c603e
+No new unused IfNullHeadOutcome/head/finish re-export warning remains; only eval_if_null_in is exposed outside its private module.
+
+Entire failure sections, including final lists, byte-equal to request-scope-82 after replacing only numeric panic-heading thread IDs with THREAD:
+expression 411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+unistore 2f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1
+
+11 locked nonzero launches:8green,1known focused RED,2known full RED. All8new tests pass on their first matching execution; no new test failure/input correction, compile failure, zero-match, interrupted test or fixture recording. New SQL test54SELECTs=48direct(24normal/24zero-slot)+4lazy-error+2filters; each positive direct query reads2stored rows. Filter counts overlap, not unique totals.
+
+Pinned formatting: run rustfmt --edition 2021 --config skip_children=true --check on the8changed CPP Rust files using /home/agent/tidb/expression-reuse/rustup-home/toolchains/nightly-2026-01-30-x86_64-unknown-linux-gnu/bin/rustfmt, and on the11changed native Rust files using the corresponding nightly-2026-08-22 executable. Both worktrees: git diff --check. Parent applied a second pinned formatting pass to one new ClosedPrivate return. A source-audit helper timed out at20s due repeated whole-tail slicing; its linear-time replacement completed, comparing121CPP/515native original #[test] bodies byte-for-byte. This was not a test interruption or source regression.

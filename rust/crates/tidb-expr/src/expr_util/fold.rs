@@ -417,9 +417,17 @@ fn if_null_fold_handler(
         return (expr.clone(), false);
     };
     // Only the VALUE matters: a deferred argument has already been evaluated
-    // into it by the fold above.
-    if !constant.value.is_null() {
-        return (folded_arg0.clone(), is_deferred);
+    // into it by the fold above. This tree transformation shares the worker's
+    // pure choice rule, without introducing a fallible execution boundary.
+    let actual_first = match &constant.value {
+        Datum::Null => None,
+        _ => Some(&folded_arg0),
+    };
+    match tidb_query_expr::native_if_null_choose_first(actual_first) {
+        tidb_query_expr::NativeIfNullChoice::Done(first) => {
+            return (first.clone(), is_deferred);
+        }
+        tidb_query_expr::NativeIfNullChoice::NeedSecond => {}
     }
     let (folded, is_constant) = fold_constant_inner(&args[1], ctx, opts);
     // TiDB issue #51765: when the first argument folds to NULL, IFNULL's

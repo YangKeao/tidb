@@ -1464,6 +1464,9 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::FromUnixTimeNullNative => {
             panic!("FROM_UNIXTIME needs its actual numeric, text, epoch or nullable decimal input")
         }
+        EvaluatedBytesOp::IfNullHeadNative | EvaluatedBytesOp::IfNullFinishNative => {
+            panic!("IFNULL needs its actual first value or original head report and demanded second value")
+        }
         EvaluatedBytesOp::ConvertTzNative => {
             panic!("CONVERT_TZ needs its three actual nullable coerced strings")
         }

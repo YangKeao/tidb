@@ -1875,12 +1875,11 @@ impl ScalarFunction {
         // value. Evaluate only as far as that decision requires so an error
         // in a skipped argument stays unreachable.
         if name == "ifnull" && self.args.len() == 2 {
-            let first = self.args[0].eval(ctx, row)?;
-            return if first.is_null() {
-                self.args[1].eval(ctx, row)
-            } else {
-                Ok(first)
-            };
+            return crate::tikv::eval_if_null_in(
+                ctx,
+                |original_ctx| self.args[0].eval(original_ctx, row),
+                |scoped_ctx| self.args[1].eval(scoped_ctx, row),
+            );
         }
         if name == "coalesce" {
             for arg in &self.args {

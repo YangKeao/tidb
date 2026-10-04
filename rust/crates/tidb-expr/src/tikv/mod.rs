@@ -28,7 +28,9 @@ mod context;
 mod evaluated_ascii;
 mod from_unixtime;
 mod identity_value;
+mod if_null;
 pub use from_unixtime::eval_from_unixtime_legacy_scoped_in;
+pub(crate) use if_null::eval_if_null_in;
 mod unix_timestamp;
 pub use adapter_failure::{
     ExpressionAdapterFailure, ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,
@@ -137,7 +139,7 @@ pub(crate) fn prepare_grouping_args(
     })
 }
 
-/// Encode only the selected actual value for the fixed identity worker.
+/// Encode one actual native datum in the existing identity representation.
 pub(crate) fn prepare_datum_identity_args(
     value: &tidb_datatype::Datum,
 ) -> Result<EvaluatedArgs, crate::EvalError> {

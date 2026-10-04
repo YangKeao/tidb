@@ -9363,6 +9363,228 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_ifnull_preserves_stored_frames_lazy_errors_and_runtime_root_demand() {
+    use tidb_datatype::{FieldTypeCode, TimeType};
+
+    // Two rows per table have distinct payloads. The five value families
+    // have non-NULL first arguments in the left table and NULL in the right;
+    // the separate typed-NULL pair is NULL in both. Zero-slot proof therefore
+    // does not depend on which row a scan visits first.
+    let schema = "(i_left BIGINT, i_right BIGINT, d_left DECIMAL(8,1), d_right DECIMAL(10,3), s_left VARCHAR(8), s_right VARCHAR(12), t_left DATETIME, t_right DATETIME(3), j_left JSON, j_right JSON, n_left BIGINT, n_right BIGINT, subject VARCHAR(8), bad_pattern VARCHAR(8))";
+    let left_rows = "(1,2,1.5,123.123,'abc','n','2020-10-10 12:59:59','2020-10-10 12:59:59.123','[1]','[2]',NULL,NULL,'x','['),(3,4,2.5,456.456,'xyz','z','2024-01-01 00:00:00','2024-01-01 00:00:00.456','[3]','[4]',NULL,NULL,'x','[')";
+    let right_rows = "(NULL,2,NULL,123.123,NULL,'n',NULL,'2020-10-10 12:59:59.123',NULL,'[2]',NULL,NULL,'x','['),(NULL,4,NULL,456.456,NULL,'z',NULL,'2024-01-01 00:00:00.456',NULL,'[4]',NULL,NULL,'x','[')";
+    // Original control.rs / compare_control_source.rs selection rules, with
+    // fixed literal payloads. InferType4ControlFuncs merges widths/scales,
+    // while the existing outer coerce keeps values already in that family.
+    let cases = [
+        (
+            "i_left,i_right",
+            FieldTypeCode::LongLong,
+            Some((20, 0)),
+            Some([["1", "3"], ["2", "4"]]),
+        ),
+        (
+            "d_left,d_right",
+            FieldTypeCode::NewDecimal,
+            Some((10, 3)),
+            Some([["1.5", "2.5"], ["123.123", "456.456"]]),
+        ),
+        (
+            "s_left,s_right",
+            FieldTypeCode::Varchar,
+            Some((12, -1)),
+            Some([["abc", "xyz"], ["n", "z"]]),
+        ),
+        (
+            "t_left,t_right",
+            FieldTypeCode::Datetime,
+            Some((23, 3)),
+            Some([
+                ["2020-10-10 12:59:59", "2024-01-01 00:00:00"],
+                ["2020-10-10 12:59:59.123", "2024-01-01 00:00:00.456"],
+            ]),
+        ),
+        (
+            "j_left,j_right",
+            FieldTypeCode::Json,
+            None,
+            Some([["[1]", "[3]"], ["[2]", "[4]"]]),
+        ),
+        // NULL values in typed BIGINT columns still have a BIGINT result
+        // header, unlike two untyped NULL constants folded at planning.
+        (
+            "n_left,n_right",
+            FieldTypeCode::LongLong,
+            Some((20, 0)),
+            None,
+        ),
+    ];
+    for slots in [1, 0] {
+        let mut session = Session::new();
+        session
+            .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+            .unwrap();
+        session.run("SET time_zone='+00:00'").unwrap();
+        session.run("SET sql_mode=''").unwrap();
+        session
+            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+            .unwrap();
+        for (table, values) in [
+            ("shared_ifnull_left", left_rows),
+            ("shared_ifnull_right", right_rows),
+        ] {
+            session
+                .run(&format!("CREATE TABLE {table} {schema}"))
+                .unwrap();
+            session
+                .run(&format!("INSERT INTO {table} VALUES {values}"))
+                .unwrap();
+        }
+        assert!(session
+            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .unwrap());
+        for vectorized in [0, 1] {
+            session
+                .run(&format!(
+                    "SET tidb_enable_vectorized_expression={vectorized}"
+                ))
+                .unwrap();
+            for (table, first_null) in
+                [("shared_ifnull_left", false), ("shared_ifnull_right", true)]
+            {
+                for (args, code, shape, expected) in cases {
+                    // Pure two-column IFNULL: no child function, WHERE or
+                    // ORDER BY can supply a substitute zero-slot failure.
+                    let sql = format!("SELECT IFNULL({args}) FROM {table}");
+                    if slots == 1 {
+                        let StmtOutput::Rows { columns, rows } =
+                            session.run_with_columns(&sql).unwrap()
+                        else {
+                            panic!("expected IFNULL rows: {sql}")
+                        };
+                        assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
+                        let field = &columns[0].1;
+                        assert_eq!(field.code(), code, "{sql}/{vectorized}");
+                        if let Some(shape) = shape {
+                            assert_eq!(
+                                (field.flen(), field.decimal()),
+                                shape,
+                                "{sql}/{vectorized}"
+                            );
+                        }
+                        assert_eq!(rows.len(), 2, "{sql}/{vectorized}");
+                        for row in &rows {
+                            assert_eq!(row.len(), 1);
+                            if expected.is_none() {
+                                assert_eq!(row[0], Datum::Null, "{sql}/{vectorized}");
+                                continue;
+                            }
+                            match (&row[0], code) {
+                                (Datum::Int(_), FieldTypeCode::LongLong) => {}
+                                (Datum::Decimal(decimal), FieldTypeCode::NewDecimal) => {
+                                    assert_eq!(decimal.declared_shape(), Some((10, 3)));
+                                }
+                                (Datum::String(_), FieldTypeCode::Varchar) => {
+                                    assert_eq!(field.charset_name(), "utf8mb4");
+                                    assert_eq!(field.collation_name(), "utf8mb4_bin");
+                                }
+                                (Datum::Time(time), FieldTypeCode::Datetime) => {
+                                    assert_eq!(time.kind(), TimeType::DateTime);
+                                    // IFNULL does not perform COALESCE's
+                                    // special merged-FSP stamp on a Time.
+                                    assert_eq!(time.fsp(), if first_null { 3 } else { 0 });
+                                }
+                                (Datum::Json(_), FieldTypeCode::Json) => {}
+                                other => {
+                                    panic!("IFNULL changed the selected carrier: {sql}: {other:?}")
+                                }
+                            }
+                        }
+                        if let Some(expected) = expected {
+                            let mut actual: Vec<_> =
+                                rows.iter().map(|row| cell_text(&row[0])).collect();
+                            // Compare a fixed multiset without inserting a SQL
+                            // sort worker into the root-demand query itself.
+                            actual.sort();
+                            assert_eq!(
+                                actual,
+                                expected[usize::from(first_null)],
+                                "{sql}/{vectorized}"
+                            );
+                        }
+                    } else {
+                        let error = session.run_with_columns(&sql).expect_err(&sql);
+                        match &error {
+                            DriverError::Exec(tidb_executor::ExecError::Eval(
+                                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                            )) => {
+                                assert_eq!(failure.class(), tidb_executor::ExpressionAdapterFailureClass::PoolResource);
+                                assert_eq!(failure.origin(), tidb_executor::ExpressionAdapterFailureOrigin::Pool);
+                            }
+                            other => panic!("IFNULL used a native picker instead of its worker: {sql}/{vectorized}: {other:?}"),
+                        }
+                        let mysql = error.to_mysql_error();
+                        assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
+                        assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
+                        assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
+                    }
+                    assert!(
+                        warnings_of(&session).is_empty(),
+                        "{sql}/{vectorized}/slots={slots}"
+                    );
+                }
+                if slots == 1 {
+                    // The original IFNULL dead-regexp case, now with ALL
+                    // operands stored. The invalid pattern cannot be folded
+                    // into an earlier constant error. These child-bearing
+                    // queries are not claimed as zero-slot root evidence.
+                    let sql =
+                        format!("SELECT IFNULL(i_left, subject REGEXP bad_pattern) FROM {table}");
+                    if first_null {
+                        let error = session.run_with_columns(&sql).expect_err(&sql);
+                        assert!(
+                            matches!(
+                                &error,
+                                DriverError::Exec(tidb_executor::ExecError::Eval(
+                                    tidb_executor::EvalError::Unsupported(
+                                        "invalid regular expression pattern"
+                                    )
+                                ))
+                            ),
+                            "{error:?}"
+                        );
+                        // The existing native compile_error maps InvalidPattern
+                        // to Unsupported: preserve 1105, not Go's nominal 1139.
+                        let mysql = error.to_mysql_error();
+                        assert_eq!(mysql.code, 1105);
+                        assert_eq!(mysql.state, *b"HY000");
+                        assert_eq!(mysql.message, "invalid regular expression pattern");
+                    } else {
+                        let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap()
+                        else {
+                            panic!("expected IFNULL to skip the invalid stored pattern")
+                        };
+                        let mut actual: Vec<_> =
+                            rows.iter().map(|row| cell_text(&row[0])).collect();
+                        actual.sort();
+                        assert_eq!(actual, ["1", "3"]);
+                        assert!(warnings_of(&session).is_empty());
+                    }
+                }
+            }
+            if slots == 1 {
+                let sql = "SELECT 1 FROM shared_ifnull_right WHERE IFNULL(i_left,i_right)=2";
+                let StmtOutput::Rows { rows, .. } = session.run_with_columns(sql).unwrap() else {
+                    panic!("expected IFNULL predicate rows")
+                };
+                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
+                assert!(warnings_of(&session).is_empty());
+            }
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_temporal_literal_rewrite_uses_the_executing_session_pool() {
     use tidb_datatype::{FieldTypeCode, TimeType};
 

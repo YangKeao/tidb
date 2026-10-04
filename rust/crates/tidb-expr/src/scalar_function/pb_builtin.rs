@@ -213,14 +213,19 @@ impl PbBuiltin {
                 };
                 argument(branch)
             }
-            Kernel::IfNull => {
-                let value = argument(0)?;
-                if value.is_null() {
-                    argument(1)
-                } else {
-                    Ok(value)
-                }
-            }
+            Kernel::IfNull => crate::tikv::eval_if_null_in(
+                ctx,
+                |original_ctx| {
+                    args.first()
+                        .ok_or(EvalError::Unsupported("missing protobuf builtin argument"))?
+                        .eval(original_ctx, row)
+                },
+                |scoped_ctx| {
+                    args.get(1)
+                        .ok_or(EvalError::Unsupported("missing protobuf builtin argument"))?
+                        .eval(scoped_ctx, row)
+                },
+            ),
             Kernel::IsNull => {
                 let ready = if argument(0)?.is_null() {
                     None
@@ -709,6 +714,285 @@ mod json_path_worker_tests {
     use crate::expression::{Column, Constant, Expression};
     use crate::NoColumns;
     use tidb_datatype::{BinaryJSON, FieldTypeCode, FieldTypeFlags};
+
+    #[test]
+    fn protobuf_ifnull_keeps_missing_extra_demand_scope_and_outer_types() {
+        use std::cell::RefCell;
+        use tidb_datatype::{CoreTime, Decimal, MySqlDuration, Time, TimeType};
+        struct Demand {
+            values: [Datum; 2],
+            reads: RefCell<Vec<usize>>,
+        }
+        impl Columns for Demand {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn param_value(&self, index: usize) -> Result<Datum, EvalError> {
+                self.reads.borrow_mut().push(index);
+                self.values
+                    .get(index)
+                    .cloned()
+                    .ok_or(EvalError::Unsupported("dead IFNULL suffix"))
+            }
+            fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+                panic!("IFNULL does not consult timezone")
+            }
+            fn date_modes(&self) -> tidb_datatype::DateModes {
+                panic!("IFNULL does not consult date modes")
+            }
+            fn truncate_level(&self) -> crate::ErrorLevel {
+                panic!("IFNULL does not coerce child values")
+            }
+            fn append_warning(&self, _: u16, _: &str) {
+                panic!("IFNULL does not append warnings")
+            }
+        }
+        fn frame(value: &Datum) -> Option<Vec<u8>> {
+            let crate::tikv::EvaluatedArgs::Bytes(bytes) =
+                crate::tikv::prepare_datum_identity_args(value).unwrap()
+            else {
+                panic!("expected actual nullable identity")
+            };
+            bytes
+        }
+        fn resource(result: Result<Datum, EvalError>) {
+            let error = result.expect_err("PB IFNULL must retain the zero-slot owner");
+            let EvalError::ExpressionAdapterFailure(failure) = error else {
+                panic!("{error:?}")
+            };
+            assert_eq!(
+                failure.class(),
+                crate::ExpressionAdapterFailureClass::PoolResource
+            );
+            assert_eq!(
+                failure.origin(),
+                crate::ExpressionAdapterFailureOrigin::Pool
+            );
+        }
+        let child = |order| {
+            let mut constant = Constant::default();
+            constant.param_marker = Some(crate::constant::ParamMarker { order });
+            Expression::Constant(constant)
+        };
+        let build = |signature, ret_type, count| {
+            ScalarFunction::from_pb(
+                PbBuiltin::new(signature).unwrap(),
+                ret_type,
+                (0..count).map(&child).collect(),
+            )
+        };
+        let int_type = FieldType::new(FieldTypeCode::LongLong);
+        let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+        for slots in [1, 0] {
+            let owner = crate::AsciiPoolOwner::new(
+                crate::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    64,
+                    8,
+                    4 * 1024 * 1024,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let execution = owner.begin_execution().unwrap();
+            for first in [Datum::Int(7), Datum::Null] {
+                let ctx = Demand {
+                    values: [first.clone(), Datum::Int(9)],
+                    reads: RefCell::new(Vec::new()),
+                };
+                for count in 0..=3 {
+                    let function = build(ScalarFuncSig::IfNullInt, int_type.clone(), count);
+                    let result = execution
+                        .scope()
+                        .with_columns(&ctx, |columns| function.eval(columns, empty.to_row()));
+                    if count == 0 {
+                        assert!(matches!(
+                            result,
+                            Err(EvalError::Unsupported("missing protobuf builtin argument"))
+                        ));
+                        assert!(ctx.reads.take().is_empty());
+                    } else if slots == 0 {
+                        resource(result);
+                        assert_eq!(ctx.reads.take(), vec![0]);
+                    } else if first.is_null() && count == 1 {
+                        assert!(matches!(
+                            result,
+                            Err(EvalError::Unsupported("missing protobuf builtin argument"))
+                        ));
+                        assert_eq!(ctx.reads.take(), vec![0]);
+                    } else {
+                        assert_eq!(
+                            result.unwrap(),
+                            if first.is_null() {
+                                Datum::Int(9)
+                            } else {
+                                first.clone()
+                            }
+                        );
+                        assert_eq!(
+                            ctx.reads.take(),
+                            if first.is_null() { vec![0, 1] } else { vec![0] }
+                        );
+                    }
+                }
+            }
+            let cases = [
+                (ScalarFuncSig::IfNullInt, int_type.clone(), Datum::Int(7)),
+                (
+                    ScalarFuncSig::IfNullReal,
+                    FieldType::new(FieldTypeCode::Double),
+                    Datum::Real(-0.0),
+                ),
+                (
+                    ScalarFuncSig::IfNullDecimal,
+                    FieldType::new(FieldTypeCode::NewDecimal),
+                    Datum::Decimal(Decimal::from_raw_parts(true, b"00010049".to_vec(), 2, 4)),
+                ),
+                (
+                    ScalarFuncSig::IfNullString,
+                    FieldType::new(FieldTypeCode::VarString),
+                    Datum::new_bytes(vec![0xff, 0]),
+                ),
+                (
+                    ScalarFuncSig::IfNullTime,
+                    FieldType::new(FieldTypeCode::Datetime),
+                    Datum::Time(Time::from_raw_parts(
+                        CoreTime::from_date(2024, 1, 1, 0, 0, 0, 123000),
+                        TimeType::DateTime,
+                        3,
+                    )),
+                ),
+                (
+                    ScalarFuncSig::IfNullDuration,
+                    FieldType::new(FieldTypeCode::Duration),
+                    Datum::Duration(MySqlDuration::from_raw_parts(-123000000, 3)),
+                ),
+                (
+                    ScalarFuncSig::IfNullJson,
+                    FieldType::new(FieldTypeCode::Json),
+                    Datum::Json(BinaryJSON::parse("null").unwrap()),
+                ),
+                // The wider existing direct PB helper preserves an unsupported
+                // conversion's original raw result; it must not reject its frame.
+                (
+                    ScalarFuncSig::IfNullInt,
+                    int_type.clone(),
+                    Datum::Raw(vec![0xff, 0]),
+                ),
+                (ScalarFuncSig::IfNullInt, int_type.clone(), Datum::Null),
+            ];
+            for (signature, ret_type, value) in cases {
+                for null_first in [false, true] {
+                    let ctx = Demand {
+                        values: [
+                            if null_first {
+                                Datum::Null
+                            } else {
+                                value.clone()
+                            },
+                            value.clone(),
+                        ],
+                        reads: RefCell::new(Vec::new()),
+                    };
+                    let function = build(signature, ret_type.clone(), 2);
+                    let result = execution
+                        .scope()
+                        .with_columns(&ctx, |columns| function.eval(columns, empty.to_row()));
+                    if slots == 1 {
+                        assert_eq!(frame(&result.unwrap()), frame(&value));
+                    } else {
+                        resource(result);
+                    }
+                    assert_eq!(
+                        ctx.reads.take(),
+                        if slots == 1 && ctx.values[0].is_null() {
+                            vec![0, 1]
+                        } else {
+                            vec![0]
+                        }
+                    );
+                }
+            }
+            if slots == 1 {
+                let ctx = Demand {
+                    values: [Datum::UInt(u64::MAX), Datum::Null],
+                    reads: RefCell::new(Vec::new()),
+                };
+                let signed = build(ScalarFuncSig::IfNullInt, int_type.clone(), 2);
+                assert_eq!(
+                    execution
+                        .scope()
+                        .with_columns(&ctx, |columns| signed.eval(columns, empty.to_row()))
+                        .unwrap(),
+                    Datum::Int(-1)
+                );
+                let ordinary = ScalarFunction::new(
+                    tidb_ast::CiString::new("ifnull"),
+                    int_type.clone(),
+                    vec![child(0), child(1)],
+                );
+                assert_eq!(
+                    execution
+                        .scope()
+                        .with_columns(&ctx, |columns| ordinary.eval(columns, empty.to_row()))
+                        .unwrap(),
+                    Datum::UInt(u64::MAX)
+                );
+                let ctx = Demand {
+                    values: [Datum::Int(-1), Datum::Null],
+                    reads: RefCell::new(Vec::new()),
+                };
+                let unsigned = build(
+                    ScalarFuncSig::IfNullInt,
+                    int_type.clone().with_added_flags(FieldTypeFlags::UNSIGNED),
+                    2,
+                );
+                assert_eq!(
+                    execution
+                        .scope()
+                        .with_columns(&ctx, |columns| unsigned.eval(columns, empty.to_row()))
+                        .unwrap(),
+                    Datum::UInt(u64::MAX)
+                );
+                let ctx = Demand {
+                    values: [Datum::Int(7), Datum::Null],
+                    reads: RefCell::new(Vec::new()),
+                };
+                let text = build(
+                    ScalarFuncSig::IfNullString,
+                    FieldType::new(FieldTypeCode::VarString),
+                    2,
+                );
+                assert_eq!(
+                    execution
+                        .scope()
+                        .with_columns(&ctx, |columns| text.eval(columns, empty.to_row()))
+                        .unwrap()
+                        .sql_string()
+                        .unwrap(),
+                    "7"
+                );
+                let ordinary = ScalarFunction::new(
+                    tidb_ast::CiString::new("ifnull"),
+                    FieldType::new(FieldTypeCode::VarString),
+                    vec![child(0), child(1)],
+                );
+                assert_eq!(
+                    execution
+                        .scope()
+                        .with_columns(&ctx, |columns| ordinary.eval(columns, empty.to_row()))
+                        .unwrap()
+                        .sql_string()
+                        .unwrap(),
+                    "7"
+                );
+            }
+        }
+    }
 
     #[test]
     fn protobuf_from_unixtime_keeps_null_demand_and_outer_typed_wrapping() {

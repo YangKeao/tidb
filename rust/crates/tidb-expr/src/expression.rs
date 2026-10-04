@@ -453,7 +453,23 @@ fn try_fold_nullified_function(
 ) -> Option<Constant> {
     let name = function.func_name.lowercase();
     let result_type = function.get_static_type()?.clone();
-    if matches!(name, "coalesce" | "ifnull") {
+    if name == "ifnull" {
+        // Keep this proof helper's existing variadic domain, including malformed
+        // calls, while sharing the runtime worker's pure nullable choice rule.
+        for argument in &function.args {
+            let constant = try_fold_nullified_constant(inner_column_ids, argument)?;
+            let actual_first = match &constant.value {
+                Datum::Null => None,
+                _ => Some(constant),
+            };
+            match tidb_query_expr::native_if_null_choose_first(actual_first) {
+                tidb_query_expr::NativeIfNullChoice::Done(first) => return Some(first),
+                tidb_query_expr::NativeIfNullChoice::NeedSecond => {}
+            }
+        }
+        return Some(Constant::new(Datum::Null, result_type));
+    }
+    if name == "coalesce" {
         for argument in &function.args {
             let constant = try_fold_nullified_constant(inner_column_ids, argument)?;
             if !constant.value.is_null() {
