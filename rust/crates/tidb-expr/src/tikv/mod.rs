@@ -32,6 +32,10 @@ pub(crate) use case_control::eval_case_in;
 mod coalesce;
 pub(crate) use coalesce::eval_coalesce_in;
 mod context;
+mod convert_charset;
+pub(crate) use convert_charset::{
+    eval_charset_null_in, eval_convert_using_in, eval_from_binary_in, eval_to_binary_in,
+};
 // The closed ready-argument families share this value boundary and one pool.
 mod evaluated_ascii;
 mod from_unixtime;

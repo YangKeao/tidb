@@ -1,0 +1,61 @@
+convert-charset-93 / R96
+CPP cwd: /home/agent/tidb/expression-unification/tikv
+Native cwd: /home/agent/tidb/expression-unification/tidb/rust
+Raw logs: /home/agent/tidb/expression-unification/logs/convert-charset-{id}.log
+Counts passed/failed/ignored/filtered; compile_seconds/test_seconds.
+
+tikv-core | 1/0/0/970 | 15.80/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_convert_charset -- --test-threads=1
+sha256 28dd0232e148cdfd598294775ea16c1da0d847c2bac15e874488f1534b66b744
+
+tikv-local | 347/0/1/623 | 0.14/0.24 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+sha256 73dd35f0a1e7b8cb593257ba3d2b38649fe6df2817346b24d201ddd4632e0f3a
+
+Four earlier compile RED attempts, no tests executed (each command above ran twice before its successful run):
+tikv-core-compile-failure | exit101 | sha256 015cfc4828dc126b4f061a9837d36d305a6534b470bd1286d6df72b63f30a210
+tikv-local-compile-failure | exit101 | sha256 23b1a5557e3879e1cb3b2afeb4d8319e82d17d9a4fbd00454bc42bfc92226178
+New module rpn_fn expansion required EvaluableRef/EvaluableRet imports (E0405/E0599); added those two traits.
+tikv-core-compile-failure-2 | exit101 | sha256 4ee4d31013d8a70c51acc7ab6fa65e26bc6f144019b6df6db0f07f9958f083d2
+tikv-local-compile-failure-2 | exit101 | sha256 4ee4d31013d8a70c51acc7ab6fa65e26bc6f144019b6df6db0f07f9958f083d2
+Expanded code then required ChunkedVec::with_capacity trait visibility (E0599); added ChunkedVec import. No algorithm/test oracle changed. The latter two raw logs are byte-identical but came from two real command launches. No compile/test elapsed receipt for failed attempts. Initial pinned formatter check also needed a second pass before ANY Cargo launch; it is not a test/compile RED or zero-match run.
+
+native-datatype | 22/0/0/437 | 2.33/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib encoding -- --test-threads=1
+sha256 6fe7b1acb5a7e80519078618d6f65fd260048f9d8550334f62b292924c6561e4
+
+native-root | 2/0/0/1700 | 20.31/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib convert_charset -- --test-threads=1
+sha256 60eb193f0d2963b8f5d3e0137778e58f9c9664f1125f26defc998f564bec223b
+
+native-gateway | 196/0/1/1505 | 0.24/0.36 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii -- --test-threads=1
+sha256 89c7969c1063f4d5a0d52bc8ed1beff6f17d50bdc0ab0bba686b3b94d7e6aa49
+
+sql | 1/0/0/2238 | 32.71/0.09 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_convert_using_preserves_charset_bytes_and_distinct_null_pool_paths -- --test-threads=1
+sha256 72126992bfde391588b508e1bf2947e385c472717ec565e62ec50ab12f642519
+
+sql-original | 7/0/0/2232 | 0.16/0.08 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_charset -- --test-threads=1
+sha256 074f2dd2135420f6ea60c1536cf5277c1c48ae96fdbe5654a49b698bb4ce1e88
+
+expr-full | 1604/4/94/0 | 0.19/14.89 | exit101 | OLD failures unchanged
+../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+sha256 94507a107eaff2dfec9a1f4af19293f0d2657c24cf1ac989c486562fdc6a35c2
+
+unistore-full | 220/1/13/0 | 7.80/3.08 | exit101 | OLD failure unchanged
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+sha256 77d0dc11d7bcbe7fad4e81442fad3ce47b39b7798a7db5907dc2c3c68b833e21
+
+Thirteen locked single-threaded Cargo launches:4compile RED and9nonzero test runs=7green+2only-old full RED. Six new tests pass on first actual execution. No new execution failure, oracle correction, zero-match, interruption or fixture recording. Whole failure sections byte-equal to charset-codec-92 after only numeric panic-heading thread IDs become THREAD:
+expression 411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+unistore 2f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1
+
+New SQL34SELECT=8storedcases×2vector×pool1/0=32direct+2positivefilters.14zero-slot probes isolate NEW ConvertUsing (including nonNULL badbytes→computedNULL);2caller-NULL refusals use OLD DateDiffNullNative witness and are labeled separately. StoredString/Bytes casts clone, no earlier worker. VarString(-1,-1), actual materialized String bytes/collations, ASCII/GBK/UTF8/binary, replacement, decode, empty/error/NULL boundaries pinned. Positive GBK-HEX/filter queries exercise implicit ToBinary but do not pretend their composite refusal is Convert root evidence. Original7SQLtests/20SELECTs also pass. FromBinary internal helper has direct tests, not invented explicit SQL/PB admission.
+
+3closed one-call Values/OwnBytes profiles: ToBinary/FromBinary Bytes2; ConvertUsing uses necessary new Bytes4 carrying nullabledata + exactsource + effectivecanonicalsource + target. Generic1..3/wire unchanged; only Convert gets4arity whitelist. Existing4ScalarValue ready stack reused. Native factory max_nodes5 source correction applied before gates. SDK report0Bytes/1Retag payload/2invalidcharacter/3unknowncharset; outerNone onlyConvert decodefailure. Target metadata validation uses shared lookup before coercion; directhelperNULL entersNone and computesempty, callerNULL uses actualwitness; metadata passthrough remains no-call. ASTlowercase versustypedlossy-target and getter/cast/child demand retained. Retag defaultcollation/global mode resolved only after SDK reply. Targetbinary's former repeated eval_string was pure byte cloning and is captured once, not a performance claim.
+Conservative checked8*n+1 retainedreply precharge, fresh exact-reserved report and realcap postflight. Allactualcapacity tests includeunused metadata slots;128Ki sparecapacity vs64Ki cap refuses before invoke and healthy reuse succeeds. Codec temporary/physical peak/OOM unverified; no newcollector/driver algorithm. Native runtime selection bodies and encoding lookup removed; public NoColumns facades remain for callers withoutcontext, no hidden native fallback.
+
+Pinned rustfmt --edition 2021 --config skip_children=true --check:9CPP files via /home/agent/tidb/expression-reuse/rustup-home/toolchains/nightly-2026-01-30-x86_64-unknown-linux-gnu/bin/rustfmt,10native via corresponding nightly-2026-08-22 executable. Both git diff --check pass.145CPP/425native original test bodies byte-identical;3CPP/3native new tests,2new modules. Independent E review found no blocker; agent-doc changes descriptive/path-checked. No Go/Bazel/Cargo/lock/generated changes; unrelated untracked BUILD excluded.
+Functional229/245 (93.47%), strict0, remaining16=5core+5ordinary+6complex candidates.228 previous family objects unchanged; only convert_charset added. Previous partialCAST/type objects retained; encoding-name-lookup appended without extra family credit. Request-root/default-NoColumns/liveDAG/final acceptance, known gaps, workspace/lint/dev/bazel_prepare/release/exhaustive/TiFlash/FIPS/performance/physical-OOM/package-transcreation/PR-readiness remain unverified.

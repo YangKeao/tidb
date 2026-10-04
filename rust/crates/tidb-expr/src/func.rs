@@ -126,7 +126,7 @@ pub(crate) fn eval_func(
             // the UTF-8 form, so only the former transcodes.
             let value = match function {
                 StringLengthFunction::Length => {
-                    crate::convert_charset::to_binary_by_collation(&value)?
+                    crate::convert_charset::to_binary_by_collation_in(&value, cols)?
                 }
                 StringLengthFunction::CharLength => value,
             };
@@ -289,7 +289,7 @@ pub(crate) fn eval_func(
         == crate::convert_charset::FuncProp::BinAware
     {
         vals.iter()
-            .map(crate::convert_charset::to_binary_by_collation)
+            .map(|value| crate::convert_charset::to_binary_by_collation_in(value, cols))
             .collect::<Result<_, _>>()?
     } else {
         vals

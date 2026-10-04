@@ -1488,6 +1488,11 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::TimestampDiffTextNative | EvaluatedBytesOp::TimestampDiffCoreNative => {
             panic!("TIMESTAMPDIFF needs its actual unit and two nullable text or raw-core operands")
         }
+        EvaluatedBytesOp::ToBinaryNative
+        | EvaluatedBytesOp::FromBinaryNative
+        | EvaluatedBytesOp::ConvertUsingNative => {
+            panic!("charset conversion needs actual nullable bytes and exact/effective charset metadata")
+        }
         EvaluatedBytesOp::ConvertTzNative => {
             panic!("CONVERT_TZ needs its three actual nullable coerced strings")
         }

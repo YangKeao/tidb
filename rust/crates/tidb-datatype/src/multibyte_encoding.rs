@@ -111,16 +111,21 @@ impl Encoding {
         }
     }
 
+    const fn from_shared(encoding: SharedNativeEncoding) -> Self {
+        match encoding {
+            SharedNativeEncoding::Utf8 => Self::Utf8,
+            SharedNativeEncoding::Utf8Mb3Strict => Self::Utf8Mb3Strict,
+            SharedNativeEncoding::Ascii => Self::Ascii,
+            SharedNativeEncoding::Latin1 => Self::Latin1,
+            SharedNativeEncoding::Binary => Self::Binary,
+            SharedNativeEncoding::Gbk => Self::Gbk,
+            SharedNativeEncoding::Gb18030 => Self::Gb18030,
+        }
+    }
+
     /// Returns the source registry name.
     pub const fn name(self) -> &'static str {
-        match self {
-            Self::Utf8 | Self::Utf8Mb3Strict => "utf8mb4",
-            Self::Ascii => "ascii",
-            Self::Latin1 => "latin1",
-            Self::Binary => "binary",
-            Self::Gbk => "gbk",
-            Self::Gb18030 => "gb18030",
-        }
+        self.shared().name()
     }
 
     /// Returns the source encoding type.
@@ -191,33 +196,23 @@ impl Encoding {
 
 /// Checks whether a name has a complete encoding implementation.
 pub fn is_supported_encoding(charset: &str) -> bool {
-    matches!(
-        charset,
-        "utf8mb4" | "utf8" | "gbk" | "latin1" | "binary" | "ascii" | "gb18030"
-    )
+    tidb_query_datatype::codec::collation::native_encoding::is_supported_encoding(charset)
 }
 
 /// Finds an encoding; empty and unknown names use binary, exactly as Go does.
 pub fn find_encoding(charset: &str) -> Encoding {
-    match charset {
-        "utf8mb4" | "utf8" => Encoding::Utf8,
-        "gbk" => Encoding::Gbk,
-        "latin1" => Encoding::Latin1,
-        "binary" | "" => Encoding::Binary,
-        "ascii" => Encoding::Ascii,
-        "gb18030" => Encoding::Gb18030,
-        _ => Encoding::Binary,
-    }
+    Encoding::from_shared(
+        tidb_query_datatype::codec::collation::native_encoding::find_encoding(charset),
+    )
 }
 
 /// Finds an encoding while treating UTF-8 as byte-preserving binary.
 pub fn find_encoding_take_utf8_as_noop(charset: &str) -> Encoding {
-    let encoding = find_encoding(charset);
-    if encoding.encoding_type() == EncodingType::Utf8 {
-        Encoding::Binary
-    } else {
-        encoding
-    }
+    Encoding::from_shared(
+        tidb_query_datatype::codec::collation::native_encoding::find_encoding_take_utf8_as_noop(
+            charset,
+        ),
+    )
 }
 
 /// Counts the valid UTF-8 prefix representable by an encoding.

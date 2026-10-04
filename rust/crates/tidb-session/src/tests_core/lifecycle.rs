@@ -9363,6 +9363,168 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_convert_using_preserves_charset_bytes_and_distinct_null_pool_paths() {
+    use tidb_datatype::{Collation, FieldTypeCode};
+
+    let create = "CREATE TABLE shared_convert_using_sql (s_one VARCHAR(8) CHARACTER SET utf8mb4, s_pair VARCHAR(8) CHARACTER SET utf8mb4, s_emoji VARCHAR(8) CHARACTER SET utf8mb4, b_gbk VARBINARY(8), b_utf8 VARBINARY(8), b_bad VARBINARY(8), s_null VARCHAR(8) CHARACTER SET utf8mb4, gbk_col VARCHAR(8) CHARACTER SET gbk)";
+    let insert = "INSERT INTO shared_convert_using_sql VALUES ('一','一列','😉',X'D2BBC1D0',X'E4B880E58897',X'FF',NULL,'一列')";
+    // Original charset tests pin character-to-character retag/replacement
+    // and GBK boundary bytes. Binary inputs instead decode; malformed UTF-8
+    // produces NULL without a warning, distinct from a NULL input shortcut.
+    let cases = [
+        ("s_one", "ascii", Collation::AsciiBin, Some("?"), false),
+        (
+            "s_pair",
+            "gbk",
+            Collation::GbkChineseCi,
+            Some("一列"),
+            false,
+        ),
+        ("s_emoji", "gbk", Collation::GbkChineseCi, Some("?"), false),
+        ("b_gbk", "gbk", Collation::GbkChineseCi, Some("一列"), false),
+        (
+            "b_utf8",
+            "utf8mb4",
+            Collation::Utf8Mb4Bin,
+            Some("一列"),
+            false,
+        ),
+        ("s_pair", "binary", Collation::Binary, Some("一列"), false),
+        ("b_bad", "utf8mb4", Collation::Utf8Mb4Bin, None, false),
+        ("s_null", "ascii", Collation::AsciiBin, None, true),
+    ];
+    for slots in [1, 0] {
+        let mut session = Session::new();
+        session
+            .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+            .unwrap();
+        session.run("SET sql_mode=''").unwrap();
+        session
+            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+            .unwrap();
+        session.run(create).unwrap();
+        session.run(insert).unwrap();
+        assert!(session
+            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .unwrap());
+        for vectorized in [0, 1] {
+            session
+                .run(&format!(
+                    "SET tidb_enable_vectorized_expression={vectorized}"
+                ))
+                .unwrap();
+            for (column, charset, collation, expected, caller_null) in cases {
+                // Stored string-family values/types pass through the original
+                // cast_arg_as_string unchanged: no earlier cast worker. Every
+                // non-NULL branch (including binary encoding) belongs to the
+                // single ConvertUsing profile, not a second ToBinary scope.
+                let sql = format!(
+                    "SELECT CONVERT({column} USING {charset}) FROM shared_convert_using_sql"
+                );
+                if slots == 1 {
+                    let StmtOutput::Rows { columns, rows } =
+                        session.run_with_columns(&sql).unwrap()
+                    else {
+                        panic!("expected CONVERT USING rows: {sql}")
+                    };
+                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
+                    let field = &columns[0].1;
+                    // ConvertUsing constructs its own VarString, not a clone
+                    // of the input column's declared width/decimal.
+                    assert_eq!(field.code(), FieldTypeCode::VarString, "{sql}/{vectorized}");
+                    assert_eq!(
+                        (field.flen(), field.decimal()),
+                        (-1, -1),
+                        "{sql}/{vectorized}"
+                    );
+                    assert_eq!(field.charset_name(), charset, "{sql}/{vectorized}");
+                    assert_eq!(
+                        field.collation_name(),
+                        collation.name(),
+                        "{sql}/{vectorized}"
+                    );
+                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
+                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
+                    if let Some(expected) = expected {
+                        // Chunk materialization returns a collation-tagged
+                        // String even for binary metadata or a helper's Bytes
+                        // result. The bytes are UTF-8 here, not GBK wire bytes.
+                        assert!(
+                            matches!(&rows[0][0], Datum::String(_)),
+                            "{sql}/{vectorized}"
+                        );
+                        assert_eq!(
+                            rows[0][0],
+                            Datum::new_collation_string(expected.as_bytes().to_vec(), collation),
+                            "{sql}/{vectorized}"
+                        );
+                        assert_eq!(
+                            rows[0][0].to_bytes().unwrap(),
+                            expected.as_bytes(),
+                            "{sql}/{vectorized}"
+                        );
+                    } else {
+                        assert_eq!(rows[0][0], Datum::Null, "{sql}/{vectorized}");
+                    }
+                } else {
+                    // Fourteen refusals are NEW ConvertUsing roots, including
+                    // non-NULL invalid bytes whose computed answer is NULL.
+                    // The two caller-NULL refusals are the OLD generic
+                    // DateDiffNullNative witness, not new-selector evidence.
+                    let stage = if caller_null {
+                        "existing caller-NULL DateDiff witness"
+                    } else {
+                        "ConvertUsing non-NULL byte worker"
+                    };
+                    let error = session.run_with_columns(&sql).expect_err(&sql);
+                    match &error {
+                        DriverError::Exec(tidb_executor::ExecError::Eval(
+                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                        )) => {
+                            assert_eq!(
+                                failure.class(),
+                                tidb_executor::ExpressionAdapterFailureClass::PoolResource,
+                                "{stage}: {sql}/{vectorized}"
+                            );
+                            assert_eq!(
+                                failure.origin(),
+                                tidb_executor::ExpressionAdapterFailureOrigin::Pool,
+                                "{stage}: {sql}/{vectorized}"
+                            );
+                        }
+                        other => panic!("{stage} bypassed its pool: {sql}/{vectorized}: {other:?}"),
+                    }
+                    let mysql = error.to_mysql_error();
+                    assert_eq!(mysql.code, 1105, "{stage}: {sql}/{vectorized}");
+                    assert_eq!(mysql.state, *b"HY000", "{stage}: {sql}/{vectorized}");
+                    assert!(mysql.is_from_evaluation(), "{stage}: {sql}/{vectorized}");
+                }
+                assert!(
+                    warnings_of(&session).is_empty(),
+                    "{sql}/{vectorized}/slots={slots}"
+                );
+            }
+            if slots == 1 {
+                // Positive integration only: HEX's stored GBK operand gains
+                // its implicit ToBinary wrapper. The predicate has Convert
+                // and equality of its own; do not count any of these as a
+                // zero-slot Convert root or invent explicit to/from SQL calls.
+                let StmtOutput::Rows { rows, .. } = session
+                    .run_with_columns("SELECT HEX(gbk_col) FROM shared_convert_using_sql WHERE CONVERT(s_one USING ascii)='?'")
+                    .unwrap()
+                else {
+                    panic!("expected charset-boundary predicate rows")
+                };
+                assert_eq!(rows.len(), 1, "mode {vectorized}");
+                assert_eq!(rows[0].len(), 1, "mode {vectorized}");
+                assert_eq!(cell_text(&rows[0][0]), "D2BBC1D0", "mode {vectorized}");
+                assert!(warnings_of(&session).is_empty());
+            }
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_timestampdiff_preserves_stored_calendar_text_and_runtime_root_demand() {
     use tidb_datatype::FieldTypeCode;
 

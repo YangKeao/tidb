@@ -1579,7 +1579,7 @@ pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
         // is binary, while `_utf8 0x...` is UTF-8. Preserve that distinction
         // here instead of reconstructing every value as a UTF-8 string.
         Expr::ConvertUsing { expr, charset } => match eval_in(expr, cols)? {
-            Datum::Null => Ok(Datum::Null),
+            Datum::Null => crate::tikv::eval_charset_null_in(cols),
             value => {
                 let (string_value, source) = if let Some(source_charset) = literal_charset(expr) {
                     let source_charset = tidb_datatype::Charset::from_name(source_charset)
@@ -1606,10 +1606,11 @@ pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
                             .with_collation(collation),
                     )
                 };
-                convert_charset::convert_using(
+                convert_charset::convert_using_in(
                     &string_value,
                     &source,
                     &charset.to_ascii_lowercase(),
+                    cols,
                 )
             }
         },

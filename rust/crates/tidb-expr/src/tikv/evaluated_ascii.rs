@@ -807,7 +807,8 @@ impl Creation {
                         | EvaluatedBytesOp::RpadUtf8Native
                         | EvaluatedBytesOp::Insert
                         | EvaluatedBytesOp::InsertUtf8Native
-                        | EvaluatedBytesOp::Locate3Native => 5,
+                        | EvaluatedBytesOp::Locate3Native
+                        | EvaluatedBytesOp::ConvertUsingNative => 5,
                         _ => 4,
                     },
                     max_depth: 3,
@@ -2264,6 +2265,9 @@ fn materialize_computed(
             | EvaluatedBytesOp::CastRealUnsignedNative
             | EvaluatedBytesOp::BoundedStalenessHeadNative
             | EvaluatedBytesOp::BoundedStalenessFinishNative
+            | EvaluatedBytesOp::ToBinaryNative
+            | EvaluatedBytesOp::FromBinaryNative
+            | EvaluatedBytesOp::ConvertUsingNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative

@@ -2066,7 +2066,7 @@ impl ScalarFunction {
         if (name == "to_binary" || name == "from_binary") && self.args.len() == 1 {
             let value = self.args[0].eval(ctx, row)?;
             if value.is_null() {
-                return Ok(Datum::Null);
+                return crate::tikv::eval_charset_null_in(ctx);
             }
             // `to_binary` encodes INTO the argument's charset; `from_binary`
             // decodes OUT of the result's.
@@ -2079,15 +2079,15 @@ impl ScalarFunction {
                 .map_or("binary", tidb_datatype::FieldType::charset_name)
                 .to_owned();
             return if name == "to_binary" {
-                crate::convert_charset::to_binary(&value, &charset)
+                crate::convert_charset::to_binary_in(&value, &charset, ctx)
             } else {
-                crate::convert_charset::from_binary(&value, &charset)
+                crate::convert_charset::from_binary_in(&value, &charset, ctx)
             };
         }
         if name == "convert_using" && self.args.len() == 2 {
             let value = self.args[0].eval(ctx, row)?;
             if value.is_null() {
-                return Ok(Datum::Null);
+                return crate::tikv::eval_charset_null_in(ctx);
             }
             let target = self.args[1].eval(ctx, row)?;
             let target = crate::coerce::coerce_str_bytes(&target)?.unwrap_or_default();
@@ -2103,7 +2103,7 @@ impl ScalarFunction {
                 explicit_collation,
                 ctx.connection_charset_info(),
             );
-            return crate::convert_charset::convert_using(&value, &string_type, &target);
+            return crate::convert_charset::convert_using_in(&value, &string_type, &target, ctx);
         }
         // Go picks one cast signature per target type; the rewriter records
         // that choice in the name, and the width/scale arguments the CHAR,

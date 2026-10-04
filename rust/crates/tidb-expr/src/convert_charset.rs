@@ -52,9 +52,9 @@
 //! transform is already the identity -- which is why `latin1` never appears
 //! in the wrap decision below.
 
-use tidb_datatype::{find_encoding, Charset, Collation, Datum, FieldType, TransformOp};
+use tidb_datatype::{Datum, FieldType};
 
-use crate::EvalError;
+use crate::{Columns, EvalError};
 
 /// Go `funcProp`: how a function's arguments meet the charset boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,19 +139,26 @@ pub fn needs_to_binary(prop: FuncProp, arg_charset: &str, result_charset: &str) 
 /// replacement -- `OpEncode` carries `opTruncateTrim`, so the caller sees
 /// `ErrInvalidCharacterString`.
 pub fn to_binary(value: &Datum, arg_charset: &str) -> Result<Datum, EvalError> {
-    let bytes = crate::arg_eval_type::eval_string(value)?.unwrap_or_default();
-    let (encoded, error) = find_encoding(arg_charset)
-        .transform(&bytes, TransformOp::ENCODE)
-        .into_parts();
-    if error.is_some() {
-        return Err(EvalError::Unsupported("invalid character string"));
-    }
-    Ok(Datum::new_bytes(encoded))
+    to_binary_in(value, arg_charset, &crate::NoColumns)
+}
+
+/// Encodes with the caller's execution context.
+pub fn to_binary_in(
+    value: &Datum,
+    arg_charset: &str,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::eval_to_binary_in(ctx, value, arg_charset)
 }
 
 /// [`to_binary`] driven by the datum's OWN collation rather than a static
 /// argument type, for the value-only evaluator that has no field types.
 pub fn to_binary_by_collation(value: &Datum) -> Result<Datum, EvalError> {
+    to_binary_by_collation_in(value, &crate::NoColumns)
+}
+
+/// Uses the caller's context only when the datum needs actual transcoding.
+pub fn to_binary_by_collation_in(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
     let Some(collation) = value.collation() else {
         return Ok(value.clone());
     };
@@ -159,19 +166,21 @@ pub fn to_binary_by_collation(value: &Datum) -> Result<Datum, EvalError> {
     if is_legacy_charset(charset) {
         return Ok(value.clone());
     }
-    to_binary(value, charset)
+    to_binary_in(value, charset, ctx)
 }
 
 /// Go `builtinInternalFromBinarySig`: encoded bytes in, UTF-8 out.
 pub fn from_binary(value: &Datum, target_charset: &str) -> Result<Datum, EvalError> {
-    let bytes = crate::arg_eval_type::eval_string(value)?.unwrap_or_default();
-    let (decoded, error) = find_encoding(target_charset)
-        .transform(&bytes, TransformOp::DECODE)
-        .into_parts();
-    if error.is_some() {
-        return Err(EvalError::Unsupported("invalid character string"));
-    }
-    Ok(Datum::new_bytes(decoded))
+    from_binary_in(value, target_charset, &crate::NoColumns)
+}
+
+/// Decodes with the caller's execution context.
+pub fn from_binary_in(
+    value: &Datum,
+    target_charset: &str,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::eval_from_binary_in(ctx, value, target_charset)
 }
 
 /// Go `builtinConvertSig`: `CONVERT(expr USING charset)`.
@@ -189,40 +198,263 @@ pub fn convert_using(
     arg_type: &FieldType,
     result_charset: &str,
 ) -> Result<Datum, EvalError> {
-    if !tidb_datatype::is_supported_encoding(result_charset) {
-        return Err(EvalError::Unsupported("unknown character set"));
-    }
-    let bytes = crate::arg_eval_type::eval_string(value)?.unwrap_or_default();
-    let arg_is_binary = arg_type.charset() == Charset::Binary;
-    let result_is_binary = result_charset == "binary";
-    if arg_is_binary && !result_is_binary {
-        // Binary -> character set: DECODE. A failure is NULL, not an error.
-        let (decoded, error) = find_encoding(result_charset)
-            .transform(&bytes, TransformOp::DECODE_REPLACE)
-            .into_parts();
-        return Ok(if error.is_some() {
-            Datum::Null
-        } else {
-            Datum::new_bytes(decoded)
-        });
-    }
-    if result_is_binary {
-        return to_binary(value, arg_type.charset_name());
-    }
-    let encoding = find_encoding(result_charset);
-    if encoding.is_valid(&bytes) {
-        return Ok(retag(bytes, result_charset));
-    }
-    let (replaced, _) = encoding
-        .transform(&bytes, TransformOp::REPLACE_NO_ERR)
-        .into_parts();
-    Ok(retag(replaced, result_charset))
+    convert_using_in(value, arg_type, result_charset, &crate::NoColumns)
 }
 
-/// Tags UTF-8 bytes with a charset's default collation, the way Go's
-/// `CONVERT ... USING` result type does.
-fn retag(bytes: Vec<u8>, charset: &str) -> Datum {
-    let collation = Charset::from_name(charset)
-        .map_or(Collation::DEFAULT, |charset| charset.default_collation());
-    Datum::new_collation_string(bytes, collation)
+/// Converts using the caller's execution context and the original source type.
+pub fn convert_using_in(
+    value: &Datum,
+    arg_type: &FieldType,
+    result_charset: &str,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::eval_convert_using_in(ctx, value, arg_type, result_charset)
+}
+
+#[cfg(test)]
+#[test]
+fn charset_entries_preserve_context_null_demand_and_source_spellings() {
+    use crate::constant::{Constant, ParamMarker};
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    use std::cell::RefCell;
+    use tidb_datatype::{Charset, Collation, FieldTypeCode};
+    struct Demand {
+        value: Datum,
+        target: Datum,
+        fail_target: bool,
+        events: RefCell<Vec<&'static str>>,
+    }
+    impl Columns for Demand {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            self.param_value(0).ok()
+        }
+        fn param_value(&self, index: usize) -> Result<Datum, EvalError> {
+            self.events
+                .borrow_mut()
+                .push(if index == 0 { "source" } else { "target" });
+            if index == 0 {
+                Ok(self.value.clone())
+            } else if self.fail_target {
+                Err(EvalError::Unsupported("charset target child"))
+            } else {
+                Ok(self.target.clone())
+            }
+        }
+        fn connection_charset_info(&self) -> (&str, &str) {
+            self.events.borrow_mut().push("connection");
+            ("utf8mb4", "utf8mb4_bin")
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            panic!("charset conversion must not warn")
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            panic!("charset conversion must not read truncation policy")
+        }
+    }
+    let context = |value, target, fail_target| Demand {
+        value,
+        target,
+        fail_target,
+        events: RefCell::new(Vec::new()),
+    };
+    let string_type = FieldType::new(FieldTypeCode::VarString);
+    let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    let typed = |name: &str, source: &FieldType, ctx: &dyn Columns| {
+        let mut first = Constant::new(Datum::Null, source.clone());
+        first.param_marker = Some(ParamMarker { order: 0 });
+        let mut args = vec![Expression::Constant(first)];
+        if name == "convert_using" {
+            let mut target = Constant::new(Datum::Null, string_type.clone());
+            target.param_marker = Some(ParamMarker { order: 1 });
+            args.push(Expression::Constant(target));
+        }
+        ScalarFunction::new(tidb_ast::CiString::new(name), source.clone(), args)
+            .eval(ctx, row.to_row())
+    };
+    let ast = |target: &str, ctx: &dyn Columns| {
+        crate::eval_in(
+            &tidb_ast::Expr::ConvertUsing {
+                expr: Box::new(tidb_ast::Expr::Column(vec!["source".to_owned()])),
+                charset: target.to_owned(),
+            },
+            ctx,
+        )
+    };
+    let owner = |slots| {
+        crate::AsciiPoolOwner::new(
+            crate::AsciiPoolPolicy::checked(
+                slots,
+                slots,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    for slots in [1, 0] {
+        let pool = owner(slots);
+        let execution = pool.begin_execution().unwrap();
+        for name in ["to_binary", "from_binary", "convert_using", "ast"] {
+            let ctx = context(Datum::Null, Datum::new_string("NOT_A_CHARSET"), true);
+            let result = execution.scope().with_columns(&ctx, |columns| {
+                if name == "ast" {
+                    ast("NOT_A_CHARSET", columns)
+                } else {
+                    typed(name, &string_type, columns)
+                }
+            });
+            if slots == 1 {
+                assert_eq!(result, Ok(Datum::Null));
+            } else {
+                assert!(
+                    matches!(result, Err(EvalError::ExpressionAdapterFailure(failure))
+                if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource)
+                );
+            }
+            assert_eq!(*ctx.events.borrow(), vec!["source"]);
+        }
+        // The implicit adapter must not add a worker for legacy or untagged values.
+        let ctx = context(Datum::Null, Datum::Null, false);
+        for value in [
+            Datum::Null,
+            Datum::Int(7),
+            Datum::new_bytes(vec![255]),
+            Datum::new_string("abc"),
+        ] {
+            assert_eq!(
+                execution
+                    .scope()
+                    .with_columns(&ctx, |columns| to_binary_by_collation_in(&value, columns)),
+                Ok(value)
+            );
+        }
+        assert!(ctx.events.borrow().is_empty());
+    }
+    let pool = owner(1);
+    let execution = pool.begin_execution().unwrap();
+    for target in [
+        Datum::new_string("ASCII"),
+        Datum::new_bytes(vec![255]),
+        Datum::Null,
+    ] {
+        let ctx = context(Datum::new_string("a"), target, false);
+        assert_eq!(
+            execution.scope().with_columns(&ctx, |columns| typed(
+                "convert_using",
+                &string_type,
+                columns
+            )),
+            Err(EvalError::Unsupported("unknown character set"))
+        );
+        assert_eq!(*ctx.events.borrow(), vec!["source", "target", "connection"]);
+    }
+    let ctx = context(Datum::new_string("a"), Datum::Null, false);
+    assert_eq!(
+        execution
+            .scope()
+            .with_columns(&ctx, |columns| ast("ASCII", columns)),
+        Ok(Datum::new_collation_string(
+            b"a".to_vec(),
+            Charset::Ascii.default_collation()
+        ))
+    );
+    assert_eq!(*ctx.events.borrow(), vec!["source"]);
+    for fail_target in [true, false] {
+        let ctx = context(Datum::MinNotNull, Datum::new_string("ASCII"), fail_target);
+        assert_eq!(
+            execution.scope().with_columns(&ctx, |columns| typed(
+                "convert_using",
+                &string_type,
+                columns
+            )),
+            Err(EvalError::Unsupported(if fail_target {
+                "charset target child"
+            } else {
+                "range sentinel byte coercion"
+            }))
+        );
+        assert_eq!(*ctx.events.borrow(), vec!["source", "target"]);
+    }
+    // An unknown exact name can still have an effective binary source. The
+    // binary decode failure is NULL, not the nonbinary replacement string.
+    let mut fallback = string_type.clone();
+    fallback.set_collation_name("binary");
+    fallback.set_charset_name("not_registered");
+    assert_eq!(fallback.charset(), Charset::Binary);
+    let ctx = context(
+        Datum::new_bytes(vec![255]),
+        Datum::new_string("utf8mb4"),
+        false,
+    );
+    assert_eq!(
+        execution
+            .scope()
+            .with_columns(&ctx, |columns| typed("convert_using", &fallback, columns)),
+        Ok(Datum::Null)
+    );
+    assert_eq!(*ctx.events.borrow(), vec!["source", "target", "connection"]);
+    // Conversely target=binary must use the exact source spelling for lookup:
+    // uppercase GBK resolves to effective Gbk, but its encoding lookup is Binary.
+    let mut uppercase = string_type.clone();
+    uppercase.set_charset_name("GBK");
+    assert_eq!(uppercase.charset(), Charset::Gbk);
+    let ctx = context(Datum::new_string("一"), Datum::new_string("binary"), false);
+    assert_eq!(
+        execution
+            .scope()
+            .with_columns(&ctx, |columns| typed("convert_using", &uppercase, columns)),
+        Ok(Datum::new_bytes("一".as_bytes().to_vec()))
+    );
+    assert_eq!(*ctx.events.borrow(), vec!["source", "target", "connection"]);
+    let mut gbk = string_type.clone();
+    gbk.set_charset_name("gbk");
+    for (name, input, expected) in [
+        (
+            "to_binary",
+            Datum::new_string("一"),
+            Datum::new_bytes(vec![0xd2, 0xbb]),
+        ),
+        (
+            "from_binary",
+            Datum::new_bytes(vec![0xd2, 0xbb]),
+            Datum::new_bytes("一".as_bytes().to_vec()),
+        ),
+    ] {
+        let ctx = context(input, Datum::Null, true);
+        assert_eq!(
+            execution
+                .scope()
+                .with_columns(&ctx, |columns| typed(name, &gbk, columns)),
+            Ok(expected)
+        );
+        assert_eq!(*ctx.events.borrow(), vec!["source"]);
+    }
+    let ctx = context(
+        Datum::new_collation_string(
+            "一".as_bytes().to_vec(),
+            Collation::from_name("gbk_bin").unwrap(),
+        ),
+        Datum::Null,
+        false,
+    );
+    for (name, expected) in [("LENGTH", "2"), ("HEX", "D2BB")] {
+        let result = execution
+            .scope()
+            .with_columns(&ctx, |columns| {
+                crate::func::eval_func(
+                    name,
+                    &[tidb_ast::Expr::Column(vec!["source".to_owned()])],
+                    columns,
+                    None,
+                )
+            })
+            .unwrap();
+        assert_eq!(result.sql_string().unwrap(), expected);
+    }
 }
