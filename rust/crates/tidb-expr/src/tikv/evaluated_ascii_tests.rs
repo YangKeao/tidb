@@ -1481,6 +1481,10 @@ fn dispatch_bytes_family(
         EvaluatedBytesOp::CastRealUnsignedNative => {
             panic!("real-to-unsigned CAST needs the actual raw Real or Float32 identity")
         }
+        EvaluatedBytesOp::BoundedStalenessHeadNative
+        | EvaluatedBytesOp::BoundedStalenessFinishNative => {
+            panic!("bounded staleness needs actual Time endpoints and the demanded optional SafeTS")
+        }
         EvaluatedBytesOp::ConvertTzNative => {
             panic!("CONVERT_TZ needs its three actual nullable coerced strings")
         }

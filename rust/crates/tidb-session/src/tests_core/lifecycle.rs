@@ -9363,6 +9363,140 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_bounded_staleness_preserves_sql_lower_bounds_and_distinct_pool_paths() {
+    use tidb_datatype::{FieldTypeCode, TimeType};
+
+    // SQL's production Columns implementation currently leaves SafeTS absent.
+    // Valid windows therefore return the lower bound; this test does NOT
+    // supply storage SafeTS or claim coverage of its getter count/clamping.
+    let create = "CREATE TABLE shared_bounded_staleness_sql (lo DATETIME, hi DATETIME, fraction_lo DATETIME(6), fraction_hi DATETIME(6), null_lo DATETIME, null_hi DATETIME)";
+    let insert = "INSERT INTO shared_bounded_staleness_sql VALUES ('2015-09-21 09:53:04','2025-01-02 10:00:00','2020-06-07 08:09:10.123456','2020-06-07 08:09:10.654321',NULL,NULL)";
+    let cases = [
+        ("lo,hi", Some(("2015-09-21 09:53:04.000", 0)), false),
+        (
+            "fraction_lo,fraction_hi",
+            Some(("2020-06-07 08:09:10.123", 123_456)),
+            false,
+        ),
+        ("lo,lo", Some(("2015-09-21 09:53:04.000", 0)), false),
+        ("hi,lo", None, false),
+        ("null_lo,hi", None, true),
+        ("lo,null_hi", None, true),
+    ];
+    for slots in [1, 0] {
+        let mut session = Session::new();
+        session.run("SET time_zone='+00:00'").unwrap();
+        session.run("SET sql_mode=''").unwrap();
+        session
+            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+            .unwrap();
+        session.run(create).unwrap();
+        session.run(insert).unwrap();
+        assert!(session
+            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .unwrap());
+        for vectorized in [0, 1] {
+            session
+                .run(&format!(
+                    "SET tidb_enable_vectorized_expression={vectorized}"
+                ))
+                .unwrap();
+            for (args, expected, null_witness) in cases {
+                // Both original datetime argument casts still run BEFORE the
+                // family. Stored Time/NULL takes their pure pass-through, so
+                // neither a child caster nor a comparison spends a slot first.
+                let sql = format!(
+                    "SELECT TIDB_BOUNDED_STALENESS({args}) FROM shared_bounded_staleness_sql"
+                );
+                if slots == 1 {
+                    let StmtOutput::Rows { columns, rows } =
+                        session.run_with_columns(&sql).unwrap()
+                    else {
+                        panic!("expected bounded-staleness rows: {sql}")
+                    };
+                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
+                    let field = &columns[0].1;
+                    assert_eq!(field.code(), FieldTypeCode::Datetime, "{sql}/{vectorized}");
+                    assert_eq!(
+                        (field.flen(), field.decimal()),
+                        (23, 3),
+                        "{sql}/{vectorized}"
+                    );
+                    assert_eq!(field.charset_name(), "binary");
+                    assert_eq!(field.collation_name(), "binary");
+                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
+                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
+                    if let Some((text, microsecond)) = expected {
+                        let Datum::Time(time) = &rows[0][0] else {
+                            panic!("expected bounded-staleness Time: {sql}: {:?}", rows[0][0])
+                        };
+                        assert_eq!(time.kind(), TimeType::DateTime);
+                        assert_eq!(time.fsp(), 3);
+                        // Finish stamps kind/FSP only: .123 is the display,
+                        // while the stored .123456 core remains intact.
+                        assert_eq!(
+                            time.core_time().microsecond(),
+                            microsecond,
+                            "{sql}/{vectorized}"
+                        );
+                        assert_eq!(time.to_string(), text, "{sql}/{vectorized}");
+                    } else {
+                        assert_eq!(rows[0][0], Datum::Null, "{sql}/{vectorized}");
+                    }
+                } else {
+                    // Eight zero-slot probes reach the NEW family Head.
+                    // Four genuine-NULL probes instead reach the EXISTING
+                    // DateDiffNullNative witness: do not credit them to Head.
+                    let stage = if null_witness {
+                        "existing DateDiff genuine-NULL witness"
+                    } else {
+                        "bounded-staleness Head"
+                    };
+                    let error = session.run_with_columns(&sql).expect_err(&sql);
+                    match &error {
+                        DriverError::Exec(tidb_executor::ExecError::Eval(
+                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                        )) => {
+                            assert_eq!(
+                                failure.class(),
+                                tidb_executor::ExpressionAdapterFailureClass::PoolResource,
+                                "{stage}: {sql}/{vectorized}"
+                            );
+                            assert_eq!(
+                                failure.origin(),
+                                tidb_executor::ExpressionAdapterFailureOrigin::Pool,
+                                "{stage}: {sql}/{vectorized}"
+                            );
+                        }
+                        other => panic!("{stage} bypassed its pool: {sql}/{vectorized}: {other:?}"),
+                    }
+                    let mysql = error.to_mysql_error();
+                    assert_eq!(mysql.code, 1105, "{stage}: {sql}/{vectorized}");
+                    assert_eq!(mysql.state, *b"HY000", "{stage}: {sql}/{vectorized}");
+                    assert!(mysql.is_from_evaluation(), "{stage}: {sql}/{vectorized}");
+                }
+                assert!(
+                    warnings_of(&session).is_empty(),
+                    "{sql}/{vectorized}/slots={slots}"
+                );
+            }
+            if slots == 1 {
+                // Positive consumer only, not another Head/Finish admission
+                // proof: its outer equality has its own existing worker.
+                let StmtOutput::Rows { rows, .. } = session
+                    .run_with_columns("SELECT 1 FROM shared_bounded_staleness_sql WHERE TIDB_BOUNDED_STALENESS(lo,hi)=lo")
+                    .unwrap()
+                else {
+                    panic!("expected bounded-staleness predicate rows")
+                };
+                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
+                assert!(warnings_of(&session).is_empty());
+            }
+        }
+    }
+}
+
+#[test]
 fn native_type_helpers_preserve_decimal_cast_values_and_float_diagnostics() {
     use tidb_datatype::FieldTypeCode;
 

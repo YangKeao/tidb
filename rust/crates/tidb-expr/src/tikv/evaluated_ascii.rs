@@ -2260,6 +2260,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::CoalesceEndNative
             | EvaluatedBytesOp::NullIfNative
             | EvaluatedBytesOp::CastRealUnsignedNative
+            | EvaluatedBytesOp::BoundedStalenessHeadNative
+            | EvaluatedBytesOp::BoundedStalenessFinishNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative

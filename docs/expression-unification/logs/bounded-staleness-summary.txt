@@ -1,0 +1,49 @@
+bounded-staleness-90 / R93
+CPP cwd: /home/agent/tidb/expression-unification/tikv
+Native cwd: /home/agent/tidb/expression-unification/tidb/rust
+Raw logs: /home/agent/tidb/expression-unification/logs/bounded-staleness-{id}.log
+Counts passed/failed/ignored/filtered; compile_seconds/test_seconds.
+
+tikv-core | 1/0/0/964 | 18.04/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_bounded_staleness::tests -- --test-threads=1
+sha256 bdb97d7a702130eac5cb82fa55bbb5dcc07d221679a0101b417a3e1bd85fc6fb
+
+tikv-local | 343/0/1/621 | 0.18/0.24 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+sha256 ffce396f08d920bb29a1c92317ebf312badbadd65977b224d1ad3d9fbe35f4e1
+
+native-root | 3/0/0/1695 | 18.68/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib bounded_staleness -- --test-threads=1
+sha256 bfe5b404a1278b48d0d7a4fa9ec557ea6fa99013e7e034e92466278289cfa2b7
+
+native-gateway | 196/0/1/1501 | 0.13/0.35 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii -- --test-threads=1
+sha256 5ea2a0d1db2a6542e5e95900a30e47f9b75c4351bb67d20d26e14f1b5089e777
+
+sql | 1/0/0/2236 | 28.83/0.06 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_bounded_staleness_preserves_sql_lower_bounds_and_distinct_pool_paths -- --test-threads=1
+sha256 d419a0013f97609458949357e72e4dbf8a26e0995c497d7daa26ac878468fad8
+
+expr-full | 1600/4/94/0 | 0.14/14.40 | exit101 | OLD failures unchanged
+../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+sha256 57e126fdad3c2dde8db943aa6c4612c5da68eb41617072be1ab8dc52754b940f
+
+unistore-full | 219/1/13/0 | 6.75/3.04 | exit101 | OLD failure unchanged
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+sha256 11a30e067bd654404c694ec77e05d7b06842acd712145798ac984ae19ce670b6
+
+Seven locked nonzero single-threaded launches:5green,2only-old full RED. All6new tests pass on first matching execution; native-root also runs the original source regression. No compile failure, new execution failure, oracle correction, zero-match, interrupted test or fixture recording. Counts overlap across filters.
+
+Entire failure sections byte-equal to decimal-policy-89 expression/unistore sections after only numeric panic-heading thread IDs become THREAD:
+expression 411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+unistore 2f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1
+
+SQL26SELECT=6cases×2vector×2pool=24direct +2positivefilters. Eight new Head-root zero-slot refusals (ordinary/fraction/equal/reversed typed endpoints) are distinct from four EXISTING DateDiffNullNative NULL-witness refusals. No earlier datetime-cast/Compare worker substitutes for those Head probes. Datetime23/3 metadata and actualDateTime/FSP3/raw123456micro are pinned. Current production SQL SafeTS getter is absent/defaultNone, so successful SQL values prove lower-bound fallback, not storage SafeTS integration. Nondefault clamping and getter counts are direct SDK/bridge/source-test evidence.
+
+CPP Head owns left/right month/day-zero priority, reversed-range NULL and NeedSafe. Only NeedSafe reads the original already-zone-adjusted getter once under the active scope; Finish owns strict clamp/None-lower/equal-Safe selection plus metadata-only DateTime/FSP3. Raw microseconds/low4 bits remain; no new year/calendar/FSP/Safe-zero validation or clock/timezone/storage getter. Original casts and warning handler authority remain. Zero Head admission has no new family warning/getter, but earlier caster events are outside that statement. Actual NULL uses Int(None), never an absent Head report. Existing PB/legacy admission is empty and unchanged.
+
+Ready/direct-ready budgets call the same producers for1/11byte bounds and then execute real kernels, charging actual endpoints and SafeTS capacity even if the latter is clamped away. Existing row floor unchanged. Getter/warning panic poisoning, original context, malformed replies and default-NoColumns are covered. No allocator/physical peak/performance claim.
+
+Pinned rustfmt --edition 2021 --config skip_children=true --check covers8CPP files with /home/agent/tidb/expression-reuse/rustup-home/toolchains/nightly-2026-01-30-x86_64-unknown-linux-gnu/bin/rustfmt and6native files with corresponding nightly-2026-08-22 executable. Both git diff --check pass. Source audit:206CPP/373native original #[test] bodies byte-identical;3CPP/3native new tests;2new modules. Independent E production review reports no blocker. Agent-doc changes descriptive, no new policy; no Go/Bazel/Cargo/lock/generated or compile.rs changes. IN remains read-only: old three-facade receipt unchanged, no hidden calls or rewritten SQL oracle.
+
+Functional227/245 (92.65%), strict0, remaining18=5core+7ordinary+6complex candidates. All226 prior family objects unchanged; only tidb_bounded_staleness added. No workspace/lint/dev/release/exhaustive/performance/physical-OOM or PR-readiness claim. Overall goal remains active.

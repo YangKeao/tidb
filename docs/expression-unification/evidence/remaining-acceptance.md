@@ -1,29 +1,28 @@
 # Remaining acceptance after the functional threshold
 
-Status: **226/245 functional families; strict0; overall goal active**. The frozen denominator is unchanged. R86–R90 close IFNULL, IF, COALESCE, CASE and NULLIF selection through shared workers; see [IFNULL](ifnull-checkpoint.md), [IF](if-checkpoint.md), [COALESCE](coalesce-checkpoint.md), [CASE](case-checkpoint.md) and [NULLIF](nullif-checkpoint.md) evidence. Existing comparison/return-type/branch-cast adapters remain explicit. The19 remaining families are not approved blanket exceptions. This review is not itself a passing test receipt.
+Status: **227/245 functional families; strict0; overall goal active**. R93 closes [TIDB_BOUNDED_STALENESS](bounded-staleness-checkpoint.md) through actual endpoint/SafeTS workers, retaining original casts and warning delivery. SQL evidence covers the current absent-SafeTS lower-bound behavior; nondefault SafeTS clamps have direct tests, not invented storage evidence. The frozen denominator is unchanged. R86–R90 close IFNULL, IF, COALESCE, CASE and NULLIF selection through shared workers; see [IFNULL](ifnull-checkpoint.md), [IF](if-checkpoint.md), [COALESCE](coalesce-checkpoint.md), [CASE](case-checkpoint.md) and [NULLIF](nullif-checkpoint.md) evidence. Existing comparison/return-type/branch-cast adapters remain explicit. The18 remaining families are not approved blanket exceptions. This review is not itself a passing test receipt.
 
 The accepted synchronous/scoped evaluator design stays in place. No universal compiler rewrite or exhaustive performance project is required to make the next functional steps. Conversely, reaching90% does not erase the Plan's remaining core ownership/demand obligations.
 
-R91 adds a [Real/Float32→UNSIGNED CAST slice](cast-real-uint-checkpoint.md), **not a new family**. Its native rounding/wrapping/range/overflow algorithm now belongs to TiKV. Other CAST domains, outer NULL and UNION negative bypass remain; legacy wire conversion has a distinct unchanged policy. R92 [type deduplication](decimal-policy-checkpoint.md) subsequently moves the full native float-format policy and Decimal precision-cast body to TiKV. LowerExp and Ryu policies remain distinct through a shared layout renderer; CAST warning classification and source preparation are still caller-owned. This adds no C4 profile or family credit. All226 family objects and the19-family remainder are unchanged.
+R91 adds a [Real/Float32→UNSIGNED CAST slice](cast-real-uint-checkpoint.md), **not a new family**. Its native rounding/wrapping/range/overflow algorithm now belongs to TiKV. Other CAST domains, outer NULL and UNION negative bypass remain; legacy wire conversion has a distinct unchanged policy. R92 [type deduplication](decimal-policy-checkpoint.md) subsequently moves the full native float-format policy and Decimal precision-cast body to TiKV. LowerExp and Ryu policies remain distinct through a shared layout renderer; CAST warning classification and source preparation are still caller-owned. This adds no C4 profile or family credit. R91–R92 added no family credit; R93 retains all226 prior objects and adds only bounded staleness.
 
 ## Five core families still need closure
 
 | Families | Remaining work / source evidence |
 |---|---|
 | cast | `cast.rs` and datatype `decimal/mod.rs` still own ordinary parsing/status policy. R83 float-constructor/Display sharing did not migrate general string-to-Decimal parsing. Close ordinary domains over shared SDKs; record truly exceptional domains separately. |
-| in | `func.rs` still owns found-match/found-null reduction. Its existing eager candidate/comparison side effects cannot be replaced with wire early return. |
+| in | Runtime reduction, typed temporal/JSON membership and prepared string cache/probe remain native. AST/typed generic exhaust comparisons, while ready-values/legacy early-stop; typed temporal paths cast everything first. R93 inventoried these differences. The old NOT IN test fixes3facades (Eq,Eq,NOT); adding a real reducer requires explicitly authorized mechanical receipt adjustment, not hiding calls or changing SQL expectations. No IN code/test was changed. |
 | greatest, least, interval | `builtin_ext/compare2.rs` retains extrema selection and INTERVAL's metadata-selected nullable-linear versus NOT_NULL-binary search. Preserve actual type, collation, precision and getter/search order. |
 
 Observed caller chain: `evaluator.rs::run_with_consumer` → `Expression::eval` → `ScalarFunction::eval` → native control branches or PB dispatch. The R85 parent read the actual CASE/IF/IFNULL/COALESCE branches; R86–R90 removed IFNULL/IF/COALESCE/CASE/NULLIF runtime selection and share choice primitives, retaining distinct truth/error, proof and return-projection policies. NULLIF keeps eager operands and actual Eq before left preparation; its SQL zero-slot refusal is comparison-stage evidence, distinct from selector-isolating direct tests. CASE keeps AST base-once versus rewritten per-WHEN evaluation and original SQL branch casts. COALESCE has catalog facts but no PB/legacy admission; that boundary remains closed. Remaining conclusions are not inferred solely from registry names.
 
-## Eight ordinary families still pending
+## Seven ordinary families still pending
 
 | Family group | Remaining work |
 |---|---|
 | convert_charset | Actual encode/decode/replacement/retag policy in `convert_charset.rs`; shared GB leaves are prerequisites, not evaluator closure. |
 | date_add, date_sub, extract | Calendar/unit algorithms and warning/type policies remain in `time_fn/calendar.rs`. |
 | str_to_date, timestampdiff | Real format scanning and distinct errors, or civil/month difference policy; source in `time_fn/calendar.rs`. |
-| tidb_bounded_staleness | Null/invalid-zero, range check, one demanded SafeTS getter, clamp and FSP3 in `time_fn/mod.rs`. Host supplies SafeTS input, not an excuse to keep all computation native. |
 | json_sum_crc32 | Existing internal scalar-array algorithm in `builtin_ext/json/report.rs`. SQL ARRAY syntax is still rejected by the baseline; migrate the implemented domain without inventing new SQL admission. |
 
 These are pending implementations, not approved whole-family exceptions merely because they take work.

@@ -134,43 +134,7 @@ fn current_tso(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
 /// SafeTS for normal post-epoch datetimes). The result is always a DATETIME
 /// with millisecond precision, matching `setDecimalAndFlenForDatetime(3)`.
 fn tidb_bounded_staleness(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    let [left, right] = vals else {
-        return Err(EvalError::WrongParameterCount("tidb_bounded_staleness"));
-    };
-    let (Datum::Time(left), Datum::Time(right)) = (left, right) else {
-        return if vals.iter().any(Datum::is_null) {
-            Ok(Datum::Null)
-        } else {
-            Err(EvalError::Unsupported(
-                "TIDB_BOUNDED_STALENESS arguments reached the signature without ETDatetime casts",
-            ))
-        };
-    };
-    // `builtinTiDBBoundedStalenessSig` runs `InvalidZero` through
-    // `handleInvalidTimeError` before converting either endpoint to Go time.
-    // Keep that check here, after the signature cast has produced typed
-    // values, so zero/zero-in-date inputs cannot accidentally become a valid
-    // lower-bound read timestamp.
-    for value in [left, right] {
-        if value.invalid_zero() {
-            cols.handle_truncate(&format!("Incorrect datetime value: '{value}'"))?;
-            return Ok(Datum::Null);
-        }
-    }
-    if left.compare(*right).is_gt() {
-        return Ok(Datum::Null);
-    }
-    let mut result = match cols.bounded_staleness_safe_time() {
-        Some(safe) if safe.compare(*left).is_lt() => *left,
-        Some(safe) if safe.compare(*right).is_gt() => *right,
-        Some(safe) => safe,
-        None => *left,
-    };
-    result.set_kind(tidb_datatype::TimeType::DateTime);
-    result
-        .set_fsp(3)
-        .map_err(|_| EvalError::Unsupported("invalid bounded-staleness result precision"))?;
-    Ok(Datum::Time(result))
+    crate::tikv::eval_bounded_staleness_in(cols, vals)
 }
 
 /// `DATE(expr)`, after Go's declared `ETDatetime` argument cast has produced
@@ -1632,6 +1596,257 @@ fn time_diff_worker_preserves_demand_and_raw_formatter_policy() {
     assert_eq!(format_time_diff(3_240_000_000_000, 0), "900:00:00");
     assert_eq!(format_time_diff(-1, 0), "-00:00:00");
     assert_eq!(format_time_diff(-1, 6), "-00:00:00.000001");
+}
+
+#[cfg(test)]
+#[test]
+fn bounded_staleness_keeps_entry_preparation_and_source_demand() {
+    use crate::constant::{Constant, ParamMarker};
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    use std::cell::RefCell;
+    use tidb_datatype::{FieldType, FieldTypeCode, Time, TimeType};
+    struct Demand {
+        values: Vec<Datum>,
+        fail: Option<usize>,
+        safe: Time,
+        events: RefCell<Vec<&'static str>>,
+        warnings: RefCell<Vec<(u16, String)>>,
+    }
+    impl Columns for Demand {
+        fn get(&self, path: &[String]) -> Option<Datum> {
+            self.param_value(path[0].parse().unwrap()).ok()
+        }
+        fn param_value(&self, index: usize) -> Result<Datum, EvalError> {
+            self.events
+                .borrow_mut()
+                .push(["left", "right", "extra"][index]);
+            if self.fail == Some(index) {
+                return Err(EvalError::Unsupported("bounded-staleness child"));
+            }
+            Ok(self.values[index].clone())
+        }
+        fn bounded_staleness_safe_time(&self) -> Option<Time> {
+            self.events.borrow_mut().push("safe");
+            Some(self.safe)
+        }
+        fn date_modes(&self) -> tidb_datatype::DateModes {
+            self.events.borrow_mut().push("modes");
+            tidb_datatype::DateModes::default()
+        }
+        fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+            self.events.borrow_mut().push("zone");
+            tidb_datatype::SessionTimeZone::utc()
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            self.events.borrow_mut().push("policy");
+            crate::ErrorLevel::Warn
+        }
+        fn append_warning(&self, code: u16, text: &str) {
+            self.events.borrow_mut().push("warning");
+            self.warnings.borrow_mut().push((code, text.to_owned()));
+        }
+        fn now(&self) -> Option<(i64, u32, i32)> {
+            panic!("these endpoints need no statement clock")
+        }
+    }
+    let left = Time::from_date_checked(2020, 1, 1, 0, 0, 0, 0, TimeType::DateTime, 0).unwrap();
+    let right = Time::from_date_checked(2020, 1, 3, 0, 0, 0, 0, TimeType::DateTime, 0).unwrap();
+    let safe =
+        Time::from_date_checked(2020, 1, 2, 0, 0, 0, 123456, TimeType::Timestamp, 6).unwrap();
+    let context = |values, fail| Demand {
+        values,
+        fail,
+        safe,
+        events: RefCell::new(Vec::new()),
+        warnings: RefCell::new(Vec::new()),
+    };
+    let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    let evaluate = |mode, values: &[Datum], columns: &dyn Columns| {
+        if mode == 0 {
+            dispatch("TIDB_BOUNDED_STALENESS", values, columns).unwrap()
+        } else if mode == 1 {
+            let args = (0..values.len())
+                .map(|index| tidb_ast::Expr::Column(vec![index.to_string()]))
+                .collect::<Vec<_>>();
+            crate::func::eval_func("TIDB_BOUNDED_STALENESS", &args, columns, None)
+        } else {
+            let args = values
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    let field =
+                        FieldType::new(if matches!(value, Datum::String(_) | Datum::Bytes(_)) {
+                            FieldTypeCode::VarString
+                        } else {
+                            FieldTypeCode::Datetime
+                        });
+                    let mut constant = Constant::new(Datum::Null, field);
+                    constant.param_marker = Some(ParamMarker {
+                        order: index as i64,
+                    });
+                    Expression::Constant(constant)
+                })
+                .collect::<Vec<_>>();
+            let inferred =
+                crate::rewriter::result_type::builtin_return_type("tidb_bounded_staleness", &args);
+            if args.len() == 2 {
+                let field = inferred.as_ref().unwrap();
+                assert_eq!(field.code(), FieldTypeCode::Datetime);
+                assert_eq!(field.decimal(), 3);
+            }
+            ScalarFunction::new(
+                tidb_ast::CiString::new("tidb_bounded_staleness"),
+                inferred.unwrap_or_else(|| FieldType::new(FieldTypeCode::Datetime)),
+                args,
+            )
+            .eval(columns, empty.to_row())
+        }
+    };
+    let pool = crate::AsciiPoolOwner::new(
+        crate::AsciiPoolPolicy::checked(
+            1,
+            1,
+            16 * 1024 * 1024,
+            4 * 1024 * 1024,
+            4 * 1024 * 1024,
+            64,
+            8,
+            4 * 1024 * 1024,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let execution = pool.begin_execution().unwrap();
+    for mode in 0..3 {
+        let ctx = context(vec![Datum::Time(left), Datum::Time(right)], None);
+        let value = execution
+            .scope()
+            .with_columns(&ctx, |columns| evaluate(mode, &ctx.values, columns))
+            .unwrap();
+        let Datum::Time(value) = value else {
+            panic!("typed temporal result")
+        };
+        assert_eq!(value.core_time().raw(), safe.core_time().raw());
+        assert_eq!((value.kind(), value.fsp()), (TimeType::DateTime, 3));
+        assert_eq!(
+            *ctx.events.borrow(),
+            if mode == 0 {
+                vec!["safe"]
+            } else {
+                vec!["left", "right", "safe"]
+            }
+        );
+        assert!(ctx.warnings.borrow().is_empty());
+        for count in [0, 1, 3] {
+            let ctx = context(vec![Datum::Time(left); count], None);
+            assert_eq!(
+                execution.scope().with_columns(&ctx, |columns| evaluate(
+                    mode,
+                    &ctx.values,
+                    columns
+                )),
+                Err(EvalError::WrongParameterCount("tidb_bounded_staleness"))
+            );
+            assert_eq!(
+                *ctx.events.borrow(),
+                if mode == 0 {
+                    vec![]
+                } else {
+                    ["left", "right", "extra"][..count].to_vec()
+                }
+            );
+        }
+    }
+    for mode in [1, 2] {
+        let ctx = context(
+            vec![
+                Datum::new_string("2020-01-01 00:00:00"),
+                Datum::new_string("2020-01-03 00:00:00"),
+            ],
+            None,
+        );
+        assert!(matches!(
+            execution
+                .scope()
+                .with_columns(&ctx, |columns| evaluate(mode, &ctx.values, columns)),
+            Ok(Datum::Time(_))
+        ));
+        assert_eq!(
+            *ctx.events.borrow(),
+            vec!["left", "right", "modes", "zone", "modes", "zone", "safe"]
+        );
+        // NULL left does not skip right's datetime cast. A wrong raw value
+        // would instead be absorbed by the direct signature's NULL guard.
+        let ctx = context(vec![Datum::Null, Datum::new_bytes(vec![255])], None);
+        assert!(execution
+            .scope()
+            .with_columns(&ctx, |columns| evaluate(mode, &ctx.values, columns))
+            .is_err());
+        assert_eq!(*ctx.events.borrow(), vec!["left", "right"]);
+        assert!(ctx.warnings.borrow().is_empty());
+        for failed in [0, 1, 2] {
+            let ctx = context(
+                vec![Datum::Null, Datum::Time(right), Datum::Time(right)],
+                Some(failed),
+            );
+            let result = execution
+                .scope()
+                .with_columns(&ctx, |columns| evaluate(mode, &ctx.values, columns));
+            assert!(result.is_err());
+            if mode == 2 {
+                assert_eq!(
+                    result,
+                    Err(EvalError::Unsupported("bounded-staleness child"))
+                );
+            }
+            assert_eq!(*ctx.events.borrow(), ["left", "right", "extra"][..=failed]);
+        }
+    }
+    for values in [
+        vec![Datum::Null, Datum::MaxValue],
+        vec![Datum::MaxValue, Datum::Null],
+    ] {
+        let ctx = context(values, None);
+        assert_eq!(
+            execution
+                .scope()
+                .with_columns(&ctx, |columns| evaluate(0, &ctx.values, columns)),
+            Ok(Datum::Null)
+        );
+        assert!(ctx.events.borrow().is_empty());
+    }
+    let ctx = context(vec![Datum::Time(left), Datum::Int(1)], None);
+    assert_eq!(
+        execution
+            .scope()
+            .with_columns(&ctx, |columns| evaluate(0, &ctx.values, columns)),
+        Err(EvalError::Unsupported(
+            "TIDB_BOUNDED_STALENESS arguments reached the signature without ETDatetime casts"
+        ))
+    );
+    assert!(ctx.events.borrow().is_empty());
+    let invalid = Time::from_date_checked(2020, 0, 1, 0, 0, 0, 0, TimeType::DateTime, 0).unwrap();
+    let ctx = context(vec![Datum::Time(invalid), Datum::Time(right)], None);
+    assert_eq!(
+        execution
+            .scope()
+            .with_columns(&ctx, |columns| evaluate(0, &ctx.values, columns)),
+        Ok(Datum::Null)
+    );
+    assert_eq!(*ctx.events.borrow(), vec!["policy", "warning"]);
+    assert_eq!(
+        *ctx.warnings.borrow(),
+        vec![(1292, format!("Incorrect datetime value: '{invalid}'"))]
+    );
+    let ctx = context(vec![Datum::Time(right), Datum::Time(left)], None);
+    assert_eq!(
+        execution
+            .scope()
+            .with_columns(&ctx, |columns| evaluate(0, &ctx.values, columns)),
+        Ok(Datum::Null)
+    );
+    assert!(ctx.events.borrow().is_empty());
 }
 
 #[cfg(test)]
