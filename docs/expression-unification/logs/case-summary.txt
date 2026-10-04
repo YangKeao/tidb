@@ -1,0 +1,59 @@
+case-86 / R89
+CPP cwd: /home/agent/tidb/expression-unification/tikv
+Native cwd: /home/agent/tidb/expression-unification/tidb/rust
+Raw logs: /home/agent/tidb/expression-unification/logs/case-{id}.log
+Counts passed/failed/ignored/filtered; compile_seconds/test_seconds.
+
+tikv-core | 1/0/0/955 | 9.78/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_control::tests::case_when_shared -- --test-threads=1
+sha256 5164d26d79a8ac250ad4a7754c3d0daeee3a16b4d613634146da8a562b4d48f4
+
+tikv-wire | 2/0/0/954 | 0.18/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_control::tests::test_case_when -- --test-threads=1
+sha256 4c3c213813f185981302268d5dc9a438de096aea5f2c585f30a4dc115ef3d65c
+
+tikv-local | 337/0/1/618 | 0.14/0.24 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+sha256 dae99fdb187618b21f42b580fc3c81cc30f509600d01c759dbab66e34ccb9825
+
+native-root | 18/0/0/1674 | 15.97/0.02 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib case_ -- --test-threads=1
+sha256 00284819f752cbc89a02a002755d0bf155c0b904207e4aff1c0fb9ea9edfa2b3
+
+if-regression | 1/0/0/1691 | 0.15/0.01 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib if_bridge -- --test-threads=1
+sha256 29a9757b54d2f5e7720d892d321cbe1c15fcdf3ba2b969c2f05fa9d36e5118c0
+
+native-gateway | 196/0/1/1495 | 0.14/0.35 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii -- --test-threads=1
+sha256 6ae40c9a22bb81b6f80ec9eaee2d66011be60ede94691fe2c6024205f3146b86
+
+legacy | 1/0/0/231 | 6.04/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_case_shared -- --test-threads=1
+sha256 1bf5863810f2a0507fa2272d3e55befae93fb80edc5b42818ae5175ae134c058
+
+sql | 1/0/0/2232 | 19.17/0.11 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_case_preserves -- --test-threads=1
+sha256 46f8dc91f1b7edc9cb658fd332ac0283c78376e5bfe03c8614f9fa2e3093a2b0
+
+expr-full | 1594/4/94/0 | 0.14/14.66 | exit101 | OLD failures unchanged
+../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+sha256 61bfeba3bee56c8a24ce81649741ff516b39d6f22aac73c85c697db22112313b
+
+unistore-full | 218/1/13/0 | 0.14/3.05 | exit101 | OLD failure unchanged
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+sha256 d350bcf0ef79a917d1f5c490f679ffb5720abb1a26271a1d20beb908622420e6
+
+Ten locked nonzero launches:8green,2only-old full RED. All7new tests pass on first matching execution. No compile failure, new execution failure, zero-match, interrupted test or fixture recording. Counts overlap across filters, not unique totals.
+
+Entire failure sections byte-equal to coalesce-85 final expression/unistore sections after only numeric panic-heading thread IDs become THREAD:
+expression 411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+unistore 2f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1
+
+native-root explicitly passes case_workers_keep_base_once_typed_demand_and_empty_preparation, scalar_function::pb_builtin::json_path_worker_tests::protobuf_case_keeps_warning_order_sole_else_and_outer_casts, and tikv::case_control::tests::case_bridge_initializes_once_and_iterates_only_demanded_conditions. Existing IF regression confirms the private helper extraction preserves its behavior.
+
+SQL54SELECT=48searched actual-column roots (24positive/24zero-slot) +4positive-only dynamic lazy/error checks +2positive-only simple-CASE filters. First searched condition is a column, so zero-slot checks are not substituted by condition CAST/Eq/WHERE. Existing Decimal/Time result-branch CASTs are retained and execute only as demanded at runtime; source expectations include1.500/.000, not the unwrapped IF values. Simple-CASE filters may execute Eq C4 first and do NOT count as CASE zero-slot root or AST base-once evidence. No SQL zero-WHEN syntax invented.
+
+No new SDK profile, carrier, role, codec, driver, budget rule or PB/legacy admission. Reused IF Head/Finish, AnyValue for a statically sole actual ELSE, and CoalesceEnd for genuine no-ELSE exhaustion. First initialization includes simple base even with zero WHENs; sole ELSE stays original preparation before its parent admission.
+
+Pinned formatting: rustfmt --edition 2021 --config skip_children=true --check on2CPP changed Rust files with /home/agent/tidb/expression-reuse/rustup-home/toolchains/nightly-2026-01-30-x86_64-unknown-linux-gnu/bin/rustfmt;9native files with corresponding nightly-2026-08-22 executable. Both git diff --check pass. Source audit:19CPP/318native original #[test] bodies byte-identical,2CPP/5native new tests. No Go/Bazel/Cargo/lock/generated changes. Agent-doc review remains source-map/boundary descriptions only, without new policy. No lint/dev/workspace/release/performance/physical-OOM or PR-readiness claim.

@@ -465,7 +465,10 @@ fn case_when_handler(
         let Ok(value) = eval_once(&folded_cond, ctx) else {
             return (expr.clone(), false);
         };
-        if matches!(crate::truthy_of(&value), Ok(Some(true))) {
+        if matches!(
+            tidb_query_expr::native_if_choose_branch(crate::truthy_of(&value).unwrap_or(None)),
+            tidb_query_expr::NativeIfBranch::Then
+        ) {
             let (mut folded, is_deferred) = fold_constant_inner(&args[index + 1], ctx, opts);
             is_deferred_const = is_deferred_const || is_deferred;
             if matches!(folded, Expression::Constant(_)) {

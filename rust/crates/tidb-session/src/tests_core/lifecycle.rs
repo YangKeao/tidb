@@ -9363,6 +9363,240 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_case_preserves_sql_branch_casts_lazy_selection_and_runtime_roots() {
+    use tidb_datatype::{FieldTypeCode, TimeType};
+
+    let create = "CREATE TABLE shared_case_sql (c_true BIGINT, c_other_true BIGINT, c_false BIGINT, c_null BIGINT, base_value BIGINT, when_first BIGINT, when_late BIGINT, i_first BIGINT, i_late BIGINT, i_else BIGINT, n_int BIGINT, d_first DECIMAL(8,1), d_late DECIMAL(10,3), s_first VARCHAR(8), s_late VARCHAR(12), t_first DATETIME, t_late DATETIME(3), j_first JSON, j_late JSON, subject VARCHAR(8), bad_pattern VARCHAR(8))";
+    let insert = "INSERT INTO shared_case_sql VALUES (1,1,0,NULL,11,12,11,1,2,3,NULL,1.5,123.123,'abc','n','2020-10-10 12:59:59','2020-10-10 12:59:59.123','[1]','[2]','x','[')";
+    // Original control.rs CASE order/NULL rules with fixed input literals.
+    // The SQL rewriter wraps Decimal and temporal result branches in the FULL
+    // merged target. Thus 1.5 becomes 1.500 and DATETIME(0) becomes FSP 3 here:
+    // this is the existing branch cast, NOT a COALESCE-style CASE stamp.
+    let cases = [
+        (
+            "CASE WHEN c_true THEN i_first WHEN c_other_true THEN i_late ELSE i_else END",
+            FieldTypeCode::LongLong,
+            Some((20, 0)),
+            Some("1"),
+            None,
+        ),
+        (
+            "CASE WHEN c_false THEN i_first WHEN c_null THEN i_late ELSE i_else END",
+            FieldTypeCode::LongLong,
+            Some((20, 0)),
+            Some("3"),
+            None,
+        ),
+        (
+            "CASE WHEN c_true THEN d_first WHEN c_other_true THEN d_late ELSE d_late END",
+            FieldTypeCode::NewDecimal,
+            Some((10, 3)),
+            Some("1.500"),
+            None,
+        ),
+        (
+            "CASE WHEN c_false THEN d_first WHEN c_true THEN d_late ELSE d_first END",
+            FieldTypeCode::NewDecimal,
+            Some((10, 3)),
+            Some("123.123"),
+            None,
+        ),
+        (
+            "CASE WHEN c_true THEN s_first WHEN c_other_true THEN s_late ELSE s_late END",
+            FieldTypeCode::Varchar,
+            Some((12, -1)),
+            Some("abc"),
+            None,
+        ),
+        (
+            "CASE WHEN c_false THEN s_first WHEN c_true THEN s_late ELSE s_first END",
+            FieldTypeCode::Varchar,
+            Some((12, -1)),
+            Some("n"),
+            None,
+        ),
+        (
+            "CASE WHEN c_true THEN t_first WHEN c_other_true THEN t_late ELSE t_late END",
+            FieldTypeCode::Datetime,
+            Some((23, 3)),
+            Some("2020-10-10 12:59:59.000"),
+            Some(3),
+        ),
+        (
+            "CASE WHEN c_false THEN t_first WHEN c_true THEN t_late ELSE t_first END",
+            FieldTypeCode::Datetime,
+            Some((23, 3)),
+            Some("2020-10-10 12:59:59.123"),
+            Some(3),
+        ),
+        (
+            "CASE WHEN c_true THEN j_first WHEN c_other_true THEN j_late ELSE j_late END",
+            FieldTypeCode::Json,
+            None,
+            Some("[1]"),
+            None,
+        ),
+        (
+            "CASE WHEN c_false THEN j_first WHEN c_true THEN j_late ELSE j_first END",
+            FieldTypeCode::Json,
+            None,
+            Some("[2]"),
+            None,
+        ),
+        // A taken THEN returning NULL stops; the next true WHEN must not run.
+        (
+            "CASE WHEN c_true THEN n_int WHEN c_other_true THEN i_late ELSE i_else END",
+            FieldTypeCode::LongLong,
+            Some((20, 0)),
+            None,
+            None,
+        ),
+        // All conditions false/NULL and no ELSE: actual empty completion.
+        (
+            "CASE WHEN c_false THEN i_first WHEN c_null THEN i_late END",
+            FieldTypeCode::LongLong,
+            Some((20, 0)),
+            None,
+            None,
+        ),
+    ];
+    for slots in [1, 0] {
+        let mut session = Session::new();
+        session
+            .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+            .unwrap();
+        session.run("SET time_zone='+00:00'").unwrap();
+        session.run("SET sql_mode=''").unwrap();
+        session
+            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+            .unwrap();
+        session.run(create).unwrap();
+        session.run(insert).unwrap();
+        assert!(session
+            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .unwrap());
+        for vectorized in [0, 1] {
+            session
+                .run(&format!(
+                    "SET tidb_enable_vectorized_expression={vectorized}"
+                ))
+                .unwrap();
+            for (expression, code, shape, expected, value_fsp) in cases {
+                // Searched CASE conditions are plain stored columns, so no
+                // comparison/function condition or WHERE/sort can supply the
+                // zero-slot error before the CASE head. The existing implicit
+                // branch casts above are evaluated only after a head chooses.
+                let sql = format!("SELECT {expression} FROM shared_case_sql");
+                if slots == 1 {
+                    let StmtOutput::Rows { columns, rows } =
+                        session.run_with_columns(&sql).unwrap()
+                    else {
+                        panic!("expected CASE rows: {sql}")
+                    };
+                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
+                    let field = &columns[0].1;
+                    assert_eq!(field.code(), code, "{sql}/{vectorized}");
+                    if let Some(shape) = shape {
+                        assert_eq!((field.flen(), field.decimal()), shape, "{sql}/{vectorized}");
+                    }
+                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
+                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
+                    if let Some(expected) = expected {
+                        match (&rows[0][0], code) {
+                            (Datum::Int(_), FieldTypeCode::LongLong) => {}
+                            (Datum::Decimal(decimal), FieldTypeCode::NewDecimal) => {
+                                assert_eq!(decimal.declared_shape(), Some((10, 3)));
+                            }
+                            (Datum::String(_), FieldTypeCode::Varchar) => {
+                                assert_eq!(field.charset_name(), "utf8mb4");
+                                assert_eq!(field.collation_name(), "utf8mb4_bin");
+                            }
+                            (Datum::Time(time), FieldTypeCode::Datetime) => {
+                                assert_eq!(time.kind(), TimeType::DateTime);
+                                assert_eq!(time.fsp(), value_fsp.unwrap());
+                            }
+                            (Datum::Json(_), FieldTypeCode::Json) => {}
+                            other => panic!("CASE changed its selected carrier: {sql}: {other:?}"),
+                        }
+                        assert_eq!(cell_text(&rows[0][0]), expected, "{sql}/{vectorized}");
+                    } else {
+                        assert_eq!(rows[0][0], Datum::Null, "{sql}/{vectorized}");
+                    }
+                } else {
+                    let error = session.run_with_columns(&sql).expect_err(&sql);
+                    match &error {
+                        DriverError::Exec(tidb_executor::ExecError::Eval(
+                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                        )) => {
+                            assert_eq!(
+                                failure.class(),
+                                tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                            );
+                            assert_eq!(
+                                failure.origin(),
+                                tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                            );
+                        }
+                        other => panic!(
+                            "CASE bypassed its condition worker: {sql}/{vectorized}: {other:?}"
+                        ),
+                    }
+                    let mysql = error.to_mysql_error();
+                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
+                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
+                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
+                }
+                assert!(
+                    warnings_of(&session).is_empty(),
+                    "{sql}/{vectorized}/slots={slots}"
+                );
+            }
+            if slots == 1 {
+                // Real condition/result columns prevent constant-folding the
+                // invalid later branch. These are positive-pool-only probes.
+                let StmtOutput::Rows { rows, .. } = session
+                    .run_with_columns("SELECT CASE WHEN c_true THEN i_first WHEN c_other_true THEN subject REGEXP bad_pattern ELSE i_else END FROM shared_case_sql")
+                    .unwrap()
+                else {
+                    panic!("expected CASE to skip the invalid later result")
+                };
+                assert_eq!(rows, vec![vec![Datum::Int(1)]]);
+                assert!(warnings_of(&session).is_empty());
+                let error = session
+                    .run_with_columns("SELECT CASE WHEN c_false THEN i_first WHEN c_true THEN subject REGEXP bad_pattern ELSE i_else END FROM shared_case_sql")
+                    .expect_err("CASE must evaluate the selected invalid result");
+                assert!(
+                    matches!(
+                        &error,
+                        DriverError::Exec(tidb_executor::ExecError::Eval(
+                            tidb_executor::EvalError::Unsupported(
+                                "invalid regular expression pattern"
+                            )
+                        ))
+                    ),
+                    "{error:?}"
+                );
+                let mysql = error.to_mysql_error();
+                assert_eq!(mysql.code, 1105);
+                assert_eq!(mysql.state, *b"HY000");
+                assert_eq!(mysql.message, "invalid regular expression pattern");
+                // Simple CASE is lowered to per-WHEN equality expressions.
+                // Its comparisons may run before CASE's head, so this filter
+                // is NOT zero-slot root proof or AST base-once evidence.
+                let StmtOutput::Rows { rows, .. } = session
+                    .run_with_columns("SELECT 1 FROM shared_case_sql WHERE CASE base_value WHEN when_first THEN i_first WHEN when_late THEN i_late ELSE i_else END=2")
+                    .unwrap()
+                else {
+                    panic!("expected simple CASE predicate rows")
+                };
+                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
+                assert!(warnings_of(&session).is_empty());
+            }
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_coalesce_preserves_iterative_selection_temporal_stamps_and_runtime_roots() {
     use tidb_datatype::{FieldTypeCode, TimeType};
 

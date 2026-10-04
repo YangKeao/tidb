@@ -1847,18 +1847,23 @@ impl ScalarFunction {
         // evaluated -- so an error in an unreachable branch never surfaces.
         if name == "case" {
             let (pairs, remainder) = self.args.as_chunks::<2>();
-            for pair in pairs {
-                let condition = pair[0].eval(ctx, row)?;
-                // A NULL condition is not a match, the same as false.
-                if crate::truthy_of(&condition)? == Some(true) {
-                    return pair[1].eval(ctx, row);
-                }
-            }
-            // An odd argument count means a trailing ELSE.
-            return match remainder.first() {
-                Some(else_branch) => else_branch.eval(ctx, row),
-                None => Ok(Datum::Null),
-            };
+            return crate::tikv::eval_case_in(
+                ctx,
+                pairs.len(),
+                !remainder.is_empty(),
+                |_| Ok(()),
+                |index, _, selected| crate::truthy_of(&pairs[index][0].eval(selected, row)?),
+                |index, selected| {
+                    let value = if index == pairs.len() {
+                        remainder
+                            .first()
+                            .ok_or(EvalError::Unsupported("missing CASE ELSE"))?
+                    } else {
+                        &pairs[index][1]
+                    };
+                    value.eval(selected, row)
+                },
+            );
         }
         // Go `builtinIf*Sig` is lazy too: the condition decides which single
         // branch is evaluated, so an error in the other never surfaces.

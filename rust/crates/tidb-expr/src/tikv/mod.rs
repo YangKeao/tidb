@@ -22,7 +22,9 @@
 
 mod adapter_failure;
 mod batch;
+mod case_control;
 mod catalog;
+pub(crate) use case_control::eval_case_in;
 mod coalesce;
 pub(crate) use coalesce::eval_coalesce_in;
 mod context;

@@ -28,6 +28,32 @@ fn invalid_report() -> EvalError {
     ))
 }
 
+pub(super) fn decode_head(
+    computed: EvaluatedBytesResult,
+) -> Result<(NativeIfBranch, Vec<u8>), EvalError> {
+    let report = computed.into_bytes()?.ok_or_else(invalid_report)?;
+    let branch = decode_native_if_head_result(&report).ok_or_else(invalid_report)?;
+    Ok((branch, report))
+}
+
+pub(super) fn finish_in(
+    ctx: &dyn Columns,
+    report: Vec<u8>,
+    value: &Datum,
+) -> Result<Datum, EvalError> {
+    evaluate_args_in(
+        EvaluatedBytesOp::IfFinishNative,
+        ctx,
+        || {
+            Ok(EvaluatedArgs::Bytes2(
+                Some(report),
+                identity_value::encode(value)?,
+            ))
+        },
+        EvaluatedBytesResult::into_identity_datum,
+    )
+}
+
 pub(crate) fn eval_if_in(
     ctx: &dyn Columns,
     condition: impl FnOnce(&dyn Columns) -> Result<Option<bool>, EvalError>,
@@ -46,22 +72,12 @@ pub(crate) fn eval_if_in(
             ))
         },
         |computed, selected| {
-            let report = computed.into_bytes()?.ok_or_else(invalid_report)?;
-            let value = match decode_native_if_head_result(&report).ok_or_else(invalid_report)? {
+            let (branch, report) = decode_head(computed)?;
+            let value = match branch {
                 NativeIfBranch::Then => when_true(selected)?,
                 NativeIfBranch::Else => when_false(selected)?,
             };
-            evaluate_args_in(
-                EvaluatedBytesOp::IfFinishNative,
-                selected,
-                || {
-                    Ok(EvaluatedArgs::Bytes2(
-                        Some(report),
-                        identity_value::encode(&value)?,
-                    ))
-                },
-                EvaluatedBytesResult::into_identity_datum,
-            )
+            finish_in(selected, report, &value)
         },
     )
 }

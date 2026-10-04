@@ -196,14 +196,25 @@ impl PbBuiltin {
         match self.kernel {
             Kernel::Case => {
                 let (pairs, remainder) = args.as_chunks::<2>();
-                for pair in pairs {
-                    if logic_truthy(&pair[0].eval(ctx, row)?, ctx)? == Some(true) {
-                        return pair[1].eval(ctx, row);
-                    }
-                }
-                remainder
-                    .first()
-                    .map_or(Ok(Datum::Null), |value| value.eval(ctx, row))
+                crate::tikv::eval_case_in(
+                    ctx,
+                    pairs.len(),
+                    !remainder.is_empty(),
+                    |_| Ok(()),
+                    |index, _, selected| {
+                        logic_truthy(&pairs[index][0].eval(selected, row)?, selected)
+                    },
+                    |index, selected| {
+                        let value = if index == pairs.len() {
+                            remainder.first().ok_or(EvalError::Unsupported(
+                                "missing protobuf builtin argument",
+                            ))?
+                        } else {
+                            &pairs[index][1]
+                        };
+                        value.eval(selected, row)
+                    },
+                )
             }
             Kernel::If => crate::tikv::eval_if_in(
                 ctx,
@@ -726,6 +737,204 @@ mod json_path_worker_tests {
     use crate::expression::{Column, Constant, Expression};
     use crate::NoColumns;
     use tidb_datatype::{BinaryJSON, FieldTypeCode, FieldTypeFlags};
+
+    #[test]
+    fn protobuf_case_keeps_warning_order_sole_else_and_outer_casts() {
+        use std::cell::RefCell;
+        struct Demand {
+            values: Vec<Datum>,
+            level: crate::ErrorLevel,
+            fail: Option<usize>,
+            events: RefCell<Vec<&'static str>>,
+            warnings: RefCell<Vec<(u16, String)>>,
+        }
+        impl Columns for Demand {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn param_value(&self, index: usize) -> Result<Datum, EvalError> {
+                self.events
+                    .borrow_mut()
+                    .push(["arg0", "arg1", "arg2", "arg3", "arg4"][index]);
+                if self.fail == Some(index) {
+                    return Err(EvalError::Unsupported("PB CASE demanded child"));
+                }
+                Ok(self.values[index].clone())
+            }
+            fn truncate_level(&self) -> crate::ErrorLevel {
+                self.events.borrow_mut().push("policy");
+                self.level
+            }
+            fn append_warning(&self, code: u16, message: &str) {
+                self.events.borrow_mut().push("warning");
+                self.warnings.borrow_mut().push((code, message.to_owned()));
+            }
+        }
+        fn resource(result: Result<Datum, EvalError>) {
+            assert!(
+                matches!(result, Err(EvalError::ExpressionAdapterFailure(failure))
+                if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource
+                    && failure.origin() == crate::ExpressionAdapterFailureOrigin::Pool)
+            );
+        }
+        let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+        let evaluate = |count: usize, ret_type: FieldType, columns: &dyn Columns| {
+            let args = (0..count)
+                .map(|index| {
+                    let mut constant = Constant::default();
+                    constant.param_marker = Some(crate::constant::ParamMarker {
+                        order: index as i64,
+                    });
+                    Expression::Constant(constant)
+                })
+                .collect();
+            ScalarFunction::from_pb(
+                PbBuiltin::new(ScalarFuncSig::CaseWhenInt).unwrap(),
+                ret_type,
+                args,
+            )
+            .eval(columns, empty.to_row())
+        };
+        assert!(PbBuiltin::new(ScalarFuncSig::CaseWhenString).is_none());
+        for slots in [1, 0] {
+            let owner = crate::AsciiPoolOwner::new(
+                crate::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    64,
+                    8,
+                    4 * 1024 * 1024,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let execution = owner.begin_execution().unwrap();
+            for level in [
+                crate::ErrorLevel::Ignore,
+                crate::ErrorLevel::Warn,
+                crate::ErrorLevel::Error,
+            ] {
+                let ctx = Demand {
+                    values: vec![
+                        Datum::new_string("abc"),
+                        Datum::Int(99),
+                        Datum::new_string("1tail"),
+                        Datum::Null,
+                        Datum::Int(88),
+                    ],
+                    level,
+                    fail: Some(1),
+                    events: RefCell::new(Vec::new()),
+                    warnings: RefCell::new(Vec::new()),
+                };
+                let result = execution.scope().with_columns(&ctx, |c| {
+                    evaluate(5, FieldType::new(FieldTypeCode::LongLong), c)
+                });
+                let mut events = vec!["arg0", "policy"];
+                let mut messages = Vec::new();
+                if level == crate::ErrorLevel::Warn {
+                    events.push("warning");
+                    messages.push((1292, "Truncated incorrect DOUBLE value: 'abc'".to_owned()));
+                }
+                if level == crate::ErrorLevel::Error {
+                    assert!(
+                        matches!(result, Err(EvalError::TruncatedWrongValue(message)) if message == "Truncated incorrect DOUBLE value: 'abc'")
+                    );
+                } else if slots == 0 {
+                    resource(result);
+                } else {
+                    assert_eq!(result.unwrap(), Datum::Null);
+                    events.extend(["arg2", "policy"]);
+                    if level == crate::ErrorLevel::Warn {
+                        events.push("warning");
+                        messages
+                            .push((1292, "Truncated incorrect DOUBLE value: '1tail'".to_owned()));
+                    }
+                    events.push("arg3");
+                }
+                assert_eq!(ctx.events.take(), events);
+                assert_eq!(ctx.warnings.take(), messages);
+            }
+            // With no WHEN pairs a sole argument is a VALUE, never a DOUBLE
+            // predicate. Its frontend error still precedes zero-slot admission.
+            for count in [0, 1] {
+                for fail in [None, Some(0)] {
+                    let ctx = Demand {
+                        values: vec![Datum::new_string("1tail")],
+                        level: crate::ErrorLevel::Error,
+                        fail,
+                        events: RefCell::new(Vec::new()),
+                        warnings: RefCell::new(Vec::new()),
+                    };
+                    let result = execution.scope().with_columns(&ctx, |c| {
+                        evaluate(count, FieldType::new(FieldTypeCode::VarString), c)
+                    });
+                    if count == 1 && fail.is_some() {
+                        assert!(matches!(
+                            result,
+                            Err(EvalError::Unsupported("PB CASE demanded child"))
+                        ));
+                    } else if slots == 0 {
+                        resource(result);
+                    } else {
+                        assert_eq!(
+                            result.unwrap(),
+                            if count == 0 {
+                                Datum::Null
+                            } else {
+                                Datum::new_string("1tail")
+                            }
+                        );
+                    }
+                    assert_eq!(
+                        ctx.events.take(),
+                        if count == 0 { vec![] } else { vec!["arg0"] }
+                    );
+                    assert!(ctx.warnings.take().is_empty());
+                }
+            }
+            for (field, value, expected) in [
+                (
+                    FieldType::new(FieldTypeCode::LongLong),
+                    Datum::UInt(u64::MAX),
+                    Datum::Int(-1),
+                ),
+                (
+                    FieldType::new(FieldTypeCode::VarString),
+                    Datum::Int(7),
+                    Datum::new_string("7"),
+                ),
+            ] {
+                let ctx = Demand {
+                    values: vec![Datum::Int(1), value, Datum::Int(88)],
+                    level: crate::ErrorLevel::Error,
+                    fail: Some(2),
+                    events: RefCell::new(Vec::new()),
+                    warnings: RefCell::new(Vec::new()),
+                };
+                let result = execution
+                    .scope()
+                    .with_columns(&ctx, |c| evaluate(3, field, c));
+                if slots == 0 {
+                    resource(result);
+                } else {
+                    assert_eq!(result.unwrap(), expected);
+                }
+                assert_eq!(
+                    ctx.events.take(),
+                    if slots == 0 {
+                        vec!["arg0"]
+                    } else {
+                        vec!["arg0", "arg1"]
+                    }
+                );
+                assert!(ctx.warnings.take().is_empty());
+            }
+        }
+    }
 
     #[test]
     fn protobuf_if_keeps_truth_warning_precedence_demand_and_outer_types() {

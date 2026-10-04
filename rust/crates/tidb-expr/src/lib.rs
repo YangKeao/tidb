@@ -1835,46 +1835,49 @@ pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
             // attempted here — the result is simply whichever branch was
             // taken, in its own natural type, matching the common case
             // where every branch already shares one type.
-            let taken = match value {
-                // Simple form: `value = cond`, ordinary `=` (not `<=>`) —
-                // a NULL `value` or `cond` never matches, matching `=`'s
-                // own propagation (confirmed via `goeval`: `CASE NULL
-                // WHEN NULL THEN 1 ELSE 2 END` is `2`, not `1`).
-                Some(value_expr) => {
-                    let v = eval_in(value_expr, cols)?;
-                    let mut taken = None;
-                    for (cond, result) in when_clauses {
-                        let w = eval_in(cond, cols)?;
-                        if crate::ops::eval_binary_in(tidb_ast::BinaryOp::Eq, v.clone(), w, cols)?
-                            == Datum::Int(1)
-                        {
-                            taken = Some(result);
-                            break;
-                        }
-                    }
-                    taken
-                }
-                // Searched form: each `cond` is truthiness-tested
-                // directly, the same three-valued logic `IF`/`WHERE`
-                // already use.
-                None => {
-                    let mut taken = None;
-                    for (cond, result) in when_clauses {
-                        if truthy_of(&eval_in(cond, cols)?)? == Some(true) {
-                            taken = Some(result);
-                            break;
-                        }
-                    }
-                    taken
-                }
-            };
-            match taken {
-                Some(result) => eval_in(result, cols),
-                None => match else_clause {
-                    Some(e) => eval_in(e, cols),
-                    None => Ok(Datum::Null),
+            crate::tikv::eval_case_in(
+                cols,
+                when_clauses.len(),
+                else_clause.is_some(),
+                // Simple CASE evaluates its base once, including zero-WHEN
+                // helper shapes, inside the first guarded preparation.
+                |original| {
+                    value
+                        .as_deref()
+                        .map(|base| eval_in(base, original))
+                        .transpose()
                 },
-            }
+                |index, base, selected| {
+                    let condition = eval_in(&when_clauses[index].0, selected)?;
+                    match base {
+                        Some(base) => {
+                            // Even a NULL base still demands each WHEN. Keep
+                            // ordinary equality's exact Int(1) match policy.
+                            let equal = crate::ops::eval_binary_in(
+                                tidb_ast::BinaryOp::Eq,
+                                base.clone(),
+                                condition,
+                                selected,
+                            )?;
+                            Ok(match equal {
+                                Datum::Null => None,
+                                _ => Some(equal == Datum::Int(1)),
+                            })
+                        }
+                        None => truthy_of(&condition),
+                    }
+                },
+                |index, selected| {
+                    let result = if index == when_clauses.len() {
+                        else_clause
+                            .as_deref()
+                            .ok_or(EvalError::Unsupported("missing CASE ELSE"))?
+                    } else {
+                        &when_clauses[index].1
+                    };
+                    eval_in(result, selected)
+                },
+            )
         }
         _ => Err(EvalError::Unsupported("unsupported expression")),
     }
@@ -2533,5 +2536,253 @@ mod between_composition_tests {
         }
         drop(denied_scope);
         denied_execution.close();
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn case_workers_keep_base_once_typed_demand_and_empty_preparation() {
+    use crate::constant::{Constant, ParamMarker};
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    use std::cell::RefCell;
+    use tidb_datatype::{FieldType, FieldTypeCode};
+    struct Demand {
+        values: Vec<Datum>,
+        reads: RefCell<Vec<usize>>,
+        fail: Option<usize>,
+    }
+    impl Columns for Demand {
+        fn get(&self, path: &[String]) -> Option<Datum> {
+            self.param_value(path[0].parse().unwrap()).ok()
+        }
+        fn param_value(&self, index: usize) -> Result<Datum, EvalError> {
+            self.reads.borrow_mut().push(index);
+            if self.fail == Some(index) {
+                return Err(EvalError::Unsupported("CASE demanded child"));
+            }
+            Ok(self.values[index].clone())
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            crate::ErrorLevel::Warn
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            panic!("ordinary CASE truth must not warn")
+        }
+    }
+    fn resource(result: Result<Datum, EvalError>) {
+        assert!(
+            matches!(result, Err(EvalError::ExpressionAdapterFailure(failure))
+            if failure.class() == ExpressionAdapterFailureClass::PoolResource
+                && failure.origin() == ExpressionAdapterFailureOrigin::Pool)
+        );
+    }
+    let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    let evaluate =
+        |typed: bool, simple: bool, pairs: usize, has_else: bool, columns: &dyn Columns| {
+            if !typed {
+                let column = |index: usize| Expr::Column(vec![index.to_string()]);
+                let expr = Expr::Case {
+                    value: simple.then(|| Box::new(column(0))),
+                    when_clauses: (0..pairs)
+                        .map(|i| (column(2 * i + 1), column(2 * i + 2)))
+                        .collect(),
+                    else_clause: has_else.then(|| Box::new(column(2 * pairs + 1))),
+                };
+                eval_in(&expr, columns)
+            } else {
+                let parameter = |index: usize| {
+                    let mut constant =
+                        Constant::new(Datum::Null, FieldType::new(FieldTypeCode::LongLong));
+                    constant.param_marker = Some(ParamMarker {
+                        order: index as i64,
+                    });
+                    Expression::Constant(constant)
+                };
+                let mut args = Vec::new();
+                for index in 0..pairs {
+                    let condition = parameter(2 * index + 1);
+                    // This is the existing simple-CASE rewrite shape: each EQ
+                    // owns a clone of the base expression, not one cached value.
+                    args.push(if simple {
+                        Expression::ScalarFunction(ScalarFunction::new(
+                            tidb_ast::CiString::new("eq"),
+                            FieldType::new(FieldTypeCode::LongLong),
+                            vec![parameter(0), condition],
+                        ))
+                    } else {
+                        condition
+                    });
+                    args.push(parameter(2 * index + 2));
+                }
+                if has_else {
+                    args.push(parameter(2 * pairs + 1));
+                }
+                let mut function = ScalarFunction::new(
+                    tidb_ast::CiString::new("case"),
+                    FieldType::new(FieldTypeCode::LongLong),
+                    args,
+                );
+                function.ret_type = None;
+                function.eval(columns, empty.to_row())
+            }
+        };
+    for slots in [1, 0] {
+        let owner = AsciiPoolOwner::new(
+            AsciiPoolPolicy::checked(
+                slots,
+                slots,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let execution = owner.begin_execution().unwrap();
+        for typed in [false, true] {
+            for (simple, null_base) in [(false, false), (true, false), (true, true)] {
+                let values = if null_base {
+                    vec![
+                        Datum::Null,
+                        Datum::Null,
+                        Datum::Int(2),
+                        Datum::Int(7),
+                        Datum::Null,
+                        Datum::Int(9),
+                    ]
+                } else if simple {
+                    vec![
+                        Datum::Int(7),
+                        Datum::Int(2),
+                        Datum::Int(2),
+                        Datum::Int(7),
+                        Datum::Null,
+                        Datum::Int(9),
+                    ]
+                } else {
+                    vec![
+                        Datum::Null,
+                        Datum::Int(0),
+                        Datum::Int(2),
+                        Datum::Int(1),
+                        Datum::Null,
+                        Datum::Int(9),
+                    ]
+                };
+                let ctx = Demand {
+                    values,
+                    reads: RefCell::new(Vec::new()),
+                    fail: Some(2),
+                };
+                let result = execution
+                    .scope()
+                    .with_columns(&ctx, |c| evaluate(typed, simple, 2, true, c));
+                if slots == 0 {
+                    resource(result);
+                } else {
+                    assert_eq!(
+                        result.unwrap(),
+                        if null_base {
+                            Datum::Int(9)
+                        } else {
+                            Datum::Null
+                        }
+                    );
+                }
+                let mut expected = if simple { vec![0, 1] } else { vec![1] };
+                if slots == 1 {
+                    if typed && simple {
+                        expected.push(0);
+                    }
+                    expected.extend([3, if null_base { 5 } else { 4 }]);
+                }
+                assert_eq!(ctx.reads.take(), expected);
+            }
+            for failed in [None, Some(1), Some(2)] {
+                let ctx = Demand {
+                    values: vec![
+                        Datum::Null,
+                        Datum::new_string("1tail"),
+                        Datum::Int(7),
+                        Datum::Int(9),
+                    ],
+                    reads: RefCell::new(Vec::new()),
+                    fail: failed,
+                };
+                let result = execution
+                    .scope()
+                    .with_columns(&ctx, |c| evaluate(typed, false, 1, true, c));
+                if failed == Some(1) || (slots == 1 && failed == Some(2)) {
+                    assert!(
+                        matches!(result, Err(EvalError::Unsupported(message)) if message == if typed { "CASE demanded child" } else { "unknown column" })
+                    );
+                } else if slots == 0 {
+                    resource(result);
+                } else {
+                    assert_eq!(result.unwrap(), Datum::Int(7));
+                }
+                assert_eq!(
+                    ctx.reads.take(),
+                    if failed == Some(1) || slots == 0 {
+                        vec![1]
+                    } else {
+                        vec![1, 2]
+                    }
+                );
+            }
+        }
+        for (typed, simple) in [(false, false), (false, true), (true, false)] {
+            for has_else in [false, true] {
+                for fail in [None, Some(1)] {
+                    let ctx = Demand {
+                        values: vec![Datum::Int(7), Datum::Raw(vec![0xff])],
+                        reads: RefCell::new(Vec::new()),
+                        fail,
+                    };
+                    let result = execution
+                        .scope()
+                        .with_columns(&ctx, |c| evaluate(typed, simple, 0, has_else, c));
+                    if has_else && fail.is_some() {
+                        assert!(
+                            matches!(result, Err(EvalError::Unsupported(message)) if message == if typed { "CASE demanded child" } else { "unknown column" })
+                        );
+                    } else if slots == 0 {
+                        resource(result);
+                    } else {
+                        assert_eq!(
+                            result.unwrap(),
+                            if has_else {
+                                Datum::Raw(vec![0xff])
+                            } else {
+                                Datum::Null
+                            }
+                        );
+                    }
+                    let mut expected = if simple { vec![0] } else { vec![] };
+                    if has_else {
+                        expected.push(1);
+                    }
+                    assert_eq!(ctx.reads.take(), expected);
+                }
+            }
+        }
+        let ctx = Demand {
+            values: vec![Datum::Null, Datum::Int(7)],
+            reads: RefCell::new(Vec::new()),
+            fail: Some(0),
+        };
+        for has_else in [false, true] {
+            assert!(matches!(
+                execution
+                    .scope()
+                    .with_columns(&ctx, |c| evaluate(false, true, 0, has_else, c)),
+                Err(EvalError::Unsupported("unknown column"))
+            ));
+            assert_eq!(ctx.reads.take(), vec![0]);
+        }
     }
 }

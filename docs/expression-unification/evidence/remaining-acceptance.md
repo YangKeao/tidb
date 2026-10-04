@@ -1,19 +1,19 @@
 # Remaining acceptance after the functional threshold
 
-Status: **224/245 functional families; strict0; overall goal active**. The frozen denominator is unchanged. R86–R88 close IFNULL, IF and COALESCE selection through shared staged workers; see [IFNULL evidence](ifnull-checkpoint.md), [IF evidence](if-checkpoint.md) and [COALESCE evidence](coalesce-checkpoint.md). COALESCE-specific typed return-FSP binding remains an explicit adapter. The21 remaining families are not approved blanket exceptions. This review is not itself a passing test receipt.
+Status: **225/245 functional families; strict0; overall goal active**. The frozen denominator is unchanged. R86–R89 close IFNULL, IF, COALESCE and CASE selection through shared workers; see [IFNULL](ifnull-checkpoint.md), [IF](if-checkpoint.md), [COALESCE](coalesce-checkpoint.md) and [CASE](case-checkpoint.md) evidence. Existing return-type/branch-cast adapters remain explicit. The20 remaining families are not approved blanket exceptions. This review is not itself a passing test receipt.
 
 The accepted synchronous/scoped evaluator design stays in place. No universal compiler rewrite or exhaustive performance project is required to make the next functional steps. Conversely, reaching90% does not erase the Plan's remaining core ownership/demand obligations.
 
-## Seven core families still need closure
+## Six core families still need closure
 
 | Families | Remaining work / source evidence |
 |---|---|
-| case, nullif | Preserve CASE AST simple-base evaluation once versus rewritten typed per-WHEN evaluation, ordinary/PB truth policies, and existing fold/proof behavior. NULLIF currently eagerly evaluates both operands once before equality and has no independent PB/legacy admission; do not copy a desugaring that repeats the left or skips the right. Shared predicate/identity leaves alone do not close selection. |
+| nullif | Currently eagerly evaluates both operands once before equality and has no independent PB/legacy admission; do not copy a desugaring that repeats the left or skips the right. Its native equality-result-to-NULL/original-value choice still needs SDK ownership; shared comparison/identity leaves alone do not close it. |
 | cast | `cast.rs` and datatype `decimal/mod.rs` still own ordinary parsing/status policy. R83 float-constructor/Display sharing did not migrate general string-to-Decimal parsing. Close ordinary domains over shared SDKs; record truly exceptional domains separately. |
 | in | `func.rs` still owns found-match/found-null reduction. Its existing eager candidate/comparison side effects cannot be replaced with wire early return. |
 | greatest, least, interval | `builtin_ext/compare2.rs` retains extrema selection and INTERVAL's metadata-selected nullable-linear versus NOT_NULL-binary search. Preserve actual type, collation, precision and getter/search order. |
 
-Observed caller chain: `evaluator.rs::run_with_consumer` → `Expression::eval` → `ScalarFunction::eval` → native control branches or PB dispatch. The R85 parent read the actual CASE/IF/IFNULL/COALESCE branches; R86–R88 removed IFNULL/IF/COALESCE runtime selection and share their pure selectors, retaining distinct truth/error and return-projection policies. COALESCE has catalog facts but no PB/legacy admission; that boundary remains closed. Remaining conclusions are not inferred solely from registry names.
+Observed caller chain: `evaluator.rs::run_with_consumer` → `Expression::eval` → `ScalarFunction::eval` → native control branches or PB dispatch. The R85 parent read the actual CASE/IF/IFNULL/COALESCE branches; R86–R89 removed IFNULL/IF/COALESCE/CASE runtime selection and share their pure selectors, retaining distinct truth/error, proof and return-projection policies. CASE keeps AST base-once versus rewritten per-WHEN evaluation and original SQL branch casts. COALESCE has catalog facts but no PB/legacy admission; that boundary remains closed. Remaining conclusions are not inferred solely from registry names.
 
 ## Eight ordinary families still pending
 

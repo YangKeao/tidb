@@ -13286,4 +13286,328 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn legacy_case_shared_preserves_flat_demand_and_preparation_order() {
+        use std::sync::Arc;
+        use tidb_datatype::{
+            BinaryJSON, Datum, Decimal, MySqlDuration, SessionTimeZone, Time, TimeType,
+        };
+        use tipb::ScalarFuncSig as Sig;
+        struct Parent;
+        impl tidb_expr::Columns for Parent {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                panic!("retain the Shared row")
+            }
+            fn time_zone(&self) -> SessionTimeZone {
+                panic!("retain the Shared request zone")
+            }
+            fn truncate_level(&self) -> tidb_expr::ErrorLevel {
+                panic!("retain Shared warning policy")
+            }
+            fn append_warning(&self, _: u16, _: &str) {
+                panic!("retain the original warning sink")
+            }
+        }
+        fn field(tp: i32, decimal: i32) -> tipb::FieldType {
+            tipb::FieldType {
+                tp: Some(tp),
+                flen: Some(20),
+                decimal: Some(decimal),
+                ..Default::default()
+            }
+        }
+        fn call(sig: Sig, children: Vec<tipb::Expr>, tp: i32) -> tipb::Expr {
+            tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(sig as i32),
+                children,
+                field_type: Some(field(tp, 0)),
+                ..Default::default()
+            }
+        }
+        fn encoded(value: i64, kind: tipb::ExprType, tp: i32, decimal: i32) -> tipb::Expr {
+            let mut val = Vec::new();
+            tidb_codec::encode_int(&mut val, value);
+            tipb::Expr {
+                tp: Some(kind as i32),
+                val: Some(val),
+                field_type: Some(field(tp, decimal)),
+                ..Default::default()
+            }
+        }
+        fn integer(value: i64) -> tipb::Expr {
+            encoded(value, tipb::ExprType::Int64, 8, 0)
+        }
+        fn column(index: i64, tp: i32, decimal: i32) -> tipb::Expr {
+            encoded(index, tipb::ExprType::ColumnRef, tp, decimal)
+        }
+        fn null() -> tipb::Expr {
+            tipb::Expr {
+                tp: Some(tipb::ExprType::Null as i32),
+                ..Default::default()
+            }
+        }
+        fn text(value: &str) -> tipb::Expr {
+            tipb::Expr {
+                tp: Some(tipb::ExprType::String as i32),
+                val: Some(value.as_bytes().to_vec()),
+                field_type: Some(field(253, 0)),
+                ..Default::default()
+            }
+        }
+        fn assert_pool<T: std::fmt::Debug>(result: LegacyResult<T>) {
+            assert!(
+                matches!(&result, Err(LegacyEvalError::Infrastructure(
+                tidb_expr::EvalError::ExpressionAdapterFailure(failure)
+            )) if failure.class() == tidb_expr::ExpressionAdapterFailureClass::PoolResource
+                && failure.origin() == tidb_expr::ExpressionAdapterFailureOrigin::Pool),
+                "{result:?}"
+            );
+        }
+        let zone = SessionTimeZone::utc();
+        let request = Arc::new(RequestEvalContext::new(
+            SessionTimeZone::Named(chrono_tz::Asia::Shanghai),
+            8,
+            tidb_model::flags::FLAG_TRUNCATE_AS_WARNING,
+        ));
+        let strict = Arc::new(RequestEvalContext::new(zone.clone(), 4, 0));
+        let decode = |wire: &tipb::Expr, context: &Arc<RequestEvalContext>| {
+            let expr = convert_expr_with_context(wire, context).unwrap();
+            assert!(matches!(&expr, SimpleExpr::Shared(_)));
+            expr
+        };
+        let bad = call(Sig::CastStringAsInt, vec![text("tail")], 8);
+        let precise_time =
+            Time::from_date_checked(2024, 3, 5, 14, 30, 0, 123_000, TimeType::DateTime, 3).unwrap();
+        for slots in [1, 0] {
+            let owner = tidb_expr::AsciiPoolOwner::new(
+                tidb_expr::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 << 20,
+                    4 << 20,
+                    4 << 20,
+                    64,
+                    8,
+                    4 << 20,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let execution = owner.begin_execution().unwrap();
+            let scope = execution.scope();
+            scope.with_columns(&Parent, |columns| {
+                // Only two selected outcomes per admitted family; return FSP 0
+                // must not stamp the chosen temporal payload as COALESCE would.
+                for (sig, tp, precision, value) in [
+                    (Sig::CaseWhenInt, 8, 0, Datum::Int(7)),
+                    (Sig::CaseWhenReal, 5, 0, Datum::Real(7.5)),
+                    (
+                        Sig::CaseWhenDecimal,
+                        246,
+                        2,
+                        Datum::Decimal(Decimal::from_literal("7.25")),
+                    ),
+                    (Sig::CaseWhenTime, 12, 3, Datum::Time(precise_time)),
+                    (
+                        Sig::CaseWhenDuration,
+                        11,
+                        3,
+                        Datum::Duration(MySqlDuration::from_nanoseconds(1_123_000_000, 3).unwrap()),
+                    ),
+                    (
+                        Sig::CaseWhenJson,
+                        245,
+                        0,
+                        Datum::Json(BinaryJSON::parse("null").unwrap()),
+                    ),
+                ] {
+                    let row = [value.clone()];
+                    let evaluator = LegacyEvaluator {
+                        raw_columns: columns,
+                        ..LegacyEvaluator::new(&row, 4, &zone)
+                    };
+                    for present in [true, false] {
+                        let selected = if present {
+                            column(0, tp, precision)
+                        } else {
+                            null()
+                        };
+                        let expr = decode(
+                            &call(
+                                sig,
+                                vec![integer(1), selected, column(0, tp, precision)],
+                                tp,
+                            ),
+                            &request,
+                        );
+                        if slots == 0 {
+                            assert_pool(evaluator.eval_datum(&expr));
+                            assert_pool(evaluator.eval_decimal(Some(&expr)));
+                            continue;
+                        }
+                        assert_eq!(
+                            evaluator.eval_datum(&expr).unwrap(),
+                            if present { value.clone() } else { Datum::Null }
+                        );
+                        match &value {
+                            Datum::Int(v) => assert_eq!(
+                                evaluator.eval_expr(&expr).unwrap(),
+                                present.then_some(i128::from(*v))
+                            ),
+                            Datum::Real(v) => assert_eq!(
+                                evaluator.eval_real(Some(&expr)).unwrap(),
+                                present.then_some(*v)
+                            ),
+                            Datum::Decimal(v) => {
+                                let result = evaluator.eval_decimal(Some(&expr)).unwrap();
+                                assert_eq!(result, present.then(|| v.clone()));
+                                if let Some(result) = result {
+                                    assert_eq!(result.scale(), 2);
+                                }
+                            }
+                            Datum::Time(v) => {
+                                let result = evaluator.eval_time(Some(&expr)).unwrap();
+                                assert_eq!(result, present.then_some(*v));
+                                if let Some(result) = result {
+                                    assert_eq!(result.fsp(), 3);
+                                }
+                            }
+                            Datum::Duration(v) => {
+                                let result = evaluator.eval_duration(Some(&expr)).unwrap();
+                                assert_eq!(result, present.then_some(*v));
+                                if let Some(result) = result {
+                                    assert_eq!(result.fsp(), 3);
+                                }
+                            }
+                            Datum::Json(v) => assert_eq!(
+                                evaluator.eval_json(Some(&expr)).unwrap(),
+                                present.then(|| v.clone())
+                            ),
+                            _ => unreachable!(),
+                        }
+                    }
+                }
+                let row = [Datum::Time(
+                    Time::from_date_checked(1970, 1, 1, 8, 0, 1, 0, TimeType::DateTime, 0).unwrap(),
+                )];
+                let evaluator = LegacyEvaluator {
+                    raw_columns: columns,
+                    ..LegacyEvaluator::new(&row, 4, &zone)
+                };
+                for (children, expected) in [
+                    (vec![], None),
+                    (vec![integer(7)], Some(7)),
+                    (vec![null()], None),
+                    (vec![integer(0), bad.clone()], None),
+                    (
+                        vec![integer(1), null(), text("0.4tail"), bad.clone(), integer(7)],
+                        None,
+                    ),
+                    (
+                        vec![
+                            integer(0),
+                            bad.clone(),
+                            integer(1),
+                            call(Sig::IntIsNull, vec![null()], 8),
+                            bad.clone(),
+                        ],
+                        Some(1),
+                    ),
+                    (
+                        vec![
+                            null(),
+                            bad.clone(),
+                            integer(0),
+                            bad.clone(),
+                            call(Sig::UnixTimestampInt, vec![column(0, 12, 0)], 8),
+                        ],
+                        Some(1),
+                    ),
+                ] {
+                    let expr = decode(&call(Sig::CaseWhenInt, children, 8), &request);
+                    let result = evaluator.eval_expr(&expr);
+                    if slots == 1 {
+                        assert_eq!(result.unwrap(), expected);
+                    } else {
+                        assert_pool(result);
+                    }
+                }
+                assert!(
+                    request.take_warnings().is_empty(),
+                    "selected NULL stops; dead conditions/values stay unread"
+                );
+                for (children, expected, warning_kind) in [
+                    (vec![text("0.4tail"), integer(7)], 7, "DOUBLE"),
+                    (vec![bad.clone()], 0, "INTEGER"),
+                ] {
+                    let wire = call(Sig::CaseWhenInt, children, 8);
+                    let expr = decode(&wire, &request);
+                    let result = evaluator.eval_expr(&expr);
+                    if slots == 1 {
+                        assert_eq!(result.unwrap(), Some(expected));
+                    } else {
+                        assert_pool(result);
+                    }
+                    let warnings = request.take_warnings();
+                    assert_eq!(
+                        warnings.len(),
+                        1,
+                        "first actual preparation precedes parent admission"
+                    );
+                    assert_eq!(warnings[0].0, 1292);
+                    assert!(warnings[0].1.contains(warning_kind));
+                    let expr = decode(&wire, &strict);
+                    assert!(matches!(
+                        evaluator.eval_expr(&expr),
+                        Err(LegacyEvalError::Sql(_))
+                    ));
+                    assert!(evaluator.eval_decimal(Some(&expr)).unwrap().is_none());
+                }
+                let late_warning = decode(
+                    &call(
+                        Sig::CaseWhenInt,
+                        vec![integer(0), bad.clone(), text("0.4tail"), integer(7)],
+                        8,
+                    ),
+                    &request,
+                );
+                let result = evaluator.eval_expr(&late_warning);
+                if slots == 1 {
+                    assert_eq!(result.unwrap(), Some(7));
+                } else {
+                    assert_pool(result);
+                }
+                let warnings = request.take_warnings();
+                assert_eq!(
+                    warnings.len(),
+                    usize::from(slots == 1),
+                    "first head gates later condition coercion"
+                );
+                if let Some((code, message)) = warnings.first() {
+                    assert_eq!(*code, 1292);
+                    assert!(message.contains("DOUBLE"));
+                }
+                for children in [
+                    vec![integer(1), bad.clone()],
+                    vec![integer(0), integer(7), bad.clone()],
+                ] {
+                    let expr = decode(&call(Sig::CaseWhenInt, children, 8), &strict);
+                    if slots == 1 {
+                        assert!(matches!(
+                            evaluator.eval_expr(&expr),
+                            Err(LegacyEvalError::Sql(_))
+                        ));
+                        assert!(evaluator.eval_decimal(Some(&expr)).unwrap().is_none());
+                    } else {
+                        assert_pool(evaluator.eval_expr(&expr));
+                        assert_pool(evaluator.eval_decimal(Some(&expr)));
+                    }
+                }
+            });
+            drop(scope);
+            execution.close();
+        }
+    }
 }
