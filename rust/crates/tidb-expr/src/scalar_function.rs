@@ -1881,13 +1881,9 @@ impl ScalarFunction {
             );
         }
         if name == "coalesce" {
-            for arg in &self.args {
-                let value = arg.eval(ctx, row)?;
-                if !value.is_null() {
-                    return Ok(value);
-                }
-            }
-            return Ok(Datum::Null);
+            return crate::tikv::eval_coalesce_in(ctx, self.args.len(), |index, selected_ctx| {
+                self.args[index].eval(selected_ctx, row)
+            });
         }
         if name == "interval" && self.args.len() >= 2 {
             let arg_types = self
@@ -5955,4 +5951,164 @@ mod tests {
             Err(EvalError::WrongParameterCount("tidb_is_ddl_owner"))
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn coalesce_keeps_typed_temporal_projection_raw_fsp_and_late_string_cast() {
+    use tidb_datatype::{CoreTime, FieldTypeCode, MySqlDuration, Time, TimeType};
+    struct ProjectionOnly;
+    impl Columns for ProjectionOnly {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+            panic!("existing COALESCE projection has no context timezone")
+        }
+        fn date_modes(&self) -> tidb_datatype::DateModes {
+            panic!("existing COALESCE projection has no context date modes")
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            panic!("existing COALESCE projection has no context truncation policy")
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            panic!("existing COALESCE projection does not warn")
+        }
+    }
+    fn frame(value: &Datum) -> Option<Vec<u8>> {
+        let crate::tikv::EvaluatedArgs::Bytes(bytes) =
+            crate::tikv::prepare_datum_identity_args(value).unwrap()
+        else {
+            panic!("expected actual nullable identity")
+        };
+        bytes
+    }
+    let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    let evaluate = |value: Datum, ret_type: FieldType, columns: &dyn Columns| {
+        // Exercise the wider existing typed helper, including raw temporal
+        // representations SQL constructors would not admit.
+        let args = vec![
+            Expression::Constant(crate::constant::Constant::new(
+                Datum::Null,
+                FieldType::new(FieldTypeCode::Null),
+            )),
+            Expression::Constant(crate::constant::Constant::new(
+                value,
+                FieldType::new(FieldTypeCode::VarString),
+            )),
+        ];
+        ScalarFunction::new(CiString::new("coalesce"), ret_type, args).eval(columns, empty.to_row())
+    };
+    let owner = crate::AsciiPoolOwner::new(
+        crate::AsciiPoolPolicy::checked(
+            1,
+            1,
+            16 * 1024 * 1024,
+            4 * 1024 * 1024,
+            4 * 1024 * 1024,
+            64,
+            8,
+            4 * 1024 * 1024,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let core = CoreTime::from_date(2024, 1, 1, 1, 2, 3, 999999);
+    let raw_core = CoreTime::from_raw(u64::MAX);
+    execution.scope().with_columns(&ProjectionOnly, |columns| {
+        // DATE's shared setter is a no-op even for a raw nonzero FSP.
+        // Shared Time::native_normalize_fsp (time/mod.rs:1273) rejects negative
+        // targets other than -1, but clamps targets above six to six. Rejected
+        // targets leave non-DATE Time unchanged; Duration keeps the raw target.
+        for (target, expected_time_fsp, expected_duration_fsp) in [
+            (-1, 0, 0),
+            (0, 0, 0),
+            (2, 2, 2),
+            (6, 6, 6),
+            (-2, 4, -2),
+            (9, 6, 9),
+        ] {
+            for result_code in [
+                FieldTypeCode::Date,
+                FieldTypeCode::Datetime,
+                FieldTypeCode::Timestamp,
+            ] {
+                let mut result_type = FieldType::new(result_code);
+                result_type.set_decimal(target);
+                for kind in [TimeType::Date, TimeType::DateTime, TimeType::Timestamp] {
+                    for bits in [core, raw_core] {
+                        let original_fsp = if kind == TimeType::Date { 9 } else { 4 };
+                        let expected_fsp = if kind == TimeType::Date {
+                            9
+                        } else {
+                            expected_time_fsp
+                        };
+                        let source = Datum::Time(Time::from_raw_parts(bits, kind, original_fsp));
+                        let expected = Datum::Time(Time::from_raw_parts(bits, kind, expected_fsp));
+                        assert_eq!(
+                            frame(&evaluate(source, result_type.clone(), columns).unwrap()),
+                            frame(&expected)
+                        );
+                    }
+                }
+            }
+            let mut result_type = FieldType::new(FieldTypeCode::Duration);
+            result_type.set_decimal(target);
+            let source = Datum::Duration(MySqlDuration::from_raw_parts(-1234567890, 4));
+            let expected = Datum::Duration(MySqlDuration::from_raw_parts(
+                -1234567890,
+                expected_duration_fsp,
+            ));
+            assert_eq!(
+                frame(&evaluate(source, result_type, columns).unwrap()),
+                frame(&expected)
+            );
+        }
+        let mut result_type = FieldType::new(FieldTypeCode::Datetime);
+        result_type.set_decimal(0);
+        let temporal = Datum::Time(Time::from_raw_parts(core, TimeType::DateTime, 6));
+        let projected = evaluate(temporal, result_type.clone(), columns).unwrap();
+        // Restamping metadata must not round or carry the actual temporal core.
+        assert_eq!(
+            frame(&projected),
+            frame(&Datum::Time(Time::from_raw_parts(
+                core,
+                TimeType::DateTime,
+                0
+            )))
+        );
+
+        // A selected string is NOT in the temporal-restamp arm. It reaches the
+        // unchanged generic ConvertTo afterwards, whose rounding may carry.
+        let text = Datum::new_string("2024-01-01 01:02:03.999999");
+        let expected = text
+            .convert_to(&result_type, tidb_datatype::DEFAULT_STATEMENT_FLAGS)
+            .unwrap()
+            .value;
+        let converted = evaluate(text, result_type, columns).unwrap();
+        assert_eq!(frame(&converted), frame(&expected));
+        let Datum::Time(converted) = converted else {
+            panic!("late string cast must remain typed")
+        };
+        assert_eq!(converted.to_string(), "2024-01-01 01:02:04");
+        assert_ne!(converted.core_time().raw(), core.raw());
+
+        let result_type = FieldType::new(FieldTypeCode::VarString);
+        let source = Datum::Time(Time::from_raw_parts(core, TimeType::DateTime, 4));
+        let expected = source
+            .convert_to(&result_type, tidb_datatype::DEFAULT_STATEMENT_FLAGS)
+            .unwrap()
+            .value;
+        assert_eq!(
+            frame(&evaluate(source, result_type, columns).unwrap()),
+            frame(&expected)
+        );
+        let mut invalid_target = FieldType::new(FieldTypeCode::Duration);
+        invalid_target.set_decimal(-2);
+        assert_eq!(
+            evaluate(Datum::Null, invalid_target, columns).unwrap(),
+            Datum::Null
+        );
+    });
 }

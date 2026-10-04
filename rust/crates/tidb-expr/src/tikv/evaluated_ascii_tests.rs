@@ -1472,6 +1472,9 @@ fn dispatch_bytes_family(
                 "IF needs its actual nullable condition or original head report and chosen value"
             )
         }
+        EvaluatedBytesOp::CoalesceEndNative => {
+            panic!("COALESCE end needs genuine argument exhaustion, not a fabricated value")
+        }
         EvaluatedBytesOp::ConvertTzNative => {
             panic!("CONVERT_TZ needs its three actual nullable coerced strings")
         }

@@ -1,0 +1,73 @@
+coalesce-85 / R88
+CPP cwd: /home/agent/tidb/expression-unification/tikv
+Native cwd: /home/agent/tidb/expression-unification/tidb/rust
+Raw logs: /home/agent/tidb/expression-unification/logs/coalesce-{id}.log
+Counts passed/failed/ignored/filtered; compile_seconds/test_seconds.
+
+tikv-core | 1/0/0/953 | 12.73/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_compare::tests::coalesce_native_end -- --test-threads=1
+sha256 abc8f463381c3c689cd44c6eceaa1f8c2021d7d599c05390106933a2b2b89ddc
+
+tikv-wire | 1/0/0/953 | 0.20/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_compare::tests::test_coalesce -- --test-threads=1
+sha256 747078d578323c07b39d49eb57da2b060ee1f5c23094bbe63fb696b1d92416e6
+
+tikv-local | 335/1/1/617 | 0.14/0.23 | exit101 | NEW test expectation error
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+sha256 b78888515484359dd6e7ee9cf5aa3ece41aa02a435d83ab6a10ee9bd11893947
+
+tikv-local-final | 336/0/1/617 | 6.17/0.24 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+sha256 73177070d9d91eeda29fd8d4d676579b2b88de8bccd5ab3710ab21ecb0fa411d
+
+native-root | 6/1/0/1682 | 17.38/0.03 | exit101 | NEW temporal test expectation error
+../../tools/cargo-tidb test --locked -p tidb-expr --lib coalesce -- --test-threads=1
+sha256 1c8f09f715ca934aeb26663c52f3f4bb1934418d057698d9e6310b71b03f3b74
+
+ifnull-regression | 1/0/0/1688 | 0.17/0.01 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib if_null_bridge -- --test-threads=1
+sha256 63cad1dd4210bdd3aa28396f3a5b88818e0b4b92b61d131b8a2e9825d86c82d9
+
+native-gateway | 196/0/1/1492 | 0.15/0.35 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii -- --test-threads=1
+sha256 17cf9f182d4c662529ea515c8c12e3b3a2f65a052ca228d544febbe57d463e29
+
+legacy-refusal | 1/0/0/230 | 7.00/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_coalesce_and_case_string -- --test-threads=1
+sha256 d23bba4ba26c9935207b9edf7d3e58d40c290fa43dfe74daaf6e51a66b5f7ca4
+Admission refusal for7Coalesce signatures andCaseWhenString, NOT a legacy COALESCE execution receipt.
+
+sql | 1/0/0/2231 | 21.41/0.10 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_coalesce_preserves -- --test-threads=1
+sha256 c5c63bb6f2c812958be69da94137bf42d3ee6611e182606199ce3b39b50b78da
+
+expr-full | 1590/5/94/0 | 0.26/14.67 | exit101 | 4old failures plus NEW temporal test expectation error
+../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+sha256 ef76bc2373d8408b985589d200324cbe6c2edd4e67b25effe099d8bcef33d461
+
+unistore-full | 217/1/13/0 | 0.14/3.07 | exit101 | OLD failure unchanged
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+sha256 fab1b3bb86d7135d7b5d562d6354c866b2725ad9fdcfeeea94f9d8288a211156
+
+native-root-final | 7/0/0/1682 | 3.79/0.03 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib coalesce -- --test-threads=1
+sha256 060ff61750031c60f8387f16ff4110eea8859293d020956a7c45d7c7bc66cb29
+
+expr-full-final | 1591/4/94/0 | 0.15/15.25 | exit101 | OLD failures unchanged
+../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+sha256 31ba48892b387bc1d077ce8b263656f38dfc5c3ed4c17ba4f53822741b87ccfc
+
+Thirteen locked nonzero launches:8green,3runs containing new-test failures,2only-old full RED. All8new tests ultimately pass; NOT first-attempt all-green. No compile failure, zero-match, interrupted test or provider fixture recording. Counts overlap across filters/reruns, not unique totals.
+
+Two source-grounded NEW-test corrections, no production policy repair:
+1. End payload0 is not retained storage0. Existing expr_eval.rs result_precharge for Bytes FnCall calls bytes_min_storage_bytes(1,0); runtime.rs accounts offsets+bitmap for one NULL row before dispatch (minimum24bytes on64bit, not a physical peak measurement). Corrected only the new budget test to require zero-budget ResourceLimit/0calls and default-budget two real NULL calls. No magic capacity threshold or bypass of existing row accounting.
+2. Existing codec/mysql/time/mod.rs native_normalize_fsp maps-1 to0, other negatives toNone, >6 to6; native_value.rs set_fsp first returns forDate. Corrected only the new temporal test tuple(9,4,9) to(9,6,9) and its source comment. RawDate9 stays9, non-Date Time target9 clamps6, Duration rawtarget9 stays9; negative-2 still preserves old Timefsp4. Neither constructor nor production was changed, and the actual failed output was not used as an oracle.
+
+Final entire failure sections byte-equal to if-84 after only numeric panic-heading thread IDs become THREAD:
+expression 411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+unistore 2f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1
+Initial mixed/new RED logs remain separately retained.
+
+Final native-root explicitly passes func::coalesce_workers_keep_lazy_borrowed_identity_exhaustion_and_scope, scalar_function::coalesce_keeps_typed_temporal_projection_raw_fsp_and_late_string_cast and tikv::coalesce::tests::coalesce_bridge_iterates_borrowed_and_owned_candidates_under_one_scope. SQL54SELECT=48direct (24positive/24zero-slot) +4lazy-error +2filters; every pure root has3stored candidates. Bridge130NULL candidates and borrowed !Clone carrier exercise iterative continuation, not a measured physical stack bound.
+
+Pinned formatting: rustfmt --edition 2021 --config skip_children=true --check on7CPP changed Rust files using /home/agent/tidb/expression-reuse/rustup-home/toolchains/nightly-2026-01-30-x86_64-unknown-linux-gnu/bin/rustfmt;10native files use corresponding nightly-2026-08-22 executable. Both git diff --check pass. Source audit:162CPP/516native original #[test] bodies byte-identical,3CPP/5native new tests. No Go/Bazel/Cargo/lock/generated changes. No lint/dev/workspace/release/performance/physical-OOM or PR-readiness claim.

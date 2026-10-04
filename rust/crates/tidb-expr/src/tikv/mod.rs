@@ -23,6 +23,8 @@
 mod adapter_failure;
 mod batch;
 mod catalog;
+mod coalesce;
+pub(crate) use coalesce::eval_coalesce_in;
 mod context;
 // The closed ready-argument families share this value boundary and one pool.
 mod evaluated_ascii;

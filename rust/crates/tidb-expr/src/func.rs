@@ -173,13 +173,9 @@ pub(crate) fn eval_func(
         );
     }
     if name == "COALESCE" {
-        for arg in args {
-            let value = eval_in(arg, cols)?;
-            if !value.is_null() {
-                return Ok(value);
-            }
-        }
-        return Ok(Datum::Null);
+        return crate::tikv::eval_coalesce_in(cols, args.len(), |index, selected_cols| {
+            eval_in(&args[index], selected_cols)
+        });
     }
     if name == "BENCHMARK" {
         let [count, expression] = args else {
@@ -743,11 +739,7 @@ pub(crate) fn eval_func_values(
             crate::eval_boolean_ready_in(crate::BooleanFunction::IsFalse, ready, ctx)
         }),
         // COALESCE returns the first non-NULL argument.
-        "COALESCE" => Ok(vals
-            .iter()
-            .find(|v| **v != Datum::Null)
-            .cloned()
-            .unwrap_or(Datum::Null)),
+        "COALESCE" => crate::tikv::eval_coalesce_in(ctx, vals.len(), |index, _| Ok(&vals[index])),
         "IFNULL" if vals.len() == 2 => {
             let (a, b) = (vals[0].clone(), vals[1].clone());
             crate::tikv::eval_if_null_in(ctx, |_| Ok(a), |_| Ok(b))
@@ -1812,6 +1804,271 @@ fn if_workers_keep_ordinary_truth_domains_lazy_identity_and_scope() {
                     Expr::Column(vec!["dead".to_owned()]),
                 ],
             },
+        ],
+    };
+    assert_eq!(
+        crate::eval_in(&nested, &crate::NoColumns).unwrap(),
+        Datum::Int(7)
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn coalesce_workers_keep_lazy_borrowed_identity_exhaustion_and_scope() {
+    use crate::constant::{Constant, ParamMarker};
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    use std::cell::RefCell;
+    use tidb_datatype::{
+        BinaryJSON, BinaryLiteral, Collation, CoreTime, Decimal, FieldType, FieldTypeCode,
+        MySqlDuration, MysqlEnum, MysqlSet, Time, TimeType, VectorFloat32,
+    };
+
+    struct Demand {
+        values: Vec<Datum>,
+        reads: RefCell<Vec<usize>>,
+        fail: Option<usize>,
+    }
+    impl Columns for Demand {
+        fn get(&self, path: &[String]) -> Option<Datum> {
+            self.param_value(path[0].parse().unwrap()).ok()
+        }
+        fn param_value(&self, index: usize) -> Result<Datum, EvalError> {
+            self.reads.borrow_mut().push(index);
+            if self.fail == Some(index) {
+                return Err(EvalError::Unsupported("COALESCE demanded child"));
+            }
+            Ok(self.values[index].clone())
+        }
+        fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+            panic!("COALESCE selection has no timezone demand")
+        }
+        fn date_modes(&self) -> tidb_datatype::DateModes {
+            panic!("COALESCE selection has no date-mode demand")
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            panic!("COALESCE must not coerce candidates")
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            panic!("COALESCE identity must not warn")
+        }
+    }
+    fn frame(value: &Datum) -> Option<Vec<u8>> {
+        let crate::tikv::EvaluatedArgs::Bytes(bytes) =
+            crate::tikv::prepare_datum_identity_args(value).unwrap()
+        else {
+            panic!("expected actual nullable identity")
+        };
+        bytes
+    }
+    fn resource(result: Result<Datum, EvalError>) {
+        let error =
+            result.expect_err("COALESCE must retain the zero-slot owner even at exhaustion");
+        let EvalError::ExpressionAdapterFailure(failure) = error else {
+            panic!("{error:?}")
+        };
+        assert_eq!(
+            failure.class(),
+            crate::ExpressionAdapterFailureClass::PoolResource
+        );
+        assert_eq!(
+            failure.origin(),
+            crate::ExpressionAdapterFailureOrigin::Pool
+        );
+    }
+    let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    let evaluate = |mode, values: &[Datum], columns: &dyn Columns| {
+        if mode == 0 {
+            let args = (0..values.len())
+                .map(|index| Expr::Column(vec![index.to_string()]))
+                .collect::<Vec<_>>();
+            eval_func("COALESCE", &args, columns, None)
+        } else if mode == 1 {
+            let args = (0..values.len())
+                .map(|index| {
+                    let mut constant = Constant::default();
+                    constant.param_marker = Some(ParamMarker {
+                        order: index as i64,
+                    });
+                    Expression::Constant(constant)
+                })
+                .collect();
+            let mut function = ScalarFunction::new(
+                tidb_ast::CiString::new("coalesce"),
+                FieldType::new(FieldTypeCode::LongLong),
+                args,
+            );
+            function.ret_type = None;
+            function.eval(columns, empty.to_row())
+        } else {
+            // Already evaluated arguments enter the borrowed helper; no caller
+            // search, selected-value clone, or dead-suffix encoding occurs here.
+            eval_func_values_in("COALESCE", values, columns).unwrap()
+        }
+    };
+    let mut vector = VectorFloat32::init(2);
+    vector
+        .elements_mut()
+        .copy_from_slice(&[-0.0, f32::from_bits(0x7fc01234)]);
+    let candidates = vec![
+        Datum::MinNotNull,
+        Datum::MaxValue,
+        Datum::Int(0),
+        Datum::UInt(u64::MAX),
+        Datum::Real(f64::from_bits(0x7ff8000012345678)),
+        Datum::Real(-0.0),
+        Datum::Float32(1.00000049),
+        Datum::Decimal(
+            Decimal::from_raw_parts(true, b"00010049".to_vec(), 2, 4).with_declared_shape(12, 2),
+        ),
+        Datum::Decimal(Decimal::from_raw_parts(true, Vec::new(), 0, 0)),
+        Datum::new_string(""),
+        Datum::new_collation_string(vec![0xff, 0], Collation::GbkBin),
+        Datum::new_bytes(vec![0xff, 0]),
+        Datum::Raw(vec![0xff, 0]),
+        Datum::BinaryLiteral(BinaryLiteral::from(vec![0, 0xff])),
+        Datum::Bit(BinaryLiteral::from(vec![0, 0xff])),
+        Datum::Enum(MysqlEnum::new(vec![0xff], 0), Collation::Binary),
+        Datum::Set(MysqlSet::new(vec![0xff], u64::MAX), Collation::GbkBin),
+        Datum::Time(Time::from_raw_parts(
+            CoreTime::from_raw(u64::MAX),
+            TimeType::Date,
+            9,
+        )),
+        Datum::Duration(MySqlDuration::from_raw_parts(-123456789, -2)),
+        Datum::Json(BinaryJSON::parse("null").unwrap()),
+        Datum::VectorFloat32(vector),
+    ];
+    for slots in [1, 0] {
+        let owner = crate::AsciiPoolOwner::new(
+            crate::AsciiPoolPolicy::checked(
+                slots,
+                slots,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let execution = owner.begin_execution().unwrap();
+        for candidate in &candidates {
+            for prefix in [0, 2] {
+                let mut values = vec![Datum::Null; prefix];
+                values.push(candidate.clone());
+                values.push(Datum::Raw(vec![0xff]));
+                let ctx = Demand {
+                    values,
+                    reads: RefCell::new(Vec::new()),
+                    fail: Some(prefix + 1),
+                };
+                let before = ctx.values.iter().map(frame).collect::<Vec<_>>();
+                for mode in 0..3 {
+                    let result = execution
+                        .scope()
+                        .with_columns(&ctx, |columns| evaluate(mode, &ctx.values, columns));
+                    if slots == 1 {
+                        assert_eq!(frame(&result.unwrap()), frame(candidate));
+                    } else {
+                        resource(result);
+                    }
+                    assert_eq!(
+                        ctx.reads.take(),
+                        if mode == 2 {
+                            vec![]
+                        } else if slots == 1 {
+                            (0..=prefix).collect::<Vec<_>>()
+                        } else {
+                            vec![0]
+                        }
+                    );
+                    assert_eq!(ctx.values.iter().map(frame).collect::<Vec<_>>(), before);
+                }
+            }
+        }
+        for count in [0, 1, 3, 64] {
+            let ctx = Demand {
+                values: vec![Datum::Null; count],
+                reads: RefCell::new(Vec::new()),
+                fail: None,
+            };
+            for mode in 0..3 {
+                let result = execution
+                    .scope()
+                    .with_columns(&ctx, |columns| evaluate(mode, &ctx.values, columns));
+                if slots == 1 {
+                    assert_eq!(result.unwrap(), Datum::Null);
+                } else {
+                    resource(result);
+                }
+                assert_eq!(
+                    ctx.reads.take(),
+                    if mode == 2 || count == 0 {
+                        vec![]
+                    } else if slots == 1 {
+                        (0..count).collect::<Vec<_>>()
+                    } else {
+                        vec![0]
+                    }
+                );
+            }
+        }
+        for failed in [0, 1] {
+            let ctx = Demand {
+                values: vec![Datum::Null, Datum::Int(7), Datum::Int(8)],
+                reads: RefCell::new(Vec::new()),
+                fail: Some(failed),
+            };
+            for mode in 0..2 {
+                let result = execution
+                    .scope()
+                    .with_columns(&ctx, |columns| evaluate(mode, &ctx.values, columns));
+                if slots == 1 || failed == 0 {
+                    assert!(
+                        matches!(result, Err(EvalError::Unsupported(message)) if message == if mode == 0 { "unknown column" } else { "COALESCE demanded child" })
+                    );
+                    assert_eq!(ctx.reads.take(), (0..=failed).collect::<Vec<_>>());
+                } else {
+                    resource(result);
+                    assert_eq!(ctx.reads.take(), vec![0]);
+                }
+            }
+        }
+        if slots == 1 {
+            // An encoded suffix this large exceeds this invocation's budgets.
+            // It is already materialized but remains completely undemanded.
+            let values = [
+                Datum::Null,
+                Datum::Int(7),
+                Datum::Raw(vec![0; 5 * 1024 * 1024]),
+            ];
+            assert_eq!(
+                execution
+                    .scope()
+                    .with_columns(&crate::NoColumns, |columns| eval_func_values_in(
+                        "COALESCE", &values, columns
+                    )
+                    .unwrap())
+                    .unwrap(),
+                Datum::Int(7)
+            );
+        }
+    }
+    let nested = Expr::Func {
+        name: "COALESCE".to_owned(),
+        origin_position: 0,
+        args: vec![
+            Expr::Null,
+            Expr::Func {
+                name: "COALESCE".to_owned(),
+                args: vec![],
+                origin_position: 0,
+            },
+            Expr::Int("7".to_owned()),
+            Expr::Column(vec!["dead".to_owned()]),
         ],
     };
     assert_eq!(

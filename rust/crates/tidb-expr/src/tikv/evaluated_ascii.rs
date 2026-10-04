@@ -2257,6 +2257,7 @@ fn materialize_computed(
             | EvaluatedBytesOp::IfNullFinishNative
             | EvaluatedBytesOp::IfHeadNative
             | EvaluatedBytesOp::IfFinishNative
+            | EvaluatedBytesOp::CoalesceEndNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative

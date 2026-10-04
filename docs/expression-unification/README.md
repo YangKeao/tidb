@@ -1,31 +1,33 @@
 # Expression unification experiment
 
 Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
-Current checkpoint: **if-84**, following **ifnull-83**.
+Current checkpoint: **coalesce-85**, following **if-84**.
 
-Functional coverage: **223/245 (91.02%)**; strict final-audited count: **0**. The222 prior family objects are byte-identical; only IF is added. **The overall goal remains active.**
+Functional coverage: **224/245 (91.43%)**; strict final-audited count: **0**. The223 previous family objects are byte-identical; only COALESCE is added. **The overall goal remains active.**
 
-## IF branch selection belongs to TiKV
+## COALESCE reuses shared nullable selection
 
-- Head consumes the actual normalized nullable condition and computes Then/Else. Only that report drives one branch callback; Finish consumes the original report and actual selected identity, including NULL. No host-preselected answer followed by IDENTITY.
-- AST/typed/PB selectors delegate. Ordinary truth conversion and PB's warning-aware lossy numeric conversion remain distinct and precede head admission. Missing/extra arguments, outer casts, unsigned reinterpretation and temporal FSP retain their original policies.
-- Three wire IF workers retain the full Int domain and share the SDK selector with the head and two pure optimizer/proof sites. Fold truth errors still mean Else; proof truth errors still mean unknown.
-- Full raw identity domains remain admitted. No eager IF helper, IfString PB signature, legacy SimpleSig, carrier or general driver is added. First-condition preparation retains original context/NoColumns precedence; head → chosen branch → Finish use selected columns.
+- Each actual candidate uses the unchanged IFNULL head. Only computed Done/NeedSecond results drive an iterative cursor; real exhaustion invokes the new NoArgs `CoalesceEndNative`, which delegates the existing empty wire COALESCE. No second nullable kernel, fake NULL operand or native NULL answer.
+- AST/typed/eager selectors and pure null-proof selection delegate. Three wire COALESCE loops reuse the same chooser. Eager inputs are borrowed, not cloned across a prefix/dead suffix; results come from computed frames.
+- The first scoped pack retains selected columns across later heads and End without recursive continuation growth. Original first-preparation/NoColumns order and existing IFNULL behavior remain.
+- COALESCE-specific typed return-FSP binding stays an explicit native adapter. The Time setter is already shared; raw Duration metadata and later generic conversion remain unchanged. No PB/legacy COALESCE or SQL zero-arity admission is added.
 
-## Validation
+## Validation and corrections
 
-[Evidence](evidence/if-checkpoint.md), [exact commands/hashes](logs/if-summary.txt), [manifest](checkpoint.json), [cumulative ledger](migration-progress.json).
+[Evidence](evidence/coalesce-checkpoint.md), [exact commands/hashes](logs/coalesce-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
 
-All8new tests pass on first matching execution. SQL54SELECT probes comprise48stored-column root queries (24zero-slot refusals),4lazy-error checks and2filters. Nine locked launches:7green and2unchanged old full-suite RED. TiKV core1/wire4/local334, native root9/gateway196, legacy1 and SQL1 pass; local/root/gateway each retain one ignored test.
+All8new tests ultimately pass. SQL54SELECT probes:48three-column root queries (24zero-slot refusals),4lazy-error checks and2filters. Final CPP core1/wire1/local336+1ignored, native root7, existing IFNULL regression1, gateway196+1ignored, legacy refusal1 and SQL1 pass. The legacy test proves an unsupported boundary, not COALESCE execution.
 
-Full expression **1588/4old/94ignored** and unistore **216/1old/13ignored** remain RED with byte-identical normalized failure sections. No compile failure, new execution failure, zero-match, interrupted test or fixture recording. The existing vector predicate treats only empty vectors as zero; tests preserve nonempty zero-lane vectors as true rather than changing production to match an older comment.
+Two new-test expectations were corrected from existing source, with no production policy changes: NULL output still requires accounted row metadata; non-Date Time FSP above6 clamps6 rather than errors. All initial RED logs remain. Thirteen locked launches total:8green,3containing those new-test failures,2only-old full RED—not first-attempt all-green.
 
-Pinned formatting and diff checks cover11native/8TiKV Rust files. The123CPP/519native original test bodies are byte-identical; two new modules and eight appended tests. No Cargo/lock, Go/Bazel or generated changes.
+Final expression **1591/4old/94ignored** and unistore **217/1old/13ignored** remain RED with byte-identical normalized failure sections. No compile failure, zero-match, interrupted test or provider fixture recording. Original162CPP/516native test bodies remain byte-identical.
+
+Pinned formatting and diff checks cover10native/7TiKV Rust files; one new module, eight new tests. No Cargo/lock, Go/Bazel or generated changes.
 
 ## Remaining acceptance
 
-[Remaining review](evidence/remaining-acceptance.md): **8core**, **8ordinary pending**, **6complex exception candidates**—not22approved exceptions. Next: CASE/COALESCE/NULLIF, CAST/M2, IN/extrema/INTERVAL, real request-owner lifecycle and final cross-entry/deletion evidence. Keep the accepted scoped design, not a universal compiler rewrite.
+[Remaining review](evidence/remaining-acceptance.md): **7core**, **8ordinary pending**, **6complex exception candidates**—not21approved exceptions. Next CASE/NULLIF, CAST/M2, IN/extrema/INTERVAL, actual request-owner lifecycle and final cross-entry evidence. Preserve CASE base-evaluation differences and NULLIF's existing eager demand; do not replace the accepted scoped design with a universal compiler.
 
-Known full-suite, raw INTDIV, mode forwarding, CAST diagnostic, JSON/metadata, vector-truth and older Values precharge gaps remain. Workspace/lint/dev/bazel_prepare/release, exhaustive differential/TiFlash/FIPS and performance/allocator/physical heap/peak/OOM/zero-copy/dual-timezone footprint are not verified. No whole-package transcreation or PR-readiness claim.
+Known baseline failures and documented INTDIV/CAST/mode/JSON/vector/older Values gaps remain. Workspace/lint/dev/bazel_prepare/release, exhaustive differential/TiFlash/FIPS, performance/physical heap/stack peak/OOM/allocator/zero-copy/dual-timezone footprint and whole Go-package transcreation are not verified. No PR-readiness claim.
 
-Three Plans agree; the manifest pins their hash and paired TiKV commit. Publish TiKV then TiDB without force push or PR. The old untracked client-differential BUILD.bazel remains excluded.
+Three Plans agree; the manifest pins their hash and paired TiKV commit. Publish TiKV then TiDB without force push or PR. The unrelated untracked client-differential BUILD.bazel remains excluded.

@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::borrow::Borrow;
+
 use tidb_query_expr::{decode_native_if_null_head_result, NativeIfNullHeadResult};
 
 use super::adapter_failure::{ExpressionAdapterFailure, ScopeFailureKind};
@@ -33,9 +35,9 @@ fn invalid_report() -> EvalError {
     ))
 }
 
-pub(crate) fn eval_if_null_head_scoped_in<T>(
+pub(crate) fn eval_if_null_head_scoped_in<T, V: Borrow<Datum>>(
     ctx: &dyn Columns,
-    first: impl FnOnce(&dyn Columns) -> Result<Datum, EvalError>,
+    first: impl FnOnce(&dyn Columns) -> Result<V, EvalError>,
     pack: impl FnOnce(IfNullHeadOutcome, &dyn Columns) -> Result<T, EvalError>,
 ) -> Result<T, EvalError> {
     evaluate_prepared_args_scoped_in(
@@ -46,7 +48,7 @@ pub(crate) fn eval_if_null_head_scoped_in<T>(
             let first = first(ctx)?;
             Ok((
                 EvaluatedBytesOp::IfNullHeadNative,
-                EvaluatedArgs::Bytes(identity_value::encode(&first)?),
+                EvaluatedArgs::Bytes(identity_value::encode(first.borrow())?),
             ))
         },
         |computed, selected| {

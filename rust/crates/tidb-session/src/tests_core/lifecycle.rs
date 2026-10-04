@@ -9363,6 +9363,238 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_coalesce_preserves_iterative_selection_temporal_stamps_and_runtime_roots() {
+    use tidb_datatype::{FieldTypeCode, TimeType};
+
+    let create = "CREATE TABLE shared_coalesce_sql (i_first BIGINT, i_late BIGINT, i_null BIGINT, i_null2 BIGINT, i_null3 BIGINT, d_first DECIMAL(8,1), d_late DECIMAL(10,3), d_null DECIMAL(10,3), s_first VARCHAR(8), s_late VARCHAR(12), s_null VARCHAR(12), t_first DATETIME, t_late DATETIME(3), t_null DATETIME(3), j_first JSON, j_late JSON, j_null JSON, date_first DATE, subject VARCHAR(8), bad_pattern VARCHAR(8))";
+    let insert = "INSERT INTO shared_coalesce_sql VALUES (0,2,NULL,NULL,NULL,1.5,123.123,NULL,'abc','n',NULL,'2020-10-10 12:59:59','2020-10-10 12:59:59.123',NULL,'[1]','[2]',NULL,'2020-10-10','x','[')";
+    // Fixed selected input literals and the original test_coalesce /
+    // test_coalesce_fraction_promotion rules. Every query has three stored
+    // candidates, including a third-position winner and complete exhaustion.
+    let cases = [
+        // Numeric zero is non-NULL and must win, independently of truthiness.
+        (
+            "i_first,i_late,i_null",
+            FieldTypeCode::LongLong,
+            Some((20, 0)),
+            Some("0"),
+            None,
+        ),
+        (
+            "i_null,i_null2,i_late",
+            FieldTypeCode::LongLong,
+            Some((20, 0)),
+            Some("2"),
+            None,
+        ),
+        (
+            "d_first,d_late,d_null",
+            FieldTypeCode::NewDecimal,
+            Some((10, 3)),
+            Some("1.5"),
+            None,
+        ),
+        (
+            "d_null,d_late,d_first",
+            FieldTypeCode::NewDecimal,
+            Some((10, 3)),
+            Some("123.123"),
+            None,
+        ),
+        (
+            "s_first,s_late,s_null",
+            FieldTypeCode::Varchar,
+            Some((12, -1)),
+            Some("abc"),
+            None,
+        ),
+        (
+            "s_null,s_late,s_first",
+            FieldTypeCode::Varchar,
+            Some((12, -1)),
+            Some("n"),
+            None,
+        ),
+        // Unlike IF/IFNULL, COALESCE stamps a selected DATETIME(0) with the
+        // merged FSP 3. Its clock is unchanged, not rounded or reconstructed.
+        (
+            "t_first,t_late,t_null",
+            FieldTypeCode::Datetime,
+            Some((23, 3)),
+            Some("2020-10-10 12:59:59.000"),
+            Some((TimeType::DateTime, 3)),
+        ),
+        (
+            "t_null,t_late,t_first",
+            FieldTypeCode::Datetime,
+            Some((23, 3)),
+            Some("2020-10-10 12:59:59.123"),
+            Some((TimeType::DateTime, 3)),
+        ),
+        (
+            "j_first,j_late,j_null",
+            FieldTypeCode::Json,
+            None,
+            Some("[1]"),
+            None,
+        ),
+        (
+            "j_null,j_late,j_first",
+            FieldTypeCode::Json,
+            None,
+            Some("[2]"),
+            None,
+        ),
+        (
+            "i_null,i_null2,i_null3",
+            FieldTypeCode::LongLong,
+            Some((20, 0)),
+            None,
+            None,
+        ),
+        // The existing special Time branch returns after set_fsp. DATE's
+        // setter leaves its kind/FSP unchanged even under a DATETIME header.
+        (
+            "date_first,t_late,t_null",
+            FieldTypeCode::Datetime,
+            Some((23, 3)),
+            Some("2020-10-10"),
+            Some((TimeType::Date, 0)),
+        ),
+    ];
+    for slots in [1, 0] {
+        let mut session = Session::new();
+        session
+            .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+            .unwrap();
+        session.run("SET time_zone='+00:00'").unwrap();
+        session.run("SET sql_mode=''").unwrap();
+        session
+            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+            .unwrap();
+        session.run(create).unwrap();
+        session.run(insert).unwrap();
+        assert!(session
+            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .unwrap());
+        for vectorized in [0, 1] {
+            session
+                .run(&format!(
+                    "SET tidb_enable_vectorized_expression={vectorized}"
+                ))
+                .unwrap();
+            for (args, code, shape, expected, temporal) in cases {
+                // Pure stored-column roots: no CAST, WHERE, sort or function
+                // child can provide a substitute zero-slot failure. SQL's
+                // existing minimum arity remains one; no zero-arg SQL claim.
+                let sql = format!("SELECT COALESCE({args}) FROM shared_coalesce_sql");
+                if slots == 1 {
+                    let StmtOutput::Rows { columns, rows } =
+                        session.run_with_columns(&sql).unwrap()
+                    else {
+                        panic!("expected COALESCE rows: {sql}")
+                    };
+                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
+                    let field = &columns[0].1;
+                    assert_eq!(field.code(), code, "{sql}/{vectorized}");
+                    if let Some(shape) = shape {
+                        assert_eq!((field.flen(), field.decimal()), shape, "{sql}/{vectorized}");
+                    }
+                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
+                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
+                    if let Some(expected) = expected {
+                        match (&rows[0][0], code) {
+                            (Datum::Int(_), FieldTypeCode::LongLong) => {}
+                            (Datum::Decimal(decimal), FieldTypeCode::NewDecimal) => {
+                                // Same-family Decimal remains at its actual
+                                // scale; only its declared chunk shape widens.
+                                assert_eq!(decimal.declared_shape(), Some((10, 3)));
+                            }
+                            (Datum::String(_), FieldTypeCode::Varchar) => {
+                                assert_eq!(field.charset_name(), "utf8mb4");
+                                assert_eq!(field.collation_name(), "utf8mb4_bin");
+                            }
+                            (Datum::Time(time), FieldTypeCode::Datetime) => {
+                                let (kind, fsp) = temporal.unwrap();
+                                assert_eq!(time.kind(), kind, "{sql}/{vectorized}");
+                                assert_eq!(time.fsp(), fsp, "{sql}/{vectorized}");
+                            }
+                            (Datum::Json(_), FieldTypeCode::Json) => {}
+                            other => {
+                                panic!("COALESCE changed its selected carrier: {sql}: {other:?}")
+                            }
+                        }
+                        assert_eq!(cell_text(&rows[0][0]), expected, "{sql}/{vectorized}");
+                    } else {
+                        assert_eq!(rows[0][0], Datum::Null, "{sql}/{vectorized}");
+                    }
+                } else {
+                    let error = session.run_with_columns(&sql).expect_err(&sql);
+                    match &error {
+                        DriverError::Exec(tidb_executor::ExecError::Eval(
+                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                        )) => {
+                            assert_eq!(failure.class(), tidb_executor::ExpressionAdapterFailureClass::PoolResource);
+                            assert_eq!(failure.origin(), tidb_executor::ExpressionAdapterFailureOrigin::Pool);
+                        }
+                        other => panic!("COALESCE bypassed its first candidate worker: {sql}/{vectorized}: {other:?}"),
+                    }
+                    let mysql = error.to_mysql_error();
+                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
+                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
+                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
+                }
+                assert!(
+                    warnings_of(&session).is_empty(),
+                    "{sql}/{vectorized}/slots={slots}"
+                );
+            }
+            if slots == 1 {
+                // Stored first candidates and invalid pattern cannot fold.
+                // These child-bearing calls prove laziness only, not zero-slot
+                // root admission or the number of intermediate worker stages.
+                let StmtOutput::Rows { rows, .. } = session
+                    .run_with_columns("SELECT COALESCE(i_first,i_null,subject REGEXP bad_pattern) FROM shared_coalesce_sql")
+                    .unwrap()
+                else {
+                    panic!("expected COALESCE to skip its invalid stored candidate")
+                };
+                assert_eq!(rows, vec![vec![Datum::Int(0)]]);
+                assert!(warnings_of(&session).is_empty());
+                let error = session
+                    .run_with_columns("SELECT COALESCE(i_null,i_null2,subject REGEXP bad_pattern) FROM shared_coalesce_sql")
+                    .expect_err("COALESCE must demand the invalid candidate after its NULL prefix");
+                assert!(
+                    matches!(
+                        &error,
+                        DriverError::Exec(tidb_executor::ExecError::Eval(
+                            tidb_executor::EvalError::Unsupported(
+                                "invalid regular expression pattern"
+                            )
+                        ))
+                    ),
+                    "{error:?}"
+                );
+                let mysql = error.to_mysql_error();
+                assert_eq!(mysql.code, 1105);
+                assert_eq!(mysql.state, *b"HY000");
+                assert_eq!(mysql.message, "invalid regular expression pattern");
+                let StmtOutput::Rows { rows, .. } = session
+                    .run_with_columns(
+                        "SELECT 1 FROM shared_coalesce_sql WHERE COALESCE(i_null,i_null2,i_late)=2",
+                    )
+                    .unwrap()
+                else {
+                    panic!("expected COALESCE predicate rows")
+                };
+                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
+                assert!(warnings_of(&session).is_empty());
+            }
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_if_preserves_stored_conditions_branch_frames_and_runtime_root_demand() {
     use tidb_datatype::{FieldTypeCode, TimeType};
 

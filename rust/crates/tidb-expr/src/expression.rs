@@ -472,8 +472,13 @@ fn try_fold_nullified_function(
     if name == "coalesce" {
         for argument in &function.args {
             let constant = try_fold_nullified_constant(inner_column_ids, argument)?;
-            if !constant.value.is_null() {
-                return Some(constant);
+            let actual_candidate = match &constant.value {
+                Datum::Null => None,
+                _ => Some(constant),
+            };
+            match tidb_query_expr::native_if_null_choose_first(actual_candidate) {
+                tidb_query_expr::NativeIfNullChoice::Done(value) => return Some(value),
+                tidb_query_expr::NativeIfNullChoice::NeedSecond => {}
             }
         }
         return Some(Constant::new(Datum::Null, result_type));

@@ -13232,4 +13232,58 @@ mod tests {
             execution.close();
         }
     }
+
+    #[test]
+    fn legacy_coalesce_and_case_string_wire_admission_stays_closed() {
+        use tipb::ScalarFuncSig as Sig;
+        let null = tipb::Expr {
+            tp: Some(tipb::ExprType::Null as i32),
+            field_type: Some(tipb::FieldType {
+                tp: Some(6),
+                flen: Some(20),
+                decimal: Some(0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // Signature metadata is not PB admission. Both children decode, so
+        // refusal must come from the unsupported root signature, not shape.
+        for (sig, tp) in [
+            (Sig::CoalesceInt, 8),
+            (Sig::CoalesceReal, 5),
+            (Sig::CoalesceDecimal, 246),
+            (Sig::CoalesceString, 253),
+            (Sig::CoalesceTime, 12),
+            (Sig::CoalesceDuration, 11),
+            (Sig::CoalesceJson, 245),
+            (Sig::CaseWhenString, 253),
+        ] {
+            assert!(!tidb_expr::distsql_builtin::supports_signature(sig));
+            let wire = tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(sig as i32),
+                children: vec![null.clone(), null.clone()],
+                field_type: Some(tipb::FieldType {
+                    tp: Some(tp),
+                    flen: Some(20),
+                    decimal: Some(0),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let expected = format!("scalar signature {sig:?} is not a pushdown builtin");
+            assert_eq!(
+                tidb_expr::distsql_builtin::pb_to_expr(&wire, &[])
+                    .err()
+                    .expect("native PB admission remains closed"),
+                expected,
+            );
+            assert_eq!(
+                convert_expr(&wire)
+                    .err()
+                    .expect("legacy fallback must not widen admission"),
+                expected,
+            );
+        }
+    }
 }
