@@ -411,122 +411,18 @@ pub(crate) fn date_diff(vals: &[Datum]) -> Result<Datum, EvalError> {
     date_diff_in(vals, &crate::NoColumns)
 }
 
-#[derive(Clone, Copy)]
-struct TimestampDiffDateTime {
-    year: i64,
-    month: u32,
-    day: u32,
-    hour: u32,
-    minute: u32,
-    second: u32,
-    microsecond: u32,
-}
-
-/// Parses a strict DATE/DATETIME string for `TIMESTAMPDIFF`.
-fn parse_timestamp_diff_datetime(input: &str) -> Option<TimestampDiffDateTime> {
-    let (year, month, day, hour, minute, second, microsecond) =
-        TikvTime::parse_native_datetime_components(input)?;
-    Some(TimestampDiffDateTime {
-        year,
-        month,
-        day,
-        hour,
-        minute,
-        second,
-        microsecond,
-    })
-}
-
 /// `TIMESTAMPDIFF(unit, datetime_expr1, datetime_expr2)`, ported from
 /// `builtinTimestampDiffSig.evalInt` and `types.TimestampDiff`.  The Rust
 /// value boundary accepts scalar DATE/DATETIME strings and returns the exact
 /// integer result; typed temporal conversion, warning state, and SQL-mode
 /// handling remain at the caller boundary.
+pub(crate) fn timestamp_diff_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::eval_timestamp_diff_in(ctx, vals)
+}
+
+#[cfg(test)]
 pub(crate) fn timestamp_diff(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 3 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let (Some(unit), Some(left), Some(right)) = (
-        coerce_str(&vals[0])?,
-        coerce_str(&vals[1])?,
-        coerce_str(&vals[2])?,
-    ) else {
-        return Ok(Datum::Null);
-    };
-    let Some(left) = parse_timestamp_diff_datetime(&left) else {
-        return Ok(Datum::Null);
-    };
-    let Some(right) = parse_timestamp_diff_datetime(&right) else {
-        return Ok(Datum::Null);
-    };
-
-    let left_day = days_from_civil(left.year, left.month, left.day);
-    let right_day = days_from_civil(right.year, right.month, right.day);
-    let left_clock = i64::from(left.hour) * 3_600_000_000
-        + i64::from(left.minute) * 60_000_000
-        + i64::from(left.second) * 1_000_000
-        + i64::from(left.microsecond);
-    let right_clock = i64::from(right.hour) * 3_600_000_000
-        + i64::from(right.minute) * 60_000_000
-        + i64::from(right.second) * 1_000_000
-        + i64::from(right.microsecond);
-    let delta = (right_day - left_day) * 86_400_000_000 + right_clock - left_clock;
-    let negative = delta < 0;
-    let absolute = delta.unsigned_abs();
-    let seconds = absolute / 1_000_000;
-    let microseconds = absolute % 1_000_000;
-    let sign = if negative { -1 } else { 1 };
-
-    let (begin, end) = if negative {
-        (right, left)
-    } else {
-        (left, right)
-    };
-    let months = if matches!(
-        unit.to_ascii_uppercase().as_str(),
-        "YEAR" | "QUARTER" | "MONTH"
-    ) {
-        let mut years = end.year - begin.year;
-        let date_before =
-            end.month < begin.month || (end.month == begin.month && end.day < begin.day);
-        if date_before {
-            years -= 1;
-        }
-        let mut months = 12 * years;
-        if date_before {
-            months += 12 - (i64::from(begin.month) - i64::from(end.month));
-        } else {
-            months += i64::from(end.month) - i64::from(begin.month);
-        }
-        if end.day < begin.day
-            || (end.day == begin.day
-                && (end.hour * 3_600 + end.minute * 60 + end.second
-                    < begin.hour * 3_600 + begin.minute * 60 + begin.second
-                    || (end.hour * 3_600 + end.minute * 60 + end.second
-                        == begin.hour * 3_600 + begin.minute * 60 + begin.second
-                        && end.microsecond < begin.microsecond)))
-        {
-            months -= 1;
-        }
-        months
-    } else {
-        0
-    };
-
-    let unit = unit.to_ascii_uppercase();
-    let result = match unit.as_str() {
-        "YEAR" => months / 12 * sign,
-        "QUARTER" => months / 3 * sign,
-        "MONTH" => months * sign,
-        "WEEK" => (seconds / 86_400 / 7) as i64 * sign,
-        "DAY" => (seconds / 86_400) as i64 * sign,
-        "HOUR" => (seconds / 3_600) as i64 * sign,
-        "MINUTE" => (seconds / 60) as i64 * sign,
-        "SECOND" => seconds as i64 * sign,
-        "MICROSECOND" => (seconds * 1_000_000 + microseconds) as i64 * sign,
-        _ => 0,
-    };
-    Ok(Datum::Int(result))
+    timestamp_diff_in(vals, &crate::NoColumns)
 }
 
 /// `TO_DAYS(date)`, implemented through the same zero-date day number used by
@@ -2357,4 +2253,248 @@ mod composite_extract_tests {
             Datum::Int(-10_203_456_700)
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn timestamp_diff_entries_keep_cast_order_and_protobuf_null_demand() {
+    use crate::constant::{Constant, ParamMarker};
+    use crate::expression::Expression;
+    use crate::scalar_function::{PbBuiltin, ScalarFunction};
+    use std::cell::RefCell;
+    use tidb_datatype::{FieldType, FieldTypeCode, Time, TimeType};
+    struct Demand {
+        values: Vec<Datum>,
+        fail: Option<usize>,
+        events: RefCell<Vec<&'static str>>,
+    }
+    impl Columns for Demand {
+        fn get(&self, path: &[String]) -> Option<Datum> {
+            self.param_value(path[0].parse().unwrap()).ok()
+        }
+        fn param_value(&self, index: usize) -> Result<Datum, EvalError> {
+            self.events
+                .borrow_mut()
+                .push(["unit", "left", "right", "extra"][index]);
+            if self.fail == Some(index) {
+                return Err(EvalError::Unsupported("TIMESTAMPDIFF child"));
+            }
+            Ok(self.values[index].clone())
+        }
+        fn date_modes(&self) -> tidb_datatype::DateModes {
+            self.events.borrow_mut().push("modes");
+            tidb_datatype::DateModes::default()
+        }
+        fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+            self.events.borrow_mut().push("zone");
+            tidb_datatype::SessionTimeZone::utc()
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            panic!("these TIMESTAMPDIFF inputs do not warn")
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            panic!("no new TIMESTAMPDIFF truncation policy")
+        }
+        fn now(&self) -> Option<(i64, u32, i32)> {
+            panic!("no TIMESTAMPDIFF clock")
+        }
+    }
+    let context = |values, fail| Demand {
+        values,
+        fail,
+        events: RefCell::new(Vec::new()),
+    };
+    let text = |value: &str| Datum::new_string(value);
+    let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    let evaluate = |mode, values: &[Datum], columns: &dyn Columns| {
+        if mode == 0 {
+            return timestamp_diff_in(values, columns);
+        }
+        if mode == 1 {
+            let args = (0..values.len())
+                .map(|index| tidb_ast::Expr::Column(vec![index.to_string()]))
+                .collect::<Vec<_>>();
+            return crate::func::eval_func("TIMESTAMPDIFF", &args, columns, None);
+        }
+        let args = values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let field = FieldType::new(if matches!(value, Datum::Time(_)) {
+                    FieldTypeCode::Datetime
+                } else {
+                    FieldTypeCode::VarString
+                });
+                let mut constant = Constant::new(Datum::Null, field);
+                constant.param_marker = Some(ParamMarker {
+                    order: index as i64,
+                });
+                Expression::Constant(constant)
+            })
+            .collect::<Vec<_>>();
+        let ret = FieldType::new(FieldTypeCode::LongLong);
+        let function = if mode == 2 {
+            ScalarFunction::new(tidb_ast::CiString::new("timestampdiff"), ret, args)
+        } else {
+            ScalarFunction::from_pb(
+                PbBuiltin::new(tidb_proto::tipb::ScalarFuncSig::TimestampDiff).unwrap(),
+                ret,
+                args,
+            )
+        };
+        function.eval(columns, empty.to_row())
+    };
+    let owner = |slots| {
+        crate::AsciiPoolOwner::new(
+            crate::AsciiPoolPolicy::checked(
+                slots,
+                slots,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let pool = owner(1);
+    let execution = pool.begin_execution().unwrap();
+    for mode in 0..4 {
+        let ctx = context(
+            vec![text("day"), text("2020-01-01"), text("2020-01-02")],
+            None,
+        );
+        assert_eq!(
+            execution
+                .scope()
+                .with_columns(&ctx, |columns| evaluate(mode, &ctx.values, columns)),
+            Ok(Datum::Int(1))
+        );
+        assert_eq!(
+            *ctx.events.borrow(),
+            match mode {
+                0 => vec![],
+                3 => vec!["unit", "left", "right"],
+                _ => vec!["unit", "left", "right", "modes", "zone", "modes", "zone"],
+            }
+        );
+        // The expression family intentionally renders temporal values first;
+        // its visible FSP is not the raw-core microsecond difference (543).
+        let left =
+            Time::from_date_checked(2020, 1, 1, 0, 0, 0, 123456, TimeType::DateTime, 3).unwrap();
+        let right =
+            Time::from_date_checked(2020, 1, 1, 0, 0, 0, 123999, TimeType::DateTime, 3).unwrap();
+        let ctx = context(
+            vec![text("MICROSECOND"), Datum::Time(left), Datum::Time(right)],
+            None,
+        );
+        assert_eq!(
+            execution
+                .scope()
+                .with_columns(&ctx, |columns| evaluate(mode, &ctx.values, columns)),
+            Ok(Datum::Int(0))
+        );
+        assert_eq!(
+            *ctx.events.borrow(),
+            if mode == 0 {
+                vec![]
+            } else {
+                vec!["unit", "left", "right"]
+            }
+        );
+        for count in [0, 1, 4] {
+            let mut values = vec![
+                text("DAY"),
+                Datum::Time(left),
+                Datum::Time(right),
+                Datum::Int(7),
+            ];
+            values.truncate(count);
+            let ctx = context(values, None);
+            assert_eq!(
+                execution.scope().with_columns(&ctx, |columns| evaluate(
+                    mode,
+                    &ctx.values,
+                    columns
+                )),
+                Err(EvalError::Unsupported("bad function arity"))
+            );
+            assert_eq!(
+                *ctx.events.borrow(),
+                if mode == 0 {
+                    vec![]
+                } else {
+                    ["unit", "left", "right", "extra"][..count].to_vec()
+                }
+            );
+        }
+    }
+    for unit in [" DAY", "unknown"] {
+        let ctx = context(
+            vec![text(unit), text("2020-01-01"), text("2020-01-02")],
+            None,
+        );
+        assert_eq!(
+            execution
+                .scope()
+                .with_columns(&ctx, |columns| evaluate(0, &ctx.values, columns)),
+            Ok(Datum::Int(0))
+        );
+    }
+    for mode in [1, 2] {
+        let ctx = context(
+            vec![Datum::Null, text("2020-01-01"), text("2020-01-02")],
+            Some(2),
+        );
+        assert!(execution
+            .scope()
+            .with_columns(&ctx, |columns| evaluate(mode, &ctx.values, columns))
+            .is_err());
+        assert_eq!(*ctx.events.borrow(), vec!["unit", "left", "right"]);
+    }
+    for null_index in 0..3 {
+        let mut values = vec![Datum::new_bytes(vec![255]); 3];
+        values[null_index] = Datum::Null;
+        let ctx = context(values, (null_index < 2).then_some(null_index + 1));
+        // PB stops on the actual NULL without coercing even an already-read
+        // invalid UTF-8 prefix, or evaluating the failing suffix child.
+        assert_eq!(
+            execution
+                .scope()
+                .with_columns(&ctx, |columns| evaluate(3, &ctx.values, columns)),
+            Ok(Datum::Null)
+        );
+        assert_eq!(
+            *ctx.events.borrow(),
+            ["unit", "left", "right"][..=null_index]
+        );
+        ctx.events.borrow_mut().clear();
+        // The values facade instead performs all three ordered coercions
+        // before its combined NULL test; invalid UTF-8 still fails.
+        assert!(execution
+            .scope()
+            .with_columns(&ctx, |columns| evaluate(0, &ctx.values, columns))
+            .is_err());
+        assert!(ctx.events.borrow().is_empty());
+    }
+    let ctx = context(vec![Datum::Null], None);
+    assert_eq!(
+        execution
+            .scope()
+            .with_columns(&ctx, |columns| evaluate(3, &ctx.values, columns)),
+        Ok(Datum::Null)
+    );
+    assert_eq!(*ctx.events.borrow(), vec!["unit"]); // NULL still outranks PB arity.
+    ctx.events.borrow_mut().clear();
+    let denied_pool = owner(0);
+    let denied = denied_pool.begin_execution().unwrap();
+    assert!(
+        matches!(denied.scope().with_columns(&ctx, |columns| evaluate(3, &ctx.values, columns)),
+        Err(EvalError::ExpressionAdapterFailure(failure))
+            if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource)
+    );
+    assert_eq!(*ctx.events.borrow(), vec!["unit"]);
 }

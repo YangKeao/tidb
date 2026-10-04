@@ -162,9 +162,7 @@ impl PbBuiltin {
             WeekWithoutMode => Kernel::Values(|values, ctx| {
                 crate::time_fn::week_in(values, ctx.default_week_format(), ctx)
             }),
-            TimestampDiff => {
-                Kernel::Values(|values, _| crate::time_fn::calendar::timestamp_diff(values))
-            }
+            TimestampDiff => Kernel::Values(crate::time_fn::calendar::timestamp_diff_in),
             UnixTimestampInt | UnixTimestampDec => {
                 Kernel::Values(crate::time_fn::session_tz::unix_timestamp)
             }
@@ -571,6 +569,9 @@ impl PbBuiltin {
                         // Keep this exact NULL child-demand boundary, but do
                         // not bypass the nullable migrated math call.
                         match self.signature {
+                            ScalarFuncSig::TimestampDiff => {
+                                return crate::tikv::eval_timestamp_diff_null_in(ctx);
+                            }
                             ScalarFuncSig::Asin => {
                                 return crate::math_fn::asin(std::slice::from_ref(&value), ctx)
                             }

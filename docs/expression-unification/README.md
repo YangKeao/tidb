@@ -1,32 +1,32 @@
 # Expression unification experiment
 
 Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
-Current checkpoint: **bounded-staleness-90**, following **decimal-policy-89**.
+Current checkpoint: **timestamp-diff-91**, following **bounded-staleness-90**.
 
-Functional coverage is **227/245 (92.65%)**, strict final-audited count **0**. All226 prior family objects are unchanged; only `tidb_bounded_staleness` is added. The overall goal remains active.
+Functional coverage **228/245 (93.06%)**, strict final-audited count **0**. All227 prior family objects remain byte-identical; only `timestampdiff` is added. Overall goal stays active.
 
-## Bounded staleness now uses TiKV
+## TIMESTAMPDIFF and temporal types now shared
 
-The native selector in `time_fn/mod.rs` is removed. TiKV Head classifies actual endpoints: first invalid-zero warning, reversed-window NULL or NeedSafe. Only NeedSafe reads the original context's optional, already-zone-adjusted SafeTS once. Finish owns clamping and DateTime/FSP3 metadata while preserving raw microseconds and reserved bits.
+`tikv/timestamp_diff.rs` connects ordinary/typed/Shared PB text evaluation and the distinct residual manual legacy raw-core domain to TiKV. Native calendar arithmetic, CoreTime difference algorithms, duplicate types and unit lookup are removed or thin aliases/delegates.
 
-Original eager arguments/datetime casts and warning handler authority remain. Actual NULL uses the existing Int NULL witness, distinct from malformed Head output. No new calendar/FSP validation, clock/storage query, transport or PB/legacy admission.
+Policies remain distinct: Text uses visible Time formatting, wide-year strict parsing, civil days and signed months; Core uses actual raw bits, full-core zero, exact unit bytes and unsigned months. Year0 Jan1→Mar1 is60days Text versus59 Core. Original integer widths/panic order and TimeDifference Debug name remain. Named datatype helpers still report InvalidUnit; TiKV wire's constant-unit/error policy is unchanged.
 
-**SQL evidence boundary:** current SQL has no production SafeTS override and uses None→lower-bound fallback. Nondefault SafeTS clamping/getter order is covered by direct tests, not claimed as storage integration.
+Ordinary eager datetime casts/coercions stay; Shared PB keeps first-NULL before prefix coercion/suffix/arity; manual legacy keeps unit-first and both-endpoint demand. No new SQL/PB admission, carrier, general driver or existing wire encoding change.
 
 ## Validation
 
-[Evidence](evidence/bounded-staleness-checkpoint.md), [exact commands/hashes](logs/bounded-staleness-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
+[Evidence](evidence/timestamp-diff-checkpoint.md), [commands/counts/hashes](logs/timestamp-diff-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
 
-Six new tests pass on first matching execution. SQL26SELECT:24direct and2filters, with **8new Head-root** zero-slot refusals separately labeled from **4existing NULL-witness** refusals. Raw123456 microseconds remain123456 despite display precision3.
+Nine new tests pass on first matching execution. SQL34SELECT=32direct+2filters, including16new Text-root zero-slot refusals (four with NULL), not borrowed PB NULL-witness proof. StoredTime/NULL casts introduce no earlier worker. SignedLongLong20/0 metadata, full-month microsecond boundary, negative fractional truncation, leap2000 and NULL are pinned.
 
-Seven locked launches:5green,2unchanged old full RED. CPP core1/local343+1ignored; native bounded3 (including the original source test), gateway196+1ignored and SQL1 pass. Full expression **1600/4old/94ignored**, unistore **219/1old/13ignored** retain identical normalized failure sections. No compile failure, new failure, oracle correction, zero-match, interruption or fixture recording.
+Ten locked nonzero launches:8green,2unchanged old full RED. CPP datatype1/time79/local345+1ignored; native datatype91/root4/gateway196+1ignored/legacy2/SQL1 pass. Full expression **1602/4old/94ignored**, unistore **220/1old/13ignored** retain identical normalized failure sections. No compile failure, new failure, oracle correction, zero-match, interruption or fixture recording.
 
-Pinned formatting/diff checks cover6native/8TiKV Rust files,2new modules.206CPP/373native original test bodies are byte-identical;3CPP/3native new tests. No Cargo/lock, Go/Bazel/generated or `compile.rs` changes.
+Pinned formatting/diff checks cover12native/9TiKV Rust files,2new modules.260CPP/542native original test bodies are byte-identical;4CPP/5native new tests. No Cargo/lock, Go/Bazel/generated or compiler changes.
 
 ## Remaining acceptance
 
-[Remaining review](evidence/remaining-acceptance.md): **5core**, **7ordinary pending**, **6complex exception candidates**, not18approved exceptions. IN's demand/cache/legacy contracts were inventoried, but its old three-facade observation receipt remains untouched; a real reducer needs explicit mechanical-update authority rather than hidden calls or changed SQL expectations. Other CAST/M2/extrema/INTERVAL and actual request-owner/final cross-entry work remain.
+[Review](evidence/remaining-acceptance.md):5core,6ordinary pending,6complex exception candidates, not17approved exceptions. Actual request-root/default-NoColumns/live-DAG ownership and final cross-entry work remain. IN's old observation receipt remains unchanged pending mechanical-update authority; no hidden worker calls.
 
-Known failures and CAST/Decimal/mode/INTDIV/JSON/vector/older Values gaps remain. Workspace/lint/dev/bazel_prepare/release, exhaustive differential/TiFlash/FIPS, performance/physical memory/OOM/allocator/zero-copy/dual-timezone footprint and complete Go-package transcreation are unverified. No PR-readiness claim.
+Known failures and CAST/Decimal/mode/INTDIV/JSON/vector/older Values gaps remain. Workspace/lint/dev/bazel_prepare/release, exhaustive differential/TiFlash/FIPS, performance/physical memory/OOM/allocator/zero-copy/dual-timezone footprint and complete Go-package transcreation are unverified. No goal-completion or PR-readiness claim.
 
-Three Plans agree; the manifest pins their hash and paired TiKV commit. Publish TiKV then TiDB without force push or PR. Unrelated untracked client-differential BUILD remains excluded.
+Three Plans agree; manifest pins their hash and paired TiKV commit. Publish TiKV then TiDB without force push or PR. Unrelated untracked client-differential BUILD stays excluded.

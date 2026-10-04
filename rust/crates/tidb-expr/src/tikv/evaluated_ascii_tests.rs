@@ -1485,6 +1485,9 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::BoundedStalenessFinishNative => {
             panic!("bounded staleness needs actual Time endpoints and the demanded optional SafeTS")
         }
+        EvaluatedBytesOp::TimestampDiffTextNative | EvaluatedBytesOp::TimestampDiffCoreNative => {
+            panic!("TIMESTAMPDIFF needs its actual unit and two nullable text or raw-core operands")
+        }
         EvaluatedBytesOp::ConvertTzNative => {
             panic!("CONVERT_TZ needs its three actual nullable coerced strings")
         }

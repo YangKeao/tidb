@@ -9363,6 +9363,116 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_timestampdiff_preserves_stored_calendar_text_and_runtime_root_demand() {
+    use tidb_datatype::FieldTypeCode;
+
+    // Dedicated TimestampDiff AST syntax supplies the unit, not a stored
+    // expression. Unknown units are not admitted by that grammar; this test
+    // does not manufacture SQL admission for direct-worker-only inputs.
+    let create = "CREATE TABLE shared_timestampdiff_sql (day_lo DATETIME, day_hi DATETIME, month_lo DATETIME(6), month_hi DATETIME(6), fraction_lo DATETIME(6), fraction_hi DATETIME(6), leap_lo DATETIME, leap_hi DATETIME, null_lo DATETIME, null_hi DATETIME)";
+    let insert = "INSERT INTO shared_timestampdiff_sql VALUES ('2020-01-01 00:00:00','2020-01-03 00:00:00','2020-01-31 12:00:00.123456','2020-03-31 12:00:00.123455','2020-01-01 00:00:00.123456','2020-01-01 00:00:00.654321','2000-02-28 00:00:00','2000-03-01 00:00:00',NULL,NULL)";
+    // The original civil delta is right minus left. Whole-unit results
+    // truncate toward zero; a month is incomplete until its entire clock
+    // (including microseconds) reaches the starting date's clock.
+    let cases = [
+        ("DAY,day_lo,day_hi", Some(2)),
+        ("DAY,day_hi,day_lo", Some(-2)),
+        ("MONTH,month_lo,month_hi", Some(1)),
+        ("SECOND,fraction_hi,fraction_lo", Some(0)),
+        ("MICROSECOND,fraction_lo,fraction_hi", Some(530_865)),
+        ("DAY,leap_lo,leap_hi", Some(2)),
+        ("DAY,null_lo,day_hi", None),
+        ("DAY,day_lo,null_hi", None),
+    ];
+    for slots in [1, 0] {
+        let mut session = Session::new();
+        session.run("SET time_zone='+00:00'").unwrap();
+        session.run("SET sql_mode=''").unwrap();
+        session
+            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+            .unwrap();
+        session.run(create).unwrap();
+        session.run(insert).unwrap();
+        assert!(session
+            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .unwrap());
+        for vectorized in [0, 1] {
+            session
+                .run(&format!(
+                    "SET tidb_enable_vectorized_expression={vectorized}"
+                ))
+                .unwrap();
+            for (args, expected) in cases {
+                // Stored Time/NULL passes through both original datetime
+                // casts. The family then consumes the actual Display text,
+                // not a replacement raw-core comparison/calculation. These
+                // DATETIME(6) columns expose all six fractional digits.
+                let sql = format!("SELECT TIMESTAMPDIFF({args}) FROM shared_timestampdiff_sql");
+                if slots == 1 {
+                    let StmtOutput::Rows { columns, rows } =
+                        session.run_with_columns(&sql).unwrap()
+                    else {
+                        panic!("expected TIMESTAMPDIFF rows: {sql}")
+                    };
+                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
+                    let field = &columns[0].1;
+                    assert_eq!(field.code(), FieldTypeCode::LongLong, "{sql}/{vectorized}");
+                    assert_eq!(
+                        (field.flen(), field.decimal()),
+                        (20, 0),
+                        "{sql}/{vectorized}"
+                    );
+                    assert!(!field.is_unsigned(), "{sql}/{vectorized}");
+                    assert_eq!(field.charset_name(), "binary");
+                    assert_eq!(field.collation_name(), "binary");
+                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
+                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
+                    assert_eq!(
+                        rows[0][0],
+                        expected.map_or(Datum::Null, Datum::Int),
+                        "{sql}/{vectorized}"
+                    );
+                } else {
+                    // All sixteen refusals, including four NULL-endpoint
+                    // probes, belong to the new nullable Bytes3 text profile.
+                    // No child caster/comparison or old NULL witness is used
+                    // as a substitute for this family's runtime-root demand.
+                    let error = session.run_with_columns(&sql).expect_err(&sql);
+                    match &error {
+                        DriverError::Exec(tidb_executor::ExecError::Eval(
+                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                        )) => {
+                            assert_eq!(failure.class(), tidb_executor::ExpressionAdapterFailureClass::PoolResource);
+                            assert_eq!(failure.origin(), tidb_executor::ExpressionAdapterFailureOrigin::Pool);
+                        }
+                        other => panic!("TIMESTAMPDIFF text worker bypassed its pool: {sql}/{vectorized}: {other:?}"),
+                    }
+                    let mysql = error.to_mysql_error();
+                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
+                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
+                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
+                }
+                assert!(
+                    warnings_of(&session).is_empty(),
+                    "{sql}/{vectorized}/slots={slots}"
+                );
+            }
+            if slots == 1 {
+                // Positive consumer only; outer equality is not root proof.
+                let StmtOutput::Rows { rows, .. } = session
+                    .run_with_columns("SELECT 1 FROM shared_timestampdiff_sql WHERE TIMESTAMPDIFF(DAY,day_lo,day_hi)=2")
+                    .unwrap()
+                else {
+                    panic!("expected TIMESTAMPDIFF predicate rows")
+                };
+                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
+                assert!(warnings_of(&session).is_empty());
+            }
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_bounded_staleness_preserves_sql_lower_bounds_and_distinct_pool_paths() {
     use tidb_datatype::{FieldTypeCode, TimeType};
 

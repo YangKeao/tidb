@@ -92,7 +92,7 @@ pub(crate) fn dispatch(
         "FROM_UNIXTIME" => session_tz::from_unixtime(vals, cols),
         "UNIX_TIMESTAMP" => session_tz::unix_timestamp(vals, cols),
         "TIDB_PARSE_TSO" => session_tz::tidb_parse_tso(vals, cols),
-        "TIMESTAMPDIFF" => calendar::timestamp_diff(vals),
+        "TIMESTAMPDIFF" => calendar::timestamp_diff_in(vals, cols),
         // `ADDTIME`/`SUBTIME` reach here with no static argument types, so
         // every argument takes Go's `default` branch -- which is the branch
         // Go itself selects for a string constant. The chunk tier, which

@@ -1971,6 +1971,8 @@ fn materialize_computed(
             | EvaluatedBytesOp::DateDiffTextNative
             | EvaluatedBytesOp::DateDiffNullNative
             | EvaluatedBytesOp::DateDiffCoreNative
+            | EvaluatedBytesOp::TimestampDiffTextNative
+            | EvaluatedBytesOp::TimestampDiffCoreNative
             | EvaluatedBytesOp::DateCoreNative
             | EvaluatedBytesOp::DateCorePredicateLegacy
             | EvaluatedBytesOp::ToDaysTextNative

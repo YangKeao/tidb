@@ -1,6 +1,6 @@
 # Remaining acceptance after the functional threshold
 
-Status: **227/245 functional families; strict0; overall goal active**. R93 closes [TIDB_BOUNDED_STALENESS](bounded-staleness-checkpoint.md) through actual endpoint/SafeTS workers, retaining original casts and warning delivery. SQL evidence covers the current absent-SafeTS lower-bound behavior; nondefault SafeTS clamps have direct tests, not invented storage evidence. The frozen denominator is unchanged. R86–R90 close IFNULL, IF, COALESCE, CASE and NULLIF selection through shared workers; see [IFNULL](ifnull-checkpoint.md), [IF](if-checkpoint.md), [COALESCE](coalesce-checkpoint.md), [CASE](case-checkpoint.md) and [NULLIF](nullif-checkpoint.md) evidence. Existing comparison/return-type/branch-cast adapters remain explicit. The18 remaining families are not approved blanket exceptions. This review is not itself a passing test receipt.
+Status: **228/245 functional families; strict0; overall goal active**. R94 closes [TIMESTAMPDIFF](timestamp-diff-checkpoint.md), including distinct ordinary/Shared PB text and manual legacy raw-core workers, with shared underlying temporal difference types/math. R93 closes [TIDB_BOUNDED_STALENESS](bounded-staleness-checkpoint.md) through actual endpoint/SafeTS workers, retaining original casts and warning delivery. SQL evidence covers the current absent-SafeTS lower-bound behavior; nondefault SafeTS clamps have direct tests, not invented storage evidence. The frozen denominator is unchanged. R86–R90 close IFNULL, IF, COALESCE, CASE and NULLIF selection through shared workers; see [IFNULL](ifnull-checkpoint.md), [IF](if-checkpoint.md), [COALESCE](coalesce-checkpoint.md), [CASE](case-checkpoint.md) and [NULLIF](nullif-checkpoint.md) evidence. Existing comparison/return-type/branch-cast adapters remain explicit. The17 remaining families are not approved blanket exceptions. This review is not itself a passing test receipt.
 
 The accepted synchronous/scoped evaluator design stays in place. No universal compiler rewrite or exhaustive performance project is required to make the next functional steps. Conversely, reaching90% does not erase the Plan's remaining core ownership/demand obligations.
 
@@ -16,16 +16,16 @@ R91 adds a [Real/Float32→UNSIGNED CAST slice](cast-real-uint-checkpoint.md), *
 
 Observed caller chain: `evaluator.rs::run_with_consumer` → `Expression::eval` → `ScalarFunction::eval` → native control branches or PB dispatch. The R85 parent read the actual CASE/IF/IFNULL/COALESCE branches; R86–R90 removed IFNULL/IF/COALESCE/CASE/NULLIF runtime selection and share choice primitives, retaining distinct truth/error, proof and return-projection policies. NULLIF keeps eager operands and actual Eq before left preparation; its SQL zero-slot refusal is comparison-stage evidence, distinct from selector-isolating direct tests. CASE keeps AST base-once versus rewritten per-WHEN evaluation and original SQL branch casts. COALESCE has catalog facts but no PB/legacy admission; that boundary remains closed. Remaining conclusions are not inferred solely from registry names.
 
-## Seven ordinary families still pending
+## Six ordinary families still pending
 
 | Family group | Remaining work |
 |---|---|
 | convert_charset | Actual encode/decode/replacement/retag policy in `convert_charset.rs`; shared GB leaves are prerequisites, not evaluator closure. |
 | date_add, date_sub, extract | Calendar/unit algorithms and warning/type policies remain in `time_fn/calendar.rs`. |
-| str_to_date, timestampdiff | Real format scanning and distinct errors, or civil/month difference policy; source in `time_fn/calendar.rs`. |
+| str_to_date | Real format scanning and distinct error/type policies in `time_fn/calendar.rs`. TIMESTAMPDIFF civil/raw difference policies are now shared. |
 | json_sum_crc32 | Existing internal scalar-array algorithm in `builtin_ext/json/report.rs`. SQL ARRAY syntax is still rejected by the baseline; migrate the implemented domain without inventing new SQL admission. |
 
-These are pending implementations, not approved whole-family exceptions merely because they take work.
+These are pending implementations, not approved whole-family exceptions merely because they take work. R94 source review found EXTRACT's real selector in `time_fn/extract.rs`, including mixed datetime/duration choice and error policy; moving only `calendar::extract_composite` would not close it. INTERVAL needs a lazy search cursor and separate eager/typed NaN predicates; GREATEST/LEAST retain five domains, including original NoColumns numeric comparison and distinct string-as-time policy. These are scoped findings, not blanket deferrals.
 
 ## Six nontrivial exception candidates, not yet approved exceptions
 

@@ -1,0 +1,58 @@
+timestamp-diff-91 / R94
+CPP cwd: /home/agent/tidb/expression-unification/tikv
+Native cwd: /home/agent/tidb/expression-unification/tidb/rust
+Raw logs: /home/agent/tidb/expression-unification/logs/timestamp-diff-{id}.log
+Counts passed/failed/ignored/filtered; compile_seconds/test_seconds.
+
+tikv-datatype | 1/0/0/458 | 4.17/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_timestamp_diff -- --test-threads=1
+sha256 5f04d355234434fdd380e5d650c727bd7a1b5b9fa8a6f2741c8ce008d98a1c12
+
+tikv-time | 79/0/0/889 | 17.38/0.01 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib impl_time:: -- --test-threads=1
+sha256 ad1fdf82c943f8fda6fdc13915d4fb124802c655ba5bcccdf9fc0fbafd94d60e
+
+tikv-local | 345/0/1/622 | 0.13/0.23 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+sha256 ca92e94bd03e74c6e890bf7aaf8a6017b7bc4298fd99b980a06aa141ac29377b
+
+native-datatype | 91/0/0/367 | 3.47/0.01 | exit0
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib time -- --test-threads=1
+sha256 a8944053f53ab2ac41a5b771786c9a15cdccd0a5551799a5b816a7eed52f2bdd
+
+native-root | 4/0/0/1696 | 19.98/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib timestamp_diff -- --test-threads=1
+sha256 b8caca47e9057a9a0f55131e292b679395842b5f332ebb56b8be2b5dace7bf98
+
+native-gateway | 196/0/1/1503 | 0.12/0.34 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii -- --test-threads=1
+sha256 a2105002f4a9b5f3ffbab7d2cee8e417f31917152316d9eb1e20e95b4c96919c
+
+legacy | 2/0/0/232 | 8.77/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib timestamp_diff -- --test-threads=1
+sha256 ed0db979111ac2fe47c49ea0a3cf723ecde637cb13fbc13df56ff5b4df478a58
+
+sql | 1/0/0/2237 | 33.86/0.06 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_timestampdiff_preserves_stored_calendar_text_and_runtime_root_demand -- --test-threads=1
+sha256 0cd4c7945bf98dcdc769fb3202752584b74c1da88adfc1e1e6dcce028d494c06
+
+expr-full | 1602/4/94/0 | 0.12/14.28 | exit101 | OLD failures unchanged
+../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+sha256 dd29bebbfc82c9aea8ff80f6f6034458d996a81520a776dc0fe8ebc1b00c707f
+
+unistore-full | 220/1/13/0 | 0.13/3.07 | exit101 | OLD failure unchanged
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+sha256 689ea8f927d05e8a0c19d467af2175036dedccaa88ffbdf8e1ce179fd969736a
+
+Ten locked nonzero single-threaded launches:8green,2only-old full RED. All9new tests pass on first matching execution. Counts overlap; native-root/legacy also execute original source tests. No compile failure, new test failure, oracle correction, zero-match, interruption or fixture recording.
+Whole failure sections byte-equal to bounded-staleness-90 after only numeric panic-heading thread IDs become THREAD:
+expression 411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+unistore 2f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1
+
+SQL34SELECT=8cases×2vector×2pool=32direct+2positivefilters.16zero-slot probes all isolate the new Text root, including4NULL cases; they do not borrow the PB's existing NULL witness. StoredTime/NULL datetime casts are no-ops, so no earlier cast/Compare substitutes for root evidence. Pins signedLongLong20/0, ordinary visible microseconds/full-month boundary/negative fraction truncation/leap2000/NULL; unknownunit SQLgrammar stays rejected, tested directly instead. SQL DATETIME6 does not claim storage of hidden FSP3 microseconds; direct tests cover visible-vs-raw differences.
+
+Ordinary all-child evaluation, datetime casts and ordered U/L/R text coercion remain. Shared PB keeps first-NULL before prefix coercion/suffix/arity, otherwise no ordinary casts. Manual legacy keeps unitNULL early stop and both endpoint reads; Core owns fullrawzero/exact-uppercase/unknown0-before-math. Text owns wide-year strictparse/civil/i64months/ASCIIupper-notrim/unknown0-after-delta. Year0 Jan1→Mar1=60text vs59core. Source widths/panics, hidden microseconds and lowbits remain; existing wire constantunit/invalid-time policies unchanged.
+Native CoreTime math bodies and type definitions deleted; shared aliases preserve TimeDifference Debug name. Named helper shares unit lookup but still returns InvalidUnit. Existing signed-Int budget/driver reused, allactualcapacities charged before dispatch; oversizedunit/core refusal and healthy reuse verified. No physical memory/OOM/performance claim.
+
+Pinned rustfmt --edition 2021 --config skip_children=true --check:9CPP files via /home/agent/tidb/expression-reuse/rustup-home/toolchains/nightly-2026-01-30-x86_64-unknown-linux-gnu/bin/rustfmt,12native via corresponding nightly-2026-08-22 executable. Both git diff --check pass. Source audit260CPP/542native original #[test] bodies byte-identical;4CPP/5native new tests,2new modules. Independent H source review found no blocker. Agent-doc changes descriptive; no Go/Bazel/Cargo/lock/generated or compile.rs changes.
+Functional228/245 (93.06%), strict0, remaining17=5core+6ordinary+6complex candidates.227 prior family objects unchanged; timestampdiff only addition. Type deduplication itself earns no extra family credit. Overall goal active; workspace/lint/dev/bazel_prepare/release/exhaustive/TiFlash/FIPS/performance/physical-OOM/package-transcreation/PR-readiness not claimed.

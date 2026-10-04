@@ -235,18 +235,8 @@ pub fn parse_time_from_year(year: i64) -> Result<Time, TimeError> {
 
 /// Applies TiDB's string-named `TIMESTAMPDIFF` unit.
 pub fn timestamp_diff(unit: &str, start: Time, end: Time) -> Result<i64, TimeError> {
-    let interval = match unit.to_ascii_uppercase().as_str() {
-        "YEAR" => TimestampInterval::Year,
-        "QUARTER" => TimestampInterval::Quarter,
-        "MONTH" => TimestampInterval::Month,
-        "WEEK" => TimestampInterval::Week,
-        "DAY" => TimestampInterval::Day,
-        "HOUR" => TimestampInterval::Hour,
-        "MINUTE" => TimestampInterval::Minute,
-        "SECOND" => TimestampInterval::Second,
-        "MICROSECOND" => TimestampInterval::Microsecond,
-        _ => return Err(TimeError::InvalidUnit(unit.to_owned())),
-    };
+    let interval = TimestampInterval::from_uppercase_bytes(unit.to_ascii_uppercase().as_bytes())
+        .ok_or_else(|| TimeError::InvalidUnit(unit.to_owned()))?;
     Ok(start.core_time().timestamp_diff(end.core_time(), interval))
 }
 

@@ -4894,42 +4894,24 @@ impl LegacyEvaluator<'_> {
                             .map(i128::from)
                     }
                     SimpleSig::TimestampDiff => {
-                        let Some(unit_raw) = self.eval_bytes(children.first())? else {
-                            return Ok(None);
+                        let Some(unit) = self.eval_bytes(children.first())? else {
+                            return Ok(tidb_expr::eval_legacy_timestamp_diff_in(
+                                tidb_expr::LegacyTimestampDiffArgs::NullWitness(None),
+                                self.raw_columns,
+                            )?
+                            .map(i128::from));
                         };
-                        let (Some(first), Some(second)) = (
-                            self.eval_time(children.get(1))?,
-                            self.eval_time(children.get(2))?,
-                        ) else {
-                            return Ok(None);
-                        };
-                        if first.is_zero() || second.is_zero() {
-                            // Go: `InvalidZero` on either side answers NULL
-                            // under the folded wrong-value error.
-                            return Ok(None);
-                        }
-                        // Go compares the unit raw (the parser always emits
-                        // the uppercase keyword); unknown units answer 0.
-                        let interval = match unit_raw.as_slice() {
-                            b"YEAR" => Some(tidb_datatype::TimestampInterval::Year),
-                            b"QUARTER" => Some(tidb_datatype::TimestampInterval::Quarter),
-                            b"MONTH" => Some(tidb_datatype::TimestampInterval::Month),
-                            b"WEEK" => Some(tidb_datatype::TimestampInterval::Week),
-                            b"DAY" => Some(tidb_datatype::TimestampInterval::Day),
-                            b"HOUR" => Some(tidb_datatype::TimestampInterval::Hour),
-                            b"MINUTE" => Some(tidb_datatype::TimestampInterval::Minute),
-                            b"SECOND" => Some(tidb_datatype::TimestampInterval::Second),
-                            b"MICROSECOND" => Some(tidb_datatype::TimestampInterval::Microsecond),
-                            _ => None,
-                        };
-                        let Some(interval) = interval else {
-                            return Ok(Some(0));
-                        };
-                        Some(i128::from(
-                            first
-                                .core_time()
-                                .timestamp_diff(second.core_time(), interval),
-                        ))
+                        let (left, right) = (
+                            self.eval_time(children.get(1))?
+                                .map(|time| time.core_time()),
+                            self.eval_time(children.get(2))?
+                                .map(|time| time.core_time()),
+                        );
+                        tidb_expr::eval_legacy_timestamp_diff_in(
+                            tidb_expr::LegacyTimestampDiffArgs::Values { unit, left, right },
+                            self.raw_columns,
+                        )?
+                        .map(i128::from)
                     }
                     SimpleSig::JsonMemberOfSig => {
                         use tidb_expr::LegacyBinaryArgs;
@@ -13764,6 +13746,256 @@ mod tests {
                 };
                 let null = convert_expr_with_context(&cast(null, true), &request).unwrap();
                 assert_eq!(evaluator.eval_datum(&null).unwrap(), Datum::Null);
+                assert!(request.take_warnings().is_empty());
+            });
+            drop(scope);
+            execution.close();
+        }
+    }
+
+    #[test]
+    fn legacy_timestamp_diff_keeps_core_demand_and_shared_text_boundary() {
+        use std::sync::Arc;
+        use tidb_datatype::{CoreTime, Datum, SessionTimeZone, Time, TimeType};
+        use tipb::ScalarFuncSig as Sig;
+        struct Parent;
+        impl tidb_expr::Columns for Parent {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                panic!("retain the Shared row")
+            }
+            fn time_zone(&self) -> SessionTimeZone {
+                panic!("retain the original request zone")
+            }
+            fn truncate_level(&self) -> tidb_expr::ErrorLevel {
+                panic!("retain the original warning policy")
+            }
+            fn append_warning(&self, _: u16, _: &str) {
+                panic!("warnings belong to the Shared request")
+            }
+        }
+        fn field(tp: i32) -> tipb::FieldType {
+            tipb::FieldType {
+                tp: Some(tp),
+                flen: Some(20),
+                decimal: Some(0),
+                ..Default::default()
+            }
+        }
+        fn bytes(value: &[u8]) -> tipb::Expr {
+            tipb::Expr {
+                tp: Some(tipb::ExprType::String as i32),
+                val: Some(value.to_vec()),
+                field_type: Some(field(253)),
+                ..Default::default()
+            }
+        }
+        fn call(sig: Sig, children: Vec<tipb::Expr>) -> tipb::Expr {
+            tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(sig as i32),
+                children,
+                field_type: Some(field(8)),
+                ..Default::default()
+            }
+        }
+        fn column(index: i64) -> tipb::Expr {
+            let mut val = Vec::new();
+            tidb_codec::encode_int(&mut val, index);
+            tipb::Expr {
+                tp: Some(tipb::ExprType::ColumnRef as i32),
+                val: Some(val),
+                field_type: Some(field(12)),
+                ..Default::default()
+            }
+        }
+        fn manual(unit: SimpleExpr, left: SimpleExpr, right: SimpleExpr) -> SimpleExpr {
+            SimpleExpr::Func(SimpleSig::TimestampDiff, vec![unit, left, right])
+        }
+        fn assert_pool<T: std::fmt::Debug>(result: LegacyResult<T>) {
+            assert!(
+                matches!(&result, Err(LegacyEvalError::Infrastructure(
+                tidb_expr::EvalError::ExpressionAdapterFailure(failure)
+            )) if failure.class() == tidb_expr::ExpressionAdapterFailureClass::PoolResource
+                && failure.origin() == tidb_expr::ExpressionAdapterFailureOrigin::Pool),
+                "{result:?}"
+            );
+        }
+        let zone = SessionTimeZone::utc();
+        let request = Arc::new(RequestEvalContext::new(
+            zone.clone(),
+            4,
+            tidb_model::flags::FLAG_TRUNCATE_AS_WARNING,
+        ));
+        let shared = |wire: &tipb::Expr| {
+            let expr = convert_expr_with_context(wire, &request).unwrap();
+            assert!(
+                matches!(&expr, SimpleExpr::Shared(_)),
+                "actual wire stays catalog-first Shared"
+            );
+            expr
+        };
+        let start = Time::from_date_checked(2024, 3, 4, 0, 0, 0, 0, TimeType::DateTime, 0).unwrap();
+        let end = Time::from_date_checked(2024, 3, 5, 0, 0, 0, 0, TimeType::DateTime, 0).unwrap();
+        let hidden_fraction = Time::from_raw_parts(
+            CoreTime::from_date(2024, 3, 4, 0, 0, 0, 123_456),
+            TimeType::DateTime,
+            0,
+        );
+        let zero = Time::from_raw_parts(CoreTime::default(), TimeType::DateTime, 0);
+        let low_bit = Time::from_raw_parts(CoreTime::from_raw(1), TimeType::DateTime, 0);
+        let partial = Time::from_raw_parts(
+            CoreTime::from_date(2024, 0, 5, 0, 0, 0, 0),
+            TimeType::DateTime,
+            0,
+        );
+        let warning_wire = call(Sig::CastStringAsInt, vec![bytes(b"tail")]);
+        let warning_child = shared(&warning_wire);
+        assert!(tidb_expr::distsql_builtin::supports_signature(
+            Sig::TimestampDiff
+        ));
+        for slots in [1, 0] {
+            let owner = tidb_expr::AsciiPoolOwner::new(
+                tidb_expr::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 << 20,
+                    4 << 20,
+                    4 << 20,
+                    64,
+                    8,
+                    4 << 20,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let execution = owner.begin_execution().unwrap();
+            let scope = execution.scope();
+            scope.with_columns(&Parent, |columns| {
+                let row = [Datum::Time(start), Datum::Time(hidden_fraction)];
+                let evaluator = LegacyEvaluator {
+                    raw_columns: columns,
+                    ..LegacyEvaluator::new(&row, 4, &zone)
+                };
+                for (unit, left, right, expected) in [
+                    (b"DAY".as_slice(), start, end, Some(1)),
+                    (b"day".as_slice(), start, end, Some(0)),
+                    (b"\xff".as_slice(), start, end, Some(0)),
+                    (b"DAY".as_slice(), zero, end, None),
+                    (b"DAY".as_slice(), low_bit, low_bit, Some(0)),
+                    (b"DAY".as_slice(), partial, partial, Some(0)),
+                    (
+                        b"MICROSECOND".as_slice(),
+                        start,
+                        hidden_fraction,
+                        Some(123_456),
+                    ),
+                ] {
+                    let expr = manual(
+                        SimpleExpr::Bytes(unit.to_vec()),
+                        SimpleExpr::Time(left),
+                        SimpleExpr::Time(right),
+                    );
+                    let result = evaluator.eval_expr(&expr);
+                    if slots == 1 {
+                        assert_eq!(result.unwrap(), expected);
+                    } else {
+                        assert_pool(result);
+                        assert_pool(evaluator.folded_int(Some(&expr)));
+                    }
+                }
+                let no_unit = manual(
+                    SimpleExpr::Null,
+                    warning_child.clone(),
+                    warning_child.clone(),
+                );
+                let result = evaluator.eval_expr(&no_unit);
+                if slots == 1 {
+                    assert_eq!(result.unwrap(), None);
+                } else {
+                    assert_pool(result);
+                }
+                assert!(
+                    request.take_warnings().is_empty(),
+                    "NULL unit leaves both dates unread"
+                );
+                let null_left = manual(
+                    SimpleExpr::Bytes(b"DAY".to_vec()),
+                    SimpleExpr::Null,
+                    warning_child.clone(),
+                );
+                let result = evaluator.eval_expr(&null_left);
+                if slots == 1 {
+                    assert_eq!(result.unwrap(), None);
+                } else {
+                    assert_pool(result);
+                }
+                let warnings = request.take_warnings();
+                assert_eq!(
+                    warnings.len(),
+                    1,
+                    "NULL left still demands the right typed reader before core admission"
+                );
+                assert_eq!(warnings[0].0, 1292);
+                assert!(warnings[0].1.contains("INTEGER"));
+                // Shared uses the text policy, not the manual core policy above.
+                for (children, expected) in [
+                    (
+                        vec![bytes(b"day"), bytes(b"2024-03-04"), bytes(b"2024-03-05")],
+                        Some(1),
+                    ),
+                    (
+                        vec![
+                            bytes(b"unknown"),
+                            bytes(b"2024-03-04"),
+                            bytes(b"2024-03-05"),
+                        ],
+                        Some(0),
+                    ),
+                    (
+                        vec![bytes(b"DAY"), bytes(b"2024-00-05"), bytes(b"2024-00-05")],
+                        None,
+                    ),
+                    (vec![bytes(b"MICROSECOND"), column(0), column(1)], Some(0)),
+                ] {
+                    let expr = shared(&call(Sig::TimestampDiff, children));
+                    let result = evaluator.eval_expr(&expr);
+                    if slots == 1 {
+                        assert_eq!(result.unwrap(), expected);
+                    } else {
+                        assert_pool(result);
+                        assert_pool(evaluator.eval_decimal(Some(&expr)));
+                    }
+                }
+                let malformed = shared(&call(
+                    Sig::TimestampDiff,
+                    vec![bytes(b"\xff"), bytes(b"2024-03-04"), bytes(b"2024-03-05")],
+                ));
+                assert!(matches!(
+                    evaluator.eval_expr(&malformed),
+                    Err(LegacyEvalError::Sql(_))
+                ));
+                assert!(evaluator.eval_decimal(Some(&malformed)).unwrap().is_none());
+                // Observed PB NULL wins before prefix coercion, suffix demand,
+                // and even non-NULL arity validation; no fake dates are supplied.
+                let null = tipb::Expr {
+                    tp: Some(tipb::ExprType::Null as i32),
+                    ..Default::default()
+                };
+                let nullable = shared(&call(
+                    Sig::TimestampDiff,
+                    vec![
+                        bytes(b"\xff"),
+                        null,
+                        warning_wire.clone(),
+                        warning_wire.clone(),
+                    ],
+                ));
+                let result = evaluator.eval_expr(&nullable);
+                if slots == 1 {
+                    assert_eq!(result.unwrap(), None);
+                } else {
+                    assert_pool(result);
+                }
                 assert!(request.take_warnings().is_empty());
             });
             drop(scope);

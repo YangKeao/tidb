@@ -18,7 +18,10 @@ use std::fmt;
 #[cfg(test)]
 use chrono::Timelike;
 use chrono::{DateTime, TimeZone};
-pub use tidb_query_datatype::codec::mysql::time::NativeTimeConversionError as TimeConversionError;
+pub use tidb_query_datatype::codec::mysql::time::{
+    NativeTimeConversionError as TimeConversionError, NativeTimeDifference as TimeDifference,
+    NativeTimestampInterval as TimestampInterval,
+};
 use tidb_query_datatype::codec::mysql::Time as SharedTime;
 
 const HOUR_OFFSET: u64 = 36;
@@ -280,17 +283,6 @@ impl CoreTime {
     }
 }
 
-/// Absolute seconds/microseconds plus the sign of a temporal difference.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TimeDifference {
-    /// Absolute whole seconds.
-    pub seconds: i64,
-    /// Absolute remaining microseconds.
-    pub microseconds: i32,
-    /// Whether the source difference was negative.
-    pub negative: bool,
-}
-
 /// Calendar overflow from [`CoreTime::add_date`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DateAddError;
@@ -368,29 +360,6 @@ impl fmt::Display for Weekday {
             self.sunday_index(),
         )))
     }
-}
-
-/// Units accepted by MySQL `TIMESTAMPDIFF`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TimestampInterval {
-    /// Calendar years.
-    Year,
-    /// Calendar quarters.
-    Quarter,
-    /// Calendar months.
-    Month,
-    /// Seven-day weeks.
-    Week,
-    /// Days.
-    Day,
-    /// Hours.
-    Hour,
-    /// Minutes.
-    Minute,
-    /// Seconds.
-    Second,
-    /// Microseconds.
-    Microsecond,
 }
 
 impl fmt::Debug for CoreTime {
@@ -557,83 +526,21 @@ fn time_diff_internal(
     microsecond: i32,
     sign: i32,
 ) -> TimeDifference {
-    let days = calc_daynr(left.year(), left.month() as i32, left.day() as i32)
-        - sign * calc_daynr(year, month, day);
-    let mut micros = (i64::from(days) * SECONDS_IN_24_HOURS
-        + i64::from(left.hour()) * 3_600
-        + i64::from(left.minute()) * 60
-        + i64::from(left.second())
-        - i64::from(sign) * (i64::from(hour) * 3_600 + i64::from(minute) * 60 + i64::from(second)))
-        * 1_000_000
-        + i64::from(left.microsecond())
-        - i64::from(sign) * i64::from(microsecond);
-    let negative = micros < 0;
-    if negative {
-        micros = -micros;
-    }
-    TimeDifference {
-        seconds: micros / 1_000_000,
-        microseconds: (micros % 1_000_000) as i32,
-        negative,
-    }
+    SharedTime::native_core_time_diff(
+        left.raw(),
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        microsecond,
+        sign,
+    )
 }
 
 fn timestamp_diff(interval: TimestampInterval, start: CoreTime, end: CoreTime) -> i64 {
-    let difference = end.time_diff(start, 1);
-    let mut months = 0_u32;
-    if matches!(
-        interval,
-        TimestampInterval::Year | TimestampInterval::Quarter | TimestampInterval::Month
-    ) {
-        let (begin, finish) = if difference.negative {
-            (end, start)
-        } else {
-            (start, end)
-        };
-        let mut years = (finish.year() - begin.year()) as u32;
-        if finish.month() < begin.month()
-            || (finish.month() == begin.month() && finish.day() < begin.day())
-        {
-            years -= 1;
-        }
-        months = 12 * years;
-        if finish.month() < begin.month()
-            || (finish.month() == begin.month() && finish.day() < begin.day())
-        {
-            months += 12 - u32::from(begin.month() - finish.month());
-        } else {
-            months += u32::from(finish.month() - begin.month());
-        }
-        let begin_seconds = u32::from(begin.hour()) * 3_600
-            + u32::from(begin.minute()) * 60
-            + u32::from(begin.second());
-        let finish_seconds = u32::from(finish.hour()) * 3_600
-            + u32::from(finish.minute()) * 60
-            + u32::from(finish.second());
-        if finish.day() < begin.day()
-            || (finish.day() == begin.day()
-                && (finish_seconds < begin_seconds
-                    || (finish_seconds == begin_seconds
-                        && finish.microsecond() < begin.microsecond())))
-        {
-            months -= 1;
-        }
-    }
-    let sign = if difference.negative { -1 } else { 1 };
-    let value = match interval {
-        TimestampInterval::Year => i64::from(months / 12),
-        TimestampInterval::Quarter => i64::from(months / 3),
-        TimestampInterval::Month => i64::from(months),
-        TimestampInterval::Week => difference.seconds / SECONDS_IN_24_HOURS / 7,
-        TimestampInterval::Day => difference.seconds / SECONDS_IN_24_HOURS,
-        TimestampInterval::Hour => difference.seconds / 3_600,
-        TimestampInterval::Minute => difference.seconds / 60,
-        TimestampInterval::Second => difference.seconds,
-        TimestampInterval::Microsecond => {
-            difference.seconds * 1_000_000 + i64::from(difference.microseconds)
-        }
-    };
-    value * sign
+    SharedTime::native_core_timestamp_diff(start.raw(), end.raw(), interval)
 }
 
 #[cfg(test)]
@@ -1115,4 +1022,80 @@ mod tests {
             Err(TimeConversionError::InvalidCalendar)
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn shared_core_differences_keep_raw_fields_and_signed_operand_policy() {
+    let start = CoreTime::from_date(2020, 1, 15, 12, 0, 0, 5);
+    let end = CoreTime::from_date(2021, 4, 15, 12, 0, 0, 4);
+    for (interval, expected) in [
+        (TimestampInterval::Year, 1),
+        (TimestampInterval::Quarter, 4),
+        (TimestampInterval::Month, 14),
+    ] {
+        let shared: tidb_query_datatype::codec::mysql::time::NativeTimestampInterval = interval;
+        assert_eq!(start.timestamp_diff(end, shared), expected);
+        assert_eq!(end.timestamp_diff(start, interval), -expected);
+    }
+    let zero = CoreTime::default();
+    let clock = CoreTime::from_date(0, 0, 0, 1, 2, 3, 4);
+    assert_eq!(zero.timestamp_diff(clock, TimestampInterval::Second), 3723);
+    assert_eq!(
+        zero.timestamp_diff(clock, TimestampInterval::Microsecond),
+        3_723_000_004
+    );
+    assert_eq!(
+        clock.timestamp_diff(zero, TimestampInterval::Microsecond),
+        -3_723_000_004
+    );
+    for (sign, seconds, microseconds, negative) in [
+        (1, 122, 999995, false),
+        (-1, 7323, 13, false),
+        (0, 3723, 4, false),
+        (2, 3477, 14, true),
+    ] {
+        let value: tidb_query_datatype::codec::mysql::time::NativeTimeDifference =
+            time_diff_internal(clock, 0, 0, 0, 1, 0, 0, 9, sign);
+        assert_eq!(
+            value,
+            TimeDifference {
+                seconds,
+                microseconds,
+                negative
+            }
+        );
+    }
+    // The right operand's fields are i32 inputs, not packed calendar fields;
+    // narrowing hour=48 into CoreTime's five-bit field would change the answer.
+    assert_eq!(
+        time_diff_internal(zero, 0, 0, 0, 48, 0, 0, 1, 1),
+        TimeDifference {
+            seconds: 172800,
+            microseconds: 1,
+            negative: true
+        }
+    );
+    let raw = CoreTime::from_raw(u64::MAX & !15);
+    let tagged = CoreTime::from_raw(u64::MAX);
+    assert_eq!(
+        raw.time_diff(tagged, 1),
+        TimeDifference {
+            seconds: 0,
+            microseconds: 0,
+            negative: false
+        }
+    );
+    assert_eq!(raw.timestamp_diff(tagged, TimestampInterval::Month), 0);
+    let first =
+        crate::Time::from_date_checked(2020, 1, 1, 0, 0, 0, 0, crate::TimeType::DateTime, 0)
+            .unwrap();
+    let second =
+        crate::Time::from_date_checked(2020, 1, 2, 0, 0, 0, 0, crate::TimeType::DateTime, 0)
+            .unwrap();
+    assert_eq!(crate::timestamp_diff("day", first, second), Ok(1));
+    assert_eq!(
+        crate::timestamp_diff(" DAY", first, second),
+        Err(crate::TimeError::InvalidUnit(" DAY".to_owned()))
+    );
 }
