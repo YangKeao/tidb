@@ -1,30 +1,26 @@
 # Expression unification experiment
 
 Paired branch: `expression-unification-demo` in YangKeao/tidb and YangKeao/tikv.
-Current checkpoint: **str-to-date-runtime-95**, after **str-to-date-types-94**.
+Current checkpoint: **json-sum-crc32-96**, after **str-to-date-runtime-95**.
 
-Functional coverage **230/245 (93.88%)**, strict final count **0**. All229 previous family objects are unchanged; only `str_to_date` is added. Overall goal remains active.
+Functional **231/245 (94.29%) over frozen implemented domains**, strict final count **0**. All230 previous family objects are unchanged; only `json_sum_crc32` is added. Overall goal remains active.
 
-## STR_TO_DATE runtime now shared
+## Implemented checksum domain now shared
 
-Three real SDK workers own ordinary parsing, validation/rendering/warning selection and typed DATETIME's late zero-date-prefix decision. Native `calendar.rs` keeps thin entry adapters; its parser/sentinel/private helpers and scalar prefix logic are deleted. The R97 public datatype grammar and original wire grammar remain distinct.
+One SDK worker owns JSON_SUM_CRC32's existing scalar-array classification, numeric spelling, IEEE CRC and wrapping sum. Native duplicate business code is removed; original Datum preparation and error projection remain. Shared datatype formatting retains Rust Display digits and reuses Go-g layout; CRC uses the existing IEEE service.
 
-SDK continuation reports trigger the original delayed mode reads. Native retains warning delivery and generic CAST finishing, including Duration(NULL)'s timezone demand. Actual Unknown(12) metadata stays distinct from Datetime; wide day999 is not prematurely packed. No PB/legacy admission is added.
-
-A narrow BytesIntInt carrier keeps two actual mode flags separate. Generic arity/factory limits are unchanged; checked input-length-plus64 precharges retained replies, not physical parser allocation peaks.
+**This is not SQL ARRAY-target support.** The existing successful entries are helper/manual AST/manual ScalarFunction. Normal SQL `AS type ARRAY` still rejects before its child; no target conversion, registry/PB/legacy admission or SQL checksum success is added. Four SQL probes prove that refusal only.
 
 ## Evidence
 
-[Checkpoint](evidence/str-to-date-runtime-checkpoint.md), [commands/counts/hashes](logs/str-to-date-runtime-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
+[Checkpoint](evidence/json-sum-crc32-checkpoint.md), [exact commands/counts/hashes](logs/json-sum-crc32-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
 
-Six new tests finally pass. One new test initially put the zero-date prefix in the Head report; corrected from the frozen source contract, which adds it only after the late mode getter. Failure retained; no production or original test change.
+Six final core gates pass: CPP datatype1/core1/local350+1ignored, native checksum4/gateway196+1ignored, SQL refusal1. Six new tests finally pass. Retained failures: one new-test index-type compile error and one new-test scope temporary holding a single worker across both assertion operands. Only test construction/lifetime changed; production and value expectations did not.
 
-New SQL34SELECTs pass, separating14new nonNULLHead refusals from2old NULL-witness refusals. Original SQL classifier4SELECTs also pass. Full expression **1606/4old/94ignored**, unistore **220/1old/13ignored**: whole failure sections match R96 after thread-ID normalization. The known month0 mismatch is deliberately not repaired.
-
-Scope7CPP/7native Rust files,2new modules;134CPP/411native original test bodies unchanged. Pinned formatting, receipt checks and independent review pass. No Cargo/lock/Go/Bazel edits.
+Full expression/unistore were not rerun; R98's4+1 failures are historical, not current receipts. Scope8CPP/7native Rust files, two new modules;233CPP/374native original test bodies unchanged. Formatting, receipt checks and independent source review pass. No Cargo/lock/Go/Bazel edits.
 
 ## Still open
 
-[Remaining acceptance](evidence/remaining-acceptance.md):5core,4ordinary,6complex candidates—not blanket exceptions—plus request-root/default-NoColumns/liveDAG/final acceptance.
+[Remaining acceptance](evidence/remaining-acceptance.md):5core,3ordinary,6complex candidates—not blanket exceptions—plus request-root/default-NoColumns/liveDAG/final acceptance and the explicit baseline-unimplemented SQL ARRAY conversion gap.
 
-Workspace/lint/dev/bazel_prepare/release/exhaustive/TiFlash/FIPS/performance/physical memory/OOM/allocator/dual-tzdata/complete Go-package/PR-readiness remain unverified. Three identical Plans and paired TiKV commit are pinned in the manifest. No force push or PR; unrelated untracked BUILD excluded.
+Workspace/lint/dev/bazel_prepare/release/exhaustive/TiFlash/FIPS/performance/physical memory/OOM/allocator/dual-tzdata/complete Go-package/PR-readiness remain unverified. The manifest pins the paired TiKV commit and three identical Plans. No force push or PR; unrelated untracked BUILD excluded.

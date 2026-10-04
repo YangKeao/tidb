@@ -1,0 +1,52 @@
+json-sum-crc32-96 / R99
+Scope: entire frozen actually implemented scalar-array domain, NOT full SQL ARRAY-target compatibility.
+CPP cwd /home/agent/tidb/expression-unification/tikv
+Native cwd /home/agent/tidb/expression-unification/tidb/rust
+Raw /home/agent/tidb/expression-unification/logs/json-sum-crc32-{id}.log
+Counts passed/failed/ignored/filtered; compile/test seconds.
+
+tikv-datatype | 1/0/0/461 | 2.93/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_json_sum_float -- --test-threads=1
+sha256 e06c3f4518ceea439fd91cb6a70bc592f466c479540eb8afd92d7580d36368d9
+
+tikv-core | 1/0/0/975 | 18.06/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_json_sum_crc32 -- --test-threads=1
+sha256 af105444277946129f9a383d60af8e08a761cac8fd97c0ad2dd986b9710ca36a
+
+tikv-local | 350/0/1/625 | 0.17/0.23 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+sha256 bac48b520d176c4b3f3ecd4c4b89ca445cbeae6cb86ace0688c7a4684d6a52ac
+
+native-entry-compile-failure | tests NOT executed | compile_seconds null | exit101
+../../tools/cargo-tidb test --locked -p tidb-expr --lib json_sum_crc32 -- --test-threads=1
+sha256 ba641a0b98144e493cbe0f0a4bd67a6f5a186a7b9a1cc007f58ba998950cb3bf
+E0308 newtest ParamMarker.order expectedi64 foundusize at report.rs397. Only new test uses checked i64::try_from(index).unwrap(); no production/oracle change.
+
+native-entry-new-test-failure | 3/1/0/1702 | 10.72/0.00 | exit101
+../../tools/cargo-tidb test --locked -p tidb-expr --lib json_sum_crc32 -- --test-threads=1
+sha256 57c1e903d4e36cb27828648b5f89b1f542b29a829b7a8585aeb970fecb80c610
+New test's assert_eq! left AsciiScope temporary parked its one worker until the whole assertion ended; right checksum requested a second scope and correctly got PoolResource. AsciiScope::with_columns1042/Drop1097 establishes lease lifetime. Only new test stores the left result in a separate statement before the right scope, keeping one slot and all value expectations unchanged. Not a production fix or provider-oracle update.
+
+native-entry | 4/0/0/1702 | 3.64/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib json_sum_crc32 -- --test-threads=1
+sha256 7a7edcd3128150ba6ee96b09e9dd93e16d342fd69783b9791f3193e4e2a2bd98
+Two original vector tests plus two new entry/bridge tests.
+
+native-gateway | 196/0/1/1509 | 0.13/0.36 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii -- --test-threads=1
+sha256 2f0dd6988669ebe561291e6ad92ceb61e24bb17dc078b9e27615a4694bf6468c
+
+sql-refusal | 1/0/0/2240 | 30.80/0.03 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib json_sum_crc32_sql_array_refusal_precedes_child_evaluation_and_pool_admission -- --test-threads=1
+sha256 a00d0b3db7724cd7856e882eb9a844f2812d54d6114ff258c70b1562a7cc12a3
+
+Eight locked single-threaded launches: six final green gates, one new-test RED, one compile RED with no tests. Seven nonzero-test launches, no zero-match/interrupted run. Six new tests finally pass, NOT all first-run green. Parent also corrected new CPPtest typo OneJsonSumCrc32SerdeNative before the first build; no test launch was associated with that static correction. Original tests/oracles/fixtures unchanged; no provider recording. Full expression/unistore NOT rerun; R98's4+1 failures remain historical evidence, not current full-suite receipts.
+
+Runtime positives and root refusals are manual AST/manual ScalarFunction/ready helper entries, not invented SQL syntax. NULL/[]/JSONnull across3entrypaths each use the new root at pool0:9probes. Original six checksum vectors, integer versus float1e6, unsigned range, ±zero, Unicode canonicalJSON, root errors and first scalar/homogeneous error order pinned. Eager suffix reads and original Datum/UTF8/JSON errors/getter absence preserved. CPP max_steps0 (not frontendpool0), malformed role/transport and128Ki actualcap against64Ki budget reject before invocation, then healthy reuse succeeds.
+SQL four SELECTs = legalARRAY case ×2vector ×pool1/0. Stored invalid DATETIME child remains unevaluated; typed rewrite reports exact ARRAY Unsupported before child rewriting or pool admission, with no warnings. Driver from_evaluation=true is a mechanical diagnostic marker, NOT proof of evaluator admission. New SQL checksum-success probes0, new SQL worker-root refusal credit0. No registry/PB/legacy/ARRAY-target admission or fake target type.
+
+One closed JsonSumCrc32SerdeNative Values1/nullableBytes/OwnBytes/1call. Actual prepared serde doc or actualSQLNULL; b"null" is a present JSON document. SDK owns root/member/homogeneity, i64/u64/f64 number priority, IEEE CRC and wrapping_i64 sum. Root report tag0+LEi64 exactly9B or error tags1/2/3 exactly1B; outputpresence matches inputpresence. Native maps original three Unsupported messages only. Original parse_json_document_argument remains inside preparation, including DatumJson Display→sharedparse and rejected Datum kinds. Shared serde float_roundtrip transport is existing, not a checksum or per-item host precomputation.
+Decimal::native_format_json_sum_float keeps RustDisplay digits, ±0→0, original abs[1e-4,1e6) branch; outside uses original significant/exponent extraction and existing Go-g layout, not Ryu/LowerExp alias. CRC reuses file_system::calc_crc32_bytes/defaultIEEE Hasher. Native105line business implementation deleted; no second bit loop or layout renderer. Fixed9/actualNULL0 precharge before producer plus all actual capacities/freshreportcap; no parser/format transient/physicalheap/peak/OOM/allocator claim.
+
+8CPP/7native Rust files,2newmodules,3newtests each;233CPP/374native original test bodies byte-identical. Pinned rustfmt --edition2021 --config skip_children=true --check and git diff --check pass (CPPnightly2026-01-30/native2026-08-22). E independent source review no blocker. Guides descriptive; no Cargo/lock/Go/Bazel changes; unrelated BUILD excluded. Shared return-layout code is reused unchanged apart from its generator comment.
+Functional231/245=94.29% over frozen implemented domains; strict0,14remaining=5core+3ordinary+6complex candidates.230 prior family objects and old partial/type records preserved; one formatter dedup record appended. Baseline-unimplemented SQL ARRAY target conversion remains explicitly open, not counted as success or removed by changing the denominator. Root/default-NoColumns/liveDAG/final acceptance, workspace/lint/dev/bazel/release/exhaustive/TiFlash/FIPS/performance/physicalheap/OOM/allocator/dual-tzdata/complete Go-package/PR-readiness remain unverified. Paired signed-off commits carry three identical Plans.

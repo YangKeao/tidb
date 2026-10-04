@@ -9363,6 +9363,61 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn json_sum_crc32_sql_array_refusal_precedes_child_evaluation_and_pool_admission() {
+    // This is a baseline SQL NON-admission witness, not a worker success or
+    // zero-slot runtime-root test. The parser requires AS type ARRAY and
+    // produces an array Cast node, not the manually constructed scalar call
+    // whose already-supported JSON-array domain uses the new worker.
+    let sql = "SELECT JSON_SUM_CRC32(CAST(bad_datetime AS DATETIME) AS SIGNED ARRAY) FROM json_crc32_array_refusal";
+    let refusal = "a CAST with the ARRAY modifier is not supported yet";
+    for slots in [1, 0] {
+        let mut session = Session::new();
+        session.run("SET sql_mode=''").unwrap();
+        session
+            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+            .unwrap();
+        session
+            .run("CREATE TABLE json_crc32_array_refusal (bad_datetime VARCHAR(32))")
+            .unwrap();
+        session
+            .run("INSERT INTO json_crc32_array_refusal VALUES ('not-a-date')")
+            .unwrap();
+        assert!(session
+            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .unwrap());
+        for vectorized in [0, 1] {
+            session
+                .run(&format!(
+                    "SET tidb_enable_vectorized_expression={vectorized}"
+                ))
+                .unwrap();
+            // The typed rewriter refuses ARRAY before rewriting its child.
+            // Neither the invalid datetime conversion nor JSON_SUM_CRC32's
+            // new value worker may run, regardless of the available slots.
+            let error = session.run_with_columns(sql).expect_err(sql);
+            match &error {
+                DriverError::Exec(tidb_executor::ExecError::Eval(
+                    tidb_executor::EvalError::Unsupported(reason),
+                )) => assert_eq!(*reason, refusal, "mode {vectorized}/slots={slots}"),
+                other => panic!("SQL ARRAY refusal changed or a child/pool ran first: mode {vectorized}/slots={slots}: {other:?}"),
+            }
+            let mysql = error.to_mysql_error();
+            assert_eq!(mysql.code, 1105, "mode {vectorized}/slots={slots}");
+            assert_eq!(mysql.state, *b"HY000");
+            assert_eq!(mysql.message, refusal);
+            // The driver wraps plan Eval errors in Exec(Eval) and marks them
+            // from_evaluation. That flag is NOT evidence of runtime admission;
+            // the exact Unsupported variant above excludes PoolResource.
+            assert!(mysql.is_from_evaluation());
+            assert!(
+                warnings_of(&session).is_empty(),
+                "child conversion must not publish warnings: mode {vectorized}/slots={slots}"
+            );
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_str_to_date_preserves_stored_formats_modes_and_distinct_pool_paths() {
     use tidb_datatype::{FieldTypeCode, TimeType};
 

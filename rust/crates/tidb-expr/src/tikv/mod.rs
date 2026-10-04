@@ -42,6 +42,8 @@ mod from_unixtime;
 mod identity_value;
 mod if_control;
 mod if_null;
+mod json_sum_crc32;
+pub(crate) use json_sum_crc32::eval_json_sum_crc32_in;
 mod null_if;
 pub use from_unixtime::eval_from_unixtime_legacy_scoped_in;
 pub(crate) use if_control::eval_if_in;

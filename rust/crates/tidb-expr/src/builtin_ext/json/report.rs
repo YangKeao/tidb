@@ -25,7 +25,7 @@
 //! guessing. `JSON_DEPTH` and the storage sizes live in `super::super::json2`
 //! because they read BinaryJSON's encoded layout, not its value.
 
-use serde_json::{Number, Value as Json};
+use serde_json::Value as Json;
 
 use super::path::parse_path;
 use super::value::{json_document_string, parse_json_document_argument};
@@ -318,117 +318,257 @@ pub(super) fn json_keys(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, Eval
     )
 }
 
-/// `JSON_SUM_CRC32(json_doc)`, port of `builtinJSONSumCRC32Sig.evalInt` in
-/// `pkg/expression/builtin_json.go`.  The Go signature receives a JSON array
-/// plus an `ARRAY`-typed `FieldType` carried by the cast expression; the
-/// frozen Rust evaluator has no typed JSON datum or FieldType metadata.  The
-/// representable text-domain contract therefore accepts homogeneous scalar
-/// arrays (numbers or strings), preserving Go's `fmt.Appendf("%v", item)`
-/// bytes before each IEEE CRC32 and returning the int64 sum.  The target-type
-/// checks (signed/unsigned range, fixed string width, and explicit JSON path
-/// extraction) remain an orchestrator boundary rather than guessed defaults.
-pub(super) fn json_sum_crc32(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(document) = parse_json_document_argument(value)? else {
-        return Ok(Datum::Null);
-    };
-    let Json::Array(values) = document else {
-        return Err(EvalError::Unsupported("JSON_SUM_CRC32 requires JSON array"));
-    };
-
-    let mut saw_string = false;
-    let mut saw_number = false;
-    let mut sum = 0_i64;
-    for value in values {
-        let text = match value {
-            Json::String(value) if !saw_number => {
-                saw_string = true;
-                value
-            }
-            Json::Number(value) if !saw_string => {
-                saw_number = true;
-                format_json_sum_number(&value)
-            }
-            Json::Bool(_) | Json::Null | Json::Array(_) | Json::Object(_) => {
-                return Err(EvalError::Unsupported(
-                    "JSON_SUM_CRC32 requires scalar array values",
-                ));
-            }
-            Json::String(_) | Json::Number(_) => {
-                return Err(EvalError::Unsupported(
-                    "JSON_SUM_CRC32 requires homogeneous array values",
-                ));
-            }
-        };
-        sum = sum.wrapping_add(i64::from(crc32_ieee(text.as_bytes())));
-    }
-    Ok(Datum::Int(sum))
+/// The existing internal `JSON_SUM_CRC32(json_doc)` scalar-array domain.
+/// Document coercion accepts strings and typed JSON through the canonical-text
+/// boundary. The shared worker preserves the existing numeric formatting and
+/// sums IEEE CRC32 values for homogeneous numeric or string arrays.
+///
+/// This does not admit SQL `JSON_SUM_CRC32(expr AS type ARRAY)`: ARRAY target
+/// conversion (including signedness, width, and extraction) remains unsupported.
+pub(super) fn json_sum_crc32(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    crate::tikv::eval_json_sum_crc32_in(ctx, value)
 }
 
-/// Go's `%v` formatting for the integer/ordinary-double rows used by
-/// `TestJSONSumCrc32`: unlike BinaryJSON text, a float integral value is
-/// rendered as `1`, not `1.0`.  Rust's shortest `f64` display has the same
-/// spelling for these source vectors.
-fn format_json_sum_number(number: &Number) -> String {
-    if let Some(integer) = number.as_i64() {
-        return integer.to_string();
+#[cfg(test)]
+#[test]
+fn json_sum_crc32_entries_preserve_internal_domain_and_context_demand() {
+    use crate::constant::{Constant, ParamMarker};
+    use crate::scalar_function::ScalarFunction;
+    use std::cell::RefCell;
+    use tidb_datatype::{BinaryJSON, DateModes, FieldType, FieldTypeCode, SessionTimeZone};
+    struct Demand {
+        values: Vec<Datum>,
+        fail: Option<usize>,
+        reads: RefCell<Vec<usize>>,
     }
-    if let Some(integer) = number.as_u64() {
-        return integer.to_string();
-    }
-    let value = number
-        .as_f64()
-        .expect("serde JSON numbers are finite f64 here");
-    if value == 0.0 {
-        return "0".to_string();
-    }
-    let mut rendered = value.to_string();
-    let abs = value.abs();
-    if !(1e-4..1e6).contains(&abs) {
-        // Rust and Go both provide shortest round-tripping decimals, but
-        // their fixed/scientific cutover differs.  Normalize the fixed Rust
-        // spelling to Go's `%g`/`%v` threshold and two-digit exponent rule.
-        let negative = rendered.starts_with('-');
-        if negative {
-            rendered.remove(0);
+    impl Columns for Demand {
+        fn get(&self, path: &[String]) -> Option<Datum> {
+            self.param_value(path[0].parse().unwrap()).ok()
         }
-        let (integer, fraction) = rendered
-            .split_once('.')
-            .map_or((rendered.as_str(), ""), |(integer, fraction)| {
-                (integer, fraction)
-            });
-        let digits = format!("{integer}{fraction}");
-        let first = digits
-            .bytes()
-            .position(|digit| digit != b'0')
-            .expect("nonzero float has a significant digit");
-        let exponent = if integer != "0" {
-            integer.len() as i32 - first as i32 - 1
-        } else {
-            -(first as i32 - integer.len() as i32 + 1)
+        fn param_value(&self, index: usize) -> Result<Datum, EvalError> {
+            self.reads.borrow_mut().push(index);
+            if self.fail == Some(index) {
+                return Err(EvalError::Unsupported("JSON_SUM_CRC32 child"));
+            }
+            Ok(self.values[index].clone())
+        }
+        fn date_modes(&self) -> DateModes {
+            panic!("checksum must not read date modes")
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            panic!("checksum must not read timezone")
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            panic!("checksum must not read truncation policy")
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            panic!("checksum must not append warnings")
+        }
+    }
+    let context = |values, fail| Demand {
+        values,
+        fail,
+        reads: RefCell::new(Vec::new()),
+    };
+    let text = |s: &str| Datum::new_string(s);
+    let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    let evaluate = |mode, values: &[Datum], columns: &dyn Columns| {
+        if mode == 0 {
+            return super::dispatch_in("JSON_SUM_CRC32", values, columns)
+                .expect("one-argument internal domain");
+        }
+        if mode == 1 {
+            let args = (0..values.len())
+                .map(|i| tidb_ast::Expr::Column(vec![i.to_string()]))
+                .collect::<Vec<_>>();
+            return crate::func::eval_func("JSON_SUM_CRC32", &args, columns, None);
+        }
+        let args = values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let code = match value {
+                    Datum::Json(_) => FieldTypeCode::Json,
+                    Datum::Int(_) => FieldTypeCode::LongLong,
+                    Datum::Float32(_) => FieldTypeCode::Float,
+                    _ => FieldTypeCode::VarString,
+                };
+                let mut constant = Constant::new(Datum::Null, FieldType::new(code));
+                constant.param_marker = Some(ParamMarker {
+                    order: i64::try_from(index).unwrap(),
+                });
+                Expression::Constant(constant)
+            })
+            .collect();
+        // Ordinary scalar metadata only: no invented ARRAY conversion target.
+        ScalarFunction::new(
+            tidb_ast::CiString::new("json_sum_crc32"),
+            FieldType::new(FieldTypeCode::LongLong),
+            args,
+        )
+        .eval(columns, row.to_row())
+    };
+    let owner = |slots| {
+        crate::AsciiPoolOwner::new(
+            crate::AsciiPoolPolicy::checked(
+                slots,
+                slots,
+                16 * 1024 * 1024,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                64,
+                8,
+                4 * 1024 * 1024,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let pool = owner(1);
+    let execution = pool.begin_execution().unwrap();
+    for mode in 0..3 {
+        for (value, expected) in [
+            (Datum::Null, Ok(Datum::Null)),
+            (text("[]"), Ok(Datum::Int(0))),
+            (text("[1,2,3]"), Ok(Datum::Int(4_505_025_631))),
+            (
+                Datum::Json(BinaryJSON::parse("[1,2,3]").unwrap()),
+                Ok(Datum::Int(4_505_025_631)),
+            ),
+            (
+                text("null"),
+                Err(EvalError::Unsupported("JSON_SUM_CRC32 requires JSON array")),
+            ),
+            (
+                Datum::Int(1),
+                Err(EvalError::Unsupported("JSON_SUM_CRC32 requires JSON array")),
+            ),
+            (
+                Datum::Float32(1.0),
+                Err(EvalError::Unsupported(
+                    "JSON document requires JSON or string",
+                )),
+            ),
+            (
+                Datum::MinNotNull,
+                Err(EvalError::Unsupported("JSON document requires string")),
+            ),
+            (text(""), Err(EvalError::Json(JsonError::EmptyText))),
+            (text("["), Err(EvalError::Json(JsonError::InvalidText))),
+            (
+                Datum::new_bytes(vec![255]),
+                Err(EvalError::Unsupported("invalid UTF-8 string datum")),
+            ),
+            (
+                text(r#"[true,"x",1]"#),
+                Err(EvalError::Unsupported(
+                    "JSON_SUM_CRC32 requires scalar array values",
+                )),
+            ),
+            (
+                text(r#"["x",1,true]"#),
+                Err(EvalError::Unsupported(
+                    "JSON_SUM_CRC32 requires homogeneous array values",
+                )),
+            ),
+            (
+                text(r#"[1,"x",false]"#),
+                Err(EvalError::Unsupported(
+                    "JSON_SUM_CRC32 requires homogeneous array values",
+                )),
+            ),
+            (
+                text(r#"[1,false,"x"]"#),
+                Err(EvalError::Unsupported(
+                    "JSON_SUM_CRC32 requires scalar array values",
+                )),
+            ),
+        ] {
+            let ctx = context(vec![value], None);
+            assert_eq!(
+                execution.scope().with_columns(&ctx, |columns| evaluate(
+                    mode,
+                    &ctx.values,
+                    columns
+                )),
+                expected
+            );
+            assert_eq!(
+                *ctx.reads.borrow(),
+                if mode == 0 { vec![] } else { vec![0] }
+            );
+        }
+        let checksum = |document: &str| {
+            let ctx = context(vec![text(document)], None);
+            execution
+                .scope()
+                .with_columns(&ctx, |columns| evaluate(mode, &ctx.values, columns))
+                .unwrap()
         };
-        let mut mantissa = digits[first..].trim_end_matches('0').to_string();
-        if mantissa.len() > 1 {
-            mantissa.insert(1, '.');
+        assert_eq!(checksum("[1000000]"), checksum(r#"["1000000"]"#));
+        assert_eq!(checksum("[1000000.0]"), checksum(r#"["1e+06"]"#));
+        assert_ne!(checksum("[1000000]"), checksum("[1000000.0]"));
+        assert_eq!(checksum("[-0.0,0.0]"), checksum(r#"["0","0"]"#));
+        let ctx = context(
+            vec![Datum::Json(BinaryJSON::parse(r#"["é","😀"]"#).unwrap())],
+            None,
+        );
+        // End the first scope before another single-slot scope is requested;
+        // an assert_eq! operand temporary otherwise parks its lease until the
+        // whole assertion ends (AsciiScope::Drop returns it to the pool).
+        let unicode_actual = execution
+            .scope()
+            .with_columns(&ctx, |columns| evaluate(mode, &ctx.values, columns))
+            .unwrap();
+        assert_eq!(unicode_actual, checksum(r#"["é","😀"]"#));
+    }
+    for mode in [1, 2] {
+        // Even with a NULL first operand and unsupported arity, the existing
+        // eager caller still evaluates its suffix before rejecting the call.
+        let ctx = context(vec![Datum::Null, text("[]")], Some(1));
+        let result = execution
+            .scope()
+            .with_columns(&ctx, |columns| evaluate(mode, &ctx.values, columns));
+        if mode == 1 {
+            assert!(result.is_err());
+        } else {
+            assert_eq!(result, Err(EvalError::Unsupported("JSON_SUM_CRC32 child")));
         }
-        rendered = format!(
-            "{}{}e{:+03}",
-            if negative { "-" } else { "" },
-            mantissa,
-            exponent
+        assert_eq!(*ctx.reads.borrow(), vec![0, 1]);
+    }
+    let ctx = context(vec![], None);
+    for values in [vec![], vec![Datum::Null, text("[]")]] {
+        assert!(execution
+            .scope()
+            .with_columns(&ctx, |columns| super::dispatch_in(
+                "JSON_SUM_CRC32",
+                &values,
+                columns
+            ))
+            .is_none());
+    }
+    assert!(ctx.reads.borrow().is_empty());
+    let denied_pool = owner(0);
+    let denied = denied_pool.begin_execution().unwrap();
+    for mode in 0..3 {
+        for value in [Datum::Null, text("[]"), text("null")] {
+            let ctx = context(vec![value], None);
+            assert!(
+                matches!(denied.scope().with_columns(&ctx, |columns| evaluate(mode, &ctx.values, columns)),
+                Err(EvalError::ExpressionAdapterFailure(failure))
+                    if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource)
+            );
+            assert_eq!(
+                *ctx.reads.borrow(),
+                if mode == 0 { vec![] } else { vec![0] }
+            );
+        }
+        let ctx = context(vec![Datum::new_bytes(vec![255])], None);
+        assert_eq!(
+            denied
+                .scope()
+                .with_columns(&ctx, |columns| evaluate(mode, &ctx.values, columns)),
+            Err(EvalError::Unsupported("invalid UTF-8 string datum"))
         );
     }
-    rendered
-}
-
-/// IEEE CRC32, matching `hash/crc32.ChecksumIEEE` used by the Go builtin.
-fn crc32_ieee(bytes: &[u8]) -> u32 {
-    let mut crc = 0xFFFF_FFFF_u32;
-    for &byte in bytes {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            let mask = (crc & 1).wrapping_neg();
-            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
-        }
-    }
-    !crc
 }
