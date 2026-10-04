@@ -20,8 +20,11 @@
 //! Inputs remain byte slices: Go strings may contain arbitrary octets and the
 //! invalid-group boundaries are part of the `Foreach`/`Transform` contract.
 
-use crate::encoding_base::{TransformOp, TransformPolicy, TransformResult};
+use crate::encoding_base::{TransformOp, TransformResult};
 use std::fmt;
+use tidb_query_datatype::codec::collation::native_encoding::{
+    native_utf8_transform, SharedNativeEncoding,
+};
 
 /// UTF-8 keeps the source operation name while sharing one policy with all
 /// byte-preserving charset leaves.
@@ -79,29 +82,27 @@ impl Utf8Encoding {
     /// Returns the source `EncodingUTF8.Peek` grouping.  This is intentionally
     /// a lead-byte width operation, not validation.
     pub fn peek(self, src: &[u8]) -> &[u8] {
-        utf8_peek(src)
+        SharedNativeEncoding::Utf8.peek(src)
     }
 
     /// Returns the byte width of the first valid non-ASCII rune, or zero for
     /// ASCII and invalid input, matching `utf8.DecodeRuneInString`.
     pub fn mb_len(self, src: &[u8]) -> usize {
-        valid_utf8_width(src)
-            .filter(|width| *width > 1)
-            .unwrap_or(0)
+        SharedNativeEncoding::Utf8.mb_len(src)
     }
 
     /// Returns true when every byte is valid four-byte UTF-8.
     pub fn is_valid(self, src: &[u8]) -> bool {
-        all_valid(src, false)
+        SharedNativeEncoding::Utf8.is_valid(src)
     }
 
     /// Visits decoded UTF-8 groups.  `from` and `to` alias the original bytes
     /// because UTF-8 is a no-op conversion in the source implementation.
-    pub fn foreach<F>(self, src: &[u8], mut f: F)
+    pub fn foreach<F>(self, src: &[u8], f: F)
     where
         F: FnMut(&[u8], &[u8], bool) -> bool,
     {
-        foreach_utf8(src, false, &mut f);
+        SharedNativeEncoding::Utf8.foreach(src, TransformOp::default(), f);
     }
 
     /// Applies source `encodingBase.Transform` error, truncation, and
@@ -130,16 +131,16 @@ impl Utf8Mb3StrictEncoding {
 
     /// Returns true only for valid UTF-8 whose runes are at most three bytes.
     pub fn is_valid(self, src: &[u8]) -> bool {
-        all_valid(src, true)
+        SharedNativeEncoding::Utf8Mb3Strict.is_valid(src)
     }
 
     /// Visits groups and marks valid four-byte runes invalid, as in the
     /// source `encodingUTF8MB3Strict.Foreach`.
-    pub fn foreach<F>(self, src: &[u8], mut f: F)
+    pub fn foreach<F>(self, src: &[u8], f: F)
     where
         F: FnMut(&[u8], &[u8], bool) -> bool,
     {
-        foreach_utf8(src, true, &mut f);
+        SharedNativeEncoding::Utf8Mb3Strict.foreach(src, TransformOp::default(), f);
     }
 
     /// Applies source transform behavior with strict three-byte validation.
@@ -148,99 +149,11 @@ impl Utf8Mb3StrictEncoding {
     }
 }
 
-fn all_valid(src: &[u8], strict_mb3: bool) -> bool {
-    let mut valid = true;
-    foreach_utf8(src, strict_mb3, &mut |_, _, ok| {
-        valid = ok;
-        ok
-    });
-    valid
-}
-
-fn foreach_utf8<F>(src: &[u8], strict_mb3: bool, f: &mut F)
-where
-    F: FnMut(&[u8], &[u8], bool) -> bool,
-{
-    let mut offset = 0;
-    while offset < src.len() {
-        let (width, valid) = decode_utf8_group(&src[offset..]);
-        let end = offset + width;
-        let ok = valid && (!strict_mb3 || width <= 3);
-        if !f(&src[offset..end], &src[offset..end], ok) {
-            return;
-        }
-        offset = end;
-    }
-}
-
 fn transform_utf8(src: &[u8], op: Utf8Op, strict_mb3: bool) -> Utf8TransformResult {
-    // Both Go UTF-8 implementations return valid input unchanged before the
-    // shared encoding-base policy sees the operation bits.
-    if all_valid(src, strict_mb3) {
-        return TransformResult::new(src.to_vec(), None);
-    }
-    let mut policy = TransformPolicy::new(src.len(), op, |invalid| Utf8TransformError {
+    let (bytes, error) = native_utf8_transform(src, op, strict_mb3, |invalid| Utf8TransformError {
         invalid: invalid.to_vec(),
     });
-    foreach_utf8(src, strict_mb3, &mut |from, to, ok| {
-        policy.push(from, to, ok)
-    });
-    policy.finish()
-}
-
-/// Mirrors `encodingUTF8.Peek` without decoding or manufacturing a `str`.
-fn utf8_peek(src: &[u8]) -> &[u8] {
-    if src.is_empty() {
-        return src;
-    }
-    let expected = if src[0] < 0x80 {
-        1
-    } else if src[0] < 0xe0 {
-        2
-    } else if src[0] < 0xf0 {
-        3
-    } else {
-        4
-    };
-    &src[..expected.min(src.len())]
-}
-
-/// Returns the valid UTF-8 width for the first rune.  Go's decoder reports an
-/// invalid or truncated sequence as `RuneError, 1`, so invalid groups advance
-/// one byte even when their lead byte suggests a wider sequence.
-fn valid_utf8_width(src: &[u8]) -> Option<usize> {
-    let (width, valid) = decode_utf8_group(src);
-    valid.then_some(width)
-}
-
-fn decode_utf8_group(src: &[u8]) -> (usize, bool) {
-    if src.is_empty() {
-        return (0, true);
-    }
-    let first = src[0];
-    if first < 0x80 {
-        return (1, true);
-    }
-    let width = match first {
-        0xc2..=0xdf => 2,
-        0xe0..=0xef => 3,
-        0xf0..=0xf4 => 4,
-        _ => return (1, false),
-    };
-    if src.len() < width {
-        return (1, false);
-    }
-    if src[1..width].iter().any(|byte| *byte & 0xc0 != 0x80) {
-        return (1, false);
-    }
-    if (first == 0xe0 && src[1] < 0xa0)
-        || (first == 0xed && src[1] >= 0xa0)
-        || (first == 0xf0 && src[1] < 0x90)
-        || (first == 0xf4 && src[1] >= 0x90)
-    {
-        return (1, false);
-    }
-    (width, true)
+    TransformResult::new(bytes, error)
 }
 
 fn hex_bytes(bytes: &[u8]) -> String {

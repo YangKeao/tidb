@@ -17,12 +17,10 @@
 use std::fmt;
 
 use tidb_mysql::{to_lowercase as go_simple_lowercase, to_uppercase as go_simple_uppercase};
-use tidb_query_datatype::codec::collation::gb::{self, GbEncoding};
+use tidb_query_datatype::codec::collation::native_encoding::SharedNativeEncoding;
 
-use crate::ascii_encoding::ASCII_ENCODING;
 use crate::charset::{CaseRange, GB18030_CASES, GBK_CASES};
-use crate::encoding_base::{TransformOp, TransformPolicy, TransformResult};
-use crate::utf8_encoding::{UTF8_ENCODING, UTF8_MB3_STRICT_ENCODING};
+use crate::encoding_base::{TransformOp, TransformResult};
 
 /// Source `EncodingTp` values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -101,6 +99,18 @@ impl std::error::Error for EncodingError {}
 pub type EncodingResult = TransformResult<EncodingError>;
 
 impl Encoding {
+    const fn shared(self) -> SharedNativeEncoding {
+        match self {
+            Self::Utf8 => SharedNativeEncoding::Utf8,
+            Self::Utf8Mb3Strict => SharedNativeEncoding::Utf8Mb3Strict,
+            Self::Ascii => SharedNativeEncoding::Ascii,
+            Self::Latin1 => SharedNativeEncoding::Latin1,
+            Self::Binary => SharedNativeEncoding::Binary,
+            Self::Gbk => SharedNativeEncoding::Gbk,
+            Self::Gb18030 => SharedNativeEncoding::Gb18030,
+        }
+    }
+
     /// Returns the source registry name.
     pub const fn name(self) -> &'static str {
         match self {
@@ -128,88 +138,36 @@ impl Encoding {
 
     /// Returns the next encoded character group.
     pub fn peek(self, source: &[u8]) -> &[u8] {
-        match self {
-            Self::Utf8 | Self::Utf8Mb3Strict => UTF8_ENCODING.peek(source),
-            Self::Ascii | Self::Latin1 | Self::Binary => source.get(..1).unwrap_or(source),
-            Self::Gbk => gb::peek_native(GbEncoding::Gbk, source),
-            Self::Gb18030 => gb::peek_native(GbEncoding::Gb18030, source),
-        }
+        self.shared().peek(source)
     }
 
     /// Returns a multibyte width, or zero for single-byte/invalid input.
     pub fn mb_len(self, source: &[u8]) -> usize {
-        match self {
-            Self::Utf8 | Self::Utf8Mb3Strict => UTF8_ENCODING.mb_len(source),
-            Self::Gbk => gb::mb_len_native(GbEncoding::Gbk, source),
-            Self::Gb18030 => gb::mb_len_native(GbEncoding::Gb18030, source),
-            Self::Ascii | Self::Latin1 | Self::Binary => 0,
-        }
+        self.shared().mb_len(source)
     }
 
     /// Checks whether UTF-8 input can be represented by this encoding.
     pub fn is_valid(self, source: &[u8]) -> bool {
-        match self {
-            Self::Utf8 => UTF8_ENCODING.is_valid(source),
-            Self::Utf8Mb3Strict => UTF8_MB3_STRICT_ENCODING.is_valid(source),
-            Self::Ascii => ASCII_ENCODING.is_valid(source),
-            Self::Latin1 | Self::Binary => true,
-            Self::Gbk | Self::Gb18030 => {
-                let mut valid = true;
-                self.foreach(source, TransformOp::FROM_UTF8, |_, _, ok| {
-                    valid = ok;
-                    ok
-                });
-                valid
-            }
-        }
+        self.shared().is_valid(source)
     }
 
     /// Visits source groups in order.
-    pub fn foreach<F>(self, source: &[u8], operation: TransformOp, mut visit: F)
+    pub fn foreach<F>(self, source: &[u8], operation: TransformOp, visit: F)
     where
         F: FnMut(&[u8], &[u8], bool) -> bool,
     {
-        match self {
-            Self::Utf8 => UTF8_ENCODING.foreach(source, visit),
-            Self::Utf8Mb3Strict => UTF8_MB3_STRICT_ENCODING.foreach(source, visit),
-            Self::Ascii => ASCII_ENCODING.foreach(source, visit),
-            Self::Latin1 | Self::Binary => {
-                for byte in source {
-                    let group = std::slice::from_ref(byte);
-                    if !visit(group, group, true) {
-                        break;
-                    }
-                }
-            }
-            Self::Gbk | Self::Gb18030 => gb::foreach_native(
-                if self == Self::Gbk {
-                    GbEncoding::Gbk
-                } else {
-                    GbEncoding::Gb18030
-                },
-                source,
-                operation.contains(TransformOp::FROM_UTF8),
-                visit,
-            ),
-        }
+        self.shared().foreach(source, operation, visit);
     }
 
     /// Applies the source transform policy.
     pub fn transform(self, source: &[u8], operation: TransformOp) -> EncodingResult {
-        match self {
-            Self::Latin1 | Self::Binary => TransformResult::new(source.to_vec(), None),
-            _ => {
-                let mut policy =
-                    TransformPolicy::new(source.len(), operation, |invalid| EncodingError {
-                        charset: self.name(),
-                        invalid: invalid.to_vec(),
-                    });
-                self.foreach(source, operation, |from, to, valid| {
-                    policy.push(from, to, valid)
-                });
-                policy.finish()
-            }
-        }
+        let (bytes, error) = self
+            .shared()
+            .transform(source, operation, |invalid| EncodingError {
+                charset: self.name(),
+                invalid: invalid.to_vec(),
+            });
+        TransformResult::new(bytes, error)
     }
 
     /// Applies source-compatible upper-case mapping.
@@ -273,14 +231,7 @@ pub fn count_valid_bytes_decode(encoding: Encoding, source: &[u8]) -> usize {
 }
 
 fn count_valid(encoding: Encoding, source: &[u8], operation: TransformOp) -> usize {
-    let mut count = 0;
-    encoding.foreach(source, operation, |from, _, valid| {
-        if valid {
-            count += from.len();
-        }
-        valid
-    });
-    count
+    encoding.shared().count_valid(source, operation)
 }
 
 enum Case {

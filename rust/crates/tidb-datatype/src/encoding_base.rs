@@ -19,71 +19,9 @@
 //! constructor; this module owns the operation bits, first-error behavior,
 //! replacement, truncation, and source/converted collection policy.
 
-use std::ops::{BitOr, BitOrAssign};
-
-/// The operation bits consumed by the source `encodingBase.Transform`.
-///
-/// The values mirror `pkg/parser/charset/encoding.go::Op`, so a later
-/// encoding can share the policy without creating a second flag vocabulary.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct TransformOp(u16);
-
-impl TransformOp {
-    /// Interpret input as UTF-8 source bytes.
-    pub const FROM_UTF8: Self = Self(1 << 0);
-    /// Interpret output as UTF-8 bytes.
-    pub const TO_UTF8: Self = Self(1 << 1);
-    /// Stop before the first invalid group.
-    pub const TRUNCATE_TRIM: Self = Self(1 << 2);
-    /// Replace each invalid group with `?`.
-    pub const TRUNCATE_REPLACE: Self = Self(1 << 3);
-    /// Collect the source group.
-    pub const COLLECT_FROM: Self = Self(1 << 4);
-    /// Collect the converted group.
-    pub const COLLECT_TO: Self = Self(1 << 5);
-    /// Suppress the first invalid-group error.
-    pub const SKIP_ERROR: Self = Self(1 << 6);
-
-    /// Go's `OpReplaceNoErr`.
-    pub const REPLACE_NO_ERR: Self = Self(
-        Self::FROM_UTF8.0 | Self::TRUNCATE_REPLACE.0 | Self::COLLECT_FROM.0 | Self::SKIP_ERROR.0,
-    );
-    /// Go's `OpReplace`.
-    pub const REPLACE: Self =
-        Self(Self::FROM_UTF8.0 | Self::TRUNCATE_REPLACE.0 | Self::COLLECT_FROM.0);
-    /// Go's `OpEncode`.
-    pub const ENCODE: Self = Self(Self::FROM_UTF8.0 | Self::TRUNCATE_TRIM.0 | Self::COLLECT_TO.0);
-    /// Go's `OpEncodeNoErr`.
-    pub const ENCODE_NO_ERR: Self = Self(Self::ENCODE.0 | Self::SKIP_ERROR.0);
-    /// Go's `OpEncodeReplace`.
-    pub const ENCODE_REPLACE: Self =
-        Self(Self::FROM_UTF8.0 | Self::TRUNCATE_REPLACE.0 | Self::COLLECT_TO.0);
-    /// Go's `OpDecode`.
-    pub const DECODE: Self = Self(Self::TO_UTF8.0 | Self::TRUNCATE_TRIM.0 | Self::COLLECT_TO.0);
-    /// Go's `OpDecodeNoErr`.
-    pub const DECODE_NO_ERR: Self = Self(Self::DECODE.0 | Self::SKIP_ERROR.0);
-    /// Go's `OpDecodeReplace`.
-    pub const DECODE_REPLACE: Self =
-        Self(Self::TO_UTF8.0 | Self::TRUNCATE_REPLACE.0 | Self::COLLECT_TO.0);
-
-    pub(crate) const fn contains(self, other: Self) -> bool {
-        self.0 & other.0 != 0
-    }
-}
-
-impl BitOr for TransformOp {
-    type Output = Self;
-
-    fn bitor(self, rhs: Self) -> Self::Output {
-        Self(self.0 | rhs.0)
-    }
-}
-
-impl BitOrAssign for TransformOp {
-    fn bitor_assign(&mut self, rhs: Self) {
-        self.0 |= rhs.0;
-    }
-}
+pub use tidb_query_datatype::codec::collation::native_encoding::TransformOp;
+#[cfg(test)]
+use tidb_query_datatype::codec::collation::native_encoding::TransformPolicy as SharedTransformPolicy;
 
 /// Bytes and the optional first invalid-group error returned by Transform.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,56 +57,33 @@ impl<E> TransformResult<E> {
 /// `false` means the caller must stop visiting groups (the trim policy); all
 /// other modes return `true`.  The first error is retained even when a
 /// replacement byte is emitted, matching Go's `(bytes, error)` result.
+#[cfg(test)]
 pub(crate) struct TransformPolicy<E, F>
 where
     F: Fn(&[u8]) -> E,
 {
-    op: TransformOp,
-    bytes: Vec<u8>,
-    first_error: Option<E>,
-    make_error: F,
+    shared: SharedTransformPolicy<E, F>,
 }
 
+#[cfg(test)]
 impl<E, F> TransformPolicy<E, F>
 where
     F: Fn(&[u8]) -> E,
 {
     pub(crate) fn new(capacity: usize, op: TransformOp, make_error: F) -> Self {
         Self {
-            op,
-            bytes: Vec::with_capacity(capacity),
-            first_error: None,
-            make_error,
+            shared: SharedTransformPolicy::new(capacity, op, make_error),
         }
     }
 
     /// Consumes one `(from, to, valid)` group and returns whether to continue.
     pub(crate) fn push(&mut self, from: &[u8], to: &[u8], valid: bool) -> bool {
-        if !valid {
-            if self.first_error.is_none() && !self.op.contains(TransformOp::SKIP_ERROR) {
-                self.first_error = Some((self.make_error)(from));
-            }
-            if self.op.contains(TransformOp::TRUNCATE_TRIM) {
-                return false;
-            }
-            if self.op.contains(TransformOp::TRUNCATE_REPLACE) {
-                self.bytes.push(b'?');
-                return true;
-            }
-        }
-
-        // Keep the source's precedence when callers combine both collection
-        // bits: `collectFrom` wins over `collectTo`.
-        if self.op.contains(TransformOp::COLLECT_FROM) {
-            self.bytes.extend_from_slice(from);
-        } else if self.op.contains(TransformOp::COLLECT_TO) {
-            self.bytes.extend_from_slice(to);
-        }
-        true
+        self.shared.push(from, to, valid)
     }
 
     pub(crate) fn finish(self) -> TransformResult<E> {
-        TransformResult::new(self.bytes, self.first_error)
+        let (bytes, error) = self.shared.finish();
+        TransformResult::new(bytes, error)
     }
 }
 
@@ -215,5 +130,146 @@ mod tests {
         assert!(policy.push(b"from", b"to", true));
         let result = policy.finish();
         assert_eq!(result.bytes(), b"from");
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn shared_encoding_foundation_preserves_flags_groups_and_leaf_fast_paths() {
+    use crate::ascii_encoding::ASCII_ENCODING;
+    use crate::multibyte_encoding::{count_valid_bytes, count_valid_bytes_decode, Encoding};
+    use crate::utf8_encoding::{UTF8_ENCODING, UTF8_MB3_STRICT_ENCODING};
+    use std::cell::Cell;
+    let flags = [
+        TransformOp::FROM_UTF8,
+        TransformOp::TO_UTF8,
+        TransformOp::TRUNCATE_TRIM,
+        TransformOp::TRUNCATE_REPLACE,
+        TransformOp::COLLECT_FROM,
+        TransformOp::COLLECT_TO,
+        TransformOp::SKIP_ERROR,
+    ];
+    for bits in 0u16..128 {
+        let mut op = TransformOp::default();
+        for (index, flag) in flags.iter().enumerate() {
+            if bits & (1 << index) != 0 {
+                op |= *flag;
+            }
+        }
+        assert_eq!(format!("{op:?}"), format!("TransformOp({bits})"));
+        let calls = Cell::new(0usize);
+        let mut policy = TransformPolicy::new(0, op, |bytes: &[u8]| {
+            calls.set(calls.get() + 1);
+            bytes.to_vec()
+        });
+        for (from, to, valid) in [
+            (b"a", b"A", true),
+            (b"!", b"_", false),
+            (b"b", b"B", true),
+            (b"~", b"-", false),
+        ] {
+            if !policy.push(from, to, valid) {
+                break;
+            }
+        }
+        let collected: &[u8] = if bits & 16 != 0 {
+            b"a!b~".as_slice()
+        } else if bits & 32 != 0 {
+            b"A_B-"
+        } else {
+            b""
+        };
+        let expected = if bits & 4 != 0 {
+            collected.get(..1).unwrap_or_default().to_vec()
+        } else if bits & 8 != 0 {
+            if bits & 16 != 0 {
+                b"a?b?".to_vec()
+            } else if bits & 32 != 0 {
+                b"A?B?".to_vec()
+            } else {
+                b"??".to_vec()
+            }
+        } else {
+            collected.to_vec()
+        };
+        let (bytes, error) = policy.finish().into_parts();
+        assert_eq!(bytes, expected, "flags {bits}");
+        assert_eq!(error, (bits & 64 == 0).then(|| b"!".to_vec()));
+        assert_eq!(calls.get(), usize::from(bits & 64 == 0));
+        assert_eq!(ASCII_ENCODING.transform(b"a", op).bytes(), b"a");
+        assert_eq!(UTF8_ENCODING.transform(b"a", op).bytes(), b"a");
+        assert_eq!(UTF8_MB3_STRICT_ENCODING.transform(b"a", op).bytes(), b"a");
+        for encoding in [
+            Encoding::Ascii,
+            Encoding::Utf8,
+            Encoding::Utf8Mb3Strict,
+            Encoding::Gbk,
+            Encoding::Gb18030,
+        ] {
+            assert_eq!(
+                encoding.transform(b"a", op).bytes(),
+                if bits & 48 != 0 { b"a".as_slice() } else { b"" }
+            );
+        }
+        for encoding in [Encoding::Latin1, Encoding::Binary] {
+            assert_eq!(
+                encoding.transform(b"\xff", op).into_parts(),
+                (vec![255], None)
+            );
+        }
+    }
+    let source = b"\xffabcZ";
+    let ascii = ASCII_ENCODING.transform(source, TransformOp::REPLACE);
+    let utf8 = UTF8_ENCODING.transform(source, TransformOp::REPLACE);
+    assert_eq!(ascii.bytes(), b"?Z");
+    assert_eq!(
+        ascii.error().unwrap().to_string(),
+        "Invalid ascii character string: 'FF616263'"
+    );
+    assert_eq!(
+        format!("{:?}", ascii.error().unwrap()),
+        "AsciiTransformError { invalid: [255, 97, 98, 99] }"
+    );
+    assert_eq!(utf8.bytes(), b"?abcZ");
+    assert_eq!(
+        utf8.error().unwrap().to_string(),
+        "Invalid utf8 character string: 'FF'"
+    );
+    assert_eq!(
+        Encoding::Utf8
+            .transform(source, TransformOp::REPLACE)
+            .error()
+            .unwrap()
+            .to_string(),
+        "Invalid utf8mb4 character string: 'FF'"
+    );
+    assert_eq!(UTF8_MB3_STRICT_ENCODING.mb_len("😂".as_bytes()), 4);
+    assert_eq!(
+        count_valid_bytes(Encoding::Utf8Mb3Strict, "a😂b".as_bytes()),
+        1
+    );
+    assert_eq!(count_valid_bytes(Encoding::Gbk, "一€".as_bytes()), 3);
+    assert_eq!(count_valid_bytes_decode(Encoding::Gbk, b"\xd2\xbb\xff"), 2);
+    for encoding in [
+        Encoding::Ascii,
+        Encoding::Utf8,
+        Encoding::Utf8Mb3Strict,
+        Encoding::Latin1,
+        Encoding::Binary,
+        Encoding::Gbk,
+        Encoding::Gb18030,
+    ] {
+        assert_eq!(encoding.peek(b"ab"), b"a");
+        assert_eq!(encoding.mb_len(b"a"), 0);
+        assert!(encoding.is_valid(b"ab"));
+        let mut calls = 0;
+        encoding.foreach(b"ab", TransformOp::FROM_UTF8, |from, to, valid| {
+            calls += 1;
+            assert_eq!(from, b"a");
+            assert_eq!(to, b"a");
+            assert!(valid);
+            false
+        });
+        assert_eq!(calls, 1);
     }
 }

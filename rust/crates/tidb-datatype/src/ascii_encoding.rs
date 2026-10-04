@@ -19,8 +19,11 @@
 //! reports an invalid sequence.  Converting the input to `str` would lose
 //! that contract before validation starts.
 
-use crate::encoding_base::{TransformOp, TransformPolicy, TransformResult};
+use crate::encoding_base::{TransformOp, TransformResult};
 use std::fmt;
+use tidb_query_datatype::codec::collation::native_encoding::{
+    native_ascii_transform, SharedNativeEncoding,
+};
 
 /// ASCII keeps the source operation name while sharing the single operation
 /// vocabulary with UTF-8 and later charset leaves.
@@ -74,39 +77,22 @@ impl AsciiEncoding {
 
     /// Returns the next ASCII byte, preserving the input slice lifetime.
     pub fn peek(self, src: &[u8]) -> &[u8] {
-        if src.is_empty() {
-            src
-        } else {
-            &src[..1]
-        }
+        SharedNativeEncoding::Ascii.peek(src)
     }
 
     /// Returns true only when every input octet is seven-bit ASCII.
     pub fn is_valid(self, src: &[u8]) -> bool {
-        src.iter().all(|byte| *byte <= 0x7f)
+        SharedNativeEncoding::Ascii.is_valid(src)
     }
 
     /// Visits source groups using the exact ASCII/UTF-8 lead-byte grouping
     /// from `encoding_ascii.go`.  `to` aliases `from` because ASCII has no
     /// conversion table.
-    pub fn foreach<F>(self, src: &[u8], mut f: F)
+    pub fn foreach<F>(self, src: &[u8], f: F)
     where
         F: FnMut(&[u8], &[u8], bool) -> bool,
     {
-        let mut i = 0;
-        while i < src.len() {
-            let mut width = 1;
-            let mut ok = true;
-            if src[i] > 0x7f {
-                width = utf8_peek(&src[i..]).len();
-                ok = false;
-            }
-            let group = &src[i..i + width];
-            if !f(group, group, ok) {
-                return;
-            }
-            i += width;
-        }
+        SharedNativeEncoding::Ascii.foreach(src, TransformOp::default(), f);
     }
 
     /// Applies the source `encodingBase.Transform` collection and error
@@ -114,34 +100,11 @@ impl AsciiEncoding {
     /// collection path as well; the operation bits always decide which bytes
     /// are emitted.
     pub fn transform(self, src: &[u8], op: AsciiOp) -> AsciiTransformResult {
-        // `encodingASCII.Transform` has a source-level valid-input fast path:
-        // it returns the original bytes regardless of the operation bits.
-        if self.is_valid(src) {
-            return TransformResult::new(src.to_vec(), None);
-        }
-        let mut policy = TransformPolicy::new(src.len(), op, |invalid| AsciiTransformError {
+        let (bytes, error) = native_ascii_transform(src, op, |invalid| AsciiTransformError {
             invalid: invalid.to_vec(),
         });
-        self.foreach(src, |from, to, ok| policy.push(from, to, ok));
-        policy.finish()
+        TransformResult::new(bytes, error)
     }
-}
-
-/// Mirrors `encodingUTF8.Peek` without decoding or manufacturing a `str`.
-fn utf8_peek(src: &[u8]) -> &[u8] {
-    if src.is_empty() {
-        return src;
-    }
-    let expected = if src[0] < 0x80 {
-        1
-    } else if src[0] < 0xe0 {
-        2
-    } else if src[0] < 0xf0 {
-        3
-    } else {
-        4
-    };
-    &src[..expected.min(src.len())]
 }
 
 fn hex_bytes(bytes: &[u8]) -> String {

@@ -1,0 +1,50 @@
+charset-codec-92 / R95 / M0 foundation only
+CPP cwd: /home/agent/tidb/expression-unification/tikv
+Native cwd: /home/agent/tidb/expression-unification/tidb/rust
+Raw logs: /home/agent/tidb/expression-unification/logs/charset-codec-{id}.log
+Counts passed/failed/ignored/filtered; compile_seconds/test_seconds.
+
+tikv-collation | 28/0/0/432 | 3.69/0.01 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib codec::collation:: -- --test-threads=1
+sha256 8d5c056eb1095f57ddd11a74820004a92ce37b0a867f8f937527160a369f0a9e
+
+native-encoding-compile-failure | COMPILE RED, no tests executed | exit101
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib encoding -- --test-threads=1
+sha256 f6c9f5ac7f7928e881d40f3297c7b2c5b907e1a557adeb4b2b656834e9f65324
+New test E0308: conditional byte-array branches of lengths4/0 needed explicit `let collected: &[u8]`. Only the new local type annotation changed; no production or expected-value correction. Compile/test elapsed receipt unavailable for this failed attempt; not a zero-match run or a passing test.
+
+native-encoding | 22/0/0/437 | 2.31/0.00 | exit0 | rerun after annotation
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib encoding -- --test-threads=1
+sha256 5452ff0f60d52fa758c2bedba64f9de54eb991f7c8c7b671348b22df370fbb13
+
+native-convert | 3/0/1/1696 | 17.10/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib convert_using -- --test-threads=1
+sha256 76dacac95ae2e0bb4d194a41f871b1f0d537dd1f70e35cf990a5fcd0facbe2a9
+
+sql-charset | 7/0/0/2231 | 29.85/0.07 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_charset -- --test-threads=1
+sha256 2accf1a513b708ca89b36a2ef7a609e7f526da7fa6a97ad32779048e319ebf3c
+
+sql-utf8 | 1/0/0/2237 | 0.14/0.01 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_show::a_utf8mb4_column_validates_its_bytes_and_a_binary_column_does_not -- --exact --test-threads=1
+sha256 8efa6675b2b41c38549ae2488c0a61101f06450971d27eece56ef88ceda1ccc1
+
+expr-full | 1602/4/94/0 | 0.12/14.61 | exit101 | OLD failures unchanged
+../../tools/cargo-tidb test --locked -p tidb-expr --lib -- --test-threads=1
+sha256 5c8abf1a2718425f9a6888f3c4552e5c37946f3cc1534292ac4eddd5d0a61b0f
+
+unistore-full | 220/1/13/0 | 6.77/3.06 | exit101 | OLD failure unchanged
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib -- --test-threads=1
+sha256 952c0388c39341a073a783f4d17088399780966ddfcdf5cb7272ec027bfe208c
+
+Eight locked single-threaded launches:1compile RED and7nonzero test runs=5green+2only-old full RED. Two new tests pass on their first actual execution. No new execution failure, oracle correction, zero-match, interruption or fixture recording. Other native gates ran after the compile attempt and before the annotation-only test fix; production was unchanged.
+Whole failure sections byte-equal to timestamp-diff-91 after only numeric panic-heading thread IDs become THREAD:
+expression 411274feba11e202735df5a8056c72babbc8cf9df2eab3258c670e9289a1ee95
+unistore 2f19c9ad5338a86c48b895e3923c3e39454117e3410d47df5aa3fb4254ed7ce1
+
+Original SQL8tests contain21SELECTs plus write refusals: storedGBK UTF8 with implicitHEX/LENGTH/CHAR_LENGTH/ASCII boundaries, CAST AS BINARY, CONVERT USING retag/replacement, latin1 rawbyte preservation, introducers/CHAR USING, collation ordering, invalid UTF8 column versus VARBINARY. No new SQL test/profile, no zero-slot or vector/pool matrix proof is claimed.
+
+SDK owns u16 TransformOp(any-overlap contains), first-error/trim/replace/collection policy, ASCII lead-width and UTF8 strict/mb3 groups, seven-encoding byte operations and valid SOURCE-prefix counting. Primitive valid-input fastpaths ignore flags, unlike registry transforms; Latin1/Binary always preserve bytes. Existing strict UTF8 decoder and GB native helpers reused. Native errors/results/ZSTs/enum/name/type/lookup/case mapping retained; private policy test facade only delegates. No Expr/C4/driver/carrier/wire/dependency changes; runtime charset evaluator selection remains pending.
+
+Pinned rustfmt --edition 2021 --config skip_children=true --check:2CPP files via /home/agent/tidb/expression-reuse/rustup-home/toolchains/nightly-2026-01-30-x86_64-unknown-linux-gnu/bin/rustfmt,4native via corresponding nightly-2026-08-22 executable. Both git diff --check pass.14original native test bodies byte-identical; changed CPP module had no original tests.1CPP/1native new test,1new module. D independent source review found no blocker. Agent docs descriptive, no new policy; paths checked. No Go/Bazel/Cargo/lock/generated changes; unrelated untracked BUILD excluded.
+Functional228/245 (93.06%), strict0, remaining17. All228 family objects and previous partialCAST/type records unchanged; only new type prerequisite record appended. No family credit. Whole workspace/lint/dev/bazel_prepare/release/exhaustive/TiFlash/FIPS/performance/physical-OOM/package-transcreation/PR-readiness not claimed.
