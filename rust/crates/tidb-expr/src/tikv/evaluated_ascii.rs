@@ -2278,6 +2278,14 @@ fn materialize_computed(
             | EvaluatedBytesOp::ExtractMixedDurationNative
             | EvaluatedBytesOp::ExtractMixedFinishNative
             | EvaluatedBytesOp::ExtractCompositeNative
+            | EvaluatedBytesOp::ExtremumHeadNative
+            | EvaluatedBytesOp::ExtremumNumericNative
+            | EvaluatedBytesOp::ExtremumTimeNative
+            | EvaluatedBytesOp::ExtremumVectorNative
+            | EvaluatedBytesOp::ExtremumStringNative
+            | EvaluatedBytesOp::ExtremumTimeTextNative
+            | EvaluatedBytesOp::ExtremumTimeContextNative
+            | EvaluatedBytesOp::ExtremumFinishNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative

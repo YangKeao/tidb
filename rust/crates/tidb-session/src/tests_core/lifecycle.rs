@@ -9363,6 +9363,191 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_extremum_preserves_five_domains_and_global_head_pool_demand() {
+    use tidb_datatype::{FieldTypeCode, VectorFloat32};
+
+    let create = "CREATE TABLE shared_extremum_runtime_sql (i BIGINT, d DECIMAL(10,3), dt DATETIME, calendar_date DATE, s VARCHAR(8) COLLATE utf8mb4_general_ci, t VARCHAR(8) COLLATE utf8mb4_general_ci, good_text VARCHAR(32) COLLATE utf8mb4_bin, bad_text VARCHAR(32) COLLATE utf8mb4_bin, null_text VARCHAR(32) COLLATE utf8mb4_bin, v VECTOR, w VECTOR)";
+    let insert = "INSERT INTO shared_extremum_runtime_sql VALUES (-5,2.500,'2020-01-01 10:00:00','2020-01-01','a','B','2020-01-01 05:00:00','invalid_time',NULL,'[1,2]','[1,3]')";
+    let cases = [
+        (
+            "LEAST(i,d)",
+            FieldTypeCode::NewDecimal,
+            23,
+            3,
+            "binary",
+            "binary",
+            Some("-5"),
+        ),
+        (
+            "LEAST(dt,calendar_date)",
+            FieldTypeCode::Datetime,
+            19,
+            0,
+            "binary",
+            "binary",
+            Some("2020-01-01 00:00:00"),
+        ),
+        (
+            "GREATEST(s,t)",
+            FieldTypeCode::Varchar,
+            8,
+            0,
+            "utf8mb4",
+            "utf8mb4_general_ci",
+            Some("B"),
+        ),
+        (
+            "GREATEST(dt,good_text)",
+            FieldTypeCode::VarString,
+            -1,
+            -1,
+            "utf8mb4",
+            "utf8mb4_bin",
+            Some("2020-01-01 10:00:00"),
+        ),
+        (
+            "GREATEST(v,w)",
+            FieldTypeCode::VectorFloat32,
+            -1,
+            -1,
+            "binary",
+            "binary",
+            Some("[1,3]"),
+        ),
+        (
+            "GREATEST(dt,bad_text)",
+            FieldTypeCode::VarString,
+            -1,
+            -1,
+            "utf8mb4",
+            "utf8mb4_bin",
+            Some("invalid_time"),
+        ),
+        (
+            "GREATEST(dt,bad_text,null_text)",
+            FieldTypeCode::VarString,
+            -1,
+            -1,
+            "utf8mb4",
+            "utf8mb4_bin",
+            None,
+        ),
+    ];
+    for slots in [1, 0] {
+        let mut session = Session::new();
+        session
+            .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+            .unwrap();
+        session.run("SET time_zone='+00:00'").unwrap();
+        session.run("SET sql_mode=''").unwrap();
+        session
+            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+            .unwrap();
+        session.run(create).unwrap();
+        session.run(insert).unwrap();
+        assert!(session
+            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .unwrap());
+        for vectorized in [0, 1] {
+            session
+                .run(&format!(
+                    "SET tidb_enable_vectorized_expression={vectorized}"
+                ))
+                .unwrap();
+            for (expression, code, flen, decimal, charset, collation, expected) in cases {
+                // All operands are stored columns, including VECTOR values
+                // inserted before the policy. No nested CAST/function, filter
+                // or sort can claim this GREATEST/LEAST root's pool refusal.
+                let sql = format!("SELECT {expression} FROM shared_extremum_runtime_sql");
+                if slots == 0 {
+                    let error = session.run_with_columns(&sql).expect_err(&sql);
+                    match &error {
+                        DriverError::Exec(tidb_executor::ExecError::Eval(
+                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                        )) => {
+                            assert_eq!(
+                                failure.class(),
+                                tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                            );
+                            assert_eq!(
+                                failure.origin(),
+                                tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                            );
+                        }
+                        other => {
+                            panic!("extremum Head bypassed the pool: {sql}/{vectorized}: {other:?}")
+                        }
+                    }
+                    let mysql = error.to_mysql_error();
+                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
+                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
+                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
+                    // Fourteen NEW Head refusals, including the global NULL
+                    // and invalid-text calls. These do not independently
+                    // isolate the later domain reducers' pool acquisitions.
+                    assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+                    continue;
+                }
+                let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap()
+                else {
+                    panic!("expected typed extremum rows: {sql}")
+                };
+                assert_eq!(columns.len(), 1);
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].len(), 1);
+                let field = &columns[0].1;
+                assert_eq!(field.code(), code, "{sql}/{vectorized}");
+                assert_eq!(
+                    (field.flen(), field.decimal()),
+                    (flen, decimal),
+                    "{sql}/{vectorized}"
+                );
+                assert!(!field.is_unsigned());
+                assert_eq!(field.charset_name(), charset, "{sql}/{vectorized}");
+                assert_eq!(field.collation_name(), collation, "{sql}/{vectorized}");
+                let value = &rows[0][0];
+                if let Some(text) = expected {
+                    match code {
+                        FieldTypeCode::NewDecimal => {
+                            let Datum::Decimal(value) = value else {
+                                panic!("expected numeric decimal winner: {sql}")
+                            };
+                            // Winning BIGINT keeps scale zero despite the
+                            // aggregated DECIMAL(23,3) result header.
+                            assert_eq!(value.scale(), 0);
+                            assert_eq!(value.to_string(), text);
+                        }
+                        FieldTypeCode::Datetime => {
+                            assert!(matches!(value, Datum::Time(_)));
+                            // A winning DATE is stamped as the aggregate's
+                            // DATETIME, not returned as a date-only cell.
+                            assert_eq!(cell_text(value), text);
+                        }
+                        FieldTypeCode::Varchar | FieldTypeCode::VarString => {
+                            assert!(matches!(value, Datum::String(_)));
+                            assert_eq!(cell_text(value), text, "{sql}/{vectorized}");
+                        }
+                        FieldTypeCode::VectorFloat32 => assert_eq!(
+                            value,
+                            &Datum::new_vector_float32(VectorFloat32::must_create(vec![1.0, 3.0])),
+                            "{sql}/{vectorized}"
+                        ),
+                        _ => unreachable!("only the five declared extremum domains are tested"),
+                    }
+                } else {
+                    assert_eq!(value, &Datum::Null, "{sql}/{vectorized}");
+                }
+                // Preserve the original AsTime implementation: a failed
+                // time_conversion_for_gl parse returns the original text
+                // WITHOUT publishing a warning. Its comment is not a license
+                // to add a 1292 here; the global NULL remains quiet as well.
+                assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+            }
+        }
+    }
+}
+
+#[test]
 fn native_extremum_policy_preserves_numeric_winner_scale_promotion_and_global_null() {
     use tidb_datatype::FieldTypeCode;
 

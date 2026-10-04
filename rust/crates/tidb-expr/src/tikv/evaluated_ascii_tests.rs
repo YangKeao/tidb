@@ -1513,6 +1513,16 @@ fn dispatch_bytes_family(
                 "EXTRACT needs its actual metadata, cast operand, or demanded mixed continuation"
             )
         }
+        EvaluatedBytesOp::ExtremumHeadNative
+        | EvaluatedBytesOp::ExtremumNumericNative
+        | EvaluatedBytesOp::ExtremumTimeNative
+        | EvaluatedBytesOp::ExtremumVectorNative
+        | EvaluatedBytesOp::ExtremumStringNative
+        | EvaluatedBytesOp::ExtremumTimeTextNative
+        | EvaluatedBytesOp::ExtremumTimeContextNative
+        | EvaluatedBytesOp::ExtremumFinishNative => {
+            panic!("extremum needs actual identities or its SDK-requested streaming continuation")
+        }
         EvaluatedBytesOp::ConvertTzNative => {
             panic!("CONVERT_TZ needs its three actual nullable coerced strings")
         }

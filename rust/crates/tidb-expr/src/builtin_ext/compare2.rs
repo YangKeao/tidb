@@ -16,13 +16,10 @@
 
 use std::cmp::Ordering;
 
-use tidb_ast::BinaryOp;
-use tidb_datatype::{EvalType, FieldType, FieldTypeFlags, TimeType};
-use tidb_query_expr as extrema_sdk;
+use tidb_datatype::{EvalType, FieldType, FieldTypeFlags};
 
 use crate::coerce::{coerce_str, integer_cmp, integer_of};
-use crate::ops::{to_decimal, to_f64};
-use crate::{eval_binary, Datum, EvalError};
+use crate::{Datum, EvalError};
 
 /// Dispatches this family's builtins; `None` if `name` isn't one of them.
 pub(crate) fn dispatch(
@@ -157,7 +154,7 @@ pub struct GlSignature {
 ///
 /// Go's three numeric arms differ only in which cast
 /// `newBaseBuiltinFuncWithTp` wrapped the arguments in, so they share
-/// [`extremum_numeric`] here -- and that block still reads the result's
+/// the shared numeric reducer -- and that reducer still reads the result's
 /// promotion off the runtime datums rather than off the aggregate. One
 /// measured consequence, present before this selection landed and unchanged by
 /// it: over `create table g(i int, d decimal(10,3))` holding `-5` and `2.500`,
@@ -247,304 +244,15 @@ pub(crate) fn extremum_with_signature(
     collation: tidb_datatype::Collation,
     ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
-    use extrema_sdk::{NativeExtremumDomain as Domain, NativeExtremumHead as Head};
-    let metadata = extremum_value_metadata(vals);
-    let cmp_as_date = match extrema_sdk::native_extremum_head(
-        &metadata,
-        signature.map(extremum_signature_metadata),
+    crate::tikv::eval_extremum_in(
+        ctx,
+        vals,
+        want,
+        signature,
+        arg_decimals,
+        all_constant,
+        collation,
     )
-    .map_err(extremum_policy_error)?
-    {
-        Head::Null => return Ok(Datum::Null),
-        Head::Domain(Domain::Vector) => return extremum_vector(vals, want),
-        Head::Domain(Domain::Time { ret_date }) => return extremum_time(vals, want, ret_date, ctx),
-        Head::Domain(Domain::Numeric) => {
-            return extremum_numeric(vals, want, arg_decimals, all_constant, &metadata)
-        }
-        Head::Domain(Domain::StringAsTime { as_date }) => Some(as_date),
-        Head::Domain(Domain::DirectString) => None,
-    };
-    if let Some(cmp_as_date) = cmp_as_date {
-        let mut best: Option<String> = None;
-        for value in vals {
-            let Some(text) = coerce_str(value)? else {
-                return Ok(Datum::Null);
-            };
-            let text = time_conversion_for_gl(cmp_as_date, &text, ctx);
-            let wins = match &best {
-                None => true,
-                Some(best) if want == Ordering::Greater => text > *best,
-                Some(best) => text < *best,
-            };
-            if wins {
-                best = Some(text);
-            }
-        }
-        return Ok(Datum::new_string(best.unwrap_or_default()));
-    }
-    // Go `builtinGreatestStringSig.evalString`: every argument is rendered
-    // with `EvalString` -- the cast `newBaseBuiltinFuncWithTp` already wrapped
-    // it in -- and compared with `types.CompareString(v, maxv, b.collation)`,
-    // the function's own derived collator rather than raw bytes. This covers
-    // `TestGreatestLeastFunc`'s `("123a", "b", "c", 12)` row: GREATEST is
-    // `"c"`, LEAST is `"12"`. CAPTURED from TiDB:
-    // `greatest('a' collate utf8mb4_general_ci, 'B')` is `B` and `least(...)`
-    // is `a`, the SWAP of the byte answer; and under the PAD SPACE default
-    // `greatest('a', 'a ')` is `a`, because the two compare EQUAL and Go keeps
-    // the earlier argument.
-    let collator = tidb_datatype::get_collator(collation.name());
-    let mut best = extremum_string_value(&vals[0])?;
-    for v in &vals[1..] {
-        let candidate = extremum_string_value(v)?;
-        if collator.compare(&candidate, &best) == want {
-            best = candidate;
-        }
-    }
-    Ok(Datum::new_string(best))
-}
-
-/// Go's ETDatetime/ETTimestamp arm (`builtinGreatestTimeSig.evalTime`): every
-/// argument is cast onto the AGGREGATED temporal type before it is compared,
-/// and the winner is converted to that type on the way out
-/// (`res.Convert(tc, getAccurateTimeTypeForGLRet(b.cmpAsDate))`). So a DATE
-/// beside a DATETIME compares as midnight of that day and prints as a datetime
-/// -- `LEAST(date '2020-01-01', datetime '2020-01-01 10:00:00')` is
-/// `2020-01-01 00:00:00`, not `2020-01-01`.
-///
-/// An argument that is not already a time is CAST into one first, because
-/// `newBaseBuiltinFuncWithTp(ctx, c.funcName, args, resTp, argTps...)` wrapped
-/// every argument in `WrapWithCastAsTime` before `evalTime` ever runs. That
-/// wrapping is the whole reason a `time` COLUMN can meet a `TIMESTAMP 'lit'`
-/// here: `AggFieldType(TypeTime, TypeDatetime)` is `TypeDatetime`
-/// (`types/field_type.go`'s merge table), so the pair selects THIS arm and the
-/// duration is converted onto the statement date. `EvalTime` reporting NULL
-/// for any argument makes the whole call NULL --
-/// `if isNull || err != nil { return types.ZeroTime, true, err }`.
-fn extremum_time(
-    vals: &[Datum],
-    want: Ordering,
-    ret_date: bool,
-    ctx: &dyn crate::Columns,
-) -> Result<Datum, EvalError> {
-    let mut best: Option<tidb_datatype::Time> = None;
-    for value in vals {
-        // No SOURCE type travels with the value, and this is the one cast kind
-        // that needs none: `cast_arg_as_datetime` reads it ONLY to tell a YEAR
-        // from a packed `YYYYMMDD` integer, and a YEAR cannot reach this arm.
-        // Go's own merge table settles it -- `mysql.TypeYear` against
-        // `TypeTimestamp`, `TypeDate`, `TypeTime` and `TypeDatetime` is
-        // `mysql.TypeVarchar` in every direction (`types/field_type.go`'s
-        // `fieldTypeMergeRules`) -- so a YEAR argument always aggregates to a
-        // string kind and takes the compare-as-time signature instead.
-        // CAPTURED, closing it: over a `year` column holding 2019 beside a
-        // `datetime` holding `2020-01-01 10:00:00`, `least(y, dt)` is `2019`
-        // and not `2019-00-00 00:00:00` -- the unparsed text the string
-        // signature keeps, not a converted time.
-        let Datum::Time(time) = crate::cast::cast_arg_as_datetime(value, None, ctx)? else {
-            return Ok(Datum::Null);
-        };
-        if best.is_none_or(|best| time.compare(best) == want) {
-            best = Some(time);
-        }
-    }
-    let mut best = best.expect("GREATEST/LEAST is rejected at arity zero");
-    best.set_kind(if ret_date {
-        TimeType::Date
-    } else {
-        TimeType::DateTime
-    });
-    Ok(Datum::Time(best))
-}
-
-/// Go's ETInt, ETReal, ETDecimal, ETDuration and ETVectorFloat32 arms, which
-/// all read `for i := range b.args { ... if v > maxv { maxv = v } }` over
-/// arguments `newBaseBuiltinFuncWithTp` has already cast into the domain.
-///
-/// The domain that the aggregate named is reproduced here from the arguments
-/// rather than from the winner: which argument wins must not decide the
-/// result's type.
-fn extremum_numeric(
-    vals: &[Datum],
-    want: Ordering,
-    arg_decimals: &[i64],
-    all_constant: bool,
-    metadata: &[extrema_sdk::NativeExtremumValueMeta],
-) -> Result<Datum, EvalError> {
-    use extrema_sdk::{
-        NativeExtremumComparisonOp as Op, NativeExtremumComparisonValue as Value,
-        NativeExtremumNumericCursor, NativeExtremumPromotion as Promotion,
-    };
-    let mut cursor =
-        NativeExtremumNumericCursor::new(vals.len(), want).map_err(extremum_policy_error)?;
-    while let Some(request) = cursor.request() {
-        let op = match request.op {
-            Op::Lt => BinaryOp::Lt,
-            Op::Gt => BinaryOp::Gt,
-        };
-        // Retain the original NoColumns comparison policy in this foundation
-        // step; the shared cursor owns demand and winner replacement only.
-        let result = eval_binary(
-            op,
-            vals[request.candidate_index].clone(),
-            vals[request.best_index].clone(),
-        )?;
-        cursor
-            .observe(match result {
-                Datum::Int(value) => Value::Int(value),
-                _ => Value::OtherValue,
-            })
-            .map_err(extremum_policy_error)?;
-    }
-    Ok(
-        match cursor
-            .finish(metadata, arg_decimals, all_constant)
-            .map_err(extremum_policy_error)?
-        {
-            Promotion::KeepWinner { index } => vals[index].clone(),
-            Promotion::ToReal { index } => Datum::Real(to_f64(vals[index].clone())),
-            Promotion::ToDecimal {
-                index,
-                precision_scale,
-            } => {
-                let decimal = to_decimal(vals[index].clone());
-                Datum::Decimal(match precision_scale {
-                    Some(scale) => decimal.cast_to_precision(0, scale),
-                    None => decimal,
-                })
-            }
-        },
-    )
-}
-
-/// Transport actual observations only; domain and promotion decisions live in
-/// the shared policy, including the value-only caller's fallback signature.
-fn extremum_value_metadata(vals: &[Datum]) -> Vec<extrema_sdk::NativeExtremumValueMeta> {
-    vals.iter()
-        .map(|value| extrema_sdk::NativeExtremumValueMeta {
-            kind: value.kind() as u8,
-            time_kind: match value {
-                Datum::Time(time) => Some(time.kind()),
-                _ => None,
-            },
-            decimal_scale: match value {
-                Datum::Decimal(decimal) => Some(decimal.scale()),
-                _ => None,
-            },
-        })
-        .collect()
-}
-
-fn extremum_signature_metadata(value: GlSignature) -> extrema_sdk::NativeExtremumSignature {
-    use extrema_sdk::{NativeExtremumEvalType as Type, NativeExtremumStringMode as Mode};
-    extrema_sdk::NativeExtremumSignature {
-        arg_type: match value.arg_type {
-            EvalType::Int => Type::Int,
-            EvalType::Real => Type::Real,
-            EvalType::Decimal => Type::Decimal,
-            EvalType::String => Type::String,
-            EvalType::Datetime => Type::Datetime,
-            EvalType::Timestamp => Type::Timestamp,
-            EvalType::Duration => Type::Duration,
-            EvalType::Json => Type::Json,
-            EvalType::VectorFloat32 => Type::VectorFloat32,
-        },
-        cmp_string_mode: match value.cmp_string_mode {
-            GlCmpStringMode::Directly => Mode::Directly,
-            GlCmpStringMode::AsDate => Mode::AsDate,
-            GlCmpStringMode::AsDatetime => Mode::AsDatetime,
-        },
-        ret_date: value.ret_date,
-    }
-}
-
-fn extremum_policy_error(error: extrema_sdk::NativeExtremumPolicyError) -> EvalError {
-    match error {
-        extrema_sdk::NativeExtremumPolicyError::EmptyArguments => {
-            EvalError::Unsupported("bad function arity")
-        }
-        _ => EvalError::Unsupported("invalid extremum policy state"),
-    }
-}
-
-/// Go's `builtinGreatestVectorFloat32Sig` / `builtinLeastVectorFloat32Sig`.
-/// The function class casts every argument into the vector domain before it
-/// chooses a winner, so a vector-text mix returns a vector cell rather than
-/// the original text that happened to win the comparison.
-fn extremum_vector(vals: &[Datum], want: Ordering) -> Result<Datum, EvalError> {
-    let target = tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VectorFloat32);
-    let mut values = vals.iter().map(|value| {
-        match value
-            .convert_to(&target, tidb_datatype::ConversionFlags::default())
-            .map_err(|error| EvalError::Vector(error.to_string()))?
-            .value
-        {
-            Datum::VectorFloat32(value) => Ok(value),
-            _ => unreachable!("a VectorFloat32 conversion returns a vector datum"),
-        }
-    });
-    let mut best = values
-        .next()
-        .expect("GREATEST/LEAST is rejected at arity zero")?;
-    for value in values {
-        let value = value?;
-        if value.compare(&best) == want {
-            best = value;
-        }
-    }
-    Ok(Datum::new_vector_float32(best))
-}
-
-fn extremum_string_value(value: &Datum) -> Result<Vec<u8>, EvalError> {
-    Ok(match value {
-        Datum::String(value) => value.bytes().to_vec(),
-        Datum::Bytes(value) => value.clone(),
-        Datum::Int(value) => value.to_string().into_bytes(),
-        Datum::UInt(value) => value.to_string().into_bytes(),
-        Datum::Decimal(value) => value.to_string().into_bytes(),
-        Datum::Real(value) => value.to_string().into_bytes(),
-        Datum::Null => return Err(EvalError::Unsupported("NULL string operand")),
-        Datum::MinNotNull | Datum::MaxValue => {
-            return Err(EvalError::Unsupported("range sentinel string operand"));
-        }
-        other => other
-            .to_bytes()
-            .map_err(|_| EvalError::Unsupported("datum string conversion"))?,
-    })
-}
-
-/// Go `doTimeConversionForGL` (`pkg/expression/builtin_compare.go`): parse one
-/// GREATEST/LEAST argument as a DATE or DATETIME and re-render it as
-/// `types.Time.String()`.
-///
-/// A value that does not parse keeps its ORIGINAL text: Go raises the invalid
-/// time through `handleInvalidTimeError`, and in the non-erroring modes that
-/// leaves `strVal` untouched. The zero date is NOT rejected here -- this is not
-/// the cast path's `NO_ZERO_DATE` check -- so
-/// `least(<a DATE>, '0000-00-00')` is `0000-00-00`, captured from TiDB.
-fn time_conversion_for_gl(cmp_as_date: bool, value: &str, ctx: &dyn crate::Columns) -> String {
-    let (kind, fsp) = if cmp_as_date {
-        // `types.ParseDate` asks for `MinFsp`; a DATE carries no fraction.
-        (tidb_datatype::TimeType::Date, 0)
-    } else {
-        // `types.ParseDatetime` asks for the literal's own fraction width.
-        (
-            tidb_datatype::TimeType::DateTime,
-            i64::from(tidb_datatype::get_fsp(value)),
-        )
-    };
-    let parsed = tidb_datatype::parse_time(
-        value,
-        kind,
-        fsp,
-        false,
-        true,
-        ctx.date_modes().allow_invalid_dates,
-        &ctx.time_zone(),
-    );
-    match parsed {
-        Ok(parsed) => parsed.time.to_string(),
-        Err(_) => value.to_owned(),
-    }
 }
 
 /// `INTERVAL(n, n1, n2, ...)`: return the zero-based position of the first
@@ -1568,6 +1276,251 @@ fn extremum_policy_adapter_preserves_null_ties_scale_and_eager_demand() {
                 *ctx.events.borrow(),
                 vec![Event::Child(0), Event::Child(1), Event::Child(2)]
             );
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn extremum_runtime_entries_keep_five_domains_static_metadata_and_getter_order() {
+    use crate::constant::{Constant, ParamMarker};
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    use std::cell::{Cell, RefCell};
+    use tidb_datatype::{
+        Collation, DateModes, FieldTypeCode as Code, SessionTimeZone, TimeType, VectorFloat32,
+    };
+
+    #[derive(Debug, Eq, PartialEq)]
+    enum Event {
+        Child(usize),
+        Modes,
+        Zone,
+    }
+    struct Context {
+        values: Vec<Datum>,
+        fail: Option<usize>,
+        modes: Cell<usize>,
+        events: RefCell<Vec<Event>>,
+    }
+    impl crate::Columns for Context {
+        fn get(&self, path: &[String]) -> Option<Datum> {
+            self.param_value(path[0].parse().unwrap()).ok()
+        }
+        fn param_value(&self, index: usize) -> Result<Datum, EvalError> {
+            self.events.borrow_mut().push(Event::Child(index));
+            if self.fail == Some(index) {
+                return Err(EvalError::Unsupported("extremum source failure"));
+            }
+            Ok(self.values[index].clone())
+        }
+        fn date_modes(&self) -> DateModes {
+            self.events.borrow_mut().push(Event::Modes);
+            let index = self.modes.get();
+            self.modes.set(index + 1);
+            DateModes {
+                allow_invalid_dates: index == 0,
+                ..DateModes::default()
+            }
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            self.events.borrow_mut().push(Event::Zone);
+            SessionTimeZone::utc()
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            panic!("not a caller truncation-policy operation")
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            panic!("these cases do not warn")
+        }
+    }
+    let context = |values, fail| Context {
+        values,
+        fail,
+        modes: Cell::new(0),
+        events: RefCell::new(Vec::new()),
+    };
+    let time = |text, kind, fsp| {
+        tidb_datatype::parse_time(text, kind, fsp, false, true, false, &SessionTimeZone::utc())
+            .unwrap()
+            .time
+    };
+    let date = time("2020-01-01", TimeType::Date, 0);
+    let later = time("2020-01-01 10:00:00.123000", TimeType::DateTime, 6);
+    let mut midnight = date;
+    midnight.set_kind(TimeType::DateTime);
+    let vector = |values| Datum::new_vector_float32(VectorFloat32::must_create(values));
+    let signature = |arg_type, cmp_string_mode| GlSignature {
+        arg_type,
+        cmp_string_mode,
+        ret_date: false,
+    };
+    let ci = Collation::from_name("utf8mb4_general_ci").unwrap();
+    struct Case {
+        values: Vec<Datum>,
+        codes: [Code; 2],
+        result: Code,
+        signature: GlSignature,
+        want: Ordering,
+        expected: Datum,
+        ast_expected: Datum,
+        string_time: bool,
+    }
+    let cases = [
+        Case {
+            values: vec![Datum::Int(4), Datum::Real(-2.25)],
+            codes: [Code::LongLong, Code::Double],
+            result: Code::Double,
+            signature: signature(EvalType::Real, GlCmpStringMode::Directly),
+            want: Ordering::Greater,
+            expected: Datum::Real(4.0),
+            ast_expected: Datum::Real(4.0),
+            string_time: false,
+        },
+        Case {
+            values: vec![Datum::new_string("a"), Datum::new_string("B")],
+            codes: [Code::Varchar, Code::Varchar],
+            result: Code::VarString,
+            signature: signature(EvalType::String, GlCmpStringMode::Directly),
+            want: Ordering::Greater,
+            expected: Datum::new_string("B"),
+            ast_expected: Datum::new_string("a"),
+            string_time: false,
+        },
+        Case {
+            values: vec![Datum::Time(date), Datum::Time(later)],
+            codes: [Code::Date, Code::Datetime],
+            result: Code::Datetime,
+            signature: signature(EvalType::Datetime, GlCmpStringMode::Directly),
+            want: Ordering::Less,
+            expected: Datum::Time(midnight),
+            ast_expected: Datum::Time(midnight),
+            string_time: false,
+        },
+        Case {
+            values: vec![vector(vec![1.0, 2.0]), Datum::new_string("[1,3]")],
+            codes: [Code::VectorFloat32, Code::VectorFloat32],
+            result: Code::VectorFloat32,
+            signature: signature(EvalType::VectorFloat32, GlCmpStringMode::Directly),
+            want: Ordering::Greater,
+            expected: vector(vec![1.0, 3.0]),
+            ast_expected: vector(vec![1.0, 3.0]),
+            string_time: false,
+        },
+        // Same runtime strings, different source metadata: the typed entry
+        // parses each with a fresh mode read, whereas AST compares plain text.
+        // The first invalid date normalizes under ALLOW_INVALID_DATES; the
+        // second keeps its original short spelling under the next mode read.
+        Case {
+            values: vec![
+                Datum::new_string("2019-2-29"),
+                Datum::new_string("2019-2-29"),
+            ],
+            codes: [Code::Datetime, Code::Varchar],
+            result: Code::VarString,
+            signature: signature(EvalType::String, GlCmpStringMode::AsDatetime),
+            want: Ordering::Greater,
+            expected: Datum::new_string("2019-2-29"),
+            ast_expected: Datum::new_string("2019-2-29"),
+            string_time: true,
+        },
+    ];
+    let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    let evaluate = |entry, case: &Case, ctx: &Context, cols: &dyn crate::Columns| {
+        let name = if case.want == Ordering::Less {
+            "least"
+        } else {
+            "greatest"
+        };
+        match entry {
+            0 => extremum_with_signature(
+                &ctx.values,
+                case.want,
+                Some(case.signature),
+                &[],
+                false,
+                ci,
+                cols,
+            ),
+            1 => {
+                let args = (0..2)
+                    .map(|index| tidb_ast::Expr::Column(vec![index.to_string()]))
+                    .collect::<Vec<_>>();
+                crate::func::eval_func(name, &args, cols, None)
+            }
+            _ => {
+                let args = case
+                    .codes
+                    .iter()
+                    .enumerate()
+                    .map(|(index, code)| {
+                        let mut constant = Constant::new(Datum::Null, FieldType::new(*code));
+                        constant.param_marker = Some(ParamMarker {
+                            order: i64::try_from(index).unwrap(),
+                        });
+                        Expression::Constant(constant)
+                    })
+                    .collect();
+                let mut result = FieldType::new(case.result);
+                result.set_collation_name(ci.name());
+                ScalarFunction::new(tidb_ast::CiString::new(name), result, args)
+                    .eval(cols, row.to_row())
+            }
+        }
+    };
+    let owner = crate::AsciiPoolOwner::new(
+        crate::AsciiPoolPolicy::checked(
+            0,
+            0,
+            16 * 1024 * 1024,
+            4 * 1024 * 1024,
+            4 * 1024 * 1024,
+            64,
+            8,
+            4 * 1024 * 1024,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let denied = owner.begin_execution().unwrap();
+    for case in &cases {
+        for entry in 0..3 {
+            let ctx = context(case.values.clone(), None);
+            let expected = if entry == 1 {
+                &case.ast_expected
+            } else {
+                &case.expected
+            };
+            assert_eq!(evaluate(entry, case, &ctx, &ctx).as_ref(), Ok(expected));
+            let mut events = if entry == 0 {
+                vec![]
+            } else {
+                vec![Event::Child(0), Event::Child(1)]
+            };
+            if case.string_time && entry != 1 {
+                events.extend([Event::Modes, Event::Zone, Event::Modes, Event::Zone]);
+            }
+            assert_eq!(*ctx.events.borrow(), events);
+
+            let ctx = context(vec![Datum::Null, Datum::new_bytes(vec![255])], None);
+            assert_eq!(evaluate(entry, case, &ctx, &ctx), Ok(Datum::Null));
+            let children = if entry == 0 {
+                vec![]
+            } else {
+                vec![Event::Child(0), Event::Child(1)]
+            };
+            assert_eq!(*ctx.events.borrow(), children);
+            ctx.events.borrow_mut().clear();
+            assert!(
+                matches!(denied.scope().with_columns(&ctx, |cols| evaluate(entry, case, &ctx, cols)),
+                Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource)
+            );
+            assert_eq!(*ctx.events.borrow(), children);
+            if entry != 0 {
+                let ctx = context(vec![Datum::Null, Datum::Int(0)], Some(1));
+                assert!(evaluate(entry, case, &ctx, &ctx).is_err());
+                assert_eq!(*ctx.events.borrow(), vec![Event::Child(0), Event::Child(1)]);
+            }
         }
     }
 }

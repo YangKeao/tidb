@@ -40,6 +40,8 @@ pub(crate) use convert_charset::{
 mod evaluated_ascii;
 mod extract;
 pub(crate) use extract::{eval_extract_composite_in, eval_extract_in, eval_extract_null_unit_in};
+mod extremum;
+pub(crate) use extremum::eval_extremum_in;
 mod from_unixtime;
 mod identity_value;
 mod if_control;

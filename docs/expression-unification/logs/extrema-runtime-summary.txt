@@ -1,0 +1,65 @@
+extrema-runtime-100 / R103
+CPP cwd /home/agent/tidb/expression-unification/tikv
+Native cwd /home/agent/tidb/expression-unification/tidb/rust
+Raw /home/agent/tidb/expression-unification/logs/extrema-runtime-{id}.log
+Counts passed/failed/ignored/filtered; compile/test seconds.
+
+tikv-core | 2/0/0/979 | 15.64/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_extremum -- --test-threads=1
+sha256 c27605988ac3f2bc3038ecf372eca5d5ed45108b18bb63bb082df23acb61e5fe
+
+tikv-local | 352/0/1/628 | 0.14/0.23 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+sha256 4949c33e37ae50e8de96226f987eb8fa84da18181571948331faf020b1514fd5
+
+native-entry | 3/3/0/1705 | 18.45/0.01 | exit101
+../../tools/cargo-tidb test --locked -p tidb-expr --lib extremum -- --test-threads=1
+sha256 94f01198b98972f6dcc752f4f48016c26687569770f4a9389fb0d2a1efa6954d
+
+tikv-core-retry | 2/0/0/979 | 9.21/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_extremum -- --test-threads=1
+sha256 74f4d4845ea064fb4ba281bf07beaf3cc5c6e50b9359e7d76e03aa499a1ea8d7
+
+tikv-local-retry | 352/0/1/628 | 0.13/0.23 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+sha256 e019ad8ff09c10c17cf01d2f57df6992d5ec587c36c9847f32eaa5835829852e
+
+native-entry-retry | 6/0/0/1705 | 11.78/0.02 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib extremum -- --test-threads=1
+sha256 f386ac178096d5492dbbd995c2b700234b78c6338fc3cf8acbf55d808e9c8f14
+
+native-gateway | 196/0/1/1514 | 0.13/0.34 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii -- --test-threads=1
+sha256 a9a96deb4e176eb6c0c1ed4becb8d9b456a089aa94fd4fc233813c34edece21f
+
+native-original | 1/0/0/1710 | 0.13/0.02 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tests::compare_control_source::test_greatest_least_func -- --exact --test-threads=1
+sha256 78fa89d136e7ada0a7e938106dd3d623efc97c46cd1a284be5215deeaac811aa
+
+sql | 2/0/0/2243 | 28.22/0.08 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib extremum -- --test-threads=1
+sha256 a7441ff57211695620a44a82f7c066a14d97a132b4234805e60f25138ed865d3
+
+sql-original | 6/0/0/2239 | 0.15/0.10 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib greatest -- --test-threads=1
+sha256 f15f8dc7e8b1f89e327668bc7551c1c577f2bdf234c42dba6bafe7eef75782a4
+
+10 locked serial launches:9green/1real product-regression RED. No compile failure/zero-match/interruption. Initial native6 had3pass/3fail: OLDextremum_uses_the_vector_signature_when_either_argument_is_a_vector plus newentry/newbridge tests. InvalidBatch/Invoke came from newly introduced SDK vector_value using length-prefixed storage deserialization on M2identity rawLEf32 elements. Initial SDK/G newfixtures repeated that prefix error, so initial CPPgreen did not prove real native vector integration. SDK production now reconstructs rawbits only (noSQLfinite/dimension narrowing); ONLYnew SDK/G fixture encoding corrected from source. Original native test/expected remained unchanged. Corrected CPPcore/local and native6 allgreen; fail-before/fix-after logs retained. No provider/actual-output oracle recording.
+
+Five new tests:2CPP/2native/1SQL.151CPP/388native original test bodies byte-identical; existing ignoredvector tests untouched. NewSDK coversfive domains/rawidentity/globalNULL/arity0/1000scale/NaNresult/timeFSP255/zone/strictstate. Directtest isolates8actualprofile roots with SDK-produced whole continuations. NumericNone is an isolated OtherValue consumer fixture, NOT proof a chosen SQL pair computesNULL. Each state/value actualcapacity and Fixedzone.name spare128Ki against64Ki refuses beforeinvoke thenhealthyreuse; wrongrole/stage/mode andmax_steps0 refuse; UTC/London/UTC rebinding retainscleanup. These are CPP instruction-budget probes, not frontend pool0 evidence.
+
+Native bridge tests0/1slots, defaultNoColumns semantics withselectedscope, originalctxcast/mode/now/zone order, latezonepanic poisoning, zone-sparecap refusal/reuse, NoColumns entry, effectiveglobalcollation false/true andNoPad withRAII restore. Entrypaths helper/AST/manualtyped×5domains retain metadata/demand, globalNULL/badbytes rootrefusal andeagerchild error beforehead. R102scale/NaN/promotion tests remain original andgreen. Initialsource review foundno blocker butdidnotcatchvectorformatbug; runtimegate did.
+
+NewSQL28SELECT =7storedtemplates×2vector×pool1/0,14NEWHeadrefusals and14positive results includingNULL. NumericDecimalownscale0/header23/3, TimeDate+Datetime midnight/header19/0, DirectStringgeneral_ci a/B winnerB/headerVarchar8/0, StringAsTime canonical/headerVarString-1/-1, Vector[1,3]/headerVector-1/-1, invalidtime unchangedquiet, lateNULLquiet. Allrealstoredoperands withoutnestedCAST. Zero-slot isHeadonly, notseparateFinishroot proof. SQLgatealso rerunsR1024SELECT (2tests/32SELECTtotal); six original greatest SQLtests staygreen. NoSQLNaN, unsupportedvectorCAST orPB admission invented.
+
+EightOwnBytes1call profiles: Head BytesIntInt(realidentitylist/fullsignature/scales/constant packet,wantOrdering,effectivecollator), sixValuesBytes2(state,actualvalue) Numeric/Time/Vector/String/TimeText/Finish, TimeContext existingdedicatedTemporalText(state,actualmode,actualzone). SDKall5domain choice/reduction/temporalparse/promotion, hostonlyoriginalgenericactuators+materialization. ActualOriginalidentity passesFinishworker, nohostclone bypass. Numeric originaleval_binary_with_div_precision(...4,NoColumns) semanticdefaults bindselectedscope, notnewoneshot oractualstatementpolicy. Othergettersuseoriginalctx. TimeText→Context keepscoerce-beforemode-beforezone, failedparse originaltextquiet; Stringdefaultretag preserved. GlobalNULL suppresses conversions butnotalready-eagerchildren. Rawrepresentation andsingletonidentity preserved.
+
+Strictperprofile outputs, actualNone distinction anddedicatedrole gates: compile, ready/compiled/actualexpr_eval andzone metadata bindings preciseonlynewop. No genericwiden/carrier/factorylimit/compilearity/wire/PB/legacy/specializedvector change. Oldliteral validators/bounds unchanged. SDKbound actualfirstlen+secondlen+512 pluspendingDecimalfinishpositive(scaleasu32 asi32); freshoutputcap checked, actualallinputs+zonecaps precharged. Prebuild discarded blanket16*(sum+4096) because64Ki floor refused tinycalls. No physical/transientpeak orallocator claim.
+
+Prebuildsource correction: originalget_collator(name) honorsglobalnew_collation_enabled; disabledDerivedBinary israwNoPad. Head now passesactualresolvedpolicytag, notstaticdeclaredcollation.native_policy. Readonlyglobalmetadata, noctxgetter/hostwinner. Serialtest restoresglobalflag/defaults; noconcurrentglobalmutation certification. OriginalStringAsTime nativeparse8flags verified, no inventedwarning.
+
+9CPP/6native Rustfiles,2newmodules. Nativeall5reducers/timeconversion deleted, signature/return planner unchanged. Genericcoercion adapters moved—notduplicated—to bridge. SDKR102policy reused withprivatecomputedcursorcodec; prior type/partial records exact. Pinnedrustfmt/check+gitdiffchecks pass; guides descriptive, no Cargo/lock/Go/Bazel/AGENTpolicy edits. UnrelatedBUILD excluded.
+
+Audit-script-only incidents: guessed baseline inventory key and ledger complete_migrated_families key caused two KeyErrors; actual schema is baseline families filteredin_denominator and ledgerfully_final_audited_count. Read schemas and reran corrected fail-fast checker; no product/test/Cargo change or additional test launch.
+
+Functional234/245=95.51%, strict0,11remaining=3core+2ordinary+6complex candidates.232priorfamily objects byte-identical, appendonlygreatest/least. latesttype remains extrema-policy-99. Three identical Plans withsigned-off pairedpushes. Full expression/unistore NOT rerun; historicalR1004+1 failures remain. Workspace/lint/dev/bazel/release/exhaustive/TiFlash/FIPS/performance/physicalheap/peak/OOM/allocator/dual-tzdata/wholeGo-package/PR-ready unverified. M6/request-root/defaultNoColumns/liveDAG/finalacceptance continue; no blanketexceptions/overallcompletion claim.
