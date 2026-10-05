@@ -9363,6 +9363,166 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn native_json_coercion_preserves_sql_boolean_bit_document_and_value_policies() {
+    use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
+
+    let mut session = Session::new();
+    session
+        .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+        .unwrap();
+    session.run("SET sql_mode=''").unwrap();
+    session.run("SET time_zone='+00:00'").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE native_json_coercion_sql (i BIGINT, u BIGINT UNSIGNED, f FLOAT, d DECIMAL(6,2), dt DATETIME(3), tm TIME(3), b BINARY(3), vb VARBINARY(3), bits BIT(3), jnum JSON, jstr JSON, jnull JSON, doc JSON, s VARCHAR(16), n VARCHAR(16))")
+        .unwrap();
+    session
+        .run(r#"INSERT INTO native_json_coercion_sql VALUES (1,1,0.1,1.25,'2024-01-02 03:04:05.006','00:00:01.250','ab','ab',b'101','1','"1"','null','{}','1',NULL)"#)
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    type JsonCell = Option<(u8, &'static [u8])>;
+    let cases: [(&str, &[JsonCell]); 4] = [
+        (
+            "CAST(i=1 AS JSON),CAST(i AS JSON),CAST(u AS JSON)",
+            &[
+                Some((0x04, &[1])),
+                Some((0x09, &[1, 0, 0, 0, 0, 0, 0, 0])),
+                Some((0x0a, &[1, 0, 0, 0, 0, 0, 0, 0])),
+            ],
+        ),
+        (
+            "CAST(bits AS JSON),CAST(b'101' AS JSON),CAST(x'aabb' AS JSON),CAST(b AS JSON),CAST(vb AS JSON)",
+            &[
+                Some((0x0a, &[5, 0, 0, 0, 0, 0, 0, 0])),
+                Some((0x0d, &[253, 1, 5])),
+                Some((0x0d, &[253, 2, 0xaa, 0xbb])),
+                Some((0x0d, &[254, 3, b'a', b'b', 0])),
+                Some((0x0d, &[15, 2, b'a', b'b'])),
+            ],
+        ),
+        (
+            "CAST(f AS JSON),CAST(d AS JSON),CAST(dt AS JSON),CAST(tm AS JSON),CAST(jnull AS JSON),CAST(n AS JSON)",
+            &[
+                Some((0x0b, &[0, 0, 0, 0xa0, 0x99, 0x99, 0xb9, 0x3f])),
+                Some((0x0b, &[0, 0, 0, 0, 0, 0, 0xf4, 0x3f])),
+                Some((0x0f, &[0, 0x77, 1, 5, 0x31, 0x44, 0xa0, 0x1f])),
+                Some((0x11, &[0x80, 0x7c, 0x81, 0x4a, 0, 0, 0, 0, 6, 0, 0, 0])),
+                Some((0x04, &[0])),
+                None,
+            ],
+        ),
+        (
+            "CAST(s AS JSON),JSON_ARRAY(s,NULL,i=1),JSON_SET(doc,'$.x',s)",
+            &[
+                Some((0x09, &[1, 0, 0, 0, 0, 0, 0, 0])),
+                // ["1", null, true]: three entries, string at 23, literals
+                // inline, total payload size 25. No parser-built expectation.
+                Some((0x03, &[
+                    3, 0, 0, 0, 25, 0, 0, 0,
+                    12, 23, 0, 0, 0, 4, 0, 0, 0, 0, 4, 1, 0, 0, 0,
+                    1, b'1',
+                ])),
+                // {"x": "1"}: key at 19 and value string at 20, size 22.
+                Some((0x01, &[
+                    1, 0, 0, 0, 22, 0, 0, 0,
+                    19, 0, 0, 0, 1, 0, 12, 20, 0, 0, 0,
+                    b'x', 1, b'1',
+                ])),
+            ],
+        ),
+    ];
+    // These are expression-controller consumers, with the real source flags.
+    // DDL gives BIT its implicit UNSIGNED flag. ScalarFunction first converts
+    // the hybrid column to Int(5), then restores UInt from that source flag;
+    // this does NOT claim that a raw Datum::Bit helper becomes a JSON number.
+    // The two binary literals instead produce opaque type253 payloads.
+    // Likewise, SQL FLOAT has already narrowed to f32 and the typed entrypoint
+    // widens it to Real before this controller: the fixed double payload is
+    // 0.10000000149011612, not evidence for a raw Float32 helper input.
+    // Temporal FSP=6, binary source codes/padding, boolean flags and SQL NULL
+    // are controller choices; typed constructors only encode the chosen value.
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        for (case_index, &(projection, expected)) in cases.iter().enumerate() {
+            let sql = format!("SELECT {projection} FROM native_json_coercion_sql");
+            let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap() else {
+                panic!("expected shared JSON coercion rows: {sql}")
+            };
+            assert_eq!(columns.len(), expected.len(), "{sql}");
+            assert_eq!(rows.len(), 1, "{sql}");
+            assert_eq!(rows[0].len(), expected.len(), "{sql}");
+            for (index, expected) in expected.iter().enumerate() {
+                let field = &columns[index].1;
+                let cast = case_index != 3 || index == 0;
+                assert_eq!(field.code(), FieldTypeCode::Json);
+                assert_eq!(
+                    (field.flen(), field.decimal()),
+                    if cast {
+                        (4_194_304, 0)
+                    } else {
+                        (16_777_216, -1)
+                    }
+                );
+                assert_eq!(
+                    field.charset_name(),
+                    if cast { "utf8mb4" } else { "binary" }
+                );
+                assert_eq!(
+                    field.collation_name(),
+                    if cast { "utf8mb4_bin" } else { "binary" }
+                );
+                assert!(field.has_flag(FieldTypeFlags::BINARY));
+                assert_eq!(field.has_flag(FieldTypeFlags::PARSE_TO_JSON), cast);
+                assert!(!field.is_unsigned());
+                if let Some((tag, payload)) = expected {
+                    let Datum::Json(value) = &rows[0][index] else {
+                        panic!("lost typed JSON carrier: {sql}/{index}")
+                    };
+                    assert_eq!(value.type_code(), *tag, "{sql}/{vectorized}/{index}");
+                    assert_eq!(value.value(), *payload, "{sql}/{vectorized}/{index}");
+                } else {
+                    assert_eq!(rows[0][index], Datum::Null, "{sql}/{vectorized}/{index}");
+                }
+            }
+            assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+        }
+        // Two nonconstant candidates avoid single-IN's equality rewrite.
+        // The wrapper disables ParseToJSONFlag: SQL s='1' is a JSON string
+        // value here, unlike the explicit document CAST in the fourth probe.
+        let sql = "SELECT jnum IN(s,s),jstr IN(s,s) FROM native_json_coercion_sql";
+        let StmtOutput::Rows { columns, rows } = session.run_with_columns(sql).unwrap() else {
+            panic!("expected typed JSON value-policy IN rows")
+        };
+        assert_eq!(columns.len(), 2);
+        for (_, field) in &columns {
+            assert_eq!(field.code(), FieldTypeCode::LongLong);
+            assert_eq!((field.flen(), field.decimal()), (1, 0));
+            assert_eq!(field.charset_name(), "binary");
+            assert_eq!(field.collation_name(), "binary");
+            assert!(field.has_flag(FieldTypeFlags::IS_BOOLEAN));
+            assert!(!field.is_unsigned());
+        }
+        assert_eq!(
+            rows,
+            vec![vec![Datum::Int(0), Datum::Int(1)]],
+            "vectorized={vectorized}"
+        );
+        assert!(warnings_of(&session).is_empty());
+    }
+    // Ten successful SELECTs; strict malformed/surrogate document failures
+    // remain covered by the unchanged preceding rounds. No raw Float32/NaN,
+    // minimum-duration/unknown-metadata, new Head or zero-slot claim is made.
+}
+
+#[test]
 fn native_json_parse_preserves_storage_surrogates_and_strict_expression_boundary() {
     use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
 

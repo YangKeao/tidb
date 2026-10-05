@@ -1,0 +1,50 @@
+json-coercion-116 / R119 shared JSON expression value-boundary policies, not wholeJSON/CAST/M2/Go-package completion.
+Functional238/245 strict0 remaining7 unchanged. TiKV cwd /home/agent/tidb/expression-unification/tikv; Native cwd /home/agent/tidb/expression-unification/tidb/rust.
+Raw /home/agent/tidb/expression-unification/logs/json-coercion-{id}.log
+Counts passed/failed/ignored/filtered; compile/test seconds; all exits0.
+
+tikv-policy | 3/0/0/999 | 19.79/0.00
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_json_coercion -- --test-threads=1
+sha256 cd4a490195e03478f77e3f601ef670955e0e24b08b42d9239888e49b7e336f5b
+
+native-datatype | 468/0/0/0 | 1.47/7.22
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+sha256 b1c71f985d82b9b1eb62a70b21d0a92649999caf85fff9e5f0e6a11211ac3142
+
+native-json | 45/0/0/1679 | 18.93/0.36
+../../tools/cargo-tidb test --locked -p tidb-expr --lib builtin_ext::json::tests -- --test-threads=1
+sha256 7dfd844ebb503b0b8862adff49b06cc0f6170a0009e1cbd9fda694f240f066e9
+
+native-cast | 16/0/0/1708 | 0.17/0.00
+../../tools/cargo-tidb test --locked -p tidb-expr --lib test_cast_func -- --test-threads=1
+sha256 65f4f96a9d698f8644874bd1d116939cd2848c734f0edf612dd2d8a30a93f543
+
+native-column | 1/0/0/1723 | 0.13/0.00
+../../tools/cargo-tidb test --locked -p tidb-expr --lib eval_renders_binary_charset_column_as_json_opaque -- --test-threads=1
+sha256 392c57f81d4c4aaa9507ce51c98182e8611f6a7dcd0314493321358554a6a7d6
+
+sql | 1/0/0/2258 | 28.75/0.03
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_json_coercion_preserves_sql_boolean_bit_document_and_value_policies -- --exact --test-threads=1
+sha256 7e5b551d4661d90b0656d2af63df9f9a9ed516a0a4ee40cb0c3f3f94cde8e5f2
+
+sql-typed | 1/0/0/2258 | 0.17/0.03
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_json_construction_preserves_sql_tags_opaque_temporals_and_value_coercion -- --exact --test-threads=1
+sha256 00ffab76953ecb2c704e23dc7ec69cc217f3542bb12105ba924165447e2e0250
+
+sql-parser | 1/0/0/2258 | 0.16/0.04
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_json_parse_preserves_storage_surrogates_and_strict_expression_boundary -- --exact --test-threads=1
+sha256 d6a9f6e33cc8214f906ed0f01f1c89e36256fc766788f24956d5abc647a0db32
+
+sql-original | 1/0/0/2258 | 0.18/0.02
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_json::cast_as_json_keeps_gos_typed_names -- --exact --test-threads=1
+sha256 ceff8854e932fe204e07d8e9d4c76fe4ca3248d521f758e0ea690016ef5ecd55
+
+9serial locked single-threaded matched launches/9GREEN firstattempt;0compilefail/testfail/ignored/zero-match/interrupt/retry.6newtests=SDK3/native3.2SDK+5nativeRustfiles,1newlive;0SDK+242native oldtestbodies unchanged. Newnativeunit covers11/11wrappers withactualDatum/FieldType. No oldfixtures/oracles/observers changed; no targetparser/constructor/provider result used as expected. Preflight neworacles clarified from existingformat source: JsonFloat1.0 keeps'.0'/Double; Decimal9007199254740993 argument preciseInt vsdocument roundedFloat9007199254740992.0. Noactual-outputrecording/fail-before claim. RootInf display panic intentionally caught inunit, notfailedtest; malformedARRAY03[ff] displayempty->EmptyText, CASTrawclone preserved. Full native datatype library not whole-Go-package transcreation. Existing String-to-DECIMAL UNION ignore NOTselected/passed/repaired. HistoricalREDs retained.
+
+SQL10successSELECT=5projections x2vector,38cells=32JSON+2SQLNULL+4INints,emptywarnings. Booleancomparisonflag→literaltrue04 vsplainInt09/UInt0a; storedBIT implicitUNSIGNED andexistingeval_numeric_row/cast_json_argument_value prepareUInt5 (NOTdirectDatumBit conversion). b'101'/x'aabb' literalOpaque253 areSQLbuild-timeconsumers; storedBINARY3/VARBINARY3 opaque254/15. StoredFLOAT.1 preparedReal0.10000000149011612, notrawFloat32domain. DEC1.25/DT3/TIME3 existingfsp6; JSONnullvsSQLNULL. CASTs1 documentnumber vsARRAY["1",null,true]25B andSET{"x":"1"}22B, fixedrawlayouts. TwoitemIN numeric/stringJSONagainsts→0/1. CASTJSON4194304/0 UTF8/bin BINARY|PARSE; ARRAY/SETJSON16777216/-1 binary/BINARY; INLongLong1/0 binary IS_BOOLEAN. No newerrorprobe; R118regression keepsstrictsurrogate3140. OtherthreeSQLgates areoriginalreruns, notnewprobes. NewSQLdoesexerciseSDKexpressioncontrollers, not merely datatype construction; no wholefamily/C4Head/zero claims.
+
+SDKnative_json_coercion owns11publicpolicyentries+5privateselectors. Ordinary/typed/valueCAST, argument modes, SQL/documentviews, documentvalue/text/strict, binaryresult, strictparse allclosedSDK. Nativevalue.rs onlyoriginalentryvisibility,actualsourceprojection,error5map,storage/nullablewrap; 5oldselectors deleted. PublicDatum.as_shared_json_input one-lineborrowwrapper reusesoriginal19kind as_shared_sql_string unchanged; no duplicateprojection/hostformatter/parser/policy callback. Sourceactualcode2views/collation/flen/rawflagsu64; Known245 iffJSON eval, Unknown245 not, arrays effectiveJSON. No synthetic evaltype/origin/carrier. NativeRootSDKexports boundedto11entries+3types; orphanstrictparser reexport removed, NativeJsonError retainedforconstruct consumer.
+
+NULL castSQLNULL/argumentJSONnull/documentNone; typedNULL→binary StringBytes withactualbinarycollation→IntUIntboolean→typedscalar. Bool UInt wrapsasi64 before nonzero; untyped doesn'tguessflag. BinaryLiteral253 vsdirectBitfallback. DatatypeBytesalwaysopaque rule NOT substitutedfornarrowexprgate. SourceJSON forcesparse evenValue mode. RealNaN argumentFloatOverflow; Float32NaN/typedCAST Unsupported; Float32rawf64notnarrow; Decimalvisibleparse vsdatatypeDOUBLE. Timeexistingset_fsp6 DATE-noop(rawfsp255),rawcoreunchanged; Durationonlysharedfspnormalize6,nanos1001/MIN/MAX notrounded/rangechecked. JSONCASTrawclone vsDisplay/strictparse; binaryresult stillFORMAT→lenientparse/allerrorsInvalidText; nofrom_value shortcut. Strictdocnumeric4kinds excludingFloat32,3146argument/function andunsupportedmessages preserved. Unitborrowpointers applyonlyview, nowholepipelinezerocopyclaim.
+
+ScalarFunctiontypedrow/batch preparation/staticVector refusal, genericCASTdispatch, fieldfinishing, C4gateways/frozenASTNOTIN3entrylock, R117/118datatypecores/strictparser/formatter unchanged. AppendpartialCAST+type;238families/priorhistory unchanged, latestfunctional106/type-partial-runtime116 strict0remaining7goalactive. OtherCAST/typedcallerpreparation/broaderM2/sixcomplexcandidates/root/liveDAG/final remain. FullExpr/Unistore/workspace/lint/dev/bazel/release/exhaustive/perf/physicalmemory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR-ready unverified; R100expression4/unistore1 historicalunrepaired. NoGo/Bazel/Cargo/lock changes; unrelatedBUILD excluded. Architecture/guide ownership updated withoutnormativepolicy; pairedDCO pushes/threeidenticalPlans.

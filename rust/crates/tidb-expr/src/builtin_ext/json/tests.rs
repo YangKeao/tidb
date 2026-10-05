@@ -2693,3 +2693,402 @@ fn shared_json_merges_keep_preparation_errors_and_post_result_warning_order() {
         execution.close();
     }
 }
+
+#[test]
+fn json_coercion_wrappers_preserve_source_metadata_raw_scalars_and_error_domains() {
+    use super::value::{
+        binary_json_datum, cast_as_json, cast_as_json_typed, cast_as_json_value_typed,
+        json_argument, json_document_string, json_document_text_argument, json_sql_string,
+        parse_json, parse_json_document_argument, parse_json_document_argument_strict,
+        StringArgument,
+    };
+    use crate::{EvalError, JsonError};
+    use tidb_datatype::{
+        BinaryJSON, BinaryLiteral, Collation, CoreTime, Decimal, FieldType, FieldTypeCode,
+        FieldTypeFlags, MySqlDuration, Time, TimeType,
+    };
+
+    // Expected tags/payloads below are fixed source-layout bytes, not values
+    // obtained from another CAST, SDK implementation, parser or constructor.
+    fn binary(result: Result<Datum, EvalError>, tag: u8, bytes: &[u8]) -> BinaryJSON {
+        let Datum::Json(value) = result.unwrap() else {
+            panic!("expected binary JSON datum");
+        };
+        assert_eq!(value.type_code(), tag);
+        assert_eq!(value.value(), bytes);
+        value
+    }
+    let mut boolean = FieldType::new(FieldTypeCode::LongLong);
+    boolean.add_flags(FieldTypeFlags::IS_BOOLEAN);
+    let mut opaque = FieldType::new(FieldTypeCode::Varchar).with_collation(Collation::Binary);
+    opaque.add_flags(FieldTypeFlags::IS_BOOLEAN);
+    for field in [None, Some(&boolean), Some(&opaque)] {
+        assert_eq!(
+            cast_as_json_typed(&Datum::Null, field).unwrap(),
+            Datum::Null
+        );
+        assert_eq!(
+            cast_as_json_value_typed(&Datum::Null, field).unwrap(),
+            Datum::Null
+        );
+        assert_eq!(
+            json_argument(&Datum::Null, StringArgument::Value, field).unwrap(),
+            json!(null)
+        );
+    }
+    assert_eq!(cast_as_json(&Datum::Null).unwrap(), Datum::Null);
+    for value in [s("ab"), Datum::Bytes(b"ab".to_vec())] {
+        binary(
+            cast_as_json_typed(&value, Some(&opaque)),
+            0x0d,
+            &[15, 2, 97, 98],
+        );
+        binary(
+            cast_as_json_value_typed(&value, Some(&opaque)),
+            0x0d,
+            &[15, 2, 97, 98],
+        );
+        assert_eq!(
+            json_argument(&value, StringArgument::Document, Some(&opaque)).unwrap(),
+            json!("base64:type15:YWI=")
+        );
+        assert_eq!(
+            json_argument(&value, StringArgument::Value, None).unwrap(),
+            json!("ab")
+        );
+        assert!(matches!(
+            cast_as_json_typed(&value, None),
+            Err(EvalError::Json(JsonError::InvalidText))
+        ));
+    }
+    for value in [Datum::Int(1), Datum::UInt(1)] {
+        binary(cast_as_json_typed(&value, Some(&boolean)), 0x04, &[1]);
+        binary(cast_as_json_value_typed(&value, Some(&boolean)), 0x04, &[1]);
+        assert_eq!(
+            json_argument(&value, StringArgument::Value, Some(&boolean)).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            json_argument(&value, StringArgument::Value, None).unwrap(),
+            json!(1)
+        );
+    }
+    binary(
+        cast_as_json(&Datum::UInt(5)),
+        0x0a,
+        &[5, 0, 0, 0, 0, 0, 0, 0],
+    );
+    binary(
+        cast_as_json_typed(&Datum::Int(1), None),
+        0x09,
+        &[1, 0, 0, 0, 0, 0, 0, 0],
+    );
+    let known_json = FieldType::new(FieldTypeCode::Json);
+    let array = FieldType::new(FieldTypeCode::LongLong).with_array(true);
+    let unknown = FieldType::new(FieldTypeCode::Unknown(245)).with_collation(Collation::DEFAULT);
+    for field in [&known_json, &array] {
+        assert_eq!(
+            json_argument(&s("[1]"), StringArgument::Value, Some(field)).unwrap(),
+            json!([1])
+        );
+        assert!(matches!(
+            json_argument(&s("bad"), StringArgument::Value, Some(field)),
+            Err(EvalError::Json(JsonError::InvalidText))
+        ));
+    }
+    assert_eq!(
+        json_argument(&s("[1]"), StringArgument::Value, Some(&unknown)).unwrap(),
+        json!("[1]")
+    );
+    binary(cast_as_json_value_typed(&s("1"), None), 0x0c, &[1, 49]);
+    binary(cast_as_json(&s("1")), 0x09, &[1, 0, 0, 0, 0, 0, 0, 0]);
+
+    let raw_float = Datum::Float32(16_777_217.0);
+    for result in [
+        cast_as_json(&raw_float),
+        cast_as_json_typed(&raw_float, Some(&boolean)),
+        cast_as_json_value_typed(&raw_float, None),
+    ] {
+        binary(result, 0x0b, &[0, 0, 0, 16, 0, 0, 112, 65]);
+    }
+    assert_eq!(
+        json_argument(&raw_float, StringArgument::Value, None).unwrap(),
+        json!(16_777_217.0)
+    );
+    for value in [Datum::Real(f64::NAN), Datum::Float32(f64::NAN)] {
+        for result in [
+            cast_as_json(&value),
+            cast_as_json_typed(&value, None),
+            cast_as_json_value_typed(&value, None),
+        ] {
+            assert!(matches!(
+                result,
+                Err(EvalError::Unsupported("datum JSON conversion"))
+            ));
+        }
+    }
+    assert!(matches!(
+        json_argument(&Datum::Real(f64::NAN), StringArgument::Value, None),
+        Err(EvalError::FloatOverflow)
+    ));
+    assert!(matches!(
+        json_argument(&Datum::Float32(f64::NAN), StringArgument::Value, None),
+        Err(EvalError::Unsupported("datum JSON conversion"))
+    ));
+    let (decimal, warning) = Decimal::parse_mysql("9007199254740993");
+    assert!(warning.is_none());
+    let decimal = Datum::Decimal(decimal);
+    assert_eq!(
+        json_argument(&decimal, StringArgument::Value, None).unwrap(),
+        json!(9_007_199_254_740_993_u64)
+    );
+    for result in [
+        cast_as_json(&decimal),
+        cast_as_json_typed(&decimal, Some(&boolean)),
+        cast_as_json_value_typed(&decimal, None),
+    ] {
+        binary(result, 0x0b, &[0, 0, 0, 0, 0, 0, 64, 67]);
+    }
+    assert_eq!(
+        parse_json_document_argument(&decimal).unwrap(),
+        Some(json!(9_007_199_254_740_992.0_f64))
+    );
+
+    for (kind, core, tag, payload, text) in [
+        (
+            TimeType::Date,
+            CoreTime::from_date(2020, 1, 2, 0, 0, 0, 0),
+            0x0e,
+            [0, 0, 0, 0, 0, 68, 144, 31],
+            "\"2020-01-02\"",
+        ),
+        (
+            TimeType::DateTime,
+            CoreTime::from_date(2020, 1, 2, 3, 4, 5, 123000),
+            0x0f,
+            [128, 7, 30, 5, 49, 68, 144, 31],
+            "\"2020-01-02 03:04:05.123000\"",
+        ),
+        (
+            TimeType::Timestamp,
+            CoreTime::from_date(2020, 1, 2, 3, 4, 5, 123000),
+            0x10,
+            [128, 7, 30, 5, 49, 68, 144, 31],
+            "\"2020-01-02 03:04:05.123000\"",
+        ),
+    ] {
+        let value = Datum::Time(Time::from_raw_parts(core, kind, 255));
+        for result in [
+            cast_as_json(&value),
+            cast_as_json_typed(&value, None),
+            cast_as_json_value_typed(&value, None),
+        ] {
+            assert_eq!(binary(result, tag, &payload).to_string(), text);
+        }
+    }
+    // from_nanoseconds checks the new FSP only: neither range-check nor round
+    // the raw source count. Avoid display/negation of i64::MIN in this probe.
+    for (nanos, payload) in [
+        (1001, [233, 3, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0]),
+        (i64::MIN, [0, 0, 0, 0, 0, 0, 0, 128, 6, 0, 0, 0]),
+        (
+            i64::MAX,
+            [255, 255, 255, 255, 255, 255, 255, 127, 6, 0, 0, 0],
+        ),
+    ] {
+        let value = Datum::Duration(MySqlDuration::from_raw_parts(nanos, 255));
+        for result in [
+            cast_as_json(&value),
+            cast_as_json_typed(&value, None),
+            cast_as_json_value_typed(&value, None),
+        ] {
+            binary(result, 0x11, &payload);
+        }
+    }
+    let literal = BinaryLiteral::from_uint(0x6162, None);
+    binary(
+        cast_as_json(&Datum::BinaryLiteral(literal.clone())),
+        0x0d,
+        &[253, 2, 97, 98],
+    );
+    binary(
+        cast_as_json(&Datum::Bit(literal.clone())),
+        0x0c,
+        &[2, 97, 98],
+    );
+    assert_eq!(
+        json_argument(&Datum::BinaryLiteral(literal), StringArgument::Value, None).unwrap(),
+        json!("ab")
+    );
+    let raw = Datum::Json(BinaryJSON::from_encoded_parts(0xfe, vec![17, 23]));
+    // Existing JSON CAST is an unvalidated clone; do not call Display on an
+    // unsupported tag and invent a new panic contract for document consumers.
+    for result in [
+        cast_as_json(&raw),
+        cast_as_json_typed(&raw, None),
+        cast_as_json_value_typed(&raw, None),
+    ] {
+        binary(result, 0xfe, &[17, 23]);
+    }
+    // The source formatter's malformed ARRAY boundary is known: empty display,
+    // then EmptyText on document reparse, unlike the unchanged CAST clone.
+    let bad_array = Datum::Json(BinaryJSON::from_encoded_parts(0x03, vec![255]));
+    for result in [
+        cast_as_json(&bad_array),
+        cast_as_json_typed(&bad_array, None),
+        cast_as_json_value_typed(&bad_array, None),
+    ] {
+        binary(result, 0x03, &[255]);
+    }
+    assert_eq!(
+        json_document_text_argument(&bad_array).unwrap().as_deref(),
+        Some("")
+    );
+    assert!(matches!(
+        parse_json_document_argument(&bad_array),
+        Err(EvalError::Json(JsonError::EmptyText))
+    ));
+    assert!(matches!(
+        json_argument(&bad_array, StringArgument::Value, None),
+        Err(EvalError::Json(JsonError::EmptyText))
+    ));
+    let raw_uint = Datum::Json(BinaryJSON::from_encoded_parts(
+        0x0a,
+        vec![5, 0, 0, 0, 0, 0, 0, 0],
+    ));
+    binary(cast_as_json(&raw_uint), 0x0a, &[5, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(
+        parse_json_document_argument(&raw_uint).unwrap(),
+        Some(json!(5))
+    );
+    assert_eq!(
+        json_document_text_argument(&raw_uint).unwrap().as_deref(),
+        Some("5")
+    );
+    assert_eq!(
+        parse_json_document_argument_strict(&raw_uint, 2, "member of").unwrap(),
+        Some(json!(5))
+    );
+
+    let (small_decimal, warning) = Decimal::parse_mysql("1.5");
+    assert!(warning.is_none());
+    for (value, tree, text) in [
+        (Datum::Int(5), json!(5), "5"),
+        (Datum::UInt(5), json!(5), "5"),
+        (Datum::Decimal(small_decimal), json!(1.5), "1.5"),
+        (Datum::Real(1.5), json!(1.5), "1.5"),
+    ] {
+        assert_eq!(parse_json_document_argument(&value).unwrap(), Some(tree));
+        assert_eq!(
+            json_document_text_argument(&value).unwrap().as_deref(),
+            Some(text)
+        );
+        let Err(EvalError::Json(
+            error @ JsonError::InvalidTypeForJson {
+                argument: 2,
+                function: "member of",
+            },
+        )) = parse_json_document_argument_strict(&value, 2, "member of")
+        else {
+            panic!("strict numeric document error changed");
+        };
+        assert_eq!(error.code(), 3146);
+        assert_eq!(error.message(), "Invalid data type for JSON data in argument 2 to function member of; a JSON string or JSON type is required.");
+    }
+    for result in [
+        parse_json_document_argument(&Datum::Float32(1.5)),
+        parse_json_document_argument_strict(&Datum::Float32(1.5), 2, "member of"),
+    ] {
+        assert!(matches!(
+            result,
+            Err(EvalError::Unsupported(
+                "JSON document requires JSON or string"
+            ))
+        ));
+    }
+    assert!(matches!(
+        json_document_text_argument(&Datum::Float32(1.5)),
+        Err(EvalError::Unsupported(
+            "JSON document requires JSON or string"
+        ))
+    ));
+    for value in [Datum::MinNotNull, Datum::MaxValue] {
+        assert!(matches!(
+            cast_as_json(&value),
+            Err(EvalError::Unsupported("datum JSON conversion"))
+        ));
+        assert!(matches!(
+            cast_as_json_value_typed(&value, None),
+            Err(EvalError::Unsupported("range sentinel JSON value"))
+        ));
+        assert!(matches!(
+            json_argument(&value, StringArgument::Value, None),
+            Err(EvalError::Unsupported("range sentinel JSON value"))
+        ));
+        assert!(matches!(
+            parse_json_document_argument(&value),
+            Err(EvalError::Unsupported("JSON document requires string"))
+        ));
+        assert!(matches!(
+            json_document_text_argument(&value),
+            Err(EvalError::Unsupported("JSON document requires string"))
+        ));
+    }
+    for value in [Datum::Bytes(vec![255]), Datum::new_string(vec![255])] {
+        assert!(matches!(
+            json_sql_string(&value),
+            Err(EvalError::Unsupported("invalid UTF-8 string datum"))
+        ));
+        assert!(matches!(
+            json_document_string(&value),
+            Err(EvalError::Unsupported("invalid UTF-8 string datum"))
+        ));
+        assert!(matches!(
+            cast_as_json(&value),
+            Err(EvalError::Unsupported("invalid UTF-8 string datum"))
+        ));
+        assert!(matches!(
+            json_argument(&value, StringArgument::Value, None),
+            Err(EvalError::Unsupported("invalid UTF-8 string datum"))
+        ));
+        binary(
+            cast_as_json_typed(&value, Some(&opaque)),
+            0x0d,
+            &[15, 1, 255],
+        );
+    }
+    assert_eq!(json_sql_string(&s("x")).unwrap(), Some("x"));
+    assert_eq!(json_sql_string(&raw_uint).unwrap(), None);
+    assert!(matches!(
+        json_document_string(&s("x")).unwrap(),
+        Some(std::borrow::Cow::Borrowed("x"))
+    ));
+    assert!(
+        matches!(json_document_string(&raw_uint).unwrap(), Some(std::borrow::Cow::Owned(text)) if text == "5")
+    );
+    assert_eq!(parse_json_document_argument(&Datum::Null).unwrap(), None);
+    assert_eq!(json_document_text_argument(&Datum::Null).unwrap(), None);
+    assert_eq!(
+        parse_json_document_argument(&s("null")).unwrap(),
+        Some(json!(null))
+    );
+    binary(binary_json_datum(json!(null)), 0x04, &[0]);
+    binary(binary_json_datum(json!(true)), 0x04, &[1]);
+    binary(
+        binary_json_datum(json!(1.0_f64)),
+        0x0b,
+        &[0, 0, 0, 0, 0, 0, 240, 63],
+    );
+    assert_eq!(
+        parse_json("{\"a\":[1,true,null]}").unwrap(),
+        json!({"a": [1, true, null]})
+    );
+    assert!(matches!(
+        parse_json(""),
+        Err(EvalError::Json(JsonError::EmptyText))
+    ));
+    assert!(matches!(
+        parse_json("not-json"),
+        Err(EvalError::Json(JsonError::InvalidText))
+    ));
+}

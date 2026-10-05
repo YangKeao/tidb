@@ -148,6 +148,14 @@ impl Datum {
         }
     }
 
+    /// Borrows actual datum kind and raw storage for shared JSON coercion.
+    /// This view performs no interpretation, conversion or validation; the
+    /// shared consumer owns those policies. Borrowing here does not imply that
+    /// the subsequent conversion pipeline is allocation-free.
+    pub fn as_shared_json_input(&self) -> NativeSqlStringInput<'_> {
+        self.as_shared_sql_string()
+    }
+
     /// Byte-authoritative Go `Datum.ToString`. Go strings, ENUMs, SETs, and
     /// binary literals may contain arbitrary bytes and remain unchanged.
     pub fn sql_bytes(&self) -> Result<Vec<u8>, DatumStringError> {
@@ -557,5 +565,54 @@ fn shared_sql_string_facade_preserves_actual_kinds_raw_metadata_and_scientific_v
     ] {
         assert_eq!(value.format_value_expr().unwrap(), expected);
         assert_eq!(value.restore_value_expr().unwrap(), expected);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn shared_json_input_borrows_uninterpreted_storage_and_keeps_scalar_metadata() {
+    use crate::{BinaryJSON, CoreTime, Time, TimeType};
+    let string = Datum::new_string(vec![0xff, 0, 0xfe]);
+    let Datum::String(stored) = &string else {
+        panic!("expected native string")
+    };
+    match string.as_shared_json_input() {
+        NativeSqlStringInput::String(bytes) => {
+            assert_eq!(bytes, &[0xff, 0, 0xfe]);
+            assert_eq!(bytes.as_ptr(), stored.bytes().as_ptr());
+        }
+        _ => panic!("string view changed its actual kind"),
+    }
+    let json = Datum::Json(BinaryJSON::from_encoded_parts(0x03, vec![0xff]));
+    let Datum::Json(stored) = &json else {
+        panic!("expected native JSON")
+    };
+    match json.as_shared_json_input() {
+        NativeSqlStringInput::Json { type_code, value } => {
+            assert_eq!(type_code, 0x03);
+            assert_eq!(value, &[0xff]);
+            assert_eq!(value.as_ptr(), stored.value().as_ptr());
+        }
+        _ => panic!("JSON view changed its actual kind"),
+    }
+    let time = Datum::Time(Time::from_raw_parts(
+        CoreTime::from_raw(u64::MAX),
+        TimeType::Date,
+        u8::MAX,
+    ));
+    match time.as_shared_json_input() {
+        NativeSqlStringInput::Time(value) => {
+            assert_eq!(value.raw, u64::MAX);
+            assert_eq!(value.kind, TimeType::Date);
+            assert_eq!(value.fsp, u8::MAX);
+        }
+        _ => panic!("time view changed its actual kind"),
+    }
+    for bits in [16_777_217.0_f64.to_bits(), 0x7ff8_0000_0000_1234] {
+        let value = Datum::Float32(f64::from_bits(bits));
+        match value.as_shared_json_input() {
+            NativeSqlStringInput::Float32(raw) => assert_eq!(raw.to_bits(), bits),
+            _ => panic!("Float32 view changed its actual kind"),
+        }
     }
 }

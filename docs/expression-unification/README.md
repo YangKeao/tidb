@@ -1,28 +1,26 @@
 # Expression unification experiment
 
 Paired branch: `expression-unification-demo` in YangKeao/tidb and YangKeao/tikv.
-Current checkpoint: **native-json-parse-115**, after **native-json-construct-114**.
+Current checkpoint: **json-coercion-116**, after **native-json-parse-115**.
 
-Functional **238/245 (97.14%)**, strict **0**, remaining **7**—unchanged. This datatype/partial-CAST foundation earns no family credit. Overall goal remains active.
+Functional **238/245 (97.14%)**, strict **0**, remaining **7**—unchanged. This closes a coercion module, not whole JSON/CAST/M2 or new-family acceptance. Overall goal remains active.
 
-## Shared JSON parser and container layout
+## Shared JSON expression coercion
 
-SDK `codec/native_json_parse.rs` owns datatype text parsing, the original global surrogate rewrite and serde traversal. Crate-only array/object writers in `mysql/json/native_codec.rs` share layout writes while preserving serde/node child, key, offset and literal-access ordering.
+SDK `native_json_coercion.rs` owns all eleven `builtin_ext/json/value.rs` policies, including ordinary/typed/value CAST, document/value conversion and string/document helpers. Native retains only metadata, storage and error adapters. `Datum::as_shared_json_input` reuses the existing borrowed19-kind projection.
 
-Native `binary_json.rs` retains thin parse/from_value adapters and removes its old parser/encoding algorithms and layout constants. R117 typed construction/scalar/Datum services stay unchanged.
-
-**Two SQL policies remain distinct:** direct JSON-column writes repair lone surrogates, while strict expression CAST of the same VARCHAR rejects them. Already stored JSON casts successfully. No expression controller was moved or silently aliased.
+NULL, boolean/opaque precedence, raw Float32, Decimal precision, temporal FSP restamping, strict versus lenient parsing and error classes remain distinct. Typed row/batch preparation and static Vector refusal remain outside this slice.
 
 ## Evidence
 
-[Checkpoint](evidence/native-json-parse-checkpoint.md), [exact commands/counts/hashes](logs/native-json-parse-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
+[Checkpoint](evidence/json-coercion-checkpoint.md), [exact commands/counts/hashes](logs/json-coercion-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
 
-**Nine matched gates green on first attempt**, including full native datatype467, JSON44 and four SQL gates. Five new tests;6 SDK and207 native old test bodies unchanged. New SQL covers10 SELECTs and40 successful cells, with exact input escapes and nested binary layouts. The moved sanitizer is token-identical, ignoring comments/formatting.
+**Nine matched gates green on first attempt:** SDK policy3, native datatype468, JSON45, original CAST16/actual-column1 and four SQL gates. Six new tests;242 old native test bodies unchanged. Direct native tests cover11/11 wrappers. New SQL covers10 SELECTs and38 cells: boolean flags, BIT preparation, numeric/temporal/opaque identities, document/value modes, NULL and typed IN.
 
-No new C4 profile, carrier, admission, physical-allocation or performance claim. Historical failures remain retained in prior evidence.
+Expectations are source-derived, not target-output recordings. Preflight clarified floating `.0` and rounded Decimal document expectations. No new C4 profile, carrier, physical-allocation or performance claim; historical failures remain retained.
 
 ## Still open
 
-[Remaining acceptance](evidence/remaining-acceptance.md): ordinary/typed/value JSON expression control, other CAST/typed/vector/UNION conversions, broader M2, six complex candidates, request-root/default-NoColumns/liveDAG and final acceptance.
+[Remaining acceptance](evidence/remaining-acceptance.md): other CAST and typed caller preparation, broader M2, six complex candidates, request-root/default-NoColumns/liveDAG and final acceptance.
 
 Full expression/unistore were not rerun; historical4+1 failures remain. Workspace/lint/dev/bazel/release/exhaustive/TiFlash/FIPS/performance/physical memory/OOM/allocator/dual-tzdata/whole-Go-package/PR readiness are unverified. The manifest pins paired TiKV and three identical Plans. No force push or PR; unrelated BUILD excluded.

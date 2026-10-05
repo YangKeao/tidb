@@ -113,9 +113,7 @@ pub use evaluated_ascii::{
     AsciiPoolOwner, AsciiPoolPolicy, AsciiScope, LegacyBinaryArgs, LegacyIntegerArithmetic,
     LegacyLikeArgs, RegexpLegacyInput, ScopedAsciiColumns,
 };
-pub(crate) use tidb_query_datatype::codec::mysql::json::{
-    parse_native_json_document, NativeJsonError,
-};
+pub(crate) use tidb_query_datatype::codec::mysql::json::NativeJsonError;
 use tidb_query_expr::local::prepare_concat_args as prepare_concat_args_local;
 use tidb_query_expr::local::prepare_find_in_set_keys as prepare_find_in_set_keys_local;
 pub use tidb_query_expr::local::NativeDecimalDivisionDisposition;
@@ -140,6 +138,14 @@ use tidb_query_expr::local::{
     prepare_field_int_args as prepare_field_int_args_local,
     prepare_field_real_args as prepare_field_real_args_local,
     prepare_make_set_args as prepare_make_set_args_local,
+};
+pub(crate) use tidb_query_expr::{
+    native_binary_json_datum, native_cast_as_json, native_cast_as_json_typed,
+    native_cast_as_json_value_typed, native_json_argument, native_json_document_string,
+    native_json_document_text_argument, native_json_sql_string,
+    native_parse_json_document_argument, native_parse_json_document_argument_strict,
+    native_parse_json_expression, NativeJsonCoercionError, NativeJsonCoercionSource,
+    NativeJsonStringArgument,
 };
 pub use tidb_query_expr::{BinaryArithmeticOperation, ComparisonOp};
 pub(crate) use tidb_query_expr::{NativeDecimalFastOutcome, NativeDecimalFastValue};
