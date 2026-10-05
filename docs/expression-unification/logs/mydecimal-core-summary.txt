@@ -1,0 +1,57 @@
+mydecimal-core-104 / R107 type-layer sharing; functional237/245, strict0 unchanged
+TiKV cwd: /home/agent/tidb/expression-unification/tikv
+Native cwd: /home/agent/tidb/expression-unification/tidb/rust
+Raw: /home/agent/tidb/expression-unification/logs/mydecimal-core-{id}.log
+Counts passed/failed/ignored/filtered; timings compile/test seconds.
+
+tikv-core | 1/0/0/467 | 4.13/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_mydecimal -- --test-threads=1
+sha256 527407eb0298026caa58bcd6c3c8b2a4e02fb0ca746ef83897f1c8ab0a4c7812
+
+tikv-codec | 1/0/0/467 | 0.14/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_decimal_codec -- --test-threads=1
+sha256 366d5e8c4ac0820b2ff3537c9079abdc67a56f55f6a14b18af66dcf55fe8d3c4
+
+native-datatype | 462/0/0/0 | 3.80/23.15 | exit0
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+sha256 c4687834e93eb8446ee0110d1c568a6efa3d93b29357debddb215cb858c95c78
+
+native-chunk | 10/0/0/264 | 11.28/0.01 | exit0
+../../tools/cargo-tidb test --locked -p tidb-chunk --lib decimal -- --test-threads=1
+sha256 040a44ec694adf6b6292effa0f88a63a1e7d29578a7a94e88407ed088efd20bb
+
+native-codec | 6/0/0/40 | 1.71/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-codec --lib decimal -- --test-threads=1
+sha256 86f475fdf3f39ff49e18a8cc11c01346dc6eb79c19ee7c7213506e2dfd66ca1c
+
+native-hash | 7/0/0/39 | 0.10/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-codec --lib hash -- --test-threads=1
+sha256 96d018660a494d010417d5f5bcb88f5444b815a063035afa55e9f172b598b108
+
+native-entry | 1/0/0/1715 | 21.01/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib legacy_date_arithmetic -- --test-threads=1
+sha256 1c336df63578c6a7d914e9925d6935caa43794f05496e46d1ef3c84e98daa3e3
+
+unistore | 1/0/0/234 | 9.61/0.02 | exit0
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_date_arithmetic -- --test-threads=1
+sha256 b126f2fb351b320c75e86e6f156176b2ff2acc9da585a1ebbdf6b490415b36ab
+
+unistore-original | 3/0/0/232 | 0.13/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib cophandler::tests::date_add_ -- --test-threads=1
+sha256 adf5cd857fd7f80c98c52fbb7be2c8efa1a863f9d0833223c765b928704887ba
+
+sql | 1/0/0/2246 | 37.01/0.09 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::evaluated_ascii_date_arithmetic_preserves_sql_domains_fsp_and_distinct_head_routes -- --exact --test-threads=1
+sha256 df064936d3d9da50f8f985707ba9e678f23e6dc60d88bb11195d5c64876aaa70
+
+10 actual serial locked single-threaded launches;10 nonzero first-attempt passes.0 compile failures/test failures/zero-match/retry/interrupted runs.3 new tests:2 SDK/1 native. Changed3 TiKV/2 native Rust files;21 original native test bodies and entire original MyDecimal test/support suffix preserved. No existing TiKV test bodies touched. No old expectation/fixture rewrite/provider recording. New hash literal81/19/02(hex) is source-derived precision3/fraction2/int1/fraction25 plus fraction suffix, not actual-output recording.
+
+SDK native_mydecimal owns existing fixed-word parse/round/shift/compare/conversions/render/raw/parts/hash algorithms; existing float formatter reused. Native genuine reprC40B/private five fields/Copy/Debug/Default/fieldwiseEq remain. Safe rawparts copy retains signed count bytes/all nine signed words, inactive words, hidden fractions and distinct stored/result fractions. No unsafe, serialization/string roundtrip, stronger validation or wireDecimal alias. RAII writeback preserves mutated destination on soft errors and unwind; round vs round_in_place source alias distinction retained. Original extreme shift/padding/panic domains not repaired.
+
+SDK native_decimal_codec owns size/checkedsize/leadingzeros/writer and original status enums. Native binary reader and value/word adaptation remain separate. No new frac<=precision rule, length error or stricter canonical validation. Writer keeps debugassert/partialwrite/emptybin panic and laterTruncated overridingOverflow. Hash keeps significant-zero trimming, original soft-warning discard and fraction suffix.
+
+Full native datatype462; chunk decimal10; codec decimal6/hash7; unchanged bridge1, real56-mapper legacy1, oldlegacy3 and prior52SELECT SQL fixture pass.0 new SQL probes. Evaluator protocol/profiles/carriers/PB/legacy admission unchanged; existing MyDecimal actuator now invokes shared algorithms through the same facade.
+
+237 prior family objects/partial/type history preserved, append only type step; latestfunctional remainslegacy-date-arithmetic-103. Functional237/245 strict0 remaining8. BroaderM2/CAST/general digit-string parser/binary reader/IN/request-root/liveDAG andsixcomplex candidates remain open. No whole Go-package transcreation or wholeM2 completion.
+
+No full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical ortransientheap/OOM/allocator/TiFlash/FIPS/dual-tzdata/PR-ready verification. R100 historical expression4/unistore1 failures remain unrepaired. No Cargo/lock/Go/Bazel changes; unrelatedBUILD excluded. Signed-off paired pushes carry identical Plans; overall goal remains active.

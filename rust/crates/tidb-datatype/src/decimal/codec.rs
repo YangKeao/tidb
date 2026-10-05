@@ -37,8 +37,6 @@ const CODEC_WORD_SIZE: usize = 4;
 pub(super) const CODEC_WORD_BUF_LEN: usize = 9;
 /// Largest value one 1e9 word holds (Go `wordMax` = `wordBase - 1`).
 const CODEC_WORD_MAX: i32 = 999_999_999;
-/// `mysql.MaxDecimalScale`.
-pub(super) const CODEC_MAX_DECIMAL_SCALE: i32 = 30;
 /// Bytes needed to store `k` decimal digits packed into one partial word.
 const DIG2BYTES: [usize; 10] = [0, 1, 1, 2, 2, 3, 3, 4, 4, 4];
 /// `10^k` for `k` in `0..=9` (all fit in `i32`; `10^9 < i32::MAX`).
@@ -57,11 +55,7 @@ pub(super) const CODEC_POWERS10: [i32; 10] = [
 
 /// Hard codec failure — Go `ErrBadNumber` (illegal precision/scale, or a corrupt
 /// binary). Truncation/overflow are soft and reported as [`DecimalCodecWarning`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DecimalCodecError {
-    /// Precision/scale outside the legal range, or a corrupt binary payload.
-    BadNumber,
-}
+pub use tidb_query_datatype::codec::mysql::NativeDecimalCodecError as DecimalCodecError;
 
 /// Failure state returned by [`Decimal::from_bin_with_failure`].
 ///
@@ -83,13 +77,7 @@ pub struct DecimalCodecFailure {
 
 /// Soft codec outcome carried beside a valid result, mirroring Go's non-fatal
 /// `ErrTruncated`/`ErrOverflow` returned from `ToBin`/`FromBin`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DecimalCodecWarning {
-    /// Fraction digits were dropped to fit the requested scale.
-    Truncated,
-    /// Integer digits did not fit the requested precision.
-    Overflow,
-}
+pub use tidb_query_datatype::codec::mysql::NativeDecimalCodecWarning as DecimalCodecWarning;
 
 /// Go `digitsToWords`: number of 1e9 words needed for `digits` decimal digits.
 pub(super) fn digits_to_words(digits: usize) -> usize {
@@ -113,30 +101,6 @@ pub(super) fn fix_word_cnt_error(
         );
     }
     (words_int, words_frac, None)
-}
-
-/// Go `writeWord`: big-endian store of the low `size` bytes of `word`.
-fn write_word(b: &mut [u8], word: i32, size: usize) {
-    let v = word as u32;
-    match size {
-        1 => b[0] = word as u8,
-        2 => {
-            b[0] = (v >> 8) as u8;
-            b[1] = v as u8;
-        }
-        3 => {
-            b[0] = (v >> 16) as u8;
-            b[1] = (v >> 8) as u8;
-            b[2] = v as u8;
-        }
-        4 => {
-            b[0] = (v >> 24) as u8;
-            b[1] = (v >> 16) as u8;
-            b[2] = (v >> 8) as u8;
-            b[3] = v as u8;
-        }
-        _ => {}
-    }
 }
 
 /// Go `readWord`: sign-extending big-endian load of a `size`-byte word.
@@ -164,37 +128,10 @@ fn read_word(b: &[u8], size: usize) -> i32 {
     }
 }
 
-/// Go `countLeadingZeroes(i, word)`: leading zero decimal digits of `word` when
-/// laid out as `i+1` digits.
-fn count_leading_zeroes(mut i: usize, word: i32) -> usize {
-    let mut leading = 0;
-    while word < CODEC_POWERS10[i] {
-        i -= 1;
-        leading += 1;
-    }
-    leading
-}
-
 /// Go `DecimalBinSize`: byte length of the fixed-length binary for
 /// `{precision, frac}`, independent of any particular value.
 pub fn decimal_bin_size(precision: i32, frac: i32) -> Result<usize, DecimalCodecError> {
-    let digits_int = precision - frac;
-    let words_int = digits_int / DIGITS_PER_WORD as i32;
-    let words_frac = frac / DIGITS_PER_WORD as i32;
-    let x_int = digits_int - words_int * DIGITS_PER_WORD as i32;
-    let x_frac = frac - words_frac * DIGITS_PER_WORD as i32;
-    if x_int < 0
-        || x_int >= DIG2BYTES.len() as i32
-        || x_frac < 0
-        || x_frac >= DIG2BYTES.len() as i32
-    {
-        return Err(DecimalCodecError::BadNumber);
-    }
-    let size = words_int * CODEC_WORD_SIZE as i32
-        + DIG2BYTES[x_int as usize] as i32
-        + words_frac * CODEC_WORD_SIZE as i32
-        + DIG2BYTES[x_frac as usize] as i32;
-    usize::try_from(size).map_err(|_| DecimalCodecError::BadNumber)
+    tidb_query_datatype::codec::mysql::native_decimal_bin_size(precision, frac)
 }
 
 /// Go `MyDecimal`'s codec-relevant view: sign, integer/fraction digit counts,
@@ -299,23 +236,10 @@ impl MyDecimalWords {
     /// Go `removeLeadingZeros`: index of the first significant word and the
     /// count of significant integer digits.
     fn remove_leading_zeros(&self) -> (usize, i32) {
-        let mut digits_int = self.digits_int;
-        let mut word_idx = 0usize;
-        // Go truncated modulo (Rust `%` matches); the value is unused when the
-        // loop body never runs (digits_int <= 0).
-        let mut i = ((digits_int - 1) % DIGITS_PER_WORD as i32) + 1;
-        while digits_int > 0 && self.word_buf[word_idx] == 0 {
-            digits_int -= i;
-            i = DIGITS_PER_WORD as i32;
-            word_idx += 1;
-        }
-        if digits_int > 0 {
-            let start = ((digits_int - 1) % DIGITS_PER_WORD as i32) as usize;
-            digits_int -= count_leading_zeroes(start, self.word_buf[word_idx]) as i32;
-        } else {
-            digits_int = 0;
-        }
-        (word_idx, digits_int)
+        tidb_query_datatype::codec::mysql::native_decimal_remove_leading_zeros(
+            self.digits_int,
+            &self.word_buf,
+        )
     }
 }
 
@@ -338,12 +262,7 @@ impl Decimal {
 /// Go `ToBin`'s legality check plus `DecimalBinSize`: the byte length of the
 /// encoding at `{precision, frac}`, or `ErrBadNumber` for a shape Go rejects.
 pub(crate) fn checked_bin_size(precision: i32, frac: i32) -> Result<usize, DecimalCodecError> {
-    if !(0..=(DIGITS_PER_WORD * CODEC_WORD_BUF_LEN) as i32).contains(&precision)
-        || !(0..=CODEC_MAX_DECIMAL_SCALE).contains(&frac)
-    {
-        return Err(DecimalCodecError::BadNumber);
-    }
-    decimal_bin_size(precision, frac)
+    tidb_query_datatype::codec::mysql::native_decimal_checked_bin_size(precision, frac)
 }
 
 impl MyDecimalWords {
@@ -356,132 +275,15 @@ impl MyDecimalWords {
         frac: i32,
         bin: &mut [u8],
     ) -> Result<Option<DecimalCodecWarning>, DecimalCodecError> {
-        let d = self;
-        let mut warning: Option<DecimalCodecWarning> = None;
-        let mut mask: i32 = if d.negative { -1 } else { 0 };
-
-        let mut digits_int: i32 = precision - frac;
-        let words_int = (digits_int / DIGITS_PER_WORD as i32) as usize;
-        let leading_digits = (digits_int - words_int as i32 * DIGITS_PER_WORD as i32) as usize;
-        let words_frac = (frac / DIGITS_PER_WORD as i32) as usize;
-        let trailing_digits = (frac - words_frac as i32 * DIGITS_PER_WORD as i32) as usize;
-
-        let words_frac_from0 = (d.digits_frac / DIGITS_PER_WORD as i32) as usize;
-        let trailing_digits_from0 =
-            (d.digits_frac - words_frac_from0 as i32 * DIGITS_PER_WORD as i32) as usize;
-
-        let mut int_size = words_int * CODEC_WORD_SIZE + DIG2BYTES[leading_digits];
-        let mut frac_size = words_frac * CODEC_WORD_SIZE + DIG2BYTES[trailing_digits];
-        let frac_size_from = words_frac_from0 * CODEC_WORD_SIZE + DIG2BYTES[trailing_digits_from0];
-        let origin_int_size = int_size;
-        let origin_frac_size = frac_size;
-
-        debug_assert_eq!(bin.len(), int_size + frac_size);
-        let mut bin_idx = 0usize;
-
-        let (word_idx_from0, digits_int_from) = d.remove_leading_zeros();
-        let mut word_idx_from: i64 = word_idx_from0 as i64;
-        if digits_int_from + frac_size_from as i32 == 0 {
-            mask = 0;
-            digits_int = 1;
-        }
-
-        let mut words_int_from: i64 = (digits_int_from / DIGITS_PER_WORD as i32) as i64;
-        let mut leading_digits_from =
-            (digits_int_from - words_int_from as i32 * DIGITS_PER_WORD as i32) as usize;
-        let i_size_from =
-            words_int_from as usize * CODEC_WORD_SIZE + DIG2BYTES[leading_digits_from];
-
-        let mut words_frac_from = words_frac_from0;
-        let mut trailing_digits_from = trailing_digits_from0;
-
-        if digits_int < digits_int_from {
-            word_idx_from += words_int_from - words_int as i64;
-            if leading_digits_from > 0 {
-                word_idx_from += 1;
-            }
-            if leading_digits > 0 {
-                word_idx_from -= 1;
-            }
-            words_int_from = words_int as i64;
-            leading_digits_from = leading_digits;
-            warning = Some(DecimalCodecWarning::Overflow);
-        } else if int_size > i_size_from {
-            while int_size > i_size_from {
-                int_size -= 1;
-                bin[bin_idx] = mask as u8;
-                bin_idx += 1;
-            }
-        }
-
-        if frac_size < frac_size_from
-            || (frac_size == frac_size_from
-                && (trailing_digits <= trailing_digits_from || words_frac <= words_frac_from))
-        {
-            if frac_size < frac_size_from
-                || (frac_size == frac_size_from && trailing_digits < trailing_digits_from)
-                || (frac_size == frac_size_from && words_frac < words_frac_from)
-            {
-                warning = Some(DecimalCodecWarning::Truncated);
-            }
-            words_frac_from = words_frac;
-            trailing_digits_from = trailing_digits;
-        } else if frac_size > frac_size_from && trailing_digits_from > 0 {
-            if words_frac == words_frac_from {
-                trailing_digits_from = trailing_digits;
-                frac_size = frac_size_from;
-            } else {
-                words_frac_from += 1;
-                trailing_digits_from = 0;
-            }
-        }
-
-        // xIntFrom part: the leading partial integer word.
-        if leading_digits_from > 0 {
-            let i = DIG2BYTES[leading_digits_from];
-            let x =
-                (d.word_buf[word_idx_from as usize] % CODEC_POWERS10[leading_digits_from]) ^ mask;
-            word_idx_from += 1;
-            write_word(&mut bin[bin_idx..], x, i);
-            bin_idx += i;
-        }
-
-        // wordsInt + wordsFrac full words.
-        let stop = word_idx_from + words_int_from + words_frac_from as i64;
-        while word_idx_from < stop {
-            let x = d.word_buf[word_idx_from as usize] ^ mask;
-            word_idx_from += 1;
-            write_word(&mut bin[bin_idx..], x, CODEC_WORD_SIZE);
-            bin_idx += CODEC_WORD_SIZE;
-        }
-
-        // xFracFrom part: the trailing partial fraction word.
-        if trailing_digits_from > 0 {
-            let i = DIG2BYTES[trailing_digits_from];
-            let mut lim = trailing_digits;
-            if words_frac_from < words_frac {
-                lim = DIGITS_PER_WORD;
-            }
-            let mut tdf = trailing_digits_from;
-            while tdf < lim && DIG2BYTES[tdf] == i {
-                tdf += 1;
-            }
-            let x =
-                (d.word_buf[word_idx_from as usize] / CODEC_POWERS10[DIGITS_PER_WORD - tdf]) ^ mask;
-            write_word(&mut bin[bin_idx..], x, i);
-            bin_idx += i;
-        }
-
-        if frac_size > frac_size_from {
-            let bin_idx_end = origin_int_size + origin_frac_size;
-            while frac_size > frac_size_from && bin_idx < bin_idx_end {
-                frac_size -= 1;
-                bin[bin_idx] = mask as u8;
-                bin_idx += 1;
-            }
-        }
-        bin[0] ^= 0x80;
-        Ok(warning)
+        tidb_query_datatype::codec::mysql::native_decimal_write_bin(
+            self.negative,
+            self.digits_int,
+            self.digits_frac,
+            &self.word_buf,
+            precision,
+            frac,
+            bin,
+        )
     }
 }
 
