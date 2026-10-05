@@ -756,3 +756,127 @@ fn numeric_argument_routes_keep_preserve_precedence_normalization_and_effect_dom
     assert_eq!(ctx.calls.take(), ["zone", "flags"]);
     assert!(ctx.messages.borrow().is_empty());
 }
+
+#[test]
+fn numeric_argument_completion_keeps_default_metadata_string_integer_and_result_errors() {
+    use super::{cast_numeric_argument, numeric_argument_target_field};
+    use crate::{constant::Constant, expression::Expression, Columns, Datum, EvalError};
+    use std::cell::RefCell;
+    use tidb_datatype::{
+        BinaryJSON, ConversionFlags, EvalType, FieldType, FieldTypeCode, SessionTimeZone,
+        ERR_OVERFLOW, ERR_TRUNCATED_WRONG_VALUE,
+    };
+
+    #[derive(Default)]
+    struct Session(RefCell<Vec<&'static str>>);
+    impl Columns for Session {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("operand already supplied")
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            self.0.borrow_mut().push("zone");
+            crate::context::NoColumns.time_zone()
+        }
+        fn type_flags(&self) -> ConversionFlags {
+            self.0.borrow_mut().push("flags");
+            ConversionFlags::default()
+                .with_ignore_truncate_err(false)
+                .with_truncate_as_warning(false)
+        }
+        fn handle_truncate(&self, _: &str) -> Result<(), EvalError> {
+            panic!("no parsing truncation in these fixtures")
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            panic!("strict conversion returns its typed error")
+        }
+    }
+    let ctx = Session::default();
+    let field = |code, flen, decimal| FieldType::new(code).with_flen(flen).with_decimal(decimal);
+    let cast = |value: Datum, source: FieldType, target| {
+        let expression = Expression::Constant(Constant::new(value.clone(), source));
+        cast_numeric_argument(&expression, value, target, &ctx)
+    };
+    let (real_target, skip) = numeric_argument_target_field(
+        &field(FieldTypeCode::LongLong, 20, 0),
+        FieldTypeCode::Double.mysql_type(),
+    );
+    assert_eq!(real_target, FieldType::new(FieldTypeCode::Double));
+    assert!(real_target.decimal() < 0);
+    assert!(!skip); // Default negative scale does NOT skip a non-decimal conversion.
+    assert_eq!(
+        cast(
+            Datum::Int(17),
+            field(FieldTypeCode::LongLong, 20, 0),
+            EvalType::Real
+        ),
+        Ok(Datum::Real(17.0))
+    );
+    assert_eq!(ctx.0.take(), ["zone", "flags"]);
+
+    // The legacy String/Bytes argument path constructs Decimal even for target Int.
+    for (target, scale) in [(EvalType::Int, -1), (EvalType::Decimal, -7)] {
+        let Datum::Decimal(value) = cast(
+            Datum::new_string("12.5"),
+            field(FieldTypeCode::VarString, 0, scale),
+            target,
+        )
+        .unwrap() else {
+            panic!("string integer path still returns decimal")
+        };
+        assert_eq!(value.to_string(), "12.5");
+        assert_eq!(value.declared_shape(), None);
+        assert!(ctx.0.borrow().is_empty());
+    }
+    let Datum::Decimal(value) = cast(
+        Datum::new_bytes(b"12.5".to_vec()),
+        field(FieldTypeCode::VarString, 5, 1),
+        EvalType::Int,
+    )
+    .unwrap() else {
+        panic!("fitted string integer path")
+    };
+    assert_eq!(value.to_string(), "12.5");
+    assert_eq!(value.declared_shape(), Some((5, 1)));
+    assert_eq!(ctx.0.take(), ["zone", "flags"]);
+    let Datum::Decimal(value) = cast(
+        Datum::Real(12.0),
+        field(FieldTypeCode::Double, 5, 2),
+        EvalType::Decimal,
+    )
+    .unwrap() else {
+        panic!("fitted real path")
+    };
+    assert_eq!(value.to_string(), "12.00");
+    assert_eq!(value.declared_shape(), Some((5, 2)));
+    assert_eq!(ctx.0.take(), ["zone", "flags"]);
+
+    assert_eq!(
+        cast(
+            Datum::Raw(b"12".to_vec()),
+            field(FieldTypeCode::LongLong, 20, 0),
+            EvalType::Real
+        ),
+        Err(EvalError::Unsupported("numeric argument conversion failed"))
+    );
+    assert_eq!(ctx.0.take(), ["zone", "flags"]);
+    let Err(EvalError::Conversion(error)) = cast(
+        Datum::Real(999.0),
+        field(FieldTypeCode::Double, 2, 0),
+        EvalType::Decimal,
+    ) else {
+        panic!("final precision fitting returns typed overflow")
+    };
+    assert_eq!(error.identity(), ERR_OVERFLOW.identity());
+    assert_eq!(error.message(), "DECIMAL value is out of range in '(2, 0)'");
+    assert_eq!(ctx.0.take(), ["zone", "flags"]);
+    let Err(EvalError::Conversion(error)) = cast(
+        Datum::Json(BinaryJSON::parse("{}").unwrap()),
+        field(FieldTypeCode::Json, 5, 1),
+        EvalType::Decimal,
+    ) else {
+        panic!("context decimal error precedes final fitting")
+    };
+    assert_eq!(error.identity(), ERR_TRUNCATED_WRONG_VALUE.identity());
+    assert_eq!(error.message(), "Truncated incorrect DECIMAL value: '{}'");
+    assert_eq!(ctx.0.take(), ["zone", "flags"]);
+}

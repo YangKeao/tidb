@@ -1,0 +1,25 @@
+numeric-completion-134 / R139
+6matched launches,6GREEN;no compile/test failure,retry,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/numeric-completion-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_numeric_argument -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native] ../../tools/cargo-tidb test --locked -p tidb-expr --lib scalar_function::numeric_argument_tests -- --test-threads=1
+[native-real] ../../tools/cargo-tidb test --locked -p tidb-expr --lib numeric_real_cast_fast_path_preserves_decimal_value_and_scale -- --test-threads=1
+[native-division] ../../tools/cargo-tidb test --locked -p tidb-expr --lib string_division_preserves_go_decimal_parser_diagnostics -- --test-threads=1
+[sql-division] ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_decimal_div_preserves_fast_bounded_unsigned_and_null_values -- --test-threads=1
+[sql-types] ../../tools/cargo-tidb test --locked -p tidb-session --lib native_type_helpers_preserve_decimal_cast_values_and_float_diagnostics -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 11/0/0/1020 14.55/0.00 0 8dec0a9a26927865ba0b6e3c42b9bc0b6924b996c52bcf9f6610c02bc49864b9
+native 5/0/0/1738 15.68/0.00 0 e141118c48a9ab9a4d924064a54f3a7603b49ff861448557cbb861483ab2f633
+native-real 1/0/0/1742 0.15/0.00 0 331f68d9b33ae015ed4e1ce3f890457323ac8755de019156270bc86462b8d875
+native-division 1/0/0/1742 0.13/0.00 0 0f33fe3c75bdf0cd85fc8465ed7a7b5e55e5b7244a84655e4b37222d849add9f
+sql-division 1/0/0/2269 22.03/0.02 0 9e8584dab09ac26dd0dde22d1cb6df0ecf6ea013388bfce63e450c15127aa3c6
+sql-types 1/0/0/2269 0.13/0.03 0 d89760a110699334757a5ab8ddf3ac4b3513899d86e87cbe0e0da70cfdd2e85d
+
+SDK2/native2 Rust files,no new Rust files;3new tests (SDK2/native1),9old SDK/36old native touched-file test bodies unchanged. Existing numeric_expression_text function byte-identical. SQL/datatype engine files unchanged; no new SQL fixture/probe/cell credit.
+SDK owns targetmetadata/skipfitting, StringReal selection and generic/contextDecimal result disposition. Decimalshape reused; other targets preserve FieldType constructor defaults even with negative default scale. Native commonfinish constructsactualFieldType/Datum and invokesexistingconverter; old numeric_decimal_cast_type remains a thin redirect for its other real callers, sharing the same storage adapter. Two original unsupportedmessages and typederrors preserved; contextfailure returnsbeforelaterfit. Newtests cover StringInt=>intermediateDecimal, declaredshape/negative metadata, actualgeneric unsupported/typedoverflow/contexttypederror and zone→flags/effect order. SDK tests retainownedvalue/typederroridentity and once-only discardedvalue Drop, not a physicalmemory claim. Parent added API comment after SDK gate (no code/body change).
+Initial SDK rustfmt --check exited1 solely for the parent's API-comment wrapping; applied rustfmt, final check/diff passed. This is not a Cargo failure/retry. Functional238/245 strict0 remaining7 unchanged. Underlying datatypeengine, renderer, other typed/write/SQL lowering and broaderM2/root/liveDAG/final remain. Full datatype/expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

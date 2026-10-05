@@ -458,16 +458,7 @@ fn numeric_argument_text(
 /// Go WrapWithCastAsDecimal: retain declared precision/scale for non-integer
 /// sources; integer casts use the decimal width of the integer storage type.
 fn numeric_decimal_cast_type(field: &FieldType) -> FieldType {
-    let (flen, decimal) = tidb_query_expr::native_numeric_argument_decimal_shape(
-        field.eval_type(),
-        field.code().as_shared_type_name_code(),
-        field.flen(),
-        field.decimal(),
-    );
-    let mut target = FieldType::new(tidb_datatype::FieldTypeCode::NewDecimal);
-    target.set_flen(flen);
-    target.set_decimal(decimal);
-    target
+    numeric_argument_target_field(field, tidb_datatype::FieldTypeCode::NewDecimal.mysql_type()).0
 }
 
 fn integer_division_overflow(
@@ -3522,12 +3513,10 @@ fn cast_numeric_argument_in_mode(
                 tidb_datatype::ConversionLocation::from_time_zone(&zone),
                 &warnings,
             );
-            let (decimal, error) = value.to_decimal_with_context(&context).map_err(|_| {
-                EvalError::Unsupported("numeric decimal argument conversion failed")
-            })?;
-            if let Some(error) = error {
-                return Err(EvalError::Conversion(error));
-            }
+            let decimal = tidb_query_expr::native_numeric_argument_context_decimal_result(
+                value.to_decimal_with_context(&context),
+            )
+            .map_err(numeric_argument_result_error)?;
             Datum::Decimal(decimal)
         }
         Route::RealDecimal => {
@@ -3555,14 +3544,35 @@ fn cast_numeric_argument_in_mode(
         }
         Route::Fit => value,
     };
-    let target_field = if target == EvalType::Decimal {
-        numeric_decimal_cast_type(field)
-    } else {
-        FieldType::new(tidb_datatype::FieldTypeCode::from_mysql_type(target_code))
-    };
-    // IntAsDecimal constructs the decimal before applying source metadata.
-    // ProduceDecWithSpecifiedTp is a no-op when scale is unspecified.
-    if target == EvalType::Decimal && target_field.decimal() < 0 {
+    finish_numeric_argument(value, field, target_code, ctx)
+}
+
+fn numeric_argument_target_field(field: &FieldType, target_code: u8) -> (FieldType, bool) {
+    let descriptor = tidb_query_expr::native_numeric_argument_target(
+        field.eval_type(),
+        field.code().as_shared_type_name_code(),
+        field.flen(),
+        field.decimal(),
+        target_code,
+    );
+    let mut target = FieldType::new(tidb_datatype::FieldTypeCode::from_mysql_type(
+        descriptor.code,
+    ));
+    if let Some((flen, decimal)) = descriptor.decimal_shape {
+        target.set_flen(flen);
+        target.set_decimal(decimal);
+    }
+    (target, descriptor.skip_fitting)
+}
+
+fn finish_numeric_argument(
+    value: Datum,
+    field: &FieldType,
+    target_code: u8,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    let (target_field, skip_fitting) = numeric_argument_target_field(field, target_code);
+    if skip_fitting {
         return Ok(
             match tidb_query_expr::native_numeric_argument_unscaled_integer(
                 value.as_shared_numeric_input(),
@@ -3597,7 +3607,7 @@ fn cast_string_numeric_argument(
     ctx: &dyn Columns,
     vectorized: bool,
 ) -> Result<Datum, EvalError> {
-    if target == EvalType::Real {
+    if tidb_query_expr::native_numeric_argument_string_is_real(target) {
         return crate::ops::bytes_to_f64(bytes, ctx).map(Datum::Real);
     }
     use tidb_query_expr::{NativeNumericArgumentError, NativeNumericArgumentLevel};
@@ -3622,11 +3632,24 @@ fn cast_string_numeric_argument(
         }
     })?;
     let value = Datum::Decimal(tidb_datatype::Decimal::from_shared_parse(decimal));
-    let target = numeric_decimal_cast_type(field);
-    if target.decimal() < 0 {
-        Ok(value)
-    } else {
-        convert_numeric_datum(value, &target, ctx)
+    finish_numeric_argument(
+        value,
+        field,
+        tidb_datatype::FieldTypeCode::NewDecimal.mysql_type(),
+        ctx,
+    )
+}
+
+fn numeric_argument_result_error(
+    error: tidb_query_expr::NativeNumericArgumentResultError<tidb_error::terror::TerrorError>,
+) -> EvalError {
+    match error {
+        tidb_query_expr::NativeNumericArgumentResultError::Unsupported(message) => {
+            EvalError::Unsupported(message)
+        }
+        tidb_query_expr::NativeNumericArgumentResultError::Conversion(error) => {
+            EvalError::Conversion(error)
+        }
     }
 }
 
@@ -3642,13 +3665,12 @@ fn convert_numeric_datum(
         tidb_datatype::ConversionLocation::from_time_zone(&zone),
         &warnings,
     );
-    let converted = value
-        .convert_to_in_context(target, &context, &zone)
-        .map_err(|_| EvalError::Unsupported("numeric argument conversion failed"))?;
-    if let Some(error) = converted.error {
-        return Err(EvalError::Conversion(error));
-    }
-    Ok(converted.value)
+    tidb_query_expr::native_numeric_argument_conversion_result(
+        value
+            .convert_to_in_context(target, &context, &zone)
+            .map(|converted| (converted.value, converted.error)),
+    )
+    .map_err(numeric_argument_result_error)
 }
 
 fn eval_numeric_operand_row(
