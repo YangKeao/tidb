@@ -4671,32 +4671,18 @@ impl LegacyEvaluator<'_> {
                         };
                         eval_boolean_ready(tidb_expr::BooleanFunction::IsNull, ready)?
                     }
-                    SimpleSig::InString(collation) => {
-                        // Go `builtinInStringSig`: TRUE on any match under the
-                        // collation; otherwise NULL if the tested value or any
-                        // element was NULL, FALSE otherwise.
-                        let tested = self.eval_bytes(children.first())?;
-                        let mut saw_null = tested.is_none();
-                        for index in 1..children.len() {
-                            let element = self.eval_bytes(children.get(index))?;
-                            match (&tested, &element) {
-                                (Some(left), Some(right)) => {
-                                    if tidb_datatype::get_collator_by_id(*collation)
-                                        .compare(left, right)
-                                        .is_eq()
-                                    {
-                                        return Ok(Some(1));
-                                    }
-                                }
-                                _ => saw_null = true,
-                            }
-                        }
-                        if saw_null {
-                            None
-                        } else {
-                            Some(0)
-                        }
-                    }
+                    SimpleSig::InString(collation) => tidb_expr::eval_legacy_in_bytes_in(
+                        self.raw_columns,
+                        children.len(),
+                        *collation,
+                        |index, selected| {
+                            let evaluator = LegacyEvaluator {
+                                raw_columns: selected,
+                                ..*self
+                            };
+                            evaluator.eval_bytes(children.get(index))
+                        },
+                    )?,
                     SimpleSig::WeekWithoutMode => {
                         let value = self
                             .eval_time(children.first())?
@@ -4919,24 +4905,19 @@ impl LegacyEvaluator<'_> {
                             }
                         }
                     }
-                    SimpleSig::InInt => {
-                        // `builtinInIntSig.evalInt`: TRUE on any match; otherwise
-                        // NULL if the tested value or any element was NULL.
-                        let tested = child(0)?;
-                        let mut saw_null = tested.is_none();
-                        for index in 1..children.len() {
-                            match (tested, child(index)?) {
-                                (Some(left), Some(right)) if left == right => return Ok(Some(1)),
-                                (_, None) => saw_null = true,
-                                _ => {}
-                            }
-                        }
-                        if saw_null {
-                            None
-                        } else {
-                            Some(0)
-                        }
-                    }
+                    SimpleSig::InInt => tidb_expr::eval_legacy_in_int_in(
+                        self.raw_columns,
+                        children.len(),
+                        |index, selected| {
+                            let evaluator = LegacyEvaluator {
+                                raw_columns: selected,
+                                ..*self
+                            };
+                            children
+                                .get(index)
+                                .map_or(Ok(None), |child| evaluator.eval_expr(child))
+                        },
+                    )?,
                     SimpleSig::UnixTimestampInt => {
                         let value = self.eval_time(children.first())?;
                         tidb_expr::unix_timestamp_int_legacy_in(
@@ -5093,6 +5074,254 @@ mod tests {
         // A NULL tested value never answers TRUE or FALSE.
         let any = in_list(vec![SimpleExpr::Int(300)]);
         assert_eq!(eval_expr(&any, &row_null, 4, &zone()).expect("evals"), None);
+    }
+
+    #[test]
+    fn legacy_in_two_mappers_preserve_readers_demand_and_scope() {
+        use std::cell::RefCell;
+        use tidb_datatype::{BinaryJSON, BinaryJSONValue, Datum, FieldType, FieldTypeCode};
+        use tidb_expr::constant::{Constant, ParamMarker};
+        use tipb::ScalarFuncSig as S;
+
+        struct Probe {
+            values: Vec<Datum>,
+            fault: Option<usize>,
+            reads: RefCell<Vec<usize>>,
+        }
+        impl tidb_expr::Columns for Probe {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                panic!("legacy IN only requests parameter channels")
+            }
+            fn param_value(&self, index: usize) -> Result<Datum, tidb_expr::EvalError> {
+                self.reads.borrow_mut().push(index);
+                if self.fault == Some(index) {
+                    return Err(tidb_expr::EvalError::Unsupported("legacy IN probe error"));
+                }
+                Ok(self.values[index].clone())
+            }
+        }
+        let time_zone = zone();
+        let request = Arc::new(RequestEvalContext::new(time_zone.clone(), 4, 0));
+        let pool = |slots| {
+            tidb_expr::AsciiPoolOwner::new(
+                tidb_expr::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 << 20,
+                    4 << 20,
+                    4 << 20,
+                    64,
+                    8,
+                    4 << 20,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let shared_children = |count| {
+            (0..count)
+                .map(|index| {
+                    let mut constant =
+                        Constant::new(Datum::Null, FieldType::new(FieldTypeCode::VarString));
+                    constant.param_marker = Some(ParamMarker {
+                        order: i64::try_from(index).unwrap(),
+                    });
+                    SimpleExpr::Shared(Arc::new(SharedExpression {
+                        expression: tidb_expr::expression::Expression::Constant(constant),
+                        context: Arc::clone(&request),
+                    }))
+                })
+                .collect::<Vec<_>>()
+        };
+        for sig in [S::InInt, S::InString] {
+            let pb = tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(sig as i32),
+                field_type: Some(tipb::FieldType {
+                    tp: Some(8),
+                    flen: Some(1),
+                    decimal: Some(0),
+                    collate: Some(46),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            assert!(!tidb_expr::distsql_builtin::supports_signature(sig));
+            let SimpleExpr::Func(mapped, _) = convert_expr(&pb).unwrap() else {
+                panic!("IN must retain its actual legacy mapper");
+            };
+            assert!(matches!(
+                (&mapped, sig),
+                (SimpleSig::InInt, S::InInt) | (SimpleSig::InString(46), S::InString)
+            ));
+            // The producer's admitted NOT wrapper recursively decodes its IN
+            // child through Shared PB, which still refuses both signatures.
+            let not = tidb_expr::pb_predicate::logical_not_to_pb(pb);
+            assert_eq!(
+                convert_expr(&not).unwrap_err(),
+                format!("scalar signature {sig:?} is not a pushdown builtin")
+            );
+            let value = if sig == S::InInt {
+                Datum::UInt(u64::MAX)
+            } else {
+                Datum::Bytes(vec![0xff, b'a'])
+            };
+            for slots in [8, 0] {
+                let owner = pool(slots);
+                let execution = owner.begin_execution().unwrap();
+                let scope = execution.scope();
+                scope.with_columns(&tidb_expr::NoColumns, |columns| {
+                    for (values, fault, expected, reads) in [
+                        (vec![], None, None, vec![]),
+                        (vec![value.clone()], None, Some(0), vec![0]),
+                        (vec![Datum::Null], None, None, vec![0]),
+                        (vec![Datum::Null, value.clone()], None, None, vec![0, 1]),
+                        (
+                            vec![Datum::Null, value.clone(), value.clone()],
+                            Some(2),
+                            None,
+                            vec![0, 1, 2],
+                        ),
+                        (
+                            vec![value.clone(), value.clone(), value.clone()],
+                            Some(2),
+                            Some(1),
+                            vec![0, 1],
+                        ),
+                        (
+                            vec![value.clone(), Datum::Null, value.clone()],
+                            None,
+                            Some(1),
+                            vec![0, 1, 2],
+                        ),
+                        (
+                            vec![value.clone(), Datum::Null, value.clone()],
+                            Some(2),
+                            None,
+                            vec![0, 1, 2],
+                        ),
+                    ] {
+                        let count = values.len();
+                        let probe = Probe {
+                            values,
+                            fault,
+                            reads: RefCell::new(Vec::new()),
+                        };
+                        let evaluator = LegacyEvaluator {
+                            raw_columns: columns,
+                            shared_override: Some(&probe),
+                            ..LegacyEvaluator::new(&[], 4, &time_zone)
+                        };
+                        let call = SimpleExpr::Func(mapped.clone(), shared_children(count));
+                        let result = evaluator.eval_expr(&call);
+                        if slots == 0 {
+                            assert!(matches!(
+                                result,
+                                Err(LegacyEvalError::Infrastructure(
+                                    tidb_expr::EvalError::ExpressionAdapterFailure(failure)
+                                )) if failure.class()
+                                    == tidb_expr::ExpressionAdapterFailureClass::PoolResource
+                                    && failure.origin()
+                                        == tidb_expr::ExpressionAdapterFailureOrigin::Pool
+                            ));
+                            assert!(probe.reads.borrow().is_empty());
+                        } else {
+                            if sig == S::InInt && fault.is_some_and(|index| reads.contains(&index))
+                            {
+                                assert!(matches!(result, Err(LegacyEvalError::Sql(message))
+                                    if message == "Unsupported(\"legacy IN probe error\")"));
+                            } else {
+                                assert_eq!(result.unwrap(), expected, "{sig:?}");
+                            }
+                            assert_eq!(*probe.reads.borrow(), reads, "{sig:?}");
+                        }
+                    }
+                    if slots != 0 {
+                        let evaluator = LegacyEvaluator {
+                            raw_columns: columns,
+                            ..LegacyEvaluator::new(&[], 4, &time_zone)
+                        };
+                        if sig == S::InInt {
+                            let wide = |value| {
+                                SimpleExpr::Func(
+                                    SimpleSig::CastJsonAsInt,
+                                    vec![SimpleExpr::Json(
+                                        BinaryJSON::from_typed_value(&BinaryJSONValue::Float64(
+                                            value,
+                                        ))
+                                        .unwrap(),
+                                    )],
+                                )
+                            };
+                            for value in [-1e100, 1e100] {
+                                assert_eq!(
+                                    evaluator
+                                        .eval_expr(&SimpleExpr::Func(
+                                            mapped.clone(),
+                                            vec![wide(value), wide(-value), wide(value)],
+                                        ))
+                                        .unwrap(),
+                                    Some(1)
+                                );
+                            }
+                            for (value, limit, wrapped) in
+                                [(-1e100, i64::MIN, 0), (1e100, i64::MAX, -1)]
+                            {
+                                assert_eq!(
+                                    evaluator
+                                        .eval_expr(&SimpleExpr::Func(
+                                            mapped.clone(),
+                                            vec![
+                                                wide(value),
+                                                SimpleExpr::Int(limit),
+                                                SimpleExpr::Int(wrapped)
+                                            ],
+                                        ))
+                                        .unwrap(),
+                                    Some(0)
+                                );
+                            }
+                            let row = [Datum::UInt(u64::MAX)];
+                            let evaluator = LegacyEvaluator {
+                                row: &row,
+                                ..evaluator
+                            };
+                            assert_eq!(
+                                evaluator
+                                    .eval_expr(&SimpleExpr::Func(
+                                        mapped.clone(),
+                                        vec![SimpleExpr::Column(0), SimpleExpr::Int(-1)],
+                                    ))
+                                    .unwrap(),
+                                Some(0)
+                            );
+                        } else {
+                            for collation in [45, 46, 63] {
+                                let expected = i128::from(
+                                    tidb_datatype::get_collator_by_id(collation)
+                                        .compare(b"A ", b"a")
+                                        .is_eq(),
+                                );
+                                assert_eq!(
+                                    evaluator
+                                        .eval_expr(&SimpleExpr::Func(
+                                            SimpleSig::InString(collation),
+                                            vec![
+                                                SimpleExpr::Bytes(b"A ".to_vec()),
+                                                SimpleExpr::Bytes(b"a".to_vec())
+                                            ],
+                                        ))
+                                        .unwrap(),
+                                    Some(expected)
+                                );
+                            }
+                        }
+                    }
+                });
+                drop(scope);
+                execution.close();
+            }
+        }
     }
 
     #[test]

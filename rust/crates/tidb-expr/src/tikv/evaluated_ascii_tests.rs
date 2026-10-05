@@ -1543,6 +1543,12 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::LegacyDateArithmeticParseNative => {
             panic!("legacy date arithmetic needs actual channel replies and its requested parser context")
         }
+        EvaluatedBytesOp::InTypedValuesNative
+        | EvaluatedBytesOp::InLegacyIntHeadNative
+        | EvaluatedBytesOp::InLegacyStringHeadNative
+        | EvaluatedBytesOp::InLegacyStepNative => {
+            panic!("partial IN needs actual cast identities or its legacy channel continuation")
+        }
         EvaluatedBytesOp::ConvertTzNative => {
             panic!("CONVERT_TZ needs its three actual nullable coerced strings")
         }

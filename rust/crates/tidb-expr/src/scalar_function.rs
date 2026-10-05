@@ -2476,43 +2476,14 @@ impl ScalarFunction {
                         _ => unreachable!("typed IN family was matched above"),
                     };
                 }
-                let first = &values[0];
-                if first.is_null() {
-                    return Ok(Datum::Null);
-                }
-                let mut found_null = false;
-                for candidate in &values[1..] {
-                    if candidate.is_null() {
-                        found_null = true;
-                        continue;
-                    }
-                    let equal = match first_eval_type.expect("matched above") {
-                        EvalType::Datetime | EvalType::Timestamp => matches!(
-                            (first, candidate),
-                            (Datum::Time(left), Datum::Time(right))
-                                if left.compare(*right).is_eq()
-                        ),
-                        EvalType::Duration => matches!(
-                            (first, candidate),
-                            (Datum::Duration(left), Datum::Duration(right))
-                                if left.compare(*right).is_eq()
-                        ),
-                        EvalType::Json => matches!(
-                            (first, candidate),
-                            (Datum::Json(left), Datum::Json(right))
-                                if tidb_datatype::compare_binary_json(left, right).is_eq()
-                        ),
-                        _ => unreachable!("typed IN family was matched above"),
-                    };
-                    if equal {
-                        return Ok(Datum::Int(1));
-                    }
-                }
-                return Ok(if found_null {
-                    Datum::Null
-                } else {
-                    Datum::Int(0)
-                });
+                let domain = match first_eval_type.expect("matched above") {
+                    EvalType::Datetime => tidb_query_expr::NativeInTypedDomain::Datetime,
+                    EvalType::Timestamp => tidb_query_expr::NativeInTypedDomain::Timestamp,
+                    EvalType::Duration => tidb_query_expr::NativeInTypedDomain::Duration,
+                    EvalType::Json => tidb_query_expr::NativeInTypedDomain::Json,
+                    _ => unreachable!("typed IN family was matched above"),
+                };
+                return crate::tikv::eval_in_typed_values_in(ctx, domain, &values);
             }
             let collation = self.derived_collation();
             let cast_candidate =

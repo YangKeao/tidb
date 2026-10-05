@@ -9363,6 +9363,171 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_typed_in_preserves_sql_domains_eager_casts_and_root_refusals() {
+    use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
+
+    let create = "CREATE TABLE shared_in_typed_sql (dt DATETIME(3), dt_hit DATETIME(3), dt_miss DATETIME(3), dt_null DATETIME(3), ts TIMESTAMP(3), ts_hit TIMESTAMP(3), ts_miss TIMESTAMP(3), tm TIME(3), tm_hit TIME(3), tm_miss TIME(3), tm_null TIME(3), j_num JSON, j_string JSON, j_jsonnull JSON, j_sqlnull JSON, j_two JSON, s_one VARCHAR(32), s_two VARCHAR(32), s_null VARCHAR(32), bad_text VARCHAR(32))";
+    let insert = r#"INSERT INTO shared_in_typed_sql VALUES ('2024-03-15 02:03:04.125','2024-03-15 02:03:04.125','2024-03-16 02:03:04.125',NULL,'2024-03-15 02:03:04.125','2024-03-15 02:03:04.125','2024-03-16 02:03:04.125','25:03:04.125','25:03:04.125','02:00:00',NULL,'1','"1"','null',NULL,'2','1','2','null','not-a-date')"#;
+    // Stored, statically typed left operands and at least two candidates keep
+    // the real IN node: no single-candidate equality or literal-NULL fold.
+    let cases: [(&str, &[Option<i64>], bool); 4] = [
+        (
+            "dt IN (dt_hit,dt_miss),ts IN (ts_hit,ts_miss),tm IN (tm_hit,tm_miss)",
+            &[Some(1), Some(1), Some(1)],
+            false,
+        ),
+        (
+            "dt IN (dt_miss,dt_null),dt_null IN (dt_hit,dt_miss),tm IN (tm_miss,tm_null)",
+            &[None, None, None],
+            false,
+        ),
+        (
+            "j_num IN (s_one,s_two),j_string IN (s_one,s_two),j_jsonnull IN (j_jsonnull,j_num),j_num IN (j_sqlnull,j_two),j_jsonnull IN (s_null,j_num),j_sqlnull IN (j_jsonnull,j_num)",
+            &[Some(0), Some(1), Some(1), None, Some(0), None],
+            false,
+        ),
+        (
+            "dt IN (dt_hit,bad_text)",
+            &[Some(1)],
+            true,
+        ),
+    ];
+    for slots in [1, 0] {
+        let mut session = Session::new();
+        session
+            .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+            .unwrap();
+        session.run("SET time_zone='+00:00'").unwrap();
+        session.run("SET sql_mode=''").unwrap();
+        session
+            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+            .unwrap();
+        session.run(create).unwrap();
+        session.run(insert).unwrap();
+        if slots == 1 {
+            let plan = row_text(session.run("EXPLAIN SELECT dt IN (dt_hit,dt_miss),ts IN (ts_hit,ts_miss),tm IN (tm_hit,tm_miss),j_num IN (s_one,s_two),dt IN (dt_hit,bad_text) FROM shared_in_typed_sql"))
+                .iter()
+                .map(|row| row.join(" "))
+                .collect::<Vec<_>>()
+                .join("\n")
+                .to_ascii_lowercase();
+            assert!(
+                plan.matches("in(").count() >= 5,
+                "typed domains and the late temporal cast must retain IN in the real plan: {plan}"
+            );
+            assert!(
+                !plan.contains("eq("),
+                "do not credit an equality/OR rewrite as typed IN: {plan}"
+            );
+        }
+        assert!(session
+            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .unwrap());
+        if slots == 1 {
+            for vectorized in [0, 1] {
+                session
+                    .run(&format!(
+                        "SET tidb_enable_vectorized_expression={vectorized}"
+                    ))
+                    .unwrap();
+                for &(projection, expected, warns) in &cases {
+                    let sql = format!("SELECT {projection} FROM shared_in_typed_sql");
+                    let StmtOutput::Rows { columns, rows } =
+                        session.run_with_columns(&sql).unwrap()
+                    else {
+                        panic!("expected typed IN rows: {sql}")
+                    };
+                    assert_eq!(columns.len(), expected.len());
+                    assert_eq!(
+                        rows,
+                        vec![expected
+                            .iter()
+                            .map(|value| value.map_or(Datum::Null, Datum::Int))
+                            .collect::<Vec<_>>()],
+                        "{sql}/{vectorized}"
+                    );
+                    for (_, field) in &columns {
+                        // IN has a dedicated boolean result type, not the
+                        // ordinary 20-wide integer helper used by INTERVAL.
+                        assert_eq!(field.code(), FieldTypeCode::LongLong);
+                        assert_eq!((field.flen(), field.decimal()), (1, 0));
+                        assert!(field.has_flag(FieldTypeFlags::IS_BOOLEAN));
+                        assert!(!field.is_unsigned());
+                        assert_eq!(field.charset_name(), "binary");
+                        assert_eq!(field.collation_name(), "binary");
+                    }
+                    // JSON arg0 is a document; string candidates are JSON
+                    // string values, not parsed documents. JSON null is a
+                    // comparable JSON value, distinct from SQL NULL.
+                    // The temporal match must not skip the later implicit
+                    // candidate cast: its one 1292 survives the winning row.
+                    let expected_warnings = if warns {
+                        vec![(1292, "Incorrect datetime value: 'not-a-date'".to_owned())]
+                    } else {
+                        Vec::new()
+                    };
+                    assert_eq!(
+                        warnings_of(&session),
+                        expected_warnings,
+                        "{sql}/{vectorized}"
+                    );
+                }
+            }
+        } else {
+            for (vectorized, projection) in [
+                (0, "dt IN (dt_hit,dt_miss)"),
+                (1, "j_sqlnull IN (j_jsonnull,j_num)"),
+            ] {
+                session
+                    .run(&format!(
+                        "SET tidb_enable_vectorized_expression={vectorized}"
+                    ))
+                    .unwrap();
+                let sql = format!("SELECT {projection} FROM shared_in_typed_sql");
+                let error = session.run_with_columns(&sql).expect_err(&sql);
+                match &error {
+                    DriverError::Exec(tidb_executor::ExecError::Eval(
+                        tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                    )) => {
+                        assert_eq!(
+                            failure.class(),
+                            tidb_executor::ExpressionAdapterFailureClass::PoolResource
+                        );
+                        assert_eq!(
+                            failure.origin(),
+                            tidb_executor::ExpressionAdapterFailureOrigin::Pool
+                        );
+                    }
+                    other => panic!("typed IN root bypassed its pool: {sql}: {other:?}"),
+                }
+                let mysql = error.to_mysql_error();
+                assert_eq!(mysql.code, 1105);
+                assert_eq!(mysql.state, *b"HY000");
+                assert!(mysql.is_from_evaluation());
+                // Homogeneous stored DATETIME/JSON operands need no new
+                // implicit cast nodes, so these two refusals isolate the
+                // typed-IN worker, including its SQL-NULL left operand.
+                // Its admission remains AFTER the original eval-all/cast-all
+                // stages; no pre-child Head or generic/AST-IN claim is made.
+                assert!(warnings_of(&session).is_empty(), "{sql}");
+            }
+            // A failed root does not poison the next statement. This direct
+            // column read proves session reuse, not recovery of worker slots.
+            let StmtOutput::Rows { rows, .. } = session
+                .run_with_columns("SELECT dt FROM shared_in_typed_sql")
+                .unwrap()
+            else {
+                panic!("expected direct-column reuse after pool refusal")
+            };
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].len(), 1);
+            assert_eq!(cell_text(&rows[0][0]), "2024-03-15 02:03:04.125");
+            assert!(warnings_of(&session).is_empty());
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_date_arithmetic_preserves_sql_domains_fsp_and_distinct_head_routes() {
     use tidb_datatype::FieldTypeCode;
 

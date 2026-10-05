@@ -1,0 +1,55 @@
+in-typed-legacy-105 / R108 partial IN; functional237/245 strict0 unchanged
+TiKV cwd: /home/agent/tidb/expression-unification/tikv
+Native cwd: /home/agent/tidb/expression-unification/tidb/rust
+Raw: /home/agent/tidb/expression-unification/logs/in-typed-legacy-{id}.log
+Counts passed/failed/ignored/filtered; timings compile/test seconds.
+
+tikv-core | COMPILE FAILURE E0432 | exit101
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_in -- --test-threads=1
+sha256 38c665d038a7faa3f9e1347198f9a1a9d0aa66ed891ff9b68ac23842d41c65df
+native_in.rs:9 imported codec::collation::NativeCollation, which does not exist. Parent corrected only the import to codec::collation::native::NativeCollation. Local gate was NOT launched after this failure. No test-result/compile-time receipt fabricated.
+
+tikv-core-retry | 6/0/0/983 | 16.12/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_in -- --test-threads=1
+sha256 5a1f40586206ed4df9ce630175fd6112e6f9b4fdb9ac610175512702c4839e7e
+The substring filter includes existing native_in-prefix matches; this is not six new test functions.
+
+tikv-local | 360/0/1/628 | 0.15/0.24 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local -- --test-threads=1
+sha256 8e24932505057f8ccc235ad7f82156304a7dd800cab6944eb9262a62d05a5c41
+
+native-entry | 1/0/0/1716 | 18.79/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib partial_in_bridge -- --test-threads=1
+sha256 f670339f1476384bc9f459de295bc7ac5a5215e1e2ae33481bf4dcd65c21db3c
+
+native-gateway | ZERO MATCH, NOT A PASS | 0/0/0/1717 | 0.13/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii_tests -- --test-threads=1
+sha256 637533a8139b005bde27ccbf70af16efba49f313f091cb4d2ff5059a0a046a19
+Wrong module filter; no gateway execution credit. Kept raw log and reran the original filter separately without changing tests or observers.
+
+native-original | 4/0/0/1713 | 0.13/0.04 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib in_func_decimal_collation_source -- --test-threads=1
+sha256 2b9f0ae9d3a61c41570b78787740a07cffd6b8bbcab5e0e61d718af19288dec8
+
+unistore | 1/0/0/235 | 6.89/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_in_two_mappers -- --test-threads=1
+sha256 b3f45035ac78f51459e7e835aaf82e36188839bcc6cedcc3dfbe91dd0437623c
+
+sql | 1/0/0/2247 | 27.70/0.04 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::evaluated_ascii_typed_in_preserves_sql_domains_eager_casts_and_root_refusals -- --exact --test-threads=1
+sha256 07010c675a308eb2e59f926a1d0ae9046080570a1d457d2d534de485b6ec09ec
+
+native-gateway-retry | 196/0/1/1520 | 0.13/0.34 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii -- --test-threads=1
+sha256 c5499667d59aba7a0a4522b1a2bb32ef0bb97929b546d970b05db3440676264b
+Original boolean_dispatch_preserves_pb_warnings_and_native_predicate_wrappers executed and passed, including unchanged AST Eq/Eq/NOT3facades and snapshot assertions.
+
+9 actual serial locked single-threaded launches;7 nonzero GREEN,1 compile failure,1 zero-match.2 corrective relaunches,0 test execution failures/interrupted runs. Existing ignored tests are not passes. 5 new explicit test functions (2 SDK,3 native),8+8changedRustfiles,154SDK+526native original test bodies byte-identical. No expectation/fixture rewrite, observer bypass, provider recording or whole-suite pass claim.
+
+SDKtyped4domains retain actualidentity metadata; membership occurs AFTER original evaluateALL/castALL, JSONfirst-document vs candidate-value-string distinct. Existing coretime/nanos/binaryJSON comparison primitives reused. Legacyonlyactual2maps: Int eval_expr/fulli128/SQLerrorspropagate; Bytes eval_bytes/oldSQLfold; emptycount requests0 actualNone, NULLtarget visitsRHS, actualmatch skipslatererrors. Effective native collator requested only AFTER eachrealnonnullpair and re-read eachpair; nohead snapshot/nativecontains/hostverdict. All4profiles558–561 Values-only alwaysSomeOwnBytes, headsReq0-only, typedterminalonly, stepterminal/request. Boundcheckedlen1+len2+128 plus actualcaps; nophysical/transientheap/OOM claim. Originalselectedscope/requestctx/genericE/defaultNoColumns capabilities preserved.
+
+SQL12probes=11SELECT+1EXPLAIN:8success projections4groups×2vector (26typedINexpressions),2puretyped-column0poolrefusals (Datetime/SQLNULLJSON),1plaincolumnSELECTsessionreuse.5actualINnodes in EXPLAIN guard noeq/ORrewrite. HeadersLongLong1/0 IS_BOOLEAN; exactlate1292warning afterearliermatch, JSONnumbervsJSONString/JSONnullvsSQLNULL.0pooltyped admission is aftereval/casts, notprechildHead; sessionreuse does notclaimrestoredworkerpoolcapacity.
+
+ASTscalar/row,generictyped/preparedstringcache,readyvalueIN,rewriterunchanged/pending. Existing3facadeASTtestretained. No wholeINfamilycredit;237families/partialCAST/date/typehistorypreserved, appendpartialINslice only. Latestfunctionallegacy-date-arithmetic-103/latesttypemydecimal-core-104 unchanged. SharedPBIN0; actualproducerUnaryNotInt(IN) recursivechilddecode refusal explicitlypinned, notfixed/admitted. HandbuiltlegacyNOT isdifferentexistingpath.
+
+No full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical ortransientheap/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR-ready verification. R100 expression4/unistore1 historical failures remain unrepaired. NoCargo/lock/Go/Bazel changes; unrelatedBUILD excluded. Signed-off paired pushes include identical Plans; goal active.

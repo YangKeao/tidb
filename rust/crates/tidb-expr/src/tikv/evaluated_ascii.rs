@@ -2300,6 +2300,10 @@ fn materialize_computed(
             | EvaluatedBytesOp::LegacyDateArithmeticDurationHeadNative
             | EvaluatedBytesOp::LegacyDateArithmeticStepNative
             | EvaluatedBytesOp::LegacyDateArithmeticParseNative
+            | EvaluatedBytesOp::InTypedValuesNative
+            | EvaluatedBytesOp::InLegacyIntHeadNative
+            | EvaluatedBytesOp::InLegacyStringHeadNative
+            | EvaluatedBytesOp::InLegacyStepNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative

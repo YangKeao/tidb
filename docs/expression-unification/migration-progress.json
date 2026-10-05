@@ -1,5 +1,10 @@
 {
-  "checkpoint_id": "mydecimal-core-104",
+  "checkpoint_id": "in-typed-legacy-105",
+  "in_typed_temporal_json_membership_shared": true,
+  "in_legacy_two_mappings_shared": true,
+  "in_ast_generic_cache_and_values_pending": true,
+  "latest_partial_runtime_checkpoint": "in-typed-legacy-105",
+  "partial_in_slices": [{"checkpoint":"in-typed-legacy-105","domains":["typed-datetime","typed-timestamp","typed-duration","typed-json","legacy-int128","legacy-bytes"],"native_membership_algorithm_bodies_deleted":true,"typed_original_evaluate_all_then_cast_all_preparation_preserved":true,"legacy_sdk_owns_demand_null_and_matching":true,"legacy_int_sql_errors_not_folded":true,"legacy_bytes_original_sql_error_folding_preserved":true,"collation_resolution_requested_after_each_real_nonnull_pair":true,"ast_three_facade_not_in_test_unchanged":true,"shared_pb_in_admissions":0,"producer_pb_not_in_recursive_decoder_refusal_unchanged":true,"new_profiles":4,"whole_in_family_credit":false}],
   "fixed_word_mydecimal_algorithms_shared": true,
   "mydecimal_private_native_storage_facade_preserved": true,
   "decimal_binary_writer_and_size_primitives_shared": true,
