@@ -9363,6 +9363,133 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn native_vector_cast_policy_preserves_stored_domains_dimensions_and_typed_errors() {
+    use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
+
+    let mut session = Session::new();
+    session
+        .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+        .unwrap();
+    session.run("SET sql_mode=''").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE native_vector_cast_policy_sql (s VARCHAR(32), valid_bytes VARBINARY(32), v VECTOR(2), null_text VARCHAR(32), null_vector VECTOR(2), bad_bytes VARBINARY(8), bad_text VARCHAR(32), i BIGINT)")
+        .unwrap();
+    session
+        .run("INSERT INTO native_vector_cast_policy_sql VALUES ('[1,2.5]',0x5B312C322E355D,'[3,4]',NULL,NULL,0xFF,'not-a-vector',7)")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let cases: [(&str, &[Option<&[f32]>], &[i64]); 2] = [
+        (
+            "CAST(s AS VECTOR),CAST(s AS VECTOR(2)),CAST(valid_bytes AS VECTOR(2))",
+            &[Some(&[1.0, 2.5]), Some(&[1.0, 2.5]), Some(&[1.0, 2.5])],
+            &[-1, 2, 2],
+        ),
+        (
+            "CAST(v AS VECTOR),CAST(v AS VECTOR(2)),CAST(null_text AS VECTOR(3)),CAST(null_vector AS VECTOR(3))",
+            &[Some(&[3.0, 4.0]), Some(&[3.0, 4.0]), None, None],
+            &[-1, 2, 3, 3],
+        ),
+    ];
+    // Two positive projections in each mode. The NULL VECTOR(2) source is
+    // deliberately cast to VECTOR(3): the original SQL NULL guard precedes
+    // dimension enforcement. Expected elements are fixed literals, never
+    // produced by the vector parser being migrated.
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        for &(projection, expected, dimensions) in &cases {
+            let sql = format!("SELECT {projection} FROM native_vector_cast_policy_sql");
+            let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap() else {
+                panic!("expected stored vector cast rows: {sql}")
+            };
+            assert_eq!(columns.len(), expected.len(), "{sql}");
+            assert_eq!(rows.len(), 1, "{sql}");
+            assert_eq!(rows[0].len(), expected.len(), "{sql}");
+            for (index, expected) in expected.iter().enumerate() {
+                let field = &columns[index].1;
+                assert_eq!(field.code(), FieldTypeCode::VectorFloat32);
+                // CAST's parser type sets decimal=0 and binary charset, but
+                // unlike many other casts it does NOT add BinaryFlag.
+                assert_eq!((field.flen(), field.decimal()), (dimensions[index], 0));
+                assert_eq!(field.charset_name(), "binary");
+                assert_eq!(field.collation_name(), "binary");
+                assert!(!field.has_flag(FieldTypeFlags::BINARY));
+                assert!(!field.is_unsigned());
+                if let Some(expected) = expected {
+                    let Datum::VectorFloat32(value) = &rows[0][index] else {
+                        panic!("VECTOR result lost its native carrier: {sql}/{index}")
+                    };
+                    assert_eq!(value.elements().len(), expected.len());
+                    for (actual, expected) in value.elements().iter().zip(expected.iter()) {
+                        assert_eq!(
+                            actual.to_bits(),
+                            expected.to_bits(),
+                            "{sql}/{vectorized}/{index}"
+                        );
+                    }
+                } else {
+                    assert_eq!(rows[0][index], Datum::Null, "{sql}/{vectorized}/{index}");
+                }
+            }
+            assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+        }
+    }
+    // Four separate failures, not an error Cartesian product: together with
+    // the four successful SELECTs above, this is eight SQL probes. A binary
+    // column can be materialized as a collation-bearing String, so this tests
+    // strict byte payload decoding, not a forced Datum::Bytes enum variant.
+    for (vectorized, projection, expected) in [
+        (
+            0,
+            "CAST(v AS VECTOR(3))",
+            "vector has 2 dimensions, does not fit VECTOR(3)",
+        ),
+        (
+            1,
+            "CAST(bad_bytes AS VECTOR(2))",
+            "invalid utf-8 sequence of 1 bytes from index 0",
+        ),
+        (
+            0,
+            "CAST(bad_text AS VECTOR)",
+            "Invalid vector text: not-a-vector",
+        ),
+        (1, "CAST(i AS VECTOR)", "cannot cast from bigint to vector"),
+    ] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        let sql = format!("SELECT {projection} FROM native_vector_cast_policy_sql");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::Vector(message),
+            )) => assert_eq!(message, expected, "{sql}/{vectorized}"),
+            other => panic!("changed vector cast error tier: {sql}: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1105);
+        assert_eq!(mysql.state, *b"HY000");
+        assert_eq!(mysql.message, expected);
+        assert!(mysql.is_from_evaluation());
+        // Evaluation-origin 1105 does not append its own error warning row.
+        assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+    }
+    // No new Head/zero-slot, JSON-cast, global dimension cap, mutable-NaN
+    // clone validation, or unreachable SQL source-type-name claim is made.
+}
+
+#[test]
 fn native_datum_sql_string_preserves_stored_cast_formatting_and_exact_payloads() {
     use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
 

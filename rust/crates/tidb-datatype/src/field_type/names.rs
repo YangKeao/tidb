@@ -16,85 +16,15 @@ use super::FieldTypeCode;
 
 /// Returns the source type label for one code.
 pub fn type_str(code: FieldTypeCode) -> &'static str {
-    type_to_str(code, "")
+    tidb_query_datatype::codec::native_type_name::native_type_str(code.as_shared_type_name_code())
 }
 
 /// Returns the source type label, applying binary text/blob aliases.
 pub fn type_to_str(code: FieldTypeCode, charset: &str) -> &'static str {
-    let binary = charset == "binary";
-    match code {
-        FieldTypeCode::Bit => "bit",
-        FieldTypeCode::Blob => {
-            if binary {
-                "blob"
-            } else {
-                "text"
-            }
-        }
-        FieldTypeCode::Date => "date",
-        FieldTypeCode::Datetime => "datetime",
-        FieldTypeCode::Unspecified => "unspecified",
-        FieldTypeCode::NewDecimal => "decimal",
-        FieldTypeCode::Double => "double",
-        FieldTypeCode::Enum => "enum",
-        FieldTypeCode::Float => "float",
-        FieldTypeCode::Geometry => "geometry",
-        FieldTypeCode::VectorFloat32 => "vector",
-        FieldTypeCode::Int24 => "mediumint",
-        FieldTypeCode::Json => "json",
-        FieldTypeCode::Long => "int",
-        FieldTypeCode::LongLong => "bigint",
-        FieldTypeCode::LongBlob => {
-            if binary {
-                "longblob"
-            } else {
-                "longtext"
-            }
-        }
-        FieldTypeCode::MediumBlob => {
-            if binary {
-                "mediumblob"
-            } else {
-                "mediumtext"
-            }
-        }
-        FieldTypeCode::Null => {
-            if binary {
-                "binary"
-            } else {
-                "null"
-            }
-        }
-        FieldTypeCode::Set => "set",
-        FieldTypeCode::Short => "smallint",
-        FieldTypeCode::String => {
-            if binary {
-                "binary"
-            } else {
-                "char"
-            }
-        }
-        FieldTypeCode::Duration => "time",
-        FieldTypeCode::Timestamp => "timestamp",
-        FieldTypeCode::Tiny => "tinyint",
-        FieldTypeCode::TinyBlob => {
-            if binary {
-                "tinyblob"
-            } else {
-                "tinytext"
-            }
-        }
-        FieldTypeCode::Varchar => {
-            if binary {
-                "varbinary"
-            } else {
-                "varchar"
-            }
-        }
-        FieldTypeCode::VarString => "var_string",
-        FieldTypeCode::Year => "year",
-        FieldTypeCode::NewDate | FieldTypeCode::Unknown(_) => "",
-    }
+    tidb_query_datatype::codec::native_type_name::native_type_to_str(
+        code.as_shared_type_name_code(),
+        charset,
+    )
 }
 
 /// Converts a source type label to its code, including blob/binary aliases.

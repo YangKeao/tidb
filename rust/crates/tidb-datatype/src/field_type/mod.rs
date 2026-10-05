@@ -448,6 +448,18 @@ impl FieldTypeCode {
         self.is_type_time()
     }
 
+    /// Projects native named/unknown identity for shared type-name lookup.
+    /// Unknown bytes are never decoded into a named variant by this transport.
+    pub const fn as_shared_type_name_code(
+        self,
+    ) -> tidb_query_datatype::codec::native_type_name::NativeTypeNameCode {
+        use tidb_query_datatype::codec::native_type_name::NativeTypeNameCode as Shared;
+        match self {
+            Self::Unknown(raw) => Shared::Unknown(raw),
+            other => Shared::Known(other.mysql_type()),
+        }
+    }
+
     /// Projects actual named identity for shared string-conversion predicates.
     /// Unknown bytes remain Other even when they equal a known type number.
     /// Other known non-string types retain their byte but not a full type view.

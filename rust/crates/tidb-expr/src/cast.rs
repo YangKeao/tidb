@@ -95,23 +95,7 @@ pub(crate) fn eval_cast(
         CastType::Year => cast_to_year(&v, ctx),
         CastType::Double => crate::tikv::eval_cast_double_in(ctx, &v).map(Datum::Real),
         CastType::Float => crate::tikv::eval_cast_float_in(ctx, &v).map(Datum::Real),
-        CastType::Vector { dimensions } => {
-            let mut target = FieldType::new(FieldTypeCode::VectorFloat32);
-            if let Some(dimensions) = dimensions {
-                target.set_flen(i64::from(*dimensions));
-            }
-            let source_name = source
-                .map(|field_type| tidb_datatype::type_str(field_type.code()))
-                .unwrap_or("unspecified");
-            v.convert_to(&target, ConversionFlags::default())
-                .map(|converted| converted.value)
-                .map_err(|error| match error {
-                    DatumValueError::Unsupported(_, _) => {
-                        EvalError::Vector(format!("cannot cast from {source_name} to vector"))
-                    }
-                    error => EvalError::Vector(error.to_string()),
-                })
-        }
+        CastType::Vector { dimensions } => crate::tikv::eval_cast_vector(&v, source, *dimensions),
         CastType::Time { fsp } => cast_to_duration(&v, source, ctx, i64::from(fsp.unwrap_or(0))),
         CastType::Json => crate::builtin_ext::cast_as_json(&v),
     }

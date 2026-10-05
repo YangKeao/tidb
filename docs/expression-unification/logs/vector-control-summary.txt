@@ -1,0 +1,72 @@
+vector-control-113 / R116 VECTOR control + datatype selector + native type names.
+Functional238/245 strict0 remaining7 unchanged; no wholeCAST/M2/Go-package completion.
+TiKV cwd /home/agent/tidb/expression-unification/tikv
+Native cwd /home/agent/tidb/expression-unification/tidb/rust
+Raw /home/agent/tidb/expression-unification/logs/vector-control-{id}.log
+Counts passed/failed/ignored/filtered; compile/test seconds; exact commands below.
+
+COMMANDS
+[tikv-name]
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_type_names_keep_known_unknown_identity_and_exact_charset_aliases -- --test-threads=1
+[tikv-type]
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_vector_conversion_keeps_source_error_order_and_raw_vector_identity -- --test-threads=1
+[tikv-core, tikv-core-followup, tikv-core-oracle] same exact command on each launch:
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_cast_vector -- --test-threads=1
+[native-entry, native-entry-retry, native-entry-oracle] same exact command on each launch:
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::cast_vector -- --test-threads=1
+[native-cast]
+../../tools/cargo-tidb test --locked -p tidb-expr --lib cast:: -- --test-threads=1
+[native-datatype]
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[sql]
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_vector_cast_policy_preserves_stored_domains_dimensions_and_typed_errors -- --exact --test-threads=1
+[sql-original]
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_cast_vector::cast_as_vector_uses_the_vector_value_domain -- --exact --test-threads=1
+[sql-string]
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_datum_sql_string_preserves_stored_cast_formatting_and_exact_payloads -- --exact --test-threads=1
+
+RECEIPTS IN LAUNCH ORDER
+1 tikv-name | 1/0/0/477 | 4.71/0.00 | exit0
+sha256 b342b6ace6deb2435ae6a359f6ebb7283cbae3c7d3c0dddc83de2542a5a2f6d2
+2 tikv-type | 1/0/0/477 | 0.18/0.00 | exit0
+sha256 79b78cb95d0b4f9294ba6a1090163a18ec72ac8d08acf4e8f05a937de08e97ee
+3 tikv-core | 1/0/0/998 | 18.40/0.00 | exit0
+sha256 bdb918dd40d2eac79cf9e90afdceb4b57e0a979a1d2b8e92d51ba5f2d4501e71
+Initial SDK version before NULL correction; not the final acceptance receipt.
+4 native-entry | 0/1/0/1722 | 21.58/0.00 | exit101 RETAINED RED
+sha256 8fff8585db3950adb5e73829b24621227546f98837a1ff6b4709d105b7cd4679
+5 tikv-core-followup | 1/0/0/998 | 6.79/0.00 | exit0
+sha256 66cb3316752c109635a6fbde67fd1b46a7096df41465774a290693d63e3f194f
+Supplementary verification of corrected nullable API; not a retry of an SDK failure.
+6 native-entry-retry | 1/0/0/1722 | 9.30/0.00 | exit0
+sha256 f6a65dd95ec5273fd918fee7e3e3247a911e3af8b223f18ba87bf63927a16af8
+7 native-cast | 21/0/0/1702 | 0.14/0.00 | exit0
+sha256 96ad1938f080ba01ea374ca8f835d5f5bf255bcaed2fe324ca2c7c2e7649cb05
+8 native-datatype | 464/0/0/0 | 3.87/7.34 | exit0
+sha256 4d1f78d25d7a9dd24735cc64041f05a14632daa008b1d03057cdd12b7ed422e1
+9 sql | 1/0/0/2255 | 36.51/0.03 | exit0
+sha256 1af63deab258d7dc326139cc9a1ec439f3316fa651379b191c759cbf574af151
+10 sql-original | 1/0/0/2255 | 0.16/0.02 | exit0
+sha256 28e2e857fd720e19ff96072206c2d4d4501b17a376930b770df262136658d343
+11 sql-string | 1/0/0/2255 | 0.16/0.04 | exit0
+sha256 12b8fe3c980d9c46ad060d73f86b8e85f286bf677aa46ed1e4af75d38009feca
+12 tikv-core-oracle | 1/0/0/998 | 6.96/0.00 | exit0
+sha256 0e68f5303ed040a41be66233e98c00ba8284eedbc9999cf7ee1ec1eb649e6023
+13 native-entry-oracle | 1/0/0/1722 | 8.27/0.00 | exit0
+sha256 f6a3fae767406ff37c4ec3096f88e09e79a414c9824bb0dec0b1633e233ac998
+Last2 are supplementary new-test-only oracle cleanup runs; no production change since run5/6. Final distinct9gates are runs1,2,12,13,7,8,9,10,11.
+
+13locked serial single-threaded matched launches=12GREEN+1RED; 9distinct finalGREEN.1native retry+3supplementaries;0compilefail/ignored/zero-match/interrupt.5newtests=SDK3/native2.5SDK+7nativeRustfiles,4newlive.0SDK+255native oldexplicit test bodies unchanged. Full native datatype library verified, not whole-Go-package transcreation. Existing ignored vectorized String-to-DECIMAL UNION NOTselected/passed/repaired.
+
+INCIDENTS
+Staticpreflight: Htyped shared error has noDisplay because Unsupported lacks actualsourcekind; Binitialwrapper .to_string would notcompile. Corrected tothreevariants beforeCargo; nofakecompileRED.
+RealRED: native-entry.log2830 expectedOkNull butgotVector("cannot cast from unspecified to vector"). cast.rs45–47documentsnonNULLcaller; actualeval_cast61guardsrangeonly. OldVECTORarm v.convert_to inheriteddatatypeconvert_to_reported121–122 NULLguard. NewSDKwronglymappedNullOther. Productionfix: actualNULL inputNone/resultNone, source_name FIRST thenNULLreturn; nonNULL4inputkernelunchanged. Dpureprojection, nohostNULLpolicy. NewnativeNULLassert unchanged; RED retained, retryGREEN. SQLouterNULLguards remain independent.
+Finalnew-test review found runtime lower-kernel/parser results used as expected error messages/vector values in new SDK/native tests. Replaced them with source-derived fixed literals from unchanged vector_native.rs125/180, old UTF8contract, fixedf32[1,2]. Noactual-output recording or oldfixture/test changes; nofinalruntime-provider oracle. Test-only supplemental logs12/13 verify final forms. NULLassert never weakened/removed.
+
+SQL8SELECT=4success(2projections x2vector)+4expectederrorsalternatingmode,14successcells=10vectors+4NULL. Storedtext '[1,2.5]' andvalidbinarycolumn→VECTOR/no-dim/dim2; storedVECTOR2 '[3,4]' clone; nullabletext/vector→VECTOR3NULL. Errors dimension/invalidFFUTF8/parse/bigintunsupported alltyped EvalErrorVector +1105HY000/evalorigin +noWarnings. ExactVectorFloat32headerdecimal0,flen-1/2/3,binarycharset/collation butBinaryFlag=false; fixedf32expectedbits noexpectedparser. BinarycolumnmaymaterializeStringcarrier, notforcedBytesbranch. RawNaN/Inf/-0,cloneindependence,existing>16383,Unknown/NewDate/arraynames areunitdomains, notinventedSQL. OriginalVECTORtest11SELECT(8success3error) andR115SQLstring8SELECT unchangedreruns, notnewprobes.
+
+SDKnative_cast_vector calls sharednative_convert_to_vector directly; sourceeffectivecode→TypeStr emptycharset beforeconversion; Unsupported specialmessage/othersactualpayloadDisplay. NativeVectorarm targetctor/defaultflags/convert_to/eventdrop/errorselector removed; datatype selector moved tosameSDK.4nonNULLkinds preserveclone vsstrictUTF8/parse thenflendim(-1None,otherTryusizeOrMAX). No newfinite/globaldimcheck onexistingvectors. type_names Known/Unknown preservesnativeidentity; actualarray.codeJson; Blobtype_strtextdespitebinarycharset, exactbinaryaliasesonlytype_to_str; inversestr_to_type unchanged. AllotherproductionfunctionbodiesinH/Afiles unchanged outsidefourdeclaredfunctions. JSONvalue.rs unchanged.
+
+JSONordinary/typed/value sharedhelpers +nativeJSONtypedconstructors inventoried, explicitlypending, nohostexpressioncallbackfakeclosure orschema/JSONfamilycredit.238oldfamilyobjects+priorhistoriesunchanged; appendonepartialCAST+onetype record, latestfunctional106/type-partial-runtime113, strict0 remaining7, goalactive.
+
+OtherCAST/JSON/typed-vector/UNION/otherdatatypeconversions/broaderM2/sixcomplexcandidates/root/liveDAG/final remain. FullExpr/Unistore/workspace/lint/dev/bazel/release/exhaustive/perf/physicalmemory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR-ready unverified; R100expression4/unistore1 historicalunrepaired. NoGo/Bazel/Cargo/lock changes; unrelatedBUILD excluded. Architecture/guide ownershipupdated withoutnormativepolicy. PairedDCO pushes/threeidenticalPlans.

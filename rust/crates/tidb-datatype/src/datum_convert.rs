@@ -27,6 +27,8 @@ use crate::parser_types_errors::{
 pub use diagnostics::DatumConversion;
 use diagnostics::Diagnostics;
 
+#[cfg(test)]
+use crate::VectorFloat32;
 use crate::{
     convert_decimal_to_uint, convert_float_to_int, convert_float_to_uint, convert_int_to_int,
     convert_int_to_uint, convert_uint_to_int, convert_uint_to_uint, integer_signed_lower_bound,
@@ -35,7 +37,7 @@ use crate::{
     truncate_float, BinaryJSON, BinaryLiteral, BinaryLiteralWidth, Charset, Collation,
     ConversionFlags, Converted, CoreTime, Datum, DatumValueError, Decimal, DurationOrTime,
     FieldType, FieldTypeCode, MySqlDuration, ScalarConversionError, ScalarConversionEvent,
-    SessionTimeZone, Time, TimeType, VectorFloat32, UNSPECIFIED_LENGTH,
+    SessionTimeZone, Time, TimeType, UNSPECIFIED_LENGTH,
 };
 
 /// Direction used by reverse expression evaluation.
@@ -973,19 +975,22 @@ impl Datum {
     }
 
     fn convert_to_vector(&self, target: &FieldType) -> Result<Converted<Self>, DatumValueError> {
-        let value = match self {
-            Self::VectorFloat32(value) => value.clone(),
-            Self::String(value) => VectorFloat32::parse(value.as_utf8()?)
-                .map_err(|error| DatumValueError::Comparison(error.to_string()))?,
-            Self::Bytes(value) => VectorFloat32::parse(std::str::from_utf8(value)?)
-                .map_err(|error| DatumValueError::Comparison(error.to_string()))?,
-            _ => return Err(DatumValueError::Unsupported(self.kind(), "vector float32")),
+        use tidb_query_datatype::codec::native_vector_convert::{
+            native_convert_to_vector, NativeVectorConvertError as Error,
+            NativeVectorConvertInput as Input,
         };
-        let expected = (target.flen() != UNSPECIFIED_LENGTH)
-            .then(|| usize::try_from(target.flen()).unwrap_or(usize::MAX));
-        value
-            .check_dims_fit_column(expected)
-            .map_err(|error| DatumValueError::Comparison(error.to_string()))?;
+        let input = match self {
+            Self::VectorFloat32(value) => Input::Vector(value),
+            Self::String(value) => Input::String(value.bytes()),
+            Self::Bytes(value) => Input::Bytes(value),
+            _ => Input::Other,
+        };
+        let value =
+            native_convert_to_vector(input, target.flen()).map_err(|error| match error {
+                Error::Unsupported => DatumValueError::Unsupported(self.kind(), "vector float32"),
+                Error::InvalidUtf8(error) => DatumValueError::InvalidUtf8(error),
+                Error::Vector(error) => DatumValueError::Comparison(error.to_string()),
+            })?;
         Ok(exact(Self::new_vector_float32(value)))
     }
 }
