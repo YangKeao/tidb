@@ -35,75 +35,31 @@ impl fmt::Display for StringToIntError {
 impl std::error::Error for StringToIntError {}
 
 /// Overflow returned while narrowing a floating SQL value.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FloatOverflow;
-
-impl fmt::Display for FloatOverflow {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("DOUBLE value is out of range")
-    }
-}
-
-impl std::error::Error for FloatOverflow {}
+pub use tidb_query_datatype::codec::native_float_convert::NativeFloatOverflow as FloatOverflow;
 
 /// Rounds to the nearest even integer, matching Go `math.RoundToEven`.
 pub fn round_float(value: f64) -> f64 {
-    value.round_ties_even()
+    tidb_query_datatype::codec::native_float_convert::native_round_float(value)
 }
 
 /// Rounds `value` to `decimal` decimal places.
 pub fn round(value: f64, decimal: i32) -> f64 {
-    let shift = decimal_shift(decimal);
-    let shifted = value * shift;
-    if shifted.is_infinite() {
-        return value;
-    }
-    let result = round_float(shifted) / shift;
-    if result.is_nan() {
-        0.0
-    } else {
-        result
-    }
+    tidb_query_datatype::codec::native_float_convert::native_round(value, decimal)
 }
 
 /// Truncates `value` to `decimal` decimal places.
 pub fn truncate(value: f64, decimal: i32) -> f64 {
-    let shift = decimal_shift(decimal);
-    let shifted = value * shift;
-    if shifted.is_infinite() || shifted.is_nan() {
-        return value;
-    }
-    if shift == 0.0 {
-        return if value.is_nan() { value } else { 0.0 };
-    }
-    shifted.trunc() / shift
+    tidb_query_datatype::codec::native_float_convert::native_truncate(value, decimal)
 }
 
 /// Returns the largest magnitude admitted by a `(flen, decimal)` float.
 pub fn get_max_float(flen: i32, decimal: i32) -> f64 {
-    decimal_shift(flen - decimal) - decimal_shift(-decimal)
+    tidb_query_datatype::codec::native_float_convert::native_get_max_float(flen, decimal)
 }
 
 /// Rounds and clamps a float to a MySQL `(flen, decimal)` domain.
-pub fn truncate_float(
-    mut value: f64,
-    flen: i32,
-    decimal: i32,
-) -> Result<f64, (f64, FloatOverflow)> {
-    if value.is_nan() {
-        return Err((0.0, FloatOverflow));
-    }
-    let maximum = get_max_float(flen, decimal);
-    if !value.is_infinite() {
-        value = round(value, decimal);
-    }
-    if value > maximum {
-        Err((maximum, FloatOverflow))
-    } else if value < -maximum {
-        Err((-maximum, FloatOverflow))
-    } else {
-        Ok(value)
-    }
+pub fn truncate_float(value: f64, flen: i32, decimal: i32) -> Result<f64, (f64, FloatOverflow)> {
+    tidb_query_datatype::codec::native_float_convert::native_truncate_float(value, flen, decimal)
 }
 
 /// Truncates and renders without an exponent, matching Go format `'f', -1`.
@@ -187,16 +143,6 @@ pub const fn precision_to_length_no_truncation(mut length: i32, scale: i32, unsi
         length += 1;
     }
     length
-}
-
-fn decimal_shift(decimal: i32) -> f64 {
-    if decimal > 308 {
-        f64::INFINITY
-    } else if decimal < -323 {
-        0.0
-    } else {
-        10_f64.powi(decimal)
-    }
 }
 
 fn fixed_shortest(value: f64) -> String {

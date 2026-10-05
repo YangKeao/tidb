@@ -1,0 +1,23 @@
+float-target-135 / R140
+5matched launches,5GREEN;no compile/test failure,retry,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/float-target-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_float_convert -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native] ../../tools/cargo-tidb test --locked -p tidb-expr --lib scalar_function::numeric_argument_tests -- --test-threads=1
+[sql-types] ../../tools/cargo-tidb test --locked -p tidb-session --lib native_type_helpers_preserve_decimal_cast_values_and_float_diagnostics -- --test-threads=1
+[sql-division] ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_decimal_div_preserves_fast_bounded_unsigned_and_null_values -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 2/0/0/504 4.81/0.00 0 b7cfd2cdb79a26df3d9a5fc7c8827ebd9186217439c9d750008aaadfc04828e2
+native-datatype 478/0/0/0 3.52/7.24 0 73d6ae62926483d176c96254c5443a318e1c951b777180c2ea64691cac4b7348
+native 5/0/0/1738 16.30/0.00 0 3036258f4ae34b313caf1ed9b316a225739ba17d1e5f029f844babc2688e1bd9
+sql-types 1/0/0/2269 26.44/0.03 0 44d9fd6777462d76a181bf45254693fd8e077ef83acb7036c68589bab5ccdbf9
+sql-division 1/0/0/2269 0.13/0.02 0 61732119c7a86c3a726ebe4e3b839cf18088f47d53b246f2d57f1b71524d3674
+
+SDK2/native2 Rust files;one new SDKfile native_float_convert.rs, no new nativefiles.3new tests (SDK2/native1);SDK touchedfiles had0old tests, all30old native touched-file test bodies unchanged. Existing fixed_shortest/string_to_int/truncate_float_to_string/numeric_conversion_event functions byte-identical. Expression/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK owns float ties-even/decimal-shift/round/truncate/max/overflow foundations and ProduceFloat target fitting; wiretruncate has different rounding/u8 domain and is not substituted. Native FloatOverflow aliases SDK with original Display/Debug. Known4only range check, NaN/Inf earlyreturn, unsignedafterround andprecisionoverflow beforef32range preserved. Lazy diagnostic message uses canonical Go shortest/type name; event uses originalRust subject. Branch-specific ordering preserved (truncate Err formats event beforelaterreport; otheroverflows report first). Native newtest coversactualFLOATstorage Inf withprecedenttruncerror, -0.4/-0.6 unsignedrounding, Unknown4, parser1292firsterror andNonecontext. No newbusinesscallbacks/profiles; native supplies typed diagnostic construction only.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. Sourceconversion/eventmerge, fixedshortest/integerparser, otherdatatype/typed/write/SQL lowering/renderer andbroaderM2/root/liveDAG/final remain. Full native datatype478 passed; full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

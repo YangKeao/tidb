@@ -33,9 +33,9 @@ use crate::{
     convert_decimal_to_uint, convert_float_to_int, convert_float_to_uint, convert_int_to_int,
     convert_int_to_uint, convert_uint_to_int, convert_uint_to_uint, integer_signed_lower_bound,
     integer_signed_upper_bound, integer_unsigned_upper_bound, json_to_int, parse_enum,
-    parse_enum_value, parse_set, parse_set_value, parse_time, parse_time_from_num, truncate_float,
-    BinaryJSON, BinaryLiteral, BinaryLiteralWidth, Charset, Collation, ConversionFlags, Converted,
-    CoreTime, Datum, DatumValueError, Decimal, FieldType, FieldTypeCode, MySqlDuration,
+    parse_enum_value, parse_set, parse_set_value, parse_time, parse_time_from_num, BinaryJSON,
+    BinaryLiteral, BinaryLiteralWidth, Charset, Collation, ConversionFlags, Converted, CoreTime,
+    Datum, DatumValueError, Decimal, FieldType, FieldTypeCode, MySqlDuration,
     ScalarConversionError, ScalarConversionEvent, SessionTimeZone, Time, TimeType,
     UNSPECIFIED_LENGTH,
 };
@@ -1018,62 +1018,20 @@ fn produce_float_reported(
     target: &FieldType,
     diagnostics: &mut Diagnostics<'_, '_>,
 ) -> Converted<f64> {
-    if value.is_nan() {
-        diagnostics.error(|| float_target_overflow(value, target));
-        return Converted {
-            value: 0.0,
-            event: Some(overflow_event(value.to_string(), target.code())),
-        };
+    let converted = tidb_query_datatype::codec::native_float_convert::native_produce_float(
+        value,
+        target.code().as_shared_type_name_code(),
+        target.flen(),
+        target.decimal(),
+        target.is_unsigned(),
+        |diagnostic| diagnostics.error(|| ERR_OVERFLOW.generate(diagnostic.message())),
+    );
+    Converted {
+        value: converted.value,
+        event: converted
+            .overflow
+            .map(|value| overflow_event(value, target.code())),
     }
-    if value.is_infinite() {
-        diagnostics.error(|| float_target_overflow(value, target));
-        return Converted {
-            value,
-            event: Some(overflow_event(value.to_string(), target.code())),
-        };
-    }
-    let mut value = value;
-    let mut event = None;
-    if target.flen() != UNSPECIFIED_LENGTH && target.decimal() != UNSPECIFIED_LENGTH {
-        match truncate_float(value, target.flen() as i32, target.decimal() as i32) {
-            Ok(produced) => value = produced,
-            Err((produced, error)) => {
-                value = produced;
-                event = Some(ScalarConversionEvent::Overflow(
-                    ScalarConversionError::Overflow {
-                        value: error.to_string(),
-                        target: target.code(),
-                    },
-                ));
-            }
-        }
-    }
-    if target.is_unsigned() && value < 0.0 {
-        diagnostics.error(|| float_target_overflow(value, target));
-        return Converted {
-            value: 0.0,
-            event: Some(overflow_event(value.to_string(), target.code())),
-        };
-    }
-    if event.is_some() {
-        diagnostics.error(|| ERR_OVERFLOW.generate("DOUBLE value is out of range in ''"));
-        // Go returns TruncateFloat's value/error before applying the FLOAT
-        // storage range. The enclosing conversion still casts this to f32.
-        return Converted { value, event };
-    }
-    if matches!(target.code(), FieldTypeCode::Float)
-        && !(-f64::from(f32::MAX)..=f64::from(f32::MAX)).contains(&value)
-    {
-        let source = value;
-        diagnostics.error(|| float_target_overflow(source, target));
-        value = if value.is_sign_positive() {
-            f64::from(f32::MAX)
-        } else {
-            -f64::from(f32::MAX)
-        };
-        event = Some(overflow_event(source.to_string(), target.code()));
-    }
-    Converted { value, event }
 }
 
 /// Source `ProduceStrWithSpecifiedTp`, retaining truncation as an event.
@@ -1144,14 +1102,6 @@ fn produce_string_reported(
         value.resize(flen, 0);
     }
     Ok(Converted { value, event })
-}
-
-fn float_target_overflow(value: f64, target: &FieldType) -> tidb_error::terror::TerrorError {
-    ERR_OVERFLOW.generate(format!(
-        "constant {} overflows {}",
-        crate::format_float_g_shortest(value),
-        crate::type_str(target.code()),
-    ))
 }
 
 fn decimal_target_overflow(target: &FieldType) -> tidb_error::terror::TerrorError {
@@ -2798,4 +2748,119 @@ fn shared_json_target_convert_to_keeps_null_events_metadata_and_error_classes() 
         assert!(diagnostics.error.is_none());
         assert!(!diagnostics.unmapped);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn shared_float_target_preserves_nonfinite_rounding_error_order_and_typed_diagnostics() {
+    use crate::{ConversionContext, ConversionLocation, ConversionWarningAppender, FieldTypeFlags};
+    use tidb_error::terror::TerrorError;
+
+    struct NoWarnings;
+    impl ConversionWarningAppender for NoWarnings {
+        fn append_conversion_warning(&self, _: TerrorError) {
+            panic!("strict typed errors are retained, not appended")
+        }
+    }
+    let flags = ConversionFlags::default()
+        .with_ignore_truncate_err(false)
+        .with_truncate_as_warning(false);
+    let context = ConversionContext::new(flags, ConversionLocation::UTC, &NoWarnings);
+    let unsigned = FieldType::new(FieldTypeCode::Double)
+        .with_flen(2)
+        .with_decimal(0)
+        .with_added_flags(FieldTypeFlags::UNSIGNED);
+    for (input, event_text, diagnostic_text) in [
+        (f64::NAN, "NaN", "constant NaN overflows double"),
+        (f64::INFINITY, "inf", "constant +Inf overflows double"),
+        (f64::NEG_INFINITY, "-inf", "constant -Inf overflows double"),
+    ] {
+        let mut diagnostics = Diagnostics::new(Some(&context));
+        let converted = produce_float_reported(input, &unsigned, &mut diagnostics);
+        if input.is_nan() {
+            assert_eq!(converted.value, 0.0);
+        } else {
+            assert_eq!(converted.value, input);
+        }
+        assert_eq!(
+            converted.event,
+            Some(overflow_event(event_text.to_owned(), FieldTypeCode::Double))
+        );
+        let error = diagnostics.error.unwrap();
+        assert_eq!(error.identity(), ERR_OVERFLOW.identity());
+        assert_eq!(error.message(), diagnostic_text);
+        // The context-free surface retains the overflow event but no Terror.
+        let mut disabled = Diagnostics::new(None);
+        disabled.error(|| panic!("disabled diagnostic constructor must be lazy"));
+        let plain = produce_float_reported(input, &unsigned, &mut disabled);
+        assert_eq!(plain.event, converted.event);
+        assert!(disabled.error.is_none());
+    }
+    let mut diagnostics = Diagnostics::new(Some(&context));
+    let rounded_zero = produce_float_reported(-0.4, &unsigned, &mut diagnostics);
+    assert_eq!(rounded_zero.value.to_bits(), (-0.0_f64).to_bits());
+    assert_eq!(rounded_zero.event, None);
+    assert!(diagnostics.error.is_none());
+    let rejected = produce_float_reported(-0.6, &unsigned, &mut diagnostics);
+    assert_eq!(rejected.value, 0.0);
+    assert_eq!(
+        rejected.event,
+        Some(overflow_event("-1".to_owned(), FieldTypeCode::Double))
+    );
+    assert_eq!(
+        diagnostics.error.unwrap().message(),
+        "constant -1 overflows double"
+    );
+
+    let float = FieldType::new(FieldTypeCode::Float)
+        .with_flen(40)
+        .with_decimal(0);
+    let mut diagnostics = Diagnostics::new(Some(&context));
+    let converted = produce_float_reported(1e100, &float, &mut diagnostics);
+    assert!(converted.value.is_finite());
+    assert!(converted.value > f64::from(f32::MAX)); // TruncateFloat error returns BEFORE the FLOAT range clamp.
+    assert_eq!(
+        converted.event,
+        Some(overflow_event(
+            "DOUBLE value is out of range".to_owned(),
+            FieldTypeCode::Float
+        ))
+    );
+    assert_eq!(
+        diagnostics.error.unwrap().message(),
+        "DOUBLE value is out of range in ''"
+    );
+    let typed = Datum::Real(1e100)
+        .convert_to_in_context(&float, &context, &SessionTimeZone::utc())
+        .unwrap();
+    let Datum::Float32(value) = typed.value else {
+        panic!("FLOAT storage")
+    };
+    assert_eq!(value, f64::INFINITY); // Existing outer conversion still narrows the returned value.
+    let error = typed.error.unwrap();
+    assert_eq!(error.identity(), ERR_OVERFLOW.identity());
+    assert_eq!(error.message(), "DOUBLE value is out of range in ''");
+    let first = Datum::new_string("1e100x")
+        .convert_to_in_context(&float, &context, &SessionTimeZone::utc())
+        .unwrap();
+    let Datum::Float32(value) = first.value else {
+        panic!("best-effort FLOAT storage")
+    };
+    assert_eq!(value, f64::INFINITY);
+    let error = first.error.unwrap();
+    assert_eq!(error.identity(), ERR_TRUNCATED_WRONG_VALUE.identity());
+    assert_eq!(
+        error.message(),
+        "Truncated incorrect DOUBLE value: '1e100x'"
+    );
+
+    let float = FieldType::new(FieldTypeCode::Float);
+    assert_eq!(
+        produce_float_with_type(1e40, &float).value,
+        f64::from(f32::MAX)
+    );
+    let unknown = FieldType::new(FieldTypeCode::Unknown(4));
+    let untouched = produce_float_with_type(1e40, &unknown);
+    assert_eq!(untouched.value, 1e40);
+    assert_eq!(untouched.event, None); // Unknown(4) is NOT the known FLOAT code.
 }
