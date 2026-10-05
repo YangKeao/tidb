@@ -9363,6 +9363,153 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn native_in_policy_preserves_sql_numeric_cache_prepared_and_row_rewrite_paths() {
+    use tidb_datatype::FieldTypeCode;
+
+    let mut session = Session::new();
+    session
+        .run("SET NAMES utf8mb4 COLLATE utf8mb4_general_ci")
+        .unwrap();
+    session.run("SET sql_mode=''").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE native_in_policy_sql (i BIGINT, i_eq BIGINT, i_miss BIGINT, null_i BIGINT, r DOUBLE, r_eq DOUBLE, r_miss DOUBLE, null_r DOUBLE, d DECIMAL(8,2), d_other DECIMAL(8,2), d_later DECIMAL(8,2), s VARCHAR(16) COLLATE utf8mb4_general_ci, sn VARCHAR(16) COLLATE utf8mb4_general_ci, bad_text VARCHAR(16))")
+        .unwrap();
+    session
+        .run("INSERT INTO native_in_policy_sql VALUES (2,2,9,NULL,2.5,2.5,7.5,NULL,1.50,2.50,3.50,'alpha',NULL,'bad')")
+        .unwrap();
+    let plan = row_text(session.run("EXPLAIN SELECT i IN (i_eq,i_miss),s IN ('ALPHA','beta'),r IN (r_eq,bad_text),(i,r) IN ((i_eq,r_eq),(i_miss,r_miss)) FROM native_in_policy_sql"))
+        .iter()
+        .map(|row| row.join(" "))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_ascii_lowercase();
+    assert!(
+        plan.matches("in(").count() >= 3,
+        "numeric, string-cache and late-cast expressions must retain IN: {plan}"
+    );
+    assert!(
+        plan.contains("eq(") && plan.contains("or("),
+        "SQL row IN is deliberately equality/OR rewrite coverage: {plan}"
+    );
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // This pure control-plane migration keeps the original Eq workers and
+    // facade demand. A strict string-cache hit can require no Eq worker at
+    // all, so there is deliberately no novel Head or zero-slot assertion.
+    let cases: [(&str, &[Option<i64>], bool, bool); 4] = [
+        (
+            "i IN (i_eq,i_miss),r IN (r_eq,r_miss),d IN (d_other,d_later),i IN (i_miss,null_i)",
+            &[Some(1), Some(1), Some(0), None],
+            false,
+            false,
+        ),
+        (
+            "s IN ('ALPHA','beta'),s IN ('alpha ','beta'),s IN ('omega',NULL),sn IN ('ALPHA','beta')",
+            &[Some(1), Some(1), None, None],
+            false,
+            false,
+        ),
+        (
+            "(i,r) IN ((i_eq,r_eq),(i_miss,r_miss)),(i,r) IN ((i_eq,r_miss),(i_miss,r_eq)),(i,r) IN ((i_eq,null_r),(i_miss,r_eq))",
+            &[Some(1), Some(0), None],
+            false,
+            true,
+        ),
+        (
+            "r IN (r_eq,bad_text)",
+            &[Some(1)],
+            true,
+            false,
+        ),
+    ];
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        for &(projection, expected, warns, row_rewrite) in &cases {
+            let sql = format!("SELECT {projection} FROM native_in_policy_sql");
+            let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap() else {
+                panic!("expected remaining-IN SQL rows: {sql}")
+            };
+            assert_eq!(columns.len(), expected.len());
+            assert_eq!(
+                rows,
+                vec![expected
+                    .iter()
+                    .map(|value| value.map_or(Datum::Null, Datum::Int))
+                    .collect::<Vec<_>>()],
+                "{sql}/{vectorized}"
+            );
+            for (_, field) in &columns {
+                assert_eq!(field.code(), FieldTypeCode::LongLong);
+                assert!(!field.is_unsigned());
+                if !row_rewrite {
+                    assert_eq!((field.flen(), field.decimal()), (1, 0));
+                }
+            }
+            // The generic IN cursor still visits a later candidate after a
+            // match. SQL's generated real cast owns this warning; it is not
+            // evidence that a raw mixed-datum comparer emitted the warning.
+            let expected_warnings = if warns {
+                vec![(1292, "Truncated incorrect DOUBLE value: 'bad'".to_owned())]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(
+                warnings_of(&session),
+                expected_warnings,
+                "{sql}/{vectorized}"
+            );
+            // The row projections above test SQL Eq/AND/OR rewriting only,
+            // not the manually constructed AST-row IN SDK entrypoint.
+        }
+    }
+
+    // Prepare ONCE and execute the same retained statement three times. The
+    // immutable 'fixed' key and has-NULL state coexist with a dynamic marker;
+    // rebinding must not turn its first value into a permanent cached key.
+    // This proves named prepared-statement reuse, not a physical-plan cache
+    // hit or private hash-table length/capacity (covered by original tests).
+    session
+        .run("PREPARE native_in_rebind FROM 'SELECT s IN (''fixed'', ?, NULL) FROM native_in_policy_sql'")
+        .unwrap();
+    for (binding, expected) in [
+        ("SET @native_in_key='ALPHA'", Some(1)),
+        ("SET @native_in_key='omega'", None),
+        ("SET @native_in_key='alpha '", Some(1)),
+    ] {
+        session.run(binding).unwrap();
+        let StmtOutput::Rows { columns, rows } = session
+            .run_with_columns("EXECUTE native_in_rebind USING @native_in_key")
+            .unwrap()
+        else {
+            panic!("expected reused prepared IN rows")
+        };
+        assert_eq!(columns.len(), 1);
+        assert_eq!(columns[0].1.code(), FieldTypeCode::LongLong);
+        assert_eq!((columns[0].1.flen(), columns[0].1.decimal()), (1, 0));
+        assert_eq!(
+            rows,
+            vec![vec![expected.map_or(Datum::Null, Datum::Int)]],
+            "{binding}"
+        );
+        // Any plan-cache eligibility diagnostic belongs to PREPARE/EXECUTE,
+        // not this IN policy. String membership itself must not truncate.
+        assert!(
+            warnings_of(&session).iter().all(|(code, _)| *code != 1292),
+            "{binding}"
+        );
+    }
+    session.run("DEALLOCATE PREPARE native_in_rebind").unwrap();
+}
+
+#[test]
 fn evaluated_ascii_typed_in_preserves_sql_domains_eager_casts_and_root_refusals() {
     use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
 

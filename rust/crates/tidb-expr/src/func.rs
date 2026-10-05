@@ -16,9 +16,8 @@
 
 use tidb_ast::{BinaryOp, Expr};
 
-use crate::coerce::{bool_int, truthy_of};
+use crate::coerce::truthy_of;
 use crate::eval_in;
-use crate::row::row_compare_in;
 use crate::string_fn::{
     ascii, bin, bit_count, bit_length_in, case_convert_in, char_func_with_context,
     concat_with_context, concat_ws_with_context, elt_in, export_set_in, field, format_num,
@@ -701,20 +700,20 @@ pub(crate) fn eval_func_values(
         // (including the tested value) is NULL; otherwise 0.
         "IN" if vals.len() >= 2 => {
             let (value, list) = vals.split_first().expect("at least two arguments");
-            let mut found_null = *value == Datum::Null;
-            for item in list {
-                match crate::ops::eval_binary_in(BinaryOp::Eq, value.clone(), item.clone(), ctx) {
-                    Ok(Datum::Int(0)) => {}
-                    Ok(Datum::Null) => found_null = true,
-                    Ok(_) => return Some(Ok(Datum::Int(1))),
-                    Err(e) => return Some(Err(e)),
-                }
-            }
-            Ok(if found_null {
-                Datum::Null
-            } else {
-                Datum::Int(0)
-            })
+            tidb_query_expr::native_in_ready_values(
+                crate::tikv::in_eq_observation(value),
+                list.len(),
+                |index| {
+                    crate::ops::eval_binary_in(
+                        BinaryOp::Eq,
+                        value.clone(),
+                        list[index].clone(),
+                        ctx,
+                    )
+                    .map(|computed| crate::tikv::in_eq_observation(&computed))
+                },
+            )
+            .map(crate::tikv::in_control_datum)
         }
         // Go `builtinIntIsNullSig`: 1 when the argument is NULL, else 0 --
         // never NULL itself. `IS UNKNOWN` is the same function.
@@ -940,8 +939,8 @@ fn mysql_integer_prefix(value: &str) -> i64 {
 /// `Expr::Row`) is handled as its OWN case, checked FIRST: `eval_in`
 /// itself has no arm for a standalone `Expr::Row` (see `crate::row`'s
 /// own doc for why), so `expr`/each `list` item must be recognized as
-/// row-shaped and compared via `crate::row::row_compare`'s own
-/// `Eq`-mode element-wise logic BEFORE ever calling plain `eval_in` on
+/// row-shaped and compared via the shared `native_in_ast_rows` and
+/// `native_row_equality` control BEFORE ever calling plain `eval_in` on
 /// them — every `list` item is required to be a `Expr::Row` of the
 /// SAME arity too (both a literal row-value list,
 /// `(a,b) IN ((1,2),(3,4))`, and a resolved subquery's own captured
@@ -993,63 +992,39 @@ pub(crate) fn eval_in_list(
             .iter()
             .map(|e| eval_in(e, cols))
             .collect::<Result<_, _>>()?;
-        let mut found_null = false;
-        let mut found_match = false;
-        for item in list {
-            let Expr::Row(right_items) = item else {
-                return Err(EvalError::Unsupported(
-                    "row value IN list item arity mismatch",
-                ));
-            };
-            let rv: Vec<Datum> = right_items
-                .iter()
-                .map(|e| eval_in(e, cols))
-                .collect::<Result<_, _>>()?;
-            match row_compare_in(BinaryOp::Eq, &lv, &rv, cols)? {
-                Datum::Int(0) => {}
-                Datum::Null => found_null = true,
-                _ => found_match = true,
-            }
-        }
-        return in_result(found_match, found_null, not, cols);
+        let result = tidb_query_expr::native_in_ast_rows(
+            &lv,
+            list.len(),
+            |index| match &list[index] {
+                Expr::Row(right_items) => right_items
+                    .iter()
+                    .map(|e| eval_in(e, cols))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(tidb_query_expr::NativeInRowCandidate::Values),
+                _ => Ok(tidb_query_expr::NativeInRowCandidate::NotRow),
+            },
+            |left, right| {
+                crate::ops::eval_comparison_values_in(
+                    BinaryOp::Eq,
+                    left.clone(),
+                    right.clone(),
+                    crate::ops::DERIVATION_FREE_COLLATION,
+                    crate::ops::Operands::LITERALS,
+                    cols,
+                )
+                .map(|computed| crate::tikv::in_eq_observation(&computed))
+            },
+        )
+        .map_err(crate::tikv::in_row_control_error)?;
+        return negate_if(crate::tikv::in_control_datum(result), not, cols);
     }
     let v = eval_in(expr, cols)?;
-    let mut found_null = false;
-    let mut found_match = false;
-    for item in list {
-        let iv = eval_in(item, cols)?;
-        match crate::ops::eval_binary_in(BinaryOp::Eq, v.clone(), iv, cols)? {
-            Datum::Int(0) => {}
-            Datum::Null => found_null = true,
-            _ => found_match = true,
-        }
-    }
-    in_result(found_match, found_null, not, cols)
-}
-
-/// The three-valued answer of an `IN` whose whole list has been compared:
-/// a match anywhere is TRUE and outranks a NULL, no match with a NULL is
-/// NULL, no match with no NULL is FALSE. `NOT` negates TRUE/FALSE and
-/// leaves NULL alone.
-///
-/// Match-outranks-NULL is what the short-circuiting form produced too --
-/// it returned TRUE from inside the loop even when an earlier item had
-/// already set `found_null` -- so folding the whole list changes WHICH
-/// items get evaluated, never the boolean this returns.
-fn in_result(
-    found_match: bool,
-    found_null: bool,
-    not: bool,
-    cols: &dyn Columns,
-) -> Result<Datum, EvalError> {
-    let value = if found_match {
-        bool_int(true)
-    } else if found_null {
-        Datum::Null
-    } else {
-        bool_int(false)
-    };
-    negate_if(value, not, cols)
+    let result = tidb_query_expr::native_in_ast_scalar(list.len(), |index| {
+        let iv = eval_in(&list[index], cols)?;
+        crate::ops::eval_binary_in(BinaryOp::Eq, v.clone(), iv, cols)
+            .map(|computed| crate::tikv::in_eq_observation(&computed))
+    })?;
+    negate_if(crate::tikv::in_control_datum(result), not, cols)
 }
 
 /// Negates an already-computed predicate only when requested, retaining the

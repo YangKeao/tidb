@@ -51,7 +51,9 @@ mod identity_value;
 mod if_control;
 mod if_null;
 mod in_list;
-pub(crate) use in_list::eval_in_typed_values_in;
+pub(crate) use in_list::{
+    eval_in_typed_values_in, in_control_datum, in_eq_observation, in_row_control_error,
+};
 pub use in_list::{eval_legacy_in_bytes_in, eval_legacy_in_int_in};
 mod interval;
 pub(crate) use interval::{eval_interval_in, eval_interval_lazy_in};

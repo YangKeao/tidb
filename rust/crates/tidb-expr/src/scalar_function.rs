@@ -1130,50 +1130,54 @@ impl ScalarFunction {
     /// context. Other constant families remain in the row path because their
     /// implicit casts can raise warnings or errors.
     pub(crate) fn prepare_in_string_hash_set(&mut self) {
-        if self.func_name.lowercase() != "in"
-            || self.args.len() < 2
-            || self
-                .args
-                .first()
-                .and_then(Expression::static_type)
-                .is_none_or(|field_type| field_type.eval_type() != tidb_datatype::EvalType::String)
-        {
-            return;
+        use tidb_query_expr::{
+            NativeInCacheArg, NativeInCacheValue, NativeInControlEvalType as Shared,
+        };
+        let cache = tidb_query_expr::native_in_build_string_cache(
+            self.func_name.lowercase(),
+            self.args.len(),
+            || {
+                self.args
+                    .first()
+                    .and_then(Expression::static_type)
+                    .map(|field| match field.eval_type() {
+                        EvalType::Int => Shared::Int,
+                        EvalType::Real => Shared::Real,
+                        EvalType::Decimal => Shared::Decimal,
+                        EvalType::String => Shared::String,
+                        EvalType::Datetime => Shared::Datetime,
+                        EvalType::Timestamp => Shared::Timestamp,
+                        EvalType::Duration => Shared::Duration,
+                        EvalType::Json => Shared::Json,
+                        EvalType::VectorFloat32 => Shared::VectorFloat32,
+                    })
+            },
+            |index| match &self.args[index] {
+                Expression::Constant(constant) => NativeInCacheArg::Constant {
+                    level: constant.const_level().0,
+                    value: match &constant.value {
+                        Datum::Null => NativeInCacheValue::Null,
+                        Datum::String(value) => NativeInCacheValue::String(value.bytes()),
+                        Datum::Bytes(value) => NativeInCacheValue::Bytes(value),
+                        _ => NativeInCacheValue::Other,
+                    },
+                },
+                _ => NativeInCacheArg::Dynamic,
+            },
+            || {
+                tidb_datatype::get_collator(self.derived_collation().name())
+                    .new_collation()
+                    .map_or(
+                        tidb_datatype::Collation::Binary.native_policy(),
+                        tidb_datatype::Collation::native_policy,
+                    )
+            },
+        );
+        if let Some(cache) = cache {
+            self.in_string_hash_set = Some(cache.keys);
+            self.in_string_non_const_args = cache.non_const_args;
+            self.in_string_has_null = cache.has_null;
         }
-        let collator = tidb_datatype::get_collator(self.derived_collation().name());
-        // Go's `pkg/expression/builtin_other.go::builtinInStringSig` keeps
-        // these immutable literal keys in a per-function map and probes it
-        // for every row. Reserve the complete
-        // literal-list capacity up front, matching the source map's intended
-        // read-mostly shape without changing its collision-resistant hasher or
-        // any membership/collation semantics.
-        let mut hash_set =
-            std::collections::HashSet::with_capacity(self.args.len().saturating_sub(1));
-        let mut non_const_args = Vec::new();
-        let mut has_null = false;
-        for (index, argument) in self.args.iter().enumerate().skip(1) {
-            let Expression::Constant(constant) = argument else {
-                non_const_args.push(index);
-                continue;
-            };
-            if constant.const_level() != crate::expression::ConstLevel::STRICT {
-                non_const_args.push(index);
-                continue;
-            }
-            match &constant.value {
-                Datum::String(value) => {
-                    hash_set.insert(collator.key(value.bytes()));
-                }
-                Datum::Bytes(value) => {
-                    hash_set.insert(collator.key(value));
-                }
-                Datum::Null => has_null = true,
-                _ => non_const_args.push(index),
-            }
-        }
-        self.in_string_hash_set = Some(hash_set);
-        self.in_string_non_const_args = non_const_args;
-        self.in_string_has_null = has_null;
     }
 
     /// The user-variable name a `getvar`/`setvar` call carries in its first
@@ -2496,68 +2500,50 @@ impl ScalarFunction {
                     }
                 };
             let value = cast_candidate(self.args[0].eval(ctx, row)?, &self.args[0])?;
-            let mut found_null = value.is_null() || self.in_string_has_null;
-            let mut found_match = false;
-            if let Some(hash_set) = &self.in_string_hash_set {
-                if let Some(bytes) = crate::coerce::coerce_str_bytes(&value)? {
-                    let collator = tidb_datatype::get_collator(collation.name());
-                    // Go's `builtinInStringSig.evalInt` uses the raw input
-                    // for binary/derived collators (`collate.Key` returns
-                    // the same bytes). Borrow it directly so the hot row
-                    // path does not allocate a temporary Vec for each probe;
-                    // PAD SPACE collations still take the allocating key path
-                    // and therefore retain their trailing-space semantics.
-                    found_match = if collator.can_use_raw_mem_as_key() {
-                        hash_set.contains::<[u8]>(bytes.as_slice())
-                    } else {
-                        let key = collator.key(bytes.as_ref());
-                        hash_set.contains(&key)
-                    };
-                }
-                if found_match && self.in_string_non_const_args.is_empty() {
-                    return Ok(Datum::Int(1));
-                }
-            }
-            let mut visit = |item_expr: &Expression| -> Result<(), EvalError> {
+            let compare = |index: usize| {
+                let item_expr = &self.args[index];
                 let item = cast_candidate(item_expr.eval(ctx, row)?, item_expr)?;
-                match crate::ops::eval_binary_full(
+                crate::ops::eval_binary_full(
                     tidb_ast::BinaryOp::Eq,
                     value.clone(),
                     item,
                     ctx.div_precision_increment(),
                     collation,
-                    // Go's `inFunctionClass` gives EVERY argument `args[0]`'s
-                    // own eval type rather than running `GetAccurateCmpType`
-                    // per pair, so the item's constant-ness does not steer it
-                    // there. The duration signature's unconditional cast is
-                    // applied above; handing the real argument expressions
-                    // over remains strictly more information than claiming
-                    // both are literals for the other signatures.
                     crate::ops::Operands::of(&self.args[0], item_expr),
                     ctx,
-                )? {
-                    Datum::Int(0) => {}
-                    Datum::Null => found_null = true,
-                    _ => found_match = true,
-                }
-                Ok(())
+                )
+                .map(|computed| crate::tikv::in_eq_observation(&computed))
             };
-            if self.in_string_hash_set.is_some() {
-                for index in &self.in_string_non_const_args {
-                    visit(&self.args[*index])?;
-                }
+            let left = crate::tikv::in_eq_observation(&value);
+            let result = if let Some(hash_set) = &self.in_string_hash_set {
+                tidb_query_expr::native_in_prepared(
+                    left,
+                    hash_set,
+                    &self.in_string_non_const_args,
+                    self.in_string_has_null,
+                    || {
+                        crate::coerce::coerce_str_bytes(&value)
+                            .map(|bytes| bytes.map(std::borrow::Cow::Owned))
+                    },
+                    || {
+                        tidb_datatype::get_collator(collation.name())
+                            .new_collation()
+                            .map_or(
+                                tidb_datatype::Collation::Binary.native_policy(),
+                                tidb_datatype::Collation::native_policy,
+                            )
+                    },
+                    compare,
+                )
             } else {
-                for item_expr in &self.args[1..] {
-                    visit(item_expr)?;
-                }
-            }
-            return Ok(if found_match {
-                Datum::Int(1)
-            } else if found_null {
-                Datum::Null
-            } else {
-                Datum::Int(0)
-            });
+                tidb_query_expr::native_in_generic(
+                    left,
+                    self.args.len() - 1,
+                    self.in_string_has_null,
+                    |ordinal| compare(ordinal + 1),
+                )
+            }?;
+            return Ok(crate::tikv::in_control_datum(result));
         }
         // Go `builtinTiDBIsDDLOwnerSig.evalInt` (`builtin_info.go:627`):
         // reads the `DDLOwnerInfo` optional eval prop and answers 1/0, never

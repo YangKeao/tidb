@@ -1,0 +1,68 @@
+in-control-106 / R109; newfamily in only; functional238/245 (97.14%), strict0, remaining7.
+TiKV cwd /home/agent/tidb/expression-unification/tikv
+Native cwd /home/agent/tidb/expression-unification/tidb/rust
+Raw /home/agent/tidb/expression-unification/logs/in-control-{id}.log
+Counts passed/failed/ignored/filtered; timings compile/test seconds.
+
+tikv-core | 1/0/0/989 | 14.79/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_in_control -- --test-threads=1
+sha256 b79a719754629634756e37760e6cc013c910599968b4fffb4984fb1d1e3e3966
+
+native-entry | 1/0/0/1717 | 17.15/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib in_control_projection -- --test-threads=1
+sha256 dd55ca4d81bf96fd56ae69ced6b097a4fbe9d7f6784a40daa13ed262f4bd8965
+
+native-gateway | 196/0/1/1521 | 0.13/0.34 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii -- --test-threads=1
+sha256 04721fb90ef801d5288ee1f49a4141a42d4aa256d1d6bc9a18545d1908e52062
+Original boolean_dispatch_preserves_pb_warnings_and_native_predicate_wrappers passed, including Eq/Eq/NOT3facades. Existing ignored test is not a pass. Both gateway source and complete test file unchanged.
+
+native-cache | 2/0/0/1716 | 0.13/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib scalar_function::tests::string_in_ -- --test-threads=1
+sha256 2f23473509d897a9e83be40044ff1ac753baa49b267836be9a2877e62b0f9cf7
+Original realHashSet keylen2, raw/PAD semantics andcapacity>=1000 assertions unchanged.
+
+native-rebind | 1/0/0/1717 | 0.13/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib prepared_rewriter_keeps_changing_string_in_members -- --test-threads=1
+sha256 479443ec8b4b7be25985f01572d47ff0228d7a7af578be237d327bfaa9d5c814
+
+native-original | 4/0/0/1714 | 0.13/0.04 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib in_func_decimal_collation_source -- --test-threads=1
+sha256 b1cd73d31460dd2f83b51ad0246ee1c6db86dd0c69e1a439bdb6eac071351670
+
+native-row | 3/0/0/1715 | 0.13/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib row::tests -- --test-threads=1
+sha256 753d0bf2c389b4e02192f629774f4fd86b6c4b84cc2e9674a29dff46316d9faa
+
+native-expanded | 2/0/0/1716 | 4.44/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::in_list -- --test-threads=1
+sha256 4c904ef07ed83d6897da467eb7c43d3840d6fbae0aaf8a45a6a0e98e7860e054
+After initialentryGREEN parent expanded only NEW control test: actual ready-value dispatcher stops before late sentinel, rowfalse-first skips secondcomparison/warning, but fullRHSfield lookup stillerrors before comparisons. This run includes finalexpandedtest+originalR108bridge; supplementalcoverage, notfailure/retry.
+
+native-vectors | 1/0/0/1717 | 0.13/0.01 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib builtin_other_row_and_in_source_vectors -- --test-threads=1
+sha256 10774716eb2a943b670f79aa827ea33e5452eecb23ff8093cec8889706d25032
+
+unistore | 1/0/0/235 | 6.64/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_in_two_mappers -- --test-threads=1
+sha256 ac31c97da7b38cd89e4fa0acb9a1f55c159bd1566920c1fa1991a0f0d7bab941
+Actuallegacy2maps+producerNOTINsharedrecursivechildrefusal remain pinned; noadmission added.
+
+sql | 1/0/0/2248 | 26.91/0.04 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_in_policy_preserves_sql_numeric_cache_prepared_and_row_rewrite_paths -- --exact --test-threads=1
+sha256 0a433c884721093e3e0c72ebf7f36ef15c074c4a1047d88b73e2dd21e52704f5
+
+sql-typed | 1/0/0/2248 | 0.15/0.05 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::evaluated_ascii_typed_in_preserves_sql_domains_eager_casts_and_root_refusals -- --exact --test-threads=1
+sha256 1a9a8f6657d56f517f0075a042c63ce79b7fa615ceec3c79be7d76ca4173f765
+R108typedSQLgate rerun unchanged; its12probes are not newR109probes.
+
+12serial actual locked single-threaded launches allnonzeroGREEN;0compile/testfailures,0zero-match,0interruptions,0retry. Static preflight fixed newmodule NativeCollation import to codec::collation::native beforefirstcommand; nofakeREDreceipt.3newtestfunctions=SDK1/native2;2SDK+6nativeRustfiles changed;0SDK/233native preexisting explicit test bodies in thosefiles byte-identical. Noexpectation/fixture/counter/provider-oracle changes. Existingignoredtest notpass.
+
+Architecture: pureSDKnative_in_control services ownASTscalar/row/generic/ready-value and cacheeligibility/fullrhsreserve/keybuild/null/index/probe/demand/result. Native passes actualEq Null/Int(raw)/Other (nevermatchbool), trueleft/batchrow values/constlevel/type/bytes, originalctx/Operands/divprecision and lateeffectivecollator; existingEq/NOTworker data-plane unchanged. NoextraC4profile/facade orhiddenHead; emptylist/purecache retainold0comparison/admission. SharedrowEquality usedbyIN+nativecommonrow_eq; otherrowoperator dispatch remainsseparate. NativecacheactualstdHashSet/null/indices andinvalidateallthree unchanged. Stalehasnull evenkeysNone preserved. AST/genericexhaustive, readyearly, rowfalseleafshortbutfullfieldpreparation/outerexhaustive; emptyrowtrue withoutfakeleaf. R108typed/legacy workers unchanged.
+
+NewSQL12probes=8directSELECT(4projections×2vector)+3EXECUTEsamePREPARE+1EXPLAIN. Integer/Real/Decimal generic, strictstringCI/PAD/nullcache, rowrewrite, matchedreal+lateVARCHARbadimplicitcast1292. Warningbelongsactualcastchild, notrawcomparer. INnonrowheadersLongLong1/0; rowprojectiononlysignedInt contract. EXPLAIN>=3in plusrowEq/OR; noASTrowSDKcreditfromSQLrewrite. ALPHA/omega/alpha-space rebind=>1/NULL/1 samepreparedname; noassumedphysicalplan-cachehit. Nozero-slot/newHead/refusal claims fromthisfixture; priorR108puretypedcolumn refusals rerun separately.
+
+IndependentfocusedROownershipcheck foundnoother runtimeINreducer; plannerproofs/ranger/rewriter/producers notruntimealgorithm. Onlyinfamilyappended;237priorfamilyobjects andpartialCAST/date/IN/type histories preserved. Functional238/245 strict0, remaining7=CAST/M2+sixcomplexcandidates. SharedPBIN0 andactualUnaryNotInt(IN) recursiveunsupportedchildrefusal remainbaseline; nonewPB/legacy/vectoradmission.
+
+No fullExpr/Unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical-transientheap/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR-ready verification. R100 expression4/unistore1 historicalfailuresunrepaired. NoCargo/lock/Go/Bazel changes; unrelatedBUILD excluded. Signedoff pairedcommits carryidenticalPlan snapshots, goalactive.

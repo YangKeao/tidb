@@ -13,8 +13,8 @@
 
 //! Row-value (`ROW(...)`/`(...)`) comparison — `=`/`<>`/`<`/`>`/`<=`/`>=`
 //! between two same-arity tuples, called from `crate::eval_in`'s own
-//! `Expr::Binary` arm (when both operands are bare `Expr::Row` nodes)
-//! and `crate::func::eval_in_list` (a row-value `IN`/`NOT IN` operand).
+//! `Expr::Binary` arm (when both operands are bare `Expr::Row` nodes).
+//! Row-value `IN` shares the SDK equality control and scalar comparison kernels.
 //! Real MySQL/TiDB restricts `ROW(...)` syntactically to ONLY these
 //! positions (confirmed via `gorun`: a bare `SELECT ROW(1,2)` with no
 //! comparison is a genuine parse-time ERROR there too) — so this crate
@@ -99,20 +99,12 @@ pub fn compare_datums_with_collation(
 /// (`FALSE AND NULL` is `FALSE`, not `NULL`, regardless of which
 /// operand is evaluated first).
 fn row_eq_in(l: &[Datum], r: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let mut null_result = None;
-    let mut last_true = None;
-    for (lv, rv) in l.iter().zip(r) {
-        let computed = row_scalar_compare_in(BinaryOp::Eq, lv, rv, ctx)?;
-        match computed {
-            Datum::Int(0) => return Ok(computed),
-            Datum::Null => null_result = Some(computed),
-            Datum::Int(1) => last_true = Some(computed),
-            _ => unreachable!("comparison worker returns only Int(0/1) or NULL"),
-        }
-    }
-    Ok(null_result
-        .or(last_true)
-        .expect("nonempty row has a computed leaf"))
+    tidb_query_expr::native_row_equality(l, r, |left, right| {
+        row_scalar_compare_in(BinaryOp::Eq, left, right, ctx)
+            .map(|computed| crate::tikv::in_eq_observation(&computed))
+    })
+    .map(crate::tikv::in_control_datum)
+    .map_err(crate::tikv::in_row_control_error)
 }
 
 fn row_scalar_compare_in(

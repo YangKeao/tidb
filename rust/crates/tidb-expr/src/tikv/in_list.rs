@@ -20,6 +20,38 @@ use super::{
 use crate::{Columns, Datum, EvalError};
 use tidb_query_expr::{NativeInRequest as Request, NativeInResult as Report};
 
+/// Preserve the actual comparison channel, including non-Boolean integers.
+/// Each SDK control service owns its source-specific interpretation.
+pub(crate) fn in_eq_observation(value: &Datum) -> tidb_query_expr::NativeInControlValue {
+    use tidb_query_expr::NativeInControlValue as Value;
+    match value {
+        Datum::Null => Value::Null,
+        Datum::Int(value) => Value::Int(*value),
+        _ => Value::Other,
+    }
+}
+
+pub(crate) fn in_control_datum(value: tidb_query_expr::NativeInControlResult) -> Datum {
+    match value {
+        tidb_query_expr::NativeInControlResult::Null => Datum::Null,
+        tidb_query_expr::NativeInControlResult::Bool(value) => Datum::Int(i64::from(value)),
+    }
+}
+
+pub(crate) fn in_row_control_error(
+    error: tidb_query_expr::NativeInRowError<EvalError>,
+) -> EvalError {
+    match error {
+        tidb_query_expr::NativeInRowError::Child(error) => error,
+        tidb_query_expr::NativeInRowError::ItemMismatch => {
+            EvalError::Unsupported("row value IN list item arity mismatch")
+        }
+        tidb_query_expr::NativeInRowError::WidthMismatch => {
+            EvalError::Unsupported("row value arity mismatch")
+        }
+    }
+}
+
 /// Only the already-evaluated, already-cast temporal/JSON IN branch enters here.
 /// The caller retains its all-evaluation then all-casting barrier.
 pub(crate) fn eval_in_typed_values_in(
@@ -392,6 +424,201 @@ mod tests {
             Ok(Some(1))
         );
         assert_eq!(visited, vec![0, 1, 2, 3]);
+    }
+}
+
+#[cfg(test)]
+mod control_tests {
+    use super::*;
+    use crate::{AsciiPoolOwner, AsciiPoolPolicy};
+    use std::cell::RefCell;
+    use tidb_query_expr::{NativeInControlResult as Answer, NativeInControlValue as Value};
+
+    #[test]
+    fn in_control_projection_keeps_actual_comparisons_row_errors_and_original_context() {
+        #[derive(Default)]
+        struct Original {
+            events: RefCell<Vec<String>>,
+        }
+        impl Columns for Original {
+            fn get(&self, parts: &[String]) -> Option<Datum> {
+                let name = parts.last().map(String::as_str).unwrap_or_default();
+                self.events.borrow_mut().push(format!("get:{name}"));
+                match name {
+                    "a" => Some(Datum::Int(1)),
+                    "b" => Some(Datum::Int(2)),
+                    "c" => Some(Datum::Int(3)),
+                    _ => None,
+                }
+            }
+            fn div_precision_increment(&self) -> u32 {
+                self.events.borrow_mut().push("div".into());
+                11
+            }
+            fn append_warning(&self, code: u16, message: &str) {
+                assert!(message.contains("2x"));
+                self.events.borrow_mut().push(format!("warn:{code}"));
+            }
+        }
+        fn sql(source: &str, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+            let tidb_ast::Stmt::Query(query) =
+                tidb_parser::parse(&format!("SELECT {source}")).unwrap()
+            else {
+                panic!("query");
+            };
+            let tidb_ast::QueryStmt::Select(select) = query.into_inner() else {
+                panic!("SELECT");
+            };
+            let tidb_ast::SelectField::Expr { expr, .. } = &select.fields[0] else {
+                panic!("expression");
+            };
+            crate::eval_in(expr, ctx)
+        }
+        assert_eq!(in_eq_observation(&Datum::Int(2)), Value::Int(2));
+        assert_eq!(in_eq_observation(&Datum::UInt(0)), Value::Other);
+        assert_eq!(in_eq_observation(&Datum::Null), Value::Null);
+        assert_eq!(in_control_datum(Answer::Null), Datum::Null);
+        assert_eq!(in_control_datum(Answer::Bool(true)), Datum::Int(1));
+        let owner = AsciiPoolOwner::new(
+            AsciiPoolPolicy::checked(1, 1, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16).unwrap(),
+        )
+        .unwrap();
+        let execution = owner.begin_execution().unwrap();
+        let scope = execution.scope();
+        let original = Original::default();
+        scope.with_columns(&original, |bound| {
+            // The immutable evaluated_ascii facade-count test independently
+            // retains Eq, Eq, NOT = three real entries for this same AST.
+            assert_eq!(sql("1 NOT IN (1, 2)", bound), Ok(Datum::Int(0)));
+            assert_eq!(original.events.take(), vec!["div", "div"]);
+            // The actual ready-value entry stops comparison on its first match,
+            // unlike the AST entry below; the later sentinel must not be read.
+            assert_eq!(
+                crate::func::eval_func_values_in(
+                    "IN",
+                    &[Datum::Int(1), Datum::Int(1), Datum::MaxValue],
+                    bound,
+                ),
+                Some(Ok(Datum::Int(1)))
+            );
+            assert_eq!(original.events.take(), vec!["div"]);
+            // Row values are evaluated completely, but a false first leaf
+            // skips the second comparison and its numeric-text warning.
+            assert_eq!(sql("(1, 2) IN ((0, '2x'))", bound), Ok(Datum::Int(0)));
+            assert!(original.events.take().is_empty());
+            assert_eq!(
+                sql("(1, 2) IN ((0, missing))", bound),
+                Err(EvalError::Unsupported("unknown column"))
+            );
+            assert_eq!(original.events.take(), vec!["get:missing"]);
+            assert_eq!(sql("1 IN (1, '2x')", bound), Ok(Datum::Int(1)));
+            assert_eq!(original.events.take(), vec!["div", "div", "warn:1292"]);
+            assert_eq!(
+                sql("1 IN (1, missing)", bound),
+                Err(EvalError::Unsupported("unknown column"))
+            );
+            assert_eq!(original.events.take(), vec!["div", "get:missing"]);
+            assert_eq!(
+                sql("(1, 2) IN ((1, 2), missing)", bound),
+                Err(EvalError::Unsupported(
+                    "row value IN list item arity mismatch"
+                ))
+            );
+            assert!(original.events.take().is_empty());
+            assert_eq!(
+                sql("(1, 2) IN ((a, b, c))", bound),
+                Err(EvalError::Unsupported("row value arity mismatch"))
+            );
+            assert_eq!(original.events.take(), vec!["get:a", "get:b", "get:c"]);
+            assert_eq!(
+                sql("(1, 2) IN ((missing, b, c))", bound),
+                Err(EvalError::Unsupported("unknown column"))
+            );
+            assert_eq!(original.events.take(), vec!["get:missing"]);
+            assert_eq!(
+                crate::row::row_compare_in(
+                    tidb_ast::BinaryOp::Eq,
+                    &[Datum::Int(1)],
+                    &[Datum::Int(1)],
+                    bound
+                ),
+                Ok(Datum::Int(1))
+            );
+            assert!(original.events.take().is_empty());
+            // Keep a cached-NULL observation even when no cache is present;
+            // the original generic branch seeds that flag independently.
+            let result = tidb_query_expr::native_in_generic(Value::Int(1), 1, true, |index| {
+                assert_eq!(index, 0);
+                crate::ops::eval_binary_in(
+                    tidb_ast::BinaryOp::Eq,
+                    Datum::Int(1),
+                    Datum::Int(2),
+                    bound,
+                )
+                .map(|value| in_eq_observation(&value))
+            })
+            .map(in_control_datum);
+            assert_eq!(result, Ok(Datum::Null));
+            assert_eq!(original.events.take(), vec!["div"]);
+            let keys = std::collections::HashSet::from([b"2x".to_vec()]);
+            let cached_left = Datum::new_bytes(b"2x".to_vec());
+            let result = tidb_query_expr::native_in_prepared(
+                in_eq_observation(&cached_left),
+                &keys,
+                &[7],
+                false,
+                || {
+                    original.events.borrow_mut().push("coerce".into());
+                    crate::coerce::coerce_str_bytes(&cached_left)
+                        .map(|bytes| bytes.map(std::borrow::Cow::Owned))
+                },
+                || {
+                    original.events.borrow_mut().push("policy".into());
+                    tidb_datatype::get_collator(tidb_datatype::Collation::Utf8Mb4Bin.name())
+                        .new_collation()
+                        .map_or(
+                            super::super::NativeCollation::Binary,
+                            tidb_datatype::Collation::native_policy,
+                        )
+                },
+                |index| {
+                    assert_eq!(index, 7);
+                    original.events.borrow_mut().push("compare:7".into());
+                    crate::ops::eval_binary_in(
+                        tidb_ast::BinaryOp::Eq,
+                        cached_left.clone(),
+                        Datum::Int(1),
+                        bound,
+                    )
+                    .map(|value| in_eq_observation(&value))
+                },
+            )
+            .map(in_control_datum);
+            assert_eq!(result, Ok(Datum::Int(1)));
+            assert_eq!(
+                original.events.take(),
+                vec!["coerce", "policy", "compare:7", "div", "warn:1292"]
+            );
+            let null = Datum::Null;
+            let result = tidb_query_expr::native_in_prepared(
+                in_eq_observation(&null),
+                &keys,
+                &[],
+                false,
+                || {
+                    original.events.borrow_mut().push("coerce".into());
+                    crate::coerce::coerce_str_bytes(&null)
+                        .map(|bytes| bytes.map(std::borrow::Cow::Owned))
+                },
+                || panic!("NULL coercion must not resolve a collator"),
+                |_| -> Result<Value, EvalError> { panic!("no stored dynamic candidate") },
+            )
+            .map(in_control_datum);
+            assert_eq!(result, Ok(Datum::Null));
+            assert_eq!(original.events.take(), vec!["coerce"]);
+        });
+        drop(scope);
+        execution.close();
     }
 }
 
