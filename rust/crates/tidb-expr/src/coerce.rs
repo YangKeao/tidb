@@ -28,68 +28,27 @@ use crate::context::EvalError;
 mod tests;
 
 /// The integral portion of a datum, retaining signedness.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Integer {
-    Signed(i64),
-    Unsigned(u64),
-}
+pub(crate) use tidb_query_expr::NativeInteger as Integer;
 
 pub(crate) fn integer_of(value: &Datum) -> Result<Option<Integer>, EvalError> {
-    Ok(match value {
-        Datum::Int(value) => Some(Integer::Signed(*value)),
-        Datum::UInt(value) => Some(Integer::Unsigned(*value)),
-        Datum::BinaryLiteral(value) | Datum::Bit(value) => {
-            Some(Integer::Unsigned(binary_literal_value(value)))
-        }
-        Datum::Enum(value, _) => Some(Integer::Unsigned(value.value())),
-        Datum::Set(value, _) => Some(Integer::Unsigned(value.value())),
-        Datum::String(_)
-        | Datum::Bytes(_)
-        | Datum::Decimal(_)
-        | Datum::Real(_)
-        | Datum::Float32(_)
-        | Datum::Duration(_)
-        | Datum::Time(_)
-        | Datum::Json(_)
-        | Datum::Raw(_)
-        | Datum::VectorFloat32(_)
-        | Datum::Null => None,
-        Datum::MinNotNull | Datum::MaxValue => {
-            return Err(EvalError::Unsupported("range sentinel integer coercion"));
-        }
-    })
+    tidb_query_expr::native_integer_of(value.as_shared_numeric_input())
+        .map_err(EvalError::Unsupported)
 }
 
 pub(crate) fn integer_cmp(lhs: Integer, rhs: Integer) -> Ordering {
-    match (lhs, rhs) {
-        (Integer::Signed(a), Integer::Signed(b)) => a.cmp(&b),
-        (Integer::Unsigned(a), Integer::Unsigned(b)) => a.cmp(&b),
-        (Integer::Signed(a), Integer::Unsigned(_)) if a < 0 => Ordering::Less,
-        (Integer::Signed(a), Integer::Unsigned(b)) => (a as u64).cmp(&b),
-        (Integer::Unsigned(_), Integer::Signed(b)) if b < 0 => Ordering::Greater,
-        (Integer::Unsigned(a), Integer::Signed(b)) => a.cmp(&(b as u64)),
-    }
+    tidb_query_expr::native_integer_cmp(lhs, rhs)
 }
 
 pub(crate) fn integer_bits(value: Integer) -> u64 {
-    match value {
-        Integer::Signed(value) => value as u64,
-        Integer::Unsigned(value) => value,
-    }
+    tidb_query_expr::native_integer_bits(value)
 }
 
 pub(crate) fn integer_to_decimal(value: Integer) -> Decimal {
-    match value {
-        Integer::Signed(value) => Decimal::from_int(value),
-        Integer::Unsigned(value) => Decimal::from_uint(value),
-    }
+    Decimal::from_shared_parse(tidb_query_expr::native_integer_to_decimal(value))
 }
 
 pub(crate) fn integer_to_f64(value: Integer) -> f64 {
-    match value {
-        Integer::Signed(value) => value as f64,
-        Integer::Unsigned(value) => value as f64,
-    }
+    tidb_query_expr::native_integer_to_f64(value)
 }
 
 pub(crate) fn bool_int(value: bool) -> Datum {
@@ -116,16 +75,7 @@ pub(crate) fn bool_int(value: bool) -> Datum {
 /// which raises warning 1292 for `WHERE '1abc'`. The truth VALUE is
 /// unaffected, and no caller of this function carries a statement context.
 pub fn truthy_of(value: &Datum) -> Result<Option<bool>, EvalError> {
-    if matches!(value, Datum::Null) {
-        return Ok(None);
-    }
-    match value.to_bool() {
-        Ok(converted) => Ok(Some(converted.value != 0)),
-        // `Datum::Raw` and the range sentinels have no Go `Datum` kind, so
-        // Go's own `default` arm errors on them too rather than guessing a
-        // truth value that would silently keep or drop a row.
-        Err(_) => Err(EvalError::Unsupported("truth coercion of a non-SQL datum")),
-    }
+    tidb_query_expr::native_truthy(value.as_shared_numeric_input()).map_err(EvalError::Unsupported)
 }
 
 /// Returns a string datum's UTF-8 text without replacement.

@@ -14,20 +14,6 @@
 
 use crate::{Columns, Datum, EvalError};
 use tidb_datatype::Decimal;
-use tidb_query_expr::NativeCastDecimalInput as Input;
-
-fn input(value: &Datum) -> Input<'_> {
-    match value {
-        Datum::Decimal(value) => Input::Decimal(value.as_shared_parse()),
-        Datum::Int(value) => Input::Int(*value),
-        Datum::UInt(value) => Input::UInt(*value),
-        Datum::Real(value) => Input::Real(*value),
-        Datum::String(value) => Input::String(value.bytes()),
-        Datum::Bytes(value) => Input::Bytes(value),
-        Datum::Float32(value) => Input::Float32(*value),
-        _ => Input::Other,
-    }
-}
 
 /// The ordinary cast caller retains its original NULL/range/vector guards.
 /// Conversion decisions, warning order, error folding and precision policy
@@ -38,15 +24,10 @@ pub(crate) fn eval_cast_decimal_in(
     flen: u32,
     scale: u32,
 ) -> Result<Datum, EvalError> {
-    let converted = tidb_query_expr::native_cast_decimal(
-        input(value),
+    let converted = tidb_query_expr::native_cast_decimal_numeric(
+        value.as_shared_numeric_input(),
         flen,
         scale,
-        || {
-            value
-                .to_decimal()
-                .map(|converted| (converted.value.into_shared_parse(), converted.event))
-        },
         |code, message| ctx.append_warning(code, message),
     );
     Ok(Datum::Decimal(Decimal::from_shared_parse(converted)))
@@ -55,9 +36,10 @@ pub(crate) fn eval_cast_decimal_in(
 /// The existing UNION helper needs only the original input diagnostic. It
 /// retains its own separate conversion domain and negative-input handling.
 pub(crate) fn report_cast_decimal_input_in(ctx: &dyn Columns, value: &Datum) {
-    tidb_query_expr::native_cast_decimal_input_warning(input(value), |code, message| {
-        ctx.append_warning(code, message)
-    });
+    tidb_query_expr::native_cast_decimal_numeric_input_warning(
+        value.as_shared_numeric_input(),
+        |code, message| ctx.append_warning(code, message),
+    );
 }
 
 #[cfg(test)]

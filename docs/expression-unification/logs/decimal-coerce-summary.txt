@@ -1,0 +1,28 @@
+decimal-coerce-129 / R134
+7matched launches,7GREEN;no compile/test failure,retry,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/decimal-coerce-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv-decimal] ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_cast_decimal -- --test-threads=1
+[tikv-numeric] ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_coerce_numeric -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native] ../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::closed_decimal_tests -- --test-threads=1
+[native-decimal] ../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::cast_decimal::tests -- --test-threads=1
+[native-coerce] ../../tools/cargo-tidb test --locked -p tidb-expr --lib coerce::tests -- --test-threads=1
+[sql-decimal] ../../tools/cargo-tidb test --locked -p tidb-session --lib native_decimal_cast_policy_preserves_sql_source_domains_and_warning_order -- --test-threads=1
+[sql-comparison] ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_comparison_sql_values_typed_filters_and_row_tuples -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv-decimal 3/0/0/1017 16.29/0.00 0 2393fcaf0fe68b7af3d276994d043d212528eb52c89aad67805afec4329b9bf4
+tikv-numeric 2/0/0/1018 0.22/0.00 0 7748c8e6083eb00305687eaf9d5a8ca963545aca42527e6a4115e72fd5426ac8
+native 1/0/0/1737 17.80/0.00 0 25565ed106c16c26b5407dc011a26379f92c0ac7688513a0ca21f5a4ca46b4d0
+native-decimal 1/0/0/1737 0.15/0.00 0 baee6a280280ef37603f5b99798d8130f63049e6a9f5971a0da9a957c189044a
+native-coerce 1/0/0/1737 0.12/0.00 0 8bf3baeedbb535b6fe9becd982eb449933de06c6b391d885ddc919fc76da5b3a
+sql-decimal 1/0/0/2269 24.88/0.03 0 6635e2cfdbc22de64ee65204beb2a82c7905140d7e3f8aece015ee31762a0c52
+sql-comparison 1/0/0/2269 0.15/0.09 0 cb51b0e0ca2e893e52787abae211cbcd9242f0f1b3db8b1969fecc918c7ee95c
+
+SDK3/native4 Rust files,2new files;4new tests (SDK3/native1),oldSDK2/native1 touched-file test bodies unchanged. Existing coerce test file and Decimal/comparison SQL tests also unchanged and passed. No new SQL test/fixture/probe/cell credit.
+Production Decimal input/default-conversion callback removed; SDK composes actual numeric views and existing default Decimal owner, retaining generic compatibility and warning/error/precision order. General integer carrier/classification/mixedsigned compare/bits/Decimal/f64 and nullable truth now SDK-owned; native aliases/maps data/errors. Shared literal/boolean/Decimal primitives reused. Constructors, checked string access and remaining typed/write controllers unchanged. No new RPN profiles/family credit.
+New tests cover warning1292 before1690, default events/errors, raw Decimal shape, Float32/UTF8, real ordinals and wide literal value, mixedsigned order/bits, integerNone/sentinel error, NULL truth versus JSON/vector semantics and error mapping.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. Other typed/write numeric controllers and SQL lowering paths, broaderM2/root/liveDAG/final remain. Full datatype/expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
