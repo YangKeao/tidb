@@ -37,21 +37,7 @@ pub struct ParsedTime {
 }
 
 /// Parsed `INTERVAL` value before it is applied to a date or duration.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ParsedInterval {
-    /// Calendar years.
-    pub years: i64,
-    /// Calendar months.
-    pub months: i64,
-    /// Whole days.
-    pub days: i64,
-    /// Signed sub-day nanoseconds.
-    pub nanoseconds: i64,
-    /// Fractional-seconds precision.
-    pub fsp: u8,
-    /// Whether TiDB returns the value together with a truncation diagnostic.
-    pub truncated: bool,
-}
+pub use shared_time::ParsedInterval;
 
 /// A source return value paired with the error Go returns beside it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -240,165 +226,13 @@ pub(crate) fn extract_duration_num_with_error(
 
 /// Parses a MySQL interval literal into calendar and sub-day components.
 pub fn parse_duration_value(unit: &str, format: &str) -> Result<ParsedInterval, TimeError> {
-    let unit = unit.to_ascii_uppercase();
-    match unit.as_str() {
-        "MICROSECOND" | "SECOND" | "MINUTE" | "HOUR" | "DAY" | "WEEK" | "MONTH" | "QUARTER"
-        | "YEAR" => parse_single_interval(&unit, format),
-        "SECOND_MICROSECOND" => parse_composite_interval(format, 6, 2),
-        "MINUTE_MICROSECOND" => parse_composite_interval(format, 6, 3),
-        "MINUTE_SECOND" => parse_composite_interval(format, 5, 2),
-        "HOUR_MICROSECOND" => parse_composite_interval(format, 6, 4),
-        "HOUR_SECOND" => parse_composite_interval(format, 5, 3),
-        "HOUR_MINUTE" => parse_composite_interval(format, 4, 2),
-        "DAY_MICROSECOND" => parse_composite_interval(format, 6, 5),
-        "DAY_SECOND" => parse_composite_interval(format, 5, 4),
-        "DAY_MINUTE" => parse_composite_interval(format, 4, 3),
-        "DAY_HOUR" => parse_composite_interval(format, 3, 2),
-        "YEAR_MONTH" => parse_composite_interval(format, 1, 2),
-        _ => Err(TimeError::InvalidUnit(unit)),
-    }
+    shared_time::native_parse_duration_value(unit, format)
 }
 
 /// Parses a MySQL interval and validates that it fits the TIME domain.
 pub fn extract_duration_value(unit: &str, format: &str) -> Result<crate::MySqlDuration, TimeError> {
-    let parsed = parse_duration_value(unit, format)?;
-    let unit = unit.to_ascii_uppercase();
-    if parsed.truncated {
-        return Err(TimeError::InvalidDate);
-    }
-    if parsed.years != 0 {
-        return Err(TimeError::OutOfRange("time"));
-    }
-    let total_days = parsed
-        .days
-        .checked_add(parsed.months.saturating_mul(30))
-        .ok_or(TimeError::OutOfRange("time"))?;
-    let total = total_days
-        .checked_mul(86_400_000_000_000)
-        .and_then(|days| days.checked_add(parsed.nanoseconds))
-        .ok_or(TimeError::OutOfRange("time"))?;
-    if unit == "YEAR_MONTH" || total.unsigned_abs() > 3_020_399_999_999_999 {
-        return Err(TimeError::OutOfRange("time"));
-    }
-    crate::MySqlDuration::from_nanoseconds(total, i64::from(parsed.fsp))
-        .map_err(TimeError::InvalidFsp)
-}
-
-fn parse_single_interval(unit: &str, format: &str) -> Result<ParsedInterval, TimeError> {
-    let format = format.trim();
-    let (integer_text, fraction_text) = format.split_once('.').unwrap_or((format, ""));
-    let integer = integer_text
-        .parse::<i64>()
-        .map_err(|_| TimeError::InvalidDate)?;
-    let sign = if format.starts_with('-') { -1 } else { 1 };
-    let fraction_digits: String = fraction_text
-        .chars()
-        .take(6)
-        .take_while(char::is_ascii_digit)
-        .collect();
-    let fraction_len = fraction_digits.len();
-    let mut padded = fraction_digits;
-    while padded.len() < 6 {
-        padded.push('0');
-    }
-    let fraction = padded.parse::<i64>().unwrap_or(0) * sign;
-    let rounded = integer
-        + if fraction.unsigned_abs() >= 500_000 {
-            sign
-        } else {
-            0
-        };
-    let truncated = !fraction_text.is_empty() && unit != "SECOND";
-    let mut parsed = ParsedInterval {
-        years: 0,
-        months: 0,
-        days: 0,
-        nanoseconds: 0,
-        fsp: 0,
-        truncated,
-    };
-    match unit {
-        "MICROSECOND" => {
-            parsed.days = rounded / 86_400_000_000;
-            parsed.nanoseconds = rounded % 86_400_000_000 * 1_000;
-            parsed.fsp = 6;
-        }
-        "SECOND" => {
-            parsed.days = integer / 86_400;
-            parsed.nanoseconds = integer % 86_400 * 1_000_000_000 + fraction * 1_000;
-            parsed.fsp = fraction_len as u8;
-        }
-        "MINUTE" => {
-            parsed.days = rounded / 1_440;
-            parsed.nanoseconds = rounded % 1_440 * 60_000_000_000;
-        }
-        "HOUR" => {
-            parsed.days = rounded / 24;
-            parsed.nanoseconds = rounded % 24 * 3_600_000_000_000;
-        }
-        "DAY" => parsed.days = rounded,
-        "WEEK" => parsed.days = rounded * 7,
-        "MONTH" => parsed.months = rounded,
-        "QUARTER" => parsed.months = rounded * 3,
-        "YEAR" => parsed.years = rounded,
-        _ => unreachable!("single interval unit was matched by caller"),
-    }
-    Ok(parsed)
-}
-
-fn parse_composite_interval(
-    format: &str,
-    final_index: usize,
-    maximum_fields: usize,
-) -> Result<ParsedInterval, TimeError> {
-    let negative = format.trim_start().starts_with('-');
-    let matches = numeric_fields_in_text(format);
-    if matches.len() > maximum_fields {
-        return Err(TimeError::InvalidDate);
-    }
-    let mut fields = [0_i64; 7];
-    let mut index = final_index;
-    for value in matches.iter().rev() {
-        let parsed = value.parse::<i64>().map_err(|_| TimeError::InvalidDate)?;
-        fields[index] = if negative { -parsed } else { parsed };
-        if index == 0 {
-            break;
-        }
-        index -= 1;
-    }
-    if final_index == 6 {
-        let sign = if negative { -1 } else { 1 };
-        let mut value = matches.last().copied().unwrap_or("0").to_owned();
-        while value.len() < 6 {
-            value.push('0');
-        }
-        fields[6] = value.parse::<i64>().map_err(|_| TimeError::InvalidDate)? * sign;
-    }
-    let seconds = fields[3] * 3_600 + fields[4] * 60 + fields[5];
-    Ok(ParsedInterval {
-        years: fields[0],
-        months: fields[1],
-        days: fields[2] + seconds / 86_400,
-        nanoseconds: seconds % 86_400 * 1_000_000_000 + fields[6] * 1_000,
-        fsp: if final_index == 6 { 6 } else { 0 },
-        truncated: false,
-    })
-}
-
-fn numeric_fields_in_text(input: &str) -> Vec<&str> {
-    let mut fields = Vec::new();
-    let mut start = None;
-    for (index, byte) in input.bytes().enumerate() {
-        if byte.is_ascii_digit() {
-            start.get_or_insert(index);
-        } else if let Some(start) = start.take() {
-            fields.push(&input[start..index]);
-        }
-    }
-    if let Some(start) = start {
-        fields.push(&input[start..]);
-    }
-    fields
+    let (nanoseconds, fsp) = shared_time::native_extract_duration_value(unit, format)?;
+    crate::MySqlDuration::from_nanoseconds(nanoseconds, fsp).map_err(TimeError::InvalidFsp)
 }
 
 /// Parses TiDB's accepted DATE, DATETIME, and TIMESTAMP string forms.

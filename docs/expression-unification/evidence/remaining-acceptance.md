@@ -19,7 +19,7 @@ Observed caller chain: `evaluator.rs::run_with_consumer` → `Expression::eval` 
 
 | Family group | Remaining work |
 |---|---|
-| date_add, date_sub | Ordinary calendar single/composite ordering, separate typed Duration policy, plus48 calculating legacy signatures. Eight accepted Duration→Datetime legacy signatures stay unimplemented and do not read children; Shared PB has no kernel. Preserve AST NoColumns semantics, actual legacy getter order, late result casts and separate interval parsers; calendar-only delegation is insufficient. |
+| date_add, date_sub | R105 [ordinary calendar and typed Duration](date-arithmetic-checkpoint.md) now execute through four SDK profiles; the necessary strict interval datatype parser is shared too. Still pending:48 calculating legacy signatures (32text/8datetime/8duration), legacy reformatting and CoreTime add_date/add_duration. Eight accepted Duration→Datetime legacy signatures stay unimplemented and read no children; Shared PB has no kernel. Preserve distinct legacy getter order and policies; ordinary-only takeover earns no whole-family credit. |
 
 These are pending implementations, not approved whole-family exceptions merely because they take work. R94 source review found EXTRACT's real selector in `time_fn/extract.rs`, including mixed datetime/duration choice and error policy. R101 closes both that main policy and `calendar::extract_composite`; the earlier calendar-only shortcut was not used. R104 closes INTERVAL with a lazy search cursor and separate eager/typed NaN predicates; R103's shared GREATEST/LEAST preserves all five domains, including original NoColumns numeric semantics with selected execution authority and distinct quiet string-as-time policy. These are scoped findings, not blanket deferrals.
 

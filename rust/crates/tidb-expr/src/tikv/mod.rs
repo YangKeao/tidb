@@ -36,6 +36,10 @@ mod convert_charset;
 pub(crate) use convert_charset::{
     eval_charset_null_in, eval_convert_using_in, eval_from_binary_in, eval_to_binary_in,
 };
+mod date_arithmetic;
+pub(crate) use date_arithmetic::{
+    eval_date_add_default_in, eval_date_add_duration_in, eval_date_add_in,
+};
 // The closed ready-argument families share this value boundary and one pool.
 mod evaluated_ascii;
 mod extract;

@@ -28,7 +28,7 @@ use crate::string_fn::{
 };
 use crate::string_packet::{pad, repeat, space, to_base64};
 use crate::time_fn::calendar::{
-    date_add, date_diff_in, date_format_in, from_days_in, hour_in, minute_in, second_in, year_in,
+    date_diff_in, date_format_in, from_days_in, hour_in, minute_in, second_in, year_in,
 };
 use crate::{BuildContext, Columns, Datum, EvalError, StringLengthFunction};
 
@@ -80,7 +80,7 @@ pub(crate) fn eval_func(
         } else {
             1
         };
-        return date_add(unit, &date_val, &amount_val, sign);
+        return crate::tikv::eval_date_add_default_in(cols, unit, &date_val, &amount_val, sign);
     }
     // `NEXTVAL`/`LASTVAL`/`SETVAL`'s first argument is the SEQUENCE NAME
     // (real TiDB parses it as a `TableNameExpr`, this crate as a plain

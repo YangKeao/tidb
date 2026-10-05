@@ -9363,6 +9363,248 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn evaluated_ascii_date_arithmetic_preserves_sql_domains_fsp_and_distinct_head_routes() {
+    use tidb_datatype::FieldTypeCode;
+
+    let create = "CREATE TABLE shared_date_arithmetic_sql (d DATE, dt DATETIME(3), tm TIME(3), n BIGINT, s VARCHAR(40), one BIGINT, half DECIMAL(4,1), hm VARCHAR(16), sm VARCHAR(16), bad_date VARCHAR(32), dirty_amount VARCHAR(16), hi DATETIME(6), null_date DATE, null_amount BIGINT)";
+    let insert = "INSERT INTO shared_date_arithmetic_sql VALUES ('2024-01-31','2024-01-31 10:20:30.125','10:20:30.125',20240131,'2024-01-31 10:20:30.125',1,0.5,'1:30','1.500000','not-a-date','1x','9999-12-31 23:59:59.999999',NULL,NULL)";
+    // Calendar/Duration ordinary SQL consumers only, not the legacy overload
+    // inventory. Result FSP is fixed for typed temporal input but value-driven
+    // for numeric/string input, whose actual SQL result remains a String.
+    let cases = [
+        (
+            "DATE_ADD(d, INTERVAL one MONTH)",
+            FieldTypeCode::Date,
+            10,
+            0,
+            Some("2024-02-29"),
+            None,
+            false,
+        ),
+        (
+            "DATE_ADD(dt, INTERVAL half SECOND)",
+            FieldTypeCode::Datetime,
+            23,
+            3,
+            Some("2024-01-31 10:20:30.625"),
+            None,
+            false,
+        ),
+        (
+            "DATE_SUB(dt, INTERVAL hm HOUR_MINUTE)",
+            FieldTypeCode::Datetime,
+            23,
+            3,
+            Some("2024-01-31 08:50:30.125"),
+            None,
+            false,
+        ),
+        (
+            "DATE_ADD(tm, INTERVAL half SECOND)",
+            FieldTypeCode::Duration,
+            14,
+            3,
+            Some("10:20:30.625"),
+            None,
+            false,
+        ),
+        (
+            "DATE_SUB(tm, INTERVAL sm SECOND_MICROSECOND)",
+            FieldTypeCode::Duration,
+            17,
+            6,
+            Some("10:20:28.625000"),
+            None,
+            false,
+        ),
+        // The existing caller converts TIME onto the statement date before
+        // CalendarHead, reading date modes and now(). Keep this route separate
+        // from the unambiguous direct-Head refusals below.
+        (
+            "DATE_ADD(tm, INTERVAL one DAY)",
+            FieldTypeCode::Datetime,
+            23,
+            3,
+            Some("2011-11-02 10:20:30.125"),
+            None,
+            true,
+        ),
+        (
+            "DATE_ADD(n, INTERVAL one MONTH)",
+            FieldTypeCode::VarString,
+            29,
+            0,
+            Some("2024-02-29"),
+            None,
+            false,
+        ),
+        (
+            "DATE_ADD(s, INTERVAL half SECOND)",
+            FieldTypeCode::VarString,
+            29,
+            0,
+            Some("2024-01-31 10:20:30.625000"),
+            None,
+            false,
+        ),
+        (
+            "DATE_ADD(bad_date, INTERVAL one DAY)",
+            FieldTypeCode::VarString,
+            29,
+            0,
+            None,
+            Some((1292, "Incorrect datetime value: 'not-a-date'")),
+            false,
+        ),
+        (
+            "DATE_ADD(hi, INTERVAL one MICROSECOND)",
+            FieldTypeCode::Datetime,
+            26,
+            6,
+            None,
+            Some((1441, "Datetime function: datetime field overflow")),
+            false,
+        ),
+        (
+            "DATE_ADD(null_date, INTERVAL one DAY)",
+            FieldTypeCode::Date,
+            10,
+            0,
+            None,
+            None,
+            false,
+        ),
+        (
+            "DATE_SUB(dt, INTERVAL null_amount SECOND)",
+            FieldTypeCode::Datetime,
+            23,
+            3,
+            None,
+            None,
+            false,
+        ),
+        (
+            "DATE_ADD(d, INTERVAL dirty_amount DAY)",
+            FieldTypeCode::Date,
+            10,
+            0,
+            Some("2024-02-01"),
+            Some((1292, "Truncated incorrect DECIMAL value: '1x'")),
+            false,
+        ),
+    ];
+    for slots in [1, 0] {
+        let mut session = Session::new();
+        session
+            .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+            .unwrap();
+        session.run("SET time_zone='+00:00'").unwrap();
+        session.run("SET sql_mode=''").unwrap();
+        // Existing statement-clock fixture: 2011-11-01 in UTC. The internal
+        // TIME-to-DATETIME conversion must not depend on the wall-clock date.
+        session.run("SET timestamp=1320140880").unwrap();
+        session
+            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+            .unwrap();
+        session.run(create).unwrap();
+        session.run(insert).unwrap();
+        assert!(session
+            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .unwrap());
+        for vectorized in [0, 1] {
+            session
+                .run(&format!(
+                    "SET tidb_enable_vectorized_expression={vectorized}"
+                ))
+                .unwrap();
+            for (expression, code, flen, fsp, expected, warning, pre_cast) in cases {
+                // Stored date and amount operands, no SQL CAST/function child,
+                // filter or sort to stand in for the arithmetic root.
+                let sql = format!("SELECT {expression} FROM shared_date_arithmetic_sql");
+                if slots == 0 {
+                    let route = if pre_cast {
+                        "existing TIME-to-DATETIME pre-cast route"
+                    } else {
+                        "new CalendarHead/DurationHead direct route"
+                    };
+                    let error = session.run_with_columns(&sql).expect_err(&sql);
+                    match &error {
+                        DriverError::Exec(tidb_executor::ExecError::Eval(
+                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+                        )) => {
+                            assert_eq!(failure.class(), tidb_executor::ExpressionAdapterFailureClass::PoolResource);
+                            assert_eq!(failure.origin(), tidb_executor::ExpressionAdapterFailureOrigin::Pool);
+                        }
+                        other => panic!("date arithmetic pool refusal changed: {route}: {sql}/{vectorized}: {other:?}"),
+                    }
+                    let mysql = error.to_mysql_error();
+                    assert_eq!(mysql.code, 1105, "{route}: {sql}/{vectorized}");
+                    assert_eq!(mysql.state, *b"HY000", "{route}: {sql}/{vectorized}");
+                    assert!(mysql.is_from_evaluation(), "{route}: {sql}/{vectorized}");
+                    // Conservative attribution: 24 direct Head refusals plus
+                    // two pre-cast-route refusals. Neither classification
+                    // asserts that context getters cannot precede the Head.
+                    assert!(
+                        warnings_of(&session).is_empty(),
+                        "{route}: {sql}/{vectorized}"
+                    );
+                    continue;
+                }
+                let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap()
+                else {
+                    panic!("expected date arithmetic rows: {sql}")
+                };
+                assert_eq!(columns.len(), 1);
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].len(), 1);
+                let field = &columns[0].1;
+                assert_eq!(field.code(), code, "{sql}/{vectorized}");
+                assert_eq!(
+                    (field.flen(), field.decimal()),
+                    (flen, fsp),
+                    "{sql}/{vectorized}"
+                );
+                assert!(!field.is_unsigned());
+                let (charset, collation) = if code == FieldTypeCode::VarString {
+                    ("utf8mb4", "utf8mb4_bin")
+                } else {
+                    ("binary", "binary")
+                };
+                assert_eq!(field.charset_name(), charset, "{sql}/{vectorized}");
+                assert_eq!(field.collation_name(), collation, "{sql}/{vectorized}");
+                let value = &rows[0][0];
+                if let Some(text) = expected {
+                    match code {
+                        FieldTypeCode::Date | FieldTypeCode::Datetime => {
+                            let Datum::Time(time) = value else {
+                                panic!("expected materialized temporal value: {sql}")
+                            };
+                            assert_eq!(i64::from(time.fsp()), fsp, "{sql}/{vectorized}");
+                        }
+                        FieldTypeCode::Duration => assert!(matches!(value, Datum::Duration(_))),
+                        FieldTypeCode::VarString => assert!(matches!(value, Datum::String(_))),
+                        _ => unreachable!("closed DATE_ADD/DATE_SUB result domains"),
+                    }
+                    assert_eq!(cell_text(value), text, "{sql}/{vectorized}");
+                } else {
+                    assert_eq!(value, &Datum::Null, "{sql}/{vectorized}");
+                }
+                // Only original calendar parse/amount/overflow warnings are
+                // replayed. Do not apply calendar 1441 policy to Duration.
+                let expected_warnings = warning
+                    .map(|(code, message)| vec![(code, message.to_owned())])
+                    .unwrap_or_default();
+                assert_eq!(
+                    warnings_of(&session),
+                    expected_warnings,
+                    "{sql}/{vectorized}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn evaluated_ascii_interval_preserves_nullable_search_demand_and_head_pool_refusals() {
     use tidb_datatype::FieldTypeCode;
 

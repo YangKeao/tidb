@@ -1530,6 +1530,12 @@ fn dispatch_bytes_family(
                 "INTERVAL needs its actual identities, field metadata, or requested continuation"
             )
         }
+        EvaluatedBytesOp::DateArithmeticHeadNative
+        | EvaluatedBytesOp::DateArithmeticDurationHeadNative
+        | EvaluatedBytesOp::DateArithmeticStepNative
+        | EvaluatedBytesOp::DateArithmeticOverflowNative => {
+            panic!("date arithmetic needs actual operands and its SDK-requested continuation")
+        }
         EvaluatedBytesOp::ConvertTzNative => {
             panic!("CONVERT_TZ needs its three actual nullable coerced strings")
         }

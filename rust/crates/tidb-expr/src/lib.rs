@@ -114,7 +114,7 @@
 //! `YEAR` all preserve an existing time-of-day suffix on the input
 //! verbatim (or omit it if absent) — none of them touch it.
 //!
-//! `HOUR`/`MINUTE`/`SECOND` are a THIRD algorithm ([`time_fn::calendar::date_add_time`]):
+//! `HOUR`/`MINUTE`/`SECOND` use a THIRD shared ordinary-calendar algorithm:
 //! unlike the units above, they always compute AND render a time-of-day
 //! component — even for a `DATE`-only input, treated as midnight
 //! (`2021-01-01 + 5 HOUR` = `2021-01-01 05:00:00`) — via absolute
@@ -143,10 +143,10 @@
 //! unit's amount, by contrast, is always read as a string (an `Int`/
 //! `Decimal` amount is formatted to its plain decimal string first,
 //! matching Go's own `getIntervalFromInt`/`getIntervalFromReal`) and split
-//! per [`time_fn::calendar::parse_composite_value`]'s doc. The result's
-//! computed year is validated against
-//! `DATE`'s real `0001`-`9999` range ([`time_fn::calendar::format_ymd_result`] /
-//! [`time_fn::calendar::format_ymdhms_result`]): exactly `0` is MySQL's "zero date"
+//! by the shared ordinary DATE_ADD calendar parser. Its shared formatters
+//! validate the computed year against
+//! `DATE`'s real `0001`-`9999` range:
+//! exactly `0` is MySQL's "zero date"
 //! string (matching `FROM_DAYS`'s own convention — for `HOUR`/`MINUTE`/
 //! `SECOND`, ONLY the date portion becomes the placeholder, the computed
 //! time still shows through, e.g. `'0001-01-01 00:00:00' - 1 HOUR` =

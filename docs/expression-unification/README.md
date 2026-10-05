@@ -1,21 +1,23 @@
 # Expression unification experiment
 
 Paired branch: `expression-unification-demo` in YangKeao/tidb and YangKeao/tikv.
-Current checkpoint: **interval-runtime-101**, after **extrema-runtime-100**.
+Current checkpoint: **date-arithmetic-102**, after **interval-runtime-101**.
 
-Functional **235/245 (95.92%)**, strict **0**, remaining10. Only `interval` is added;234 previous family objects are unchanged. Overall goal remains active.
+Functional **235/245 (95.92%)**, strict **0**, remaining10—unchanged this round. All235 family objects are preserved. Overall goal remains active.
 
-## INTERVAL takeover
+## Ordinary DATE_ADD/SUB takeover
 
-Three SDK profiles own eager and lazy classification/search. `compare2.rs` now delegates through `tikv/interval.rs`; duplicate native loops are removed.
+Four SDK profiles now own ordinary calendar and typed-duration arithmetic through `tikv/date_arithmetic.rs`; native duplicate bodies are deleted. The necessary strict interval datatype parser and ParsedInterval carrier are shared too. AST retains historical NoColumns semantics with actual execution authority; typed callers retain their context, cast order and raw duration FSP.
 
-Eager sentinel-before-NULL and complete real conversion remain distinct from lazy metadata-driven child demand. Exact signed/unsigned comparison, NaN predicate differences and original warning/cast context are preserved. Lazy Head now admits before target callback, so resource refusal may precede a child error. No new PB/legacy admission, carrier or vector kernel.
+This is partial:48 calculating legacy signatures and CoreTime arithmetic remain pending. Eight original Duration→Datetime refusals stay child-free. No new PB/legacy admission or whole-family credit.
 
 ## Evidence
 
-[Checkpoint](evidence/interval-runtime-checkpoint.md), [commands/counts/hashes](logs/interval-runtime-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
+[Checkpoint](evidence/date-arithmetic-checkpoint.md), [commands/counts/hashes](logs/date-arithmetic-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
 
-Six locked serial launches pass on first execution. New SQL32SELECT has16 Head refusals and16 positive results across both vector settings; warning demand changes with real nullability metadata. Old constant-fold/unreachable-warning and cross-tier regressions pass.139CPP/390native old test bodies remain identical.
+Twelve locked serial launches: ten nonzero passing runs, one retained zero-match filter, one retained bridge-constructor compile failure. Corrected filter and constructor retries pass. Six new tests;205 TiKV/435 native old test bodies unchanged.
+
+New SQL52SELECT covers domains/FSP/warnings/NULL and both vector settings. Refusals are conservatively24 direct Head plus two pre-cast-route probes. Two unchanged SQL tests validate ordinary arithmetic and statement overflow policy.
 
 ## Still open
 

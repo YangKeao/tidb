@@ -16,7 +16,7 @@
 
 use crate::cast::to_i64_signed;
 use crate::coerce::coerce_str;
-use crate::{Columns, Datum, ErrorLevel, EvalError};
+use crate::{Columns, Datum, EvalError};
 use tidb_datatype::{CoreTime, Time, TimeType};
 use tidb_query_datatype::codec::mysql::Time as TikvTime;
 
@@ -489,63 +489,26 @@ pub(crate) fn date_add_result_fsp(
     amount_type: Option<&tidb_datatype::FieldType>,
 ) -> Option<u32> {
     use tidb_datatype::EvalType;
-
-    let date_type = date_type?;
-    if !matches!(
-        date_type.eval_type(),
-        EvalType::Datetime | EvalType::Timestamp | EvalType::Duration
-    ) {
-        return None;
-    }
-    let field_fsp = |field_type: &tidb_datatype::FieldType| {
-        u32::try_from(field_type.decimal().clamp(0, 6)).unwrap_or(0)
+    use tidb_query_expr::{NativeDateArithmeticEvalType as Shared, NativeDateArithmeticFieldType};
+    let metadata = |field: &tidb_datatype::FieldType| NativeDateArithmeticFieldType {
+        eval_type: match field.eval_type() {
+            EvalType::Int => Shared::Int,
+            EvalType::Real => Shared::Real,
+            EvalType::Decimal => Shared::Decimal,
+            EvalType::String => Shared::String,
+            EvalType::Datetime => Shared::Datetime,
+            EvalType::Timestamp => Shared::Timestamp,
+            EvalType::Duration => Shared::Duration,
+            EvalType::Json => Shared::Json,
+            EvalType::VectorFloat32 => Shared::VectorFloat32,
+        },
+        decimal: field.decimal(),
     };
-    if matches!(
-        unit.to_ascii_uppercase().as_str(),
-        "MICROSECOND"
-            | "SECOND_MICROSECOND"
-            | "MINUTE_MICROSECOND"
-            | "HOUR_MICROSECOND"
-            | "DAY_MICROSECOND"
-    ) {
-        return Some(6);
-    }
-    let interval_fsp = if unit.eq_ignore_ascii_case("SECOND") {
-        match amount_type.map(tidb_datatype::FieldType::eval_type) {
-            Some(EvalType::String | EvalType::Real | EvalType::Json) => 6,
-            Some(EvalType::Decimal) => amount_type.map_or(0, field_fsp),
-            _ => 0,
-        }
-    } else {
-        0
-    };
-    Some(field_fsp(date_type).max(interval_fsp))
-}
-
-// Go baseDateArithmetical.addDate sends out-of-range calendar results
-// through handleInvalidTimeError (the statement's truncation error group).
-fn date_arithmetic_overflow(ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    const MESSAGE: &str = "Datetime function: datetime field overflow";
-    match ctx.truncate_level() {
-        ErrorLevel::Ignore => {}
-        ErrorLevel::Warn => ctx.append_warning(1441, MESSAGE),
-        ErrorLevel::Error => {
-            return Err(EvalError::Conversion(
-                tidb_datatype::ERR_DATETIME_FUNCTION_OVERFLOW.generate(MESSAGE),
-            ));
-        }
-    }
-    Ok(Datum::Null)
-}
-
-// Formatting receives an already valid arithmetic result. Its only NULL
-// case is a year outside the supported range, unlike operand parsing.
-fn date_arithmetic_result(value: Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    if value.is_null() {
-        date_arithmetic_overflow(ctx)
-    } else {
-        Ok(value)
-    }
+    tidb_query_expr::native_date_arithmetic_result_fsp(
+        unit,
+        date_type.map(metadata),
+        amount_type.map(metadata),
+    )
 }
 
 pub(crate) fn date_add_with_result_fsp(
@@ -556,589 +519,13 @@ pub(crate) fn date_add_with_result_fsp(
     result_fsp: Option<u32>,
     ctx: &dyn Columns,
 ) -> Result<Datum, EvalError> {
-    if let Some((index, cnt)) = composite_spec(unit) {
-        return date_add_composite(unit, date, amount, sign, index, cnt, result_fsp, ctx);
-    }
-    let Some(s) = interval_date_text(date, ctx)? else {
-        return Ok(Datum::Null);
-    };
-    let trimmed = s.trim();
-    let (date_str, time_suffix) = trimmed
-        .split_once(char::is_whitespace)
-        .map_or((trimmed, None), |(d, t)| (d, Some(t)));
-    let Some((y, m, d)) = parse_date_ymd(date_str) else {
-        // go `builtinAddDateAndDurationSig`'s arg0 cast: an unparseable
-        // datetime text warns `Incorrect datetime value: '<text>'` (1292)
-        // and answers NULL.
-        // go routes each source TYPE to its own parser and its own warning:
-        // the STRING sources warn the datetime-typed text; the numeric
-        // sources parse the INT64 reinterpretation (a u64 overflow reads
-        // -1) and warn the time-typed text.
-        match date {
-            Datum::Int(n) => {
-                ctx.append_warning(1292, &format!("Incorrect time value: '{n}'"));
-            }
-            Datum::UInt(n) => {
-                ctx.append_warning(1292, &format!("Incorrect time value: '{}'", *n as i64));
-            }
-            _ => {
-                ctx.append_warning(1292, &format!("Incorrect datetime value: '{s}'"));
-            }
-        }
-        return Ok(Datum::Null);
-    };
-    if unit.eq_ignore_ascii_case("HOUR") || unit.eq_ignore_ascii_case("MINUTE") {
-        let Some(n) = whole_interval_amount(unit, amount, ctx)? else {
-            return Ok(Datum::Null);
-        };
-        let unit_micros = if unit.eq_ignore_ascii_case("HOUR") {
-            3_600_000_000
-        } else {
-            60_000_000
-        };
-        let Some(delta_micros) = sign
-            .checked_mul(n)
-            .and_then(|value| value.checked_mul(unit_micros))
-        else {
-            return date_arithmetic_overflow(ctx);
-        };
-        let Some((h, mi, sec, microsecond)) = time_parts_with_micros(time_suffix) else {
-            return Ok(Datum::Null);
-        };
-        return date_arithmetic_result(
-            date_add_time((y, m, d, h, mi, sec, microsecond), delta_micros, result_fsp),
-            ctx,
-        );
-    }
-    if unit.eq_ignore_ascii_case("SECOND") {
-        let Some(amount) = second_interval_micros(amount)? else {
-            return Ok(Datum::Null);
-        };
-        let Some(delta_micros) = sign.checked_mul(amount) else {
-            return date_arithmetic_overflow(ctx);
-        };
-        let Some((h, mi, sec, microsecond)) = time_parts_with_micros(time_suffix) else {
-            return Ok(Datum::Null);
-        };
-        return date_arithmetic_result(
-            date_add_time((y, m, d, h, mi, sec, microsecond), delta_micros, result_fsp),
-            ctx,
-        );
-    }
-    if unit.eq_ignore_ascii_case("MICROSECOND") {
-        let Some(n) = whole_interval_amount(unit, amount, ctx)? else {
-            return Ok(Datum::Null);
-        };
-        let Some((h, mi, sec, microsecond)) = time_parts_with_micros(time_suffix) else {
-            return Ok(Datum::Null);
-        };
-        let Some(delta_micros) = sign.checked_mul(n) else {
-            return date_arithmetic_overflow(ctx);
-        };
-        return date_arithmetic_result(
-            date_add_time((y, m, d, h, mi, sec, microsecond), delta_micros, result_fsp),
-            ctx,
-        );
-    }
-    let Some(n) = whole_interval_amount(unit, amount, ctx)? else {
-        return Ok(Datum::Null);
-    };
-    // Every unit below scales the amount and adds it to a day or month count,
-    // and TiDB's own suite hands this an amount that does not fit an `i64` at
-    // all: `select "1000-01-01 00:00:00" + INTERVAL 9223372036854775808 day`
-    // (and the same with `18446744073709551616`, and with `YEAR`,
-    // `MINUTE`, `MICROSECOND`). Real TiDB answers `NULL` for every one of them
-    // -- it is `tests/integrationtest/r/expression/time.result`'s own recording
-    // -- because the computed date leaves `DATE`'s supported range, which is
-    // the SAME answer [`format_ymd_result`] gives for any year outside
-    // `1..=9999`. So an amount that overflows the scaling is not a special
-    // case needing its own rule: it is the out-of-range case arriving early,
-    // and `None` here funnels into that same `NULL`.
-    let scaled = |factor: i64| sign.checked_mul(n).and_then(|v| v.checked_mul(factor));
-    // A day count is bounded as well as checked, and the bound is not a magic
-    // number: it is the exact civil-day span [`format_ymd_result`] accepts --
-    // year `0` (its "zero date" string) through year `9999` -- so rejecting
-    // outside it produces the SAME `NULL` that formatting the computed year
-    // would have, one step earlier. `civil_from_days` itself adds a 719,468-day
-    // epoch shift, which overflows on a day count near `i64::MAX` even though
-    // the addition producing it did not.
-    let shifted_days = |factor: i64| {
-        let days = scaled(factor).and_then(|delta| days_from_civil(y, m, d).checked_add(delta))?;
-        (days_from_civil(0, 1, 1)..=days_from_civil(9999, 12, 31))
-            .contains(&days)
-            .then_some(days)
-    };
-    let (y2, m2, d2) = if unit.eq_ignore_ascii_case("DAY") {
-        match shifted_days(1) {
-            Some(days) => civil_from_days(days),
-            None => return date_arithmetic_overflow(ctx),
-        }
-    } else if unit.eq_ignore_ascii_case("WEEK") {
-        match shifted_days(7) {
-            Some(days) => civil_from_days(days),
-            None => return date_arithmetic_overflow(ctx),
-        }
-    } else if unit.eq_ignore_ascii_case("MONTH") {
-        match scaled(1) {
-            Some(months) => match add_months(y, m, d, months) {
-                Some(ymd) => ymd,
-                None => return date_arithmetic_overflow(ctx),
-            },
-            None => return date_arithmetic_overflow(ctx),
-        }
-    } else if unit.eq_ignore_ascii_case("YEAR") {
-        match scaled(12) {
-            Some(months) => match add_months(y, m, d, months) {
-                Some(ymd) => ymd,
-                None => return date_arithmetic_overflow(ctx),
-            },
-            None => return date_arithmetic_overflow(ctx),
-        }
-    } else if unit.eq_ignore_ascii_case("QUARTER") {
-        // `parseSingleTimeValue`'s `QUARTER` case is `3 * riv` MONTHs
-        // (`pkg/types/time.go`), so it shares `MONTH`/`YEAR`'s calendar-field
-        // clamping through the same `add_months`: `2024-01-31 + 1 QUARTER` =
-        // `2024-04-30` (April has 30 days, not an overflow into May), and
-        // `2024-11-30 + 1 QUARTER` = `2025-02-28` (clamped into a
-        // non-leap February) — both confirmed via `goeval`.
-        match scaled(3) {
-            Some(months) => match add_months(y, m, d, months) {
-                Some(ymd) => ymd,
-                None => return date_arithmetic_overflow(ctx),
-            },
-            None => return date_arithmetic_overflow(ctx),
-        }
-    } else {
-        return Err(EvalError::Unsupported("INTERVAL unit"));
-    };
-    date_arithmetic_result(format_ymd_result(y2, m2, d2, time_suffix), ctx)
+    crate::tikv::eval_date_add_in(ctx, unit, date, amount, sign, result_fsp)
 }
 
-/// The TEXT the `DATE_ADD`/`DATE_SUB` date pipeline below should read for
-/// this operand, porting Go's per-SOURCE routing in
-/// `baseDateArithmetical` (`pkg/expression/builtin_time.go`): a STRING
-/// operand goes through `getDateFromString`'s `types.ParseTime`, but an
-/// INTEGER operand goes through `getDateFromInt`'s
-/// `types.ParseTimeFromInt64` -- which reads TiDB's PACKED
-/// `YYYYMMDD[HHMMSS]` NUMBER, not the digits of its decimal text.
-///
-/// Coercing the integer straight to text lost exactly the packed clock:
-/// `19000101000000` is 14 digits, which the wall-clock parser below only
-/// accepts in the 6-/8-digit bare forms, so every packed-datetime operand in
-/// `expression/issues` answered NULL where TiDB answers a value
-/// (`SELECT 88950327221140 - INTERVAL "100000000:214748364700"
-/// MINUTE_SECOND` is `1900-01-01 00:00:00`, and `SELECT INTERVAL 1 Year +
-/// 19000101000000` is `1901-01-01 00:00:00`).
-///
-/// The DATE-vs-DATETIME split is `parseDateTimeFromNum`'s own
-/// (`pkg/types/time.go`): the number carries a clock -- and so renders one --
-/// exactly when it reaches the `YYMMDDHHMMSS`/`YYYYMMDDHHMMSS` branches,
-/// i.e. at `101000000` and above. Below that it is `ZeroDate`'s
-/// `mysql.TypeDate` and the result keeps `DATE_ADD`'s date-only rendering,
-/// which is what an 8-digit operand already did. Go's separate
-/// `IsClockUnit(unit)` promotion needs no counterpart here: the clock units
-/// route through [`date_add_time`], which renders a time-of-day for a
-/// date-only operand already.
-///
-/// REAL and DECIMAL operands (Go's `getDateFromReal`/`getDateFromDecimal`)
-/// keep the pre-existing text coercion; no recorded row measures them.
-fn interval_date_text(date: &Datum, cols: &dyn Columns) -> Result<Option<String>, EvalError> {
-    let number = match date {
-        Datum::Int(value) => *value,
-        Datum::UInt(value) => match i64::try_from(*value) {
-            Ok(value) => value,
-            // Beyond `i64` the packed read fails, but go still WARNS: the
-            // wrapped value (-1) names the failure
-            // (`Incorrect time value: '-1'`, 1292) before the NULL.
-            Err(_) => {
-                cols.append_warning(1292, "Incorrect time value: '-1'");
-                return Ok(None);
-            }
-        },
-        _ => {
-            // go's getDateFromReal/getDateFromDecimal do not read the raw
-            // decimal text: the numeric value is truncated toward zero to an
-            // integer first (`1.75` -> `1`), and that integer goes through
-            // the SAME packed read as the INT source. The failure names the
-            // truncated integer (`Incorrect time value: '1'`), never the
-            // decimal text.
-            let n = match date {
-                Datum::Decimal(value) => value.round_to_i64_saturating(),
-                Datum::Real(value) => value.trunc() as i64,
-                _ => return coerce_str(date),
-            };
-            return interval_int_text(n, cols);
-        }
-    };
-    interval_int_text(number, cols)
-}
-
-/// The INT-source read shared by `Datum::Int` and the truncating DECIMAL/REAL
-/// sources: parse TiDB's packed `YYYYMMDD[HHMMSS]` number, and when the
-/// number is not a valid datetime name the failure with go's warning text
-/// (`Incorrect time value: '<num>'`, 1292) before the NULL.
-fn interval_int_text(number: i64, cols: &dyn Columns) -> Result<Option<String>, EvalError> {
-    let Ok(parsed) = tidb_datatype::parse_time_from_num(
-        number,
-        tidb_datatype::TimeType::DateTime,
-        0,
-        // Go's read path (`ResetContextOfStmt`'s `*ast.SelectStmt` arm) sets
-        // `IgnoreZeroInDate` unconditionally; the wall-clock parser below
-        // still applies its own stricter rule, so this only avoids
-        // rejecting here what Go accepts here.
-        true,
-        false,
-        true,
-        &chrono_tz::Tz::UTC,
-    ) else {
-        cols.append_warning(1292, &format!("Incorrect time value: '{number}'"));
-        return Ok(None);
-    };
-    let core = parsed.time.core_time();
-    let (year, month, day) = (core.year(), core.month(), core.day());
-    Ok(Some(if number >= 101_000_000 {
-        format!(
-            "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}",
-            core.hour(),
-            core.minute(),
-            core.second()
-        )
-    } else {
-        format!("{year:04}-{month:02}-{day:02}")
-    }))
-}
-
-/// Current Go `intervalReformatString` for a non-SECOND single unit: retain
-/// only the leading signed integer run, or zero when no run exists. SECOND
-/// takes the separate exact decimal-microsecond parser.
-fn parse_single_string_amount(unit: &str, s: &str) -> i64 {
-    let trimmed = s.trim();
-    debug_assert!(!unit.eq_ignore_ascii_case("SECOND"));
-    let bytes = trimmed.as_bytes();
-    let mut i = 0;
-    if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
-        i += 1;
-    }
-    let digits_start = i;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
-        i += 1;
-    }
-    if i == digits_start {
-        return 0;
-    }
-    trimmed[..i].parse::<i64>().unwrap_or(i64::MAX)
-}
-
-pub(super) fn whole_interval_amount(
-    unit: &str,
-    amount: &Datum,
-    cols: &dyn Columns,
-) -> Result<Option<i64>, EvalError> {
-    Ok(Some(match amount {
-        Datum::Null => return Ok(None),
-        Datum::Int(value) => *value,
-        Datum::UInt(value) => i64::try_from(*value).unwrap_or(i64::MAX),
-        Datum::Decimal(value) => value.round_to_i64_saturating(),
-        Datum::String(_) | Datum::Bytes(_) => {
-            let Some(value) = coerce_str(amount)? else {
-                return Ok(None);
-            };
-            let n = parse_single_string_amount(unit, &value);
-            // go converts the string amount through a decimal first: a
-            // string that is not a clean decimal (no digit run, or anything
-            // left after it -- including a fraction, which truncates)
-            // warns `Truncated incorrect DECIMAL value: '<s>'` (1292)
-            // before the same leading-run value.
-            let trimmed = value.trim();
-            let after_sign = trimmed.strip_prefix(['+', '-']).unwrap_or(trimmed);
-            let digits = after_sign.len()
-                - after_sign
-                    .trim_start_matches(|c: char| c.is_ascii_digit())
-                    .len();
-            if digits == 0 || digits < after_sign.len() {
-                cols.append_warning(
-                    1292,
-                    &format!("Truncated incorrect DECIMAL value: '{value}'"),
-                );
-            }
-            n
-        }
-        Datum::Real(value) => value.round() as i64,
-        Datum::MinNotNull | Datum::MaxValue => {
-            return Err(EvalError::Unsupported("range sentinel INTERVAL amount"));
-        }
-        other => {
-            other
-                .to_i64()
-                .map_err(|_| EvalError::Unsupported("INTERVAL amount conversion"))?
-                .value
-        }
-    }))
-}
-
-/// Go's `parseSingleTimeValue(..., "SECOND", false)` keeps the first six
-/// fractional digits and truncates the rest. The decimal/string/real
-/// interval getters all normalize their value to decimal text before that
-/// parser runs; doing the same here makes one exact microsecond amount for
-/// the calendar path instead of rounding through an integer.
-pub(super) fn second_interval_micros(amount: &Datum) -> Result<Option<i64>, EvalError> {
-    let text = match amount {
-        Datum::Null => return Ok(None),
-        Datum::Int(value) => value.to_string(),
-        Datum::UInt(value) => value.to_string(),
-        Datum::Decimal(value) => value.to_string(),
-        Datum::String(_) | Datum::Bytes(_) => {
-            let Some(value) = coerce_str(amount)? else {
-                return Ok(None);
-            };
-            tidb_datatype::Decimal::parse_mysql(value.trim())
-                .0
-                .to_string()
-        }
-        Datum::Real(value) => tidb_datatype::Decimal::parse_mysql(&value.to_string())
-            .0
-            .to_string(),
-        Datum::MinNotNull | Datum::MaxValue => {
-            return Err(EvalError::Unsupported("range sentinel INTERVAL amount"));
-        }
-        other => other
-            .to_i64()
-            .map_err(|_| EvalError::Unsupported("INTERVAL amount conversion"))?
-            .value
-            .to_string(),
-    };
-    Ok(decimal_seconds_to_micros(&text).ok())
-}
-
-fn decimal_seconds_to_micros(text: &str) -> Result<i64, EvalError> {
-    let text = text.trim();
-    let (negative, magnitude) = text.strip_prefix('-').map_or_else(
-        || (false, text.strip_prefix('+').unwrap_or(text)),
-        |value| (true, value),
-    );
-    let (whole, fraction) = magnitude.split_once('.').unwrap_or((magnitude, ""));
-    let whole = whole.parse::<i128>().map_err(|_| EvalError::IntOverflow)?;
-    let mut micros = fraction
-        .bytes()
-        .take(6)
-        .try_fold(0i128, |value, digit| {
-            digit
-                .is_ascii_digit()
-                .then_some(value * 10 + i128::from(digit - b'0'))
-        })
-        .ok_or(EvalError::IntOverflow)?;
-    for _ in fraction.len().min(6)..6 {
-        micros *= 10;
-    }
-    let value = whole
-        .checked_mul(1_000_000)
-        .and_then(|value| value.checked_add(micros))
-        .ok_or(EvalError::IntOverflow)?;
-    i64::try_from(if negative { -value } else { value }).map_err(|_| EvalError::IntOverflow)
-}
-
-/// Composite-unit field indices, mirroring `pkg/types/time.go`'s
-/// `YearIndex`..`MicrosecondIndex` constants (`0..=6`), and the `(index,
-/// cnt)` pair `ParseDurationValue` passes to `parseTimeValue` for each
-/// composite `INTERVAL` unit name — the field the LAST numeric group in the
-/// string lands on, and the max number of numeric groups accepted.
-/// `None` for a non-composite (single) unit name.
-pub(super) fn composite_spec(unit: &str) -> Option<(usize, usize)> {
-    const MONTH: usize = 1;
-    const HOUR: usize = 3;
-    const MINUTE: usize = 4;
-    const SECOND: usize = 5;
-    const MICROSECOND: usize = 6;
-    Some(match unit.to_ascii_uppercase().as_str() {
-        "YEAR_MONTH" => (MONTH, 2),
-        "DAY_HOUR" => (HOUR, 2),
-        "DAY_MINUTE" => (MINUTE, 3),
-        "DAY_SECOND" => (SECOND, 4),
-        "DAY_MICROSECOND" => (MICROSECOND, 5),
-        "HOUR_MINUTE" => (MINUTE, 2),
-        "HOUR_SECOND" => (SECOND, 3),
-        "HOUR_MICROSECOND" => (MICROSECOND, 4),
-        "MINUTE_SECOND" => (SECOND, 2),
-        "MINUTE_MICROSECOND" => (MICROSECOND, 3),
-        "SECOND_MICROSECOND" => (MICROSECOND, 2),
-        _ => return None,
-    })
-}
-
-/// Splits a composite `INTERVAL` string into `(years, months, days,
-/// nanoseconds)`, porting `parseTimeValue` (`pkg/types/time.go`): every
-/// contiguous ASCII-digit run in the string is one numeric group, a leading
-/// `-` (after trimming whitespace) negates EVERY group (not just the
-/// first), and the groups are assigned RIGHT-to-LEFT starting at `index`
-/// (so a string shorter than the unit's full field count — e.g. `'30'`
-/// for `HOUR_MINUTE` — fills only the RIGHTMOST/smallest fields, leaving
-/// the rest `0`; confirmed via `pkg/executor` capture: `INTERVAL '30'
-/// HOUR_MINUTE` is `+30 minutes`, not `+30 hours`).
-///
-/// MORE numeric groups than `cnt` is `parseTimeValue`'s own hard error —
-/// but real TiDB's `DATE_ADD`/`DATE_SUB` caller (`handleInvalidTimeError`)
-/// downgrades that specific error class to a warning even under
-/// `STRICT_TRANS_TABLES`, continuing with an all-zero interval rather than
-/// failing the statement (confirmed via `pkg/executor` capture: `'1:2:3'
-/// HOUR_MINUTE` leaves the date UNCHANGED, no error, no `NULL`) — so this
-/// returns the all-zero interval for that case instead of an `Err`, the
-/// same effective behavior without inventing a warning channel this crate
-/// doesn't have.
-pub(super) fn parse_composite_value(
-    index: usize,
-    cnt: usize,
-    format: &str,
-) -> (i64, i64, i64, i64) {
-    let trimmed = format.trim();
-    let (neg, body) = match trimmed.strip_prefix('-') {
-        Some(rest) => (true, rest),
-        None => (false, trimmed),
-    };
-    let mut matches: Vec<i64> = Vec::new();
-    let mut digits = String::new();
-    for c in body.chars().chain(std::iter::once('\0')) {
-        if c.is_ascii_digit() {
-            digits.push(c);
-        } else if !digits.is_empty() {
-            matches.push(digits.parse().unwrap_or(i64::MAX));
-            digits.clear();
-        }
-    }
-    if matches.len() > cnt {
-        return (0, 0, 0, 0);
-    }
-    let mut fields = [0i64; 7];
-    let mut idx = index as i64;
-    for i in 0..matches.len() {
-        let value = matches[matches.len() - 1 - i];
-        if idx >= 0 {
-            fields[idx as usize] = if neg { -value } else { value };
-        }
-        idx -= 1;
-    }
-    let years = fields[0];
-    let months = fields[1];
-    let mut days = fields[2];
-    let mut seconds = fields[3] * 3600 + fields[4] * 60 + fields[5];
-    days += seconds / 86_400;
-    seconds %= 86_400;
-    let nanos = seconds * 1_000_000_000 + fields[6] * 1000;
-    (years, months, days, nanos)
-}
-
-/// Formats a DECIMAL amount for a composite `INTERVAL` unit exactly like
-/// Go's `baseDateArithmetical.getIntervalFromDecimal`. The apparent padding
-/// is significant at this boundary: it makes the decimal point land on the
-/// unit-specific field separator before `parse_composite_value` right-aligns
-/// the resulting numeric groups.
+/// Preserve the old formatter test entry with the actual visible decimal text.
+#[cfg(test)]
 pub(super) fn format_decimal_composite_interval(unit: &str, decimal: &crate::Decimal) -> String {
-    let interval = decimal.to_string();
-    let (negative, magnitude) = interval
-        .strip_prefix('-')
-        .map_or((false, interval.as_str()), |value| (true, value));
-    let formatted = match unit.to_ascii_uppercase().as_str() {
-        "HOUR_MINUTE" | "MINUTE_SECOND" => magnitude.replace('.', ":"),
-        "YEAR_MONTH" => magnitude.replace('.', "-"),
-        "DAY_HOUR" => magnitude.replace('.', " "),
-        "DAY_MINUTE" => format!("0 {}", magnitude.replace('.', ":")),
-        "DAY_SECOND" => format!("0 00:{}", magnitude.replace('.', ":")),
-        "DAY_MICROSECOND" => format!("0 00:00:{magnitude}"),
-        "HOUR_MICROSECOND" => format!("00:00:{magnitude}"),
-        "HOUR_SECOND" => format!("00:{}", magnitude.replace('.', ":")),
-        "MINUTE_MICROSECOND" => format!("00:{magnitude}"),
-        "SECOND_MICROSECOND" => magnitude.to_string(),
-        _ => magnitude.to_string(),
-    };
-    if negative {
-        format!("-{formatted}")
-    } else {
-        formatted
-    }
-}
-
-/// `DATE_ADD`/`DATE_SUB` for a composite `INTERVAL` unit (see
-/// [`composite_spec`]/[`parse_composite_value`]). `YEAR_MONTH` is
-/// calendar-field arithmetic through the SAME [`add_months`] `MONTH`/`YEAR`
-/// use (and so shares their day-of-month clamping); every other composite
-/// unit is exact day/second arithmetic through the same absolute-day-count
-/// path [`date_add_time`] uses for `HOUR`/`MINUTE`/`SECOND` — the two
-/// families never mix within one composite unit, since exactly one of
-/// `(years, months)` or `(days, nanos)` is nonzero for any given unit.
-fn date_add_composite(
-    unit: &str,
-    date: &Datum,
-    amount: &Datum,
-    sign: i64,
-    index: usize,
-    cnt: usize,
-    result_fsp: Option<u32>,
-    ctx: &dyn Columns,
-) -> Result<Datum, EvalError> {
-    let format = match amount {
-        Datum::Null => return Ok(Datum::Null),
-        Datum::Int(i) => i.to_string(),
-        Datum::UInt(i) => i.to_string(),
-        Datum::Decimal(d) => format_decimal_composite_interval(unit, d),
-        Datum::String(_) | Datum::Bytes(_) => match coerce_str(amount)? {
-            Some(s) => s,
-            None => return Ok(Datum::Null),
-        },
-        _ => return Err(EvalError::Unsupported("composite INTERVAL amount")),
-    };
-    let Some(s) = interval_date_text(date, ctx)? else {
-        return Ok(Datum::Null);
-    };
-    let trimmed = s.trim();
-    let (date_str, time_suffix) = trimmed
-        .split_once(char::is_whitespace)
-        .map_or((trimmed, None), |(d, t)| (d, Some(t)));
-    let Some((y, m, d)) = parse_date_ymd(date_str) else {
-        // go `builtinAddDateAndDurationSig`'s arg0 cast: an unparseable
-        // datetime text warns `Incorrect datetime value: '<text>'` (1292)
-        // and answers NULL.
-        // go routes each source TYPE to its own parser and its own warning:
-        // the STRING sources warn the datetime-typed text; the numeric
-        // sources parse the INT64 reinterpretation (a u64 overflow reads
-        // -1) and warn the time-typed text.
-        match date {
-            Datum::Int(n) => {
-                ctx.append_warning(1292, &format!("Incorrect time value: '{n}'"));
-            }
-            Datum::UInt(n) => {
-                ctx.append_warning(1292, &format!("Incorrect time value: '{}'", *n as i64));
-            }
-            _ => {
-                ctx.append_warning(1292, &format!("Incorrect datetime value: '{s}'"));
-            }
-        }
-        return Ok(Datum::Null);
-    };
-    let Some((h, mi, sec, microsecond)) = time_parts_with_micros(time_suffix) else {
-        return Ok(Datum::Null);
-    };
-    let (years, months, days, nanos) = parse_composite_value(index, cnt, &format);
-    if years != 0 || months != 0 {
-        let Some((y2, m2, d2)) = years
-            .checked_mul(12)
-            .and_then(|v| v.checked_add(months))
-            .and_then(|v| sign.checked_mul(v))
-            .and_then(|delta| add_months(y, m, d, delta))
-        else {
-            return date_arithmetic_overflow(ctx);
-        };
-        return date_arithmetic_result(format_ymd_result(y2, m2, d2, time_suffix), ctx);
-    }
-    let Some(delta_micros) = days
-        .checked_mul(86_400_000_000)
-        .and_then(|value| value.checked_add(nanos / 1_000))
-        .and_then(|value| sign.checked_mul(value))
-    else {
-        return date_arithmetic_overflow(ctx);
-    };
-    date_arithmetic_result(
-        date_add_time((y, m, d, h, mi, sec, microsecond), delta_micros, result_fsp),
-        ctx,
-    )
+    tidb_query_expr::native_format_decimal_composite_interval(unit, &decimal.to_string())
 }
 
 /// `EXTRACT(<composite unit> FROM value)`, ported from
@@ -1178,20 +565,6 @@ pub(crate) fn parse_time_hms(s: &str) -> Option<(u32, u32, u32)> {
 /// written fraction here is enough for the evaluator's string-only domain.
 pub(crate) fn parse_time_with_fraction(s: &str) -> Option<(u32, u32, u32, String)> {
     TikvTime::parse_native_clock_with_fraction(s)
-}
-
-fn time_parts_with_micros(time_suffix: Option<&str>) -> Option<(u32, u32, u32, u32)> {
-    let Some(time_suffix) = time_suffix else {
-        return Some((0, 0, 0, 0));
-    };
-    let (hour, minute, second, fraction) = parse_time_with_fraction(time_suffix)?;
-    let scale = 10u32.pow(6 - fraction.len() as u32);
-    let microsecond = if fraction.is_empty() {
-        0
-    } else {
-        fraction.parse::<u32>().ok()? * scale
-    };
-    Some((hour, minute, second, microsecond))
 }
 
 /// `STR_TO_DATE(date, format)`, ported from `types.Time.StrToDate` and the
@@ -1245,137 +618,6 @@ pub(crate) fn str_to_date_typed(
     target: Option<tidb_datatype::FieldTypeCode>,
 ) -> Result<Datum, EvalError> {
     crate::tikv::eval_str_to_date_in(cols, vals, target)
-}
-
-/// `DATE_ADD`/`DATE_SUB` with an `INTERVAL n {HOUR,MINUTE,SECOND}`: unlike
-/// `DAY`/`WEEK`/`MONTH`/`YEAR`, which preserve an existing time-of-day
-/// suffix verbatim (or omit it if the input had none), these units always
-/// compute AND render a time-of-day component — even for a `DATE`-only
-/// input, treated as midnight (`2021-01-01 + 5 HOUR` = `2021-01-01
-/// 05:00:00`, confirmed via `goeval`), since the interval itself is about
-/// time-of-day granularity, not just the date. `delta_secs` (already
-/// unit-scaled and sign-applied by the caller) is added to the whole
-/// datetime's absolute seconds-since-epoch count (`days_from_civil` scaled
-/// to seconds, plus the time-of-day's own seconds), then converted back —
-/// so overflow correctly carries into the day and, via `civil_from_days`,
-/// into month/year, exactly like `DAY`-unit arithmetic already does
-/// (`22:00:00 + 5 HOUR` = the next day's `03:00:00`, confirmed via
-/// `goeval`).
-/// An amount whose seconds count does not fit an `i64` is `NULL`, for the same
-/// reason as the day/month units above: real TiDB answers `NULL` there because
-/// the date left `DATE`'s range, and an overflow is that case arriving early.
-fn date_add_time(
-    parts: (i64, u32, u32, u32, u32, u32, u32),
-    delta_micros: i64,
-    result_fsp: Option<u32>,
-) -> Datum {
-    let (y, m, d, h, mi, sec, microsecond) = parts;
-    const MICROS_PER_SECOND: i64 = 1_000_000;
-    const MICROS_PER_DAY: i64 = 86_400 * MICROS_PER_SECOND;
-    let Some(total) = days_from_civil(y, m, d)
-        .checked_mul(MICROS_PER_DAY)
-        .and_then(|value| {
-            value.checked_add(
-                (i64::from(h) * 3_600 + i64::from(mi) * 60 + i64::from(sec)) * MICROS_PER_SECOND
-                    + i64::from(microsecond),
-            )
-        })
-        .and_then(|value| value.checked_add(delta_micros))
-    else {
-        return Datum::Null;
-    };
-    let day_count = total.div_euclid(MICROS_PER_DAY);
-    let micros_of_day = total.rem_euclid(MICROS_PER_DAY);
-    let seconds_of_day = micros_of_day / MICROS_PER_SECOND;
-    let (y2, m2, d2) = civil_from_days(day_count);
-    format_ymdhms_result(
-        (
-            y2,
-            m2,
-            d2,
-            (seconds_of_day / 3_600) as u32,
-            (seconds_of_day / 60 % 60) as u32,
-            (seconds_of_day % 60) as u32,
-            (micros_of_day % MICROS_PER_SECOND) as u32,
-        ),
-        result_fsp,
-    )
-}
-
-fn format_ymdhms_result(
-    parts: (i64, u32, u32, u32, u32, u32, u32),
-    result_fsp: Option<u32>,
-) -> Datum {
-    let (y, m, d, h, mi, sec, microsecond) = parts;
-    let fsp =
-        result_fsp
-            .map(|value| value.min(6))
-            .unwrap_or_else(|| if microsecond == 0 { 0 } else { 6 });
-    let fraction = if fsp == 0 {
-        String::new()
-    } else {
-        let value = microsecond / 10u32.pow(6 - fsp);
-        format!(".{value:0width$}", width = fsp as usize)
-    };
-    if y == 0 {
-        return Datum::new_string(format!("0000-00-00 {h:02}:{mi:02}:{sec:02}{fraction}"));
-    }
-    if !(1..=9999).contains(&y) {
-        return Datum::Null;
-    }
-    Datum::new_string(format!(
-        "{y:04}-{m:02}-{d:02} {h:02}:{mi:02}:{sec:02}{fraction}"
-    ))
-}
-
-/// Adds `n` months to `(y, m, d)` as a calendar field increment: the
-/// year/month roll over via total-months arithmetic, and the day clamps to
-/// the target month's own length (e.g. `2021-01-31 + 1` = `(2021, 2, 28)`,
-/// not an overflow into March) — MySQL's `MONTH`/`YEAR` interval rule,
-/// confirmed via `goeval`, genuinely different from `DAY`'s exact
-/// day-number arithmetic (see [`date_add`]'s doc comment). `YEAR` reuses
-/// this with `n` pre-multiplied by 12, rather than a separate algorithm.
-///
-/// `None` is an `n` whose month total leaves the years
-/// [`format_ymd_result`] can render at all (`0..=9999`) -- including one that
-/// does not fit an `i64` -- which that function answers `NULL` for anyway, so
-/// the caller propagates `NULL` rather than computing a year no result can
-/// carry. TiDB's own `expression/time` script asks for exactly that:
-/// `"1000-01-01 00:00:00" + INTERVAL 9223372036854775808 YEAR`, recorded as
-/// `NULL`.
-fn add_months(y: i64, m: u32, d: u32, n: i64) -> Option<(i64, u32, u32)> {
-    let total = y
-        .checked_mul(12)?
-        .checked_add(i64::from(m - 1))?
-        .checked_add(n)?;
-    let y2 = total.div_euclid(12);
-    if !(0..=9999).contains(&y2) {
-        return None;
-    }
-    let m2 = (total.rem_euclid(12) + 1) as u32;
-    let d2 = d.min(days_in_month(y2, m2));
-    Some((y2, m2, d2))
-}
-
-/// Formats a computed `(y, m, d)` as `DATE_ADD`/`DATE_SUB`'s result,
-/// re-attaching `time_suffix` if the input had one, after validating `y`
-/// against `DATE`'s real supported range: a computed year of exactly `0`
-/// is MySQL's "zero date" string (matching `FROM_DAYS`'s own out-of-range
-/// convention); any other out-of-`1..=9999` year — negative, or past
-/// `9999` — is `NULL` (a genuine asymmetry from `FROM_DAYS`'s all-zero-date
-/// convention, both directions confirmed via `goeval` for `DAY`, `MONTH`,
-/// and `YEAR` alike, not assumed symmetric).
-pub(crate) fn format_ymd_result(y: i64, m: u32, d: u32, time_suffix: Option<&str>) -> Datum {
-    if y == 0 {
-        return Datum::new_string("0000-00-00".to_string());
-    }
-    if !(1..=9999).contains(&y) {
-        return Datum::Null;
-    }
-    Datum::new_string(match time_suffix {
-        Some(t) => format!("{y:04}-{m:02}-{d:02} {t}"),
-        None => format!("{y:04}-{m:02}-{d:02}"),
-    })
 }
 
 /// `DATE_FORMAT(date, fmt)`: renders a date/datetime string per a MySQL
@@ -2124,4 +1366,287 @@ fn str_to_date_entries_keep_lazy_modes_warnings_and_duration_null_cast() {
             if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource)
     );
     assert_eq!(*ctx.events.borrow(), vec!["input", "format"]); // No cast timezone after a worker error.
+}
+
+#[cfg(test)]
+#[test]
+fn date_arithmetic_entries_preserve_operand_order_and_context_profiles() {
+    use crate::constant::{Constant, ParamMarker};
+    use crate::expression::Expression;
+    use crate::scalar_function::ScalarFunction;
+    use std::cell::RefCell;
+    use tidb_datatype::{FieldType, FieldTypeCode as Code, MySqlDuration};
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum Event {
+        Child(usize),
+        Level,
+        Warning(u16, String),
+    }
+    struct Probe {
+        values: [Datum; 2],
+        fail_right: bool,
+        level: crate::ErrorLevel,
+        events: RefCell<Vec<Event>>,
+    }
+    impl crate::Columns for Probe {
+        fn get(&self, path: &[String]) -> Option<Datum> {
+            self.param_value(path[0].parse().unwrap()).ok()
+        }
+        fn param_value(&self, index: usize) -> Result<Datum, EvalError> {
+            self.events.borrow_mut().push(Event::Child(index));
+            if index == 1 && self.fail_right {
+                return Err(EvalError::Unsupported("date arithmetic right child"));
+            }
+            Ok(self.values[index].clone())
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            self.events.borrow_mut().push(Event::Level);
+            self.level
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.events
+                .borrow_mut()
+                .push(Event::Warning(code, message.to_owned()));
+        }
+        fn date_modes(&self) -> tidb_datatype::DateModes {
+            panic!("these date arithmetic entries do not read date modes")
+        }
+        fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+            panic!("these date arithmetic entries do not read caller timezone")
+        }
+    }
+    let probe = |values, level, fail_right| Probe {
+        values,
+        fail_right,
+        level,
+        events: RefCell::new(Vec::new()),
+    };
+    let text = |s: &str| Datum::new_string(s);
+    let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
+    let evaluate = |entry, unit: &str, sign, duration, ctx: &Probe, cols: &dyn crate::Columns| {
+        let mut date_type = FieldType::new(if duration {
+            Code::Duration
+        } else {
+            Code::VarString
+        });
+        date_type.set_decimal(3);
+        let mut amount_type = FieldType::new(Code::VarString);
+        amount_type.set_decimal(2);
+        match entry {
+            0 if duration => super::add_sub::date_add_duration(
+                cols,
+                unit,
+                &ctx.values[0],
+                &ctx.values[1],
+                Some(&amount_type),
+                sign,
+                i64::from(
+                    date_add_result_fsp(unit, Some(&date_type), Some(&amount_type)).unwrap_or(0),
+                ),
+            ),
+            0 => date_add_with_result_fsp(unit, &ctx.values[0], &ctx.values[1], sign, None, cols),
+            1 => {
+                let args = [
+                    tidb_ast::Expr::Column(vec!["0".to_owned()]),
+                    tidb_ast::Expr::Interval {
+                        value: Box::new(tidb_ast::Expr::Column(vec!["1".to_owned()])),
+                        unit: unit.to_owned(),
+                    },
+                ];
+                crate::func::eval_func(
+                    if sign < 0 { "DATE_SUB" } else { "DATE_ADD" },
+                    &args,
+                    cols,
+                    None,
+                )
+            }
+            _ => {
+                let args = [date_type, amount_type]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, field)| {
+                        let mut constant = Constant::new(Datum::Null, field);
+                        constant.param_marker = Some(ParamMarker {
+                            order: i64::try_from(index).unwrap(),
+                        });
+                        Expression::Constant(constant)
+                    })
+                    .collect();
+                let name = format!(
+                    "date_{}_{}",
+                    if sign < 0 { "sub" } else { "add" },
+                    unit.to_ascii_lowercase()
+                );
+                ScalarFunction::new(
+                    tidb_ast::CiString::new(name),
+                    FieldType::new(if duration {
+                        Code::Duration
+                    } else {
+                        Code::VarString
+                    }),
+                    args,
+                )
+                .eval(cols, row.to_row())
+            }
+        }
+    };
+    let children = |entry| {
+        if entry == 0 {
+            vec![]
+        } else {
+            vec![Event::Child(0), Event::Child(1)]
+        }
+    };
+    for entry in 0..3 {
+        for (unit, values, expected) in [
+            (
+                "DAY",
+                [Datum::Null, Datum::new_bytes(vec![255])],
+                Ok(Datum::Null),
+            ),
+            (
+                "HOUR_MINUTE",
+                [Datum::Null, Datum::new_bytes(vec![255])],
+                Err(EvalError::Unsupported("invalid UTF-8 byte datum")),
+            ),
+            (
+                "HOUR_MINUTE",
+                [Datum::Null, Datum::Real(1.5)],
+                Err(EvalError::Unsupported("composite INTERVAL amount")),
+            ),
+            ("HOUR_MINUTE", [text("bad"), Datum::Null], Ok(Datum::Null)),
+            ("MYSTERY", [Datum::Null, Datum::Int(1)], Ok(Datum::Null)),
+            (
+                "SECOND_MICROSECOND",
+                [text("2024-01-01"), text("1.1")],
+                Ok(text("2024-01-01 00:00:01.000001")),
+            ),
+        ] {
+            let ctx = probe(values, crate::ErrorLevel::Error, false);
+            assert_eq!(evaluate(entry, unit, 1, false, &ctx, &ctx), expected);
+            assert_eq!(*ctx.events.borrow(), children(entry));
+        }
+        for (date, warning) in [
+            (text("bad"), "Incorrect datetime value: 'bad'"),
+            (Datum::UInt(u64::MAX - 1), "Incorrect time value: '-1'"),
+        ] {
+            let ctx = probe([date, Datum::Null], crate::ErrorLevel::Error, false);
+            assert_eq!(
+                evaluate(entry, "DAY", 1, false, &ctx, &ctx),
+                Ok(Datum::Null)
+            );
+            let mut events = children(entry);
+            if entry != 1 {
+                events.push(Event::Warning(1292, warning.to_owned()));
+            }
+            assert_eq!(*ctx.events.borrow(), events);
+        }
+        for unit in ["HOUR", "MICROSECOND"] {
+            for level in [crate::ErrorLevel::Warn, crate::ErrorLevel::Error] {
+                let ctx = probe(
+                    [text("2024-01-01 bad-clock"), Datum::Int(i64::MIN)],
+                    level,
+                    false,
+                );
+                let result = evaluate(entry, unit, -1, false, &ctx, &ctx);
+                let overflow = unit == "HOUR" && entry != 1;
+                if overflow && level == crate::ErrorLevel::Error {
+                    assert_eq!(
+                        result,
+                        Err(EvalError::Conversion(
+                            tidb_datatype::ERR_DATETIME_FUNCTION_OVERFLOW
+                                .generate("Datetime function: datetime field overflow")
+                        ))
+                    );
+                } else {
+                    assert_eq!(result, Ok(Datum::Null));
+                }
+                let mut events = children(entry);
+                if overflow {
+                    events.push(Event::Level);
+                    if level == crate::ErrorLevel::Warn {
+                        events.push(Event::Warning(
+                            1441,
+                            "Datetime function: datetime field overflow".to_owned(),
+                        ));
+                    }
+                }
+                assert_eq!(*ctx.events.borrow(), events);
+            }
+        }
+    }
+    // Duration consumes its own profile, including fixed-precision Real text,
+    // padded microsecond groups, and silent range failure rather than 1441.
+    for entry in [0, 2] {
+        let duration = |nanos, fsp| Datum::new_duration(MySqlDuration::from_raw_parts(nanos, fsp));
+        for (unit, values, expected, warning) in [
+            (
+                "SECOND_MICROSECOND",
+                [duration(0, 3), text("1.1")],
+                duration(1_100_000_000, 6),
+                None,
+            ),
+            (
+                "HOUR_MINUTE",
+                [duration(0, 3), Datum::Real(1.5)],
+                duration(6_600_000_000_000, 3),
+                None,
+            ),
+            (
+                "HOUR_MINUTE",
+                [Datum::Null, Datum::new_bytes(vec![255])],
+                Datum::Null,
+                None,
+            ),
+            (
+                "HOUR",
+                [duration(0, 3), Datum::Int(i64::MAX)],
+                Datum::Null,
+                None,
+            ),
+            (
+                "HOUR",
+                [duration(0, 3), text("1tail")],
+                duration(3_600_000_000_000, 3),
+                Some("Truncated incorrect DECIMAL value: '1tail'"),
+            ),
+        ] {
+            let ctx = probe(values, crate::ErrorLevel::Error, false);
+            assert_eq!(evaluate(entry, unit, 1, true, &ctx, &ctx), Ok(expected));
+            let mut events = children(entry);
+            if let Some(warning) = warning {
+                events.push(Event::Warning(1292, warning.to_owned()));
+            }
+            assert_eq!(*ctx.events.borrow(), events);
+        }
+    }
+    for entry in [1, 2] {
+        let ctx = probe([Datum::Null, Datum::Int(1)], crate::ErrorLevel::Error, true);
+        assert!(evaluate(entry, "DAY", 1, false, &ctx, &ctx).is_err());
+        assert_eq!(*ctx.events.borrow(), children(entry));
+    }
+    let owner = crate::AsciiPoolOwner::new(
+        crate::AsciiPoolPolicy::checked(
+            0,
+            0,
+            16 * 1024 * 1024,
+            4 * 1024 * 1024,
+            4 * 1024 * 1024,
+            64,
+            8,
+            4 * 1024 * 1024,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let denied = owner.begin_execution().unwrap();
+    for (entry, duration) in [(0, false), (1, false), (2, false), (0, true), (2, true)] {
+        let ctx = probe([Datum::Null, Datum::Null], crate::ErrorLevel::Error, false);
+        assert!(
+            matches!(denied.scope().with_columns(&ctx, |cols| evaluate(entry, "DAY", 1, duration, &ctx, cols)),
+            Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::PoolResource)
+        );
+        assert_eq!(*ctx.events.borrow(), children(entry));
+    }
 }

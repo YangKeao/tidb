@@ -1,0 +1,73 @@
+date-arithmetic-102 / R105 PARTIAL ordinary calendar+typedDuration
+TiKV cwd /home/agent/tidb/expression-unification/tikv
+Native cwd /home/agent/tidb/expression-unification/tidb/rust
+Raw /home/agent/tidb/expression-unification/logs/date-arithmetic-{id}.log
+Counts passed/failed/ignored/filtered; compile/test seconds.
+
+tikv-datatype | 1/0/0/464 | 3.91/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_duration_interval -- --test-threads=1
+sha256 a9c2542134b36b895e0907a2c0435e523e20bdda4963ec3abac31f220a203a64
+
+native-datatype | 0/0/0/461 | 3.45/0.00 | exit0 ZERO MATCH, NOT PASS
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib interval -- --test-threads=1
+sha256 f6df157b9f8f31865c6995f2666607abb14b88406140e2d2070c3bf33b0b0ff6
+
+native-datatype-retry | 2/0/0/459 | 0.10/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib duration_value -- --test-threads=1
+sha256 9600b583b2666d8ac19f3a5a3a87cd0ac6bca5fed7194c1b493247ccc8231499
+
+tikv-core | 1/0/0/984 | 18.12/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_date_arithmetic -- --test-threads=1
+sha256 bb626dcc40a8a71c0f0f52f8a19698cf66779ba69fa50b8a0fc4c617f3fcc04d
+
+tikv-local | 354/0/1/630 | 0.14/0.24 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+sha256 2bf0ff0893ece9343b7fd8018e00747299ea954bf2d8c836fbf70794772bac62
+
+native-entry | COMPILE FAILED E0308/E0061 | no completed compile/test timing | exit101
+../../tools/cargo-tidb test --locked -p tidb-expr --lib date_arithmetic -- --test-threads=1
+sha256 e52d45c7a283c95c9560a6541288849a8f4dae4e6f608640dcf4f402da90f9a4
+
+native-entry-retry | 2/0/0/1713 | 10.98/0.01 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib date_arithmetic -- --test-threads=1
+sha256 b8204619b23be92384db787092356b76b7ea3d4d97a784cba5b9ab17190837a7
+
+native-gateway | 196/0/1/1518 | 0.13/0.34 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii -- --test-threads=1
+sha256 dbeca91661d42e294c5e848dc06cf4e9ab45f7cd2d1d4cc0e38c09d2ae21f6e2
+
+native-original | 9/0/0/1706 | 0.13/0.01 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib time_fn::calendar -- --test-threads=1
+sha256 0036ca47bdb9fd01558125fada85df38ba72d2209ff5c5e066cb229bd7687db5
+
+sql | 1/0/0/2246 | 36.52/0.08 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::evaluated_ascii_date_arithmetic_preserves_sql_domains_fsp_and_distinct_head_routes -- --exact --test-threads=1
+sha256 6728581cd180cdd34e3a2e877f90e48e0ce4444e8b6170ba798c72ada2cb35af
+
+sql-original | 1/0/0/2246 | 0.14/0.06 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::builtins::date_interval_extract_and_timestampdiff -- --exact --test-threads=1
+sha256 41776c0127cd7cbdc2cf2047d0a3bbcdcdb6e7ed7efbab9823ca8133fa31076f
+
+sql-overflow | 1/0/0/2246 | 0.14/0.04 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::temporal_types::date_arithmetic_overflow_uses_statement_error_policy -- --exact --test-threads=1
+sha256 495aa34284020e79810db706ccd8e5d393c01b08c76c07ff3ef981fbba3c41da
+
+12actualserial locked launches:10nonzero passing,1zero-match,1compile failure. Initialdatatype interval filter matched0; sourceinspection selected originaltest_extract_duration_value/test_parse_duration_value via duration_value. Initialnewbridge Bytes4 mistakenly used4parameters; existingABI accepts1array. Parent changedonlynewconstructor toBytes4([...]), retainingrawfailure; retrygreen. No testexecution failure, interruptedrun, oracle/fixture rewrite or provider recording. Existingignored vector tests remainignored. Sixnewtests3TiKV/3native;205TiKV/435native originaltestbodies byte-identical.
+
+Exactly four SDK profiles, Values/OwnBytes/onecall: CalendarHead+DurationHead actualBytes4(dateID?,amountID?,unitUTF8,distinctactualmetadata), StepBytes2(wholecomputedreport,actualgenericpreparation), OverflowBytesInt(wholeoverflowreport,actuallevel0/1/2). AllsuccessfulouterSomeincludingNULL. Only2newhead IDs getexplicit4arity/5nodes; Step+Overflow2arity; genericfallback1..3/limits unchanged. No newcarrier/role/PB/wire/legacy/vector-kernel/Cargo/lock/Go/Bazel.
+
+Strictstage reports: CalendarHead Null/Text/Unsupported/Request/Overflow withoptional1292; DurationHead Null/Duration/Unsupported/Request nowarn; Step unionexceptError withoptional1292; Overflow onlyNull(no warning/1441exactmessage) orError1441withNOwarning. WholeSDKstate forwarded; nativecoerce_str actualbytes, Datum.to_i64().value actualIntidentity, Decimal.parse_mysql(SDKtext).0 actualDecimalidentity. Originalconversionevents remain discarded.1292replaysbefore nextgenericaction/lateoverflowgetter;1441policyonlySDKOverflow. No defaultmodes/zone/clock eagerread.
+
+ASTactualctx evaluatesBOTHchildren, then SDKbody usesNoColumns semanticpolicy withselectedactualauthority. Publiccontextfreehelper remainsdefault. Typed actualctx andouter Duration→Datetime/lateDate/Datetime casts remainoriginal. Real.trunc date /Decimal round date /Float32generic distinct; UIntoverflow fixed'-1'. Single date-beforeamount vscomposite amount-beforedate; HOUR/MINUTE/SECOND signoverflow-beforeclock vsMICROSECOND clock-beforeoverflow; DAYetc originalsuffix. Generic NULL doesnotgloballysuppressinvalidamount/warnings. TypedDuration typedwrongdate beforeamount, sign<0 only; calendarrawsign multiplication. Ordinarycomposite excessgroupszero/noµspad vsstrictdatatype excessErr/rightpad; both remainneeded. SingleTIMEdelta3_020_399_000_000_000 vsstrict extraction3_020_399_999_999_999; finaldurationonlyi64checked andrawfsp, noTIMEclamp/normalization.
+
+Datatype ParsedInterval retainsstructname/Debug/fields andsharesstrictparser/extractor; nativeprivateparsers+orphan numeric scanner deleted. ExistingTime widecivil/date methods andSDKextractclockparser reused. Nativecalendar algorithms andtypedDurationbody deleted; testformatterthinSDK preservesoldtestbody. Metadata resultFSPpureSDK usesactual9ET/decimal. NativeLib doclinks updated, notunrelatedcalendar docrewrites.
+
+Boundchecked2*sumactual4byte-lengths+1024+neededFixedPrecision. PrecisiononlywhenactualDurationdate/compositeunit/finiteRealorFloat32/nonnegativeactualdecimal reachesformatting; wrongdate/NULL/nonfiniteunusedprecisionnotprecharged. Allactualownedcapacitiescheckedbeforeproducer. Direct4roots eachowner128Ki vs64Ki/instruction0/wrongrole/state/meta/flavor/unitUTF8/level, thenhealthyreuse; durationrealprecision128Ki deniedbeforeformat/invoke. Notfrontendpool0orphysicalheap/OOM guarantee.
+
+Nativeentry2newtests preservefiveentry resourcewitnesses, originalNoCols-vsstatement policy, single/compositeNULL/UTF8/unknownunit, UInt warning, HOUR-vsMICROSECOND order, rawDuration andcomposite1µsvs.1s, amountReal precision, eagerRHSerror, warning-beforeoverflowlevel andlatepanicpoison/reuse; bodyclock/mode/zone traps. Originalcalendar9includesnewentry+8oldtests, notablymicroseconds/extremeinterval/immutabledecimalformatter. Datatype2oldparsertests pass.
+
+SQLnew52SELECT=13storedtemplates×2vector×pool1/0;26successrows(includingNULLwarning outcomes)+26refusals. Conservativecredit24directHeads +2existingTIME→Datetime pre-cast-route refusals; noassertiongettersprecedeheadnever. DomainsDate/Dt3/Time3/packedInt/String; monthclamp,SECONDdecimal,HOUR_MINUTE,SECOND_MICROSECOND, TIME+DAY withfrozenclock, datevsStringfsp, invaliddate1292,overflow1441, NULLdate/amount anddirtywholeamount1292. HeadersDate10/0,Dt23/3or26/6,Duration14/3or17/6,VarString29/0 withactualdatumkind/fsp. ExistingtwoexactSQLtests coverarithmetic aliases andstrictstatementoverflow/INSERT/IGNORE; notclaimed52additionalnewwhole-familyreceipts orlegacycoverage.
+
+12TiKV/10nativeRustfiles;4newmodules(3TiKV/1native),6newtests. Pinnedfmt/check+diffchecks; guidesdescriptiveonly; unrelatedBUILDexcluded. All235priorfamilyobjects unchanged; appendordinarypartial+necessarytypes only; latestfunctional remainsinterval-runtime-101, latesttype date-arithmetic-102. Functional235/245 strict0 remaining10;48legacycalculations+8unsupported child-free labels remainpending/distinct, CoreTime.add_date/add_duration notmigrated. ThreeidenticalPlans andsigned-offpairedpushes.
+
+No full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/TiFlash/FIPS/performance/physicalheap/peak/OOM/allocator/dual-tzdata/wholeGo-package/PR-ready verification. HistoricalR1004+1 failures unrepaired; nooverallgoal completion orblanketexceptions. M6/request-root/default-NoColumns/liveDAG/finalacceptance continue.

@@ -808,7 +808,9 @@ impl Creation {
                         | EvaluatedBytesOp::Insert
                         | EvaluatedBytesOp::InsertUtf8Native
                         | EvaluatedBytesOp::Locate3Native
-                        | EvaluatedBytesOp::ConvertUsingNative => 5,
+                        | EvaluatedBytesOp::ConvertUsingNative
+                        | EvaluatedBytesOp::DateArithmeticHeadNative
+                        | EvaluatedBytesOp::DateArithmeticDurationHeadNative => 5,
                         _ => 4,
                     },
                     max_depth: 3,
@@ -2289,6 +2291,10 @@ fn materialize_computed(
             | EvaluatedBytesOp::IntervalEagerHeadNative
             | EvaluatedBytesOp::IntervalLazyHeadNative
             | EvaluatedBytesOp::IntervalStepNative
+            | EvaluatedBytesOp::DateArithmeticHeadNative
+            | EvaluatedBytesOp::DateArithmeticDurationHeadNative
+            | EvaluatedBytesOp::DateArithmeticStepNative
+            | EvaluatedBytesOp::DateArithmeticOverflowNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative
