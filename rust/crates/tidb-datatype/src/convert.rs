@@ -22,10 +22,12 @@ use tidb_query_datatype::codec::native_integer_convert as shared_integer_convert
 
 use crate::{
     BinaryJSON, BinaryLiteral, ConversionFlags, Decimal, FieldTypeCode, MySqlDuration, MysqlEnum,
-    MysqlSet, Time, JSON_LITERAL_FALSE, JSON_LITERAL_NULL, JSON_TYPE_CODE_ARRAY,
-    JSON_TYPE_CODE_DATE, JSON_TYPE_CODE_DATETIME, JSON_TYPE_CODE_DURATION, JSON_TYPE_CODE_FLOAT64,
-    JSON_TYPE_CODE_INT64, JSON_TYPE_CODE_LITERAL, JSON_TYPE_CODE_OBJECT, JSON_TYPE_CODE_OPAQUE,
-    JSON_TYPE_CODE_STRING, JSON_TYPE_CODE_TIMESTAMP, JSON_TYPE_CODE_UINT64,
+    MysqlSet, Time,
+};
+#[cfg(test)]
+use crate::{
+    JSON_TYPE_CODE_ARRAY, JSON_TYPE_CODE_FLOAT64, JSON_TYPE_CODE_INT64, JSON_TYPE_CODE_LITERAL,
+    JSON_TYPE_CODE_OBJECT, JSON_TYPE_CODE_STRING, JSON_TYPE_CODE_UINT64,
 };
 
 /// Failure returned with the source-compatible saturated conversion result.
@@ -931,19 +933,6 @@ fn integer_json_facades_preserve_target_identity_flags_raw_tags_and_panics() {
     assert!(std::panic::catch_unwind(|| json_to_int64(&nan, true, flags)).is_err());
 }
 
-fn json_non_numeric(type_code: u8) -> bool {
-    matches!(
-        type_code,
-        JSON_TYPE_CODE_OBJECT
-            | JSON_TYPE_CODE_ARRAY
-            | JSON_TYPE_CODE_OPAQUE
-            | JSON_TYPE_CODE_DATE
-            | JSON_TYPE_CODE_DATETIME
-            | JSON_TYPE_CODE_TIMESTAMP
-            | JSON_TYPE_CODE_DURATION
-    )
-}
-
 /// `ConvertJSONToInt`.
 pub fn json_to_int(
     json: &BinaryJSON,
@@ -972,30 +961,15 @@ pub fn json_to_int64(json: &BinaryJSON, unsigned: bool, flags: ConversionFlags) 
 
 /// `ConvertJSONToFloat`.
 pub fn json_to_float(json: &BinaryJSON) -> Converted<f64> {
-    if json_non_numeric(json.type_code()) {
-        return Converted::truncated(0.0);
-    }
-    match json.type_code() {
-        JSON_TYPE_CODE_LITERAL => match json.value().first().copied() {
-            Some(JSON_LITERAL_FALSE) => Converted::exact(0.0),
-            Some(JSON_LITERAL_NULL) | None => Converted::truncated(0.0),
-            Some(_) => Converted::exact(1.0),
-        },
-        JSON_TYPE_CODE_INT64 => {
-            Converted::exact(json.as_i64().expect("validated binary JSON integer") as f64)
-        }
-        JSON_TYPE_CODE_UINT64 => {
-            Converted::exact(json.as_u64().expect("validated binary JSON integer") as f64)
-        }
-        JSON_TYPE_CODE_FLOAT64 => {
-            Converted::exact(json.as_f64().expect("validated binary JSON float"))
-        }
-        JSON_TYPE_CODE_STRING => {
-            let text = std::str::from_utf8(json.as_string().expect("validated binary JSON string"))
-                .unwrap_or("");
-            str_to_float(text, false)
-        }
-        _ => Converted::truncated(0.0),
+    let converted = tidb_query_datatype::codec::native_scalar_convert::native_json_to_float(
+        json.type_code(),
+        json.value(),
+    );
+    Converted {
+        value: converted.value,
+        event: converted
+            .truncated
+            .then_some(ScalarConversionEvent::Truncated),
     }
 }
 

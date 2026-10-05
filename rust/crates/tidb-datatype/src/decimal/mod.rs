@@ -736,7 +736,7 @@ impl Decimal {
 
     /// Returns whether this value is numerically zero.
     pub fn is_zero(&self) -> bool {
-        self.digits.bytes().all(|b| b == b'0')
+        self.as_shared_parse().is_zero()
     }
 
     /// Returns this value with its sign reversed, canonicalizing zero.

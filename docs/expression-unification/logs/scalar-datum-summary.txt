@@ -1,0 +1,28 @@
+scalar-datum-127 / R132
+8matched launches,6finalGREEN,2retained NEW SQL REDs/2retries;no compile failure,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/scalar-datum-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_scalar_convert -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native] ../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::scalar_datum_tests -- --test-threads=1
+[native-coerce] ../../tools/cargo-tidb test --locked -p tidb-expr --lib coerce::tests -- --test-threads=1
+[native-float] ../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::cast_float::tests -- --test-threads=1
+[sql, sql-corrected, sql-numeric-document] ../../tools/cargo-tidb test --locked -p tidb-session --lib shared_scalar_datum_preserves_json_float_and_hybrid_numeric_consumers -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 2/0/0/501 4.13/0.00 0 63dac271e45c7994e222cb6ad860388a137e85849cccac706d1db4b85ccef252
+native-datatype 477/0/0/0 3.49/6.88 0 fbb40d7ac6f8f043b82151ffe8d9862bd23ce5691553cc61c177e169da4fd1aa
+native 1/0/0/1735 19.13/0.00 0 8ec66e9dbbf74c8f7649b20af90fb7c83a7e0ecb1347c00aea48bc92b7664a8e
+native-coerce 1/0/0/1735 0.12/0.00 0 bce097d90ca5fd25b6452e2863852c01f84dbfa1d85c41a3976659f492febe10
+native-float 1/0/0/1735 0.12/0.00 0 def9cf346b853a167249fcad72a0d93d139d155d1c262d0cfd889af7d0a3f1ef
+sql 0/1/0/2269 31.03/0.01 101 1369af7314255859f6b92335fb4b160f810d2561902b0c3b0b36ae22c9933d05
+sql-corrected 0/1/0/2269 3.80/0.01 101 031331cf36372c143347942a40ad9f9cb66bf9b1aca37397b4315dfc01186e1e
+sql-numeric-document 1/0/0/2269 3.62/0.01 0 ed5fc9924d63f4c35650b71d3a15d64a9ff1065e856d278c536c4af938c99124
+
+New SQL probe corrections, not production fixes: initial JSON STRING2.5 ordinary DOUBLE CAST expected2.5 incorrectly; existing native_cast_float.rs89–105 parses document Display including quotes. Changing the probe to j+0e0 also failed: source builtin_arithmetic.rs90–95/347–377 selects Real, rewriter.rs627–658 calls wrap_with_cast_as_real, aggregation/wrap_cast.rs157–171 and simple_expr.rs717–721 build cast_double, whose scalar_function.rs2162–2183/3096 and cast_float.rs232–247 path supplies JSON Display to the same SDK controller. Thus arithmetic does not bypass the quotes into the assumed typed JSON getter. Final probe restores ordinary CAST with actual numeric JSON2.5, whose Display has no quotes; its2.5 expectation derives from the existing parser. No string-to-number lowering fix or full JSON SQL coverage is claimed. Direct SDK/native units cover JSON-string float conversion separately. Both RED logs retained, no provider output adopted as an oracle, production/old tests unchanged after initial gates.
+SDK3/native6 Rust files,2new files;4new tests (SDK2/native2),oldSDK5/native251 touched-file test bodies unchanged. Shared selectors reuse canonical parser/comparator/temporal/literal/vector implementations; Decimal coefficient-zero predicate is also shared, preserving UTF8/empty/all-zero semantics. No new RPN profiles/family credit.
+Final SQL1test:2SELECTs/8Real cells over vector0/1, numericJSON, Enum2/Set5 ordinals andBIT3, Double result codes/no warnings. Unit tests cover Float32 bool non-narrowing vsfloat narrowing, tiny-duration raw truth vsnumber, JSONcompare-to-zero vsfloat truth, strictDatumUTF8 vsJSONempty, literal truncation and vector emptiness. Full datatype477 and oldcoerce1/float1 passed.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. Other typed/write numeric controllers and SQL lowering paths, broaderM2/root/liveDAG/final remain. Full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

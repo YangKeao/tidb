@@ -48,6 +48,8 @@ mod decimal_context_tests;
 #[cfg(test)]
 mod decimal_datum_tests;
 #[cfg(test)]
+mod scalar_datum_tests;
+#[cfg(test)]
 mod signed_datum_tests;
 #[cfg(test)]
 pub(crate) use cast_integer::eval_cast_unsigned_value_in;

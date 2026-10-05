@@ -21,91 +21,32 @@
 
 #[cfg(test)]
 use crate::BinaryLiteral;
-use std::cmp::Ordering;
 use tidb_query_datatype::codec::native_mysql_json::{
     native_datum_to_mysql_json, native_datum_to_mysql_json_with_source, NativeDatumJsonError,
     NativeDatumJsonSource,
 };
 
 use super::{Datum, DatumStringError, DatumValueError};
-use crate::{
-    compare_binary_json, json_to_float, str_to_float, BinaryJSON, Collation, Converted, Decimal,
-    ScalarConversionEvent,
-};
+use crate::{BinaryJSON, Collation, Converted, Decimal, ScalarConversionEvent};
 
 impl Datum {
     /// Source `Datum.ToBool`, retaining conversion warning/error disposition.
     pub fn to_bool(&self) -> Result<Converted<i64>, DatumValueError> {
-        let converted = match self {
-            Self::Int(value) => Converted {
-                value: i64::from(*value != 0),
-                event: None,
-            },
-            Self::UInt(value) => Converted {
-                value: i64::from(*value != 0),
-                event: None,
-            },
-            Self::Real(value) | Self::Float32(value) => Converted {
-                value: i64::from(*value != 0.0),
-                event: None,
-            },
-            Self::String(value) => {
-                let parsed = str_to_float(value.as_utf8()?, false);
-                Converted {
-                    value: i64::from(parsed.value != 0.0),
-                    event: parsed.event,
-                }
-            }
-            Self::Bytes(value) => {
-                let parsed = str_to_float(std::str::from_utf8(value)?, false);
-                Converted {
-                    value: i64::from(parsed.value != 0.0),
-                    event: parsed.event,
-                }
-            }
-            Self::Time(value) => Converted {
-                value: i64::from(!value.is_zero()),
-                event: None,
-            },
-            Self::Duration(value) => Converted {
-                value: i64::from(value.nanoseconds() != 0),
-                event: None,
-            },
-            Self::Decimal(value) => Converted {
-                value: i64::from(!value.is_zero()),
-                event: None,
-            },
-            Self::Enum(value, _) => Converted {
-                value: i64::from(value.value() != 0),
-                event: None,
-            },
-            Self::Set(value, _) => Converted {
-                value: i64::from(value.value() != 0),
-                event: None,
-            },
-            Self::BinaryLiteral(value) | Self::Bit(value) => {
-                let outcome = value.to_int();
-                Converted {
-                    value: i64::from(outcome.value() != 0),
-                    event: outcome
-                        .is_truncated()
-                        .then_some(ScalarConversionEvent::Truncated),
-                }
-            }
-            Self::Json(value) => {
-                let zero = BinaryJSON::parse("0")?;
-                Converted {
-                    value: i64::from(compare_binary_json(value, &zero) != Ordering::Equal),
-                    event: None,
-                }
-            }
-            Self::VectorFloat32(value) => Converted {
-                value: i64::from(!value.is_zero_value()),
-                event: None,
-            },
-            other => return Err(DatumValueError::Unsupported(other.kind(), "bool")),
-        };
-        Ok(converted)
+        use tidb_query_datatype::codec::native_numeric::NativeNumericError;
+        tidb_query_datatype::codec::native_scalar_convert::native_datum_to_bool(
+            self.as_shared_numeric_input(),
+        )
+        .map(|converted| Converted {
+            value: converted.value,
+            event: converted
+                .truncated
+                .then_some(ScalarConversionEvent::Truncated),
+        })
+        .map_err(|error| match error {
+            NativeNumericError::InvalidUtf8(error) => error.into(),
+            NativeNumericError::Comparison(message) => DatumValueError::Comparison(message),
+            NativeNumericError::Unsupported => DatumValueError::Unsupported(self.kind(), "bool"),
+        })
     }
 
     /// Source `Datum.ToInt64`.
@@ -180,58 +121,21 @@ impl Datum {
 
     /// Source `Datum.ToFloat64`.
     pub fn to_f64(&self) -> Result<Converted<f64>, DatumValueError> {
-        let converted = match self {
-            Self::Int(value) => Converted {
-                value: *value as f64,
-                event: None,
-            },
-            Self::UInt(value) => Converted {
-                value: *value as f64,
-                event: None,
-            },
-            Self::Real(value) => Converted {
-                value: *value,
-                event: None,
-            },
-            Self::Float32(value) => Converted {
-                value: f64::from(*value as f32),
-                event: None,
-            },
-            Self::String(value) => str_to_float(value.as_utf8()?, false),
-            Self::Bytes(value) => str_to_float(std::str::from_utf8(value)?, false),
-            Self::Time(value) => Converted {
-                value: value.to_number().to_f64(),
-                event: None,
-            },
-            Self::Duration(value) => Converted {
-                value: value.to_number().to_f64(),
-                event: None,
-            },
-            Self::Decimal(value) => Converted {
-                value: value.to_f64(),
-                event: None,
-            },
-            Self::Enum(value, _) => Converted {
-                value: value.to_number(),
-                event: None,
-            },
-            Self::Set(value, _) => Converted {
-                value: value.to_number(),
-                event: None,
-            },
-            Self::BinaryLiteral(value) | Self::Bit(value) => {
-                let outcome = value.to_int();
-                Converted {
-                    value: outcome.value() as f64,
-                    event: outcome
-                        .is_truncated()
-                        .then_some(ScalarConversionEvent::Truncated),
-                }
-            }
-            Self::Json(value) => json_to_float(value),
-            other => return Err(DatumValueError::Unsupported(other.kind(), "float64")),
-        };
-        Ok(converted)
+        use tidb_query_datatype::codec::native_numeric::NativeNumericError;
+        tidb_query_datatype::codec::native_scalar_convert::native_datum_to_f64(
+            self.as_shared_numeric_input(),
+        )
+        .map(|converted| Converted {
+            value: converted.value,
+            event: converted
+                .truncated
+                .then_some(ScalarConversionEvent::Truncated),
+        })
+        .map_err(|error| match error {
+            NativeNumericError::InvalidUtf8(error) => error.into(),
+            NativeNumericError::Comparison(message) => DatumValueError::Comparison(message),
+            NativeNumericError::Unsupported => DatumValueError::Unsupported(self.kind(), "float64"),
+        })
     }
 
     /// Go `Datum.ToDecimal` with its original conversion-stage diagnostics.

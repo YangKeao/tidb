@@ -9363,6 +9363,49 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn shared_scalar_datum_preserves_json_float_and_hybrid_numeric_consumers() {
+    let mut session = Session::new();
+    session.run("CREATE TABLE shared_scalar_datum_sql (j JSON, e ENUM('x','word'), s SET('a','b','c'), b BIT(4))").unwrap();
+    session
+        .run("INSERT INTO shared_scalar_datum_sql VALUES ('2.5','word','a,c',b'0011')")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        let StmtOutput::Rows { columns, rows } = session
+            .run_with_columns(
+                // Numeric JSON Display has no quotes. JSON-string conversion
+                // distinctions are tested directly, not inferred from SQL lowering.
+                "SELECT CAST(j AS DOUBLE),e+0e0,s+0e0,CAST(b AS DOUBLE) FROM shared_scalar_datum_sql",
+            )
+            .unwrap()
+        else {
+            panic!("expected scalar datum consumers")
+        };
+        assert_eq!(
+            rows,
+            vec![vec![
+                Datum::Real(2.5),
+                Datum::Real(2.0),
+                Datum::Real(5.0),
+                Datum::Real(3.0)
+            ]]
+        );
+        assert_eq!(columns.len(), 4);
+        for (_, field) in columns {
+            assert_eq!(field.code(), tidb_datatype::FieldTypeCode::Double);
+        }
+        assert!(warnings_of(&session).is_empty());
+    }
+}
+
+#[test]
 fn shared_decimal_context_preserves_temporal_arguments_and_fractional_projection() {
     let mut session = Session::new();
     session
