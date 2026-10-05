@@ -22,7 +22,9 @@ use tidb_query_datatype::codec::mysql::{
         native_decimal_coefficient_binary, NativeDecimalBinaryOp, NativeDecimalBinaryPolicy,
         NativeDecimalError, NativeDecimalOp, Res as SharedDecimalResult,
     },
-    native_decimal_cmp, Decimal as SharedDecimal, NativeDecimalCmpParts,
+    native_decimal_cmp, native_decimal_from_literal, native_decimal_normalize,
+    native_decimal_parse_mysql, native_decimal_shift_mysql, Decimal as SharedDecimal,
+    NativeDecimalCmpParts, NativeDecimalParseRef, NativeDecimalParseValue,
 };
 
 // TPC-H's DECIMAL(15,2) values need up to 17 coefficient bytes. Keeping the
@@ -49,36 +51,8 @@ impl DecimalDigits {
         std::str::from_utf8(&self.0).expect("decimal coefficients are ASCII digits")
     }
 
-    fn insert(&mut self, index: usize, digit: char) {
-        debug_assert!(digit.is_ascii_digit());
-        self.0.insert(index, digit as u8);
-    }
-
-    fn remove(&mut self, index: usize) -> char {
-        char::from(self.0.remove(index))
-    }
-
-    fn push_str(&mut self, digits: &str) {
-        debug_assert!(digits.bytes().all(|digit| digit.is_ascii_digit()));
-        self.0.extend_from_slice(digits.as_bytes());
-    }
-
-    fn pop(&mut self) -> Option<char> {
-        self.0.pop().map(char::from)
-    }
-
-    fn from_unsigned(mut value: u128) -> Self {
-        let mut digits = SmallVec::<[u8; INLINE_DECIMAL_DIGITS]>::new();
-        if value == 0 {
-            digits.push(b'0');
-        } else {
-            while value != 0 {
-                digits.push(b'0' + (value % 10) as u8);
-                value /= 10;
-            }
-            digits.reverse();
-        }
-        Self::from_ascii(digits)
+    fn from_unsigned(value: u128) -> Self {
+        Self::from_ascii(NativeDecimalParseValue::coefficient_from_unsigned(value))
     }
 }
 
@@ -164,19 +138,32 @@ pub enum DecimalIntegerWarning {
 }
 
 /// Source `MyDecimal.FromString`'s single non-fatal/fatal disposition.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DecimalParseError {
-    /// A valid numeric prefix was accepted and trailing or excess digits lost.
-    Truncated,
-    /// The fixed MyDecimal integer buffer could not hold the result.
-    Overflow,
-    /// Integer exponent parsing exceeded its representable range.
-    BadNumber,
-    /// No decimal digits were present.
-    TruncatedWrongValue,
-}
+pub use tidb_query_datatype::codec::mysql::NativeDecimalParseError as DecimalParseError;
 
 impl Decimal {
+    // Pure storage transport: do not normalize raw short-circuit shift results
+    // or validate their coefficient. The original SmallVec allocation is moved.
+    fn from_shared_parse(value: NativeDecimalParseValue) -> Self {
+        let (negative, digits, scale, storage_scale, declared_shape) = value.into_raw_parts();
+        Self {
+            negative,
+            digits: DecimalDigits(digits),
+            scale,
+            storage_scale,
+            declared_shape,
+        }
+    }
+
+    fn as_shared_parse(&self) -> NativeDecimalParseRef<'_> {
+        NativeDecimalParseRef {
+            negative: self.negative,
+            digits: &self.digits.0,
+            scale: self.scale,
+            storage_scale: self.storage_scale,
+            declared_shape: self.declared_shape,
+        }
+    }
+
     /// Reconstructs an exact decimal representation returned by value transport.
     /// Does not validate or normalize coefficient bytes, sign or either scale;
     /// unlike a SQL constructor, it also preserves noncanonical representations.
@@ -387,25 +374,14 @@ impl Decimal {
         storage_scale: u32,
         preserve_zero_sign: bool,
     ) -> Self {
-        let mut digits = digits.into();
-        debug_assert!(storage_scale >= scale);
-        // Left-pad `digits` to at least the storage scale, then strip any
-        // excess leading zeros back down to that same floor.
-        while (digits.len() as u32) < storage_scale {
-            digits.insert(0, '0');
-        }
-        let min_len = storage_scale.max(1) as usize;
-        while digits.len() > min_len && digits.as_bytes()[0] == b'0' {
-            digits.remove(0);
-        }
-        let is_zero = digits.bytes().all(|b| b == b'0');
-        Decimal {
-            negative: negative && (preserve_zero_sign || !is_zero),
-            digits,
+        let digits = digits.into();
+        Self::from_shared_parse(native_decimal_normalize(
+            negative,
+            digits.0,
             scale,
             storage_scale,
-            declared_shape: None,
-        }
+            preserve_zero_sign,
+        ))
     }
 
     /// Parses a decimal literal's canonical text — an optional `-`/`+` sign
@@ -421,21 +397,7 @@ impl Decimal {
     /// and panicking in digit arithmetic. Accepting the sign here is what
     /// removes that possibility from every caller at once.
     pub fn from_literal(text: &str) -> Self {
-        let (negative, magnitude) = match text.strip_prefix('-') {
-            Some(magnitude) => (true, magnitude),
-            None => (false, text.strip_prefix('+').unwrap_or(text)),
-        };
-        let (int_part, frac_part) = magnitude.split_once('.').unwrap_or((magnitude, ""));
-        let int_stripped = int_part.trim_start_matches('0');
-        let int_norm = if int_stripped.is_empty() {
-            "0"
-        } else {
-            int_stripped
-        };
-        let scale = frac_part.len() as u32;
-        // `Decimal::new` normalizes a numerically zero magnitude back to
-        // non-negative, so `-0.00` needs no branch of its own here.
-        Decimal::new(negative, format!("{int_norm}{frac_part}"), scale)
+        Self::from_shared_parse(native_decimal_from_literal(text))
     }
 
     /// Builds an exact decimal from a signed base-10 coefficient and scale.
@@ -553,126 +515,14 @@ impl Decimal {
         text: &str,
         word_limit: usize,
     ) -> (Self, Option<DecimalParseError>) {
-        let input = text.trim_start_matches([' ', '\t']);
-        if input.is_empty() {
-            return (
-                Self::from_int(0),
-                Some(DecimalParseError::TruncatedWrongValue),
-            );
-        }
-        let bytes = input.as_bytes();
-        let (negative, start) = match bytes[0] {
-            b'-' => (true, 1),
-            b'+' => (false, 1),
-            _ => (false, 0),
-        };
-        let mut cursor = start;
-        while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
-            cursor += 1;
-        }
-        let integer_end = cursor;
-        let mut end = cursor;
-        if cursor < bytes.len() && bytes[cursor] == b'.' {
-            end += 1;
-            while end < bytes.len() && bytes[end].is_ascii_digit() {
-                end += 1;
-            }
-        }
-        let integer_digits = integer_end - start;
-        let fraction_start = if integer_end < end {
-            integer_end + 1
-        } else {
-            end
-        };
-        let fraction_digits = end - fraction_start;
-        if integer_digits + fraction_digits == 0 {
-            return (
-                Self::from_int(0),
-                Some(DecimalParseError::TruncatedWrongValue),
-            );
-        }
-
-        let words_int = digits_to_words(integer_digits);
-        let words_frac = digits_to_words(fraction_digits);
-        let mut disposition = None;
-        let (kept_integer_digits, kept_fraction_digits) = if words_int + words_frac <= word_limit {
-            (integer_digits, fraction_digits)
-        } else if words_int > word_limit {
-            disposition = Some(DecimalParseError::Overflow);
-            (word_limit * DIGITS_PER_WORD, 0)
-        } else {
-            disposition = Some(DecimalParseError::Truncated);
-            (integer_digits, (word_limit - words_int) * DIGITS_PER_WORD)
-        };
-
-        let int_begin = integer_end.saturating_sub(kept_integer_digits);
-        let integer = &input[int_begin..integer_end];
-        let fraction_end = (fraction_start + kept_fraction_digits).min(end);
-        let fraction = &input[fraction_start..fraction_end];
-        let magnitude = if fraction.is_empty() {
-            if integer.is_empty() {
-                "0".to_owned()
-            } else {
-                integer.to_owned()
-            }
-        } else {
-            format!(
-                "{}.{fraction}",
-                if integer.is_empty() { "0" } else { integer }
-            )
-        };
-        let signed_magnitude = if negative {
-            format!("-{magnitude}")
-        } else {
-            magnitude
-        };
-        let mut value = Self::from_literal(&signed_magnitude);
-
-        if end < input.len() && matches!(bytes[end], b'e' | b'E') {
-            let (exponent, exponent_error) = parse_mysql_exponent(&input[end + 1..]);
-            match exponent_error {
-                Some(DecimalParseError::BadNumber) => {
-                    // Go zeroes the parsed value for a bad exponent but keeps
-                    // scanning. A clamped i64 exponent can then cross the
-                    // i32 bound below, where ErrOverflow/ErrTruncated takes
-                    // precedence over the intermediate ErrBadNumber.
-                    value = Self::from_int(0);
-                    disposition = Some(DecimalParseError::BadNumber);
-                }
-                Some(DecimalParseError::Truncated) => {
-                    disposition = Some(DecimalParseError::Truncated);
-                }
-                _ => {}
-            }
-            if exponent > i64::from(i32::MAX) / 2 {
-                let max = Self::max_or_min(negative, (word_limit * DIGITS_PER_WORD) as u32, 0);
-                return (max, Some(DecimalParseError::Overflow));
-            }
-            if exponent < i64::from(i32::MIN) / 2 {
-                return (Self::from_int(0), Some(DecimalParseError::Truncated));
-            }
-            let (shifted, shift_warning) =
-                value.shift_mysql_with_word_limit(exponent as i32, word_limit);
-            value = shifted;
-            if let Some(warning) = shift_warning {
-                disposition = Some(match warning {
-                    DecimalCodecWarning::Truncated => DecimalParseError::Truncated,
-                    DecimalCodecWarning::Overflow => DecimalParseError::Overflow,
-                });
-                if warning == DecimalCodecWarning::Overflow {
-                    value = Self::max_or_min(negative, (word_limit * DIGITS_PER_WORD) as u32, 0);
-                }
-            }
-        } else if !input[end..].trim().is_empty() {
-            disposition = Some(DecimalParseError::Truncated);
-        }
-        (value, disposition)
+        let (value, disposition) = native_decimal_parse_mysql(text, word_limit);
+        (Self::from_shared_parse(value), disposition)
     }
 
     /// Promotes an integer to a decimal of scale 0, for mixed `int op decimal`
     /// arithmetic/comparison (MySQL's implicit promotion rule).
     pub fn from_int(i: i64) -> Self {
-        Decimal::new(i < 0, i.unsigned_abs().to_string(), 0)
+        Self::from_shared_parse(NativeDecimalParseValue::from_int(i))
     }
 
     /// Promotes an unsigned integer to a decimal of scale 0. This must not
@@ -680,7 +530,7 @@ impl Decimal {
     /// `UNSIGNED` values and retain their full magnitude in decimal
     /// arithmetic and comparison.
     pub fn from_uint(i: u64) -> Self {
-        Decimal::new(false, i.to_string(), 0)
+        Self::from_shared_parse(NativeDecimalParseValue::from_uint(i))
     }
 
     /// Source `MyDecimal.FromFloat64`.
@@ -728,10 +578,9 @@ impl Decimal {
 
     /// Source `NewMaxOrMinDec`/`maxDecimal`.
     pub fn max_or_min(negative: bool, precision: u32, frac: u32) -> Self {
-        if precision == 0 {
-            return Self::from_int(0);
-        }
-        Self::new(negative, "9".repeat(precision as usize), frac)
+        Self::from_shared_parse(NativeDecimalParseValue::max_or_min(
+            negative, precision, frac,
+        ))
     }
 
     /// Returns the number of fractional decimal digits preserved by this
@@ -971,65 +820,9 @@ impl Decimal {
         shift: i32,
         word_limit: usize,
     ) -> (Decimal, Option<DecimalCodecWarning>) {
-        if shift == 0 {
-            return (self.clone(), None);
-        }
-        if self.is_zero() {
-            return (Decimal::from_int(0), None);
-        }
-
-        let mut digits = self.digits.clone();
-        let mut scale = i64::from(self.storage_scale) - i64::from(shift);
-        if scale < 0 {
-            digits.push_str(&"0".repeat((-scale) as usize));
-            scale = 0;
-        }
-
-        // Shift computes new bounds from the first and last non-zero digit.
-        while scale > 0 && digits.ends_with('0') {
-            digits.pop();
-            scale -= 1;
-        }
-        while digits.len() < scale as usize {
-            digits.insert(0, '0');
-        }
-        let exact = Decimal::new(self.negative, digits, scale as u32);
-        let split = exact.digits.len() - exact.storage_scale as usize;
-        let integer_digits = exact.digits[..split].trim_start_matches('0').len();
-        let words_int = digits_to_words(integer_digits);
-        if words_int > word_limit {
-            return (self.clone(), Some(DecimalCodecWarning::Overflow));
-        }
-
-        let words_frac = digits_to_words(exact.storage_scale as usize);
-        if words_int + words_frac <= word_limit {
-            return (exact, None);
-        }
-
-        let kept_scale = ((word_limit - words_int) * DIGITS_PER_WORD) as i32;
-        let rounded = exact.round_to_scale(kept_scale);
-        // Go checks the pre-round digit bounds after applying the carry. If
-        // every source digit was below the retained fractional boundary, a
-        // carry from rounding must not resurrect that shifted-out value.
-        let discarded_digits = exact.storage_scale.saturating_sub(kept_scale as u32) as usize;
-        let retained_len = exact.digits.len().saturating_sub(discarded_digits);
-        if exact.digits[..retained_len]
-            .bytes()
-            .all(|digit| digit == b'0')
-        {
-            return (Decimal::from_int(0), Some(DecimalCodecWarning::Truncated));
-        }
-        if rounded.is_zero() {
-            return (Decimal::from_int(0), Some(DecimalCodecWarning::Truncated));
-        }
-        let rounded_split = rounded.digits.len() - rounded.storage_scale as usize;
-        let rounded_integer_digits = rounded.digits[..rounded_split]
-            .trim_start_matches('0')
-            .len();
-        if digits_to_words(rounded_integer_digits) > word_limit {
-            return (self.clone(), Some(DecimalCodecWarning::Overflow));
-        }
-        (rounded, Some(DecimalCodecWarning::Truncated))
+        let (value, warning) =
+            native_decimal_shift_mysql(self.as_shared_parse(), shift, word_limit);
+        (Self::from_shared_parse(value), warning)
     }
 
     /// Truncating division (`DIV`) and its remainder (`MOD`): pads both
@@ -1586,58 +1379,6 @@ fn strip_leading_zeros(s: &str) -> String {
     }
 }
 
-fn parse_mysql_exponent(text: &str) -> (i64, Option<DecimalParseError>) {
-    let text = text.trim();
-    if text.is_empty() {
-        return (0, Some(DecimalParseError::Truncated));
-    }
-    let bytes = text.as_bytes();
-    let (negative, mut index) = match bytes[0] {
-        b'-' => (true, 1),
-        b'+' => (false, 1),
-        _ => (false, 0),
-    };
-    let mut magnitude = 0_u64;
-    let mut has_digit = false;
-    while index < bytes.len() {
-        let byte = bytes[index];
-        if !byte.is_ascii_digit() {
-            let bounded = magnitude.min(i64::MAX as u64) as i64;
-            return (
-                if negative { -bounded } else { bounded },
-                Some(DecimalParseError::Truncated),
-            );
-        }
-        has_digit = true;
-        let Some(next) = magnitude
-            .checked_mul(10)
-            .and_then(|value| value.checked_add(u64::from(byte - b'0')))
-        else {
-            return (0, Some(DecimalParseError::BadNumber));
-        };
-        magnitude = next;
-        index += 1;
-    }
-    if !has_digit {
-        return (0, Some(DecimalParseError::Truncated));
-    }
-    let limit = i64::MAX as u64 + u64::from(negative);
-    if magnitude > limit {
-        return (
-            if negative { i64::MIN } else { i64::MAX },
-            Some(DecimalParseError::BadNumber),
-        );
-    }
-    (
-        if negative {
-            (0_u64.wrapping_sub(magnitude)) as i64
-        } else {
-            magnitude as i64
-        },
-        None,
-    )
-}
-
 /// Unsigned schoolbook long division: `a` divided by `b` (`b` assumed
 /// nonzero), producing the truncated integer quotient and the remainder —
 /// one digit of `a` at a time, finding each quotient digit (0-9) by repeated
@@ -1658,7 +1399,7 @@ fn digit_divmod(a: &str, b: &str) -> (String, String) {
 }
 pub(crate) mod codec;
 
-use codec::{digits_to_words, MyDecimalWords, CODEC_POWERS10, CODEC_WORD_BUF_LEN, DIGITS_PER_WORD};
+use codec::{MyDecimalWords, CODEC_POWERS10, CODEC_WORD_BUF_LEN, DIGITS_PER_WORD};
 
 pub use codec::{decimal_bin_size, DecimalCodecError, DecimalCodecFailure, DecimalCodecWarning};
 
@@ -2287,4 +2028,26 @@ fn shared_precision_cast_preserves_requested_scale_and_value_metadata() {
         assert_eq!((value.scale(), value.storage_scale()), (2, 2));
         assert_eq!(value.declared_shape(), None);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn shared_decimal_parse_facade_moves_storage_and_preserves_raw_shift_identity() {
+    let raw =
+        Decimal::from_raw_parts(true, vec![0xff], 7, 2).with_declared_shape(i64::MIN, i64::MAX);
+    let (copied, warning) = raw.shift_mysql_with_word_limit(0, 0);
+    assert_eq!(warning, None);
+    assert_eq!(copied.coefficient_bytes(), &[0xff]);
+    assert!(copied.is_negative());
+    assert_eq!((copied.scale(), copied.storage_scale()), (7, 2));
+    assert_eq!(copied.declared_shape(), Some((i64::MIN, i64::MAX)));
+
+    let digits = SmallVec::<[u8; INLINE_DECIMAL_DIGITS]>::from_slice(&[b'1'; 90]);
+    let allocation = digits.as_ptr();
+    let value = Decimal::from_shared_parse(native_decimal_normalize(false, digits, 0, 0, false));
+    assert_eq!(value.digits.0.as_ptr(), allocation);
+    assert_eq!(value.coefficient_bytes(), &[b'1'; 90]);
+    assert!(!Decimal::from_int(i64::MIN).digits.0.spilled());
+    assert!(!Decimal::from_uint(u64::MAX).digits.0.spilled());
+    assert!(!Decimal::from_scaled_i128(12345, 2).digits.0.spilled());
 }

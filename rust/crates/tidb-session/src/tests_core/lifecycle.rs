@@ -9363,6 +9363,127 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn native_decimal_digit_parsing_preserves_sql_cast_diagnostics_scale_and_storage() {
+    use tidb_datatype::FieldTypeCode;
+
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session.run("SET sql_mode=''").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE native_decimal_digits_sql (leading_text VARCHAR(32), negative_zero VARCHAR(32), positive_exponent VARCHAR(32), negative_exponent VARCHAR(32), prefix_text VARCHAR(32), invalid_text VARCHAR(32), round_text VARCHAR(32), overflow_text VARCHAR(32), stored_d DECIMAL(12,4), newline_text VARCHAR(32), tab_text VARCHAR(32))")
+        .unwrap();
+    session
+        .run("INSERT INTO native_decimal_digits_sql VALUES ('  +00012.3400','-000.000','1.25e3','1.25e-2',' 12.50tail ','oops','9.995','123456','0000012.3400','\n1.25','\t1.25')")
+        .unwrap();
+    assert!(warnings_of(&session).is_empty());
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // String CAST sources call Decimal::parse_mysql for their diagnostic
+    // and value, then retain the existing precision/scale production policy.
+    // REAL's separate native decimal_prefix pre-parser is not exercised or
+    // claimed migrated. This is not a new C4/Head or whole-CAST-family gate.
+    let cases: [(&str, &[(&str, i64, i64)], &[(u16, &str)], bool); 5] = [
+        (
+            "CAST(leading_text AS DECIMAL(10,4)),CAST(negative_zero AS DECIMAL(6,3)),CAST(positive_exponent AS DECIMAL(12,3)),CAST(negative_exponent AS DECIMAL(12,5))",
+            &[("12.3400", 10, 4), ("0.000", 6, 3), ("1250.000", 12, 3), ("0.01250", 12, 5)],
+            &[],
+            true,
+        ),
+        (
+            "CAST(prefix_text AS DECIMAL(8,2)),CAST(invalid_text AS DECIMAL(8,2))",
+            &[("12.50", 8, 2), ("0.00", 8, 2)],
+            &[
+                (1292, "Truncated incorrect DECIMAL value: '12.50tail'"),
+                (1292, "Truncated incorrect DECIMAL value: 'oops'"),
+            ],
+            true,
+        ),
+        (
+            "CAST(round_text AS DECIMAL(5,2)),CAST(overflow_text AS DECIMAL(5,2))",
+            &[("10.00", 5, 2), ("999.99", 5, 2)],
+            &[
+                (1292, "Truncated incorrect DECIMAL value: '9.995'"),
+                (1690, "DECIMAL value is out of range in '(5, 2)'"),
+            ],
+            true,
+        ),
+        (
+            "stored_d,stored_d+0.0060,00012.3400",
+            &[("12.3400", 12, 4), ("12.3460", 13, 4), ("12.3400", 8, 4)],
+            &[],
+            false,
+        ),
+        (
+            "CAST(newline_text AS DECIMAL(8,2)),CAST(tab_text AS DECIMAL(8,2))",
+            &[("0.00", 8, 2), ("1.25", 8, 2)],
+            &[],
+            true,
+        ),
+    ];
+    // Five projections in each executor mode: ten SELECTs, no extreme
+    // exponent allocation, no new admission or fixed-word-parser claim.
+    // Stored-column scale and literal normalization remain observable:
+    // decimal_literal_type uses rendered length + 1, hence 12.3400 has
+    // metadata (8,4), not a width based on its leading zeroes.
+    // Preserve the two parses: report_decimal_input_truncation uses trim(),
+    // but actual parse_mysql trims only spaces/tabs. A leading LF therefore
+    // produces zero WITHOUT a warning; TAB produces 1.25. Reusing the first
+    // parse's value for actual conversion would silently change this rule.
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        for &(projection, expected, warnings, explicit_casts) in &cases {
+            let sql = format!("SELECT {projection} FROM native_decimal_digits_sql");
+            let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap() else {
+                panic!("expected decimal digit-parser consumer rows: {sql}")
+            };
+            assert_eq!(columns.len(), expected.len(), "{sql}/{vectorized}");
+            assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
+            assert_eq!(rows[0].len(), expected.len(), "{sql}/{vectorized}");
+            for (index, &(text, flen, scale)) in expected.iter().enumerate() {
+                let field = &columns[index].1;
+                assert_eq!(field.code(), FieldTypeCode::NewDecimal, "{sql}/{index}");
+                assert_eq!(
+                    (field.flen(), field.decimal()),
+                    (flen, scale),
+                    "{sql}/{index}"
+                );
+                assert!(!field.is_unsigned());
+                assert_eq!(field.charset_name(), "binary");
+                assert_eq!(field.collation_name(), "binary");
+                let Datum::Decimal(decimal) = &rows[0][index] else {
+                    panic!("decimal parser changed the SQL value carrier: {sql}/{index}")
+                };
+                assert_eq!(decimal.to_string(), text, "{sql}/{vectorized}/{index}");
+                assert_eq!(decimal.scale(), scale as u32, "{sql}/{index}");
+                if explicit_casts {
+                    assert_eq!(
+                        decimal.declared_shape(),
+                        Some((flen, scale)),
+                        "{sql}/{index}"
+                    );
+                }
+            }
+            assert_eq!(
+                warnings_of(&session),
+                warnings
+                    .iter()
+                    .map(|&(code, message)| (code, message.to_owned()))
+                    .collect::<Vec<_>>(),
+                "{sql}/{vectorized}"
+            );
+        }
+    }
+}
+
+#[test]
 fn native_in_policy_preserves_sql_numeric_cache_prepared_and_row_rewrite_paths() {
     use tidb_datatype::FieldTypeCode;
 

@@ -1,0 +1,40 @@
+decimal-parse-107 / R110 type slice; functional238/245 strict0 remaining7 unchanged.
+TiKV cwd /home/agent/tidb/expression-unification/tikv
+Native cwd /home/agent/tidb/expression-unification/tidb/rust
+Raw /home/agent/tidb/expression-unification/logs/decimal-parse-{id}.log
+Counts passed/failed/ignored/filtered; timings compile/test seconds.
+
+tikv-core | 2/0/0/468 | 4.15/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_decimal_parse -- --test-threads=1
+sha256 7c2b756d0e84fb865376e3183d0c6e9329d55650d54afd79d664bcde85551e72
+
+native-datatype | 463/0/0/0 | 3.60/7.32 | exit0
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+sha256 29df49ce55404d1b86fffa64d244478755baaac09edd87c077201c068ffe298a
+Whole native datatype library tests, including original parse/word-limit/exponent/shift/float/codec/MyDecimal and representation cases, not wholeGo-package transcreation.
+
+native-cast | 7/0/1/1710 | 19.46/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib as_decimal -- --test-threads=1
+sha256 7a48cbfbb819041aab7a9c0437342a7ac1f26bbb63deb218322be78fe34a273d
+Existing ignored: tests::ilike_info_cast_source::vectorized_cast_string_as_decimal_union_gap — go-parity-gap, vectorized string-to-DECIMAL inUnion signature unmodeled; scalar source-specific UNION covered. Not a pass or new repaired domain.
+
+sql | 1/0/0/2249 | 32.49/0.03 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_decimal_digit_parsing_preserves_sql_cast_diagnostics_scale_and_storage -- --exact --test-threads=1
+sha256 8abfd3122f53a96502ac7eb056d28b9fc7eed0b5db441978caa5d2e57e427a78
+
+sql-original | 1/0/0/2249 | 0.15/0.03 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_type_helpers_preserve_decimal_cast_values_and_float_diagnostics -- --exact --test-threads=1
+sha256 0bf3f9589d03ac0b4520cdc01f03487653689a80b1f18f8ef700814810a4da4d
+Original precision/float SQL helper regression, not newly added probes.
+
+Artifact audit corrections (not Cargo runs): first checker named nonexistent decimal/decimal_tests.rs; glob located src/decimal_tests.rs. A subsequent normalized-source check also needed to account for rustfmt's added trailing parameter comma after pub(super). Corrected checks confirm original test files and existing rounder body unchanged; earlier history/receipt/Plan/link assertions passed. No code or fixture change was made for these checker errors.
+
+5 serial locked single-threaded actual launches, allnonzeroGREEN;0compile/testfailures,0zero-match,0interruptions,0retry.4newtests=SDK2/native2.3SDK+2nativeRustfiles changed;98SDK+198native oldexplicit test bodies byte-identical. Nooldfixture/oracle/observer updates orprovider-output recording. Native cast.rs, decimal/codec.rs and existingdatatype tests untouched.
+
+SDKnative_decimal_parse owns literal/integer/unsigned coefficient construction, normalization, parseMysql/exponent/status/max and boundedshift. Native originalprivateDecimal/DecimalDigits SmallVec24/fivemetadata/API/Debug/traits retained; actualownedSmallVecmoves acrossparts, borrowedshiftref carriesexactrawstate. shift0/overflowcopyoriginal declaredshape/bytes/visible&storage; newresults clearshape. Originalunsignedloop singleSDKowner, noStringformatter detour. NoUTF8prevalidation forrawshift0; normalizer keepsoriginal dereference timing afterstorage debugassert andbeforepadding. Existingrounder+canonicalcoefficient extractor reused, lattervisibilityonlypub(super) mysql-internal. No newdependencies/profiles/admission/carriers orwire/fixedword/canonical parser substitution.
+
+NewSQL10SELECT=5groups×2vector/26Decimalcells: sign/leadingzero/negativezero/exponents±small; prefix/invalid1292; precisionround1292/overflow1690; storedDECIMAL12,4 plusarithmetic13,4 andleadingzeroLiteral8,4; actualLF/TAB input. WarningparseUnicode-trims first, actualconversion parsesuntrimmed source anddiscardsthatdisposition, soLF1.25quiet→0.00 vsTAB→1.25 preserved. Allnumeric metadata/scale/explicitCASTdeclaredshape checked. No newHead/zero-slot/wholeCAST claim.
+
+Nativefacade test checksactual90byteheap allocation moved throughownedparts andintegerinline storage; this is notperformance/zero-copy/physicalpeak/OOM verification. Generalwordlimits/status/exponentprecedence andshiftfractionexhaustion retained withoutfixingextremeallocation/padding gaps. FixedwordMyDecimal andwireparser remain distinctcompatibility policies.
+
+Only typehistory appended;238families andoldpartialCAST/date/IN/type records retained. latestfunctional in-control-106/latestpartialruntime in-typed-legacy-105 unchanged, latesttype decimal-parse-107. CAST source-selection/diagnostics/Realprefix/Float32-Other/UNION/numericargument/vector andbinaryread/value-word adapters remain explicit. FullExpr/Unistore/workspace/lint/dev/bazel/release/exhaustive/perf/physical-transientheap/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR-ready unverified; R100expression4/unistore1 historicalunrepaired. NoCargo/lock/Go/Bazel changes; unrelatedBUILD excluded. PairedDCOpushes withidenticalPlans; overallgoalactive.
