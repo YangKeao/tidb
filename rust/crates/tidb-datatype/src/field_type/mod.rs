@@ -960,28 +960,10 @@ impl FieldType {
 
     /// Mirrors parser `FieldType.EvalType` exactly.
     pub const fn eval_type(&self) -> EvalType {
-        match self.code() {
-            FieldTypeCode::Tiny
-            | FieldTypeCode::Short
-            | FieldTypeCode::Int24
-            | FieldTypeCode::Long
-            | FieldTypeCode::LongLong
-            | FieldTypeCode::Bit
-            | FieldTypeCode::Year => EvalType::Int,
-            FieldTypeCode::Float | FieldTypeCode::Double => EvalType::Real,
-            FieldTypeCode::NewDecimal => EvalType::Decimal,
-            FieldTypeCode::Date | FieldTypeCode::Datetime => EvalType::Datetime,
-            FieldTypeCode::Timestamp => EvalType::Timestamp,
-            FieldTypeCode::Duration => EvalType::Duration,
-            FieldTypeCode::Json => EvalType::Json,
-            FieldTypeCode::VectorFloat32 => EvalType::VectorFloat32,
-            FieldTypeCode::Enum | FieldTypeCode::Set
-                if self.flags & FieldTypeFlags::ENUM_SET_AS_INT as u64 != 0 =>
-            {
-                EvalType::Int
-            }
-            _ => EvalType::String,
-        }
+        tidb_query_datatype::codec::native_eval_type::native_field_eval_type(
+            self.code().as_shared_type_name_code(),
+            self.raw_flags(),
+        )
     }
 
     /// Mirrors parser `FieldType.Hybrid`.
@@ -2249,5 +2231,61 @@ mod tests {
         assert!(decoded.elems_is_binary_literal.is_empty());
 
         assert!(FieldType::from_json(br#"{"Flag":"not-a-number"}"#).is_err());
+    }
+
+    #[test]
+    fn shared_eval_type_alias_preserves_native_array_unknown_and_flag_identity() {
+        use tidb_query_datatype::codec::native_eval_type::{self as shared, NativeEvalType};
+
+        const NATIVE_CONSTANTS: [NativeEvalType; 9] = [
+            crate::ET_INT,
+            crate::ET_REAL,
+            crate::ET_DECIMAL,
+            crate::ET_STRING,
+            crate::ET_DATETIME,
+            crate::ET_TIMESTAMP,
+            crate::ET_DURATION,
+            crate::ET_JSON,
+            crate::ET_VECTOR_FLOAT32,
+        ];
+        assert_eq!(NATIVE_CONSTANTS, NativeEvalType::ALL);
+        let native: crate::EvalType = shared::ET_TIMESTAMP;
+        assert_eq!(native, NativeEvalType::Timestamp);
+        let error: crate::InvalidEvalType = NativeEvalType::try_from(255).unwrap_err();
+        assert_eq!(error.to_string(), "invalid EvalType 255");
+
+        let high = 1_u64 << 63;
+        for code in [FieldTypeCode::Enum, FieldTypeCode::Set] {
+            let string = FieldType::new(code).with_raw_flags(high);
+            assert_eq!(string.eval_type(), NativeEvalType::String);
+            let integer = string
+                .clone()
+                .with_raw_flags(high | u64::from(FieldTypeFlags::ENUM_SET_AS_INT));
+            assert_eq!(integer.raw_flags(), high | (1_u64 << 21));
+            assert_eq!(integer.eval_type(), NativeEvalType::Int);
+            let array = integer.with_array(true);
+            assert_eq!(array.eval_type(), NativeEvalType::Json);
+            assert_eq!(array.array_element_code(), code);
+            assert_eq!(array.array_type().eval_type(), NativeEvalType::Int);
+        }
+        for raw in [13, 225, 245, 247, 248] {
+            let unknown = FieldType::new(FieldTypeCode::Unknown(raw)).with_raw_flags(u64::MAX);
+            assert_eq!(unknown.eval_type(), NativeEvalType::String);
+            let array = unknown.with_array(true);
+            assert_eq!(array.eval_type(), NativeEvalType::Json);
+            assert_eq!(array.array_type().eval_type(), NativeEvalType::String);
+        }
+        for (code, expected) in [
+            (FieldTypeCode::Year, NativeEvalType::Int),
+            (FieldTypeCode::Date, NativeEvalType::Datetime),
+            (FieldTypeCode::Datetime, NativeEvalType::Datetime),
+            (FieldTypeCode::Timestamp, NativeEvalType::Timestamp),
+            (FieldTypeCode::VectorFloat32, NativeEvalType::VectorFloat32),
+            (FieldTypeCode::Json, NativeEvalType::Json),
+        ] {
+            let field = FieldType::new(code).with_raw_flags(u64::MAX);
+            let value: NativeEvalType = field.eval_type();
+            assert_eq!(value, expected);
+        }
     }
 }

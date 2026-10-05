@@ -9363,6 +9363,128 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn native_json_source_policy_preserves_year_unsigned_and_hybrid_name_modes() {
+    use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
+
+    let mut session = Session::new();
+    session
+        .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+        .unwrap();
+    session.run("SET sql_mode=''").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE native_json_source_sql (y YEAR, u BIGINT UNSIGNED, e_one ENUM('1','true','bad'), e_true ENUM('1','true','bad'), e_bad ENUM('1','true','bad'), s_one SET('1','true'), s_true SET('1','true'), s_multi SET('1','true'), jnum JSON, jstr JSON, jbad JSON, jmulti JSON)")
+        .unwrap();
+    session
+        .run(r#"INSERT INTO native_json_source_sql VALUES (2024,18446744073709551615,'1','true','bad','1','true','1,true','1','"1"','"bad"','"1,true"')"#)
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let expected_json: &[(u8, &[u8])] = &[
+        (0x0a, &[0xe8, 7, 0, 0, 0, 0, 0, 0]),
+        (0x0a, &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
+        (0x09, &[1, 0, 0, 0, 0, 0, 0, 0]),
+        (0x04, &[1]),
+        (0x09, &[1, 0, 0, 0, 0, 0, 0, 0]),
+        (0x04, &[1]),
+    ];
+    // The unchanged numeric entrypoint presents UInt::MAX as Int(-1); JSON
+    // source preparation restores the unsigned carrier from the actual column
+    // metadata. YEAR is likewise unsigned here, not a synthetic flag fixture.
+    // ENUM/SET remain ETString: their names become Bytes, not ordinals/masks.
+    // In particular, the name 'true' parses as JSON true, not integer 2.
+    // Bytes alone cannot imply binary opaque data: these sources retain their
+    // non-binary utf8mb4 field metadata at the typed expression boundary.
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        let sql = "SELECT CAST(y AS JSON),CAST(u AS JSON),CAST(e_one AS JSON),CAST(e_true AS JSON),CAST(s_one AS JSON),CAST(s_true AS JSON) FROM native_json_source_sql";
+        let StmtOutput::Rows { columns, rows } = session.run_with_columns(sql).unwrap() else {
+            panic!("expected JSON source-policy cast rows")
+        };
+        assert_eq!(columns.len(), expected_json.len());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].len(), expected_json.len());
+        for (index, (tag, payload)) in expected_json.iter().enumerate() {
+            let field = &columns[index].1;
+            assert_eq!(field.code(), FieldTypeCode::Json);
+            assert_eq!((field.flen(), field.decimal()), (4_194_304, 0));
+            assert_eq!(field.charset_name(), "utf8mb4");
+            assert_eq!(field.collation_name(), "utf8mb4_bin");
+            assert!(field.has_flag(FieldTypeFlags::BINARY));
+            assert!(field.has_flag(FieldTypeFlags::PARSE_TO_JSON));
+            assert!(!field.is_unsigned());
+            let Datum::Json(value) = &rows[0][index] else {
+                panic!("lost typed JSON source-policy result: {vectorized}/{index}")
+            };
+            assert_eq!(value.type_code(), *tag, "vectorized={vectorized}/{index}");
+            assert_eq!(value.value(), *payload, "vectorized={vectorized}/{index}");
+        }
+        assert!(warnings_of(&session).is_empty());
+        // Nonconstant two-item lists retain typed IN, whose JSON target has
+        // ParseToJSONFlag cleared. The same hybrid names are now string values,
+        // including names which would be invalid JSON documents on their own.
+        for (projection, expected) in [
+            (
+                "jnum IN(e_one,e_one),jstr IN(e_one,e_one),jnum IN(s_one,s_one),jstr IN(s_one,s_one)",
+                vec![Datum::Int(0), Datum::Int(1), Datum::Int(0), Datum::Int(1)],
+            ),
+            (
+                "jbad IN(e_bad,e_bad),jmulti IN(s_multi,s_multi)",
+                vec![Datum::Int(1), Datum::Int(1)],
+            ),
+        ] {
+            let sql = format!("SELECT {projection} FROM native_json_source_sql");
+            let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap() else {
+                panic!("expected hybrid JSON value-policy IN rows: {sql}")
+            };
+            assert_eq!(columns.len(), expected.len(), "{sql}");
+            for (_, field) in &columns {
+                assert_eq!(field.code(), FieldTypeCode::LongLong);
+                assert_eq!((field.flen(), field.decimal()), (1, 0));
+                assert_eq!(field.charset_name(), "binary");
+                assert_eq!(field.collation_name(), "binary");
+                assert!(field.has_flag(FieldTypeFlags::IS_BOOLEAN));
+                assert!(!field.is_unsigned());
+            }
+            assert_eq!(rows, vec![expected], "{sql}/{vectorized}");
+            assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+        }
+    }
+    // The names accepted in VALUE mode above fail the explicit DOCUMENT cast.
+    // SET's canonical multi-name string is '1,true', not its integer mask 3.
+    for source in ["e_bad", "s_multi"] {
+        let sql = format!("SELECT CAST({source} AS JSON) FROM native_json_source_sql");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        assert!(matches!(
+            &error,
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::Json(tidb_executor::JsonError::InvalidText)
+            ))
+        ));
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 3140);
+        assert_eq!(mysql.state, *b"22032");
+        assert_eq!(
+            mysql.message,
+            "Invalid JSON text: The document root must not be followed by other values."
+        );
+        assert!(mysql.is_from_evaluation());
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+    // Six successful SELECTs across both modes plus two document-error
+    // controls. All expected JSON tags/bytes are literals, not parser output.
+    // Missing metadata/vector-before-child, raw helper values and datatype
+    // surrogate repair retain their separate unit/previous-SQL coverage.
+}
+
+#[test]
 fn native_json_coercion_preserves_sql_boolean_bit_document_and_value_policies() {
     use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
 

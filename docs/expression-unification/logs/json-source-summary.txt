@@ -1,0 +1,71 @@
+json-source-117 / R120 canonical EvalType + JSON source/prepared and datatype target policies.
+Functional238/245 strict0remaining7 unchanged. NotwholeJSON/CAST/M2/Go-package completion.
+TiKV cwd /home/agent/tidb/expression-unification/tikv; Native cwd /home/agent/tidb/expression-unification/tidb/rust.
+Raw /home/agent/tidb/expression-unification/logs/json-source-{id}.log
+Counts passed/failed/ignored/filtered; compile/test seconds; exit0 unless specified.
+
+tikv-evaltype | 1/0/0/485 | 4.77/0.00 | initial before supplemental Debug assertion
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_eval_type -- --test-threads=1
+sha256 c5f5938cd89bdfd5ab237788e6fc96d936ae1432c4ede34aa8cc3e1393e8ca53
+
+tikv-target | 2/0/0/484 | 0.15/0.00
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_mysql_json -- --test-threads=1
+sha256 2d9dc4ad9ca595d95f4e1261a184cc928f957bfe5ced8b215986ddc52cebc467
+
+tikv-source | 5/0/0/999 | 18.84/0.00
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_json_coercion -- --test-threads=1
+sha256 715ed1497fc3a783e50ca104c0e64b41c7ee0d5ba145b038997eaf83df85759f
+
+tikv-evaltype-debug-red | 0/1/0/485 | 2.30/0.00 | exit101 retained RED
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_eval_type -- --test-threads=1
+sha256 9cc843ff786baab771ec9cdb6cd9a4db6c52ce2307a20ff895d0dae6b0d1fc9c
+
+tikv-evaltype-debug-fixed | 1/0/0/485 | 4.37/0.00 | corrected follow-up
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_eval_type -- --test-threads=1
+sha256 bfe0344614e54b8ea739aa3b5166db1c38b05437b0633547d919e35fbb8b7599
+
+native-datatype | 470/0/0/0 | 3.96/7.41
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+sha256 f30a7ae12dec4921fefb114148d70391ab5547c0ebdf83f9d76ab89ee8f640da
+
+native-source | 1/0/0/1724 | 22.30/0.00
+../../tools/cargo-tidb test --locked -p tidb-expr --lib json_preparation_tests -- --test-threads=1
+sha256 62c10ba8269ae17a23729dfcd68c019f6f2de8ea3aecb4808ae90f4e17ba49d2
+
+native-json | 45/0/0/1680 | 0.20/0.37
+../../tools/cargo-tidb test --locked -p tidb-expr --lib builtin_ext::json::tests -- --test-threads=1
+sha256 0b3c073da5fd8259b5f9d8463d4dcbe75ad4eee6fafe2551ff362078a84e2451
+
+native-pb | 0/0/0/1725 | 0.14/0.00 | ZERO-MATCH, not passing coverage
+../../tools/cargo-tidb test --locked -p tidb-expr --lib scalar_function::pb_builtin::tests::protobuf_json_ -- --test-threads=1
+sha256 382d5ee63187dcbc03657329c2c79b3b3ee10dd1ada1b35f25b25fda37e15629
+
+native-pb-matched | 2/0/0/1723 | 0.15/0.00 | corrected filter
+../../tools/cargo-tidb test --locked -p tidb-expr --lib scalar_function::pb_builtin::json_path_worker_tests::protobuf_json_ -- --test-threads=1
+sha256 e60c005db28e5c273946e13857942d7b6941b25f20b65f38940dbc9d5898f778
+
+sql | 1/0/0/2259 | 37.54/0.03
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_json_source_policy_preserves_year_unsigned_and_hybrid_name_modes -- --exact --test-threads=1
+sha256 795e0501c3b11437cb9d98b3da2f4caf8e0ecdac9b41cdb109a20c3e98083ac3
+
+sql-coercion | 1/0/0/2259 | 0.17/0.03
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_json_coercion_preserves_sql_boolean_bit_document_and_value_policies -- --exact --test-threads=1
+sha256 13f661ddb29cc0837ea00a7047c14b2ba8a23904f91a9d6a11b2f476fa955198
+
+sql-parser | 1/0/0/2259 | 0.17/0.04
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_json_parse_preserves_storage_surrogates_and_strict_expression_boundary -- --exact --test-threads=1
+sha256 7636a971e908ee1fe65d3fd66dbc20ede5e2ef420a904b92528abe2fa018b47c
+
+sql-original | 1/0/0/2259 | 0.17/0.02
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_json::cast_as_json_keeps_gos_typed_names -- --exact --test-threads=1
+sha256 1861797d64ce4b38a61ddb2fce3667c017d40d9a06478c978f7a3f5b3d21f583
+
+14serial locked single-threaded launches;13matched=12GREEN+1RED,1zero-match excluded. Final11required gate filters GREEN.0compilefail/ignored/interrupted. Debug supplemental afterinitial3SDKGREEN adds original derived-debug assertion; observed NativeInvalidEvalType(9) vs original InvalidEvalType(9), kept realRED, fixed soleSDKstruct name InvalidEvalType with NativeInvalidEvalType pubuse alias, same assertionGREEN. No native duplicate definition/manual formatter/oracle change. PB wrongmodule tests filter selected0; actualmodule json_path_worker_tests corrected2GREEN. Audit initially rejected0match, so neither exit0 nor completed-job status counted as coverage. Original RED/zero logs retained, not overwritten. Static ownership audit initially assumed the row block belonged to eval; listing changed functions identified eval_by_signature. Correcting that audit scope required no source/oracle change; the exact three-function caller-change check then passed.
+
+8newtests=SDK4/native4.5SDK+10nativeRustfiles,2newlive.4oldSDK+286oldnative testbodies unchanged. No oldexpected/fixtures/observers touched, no provider/targetparser/constructor output as oracle. Generic child evaluation, actual source-batch-before-convert body, PBNULL/arity caller, datatype outerNULL/diagnostic dispatch and ASTNOTIN3lock unchanged. Newnative metadata tests distinguishdirectDTO fromactualColumn/Chunk row/nativebatch; knownVector actualNULL rejected beforechild, invalidcolumn99 gettererror loses tostaticVectorrefusal, missingmetadata error preserved. Real stringchunk[1,NULL,2] bothDoc/Value modes row andnativebatch fixedbytes; noNoColumns escape, noPBselection/projectionseal/resource-slotclaim. Datatype actualconvert_to/report entries preserveNoneevent/unmappedfalse(contextNone); nowarning-sinkintegrationclaim.
+
+OneSQLtest8SELECT=6success(3projections x2vector)+2docerrors(mode1),24successcells=12JSON+12INints. ActualYEAR(defaultUNSIGNED)2024→UInt0a[e8,07,..], storedUIntMAX preparedInt−1→UInt0aFFx8; ENUM/SETname1→Int09/1 andnametrue→literal04/1 (notordinal/mask2). TwoitemtypedINnumeric/stringJSON againstEnum1/Set1→0/1 each. JSONstringsbad/1,true match correspondingEnumBad/SetMulti inVALUE mode, samecolumn explicitdocumentCAST reportsInvalidText3140/22032 exactmessage/origin/emptywarnings. HeadersCASTJSON4194304/0 utf8mb4/utf8mb4_bin BINARY|PARSE,signed; INLongLong1/0binary IS_BOOLEAN. Literalgoldens only; noSQLclaim forunsigned-clearYear/Unknowncodes/directEnumdatatarget/Vectorbeforechild. Other3SQLgates originalreruns notnewprobes; PB2 unchangedexistingtests, nonewadmission.
+
+SDKnative_eval_type canonical9repru8/ALL/constants/traits/methods +effectivecode/rawflags classifier; nativeeval_type aliases only, FieldType getter thin. Unknownallcodes→String, knownenum/set bit21→Int, arrayalreadyeffectiveJSON, Datetime/Timestamp distinct, notwireEvalType. InvaliderrororiginalDebugandDisplay restored, publicalias oneowner. SDKnative_json_coercion admission acceptsactualmetadata nochild; MissingSource/Vector SDKmessages. preparedOptionSource checkedbeforeNULL, unsigned/knownYear Int→UInt, EnumSetonlysharedETString→R115Bytes, targetPARSE18 DocelseValue(Noneincluded); prepareddoesNOTrepeatVectorguard toretainPBcallersemantics. Native3wrappers reuseSource/error/result; batchsupport .is_ok avoidsnativeerrorallocation, shape/target/arity+genericrecursiveengine staynative; wholechildbatch barrier unchanged. NoSourceETypehint/fakeorigin/carrier/callback.
+
+SDKnative_mysql_json targetselects String/Bytes/Enum/Set strictUTF8→R118lenientparse, BinaryLiteral originalComparison refusal, othersR117fallback. Bit/RawJSONString(notparse), EnumSetinvalidUTF8 vsRawUnsupported categories; JSONrawclone, Float32rawf64, Time/Duration noexprFSP6restamp. Sourcefree, noflags/ctx. Nativeborrow19+exact(newJSON)+errorprojection; binary_json parsererror ONLYcratevisibility. Existingconstruction/parsers/formatter/19view untouched. PartialCAST+type records appended,238familyobjects/history unchanged. Noadditionalprofiles/admission/dependencies/physical/perf/zerocopy claim, noGo/Bazel/Cargo/lock changes; unrelatedBUILD excluded. Architecture/guideupdated withoutnormativepolicy, pairedDCO commits/threeidenticalPlans. OtherCAST/generictypedchild/broaderM2/sixcandidates/root/liveDAG/finalremain; fullExpr/Unistore/workspace/lint/dev/bazel/release/exhaustive/perf/physical/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR-ready unverified. R100expression4/unistore1 historicalunrepaired. Goalactive.

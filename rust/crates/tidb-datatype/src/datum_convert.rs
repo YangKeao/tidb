@@ -957,21 +957,28 @@ impl Datum {
     }
 
     fn convert_to_json_target(&self) -> Result<Converted<Self>, DatumValueError> {
-        let json = match self {
-            Self::String(value) => BinaryJSON::parse(value.as_utf8()?)?,
-            Self::Bytes(value) => BinaryJSON::parse(std::str::from_utf8(value)?)?,
-            Self::Enum(value, _) => BinaryJSON::parse(value.name().as_utf8()?)?,
-            Self::Set(value, _) => BinaryJSON::parse(value.name().as_utf8()?)?,
-            Self::BinaryLiteral(_) => {
-                return Err(DatumValueError::Comparison(
+        use tidb_query_datatype::codec::native_mysql_json::{
+            native_convert_to_json_target, NativeDatumJsonError as DatumError,
+            NativeJsonTargetError as Error,
+        };
+        let (type_code, value) = native_convert_to_json_target(self.as_shared_json_input())
+            .map_err(|error| match error {
+                Error::CannotCreateJsonFromBinary => DatumValueError::Comparison(
                     "Cannot create a JSON value from a string with CHARACTER SET 'binary'"
                         .to_owned(),
-                ))
-            }
-            Self::Json(value) => value.clone(),
-            _ => self.to_mysql_json()?,
-        };
-        Ok(exact(Self::new_json(json)))
+                ),
+                Error::Parse(error) => crate::binary_json::native_json_parse_error(error).into(),
+                Error::Datum(DatumError::InvalidUtf8(error)) => DatumValueError::InvalidUtf8(error),
+                Error::Datum(DatumError::Unsupported) => {
+                    DatumValueError::Unsupported(self.kind(), "json")
+                }
+                Error::Datum(DatumError::Construct(error)) => {
+                    crate::binary_json::native_json_construct_error(error).into()
+                }
+            })?;
+        Ok(exact(Self::new_json(BinaryJSON::from_encoded_parts(
+            type_code, value,
+        ))))
     }
 
     fn convert_to_vector(&self, target: &FieldType) -> Result<Converted<Self>, DatumValueError> {
@@ -2482,5 +2489,169 @@ mod tests {
                 converted.value
             );
         }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn shared_json_target_convert_to_keeps_null_events_metadata_and_error_classes() {
+    use crate::{BinaryJSONError, DatumKind, MysqlEnum, MysqlSet};
+    fn assert_json(converted: Converted<Datum>, tag: u8, bytes: &[u8]) {
+        assert_eq!(converted.event, None);
+        let Datum::Json(value) = converted.value else {
+            panic!("expected JSON datum")
+        };
+        assert_eq!(value.type_code(), tag);
+        assert_eq!(value.value(), bytes);
+    }
+    let target = FieldType::new(FieldTypeCode::Json)
+        .with_flen(1)
+        .with_decimal(6)
+        .with_collation(Collation::Binary)
+        .with_flags(u32::MAX);
+    let flags = ConversionFlags::default();
+    let zone = SessionTimeZone::utc();
+    let cases = vec![
+        (Datum::new_string("12"), 0x09, vec![12, 0, 0, 0, 0, 0, 0, 0]),
+        (
+            Datum::Bytes(b"1".to_vec()),
+            0x09,
+            vec![1, 0, 0, 0, 0, 0, 0, 0],
+        ),
+        (
+            Datum::new_enum(MysqlEnum::new("1", 99), Collation::Binary),
+            0x09,
+            vec![1, 0, 0, 0, 0, 0, 0, 0],
+        ),
+        (
+            Datum::new_set(MysqlSet::new("1", 99), Collation::Binary),
+            0x09,
+            vec![1, 0, 0, 0, 0, 0, 0, 0],
+        ),
+        (Datum::UInt(1), 0x0a, vec![1, 0, 0, 0, 0, 0, 0, 0]),
+        (
+            Datum::Bit(BinaryLiteral::from(b"1".to_vec())),
+            0x0c,
+            vec![1, b'1'],
+        ),
+        (Datum::Raw(b"1".to_vec()), 0x0c, vec![1, b'1']),
+        (
+            Datum::Float32(16_777_217.0),
+            0x0b,
+            16_777_217.0_f64.to_bits().to_le_bytes().to_vec(),
+        ),
+        (
+            Datum::Duration(MySqlDuration::from_raw_parts(-1, -1)),
+            0x11,
+            vec![0xff; 12],
+        ),
+        (
+            Datum::Time(Time::from_raw_parts(
+                CoreTime::from_raw(u64::MAX),
+                TimeType::DateTime,
+                u8::MAX,
+            )),
+            0x0f,
+            vec![0xff; 8],
+        ),
+        (
+            Datum::Json(BinaryJSON::from_encoded_parts(0x03, vec![0xff])),
+            0x03,
+            vec![0xff],
+        ),
+    ];
+    for (value, tag, bytes) in cases {
+        assert_json(value.convert_to(&target, flags).unwrap(), tag, &bytes);
+        let mut diagnostics = Diagnostics::new(None);
+        assert_json(
+            value
+                .convert_to_reported(&target, flags, &zone, &mut diagnostics)
+                .unwrap(),
+            tag,
+            &bytes,
+        );
+        assert!(diagnostics.error.is_none());
+        assert!(!diagnostics.unmapped);
+    }
+    for (value, expected) in [
+        (
+            Datum::new_string(" "),
+            DatumValueError::Json(BinaryJSONError::EmptyDocument),
+        ),
+        (
+            Datum::Bytes(b"1 2".to_vec()),
+            DatumValueError::Json(BinaryJSONError::TrailingValues),
+        ),
+        (
+            Datum::new_set(MysqlSet::new("[", 1), Collation::Binary),
+            DatumValueError::Json(BinaryJSONError::InvalidText),
+        ),
+        (
+            Datum::BinaryLiteral(BinaryLiteral::from(vec![0xff])),
+            DatumValueError::Comparison(
+                "Cannot create a JSON value from a string with CHARACTER SET 'binary'".to_owned(),
+            ),
+        ),
+        (
+            Datum::Raw(vec![0xff]),
+            DatumValueError::Unsupported(DatumKind::Raw, "json"),
+        ),
+        (
+            Datum::MinNotNull,
+            DatumValueError::Unsupported(DatumKind::MinNotNull, "json"),
+        ),
+        (
+            Datum::Float32(f64::INFINITY),
+            DatumValueError::Json(BinaryJSONError::InvalidText),
+        ),
+    ] {
+        assert_eq!(value.convert_to(&target, flags).unwrap_err(), expected);
+        let mut diagnostics = Diagnostics::new(None);
+        assert_eq!(
+            value
+                .convert_to_reported(&target, flags, &zone, &mut diagnostics)
+                .unwrap_err(),
+            expected
+        );
+        assert!(diagnostics.error.is_none());
+        assert!(!diagnostics.unmapped);
+    }
+    for value in [
+        Datum::new_string(vec![0xff]),
+        Datum::Bytes(vec![0xff]),
+        Datum::new_enum(MysqlEnum::new([0xff], 1), Collation::Binary),
+        Datum::new_set(MysqlSet::new([0xff], 1), Collation::Binary),
+        Datum::Bit(BinaryLiteral::from(vec![0xff])),
+    ] {
+        assert!(matches!(
+            value.convert_to(&target, flags),
+            Err(DatumValueError::InvalidUtf8(_))
+        ));
+        let mut diagnostics = Diagnostics::new(None);
+        assert!(matches!(
+            value.convert_to_reported(&target, flags, &zone, &mut diagnostics),
+            Err(DatumValueError::InvalidUtf8(_))
+        ));
+        assert!(diagnostics.error.is_none());
+        assert!(!diagnostics.unmapped);
+    }
+    for (value, target) in [
+        (Datum::Null, target),
+        (
+            Datum::BinaryLiteral(BinaryLiteral::from(vec![0xff])),
+            FieldType::new(FieldTypeCode::Null),
+        ),
+    ] {
+        let converted = value.convert_to(&target, flags).unwrap();
+        assert_eq!(converted.value, Datum::Null);
+        assert_eq!(converted.event, None);
+        let mut diagnostics = Diagnostics::new(None);
+        let converted = value
+            .convert_to_reported(&target, flags, &zone, &mut diagnostics)
+            .unwrap();
+        assert_eq!(converted.value, Datum::Null);
+        assert_eq!(converted.event, None);
+        assert!(diagnostics.error.is_none());
+        assert!(!diagnostics.unmapped);
     }
 }

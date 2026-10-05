@@ -71,8 +71,9 @@ pub(crate) use modify::parse_json_modify_paths;
 pub(crate) use path::{parse_path, JsonPath};
 pub(crate) use report::JsonSchemaCache;
 pub(crate) use value::{
-    cast_as_json, cast_as_json_typed, cast_as_json_value_typed, json_document_text_argument,
-    parse_json_document_argument,
+    cast_as_json, cast_as_json_typed, cast_as_json_value_typed, cast_json_prepared,
+    json_cast_source_supported, json_document_text_argument, parse_json_document_argument,
+    validate_json_cast_source,
 };
 
 /// Dispatches the JSON family.  The match and arities are ports of the

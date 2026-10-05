@@ -476,7 +476,7 @@ fn literal(value: u8) -> BinaryJSON {
     BinaryJSON::from_encoded_parts(type_code, value)
 }
 
-fn native_json_parse_error(error: NativeJsonParseError) -> BinaryJSONError {
+pub(crate) fn native_json_parse_error(error: NativeJsonParseError) -> BinaryJSONError {
     match error {
         NativeJsonParseError::EmptyDocument => BinaryJSONError::EmptyDocument,
         NativeJsonParseError::TrailingValues => BinaryJSONError::TrailingValues,

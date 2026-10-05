@@ -104,6 +104,33 @@ pub(crate) fn cast_as_json_value_typed(
     ))
 }
 
+pub(crate) fn validate_json_cast_source(field_type: Option<&FieldType>) -> Result<(), EvalError> {
+    crate::tikv::native_json_cast_admission(source(field_type)).map_err(|error| match error {
+        crate::tikv::NativeJsonCastAdmissionError::MissingSource => {
+            EvalError::Unsupported(error.message())
+        }
+        crate::tikv::NativeJsonCastAdmissionError::Vector => {
+            EvalError::Vector(error.message().to_owned())
+        }
+    })
+}
+
+pub(crate) fn json_cast_source_supported(field_type: Option<&FieldType>) -> bool {
+    crate::tikv::native_json_cast_admission(source(field_type)).is_ok()
+}
+
+pub(crate) fn cast_json_prepared(
+    value: &Datum,
+    field_type: Option<&FieldType>,
+    target: Option<&FieldType>,
+) -> Result<Datum, EvalError> {
+    cast_result(crate::tikv::native_cast_json_prepared_argument(
+        value.as_shared_json_input(),
+        source(field_type),
+        target.map(FieldType::raw_flags),
+    ))
+}
+
 /// The shared mode retains the distinction between a document argument and a
 /// string value, while actual source metadata stays separate from the mode.
 pub(super) fn json_argument(

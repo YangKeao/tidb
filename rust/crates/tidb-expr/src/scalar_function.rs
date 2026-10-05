@@ -31,6 +31,9 @@
 
 mod pb_builtin;
 
+#[cfg(test)]
+mod json_preparation_tests;
+
 pub(crate) use pb_builtin::PbBuiltin;
 
 use std::collections::BTreeSet;
@@ -2159,17 +2162,9 @@ impl ScalarFunction {
         if let Some(target) = name.strip_prefix("cast_") {
             if self.args.len() == 1 {
                 if target == "json" {
-                    let source = self.args[0]
-                        .static_type()
-                        .ok_or(EvalError::Unsupported("a JSON cast with no source type"))?
-                        .eval_type();
-                    // Go's unsupported vector signature fails before reading
-                    // its argument, even when that row would have been NULL.
-                    if source == EvalType::VectorFloat32 {
-                        return Err(EvalError::Vector(
-                            "cannot cast from vector to json".to_owned(),
-                        ));
-                    }
+                    let source = self.args[0].static_type();
+                    crate::builtin_ext::json::validate_json_cast_source(source)?;
+                    let source = source.expect("validated JSON source").eval_type();
                     let value = eval_numeric_row(&self.args[0], ctx, row, source)?;
                     return cast_json_argument_value(self, value);
                 }
@@ -3736,32 +3731,11 @@ fn eval_numeric_operand_batch(
 /// Go JSON cast signatures consume their source EvalType, including hybrid
 /// string names and signed integer carriers, before constructing binary JSON.
 fn cast_json_argument_value(function: &ScalarFunction, value: Datum) -> Result<Datum, EvalError> {
-    let field = function.args[0]
-        .static_type()
-        .ok_or(EvalError::Unsupported("a JSON cast with no source type"))?;
-    let value = match value {
-        Datum::Int(value)
-            if field.is_unsigned() || field.code() == tidb_datatype::FieldTypeCode::Year =>
-        {
-            Datum::UInt(value as u64)
-        }
-        value @ (Datum::Enum(..) | Datum::Set(..)) if field.eval_type() == EvalType::String => {
-            Datum::new_bytes(
-                value
-                    .sql_bytes()
-                    .map_err(|_| EvalError::Unsupported("hybrid JSON string conversion"))?,
-            )
-        }
-        value => value,
-    };
-    if function
-        .get_static_type()
-        .is_some_and(|field| field.has_flag(tidb_datatype::FieldTypeFlags::PARSE_TO_JSON))
-    {
-        crate::builtin_ext::cast_as_json_typed(&value, Some(field))
-    } else {
-        crate::builtin_ext::cast_as_json_value_typed(&value, Some(field))
-    }
+    crate::builtin_ext::json::cast_json_prepared(
+        &value,
+        function.args[0].static_type(),
+        function.get_static_type(),
+    )
 }
 
 fn numeric_batch_supported(expression: &Expression, target: EvalType) -> bool {
@@ -3785,10 +3759,16 @@ fn numeric_batch_supported(expression: &Expression, target: EvalType) -> bool {
                     .get_static_type()
                     .is_some_and(|field| field.eval_type() == target)
                     && function.args.len() == 1
-                    && function.args[0].static_type().is_some_and(|field| {
-                        field.eval_type() != EvalType::VectorFloat32
-                            && numeric_batch_supported(&function.args[0], field.eval_type())
-                    });
+                    && crate::builtin_ext::json::json_cast_source_supported(
+                        function.args[0].static_type(),
+                    )
+                    && numeric_batch_supported(
+                        &function.args[0],
+                        function.args[0]
+                            .static_type()
+                            .expect("supported JSON source")
+                            .eval_type(),
+                    );
             }
             function
                 .get_static_type()

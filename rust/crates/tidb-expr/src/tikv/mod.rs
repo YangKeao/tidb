@@ -141,10 +141,11 @@ use tidb_query_expr::local::{
 };
 pub(crate) use tidb_query_expr::{
     native_binary_json_datum, native_cast_as_json, native_cast_as_json_typed,
-    native_cast_as_json_value_typed, native_json_argument, native_json_document_string,
-    native_json_document_text_argument, native_json_sql_string,
-    native_parse_json_document_argument, native_parse_json_document_argument_strict,
-    native_parse_json_expression, NativeJsonCoercionError, NativeJsonCoercionSource,
+    native_cast_as_json_value_typed, native_cast_json_prepared_argument, native_json_argument,
+    native_json_cast_admission, native_json_document_string, native_json_document_text_argument,
+    native_json_sql_string, native_parse_json_document_argument,
+    native_parse_json_document_argument_strict, native_parse_json_expression,
+    NativeJsonCastAdmissionError, NativeJsonCoercionError, NativeJsonCoercionSource,
     NativeJsonStringArgument,
 };
 pub use tidb_query_expr::{BinaryArithmeticOperation, ComparisonOp};
