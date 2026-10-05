@@ -9363,6 +9363,153 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn native_json_construction_preserves_sql_tags_opaque_temporals_and_value_coercion() {
+    use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
+
+    let mut session = Session::new();
+    session
+        .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+        .unwrap();
+    session.run("SET sql_mode=''").unwrap();
+    session.run("SET time_zone='+00:00'").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE native_json_construction_sql (b BINARY(3), vb VARBINARY(3), u BIGINT UNSIGNED, d DECIMAL(6,2), dt DATETIME(3), tm TIME(3), jnum JSON, jstr JSON, jnull JSON, sqlnull JSON, s VARCHAR(16), bad_text VARCHAR(16))")
+        .unwrap();
+    session
+        .run(r#"INSERT INTO native_json_construction_sql VALUES ('ab','ab',1,1.25,'2024-01-02 03:04:05.006','00:00:01.250','1','"1"','null',NULL,'1','not-json')"#)
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    type JsonCell = Option<(u8, &'static [u8], &'static str)>;
+    let cases: [(&str, &[JsonCell]); 3] = [
+        (
+            "CAST(b AS JSON),CAST(vb AS JSON),CAST(u AS JSON),CAST(d AS JSON)",
+            &[
+                Some((0x0d, &[254, 3, b'a', b'b', 0], r#""base64:type254:YWIA""#)),
+                Some((0x0d, &[15, 2, b'a', b'b'], r#""base64:type15:YWI=""#)),
+                Some((0x0a, &[1, 0, 0, 0, 0, 0, 0, 0], "1")),
+                Some((0x0b, &[0, 0, 0, 0, 0, 0, 0xf4, 0x3f], "1.25")),
+            ],
+        ),
+        (
+            "CAST(dt AS JSON),CAST(tm AS JSON)",
+            &[
+                Some((0x0f, &[0x00, 0x77, 0x01, 0x05, 0x31, 0x44, 0xa0, 0x1f], r#""2024-01-02 03:04:05.006000""#)),
+                Some((0x11, &[0x80, 0x7c, 0x81, 0x4a, 0, 0, 0, 0, 6, 0, 0, 0], r#""00:00:01.250000""#)),
+            ],
+        ),
+        (
+            "CAST(jnum AS JSON),CAST(jstr AS JSON),CAST(jnull AS JSON),CAST(sqlnull AS JSON),CAST(s AS JSON)",
+            &[
+                Some((0x09, &[1, 0, 0, 0, 0, 0, 0, 0], "1")),
+                Some((0x0c, &[1, b'1'], r#""1""#)),
+                Some((0x04, &[0], "null")),
+                None,
+                Some((0x09, &[1, 0, 0, 0, 0, 0, 0, 0], "1")),
+            ],
+        ),
+    ];
+    // Fixed source-layout literals, not BinaryJSON::parse/from_typed_value
+    // expected values: opaque = field code + uvarint length + raw bytes;
+    // numeric scalars are LE payloads. DATETIME's core is
+    // (2024<<50)|(1<<46)|(2<<41)|(3<<36)|(4<<30)|(5<<24)|(6000<<4)
+    // = 0x1fa0443105017700. Duration is LE 1_250_000_000 ns + LE u32 FSP 6.
+    // The unchanged expression controller sets temporal FSP=6 before the
+    // datatype constructor, preserves JSON clones, and guards SQL NULL.
+    // This is datatype-construction consumer evidence, not a migration of
+    // builtin_ext/json/value.rs's CAST/document/value selector.
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        for &(projection, expected) in &cases {
+            let sql = format!("SELECT {projection} FROM native_json_construction_sql");
+            let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap() else {
+                panic!("expected typed JSON construction rows: {sql}")
+            };
+            assert_eq!(columns.len(), expected.len(), "{sql}");
+            assert_eq!(rows.len(), 1, "{sql}");
+            assert_eq!(rows[0].len(), expected.len(), "{sql}");
+            for (index, expected) in expected.iter().enumerate() {
+                let field = &columns[index].1;
+                assert_eq!(field.code(), FieldTypeCode::Json);
+                assert_eq!((field.flen(), field.decimal()), (4_194_304, 0));
+                assert_eq!(field.charset_name(), "utf8mb4");
+                assert_eq!(field.collation_name(), "utf8mb4_bin");
+                assert!(field.has_flag(FieldTypeFlags::BINARY));
+                assert!(field.has_flag(FieldTypeFlags::PARSE_TO_JSON));
+                assert!(!field.is_unsigned());
+                if let Some((tag, payload, text)) = expected {
+                    let Datum::Json(value) = &rows[0][index] else {
+                        panic!("lost typed JSON carrier: {sql}/{index}")
+                    };
+                    assert_eq!(value.type_code(), *tag, "{sql}/{vectorized}/{index}");
+                    assert_eq!(value.value(), *payload, "{sql}/{vectorized}/{index}");
+                    assert_eq!(value.to_string(), *text, "{sql}/{vectorized}/{index}");
+                } else {
+                    assert_eq!(rows[0][index], Datum::Null, "{sql}/{vectorized}/{index}");
+                }
+            }
+            assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+        }
+        // A one-item IN rewrites to equality. Two nonconstant column entries
+        // retain typed IN (constant deduplication cannot remove them), whose
+        // JSON wrappers use VALUE coercion rather than parsing s='1' as JSON.
+        let sql = "SELECT jnum IN(s,s),jnum IN(u,u),jstr IN(s,s),jstr IN(u,u) FROM native_json_construction_sql";
+        let StmtOutput::Rows { columns, rows } = session.run_with_columns(sql).unwrap() else {
+            panic!("expected typed JSON IN rows")
+        };
+        assert_eq!(columns.len(), 4);
+        for (_, field) in &columns {
+            assert_eq!(field.code(), FieldTypeCode::LongLong);
+            assert_eq!((field.flen(), field.decimal()), (1, 0));
+            assert_eq!(field.charset_name(), "binary");
+            assert_eq!(field.collation_name(), "binary");
+            assert!(field.has_flag(FieldTypeFlags::IS_BOOLEAN));
+            assert!(!field.is_unsigned());
+        }
+        assert_eq!(
+            rows,
+            vec![vec![
+                Datum::Int(0),
+                Datum::Int(1),
+                Datum::Int(1),
+                Datum::Int(0)
+            ]],
+            "vectorized={vectorized}"
+        );
+        assert!(warnings_of(&session).is_empty());
+    }
+    // One unchanged expression-control failure, outside the dual-mode matrix.
+    let error = session
+        .run_with_columns("SELECT CAST(bad_text AS JSON) FROM native_json_construction_sql")
+        .unwrap_err();
+    assert!(matches!(
+        &error,
+        DriverError::Exec(tidb_executor::ExecError::Eval(
+            tidb_executor::EvalError::Json(tidb_executor::JsonError::InvalidText)
+        ))
+    ));
+    let mysql = error.to_mysql_error();
+    assert_eq!(mysql.code, 3140);
+    assert_eq!(mysql.state, *b"22032");
+    assert_eq!(
+        mysql.message,
+        "Invalid JSON text: The document root must not be followed by other values."
+    );
+    assert!(mysql.is_from_evaluation());
+    assert!(warnings_of(&session).is_empty());
+    // Raw Float32/nonfinite/invalid binary/FSP/depth/key-limit unit domains,
+    // new worker Heads and zero-slot/whole-JSON-family credit are not claimed.
+}
+
+#[test]
 fn native_vector_cast_policy_preserves_stored_domains_dimensions_and_typed_errors() {
     use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
 

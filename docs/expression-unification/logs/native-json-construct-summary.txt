@@ -1,0 +1,52 @@
+native-json-construct-114 / R117 JSON datatype foundation, not expression-selector/wholeJSON/M2/Go-package completion.
+Functional238/245 strict0 remaining7 unchanged. TiKV cwd /home/agent/tidb/expression-unification/tikv; Native cwd /home/agent/tidb/expression-unification/tidb/rust.
+Raw /home/agent/tidb/expression-unification/logs/native-json-construct-{id}.log
+Counts passed/failed/ignored/filtered; compile/test seconds; all exits0.
+
+tikv-build | 2/0/0/479 | 4.43/0.00
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_json_construct -- --test-threads=1
+sha256 f820548aa931416a5e8a142895638fd61c26777679f05635b2c770ea3a69eac1
+
+tikv-datum | 1/0/0/480 | 0.21/0.00
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_mysql_json -- --test-threads=1
+sha256 a61aef07791a7f16c3c15cab5756ec3d84fe22e7c09d6c6d47f3695220b682bc
+
+native-datatype | 466/0/0/0 | 3.82/7.33
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+sha256 cae9b25d2879f857e497e7df8bd98beb0c63dd5d79836875d29e6f3f39393e5d
+
+native-json | 44/0/0/1679 | 22.48/0.37
+../../tools/cargo-tidb test --locked -p tidb-expr --lib builtin_ext::json::tests -- --test-threads=1
+sha256 eb7440825ed964eb955cd330ff767bb1d33927ca67efbd78090fc2f7276385e9
+
+native-cast | 16/0/0/1707 | 0.18/0.00
+../../tools/cargo-tidb test --locked -p tidb-expr --lib test_cast_func -- --test-threads=1
+sha256 41a288b7ab125eaab6c4b88482631875430c23b110e73ddf62965e3557058fa1
+
+sql | 1/0/0/2256 | 38.80/0.03
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_json_construction_preserves_sql_tags_opaque_temporals_and_value_coercion -- --exact --test-threads=1
+sha256 a2d380c945242a2310010842936fe6c54c6cf6b861a07faf88d65f37d1e21c8c
+
+sql-original | 1/0/0/2256 | 0.23/0.02
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_json::cast_as_json_keeps_gos_typed_names -- --exact --test-threads=1
+sha256 6c27a670adfff8c8fd76e7fad6472954d5dc706f4005a1b545aadd2531d71be3
+
+sql-aggregate | 1/0/0/2256 | 0.18/0.03
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_json::json_aggregates_wrap_binary_charset_values_as_opaque -- --exact --test-threads=1
+sha256 898b01d7c5f82ba2dabc23a46f0150262057055701971ed446150e9182843b65
+
+sql-string | 1/0/0/2256 | 0.17/0.03
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_datum_sql_string_preserves_stored_cast_formatting_and_exact_payloads -- --exact --test-threads=1
+sha256 bda743f7ac3b3be363cecf566457cf49ece8f138cb0a20984b8abd7fdcb087b8
+
+9serial locked single-threaded matched launches/9GREEN firstattempt;0compilefail/testfail/ignored/zero-match/interrupt/retry.6newtests=SDK3/native3.3SDK+4nativeRustfiles,2newlive;0SDK+216native oldtestbodies unchanged. No oldfixtures/oracles/observers changed. Newexpectations fixedsource-derived tags/bytes/IEEEbits/errors, not provider/constructor/parser output. Full native datatype library is not whole-Go-package transcreation. Existing vectorized String-to-DECIMAL UNION ignore NOTselected/passed/repaired. PriorR116NULL RED andR113RED remain historical, not erased.
+
+SQL9SELECT=8success(4projections x2vector)+1invalidJSONcontrol(vector1);30successcells=20JSON+2SQLNULL+8INints. StoredBINARY3/VARBINARY3 opaque254 abNUL(YWIA) vs15ab(YWI=); unsigned1 tag0a vsDecimal1.25 double0b; DATETIME/TIME3 cast retainsunchangedexprfsp6 andliteralrawcore/nanos bytes; storedJSON signed1/string1/JSONnull rawclone versusSQLNULLguard andVARCHAR1 documentparse. Two-item repeatednonconstant IN avoidsrewriter single-IN→EQ, preservesvaluepolicy jnum IN(s,s)/IN(u,u),jstr same→0,1,1,0. JSONheader4194304/0,utf8mb4/utf8mb4_bin BINARY|PARSE; INLongLong1/0 binary IS_BOOLEAN. InvalidJSON control3140/22032/evalorigin/exactmessage/emptywarnings unchanged. Theseareexistingcontrollersconsumingnewdatatypeimplementation, notcontroller migration.
+
+SDKnative_json_construct owns13kind typedview→wholelogicaltree→existingnodeencoder and9scalarprimitives i64/u64/f64/literal/number/string/opaque/time/duration. Native typed_value_to_node andorphanvarintbody deleted; fromtyped/rawconstructors/number/literal/stringarm thinshared. fnptr isonelevelborrowedfieldprojection only, nothost policy/formatter/parser. Nativeparse/surrogate/serdearray-object traversal remain unchanged; from_value isNOT redirectedtotypeNode becauseerrororderdiffers.
+
+SDKnative_mysql_json owns ordinary/source-aware Datum conversion overreused19kindNativeSqlStringInput; stringifyvisibilityonlypub(super), no newpublictransport. DirectString/Bytes/Literal/Bit UTF8 errors remainInvalidUtf8; Enum/Set/Raw/sentinelfallbackerrors→Unsupported(actualkind,json); Vector→JSONstringviaSDKsql_string. DatumJsonrawclone(includingmalformed) distinctfromtypedBinarydecode/encode validation. SmallUIntunsignedtag; Float32rawf64 notnarrow; Decimalvisibleconversionreuse; Timecore/kindnoFSP; Durationnanos+uncheckedfspu32. Sourceactualcode2views/collation/flen, Bytesalwaysopaque/Stringexactbinarycollation, onlyknownString254+positiveflenresize(padANDtruncate); Unknown254noresize butrawtype254; arrayeffectiveJson. No normalization/wirealias/newrenderer/hostpolicycallback.
+
+Typedcompletebuildbeforefinaldepth/key check preservesbadNumber/embeddedBinary precedence; nativeSerdekey-beforechildpolicy remains. Numberi64→u64→f64 andserdeNumberfiniteboundary preserved. Rawnoncanonical/depth/key/Unknown domains unitonly, nofakeSQLcoverage. Originalnodecodec/valueparser/JSONexpressioncontrollers/C4/frozenASTNOTIN lock unchanged. No newprofile/carrier/admission/performance/physicalallocation/zero-copyclaim. AppendonepartialCAST+onetype record;238oldfamilies/priorhistory unchanged, latestfunctional106/type-partial-runtime114 strict0remaining7goalactive.
+
+JSONtext/parser/container/expressioncontrollers, otherCAST/typed-vector/UNION/conversions,broaderM2/sixcomplexcandidates/root/liveDAG/final remain. FullExpr/Unistore/workspace/lint/dev/bazel/release/exhaustive/perf/physicalmemory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR-ready unverified; R100expression4/unistore1 historicalunrepaired. NoGo/Bazel/Cargo/lock changes; unrelatedBUILD excluded. Architecture/guide ownership updated withoutnormativepolicy; pairedDCO pushes/threeidenticalPlans.

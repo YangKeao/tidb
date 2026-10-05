@@ -114,7 +114,7 @@ impl Datum {
 
     // Only transports actual kind/storage. The shared owner selects rendering,
     // UTF-8 policy and sentinel errors; no constructors normalize raw metadata.
-    fn as_shared_sql_string(&self) -> NativeSqlStringInput<'_> {
+    pub(super) fn as_shared_sql_string(&self) -> NativeSqlStringInput<'_> {
         match self {
             Self::Int(value) => NativeSqlStringInput::Int(*value),
             Self::UInt(value) => NativeSqlStringInput::UInt(*value),

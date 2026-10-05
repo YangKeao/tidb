@@ -26,6 +26,13 @@ use tidb_query_datatype::codec::mysql::json::{
     NativeBinaryJsonError, NativeJsonNode,
 };
 
+use tidb_query_datatype::codec::mysql::time::NativeTemporalValue;
+use tidb_query_datatype::codec::native_json_construct::{
+    native_json_encode_number, native_json_from_duration, native_json_from_opaque,
+    native_json_from_string, native_json_from_time, native_json_from_typed, native_json_literal,
+    NativeJsonConstructError, NativeJsonTypedInput,
+};
+
 use crate::{CoreTime, MySqlDuration, Time, TimeType};
 
 /// BinaryJSON object type code.
@@ -194,27 +201,18 @@ impl BinaryJSON {
 
     /// Builds a source-layout opaque JSON value.
     pub fn from_opaque(value: Opaque) -> Self {
-        let mut bytes = Vec::with_capacity(2 + value.bytes.len());
-        bytes.push(value.type_code);
-        encode_uvarint(value.bytes.len(), &mut bytes);
-        bytes.extend_from_slice(&value.bytes);
-        Self {
-            type_code: JSON_TYPE_CODE_OPAQUE,
-            value: bytes,
-        }
+        let (type_code, bytes) = native_json_from_opaque(value.type_code, &value.bytes);
+        Self::from_encoded_parts(type_code, bytes)
     }
 
     /// Embeds a MySQL date, datetime, or timestamp.
     pub fn from_time(value: Time) -> Self {
-        let type_code = match value.kind() {
-            TimeType::Date => JSON_TYPE_CODE_DATE,
-            TimeType::DateTime => JSON_TYPE_CODE_DATETIME,
-            TimeType::Timestamp => JSON_TYPE_CODE_TIMESTAMP,
-        };
-        Self {
-            type_code,
-            value: value.core_time().raw().to_le_bytes().to_vec(),
-        }
+        let (type_code, bytes) = native_json_from_time(NativeTemporalValue {
+            raw: value.core_time().raw(),
+            kind: value.kind(),
+            fsp: value.fsp(),
+        });
+        Self::from_encoded_parts(type_code, bytes)
     }
 
     /// Decodes an embedded MySQL date, datetime, or timestamp.
@@ -236,12 +234,8 @@ impl BinaryJSON {
 
     /// Embeds a MySQL TIME duration.
     pub fn from_duration(value: MySqlDuration) -> Self {
-        let mut bytes = value.nanoseconds().to_le_bytes().to_vec();
-        bytes.extend_from_slice(&(value.fsp() as u32).to_le_bytes());
-        Self {
-            type_code: JSON_TYPE_CODE_DURATION,
-            value: bytes,
-        }
+        let (type_code, bytes) = native_json_from_duration(value.nanoseconds(), value.fsp());
+        Self::from_encoded_parts(type_code, bytes)
     }
 
     /// Decodes an embedded MySQL TIME duration.
@@ -285,7 +279,9 @@ impl BinaryJSON {
 
     /// Builds a BinaryJSON value from every source-supported input type.
     pub fn from_typed_value(value: &BinaryJSONValue) -> Result<Self, BinaryJSONError> {
-        Self::from_node(&typed_value_to_node(value)?)
+        native_json_from_typed(value, typed_value_input)
+            .map(|(type_code, value)| Self::from_encoded_parts(type_code, value))
+            .map_err(native_json_construct_error)
     }
 
     /// Calculates the source binary payload size for a typed input.
@@ -392,53 +388,34 @@ impl BinaryJSON {
     }
 }
 
-fn typed_value_to_node(value: &BinaryJSONValue) -> Result<JSONNode, BinaryJSONError> {
-    let scalar = |value| Ok(JSONNode::Scalar(value));
+fn typed_value_input(value: &BinaryJSONValue) -> NativeJsonTypedInput<'_, BinaryJSONValue> {
     match value {
-        BinaryJSONValue::Null => scalar(literal(JSON_LITERAL_NULL)),
-        BinaryJSONValue::Bool(true) => scalar(literal(JSON_LITERAL_TRUE)),
-        BinaryJSONValue::Bool(false) => scalar(literal(JSON_LITERAL_FALSE)),
-        BinaryJSONValue::Int64(value) => scalar(BinaryJSON {
-            type_code: JSON_TYPE_CODE_INT64,
-            value: value.to_le_bytes().to_vec(),
+        BinaryJSONValue::Null => NativeJsonTypedInput::Null,
+        BinaryJSONValue::Bool(value) => NativeJsonTypedInput::Bool(*value),
+        BinaryJSONValue::Int64(value) => NativeJsonTypedInput::Int64(*value),
+        BinaryJSONValue::Uint64(value) => NativeJsonTypedInput::Uint64(*value),
+        BinaryJSONValue::Float64(value) => NativeJsonTypedInput::Float64(*value),
+        BinaryJSONValue::Number(value) => NativeJsonTypedInput::Number(value),
+        BinaryJSONValue::String(value) => NativeJsonTypedInput::String(value),
+        BinaryJSONValue::Binary(value) => NativeJsonTypedInput::Binary {
+            type_code: value.type_code(),
+            value: value.value(),
+        },
+        BinaryJSONValue::Array(values) => NativeJsonTypedInput::Array(values),
+        BinaryJSONValue::Object(values) => NativeJsonTypedInput::Object(values),
+        BinaryJSONValue::Opaque(value) => NativeJsonTypedInput::Opaque {
+            type_code: value.type_code,
+            bytes: &value.bytes,
+        },
+        BinaryJSONValue::Time(value) => NativeJsonTypedInput::Time(NativeTemporalValue {
+            raw: value.core_time().raw(),
+            kind: value.kind(),
+            fsp: value.fsp(),
         }),
-        BinaryJSONValue::Uint64(value) => scalar(BinaryJSON {
-            type_code: JSON_TYPE_CODE_UINT64,
-            value: value.to_le_bytes().to_vec(),
-        }),
-        BinaryJSONValue::Float64(value) => Number::from_f64(*value)
-            .ok_or(BinaryJSONError::InvalidText)
-            .and_then(|value| encode_number(&value))
-            .and_then(scalar),
-        BinaryJSONValue::Number(value) => {
-            if let Ok(value) = value.parse::<i64>() {
-                typed_value_to_node(&BinaryJSONValue::Int64(value))
-            } else if let Ok(value) = value.parse::<u64>() {
-                typed_value_to_node(&BinaryJSONValue::Uint64(value))
-            } else {
-                let value = value
-                    .parse::<f64>()
-                    .map_err(|_| BinaryJSONError::InvalidText)?;
-                typed_value_to_node(&BinaryJSONValue::Float64(value))
-            }
-        }
-        BinaryJSONValue::String(value) => {
-            encode_value(&Value::String(value.clone()), 0).and_then(scalar)
-        }
-        BinaryJSONValue::Binary(value) => value.to_node(),
-        BinaryJSONValue::Array(values) => values
-            .iter()
-            .map(typed_value_to_node)
-            .collect::<Result<Vec<_>, _>>()
-            .map(JSONNode::Array),
-        BinaryJSONValue::Object(values) => values
-            .iter()
-            .map(|(key, value)| Ok((key.clone(), typed_value_to_node(value)?)))
-            .collect::<Result<Vec<_>, _>>()
-            .map(JSONNode::Object),
-        BinaryJSONValue::Opaque(value) => scalar(BinaryJSON::from_opaque(value.clone())),
-        BinaryJSONValue::Time(value) => scalar(BinaryJSON::from_time(*value)),
-        BinaryJSONValue::Duration(value) => scalar(BinaryJSON::from_duration(*value)),
+        BinaryJSONValue::Duration(value) => NativeJsonTypedInput::Duration {
+            nanoseconds: value.nanoseconds(),
+            fsp: value.fsp(),
+        },
     }
 }
 
@@ -570,13 +547,8 @@ fn encode_value(value: &Value, depth: usize) -> Result<BinaryJSON, BinaryJSONErr
         Value::Bool(false) => Ok(literal(JSON_LITERAL_FALSE)),
         Value::Number(number) => encode_number(number),
         Value::String(text) => {
-            let mut bytes = Vec::new();
-            encode_uvarint(text.len(), &mut bytes);
-            bytes.extend_from_slice(text.as_bytes());
-            Ok(BinaryJSON {
-                type_code: JSON_TYPE_CODE_STRING,
-                value: bytes,
-            })
+            let (type_code, value) = native_json_from_string(text);
+            Ok(BinaryJSON::from_encoded_parts(type_code, value))
         }
         Value::Array(values) => encode_array(values, depth + 1),
         Value::Object(values) => encode_object(values, depth + 1),
@@ -584,29 +556,22 @@ fn encode_value(value: &Value, depth: usize) -> Result<BinaryJSON, BinaryJSONErr
 }
 
 fn literal(value: u8) -> BinaryJSON {
-    BinaryJSON {
-        type_code: JSON_TYPE_CODE_LITERAL,
-        value: vec![value],
-    }
+    let (type_code, value) = native_json_literal(value);
+    BinaryJSON::from_encoded_parts(type_code, value)
 }
 
 fn encode_number(number: &Number) -> Result<BinaryJSON, BinaryJSONError> {
-    if let Some(value) = number.as_i64() {
-        Ok(BinaryJSON {
-            type_code: JSON_TYPE_CODE_INT64,
-            value: value.to_le_bytes().to_vec(),
-        })
-    } else if let Some(value) = number.as_u64() {
-        Ok(BinaryJSON {
-            type_code: JSON_TYPE_CODE_UINT64,
-            value: value.to_le_bytes().to_vec(),
-        })
-    } else {
-        let value = number.as_f64().ok_or(BinaryJSONError::InvalidText)?;
-        Ok(BinaryJSON {
-            type_code: JSON_TYPE_CODE_FLOAT64,
-            value: value.to_bits().to_le_bytes().to_vec(),
-        })
+    native_json_encode_number(number)
+        .map(|(type_code, value)| BinaryJSON::from_encoded_parts(type_code, value))
+        .map_err(native_json_construct_error)
+}
+
+pub(crate) fn native_json_construct_error(error: NativeJsonConstructError) -> BinaryJSONError {
+    match error {
+        NativeJsonConstructError::InvalidText => BinaryJSONError::InvalidText,
+        NativeJsonConstructError::InvalidBinary => BinaryJSONError::InvalidBinary,
+        NativeJsonConstructError::TooDeep => BinaryJSONError::TooDeep,
+        NativeJsonConstructError::KeyTooLong => BinaryJSONError::KeyTooLong,
     }
 }
 
@@ -691,12 +656,155 @@ fn write_header(output: &mut [u8], count: usize) -> Result<(), BinaryJSONError> 
     write_native_binary_json_header(output, count).map_err(native_binary_json_encode_error)
 }
 
-fn encode_uvarint(mut value: usize, output: &mut Vec<u8>) {
-    while value >= 0x80 {
-        output.push((value as u8) | 0x80);
-        value >>= 7;
+#[cfg(test)]
+#[test]
+fn typed_json_construction_keeps_fixed_bytes_raw_temporals_and_original_error_order() {
+    use BinaryJSONValue as Input;
+    for (input, expected) in [
+        (Input::Null, vec![0x04, 0]),
+        (Input::Bool(true), vec![0x04, 1]),
+        (Input::Bool(false), vec![0x04, 2]),
+        (Input::Int64(1), vec![0x09, 1, 0, 0, 0, 0, 0, 0, 0]),
+        (
+            Input::Uint64(u64::MAX),
+            vec![0x0a, 255, 255, 255, 255, 255, 255, 255, 255],
+        ),
+        (
+            Input::Number("18446744073709551615".into()),
+            vec![0x0a, 255, 255, 255, 255, 255, 255, 255, 255],
+        ),
+        (Input::Float64(-0.0), vec![0x0b, 0, 0, 0, 0, 0, 0, 0, 128]),
+        (Input::String("é\0".into()), vec![0x0c, 3, 0xc3, 0xa9, 0]),
+    ] {
+        let encoded = BinaryJSON::from_typed_value(&input).unwrap();
+        assert_eq!(encoded.encoded(), expected);
+        assert_eq!(
+            BinaryJSON::calculate_typed_size(&input).unwrap(),
+            expected.len() - 1
+        );
     }
-    output.push(value as u8);
+    let array = Input::Array(vec![Input::Int64(1), Input::String("a".into())]);
+    assert_eq!(
+        BinaryJSON::from_typed_value(&array).unwrap().encoded(),
+        vec![
+            0x03, 2, 0, 0, 0, 28, 0, 0, 0, 0x09, 18, 0, 0, 0, 0x0c, 26, 0, 0, 0, 1, 0, 0, 0, 0, 0,
+            0, 0, 1, b'a'
+        ]
+    );
+    let opaque = Opaque {
+        type_code: 255,
+        bytes: vec![0x91; 128],
+    };
+    let mut opaque_bytes = vec![0x0d, 255, 0x80, 1];
+    opaque_bytes.extend_from_slice(&[0x91; 128]);
+    assert_eq!(
+        BinaryJSON::from_opaque(opaque.clone()).encoded(),
+        opaque_bytes
+    );
+    assert_eq!(
+        BinaryJSON::from_typed_value(&Input::Opaque(opaque))
+            .unwrap()
+            .encoded(),
+        opaque_bytes
+    );
+    for (kind, tag) in [
+        (TimeType::Date, 0x0e),
+        (TimeType::DateTime, 0x0f),
+        (TimeType::Timestamp, 0x10),
+    ] {
+        let time = Time::from_raw_parts(CoreTime::from_raw(0xfedc_ba98_7654_3210), kind, 255);
+        let expected = vec![tag, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe];
+        assert_eq!(BinaryJSON::from_time(time).encoded(), expected);
+        assert_eq!(
+            BinaryJSON::from_typed_value(&Input::Time(time))
+                .unwrap()
+                .encoded(),
+            expected
+        );
+    }
+    let duration = MySqlDuration::from_raw_parts(-1, -1);
+    let mut duration_bytes = vec![0x11];
+    duration_bytes.extend_from_slice(&[255; 12]);
+    let direct_duration = BinaryJSON::from_duration(duration);
+    assert_eq!(direct_duration.encoded(), duration_bytes);
+    assert_eq!(
+        direct_duration.as_duration().unwrap().fsp(),
+        i64::from(u32::MAX)
+    );
+    assert_eq!(
+        BinaryJSON::from_typed_value(&Input::Duration(duration))
+            .unwrap()
+            .encoded(),
+        duration_bytes
+    );
+    let encoded_array = BinaryJSON::from_typed_value(&array).unwrap();
+    assert_eq!(
+        BinaryJSON::from_typed_value(&Input::Binary(encoded_array.clone())).unwrap(),
+        encoded_array
+    );
+    let malformed = BinaryJSON::from_encoded_parts(JSON_TYPE_CODE_OBJECT, Vec::new());
+    assert_eq!(
+        BinaryJSON::from_typed_value(&Input::Binary(malformed)),
+        Err(BinaryJSONError::InvalidBinary)
+    );
+    assert_eq!(
+        BinaryJSON::from_typed_value(&Input::Float64(f64::NAN)),
+        Err(BinaryJSONError::InvalidText)
+    );
+    let long_key = "x".repeat(usize::from(u16::MAX) + 1);
+    let mut invalid_child = BTreeMap::new();
+    invalid_child.insert(long_key.clone(), Input::Number("bad".into()));
+    assert_eq!(
+        BinaryJSON::from_typed_value(&Input::Object(invalid_child)),
+        Err(BinaryJSONError::InvalidText)
+    );
+    let mut deep_typed = Input::Null;
+    let mut deep_serde = Value::Null;
+    for _ in 0..101 {
+        deep_typed = Input::Array(vec![deep_typed]);
+        deep_serde = Value::Array(vec![deep_serde]);
+    }
+    // Construction visits the later invalid scalar before node depth checking.
+    assert_eq!(
+        BinaryJSON::from_typed_value(&Input::Array(vec![
+            deep_typed.clone(),
+            Input::Number("bad".into())
+        ])),
+        Err(BinaryJSONError::InvalidText)
+    );
+    let mut typed_object = BTreeMap::new();
+    typed_object.insert(long_key.clone(), deep_typed);
+    assert_eq!(
+        BinaryJSON::from_typed_value(&Input::Object(typed_object)),
+        Err(BinaryJSONError::TooDeep)
+    );
+    let mut serde_object = Map::new();
+    serde_object.insert(long_key.clone(), deep_serde);
+    // Generic serde construction retains its distinct key-before-child order.
+    assert_eq!(
+        BinaryJSON::from_value(&Value::Object(serde_object)),
+        Err(BinaryJSONError::KeyTooLong)
+    );
+    let mut only_long_key = BTreeMap::new();
+    only_long_key.insert(long_key, Input::Null);
+    assert_eq!(
+        BinaryJSON::from_typed_value(&Input::Object(only_long_key)),
+        Err(BinaryJSONError::KeyTooLong)
+    );
+    assert_eq!(
+        BinaryJSON::parse("\"\\ud800\"").unwrap().encoded(),
+        vec![0x0c, 3, 0xef, 0xbf, 0xbd]
+    );
+    assert_eq!(
+        BinaryJSON::parse("true false"),
+        Err(BinaryJSONError::TrailingValues)
+    );
+    assert_eq!(
+        BinaryJSON::from_typed_value(&Input::String("\\ud800".into()))
+            .unwrap()
+            .encoded(),
+        vec![0x0c, 6, b'\\', b'u', b'd', b'8', b'0', b'0']
+    );
 }
 
 #[cfg(test)]

@@ -20,12 +20,16 @@
 //! (`pkg/executor/aggfuncs/func_json_objectagg.go`).
 
 use std::cmp::Ordering;
+use tidb_query_datatype::codec::native_mysql_json::{
+    native_datum_to_mysql_json, native_datum_to_mysql_json_with_source, NativeDatumJsonError,
+    NativeDatumJsonSource,
+};
 
 use super::{decimal_from_bytes, Datum, DatumStringError, DatumValueError};
 use crate::{
     compare_binary_json, json_to_decimal, json_to_float, json_to_int64, str_to_float, str_to_int,
-    BinaryJSON, BinaryJSONValue, BinaryLiteral, Collation, Converted, Decimal,
-    ScalarConversionEvent, DEFAULT_STATEMENT_FLAGS,
+    BinaryJSON, BinaryLiteral, Collation, Converted, Decimal, ScalarConversionEvent,
+    DEFAULT_STATEMENT_FLAGS,
 };
 
 impl Datum {
@@ -406,26 +410,9 @@ impl Datum {
 
     /// Source `Datum.ToMysqlJSON`.
     pub fn to_mysql_json(&self) -> Result<BinaryJSON, DatumValueError> {
-        let value = match self {
-            Self::Json(value) => return Ok(value.clone()),
-            Self::Int(value) => BinaryJSONValue::Int64(*value),
-            Self::UInt(value) => BinaryJSONValue::Uint64(*value),
-            Self::Real(value) | Self::Float32(value) => BinaryJSONValue::Float64(*value),
-            Self::Decimal(value) => BinaryJSONValue::Float64(value.to_f64()),
-            Self::String(value) => BinaryJSONValue::String(value.as_utf8()?.to_owned()),
-            Self::Bytes(value) => BinaryJSONValue::String(std::str::from_utf8(value)?.to_owned()),
-            Self::BinaryLiteral(value) | Self::Bit(value) => {
-                BinaryJSONValue::String(std::str::from_utf8(value.as_bytes())?.to_owned())
-            }
-            Self::Null => BinaryJSONValue::Null,
-            Self::Time(value) => BinaryJSONValue::Time(*value),
-            Self::Duration(value) => BinaryJSONValue::Duration(*value),
-            _ => BinaryJSONValue::String(
-                self.sql_string()
-                    .map_err(|_| DatumValueError::Unsupported(self.kind(), "json"))?,
-            ),
-        };
-        BinaryJSON::from_typed_value(&value).map_err(Into::into)
+        native_datum_to_mysql_json(self.as_shared_sql_string())
+            .map(|(type_code, value)| BinaryJSON::from_encoded_parts(type_code, value))
+            .map_err(|error| from_shared_mysql_json_error(self.kind(), error))
     }
 
     /// As [`Self::to_mysql_json`], but a `Bytes` payload -- and a `String`
@@ -446,25 +433,29 @@ impl Datum {
         &self,
         field_type: &crate::FieldType,
     ) -> Result<BinaryJSON, DatumValueError> {
-        let buf = match self {
-            Self::Bytes(value) => Some(value.clone()),
-            Self::String(value) if field_type.is_binary_string() => Some(value.bytes().to_vec()),
-            _ => None,
+        let code = field_type.code();
+        let source = NativeDatumJsonSource {
+            code: code.as_shared_type_name_code(),
+            string_code: code.as_shared_string_type(),
+            collation: field_type.collation_name(),
+            flen: field_type.flen(),
         };
-        let Some(mut buf) = buf else {
-            return self.to_mysql_json();
-        };
-        if field_type.code() == crate::FieldTypeCode::String {
-            let flen = field_type.flen();
-            if flen > 0 {
-                buf.resize(flen as usize, 0);
-            }
+        native_datum_to_mysql_json_with_source(self.as_shared_sql_string(), source)
+            .map(|(type_code, value)| BinaryJSON::from_encoded_parts(type_code, value))
+            .map_err(|error| from_shared_mysql_json_error(self.kind(), error))
+    }
+}
+
+fn from_shared_mysql_json_error(
+    kind: super::DatumKind,
+    error: NativeDatumJsonError,
+) -> DatumValueError {
+    match error {
+        NativeDatumJsonError::InvalidUtf8(error) => DatumValueError::InvalidUtf8(error),
+        NativeDatumJsonError::Unsupported => DatumValueError::Unsupported(kind, "json"),
+        NativeDatumJsonError::Construct(error) => {
+            crate::binary_json::native_json_construct_error(error).into()
         }
-        let opaque = crate::Opaque {
-            type_code: field_type.code().mysql_type(),
-            bytes: buf,
-        };
-        BinaryJSON::from_typed_value(&BinaryJSONValue::Opaque(opaque)).map_err(Into::into)
     }
 }
 
@@ -837,4 +828,184 @@ mod tests {
             .unwrap();
         assert_eq!(opaque.type_name().unwrap(), "BLOB");
     }
+}
+
+#[cfg(test)]
+#[test]
+fn shared_mysql_json_facade_keeps_actual_kinds_errors_and_effective_source_metadata() {
+    use crate::{
+        BinaryJSONError, CoreTime, DatumKind, FieldType, FieldTypeCode, MySqlDuration, MysqlEnum,
+        MysqlSet, Time, TimeType, VectorFloat32,
+    };
+    fn assert_parts(value: BinaryJSON, kind: u8, bytes: &[u8]) {
+        assert_eq!(value.type_code(), kind);
+        assert_eq!(value.value(), bytes);
+    }
+    let cases = vec![
+        (Datum::Null, 0x04, vec![0]),
+        (Datum::Int(-1), 0x09, vec![0xff; 8]),
+        (Datum::UInt(u64::MAX), 0x0a, vec![0xff; 8]),
+        (
+            Datum::Real(1.25),
+            0x0b,
+            1.25_f64.to_bits().to_le_bytes().to_vec(),
+        ),
+        (
+            Datum::Float32(16_777_217.0),
+            0x0b,
+            16_777_217.0_f64.to_bits().to_le_bytes().to_vec(),
+        ),
+        (
+            Datum::Decimal(
+                Decimal::from_raw_parts(false, b"125".to_vec(), 1, 2).with_declared_shape(20, 8),
+            ),
+            0x0b,
+            1.3_f64.to_bits().to_le_bytes().to_vec(),
+        ),
+        (Datum::new_string("s"), 0x0c, vec![1, b's']),
+        (Datum::Bytes(vec![b'b']), 0x0c, vec![1, b'b']),
+        (
+            Datum::BinaryLiteral(BinaryLiteral::from(vec![b'l'])),
+            0x0c,
+            vec![1, b'l'],
+        ),
+        (
+            Datum::Bit(BinaryLiteral::from(vec![b't'])),
+            0x0c,
+            vec![1, b't'],
+        ),
+        (
+            Datum::new_enum(MysqlEnum::new("e", 99), Collation::Binary),
+            0x0c,
+            vec![1, b'e'],
+        ),
+        (
+            Datum::new_set(MysqlSet::new("s", 99), Collation::Binary),
+            0x0c,
+            vec![1, b's'],
+        ),
+        (Datum::Raw(vec![b'r']), 0x0c, vec![1, b'r']),
+        (
+            Datum::Time(Time::from_raw_parts(
+                CoreTime::from_raw(u64::MAX),
+                TimeType::Timestamp,
+                u8::MAX,
+            )),
+            0x10,
+            vec![0xff; 8],
+        ),
+        (
+            Datum::Duration(MySqlDuration::from_raw_parts(-1, -1)),
+            0x11,
+            vec![0xff; 12],
+        ),
+        (
+            Datum::Json(BinaryJSON::from_encoded_parts(0x03, vec![0xff])),
+            0x03,
+            vec![0xff],
+        ),
+        (
+            Datum::VectorFloat32(VectorFloat32::default()),
+            0x0c,
+            vec![2, b'[', b']'],
+        ),
+    ];
+    for (value, kind, bytes) in cases {
+        assert_parts(value.to_mysql_json().unwrap(), kind, &bytes);
+    }
+    for value in [
+        Datum::new_string(vec![0xff]),
+        Datum::Bytes(vec![0xff]),
+        Datum::BinaryLiteral(BinaryLiteral::from(vec![0xff])),
+        Datum::Bit(BinaryLiteral::from(vec![0xff])),
+    ] {
+        assert!(matches!(
+            value.to_mysql_json(),
+            Err(DatumValueError::InvalidUtf8(_))
+        ));
+    }
+    for value in [
+        Datum::new_enum(MysqlEnum::new([0xff], 1), Collation::Binary),
+        Datum::new_set(MysqlSet::new([0xff], 1), Collation::Binary),
+        Datum::Raw(vec![0xff]),
+        Datum::MinNotNull,
+        Datum::MaxValue,
+    ] {
+        assert_eq!(
+            value.to_mysql_json().unwrap_err(),
+            DatumValueError::Unsupported(value.kind(), "json")
+        );
+    }
+    assert_eq!(
+        Datum::Float32(f64::INFINITY).to_mysql_json().unwrap_err(),
+        DatumValueError::Json(BinaryJSONError::InvalidText)
+    );
+    assert_eq!(
+        Datum::MinNotNull.to_mysql_json().unwrap_err(),
+        DatumValueError::Unsupported(DatumKind::MinNotNull, "json")
+    );
+    let fixed = FieldType::new(FieldTypeCode::String)
+        .with_collation_name("binary")
+        .with_flen(5);
+    assert_parts(
+        Datum::new_string("abcd")
+            .to_mysql_json_with_source_type(&fixed)
+            .unwrap(),
+        0x0d,
+        &[254, 5, b'a', b'b', b'c', b'd', 0],
+    );
+    assert_parts(
+        Datum::Bytes(b"abcd".to_vec())
+            .to_mysql_json_with_source_type(&fixed.clone().with_flen(2))
+            .unwrap(),
+        0x0d,
+        &[254, 2, b'a', b'b'],
+    );
+    let unknown = FieldType::new(FieldTypeCode::Unknown(254))
+        .with_collation_name("binary")
+        .with_flen(5);
+    assert_parts(
+        Datum::Bytes(b"ab".to_vec())
+            .to_mysql_json_with_source_type(&unknown)
+            .unwrap(),
+        0x0d,
+        &[254, 2, b'a', b'b'],
+    );
+    assert_parts(
+        Datum::new_string("ab")
+            .to_mysql_json_with_source_type(&unknown)
+            .unwrap(),
+        0x0c,
+        &[2, b'a', b'b'],
+    );
+    let array = fixed.clone().with_array(true);
+    assert_parts(
+        Datum::Bytes(vec![0xff])
+            .to_mysql_json_with_source_type(&array)
+            .unwrap(),
+        0x0d,
+        &[245, 1, 0xff],
+    );
+    assert!(matches!(
+        Datum::new_string(vec![0xff]).to_mysql_json_with_source_type(&array),
+        Err(DatumValueError::InvalidUtf8(_))
+    ));
+    let not_binary = fixed
+        .clone()
+        .with_charset_name("binary")
+        .with_collation_name("utf8mb4_bin");
+    assert_parts(
+        Datum::new_string("ab")
+            .to_mysql_json_with_source_type(&not_binary)
+            .unwrap(),
+        0x0c,
+        &[2, b'a', b'b'],
+    );
+    assert_parts(
+        Datum::new_string("ab")
+            .to_mysql_json_with_source_type(&fixed.with_collation_name("BINARY"))
+            .unwrap(),
+        0x0c,
+        &[2, b'a', b'b'],
+    );
 }
