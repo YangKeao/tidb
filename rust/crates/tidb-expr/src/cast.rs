@@ -454,27 +454,7 @@ pub(crate) fn cast_arg_as_string(
     _source: Option<&tidb_datatype::FieldType>,
     _ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
-    match v {
-        // Go's early return: every `types.ETString` eval type, which is every
-        // string kind plus the two string-typed hybrids. Passing the datum
-        // through UNCHANGED (rather than flattening it to bytes here) is what
-        // keeps a `Datum::String`'s collation and a `Datum::Bytes`'s binary
-        // signature readable by the body -- see `crate::string_signature`.
-        Datum::Null
-        | Datum::String(_)
-        | Datum::Bytes(_)
-        | Datum::Enum(..)
-        | Datum::Set(..)
-        | Datum::BinaryLiteral(_) => Ok(v.clone()),
-        // The BIT arm above: raw bytes under the binary charset Go's `tp`
-        // was given, which in this tier is `Datum::Bytes`.
-        Datum::Bit(bits) => Ok(Datum::new_bytes(bits.as_bytes().to_vec())),
-        // Everything else takes one of `castAsStringFunctionClass`'s
-        // per-source signatures, all of which render the value's own text
-        // under the connection charset -- which is exactly what
-        // `crate::coerce::coerce_str_bytes` already is.
-        _ => Ok(crate::coerce::coerce_str_bytes(v)?.map_or(Datum::Null, Datum::new_string)),
-    }
+    crate::tikv::eval_cast_arg_as_string(v)
 }
 
 /// The result type Go's `WrapWithCastAsString` assigns to `source`.
@@ -488,24 +468,7 @@ pub(crate) fn cast_arg_as_string_type(
     explicit_collation: bool,
     connection: (&str, &str),
 ) -> tidb_datatype::FieldType {
-    if source.eval_type() == tidb_datatype::EvalType::String {
-        return source.clone();
-    }
-    let mut target = tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString);
-    if explicit_collation {
-        target.set_charset_name(source.charset_name());
-        target.set_collation_name(source.collation_name());
-    } else if source.code() == tidb_datatype::FieldTypeCode::Bit {
-        target.set_charset_name("binary");
-        target.set_collation_name("binary");
-    } else {
-        let (charset, collation) = connection;
-        target.set_charset_name(charset);
-        target.set_collation_name(collation);
-    }
-    target.set_flen(crate::rewriter::result_type::string_cast_flen(source));
-    target.set_decimal(tidb_datatype::UNSPECIFIED_LENGTH);
-    target
+    crate::tikv::eval_cast_arg_as_string_type(source, explicit_collation, connection)
 }
 
 /// `CAST(... AS YEAR)`: the operand's calendar year if it parses as a

@@ -25,6 +25,10 @@ mod batch;
 mod bounded_staleness;
 pub(crate) use bounded_staleness::eval_bounded_staleness_in;
 mod case_control;
+mod cast_arg_string;
+pub(crate) use cast_arg_string::{eval_cast_arg_as_string, eval_cast_arg_as_string_type};
+#[cfg(test)]
+mod cast_arg_string_tests;
 mod cast_decimal;
 pub(crate) use cast_decimal::{eval_cast_decimal_in, report_cast_decimal_input_in};
 mod cast_duration;

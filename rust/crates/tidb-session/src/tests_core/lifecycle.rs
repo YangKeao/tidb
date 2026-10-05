@@ -9363,6 +9363,43 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn shared_argument_string_preserves_binary_names_float_display_and_widths() {
+    let mut session = Session::new();
+    session.run("CREATE TABLE shared_arg_string_sql (b BIT(8), e ENUM('other','word'), f DOUBLE, d DECIMAL(10,2), r VARBINARY(2))").unwrap();
+    session
+        .run("INSERT INTO shared_arg_string_sql VALUES (b'11111111','word',1e30,1.20,x'ff00')")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        let StmtOutput::Rows { columns, rows } = session.run_with_columns(
+            "SELECT HEX(LTRIM(b)),QUOTE(e),CONCAT(f),CONCAT(d),HEX(CONCAT(r)),CONCAT(NULL) FROM shared_arg_string_sql"
+        ).unwrap() else { panic!("expected argument string rows") };
+        assert_eq!(
+            rows,
+            vec![vec![
+                Datum::new_string("FF"),
+                Datum::new_string("'word'"),
+                Datum::new_string("1000000000000000000000000000000"),
+                Datum::new_string("1.20"),
+                Datum::new_string("FF00"),
+                Datum::Null,
+            ]]
+        );
+        assert_eq!(columns.len(), 6);
+        assert_eq!(columns[2].1.flen(), 370);
+        assert_eq!(columns[3].1.flen(), 13);
+        assert!(warnings_of(&session).is_empty());
+    }
+}
+
+#[test]
 fn shared_datetime_controller_preserves_source_parsers_date_clock_and_diagnostics() {
     use tidb_datatype::{FieldTypeCode, TimeType};
     let mut session = Session::new();

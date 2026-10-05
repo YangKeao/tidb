@@ -2144,6 +2144,7 @@ pub(super) fn base64_needed_encoded_length(n: i64) -> i64 {
 /// stays FLOAT.
 /// `pkg/parser/mysql.MaxBlobWidth` and `MaxLongBlobWidth`.
 const MAX_BLOB_WIDTH: i64 = 16_777_216;
+#[cfg(test)]
 const MAX_LONG_BLOB_WIDTH: i64 = 4_294_967_295;
 
 fn ft_with_flen(mut ft: FieldType, flen: i64) -> FieldType {
@@ -2180,42 +2181,12 @@ fn clamp_blob_width(flen: i64) -> i64 {
 /// `decimalPrecisionToLength`. That leaves the unspecified path below, which
 /// is Go's answer for an argument of genuinely unknown width.
 pub(crate) fn string_cast_flen(ft: &FieldType) -> i64 {
-    use tidb_datatype::EvalType;
-    const UNSPECIFIED: i64 = tidb_datatype::UNSPECIFIED_LENGTH;
-
-    let eval_type = ft.eval_type();
-    let requested = match eval_type {
-        // Already a string: no cast is inserted at all.
-        EvalType::String => return ft.flen(),
-        EvalType::Int if ft.code() == FieldTypeCode::Bit => (ft.flen() + 7) / 8,
-        EvalType::Int => 20,
-        EvalType::Decimal if ft.flen() != UNSPECIFIED => ft.flen() + 3,
-        EvalType::Real => UNSPECIFIED,
-        _ => ft.flen(),
-    };
-    if requested != UNSPECIFIED {
-        return requested;
-    }
-
-    // The cast's return-type sizing, reached only for a width nobody asked for.
-    let with_fraction = |base: i64| {
-        if ft.decimal() > 0 {
-            base + 1 + ft.decimal()
-        } else {
-            base
-        }
-    };
-    match eval_type {
-        // 87 and 370 are Go's own worst-case widths for `%f`-formatted
-        // f32/f64, not MySQL's 12/22 -- TiDB never uses scientific notation.
-        EvalType::Real if ft.code() == FieldTypeCode::Float => 87,
-        EvalType::Real => 370,
-        EvalType::Datetime | EvalType::Timestamp if ft.code() == FieldTypeCode::Date => 10,
-        EvalType::Datetime | EvalType::Timestamp => with_fraction(19),
-        EvalType::Duration => with_fraction(10),
-        EvalType::Json => MAX_LONG_BLOB_WIDTH,
-        _ => UNSPECIFIED,
-    }
+    tidb_query_expr::native_string_cast_flen(
+        ft.eval_type(),
+        ft.code().as_shared_type_name_code(),
+        ft.flen(),
+        ft.decimal(),
+    )
 }
 
 /// Go `concatFunctionClass.getFunction`, over `args[skip..]`.

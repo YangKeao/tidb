@@ -150,27 +150,8 @@ pub(crate) fn coerce_str(value: &Datum) -> Result<Option<String>, EvalError> {
 /// separate from [`coerce_str`] so callers that actually need Unicode text do
 /// not silently acquire replacement or lossy-decoding behavior.
 pub(crate) fn coerce_str_bytes(value: &Datum) -> Result<Option<Vec<u8>>, EvalError> {
-    Ok(match value {
-        Datum::String(value) => Some(value.bytes().to_vec()),
-        Datum::Bytes(value) => Some(value.clone()),
-        Datum::Int(value) => Some(value.to_string().into_bytes()),
-        Datum::UInt(value) => Some(value.to_string().into_bytes()),
-        Datum::Decimal(value) => Some(value.to_string().into_bytes()),
-        Datum::Real(value) => Some(value.to_string().into_bytes()),
-        Datum::Float32(value) => Some((*value as f32).to_string().into_bytes()),
-        Datum::BinaryLiteral(value) | Datum::Bit(value) => Some(value.as_bytes().to_vec()),
-        Datum::Duration(value) => Some(value.to_string().into_bytes()),
-        Datum::Enum(value, _) => Some(value.name_bytes().to_vec()),
-        Datum::Set(value, _) => Some(value.name_bytes().to_vec()),
-        Datum::Time(value) => Some(value.to_string().into_bytes()),
-        Datum::Json(value) => Some(value.to_string().into_bytes()),
-        Datum::Raw(value) => Some(value.clone()),
-        Datum::VectorFloat32(value) => Some(value.to_string().into_bytes()),
-        Datum::Null => None,
-        Datum::MinNotNull | Datum::MaxValue => {
-            return Err(EvalError::Unsupported("range sentinel byte coercion"));
-        }
-    })
+    tidb_query_expr::native_coerce_bytes(value.as_shared_json_input())
+        .map_err(EvalError::Unsupported)
 }
 
 pub(crate) fn binary_literal_value(value: &tidb_datatype::BinaryLiteral) -> u64 {

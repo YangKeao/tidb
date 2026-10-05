@@ -1,0 +1,29 @@
+arg-string-123 / R128
+8launches=7matchedGREEN+1initialcompileRED;1retry,no test-execution failure/zero-match/interruption.
+Raw: /home/agent/tidb/expression-unification/logs/arg-string-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_cast_arg_string -- --test-threads=1
+[tikv-coercion] ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_coerce_string -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native, native-corrected] ../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::cast_arg_string_tests -- --test-threads=1
+[native-args] ../../tools/cargo-tidb test --locked -p tidb-expr --lib arg_eval_type::tests -- --test-threads=1
+[native-coercion] ../../tools/cargo-tidb test --locked -p tidb-expr --lib coerce::tests -- --test-threads=1
+[native-types] ../../tools/cargo-tidb test --locked -p tidb-expr --lib rewriter::result_type::tests -- --test-threads=1
+[sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib shared_argument_string_preserves_binary_names_float_display_and_widths -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 2/0/0/1011 15.29/0.00 0 732031f292999c9bffffe9cbf7e9394511ce9da63e7f33cc00bb3fb2c3b287b4
+tikv-coercion 2/0/0/1011 0.14/0.00 0 125948ef79b2a2a78e66f4fc86ce957f172fe775feb7e1eeec796883db4260b9
+native COMPILE_FAILED no-Finished/no-test-time 101 1d0302dc9c961152f823069d6586e2155121d86e8b5f98bb9c4c567ca199c41c
+native-corrected 2/0/0/1730 8.72/0.00 0 1697f8960787e57dcd40ec259a8ff39a64177d0c5712e8f7aa1cbfba469d93b6
+native-args 8/0/0/1724 0.12/0.00 0 211cd1ec309acd9c30dee7fb28467e388db6ca6bd306bc22b442cef1e53a6bcf
+native-coercion 1/0/0/1731 0.12/0.00 0 b5540c523cd6c391acc24705f1cc81995ce7322312b743b58059b2384002947c
+native-types 33/0/0/1699 0.13/0.00 0 449e70bb72a2172f3d0996f6a73dfd7d2fa33f57c3fed85b2113693b7e0bf94f
+sql 1/0/0/2265 22.75/0.02 0 c22981b81a11520783bec7b12ee8a092045e4c065b588d3ea31756865c9f97b7
+
+Initial compile RED: parent-authorized removal of apparently unused native MAX_LONG_BLOB_WIDTH missed two references in the separate original result_type_tests.rs. Restored its original literal under cfg(test); no original test body/oracle or production policy changed, no SDK output used as an oracle. RED retained; full33 metadata tests pass after restoration.
+SDK3/native7 Rust files,3new files;5new tests (SDK2/native3);oldSDK2/native222 touched-file test bodies unchanged. Native selectors/width algorithm replaced by SDK delegation; only explicit identity and storage/metadata projection remain. No new RPN profiles/family credit.
+New SQL1test:2SELECTs/12cells over vector0/1,10strings+2NULL. BIT rawFF, Enum name, large Rust-display float, decimal visible scale, invalidUTF8 binary payload, NULL; DOUBLE370/DECIMAL13 metadata widths and no warnings. Unit gates cover collation identity, metadata precedence, width cases, sentinel errors and overflow/panic quirks.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. Integer argument/unsigned dependencies, typed/write selectors, broaderM2/root/liveDAG/final remain. Full suites/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and previous receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
