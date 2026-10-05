@@ -1536,6 +1536,13 @@ fn dispatch_bytes_family(
         | EvaluatedBytesOp::DateArithmeticOverflowNative => {
             panic!("date arithmetic needs actual operands and its SDK-requested continuation")
         }
+        EvaluatedBytesOp::LegacyDateArithmeticTextHeadNative
+        | EvaluatedBytesOp::LegacyDateArithmeticTimeHeadNative
+        | EvaluatedBytesOp::LegacyDateArithmeticDurationHeadNative
+        | EvaluatedBytesOp::LegacyDateArithmeticStepNative
+        | EvaluatedBytesOp::LegacyDateArithmeticParseNative => {
+            panic!("legacy date arithmetic needs actual channel replies and its requested parser context")
+        }
         EvaluatedBytesOp::ConvertTzNative => {
             panic!("CONVERT_TZ needs its three actual nullable coerced strings")
         }

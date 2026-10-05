@@ -3397,208 +3397,62 @@ impl LegacyEvaluator<'_> {
     }
 }
 
-/// The MySQL duration of one operand: a DURATION leaf, or a DATETIME
-/// leaf's time-of-day (Go `CastTimeAsDuration`).
-/// Go `intervalReformatString`: single units keep the leading numeric
-/// prefix (`^[+-]?[\d]+`, the truncation error folded), `SECOND`
-/// re-renders the text through a decimal, and compound units pass
-/// through for the composite parser.
-fn interval_reformat_string(text: &str, unit: &str) -> String {
-    match unit.to_ascii_uppercase().as_str() {
-        "MICROSECOND" | "MINUTE" | "HOUR" | "DAY" | "WEEK" | "MONTH" | "QUARTER" | "YEAR" => {
-            let trimmed = text.trim();
-            let bytes = trimmed.as_bytes();
-            let mut end = usize::from(matches!(bytes.first(), Some(b'+') | Some(b'-')));
-            let digits_from = end;
-            while end < bytes.len() && bytes[end].is_ascii_digit() {
-                end += 1;
-            }
-            if end == digits_from {
-                "0".to_owned()
-            } else {
-                trimmed[..end].to_owned()
-            }
-        }
-        // Go: `dec.FromString` then `ToString` ("1e2" -> "100"); a parse
-        // failure answers "0" with the truncation folded.
-        "SECOND" => {
-            let (dec, _) = tidb_datatype::MyDecimal::from_string(text.as_bytes());
-            String::from_utf8_lossy(&dec.to_string_bytes()).into_owned()
-        }
-        _ => text.to_owned(),
-    }
-}
-
-/// Go `getIntervalFromDecimal`'s unit table: compound units reshape the
-/// decimal text into the composite literal, single units round half-up
-/// to a whole number (Go `intervalDecimalToString`).
-fn interval_reformat_decimal_text(text: &str, unit: &str) -> String {
-    match unit.to_ascii_uppercase().as_str() {
-        "HOUR_MINUTE" | "MINUTE_SECOND" => text.replace('.', ":"),
-        "YEAR_MONTH" => text.replace('.', "-"),
-        "DAY_HOUR" => text.replace('.', " "),
-        "DAY_MINUTE" => format!("0 {}", text.replace('.', ":")),
-        "DAY_SECOND" => format!("0 00:{}", text.replace('.', ":")),
-        "DAY_MICROSECOND" => format!("0 00:00:{text}"),
-        "HOUR_MICROSECOND" => format!("00:00:{text}"),
-        "HOUR_SECOND" => format!("00:{}", text.replace('.', ":")),
-        "MINUTE_MICROSECOND" => format!("00:{text}"),
-        // `SECOND` already reads like the `%f` format.
-        "SECOND" | "SECOND_MICROSECOND" => text.to_owned(),
-        _ => {
-            let (mut dec, _) = tidb_datatype::MyDecimal::from_string(text.as_bytes());
-            dec.round_in_place(0, tidb_datatype::RoundMode::HalfUp);
-            String::from_utf8_lossy(&dec.to_string_bytes()).into_owned()
-        }
-    }
-}
-
-/// Whether the upstream pair answers text: the non-temporal sources
-/// (Go `builtinAddSubDateAsStringSig`).
-fn add_sub_answers_text(sig: &SimpleSig) -> bool {
-    matches!(
-        sig,
-        SimpleSig::AddSubDate {
-            date: DateArithArg::String
-                | DateArithArg::Int
-                | DateArithArg::Real
-                | DateArithArg::Decimal,
-            ..
-        }
-    )
-}
-
-/// The interval text for one operand channel (Go `getInterval*`); the
-/// interval operand sits at index 1 of the `AddDate`/`SubDate` node.
-impl LegacyEvaluator<'_> {
-    fn interval_text(
-        &self,
-        children: &[SimpleExpr],
-        kind: IntervalArg,
-        unit: &str,
-    ) -> LegacyResult<Option<String>> {
-        Ok(match kind {
-            IntervalArg::String => {
-                let raw = legacy_some!(self.eval_bytes(children.get(1))?);
-                Some(interval_reformat_string(
-                    &String::from_utf8_lossy(&raw),
-                    unit,
-                ))
-            }
-            IntervalArg::Int => {
-                let value = legacy_some!(self.folded_int(children.get(1))?);
-                Some(value.to_string())
-            }
-            IntervalArg::Real => {
-                let value = legacy_some!(self.eval_real(children.get(1))?);
-                Some(format!("{value}"))
-            }
-            IntervalArg::Decimal => {
-                let value = legacy_some!(self.eval_decimal(children.get(1))?);
-                Some(interval_reformat_decimal_text(&value.to_string(), unit))
-            }
-        })
-    }
-}
-
-/// The date operand parsed per its channel for the string-answer forms
-/// (Go `getDateFromString`/`getDateFromInt`/`getDateFromReal`/
-/// `getDateFromDecimal`): a pure-date string stays a date unless the
-/// unit carries a clock, and numeric sources widen the same way.
-impl LegacyEvaluator<'_> {
-    fn add_sub_date_operand(
-        &self,
-        children: &[SimpleExpr],
-        kind: DateArithArg,
-        unit: &str,
-    ) -> LegacyResult<Option<tidb_datatype::Time>> {
-        use tidb_datatype::TimeType;
-        let zone = self.time_zone;
-        let clock = tidb_datatype::is_clock_unit(unit);
-        Ok(match kind {
-            DateArithArg::String => {
-                let raw = legacy_some!(self.eval_bytes(children.first())?);
-                let text = String::from_utf8_lossy(&raw).into_owned();
-                let kind = if !tidb_datatype::is_date_format(&text) || clock {
-                    TimeType::DateTime
-                } else {
-                    TimeType::Date
-                };
-                tidb_datatype::parse_time(&text, kind, 6, false, false, false, zone)
-                    .ok()
-                    .map(|parsed| parsed.time)
-            }
-            DateArithArg::Int => {
-                let value = legacy_some!(self.folded_int(children.first())?);
-                let mut date = legacy_some!(tidb_datatype::parse_time_from_int64(
-                    legacy_some!(i64::try_from(value).ok()),
-                    false,
-                    false,
-                    zone,
-                )
-                .ok());
-                if clock {
-                    date.set_kind(TimeType::DateTime);
-                }
-                Some(date)
-            }
-            DateArithArg::Real => {
-                let value = legacy_some!(self.eval_real(children.first())?);
-                let mut date = legacy_some!(tidb_datatype::parse_time_from_float64(
-                    value, false, false, zone
-                )
-                .ok());
-                if clock {
-                    date.set_kind(TimeType::DateTime);
-                }
-                Some(date)
-            }
-            DateArithArg::Decimal => {
-                let value = legacy_some!(self.eval_decimal(children.first())?);
-                let mut date = legacy_some!(tidb_datatype::parse_time_from_decimal(
-                    &value, false, false, zone
-                )
-                .ok());
-                if clock {
-                    date.set_kind(TimeType::DateTime);
-                }
-                Some(date)
-            }
-            // The typed temporal operands answer through the time and
-            // duration channels instead.
-            _ => None,
-        })
-    }
-}
-
-/// Go `baseDateArithmetical.add`/`sub` -> `addDate`: the interval text
-/// decomposes into calendar and sub-day parts (`ParseDurationValue`),
-/// the sub-day nanoseconds shift first, and the calendar fields move
-/// with MySQL's month clamping (`types.AddDate`). `SubDate` negates all
-/// four parts. Overflow answers NULL here where Go raises the datetime
-/// function overflow error.
-fn add_sub_time(
-    mut date: tidb_datatype::Time,
+/// Lossless signature metadata; SDK services own date arithmetic policy.
+fn legacy_date_arithmetic_metadata(
+    date: DateArithArg,
+    interval: IntervalArg,
     subtract: bool,
-    unit: &str,
-    interval: &str,
-) -> Option<tidb_datatype::Time> {
-    let parsed = tidb_datatype::parse_duration_value(unit, interval).ok()?;
-    let sign: i64 = if subtract { -1 } else { 1 };
-    let mut core = date.core_time();
-    core = core.add_duration(sign * parsed.nanoseconds);
-    core = core
-        .add_date(
-            sign * parsed.years,
-            sign * parsed.months,
-            sign * parsed.days,
-        )
-        .ok()?;
-    date.set_core_time(core);
-    Some(date)
+) -> tidb_expr::LegacyDateArithmeticMetadata {
+    use tidb_expr::{
+        LegacyDateArithmeticDateKind as Date, LegacyDateArithmeticIntervalKind as Interval,
+    };
+    tidb_expr::LegacyDateArithmeticMetadata {
+        date: match date {
+            DateArithArg::String => Date::String,
+            DateArithArg::Int => Date::Int,
+            DateArithArg::Real => Date::Real,
+            DateArithArg::Decimal => Date::Decimal,
+            DateArithArg::Datetime => Date::Datetime,
+            DateArithArg::Duration => Date::Duration,
+        },
+        interval: match interval {
+            IntervalArg::String => Interval::String,
+            IntervalArg::Int => Interval::Int,
+            IntervalArg::Real => Interval::Real,
+            IntervalArg::Decimal => Interval::Decimal,
+        },
+        subtract,
+    }
 }
 
 impl LegacyEvaluator<'_> {
+    /// Actuate only the requested original child channel. The selected scope
+    /// supplies authority; eval_shared retains each child's request semantics.
+    fn read_date_arithmetic(
+        &self,
+        children: &[SimpleExpr],
+        index: usize,
+        channel: tidb_expr::LegacyDateArithmeticChannel,
+        selected: &dyn tidb_expr::Columns,
+    ) -> LegacyResult<tidb_expr::LegacyDateArithmeticValue> {
+        use tidb_expr::{
+            LegacyDateArithmeticChannel as Channel, LegacyDateArithmeticValue as Value,
+        };
+        let evaluator = LegacyEvaluator {
+            raw_columns: selected,
+            ..*self
+        };
+        let child = children.get(index);
+        Ok(match channel {
+            Channel::Bytes => Value::Bytes(evaluator.eval_bytes(child)?),
+            Channel::FoldedInt => Value::Int(evaluator.folded_int(child)?),
+            Channel::Real => Value::Real(evaluator.eval_real(child)?),
+            Channel::Decimal => Value::Decimal(evaluator.eval_decimal(child)?),
+            Channel::Time => Value::Time(evaluator.eval_time(child)?),
+            Channel::Duration => Value::Duration(evaluator.eval_duration(child)?),
+        })
+    }
+
     fn eval_duration(
         &self,
         expr: Option<&SimpleExpr>,
@@ -3633,17 +3487,19 @@ impl LegacyEvaluator<'_> {
                 },
                 children,
             ) => {
-                let duration = legacy_some!(self.eval_duration(children.first())?);
-                let unit_raw = legacy_some!(self.eval_bytes(children.get(2))?);
-                let unit = String::from_utf8_lossy(&unit_raw).into_owned();
-                let interval = legacy_some!(self.interval_text(children, *interval_kind, &unit)?);
-                let delta =
-                    legacy_some!(tidb_datatype::extract_duration_value(&unit, &interval).ok());
-                if *subtract {
-                    duration.checked_sub(delta).ok()
-                } else {
-                    duration.checked_add(delta).ok()
-                }
+                tidb_expr::eval_legacy_date_arithmetic_duration_in(
+                    self.raw_columns,
+                    legacy_date_arithmetic_metadata(
+                        DateArithArg::Duration,
+                        *interval_kind,
+                        *subtract,
+                    ),
+                    self.time_zone,
+                    |index, channel, selected| {
+                        self.read_date_arithmetic(children, index, channel, selected)
+                    },
+                )?
+                .value
             }
             // The duration-answer casts: Go's `NumberToDuration` reads
             // integer digits as HHMMSS and text goes through `ParseDuration`
@@ -3747,11 +3603,19 @@ impl LegacyEvaluator<'_> {
                 },
                 children,
             ) => {
-                let date = legacy_some!(self.eval_time(children.first())?);
-                let unit_raw = legacy_some!(self.eval_bytes(children.get(2))?);
-                let unit = String::from_utf8_lossy(&unit_raw).into_owned();
-                let interval = legacy_some!(self.interval_text(children, *interval_kind, &unit)?);
-                add_sub_time(date, *subtract, &unit, &interval)
+                tidb_expr::eval_legacy_date_arithmetic_time_in(
+                    self.raw_columns,
+                    legacy_date_arithmetic_metadata(
+                        DateArithArg::Datetime,
+                        *interval_kind,
+                        *subtract,
+                    ),
+                    self.time_zone,
+                    |index, channel, selected| {
+                        self.read_date_arithmetic(children, index, channel, selected)
+                    },
+                )?
+                .value
             }
             // The `Duration*Datetime` upstream ids anchor the duration on
             // the current date (`d.ConvertToTime`) -- no stable predicate
@@ -3902,31 +3766,28 @@ impl LegacyEvaluator<'_> {
             // MySQL string form (Go `builtinAddSubDateAsStringSig`): the
             // parsed source moves by the interval and renders per its kind
             // and refit fraction.
-            SimpleExpr::Func(sig @ SimpleSig::AddSubDate { .. }, children)
-                if add_sub_answers_text(sig) =>
-            {
-                let unit_raw = legacy_some!(self.eval_bytes(children.get(2))?);
-                let unit = String::from_utf8_lossy(&unit_raw).into_owned();
-                let (subtract, date_kind, interval_kind) = match sig {
-                    SimpleSig::AddSubDate {
-                        subtract,
-                        date,
-                        interval,
-                        ..
-                    } => (*subtract, *date, *interval),
-                    _ => unreachable!("guarded by add_sub_answers_text"),
-                };
-                let date = legacy_some!(self.add_sub_date_operand(children, date_kind, &unit)?);
-                if date.is_zero() {
-                    // Go answers NULL under the folded wrong-value error.
-                    return Ok(None);
-                }
-                let interval = legacy_some!(self.interval_text(children, interval_kind, &unit)?);
-                let mut result = legacy_some!(add_sub_time(date, subtract, &unit, &interval));
-                // Go refits the fraction: whole seconds render short.
-                let fsp = i64::from(result.core_time().microsecond() != 0) * 6;
-                legacy_some!(result.set_fsp(fsp).ok());
-                Some(result.to_string().into_bytes())
+            SimpleExpr::Func(
+                SimpleSig::AddSubDate {
+                    subtract,
+                    date:
+                        date_kind @ (DateArithArg::String
+                        | DateArithArg::Int
+                        | DateArithArg::Real
+                        | DateArithArg::Decimal),
+                    interval: interval_kind,
+                    ..
+                },
+                children,
+            ) => {
+                tidb_expr::eval_legacy_date_arithmetic_text_in(
+                    self.raw_columns,
+                    legacy_date_arithmetic_metadata(*date_kind, *interval_kind, *subtract),
+                    self.time_zone,
+                    |index, channel, selected| {
+                        self.read_date_arithmetic(children, index, channel, selected)
+                    },
+                )?
+                .value
             }
             // The `AS CHAR` casts answer their source's text rendering (Go
             // `builtinCast*AsStringSig`): `ProduceStrWithSpecifiedTp` and
@@ -4555,23 +4416,49 @@ impl LegacyEvaluator<'_> {
                         let value: f64 = numeric.parse().unwrap_or(0.0);
                         Some(i128::from(value != 0.0))
                     }
-                    SimpleSig::AddSubDate { .. } => {
-                        // A bare date arithmetic as a condition answers its
-                        // own non-NULL truth (Go `ToBool` over the answer;
-                        // "2000-01-03" reads as 2000 -> true).
-                        let answered = match sig {
-                            SimpleSig::AddSubDate {
-                                date: DateArithArg::Duration,
-                                datetime_result: false,
-                                ..
-                            } => self.eval_duration(Some(expr))?.is_some(),
-                            SimpleSig::AddSubDate {
-                                date: DateArithArg::Datetime,
-                                ..
-                            } => self.eval_time(Some(expr))?.is_some(),
-                            _ => self.eval_bytes(Some(expr))?.is_some(),
+                    SimpleSig::AddSubDate {
+                        subtract,
+                        date,
+                        interval,
+                        datetime_result,
+                    } => {
+                        let metadata = legacy_date_arithmetic_metadata(*date, *interval, *subtract);
+                        let read = |index, channel, selected: &dyn tidb_expr::Columns| {
+                            self.read_date_arithmetic(children, index, channel, selected)
                         };
-                        Some(i128::from(answered))
+                        let presence = match date {
+                            DateArithArg::Duration if !*datetime_result => {
+                                tidb_expr::eval_legacy_date_arithmetic_duration_in(
+                                    self.raw_columns,
+                                    metadata,
+                                    self.time_zone,
+                                    read,
+                                )?
+                                .presence
+                            }
+                            DateArithArg::Datetime => {
+                                tidb_expr::eval_legacy_date_arithmetic_time_in(
+                                    self.raw_columns,
+                                    metadata,
+                                    self.time_zone,
+                                    read,
+                                )?
+                                .presence
+                            }
+                            // Preserve the eight unsupported, child-free ids;
+                            // they do not acquire a runtime root or capability.
+                            DateArithArg::Duration => 0,
+                            _ => {
+                                tidb_expr::eval_legacy_date_arithmetic_text_in(
+                                    self.raw_columns,
+                                    metadata,
+                                    self.time_zone,
+                                    read,
+                                )?
+                                .presence
+                            }
+                        };
+                        Some(presence)
                     }
                     SimpleSig::DateFormatSig => {
                         // This legacy condition tests only the first datum's
@@ -14000,6 +13887,465 @@ mod tests {
             });
             drop(scope);
             execution.close();
+        }
+    }
+
+    #[test]
+    fn legacy_date_arithmetic_all_mappers_preserve_channels_presence_and_refusals() {
+        use std::cell::RefCell;
+        use std::sync::Arc;
+        use tidb_datatype::{
+            Datum, Decimal, FieldType, FieldTypeCode, MySqlDuration, Time, TimeType,
+        };
+        use tidb_expr::constant::{Constant, ParamMarker};
+        use tipb::ScalarFuncSig as S;
+
+        struct Probe {
+            values: [Datum; 3],
+            reads: RefCell<Vec<usize>>,
+        }
+        impl tidb_expr::Columns for Probe {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                panic!("only requested parameter channels")
+            }
+            fn param_value(&self, index: usize) -> Result<Datum, tidb_expr::EvalError> {
+                self.reads.borrow_mut().push(index);
+                Ok(self.values[index].clone())
+            }
+            fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+                panic!("legacy uses its captured zone")
+            }
+            fn date_modes(&self) -> tidb_datatype::DateModes {
+                panic!("legacy parse flags are fixed")
+            }
+            fn truncate_level(&self) -> tidb_expr::ErrorLevel {
+                panic!("legacy parse failures are folded")
+            }
+            fn append_warning(&self, _: u16, _: &str) {
+                panic!("legacy date arithmetic does not warn")
+            }
+        }
+        let time_zone = zone();
+        let request = Arc::new(RequestEvalContext::new(time_zone.clone(), 4, 0));
+        let shared_children = || {
+            (0..3)
+                .map(|index| {
+                    let mut constant =
+                        Constant::new(Datum::Null, FieldType::new(FieldTypeCode::VarString));
+                    constant.param_marker = Some(ParamMarker {
+                        order: i64::try_from(index).unwrap(),
+                    });
+                    SimpleExpr::Shared(Arc::new(SharedExpression {
+                        expression: tidb_expr::expression::Expression::Constant(constant),
+                        context: Arc::clone(&request),
+                    }))
+                })
+                .collect::<Vec<_>>()
+        };
+        let time = |second| {
+            Time::from_date_checked(2024, 3, 5, 14, 30, second, 0, TimeType::Timestamp, 3).unwrap()
+        };
+        let matrices = [
+            (
+                DateArithArg::String,
+                false,
+                [
+                    S::AddDateStringString,
+                    S::AddDateStringInt,
+                    S::AddDateStringReal,
+                    S::AddDateStringDecimal,
+                ],
+                [
+                    S::SubDateStringString,
+                    S::SubDateStringInt,
+                    S::SubDateStringReal,
+                    S::SubDateStringDecimal,
+                ],
+            ),
+            (
+                DateArithArg::Int,
+                false,
+                [
+                    S::AddDateIntString,
+                    S::AddDateIntInt,
+                    S::AddDateIntReal,
+                    S::AddDateIntDecimal,
+                ],
+                [
+                    S::SubDateIntString,
+                    S::SubDateIntInt,
+                    S::SubDateIntReal,
+                    S::SubDateIntDecimal,
+                ],
+            ),
+            (
+                DateArithArg::Real,
+                false,
+                [
+                    S::AddDateRealString,
+                    S::AddDateRealInt,
+                    S::AddDateRealReal,
+                    S::AddDateRealDecimal,
+                ],
+                [
+                    S::SubDateRealString,
+                    S::SubDateRealInt,
+                    S::SubDateRealReal,
+                    S::SubDateRealDecimal,
+                ],
+            ),
+            (
+                DateArithArg::Decimal,
+                false,
+                [
+                    S::AddDateDecimalString,
+                    S::AddDateDecimalInt,
+                    S::AddDateDecimalReal,
+                    S::AddDateDecimalDecimal,
+                ],
+                [
+                    S::SubDateDecimalString,
+                    S::SubDateDecimalInt,
+                    S::SubDateDecimalReal,
+                    S::SubDateDecimalDecimal,
+                ],
+            ),
+            (
+                DateArithArg::Datetime,
+                false,
+                [
+                    S::AddDateDatetimeString,
+                    S::AddDateDatetimeInt,
+                    S::AddDateDatetimeReal,
+                    S::AddDateDatetimeDecimal,
+                ],
+                [
+                    S::SubDateDatetimeString,
+                    S::SubDateDatetimeInt,
+                    S::SubDateDatetimeReal,
+                    S::SubDateDatetimeDecimal,
+                ],
+            ),
+            (
+                DateArithArg::Duration,
+                false,
+                [
+                    S::AddDateDurationString,
+                    S::AddDateDurationInt,
+                    S::AddDateDurationReal,
+                    S::AddDateDurationDecimal,
+                ],
+                [
+                    S::SubDateDurationString,
+                    S::SubDateDurationInt,
+                    S::SubDateDurationReal,
+                    S::SubDateDurationDecimal,
+                ],
+            ),
+            (
+                DateArithArg::Duration,
+                true,
+                [
+                    S::AddDateDurationStringDatetime,
+                    S::AddDateDurationIntDatetime,
+                    S::AddDateDurationRealDatetime,
+                    S::AddDateDurationDecimalDatetime,
+                ],
+                [
+                    S::SubDateDurationStringDatetime,
+                    S::SubDateDurationIntDatetime,
+                    S::SubDateDurationRealDatetime,
+                    S::SubDateDurationDecimalDatetime,
+                ],
+            ),
+        ];
+        let intervals = [
+            IntervalArg::String,
+            IntervalArg::Int,
+            IntervalArg::Real,
+            IntervalArg::Decimal,
+        ];
+        let is_pool = |error| {
+            matches!(error,
+            LegacyEvalError::Infrastructure(tidb_expr::EvalError::ExpressionAdapterFailure(failure))
+                if failure.class() == tidb_expr::ExpressionAdapterFailureClass::PoolResource)
+        };
+        for slots in [8, 0] {
+            let owner = tidb_expr::AsciiPoolOwner::new(
+                tidb_expr::AsciiPoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    4 * 1024 * 1024,
+                    64,
+                    8,
+                    4 * 1024 * 1024,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let execution = owner.begin_execution().unwrap();
+            for (date, datetime_result, adds, subs) in matrices {
+                for (subtract, signatures) in [(false, adds), (true, subs)] {
+                    for (index, wire_sig) in signatures.into_iter().enumerate() {
+                        let pb = tipb::Expr {
+                            tp: Some(tipb::ExprType::ScalarFunc as i32),
+                            sig: Some(wire_sig as i32),
+                            children: (0..3)
+                                .map(|index| {
+                                    let mut val = Vec::new();
+                                    tidb_codec::encode_int(&mut val, index);
+                                    tipb::Expr {
+                                        tp: Some(tipb::ExprType::ColumnRef as i32),
+                                        val: Some(val),
+                                        ..Default::default()
+                                    }
+                                })
+                                .collect(),
+                            ..Default::default()
+                        };
+                        let SimpleExpr::Func(actual, _) = convert_expr(&pb).unwrap() else {
+                            panic!("legacy admission must not move to Shared");
+                        };
+                        assert_eq!(
+                            actual,
+                            SimpleSig::AddSubDate {
+                                subtract,
+                                date,
+                                interval: intervals[index],
+                                datetime_result
+                            }
+                        );
+                        let date_value = match date {
+                            DateArithArg::String => {
+                                Datum::new_bytes(b"2024-03-05 14:30:45".to_vec())
+                            }
+                            DateArithArg::Int => Datum::Int(20_240_305_143_045),
+                            DateArithArg::Real => Datum::Real(20_240_305_143_045.0),
+                            DateArithArg::Decimal => {
+                                Datum::Decimal(Decimal::from_literal("20240305143045"))
+                            }
+                            DateArithArg::Datetime => Datum::Time(time(45)),
+                            DateArithArg::Duration => {
+                                Datum::new_duration(MySqlDuration::from_raw_parts(1_000_000_000, 3))
+                            }
+                        };
+                        let amount = match intervals[index] {
+                            IntervalArg::String => Datum::new_bytes(b"1".to_vec()),
+                            IntervalArg::Int => Datum::Int(1),
+                            IntervalArg::Real => Datum::Real(1.0),
+                            IntervalArg::Decimal => Datum::Decimal(Decimal::from_literal("1")),
+                        };
+                        for null_unit in [false, true] {
+                            let ctx = Probe {
+                                values: [
+                                    date_value.clone(),
+                                    amount.clone(),
+                                    if null_unit {
+                                        Datum::Null
+                                    } else {
+                                        Datum::new_bytes(b"SECOND".to_vec())
+                                    },
+                                ],
+                                reads: RefCell::new(Vec::new()),
+                            };
+                            let call = SimpleExpr::Func(actual, shared_children());
+                            execution.scope().with_columns(&ctx, |columns| {
+                                let evaluator = LegacyEvaluator {
+                                    raw_columns: columns,
+                                    shared_override: Some(columns),
+                                    ..LegacyEvaluator::new(&[], 4, &time_zone)
+                                };
+                                if datetime_result {
+                                    assert_eq!(evaluator.eval_bytes(Some(&call)).unwrap(), None);
+                                    assert_eq!(evaluator.eval_time(Some(&call)).unwrap(), None);
+                                    assert_eq!(evaluator.eval_duration(Some(&call)).unwrap(), None);
+                                    assert_eq!(evaluator.eval_expr(&call).unwrap(), Some(0));
+                                    assert!(ctx.reads.borrow().is_empty());
+                                    return;
+                                }
+                                // Wrong-reader refusals remain child-free, even with no slots.
+                                if date != DateArithArg::Datetime {
+                                    assert_eq!(evaluator.eval_time(Some(&call)).unwrap(), None);
+                                }
+                                if date != DateArithArg::Duration {
+                                    assert_eq!(evaluator.eval_duration(Some(&call)).unwrap(), None);
+                                }
+                                if matches!(date, DateArithArg::Datetime | DateArithArg::Duration) {
+                                    assert_eq!(evaluator.eval_bytes(Some(&call)).unwrap(), None);
+                                }
+                                assert!(ctx.reads.borrow().is_empty());
+                                let result = match date {
+                                    DateArithArg::Datetime => evaluator
+                                        .eval_time(Some(&call))
+                                        .map(|value| value.map(Datum::Time)),
+                                    DateArithArg::Duration => evaluator
+                                        .eval_duration(Some(&call))
+                                        .map(|value| value.map(Datum::new_duration)),
+                                    _ => evaluator
+                                        .eval_bytes(Some(&call))
+                                        .map(|value| value.map(Datum::new_bytes)),
+                                };
+                                if slots == 0 {
+                                    assert!(is_pool(result.unwrap_err()));
+                                    assert!(is_pool(evaluator.eval_expr(&call).unwrap_err()));
+                                    assert!(ctx.reads.borrow().is_empty());
+                                    return;
+                                }
+                                let expected = if null_unit {
+                                    None
+                                } else {
+                                    Some(match date {
+                                        DateArithArg::Datetime => {
+                                            Datum::Time(time(if subtract { 44 } else { 46 }))
+                                        }
+                                        DateArithArg::Duration => {
+                                            Datum::new_duration(MySqlDuration::from_raw_parts(
+                                                if subtract { 0 } else { 2_000_000_000 },
+                                                3,
+                                            ))
+                                        }
+                                        _ => Datum::new_bytes(if subtract {
+                                            b"2024-03-05 14:30:44".to_vec()
+                                        } else {
+                                            b"2024-03-05 14:30:46".to_vec()
+                                        }),
+                                    })
+                                };
+                                let result = result.unwrap();
+                                if let Some(Datum::Time(value)) = &result {
+                                    assert_eq!(value.kind(), TimeType::Timestamp);
+                                    assert_eq!(value.fsp(), 3);
+                                }
+                                if let Some(Datum::Duration(value)) = &result {
+                                    assert_eq!(value.fsp(), 3);
+                                }
+                                assert_eq!(result, expected, "{wire_sig:?}");
+                                let temporal =
+                                    matches!(date, DateArithArg::Datetime | DateArithArg::Duration);
+                                let visits = if temporal {
+                                    if null_unit {
+                                        vec![0, 2]
+                                    } else {
+                                        vec![0, 2, 1]
+                                    }
+                                } else if null_unit {
+                                    vec![2]
+                                } else {
+                                    vec![2, 0, 1]
+                                };
+                                assert_eq!(*ctx.reads.borrow(), visits);
+                                ctx.reads.borrow_mut().clear();
+                                // In particular, a present zero Duration is true here.
+                                assert_eq!(
+                                    evaluator.eval_expr(&call).unwrap(),
+                                    Some(if null_unit { 0 } else { 1 })
+                                );
+                                assert_eq!(*ctx.reads.borrow(), visits);
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        // Legacy decimal composite prefixes do not lift a negative sign out:
+        // DAY_SECOND -1.2 formats as "0 00:-1:2", hence positive 62 seconds.
+        for (date, interval, values, expected, visits) in [
+            (
+                DateArithArg::String,
+                IntervalArg::Decimal,
+                [
+                    Datum::new_bytes(b"2024-03-05 14:30:45".to_vec()),
+                    Datum::Decimal(Decimal::from_literal("-1.2")),
+                    Datum::new_bytes(b"DAY_SECOND".to_vec()),
+                ],
+                Some(b"2024-03-05 14:31:47".to_vec()),
+                vec![2, 0, 1],
+            ),
+            (
+                DateArithArg::String,
+                IntervalArg::String,
+                [
+                    Datum::new_bytes(b"0000-00-00".to_vec()),
+                    Datum::Null,
+                    Datum::new_bytes(b"SECOND".to_vec()),
+                ],
+                None,
+                vec![2, 0],
+            ),
+            (
+                DateArithArg::Int,
+                IntervalArg::String,
+                [
+                    Datum::UInt(u64::MAX),
+                    Datum::Null,
+                    Datum::new_bytes(b"DAY".to_vec()),
+                ],
+                None,
+                vec![2, 0],
+            ),
+            (
+                DateArithArg::String,
+                IntervalArg::Int,
+                [
+                    Datum::new_bytes(b"2024-03-05".to_vec()),
+                    Datum::UInt(u64::MAX),
+                    Datum::new_bytes(b"SECOND".to_vec()),
+                ],
+                None,
+                vec![2, 0, 1],
+            ),
+        ] {
+            let ctx = Probe {
+                values,
+                reads: RefCell::new(Vec::new()),
+            };
+            let evaluator = LegacyEvaluator {
+                raw_columns: &ctx,
+                shared_override: Some(&ctx),
+                ..LegacyEvaluator::new(&[], 4, &time_zone)
+            };
+            let call = SimpleExpr::Func(
+                SimpleSig::AddSubDate {
+                    subtract: false,
+                    date,
+                    interval,
+                    datetime_result: false,
+                },
+                shared_children(),
+            );
+            assert_eq!(evaluator.eval_bytes(Some(&call)).unwrap(), expected);
+            assert_eq!(*ctx.reads.borrow(), visits);
+        }
+        let evaluator = LegacyEvaluator::new(&[], 4, &time_zone);
+        for date in [
+            DateArithArg::String,
+            DateArithArg::Int,
+            DateArithArg::Real,
+            DateArithArg::Decimal,
+            DateArithArg::Datetime,
+            DateArithArg::Duration,
+        ] {
+            let missing = SimpleExpr::Func(
+                SimpleSig::AddSubDate {
+                    subtract: false,
+                    date,
+                    interval: IntervalArg::Int,
+                    datetime_result: false,
+                },
+                vec![],
+            );
+            match date {
+                DateArithArg::Datetime => {
+                    assert_eq!(evaluator.eval_time(Some(&missing)).unwrap(), None)
+                }
+                DateArithArg::Duration => {
+                    assert_eq!(evaluator.eval_duration(Some(&missing)).unwrap(), None)
+                }
+                _ => assert_eq!(evaluator.eval_bytes(Some(&missing)).unwrap(), None),
+            }
+            assert_eq!(evaluator.eval_expr(&missing).unwrap(), Some(0));
         }
     }
 }

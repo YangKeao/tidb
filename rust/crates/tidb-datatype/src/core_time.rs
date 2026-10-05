@@ -22,13 +22,12 @@ pub use tidb_query_datatype::codec::mysql::time::{
     NativeTimeConversionError as TimeConversionError, NativeTimeDifference as TimeDifference,
     NativeTimestampInterval as TimestampInterval,
 };
-use tidb_query_datatype::codec::mysql::Time as SharedTime;
+use tidb_query_datatype::codec::mysql::{time as shared_time, Time as SharedTime};
 
 const HOUR_OFFSET: u64 = 36;
 const MINUTE_OFFSET: u64 = 30;
 const SECOND_OFFSET: u64 = 24;
 const MICROSECOND_OFFSET: u64 = 4;
-const SECONDS_IN_24_HOURS: i64 = 86_400;
 const DAYS_BY_MONTH: [u8; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
 /// TiDB's compact internal calendar representation.
@@ -184,42 +183,9 @@ impl CoreTime {
 
     /// Adds calendar years, months, and days with TiDB's month-end rule.
     pub fn add_date(self, years: i64, months: i64, days: i64) -> Result<Self, DateAddError> {
-        const MAX_ADD: i64 = 10_000 * 365;
-        if !(-MAX_ADD..=MAX_ADD).contains(&years)
-            || !(-MAX_ADD..=MAX_ADD).contains(&months)
-            || !(-MAX_ADD..=MAX_ADD).contains(&days)
-        {
-            return Err(DateAddError);
-        }
-
-        let total_months = i64::from(self.year())
-            .checked_mul(12)
-            .and_then(|value| value.checked_add(i64::from(self.month()) - 1))
-            .and_then(|value| value.checked_add(years.checked_mul(12)?))
-            .and_then(|value| value.checked_add(months))
-            .ok_or(DateAddError)?;
-        let mut year = total_months.div_euclid(12);
-        let mut month = total_months.rem_euclid(12) + 1;
-        let mut day = i64::from(self.day());
-
-        if days == 0 && (years != 0 || months != 0) {
-            day += fix_days(years, months, days, self);
-        } else {
-            day = day.checked_add(days).ok_or(DateAddError)?;
-            normalize_day(&mut year, &mut month, &mut day);
-        }
-        if !(0..=9999).contains(&year) {
-            return Err(DateAddError);
-        }
-        Ok(Self::from_date(
-            year as u16,
-            month as u8,
-            day as u8,
-            self.hour(),
-            self.minute(),
-            self.second(),
-            self.microsecond(),
-        ))
+        shared_time::native_core_add_date(self.raw(), years, months, days)
+            .map(Self::from_raw)
+            .ok_or(DateAddError)
     }
 
     /// Returns the `YYYYMMDDHHMMSS` integer used by temporal comparison.
@@ -229,30 +195,10 @@ impl CoreTime {
 
     /// Adds a signed duration while preserving the existing clock fields.
     pub fn add_duration(self, nanoseconds: i64) -> Self {
-        let own_micros = i64::from(calc_daynr(
-            self.year(),
-            self.month() as i32,
-            self.day() as i32,
-        )) * SECONDS_IN_24_HOURS
-            * 1_000_000
-            + i64::from(self.hour()) * 3_600_000_000
-            + i64::from(self.minute()) * 60_000_000
-            + i64::from(self.second()) * 1_000_000
-            + i64::from(self.microsecond());
-        let result = own_micros + nanoseconds / 1_000;
-        let daynr = result.div_euclid(SECONDS_IN_24_HOURS * 1_000_000);
-        let time = result.rem_euclid(SECONDS_IN_24_HOURS * 1_000_000);
-        let (year, month, day) = get_date_from_daynr(daynr as u32);
-        let seconds = time / 1_000_000;
-        Self::from_date(
-            year as u16,
-            month as u8,
-            day as u8,
-            (seconds / 3_600) as u8,
-            (seconds % 3_600 / 60) as u8,
-            (seconds % 60) as u8,
-            (time % 1_000_000) as u32,
-        )
+        Self::from_raw(shared_time::native_core_add_duration(
+            self.raw(),
+            nanoseconds,
+        ))
     }
 
     /// Adds a signed duration in nanoseconds using TiDB's date/time mixing.
@@ -408,72 +354,12 @@ pub const fn calc_daynr(year: i32, month: i32, day: i32) -> i32 {
 
 /// Converts a MySQL day number back to a calendar date.
 pub const fn get_date_from_daynr(daynr: u32) -> (u32, u32, u32) {
-    if daynr <= 365 || daynr >= 3_652_500 {
-        return (0, 0, 0);
-    }
-    let mut year = daynr * 100 / 36_525;
-    let temp = (((year - 1) / 100 + 1) * 3) / 4;
-    let mut day_of_year = daynr - year * 365 - (year - 1) / 4 + temp;
-    let mut days_in_year = calc_days_in_year(year as i32) as u32;
-    while day_of_year > days_in_year {
-        day_of_year -= days_in_year;
-        year += 1;
-        days_in_year = calc_days_in_year(year as i32) as u32;
-    }
-    let mut leap_day = 0;
-    if days_in_year == 366 && day_of_year > 59 {
-        day_of_year -= 1;
-        if day_of_year == 59 {
-            leap_day = 1;
-        }
-    }
-    let mut month = 1;
-    let mut index = 0;
-    while index < DAYS_BY_MONTH.len() {
-        let days = DAYS_BY_MONTH[index] as u32;
-        if day_of_year <= days {
-            break;
-        }
-        day_of_year -= days;
-        month += 1;
-        index += 1;
-    }
-    (year, month, day_of_year + leap_day)
+    shared_time::native_get_date_from_daynr(daynr)
 }
 
-fn normalize_day(year: &mut i64, month: &mut i64, day: &mut i64) {
-    while *day <= 0 {
-        *month -= 1;
-        if *month == 0 {
-            *month = 12;
-            *year -= 1;
-        }
-        *day += i64::from(get_last_day(*year as i32, *month as u8));
-    }
-    loop {
-        let days_in_month = i64::from(get_last_day(*year as i32, *month as u8));
-        if *day <= days_in_month {
-            break;
-        }
-        *day -= days_in_month;
-        *month += 1;
-        if *month == 13 {
-            *month = 1;
-            *year += 1;
-        }
-    }
-}
-
+#[cfg(test)]
 fn fix_days(years: i64, months: i64, days: i64, original: CoreTime) -> i64 {
-    if (years == 0 && months == 0) || days != 0 {
-        return 0;
-    }
-    let total_months =
-        i64::from(original.year()) * 12 + i64::from(original.month()) - 1 + years * 12 + months;
-    let year = total_months.div_euclid(12);
-    let month = total_months.rem_euclid(12) + 1;
-    let last = i64::from(get_last_day(year as i32, month as u8));
-    (last - i64::from(original.day())).min(0)
+    shared_time::native_core_fix_days(original.raw(), years, months, days)
 }
 
 const WEEK_BEHAVIOUR_MONDAY_FIRST: u8 = 1;

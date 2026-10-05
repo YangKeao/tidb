@@ -2295,6 +2295,11 @@ fn materialize_computed(
             | EvaluatedBytesOp::DateArithmeticDurationHeadNative
             | EvaluatedBytesOp::DateArithmeticStepNative
             | EvaluatedBytesOp::DateArithmeticOverflowNative
+            | EvaluatedBytesOp::LegacyDateArithmeticTextHeadNative
+            | EvaluatedBytesOp::LegacyDateArithmeticTimeHeadNative
+            | EvaluatedBytesOp::LegacyDateArithmeticDurationHeadNative
+            | EvaluatedBytesOp::LegacyDateArithmeticStepNative
+            | EvaluatedBytesOp::LegacyDateArithmeticParseNative
             | EvaluatedBytesOp::FormatBytesNative
             | EvaluatedBytesOp::FormatNanoTimeNative
             | EvaluatedBytesOp::VecAsTextNative

@@ -1,0 +1,71 @@
+legacy-date-arithmetic-103 / R106
+TiKV cwd: /home/agent/tidb/expression-unification/tikv
+Native cwd: /home/agent/tidb/expression-unification/tidb/rust
+Raw logs: /home/agent/tidb/expression-unification/logs/legacy-date-arithmetic-{id}.log
+Counts: passed/failed/ignored/filtered; timing: compile/test seconds.
+
+tikv-datatype | 1/0/0/465 | 2.30/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_core_arithmetic -- --test-threads=1
+sha256 07c0f07aa6e63d20808823c28db0e854b38c3f5a173bf6fdf1c8b6f7b673a010
+
+native-datatype | 17/0/0/444 | 2.16/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib core_time -- --test-threads=1
+sha256 10ed289e7411d6256bedb1b506dfdffd19e4c3157c10224f93c4f0afc90dd538
+
+tikv-core | COMPILE FAILED E0599/E0282 | no completed compile/test timing | exit101
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_legacy_date_arithmetic -- --test-threads=1
+sha256 fdc7ecdfdf02b96e95bfdb52ca41decd8d73efe961c716f3ca6455ff7110d091
+
+tikv-core-retry | 1/0/0/986 | 15.87/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_legacy_date_arithmetic -- --test-threads=1
+sha256 0a8b018d1ebfc1fe753ba0962b4b9efa238201c0cc0356692dc5deb6904db80a
+
+tikv-local | 355/0/1/631 | 0.15/0.24 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib local:: -- --test-threads=1
+sha256 c01dacd9c6f5817af6a46aa8240a84df52bdda79931b2539319bb8f2347a7075
+
+native-entry | 1/0/0/1715 | 20.40/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib legacy_date_arithmetic -- --test-threads=1
+sha256 b40fcf56cc60b7cb17c859f7814021e61d858b4e3398067ca16bb454f9d5fa89
+
+native-gateway | 196/0/1/1519 | 0.14/0.34 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::evaluated_ascii -- --test-threads=1
+sha256 423b982fe66e2ad23a773e04b4fad36f40fa6fbebb065fd5f3379f48eb560fb6
+
+unistore | 1/0/0/234 | 9.69/0.02 | exit0
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib legacy_date_arithmetic -- --test-threads=1
+sha256 62713572f520d6fb4b13f73c601433a3f0b18e9d074a71ccd0abcea18c125799
+
+unistore-original | 3/0/0/232 | 0.15/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-unistore --lib cophandler::tests::date_add_ -- --test-threads=1
+sha256 ffbff5a8b0420b9bb8530fdc1ef9fae08699a18ff4317f696b1b0662306818f8
+
+sql | 1/0/0/2246 | 31.67/0.08 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::evaluated_ascii_date_arithmetic_preserves_sql_domains_fsp_and_distinct_head_routes -- --exact --test-threads=1
+sha256 9a70b24f4ae62f00b63f1d58be99bb4fff0658f47acceaa3e70e4ef4c59721f0
+
+sql-original | 1/0/0/2246 | 0.14/0.06 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::builtins::date_interval_extract_and_timestampdiff -- --exact --test-threads=1
+sha256 5db31725e21268e4f5c3fc33f690e87901d74faa6035b83d05da3f1fdc60f15b
+
+sql-overflow | 1/0/0/2246 | 0.14/0.03 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::temporal_types::date_arithmetic_overflow_uses_statement_error_policy -- --exact --test-threads=1
+sha256 bde889fb57bb61f1a557d462b8d12d81be5f8c700e6eee929831b9ab56c4da9d
+
+12 actual serial locked launches:11 nonzero passing,1 compile failure,0 zero-match/interrupted/test-execution failures. First SDK integer-date path mistakenly called into_result on an already-Result return. Parent removed only that extra call; E0599/E0282 disappear on retry. First local run was not launched after compile failure; no fabricated receipt. Old ignored tests remain ignored, no old oracle/fixture/provider recording.
+
+5 new tests:3 TiKV/2 native. Changed10 TiKV/7 native Rust files retain205/327 original test bodies exactly. CoreTime17 original tests pass; raw helper algorithms moved, original DateAddError retained. Native day-number cutoff3_652_500 is not wire3_652_425. Raw clocks/projections/reserved-bit repacking/duration-before-calendar retained.
+
+5 profiles:3 actual metadata Bytes heads, Step Bytes2, Parse existing TemporalText(state,flags0,actual captured native zone). IDs553–557; Values arity1/1/1/2, Parse arity2; no generic compiler/carrier/transport/PB widening. All successful outerSome. SDK strict terminal presence0/1; no native is_some/numeric-truth reducer. FoldedInt raw16LE i128, Real raw8LE, actual Decimal/Time/Duration identities, raw nullable bytes. Exact whole SDK reports forwarded.
+
+Text order unit2/date0/parse/zero guard/interval1; typed order date0/unit2/interval1. LossyUTF8 stays lossy. DateInt narrows only inSDK; intervalInt staysfull. Decimal negative-prefix quirks not aliased to ordinary. MyDecimal generic primitive actuator remains native: source from_string, SDK-requested HalfUp scale0, original rendering, discarded events. No claim those primitives are type-shared. SDK owns choosing preparation and all subsequent reformat/arithmetic/render/presence. Quiet legacy NULL differs from ordinary1292/1441. Text final FSP0/6, Time original kind/FSP, Duration checked maxFSP retained.
+
+Bound checked3*(first.len+second.len)+512+actual replyDecimal visibleScale+savedDateDecimal visibleScale when demanded. Raw byte channels resembling frames do not invent scale work. Actual owned capacities and Parse zone checked separately before producer. Not physical/transient heap/OOM certification.
+
+Real legacy test asserts56 mapper outputs are exact Func AddSubDate metadata.48 calculating signatures × normal/unitNULL × scope8/0 exercise value/presence/wrong-reader surfaces and exact child order.8 old DurationDatetime refusals remain no-child/no-root evenclosed slots. Timestamp/FSP3, Duration0 stillpresence1, text zero-date, i128 ranges, negativeDecimal DAY_SECOND +62seconds and missing children covered.3 unchanged legacy value tests pass. No decode-only credit.
+
+Direct SDK/native tests prove5 roots, strict stages/roles/metadata/channel shapes, actual capacity and max_steps0 refusal/reuse, Parse-only actual zone demand and binding release/rebind. Bridge keeps original generic callback errors and late panic poisoning. Selected capability reaches child evaluation, including NoColumns one-shot; child request semantics unchanged. Not whole request-root/default-NoColumns/liveDAG closure.
+
+Three unchanged SQL tests rerun, including R10552SELECT fixture;0 new SQL probes thisround. Full expression/unistore not rerun; R1004+1 historical failures unrepaired. No workspace/lint/dev/bazel/release/exhaustive/TiFlash/FIPS/performance/physicalheap/OOM/allocator/dual-tzdata/whole-Go-package/PR-ready verification.
+
+Functional237/245(96.73%), strict0, remaining8=2core+6complex candidates.235 old family objects and all partial/type history preserved; appenddate_add/date_sub +rawCore type step. Paired signed-off branch pushes carry identical Plan snapshots; unrelated BUILD excluded; overall goal active.
