@@ -153,24 +153,14 @@ impl MySqlDuration {
 
     /// Returns TiDB's numeric TIME representation.
     pub fn to_number(self) -> Decimal {
-        let literal = if self.fsp == 0 {
-            format!("{:02}{:02}{:02}", self.hour(), self.minute(), self.second())
-        } else {
-            let fraction = format!("{:06}", self.microsecond());
-            format!(
-                "{:02}{:02}{:02}.{}",
-                self.hour(),
-                self.minute(),
-                self.second(),
-                &fraction[..usize::try_from(self.fsp).expect("nonnegative duration FSP")]
-            )
-        };
-        let value = Decimal::from_literal(&literal);
-        if self.nanoseconds < 0 {
-            value.negate()
-        } else {
-            value
-        }
+        Decimal::from_shared_parse(
+            tidb_query_datatype::codec::native_temporal_number::native_duration_to_number(
+                tidb_query_datatype::codec::native_duration_convert::NativeDurationParts {
+                    nanoseconds: self.nanoseconds,
+                    fsp: self.fsp,
+                },
+            ),
+        )
     }
 
     /// Rounds fractional seconds with Go's nearest-value `Time.Round` rule.

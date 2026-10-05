@@ -438,33 +438,11 @@ impl Time {
 
     /// Returns TiDB's numeric DATE/DATETIME representation.
     pub fn to_number(self) -> Decimal {
-        if self.is_zero() {
-            return Decimal::from_int(0);
-        }
-        let mut text = if self.kind == TimeType::Date {
-            format!(
-                "{:04}{:02}{:02}",
-                self.core.year(),
-                self.core.month(),
-                self.core.day()
-            )
-        } else {
-            format!(
-                "{:04}{:02}{:02}{:02}{:02}{:02}",
-                self.core.year(),
-                self.core.month(),
-                self.core.day(),
-                self.core.hour(),
-                self.core.minute(),
-                self.core.second()
-            )
-        };
-        if self.kind != TimeType::Date && self.fsp > 0 {
-            let fraction = format!("{:06}", self.core.microsecond());
-            text.push('.');
-            text.push_str(&fraction[..usize::from(self.fsp)]);
-        }
-        Decimal::from_literal(&text)
+        Decimal::from_shared_parse(
+            tidb_query_datatype::codec::native_temporal_number::native_time_to_number(
+                self.as_shared(),
+            ),
+        )
     }
 
     /// Converts DATE/DATETIME/TIMESTAMP clock fields to a MySQL duration.
@@ -612,6 +590,80 @@ pub fn format_int_width(value: i32, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn temporal_number_facades_preserve_raw_fsp_zero_metadata_and_binary_outcomes() {
+        let check = |value: Decimal, expected: &str| {
+            assert_eq!(value.to_string(), expected);
+            let expected = Decimal::from_literal(expected);
+            let actual = value.as_shared_parse();
+            let expected = expected.as_shared_parse();
+            assert_eq!(actual.negative, expected.negative);
+            assert_eq!(actual.digits, expected.digits);
+            assert_eq!(actual.scale, expected.scale);
+            assert_eq!(actual.storage_scale, expected.storage_scale);
+            assert_eq!(actual.declared_shape, expected.declared_shape);
+        };
+        let core = CoreTime::from_date(2024, 1, 2, 3, 4, 5, 123456);
+        for (time, expected) in [
+            (Time::from_raw_parts(core, TimeType::Date, 255), "20240102"),
+            (
+                Time::from_raw_parts(core, TimeType::DateTime, 3),
+                "20240102030405.123",
+            ),
+            (
+                Time::from_raw_parts(CoreTime::default(), TimeType::Timestamp, 255),
+                "0",
+            ),
+            (
+                Time::from_raw_parts(
+                    CoreTime::from_date(2024, 1, 2, 3, 4, 5, 1000001),
+                    TimeType::DateTime,
+                    7,
+                ),
+                "20240102030405.1000001",
+            ),
+        ] {
+            check(time.to_number(), expected);
+        }
+        assert!(std::panic::catch_unwind(|| {
+            Time::from_raw_parts(core, TimeType::DateTime, 7).to_number()
+        })
+        .is_err());
+        for (nanoseconds, fsp, expected) in [
+            (3_723_123_456_000, 3, "10203.123"),
+            (-3_723_123_456_000, 6, "-10203.123456"),
+            (-999, 6, "0.000000"),
+            (-999, 0, "0"),
+        ] {
+            check(
+                MySqlDuration::from_raw_parts(nanoseconds, fsp).to_number(),
+                expected,
+            );
+        }
+        for fsp in [-1, 7] {
+            assert!(std::panic::catch_unwind(|| {
+                MySqlDuration::from_raw_parts(0, fsp).to_number()
+            })
+            .is_err());
+        }
+        use crate::{BinaryLiteral, BinaryLiteralIntOutcome};
+        for (bytes, expected) in [
+            (vec![], BinaryLiteralIntOutcome::Exact(0)),
+            (vec![0; 12], BinaryLiteralIntOutcome::Exact(0)),
+            (vec![0, 0, 1, 2], BinaryLiteralIntOutcome::Exact(258)),
+            (vec![255; 8], BinaryLiteralIntOutcome::Exact(u64::MAX)),
+            (
+                vec![1; 9],
+                BinaryLiteralIntOutcome::Truncated { value: u64::MAX },
+            ),
+        ] {
+            let actual = BinaryLiteral::from(bytes).to_int();
+            assert_eq!(actual, expected);
+            assert_eq!(actual.value(), expected.value());
+            assert_eq!(actual.is_truncated(), expected.is_truncated());
+        }
+    }
 
     #[test]
     fn test_codec() {

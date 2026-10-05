@@ -112,14 +112,7 @@ impl BinaryLiteral {
     /// non-zero payload wider than eight bytes. The typed outcome preserves
     /// both pieces without inventing a warning sink in the datatype layer.
     pub fn to_int(&self) -> BinaryLiteralIntOutcome {
-        let bytes = trim_leading_zero_bytes(&self.0);
-        if bytes.len() > 8 {
-            return BinaryLiteralIntOutcome::Truncated { value: u64::MAX };
-        }
-        let value = bytes
-            .iter()
-            .fold(0_u64, |value, byte| (value << 8) | u64::from(*byte));
-        BinaryLiteralIntOutcome::Exact(value)
+        tidb_query_datatype::codec::mysql::binary_literal::native_binary_literal_to_int(&self.0)
     }
 
     /// Go `BinaryLiteral.ToInt(ctx)`, routed through the shared truncation
@@ -253,30 +246,7 @@ impl HexLiteral {
 }
 
 /// The result of converting a literal before statement-context error policy.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum BinaryLiteralIntOutcome {
-    /// Conversion was exact.
-    Exact(u64),
-    /// Significant bytes exceeded the unsigned 64-bit boundary.
-    Truncated {
-        /// Go's returned value (`math.MaxUint64`).
-        value: u64,
-    },
-}
-
-impl BinaryLiteralIntOutcome {
-    /// Returns the value produced alongside the exact/truncated disposition.
-    pub const fn value(self) -> u64 {
-        match self {
-            Self::Exact(value) | Self::Truncated { value } => value,
-        }
-    }
-
-    /// Returns whether Go would pass `ErrTruncatedWrongVal` to its context.
-    pub const fn is_truncated(self) -> bool {
-        matches!(self, Self::Truncated { .. })
-    }
-}
+pub use tidb_query_datatype::codec::mysql::binary_literal::NativeBinaryLiteralIntOutcome as BinaryLiteralIntOutcome;
 
 /// A fixed output width accepted by Go `NewBinaryLiteralFromUint`.
 ///

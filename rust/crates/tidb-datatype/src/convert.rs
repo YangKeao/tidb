@@ -18,10 +18,11 @@
 use crate::TimeType;
 use std::fmt;
 use tidb_query_datatype::codec::native_duration_convert as shared_duration_convert;
+use tidb_query_datatype::codec::native_integer_convert as shared_integer_convert;
 
 use crate::{
-    round_float, BinaryJSON, BinaryLiteral, ConversionFlags, Decimal, FieldTypeCode, MySqlDuration,
-    MysqlEnum, MysqlSet, Time, JSON_LITERAL_FALSE, JSON_LITERAL_NULL, JSON_TYPE_CODE_ARRAY,
+    BinaryJSON, BinaryLiteral, ConversionFlags, Decimal, FieldTypeCode, MySqlDuration, MysqlEnum,
+    MysqlSet, Time, JSON_LITERAL_FALSE, JSON_LITERAL_NULL, JSON_TYPE_CODE_ARRAY,
     JSON_TYPE_CODE_DATE, JSON_TYPE_CODE_DATETIME, JSON_TYPE_CODE_DURATION, JSON_TYPE_CODE_FLOAT64,
     JSON_TYPE_CODE_INT64, JSON_TYPE_CODE_LITERAL, JSON_TYPE_CODE_OBJECT, JSON_TYPE_CODE_OPAQUE,
     JSON_TYPE_CODE_STRING, JSON_TYPE_CODE_TIMESTAMP, JSON_TYPE_CODE_UINT64,
@@ -118,43 +119,84 @@ fn overflow(value: impl ToString, target: FieldTypeCode) -> ScalarConversionErro
     }
 }
 
+pub(crate) fn from_shared_integer_error(
+    error: shared_integer_convert::NativeIntegerError,
+) -> ScalarConversionError {
+    use shared_integer_convert::NativeIntegerError;
+    use tidb_query_datatype::codec::native_type_name::NativeTypeNameCode;
+    match error {
+        NativeIntegerError::Overflow { value, target } => ScalarConversionError::Overflow {
+            value,
+            target: match target {
+                NativeTypeNameCode::Known(code) => FieldTypeCode::from_mysql_type(code),
+                NativeTypeNameCode::Unknown(code) => FieldTypeCode::Unknown(code),
+            },
+        },
+        NativeIntegerError::InvalidUnsignedInteger(value) => {
+            ScalarConversionError::InvalidUnsignedInteger(value)
+        }
+    }
+}
+
+fn from_shared_integer_event(
+    event: shared_integer_convert::NativeIntegerEvent,
+) -> ScalarConversionEvent {
+    match event {
+        shared_integer_convert::NativeIntegerEvent::Truncated => ScalarConversionEvent::Truncated,
+        shared_integer_convert::NativeIntegerEvent::Overflow(error) => {
+            ScalarConversionEvent::Overflow(from_shared_integer_error(error))
+        }
+    }
+}
+
+pub(crate) fn from_shared_integer_conversion<T>(
+    converted: shared_integer_convert::NativeIntegerConverted<T>,
+) -> Converted<T> {
+    Converted {
+        value: converted.value,
+        event: converted.event.map(from_shared_integer_event),
+    }
+}
+
+fn apply_integer_diagnostic(
+    diagnostics: &mut crate::datum_convert::diagnostics::Diagnostics<'_, '_>,
+    effect: shared_integer_convert::NativeIntegerDiagnostic<'_>,
+) {
+    use shared_integer_convert::NativeIntegerDiagnostic;
+    match effect {
+        NativeIntegerDiagnostic::TruncatedNumericInput(input) => {
+            diagnostics.truncated_numeric_input(input)
+        }
+        NativeIntegerDiagnostic::ParsedInteger(event) => {
+            let event = from_shared_integer_event(event.clone());
+            diagnostics.parsed_integer(Some(&event));
+        }
+        NativeIntegerDiagnostic::ErrorOverflow(input) => diagnostics.error(|| {
+            crate::ERR_OVERFLOW.generate(format!("BIGINT value is out of range in '{input}'"))
+        }),
+        NativeIntegerDiagnostic::ReplaceUnsignedOverflow(input) => {
+            diagnostics.replace_error(|| {
+                crate::ERR_OVERFLOW.generate(format!(
+                    "BIGINT UNSIGNED value is out of range in '{input}'"
+                ))
+            })
+        }
+    }
+}
+
 /// `IntegerUnsignedUpperBound`.
 pub const fn integer_unsigned_upper_bound(target: FieldTypeCode) -> u64 {
-    match target {
-        FieldTypeCode::Tiny => u8::MAX as u64,
-        FieldTypeCode::Short => u16::MAX as u64,
-        FieldTypeCode::Int24 => 0x00ff_ffff,
-        FieldTypeCode::Long => u32::MAX as u64,
-        FieldTypeCode::LongLong | FieldTypeCode::Bit | FieldTypeCode::Set => u64::MAX,
-        FieldTypeCode::Enum => u16::MAX as u64,
-        _ => panic!("input is not a MySQL integer type"),
-    }
+    shared_integer_convert::native_integer_unsigned_upper_bound(target.as_shared_type_name_code())
 }
 
 /// `IntegerSignedUpperBound`.
 pub const fn integer_signed_upper_bound(target: FieldTypeCode) -> i64 {
-    match target {
-        FieldTypeCode::Tiny => i8::MAX as i64,
-        FieldTypeCode::Short => i16::MAX as i64,
-        FieldTypeCode::Int24 => 0x007f_ffff,
-        FieldTypeCode::Long => i32::MAX as i64,
-        FieldTypeCode::LongLong => i64::MAX,
-        FieldTypeCode::Enum => u16::MAX as i64,
-        _ => panic!("input is not a MySQL signed integer type"),
-    }
+    shared_integer_convert::native_integer_signed_upper_bound(target.as_shared_type_name_code())
 }
 
 /// `IntegerSignedLowerBound`.
 pub const fn integer_signed_lower_bound(target: FieldTypeCode) -> i64 {
-    match target {
-        FieldTypeCode::Tiny => i8::MIN as i64,
-        FieldTypeCode::Short => i16::MIN as i64,
-        FieldTypeCode::Int24 => -0x0080_0000,
-        FieldTypeCode::Long => i32::MIN as i64,
-        FieldTypeCode::LongLong => i64::MIN,
-        FieldTypeCode::Enum => 0,
-        _ => panic!("input is not a MySQL integer type"),
-    }
+    shared_integer_convert::native_integer_signed_lower_bound(target.as_shared_type_name_code())
 }
 
 /// `ConvertFloatToInt`, including MySQL half-away-from-zero rounding.
@@ -164,17 +206,13 @@ pub fn convert_float_to_int(
     upper_bound: i64,
     target: FieldTypeCode,
 ) -> Result<i64, (i64, ScalarConversionError)> {
-    let rounded = round_float(value);
-    if rounded < lower_bound as f64 {
-        return Err((lower_bound, overflow(rounded, target)));
-    }
-    if rounded >= upper_bound as f64 {
-        if rounded == upper_bound as f64 {
-            return Ok(upper_bound);
-        }
-        return Err((upper_bound, overflow(rounded, target)));
-    }
-    Ok(rounded as i64)
+    shared_integer_convert::native_convert_float_to_int(
+        value,
+        lower_bound,
+        upper_bound,
+        target.as_shared_type_name_code(),
+    )
+    .map_err(|(value, error)| (value, from_shared_integer_error(error)))
 }
 
 /// `ConvertIntToInt`.
@@ -184,13 +222,13 @@ pub fn convert_int_to_int(
     upper_bound: i64,
     target: FieldTypeCode,
 ) -> Result<i64, (i64, ScalarConversionError)> {
-    if value < lower_bound {
-        Err((lower_bound, overflow(value, target)))
-    } else if value > upper_bound {
-        Err((upper_bound, overflow(value, target)))
-    } else {
-        Ok(value)
-    }
+    shared_integer_convert::native_convert_int_to_int(
+        value,
+        lower_bound,
+        upper_bound,
+        target.as_shared_type_name_code(),
+    )
+    .map_err(|(value, error)| (value, from_shared_integer_error(error)))
 }
 
 /// `ConvertUintToInt`.
@@ -199,11 +237,12 @@ pub fn convert_uint_to_int(
     upper_bound: i64,
     target: FieldTypeCode,
 ) -> Result<i64, (i64, ScalarConversionError)> {
-    if value > upper_bound as u64 {
-        Err((upper_bound, overflow(value, target)))
-    } else {
-        Ok(value as i64)
-    }
+    shared_integer_convert::native_convert_uint_to_int(
+        value,
+        upper_bound,
+        target.as_shared_type_name_code(),
+    )
+    .map_err(|(value, error)| (value, from_shared_integer_error(error)))
 }
 
 /// `ConvertIntToUint`.
@@ -213,15 +252,13 @@ pub fn convert_int_to_uint(
     upper_bound: u64,
     target: FieldTypeCode,
 ) -> Result<u64, (u64, ScalarConversionError)> {
-    if value < 0 && !flags.allow_negative_to_unsigned() {
-        return Err((0, overflow(value, target)));
-    }
-    let converted = value as u64;
-    if converted > upper_bound {
-        Err((upper_bound, overflow(value, target)))
-    } else {
-        Ok(converted)
-    }
+    shared_integer_convert::native_convert_int_to_uint(
+        flags.bits(),
+        value,
+        upper_bound,
+        target.as_shared_type_name_code(),
+    )
+    .map_err(|(value, error)| (value, from_shared_integer_error(error)))
 }
 
 /// `ConvertUintToUint`.
@@ -230,11 +267,12 @@ pub fn convert_uint_to_uint(
     upper_bound: u64,
     target: FieldTypeCode,
 ) -> Result<u64, (u64, ScalarConversionError)> {
-    if value > upper_bound {
-        Err((upper_bound, overflow(value, target)))
-    } else {
-        Ok(value)
-    }
+    shared_integer_convert::native_convert_uint_to_uint(
+        value,
+        upper_bound,
+        target.as_shared_type_name_code(),
+    )
+    .map_err(|(value, error)| (value, from_shared_integer_error(error)))
 }
 
 /// `ConvertFloatToUint`.
@@ -247,24 +285,13 @@ pub fn convert_float_to_uint(
     upper_bound: u64,
     target: FieldTypeCode,
 ) -> Result<u64, (u64, ScalarConversionError)> {
-    let rounded = round_float(value);
-    assert!(!rounded.is_nan(), "Float.SetFloat64(NaN)");
-    if rounded < 0.0 {
-        if !flags.allow_negative_to_unsigned() {
-            return Err((0, overflow(rounded, target)));
-        }
-        let converted = (rounded as i64) as u64;
-        return Err((converted, overflow(rounded, target)));
-    }
-    if !rounded.is_finite() || rounded >= (u64::MAX as f64) {
-        return Err((upper_bound, overflow(rounded, target)));
-    }
-    let converted = rounded as u64;
-    if converted > upper_bound {
-        Err((upper_bound, overflow(rounded, target)))
-    } else {
-        Ok(converted)
-    }
+    shared_integer_convert::native_convert_float_to_uint(
+        flags.bits(),
+        value,
+        upper_bound,
+        target.as_shared_type_name_code(),
+    )
+    .map_err(|(value, error)| (value, from_shared_integer_error(error)))
 }
 
 /// Expands the scientific notation accepted by `convertScientificNotation`.
@@ -392,32 +419,7 @@ pub fn valid_float_prefix(input: &str, is_function_cast: bool) -> NumericPrefix 
 
 /// `roundIntStr`.
 pub fn round_integer_string(next_fraction_digit: u8, integer: &str) -> String {
-    if next_fraction_digit < b'5' {
-        return integer.to_owned();
-    }
-    let mut result = integer.as_bytes().to_vec();
-    let mut index = result.len() - 1;
-    while index >= 1 {
-        if result[index] != b'9' {
-            result[index] += 1;
-            return String::from_utf8(result).expect("integer input is ASCII");
-        }
-        result[index] = b'0';
-        index -= 1;
-    }
-    match result[0] {
-        b'9' => {
-            result[0] = b'1';
-            result.push(b'0');
-        }
-        b'0'..=b'8' => result[0] += 1,
-        b'+' | b'-' => {
-            result[1] = b'1';
-            result.push(b'0');
-        }
-        _ => unreachable!("integer input is valid"),
-    }
-    String::from_utf8(result).expect("integer input is ASCII")
+    shared_integer_convert::native_round_integer_string(next_fraction_digit, integer)
 }
 
 /// `floatStrToIntStr`. The error carries the same saturated BIGINT text used
@@ -426,94 +428,8 @@ pub fn float_string_to_integer_string(
     valid_float: &str,
     original: &str,
 ) -> Result<String, (String, ScalarConversionError)> {
-    let bytes = valid_float.as_bytes();
-    let dot_index = bytes.iter().position(|byte| *byte == b'.');
-    let exponent_index = bytes.iter().position(|byte| matches!(byte, b'e' | b'E'));
-
-    let Some(exponent_index) = exponent_index else {
-        let Some(mut dot_index) = dot_index else {
-            return Ok(valid_float.to_owned());
-        };
-        let signed = matches!(bytes.first(), Some(b'+' | b'-'));
-        let digits = if signed {
-            dot_index -= 1;
-            &bytes[1..]
-        } else {
-            bytes
-        };
-        let mut integer = if dot_index == 0 {
-            "0".to_owned()
-        } else {
-            String::from_utf8(digits[..dot_index].to_vec()).expect("numeric input is ASCII")
-        };
-        if digits.len() > dot_index + 1 {
-            integer = round_integer_string(digits[dot_index + 1], &integer);
-        }
-        if (integer.len() > 1 || integer.as_bytes()[0] != b'0') && bytes.first() == Some(&b'-') {
-            integer.insert(0, '-');
-        }
-        return Ok(integer);
-    };
-
-    let mut digits = Vec::with_capacity(valid_float.len());
-    let mut integer_count;
-    if let Some(dot_index) = dot_index {
-        digits.extend_from_slice(&bytes[..dot_index]);
-        integer_count = digits.len() as i128;
-        digits.extend_from_slice(&bytes[dot_index + 1..exponent_index]);
-    } else {
-        digits.extend_from_slice(&bytes[..exponent_index]);
-        integer_count = digits.len() as i128;
-    }
-    let exponent = valid_float[exponent_index + 1..]
-        .parse::<i128>()
-        .map_err(|_| {
-            let saturated = if digits.first() == Some(&b'-') {
-                i64::MIN.to_string()
-            } else {
-                u64::MAX.to_string()
-            };
-            (saturated, overflow(original, FieldTypeCode::LongLong))
-        })?;
-    integer_count += exponent;
-    if exponent >= 0 && !(0..=21).contains(&integer_count) {
-        let saturated = if digits.first() == Some(&b'-') {
-            i64::MIN.to_string()
-        } else {
-            u64::MAX.to_string()
-        };
-        return Err((saturated, overflow(original, FieldTypeCode::LongLong)));
-    }
-    if integer_count <= 0 {
-        let mut integer = "0".to_owned();
-        if integer_count == 0 && digits.first().is_some_and(u8::is_ascii_digit) {
-            integer = round_integer_string(digits[0], &integer);
-        }
-        return Ok(integer);
-    }
-    if integer_count == 1 && matches!(digits.first(), Some(b'+' | b'-')) {
-        let mut integer = "0".to_owned();
-        if digits.len() > 1 {
-            integer = round_integer_string(digits[1], &integer);
-        }
-        if integer.starts_with('1') {
-            integer.insert(0, digits[0] as char);
-        }
-        return Ok(integer);
-    }
-    if integer_count <= digits.len() as i128 {
-        let count = integer_count as usize;
-        let mut integer =
-            String::from_utf8(digits[..count].to_vec()).expect("numeric input is ASCII");
-        if count < digits.len() {
-            integer = round_integer_string(digits[count], &integer);
-        }
-        Ok(integer)
-    } else {
-        let mut integer = String::from_utf8(digits).expect("numeric input is ASCII");
-        integer.push_str(&"0".repeat(integer_count as usize - integer.len()));
-        Ok(integer)
-    }
+    shared_integer_convert::native_float_string_to_integer_string(valid_float, original)
+        .map_err(|(value, error)| (value, from_shared_integer_error(error)))
 }
 
 /// `getValidIntPrefix`.
@@ -531,78 +447,21 @@ pub fn valid_integer_prefix(
     is_function_cast: bool,
     truncate_as_warning: bool,
 ) -> Result<Converted<String>, (String, ScalarConversionError)> {
-    if !is_function_cast {
-        let float = valid_float_prefix(input, false);
-        if float.truncated && !truncate_as_warning {
-            return Err((
-                float.value,
-                ScalarConversionError::InvalidUnsignedInteger(input.to_owned()),
-            ));
-        }
-        let event = float.truncated.then_some(ScalarConversionEvent::Truncated);
-        return float_string_to_integer_string(float.value(), input)
-            .map(|value| Converted { value, event });
-    }
-
-    let mut valid_len = 0;
-    for (index, byte) in input.bytes().enumerate() {
-        if matches!(byte, b'+' | b'-') && index == 0 {
-            continue;
-        }
-        if byte.is_ascii_digit() {
-            valid_len = index + 1;
-            continue;
-        }
-        break;
-    }
-    let value = if valid_len == 0 {
-        "0".to_owned()
-    } else {
-        input[..valid_len].to_owned()
-    };
-    if valid_len == 0 || valid_len != input.len() {
-        if truncate_as_warning {
-            return Ok(Converted::truncated(value));
-        }
-        return Err((
-            value,
-            ScalarConversionError::InvalidUnsignedInteger(input.to_owned()),
-        ));
-    }
-    Ok(Converted::exact(value))
-}
-
-/// `getValidIntPrefix`'s `isFuncCast` arm, byte for byte.
-///
-/// Go advances the valid length ONLY on a digit, so a leading `+`/`-` that no
-/// digit follows leaves the length at zero and the prefix becomes `"0"` -- the
-/// sign is never the accepted prefix on its own. Returns the prefix and
-/// whether the scan consumed the whole input, which is the `validLen == 0 ||
-/// validLen != len(str)` condition Go hands to `Context.HandleTruncate`.
-fn function_cast_integer_prefix(input: &str) -> (String, bool) {
-    let mut valid_len = 0;
-    for (index, byte) in input.bytes().enumerate() {
-        if matches!(byte, b'+' | b'-') && index == 0 {
-            continue;
-        }
-        if byte.is_ascii_digit() {
-            valid_len = index + 1;
-            continue;
-        }
-        break;
-    }
-    let consumed_all = valid_len != 0 && valid_len == input.len();
-    let prefix = if valid_len == 0 {
-        "0".to_owned()
-    } else {
-        input[..valid_len].to_owned()
-    };
-    (prefix, consumed_all)
+    shared_integer_convert::native_valid_integer_prefix(
+        input,
+        is_function_cast,
+        truncate_as_warning,
+    )
+    .map(from_shared_integer_conversion)
+    .map_err(|(value, error)| (value, from_shared_integer_error(error)))
 }
 
 /// `StrToInt`, preserving the best-effort value and truncation/overflow event.
 pub fn str_to_int(input: &str, is_function_cast: bool) -> Converted<i64> {
-    str_to_int_with_truncate_policy(input, is_function_cast, true)
+    from_shared_integer_conversion(shared_integer_convert::native_str_to_int(
+        input,
+        is_function_cast,
+    ))
 }
 
 /// `StrToInt` with the source context's `HandleTruncate` decision.
@@ -616,12 +475,12 @@ pub(crate) fn str_to_int_with_truncate_policy(
     is_function_cast: bool,
     truncate_as_warning: bool,
 ) -> Converted<i64> {
-    str_to_int_reported(
+    from_shared_integer_conversion(shared_integer_convert::native_str_to_int_reported(
         input,
         is_function_cast,
         truncate_as_warning,
-        &mut crate::datum_convert::diagnostics::Diagnostics::new(None),
-    )
+        |_| {},
+    ))
 }
 
 pub(crate) fn str_to_int_reported(
@@ -630,61 +489,20 @@ pub(crate) fn str_to_int_reported(
     truncate_as_warning: bool,
     diagnostics: &mut crate::datum_convert::diagnostics::Diagnostics<'_, '_>,
 ) -> Converted<i64> {
-    let input = input.trim();
-    let float = valid_float_prefix(input, is_function_cast);
-    if float.truncated() {
-        diagnostics.truncated_numeric_input(input);
-    }
-    let mut function_cast_consumed_all = true;
-    let integer = if is_function_cast {
-        let (prefix, consumed_all) = function_cast_integer_prefix(input);
-        function_cast_consumed_all = consumed_all;
-        prefix
-    } else if float.truncated() && !truncate_as_warning {
-        float.value().to_owned()
-    } else {
-        match float_string_to_integer_string(float.value(), input) {
-            Ok(value) => value,
-            Err((value, error)) => {
-                let event = Some(ScalarConversionEvent::Overflow(error));
-                diagnostics.parsed_integer(event.as_ref());
-                return Converted {
-                    value: value.parse().unwrap_or_else(|_| {
-                        if value.starts_with('-') {
-                            i64::MIN
-                        } else {
-                            i64::MAX
-                        }
-                    }),
-                    event,
-                };
-            }
-        }
-    };
-    match integer.parse::<i64>() {
-        Ok(value) if float.truncated() || (is_function_cast && !function_cast_consumed_all) => {
-            Converted::truncated(value)
-        }
-        Ok(value) => Converted::exact(value),
-        Err(error) => {
-            let value = match error.kind() {
-                std::num::IntErrorKind::PosOverflow => i64::MAX,
-                std::num::IntErrorKind::NegOverflow => i64::MIN,
-                _ => 0,
-            };
-            let event = Some(ScalarConversionEvent::Overflow(overflow(
-                &integer,
-                FieldTypeCode::LongLong,
-            )));
-            diagnostics.parsed_integer(event.as_ref());
-            Converted { value, event }
-        }
-    }
+    from_shared_integer_conversion(shared_integer_convert::native_str_to_int_reported(
+        input,
+        is_function_cast,
+        truncate_as_warning,
+        |effect| apply_integer_diagnostic(diagnostics, effect),
+    ))
 }
 
 /// `StrToUint`, including the source rule that only negative zero is valid.
 pub fn str_to_uint(input: &str, is_function_cast: bool) -> Converted<u64> {
-    str_to_uint_with_truncate_policy(input, is_function_cast, true)
+    from_shared_integer_conversion(shared_integer_convert::native_str_to_uint(
+        input,
+        is_function_cast,
+    ))
 }
 
 /// `StrToUint` with the source context's `HandleTruncate` decision. See
@@ -695,12 +513,12 @@ pub(crate) fn str_to_uint_with_truncate_policy(
     is_function_cast: bool,
     truncate_as_warning: bool,
 ) -> Converted<u64> {
-    str_to_uint_reported(
+    from_shared_integer_conversion(shared_integer_convert::native_str_to_uint_reported(
         input,
         is_function_cast,
         truncate_as_warning,
-        &mut crate::datum_convert::diagnostics::Diagnostics::new(None),
-    )
+        |_| {},
+    ))
 }
 
 pub(crate) fn str_to_uint_reported(
@@ -709,84 +527,12 @@ pub(crate) fn str_to_uint_reported(
     truncate_as_warning: bool,
     diagnostics: &mut crate::datum_convert::diagnostics::Diagnostics<'_, '_>,
 ) -> Converted<u64> {
-    let input = input.trim();
-    let float = valid_float_prefix(input, is_function_cast);
-    if float.truncated() {
-        diagnostics.truncated_numeric_input(input);
-    }
-    let mut function_cast_consumed_all = true;
-    let mut prefix_error = None;
-    let integer = if is_function_cast {
-        let (prefix, consumed_all) = function_cast_integer_prefix(input);
-        function_cast_consumed_all = consumed_all;
-        prefix
-    } else if float.truncated() && !truncate_as_warning {
-        float.value().to_owned()
-    } else {
-        match float_string_to_integer_string(float.value(), input) {
-            Ok(value) => value,
-            Err((value, error)) => {
-                diagnostics.error(|| {
-                    crate::ERR_OVERFLOW
-                        .generate(format!("BIGINT value is out of range in '{input}'"))
-                });
-                prefix_error = Some(ScalarConversionEvent::Overflow(error));
-                value
-            }
-        }
-    };
-    let unsigned = integer.strip_prefix('+').unwrap_or(&integer);
-    if let Some(magnitude) = unsigned.strip_prefix('-') {
-        if magnitude.bytes().any(|byte| byte != b'0') {
-            diagnostics.replace_error(|| {
-                crate::ERR_OVERFLOW.generate(format!(
-                    "BIGINT UNSIGNED value is out of range in '{integer}'"
-                ))
-            });
-            return Converted {
-                value: 0,
-                event: Some(ScalarConversionEvent::Overflow(overflow(
-                    &integer,
-                    FieldTypeCode::LongLong,
-                ))),
-            };
-        }
-        return if float.truncated() {
-            Converted::truncated(0)
-        } else {
-            Converted::exact(0)
-        };
-    }
-    match unsigned.parse::<u64>() {
-        Ok(value) if float.truncated() || (is_function_cast && !function_cast_consumed_all) => {
-            Converted {
-                value,
-                event: prefix_error.or(Some(ScalarConversionEvent::Truncated)),
-            }
-        }
-        Ok(value) => Converted {
-            value,
-            event: prefix_error,
-        },
-        Err(error) => {
-            diagnostics.replace_error(|| {
-                crate::ERR_OVERFLOW.generate(format!(
-                    "BIGINT UNSIGNED value is out of range in '{unsigned}'"
-                ))
-            });
-            Converted {
-                value: if matches!(error.kind(), std::num::IntErrorKind::PosOverflow) {
-                    u64::MAX
-                } else {
-                    0
-                },
-                event: Some(ScalarConversionEvent::Overflow(overflow(
-                    &integer,
-                    FieldTypeCode::LongLong,
-                ))),
-            }
-        }
-    }
+    from_shared_integer_conversion(shared_integer_convert::native_str_to_uint_reported(
+        input,
+        is_function_cast,
+        truncate_as_warning,
+        |effect| apply_integer_diagnostic(diagnostics, effect),
+    ))
 }
 
 /// `StrToFloat`.
@@ -983,14 +729,206 @@ fn duration_conversion_facades_keep_raw_rounding_numeric_errors_and_datetime_alt
     );
 }
 
-fn converted_result<T>(result: Result<T, (T, ScalarConversionError)>) -> Converted<T> {
-    match result {
-        Ok(value) => Converted::exact(value),
-        Err((value, error)) => Converted {
-            value,
-            event: Some(ScalarConversionEvent::Overflow(error)),
-        },
+#[cfg(test)]
+#[test]
+fn integer_text_facades_preserve_prefix_domains_and_typed_diagnostic_order() {
+    assert_eq!(round_integer_string(b'5', "99"), "100");
+    assert_eq!(
+        float_string_to_integer_string("-0.5", "-0.5").unwrap(),
+        "-1"
+    );
+    assert_eq!(
+        valid_integer_prefix("123..34", false, false),
+        Err((
+            "123.".into(),
+            ScalarConversionError::InvalidUnsignedInteger("123..34".into())
+        ))
+    );
+    assert_eq!(
+        str_to_int(" 3.5 ", false),
+        Converted {
+            value: 4,
+            event: None
+        }
+    );
+    assert_eq!(
+        str_to_int("3.5", true),
+        Converted {
+            value: 3,
+            event: Some(ScalarConversionEvent::Truncated)
+        }
+    );
+    assert_eq!(
+        str_to_int_with_truncate_policy("3.5tail", false, false),
+        Converted {
+            value: 0,
+            event: Some(ScalarConversionEvent::Overflow(
+                ScalarConversionError::Overflow {
+                    value: "3.5".into(),
+                    target: FieldTypeCode::LongLong,
+                }
+            )),
+        }
+    );
+    assert_eq!(
+        str_to_int_with_truncate_policy("3.5tail", false, true),
+        Converted {
+            value: 4,
+            event: Some(ScalarConversionEvent::Truncated),
+        }
+    );
+    assert_eq!(
+        str_to_uint("-000", false),
+        Converted {
+            value: 0,
+            event: None
+        }
+    );
+    assert_eq!(
+        str_to_uint("-1e100", false),
+        Converted {
+            value: 0,
+            event: Some(ScalarConversionEvent::Overflow(
+                ScalarConversionError::Overflow {
+                    value: "-9223372036854775808".into(),
+                    target: FieldTypeCode::LongLong,
+                }
+            )),
+        }
+    );
+
+    #[derive(Default)]
+    struct Warnings(std::cell::RefCell<Vec<String>>);
+    impl crate::ConversionWarningAppender for Warnings {
+        fn append_conversion_warning(&self, error: tidb_error::terror::TerrorError) {
+            self.0.borrow_mut().push(error.to_string());
+        }
     }
+    let warnings = Warnings::default();
+    let flags = crate::DEFAULT_STATEMENT_FLAGS.with_truncate_as_warning(true);
+    let context = crate::ConversionContext::new(flags, crate::ConversionLocation::UTC, &warnings);
+    let target = crate::FieldType::new(FieldTypeCode::LongLong)
+        .with_added_flags(crate::FieldTypeFlags::UNSIGNED);
+    let converted = crate::Datum::new_string("-1e100tail")
+        .convert_to_in_context(&target, &context, &crate::SessionTimeZone::utc())
+        .unwrap();
+    assert_eq!(converted.value, crate::Datum::UInt(0));
+    assert_eq!(
+        converted.error.unwrap().to_string(),
+        "[types:1690]BIGINT UNSIGNED value is out of range in '-9223372036854775808'"
+    );
+    assert_eq!(
+        *warnings.0.borrow(),
+        vec!["[types:1292]Truncated incorrect DOUBLE value: '-1e100tail'"]
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn integer_json_facades_preserve_target_identity_flags_raw_tags_and_panics() {
+    let flags = ConversionFlags::from_bits(0);
+    assert_eq!(integer_unsigned_upper_bound(FieldTypeCode::Bit), u64::MAX);
+    assert_eq!(integer_signed_lower_bound(FieldTypeCode::Enum), 0);
+    assert_eq!(integer_signed_upper_bound(FieldTypeCode::Enum), 65535);
+    assert!(
+        std::panic::catch_unwind(|| integer_signed_upper_bound(FieldTypeCode::Unknown(8))).is_err()
+    );
+    assert_eq!(
+        convert_int_to_int(200, -128, 127, FieldTypeCode::Unknown(1)),
+        Err((
+            127,
+            ScalarConversionError::Overflow {
+                value: "200".into(),
+                target: FieldTypeCode::Unknown(1),
+            }
+        ))
+    );
+    assert_eq!(
+        convert_float_to_int(2.5, i64::MIN, i64::MAX, FieldTypeCode::LongLong),
+        Ok(2)
+    );
+    let minus_one =
+        BinaryJSON::from_encoded_parts(JSON_TYPE_CODE_INT64, (-1_i64).to_le_bytes().to_vec());
+    assert_eq!(json_to_int64(&minus_one, true, flags).value, 0);
+    assert_eq!(
+        json_to_int64(
+            &minus_one,
+            true,
+            flags.with_allow_negative_to_unsigned(true)
+        ),
+        Converted {
+            value: -1,
+            event: None
+        }
+    );
+    let text = BinaryJSON::parse(r#""18446744073709551616""#).unwrap();
+    assert_eq!(
+        json_to_int(&text, false, FieldTypeCode::Tiny, flags),
+        Converted {
+            value: -1,
+            event: Some(ScalarConversionEvent::Overflow(
+                ScalarConversionError::Overflow {
+                    value: "18446744073709551616".into(),
+                    target: FieldTypeCode::LongLong,
+                }
+            )),
+        }
+    );
+    let negative = BinaryJSON::parse(r#""-1""#).unwrap();
+    let spaced = BinaryJSON::parse(r#"" -1""#).unwrap();
+    assert_eq!(
+        json_to_int(&negative, true, FieldTypeCode::Tiny, flags),
+        Converted {
+            value: -1,
+            event: None
+        }
+    );
+    assert_eq!(
+        json_to_int64(&spaced, false, flags),
+        Converted {
+            value: 0,
+            event: Some(ScalarConversionEvent::Overflow(
+                ScalarConversionError::Overflow {
+                    value: "-1".into(),
+                    target: FieldTypeCode::LongLong
+                }
+            )),
+        }
+    );
+    assert_eq!(
+        json_to_int64(
+            &BinaryJSON::from_encoded_parts(JSON_TYPE_CODE_LITERAL, vec![255]),
+            false,
+            flags
+        ),
+        Converted {
+            value: 1,
+            event: None
+        }
+    );
+    assert_eq!(
+        json_to_int64(
+            &BinaryJSON::from_encoded_parts(JSON_TYPE_CODE_STRING, vec![1, 255]),
+            false,
+            flags
+        ),
+        Converted {
+            value: 0,
+            event: Some(ScalarConversionEvent::Truncated)
+        }
+    );
+    let malformed = BinaryJSON::from_encoded_parts(JSON_TYPE_CODE_INT64, Vec::new());
+    assert!(std::panic::catch_unwind(|| json_to_int64(&malformed, false, flags)).is_err());
+    let nan =
+        BinaryJSON::from_encoded_parts(JSON_TYPE_CODE_FLOAT64, f64::NAN.to_le_bytes().to_vec());
+    assert_eq!(
+        json_to_int64(&nan, false, flags),
+        Converted {
+            value: 0,
+            event: None
+        }
+    );
+    assert!(std::panic::catch_unwind(|| json_to_int64(&nan, true, flags)).is_err());
 }
 
 fn json_non_numeric(type_code: u8) -> bool {
@@ -1013,99 +951,23 @@ pub fn json_to_int(
     target: FieldTypeCode,
     flags: ConversionFlags,
 ) -> Converted<i64> {
-    if json_non_numeric(json.type_code()) {
-        return Converted::truncated(0);
-    }
-    match json.type_code() {
-        JSON_TYPE_CODE_LITERAL => match json.value().first().copied() {
-            Some(JSON_LITERAL_FALSE) => Converted::exact(0),
-            Some(JSON_LITERAL_NULL) | None => Converted::truncated(0),
-            Some(_) => Converted::exact(1),
-        },
-        JSON_TYPE_CODE_INT64 => {
-            let value = json.as_i64().expect("validated binary JSON integer");
-            if unsigned {
-                let converted = converted_result(convert_int_to_uint(
-                    flags,
-                    value,
-                    integer_unsigned_upper_bound(target),
-                    target,
-                ));
-                Converted {
-                    value: converted.value as i64,
-                    event: converted.event,
-                }
-            } else {
-                converted_result(convert_int_to_int(
-                    value,
-                    integer_signed_lower_bound(target),
-                    integer_signed_upper_bound(target),
-                    target,
-                ))
-            }
-        }
-        JSON_TYPE_CODE_UINT64 => {
-            let value = json.as_u64().expect("validated binary JSON integer");
-            if unsigned {
-                let converted = converted_result(convert_uint_to_uint(
-                    value,
-                    integer_unsigned_upper_bound(target),
-                    target,
-                ));
-                Converted {
-                    value: converted.value as i64,
-                    event: converted.event,
-                }
-            } else {
-                converted_result(convert_uint_to_int(
-                    value,
-                    integer_signed_upper_bound(target),
-                    target,
-                ))
-            }
-        }
-        JSON_TYPE_CODE_FLOAT64 => {
-            let value = json.as_f64().expect("validated binary JSON float");
-            if unsigned {
-                let converted = converted_result(convert_float_to_uint(
-                    flags,
-                    value,
-                    integer_unsigned_upper_bound(target),
-                    target,
-                ));
-                Converted {
-                    value: converted.value as i64,
-                    event: converted.event,
-                }
-            } else {
-                converted_result(convert_float_to_int(
-                    value,
-                    integer_signed_lower_bound(target),
-                    integer_signed_upper_bound(target),
-                    target,
-                ))
-            }
-        }
-        JSON_TYPE_CODE_STRING => {
-            let text = std::str::from_utf8(json.as_string().expect("validated binary JSON string"))
-                .unwrap_or("");
-            if text.len() > 1 && text.starts_with('-') {
-                str_to_int(text, false)
-            } else {
-                let converted = str_to_uint(text, false);
-                Converted {
-                    value: converted.value as i64,
-                    event: converted.event,
-                }
-            }
-        }
-        _ => Converted::truncated(0),
-    }
+    from_shared_integer_conversion(shared_integer_convert::native_json_to_int(
+        json.type_code(),
+        json.value(),
+        unsigned,
+        target.as_shared_type_name_code(),
+        flags.bits(),
+    ))
 }
 
 /// `ConvertJSONToInt64`.
 pub fn json_to_int64(json: &BinaryJSON, unsigned: bool, flags: ConversionFlags) -> Converted<i64> {
-    json_to_int(json, unsigned, FieldTypeCode::LongLong, flags)
+    from_shared_integer_conversion(shared_integer_convert::native_json_to_int64(
+        json.type_code(),
+        json.value(),
+        unsigned,
+        flags.bits(),
+    ))
 }
 
 /// `ConvertJSONToFloat`.

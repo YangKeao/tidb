@@ -19,6 +19,8 @@
 //! aggregate-side opaque-JSON rule of `getRealJSONValue`
 //! (`pkg/executor/aggfuncs/func_json_objectagg.go`).
 
+#[cfg(test)]
+use crate::BinaryLiteral;
 use std::cmp::Ordering;
 use tidb_query_datatype::codec::native_mysql_json::{
     native_datum_to_mysql_json, native_datum_to_mysql_json_with_source, NativeDatumJsonError,
@@ -27,9 +29,8 @@ use tidb_query_datatype::codec::native_mysql_json::{
 
 use super::{decimal_from_bytes, Datum, DatumStringError, DatumValueError};
 use crate::{
-    compare_binary_json, json_to_decimal, json_to_float, json_to_int64, str_to_float, str_to_int,
-    BinaryJSON, BinaryLiteral, Collation, Converted, Decimal, ScalarConversionEvent,
-    DEFAULT_STATEMENT_FLAGS,
+    compare_binary_json, json_to_decimal, json_to_float, str_to_float, BinaryJSON, Collation,
+    Converted, Decimal, ScalarConversionEvent,
 };
 
 impl Datum {
@@ -124,74 +125,57 @@ impl Datum {
         &self,
         zone: &crate::SessionTimeZone,
     ) -> Result<Converted<i64>, DatumValueError> {
-        let converted = match self {
-            Self::Int(value) => Converted {
-                value: *value,
-                event: None,
-            },
-            Self::UInt(value) => Converted {
-                value: (*value).min(i64::MAX as u64) as i64,
-                event: (*value > i64::MAX as u64).then_some(ScalarConversionEvent::Truncated),
-            },
-            Self::Real(value) | Self::Float32(value) => {
-                let rounded = crate::round_float(*value);
-                Converted {
-                    value: rounded.clamp(i64::MIN as f64, i64::MAX as f64) as i64,
-                    event: (!(i64::MIN as f64..=i64::MAX as f64).contains(&rounded))
-                        .then_some(ScalarConversionEvent::Truncated),
+        use tidb_query_datatype::codec::native_numeric::{native_datum_to_i64, NativeNumericError};
+        native_datum_to_i64(self.as_shared_numeric_input(), zone)
+            .map(crate::convert::from_shared_integer_conversion)
+            .map_err(|error| match error {
+                NativeNumericError::InvalidUtf8(error) => error.into(),
+                NativeNumericError::Comparison(message) => DatumValueError::Comparison(message),
+                NativeNumericError::Unsupported => {
+                    DatumValueError::Unsupported(self.kind(), "int64")
                 }
-            }
-            Self::String(value) => str_to_int(value.as_utf8()?, false),
-            Self::Bytes(value) => str_to_int(std::str::from_utf8(value)?, false),
-            // Go `toSignedInteger`'s temporal arms round the TEMPORAL value
-            // to `DefaultFsp` FIRST and only then render it as a number, so a
-            // fractional carry propagates through the sexagesimal fields
-            // instead of landing on an impossible seconds digit. Its own
-            // comment states the contract: `11:59:59.999999 -> 120000`, not
-            // `115960`. The zone is load-bearing on the DATETIME arm the same
-            // way it is for `convert_to_signed` -- a carry that lands on a DST
-            // transition instant reads back the SESSION zone's wall clock.
-            Self::Time(value) => decimal_to_i64(
-                value
-                    .round_frac(crate::DEFAULT_FSP, zone)
-                    .map_err(|error| DatumValueError::Comparison(error.to_string()))?
-                    .to_number(),
-            ),
-            Self::Duration(value) => decimal_to_i64(
-                value
-                    .round_frac(crate::DEFAULT_FSP)
-                    .map_err(|error| DatumValueError::Comparison(error.to_string()))?
-                    .to_number(),
-            ),
-            Self::Decimal(value) => decimal_to_i64(value.clone()),
-            Self::Enum(value, _) => Converted {
-                value: value.value().min(i64::MAX as u64) as i64,
-                event: None,
-            },
-            Self::Set(value, _) => Converted {
-                value: value.value().min(i64::MAX as u64) as i64,
-                event: None,
-            },
-            Self::Json(value) => json_to_int64(value, false, DEFAULT_STATEMENT_FLAGS),
-            // `ToInt64` special-cases `KindMysqlBit`: it reinterprets the
-            // unsigned payload even when it exceeds int64::MAX. A
-            // `KindBinaryLiteral` instead takes the bounded signed path and
-            // returns the saturated value plus an overflow event. The source
-            // also returns zero (with the truncation event) when `ToInt`
-            // itself rejects a literal wider than eight bytes.
-            Self::BinaryLiteral(value) => binary_literal_to_i64(value),
-            Self::Bit(value) => {
-                let outcome = value.to_int();
-                Converted {
-                    value: outcome.value() as i64,
-                    event: outcome
-                        .is_truncated()
-                        .then_some(ScalarConversionEvent::Truncated),
-                }
-            }
-            other => return Err(DatumValueError::Unsupported(other.kind(), "int64")),
+            })
+    }
+
+    /// Borrows actual numeric storage without conversion or context demand.
+    pub fn as_shared_numeric_input(
+        &self,
+    ) -> tidb_query_datatype::codec::native_numeric::NativeNumericInput<'_> {
+        use tidb_query_datatype::codec::{
+            mysql::time::NativeTemporalValue, native_duration_convert::NativeDurationParts,
+            native_numeric::NativeNumericInput as I,
         };
-        Ok(converted)
+        match self {
+            Self::Int(value) => I::Int(*value),
+            Self::UInt(value) => I::UInt(*value),
+            Self::Decimal(value) => I::Decimal(value.as_shared_parse()),
+            Self::Real(value) => I::Real(*value),
+            Self::Float32(value) => I::Float32(*value),
+            Self::String(value) => I::String(value.bytes()),
+            Self::Bytes(value) => I::Bytes(value),
+            Self::BinaryLiteral(value) => I::BinaryLiteral(value.as_bytes()),
+            Self::Bit(value) => I::Bit(value.as_bytes()),
+            Self::Duration(value) => I::Duration(NativeDurationParts {
+                nanoseconds: value.nanoseconds(),
+                fsp: value.fsp(),
+            }),
+            Self::Enum(value, _) => I::Enum(value.value()),
+            Self::Set(value, _) => I::Set(value.value()),
+            Self::Time(value) => I::Time(NativeTemporalValue {
+                raw: value.core_time().raw(),
+                kind: value.kind(),
+                fsp: value.fsp(),
+            }),
+            Self::Json(value) => I::Json {
+                type_code: value.type_code(),
+                value: value.value(),
+            },
+            Self::Raw(value) => I::Raw(value),
+            Self::VectorFloat32(value) => I::VectorFloat32(value),
+            Self::Null => I::Null,
+            Self::MinNotNull => I::MinNotNull,
+            Self::MaxValue => I::MaxValue,
+        }
     }
 
     /// Source `Datum.ToFloat64`.
@@ -485,47 +469,6 @@ fn decimal_conversion_error(
             ))
         }
     }
-}
-
-fn decimal_to_i64(decimal: Decimal) -> Converted<i64> {
-    match decimal.round_to_i64() {
-        Some(value) => Converted { value, event: None },
-        None => Converted {
-            value: decimal.round_to_i64_saturating(),
-            event: Some(ScalarConversionEvent::Truncated),
-        },
-    }
-}
-
-/// Source `toSignedInteger`'s `KindBinaryLiteral`/`KindMysqlBit` arm after
-/// `BinaryLiteral.ToInt`. A too-wide literal returns zero beside its
-/// truncation event; an in-range-width literal then follows the bounded
-/// unsigned-to-signed conversion and can saturate at int64::MAX.
-fn binary_literal_to_signed(
-    literal: &BinaryLiteral,
-    target: crate::FieldTypeCode,
-    upper: i64,
-) -> Converted<i64> {
-    let outcome = literal.to_int();
-    if outcome.is_truncated() {
-        return Converted {
-            value: 0,
-            event: Some(ScalarConversionEvent::Truncated),
-        };
-    }
-    match crate::convert_uint_to_int(outcome.value(), upper, target) {
-        Ok(value) => Converted { value, event: None },
-        Err((value, error)) => Converted {
-            value,
-            event: Some(ScalarConversionEvent::Overflow(error)),
-        },
-    }
-}
-
-/// Source `Datum.ToInt64`'s `KindBinaryLiteral` arm. Unlike a MySQL BIT
-/// datum, a hex/bit literal is bounded to the signed integer domain.
-fn binary_literal_to_i64(literal: &BinaryLiteral) -> Converted<i64> {
-    binary_literal_to_signed(literal, crate::FieldTypeCode::LongLong, i64::MAX)
 }
 
 #[cfg(test)]

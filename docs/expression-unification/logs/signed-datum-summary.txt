@@ -1,0 +1,32 @@
+signed-datum-120 / R123–125
+Raw logs: /home/agent/tidb/expression-unification/logs/signed-datum-{id}.log
+9 launches:8GREEN,1initial compile failure. No test-execution failures or zero-matches. Initial datatype compilation lost BinaryLiteral test-only import during parent cleanup; restored #[cfg(test)] import without changing tests or production policy. Original RED retained.
+
+Exact commands; --locked and single test thread on every launch:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_ -- --test-threads=1
+[tikv-binary] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib binary_literal::tests -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype, native-datatype-corrected: two launches]
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-expression] ../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::signed_datum_tests -- --test-threads=1
+[native-controller] ../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::cast_integer::tests -- --test-threads=1
+[native-year] ../../tools/cargo-tidb test --locked -p tidb-expr --lib coerce::tests -- --test-threads=1
+[sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib native_signed_datum_preserves_hybrid_ordinals_and_temporal_carry_in_sql -- --test-threads=1
+[sql-calendar] ../../tools/cargo-tidb test --locked -p tidb-session --lib native_temporal_calendar_preserves_statement_clock_year_fields_and_dst_boundaries -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 101/0/0/396 4.16/0.01 0 bde2008dfbbaa8b52dfe3bf94568645ba2dda081cbb0032ecdf7732526bd2ed2
+tikv-binary 8/0/0/489 0.13/0.00 0 500521e121d123b958e0c6a8cac37364e0d96ea090d277b1304e5364642c7c8f
+native-datatype COMPILE_FAILED NA 101 3b54b084133484d33e4ea100f56da43a5ec5c79e2d3b88cb75de9e29ecc1a229
+native-datatype-corrected 477/0/0/0 2.30/7.11 0 513b99fdc3ae0759e13a8dc1b724658ce6b248c414121f9f16f8f709ccfee32d
+native-expression 1/0/0/1727 19.91/0.00 0 8a49c4f09ae56fca89a7f85677a8ab38563c37fe9dc906fc3ddef8e075d3da11
+native-controller 1/0/0/1727 0.14/0.00 0 bdc5d8e98cc4933c9594d361edd12c4b5bf1d78168157efc1a6d86c05fa04847
+native-year 1/0/0/1727 0.12/0.00 0 bc5509d8f9a6d8507964acb4f2617a471ac8660c649720dafd01760187028296
+sql 1/0/0/2262 35.50/0.02 0 262618bda6a5e7aea081fc7fd6eaa9af11279b7f759386bd33db53c4971f07e5
+sql-calendar 1/0/0/2262 0.15/0.03 0 69393a3591b9e4c1cbce71be7ea86145ecfec2775a6dcddbc705a8bffd76a9dc
+
+SDK6/native8 live Rust files,4 new.11 new tests (6SDK/5native).12 old SDK and264 old native test bodies unchanged. Wire binary literal to_uint now consumes the same private width/fold core, preserving its original trimmed-payload diagnostics and context policy; no duplicate numeric fold. Native/wire outcome policy remains distinct.
+New SQL:1test,2SELECTs/8cells in vector modes0/1, actual ENUM/SET ordinal YEAR fallback and temporal minute/DST carry. Original controller warning/zone-demand and temporal SQL gates remain green. Source-derived fixed expectations, no actual-output oracle recording.
+Formatting and git diff --check passed. Functional238/245, strict0, remaining7 unchanged. YEAR/DATE/implicit and other typed/write controllers, broader M2/root/liveDAG/final acceptance remain. Existing integer-controller callback interface remains but signed-datum business is shared.
+Not run: full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR acceptance. Historical R100 expression4/unistore1 failures remain unrepaired. No Go/Bazel/lock change; unrelated BUILD excluded. Goal remains active.

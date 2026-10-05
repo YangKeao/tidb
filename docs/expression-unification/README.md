@@ -1,28 +1,22 @@
 # Expression unification experiment
 
-Paired branch: `expression-unification-demo` in YangKeao/tidb and YangKeao/tikv.
-Current checkpoint: **temporal-calendar-119**, after **duration-control-118**.
+Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
+Current checkpoint: **signed-datum-120**, following **temporal-calendar-119**.
 
-Functional **238/245 (97.14%)**, strict **0**, remaining **7**—unchanged. This is partial CAST/M2 evidence, not whole YEAR/DATE/CAST, temporal-family or Go-package acceptance. Goal remains active.
+Functional **238/245 (97.14%)**, strict **0**, remaining **7**—unchanged. This is partial CAST/M2 ownership, not whole CAST or Go-package acceptance.
 
-## Shared ownership
+SDK owns actual19-kind signed-datum conversion, integer bounds/conversion/text/JSON policy, temporal numeric rendering and the pure binary-literal integer outcome. Native facades project values, typed errors and events; diagnostics execute synchronously at original sites. Enum/Set ordinals, Float32 raw precision, BIT/literal distinctions, JSON string quirks and temporal rounding order remain separate.
 
-- `native_temporal_convert.rs` owns kind conversion, temporal rounding, duration calendar/year conversion, year adjustment/parsing and the strict year-event fold.
-- `native_coerce_string.rs` owns the generic19-kind expression string selector, preserving Rust float display and original UTF-8 error classes rather than substituting SQL float formatting.
-- Native methods retain raw value/event projection and a thin `coerce_str` delegate. No host business callback is added to these entries.
-
-DATE/zero/same-kind/FSP identity, DST gap metadata reset, rounding reprojection versus duration-midnight behavior, raw YEAR storage and error subjects remain distinct. YEAR/DATE controllers and signed-datum fallback still remain native.
+Existing integer-controller callback interfaces remain, but their signed-datum business implementation is shared. YEAR/DATE, implicit argument and other typed/write conversion controllers remain to be closed.
 
 ## Verification
 
-[Evidence](evidence/temporal-calendar-checkpoint.md), [exact commands/counts/hashes](logs/temporal-calendar-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
+[Evidence](evidence/signed-datum-checkpoint.md), [commands/counts/hashes](logs/signed-datum-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
 
-**11 matched GREEN launches**, no failure, zero-match, retry or interruption. SDK2/2; native datatype474; expression1/2/1/1/1; three SQL gates. Eight new tests;256 old native test bodies unchanged, with no existing SDK test bodies in the changed files.
+Eight final gates GREEN: SDK101/8, native datatype477, three expression gates and two SQL gates. Nine launches include an initial compile failure from a missing test-only import; corrected without changing old tests or production policy. Eleven new tests;12 SDK/264 native old test bodies unchanged.
 
-New SQL covers8 SELECTs/22 cells plus2 strict typed INSERT error probes: fixed statement clock, calendar/YEAR fields, negative durations and DST boundaries. Concat=true remains unit/old-expression evidence. Non-strict typed-gap storage was not guessed from string-gap results; its existing kind propagation is unchanged and unverified here. No output-recorded oracle or performance/physical-memory claim.
+New SQL:2 SELECTs/8 cells across both vector modes, actual hybrid ordinal fallback and temporal carry including DST. No performance or physical-memory claim.
 
 ## Remaining
 
-[Remaining acceptance](evidence/remaining-acceptance.md): signed-datum conversion needs genuine hybrid ordinals plus temporal numeric, integer-text, JSON-integer and binary-literal policies before YEAR/DATE closure. Other CAST/M2, six complex candidates, request-root/default-NoColumns/liveDAG and final acceptance remain.
-
-Full expression/unistore were not rerun; historical4+1 failures remain. Workspace/lint/dev/bazel/release/exhaustive/TiFlash/FIPS/performance/physical memory/OOM/allocator/dual-tzdata/whole-Go-package/PR readiness remain unverified. Prior incident receipts are retained. Paired TiKV and three identical Plans are pinned; unrelated BUILD excluded. No force push or PR.
+[Remaining acceptance](evidence/remaining-acceptance.md): other CAST/M2, six complex candidates, request-root/default-NoColumns/liveDAG and final acceptance. Full suites/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness remain unverified. Historical R100 expression4/unistore1 failures remain unrepaired. Goal remains active.

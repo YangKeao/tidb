@@ -9363,6 +9363,52 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn native_signed_datum_preserves_hybrid_ordinals_and_temporal_carry_in_sql() {
+    use tidb_datatype::FieldTypeCode;
+    let mut session = Session::new();
+    session.run("SET sql_mode='' ").unwrap();
+    session.run("SET time_zone='America/Los_Angeles'").unwrap();
+    session.run("CREATE TABLE native_signed_datum_sql (e ENUM('other','word'), s SET('a','b','c'), t DATETIME(6), d TIME(6))").unwrap();
+    session.run("INSERT INTO native_signed_datum_sql VALUES ('word','a,c','2011-03-13 01:59:59.999999','11:59:59.999999')").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        let StmtOutput::Rows { columns, rows } = session.run_with_columns(
+            "SELECT CAST(e AS YEAR),CAST(s AS YEAR),CAST(t AS SIGNED),CAST(d AS SIGNED) FROM native_signed_datum_sql"
+        ).unwrap() else { panic!("expected signed conversion rows") };
+        assert_eq!(
+            rows,
+            vec![vec![
+                Datum::Int(2),
+                Datum::Int(5),
+                Datum::Int(20110313030000),
+                Datum::Int(120000)
+            ]]
+        );
+        assert_eq!(columns.len(), 4);
+        for (index, (_, field)) in columns.iter().enumerate() {
+            assert_eq!(
+                field.code(),
+                if index < 2 {
+                    FieldTypeCode::Year
+                } else {
+                    FieldTypeCode::LongLong
+                }
+            );
+            assert!(!field.is_unsigned());
+            assert_eq!(field.decimal(), 0);
+        }
+        assert!(warnings_of(&session).is_empty());
+    }
+}
+
+#[test]
 fn native_temporal_calendar_preserves_statement_clock_year_fields_and_dst_boundaries() {
     use tidb_datatype::{FieldTypeCode, FieldTypeFlags, TimeType};
 
