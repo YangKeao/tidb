@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use crate::{Columns, Datum, EvalError};
-use tidb_query_expr::{NativeCastFloatInput as Input, NativeCastFloatTarget as Target};
+#[cfg(test)]
+use tidb_query_expr::NativeCastFloatInput as Input;
+use tidb_query_expr::NativeCastFloatTarget as Target;
 
 #[cfg(test)]
 mod tests {
@@ -212,6 +214,7 @@ mod tests {
     }
 }
 
+#[cfg(test)]
 fn input(value: &Datum) -> Input<'_> {
     match value {
         Datum::Null => Input::Null,
@@ -230,22 +233,9 @@ fn input(value: &Datum) -> Input<'_> {
 }
 
 fn evaluate(ctx: &dyn Columns, value: &Datum, target: Target) -> Result<f64, EvalError> {
-    tidb_query_expr::native_cast_float(
-        input(value),
-        target,
-        || {
-            let Datum::Json(value) = value else {
-                unreachable!("SDK JSON display request needs an actual JSON datum");
-            };
-            value.to_string()
-        },
-        || {
-            value
-                .to_f64()
-                .map(|converted| (converted.value, converted.event))
-        },
-        |message| ctx.handle_truncate(message),
-    )
+    tidb_query_expr::native_cast_float_numeric(value.as_shared_numeric_input(), target, |message| {
+        ctx.handle_truncate(message)
+    })
     .map_err(|error| match error {
         tidb_query_expr::NativeCastFloatError::Child(error) => error,
         tidb_query_expr::NativeCastFloatError::ConstantFloatCastOverflow { value } => {
@@ -265,9 +255,5 @@ pub(crate) fn eval_cast_float_in(ctx: &dyn Columns, value: &Datum) -> Result<f64
 /// This is the distinct strict-UTF-8 value-only surface, not the ordinary
 /// lossy string/JSON cast with a statement warning callback.
 pub(crate) fn eval_cast_float_value(value: &Datum) -> f64 {
-    tidb_query_expr::native_cast_float_value(input(value), || {
-        value
-            .to_f64()
-            .map(|converted| (converted.value, converted.event))
-    })
+    tidb_query_expr::native_cast_float_numeric_value(value.as_shared_numeric_input())
 }

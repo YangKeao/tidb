@@ -38,6 +38,8 @@ pub(crate) use cast_duration::{
 #[cfg(test)]
 mod cast_duration_tests;
 mod cast_float;
+#[cfg(test)]
+mod closed_float_tests;
 pub(crate) use cast_float::{eval_cast_double_in, eval_cast_float_in, eval_cast_float_value};
 mod cast_integer;
 pub(crate) use cast_integer::eval_cast_arg_as_int_in;

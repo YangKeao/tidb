@@ -1,0 +1,23 @@
+float-composition-128 / R133
+5matched launches,5GREEN;no compile/test failure,retry,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/float-composition-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_cast_float -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native] ../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::closed_float_tests -- --test-threads=1
+[native-old] ../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::cast_float::tests -- --test-threads=1
+[native-scalar] ../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::scalar_datum_tests -- --test-threads=1
+[sql-existing] ../../tools/cargo-tidb test --locked -p tidb-session --lib native_float_cast_policy_preserves_sql_source_parsing_narrowing_and_error_order -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 4/0/0/1013 16.89/0.00 0 b04f3bdf3d69aa5660c1a3e195723fa7642dc2561d7c185c529e8bb8f839b31a
+native 1/0/0/1736 11.31/0.00 0 aabc239feebe49a9027f9e4d3e71d9a71a087b190cea3d6d1240f6d877204d57
+native-old 1/0/0/1736 0.12/0.00 0 5668281eea87572b65b2625dab56fce9bf075e607d55470242cc055962a89f83
+native-scalar 1/0/0/1736 0.12/0.00 0 25a01ed18b79075f32d17885dde99472706d7ece6e5856290c5da2dc6174cccf
+sql-existing 1/0/0/2269 14.27/0.04 0 e4344c765f550fa40e1984169a71fd3c927fa3d8a55f404a6a813472476e71a7
+
+SDK2/native3 Rust files,1new file;3new tests (SDK2/native1),oldSDK2/native1 touched-file test bodies unchanged. Existing scalar regression and comprehensive float SQL test also unchanged and passed. No new SQL test/fixture; no SQL probe/cell credit added.
+Production native input selector and JSONDisplay/to_f64 business callbacks removed; old input helper remains cfg(test) for unchanged old tests. SDK composes actual views and shared JSON/datatype owners; onlytruncateeffect remains external. GenericSDK APIs remain compatible. Newunits lock JSONquotes ordinary0/warning vsvalue2.5, lossy/strict UTF8, narrowing/overflow/vetoorder, hybrid/literal/temporal data, raw fallback, NaN/signedzero and original panic domains. No new RPN profiles/family credit.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. Other typed/write numeric controllers and SQL lowering paths, broaderM2/root/liveDAG/final remain. Full datatype/expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
