@@ -1,0 +1,57 @@
+cast-string-111 / R114 CHAR/BINARY and string classification; functional238/245 strict0 remaining7 unchanged.
+TiKV cwd /home/agent/tidb/expression-unification/tikv
+Native cwd /home/agent/tidb/expression-unification/tidb/rust
+Raw /home/agent/tidb/expression-unification/logs/cast-string-{id}.log
+Counts passed/failed/ignored/filtered; timings compile/test seconds. All exits0.
+
+tikv-type | 1/0/0/473 | 4.87/0.00
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_string_type_preserves_named_identity_and_exact_collation -- --test-threads=1
+sha256 7d759c53921f7644db465e085a37e5e480e9e1a0a8ed4ffb28d3b0464c3d357e
+
+tikv-core | 2/0/0/996 | 18.15/0.00
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_cast_string -- --test-threads=1
+sha256 38da0ffcd0ffcdd50ee01482251a6a9544137d1441645de51c25fa5c21bb51d5
+
+native-entry | 1/0/0/1721 | 21.69/0.00
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::cast_string -- --test-threads=1
+sha256 ae43f11365b4d0009f4138d21f91fc75e6effbe8ceca9cc43b86d02a08816436
+
+native-cast | 21/0/0/1701 | 0.15/0.01
+../../tools/cargo-tidb test --locked -p tidb-expr --lib cast:: -- --test-threads=1
+sha256 05c5db5d02094c47d6f79ff4764dc16284ba251788de4125bba44e3cc5d221ea
+
+native-original | 16/0/0/1706 | 0.14/0.00
+../../tools/cargo-tidb test --locked -p tidb-expr --lib test_cast_func -- --test-threads=1
+sha256 0ed2e7ba368453e7422327d7f1df4069f2df079bbc3114b37ff2bb942ae0e251
+
+native-wrap | 1/0/0/1721 | 0.16/0.00
+../../tools/cargo-tidb test --locked -p tidb-expr --lib test_wrap_with_cast_as_string_binary_literal_warns_invalid_utf8 -- --test-threads=1
+sha256 ec83d3906931e5bebe36c937593352560741d365ef3e2fef610207e2cb033b25
+
+native-datatype | 463/0/0/0 | 3.32/7.57
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+sha256 d9ce5608e4cdc203374f10a371dabb6d1695545931f2df3075a40e85a72cafa1
+Whole native datatype library, not whole-Go-package transcreation.
+
+sql | 1/0/0/2253 | 35.89/0.03
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_string_cast_policy_preserves_sql_year_bytes_decode_order_and_packet_padding -- --exact --test-threads=1
+sha256 ed2bd95b595ce9639e4a3f0972cb902e47d1f1eacba0fa793d94cdb4d838108e
+
+sql-original | 1/0/0/2253 | 0.17/0.03
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_float_cast_policy_preserves_sql_source_parsing_narrowing_and_error_order -- --exact --test-threads=1
+sha256 902231bb4f9d5d415485a4c936922a382ab3bbb50d3a6510dd156fcf28d9df2e
+Original corrected R11310SELECT test, not new probes. Its historical initial RED remains retained in prior evidence.
+
+9 serial locked single-threaded matched launches,9GREEN on first attempt;0compile/testfail/ignored/zero-match/interrupt/retry.5newtests=SDK3/native2.4SDK+5nativeRustfiles,3newlivefiles.0SDK+232native oldexplicit test bodies byte-identical. No oldfixture/oracle/observer changes. Preexisting vectorized String-to-DECIMAL UNION ignore NOTselected/passed/repaired.
+
+NewSQL10SELECT=5projections pervector mode/32cells. YEAR0 vsinteger0, SQLexplicitBINARYCHAR noYEAR/noPAD, Unicodecharacter truncation vs5rawbytes retaining half-UTF8, stored00FF andbuild-time binaryliteral padding, GBK partialdecode3854 before1406, andmaxpacket1024: pad1025→NULL1301 butlong1050→1025 allowedtrunc1406, equal1025quiet andno-widthquiet. ExactVarString/String,flen/-1,decimal-1,charset/collation/Binaryflag andrawbytevalues. No synthetic invalidENUM SQL or claimSQLcanonicalcharset coversrawcase variants; thosearebridge witnesses. String typedfinish stayssamefamily (unlikeR113FLOAT), so no invented escape.
+
+SDKcontroller owns source/YEAR-zero/charset demand/encoding selection/warnings/char-byte truncation/padding/NULL/error disposition. Native2thinAPIs,6oldhelpers removed. ActualInt/UInt/String/Bytes/BinaryLiteral/Bit/Other projection andactualsourceeffectivecode/collation; nohostyear/binary/length/erroranswer. ExactCHAR Some(BINARY) earlybytepath skipsYEAR/conn/decode/pad. NormalCHAR targetNone firstgetsconnectioncharset, thenbinarymetadata+target comparison decidesdecode; sharedencoding exactlookup andoriginalerrorpayload retained,3854 fulloriginaluppercaseHEX precedes1406. Unknownlookup fallback andlossydecode versusstrictordinarySQLstring remain distinct.
+
+BINARYYEAR0 first; raw4kinds bypass strictsql_string, others retainactualdatatype result. Width diagnostics thenonlypadding demandsmaxpacket; over-limit invokesoriginalhandler(cast_as_binary), preservingitssecondgetter andtruncatelevel, beforeNULL/Child(E). Bridge2→7getter witness pinsactualmessage7 andunchangedwarn/error, notcachedlimit orre-evaluation. No-width/equal/truncate skipgetter;CHARneverpacketchecks.
+
+Hclassifier oneowner codec/native_string_type: named8string+Year/Other projection; Unknown0/13/253 staysOther, nocanonicalrawbyte alias. source.code() preservesarrayJsonview. exactcollationbinary notcharset/flags/casefold. Nativecode.is_string andFieldType.is_binary_string thinSDKdelegates. ExistingnativeDatum.sql_string internal selector/fixedfloatformatter remain genuineoriginaldatatypeactuator andexplicitM2debt; not duplicated orclaimedported. ExistingSDKencodingimplementation unchanged.
+
+Static preflight caught rawu8 sourceproposal conflatingUnknown13/253; frozen named/Other API corrected beforecode/gates, nofabricatedRED. OneparentRO grep targeted nonexistent src/field_type.rs, then actualsrc/field_type/mod.rs located; noCargo failure orfilechange. No newC4profile/carrier/admission/zero-copy/performanceclaim. AppendonepartialCAST+onetype record;238oldfamilies/history unchanged. latestfunctional106, latesttype/partial/runtime111; overallgoalactive.
+
+OtherCAST/typed-vector/UNION/defaultconverters includingSQLstringifier,M2reader/value-word,sixcomplexcandidates/root/liveDAG/final remain. FullExpr/Unistore/workspace/lint/dev/bazel/release/exhaustive/perf/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR-ready unverified; R100expression4/unistore1 historicalunrepaired. NoGo/Bazel/Cargo/lock changes; unrelatedBUILD excluded. Architecture-index change onlymaps newmodules, no newpolicy; agents-review-guide boundary/path checks apply. PairedDCO pushes/threeidenticalPlans.

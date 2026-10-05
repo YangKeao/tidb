@@ -9363,6 +9363,156 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn native_string_cast_policy_preserves_sql_year_bytes_decode_order_and_packet_padding() {
+    use tidb_datatype::{FieldTypeCode as C, FieldTypeFlags};
+
+    let mut session = Session::new();
+    session
+        .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+        .unwrap();
+    session.run("SET sql_mode=''").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE native_string_cast_policy_sql (y YEAR, i BIGINT, unicode_text VARCHAR(16), raw_bytes VARBINARY(8), gbk_bad VARBINARY(8), short_bytes VARBINARY(8), wide_bytes VARBINARY(1100), equal_bytes VARBINARY(1100))")
+        .unwrap();
+    session
+        .run(&format!("INSERT INTO native_string_cast_policy_sql VALUES (0,0,'你好x',0x00FF,0x414281,'ab','{}','{}')", "a".repeat(1050), "b".repeat(1025)))
+        .unwrap();
+    // SQL SET SESSION is read-only for this variable. Reuse the existing
+    // validated SessionVars fixture path, after inserting the larger rows.
+    session
+        .vars
+        .set_system("max_allowed_packet", "1024".to_owned())
+        .unwrap();
+    assert_eq!(session.max_allowed_packet(), 1024);
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    type Cell = (C, i64, &'static str, &'static str, Option<Vec<u8>>);
+    let cases: [(&str, Vec<Cell>, &[(u16, &str)]); 5] = [
+        (
+            "CAST(y AS CHAR),CAST(i AS CHAR),CAST(y AS BINARY),CAST(y AS CHAR(8) CHARACTER SET binary),CAST(y AS BINARY(6))",
+            vec![
+                (C::VarString, -1, "utf8mb4", "utf8mb4_bin", Some(b"0000".to_vec())),
+                (C::VarString, -1, "utf8mb4", "utf8mb4_bin", Some(b"0".to_vec())),
+                (C::VarString, -1, "binary", "binary", Some(b"0000".to_vec())),
+                (C::VarString, 8, "binary", "binary", Some(b"0".to_vec())),
+                (C::String, 6, "binary", "binary", Some(b"0000\0\0".to_vec())),
+            ],
+            &[],
+        ),
+        (
+            "CAST(unicode_text AS CHAR(2)),CAST(unicode_text AS BINARY(5)),CAST(unicode_text AS CHAR(5) CHARACTER SET binary)",
+            vec![
+                (C::VarString, 2, "utf8mb4", "utf8mb4_bin", Some("你好".as_bytes().to_vec())),
+                (C::String, 5, "binary", "binary", Some(vec![0xE4, 0xBD, 0xA0, 0xE5, 0xA5])),
+                (C::VarString, 5, "binary", "binary", Some(vec![0xE4, 0xBD, 0xA0, 0xE5, 0xA5])),
+            ],
+            &[
+                (1406, "Data Too Long, field len 2, data len 3"),
+                (1406, "Data Too Long, field len 5, data len 7"),
+                (1406, "Data Too Long, field len 5, data len 7"),
+            ],
+        ),
+        (
+            "CAST(raw_bytes AS BINARY(4)),CAST(raw_bytes AS BINARY),CAST(0x00FF AS BINARY(4))",
+            vec![
+                (C::String, 4, "binary", "binary", Some(vec![0, 255, 0, 0])),
+                (C::VarString, -1, "binary", "binary", Some(vec![0, 255])),
+                (C::String, 4, "binary", "binary", Some(vec![0, 255, 0, 0])),
+            ],
+            &[],
+        ),
+        (
+            "CAST(gbk_bad AS CHAR(1) CHARACTER SET gbk)",
+            vec![(C::VarString, 1, "gbk", "gbk_chinese_ci", Some(b"A".to_vec()))],
+            &[
+                (3854, "Cannot convert string '414281' from binary to gbk"),
+                (1406, "Data Too Long, field len 1, data len 2"),
+            ],
+        ),
+        (
+            "CAST(short_bytes AS BINARY(1025)),CAST(wide_bytes AS BINARY(1025)),CAST(equal_bytes AS BINARY(1025)),CAST(short_bytes AS BINARY)",
+            vec![
+                (C::String, 1025, "binary", "binary", None),
+                (C::String, 1025, "binary", "binary", Some(vec![b'a'; 1025])),
+                (C::String, 1025, "binary", "binary", Some(vec![b'b'; 1025])),
+                (C::VarString, -1, "binary", "binary", Some(b"ab".to_vec())),
+            ],
+            &[
+                (1301, "Result of cast_as_binary() was larger than max_allowed_packet (1024) - truncated"),
+                (1406, "Data Too Long, field len 1025, data len 1050"),
+            ],
+        ),
+    ];
+    // SQL canonicalizes the binary charset before reconstructing CastType;
+    // this is not evidence for the raw SDK's case-sensitive charset input.
+    // CHAR ... binary has neither YEAR rendering nor BINARY's NUL padding.
+    // Explicit SQL casts retain unspecified width; they do not take the
+    // separate build_cast_function's argument-based string-width inference.
+    // String/Bytes already share the String eval family, unlike R113 FLOAT:
+    // ScalarFunction's typed finish does not re-truncate/re-encode these.
+    // Chunk materialization may rebuild a collation-bearing String datum, so
+    // compare its bytes, including invalid UTF-8 and NULs, not display text.
+    // The raw literal case is a build-time cast consumer; other sources are
+    // stored columns. No new Head, zero-slot or whole-CAST claim is made.
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        for (projection, expected, warnings) in &cases {
+            let sql = format!("SELECT {projection} FROM native_string_cast_policy_sql");
+            let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap() else {
+                panic!("expected CHAR/BINARY policy rows: {sql}")
+            };
+            assert_eq!(columns.len(), expected.len(), "{sql}");
+            assert_eq!(rows.len(), 1, "{sql}");
+            assert_eq!(rows[0].len(), expected.len(), "{sql}");
+            for (index, (code, flen, charset, collation, bytes)) in expected.iter().enumerate() {
+                let field = &columns[index].1;
+                assert_eq!(field.code(), *code, "{sql}/{index}");
+                assert_eq!(
+                    (field.flen(), field.decimal()),
+                    (*flen, -1),
+                    "{sql}/{index}"
+                );
+                assert_eq!(field.charset_name(), *charset, "{sql}/{index}");
+                assert_eq!(field.collation_name(), *collation, "{sql}/{index}");
+                assert_eq!(field.has_flag(FieldTypeFlags::BINARY), *charset == "binary");
+                assert_eq!(field.is_binary_string(), *collation == "binary");
+                assert!(!field.is_unsigned());
+                if let Some(expected_bytes) = bytes {
+                    let actual = match &rows[0][index] {
+                        Datum::String(value) => value.bytes(),
+                        Datum::Bytes(value) => value.as_slice(),
+                        other => panic!("changed string result carrier: {sql}/{index}: {other:?}"),
+                    };
+                    assert_eq!(
+                        actual,
+                        expected_bytes.as_slice(),
+                        "{sql}/{vectorized}/{index}"
+                    );
+                } else {
+                    assert_eq!(rows[0][index], Datum::Null, "{sql}/{vectorized}/{index}");
+                }
+            }
+            assert_eq!(
+                warnings_of(&session),
+                warnings
+                    .iter()
+                    .map(|&(code, message)| (code, message.to_owned()))
+                    .collect::<Vec<_>>(),
+                "{sql}/{vectorized}"
+            );
+        }
+    }
+}
+
+#[test]
 fn native_float_cast_policy_preserves_sql_source_parsing_narrowing_and_error_order() {
     use tidb_datatype::FieldTypeCode;
 

@@ -30,10 +30,9 @@ use crate::Decimal;
 use crate::{Datum, EvalError};
 use tidb_ast::CastType;
 use tidb_datatype::{
-    find_encoding, number_to_duration, ConversionFlags, DatumValueError, EvalType, FieldType,
-    FieldTypeCode, ScalarConversionEvent, TransformOp, JSON_TYPE_CODE_DATE,
-    JSON_TYPE_CODE_DATETIME, JSON_TYPE_CODE_DURATION, JSON_TYPE_CODE_STRING,
-    JSON_TYPE_CODE_TIMESTAMP,
+    number_to_duration, ConversionFlags, DatumValueError, EvalType, FieldType, FieldTypeCode,
+    ScalarConversionEvent, JSON_TYPE_CODE_DATE, JSON_TYPE_CODE_DATETIME, JSON_TYPE_CODE_DURATION,
+    JSON_TYPE_CODE_STRING, JSON_TYPE_CODE_TIMESTAMP,
 };
 
 /// Internal marker used when a wrapper carries Go's `UnspecifiedLength`
@@ -79,98 +78,9 @@ pub(crate) fn eval_cast(
             crate::tikv::eval_cast_unsigned_union_in(ctx, &v, source).map(Datum::UInt)
         }
         CastType::Char { len, charset } => {
-            // Go `CHAR(n) CHARSET binary`: the ret charset is binary, so
-            // `ProduceStrWithSpecifiedTp` takes its `chs == CharsetBin`
-            // branch and truncates in BYTES, and `padZeroForBinaryType`
-            // never pads a `TypeVarString` target. The default (session)
-            // charset keeps character-oriented truncation.
-            if charset.as_deref() == Some("BINARY") {
-                let mut bytes = datum_binary_bytes(&v)?;
-                if let Some(n) = len {
-                    report_data_too_long(ctx, bytes.len(), *n as usize);
-                    bytes.truncate(*n as usize);
-                }
-                return Ok(Datum::new_bytes(bytes));
-            }
-            // `castAsStringFunctionClass` routes a BINARY-charset argument
-            // through Go's `HandleBinaryLiteral(..., explicitCast=true)`.
-            // Its `from_binary` signature decodes the raw bytes with
-            // `OpDecode`, publishes ErrCannotConvertString (3854) as a
-            // warning, and keeps the successfully decoded prefix in
-            // non-strict mode.  The generic stringifier used to reject an
-            // invalid UTF-8 byte before this boundary, which made
-            // `CAST(0x91 AS CHAR)` an execution error instead of the empty
-            // string plus one warning.
-            let target_charset = charset
-                .as_deref()
-                .unwrap_or_else(|| ctx.connection_charset_info().0);
-            let text = if source.is_some_and(FieldType::is_binary_string)
-                && !target_charset.eq_ignore_ascii_case("binary")
-            {
-                let bytes = datum_binary_bytes(&v)?;
-                let (decoded, error) = find_encoding(target_charset)
-                    .transform(&bytes, TransformOp::DECODE)
-                    .into_parts();
-                if error.is_some() {
-                    let hex = bytes
-                        .iter()
-                        .map(|byte| format!("{byte:02X}"))
-                        .collect::<String>();
-                    ctx.append_warning(
-                        3854,
-                        &format!("Cannot convert string '{hex}' from binary to {target_charset}"),
-                    );
-                }
-                String::from_utf8_lossy(&decoded).into_owned()
-            } else {
-                string_source_text(&v, source)?
-            };
-            Ok(Datum::new_string(match len {
-                Some(n) => {
-                    report_data_too_long(ctx, text.chars().count(), *n as usize);
-                    text.chars().take(*n as usize).collect()
-                }
-                None => text,
-            }))
+            crate::tikv::eval_cast_char_in(ctx, &v, source, *len, charset.as_deref())
         }
-        CastType::Binary { len } => {
-            // Go's binary cast is byte-oriented and preserves arbitrary
-            // octets.  Do not route an already-byte-valued operand through
-            // UTF-8 decoding: `CAST('你好world' AS BINARY(5))` deliberately
-            // keeps the first five bytes, even though that suffix is not a
-            // complete UTF-8 sequence (see `TestCastFunctions`).
-            // The YEAR-zero rendering is the SAME signature's, because a
-            // BINARY target only changes `b.tp`'s charset: Go still picks
-            // `builtinCastIntAsStringSig` from the ARGUMENT's ETInt eval type
-            // and only then pads. Captured: `hex(cast(y as binary))` over a
-            // zero YEAR is `30303030`, i.e. `"0000"`.
-            let bytes = match year_zero_string(&v, source) {
-                Some(text) => text.into_bytes(),
-                None => datum_binary_bytes(&v)?,
-            };
-            Ok(Datum::new_bytes(match len {
-                Some(n) => {
-                    // A binary target measures in BYTES, not characters:
-                    // Go's `chs == CharsetBin` arm sets
-                    // `characterLen = len(s)`.
-                    report_data_too_long(ctx, bytes.len(), *n as usize);
-                    // Go `padZeroForBinaryType` (`builtin_cast.go:2249`)
-                    // refuses to BUILD a pad wider than `max_allowed_packet`,
-                    // answering NULL with the 1301 warning instead. The test
-                    // is on the declared width, before any allocation, and
-                    // that ordering is the whole point: `cast("a" as
-                    // binary(4294967295))` (`expression/issues`) otherwise
-                    // materializes four gigabytes of zeros -- 109 SECONDS of
-                    // the topic's 125, for a statement TiDB rejects outright.
-                    if bytes.len() < *n as usize && *n as u64 > ctx.max_allowed_packet() {
-                        ctx.handle_allowed_packet_overflowed("cast_as_binary")?;
-                        return Ok(Datum::Null);
-                    }
-                    binary_pad_truncate(&bytes, *n as usize)
-                }
-                None => bytes,
-            }))
-        }
+        CastType::Binary { len } => crate::tikv::eval_cast_binary_in(ctx, &v, source, *len),
         CastType::Decimal { flen, scale } => {
             crate::tikv::eval_cast_decimal_in(ctx, &v, *flen, *scale)
         }
@@ -310,88 +220,6 @@ pub(crate) fn cast_arg_as_duration(
     cast_to_duration(value, source, ctx, fsp)
 }
 
-/// Go `types.ProduceStrWithSpecifiedTp` (`pkg/types/datum.go:1289-1304`),
-/// warning half: a value the target width cannot hold raises
-/// `ErrDataTooLong` (1406) "Data Too Long, field len %d, data len %d".
-///
-/// `data_len` is what Go's `characterLen` counts, which is the SOURCE's own
-/// length in the target's unit -- runes for a character target, bytes for a
-/// binary one -- NOT the truncated result's. Captured:
-/// `CAST('中文abc' AS CHAR(2))` warns `field len 2, data len 5` while
-/// `CAST('中文abc' AS BINARY(4))` warns `field len 4, data len 9`.
-///
-/// Go's one exception, the whitespace-only overflow that downgrades to a
-/// 1265 `Data truncated`, needs `tp.GetType() == TypeVarchar`; a CAST target
-/// is `TypeVarString`, so it cannot apply here. Captured:
-/// `CAST('ab   ' AS CHAR(2))` warns 1406, not 1265.
-fn report_data_too_long(ctx: &dyn crate::Columns, data_len: usize, field_len: usize) {
-    if data_len > field_len {
-        ctx.append_warning(
-            1406,
-            &format!("Data Too Long, field len {field_len}, data len {data_len}"),
-        );
-    }
-}
-
-fn datum_sql_string(value: &Datum) -> Result<String, EvalError> {
-    value
-        .sql_string()
-        .map_err(|_| EvalError::Unsupported("invalid UTF-8 string coercion"))
-}
-
-/// Go `builtinCastIntAsStringSig.evalString`'s last rendering rule
-/// (`pkg/expression/builtin_cast.go:1098`):
-///
-/// ```go
-/// if tp.GetType() == mysql.TypeYear && res == "0" {
-///     res = "0000"
-/// }
-/// ```
-///
-/// `tp` is `b.args[0].GetType(ctx)` -- the SOURCE's static type, not the
-/// datum's. A zero YEAR is a `Datum::Int(0)` indistinguishable from a
-/// `BIGINT` zero, and the two render differently: `CAST(y AS CHAR)` is
-/// `'0000'` where `CAST(i AS CHAR)` is `'0'`. Captured over
-/// `t(y year, i int)` holding `(0, 0)`:
-///
-/// ```text
-/// select cast(y as char), length(cast(y as char)), cast(i as char) from t;
-/// 0000    4    0
-/// ```
-///
-/// `Some` only for that one value: every other YEAR is already its own four
-/// digits (the domain is `0` and `1901..=2155`), which is why Go tests the
-/// RENDERED text rather than the integer.
-fn year_zero_string(value: &Datum, source: Option<&tidb_datatype::FieldType>) -> Option<String> {
-    if source.map(tidb_datatype::FieldType::code) != Some(tidb_datatype::FieldTypeCode::Year) {
-        return None;
-    }
-    matches!(value, Datum::Int(0) | Datum::UInt(0)).then(|| "0000".to_owned())
-}
-
-/// [`year_zero_string`] over the ordinary string rendering.
-fn string_source_text(
-    value: &Datum,
-    source: Option<&tidb_datatype::FieldType>,
-) -> Result<String, EvalError> {
-    match year_zero_string(value, source) {
-        Some(text) => Ok(text),
-        None => datum_sql_string(value),
-    }
-}
-
-/// Returns the byte payload used by Go's `builtinCast*AsStringSig` binary
-/// target.  String/bytes datums already carry the source bytes; only numeric
-/// values need SQL stringification first.
-fn datum_binary_bytes(value: &Datum) -> Result<Vec<u8>, EvalError> {
-    match value {
-        Datum::String(value) => Ok(value.bytes().to_vec()),
-        Datum::Bytes(value) => Ok(value.clone()),
-        Datum::BinaryLiteral(value) | Datum::Bit(value) => Ok(value.as_bytes().to_vec()),
-        _ => Ok(datum_sql_string(value)?.into_bytes()),
-    }
-}
-
 /// `SIGNED`'s own coercion: `Int` is unchanged; `Decimal`/`Float` round to
 /// the nearest integer (ties away from zero for `Decimal`, ties to EVEN
 /// for `Float` — a real asymmetry, matching the `~` bitwise operator's own
@@ -480,19 +308,6 @@ pub(crate) fn report_int_truncation(v: &Datum, ctx: &dyn crate::Columns) -> Resu
 /// truncated suffix contributes this statement warning.
 pub(crate) fn report_decimal_input_truncation(v: &Datum, ctx: &dyn crate::Columns) {
     crate::tikv::report_cast_decimal_input_in(ctx, v);
-}
-
-/// `CHAR(N)`'s own truncation is handled inline in [`eval_cast`] (keeps
-/// the first `N` characters, never pads); this is `BINARY(N)`'s own
-/// FIXED-WIDTH behavior — truncates the same way if longer, but PADS
-/// with `\0` bytes if shorter, confirmed via `goeval`:
-/// `CAST('hi' AS BINARY(5))` is `"hi\0\0\0"`, 5 bytes exactly. MySQL
-/// `BINARY` counts BYTES, not characters; the byte-preserving `Datum::Bytes`
-/// result keeps the same behavior for non-UTF-8 truncation boundaries too.
-fn binary_pad_truncate(s: &[u8], n: usize) -> Vec<u8> {
-    let mut bytes: Vec<u8> = s.iter().copied().take(n).collect();
-    bytes.resize(n, 0);
-    bytes
 }
 
 /// Uses the SDK's strict-UTF8, value-only profile, not the ordinary cast parser.

@@ -448,12 +448,30 @@ impl FieldTypeCode {
         self.is_type_time()
     }
 
+    /// Projects actual named identity for shared string-conversion predicates.
+    /// Unknown bytes remain Other even when they equal a known type number.
+    /// Other known non-string types retain their byte but not a full type view.
+    pub const fn as_shared_string_type(
+        self,
+    ) -> tidb_query_datatype::codec::native_string_type::NativeStringTypeCode {
+        use tidb_query_datatype::codec::native_string_type::NativeStringTypeCode as Shared;
+        match self {
+            Self::Year => Shared::Year,
+            Self::Unspecified => Shared::Unspecified,
+            Self::Varchar => Shared::VarChar,
+            Self::TinyBlob => Shared::TinyBlob,
+            Self::MediumBlob => Shared::MediumBlob,
+            Self::LongBlob => Shared::LongBlob,
+            Self::Blob => Shared::Blob,
+            Self::VarString => Shared::VarString,
+            Self::String => Shared::String,
+            other => Shared::Other(other.mysql_type()),
+        }
+    }
+
     /// Returns whether Go TiDB classifies this as a string SQL type.
     pub const fn is_string(self) -> bool {
-        self.is_type_char()
-            || self.is_type_blob()
-            || self.is_type_varchar()
-            || self.is_type_unspecified()
+        self.as_shared_string_type().is_string()
     }
 
     /// Go `mysql.IsIntegerType` (`parser/mysql/util.go:52`).
@@ -1018,7 +1036,9 @@ impl FieldType {
     /// Directly mirrors `pkg/types/etc.go::IsBinaryStr`: a type is a binary
     /// string only when it is a string SQL type whose collation is `binary`.
     pub fn is_binary_string(&self) -> bool {
-        self.is_string() && self.collation_name.as_ref() == "binary"
+        self.code()
+            .as_shared_string_type()
+            .is_binary_string(self.collation_name.as_ref())
     }
 
     /// Returns whether this is a non-binary character string.

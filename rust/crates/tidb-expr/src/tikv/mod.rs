@@ -38,6 +38,8 @@ pub(crate) use cast_integer::{
 };
 mod cast_real_unsigned;
 pub(crate) use cast_real_unsigned::eval_cast_real_unsigned_in;
+mod cast_string;
+pub(crate) use cast_string::{eval_cast_binary_in, eval_cast_char_in};
 mod catalog;
 pub(crate) use case_control::eval_case_in;
 mod coalesce;
