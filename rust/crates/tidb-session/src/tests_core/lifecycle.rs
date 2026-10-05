@@ -9363,6 +9363,44 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn shared_integer_argument_preserves_json_prefix_hybrid_and_unsigned_source_rules() {
+    let mut session = Session::new();
+    session.run("SET sql_mode=''").unwrap();
+    session.run("CREATE TABLE shared_arg_integer_sql (j JSON, e ENUM('other','word'), s SET('a','b','c'), u DOUBLE UNSIGNED)").unwrap();
+    session
+        .run("INSERT INTO shared_arg_integer_sql VALUES ('3.5','word','a,c',1.0)")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        let StmtOutput::Rows { columns, rows } = session.run_with_columns(
+            "SELECT MAKE_SET(j,'a','b','c'),MAKE_SET(e,'a','b','c'),MAKE_SET(s,'a','b','c'),TRUNCATE(12.34,u) FROM shared_arg_integer_sql"
+        ).unwrap() else { panic!("expected integer argument rows") };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].len(), 4);
+        assert_eq!(rows[0][0], Datum::new_string("a,b"));
+        assert_eq!(rows[0][1], Datum::new_string("b"));
+        assert_eq!(rows[0][2], Datum::new_string("a,c"));
+        assert_eq!(rows[0][3].sql_string().unwrap(), "12.3");
+        assert_eq!(columns.len(), 4);
+        assert_eq!(
+            columns[3].1.code(),
+            tidb_datatype::FieldTypeCode::NewDecimal
+        );
+        assert_eq!(
+            warnings_of(&session),
+            vec![(1292, "Truncated incorrect INTEGER value: '3.5'".to_owned())]
+        );
+    }
+}
+
+#[test]
 fn shared_decimal_datum_preserves_unsigned_hybrid_bit_and_json_consumers() {
     use tidb_datatype::FieldTypeCode;
     let mut session = Session::new();

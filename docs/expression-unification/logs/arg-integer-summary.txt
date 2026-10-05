@@ -1,0 +1,25 @@
+arg-integer-125 / R130
+6matched launches,6GREEN;no compile/test failure,retry,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/arg-integer-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_cast_integer -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native] ../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::cast_arg_integer_tests -- --test-threads=1
+[native-controller] ../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::cast_integer::tests -- --test-threads=1
+[native-args] ../../tools/cargo-tidb test --locked -p tidb-expr --lib arg_eval_type::tests -- --test-threads=1
+[native-cast] ../../tools/cargo-tidb test --locked -p tidb-expr --lib cast::tests -- --test-threads=1
+[sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib shared_integer_argument_preserves_json_prefix_hybrid_and_unsigned_source_rules -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 4/0/0/1011 16.46/0.00 0 7441f4cbc7685f3fd49dd346a70710381c5b303dfaf891bd2d743b29e12e44e9
+native 1/0/0/1733 15.81/0.00 0 a68562513b44be1530050903e6573c94746bf7d72bbcab08584b3a2619df06cf
+native-controller 1/0/0/1733 0.13/0.00 0 352f522563bf2c1ab2d3282a9f4c1a0cec06992e10bfbbcc03ee94412b182da2
+native-args 8/0/0/1726 0.12/0.00 0 cb71fb0c907b5a9ac969d1d2b553397a9e42e5713c2ccf7f34e096d016074ab8
+native-cast 20/0/0/1714 0.14/0.00 0 8c060f6e63e76c71736f07b80b58420568106681538b36a636f108351a7345d4
+sql 1/0/0/2267 23.90/0.02 0 d218bbda567def149b572f88a696f9f56e3c367eaa16dcf862d32d0ecb4d5896
+
+SDK2/native5 Rust files,1new file;4new tests (SDK2/native2),oldSDK2/native225 touched-file test bodies unchanged. GenericSDK APIs remain compatible; native JSON/signed/Decimal conversion callbacks removed. RealUnsigned sealedworker execution callback remains, preserving admission and infrastructure errors; not a native algorithm or bypass. No new RPN profiles/family credit.
+New SQL1test:2SELECTs/8cells across vector0/1,6MAKE_SET strings and2TRUNCATE decimal values. JSON3.5 integer prefix→3 and one exact1292 warning per query, Enum2/Set5 ordinals, actual unsignedDOUBLE source→integer argument forTRUNCATE, Decimal result code. Unit tests additionally cover identity, JSON source-unsigned bypass/nozone/no8031, guard/error order, truncation veto and0/1slot worker refusal/success.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. Context-aware Decimal and other typed/write selectors, broaderM2/root/liveDAG/final remain. Full datatype/expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and previous RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

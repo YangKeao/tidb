@@ -380,25 +380,7 @@ pub(crate) fn cast_arg_as_int(
     source: Option<&tidb_datatype::FieldType>,
     ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
-    if matches!(v, Datum::Int(_) | Datum::UInt(_) | Datum::Null) {
-        return Ok(v.clone());
-    }
-    // go's WrapWithCastAsInt over a JSON operand is `builtinCastJSONAsIntSig`:
-    // the document's MarshalJSON text re-reads as an integer (StrToInt), with
-    // go's 1292 truncation warning when the text is not a clean integer —
-    // captured: `bitand(j, j)` over `{}` warns twice and answers 0, while
-    // JSON `3` coerces silently.
-    if let Datum::Json(value) = v {
-        let as_text = Datum::new_string(value.to_string());
-        report_int_truncation(&as_text, ctx)?;
-        return Ok(Datum::Int(to_i64_signed(&as_text)));
-    }
-    let cast = if source.is_some_and(tidb_datatype::FieldType::is_unsigned) {
-        CastType::Unsigned
-    } else {
-        CastType::Signed
-    };
-    eval_cast(&cast, v.clone(), source, ctx)
+    crate::tikv::eval_cast_arg_as_int_in(ctx, v, source)
 }
 
 /// Go `WrapWithCastAsString(ctx, expr)` (`builtin_cast.go:2769-2813`), applied

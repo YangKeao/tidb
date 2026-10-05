@@ -14,20 +14,11 @@
 
 use crate::{Columns, Datum, EvalError};
 use tidb_datatype::{EvalType, FieldType, SessionTimeZone};
-use tidb_query_expr::{
-    NativeCastIntegerInput as Input, NativeCastIntegerResult as Report,
-    NativeCastIntegerTarget as Target,
-};
+use tidb_query_expr::{NativeCastIntegerResult as Report, NativeCastIntegerTarget as Target};
 
-fn input(value: &Datum) -> Input<'_> {
+#[cfg(test)]
+fn input(value: &Datum) -> tidb_query_expr::NativeCastIntegerInput<'_> {
     tidb_query_expr::native_cast_integer_input_from_numeric(value.as_shared_numeric_input())
-}
-
-fn json_text(value: &Datum) -> String {
-    let Datum::Json(value) = value else {
-        unreachable!("SDK JSON display request needs an actual JSON datum");
-    };
-    value.to_string()
 }
 
 fn invalid_result() -> EvalError {
@@ -44,28 +35,42 @@ fn evaluate(
     target: Target,
     source: Option<tidb_query_expr::NativeIntervalEvalType>,
 ) -> Result<Report, EvalError> {
-    tidb_query_expr::native_cast_integer(
-        input(value),
+    tidb_query_expr::native_cast_integer_numeric(
+        value.as_shared_numeric_input(),
         target,
         source,
-        || json_text(value),
         || ctx.time_zone(),
-        |zone| {
-            value
-                .to_i64_in(zone)
-                .map(|converted| (converted.value, converted.event))
-        },
-        || {
-            value
-                .to_decimal()
-                .map(|converted| (converted.value.into_shared_parse(), converted.event))
-        },
         // This is the existing real/Float32 worker and its original authority.
         // Unlike datatype errors, its infrastructure errors must not be folded.
         || super::eval_cast_real_unsigned_in(ctx, value),
         |message| ctx.handle_truncate(message),
         |code, message| ctx.append_warning(code, message),
     )
+}
+
+pub(crate) fn eval_cast_arg_as_int_in(
+    ctx: &dyn Columns,
+    value: &Datum,
+    source: Option<&FieldType>,
+) -> Result<Datum, EvalError> {
+    use tidb_query_expr::{NativeArgIntegerError, NativeArgIntegerResult};
+    tidb_query_expr::native_cast_arg_as_int(
+        value.as_shared_numeric_input(),
+        source.map(FieldType::is_unsigned),
+        || ctx.time_zone(),
+        || super::eval_cast_real_unsigned_in(ctx, value),
+        |message| ctx.handle_truncate(message),
+        |code, message| ctx.append_warning(code, message),
+    )
+    .map(|result| match result {
+        NativeArgIntegerResult::Original => value.clone(),
+        NativeArgIntegerResult::Signed(value) => Datum::Int(value),
+        NativeArgIntegerResult::Unsigned(value) => Datum::UInt(value),
+    })
+    .map_err(|error| match error {
+        NativeArgIntegerError::Unsupported(message) => EvalError::Unsupported(message),
+        NativeArgIntegerError::Effect(error) => error,
+    })
 }
 
 pub(crate) fn eval_cast_signed_value_in(value: &Datum, zone: &SessionTimeZone) -> i64 {
@@ -101,9 +106,8 @@ pub(crate) fn report_cast_integer_input_in(
     ctx: &dyn Columns,
     value: &Datum,
 ) -> Result<(), EvalError> {
-    tidb_query_expr::native_cast_integer_input_warning(
-        input(value),
-        || json_text(value),
+    tidb_query_expr::native_cast_integer_numeric_input_warning(
+        value.as_shared_numeric_input(),
         |message| ctx.handle_truncate(message),
     )
 }
@@ -115,19 +119,9 @@ pub(crate) fn eval_cast_unsigned_value_in(
     ctx: &dyn Columns,
     value: &Datum,
 ) -> Result<u64, EvalError> {
-    tidb_query_expr::native_cast_integer_unsigned_value(
-        input(value),
+    tidb_query_expr::native_cast_integer_unsigned_numeric(
+        value.as_shared_numeric_input(),
         || ctx.time_zone(),
-        |zone| {
-            value
-                .to_i64_in(zone)
-                .map(|converted| (converted.value, converted.event))
-        },
-        || {
-            value
-                .to_decimal()
-                .map(|converted| (converted.value.into_shared_parse(), converted.event))
-        },
         || super::eval_cast_real_unsigned_in(ctx, value),
         |code, message| ctx.append_warning(code, message),
     )
