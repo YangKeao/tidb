@@ -196,3 +196,158 @@ fn numeric_argument_consumers_keep_json_and_vectorized_diagnostic_domains() {
     );
     assert!(ctx.warnings.borrow().is_empty());
 }
+
+#[test]
+fn numeric_argument_shape_and_json_integer_keep_effective_types_and_utc_independence() {
+    use super::{cast_numeric_argument, numeric_decimal_cast_type};
+    use crate::{
+        constant::Constant, expression::Expression, Columns, Datum, ErrorLevel, EvalError,
+    };
+    use std::cell::{Cell, RefCell};
+    use tidb_datatype::{
+        BinaryJSON, EvalType, FieldType, FieldTypeCode, FieldTypeFlags, SessionTimeZone,
+    };
+
+    // The integral domain ignores source width/scale; BIT and integer-mode
+    // hybrids use the old default width rather than a display-name width.
+    for (code, width) in [
+        (FieldTypeCode::Tiny, 3),
+        (FieldTypeCode::Short, 5),
+        (FieldTypeCode::Int24, 8),
+        (FieldTypeCode::Long, 10),
+        (FieldTypeCode::LongLong, 20),
+        (FieldTypeCode::Year, 4),
+        (FieldTypeCode::Bit, 20),
+    ] {
+        let source = FieldType::new(code).with_flen(100).with_decimal(42);
+        let target = numeric_decimal_cast_type(&source);
+        assert_eq!(target.code(), FieldTypeCode::NewDecimal);
+        assert_eq!((target.flen(), target.decimal()), (width, 0));
+    }
+    for code in [FieldTypeCode::Enum, FieldTypeCode::Set] {
+        let source = FieldType::new(code)
+            .with_raw_flags(u64::from(FieldTypeFlags::ENUM_SET_AS_INT))
+            .with_flen(100)
+            .with_decimal(42);
+        let target = numeric_decimal_cast_type(&source);
+        assert_eq!((target.flen(), target.decimal()), (20, 0));
+    }
+    for (source, expected) in [
+        (
+            FieldType::new(FieldTypeCode::VarString)
+                .with_flen(-2)
+                .with_decimal(-7),
+            (65, -7),
+        ),
+        (
+            FieldType::new(FieldTypeCode::Double)
+                .with_flen(0)
+                .with_decimal(42),
+            (0, 30),
+        ),
+        (
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(3)
+                .with_decimal(4),
+            (3, 4),
+        ),
+        (
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(i64::MAX)
+                .with_decimal(i64::MAX),
+            (65, 30),
+        ),
+        // Unknown(1) must not normalize to the known TINY code.
+        (
+            FieldType::new(FieldTypeCode::Unknown(1))
+                .with_flen(100)
+                .with_decimal(42),
+            (65, 30),
+        ),
+        (
+            FieldType::new(FieldTypeCode::Tiny)
+                .with_flen(17)
+                .with_decimal(5)
+                .with_array(true),
+            (17, 5),
+        ),
+        (
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(100)
+                .with_decimal(42)
+                .with_array(true),
+            (65, 30),
+        ),
+    ] {
+        let target = numeric_decimal_cast_type(&source);
+        assert_eq!(target.code(), FieldTypeCode::NewDecimal);
+        assert!(!target.is_array());
+        assert_eq!((target.flen(), target.decimal()), expected);
+    }
+
+    #[derive(Default)]
+    struct Session {
+        messages: RefCell<Vec<String>>,
+        veto: Cell<bool>,
+    }
+    impl Columns for Session {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("actual JSON operand already supplied")
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            panic!("JSON integer uses value-only UTC, not the session zone")
+        }
+        fn truncate_level(&self) -> ErrorLevel {
+            panic!("only the actual truncate callback is requested")
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            panic!("no full integer CAST advisory")
+        }
+        fn handle_truncate(&self, message: &str) -> Result<(), EvalError> {
+            self.messages.borrow_mut().push(message.to_owned());
+            if self.veto.get() {
+                Err(EvalError::Unsupported("JSON integer veto"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+    let ctx = Session::default();
+    for (document, integer, warning_subject) in [
+        ("3", 3, None),
+        ("-7", -7, None),
+        ("1.5", 1, Some("1.5")),
+        ("\"12\"", 0, Some("\"12\"")),
+        ("{}", 0, Some("{}")),
+        ("null", 0, Some("null")),
+    ] {
+        let value = Datum::Json(BinaryJSON::parse(document).unwrap());
+        let expression = Expression::Constant(Constant::new(
+            value.clone(),
+            FieldType::new(FieldTypeCode::Json),
+        ));
+        assert_eq!(
+            cast_numeric_argument(&expression, value, EvalType::Int, &ctx),
+            Ok(Datum::Int(integer))
+        );
+        let expected: Vec<_> = warning_subject
+            .into_iter()
+            .map(|subject| format!("Truncated incorrect INTEGER value: '{subject}'"))
+            .collect();
+        assert_eq!(ctx.messages.take(), expected);
+    }
+    ctx.veto.set(true);
+    let value = Datum::Json(BinaryJSON::parse("\"12\"").unwrap());
+    let expression = Expression::Constant(Constant::new(
+        value.clone(),
+        FieldType::new(FieldTypeCode::Json),
+    ));
+    assert_eq!(
+        cast_numeric_argument(&expression, value, EvalType::Int, &ctx),
+        Err(EvalError::Unsupported("JSON integer veto"))
+    );
+    assert_eq!(
+        ctx.messages.take(),
+        ["Truncated incorrect INTEGER value: '\"12\"'".to_owned()]
+    );
+}

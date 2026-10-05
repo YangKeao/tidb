@@ -1067,20 +1067,19 @@ impl FieldType {
 
     /// Mirrors `FieldType.SetFlenUnderLimit`.
     pub fn set_flen_under_limit(&mut self, flen: i64) {
-        self.flen = if self.code() == FieldTypeCode::NewDecimal {
-            flen.min(MAX_DECIMAL_WIDTH)
-        } else {
-            flen
-        };
+        self.flen = tidb_query_datatype::codec::native_eval_type::native_field_flen_under_limit(
+            self.code().as_shared_type_name_code(),
+            flen,
+        );
     }
 
     /// Mirrors `FieldType.SetDecimalUnderLimit`.
     pub fn set_decimal_under_limit(&mut self, decimal: i64) {
-        self.decimal = if self.code() == FieldTypeCode::NewDecimal {
-            decimal.min(MAX_DECIMAL_SCALE)
-        } else {
-            decimal
-        };
+        self.decimal =
+            tidb_query_datatype::codec::native_eval_type::native_field_decimal_under_limit(
+                self.code().as_shared_type_name_code(),
+                decimal,
+            );
     }
 
     /// Mirrors Go `FieldType.SetFlag`: replaces the flag word.

@@ -458,27 +458,15 @@ fn numeric_argument_text(
 /// Go WrapWithCastAsDecimal: retain declared precision/scale for non-integer
 /// sources; integer casts use the decimal width of the integer storage type.
 fn numeric_decimal_cast_type(field: &FieldType) -> FieldType {
+    let (flen, decimal) = tidb_query_expr::native_numeric_argument_decimal_shape(
+        field.eval_type(),
+        field.code().as_shared_type_name_code(),
+        field.flen(),
+        field.decimal(),
+    );
     let mut target = FieldType::new(tidb_datatype::FieldTypeCode::NewDecimal);
-    if field.eval_type() == EvalType::Int {
-        use tidb_datatype::FieldTypeCode::*;
-        target.set_flen(match field.code() {
-            Tiny => 3,
-            Short => 5,
-            Int24 => 8,
-            Long => 10,
-            LongLong => 20,
-            Year => 4,
-            _ => 20,
-        });
-        target.set_decimal(0);
-    } else {
-        target.set_flen(if field.flen() < 0 {
-            65
-        } else {
-            field.flen().min(65)
-        });
-        target.set_decimal_under_limit(field.decimal());
-    }
+    target.set_flen(flen);
+    target.set_decimal(decimal);
     target
 }
 
@@ -3507,9 +3495,12 @@ fn cast_numeric_argument_in_mode(
             // when the text is not a clean integer — captured:
             // `bitand(j, j)` over `{}` warns twice and answers 0, while the
             // JSON number `3` coerces silently.
-            let as_text = Datum::new_string(json.to_string());
-            crate::cast::report_int_truncation(&as_text, ctx)?;
-            return Ok(Datum::Int(crate::cast::to_i64_signed(&as_text)));
+            return tidb_query_expr::native_numeric_argument_json_to_i64(
+                json.type_code(),
+                json.value(),
+                |message| ctx.handle_truncate(message),
+            )
+            .map(Datum::Int);
         }
     }
     let value = if target == EvalType::Decimal

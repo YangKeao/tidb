@@ -1,0 +1,28 @@
+numeric-shape-131 / R136
+7matched launches,7GREEN;no compile/test failure,retry,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/numeric-shape-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv-types] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_eval_type -- --test-threads=1
+[tikv-argument] ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_numeric_argument -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native] ../../tools/cargo-tidb test --locked -p tidb-expr --lib scalar_function::numeric_argument_tests -- --test-threads=1
+[native-real] ../../tools/cargo-tidb test --locked -p tidb-expr --lib numeric_real_cast_fast_path_preserves_decimal_value_and_scale -- --test-threads=1
+[sql-integer] ../../tools/cargo-tidb test --locked -p tidb-session --lib shared_integer_argument_preserves_json_prefix_hybrid_and_unsigned_source_rules -- --test-threads=1
+[sql-division] ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_decimal_div_preserves_fast_bounded_unsigned_and_null_values -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv-types 2/0/0/502 2.47/0.00 0 bbba9e61fbf0b986fa2237e19875f4df7e64ba471da9dfbeda004fcd50d6c893
+tikv-argument 5/0/0/1020 10.98/0.00 0 7fc7230c8eb4a44651514d281669c445f159be373fceb582b12739672c7006c5
+native-datatype 477/0/0/0 2.43/7.18 0 fae0a9084f1de2909b75666be1fd17eb4267569ff86badf4b31380efc1a08aeb
+native 2/0/0/1738 15.45/0.00 0 cd92141635b26bbecc174521d3ce9c702aa7c604dfc5a7e1977ef321d69b9545
+native-real 1/0/0/1739 0.12/0.00 0 acf377da97d566ffd3cc5f49743ad05310fadea9b7ff2bd9d901d16e52ed40a2
+sql-integer 1/0/0/2269 15.47/0.02 0 627e5742b95a2f8054f5be10d7826b4782a9437c5e1e1fefa031c13a51a20488
+sql-division 1/0/0/2269 0.27/0.03 0 dc10694de61dd49c39a51eb41ccc9bfd3663c5cd94399e1b6d6da44a475a497b
+
+SDK4/native3 Rust files,no new Rust files;4new tests (SDK3/native1),102old SDK/56old native touched-file test bodies unchanged. SQL file unchanged; no new SQL fixture/probe/cell credit.
+FieldType two limit primitives and numeric Decimal targetshape now share canonical limits. Only crate-private visibility of existing decimal::MAX_FRACTION widened; original constant/body/value unchanged, crate::MAX_DECIMAL_WIDTH reused. Known/Unknown identities, actual array view, negative widths/scales, integer width table and unspecified source metadata preserved. Native stores actual fields/results.
+JSON integer numeric argument composition now SDK Display→existinginteger warning→existing signed numeric using originalUTC; native supplies actualJSON/truncateeffect, no syntheticDatum/controller duplication. Original labels, overflow/prefix semantics, veto and malformed/nonfinite Display behavior retained. Final fitting/RealDecimal/other controllers remain.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. BroaderM2/root/liveDAG/final remain. Full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
