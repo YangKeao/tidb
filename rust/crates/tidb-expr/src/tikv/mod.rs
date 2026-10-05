@@ -50,6 +50,10 @@ mod cast_string;
 pub(crate) use cast_string::{eval_cast_binary_in, eval_cast_char_in};
 mod cast_vector;
 pub(crate) use cast_vector::eval_cast_vector;
+mod cast_time;
+pub(crate) use cast_time::{eval_cast_arg_as_datetime_in, eval_cast_time_value_in};
+#[cfg(test)]
+mod cast_time_tests;
 mod cast_year;
 pub(crate) use cast_year::eval_cast_year_in;
 #[cfg(test)]

@@ -9363,6 +9363,64 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn shared_datetime_controller_preserves_source_parsers_date_clock_and_diagnostics() {
+    use tidb_datatype::{FieldTypeCode, TimeType};
+    let mut session = Session::new();
+    session
+        .run("SET sql_mode='', time_zone='America/Los_Angeles'")
+        .unwrap();
+    session.run("CREATE TABLE shared_datetime_control_sql (s VARCHAR(64), n DECIMAL(12,4), u BIGINT UNSIGNED, bad VARCHAR(16), edge VARCHAR(64))").unwrap();
+    session.run("INSERT INTO shared_datetime_control_sql VALUES ('2024-02-29 12:34:56.123456',121212.1111,18446744073709551615,'bad','2011-03-13 01:59:59.9999999')").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        let StmtOutput::Rows { columns, rows } = session.run_with_columns(
+            "SELECT CAST(s AS DATE),CAST(n AS DATETIME(3)),CAST(u AS DATETIME),CAST(bad AS DATETIME),CAST(edge AS DATETIME) FROM shared_datetime_control_sql"
+        ).unwrap() else { panic!("expected datetime controller rows") };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].len(), 5);
+        for (index, kind, fsp, text) in [
+            (0, TimeType::Date, 0, "2024-02-29"),
+            (1, TimeType::DateTime, 3, "2012-12-12 00:00:00.000"),
+            (4, TimeType::DateTime, 0, "2011-03-13 03:00:00"),
+        ] {
+            let Datum::Time(time) = &rows[0][index] else {
+                panic!("expected temporal value")
+            };
+            assert_eq!((time.kind(), time.fsp()), (kind, fsp));
+            assert_eq!(time.to_string(), text);
+        }
+        assert_eq!(rows[0][2], Datum::Null);
+        assert_eq!(rows[0][3], Datum::Null);
+        assert_eq!(columns.len(), 5);
+        for (index, (_, field)) in columns.iter().enumerate() {
+            assert_eq!(
+                field.code(),
+                if index == 0 {
+                    FieldTypeCode::Date
+                } else {
+                    FieldTypeCode::Datetime
+                }
+            );
+            assert_eq!(field.decimal(), if index == 1 { 3 } else { 0 });
+        }
+        assert_eq!(
+            warnings_of(&session),
+            vec![
+                (1292, "Incorrect time value: '-1'".to_owned()),
+                (1292, "Incorrect datetime value: 'bad'".to_owned()),
+            ]
+        );
+    }
+}
+
+#[test]
 fn shared_year_controller_preserves_clock_date_prefix_and_unsigned_fallback() {
     use tidb_datatype::FieldTypeCode;
     let mut session = Session::new();

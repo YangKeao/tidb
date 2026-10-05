@@ -1,0 +1,27 @@
+datetime-control-122 / R127
+7 matched launches: initial SDK RED,6final GREEN;1retry,no compile failure/zero-match/interruption.
+Raw: /home/agent/tidb/expression-unification/logs/datetime-control-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv, tikv-corrected] ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_cast_time -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native] ../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::cast_time_tests -- --test-threads=1
+[native-cast] ../../tools/cargo-tidb test --locked -p tidb-expr --lib cast::tests -- --test-threads=1
+[native-args] ../../tools/cargo-tidb test --locked -p tidb-expr --lib arg_eval_type::tests -- --test-threads=1
+[sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib shared_datetime_controller_preserves_source_parsers_date_clock_and_diagnostics -- --test-threads=1
+[sql-calendar] ../../tools/cargo-tidb test --locked -p tidb-session --lib native_temporal_calendar_preserves_statement_clock_year_fields_and_dst_boundaries -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/1/0/1009 14.90/0.00 101 b96ee6a44a7158a61b9856c01692e17451c3723e1764727181dd0a50efc6d746
+tikv-corrected 2/0/0/1009 5.07/0.00 0 f8b767d6a213d34503bac82b830ea2fe5d06a4300b1ab4447c264b074f665aa5
+native 1/0/0/1729 17.28/0.00 0 0e5f73cbb5ac2a11450ebfeb26ab4cf18d6e52cc5eefead8f77f64828fa61ec3
+native-cast 20/0/0/1710 0.14/0.00 0 34749b0aad4f20b10e88cdf98504757530d62c4dad344ed3b070cc26861dd41a
+native-args 8/0/0/1722 0.13/0.00 0 7f52fca0f186265fe99c18b59f475cb4a210a0d74589f9e2efb5e692f611c64d
+sql 1/0/0/2264 26.35/0.02 0 adb5069ef72c5a170d724306e3e2ef53717ec72140cfa1fd29cfa09938a97c0a
+sql-calendar 1/0/0/2264 0.14/0.03 0 590465786cf5b340ca6f22c8115bff559957cdcb5eb4615ea272023180539a0b
+
+Initial failure: a NEW SDK test incorrectly used FSP7 as invalid and expected None. Native fsp.rs29–36 and SDK native_normalize_fsp define >6 clamp, -1 default, other negative invalid. Changed only that NEW test input to -2 to exercise the intended error fold; no production or old-test change, no actual output used as oracle. Original RED retained.
+SDK2/native5 Rust files,3new files.4new tests (SDK2/native2);221 old native test bodies unchanged,0 old SDK test bodies in touched files. Five native private policy helpers deleted; explicit/computed/argument controllers delegate. No host business callbacks or new RPN profiles.
+New SQL1test:2SELECTs/10cells over vector0/1;6temporal+4NULL. DATEclock clear, decimal numeric parser, DST fractional carry, UInt wrap diagnostic and malformed text diagnostic, DATE/DATETIME codes/FSP and exact warning order. Existing calendar SQL and20CAST/8argument tests pass.
+fmt/diff checks passed. Functional238/245 strict0 remaining7 unchanged. Other implicit/typed/write conversion selectors, broaderM2/root/liveDAG/final remain. Full suites/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. R100 expression4/unistore1 failures remain historical/unrepaired. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
