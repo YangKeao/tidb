@@ -1,0 +1,32 @@
+decimal-context-126 / R131
+8matched launches,5finalGREEN,3retained RED gates/3retries;no compile failure,zero-match or interruption. RED gates matched tests despite0passed.
+Raw: /home/agent/tidb/expression-unification/logs/decimal-context-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv, tikv-corrected] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_decimal_context -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native, native-corrected] ../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::decimal_context_tests -- --test-threads=1
+[native-constant] ../../tools/cargo-tidb test --locked -p tidb-expr --lib constant::tests -- --test-threads=1
+[sql, sql-corrected] ../../tools/cargo-tidb test --locked -p tidb-session --lib shared_decimal_context_preserves_temporal_arguments_and_fractional_projection -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 0/2/0/499 3.47/0.00 101 0055449e393aefed039a2221f6f3fbc2bff514d290dfda3e1bc4ab4fe30fba3c
+native-datatype 477/0/0/0 3.03/6.92 0 9f9871547addb85f621de18e969280efcb5da0dd28558dc3b48414db50cb459f
+native 0/1/0/1734 15.36/0.00 101 1d79824d8c2646f25f077805af21d3e5bdd401766c72703131e21f9810afd021
+native-constant 16/0/0/1719 0.13/0.01 0 c817f8ae7f586fe550b4f2d4d0691e4c9f5c340e88cde36d0d55065f8e0b57a8
+sql 0/1/0/2268 27.43/0.01 101 605414efdcd4c6ea282bcf64bd679dc4aa526f70a3728dec4a493c0de62f34c4
+tikv-corrected 2/0/0/499 2.65/0.00 0 404307201a224156efe9cc4760e77470a35f3d3bfc7af77bda817b3bc13d76ca
+native-corrected 1/0/0/1734 9.12/0.00 0 62dccc928eaa9572c0c4e461c5876200fe34ab24dbcd2cac61fd7c59bfaa6b55
+sql-corrected 1/0/0/2268 13.29/0.01 0 5f9d6bd8fcaa3b7d6f2b1a710b0ac55e87a7b312db2f1e5814f518ba2ce7b628
+
+All corrections were to NEW test setup/expectations; production/old tests unchanged after initial gates, no actual-output oracle:
+- SDK newtest used set_result_frac beyond digits_frac, violating unchanged native_mydecimal.rs1233; use its nonvalidating raw_parts/from_raw_parts transport to test the existing projection padding branch.
+- SDK newtest overgeneralized malformed JSON panic. native_text.rs65–80 explicitly returns empty successful Display for ordinary decode failure, so short numeric payloads yield zero plus empty-text1292 diagnostic; only empty literal indexes value[0] and panics. Corrected assertions from these source branches.
+- Native newtest assumed numeric-prefix suffix errors were1292. native_mydecimal.rs841–965 returns Truncated after a valid prefix, and old mapper clones ERR_TRUNCATED (Types1265). Corrected templates; separate no-digit fixtures retain source1292 trimmed/lossy diagnostic coverage.
+- SQL newtest incorrectly expected no warnings. Division scale4+default4 gives0.33333333; existing native_cast_decimal.rs118–129 emits1292 when narrowing changes its value. Added exact source-derived DECIMAL warning, retaining all original new-test inputs/results.
+
+SDK5/native7 Rust files,2new files;4new tests (SDK2/native2),oldSDK14/native248 touched-file test bodies unchanged. Full native datatype477 and oldconstant16 passed. Context selector/diagnostics, MyDecimal projection/padding and literal Display shared; only actual data, typed Terror construction and generic context effects remain native. No new RPN profiles/family credit.
+Final new SQL1test:2SELECTs/6Decimal cells across vector0/1; DateTime/Duration numeric arguments keep millisecond fractions, decimal division narrows to0.3333 with one exact1292 warning per query, all result codes NewDecimal. JSON context effects are covered by units, NOT claimed fully exercised by SQL. New units cover strict/warn/ignore/error identities, raw text vsplain conversion, Float bypass, malformed JSON and handler demand includingNone.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. Other typed/write numeric wrappers including scalar_function, broaderM2/root/liveDAG/final remain. Full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

@@ -143,18 +143,7 @@ impl BinaryLiteral {
     }
 
     fn truncated_wrong_value_error(&self) -> TerrorError {
-        TerrorError::registered_standard(
-            TerrorClass::Types,
-            TerrorCode::new(
-                isize::try_from(errcode::ErrTruncatedWrongValue)
-                    .expect("MySQL error code must fit the source int domain"),
-            ),
-            errname::ErrTruncatedWrongValue,
-        )
-        .fast_generate(
-            errname::ErrTruncatedWrongValue.raw,
-            &[FormatArg::from("BINARY"), FormatArg::from(self.to_string())],
-        )
+        binary_literal_truncated_wrong_value_error(&self.to_string())
     }
 
     /// Compares two literals as unsigned big-endian integers after removing
@@ -164,6 +153,21 @@ impl BinaryLiteral {
         let right = trim_leading_zero_bytes(&other.0);
         left.len().cmp(&right.len()).then_with(|| left.cmp(right))
     }
+}
+
+pub(crate) fn binary_literal_truncated_wrong_value_error(literal: &str) -> TerrorError {
+    TerrorError::registered_standard(
+        TerrorClass::Types,
+        TerrorCode::new(
+            isize::try_from(errcode::ErrTruncatedWrongValue)
+                .expect("MySQL error code must fit the source int domain"),
+        ),
+        errname::ErrTruncatedWrongValue,
+    )
+    .fast_generate(
+        errname::ErrTruncatedWrongValue.raw,
+        &[FormatArg::from("BINARY"), FormatArg::from(literal)],
+    )
 }
 
 impl From<Vec<u8>> for BinaryLiteral {
@@ -192,14 +196,9 @@ impl AsRef<[u8]> for BinaryLiteral {
 
 impl fmt::Display for BinaryLiteral {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.0.is_empty() {
-            return Ok(());
-        }
-        formatter.write_str("0x")?;
-        for byte in &self.0 {
-            write!(formatter, "{byte:02x}")?;
-        }
-        Ok(())
+        tidb_query_datatype::codec::mysql::binary_literal::native_format_binary_literal(
+            &self.0, formatter,
+        )
     }
 }
 

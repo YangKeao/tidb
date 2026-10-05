@@ -431,19 +431,9 @@ impl Decimal {
     /// base-1e9 fraction digits retained for later arithmetic.
     #[must_use]
     pub fn from_my_decimal(value: &MyDecimal) -> Self {
-        let (negative, digits, storage_scale, result_scale) = value.to_decimal_parts();
-        let storage_scale = storage_scale.max(result_scale);
-        let digits: DecimalDigits = if storage_scale == value.digits_frac().max(0) as u32 {
-            DecimalDigits::from_ascii(digits)
-        } else {
-            pad_scale(
-                std::str::from_utf8(&digits).expect("MyDecimal coefficients are ASCII digits"),
-                value.digits_frac().max(0) as u32,
-                storage_scale,
-            )
-            .into()
-        };
-        Self::new_with_storage(negative, digits, result_scale, storage_scale)
+        Self::from_shared_parse(
+            tidb_query_datatype::codec::mysql::native_decimal_from_my_decimal(value.as_shared()),
+        )
     }
 
     /// Converts this value to Go's exact `MyDecimal` storage shape without
@@ -1273,9 +1263,7 @@ impl Ord for Decimal {
 /// from `scale` to `target` fractional digits — exact, since a trailing
 /// fractional zero never changes the value.
 fn pad_scale(digits: &str, scale: u32, target: u32) -> String {
-    let mut s = digits.to_string();
-    s.push_str(&"0".repeat((target - scale) as usize));
-    s
+    tidb_query_datatype::codec::mysql::native_decimal_pad_scale(digits, scale, target)
 }
 
 /// MyDecimal stores fractional digits in base-1e9 words. A division result's

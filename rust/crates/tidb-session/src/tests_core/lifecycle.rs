@@ -9363,6 +9363,53 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn shared_decimal_context_preserves_temporal_arguments_and_fractional_projection() {
+    let mut session = Session::new();
+    session
+        .run(
+            "CREATE TABLE shared_decimal_context_sql (dt DATETIME(3), tm TIME(3), d DECIMAL(10,4))",
+        )
+        .unwrap();
+    session.run("INSERT INTO shared_decimal_context_sql VALUES ('2024-02-03 04:05:06.125','11:22:33.125',1.0000)").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        let StmtOutput::Rows { columns, rows } = session.run_with_columns(
+            "SELECT dt+0.001,tm+0.001,CAST(d/3 AS DECIMAL(10,4)) FROM shared_decimal_context_sql"
+        ).unwrap() else { panic!("expected decimal context rows") };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].len(), 3);
+        assert_eq!(columns.len(), 3);
+        for (index, expected) in ["20240203040506.126", "112233.126", "0.3333"]
+            .into_iter()
+            .enumerate()
+        {
+            assert!(matches!(rows[0][index], Datum::Decimal(_)));
+            assert_eq!(rows[0][index].sql_string().unwrap(), expected);
+            assert_eq!(
+                columns[index].1.code(),
+                tidb_datatype::FieldTypeCode::NewDecimal
+            );
+        }
+        // Division uses source scale4 plus the default increment4. The existing
+        // DECIMAL CAST warns when narrowing changes that scale8 value.
+        assert_eq!(
+            warnings_of(&session),
+            vec![(
+                1292,
+                "Truncated incorrect DECIMAL value: '0.33333333'".to_owned()
+            )]
+        );
+    }
+}
+
+#[test]
 fn shared_integer_argument_preserves_json_prefix_hybrid_and_unsigned_source_rules() {
     let mut session = Session::new();
     session.run("SET sql_mode=''").unwrap();

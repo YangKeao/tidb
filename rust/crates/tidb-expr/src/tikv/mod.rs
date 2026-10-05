@@ -44,6 +44,8 @@ pub(crate) use cast_integer::eval_cast_arg_as_int_in;
 #[cfg(test)]
 mod cast_arg_integer_tests;
 #[cfg(test)]
+mod decimal_context_tests;
+#[cfg(test)]
 mod decimal_datum_tests;
 #[cfg(test)]
 mod signed_datum_tests;

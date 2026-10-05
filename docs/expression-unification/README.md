@@ -1,20 +1,20 @@
 # Expression unification experiment
 
 Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
-Current checkpoint: **arg-integer-125**, following **decimal-datum-124**.
+Current checkpoint: **decimal-context-126**, following **arg-integer-125**.
 
 Functional **238/245 (97.14%)**, strict **0**, remaining **7**—unchanged. No whole CAST/M2 or Go-package credit.
 
-SDK `native_cast_integer.rs` owns integer-argument identity/JSON/source-unsigned/guard policy and composes JSON rendering plus signed/Decimal conversions internally. Native business conversion callbacks are removed. The original sealed real-unsigned worker execution callback remains, preserving admission and infrastructure errors alongside zone/truncate/warning effects; it is not a native numerical fallback. Generic SDK APIs remain compatible.
+SDK `codec/native_decimal_context.rs` owns context-aware Decimal source selection, diagnostics and effect ordering. Native retains only actual data, typed Terror construction and generic context effects. MyDecimal-to-Decimal projection/scale padding and native literal Display also have single SDK owners; old native entries delegate. Plain/context conversion differences remain explicit.
 
 ## Verification
 
-[Evidence](evidence/arg-integer-checkpoint.md), [commands/counts/hashes](logs/arg-integer-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
+[Evidence](evidence/decimal-context-checkpoint.md), [commands/counts/hashes](logs/decimal-context-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
 
-Six matched gates GREEN without failure/retry: SDK4, native new1/controller1/arguments8/CAST20, SQL1. Four new tests;2 SDK/225 native old test bodies unchanged.
+Five final gates GREEN: SDK2, full native datatype477, new expression1/old constants16, SQL1. Eight matched launches include three RED gates from new-test setup/expectations, corrected from original source without production/old-test changes. All RED receipts retained. Four new tests;14 SDK/248 native old test bodies unchanged.
 
-New SQL:2 SELECTs/8 cells across both vector modes, JSON integer-prefix warnings, Enum/Set ordinals and unsigned DOUBLE argument conversion for TRUNCATE. Unit coverage includes identity, JSON no-zone/no8031 behavior, effect veto and worker refusal. No performance or physical-memory claim.
+Final SQL:2 SELECTs/6 Decimal cells across both vector modes, temporal millisecond arguments and fractional projection/narrowing, with result codes and exact1292 warnings. JSON context policies are covered by units, not claimed fully exercised by SQL. No performance or physical-memory claim.
 
 ## Remaining
 
-[Remaining acceptance](evidence/remaining-acceptance.md): context-aware Decimal and other typed/write selectors, broader M2, six complex candidates, request-root/default-NoColumns/liveDAG and final acceptance. Full suites/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness remain unverified. Historical R100 expression4/unistore1 failures remain unrepaired; prior incident receipts retained. Goal remains active.
+[Remaining acceptance](evidence/remaining-acceptance.md): other typed/write numeric selectors including scalar_function composition, broader M2, six complex candidates, request-root/default-NoColumns/liveDAG and final acceptance. Full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness remain unverified. Historical R100 expression4/unistore1 failures remain unrepaired; prior incident receipts retained. Goal remains active.

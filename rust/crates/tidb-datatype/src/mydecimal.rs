@@ -70,7 +70,7 @@ impl Drop for SharedWriteBack<'_> {
 }
 
 impl MyDecimal {
-    fn as_shared(&self) -> SharedMyDecimal {
+    pub(crate) fn as_shared(&self) -> SharedMyDecimal {
         SharedMyDecimal::from_raw_parts((
             self.digits_int,
             self.digits_frac,

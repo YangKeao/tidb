@@ -240,83 +240,19 @@ impl Datum {
         &self,
         context: &crate::ConversionContext<'_>,
     ) -> Result<(Decimal, Option<tidb_error::terror::TerrorError>), DatumValueError> {
-        use crate::{MyDecimal, JSON_LITERAL_FALSE, JSON_LITERAL_NULL, JSON_TYPE_CODE_LITERAL};
-        let (parsed, float) = match self {
-            Self::String(value) => {
-                let (decimal, error) = MyDecimal::from_string(value.bytes());
-                return Ok((
-                    Decimal::from_my_decimal(&decimal),
-                    context.handle_truncate(
-                        error.map(|error| decimal_conversion_error(error, value.bytes())),
-                    ),
-                ));
-            }
-            Self::Real(value) => (MyDecimal::from_float64(*value), *value),
-            Self::Float32(value) => (
-                MyDecimal::from_float64(f64::from(*value as f32)),
-                f64::from(*value as f32),
-            ),
-            Self::BinaryLiteral(value) | Self::Bit(value) => {
-                let (integer, error) = value.to_int_with_context(context);
-                return Ok((Decimal::from_uint(integer), error));
-            }
-            Self::Json(value) => {
-                let (decimal, error) = if let Some(value) = value.as_i64() {
-                    (Decimal::from_int(value), None)
-                } else if let Some(value) = value.as_u64() {
-                    (Decimal::from_uint(value), None)
-                } else if let Some(value) = value.as_f64() {
-                    let (decimal, error) = MyDecimal::from_float64(value);
-                    (
-                        Decimal::from_my_decimal(&decimal),
-                        error.map(|error| {
-                            decimal_conversion_error(
-                                error,
-                                crate::format_float_g_shortest(value).as_bytes(),
-                            )
-                        }),
-                    )
-                } else if let Some(value) = value.as_string() {
-                    let (decimal, error) = MyDecimal::from_string(value);
-                    (
-                        Decimal::from_my_decimal(&decimal),
-                        error.map(|error| decimal_conversion_error(error, value)),
-                    )
-                } else if value.type_code() == JSON_TYPE_CODE_LITERAL
-                    && value.value()[0] != JSON_LITERAL_NULL
-                {
-                    (
-                        Decimal::from_int(i64::from(value.value()[0] != JSON_LITERAL_FALSE)),
-                        None,
-                    )
-                } else {
-                    (
-                        Decimal::from_int(0),
-                        Some(
-                            crate::ERR_TRUNCATED_WRONG_VALUE
-                                .generate(format!("Truncated incorrect DECIMAL value: '{value}'")),
-                        ),
-                    )
-                };
-                return Ok((decimal, context.handle_truncate(error)));
-            }
-            Self::Int(_)
-            | Self::UInt(_)
-            | Self::Decimal(_)
-            | Self::Time(_)
-            | Self::Duration(_)
-            | Self::Enum(..)
-            | Self::Set(..) => {
-                return Ok((self.to_decimal()?.value, None));
-            }
-            _ => return Err(DatumValueError::Unsupported(self.kind(), "decimal")),
-        };
-        Ok((
-            Decimal::from_my_decimal(&parsed.0),
-            parsed.1.map(|error| {
-                decimal_conversion_error(error, crate::format_float_g_shortest(float).as_bytes())
-            }),
-        ))
+        use tidb_query_datatype::codec::native_decimal_context::native_datum_to_decimal_with_context;
+        use tidb_query_datatype::codec::native_numeric::NativeNumericError;
+        native_datum_to_decimal_with_context(
+            self.as_shared_numeric_input(),
+            |error| context.handle_truncate(error.map(decimal_context_error)),
+            decimal_context_error,
+        )
+        .map(|(value, error)| (Decimal::from_shared_parse(value), error))
+        .map_err(|error| match error {
+            NativeNumericError::InvalidUtf8(error) => error.into(),
+            NativeNumericError::Comparison(message) => DatumValueError::Comparison(message),
+            NativeNumericError::Unsupported => DatumValueError::Unsupported(self.kind(), "decimal"),
+        })
     }
 
     /// Source `Datum.ToDecimal`.
@@ -406,28 +342,19 @@ fn from_shared_mysql_json_error(
 
 // MyDecimal keeps compact Rust errors; conversion adds Go's error identity
 // and the exact input slice used by FromString after whitespace/sign removal.
-fn decimal_conversion_error(
-    error: crate::DecimalError,
-    input: &[u8],
+fn decimal_context_error(
+    error: tidb_query_datatype::codec::native_decimal_context::NativeDecimalContextError,
 ) -> tidb_error::terror::TerrorError {
+    use tidb_query_datatype::codec::native_decimal_context::NativeDecimalContextError;
     match error {
-        crate::DecimalError::Truncated => crate::ERR_TRUNCATED.clone(),
-        crate::DecimalError::Overflow => crate::ERR_OVERFLOW.clone(),
-        crate::DecimalError::BadNumber => crate::ERR_BAD_NUMBER.clone(),
-        crate::DecimalError::TruncatedWrongValue => {
-            let input = &input[input
-                .iter()
-                .position(|byte| !matches!(byte, b' ' | b'\t'))
-                .unwrap_or(0)..];
-            let input = if matches!(input.first(), Some(b'+' | b'-')) {
-                &input[1..]
-            } else {
-                input
-            };
-            crate::ERR_TRUNCATED_WRONG_VALUE.generate(format!(
-                "Truncated incorrect DECIMAL value: '{}'",
-                String::from_utf8_lossy(input)
-            ))
+        NativeDecimalContextError::Truncated => crate::ERR_TRUNCATED.clone(),
+        NativeDecimalContextError::Overflow => crate::ERR_OVERFLOW.clone(),
+        NativeDecimalContextError::BadNumber => crate::ERR_BAD_NUMBER.clone(),
+        NativeDecimalContextError::TruncatedWrongValue { message } => {
+            crate::ERR_TRUNCATED_WRONG_VALUE.generate(message)
+        }
+        NativeDecimalContextError::BinaryTruncatedWrongValue { literal } => {
+            crate::binary_literal::binary_literal_truncated_wrong_value_error(&literal)
         }
     }
 }
