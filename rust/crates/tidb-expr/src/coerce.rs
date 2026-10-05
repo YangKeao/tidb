@@ -23,6 +23,10 @@ use tidb_datatype::{BinaryLiteralIntOutcome, Datum, Decimal, StringDatum};
 
 use crate::context::EvalError;
 
+#[cfg(test)]
+#[path = "coerce_tests.rs"]
+mod tests;
+
 /// The integral portion of a datum, retaining signedness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Integer {
@@ -133,41 +137,8 @@ pub(crate) fn string_text(value: &StringDatum) -> Result<&str, EvalError> {
 
 /// Coerces a scalar to text, preserving NULL and rejecting invalid UTF-8.
 pub(crate) fn coerce_str(value: &Datum) -> Result<Option<String>, EvalError> {
-    match value {
-        Datum::String(value) => Ok(Some(string_text(value)?.to_string())),
-        Datum::Bytes(value) => std::str::from_utf8(value)
-            .map(|text| Some(text.to_string()))
-            .map_err(|_| EvalError::Unsupported("invalid UTF-8 byte datum")),
-        Datum::Int(value) => Ok(Some(value.to_string())),
-        Datum::UInt(value) => Ok(Some(value.to_string())),
-        Datum::Decimal(value) => Ok(Some(value.to_string())),
-        Datum::Real(value) => Ok(Some(value.to_string())),
-        Datum::Float32(value) => Ok(Some((*value as f32).to_string())),
-        Datum::BinaryLiteral(value) | Datum::Bit(value) => std::str::from_utf8(value.as_bytes())
-            .map(|text| Some(text.to_owned()))
-            .map_err(|_| EvalError::Unsupported("invalid UTF-8 binary literal")),
-        Datum::Duration(value) => Ok(Some(value.to_string())),
-        Datum::Enum(value, _) => value
-            .name()
-            .as_utf8()
-            .map(|text| Some(text.to_owned()))
-            .map_err(|_| EvalError::Unsupported("invalid UTF-8 ENUM name")),
-        Datum::Set(value, _) => value
-            .name()
-            .as_utf8()
-            .map(|text| Some(text.to_owned()))
-            .map_err(|_| EvalError::Unsupported("invalid UTF-8 SET name")),
-        Datum::Time(value) => Ok(Some(value.to_string())),
-        Datum::Json(value) => Ok(Some(value.to_string())),
-        Datum::Raw(value) => std::str::from_utf8(value)
-            .map(|text| Some(text.to_owned()))
-            .map_err(|_| EvalError::Unsupported("invalid UTF-8 raw datum")),
-        Datum::VectorFloat32(value) => Ok(Some(value.to_string())),
-        Datum::Null => Ok(None),
-        Datum::MinNotNull | Datum::MaxValue => {
-            Err(EvalError::Unsupported("range sentinel string coercion"))
-        }
-    }
+    tidb_query_expr::native_coerce_string(value.as_shared_json_input())
+        .map_err(EvalError::Unsupported)
 }
 
 /// Coerces a scalar through Go TiDB's `EvalString` byte boundary.

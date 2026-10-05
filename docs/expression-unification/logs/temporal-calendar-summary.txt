@@ -1,0 +1,50 @@
+temporal-calendar-119 / R122
+Raw logs: /home/agent/tidb/expression-unification/logs/temporal-calendar-{id}.log
+11 launches, all matched GREEN. No compile/test failures, zero-matches, retries or interruptions. Eight new tests (SDK4/native4);256 old native test bodies unchanged;0 existing SDK test bodies in changed files. SDK4/native6 live Rust files,3 new files. Functional238/245, strict0, remaining7 unchanged.
+
+Exact commands (each actual launch redirected through tee to its distinct raw log):
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv-foundation]
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_temporal_convert -- --test-threads=1
+[tikv-coercion]
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_coerce_string -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype]
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-coercion]
+../../tools/cargo-tidb test --locked -p tidb-expr --lib coerce::tests:: -- --test-threads=1
+[native-year]
+../../tools/cargo-tidb test --locked -p tidb-expr --lib test_cast_duration_as_year -- --test-threads=1
+[native-round]
+../../tools/cargo-tidb test --locked -p tidb-expr --lib cast::tests::a_string_cast_to_datetime_rounds_in_the_session_zone -- --exact --test-threads=1
+[native-gap]
+../../tools/cargo-tidb test --locked -p tidb-expr --lib cast::tests::a_string_cast_to_timestamp_adjusts_dst_gap_and_warns -- --exact --test-threads=1
+[native-string-consumer]
+../../tools/cargo-tidb test --locked -p tidb-expr --lib builtin_ext::string2::tests::export_set_extension_adapter_preserves_nullable_prefix_and_strict_errors -- --exact --test-threads=1
+[sql]
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_temporal_calendar_preserves_statement_clock_year_fields_and_dst_boundaries -- --exact --test-threads=1
+[sql-clock]
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::builtins::a_duration_beside_a_temporal_literal_lands_on_the_statement_date -- --exact --test-threads=1
+[sql-year]
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_datetime_year_compare::cast_year_column_as_datetime_injects_the_year_field -- --exact --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv-foundation 2/0/0/489 3.28/0.00 0 1672ab44a87f27e05c1805f3065f41349315ebbf4cc5293289dbaa214c73f125
+tikv-coercion 2/0/0/1006 13.69/0.00 0 24d480cae8b3dd4c26bfa5440cd3a42308486bfbd3664e3abb2010f619017797
+native-datatype 474/0/0/0 2.98/7.07 0 81827725ead18dd5f63a41c5bfaff455ee182e23364f272ba9a75de4e4897978
+native-coercion 1/0/0/1726 17.65/0.00 0 2acbff94548cfb8ade43c88c7d59ebd87df1e1afe3b74312cfb4e5da27526e11
+native-year 2/0/0/1725 0.13/0.00 0 202a2654d9b42dc2636dfae94a0c5c0e64ad2b0832aa4b8d4d833c5ce95ecd5c
+native-round 1/0/0/1726 0.12/0.00 0 b2cbd02bffc1402c05b21b0e48e93b9b4ce9c00635505bb26cbce0057d96e6b2
+native-gap 1/0/0/1726 0.12/0.00 0 9faf7d3d9a98395a34e237f1b57619a39bb9fc1ba468e095726ccba3fcfb9de5
+native-string-consumer 1/0/0/1726 0.13/0.00 0 8b55dac2b315e1d48c7ff502fbab245c7089c9aade8965812e6e7b47b41e582a
+sql 1/0/0/2261 25.70/0.03 0 3a3ae02243eee179fdca8d76ed43056bdc9255de11d2ba47c07bf6e83fb4db3c
+sql-clock 1/0/0/2261 0.15/0.03 0 a3e223f3a73078ebb3c844f138e875bfda2e754c1f563ed63af6cb14f6d8c867
+sql-year 1/0/0/2261 0.14/0.01 0 3821279472674542a17ce1392189689468346098cdc41f90f87ab7c026637b80
+
+New SQL:1test,8standalone SELECTs (4clock/zone,2YEAR/DST,2empty-gap),22cells=8YEARInt+14Time. Additional2strict typed INSERT...SELECT error probes;1292/22007/full message+1errorwarning each, then no stored rows. Actual SET timestamp1609459200, zones+00/-01 and America/Los_Angeles, vector modes0/1. Literal headers, Time kind/FSP/display and year integers. Calendar year changes across session dates, negative durations, raw YEAR field injection, DST rounding and typed timestamp-gap refusal. Concat=true is unit/old-expression scope: ordinary SQL has no supported switch, and no fake switch was added.
+
+Preflight scope correction (not a failed run): non-strict typed gap storage was not assumed equal to string-gap storage. Original convert_kind resets DateTime/FSP0 and downstream kind propagation stays unchanged. Chose strict typed-gap refusal to verify actual path without inventing its non-strict stored-value oracle. No production fix, old oracle change or actual-output recording. Original root JSON+Inf panic is deliberately caught in units, not a failed-test claim.
+
+Static review: exact native policy edits are duration convert_to_time/convert_to_year/with_event, Time convert_kind/round_frac, adjust_year/with_event/parse_time_from_year and coerce_str. Strict year event fold has one SDK owner. Other coerce methods, YEAR/DATE expression controllers, signed fallback, generic engines/PB/AST/19view, temporal numeric formatting and datatype selectors unchanged. Formatter and git diff --check passed; no Go/Bazel/Cargo lock changes, unrelated BUILD excluded.
+Remaining M2 chain: actual hybrid numeric ordinals, temporal numeric formatting, integer text, JSON integer and binary-literal integer policies before removing signed-datum callbacks. No new family/profile/wholeCAST/Go-package credit.
+Not run: full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/TiFlash/FIPS/performance/physical heap/stack/OOM/allocator/dual-tzdata/whole-Go-package/PR acceptance. Historical R1004+1 failures remain; R121 new-test RED and other earlier incidents retained in prior receipts. Goal remains active.

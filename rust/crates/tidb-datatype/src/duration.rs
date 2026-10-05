@@ -16,7 +16,7 @@
 
 use std::{cmp::Ordering, fmt};
 
-use chrono::{DateTime, Datelike, Duration as ChronoDuration, TimeZone};
+use chrono::{DateTime, TimeZone};
 pub use tidb_query_datatype::codec::mysql::duration::{
     NativeDurationDateTimeFallbackKind as DurationDateTimeFallbackKind,
     NativeDurationOverflow as DurationOverflow, NativeDurationParseError as DurationParseError,
@@ -24,10 +24,7 @@ pub use tidb_query_datatype::codec::mysql::duration::{
 };
 use tidb_query_datatype::codec::mysql::{duration as shared_duration, Duration as SharedDuration};
 
-use crate::time_parse::adjust_year_with_event;
-use crate::{
-    check_fsp, core_time_from_datetime, Converted, Decimal, FspError, Time, TimeError, TimeType,
-};
+use crate::{check_fsp, Converted, Decimal, FspError, Time, TimeError, TimeType};
 
 /// The maximum SQL `TIME` hour component accepted by TiDB.
 pub const TIME_MAX_HOUR: i64 = 838;
@@ -210,25 +207,19 @@ impl MySqlDuration {
         allow_zero_in_date: bool,
         allow_invalid_date: bool,
     ) -> Result<Time, TimeError> {
-        let timezone = timestamp.timezone();
-        let midnight = timezone
-            .with_ymd_and_hms(
-                timestamp.year(),
-                timestamp.month(),
-                timestamp.day(),
-                0,
-                0,
-                0,
-            )
-            .single()
-            .ok_or(TimeError::InvalidDate)?;
-        let value = midnight
-            .checked_add_signed(ChronoDuration::nanoseconds(self.nanoseconds))
-            .ok_or(TimeError::OutOfRange("time"))?;
-        let datetime = Time::new(core_time_from_datetime(value), TimeType::DateTime, self.fsp)?;
-        datetime
-            .convert_kind(kind, allow_zero_in_date, allow_invalid_date, &timezone)
-            .map(|result| result.0)
+        tidb_query_datatype::codec::native_temporal_convert::native_duration_convert_to_time(
+            tidb_query_datatype::codec::native_duration_convert::NativeDurationParts {
+                nanoseconds: self.nanoseconds,
+                fsp: self.fsp,
+            },
+            timestamp,
+            kind,
+            allow_zero_in_date,
+            allow_invalid_date,
+        )
+        .map(|value| {
+            Time::from_raw_parts(crate::CoreTime::from_raw(value.raw), value.kind, value.fsp)
+        })
     }
 
     /// Converts a TIME value to YEAR using TiDB's two source modes.
@@ -237,11 +228,12 @@ impl MySqlDuration {
         now: DateTime<TZ>,
         through_concat: bool,
     ) -> Result<i64, TimeError> {
-        let converted = self.convert_to_year_with_event(now, through_concat)?;
-        if converted.event.is_some() {
-            return Err(TimeError::OutOfRange("year"));
-        }
-        Ok(converted.value)
+        tidb_query_datatype::codec::native_temporal_convert::native_duration_convert_to_year_with_event(
+            tidb_query_datatype::codec::native_duration_convert::NativeDurationParts {
+                nanoseconds: self.nanoseconds, fsp: self.fsp,
+            },
+            now, through_concat,
+        )?.into_result()
     }
 
     pub(crate) fn convert_to_year_with_event<TZ: TimeZone>(
@@ -249,23 +241,12 @@ impl MySqlDuration {
         now: DateTime<TZ>,
         through_concat: bool,
     ) -> Result<Converted<i64>, TimeError> {
-        if through_concat {
-            let rounded = self
-                .round_frac(0)
-                .map_err(|_| TimeError::OutOfRange("year"))?;
-            let numeric = rounded.hour() * 10_000 + rounded.minute() * 100 + rounded.second();
-            let numeric = if rounded.nanoseconds < 0 {
-                -numeric
-            } else {
-                numeric
-            };
-            return Ok(adjust_year_with_event(numeric, false));
-        }
-        let value = self.convert_to_time(now, TimeType::DateTime, false, false)?;
-        Ok(adjust_year_with_event(
-            i64::from(value.core_time().year()),
-            false,
-        ))
+        tidb_query_datatype::codec::native_temporal_convert::native_duration_convert_to_year_with_event(
+            tidb_query_datatype::codec::native_duration_convert::NativeDurationParts {
+                nanoseconds: self.nanoseconds, fsp: self.fsp,
+            },
+            now, through_concat,
+        ).map(crate::time_parse::from_shared_year_conversion)
     }
 }
 

@@ -110,37 +110,167 @@ pub fn parse_year(input: &str) -> Result<i16, TimeError> {
     i16::try_from(adjust_year(year, true)?).map_err(|_| TimeError::OutOfRange("year"))
 }
 
+#[cfg(test)]
+#[test]
+fn temporal_year_facades_keep_storage_domain_overflow_subjects_and_lazy_duration_clock() {
+    for (year, zero, expected, overflow) in [
+        (0, false, 0, None),
+        (0, true, 2000, None),
+        (69, false, 2069, None),
+        (70, false, 1970, None),
+        (99, false, 1999, None),
+        (-1, false, 0, Some("-1")),
+        (1900, false, 1901, Some("1900")),
+        (2156, false, 2155, Some("2156")),
+    ] {
+        assert_eq!(
+            adjust_year_with_event(year, zero),
+            Converted {
+                value: expected,
+                event: overflow.map(|value| ScalarConversionEvent::Overflow(
+                    ScalarConversionError::Overflow {
+                        value: value.into(),
+                        target: FieldTypeCode::Year,
+                    }
+                )),
+            }
+        );
+        assert_eq!(
+            adjust_year(year, zero),
+            if overflow.is_some() {
+                Err(TimeError::OutOfRange("year"))
+            } else {
+                Ok(expected)
+            }
+        );
+    }
+    let zero = parse_time_from_year(0).unwrap();
+    assert_eq!(
+        (zero.core_time().raw(), zero.kind(), zero.fsp()),
+        (0, TimeType::Date, 0)
+    );
+    let ordinary = parse_time_from_year(2018).unwrap();
+    assert_eq!(
+        ordinary.core_time(),
+        CoreTime::from_date(2018, 0, 0, 0, 0, 0, 0)
+    );
+    assert_eq!((ordinary.kind(), ordinary.fsp()), (TimeType::DateTime, 0));
+    // The storage parser narrows to u16, then packs fourteen year bits. It is
+    // not the YEAR column range clamp or a checked-calendar constructor.
+    let wide = parse_time_from_year(65_535).unwrap();
+    assert_eq!(wide.core_time().raw(), 0xfffc_0000_0000_0000);
+    assert_eq!((wide.kind(), wide.fsp()), (TimeType::DateTime, 0));
+    assert_eq!(
+        parse_time_from_year(65_536),
+        Err(TimeError::OutOfRange("year"))
+    );
+    assert_eq!(parse_time_from_year(-1), Err(TimeError::OutOfRange("year")));
+
+    #[derive(Clone)]
+    struct NoTimezoneReads;
+    impl chrono::TimeZone for NoTimezoneReads {
+        type Offset = chrono::FixedOffset;
+        fn from_offset(_: &Self::Offset) -> Self {
+            panic!("unexpected timezone reconstruction")
+        }
+        fn offset_from_local_date(
+            &self,
+            _: &chrono::NaiveDate,
+        ) -> chrono::LocalResult<Self::Offset> {
+            panic!("unexpected local date")
+        }
+        fn offset_from_local_datetime(
+            &self,
+            _: &chrono::NaiveDateTime,
+        ) -> chrono::LocalResult<Self::Offset> {
+            panic!("unexpected local datetime")
+        }
+        fn offset_from_utc_date(&self, _: &chrono::NaiveDate) -> Self::Offset {
+            panic!("unexpected UTC date")
+        }
+        fn offset_from_utc_datetime(&self, _: &chrono::NaiveDateTime) -> Self::Offset {
+            panic!("unexpected UTC datetime")
+        }
+    }
+    let lazy_now = chrono::DateTime::<NoTimezoneReads>::from_naive_utc_and_offset(
+        chrono::NaiveDate::from_ymd_opt(2023, 11, 13)
+            .unwrap()
+            .and_hms_opt(3, 9, 0)
+            .unwrap(),
+        chrono::FixedOffset::east_opt(0).unwrap(),
+    );
+    assert_eq!(
+        crate::MySqlDuration::from_raw_parts(1_212_000_000_000, 6)
+            .convert_to_year(lazy_now.clone(), true)
+            .unwrap(),
+        2012
+    );
+    let large = crate::MySqlDuration::from_raw_parts(720_000_000_000_000, 0);
+    assert_eq!(
+        large
+            .convert_to_year_with_event(lazy_now.clone(), true)
+            .unwrap(),
+        Converted {
+            value: 2155,
+            event: Some(ScalarConversionEvent::Overflow(
+                ScalarConversionError::Overflow {
+                    value: "2000000".into(),
+                    target: FieldTypeCode::Year,
+                }
+            )),
+        }
+    );
+    assert_eq!(
+        large.convert_to_year(lazy_now.clone(), true),
+        Err(TimeError::OutOfRange("year"))
+    );
+    assert_eq!(
+        crate::MySqlDuration::from_raw_parts(i64::MAX, 6).convert_to_year(lazy_now, true),
+        Err(TimeError::OutOfRange("year"))
+    );
+
+    let now = chrono_tz::UTC
+        .with_ymd_and_hms(2023, 12, 31, 8, 0, 0)
+        .single()
+        .unwrap();
+    let elapsed = crate::MySqlDuration::from_raw_parts(90_000_000_000_000, 6);
+    let time = elapsed
+        .convert_to_time(now.clone(), TimeType::DateTime, false, false)
+        .unwrap();
+    assert_eq!(
+        time.core_time(),
+        CoreTime::from_date(2024, 1, 1, 1, 0, 0, 0)
+    );
+    assert_eq!((time.kind(), time.fsp()), (TimeType::DateTime, 6));
+    assert_eq!(elapsed.convert_to_year(now, false).unwrap(), 2024);
+}
+
 /// Applies MySQL's two-digit YEAR window and validates the YEAR domain.
 pub fn adjust_year(year: i64, adjust_zero: bool) -> Result<i64, TimeError> {
-    let converted = adjust_year_with_event(year, adjust_zero);
-    if converted.event.is_some() {
-        return Err(TimeError::OutOfRange("year"));
-    }
-    Ok(converted.value)
+    tidb_query_datatype::codec::native_temporal_convert::native_adjust_year_with_event(
+        year,
+        adjust_zero,
+    )
+    .into_result()
 }
 
 pub(crate) fn adjust_year_with_event(year: i64, adjust_zero: bool) -> Converted<i64> {
-    if year == 0 && !adjust_zero {
-        return Converted {
-            value: 0,
-            event: None,
-        };
-    }
-    let adjusted = match year {
-        0..=69 => 2000 + year,
-        70..=99 => 1900 + year,
-        _ => year,
-    };
-    let value = if adjusted < 0 {
-        0
-    } else {
-        adjusted.clamp(1901, 2155)
-    };
+    from_shared_year_conversion(
+        tidb_query_datatype::codec::native_temporal_convert::native_adjust_year_with_event(
+            year,
+            adjust_zero,
+        ),
+    )
+}
+
+pub(crate) fn from_shared_year_conversion(
+    converted: tidb_query_datatype::codec::native_temporal_convert::NativeYearConverted,
+) -> Converted<i64> {
     Converted {
-        value,
-        event: (value != adjusted).then(|| {
+        value: converted.value,
+        event: converted.overflow.map(|value| {
             ScalarConversionEvent::Overflow(ScalarConversionError::Overflow {
-                value: year.to_string(),
+                value,
                 target: FieldTypeCode::Year,
             })
         }),
@@ -173,15 +303,8 @@ pub fn time_from_days(day_number: i64) -> Time {
 
 /// Converts a YEAR value to TiDB's temporal representation.
 pub fn parse_time_from_year(year: i64) -> Result<Time, TimeError> {
-    if year == 0 {
-        return Time::new(CoreTime::default(), TimeType::Date, 0);
-    }
-    let year = u16::try_from(year).map_err(|_| TimeError::OutOfRange("year"))?;
-    Time::new(
-        CoreTime::from_date(year, 0, 0, 0, 0, 0, 0),
-        TimeType::DateTime,
-        0,
-    )
+    tidb_query_datatype::codec::native_temporal_convert::native_parse_time_from_year(year)
+        .map(from_shared_time)
 }
 
 /// Applies TiDB's string-named `TIMESTAMPDIFF` unit.

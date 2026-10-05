@@ -17,7 +17,7 @@ use std::fmt;
 
 use chrono::{DateTime, Duration as ChronoDuration, Local, TimeZone, Timelike, Utc};
 
-use crate::{check_fsp, CoreTime, Decimal, MySqlDuration, PackedTime, TimeConversionError};
+use crate::{check_fsp, CoreTime, Decimal, MySqlDuration, PackedTime};
 
 use tidb_query_datatype::codec::mysql::time::NativeTemporalValue;
 /// MySQL temporal type carried by [`Time`].
@@ -29,6 +29,123 @@ pub struct Time {
     core: CoreTime,
     kind: TimeType,
     fsp: u8,
+}
+
+#[cfg(test)]
+#[test]
+fn temporal_calendar_facades_keep_raw_early_returns_timezone_demands_and_dst_results() {
+    #[derive(Clone)]
+    struct NoTimezoneReads;
+    impl chrono::TimeZone for NoTimezoneReads {
+        type Offset = chrono::FixedOffset;
+        fn from_offset(_: &Self::Offset) -> Self {
+            panic!("unexpected timezone reconstruction")
+        }
+        fn offset_from_local_date(
+            &self,
+            _: &chrono::NaiveDate,
+        ) -> chrono::LocalResult<Self::Offset> {
+            panic!("unexpected local date")
+        }
+        fn offset_from_local_datetime(
+            &self,
+            _: &chrono::NaiveDateTime,
+        ) -> chrono::LocalResult<Self::Offset> {
+            panic!("unexpected local datetime")
+        }
+        fn offset_from_utc_date(&self, _: &chrono::NaiveDate) -> Self::Offset {
+            panic!("unexpected UTC date")
+        }
+        fn offset_from_utc_datetime(&self, _: &chrono::NaiveDateTime) -> Self::Offset {
+            panic!("unexpected UTC datetime")
+        }
+    }
+    let raw_date = Time::from_raw_parts(CoreTime::from_raw(u64::MAX), TimeType::Date, 255);
+    assert_eq!(raw_date.round_frac(-2, &NoTimezoneReads).unwrap(), raw_date);
+    assert_eq!(
+        raw_date
+            .convert_kind(TimeType::Date, false, false, &NoTimezoneReads)
+            .unwrap(),
+        (
+            Time::from_raw_parts(CoreTime::from_raw(u64::MAX), TimeType::Date, 0),
+            false
+        )
+    );
+    let zero = Time::from_raw_parts(CoreTime::default(), TimeType::DateTime, 255);
+    assert_eq!(zero.round_frac(-2, &NoTimezoneReads).unwrap(), zero);
+    assert_eq!(
+        zero.convert_kind(TimeType::Timestamp, false, false, &NoTimezoneReads)
+            .unwrap(),
+        (
+            Time::from_raw_parts(CoreTime::default(), TimeType::Timestamp, 255),
+            false
+        )
+    );
+    let raw_same = Time::from_raw_parts(CoreTime::from_raw(1), TimeType::DateTime, 6);
+    assert_eq!(raw_same.round_frac(9, &NoTimezoneReads).unwrap(), raw_same);
+    assert_eq!(
+        raw_same
+            .convert_kind(TimeType::DateTime, false, false, &NoTimezoneReads)
+            .unwrap(),
+        (raw_same, false)
+    );
+    assert_eq!(
+        raw_same.round_frac(-2, &NoTimezoneReads),
+        Err(TimeError::InvalidFsp(crate::FspError::InvalidFsp(-2)))
+    );
+
+    let invalid = Time::from_raw_parts(
+        CoreTime::from_date(2012, 0, 0, 12, 34, 56, 999_999),
+        TimeType::DateTime,
+        6,
+    );
+    let rounded = invalid.round_frac(0, &chrono_tz::UTC).unwrap();
+    assert_eq!(
+        rounded.core_time(),
+        CoreTime::from_date(2012, 0, 0, 12, 34, 57, 0)
+    );
+    assert_eq!(rounded.fsp(), 0);
+    let invalid_carry = Time::from_raw_parts(
+        CoreTime::from_date(2012, 0, 0, 23, 59, 59, 999_999),
+        TimeType::DateTime,
+        6,
+    );
+    assert_eq!(
+        invalid_carry.round_frac(0, &chrono_tz::UTC),
+        Err(TimeError::OutOfRange("rounded value"))
+    );
+    let before_gap = Time::from_raw_parts(
+        CoreTime::from_date(2011, 3, 13, 1, 59, 59, 999_999),
+        TimeType::DateTime,
+        6,
+    );
+    let rounded = before_gap
+        .round_frac(0, &chrono_tz::America::Los_Angeles)
+        .unwrap();
+    assert_eq!(
+        rounded.core_time(),
+        CoreTime::from_date(2011, 3, 13, 3, 0, 0, 0)
+    );
+    assert_eq!((rounded.kind(), rounded.fsp()), (TimeType::DateTime, 0));
+    let gap = Time::from_raw_parts(
+        CoreTime::from_date(2018, 3, 11, 2, 0, 16, 567_000),
+        TimeType::DateTime,
+        3,
+    );
+    let (converted, adjusted) = gap
+        .convert_kind(
+            TimeType::Timestamp,
+            false,
+            false,
+            &chrono_tz::America::Los_Angeles,
+        )
+        .unwrap();
+    assert!(adjusted);
+    assert_eq!(
+        converted.core_time(),
+        CoreTime::from_date(2018, 3, 11, 3, 0, 0, 0)
+    );
+    assert_eq!((converted.kind(), converted.fsp()), (TimeType::DateTime, 0));
 }
 
 /// Parsed trailing timezone fields from a temporal literal.
@@ -281,28 +398,14 @@ impl Time {
         allow_invalid_date: bool,
         timezone: &TZ,
     ) -> Result<(Self, bool), TimeError> {
-        let mut converted = self;
-        converted.set_kind(kind);
-        if self.kind == kind || self.is_zero() {
-            return Ok((converted, false));
-        }
-        match converted.validate(allow_zero_in_date, allow_invalid_date, timezone) {
-            Ok(()) => Ok((converted, false)),
-            Err(TimeError::Conversion(TimeConversionError::NonexistentLocalTime))
-                if kind == TimeType::Timestamp =>
-            {
-                converted.core =
-                    core_time_from_datetime(converted.core.adjusted_datetime(timezone)?);
-                // Go returns `Time{FromGoTime(tAdj)}` (time.go:467): the
-                // composite literal zeroes the type and fsp fields, so the
-                // adjusted value reverts to DATETIME with fsp 0.
-                converted.set_kind(TimeType::DateTime);
-                converted.set_fsp(0)?;
-                converted.validate(allow_zero_in_date, allow_invalid_date, timezone)?;
-                Ok((converted, true))
-            }
-            Err(error) => Err(error),
-        }
+        tidb_query_datatype::codec::native_temporal_convert::native_time_convert_kind(
+            self.as_shared(),
+            kind,
+            allow_zero_in_date,
+            allow_invalid_date,
+            timezone,
+        )
+        .map(|(value, adjusted)| (Self::from_shared(value), adjusted))
     }
 
     /// Returns whether this value lies outside TiDB's temporal storage bounds.
@@ -376,53 +479,12 @@ impl Time {
 
     /// Rounds fractional seconds with TiDB's half-up rule.
     pub fn round_frac<TZ: TimeZone>(self, fsp: i64, timezone: &TZ) -> Result<Self, TimeError> {
-        if self.kind == TimeType::Date || self.is_zero() {
-            return Ok(self);
-        }
-        let fsp = check_fsp(fsp).map_err(TimeError::InvalidFsp)? as u8;
-        if fsp == self.fsp {
-            return Ok(self);
-        }
-        let quantum = 10_i64.pow(u32::from(6 - fsp));
-        let microsecond = i64::from(self.core.microsecond());
-        let rounded = ((microsecond + quantum / 2) / quantum) * quantum;
-        let core = match self.core.to_datetime(timezone) {
-            Ok(value) => {
-                let shifted = value + ChronoDuration::microseconds(rounded - microsecond);
-                // Go's `roundTime` hands back a `time.Time` still bound to
-                // `ctx.Location()`, so every wall-clock field is re-derived
-                // from the ZONE at the rounded instant. chrono's `Add` instead
-                // keeps the offset cached from before the shift, which pins
-                // the stale offset when the carry crosses a DST transition:
-                // `2011-03-13 01:59:59.999999` in America/Los_Angeles rounds
-                // to the instant 02:00:00 PST, and reading it at the cached
-                // PST offset yields 02:00:00 -- a wall clock that does not
-                // exist there. Re-resolving through the zone yields Go's
-                // 03:00:00 PDT.
-                core_time_from_datetime(timezone.from_utc_datetime(&shifted.naive_utc()))
-            }
-            Err(_) => {
-                let clock_micros = (i64::from(self.core.hour()) * 3_600
-                    + i64::from(self.core.minute()) * 60
-                    + i64::from(self.core.second()))
-                    * 1_000_000
-                    + rounded;
-                if clock_micros >= 86_400 * 1_000_000 {
-                    return Err(TimeError::OutOfRange("rounded value"));
-                }
-                let seconds = clock_micros / 1_000_000;
-                CoreTime::from_date(
-                    self.core.year() as u16,
-                    self.core.month(),
-                    self.core.day(),
-                    (seconds / 3_600) as u8,
-                    (seconds % 3_600 / 60) as u8,
-                    (seconds % 60) as u8,
-                    (clock_micros % 1_000_000) as u32,
-                )
-            }
-        };
-        Self::new(core, self.kind, i64::from(fsp))
+        tidb_query_datatype::codec::native_temporal_convert::native_time_round_frac(
+            self.as_shared(),
+            fsp,
+            timezone,
+        )
+        .map(Self::from_shared)
     }
 
     /// Subtracts two temporal values using instant semantics for TIMESTAMP and

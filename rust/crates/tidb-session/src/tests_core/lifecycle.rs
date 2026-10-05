@@ -9363,6 +9363,189 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn native_temporal_calendar_preserves_statement_clock_year_fields_and_dst_boundaries() {
+    use tidb_datatype::{FieldTypeCode, FieldTypeFlags, TimeType};
+
+    let mut session = Session::new();
+    session
+        .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+        .unwrap();
+    session.run("SET sql_mode=''").unwrap();
+    session.run("SET time_zone='+00:00'").unwrap();
+    session.run("SET timestamp=1609459200").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE native_temporal_calendar_sql (small_time TIME(3), negative_time TIME(3), y YEAR, zero_y YEAR, dst_edge DATETIME(6), gap_dt DATETIME)")
+        .unwrap();
+    session
+        .run("INSERT INTO native_temporal_calendar_sql VALUES ('00:20:12.250','-01:00:00.125',2024,0,'2011-03-13 01:59:59.999999','2024-03-10 02:30:00')")
+        .unwrap();
+    session
+        .run("CREATE TABLE native_temporal_gap_sql (ts TIMESTAMP)")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // The actual SET timestamp API fixes 2021-01-01 00:00:00 UTC. YEAR uses
+    // the normal false-concat mode; DATETIME's existing duration controller
+    // uses now()'s fixed offset. Neither is a numeric rendering of 00:20:12.
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        session.run("SET sql_mode=''").unwrap();
+        for (zone, small_year, small_datetime, negative_datetime) in [
+            (
+                "+00:00",
+                2021,
+                "2021-01-01 00:20:12.250",
+                "2020-12-31 22:59:59.875",
+            ),
+            (
+                "-01:00",
+                2020,
+                "2020-12-31 00:20:12.250",
+                "2020-12-30 22:59:59.875",
+            ),
+        ] {
+            session.run(&format!("SET time_zone='{zone}'")).unwrap();
+            let sql = "SELECT CAST(small_time AS YEAR),CAST(small_time AS DATETIME(3)),CAST(negative_time AS YEAR),CAST(negative_time AS DATETIME(3)) FROM native_temporal_calendar_sql";
+            let StmtOutput::Rows { columns, rows } = session.run_with_columns(sql).unwrap() else {
+                panic!("expected statement-clock temporal rows")
+            };
+            assert_eq!(columns.len(), 4);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].len(), 4);
+            for (index, year) in [(0, small_year), (2, 2020)] {
+                let field = &columns[index].1;
+                assert_eq!(field.code(), FieldTypeCode::Year);
+                assert_eq!((field.flen(), field.decimal()), (4, 0));
+                assert_eq!(
+                    rows[0][index],
+                    Datum::Int(year),
+                    "{zone}/{vectorized}/{index}"
+                );
+            }
+            for (index, expected) in [(1, small_datetime), (3, negative_datetime)] {
+                let field = &columns[index].1;
+                assert_eq!(field.code(), FieldTypeCode::Datetime);
+                assert_eq!((field.flen(), field.decimal()), (23, 3));
+                let Datum::Time(value) = &rows[0][index] else {
+                    panic!("lost clock/calendar Time carrier: {zone}/{vectorized}/{index}")
+                };
+                assert_eq!(value.kind(), TimeType::DateTime);
+                assert_eq!(value.fsp(), 3);
+                assert_eq!(value.to_string(), expected, "{zone}/{vectorized}/{index}");
+            }
+            for (_, field) in &columns {
+                assert_eq!(field.charset_name(), "binary");
+                assert_eq!(field.collation_name(), "binary");
+                assert!(field.has_flag(FieldTypeFlags::BINARY));
+                assert!(!field.is_unsigned());
+            }
+            assert!(warnings_of(&session).is_empty(), "{zone}/{vectorized}");
+        }
+        session.run("SET time_zone='America/Los_Angeles'").unwrap();
+        let sql = "SELECT CAST(y AS DATETIME),CAST(zero_y AS DATE),CAST(dst_edge AS DATETIME) FROM native_temporal_calendar_sql";
+        let StmtOutput::Rows { columns, rows } = session.run_with_columns(sql).unwrap() else {
+            panic!("expected YEAR-field and DST-round rows")
+        };
+        assert_eq!(columns.len(), 3);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].len(), 3);
+        // ParseTimeFromYear injects only the year field; zero has DATE kind.
+        // The target choices match those native kinds, without pretending an
+        // early-return YEAR cast repairs target-kind mismatches. The third
+        // value rounds across PST->PDT, re-resolving the zone at the new instant.
+        for (index, (code, flen, kind, expected)) in [
+            (
+                FieldTypeCode::Datetime,
+                19,
+                TimeType::DateTime,
+                "2024-00-00 00:00:00",
+            ),
+            (FieldTypeCode::Date, 10, TimeType::Date, "0000-00-00"),
+            (
+                FieldTypeCode::Datetime,
+                19,
+                TimeType::DateTime,
+                "2011-03-13 03:00:00",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let field = &columns[index].1;
+            assert_eq!(field.code(), code);
+            assert_eq!((field.flen(), field.decimal()), (flen, 0));
+            assert_eq!(field.charset_name(), "binary");
+            assert_eq!(field.collation_name(), "binary");
+            assert!(field.has_flag(FieldTypeFlags::BINARY));
+            assert!(!field.is_unsigned());
+            let Datum::Time(value) = &rows[0][index] else {
+                panic!("lost YEAR/DST Time carrier: {vectorized}/{index}")
+            };
+            assert_eq!(value.kind(), kind);
+            assert_eq!(value.fsp(), 0);
+            assert_eq!(value.to_string(), expected, "{vectorized}/{index}");
+        }
+        assert!(warnings_of(&session).is_empty());
+        // A typed DATETIME column, not a string parser, reaches convert_kind's
+        // TIMESTAMP-gap adjustment. Strict INSERT exposes its diagnostic and
+        // rejects the row. Do not invent a non-strict storage oracle: the
+        // existing adjusted result resets to DATETIME/FSP0, and tablecodec's
+        // UTC conversion depends on the native kind, not just column metadata.
+        session.run("SET sql_mode='STRICT_ALL_TABLES'").unwrap();
+        let error = session
+            .run("INSERT INTO native_temporal_gap_sql SELECT gap_dt FROM native_temporal_calendar_sql")
+            .expect_err("typed gap conversion must fail the strict write");
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1292);
+        assert_eq!(mysql.state, *b"22007");
+        assert_eq!(
+            mysql.message,
+            "Incorrect timestamp value: '2024-03-10 02:30:00' for column 'ts' at row 1"
+        );
+        assert_eq!(
+            warnings_of(&session),
+            vec![(
+                1292,
+                "Incorrect timestamp value: '2024-03-10 02:30:00' for column 'ts' at row 1"
+                    .to_owned()
+            )]
+        );
+        let StmtOutput::Rows { columns, rows } = session
+            .run_with_columns("SELECT ts FROM native_temporal_gap_sql")
+            .unwrap()
+        else {
+            panic!("expected empty gap-write table")
+        };
+        assert_eq!(columns.len(), 1);
+        let field = &columns[0].1;
+        assert_eq!(field.code(), FieldTypeCode::Timestamp);
+        assert_eq!((field.flen(), field.decimal()), (19, 0));
+        assert_eq!(field.charset_name(), "binary");
+        assert_eq!(field.collation_name(), "binary");
+        assert!(field.has_flag(FieldTypeFlags::BINARY));
+        assert!(!field.is_unsigned());
+        assert!(
+            rows.is_empty(),
+            "strict write persisted a row: {vectorized}"
+        );
+        assert!(warnings_of(&session).is_empty());
+    }
+    // Eight SELECTs (22 cells, including two zero-row SELECTs) plus two strict
+    // INSERT error probes. Normal SQL cannot toggle the duration YEAR concat
+    // flag; true-concat/reorg and raw gap-kind details remain unit coverage.
+    // YEAR/DATE controllers and zero-date diagnostics are unchanged, and no
+    // whole-CAST/new-Head/zero-slot or synthetic-clock claim is made.
+}
+
+#[test]
 fn native_duration_control_preserves_sql_source_rounding_overflow_and_storage() {
     use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
 
