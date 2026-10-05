@@ -1,0 +1,26 @@
+numeric-text-136 / R141
+6matched Cargo launches,6GREEN;no Cargo compile/test failure,retry,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/numeric-text-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_numeric_helpers -- --test-threads=1
+[tikv-layout] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_shortest_float_policies_share_layout_not_digit_generators -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native] ../../tools/cargo-tidb test --locked -p tidb-expr --lib scalar_function::numeric_argument_tests -- --test-threads=1
+[sql-types] ../../tools/cargo-tidb test --locked -p tidb-session --lib native_type_helpers_preserve_decimal_cast_values_and_float_diagnostics -- --test-threads=1
+[sql-integer] ../../tools/cargo-tidb test --locked -p tidb-session --lib shared_integer_argument_preserves_json_prefix_hybrid_and_unsigned_source_rules -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 3/0/0/506 4.84/0.00 0 8cd353aedccae8acc4b7c3b710341f833e78943f62b25a0017c1cd1efef3efb0
+tikv-layout 1/0/0/508 0.15/0.00 0 3adad739c79c6a6cb2f94fd1e7399ec59c9a6f6702df9df28402e21c719817bb
+native-datatype 479/0/0/0 3.58/7.01 0 d0d669f5fc124855df30f870ed440e400656f8f9e4f1d108816a5902a7ef8400
+native 5/0/0/1738 13.72/0.00 0 74428392f4ce637c8f006ca30864f171a8023753bb67f6633a37d1079809d75c
+sql-types 1/0/0/2269 24.94/0.04 0 71b6db32a298358e8dca888397347687226b1e7d8727d846b7d58feba3587107
+sql-integer 1/0/0/2269 0.17/0.02 0 9ce66958c43ea857a815fc299670d1d6bae01444df7b45d8a476c33c39d733bd
+
+Integration incident BEFORE Cargo: initial multi-file SDK rustfmt exited1 with unclosed delimiter for newly added native_string_to_int (then line24..923). Parent added its missing closing brace after the trailing-result branch and reran formatter successfully. No test oracle/body change, no Cargo command had yet run. Final fmt/diff passed.
+SDK4/native1 Rust files,no new Rust files.4new tests (SDK3/native1);104old SDK/7old native touched-file test bodies unchanged. Expression/SQL files unchanged; no new SQL fixture/probe/cell credit.
+Remaining numeric_helper algorithms become SDKfacades/erroralias: bestEffort integer parse, constlength/precision, truncatedDisplay fixedtext. Unicode trim/ASCII/NUL/trailing and signed/u64overflow order retained. Existing native_str_to_int scientific-prefix and MyDecimal str_to_int overflow-zero policies differ and are NOT substituted. A single fixedlayout leaf factored from existingDecimal Go-g is reused; originalDisplay earlyrawreturn/exp no-dotpoint1, Ryu/LowerExp/Display generators andscientificcutovers preserved. Newtests coverUnicode/zeroWidth/NUL, overflow-beforetrailing, Error Display/Debug, nonfinite/-0/MAX/subnormal/scaleextremes andnoninverse constquirks. No new profiles/businesscallbacks.
+Functional238/245 strict0 remaining7 unchanged. One type record only; prior CAST records unchanged. Sourceconversion/eventmerge, otherdatatype/typed/write/SQL lowering/renderer andbroaderM2/root/liveDAG/final remain. Full native datatype479 passed; full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

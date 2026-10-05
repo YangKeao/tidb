@@ -12,27 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::fmt;
-
 /// Best-effort integer parsing failure from `types.strToInt`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StringToIntError {
-    /// No complete integer was present or trailing input remained.
-    Truncated,
-    /// The magnitude exceeded the signed/unsigned accumulator.
-    BadNumber,
-}
-
-impl fmt::Display for StringToIntError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Truncated => formatter.write_str("truncated"),
-            Self::BadNumber => formatter.write_str("bad number"),
-        }
-    }
-}
-
-impl std::error::Error for StringToIntError {}
+pub use tidb_query_datatype::codec::native_integer_convert::NativeStringToIntError as StringToIntError;
 
 /// Overflow returned while narrowing a floating SQL value.
 pub use tidb_query_datatype::codec::native_float_convert::NativeFloatOverflow as FloatOverflow;
@@ -64,118 +45,28 @@ pub fn truncate_float(value: f64, flen: i32, decimal: i32) -> Result<f64, (f64, 
 
 /// Truncates and renders without an exponent, matching Go format `'f', -1`.
 pub fn truncate_float_to_string(value: f64, decimal: i32) -> String {
-    fixed_shortest(truncate(value, decimal))
+    tidb_query_datatype::codec::native_float_convert::native_truncate_float_to_string(
+        value, decimal,
+    )
 }
 
 /// Parses a signed integer in TiDB's best-effort mode.
 pub fn string_to_int(value: &str) -> Result<i64, (i64, StringToIntError)> {
-    let value = value.trim();
-    if value.is_empty() {
-        return Err((0, StringToIntError::Truncated));
-    }
-    let bytes = value.as_bytes();
-    let (negative, mut index) = match bytes[0] {
-        b'-' => (true, 1),
-        b'+' => (false, 1),
-        _ => (false, 0),
-    };
-    let mut magnitude = 0_u64;
-    let mut has_number = false;
-    let mut trailing = false;
-    while index < bytes.len() {
-        let byte = bytes[index];
-        if !byte.is_ascii_digit() {
-            trailing = true;
-            break;
-        }
-        has_number = true;
-        let Some(next) = magnitude
-            .checked_mul(10)
-            .and_then(|number| number.checked_add(u64::from(byte - b'0')))
-        else {
-            return Err((
-                if negative { i64::MIN } else { i64::MAX },
-                StringToIntError::BadNumber,
-            ));
-        };
-        magnitude = next;
-        index += 1;
-    }
-    if !has_number {
-        return Err((0, StringToIntError::Truncated));
-    }
-    let limit = i64::MAX as u64 + u64::from(negative);
-    if magnitude > limit {
-        return Err((
-            if negative { i64::MIN } else { i64::MAX },
-            StringToIntError::BadNumber,
-        ));
-    }
-    let output = if negative {
-        (0_u64.wrapping_sub(magnitude)) as i64
-    } else {
-        magnitude as i64
-    };
-    if trailing {
-        Err((output, StringToIntError::Truncated))
-    } else {
-        Ok(output)
-    }
+    tidb_query_datatype::codec::native_integer_convert::native_string_to_int(value)
 }
 
 /// Converts display length to decimal precision.
-pub const fn decimal_length_to_precision(mut length: i32, scale: i32, unsigned: bool) -> i32 {
-    if scale > 0 {
-        length -= 1;
-    }
-    if unsigned || length > 0 {
-        length -= 1;
-    }
-    length
+pub const fn decimal_length_to_precision(length: i32, scale: i32, unsigned: bool) -> i32 {
+    tidb_query_datatype::codec::native_decimal_convert::native_decimal_length_to_precision(
+        length, scale, unsigned,
+    )
 }
 
 /// Converts decimal precision to display length without truncation.
-pub const fn precision_to_length_no_truncation(mut length: i32, scale: i32, unsigned: bool) -> i32 {
-    if scale > 0 {
-        length += 1;
-    }
-    if unsigned || length > 0 {
-        length += 1;
-    }
-    length
-}
-
-fn fixed_shortest(value: f64) -> String {
-    let shortest = value.to_string();
-    let Some((mantissa, exponent)) = shortest
-        .split_once('e')
-        .or_else(|| shortest.split_once('E'))
-    else {
-        return shortest;
-    };
-    let exponent: i32 = exponent.parse().expect("Rust exponent is numeric");
-    let negative = mantissa.starts_with('-');
-    let unsigned = mantissa.trim_start_matches('-');
-    let digits: String = unsigned.chars().filter(|ch| *ch != '.').collect();
-    let decimal = unsigned.find('.').map_or(1_i32, |index| index as i32);
-    let point = decimal + exponent;
-    let mut output = String::new();
-    if negative {
-        output.push('-');
-    }
-    if point <= 0 {
-        output.push_str("0.");
-        output.extend(std::iter::repeat_n('0', (-point) as usize));
-        output.push_str(&digits);
-    } else if point as usize >= digits.len() {
-        output.push_str(&digits);
-        output.extend(std::iter::repeat_n('0', point as usize - digits.len()));
-    } else {
-        output.push_str(&digits[..point as usize]);
-        output.push('.');
-        output.push_str(&digits[point as usize..]);
-    }
-    output
+pub const fn precision_to_length_no_truncation(length: i32, scale: i32, unsigned: bool) -> i32 {
+    tidb_query_datatype::codec::native_decimal_convert::native_precision_to_length_no_truncation(
+        length, scale, unsigned,
+    )
 }
 
 #[cfg(test)]
@@ -287,5 +178,81 @@ mod tests {
         ] {
             assert_eq!(truncate_float_to_string(input, decimal), expected);
         }
+    }
+
+    #[test]
+    fn shared_numeric_text_keeps_parser_precedence_float_spelling_and_const_length_quirks() {
+        use StringToIntError::{BadNumber, Truncated};
+        for (input, expected) in [
+            ("\u{2003}\u{00a0}+42\u{202f}", Ok(42)),
+            ("9223372036854775807", Ok(i64::MAX)),
+            ("-9223372036854775808", Ok(i64::MIN)),
+            ("+", Err((0, Truncated))),
+            ("-", Err((0, Truncated))),
+            ("１２", Err((0, Truncated))),
+            ("\u{200b}12", Err((0, Truncated))),
+            ("12\0tail", Err((12, Truncated))),
+            ("-0x", Err((0, Truncated))),
+            ("-9223372036854775808x", Err((i64::MIN, Truncated))),
+            ("9223372036854775808\0", Err((i64::MAX, BadNumber))),
+            ("18446744073709551615x", Err((i64::MAX, BadNumber))),
+            ("18446744073709551616x", Err((i64::MAX, BadNumber))),
+            ("-18446744073709551616x", Err((i64::MIN, BadNumber))),
+            ("12x18446744073709551616", Err((12, Truncated))),
+        ] {
+            assert_eq!(string_to_int(input), expected, "{input:?}");
+        }
+        assert_eq!(Truncated.to_string(), "truncated");
+        assert_eq!(format!("{Truncated:?}"), "Truncated");
+        let error: &dyn std::error::Error = &BadNumber;
+        assert_eq!(error.to_string(), "bad number");
+        assert!(error.source().is_none());
+        assert_eq!(format!("{BadNumber:?}"), "BadNumber");
+        for (input, decimal, expected) in [
+            (f64::NAN, 0, "NaN"),
+            (f64::INFINITY, i32::MIN, "inf"),
+            (f64::NEG_INFINITY, i32::MAX, "-inf"),
+            (-0.0, 0, "-0"),
+            (-0.0, i32::MAX, "-0"),
+            (-0.0, i32::MIN, "0"),
+            (1.25, i32::MAX, "1.25"),
+            (-1.25, i32::MIN, "0"),
+        ] {
+            assert_eq!(truncate_float_to_string(input, decimal), expected);
+        }
+        assert_eq!(
+            truncate_float_to_string(f64::MAX, 400),
+            format!("17976931348623157{}", "0".repeat(292)),
+        );
+        assert_eq!(
+            truncate_float_to_string(f64::from_bits(1), 400),
+            format!("0.{}5", "0".repeat(323)),
+        );
+        const QUIRKS: [(i32, i32); 5] = [
+            (
+                decimal_length_to_precision(0, 0, false),
+                precision_to_length_no_truncation(0, 0, false),
+            ),
+            (
+                decimal_length_to_precision(0, 0, true),
+                precision_to_length_no_truncation(0, 0, true),
+            ),
+            (
+                decimal_length_to_precision(0, 1, false),
+                precision_to_length_no_truncation(0, 1, false),
+            ),
+            (
+                decimal_length_to_precision(-1, 1, true),
+                precision_to_length_no_truncation(-1, 1, true),
+            ),
+            (
+                decimal_length_to_precision(i32::MAX, 0, false),
+                precision_to_length_no_truncation(i32::MIN, 0, false),
+            ),
+        ];
+        assert_eq!(
+            QUIRKS,
+            [(0, 0), (-1, 1), (-1, 2), (-3, 1), (i32::MAX - 1, i32::MIN)]
+        );
     }
 }
