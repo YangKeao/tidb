@@ -1,0 +1,25 @@
+numeric-route-133 / R138
+6matched launches,6GREEN;no compile/test failure,retry,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/numeric-route-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_numeric_argument -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native] ../../tools/cargo-tidb test --locked -p tidb-expr --lib scalar_function::numeric_argument_tests -- --test-threads=1
+[native-real] ../../tools/cargo-tidb test --locked -p tidb-expr --lib numeric_real_cast_fast_path_preserves_decimal_value_and_scale -- --test-threads=1
+[native-arithmetic] ../../tools/cargo-tidb test --locked -p tidb-expr --lib string_arithmetic_preserves_go_cast_and_batch_order -- --test-threads=1
+[sql-division] ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_decimal_div_preserves_fast_bounded_unsigned_and_null_values -- --test-threads=1
+[sql-integer] ../../tools/cargo-tidb test --locked -p tidb-session --lib shared_integer_argument_preserves_json_prefix_hybrid_and_unsigned_source_rules -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 9/0/0/1020 14.75/0.00 0 ae33c1c17480a026648a4a843a29eb8383a5be75a95cbf5d17496430d1ae1fbe
+native 4/0/0/1738 15.57/0.00 0 bf2db023586af5962f48cf5a0428142cb96bf6796c39bbc09985d1f24de00eef
+native-real 1/0/0/1741 0.13/0.00 0 781472dfb97d901a507a4bc60cd14c0496801e98aeb539f06d9704e64142a8fc
+native-arithmetic 1/0/0/1741 0.12/0.00 0 025c8a4239aca34f8ce545c732358f1e690b5e590e058fae3abe192693a92fad
+sql-division 1/0/0/2269 22.11/0.02 0 e8fda937393f9eb3100f5533fa730ae043af35b195f83c6ffe991a08d45ca0e2
+sql-integer 1/0/0/2269 0.14/0.02 0 9dbba9f54cd9a961cb297b24d16c48c4331827e42f5138100292f5aae87ffc99
+
+SDK2/native2 Rust files,no new Rust files;3new tests (SDK2/native1),7old SDK/35old native touched-file test bodies unchanged. Existing numeric_expression_text and convert_numeric_datum functions byte-identical; both remain explicit native dependencies. SQL file unchanged; no new SQL fixture/probe/cell credit.
+SDK head owns NULL/sameEval preserve BEFORE normalization/validation, actualunsigned/F32 normalization BEFORE numeric targetvalidation, nonhybridString actualkind admission BEFORE remainingroutes. Native applies selectedstorage, consumes realdata and executes selected existingconversions; no native head source/target businessselector or newC4gate/profile. Static_type.expect remainsfirst. Newtests cover mismatchedmetadata, missingtypepanic, exacterrprecedence/text, hybrid distinctions, preservedkind, unsigned/f32/-0/NaN/underflow, allsixroutes and context/handler demands. Finalfit/renderer remain.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. Other typed/write/SQL lowering and broaderM2/root/liveDAG/final remain. Full datatype/expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

@@ -552,3 +552,207 @@ fn real_decimal_argument_keeps_lazy_subject_error_precedence_and_final_storage()
     assert_eq!(actual.declared_shape(), stored.declared_shape());
     assert!(ctx.calls.borrow().is_empty());
 }
+
+#[test]
+fn numeric_argument_routes_keep_preserve_precedence_normalization_and_effect_domains() {
+    use super::cast_numeric_argument;
+    use crate::{
+        constant::Constant, expression::Expression, Columns, Datum, ErrorLevel, EvalError,
+    };
+    use std::cell::RefCell;
+    use tidb_datatype::{
+        BinaryJSON, Collation, ConversionFlags, Decimal, EvalType, FieldType, FieldTypeCode,
+        FieldTypeFlags, MySqlDuration, MysqlEnum, SessionTimeZone,
+    };
+
+    #[derive(Default)]
+    struct Session {
+        calls: RefCell<Vec<&'static str>>,
+        messages: RefCell<Vec<String>>,
+    }
+    impl Columns for Session {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("already evaluated operand")
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            self.calls.borrow_mut().push("zone");
+            crate::context::NoColumns.time_zone()
+        }
+        fn type_flags(&self) -> ConversionFlags {
+            self.calls.borrow_mut().push("flags");
+            ConversionFlags::default()
+        }
+        fn truncate_level(&self) -> ErrorLevel {
+            panic!("no level demand for these exact decimal values")
+        }
+        fn handle_truncate(&self, message: &str) -> Result<(), EvalError> {
+            self.calls.borrow_mut().push("truncate");
+            self.messages.borrow_mut().push(message.to_owned());
+            Ok(())
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            panic!("no final-fit diagnostic expected")
+        }
+    }
+    let ctx = Session::default();
+    let field = |code| FieldType::new(code).with_flen(-1).with_decimal(-1);
+    let cast = |value: Datum, source: FieldType, target| {
+        let expression = Expression::Constant(Constant::new(value.clone(), source));
+        cast_numeric_argument(&expression, value, target, &ctx)
+    };
+    // These metadata mismatches deliberately lock the old early-return ordering:
+    // neither target admission nor normalization precedes NULL/same-domain.
+    for (value, source, target) in [
+        (
+            Datum::Null,
+            field(FieldTypeCode::VarString),
+            EvalType::VectorFloat32,
+        ),
+        (
+            Datum::Float32(1e-50),
+            field(FieldTypeCode::Double),
+            EvalType::Real,
+        ),
+        (
+            Datum::Raw(b"raw".to_vec()),
+            field(FieldTypeCode::Json),
+            EvalType::Json,
+        ),
+        (
+            Datum::Int(-1),
+            field(FieldTypeCode::VarString).with_raw_flags(u64::from(FieldTypeFlags::UNSIGNED)),
+            EvalType::String,
+        ),
+    ] {
+        assert_eq!(cast(value.clone(), source, target), Ok(value));
+    }
+    assert!(ctx.calls.borrow().is_empty());
+    let mut missing = Constant::new(Datum::Null, field(FieldTypeCode::Json));
+    missing.ret_type = None;
+    let missing = Expression::Constant(missing);
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        cast_numeric_argument(&missing, Datum::Null, EvalType::Json, &ctx)
+    }))
+    .is_err());
+    for (value, source, target, message) in [
+        (
+            Datum::Json(BinaryJSON::parse("3").unwrap()),
+            field(FieldTypeCode::VarString),
+            EvalType::Json,
+            "numeric argument cast domain",
+        ),
+        (
+            Datum::Json(BinaryJSON::parse("3").unwrap()),
+            field(FieldTypeCode::VarString),
+            EvalType::Real,
+            "string arithmetic argument domain",
+        ),
+        (
+            Datum::Real(1.25),
+            field(FieldTypeCode::VarString),
+            EvalType::Decimal,
+            "string arithmetic argument domain",
+        ),
+        (
+            Datum::Int(-1),
+            field(FieldTypeCode::Double),
+            EvalType::VectorFloat32,
+            "numeric argument cast domain",
+        ),
+    ] {
+        assert_eq!(
+            cast(value, source, target),
+            Err(EvalError::Unsupported(message))
+        );
+    }
+    assert!(ctx.calls.borrow().is_empty());
+    for (value, source, expected) in [
+        (Datum::Float32(1e-50), field(FieldTypeCode::Double), "0"),
+        (
+            Datum::Float32(16_777_217.0),
+            field(FieldTypeCode::Double),
+            "16777216",
+        ),
+        (
+            Datum::Int(-1),
+            field(FieldTypeCode::Double).with_raw_flags(u64::from(FieldTypeFlags::UNSIGNED)),
+            "18446744073709551615",
+        ),
+        (Datum::Real(1.25), field(FieldTypeCode::Enum), "1.25"),
+    ] {
+        let Datum::Decimal(decimal) = cast(value, source, EvalType::Decimal).unwrap() else {
+            panic!("decimal route")
+        };
+        assert_eq!(decimal.to_string(), expected);
+        assert!(ctx.calls.borrow().is_empty());
+    }
+    assert_eq!(
+        cast(
+            Datum::new_bytes(b"12x".to_vec()),
+            field(FieldTypeCode::VarString),
+            EvalType::Real
+        ),
+        Ok(Datum::Real(12.0))
+    );
+    assert_eq!(ctx.calls.take(), ["truncate"]);
+    assert_eq!(
+        ctx.messages.take(),
+        ["Truncated incorrect DOUBLE value: '12x'".to_owned()]
+    );
+    assert_eq!(
+        cast(
+            Datum::Json(BinaryJSON::parse("\"2.5\"").unwrap()),
+            field(FieldTypeCode::Json),
+            EvalType::Real
+        ),
+        Ok(Datum::Real(2.5))
+    );
+    assert!(ctx.calls.borrow().is_empty());
+    assert_eq!(
+        cast(
+            Datum::Json(BinaryJSON::parse("\"9\"").unwrap()),
+            field(FieldTypeCode::Json),
+            EvalType::Int
+        ),
+        Ok(Datum::Int(0))
+    );
+    assert_eq!(ctx.calls.take(), ["truncate"]);
+    assert_eq!(
+        ctx.messages.take(),
+        ["Truncated incorrect INTEGER value: '\"9\"'".to_owned()]
+    );
+    for (value, source, expected) in [
+        (
+            Datum::Duration(MySqlDuration::new(1, 2, 3, 0, 0).unwrap()),
+            field(FieldTypeCode::Duration),
+            Decimal::from_int(10203),
+        ),
+        (
+            Datum::Json(BinaryJSON::parse("12").unwrap()),
+            field(FieldTypeCode::Json),
+            Decimal::from_int(12),
+        ),
+    ] {
+        assert_eq!(
+            cast(value, source, EvalType::Decimal),
+            Ok(Datum::Decimal(expected))
+        );
+        assert_eq!(ctx.calls.take(), ["zone", "flags"]);
+    }
+    let hybrid = Datum::Enum(MysqlEnum::new("seventeen", 17), Collation::DEFAULT);
+    assert_eq!(
+        cast(hybrid, field(FieldTypeCode::Enum), EvalType::Real),
+        Ok(Datum::Real(17.0))
+    );
+    assert_eq!(ctx.calls.take(), ["zone", "flags"]);
+    assert_eq!(
+        cast(
+            Datum::Real(12.0),
+            field(FieldTypeCode::Double),
+            EvalType::Int
+        ),
+        Ok(Datum::Int(12))
+    );
+    assert_eq!(ctx.calls.take(), ["zone", "flags"]);
+    assert!(ctx.messages.borrow().is_empty());
+}

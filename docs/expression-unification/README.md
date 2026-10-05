@@ -1,17 +1,17 @@
 # Expression unification experiment
 
 Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
-Current checkpoint: **real-decimal-132**, following **numeric-shape-131**.
+Current checkpoint: **numeric-route-133**, following **real-decimal-132**.
 
 Functional **238/245 (97.14%)**, strict **0**, remaining **7**—unchanged. No whole CAST/M2 or Go-package credit.
 
-SDK Real-to-Decimal preparation owns exact-integer selection, parsing/error policy, lazy subject demand and warning-before-projection finish. Native provides optional expression text only when demanded; its renderer remains explicitly native and unchanged. SDK owns fallback formatting. Unscaled Int/UInt construction is shared too.
+SDK numeric head owns early preservation, unsigned/Float32 normalization, numeric target validation, String/hybrid admission and conversion routing. Native applies selected storage and executes existing conversions from actual values/metadata. Static-type demand, error precedence and context effects retain their original order. No new C4 gate/profile.
 
 ## Verification
 
-[Evidence](evidence/real-decimal-checkpoint.md), [commands/counts/hashes](logs/real-decimal-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
+[Evidence](evidence/numeric-route-checkpoint.md), [commands/counts/hashes](logs/numeric-route-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
 
-Six matched gates GREEN without failure/retry: SDK7, native consumers3/old Real1/division1 and existing SQL2. Three new tests;5 SDK/34 native old touched-file test bodies unchanged. Tests cover lazy ParamMarker subject reads, strict errors, fallback/veto and final metadata/context order. No new Rust files or SQL fixture/probe credit.
+Six matched gates GREEN without failure/retry: SDK9, native consumers4/old Real1/arithmetic1 and existing SQL2. Three new tests;7 SDK/35 native old touched-file test bodies unchanged. Existing renderer/final conversion functions are byte-identical. No new Rust files or SQL fixture/probe credit.
 
 ## Remaining
 

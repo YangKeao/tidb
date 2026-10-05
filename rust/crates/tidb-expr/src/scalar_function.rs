@@ -3458,30 +3458,44 @@ fn cast_numeric_argument_in_mode(
     let field = expression
         .static_type()
         .expect("numeric argument has a type");
-    if value.is_null() || field.eval_type() == target {
-        return Ok(value);
-    }
-    let value = match value {
-        Datum::Int(bits) if field.is_unsigned() => Datum::UInt(bits as u64),
-        Datum::Float32(value) => Datum::Real(f64::from(value as f32)),
-        value => value,
+    use tidb_query_expr::{
+        NativeNumericArgumentHead as Head, NativeNumericArgumentNormalization as Normalization,
+        NativeNumericArgumentRoute as Route,
     };
-    let code = match target {
-        EvalType::Int => tidb_datatype::FieldTypeCode::LongLong,
-        EvalType::Real => tidb_datatype::FieldTypeCode::Double,
-        EvalType::Decimal => tidb_datatype::FieldTypeCode::NewDecimal,
-        _ => return Err(EvalError::Unsupported("numeric argument cast domain")),
+    let (normalization, route, target_code) = match tidb_query_expr::native_numeric_argument_head(
+        value.as_shared_numeric_input(),
+        field.eval_type(),
+        target,
+        field.is_unsigned(),
+        field.is_hybrid(),
+    )
+    .map_err(EvalError::Unsupported)?
+    {
+        Head::Preserve => return Ok(value),
+        Head::Cast {
+            normalization,
+            route,
+            target_code,
+        } => (normalization, route, target_code),
     };
-    if field.eval_type() == EvalType::String && !field.is_hybrid() {
-        let bytes = match &value {
-            Datum::String(value) => value.bytes(),
-            Datum::Bytes(value) => value.as_slice(),
-            _ => return Err(EvalError::Unsupported("string arithmetic argument domain")),
-        };
-        return cast_string_numeric_argument(field, bytes, target, ctx, vectorized);
-    }
-    if let Datum::Json(json) = &value {
-        if target == EvalType::Real {
+    let value = match normalization {
+        Normalization::Keep => value,
+        Normalization::UInt(value) => Datum::UInt(value),
+        Normalization::Real(value) => Datum::Real(value),
+    };
+    let value = match route {
+        Route::String => {
+            let bytes = match &value {
+                Datum::String(value) => value.bytes(),
+                Datum::Bytes(value) => value.as_slice(),
+                _ => unreachable!("SDK string route requires actual string bytes"),
+            };
+            return cast_string_numeric_argument(field, bytes, target, ctx, vectorized);
+        }
+        Route::JsonReal => {
+            let Datum::Json(json) = &value else {
+                unreachable!("SDK JSON real route requires an actual JSON datum");
+            };
             return tidb_query_expr::native_numeric_argument_json_to_f64(
                 json.type_code(),
                 json.value(),
@@ -3489,12 +3503,10 @@ fn cast_numeric_argument_in_mode(
             )
             .map(Datum::Real);
         }
-        if target == EvalType::Int {
-            // go `builtinCastJSONAsIntSig`: the document's text re-reads as
-            // an integer (StrToInt), raising go's 1292 truncation warning
-            // when the text is not a clean integer — captured:
-            // `bitand(j, j)` over `{}` warns twice and answers 0, while the
-            // JSON number `3` coerces silently.
+        Route::JsonInt => {
+            let Datum::Json(json) = &value else {
+                unreachable!("SDK JSON integer route requires an actual JSON datum");
+            };
             return tidb_query_expr::native_numeric_argument_json_to_i64(
                 json.type_code(),
                 json.value(),
@@ -3502,53 +3514,51 @@ fn cast_numeric_argument_in_mode(
             )
             .map(Datum::Int);
         }
-    }
-    let value = if target == EvalType::Decimal
-        && matches!(value, Datum::Time(_) | Datum::Duration(_) | Datum::Json(_))
-    {
-        // Time/Duration.ToNumber and ConvertJSONToDecimal precede target
-        // precision fitting. JSON's integer path must never pass through f64.
-        let warnings = crate::constant::ConversionWarnings(ctx);
-        let zone = ctx.time_zone();
-        let context = tidb_datatype::ConversionContext::new(
-            ctx.type_flags(),
-            tidb_datatype::ConversionLocation::from_time_zone(&zone),
-            &warnings,
-        );
-        let (decimal, error) = value
-            .to_decimal_with_context(&context)
-            .map_err(|_| EvalError::Unsupported("numeric decimal argument conversion failed"))?;
-        if let Some(error) = error {
-            return Err(EvalError::Conversion(error));
-        }
-        Datum::Decimal(decimal)
-    } else {
-        value
-    };
-    let value = if let (EvalType::Decimal, Datum::Real(real)) = (target, &value) {
-        use tidb_query_expr::NativeNumericArgumentLevel;
-        let state = tidb_query_expr::native_numeric_argument_real_decimal_prepare(*real, || {
-            match ctx.truncate_level() {
-                crate::ErrorLevel::Error => NativeNumericArgumentLevel::Error,
-                crate::ErrorLevel::Warn => NativeNumericArgumentLevel::Warn,
-                crate::ErrorLevel::Ignore => NativeNumericArgumentLevel::Ignore,
+        Route::ContextDecimal => {
+            let warnings = crate::constant::ConversionWarnings(ctx);
+            let zone = ctx.time_zone();
+            let context = tidb_datatype::ConversionContext::new(
+                ctx.type_flags(),
+                tidb_datatype::ConversionLocation::from_time_zone(&zone),
+                &warnings,
+            );
+            let (decimal, error) = value.to_decimal_with_context(&context).map_err(|_| {
+                EvalError::Unsupported("numeric decimal argument conversion failed")
+            })?;
+            if let Some(error) = error {
+                return Err(EvalError::Conversion(error));
             }
-        })
-        .map_err(|kind| EvalError::Conversion(numeric_argument_conversion_error(kind)))?;
-        let subject = if state.requires_expression_subject() {
-            numeric_expression_text(expression, true, ctx)
-        } else {
-            None
-        };
-        let decimal = state.finish(subject.as_deref(), |message| ctx.handle_truncate(message))?;
-        Datum::Decimal(tidb_datatype::Decimal::from_shared_parse(decimal))
-    } else {
-        value
+            Datum::Decimal(decimal)
+        }
+        Route::RealDecimal => {
+            let Datum::Real(real) = &value else {
+                unreachable!("SDK real decimal route requires an actual normalized real datum");
+            };
+            use tidb_query_expr::NativeNumericArgumentLevel;
+            let state =
+                tidb_query_expr::native_numeric_argument_real_decimal_prepare(*real, || match ctx
+                    .truncate_level()
+                {
+                    crate::ErrorLevel::Error => NativeNumericArgumentLevel::Error,
+                    crate::ErrorLevel::Warn => NativeNumericArgumentLevel::Warn,
+                    crate::ErrorLevel::Ignore => NativeNumericArgumentLevel::Ignore,
+                })
+                .map_err(|kind| EvalError::Conversion(numeric_argument_conversion_error(kind)))?;
+            let subject = if state.requires_expression_subject() {
+                numeric_expression_text(expression, true, ctx)
+            } else {
+                None
+            };
+            let decimal =
+                state.finish(subject.as_deref(), |message| ctx.handle_truncate(message))?;
+            Datum::Decimal(tidb_datatype::Decimal::from_shared_parse(decimal))
+        }
+        Route::Fit => value,
     };
     let target_field = if target == EvalType::Decimal {
         numeric_decimal_cast_type(field)
     } else {
-        FieldType::new(code)
+        FieldType::new(tidb_datatype::FieldTypeCode::from_mysql_type(target_code))
     };
     // IntAsDecimal constructs the decimal before applying source metadata.
     // ProduceDecWithSpecifiedTp is a no-op when scale is unspecified.
