@@ -16,21 +16,27 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
 
-use serde_json::{Map, Number, Value};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::{Map, Number};
 use tidb_query_datatype::codec::mysql::json::{
     compare_native_binary_json, decode_native_binary_json_node, decode_native_binary_json_value,
     decode_native_json_escaped_unicode, encode_native_binary_json_node,
     native_binary_json_string_bytes, native_binary_json_type_name, native_json_opaque,
     quote_native_json_string, unquote_native_json_escaped_string, unquote_native_json_string,
-    write_native_binary_json_header, write_native_binary_json_text, NativeBinaryJsonEncodeError,
-    NativeBinaryJsonError, NativeJsonNode,
+    write_native_binary_json_text, NativeBinaryJsonEncodeError, NativeBinaryJsonError,
+    NativeJsonNode,
 };
 
 use tidb_query_datatype::codec::mysql::time::NativeTemporalValue;
+#[cfg(test)]
+use tidb_query_datatype::codec::native_json_construct::native_json_literal;
 use tidb_query_datatype::codec::native_json_construct::{
-    native_json_encode_number, native_json_from_duration, native_json_from_opaque,
-    native_json_from_string, native_json_from_time, native_json_from_typed, native_json_literal,
-    NativeJsonConstructError, NativeJsonTypedInput,
+    native_json_from_duration, native_json_from_opaque, native_json_from_time,
+    native_json_from_typed, NativeJsonConstructError, NativeJsonTypedInput,
+};
+use tidb_query_datatype::codec::native_json_parse::{
+    native_json_from_value, native_json_parse, NativeJsonParseError,
 };
 
 use crate::{CoreTime, MySqlDuration, Time, TimeType};
@@ -66,11 +72,6 @@ pub const JSON_LITERAL_NULL: u8 = 0;
 pub const JSON_LITERAL_TRUE: u8 = 1;
 /// BinaryJSON false literal.
 pub const JSON_LITERAL_FALSE: u8 = 2;
-
-const HEADER_SIZE: usize = 8;
-const KEY_ENTRY_SIZE: usize = 6;
-const VALUE_ENTRY_SIZE: usize = 5;
-const MAX_JSON_DEPTH: usize = 100;
 
 /// Source-compatible `type code + value bytes` BinaryJSON representation.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -250,31 +251,16 @@ impl BinaryJSON {
 
     /// Parses JSON text and builds TiDB's binary representation.
     pub fn parse(text: &str) -> Result<Self, BinaryJSONError> {
-        if text.trim().is_empty() {
-            return Err(BinaryJSONError::EmptyDocument);
-        }
-        let value: Value = match serde_json::from_str(text) {
-            Ok(value) => value,
-            Err(error) => {
-                if error.to_string().contains("trailing characters") {
-                    return Err(BinaryJSONError::TrailingValues);
-                }
-                // Go `json.Valid` accepts lone `\uXXXX` surrogate escapes and
-                // `encoding/json` decodes them to U+FFFD; serde_json refuses
-                // them. Rewrite those escapes the way Go's decoder would and
-                // retry once — the sanitizer copies everything else
-                // verbatim, so a text without surrogate escapes fails again
-                // identically.
-                let sanitized = replace_lone_surrogate_escapes(text);
-                serde_json::from_str(&sanitized).map_err(|_| BinaryJSONError::InvalidText)?
-            }
-        };
-        Self::from_value(&value)
+        native_json_parse(text)
+            .map(|(type_code, value)| Self::from_encoded_parts(type_code, value))
+            .map_err(native_json_parse_error)
     }
 
     /// Builds a BinaryJSON value from a validated JSON tree.
     pub fn from_value(value: &Value) -> Result<Self, BinaryJSONError> {
-        encode_value(value, 0)
+        native_json_from_value(value)
+            .map(|(type_code, value)| Self::from_encoded_parts(type_code, value))
+            .map_err(native_json_parse_error)
     }
 
     /// Builds a BinaryJSON value from every source-supported input type.
@@ -440,59 +426,6 @@ pub fn unquote_json_string(text: &str) -> Result<String, BinaryJSONError> {
     unquote_native_json_escaped_string(text).map_err(|_| BinaryJSONError::InvalidText)
 }
 
-/// Rewrites the `\uXXXX` surrogate escapes that Go `encoding/json` decodes
-/// to U+FFFD (lone surrogates and invalid pairs) into the literal U+FFFD
-/// character, so the strict serde parser accepts what Go's lenient scanner
-/// accepts. Everything else is copied verbatim.
-fn replace_lone_surrogate_escapes(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut output = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        let is_surrogate_escape = bytes[index] == b'\\'
-            && text.get(index..index + 2) == Some("\\u")
-            && text.get(index + 2..index + 6).is_some_and(|hex| {
-                u16::from_str_radix(hex, 16).is_ok_and(|value| (0xd800..=0xdfff).contains(&value))
-            });
-        if !is_surrogate_escape {
-            output.push(bytes[index]);
-            index += 1;
-            continue;
-        }
-        let first = u16::from_str_radix(text.get(index + 2..index + 6).expect("checked above"), 16)
-            .expect("checked above");
-        // A high surrogate MAY pair with an adjacent `\uDC00..=\uDFFF`.
-        let paired = if (0xd800..=0xdbff).contains(&first) {
-            text.get(index + 6..index + 8)
-                .filter(|next| *next == "\\u")
-                .and_then(|_| text.get(index + 8..index + 12))
-                .and_then(|hex| u16::from_str_radix(hex, 16).ok())
-                .filter(|second| (0xdc00..=0xdfff).contains(second))
-                .map(|second| {
-                    let scalar = 0x10000
-                        + ((u32::from(first) - 0xd800) << 10)
-                        + (u32::from(second) - 0xdc00);
-                    (index + 12, scalar)
-                })
-        } else {
-            None
-        };
-        match paired {
-            Some((next, scalar)) => {
-                let ch = char::from_u32(scalar).unwrap_or('\u{fffd}');
-                let mut encoded = [0; 4];
-                output.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
-                index = next;
-            }
-            None => {
-                output.extend_from_slice("\\ufffd".as_bytes());
-                index += 6;
-            }
-        }
-    }
-    String::from_utf8(output).unwrap_or_else(|_| text.to_owned())
-}
-
 /// Decodes one four- or eight-hex-digit escaped Unicode value.
 pub fn decode_escaped_unicode(hex: &[u8]) -> Result<([u8; 4], usize, bool), BinaryJSONError> {
     decode_native_json_escaped_unicode(hex).map_err(|_| BinaryJSONError::InvalidText)
@@ -537,33 +470,21 @@ fn native_json_node(node: NativeJsonNode<(u8, Vec<u8>)>) -> JSONNode {
     }
 }
 
-fn encode_value(value: &Value, depth: usize) -> Result<BinaryJSON, BinaryJSONError> {
-    if depth > MAX_JSON_DEPTH {
-        return Err(BinaryJSONError::TooDeep);
-    }
-    match value {
-        Value::Null => Ok(literal(JSON_LITERAL_NULL)),
-        Value::Bool(true) => Ok(literal(JSON_LITERAL_TRUE)),
-        Value::Bool(false) => Ok(literal(JSON_LITERAL_FALSE)),
-        Value::Number(number) => encode_number(number),
-        Value::String(text) => {
-            let (type_code, value) = native_json_from_string(text);
-            Ok(BinaryJSON::from_encoded_parts(type_code, value))
-        }
-        Value::Array(values) => encode_array(values, depth + 1),
-        Value::Object(values) => encode_object(values, depth + 1),
-    }
-}
-
+#[cfg(test)]
 fn literal(value: u8) -> BinaryJSON {
     let (type_code, value) = native_json_literal(value);
     BinaryJSON::from_encoded_parts(type_code, value)
 }
 
-fn encode_number(number: &Number) -> Result<BinaryJSON, BinaryJSONError> {
-    native_json_encode_number(number)
-        .map(|(type_code, value)| BinaryJSON::from_encoded_parts(type_code, value))
-        .map_err(native_json_construct_error)
+fn native_json_parse_error(error: NativeJsonParseError) -> BinaryJSONError {
+    match error {
+        NativeJsonParseError::EmptyDocument => BinaryJSONError::EmptyDocument,
+        NativeJsonParseError::TrailingValues => BinaryJSONError::TrailingValues,
+        NativeJsonParseError::InvalidText => BinaryJSONError::InvalidText,
+        NativeJsonParseError::InvalidBinary => BinaryJSONError::InvalidBinary,
+        NativeJsonParseError::TooDeep => BinaryJSONError::TooDeep,
+        NativeJsonParseError::KeyTooLong => BinaryJSONError::KeyTooLong,
+    }
 }
 
 pub(crate) fn native_json_construct_error(error: NativeJsonConstructError) -> BinaryJSONError {
@@ -575,85 +496,96 @@ pub(crate) fn native_json_construct_error(error: NativeJsonConstructError) -> Bi
     }
 }
 
-fn encode_array(values: &[Value], depth: usize) -> Result<BinaryJSON, BinaryJSONError> {
-    let entry_start = HEADER_SIZE;
-    let data_start = entry_start + values.len() * VALUE_ENTRY_SIZE;
-    let mut output = vec![0; data_start];
-    let mut payload = Vec::new();
-    for (index, value) in values.iter().enumerate() {
-        let encoded = encode_value(value, depth)?;
-        let entry = entry_start + index * VALUE_ENTRY_SIZE;
-        output[entry] = encoded.type_code;
-        if encoded.type_code == JSON_TYPE_CODE_LITERAL {
-            output[entry + 1] = encoded.value[0];
-        } else {
-            let offset = data_start
-                .checked_add(payload.len())
-                .and_then(|offset| u32::try_from(offset).ok())
-                .ok_or(BinaryJSONError::InvalidBinary)?;
-            output[entry + 1..entry + 5].copy_from_slice(&offset.to_le_bytes());
-            payload.extend_from_slice(&encoded.value);
-        }
+#[cfg(test)]
+#[test]
+fn json_parse_facade_keeps_fixed_layout_retry_classification_and_serde_error_order() {
+    let expected_object = vec![
+        0x01, 2, 0, 0, 0, 32, 0, 0, 0, 30, 0, 0, 0, 1, 0, 31, 0, 0, 0, 1, 0, 4, 0, 0, 0, 0, 4, 1,
+        0, 0, 0, b'a', b'b',
+    ];
+    assert_eq!(
+        BinaryJSON::parse(r#"{"b":true,"a":null}"#)
+            .unwrap()
+            .encoded(),
+        expected_object
+    );
+    let mut object = Map::new();
+    object.insert("b".into(), Value::Bool(true));
+    object.insert("a".into(), Value::Null);
+    assert_eq!(
+        BinaryJSON::from_value(&Value::Object(object))
+            .unwrap()
+            .encoded(),
+        expected_object
+    );
+    assert_eq!(
+        BinaryJSON::parse("\u{2003}\t "),
+        Err(BinaryJSONError::EmptyDocument)
+    );
+    assert_eq!(
+        BinaryJSON::parse("\u{2003}null"),
+        Err(BinaryJSONError::InvalidText)
+    );
+    assert_eq!(
+        BinaryJSON::parse("true false"),
+        Err(BinaryJSONError::TrailingValues)
+    );
+    assert_eq!(
+        BinaryJSON::parse(r#""\ud800" true"#),
+        Err(BinaryJSONError::InvalidText)
+    );
+    assert_eq!(
+        BinaryJSON::parse(r#""\ud800""#).unwrap().encoded(),
+        vec![0x0c, 3, 0xef, 0xbf, 0xbd]
+    );
+    assert_eq!(
+        BinaryJSON::parse(r#""\ud83d\ude00""#).unwrap().encoded(),
+        vec![0x0c, 4, 0xf0, 0x9f, 0x98, 0x80]
+    );
+    // Successful initial parsing never invokes the bytewise sanitizer.
+    assert_eq!(
+        BinaryJSON::parse(r#""\\ud800""#)
+            .unwrap()
+            .to_value()
+            .unwrap(),
+        Value::String(r"\ud800".into())
+    );
+    // A later bad surrogate triggers the ORIGINAL global retry rewrite, even
+    // inside an already escaped string. This is intentionally not repaired.
+    assert_eq!(
+        BinaryJSON::parse(r#"["\\ud800","\ud800"]"#)
+            .unwrap()
+            .to_value()
+            .unwrap(),
+        Value::Array(vec![
+            Value::String(r"\ufffd".into()),
+            Value::String("\u{fffd}".into())
+        ])
+    );
+    let mut empty_at_100 = Value::Array(Vec::new());
+    for _ in 0..100 {
+        empty_at_100 = Value::Array(vec![empty_at_100]);
     }
-    output.extend_from_slice(&payload);
-    write_header(&mut output, values.len())?;
-    Ok(BinaryJSON {
-        type_code: JSON_TYPE_CODE_ARRAY,
-        value: output,
-    })
-}
-
-fn encode_object(values: &Map<String, Value>, depth: usize) -> Result<BinaryJSON, BinaryJSONError> {
-    let mut entries: Vec<_> = values.iter().collect();
-    entries.sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
-    let key_entry_start = HEADER_SIZE;
-    let value_entry_start = key_entry_start + entries.len() * KEY_ENTRY_SIZE;
-    let key_data_start = value_entry_start + entries.len() * VALUE_ENTRY_SIZE;
-    let key_bytes = entries.iter().try_fold(0_usize, |total, (key, _)| {
-        if key.len() > u16::MAX as usize {
-            Err(BinaryJSONError::KeyTooLong)
-        } else {
-            total
-                .checked_add(key.len())
-                .ok_or(BinaryJSONError::InvalidBinary)
-        }
-    })?;
-    let value_data_start = key_data_start + key_bytes;
-    let mut output = vec![0; key_data_start];
-    let mut keys = Vec::with_capacity(key_bytes);
-    let mut payload = Vec::new();
-
-    for (index, (key, value)) in entries.into_iter().enumerate() {
-        let key_entry = key_entry_start + index * KEY_ENTRY_SIZE;
-        let key_offset = u32::try_from(key_data_start + keys.len())
-            .map_err(|_| BinaryJSONError::InvalidBinary)?;
-        output[key_entry..key_entry + 4].copy_from_slice(&key_offset.to_le_bytes());
-        output[key_entry + 4..key_entry + 6].copy_from_slice(&(key.len() as u16).to_le_bytes());
-        keys.extend_from_slice(key.as_bytes());
-
-        let encoded = encode_value(value, depth)?;
-        let value_entry = value_entry_start + index * VALUE_ENTRY_SIZE;
-        output[value_entry] = encoded.type_code;
-        if encoded.type_code == JSON_TYPE_CODE_LITERAL {
-            output[value_entry + 1] = encoded.value[0];
-        } else {
-            let offset = u32::try_from(value_data_start + payload.len())
-                .map_err(|_| BinaryJSONError::InvalidBinary)?;
-            output[value_entry + 1..value_entry + 5].copy_from_slice(&offset.to_le_bytes());
-            payload.extend_from_slice(&encoded.value);
-        }
-    }
-    output.extend_from_slice(&keys);
-    output.extend_from_slice(&payload);
-    write_header(&mut output, values.len())?;
-    Ok(BinaryJSON {
-        type_code: JSON_TYPE_CODE_OBJECT,
-        value: output,
-    })
-}
-
-fn write_header(output: &mut [u8], count: usize) -> Result<(), BinaryJSONError> {
-    write_native_binary_json_header(output, count).map_err(native_binary_json_encode_error)
+    assert!(BinaryJSON::from_value(&empty_at_100).is_ok());
+    let too_deep = Value::Array(vec![empty_at_100]);
+    assert_eq!(
+        BinaryJSON::from_value(&too_deep),
+        Err(BinaryJSONError::TooDeep)
+    );
+    let long_key = "x".repeat(usize::from(u16::MAX) + 1);
+    let mut long_key_object = Map::new();
+    long_key_object.insert(long_key, too_deep.clone());
+    assert_eq!(
+        BinaryJSON::from_value(&Value::Object(long_key_object.clone())),
+        Err(BinaryJSONError::KeyTooLong)
+    );
+    assert_eq!(
+        BinaryJSON::from_value(&Value::Array(vec![
+            too_deep,
+            Value::Object(long_key_object)
+        ])),
+        Err(BinaryJSONError::TooDeep)
+    );
 }
 
 #[cfg(test)]

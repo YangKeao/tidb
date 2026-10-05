@@ -1,0 +1,50 @@
+native-json-parse-115 / R118 JSON datatype parser/container foundation, not expression-selector/wholeJSON/M2/Go-package completion.
+Functional238/245 strict0 remaining7 unchanged. TiKV cwd /home/agent/tidb/expression-unification/tikv; Native cwd /home/agent/tidb/expression-unification/tidb/rust.
+Raw /home/agent/tidb/expression-unification/logs/native-json-parse-{id}.log
+Counts passed/failed/ignored/filtered; compile/test seconds; all exits0.
+
+tikv-parser | 2/0/0/482 | 5.00/0.00
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_json_parse -- --test-threads=1
+sha256 be7432e9cdbe79b4cec1d82638281d7464c3394075a6ddb1ef3a86747e2e0a4a
+
+tikv-layout | 3/0/0/481 | 0.21/0.00
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_codec -- --test-threads=1
+sha256 6eee3ff50293477e6d05b6f910da5833b63a4e9523fe7e0c13fc1043623784c0
+
+tikv-typed | 2/0/0/482 | 0.17/0.00
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_json_construct -- --test-threads=1
+sha256 151e9cc95df08851df6d948f13ca07f788918aca759845d47f9d2f013434cacb
+
+native-datatype | 467/0/0/0 | 4.13/7.53
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+sha256 bd06af57f419c8980098896b5921a79c913b995e9c73126f6681857cb5d67195
+
+native-json | 44/0/0/1679 | 22.16/0.35
+../../tools/cargo-tidb test --locked -p tidb-expr --lib builtin_ext::json::tests -- --test-threads=1
+sha256 98e76a9ccf3db2179511bfc495389f1feee55d3ba124487d03d2d587529748cd
+
+sql | 1/0/0/2257 | 38.67/0.03
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_json_parse_preserves_storage_surrogates_and_strict_expression_boundary -- --exact --test-threads=1
+sha256 cde40da0737407298c0cdb0ca53e3bd997e160d53a5e59483dfac389a7ce09e5
+
+sql-typed | 1/0/0/2257 | 0.19/0.03
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_json_construction_preserves_sql_tags_opaque_temporals_and_value_coercion -- --exact --test-threads=1
+sha256 cd9dacd5ebd4530797a8622f3d8e30d63d2a1a78907bb4f6ce85371b330a5147
+
+sql-original | 1/0/0/2257 | 0.15/0.02
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_json::cast_as_json_keeps_gos_typed_names -- --exact --test-threads=1
+sha256 5ba2c652ec1cbbc4c44bc97311f370c3f0d3e0fdde47cb5bc661b8af63efdc15
+
+sql-aggregate | 1/0/0/2257 | 0.18/0.03
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_json::json_aggregates_wrap_binary_charset_values_as_opaque -- --exact --test-threads=1
+sha256 4f9f28c810f7b7a47d02d4ad1d2c4e347ee1cfa52dbfc15f1629e3d687463c14
+
+9serial locked single-threaded matched launches/9GREEN firstattempt;0compilefail/testfail/ignored/zero-match/interrupt/retry.5newtests=SDK3/native2.4SDK+2nativeRustfiles,1newlive;6SDK+207native oldtestbodies unchanged. No oldfixtures/oracles/observers changed. Source-derived fixedtags/bytes/IEEEbits/errors, no parser/constructor/provider output used as expected. Internal writer unit intentionally catches original empty-literal index panic and exercises arithmetic overflow without large allocations; not a failed test, allocator-fault/OOM or physical-memory receipt. Full native datatype library is not whole-Go-package transcreation. Existing vectorized String-to-DECIMAL UNION ignore NOTselected/passed/repaired. Historical R116/R113 REDs retained.
+
+SQL10SELECT=8success(4projections x2vector)+2strictCASTerrors(mode1),40cells=20text/HEX+20JSON. SQLtwo backslashes becomeone JSONslash, pinnedliteral/storedHEX225C756438303022/225C756463303022/225C75643833645C756465303022. DirectJSONcolumnDML repairs lonehigh/low toU+FFFD/EFBFBD; validpair→UTF8F09F9880. AlreadyJSON CAST clones; sameVARCHARhigh/low strictCAST each3140/22032/InvalidText/exactmessage/evalorigin/emptywarnings, validpair succeeds. Nestedobject75bytes sortedkeys a/z andoffset32/36; array39bytes Int64(9)1 offset23,Double(b)1.25 offset31,inlineNull(4). Fixedtag/payload/text noJSONparseexpected. CASTheader4194304/0 utf8mb4/bin BINARY|PARSE; EXTRACT16777216/-1 binary/binary BINARY; HEX/TYPE VarString/-1 UTF8/bin, literalHEXflen64/storedHEX512/type-extractHEX-1. No allUnicode/depth/keylimit/globalretry/zero/Head SQL claims. OriginalthreeSQLgates reruns, notnewprobes.
+
+SDKnative_json_parse ownsparse/from_value, global surrogate scan andserde traversal. Nativebinary_json.rs parse/fromvalue delegate+6errors; sanitizer/encode_value/number/array/object/header wrapper/4constants deleted; literal cfgtestwrapper preservedforoldtest. Sanitizer token-identical ignoringcomments/formatwhitespace. trimonlyempty; originaltextserde; firsttrailing→TrailingValues, otherfirsterror→globalrewrite+retry, anyretryerror→InvalidText. No string-aware repair; escaped-backslash side effect retained. Depth guard onvalueentry; depth100emptycontainer allowed; serde textrecursion vsbinaryTooDeep distinct.
+
+SDKcrate-only Array/ObjectWriter delegateONEprivate layout/value-entry/header implementation. Serdearrayalloc→child→checkedoffset/write perchild; nodeallchildren→writer ordinaryoffset. Serdeobjectsort/allkeypreflight→alloc→keyoffset/write→child→valueoffset/write; nodeallchildren→clone/sort/preflight→samewriter. Literal serdeindex vsnodefirstError, arraycheckedAdd/plain preserved. Objectoffset plain andheaderchecks onlyfinish. Existing encode_node andheader bodies unchanged. No duplicated native containerlayout, newpublicallocatorframework, hostpolicycallbacks, transport/origin tags, wirealias, or performance/physicalallocation/zero-copy claim. R117typed/scalar/Datum andstrictSDKexprparser/nativeJSONcontrollers/frozenAST lock unchanged.
+
+AppendonepartialCAST+onetype record;238oldfamilies/priorhistory unchanged, latestfunctional106/type-partial-runtime115 strict0remaining7goalactive. JSONexpressioncontrollers/otherCAST/typed-vector/UNION/conversions,broaderM2/sixcomplexcandidates/root/liveDAG/final remain. FullExpr/Unistore/workspace/lint/dev/bazel/release/exhaustive/perf/physicalmemory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR-ready unverified; R100expression4/unistore1 historicalunrepaired. NoGo/Bazel/Cargo/lock changes; unrelatedBUILD excluded. Architecture/guide ownership updated withoutnormativepolicy; pairedDCO pushes/threeidenticalPlans.

@@ -9363,6 +9363,191 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn native_json_parse_preserves_storage_surrogates_and_strict_expression_boundary() {
+    use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
+
+    let mut session = Session::new();
+    session
+        .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+        .unwrap();
+    session.run("SET sql_mode=''").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE native_json_parse_sql (j_hi JSON, s_hi VARCHAR(64), j_lo JSON, s_lo VARCHAR(64), j_pair JSON, s_pair VARCHAR(64), j_nested JSON)")
+        .unwrap();
+    // Raw Rust strings preserve TWO SQL backslashes. With sql_mode='', the
+    // SQL lexer consumes each pair and passes ONE backslash to the JSON text.
+    // Identical literal bytes feed JSON's write cast and VARCHAR storage.
+    session
+        .run(r#"INSERT INTO native_json_parse_sql VALUES ('"\\ud800"','"\\ud800"','"\\udc00"','"\\udc00"','"\\ud83d\\ude00"','"\\ud83d\\ude00"','{"z":[1,1.25,null],"a":"\\ud800"}')"#)
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    enum Expected {
+        Text(&'static str),
+        Json(u8, &'static [u8]),
+    }
+    // Source layout: count/size header, five-byte value entries, then payloads.
+    // The three-item array has inline NULL, signed-int64 1 and double 1.25.
+    let array: &'static [u8] = &[
+        3, 0, 0, 0, 39, 0, 0, 0, 9, 23, 0, 0, 0, 11, 31, 0, 0, 0, 4, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0xf4, 0x3f,
+    ];
+    // Two sorted keys a/z: header 8 + key entries 12 + value entries 10;
+    // key bytes at 30/31, replacement string at 32, child array at 36.
+    let object: &'static [u8] = &[
+        2, 0, 0, 0, 75, 0, 0, 0, 30, 0, 0, 0, 1, 0, 31, 0, 0, 0, 1, 0, 12, 32, 0, 0, 0, 3, 36, 0,
+        0, 0, b'a', b'z', 3, 0xef, 0xbf, 0xbd, 3, 0, 0, 0, 39, 0, 0, 0, 9, 23, 0, 0, 0, 11, 31, 0,
+        0, 0, 4, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xf4, 0x3f,
+    ];
+    let cases: [(&str, &[Expected]); 4] = [
+        (
+            r#"SELECT HEX('"\\ud800"'),HEX(s_hi),HEX(s_lo),HEX(s_pair) FROM native_json_parse_sql"#,
+            &[
+                Expected::Text("225C756438303022"),
+                Expected::Text("225C756438303022"),
+                Expected::Text("225C756463303022"),
+                Expected::Text("225C75643833645C756465303022"),
+            ],
+        ),
+        (
+            "SELECT JSON_TYPE(j_hi),HEX(JSON_UNQUOTE(j_hi)),JSON_TYPE(j_lo),HEX(JSON_UNQUOTE(j_lo)),JSON_TYPE(j_pair),HEX(JSON_UNQUOTE(j_pair)) FROM native_json_parse_sql",
+            &[
+                Expected::Text("STRING"), Expected::Text("EFBFBD"),
+                Expected::Text("STRING"), Expected::Text("EFBFBD"),
+                Expected::Text("STRING"), Expected::Text("F09F9880"),
+            ],
+        ),
+        (
+            "SELECT CAST(j_hi AS JSON),CAST(j_lo AS JSON),CAST(j_pair AS JSON),CAST(s_pair AS JSON) FROM native_json_parse_sql",
+            &[
+                Expected::Json(0x0c, &[3, 0xef, 0xbf, 0xbd]),
+                Expected::Json(0x0c, &[3, 0xef, 0xbf, 0xbd]),
+                Expected::Json(0x0c, &[4, 0xf0, 0x9f, 0x98, 0x80]),
+                Expected::Json(0x0c, &[4, 0xf0, 0x9f, 0x98, 0x80]),
+            ],
+        ),
+        (
+            "SELECT CAST(j_nested AS JSON),JSON_EXTRACT(j_nested,'$.a'),JSON_EXTRACT(j_nested,'$.z'),JSON_EXTRACT(j_nested,'$.z[0]'),JSON_EXTRACT(j_nested,'$.z[1]'),JSON_EXTRACT(j_nested,'$.z[2]') FROM native_json_parse_sql",
+            &[
+                Expected::Json(0x01, object),
+                Expected::Json(0x0c, &[3, 0xef, 0xbf, 0xbd]),
+                Expected::Json(0x03, array),
+                Expected::Json(0x09, &[1, 0, 0, 0, 0, 0, 0, 0]),
+                Expected::Json(0x0b, &[0, 0, 0, 0, 0, 0, 0xf4, 0x3f]),
+                Expected::Json(0x04, &[0]),
+            ],
+        ),
+    ];
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        for (case_index, &(sql, expected)) in cases.iter().enumerate() {
+            let StmtOutput::Rows { columns, rows } = session.run_with_columns(sql).unwrap() else {
+                panic!("expected stored JSON parser rows: {sql}")
+            };
+            assert_eq!(columns.len(), expected.len(), "{sql}");
+            assert_eq!(rows.len(), 1, "{sql}");
+            assert_eq!(rows[0].len(), expected.len(), "{sql}");
+            for (index, expected) in expected.iter().enumerate() {
+                let field = &columns[index].1;
+                let cast_json = case_index == 2 || (case_index == 3 && index == 0);
+                let extract_json = case_index == 3 && index != 0;
+                let (code, flen, decimal) = if cast_json {
+                    (FieldTypeCode::Json, 4_194_304, 0)
+                } else if extract_json {
+                    (FieldTypeCode::Json, 16_777_216, -1)
+                } else {
+                    // HEX's string width is argument flen * 8. JSON_TYPE and
+                    // JSON_UNQUOTE retain unspecified width in this resolver.
+                    let flen = if case_index == 0 {
+                        if index == 0 {
+                            64
+                        } else {
+                            512
+                        }
+                    } else {
+                        -1
+                    };
+                    (FieldTypeCode::VarString, flen, -1)
+                };
+                assert_eq!(field.code(), code, "{sql}/{index}");
+                assert_eq!(
+                    (field.flen(), field.decimal()),
+                    (flen, decimal),
+                    "{sql}/{index}"
+                );
+                assert_eq!(
+                    field.charset_name(),
+                    if extract_json { "binary" } else { "utf8mb4" }
+                );
+                assert_eq!(
+                    field.collation_name(),
+                    if extract_json {
+                        "binary"
+                    } else {
+                        "utf8mb4_bin"
+                    }
+                );
+                assert_eq!(
+                    field.has_flag(FieldTypeFlags::BINARY),
+                    cast_json || extract_json
+                );
+                assert_eq!(field.has_flag(FieldTypeFlags::PARSE_TO_JSON), cast_json);
+                assert!(!field.is_unsigned());
+                match expected {
+                    Expected::Text(text) => assert_eq!(
+                        cell_text(&rows[0][index]),
+                        *text,
+                        "{sql}/{vectorized}/{index}"
+                    ),
+                    Expected::Json(tag, payload) => {
+                        let Datum::Json(value) = &rows[0][index] else {
+                            panic!("lost binary JSON carrier: {sql}/{index}")
+                        };
+                        assert_eq!(value.type_code(), *tag, "{sql}/{vectorized}/{index}");
+                        assert_eq!(value.value(), *payload, "{sql}/{vectorized}/{index}");
+                    }
+                }
+            }
+            assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+        }
+    }
+    // The SAME original VARCHAR bytes remain lone surrogate escapes. The
+    // unchanged expression controller uses its strict document parser, not
+    // the datatype write path's sanitizer/retry. Already-JSON clones above
+    // never reparse those original escapes. Two controls, one per source.
+    for source in ["s_hi", "s_lo"] {
+        let sql = format!("SELECT CAST({source} AS JSON) FROM native_json_parse_sql");
+        let error = session.run_with_columns(&sql).expect_err(&sql);
+        assert!(matches!(
+            &error,
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::Json(tidb_executor::JsonError::InvalidText)
+            ))
+        ));
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 3140);
+        assert_eq!(mysql.state, *b"22032");
+        assert_eq!(
+            mysql.message,
+            "Invalid JSON text: The document root must not be followed by other values."
+        );
+        assert!(mysql.is_from_evaluation());
+        assert!(warnings_of(&session).is_empty(), "{sql}");
+    }
+    // No expected value is built by a JSON parser/constructor. This is not
+    // an expression-selector migration or exhaustive Unicode/depth/key-limit
+    // evidence; retry/trailing/global-sanitizer unit domains remain separate.
+}
+
+#[test]
 fn native_json_construction_preserves_sql_tags_opaque_temporals_and_value_coercion() {
     use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
 
