@@ -9363,6 +9363,49 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn shared_year_controller_preserves_clock_date_prefix_and_unsigned_fallback() {
+    use tidb_datatype::FieldTypeCode;
+    let mut session = Session::new();
+    session.run("SET sql_mode='', time_zone='+00:00'").unwrap();
+    session.run("SET timestamp=1609459200").unwrap();
+    session.run("CREATE TABLE shared_year_control_sql (d TIME(3), date_text VARCHAR(32), prefix_text VARCHAR(32), u BIGINT UNSIGNED)").unwrap();
+    session.run("INSERT INTO shared_year_control_sql VALUES ('00:20:12.250','2024-01-02','42tail',18446744073709551615)").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        for (zone, year) in [("+00:00", 2021), ("-01:00", 2020)] {
+            session.run(&format!("SET time_zone='{zone}'")).unwrap();
+            let StmtOutput::Rows { columns, rows } = session.run_with_columns(
+                "SELECT CAST(d AS YEAR),CAST(date_text AS YEAR),CAST(prefix_text AS YEAR),CAST(u AS YEAR),CAST(NULL AS YEAR) FROM shared_year_control_sql"
+            ).unwrap() else { panic!("expected YEAR controller rows") };
+            assert_eq!(
+                rows,
+                vec![vec![
+                    Datum::Int(year),
+                    Datum::Int(2024),
+                    Datum::Int(42),
+                    Datum::Int(-1),
+                    Datum::Null
+                ]]
+            );
+            assert_eq!(columns.len(), 5);
+            for (_, field) in columns {
+                assert_eq!(field.code(), FieldTypeCode::Year);
+                assert_eq!((field.flen(), field.decimal()), (4, 0));
+                assert!(!field.is_unsigned());
+            }
+            assert!(warnings_of(&session).is_empty());
+        }
+    }
+}
+
+#[test]
 fn native_signed_datum_preserves_hybrid_ordinals_and_temporal_carry_in_sql() {
     use tidb_datatype::FieldTypeCode;
     let mut session = Session::new();

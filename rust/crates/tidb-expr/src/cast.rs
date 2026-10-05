@@ -24,7 +24,6 @@
 //! assumed — see each function's own doc for the specific probe.
 
 use crate::coerce::coerce_str;
-use crate::time_fn::calendar::parse_date_ymd;
 #[cfg(test)]
 use crate::Decimal;
 use crate::{Datum, EvalError};
@@ -915,24 +914,7 @@ fn invalid_time_warning(ctx: &dyn crate::Columns, input: &str, fsp: i64) {
 /// previous Rust path treated the duration as its packed integer (`125959`),
 /// so it never observed either `ctx.now()` or the session time zone.
 fn cast_to_year(v: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    if let Datum::Duration(duration) = v {
-        let (utc_secs, nanos, _) = ctx
-            .now()
-            .ok_or(EvalError::Unsupported("no statement clock for a YEAR cast"))?;
-        let now = chrono::DateTime::<chrono::Utc>::from_timestamp(utc_secs, nanos)
-            .ok_or(EvalError::Unsupported("statement clock is out of range"))?
-            .with_timezone(&ctx.time_zone());
-        let year = duration
-            .convert_to_year(now, ctx.cast_time_to_year_through_concat())
-            .map_err(|_| EvalError::Unsupported("duration to YEAR conversion"))?;
-        return Ok(Datum::Int(year));
-    }
-    if let Some(s) = coerce_str(v)? {
-        if let Some((y, _, _)) = parse_date_ymd(&s) {
-            return Ok(Datum::Int(y));
-        }
-    }
-    Ok(Datum::Int(to_i64_signed(v)))
+    crate::tikv::eval_cast_year_in(ctx, v)
 }
 
 #[cfg(test)]

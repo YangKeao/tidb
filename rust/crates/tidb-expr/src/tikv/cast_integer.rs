@@ -20,24 +20,7 @@ use tidb_query_expr::{
 };
 
 fn input(value: &Datum) -> Input<'_> {
-    match value {
-        Datum::Int(value) => Input::Int(*value),
-        Datum::UInt(value) => Input::UInt(*value),
-        Datum::Decimal(value) => Input::Decimal(value.as_shared_parse()),
-        Datum::Real(value) => Input::Real(*value),
-        Datum::Float32(value) => Input::Float32(*value),
-        Datum::String(value) => Input::String(value.bytes()),
-        Datum::Bytes(value) => Input::Bytes(value),
-        Datum::Time(_) => Input::Time,
-        Datum::Duration(_) => Input::Duration,
-        Datum::Json(value) => Input::Json {
-            type_code: value.type_code(),
-        },
-        Datum::Null => Input::Null,
-        Datum::MinNotNull => Input::MinNotNull,
-        Datum::MaxValue => Input::MaxValue,
-        _ => Input::Other,
-    }
+    tidb_query_expr::native_cast_integer_input_from_numeric(value.as_shared_numeric_input())
 }
 
 fn json_text(value: &Datum) -> String {
@@ -86,11 +69,7 @@ fn evaluate(
 }
 
 pub(crate) fn eval_cast_signed_value_in(value: &Datum, zone: &SessionTimeZone) -> i64 {
-    tidb_query_expr::native_cast_integer_signed_value(input(value), zone, |zone| {
-        value
-            .to_i64_in(zone)
-            .map(|converted| (converted.value, converted.event))
-    })
+    tidb_query_expr::native_cast_integer_signed_numeric(value.as_shared_numeric_input(), zone)
 }
 
 pub(crate) fn eval_cast_signed_in(ctx: &dyn Columns, value: &Datum) -> Result<i64, EvalError> {

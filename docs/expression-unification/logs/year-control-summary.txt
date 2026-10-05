@@ -1,0 +1,29 @@
+year-control-121 / R126
+8 launches,8 matched GREEN; no compile/test failure, zero-match, retry or interruption.
+Raw logs: /home/agent/tidb/expression-unification/logs/year-control-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv-year] ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_cast_year -- --test-threads=1
+[tikv-integer] ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_cast_integer -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-year] ../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::cast_year_tests -- --test-threads=1
+[native-integer] ../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::cast_integer::tests -- --test-threads=1
+[native-numeric] ../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::signed_datum_tests -- --test-threads=1
+[native-coercion] ../../tools/cargo-tidb test --locked -p tidb-expr --lib coerce::tests -- --test-threads=1
+[sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib shared_year_controller_preserves_clock_date_prefix_and_unsigned_fallback -- --test-threads=1
+[sql-calendar] ../../tools/cargo-tidb test --locked -p tidb-session --lib native_temporal_calendar_preserves_statement_clock_year_fields_and_dst_boundaries -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv-year 1/0/0/1008 17.37/0.00 0 73d683807069479adf914d459c507c7d50ebe9f5f5575e5b30360e8f75a907be
+tikv-integer 2/0/0/1007 0.16/0.00 0 74faf2db63e7189e6300d3dfe845f04647b0e219e7e010e645982803464fb826
+native-year 1/0/0/1728 13.85/0.00 0 4e1b43919e6b0f53a890092d73c5a20aef77d5d3011a73bd29071c874f5d6297
+native-integer 1/0/0/1728 0.13/0.00 0 4f469c9f9622bbc3e58f8f3d6a32b434b737a27df75cfe494b53775c09fb4506
+native-numeric 1/0/0/1728 0.13/0.00 0 89387dd7a1c4bfb4c3e7c2fef5a58b995240d98a099ddc8398c22ed2669bc521
+native-coercion 1/0/0/1728 0.14/0.00 0 c6d6d2761ba69b2f0c3db106c9390fe3a3c5eaf16445a4144d9257cdcfa26cef
+sql 1/0/0/2263 16.63/0.02 0 c9be2ea837eac0097124ad9d4ecd10c7d597b83a0347073be6cf7044d9ad27fe
+sql-calendar 1/0/0/2263 0.15/0.03 0 99fa3a66e0798bf5a51d75bb033190f5a7b5177aa53655317fbab841651cdf25
+
+SDK3/native6 live Rust files,3new.3new tests;2SDK/221native old test bodies unchanged. YEAR control, value-only signed composition and integer-input data projection are SDK-owned; ordinary integer callback interfaces and other CAST controllers unchanged.
+New SQL:1test,4SELECTs/20cells=16YEAR integers+4NULL, vector0/1 and zones+00/-01 at actual SETtimestamp1609459200. Stored Duration calendar boundary2021/2020, date text2024, prefix42, UIntMAX signed wrap-1, NULL; YEAR4/0 signed metadata/no warnings. No new C4 profiles or wholeCAST/family credit.
+Formatting and git diff --check passed. Functional238/245, strict0, remaining7 unchanged. DATE/DATETIME, implicit argument/typed/write conversions, broader M2/root/liveDAG/final remain. No full datatype/expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR validation. R1004+1 failures and prior incident receipts retained. No Go/Bazel/lock change; unrelated BUILD excluded. Goal remains active.
