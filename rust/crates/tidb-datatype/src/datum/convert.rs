@@ -27,10 +27,10 @@ use tidb_query_datatype::codec::native_mysql_json::{
     NativeDatumJsonSource,
 };
 
-use super::{decimal_from_bytes, Datum, DatumStringError, DatumValueError};
+use super::{Datum, DatumStringError, DatumValueError};
 use crate::{
-    compare_binary_json, json_to_decimal, json_to_float, str_to_float, BinaryJSON, Collation,
-    Converted, Decimal, ScalarConversionEvent,
+    compare_binary_json, json_to_float, str_to_float, BinaryJSON, Collation, Converted, Decimal,
+    ScalarConversionEvent,
 };
 
 impl Datum {
@@ -321,56 +321,17 @@ impl Datum {
 
     /// Source `Datum.ToDecimal`.
     pub fn to_decimal(&self) -> Result<Converted<Decimal>, DatumValueError> {
-        let converted = match self {
-            Self::Int(value) => Converted {
-                value: Decimal::from_int(*value),
-                event: None,
-            },
-            Self::UInt(value) => Converted {
-                value: Decimal::from_uint(*value),
-                event: None,
-            },
-            Self::Real(value) => {
-                crate::convert::decimal_from_text(&crate::format_float_g_shortest(*value))
-            }
-            Self::Float32(value) => crate::convert::decimal_from_text(
-                &crate::format_float_g_shortest(f64::from(*value as f32)),
-            ),
-            Self::String(value) => decimal_from_bytes(value.bytes())?,
-            Self::Bytes(value) => decimal_from_bytes(value)?,
-            Self::Time(value) => Converted {
-                value: value.to_number(),
-                event: None,
-            },
-            Self::Duration(value) => Converted {
-                value: value.to_number(),
-                event: None,
-            },
-            Self::Decimal(value) => Converted {
-                value: value.clone(),
-                event: None,
-            },
-            Self::Enum(value, _) => Converted {
-                value: Decimal::from_uint(value.value()),
-                event: None,
-            },
-            Self::Set(value, _) => Converted {
-                value: Decimal::from_uint(value.value()),
-                event: None,
-            },
-            Self::Json(value) => json_to_decimal(value),
-            Self::BinaryLiteral(value) | Self::Bit(value) => {
-                let outcome = value.to_int();
-                Converted {
-                    value: Decimal::from_uint(outcome.value()),
-                    event: outcome
-                        .is_truncated()
-                        .then_some(ScalarConversionEvent::Truncated),
+        use tidb_query_datatype::codec::native_decimal_convert::native_datum_to_decimal;
+        use tidb_query_datatype::codec::native_numeric::NativeNumericError;
+        native_datum_to_decimal(self.as_shared_numeric_input())
+            .map(crate::convert::from_shared_decimal_conversion)
+            .map_err(|error| match error {
+                NativeNumericError::InvalidUtf8(error) => error.into(),
+                NativeNumericError::Comparison(message) => DatumValueError::Comparison(message),
+                NativeNumericError::Unsupported => {
+                    DatumValueError::Unsupported(self.kind(), "decimal")
                 }
-            }
-            other => return Err(DatumValueError::Unsupported(other.kind(), "decimal")),
-        };
-        Ok(converted)
+            })
     }
 
     /// Source `Datum.ToBytes`, whose default arm is `ToString`.

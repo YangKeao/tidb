@@ -41,6 +41,8 @@ mod cast_float;
 pub(crate) use cast_float::{eval_cast_double_in, eval_cast_float_in, eval_cast_float_value};
 mod cast_integer;
 #[cfg(test)]
+mod decimal_datum_tests;
+#[cfg(test)]
 mod signed_datum_tests;
 #[cfg(test)]
 pub(crate) use cast_integer::eval_cast_unsigned_value_in;

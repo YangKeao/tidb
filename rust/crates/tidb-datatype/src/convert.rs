@@ -1014,51 +1014,34 @@ pub fn json_to_float(json: &BinaryJSON) -> Converted<f64> {
 /// zeros, so routing decimals through it turned `'1e9223372036854775807'` into a
 /// 9.2-exabyte allocation instead of Go's clamped 81 nines plus `ErrOverflow`.
 pub(crate) fn decimal_from_text(text: &str) -> Converted<Decimal> {
-    let (value, error) = Decimal::parse_mysql(text);
-    let event = match error {
-        None => None,
-        Some(crate::DecimalParseError::Overflow) => Some(ScalarConversionEvent::Overflow(
-            overflow(text, FieldTypeCode::NewDecimal),
-        )),
-        Some(_) => Some(ScalarConversionEvent::Truncated),
-    };
-    Converted { value, event }
+    from_shared_decimal_conversion(
+        tidb_query_datatype::codec::native_decimal_convert::native_decimal_from_text(text),
+    )
+}
+
+pub(crate) fn from_shared_decimal_conversion(
+    converted: tidb_query_datatype::codec::native_decimal_convert::NativeDecimalConverted,
+) -> Converted<Decimal> {
+    use tidb_query_datatype::codec::native_decimal_convert::NativeDecimalConversionEvent;
+    Converted {
+        value: Decimal::from_shared_parse(converted.value),
+        event: converted.event.map(|event| match event {
+            NativeDecimalConversionEvent::Truncated => ScalarConversionEvent::Truncated,
+            NativeDecimalConversionEvent::Overflow { value } => {
+                ScalarConversionEvent::Overflow(overflow(&value, FieldTypeCode::NewDecimal))
+            }
+        }),
+    }
 }
 
 /// `ConvertJSONToDecimal`.
 pub fn json_to_decimal(json: &BinaryJSON) -> Converted<Decimal> {
-    if json_non_numeric(json.type_code()) {
-        return Converted::truncated(Decimal::from_int(0));
-    }
-    match json.type_code() {
-        JSON_TYPE_CODE_LITERAL => match json.value().first().copied() {
-            Some(JSON_LITERAL_FALSE) => Converted::exact(Decimal::from_int(0)),
-            Some(JSON_LITERAL_NULL) | None => Converted::truncated(Decimal::from_int(0)),
-            Some(_) => Converted::exact(Decimal::from_int(1)),
-        },
-        JSON_TYPE_CODE_INT64 => Converted::exact(Decimal::from_int(
-            json.as_i64().expect("validated binary JSON integer"),
-        )),
-        JSON_TYPE_CODE_UINT64 => Converted::exact(Decimal::from_uint(
-            json.as_u64().expect("validated binary JSON integer"),
-        )),
-        JSON_TYPE_CODE_FLOAT64 => {
-            let value = json.as_f64().expect("validated binary JSON float");
-            Decimal::from_f64(value).map_or_else(
-                || Converted::truncated(Decimal::from_int(0)),
-                Converted::exact,
-            )
-        }
-        // Go's `res.FromString(j.GetString())`, which is prefix-accepting:
-        // `"123abc"` is `123` and `"1,999.00"` is `1`, both with a truncation
-        // warning. Rejecting the whole string instead STORED a silent `0`.
-        JSON_TYPE_CODE_STRING => {
-            let text = std::str::from_utf8(json.as_string().expect("validated binary JSON string"))
-                .unwrap_or("");
-            decimal_from_text(text)
-        }
-        _ => Converted::truncated(Decimal::from_int(0)),
-    }
+    from_shared_decimal_conversion(
+        tidb_query_datatype::codec::native_decimal_convert::native_json_to_decimal(
+            json.type_code(),
+            json.value(),
+        ),
+    )
 }
 
 /// Typed replacement for Go `ToString(any)`.

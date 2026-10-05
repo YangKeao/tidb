@@ -9363,6 +9363,43 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn shared_decimal_datum_preserves_unsigned_hybrid_bit_and_json_consumers() {
+    use tidb_datatype::FieldTypeCode;
+    let mut session = Session::new();
+    session.run("CREATE TABLE shared_decimal_datum_sql (e ENUM('other','word'), s SET('a','b','c'), b BIT(64), j JSON)").unwrap();
+    session.run("INSERT INTO shared_decimal_datum_sql VALUES ('word','a,c',x'ffffffffffffffff','18446744073709551615')").unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        let StmtOutput::Rows { columns, rows } = session.run_with_columns(
+            "SELECT CAST(e AS UNSIGNED),CAST(s AS UNSIGNED),CAST(b AS UNSIGNED),CAST(j AS UNSIGNED) FROM shared_decimal_datum_sql"
+        ).unwrap() else { panic!("expected unsigned decimal consumer rows") };
+        assert_eq!(
+            rows,
+            vec![vec![
+                Datum::UInt(2),
+                Datum::UInt(5),
+                Datum::UInt(u64::MAX),
+                Datum::UInt(u64::MAX)
+            ]]
+        );
+        assert_eq!(columns.len(), 4);
+        for (_, field) in columns {
+            assert_eq!(field.code(), FieldTypeCode::LongLong);
+            assert!(field.is_unsigned());
+            assert_eq!((field.flen(), field.decimal()), (20, 0));
+        }
+        assert!(warnings_of(&session).is_empty());
+    }
+}
+
+#[test]
 fn shared_argument_string_preserves_binary_names_float_display_and_widths() {
     let mut session = Session::new();
     session.run("CREATE TABLE shared_arg_string_sql (b BIT(8), e ENUM('other','word'), f DOUBLE, d DECIMAL(10,2), r VARBINARY(2))").unwrap();

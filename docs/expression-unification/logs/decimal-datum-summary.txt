@@ -1,0 +1,26 @@
+decimal-datum-124 / R129
+6matched launches: initialSDK RED,5finalGREEN;1retry,no compile failure/zero-match/interruption.
+Raw: /home/agent/tidb/expression-unification/logs/decimal-datum-{id}.log
+Only the six ids below belong to R129. An initial receipt-collector glob also matched historical decimal-datum-display-fault-* logs; corrected to explicit ids, those older logs are unchanged and not new gate attempts.
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv, tikv-corrected] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_decimal_convert -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-expression] ../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::decimal_datum_tests -- --test-threads=1
+[native-integer] ../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::cast_integer::tests -- --test-threads=1
+[sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib shared_decimal_datum_preserves_unsigned_hybrid_bit_and_json_consumers -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/1/0/497 3.48/0.00 101 086fef83ea0bbcde7a64b0c717a848ed8256ba2043813639e67df98d62d6d85c
+tikv-corrected 2/0/0/497 1.63/0.00 0 7a4c5f1964eb3b73bb32bda47684cef9626ba37e931e90e303a1e58e1227faca
+native-datatype 477/0/0/0 2.92/7.06 0 d7faab5425273ec7d263e338eab10b9f4beffaf2bd35a5ca5633545b025f1019
+native-expression 1/0/0/1732 15.17/0.00 0 961980d45c741eeae7af42ea4fe28325f50b67c13fba37d717f2c9c147b83f8e
+native-integer 1/0/0/1732 0.14/0.00 0 3958b8ec9d466b0343f81de5310ac80cc01f5d933eb856f0d96eb97f4e26a9cd
+sql 1/0/0/2266 24.74/0.02 0 7fa1171791030752331dacddace1154895e968af79df1eeca7cbb2e49dbe8c28
+
+Initial new-test failure: wide Literal/Bit expected decimal0, conflating the signed-literal selector with the pure literal outcome. Original BinaryLiteral.to_int and SDK outcome explicitly return u64MAX+Truncated; original Datum.to_decimal consumes outcome.value(). Changed only the NEW SDK literal expectation to18446744073709551615, retaining Truncated. Production/oldtests unchanged; RED retained, actual output not used as oracle.
+SDK3/native5 Rust files,2new files;4new tests (SDK2/native2);oldSDK5/native234 touched-file test bodies unchanged. Existing canonical Decimal projector changed only to pub(crate) for reuse. Plain selector/text/JSON policy now shared; with_context and integer controller interfaces unchanged. No new RPN profiles/family credit.
+New SQL1test:2SELECTs/8UInt cells over vector0/1, actualEnum2/Set5/BitMAX/JsonMAX unsigned consumers, LongLong20/0 unsigned metadata, no warnings. Native tests additionally cover decimal shape, Float32 narrowing, lossy-vs-JSON UTF8, events and event-discarding unsigned fallback. Full native datatype477 passed.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. Integer-argument/controller composition, context-aware Decimal and typed/write selectors, broaderM2/root/liveDAG/final remain. Full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and previous receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
