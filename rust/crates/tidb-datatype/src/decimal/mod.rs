@@ -1081,9 +1081,7 @@ impl Decimal {
     /// digits, same as MySQL's own conversion; parses this value's own
     /// canonical `Display` text, which is always valid decimal syntax.
     pub fn to_f64(&self) -> f64 {
-        self.to_string()
-            .parse()
-            .expect("Decimal's own Display always produces valid float syntax")
+        self.as_shared_parse().to_f64()
     }
 
     /// The EXACT mathematical ceiling (`ceiling: true`) or floor

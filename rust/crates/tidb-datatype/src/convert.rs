@@ -355,8 +355,7 @@ pub struct NumericPrefix {
 /// `getValidFloatPrefix`, and that helper shortens the same subject at the
 /// first NUL byte before formatting the error.
 pub fn float_warning_input(input: &str) -> &str {
-    let nul_cut = input.trim().split('\0').next().unwrap_or_default();
-    warning_subject_byte_cap(nul_cut)
+    tidb_query_datatype::codec::native_float_parse::native_float_warning_input(input)
 }
 
 /// Go's `ErrTruncatedWrongVal` template caps the quoted subject at 128 bytes
@@ -379,59 +378,13 @@ impl NumericPrefix {
 
 /// `getValidFloatPrefix` without hiding its truncation event in an error.
 pub fn valid_float_prefix(input: &str, is_function_cast: bool) -> NumericPrefix {
-    if is_function_cast && input.is_empty() {
-        return NumericPrefix {
-            value: "0".to_owned(),
-            truncated: false,
-        };
-    }
-
-    let bytes = input.as_bytes();
-    let mut saw_dot = false;
-    let mut saw_digit = false;
-    let mut valid_len = 0;
-    let mut exponent_index: Option<usize> = None;
-    let mut effective_len = bytes.len();
-    for (index, byte) in bytes.iter().copied().enumerate() {
-        match byte {
-            b'+' | b'-'
-                if index == 0 || exponent_index.is_some_and(|exponent| index == exponent + 1) => {}
-            b'+' | b'-' => break,
-            b'.' if saw_dot || exponent_index.is_some_and(|exponent| exponent > 0) => break,
-            b'.' => {
-                saw_dot = true;
-                if saw_digit {
-                    valid_len = index + 1;
-                }
-            }
-            b'e' | b'E' if !saw_digit || exponent_index.is_some() => break,
-            b'e' | b'E' => {
-                exponent_index = Some(index);
-                if index + 1 == bytes.len() {
-                    return NumericPrefix {
-                        value: input[..index].to_owned(),
-                        truncated: false,
-                    };
-                }
-            }
-            0 => {
-                effective_len = valid_len;
-                break;
-            }
-            b'0'..=b'9' => {
-                saw_digit = true;
-                valid_len = index + 1;
-            }
-            _ => break,
-        }
-    }
+    let prefix = tidb_query_datatype::codec::native_float_parse::native_valid_float_prefix(
+        input,
+        is_function_cast,
+    );
     NumericPrefix {
-        value: if valid_len == 0 {
-            "0".to_owned()
-        } else {
-            input[..valid_len].to_owned()
-        },
-        truncated: valid_len == 0 || valid_len != effective_len,
+        value: prefix.value.to_owned(),
+        truncated: prefix.truncated,
     }
 }
 
@@ -848,28 +801,23 @@ pub(crate) fn str_to_float_reported(
     is_function_cast: bool,
     diagnostics: &mut crate::datum_convert::diagnostics::Diagnostics<'_, '_>,
 ) -> Converted<f64> {
-    let input = input.trim();
-    let prefix = valid_float_prefix(input, is_function_cast);
-    if prefix.truncated() {
-        diagnostics.truncated_numeric_input(input);
-    }
-    match prefix.value().parse::<f64>() {
-        Ok(value) if value.is_infinite() => {
-            // StrToFloat routes its range error independently of the prefix
-            // error. Warning mode must retain both in their original order.
-            diagnostics.truncated_numeric_input(input);
-            Converted::truncated(if value.is_sign_positive() {
-                f64::MAX
-            } else {
-                -f64::MAX
-            })
-        }
-        Ok(value) if prefix.truncated() => Converted::truncated(value),
-        Ok(value) => Converted::exact(value),
-        Err(_) => {
-            diagnostics.unhandled(Some(&ScalarConversionEvent::Truncated));
-            Converted::truncated(0.0)
-        }
+    use tidb_query_datatype::codec::native_float_parse::{
+        native_str_to_float_reported, NativeFloatDiagnostic,
+    };
+    let converted =
+        native_str_to_float_reported(input, is_function_cast, |diagnostic| match diagnostic {
+            NativeFloatDiagnostic::TruncatedNumericInput(input) => {
+                diagnostics.truncated_numeric_input(input);
+            }
+            NativeFloatDiagnostic::UnhandledTruncated => {
+                diagnostics.unhandled(Some(&ScalarConversionEvent::Truncated));
+            }
+        });
+    Converted {
+        value: converted.value,
+        event: converted
+            .truncated
+            .then_some(ScalarConversionEvent::Truncated),
     }
 }
 

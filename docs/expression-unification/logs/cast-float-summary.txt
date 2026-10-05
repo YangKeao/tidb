@@ -1,0 +1,60 @@
+cast-float-110 / R113 floating CAST batch; functional238/245 strict0 remaining7 unchanged.
+TiKV cwd /home/agent/tidb/expression-unification/tikv
+Native cwd /home/agent/tidb/expression-unification/tidb/rust
+Raw /home/agent/tidb/expression-unification/logs/cast-float-{id}.log
+Counts passed/failed/ignored/filtered; timings compile/test seconds.
+
+tikv-parser | 1/0/0/472 | 3.87/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_float_parse_keeps_byte_prefix_and_reported_diagnostics_separate -- --test-threads=1
+sha256 074610d01d6ce8e27821d491957e3d79c6c79f76604607ea34a2fb743db2309d
+
+tikv-decimal | 1/0/0/472 | 0.13/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_decimal_to_f64_keeps_visible_rounding_raw_sign_and_panic_domain -- --test-threads=1
+sha256 bcefd2e88c5bd347a59c16a230a4f5324a2b7e65f135ff30e0c1a01fdb01142b
+
+tikv-core | 2/0/0/994 | 17.97/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_cast_float -- --test-threads=1
+sha256 2554c19085ad1bbe61e9545b44c73fde5d57bd331625f70222d300c5aa1d5afb
+
+native-entry | 1/0/0/1720 | 21.34/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::cast_float -- --test-threads=1
+sha256 875fb9098b022523601a74aa41ab95df780688517f4f5d1aa40744d80d0b6db6
+
+native-cast | 21/0/0/1700 | 0.14/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib cast:: -- --test-threads=1
+sha256 318d2cbe82b5379365a2ce57649bf4a97371dfde02bbec3734c054ea1962d723
+
+native-original | 16/0/0/1705 | 0.15/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib test_cast_func -- --test-threads=1
+sha256 00cdae628279cf2a79dbd15161c6cdfb17b2acebcb7e93154fd96610f99a2b50
+
+native-datatype | 463/0/0/0 | 3.73/7.46 | exit0
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+sha256 d0259d931c1e8bd151ea3895de4db1975060d5db3948dce58af70cc336b2a650
+Whole native datatype library, not whole-Go-package transcreation.
+
+sql | 0/1/0/2252 | 31.04/0.02 | exit101 | RETAINED FAILED new-test attempt
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_float_cast_policy_preserves_sql_source_parsing_narrowing_and_error_order -- --exact --test-threads=1
+sha256 f923ac74aaa8225fe18153baa2bb3d64a3e982e881aefcf41c55e02b8d80d267
+New P1 col1 nested DOUBLE(FLOAT(string)) expected0.1 incorrectly. Test failed at that assertion; later planned SQL-original launch in this shell did NOT run.
+
+sql-original | 1/0/0/2252 | 0.15/0.03 | exit0 | separately launched after preceding failure
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_integer_cast_policy_preserves_sql_domains_complements_and_warning_order -- --exact --test-threads=1
+sha256 2fa728cfc3caa90fe80a4eae4b2cde695cec07543958c3f56e1fd82310c35572
+Original R11210SELECT test, not new probes.
+
+sql-retry | 1/0/0/2252 | 4.07/0.03 | exit0 | corrected NEW test only
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_float_cast_policy_preserves_sql_source_parsing_narrowing_and_error_order -- --exact --test-threads=1
+sha256 e25e80fc90ba782101437796f678918bc134adac6d95770149e3673941b1a273
+
+10 serial locked single-threaded matched launches,9GREEN+1retainedFAILED;0compilefailures/zero-match/interruptions;1retry.6newtests=SDK4/native2.5SDK+6nativeRustfiles,3newlivefiles.3SDK+244native oldexplicit test bodies byte-identical. No oldfixtures/oracles/observers changed. Existing vectorized String-to-DECIMAL UNION ignore remains unmodeled and was NOTselected, notpassed/repaired.
+
+Failure cause independently source-proven, NOT production correction or provider-output recording: scalar_function.rs1197–1217 eval_by_signature→coerce_to_ret_type at EACH function; outer eval2176 first completes inner.eval. same_eval_family156–173 explicitly rejects DatumReal under Float, coerce1072/1108 reaches datum_convert136–160 whose155–156 narrows Float32. Thus outerDOUBLE cannot recover the innerFLOAT's0.1 precision. Only the new test's expected nested result was corrected to the fixed f32 value0.10000000149011612, and directCAST(s AS DOUBLE)=0.1 added. Existing typedfinish/production source untouched; REDlog and its initial query remain. SQL no longer claims to observe core Other non-narrowing; SDK/bridge tests establish that narrower core contract.
+
+CorrectednewSQL10SELECT=4successfulprojections+1expectedtypederror pervector mode;36successfulcells+2expectederrorprobes. Storednumeric/Float32/Decimal/NULL, nestedFLOATtypedfinish versusdirectDOUBLE, prefixgarbage/bareequiet/leadingNUL/empty/lossyVARBINARY31FF, ALLJSONDisplay includingquotedstring/true/null, prefix+range overflowDOUBLE maxfinite withONE1292, andFLOAT'1e300x' typed1690/22003/evalorigin afterprior1292 withoutinventedsecond1690warning. ExactDouble22/-1 /NULLFloat12/-1/binary/signed headers andtypedfloatbits checked. Noinventedvalue-onlySQLroute/rootadmission/profiling claim.
+
+SDKnative_cast_float ownsordinaryDOUBLE/FLOAT plusDISTINCTvalue-onlyselector. Actual12kindprojection andoriginallazyJSONDisplay/default.to_f64(actualvalue,event/Err)/handle_truncate only; SDKdrops/foldsdatatype butpreserveshandlerE andcomputesConstantFloatOverflow text. OrdinaryLOSSYstrings/allJSONDisplay+nativebyteparser versusvalue-onlystrictUTF8/R111Decimalprefix/defaultJSON are notaliased. FLOATonlyReal/Float32narrow→infinity+0 orwidenNaN/−0; OthercorechecksrangeaftertruncanddoesNOTnarrow. Existingtypedfinish remainsseparate. Null/Min/Maxguardedpanic/outerguards unchanged; nocallerzone/type/dateFlags, noC4profile/carrier/admission. Zero-slot bridge witness onlyretainsoldpurebehavior.
+
+Hcodec/native_float_parse is oneowner byteprefix/conversion/reporteddiagnostics; originalwirecharscanner untouched. Reportedcallbackretainsfulltrimsubject andprefix→parse→range/Unhandled order, finaleventsingleTruncated; ordinaryCAST observesonlyfinalevent andusesindependenttrim→NUL→bytecap. NativeNumericPrefix/Converted/Diagnostics remainthinoriginalcarriers/contextactuators. Ref.to_f64 reusesvisibleformat+originalparse.expect includingrawsign/hiddenvisible/panic/largeInfinity; nativeDecimaldelegate, nohidden-coefficient shortcut orfiniteclamp substitution.
+
+238families/oldpartial/type/date/IN history retained; appendonepartialCAST+onetype record. latestfunctional in-control-106 unchanged; latesttype/partialCAST/runtime cast-float-110. OtherCAST/typed-vector/UNIONvariants/defaultdatatypeactuators,M2reader/value-word,sixcomplexcandidates/root/liveDAG/final remain. FullExpr/Unistore/workspace/lint/dev/bazel/release/exhaustive/perf/physical-transientheap/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR-ready unverified; R100expression4/unistore1 historicalunrepaired. NoGo/Bazel/Cargo/lock changes; unrelatedBUILD excluded. PairedDCO pushes/threeidenticalPlans; overallgoalactive.

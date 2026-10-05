@@ -25,6 +25,7 @@
 
 use crate::coerce::coerce_str;
 use crate::time_fn::calendar::parse_date_ymd;
+#[cfg(test)]
 use crate::Decimal;
 use crate::{Datum, EvalError};
 use tidb_ast::CastType;
@@ -182,34 +183,8 @@ pub(crate) fn eval_cast(
             i64::from(fsp.unwrap_or(0)),
         ),
         CastType::Year => cast_to_year(&v, ctx),
-        CastType::Double => {
-            let converted = str_to_real_for_cast(&v, ctx)?;
-            Ok(Datum::Real(converted))
-        }
-        // go's FLOAT cast narrows through float32, and the two operand kinds
-        // diverge (captured on the oracle): a TEXT value beyond the float32
-        // range is `types.ErrOverflow`'s "constant 1e+300 overflows float"
-        // (1690 / 22003), while a REAL constant's conversion answers 0
-        // (`CAST(1e300 AS FLOAT)` -> 0). Within range both answer the value.
-        CastType::Float => match v {
-            Datum::Real(x) | Datum::Float32(x) => {
-                let narrowed = x as f32;
-                if narrowed.is_infinite() {
-                    Ok(Datum::Real(0.0))
-                } else {
-                    Ok(Datum::Real(f64::from(narrowed)))
-                }
-            }
-            other => {
-                let converted = str_to_real_for_cast(&other, ctx)?;
-                if converted.abs() > f64::from(f32::MAX) {
-                    return Err(EvalError::ConstantFloatCastOverflow {
-                        value: tidb_datatype::format_float_g_shortest(converted),
-                    });
-                }
-                Ok(Datum::Real(converted))
-            }
-        },
+        CastType::Double => crate::tikv::eval_cast_double_in(ctx, &v).map(Datum::Real),
+        CastType::Float => crate::tikv::eval_cast_float_in(ctx, &v).map(Datum::Real),
         CastType::Vector { dimensions } => {
             let mut target = FieldType::new(FieldTypeCode::VectorFloat32);
             if let Some(dimensions) = dimensions {
@@ -520,67 +495,9 @@ fn binary_pad_truncate(s: &[u8], n: usize) -> Vec<u8> {
     bytes
 }
 
-/// Uses the SDK's source-compatible decimal prefix conversion.
-fn decimal_prefix(s: &str) -> Decimal {
-    Decimal::from_shared_parse(tidb_query_expr::native_cast_decimal_prefix(s))
-}
-
-/// `DOUBLE`/`FLOAT`'s own coercion: `Int`/`Decimal`/`Float` promote the
-/// same way `crate::ops::to_f64` already does for binary arithmetic; a
-/// `Str` source reuses [`decimal_prefix`]'s own numeric-prefix scan
-/// (matching `DECIMAL`'s own string coercion, NOT `SIGNED`'s narrower
-/// digit-run-only one — confirmed via `goeval`: `CAST('3.5e1abc' AS
-/// DOUBLE)` is `35`, consuming the `.` and exponent `SIGNED`'s own scan
-/// would stop before).
-/// Go `builtinCastStringAsRealSig.evalReal`
-/// (`pkg/expression/builtin_cast.go:1839`): the string operand goes through
-/// `types.StrToFloat(ctx, val, true)`, whose trailing-garbage scan raises 1292
-/// `Truncated incorrect DOUBLE value: '<trimmed>'` through the statement's
-/// truncate policy -- once per evaluated row, exactly where the coercion
-/// happens. Every non-string operand keeps the silent numeric conversion
-/// below; Go reaches this signature only for a string-eval-type source.
-///
-/// `is_function_cast=true` is what makes an EMPTY string parse as `0`
-/// silently (`getValidFloatPrefix`'s early return), matching the explicit
-/// `CAST` this arm implements.
-fn str_to_real_for_cast(v: &Datum, ctx: &dyn crate::Columns) -> Result<f64, EvalError> {
-    let (text, type_word) = match v {
-        Datum::String(value) => (
-            String::from_utf8_lossy(value.bytes()).into_owned(),
-            "DOUBLE",
-        ),
-        Datum::Bytes(value) => (String::from_utf8_lossy(value).into_owned(), "DOUBLE"),
-        // go's WrapWithCastAsReal over a JSON operand re-reads the document's
-        // MarshalJSON text as a float, and the failure names the value with
-        // the FLOAT word (`j + 0` over `{}` warns `Truncated incorrect FLOAT
-        // value: '{}'`), where the STRING sources keep the DOUBLE word.
-        Datum::Json(value) => (value.to_string(), "FLOAT"),
-        _ => return Ok(to_f64_for_cast(v)),
-    };
-    let converted = tidb_datatype::str_to_float(&text, true);
-    if converted.event.is_some() {
-        ctx.handle_truncate(&format!(
-            "Truncated incorrect {} value: '{}'",
-            type_word,
-            tidb_datatype::float_warning_input(&text)
-        ))?;
-    }
-    Ok(converted.value)
-}
-
+/// Uses the SDK's strict-UTF8, value-only profile, not the ordinary cast parser.
 pub(crate) fn to_f64_for_cast(v: &Datum) -> f64 {
-    match v {
-        Datum::Int(i) => *i as f64,
-        Datum::UInt(i) => *i as f64,
-        Datum::Decimal(d) => d.to_f64(),
-        Datum::Real(f) => *f,
-        Datum::String(s) => s.as_utf8().map(decimal_prefix).map_or(0.0, |d| d.to_f64()),
-        Datum::Bytes(s) => std::str::from_utf8(s)
-            .map(decimal_prefix)
-            .map_or(0.0, |d| d.to_f64()),
-        Datum::Null | Datum::MinNotNull | Datum::MaxValue => unreachable!("guarded by caller"),
-        other => other.to_f64().map_or(0.0, |converted| converted.value),
-    }
+    crate::tikv::eval_cast_float_value(v)
 }
 
 /// `CAST(... AS DATE)` and `CAST(... AS DATETIME)`: Go

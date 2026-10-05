@@ -9363,6 +9363,151 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn native_float_cast_policy_preserves_sql_source_parsing_narrowing_and_error_order() {
+    use tidb_datatype::FieldTypeCode;
+
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session.run("SET sql_mode=''").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE native_float_cast_policy_sql (r DOUBLE, f FLOAT, d DECIMAL(6,2), s VARCHAR(32), huge_r DOUBLE, null_text VARCHAR(32), prefix_text VARCHAR(32), bare_e VARCHAR(32), nul_text VARCHAR(32), empty_text VARCHAR(32), invalid_bytes VARBINARY(8), j_number JSON, j_string JSON, j_bool JSON, j_null JSON, overflow_text VARCHAR(32), float_overflow_text VARCHAR(32))")
+        .unwrap();
+    session
+        .run(r#"INSERT INTO native_float_cast_policy_sql VALUES (0.1,0.1,12.50,'0.1',1e300,NULL,' 12.5tail ','5e','\0 12','',0x31FF,'12.5','"12.5"','true','null','1e999x','1e300x')"#)
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // Ordinary DOUBLE/FLOAT policy, not a new runtime Head or admission gate.
+    // Each ScalarFunction completes its own typed finish before its parent
+    // evaluates: same_eval_family rejects Real under a Float result type,
+    // and datum_convert materializes Float32 via an f32 cast. Thus even a
+    // string's FLOAT result is narrowed before the outer DOUBLE sees it;
+    // direct DOUBLE parsing is the contrasting 0.1 result. The controller's
+    // earlier Other-source non-narrowing rule needs expression-unit evidence,
+    // not a SQL claim that this outer cast can bypass the inner typed finish.
+    let cases: [(&str, &[Option<f64>], &[bool], &[(u16, &str)]); 4] = [
+        (
+            "CAST(CAST(r AS FLOAT) AS DOUBLE),CAST(CAST(s AS FLOAT) AS DOUBLE),CAST(f AS DOUBLE),CAST(d AS DOUBLE),CAST(CAST(huge_r AS FLOAT) AS DOUBLE),CAST(null_text AS DOUBLE),CAST(null_text AS FLOAT),CAST(s AS DOUBLE)",
+            &[Some(0.10000000149011612), Some(0.10000000149011612), Some(0.10000000149011612), Some(12.5), Some(0.0), None, None, Some(0.1)],
+            &[false, false, false, false, false, false, true, false],
+            &[],
+        ),
+        (
+            "CAST(prefix_text AS DOUBLE),CAST(bare_e AS DOUBLE),CAST(nul_text AS DOUBLE),CAST(empty_text AS DOUBLE),CAST(invalid_bytes AS DOUBLE)",
+            &[Some(12.5), Some(5.0), Some(0.0), Some(0.0), Some(1.0)],
+            &[false, false, false, false, false],
+            &[
+                (1292, "Truncated incorrect DOUBLE value: '12.5tail'"),
+                (1292, "Truncated incorrect DOUBLE value: ''"),
+                (1292, "Truncated incorrect DOUBLE value: '1�'"),
+            ],
+        ),
+        (
+            "CAST(j_number AS DOUBLE),CAST(j_string AS DOUBLE),CAST(j_bool AS DOUBLE),CAST(j_null AS DOUBLE)",
+            &[Some(12.5), Some(0.0), Some(0.0), Some(0.0)],
+            &[false, false, false, false],
+            &[
+                (1292, "Truncated incorrect FLOAT value: '\"12.5\"'"),
+                (1292, "Truncated incorrect FLOAT value: 'true'"),
+                (1292, "Truncated incorrect FLOAT value: 'null'"),
+            ],
+        ),
+        (
+            "CAST(overflow_text AS DOUBLE)",
+            &[Some(f64::MAX)],
+            &[false],
+            &[(1292, "Truncated incorrect DOUBLE value: '1e999x'")],
+        ),
+    ];
+    // valid_float_prefix accepts a final bare e quietly; a leading NUL has
+    // no numeric prefix and also caps the warning's displayed subject to "".
+    // Bytes are lossy UTF-8 here, unlike the separate value-only helper.
+    // Every JSON source is reparsed from Display JSON: the quotes around a
+    // JSON string remain, and even true/null warn with FLOAT, not DOUBLE.
+    // Prefix plus range diagnostics still become ONE handle_truncate call.
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        for &(projection, expected, float_fields, warnings) in &cases {
+            let sql = format!("SELECT {projection} FROM native_float_cast_policy_sql");
+            let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap() else {
+                panic!("expected floating cast-policy rows: {sql}")
+            };
+            assert_eq!(columns.len(), expected.len(), "{sql}");
+            assert_eq!(rows.len(), 1, "{sql}");
+            assert_eq!(rows[0].len(), expected.len(), "{sql}");
+            for (index, expected) in expected.iter().enumerate() {
+                let field = &columns[index].1;
+                let (code, flen) = if float_fields[index] {
+                    (FieldTypeCode::Float, 12)
+                } else {
+                    (FieldTypeCode::Double, 22)
+                };
+                assert_eq!(field.code(), code, "{sql}/{index}");
+                assert_eq!((field.flen(), field.decimal()), (flen, -1));
+                assert!(!field.is_unsigned());
+                assert_eq!(field.charset_name(), "binary");
+                assert_eq!(field.collation_name(), "binary");
+                if let Some(expected) = expected {
+                    let Datum::Real(actual) = &rows[0][index] else {
+                        panic!("DOUBLE result changed carrier: {sql}/{index}")
+                    };
+                    assert_eq!(
+                        actual.to_bits(),
+                        expected.to_bits(),
+                        "{sql}/{vectorized}/{index}"
+                    );
+                } else {
+                    assert_eq!(rows[0][index], Datum::Null, "{sql}/{vectorized}/{index}");
+                }
+            }
+            assert_eq!(
+                warnings_of(&session),
+                warnings
+                    .iter()
+                    .map(|&(code, message)| (code, message.to_owned()))
+                    .collect::<Vec<_>>(),
+                "{sql}/{vectorized}"
+            );
+        }
+        let sql = "SELECT CAST(float_overflow_text AS FLOAT) FROM native_float_cast_policy_sql";
+        let error = session
+            .run_with_columns(sql)
+            .expect_err("text FLOAT must check its range after parsing");
+        match &error {
+            DriverError::Exec(tidb_executor::ExecError::Eval(
+                tidb_executor::EvalError::ConstantFloatCastOverflow { value },
+            )) => assert_eq!(value, "1e+300"),
+            other => panic!("expected source-specific FLOAT overflow: {other:?}"),
+        }
+        let mysql = error.to_mysql_error();
+        assert_eq!(mysql.code, 1690);
+        assert_eq!(mysql.state, *b"22003");
+        assert_eq!(mysql.message, "constant 1e+300 overflows float");
+        assert!(mysql.is_from_evaluation());
+        // SELECT's warning-level truncate callback precedes the range error.
+        // finish_statement_state excludes evaluation-origin 1690 from its
+        // appended error rows, so only the original DOUBLE warning remains.
+        // Error-level callback short-circuiting is an expression-unit concern.
+        assert_eq!(
+            warnings_of(&session),
+            vec![(
+                1292,
+                "Truncated incorrect DOUBLE value: '1e300x'".to_owned()
+            )],
+            "{sql}/{vectorized}"
+        );
+    }
+}
+
+#[test]
 fn native_integer_cast_policy_preserves_sql_domains_complements_and_warning_order() {
     use tidb_datatype::FieldTypeCode;
 
