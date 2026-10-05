@@ -29,11 +29,8 @@ use crate::time_fn::calendar::parse_date_ymd;
 use crate::Decimal;
 use crate::{Datum, EvalError};
 use tidb_ast::CastType;
-use tidb_datatype::{
-    number_to_duration, ConversionFlags, DatumValueError, EvalType, FieldType, FieldTypeCode,
-    ScalarConversionEvent, JSON_TYPE_CODE_DATE, JSON_TYPE_CODE_DATETIME, JSON_TYPE_CODE_DURATION,
-    JSON_TYPE_CODE_STRING, JSON_TYPE_CODE_TIMESTAMP,
-};
+#[cfg(test)]
+use tidb_datatype::{FieldType, FieldTypeCode};
 
 /// Internal marker used when a wrapper carries Go's `UnspecifiedLength`
 /// decimal scale through the AST-facing `CastType::Decimal` (whose fields are
@@ -111,73 +108,7 @@ fn cast_to_duration(
     ctx: &dyn crate::Columns,
     fsp: i64,
 ) -> Result<Datum, EvalError> {
-    let input = v.sql_string().unwrap_or_else(|_| "<binary>".to_owned());
-    let target = FieldType::new(FieldTypeCode::Duration).with_decimal(fsp);
-    let source_eval_type = source.map(FieldType::eval_type);
-
-    if let Datum::Json(value) = v {
-        if !matches!(
-            value.type_code(),
-            JSON_TYPE_CODE_DATE
-                | JSON_TYPE_CODE_DATETIME
-                | JSON_TYPE_CODE_TIMESTAMP
-                | JSON_TYPE_CODE_DURATION
-                | JSON_TYPE_CODE_STRING
-        ) {
-            ctx.handle_truncate(&format!(
-                "Truncated incorrect time value: '{}'",
-                tidb_datatype::warning_subject_byte_cap(&input)
-            ))?;
-            return Ok(Datum::Null);
-        }
-    }
-
-    let numeric = matches!(
-        source_eval_type,
-        Some(EvalType::Int | EvalType::Real | EvalType::Decimal)
-    ) || (source_eval_type.is_none()
-        && matches!(
-            v,
-            Datum::Int(_) | Datum::UInt(_) | Datum::Real(_) | Datum::Float32(_) | Datum::Decimal(_)
-        ));
-    let converted = if source_eval_type == Some(EvalType::Int)
-        || (source_eval_type.is_none() && matches!(v, Datum::Int(_) | Datum::UInt(_)))
-    {
-        let number = match v {
-            Datum::Int(value) => *value,
-            // Go's ETInt ABI is `int64`: an unsigned source reaches this
-            // signature through the same low-64-bit representation.
-            Datum::UInt(value) => *value as i64,
-            _ => return Err(EvalError::Unsupported("CAST AS TIME integer datum")),
-        };
-        number_to_duration(number, fsp)
-            .map(|converted| (Datum::new_duration(converted.value), converted.event))
-            .map_err(|error| DatumValueError::Comparison(error.to_string()))
-    } else {
-        v.convert_to_in(&target, ConversionFlags::default(), &ctx.time_zone())
-            .map(|converted| (converted.value, converted.event))
-    };
-
-    match converted {
-        Ok((value, None | Some(ScalarConversionEvent::RoundedToScale))) => Ok(value),
-        Ok((value, Some(_))) => {
-            ctx.handle_truncate(&format!(
-                "Truncated incorrect time value: '{}'",
-                tidb_datatype::warning_subject_byte_cap(&input)
-            ))?;
-            Ok(if numeric { Datum::Null } else { value })
-        }
-        Err(DatumValueError::Unsupported(_, _)) => {
-            Err(EvalError::Unsupported("CAST AS TIME source datum"))
-        }
-        Err(_) => {
-            ctx.handle_truncate(&format!(
-                "Truncated incorrect time value: '{}'",
-                tidb_datatype::warning_subject_byte_cap(&input)
-            ))?;
-            Ok(Datum::Null)
-        }
-    }
+    crate::tikv::eval_cast_duration_in(ctx, v, source, fsp)
 }
 
 /// Go `WrapWithCastAsDuration` applied to one builtin argument value.
@@ -190,18 +121,7 @@ pub(crate) fn cast_arg_as_duration(
     source: Option<&tidb_datatype::FieldType>,
     ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
-    if matches!(value, Datum::Duration(_) | Datum::Null) {
-        return Ok(value.clone());
-    }
-    let fsp = source
-        .filter(|field_type| {
-            matches!(
-                field_type.code(),
-                FieldTypeCode::Date | FieldTypeCode::Datetime | FieldTypeCode::Timestamp
-            )
-        })
-        .map_or(6, FieldType::decimal);
-    cast_to_duration(value, source, ctx, fsp)
+    crate::tikv::eval_cast_arg_as_duration_in(ctx, value, source)
 }
 
 /// `SIGNED`'s own coercion: `Int` is unchanged; `Decimal`/`Float` round to
@@ -542,11 +462,7 @@ pub(crate) fn parse_computed_duration(
     value: &Datum,
     ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
-    let fsp = value.sql_string().ok().map_or(0, |text| {
-        text.rsplit_once('.')
-            .map_or(0, |(_, fraction)| fraction.len().min(6) as i64)
-    });
-    cast_to_duration(value, None, ctx, fsp)
+    crate::tikv::eval_parse_computed_duration_in(ctx, value)
 }
 
 /// Go's `WrapWithCastAsTime(ctx, expr, types.NewFieldType(mysql.TypeDatetime))`

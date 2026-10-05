@@ -14,15 +14,17 @@
 
 //! Scalar conversion primitives transcreated from `pkg/types/convert.go`.
 
+#[cfg(test)]
+use crate::TimeType;
 use std::fmt;
+use tidb_query_datatype::codec::native_duration_convert as shared_duration_convert;
 
 use crate::{
-    parse_mysql_duration, parse_time_from_num, round_float, BinaryJSON, BinaryLiteral,
-    ConversionFlags, Decimal, FieldTypeCode, MySqlDuration, MysqlEnum, MysqlSet, Time, TimeType,
-    JSON_LITERAL_FALSE, JSON_LITERAL_NULL, JSON_TYPE_CODE_ARRAY, JSON_TYPE_CODE_DATE,
-    JSON_TYPE_CODE_DATETIME, JSON_TYPE_CODE_DURATION, JSON_TYPE_CODE_FLOAT64, JSON_TYPE_CODE_INT64,
-    JSON_TYPE_CODE_LITERAL, JSON_TYPE_CODE_OBJECT, JSON_TYPE_CODE_OPAQUE, JSON_TYPE_CODE_STRING,
-    JSON_TYPE_CODE_TIMESTAMP, JSON_TYPE_CODE_UINT64,
+    round_float, BinaryJSON, BinaryLiteral, ConversionFlags, Decimal, FieldTypeCode, MySqlDuration,
+    MysqlEnum, MysqlSet, Time, JSON_LITERAL_FALSE, JSON_LITERAL_NULL, JSON_TYPE_CODE_ARRAY,
+    JSON_TYPE_CODE_DATE, JSON_TYPE_CODE_DATETIME, JSON_TYPE_CODE_DURATION, JSON_TYPE_CODE_FLOAT64,
+    JSON_TYPE_CODE_INT64, JSON_TYPE_CODE_LITERAL, JSON_TYPE_CODE_OBJECT, JSON_TYPE_CODE_OPAQUE,
+    JSON_TYPE_CODE_STRING, JSON_TYPE_CODE_TIMESTAMP, JSON_TYPE_CODE_UINT64,
 };
 
 /// Failure returned with the source-compatible saturated conversion result.
@@ -827,13 +829,8 @@ pub fn str_to_datetime<TZ: chrono::TimeZone>(
     fsp: i64,
     timezone: &TZ,
 ) -> Result<Converted<Time>, crate::TimeError> {
-    crate::parse_time(input, TimeType::DateTime, fsp, false, true, false, timezone).map(|parsed| {
-        if parsed.truncated {
-            Converted::truncated(parsed.time)
-        } else {
-            Converted::exact(parsed.time)
-        }
-    })
+    shared_duration_convert::native_str_to_datetime(input, fsp, timezone)
+        .map(|value| from_shared_duration_conversion(value, time_from_shared_duration))
 }
 
 /// `StrToDuration`.
@@ -842,88 +839,148 @@ pub fn str_to_duration<TZ: chrono::TimeZone>(
     fsp: i64,
     timezone: &TZ,
 ) -> Result<Converted<DurationOrTime>, crate::DurationValueError> {
-    let input = input.trim();
-    let unsigned = input.strip_prefix('-').unwrap_or(input);
-    let integer_length = unsigned.find('.').unwrap_or(unsigned.len());
-    if integer_length >= 12 {
-        if let Ok(parsed) = str_to_datetime(input, fsp, timezone) {
-            return Ok(Converted {
-                value: DurationOrTime::Time(parsed.value),
-                event: parsed.event,
-            });
-        }
-    }
-    let parsed = parse_mysql_duration(input, fsp, timezone, true, false)?;
-    let duration = MySqlDuration::from_nanoseconds(parsed.nanoseconds(), parsed.fsp())
-        .map_err(crate::DurationParseError::InvalidFsp)
-        .map_err(crate::DurationValueError::Duration)?;
-    Ok(Converted {
-        value: DurationOrTime::Duration(duration),
-        event: parsed.event().and_then(|event| match event {
-            crate::DurationParseEvent::Truncated => Some(ScalarConversionEvent::Truncated),
-            crate::DurationParseEvent::Overflow(_) => Some(ScalarConversionEvent::Overflow(
-                overflow(input, FieldTypeCode::Duration),
-            )),
-            crate::DurationParseEvent::DateTimeFallback(_) => None,
-        }),
+    shared_duration_convert::native_str_to_duration(input, fsp, timezone).map(|value| {
+        from_shared_duration_conversion(value, |value| match value {
+            shared_duration_convert::NativeDurationOrTime::Duration(value) => {
+                DurationOrTime::Duration(MySqlDuration::from_raw_parts(
+                    value.nanoseconds,
+                    value.fsp,
+                ))
+            }
+            shared_duration_convert::NativeDurationOrTime::Time(value) => {
+                DurationOrTime::Time(time_from_shared_duration(value))
+            }
+        })
     })
 }
 
 /// `NumberToDuration`.
 pub fn number_to_duration(
-    mut number: i64,
+    number: i64,
     fsp: i64,
 ) -> Result<Converted<MySqlDuration>, crate::TimeError> {
-    const TIME_MAX_VALUE: i64 = 8_385_959;
-    // Go tests the two bounds separately, so it never negates a value it has
-    // not already ruled in range. `number.abs()` here made `i64::MIN` panic in
-    // debug and wrap to a negative "magnitude" in release, whose hour/minute
-    // fields then read false against the `> 838` / `>= 60` guards below.
-    if !(-TIME_MAX_VALUE..=TIME_MAX_VALUE).contains(&number) {
-        if number >= 10_000_000_000 {
-            if let Ok(parsed) = parse_time_from_num(
-                number,
-                TimeType::DateTime,
-                fsp,
-                false,
-                false,
-                true,
-                &chrono_tz::UTC,
-            ) {
-                return parsed.time.to_duration().map(Converted::exact);
+    shared_duration_convert::native_number_to_duration(number, fsp).map(|value| {
+        from_shared_duration_conversion(value, |value| {
+            MySqlDuration::from_raw_parts(value.nanoseconds, value.fsp)
+        })
+    })
+}
+
+fn time_from_shared_duration(
+    value: tidb_query_datatype::codec::mysql::time::NativeTemporalValue,
+) -> Time {
+    Time::from_raw_parts(crate::CoreTime::from_raw(value.raw), value.kind, value.fsp)
+}
+
+pub(crate) fn from_shared_duration_conversion<T, U>(
+    converted: shared_duration_convert::NativeDurationConverted<T>,
+    project: impl FnOnce(T) -> U,
+) -> Converted<U> {
+    Converted {
+        value: project(converted.value),
+        event: converted.event.map(|event| match event {
+            shared_duration_convert::NativeDurationConvertEvent::Truncated => {
+                ScalarConversionEvent::Truncated
             }
-        }
-        let mut duration = MySqlDuration::maximum(fsp).map_err(crate::TimeError::InvalidFsp)?;
-        if number < 0 {
-            duration = MySqlDuration::from_nanoseconds(-duration.nanoseconds(), fsp)
-                .map_err(crate::TimeError::InvalidFsp)?;
-        }
-        return Ok(Converted {
-            value: duration,
-            event: Some(ScalarConversionEvent::Overflow(overflow(
-                number,
-                FieldTypeCode::Duration,
-            ))),
-        });
+            shared_duration_convert::NativeDurationConvertEvent::Overflow(value) => {
+                ScalarConversionEvent::Overflow(ScalarConversionError::Overflow {
+                    value,
+                    target: FieldTypeCode::Duration,
+                })
+            }
+        }),
     }
-    let negative = number < 0;
-    number = number.abs();
-    let hour = number / 10_000;
-    let minute = (number / 100) % 100;
-    let second = number % 100;
-    if hour > 838 || minute >= 60 || second >= 60 {
-        // Go returns `ZeroDuration`, whose fsp is 0 -- NOT a zero of the
-        // requested fsp -- so the printed value is `00:00:00`, never
-        // `00:00:00.0`.
-        return Ok(Converted::truncated(
-            MySqlDuration::from_nanoseconds(0, 0).map_err(crate::TimeError::InvalidFsp)?,
-        ));
-    }
-    let sign = if negative { -1 } else { 1 };
-    let nanoseconds = sign * (hour * 3_600 + minute * 60 + second) * 1_000_000_000;
-    Ok(Converted::exact(
-        MySqlDuration::from_nanoseconds(nanoseconds, fsp).map_err(crate::TimeError::InvalidFsp)?,
-    ))
+}
+
+#[cfg(test)]
+#[test]
+fn duration_conversion_facades_keep_raw_rounding_numeric_errors_and_datetime_alternatives() {
+    use crate::{round_duration_fsp, DurationRoundError, FspError};
+    let rounded = round_duration_fsp(123, 6, 9).unwrap();
+    assert_eq!((rounded.nanoseconds(), rounded.fsp()), (123, 6));
+    assert_eq!(
+        round_duration_fsp(-1_500_000, 6, 3).unwrap().nanoseconds(),
+        -1_000_000
+    );
+    assert_eq!(
+        round_duration_fsp(-1_500_001, 6, 3).unwrap().nanoseconds(),
+        -2_000_000
+    );
+    assert_eq!(
+        round_duration_fsp(123, -2, -2),
+        Err(DurationRoundError::InvalidFsp(FspError::InvalidFsp(-2)))
+    );
+    assert_eq!(
+        round_duration_fsp(i64::MAX, 6, 0),
+        Err(DurationRoundError::Overflow)
+    );
+    assert_eq!(
+        DurationRoundError::Overflow.to_string(),
+        "rounded duration is out of range"
+    );
+    assert_eq!(format!("{:?}", DurationRoundError::Overflow), "Overflow");
+
+    let saturated = number_to_duration(i64::MIN, 6).unwrap();
+    assert_eq!(
+        (saturated.value.nanoseconds(), saturated.value.fsp()),
+        (-3_020_399_000_000_000, 6)
+    );
+    assert_eq!(
+        saturated.event,
+        Some(ScalarConversionEvent::Overflow(
+            ScalarConversionError::Overflow {
+                value: "-9223372036854775808".into(),
+                target: FieldTypeCode::Duration,
+            }
+        ))
+    );
+    let zero = number_to_duration(60, -2).unwrap();
+    assert_eq!((zero.value.nanoseconds(), zero.value.fsp()), (0, 0));
+    assert_eq!(zero.event, Some(ScalarConversionEvent::Truncated));
+    assert_eq!(
+        number_to_duration(0, -2),
+        Err(crate::TimeError::InvalidFsp(FspError::InvalidFsp(-2)))
+    );
+    let numeric_date = number_to_duration(20_190_412_123_456, 3).unwrap();
+    assert_eq!(
+        (numeric_date.value.nanoseconds(), numeric_date.value.fsp()),
+        (45_296_000_000_000, 3)
+    );
+    assert_eq!(numeric_date.event, None);
+
+    let datetime = str_to_datetime("2019-04-12 12:34:56", 3, &chrono_tz::UTC).unwrap();
+    assert_eq!(
+        datetime.value.core_time(),
+        crate::CoreTime::from_date(2019, 4, 12, 12, 34, 56, 0)
+    );
+    assert_eq!(
+        (datetime.value.kind(), datetime.value.fsp()),
+        (TimeType::DateTime, 3)
+    );
+    assert_eq!(datetime.event, None);
+    let alternative = str_to_duration(" 20190412123456 ", 3, &chrono_tz::UTC).unwrap();
+    assert_eq!(alternative.value, DurationOrTime::Time(datetime.value));
+    assert_eq!(alternative.event, None);
+    let duration = str_to_duration("12:34:56", 0, &chrono_tz::UTC).unwrap();
+    assert_eq!(
+        duration.value,
+        DurationOrTime::Duration(MySqlDuration::from_raw_parts(45_296_000_000_000, 0))
+    );
+    assert_eq!(duration.event, None);
+    let overflowed = str_to_duration(" 839:00:00 ", 0, &chrono_tz::UTC).unwrap();
+    assert_eq!(
+        overflowed.value,
+        DurationOrTime::Duration(MySqlDuration::from_raw_parts(3_020_399_000_000_000, 0))
+    );
+    assert_eq!(
+        overflowed.event,
+        Some(ScalarConversionEvent::Overflow(
+            ScalarConversionError::Overflow {
+                value: "839:00:00".into(),
+                target: FieldTypeCode::Duration,
+            }
+        ))
+    );
 }
 
 fn converted_result<T>(result: Result<T, (T, ScalarConversionError)>) -> Converted<T> {

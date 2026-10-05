@@ -23,9 +23,9 @@ use tidb_query_datatype::codec::mysql::json::{
     compare_native_binary_json, decode_native_binary_json_node, decode_native_binary_json_value,
     decode_native_json_escaped_unicode, encode_native_binary_json_node,
     native_binary_json_string_bytes, native_binary_json_type_name, native_json_opaque,
-    quote_native_json_string, unquote_native_json_escaped_string, unquote_native_json_string,
-    write_native_binary_json_text, NativeBinaryJsonEncodeError, NativeBinaryJsonError,
-    NativeJsonNode,
+    native_unquote_binary_json, quote_native_json_string, unquote_native_json_escaped_string,
+    unquote_native_json_string, write_native_binary_json_text, NativeBinaryJsonEncodeError,
+    NativeBinaryJsonError, NativeJsonError, NativeJsonNode,
 };
 
 use tidb_query_datatype::codec::mysql::time::NativeTemporalValue;
@@ -361,16 +361,12 @@ impl BinaryJSON {
 
     /// Implements JSON_UNQUOTE for one binary JSON value.
     pub fn unquote(&self) -> Result<String, BinaryJSONError> {
-        // Shared projection, escapes, and Display retain the SDK's original
-        // UTF-8 admission and possible second unescape (unlike SQL Json input).
-        match self.as_string() {
-            Some(bytes) => {
-                let text =
-                    std::str::from_utf8(bytes).map_err(|_| BinaryJSONError::InvalidBinary)?;
-                unquote_string(text)
+        native_unquote_binary_json(self.type_code, &self.value).map_err(|error| match error {
+            NativeJsonError::InvalidBinary => BinaryJSONError::InvalidBinary,
+            NativeJsonError::EmptyText | NativeJsonError::InvalidText => {
+                BinaryJSONError::InvalidText
             }
-            None => Ok(self.to_string()),
-        }
+        })
     }
 }
 

@@ -33,11 +33,11 @@ use crate::{
     convert_decimal_to_uint, convert_float_to_int, convert_float_to_uint, convert_int_to_int,
     convert_int_to_uint, convert_uint_to_int, convert_uint_to_uint, integer_signed_lower_bound,
     integer_signed_upper_bound, integer_unsigned_upper_bound, json_to_int, parse_enum,
-    parse_enum_value, parse_set, parse_set_value, parse_time, parse_time_from_num, str_to_duration,
-    truncate_float, BinaryJSON, BinaryLiteral, BinaryLiteralWidth, Charset, Collation,
-    ConversionFlags, Converted, CoreTime, Datum, DatumValueError, Decimal, DurationOrTime,
-    FieldType, FieldTypeCode, MySqlDuration, ScalarConversionError, ScalarConversionEvent,
-    SessionTimeZone, Time, TimeType, UNSPECIFIED_LENGTH,
+    parse_enum_value, parse_set, parse_set_value, parse_time, parse_time_from_num, truncate_float,
+    BinaryJSON, BinaryLiteral, BinaryLiteralWidth, Charset, Collation, ConversionFlags, Converted,
+    CoreTime, Datum, DatumValueError, Decimal, FieldType, FieldTypeCode, MySqlDuration,
+    ScalarConversionError, ScalarConversionEvent, SessionTimeZone, Time, TimeType,
+    UNSPECIFIED_LENGTH,
 };
 
 /// Direction used by reverse expression evaluation.
@@ -735,35 +735,41 @@ impl Datum {
         target: &FieldType,
         zone: &SessionTimeZone,
     ) -> Result<Converted<Self>, DatumValueError> {
-        let fsp = if target.decimal() == UNSPECIFIED_LENGTH {
-            0
-        } else {
-            target.decimal()
-        };
-        let converted = match self {
-            Self::Time(value) => exact(
-                value
-                    .to_duration()
-                    .map_err(conversion_error)?
-                    .round_frac(fsp)
-                    .map_err(conversion_error)?,
-            ),
-            Self::Duration(value) => exact(value.round_frac(fsp).map_err(conversion_error)?),
-            Self::String(value) => duration_from_text(value.as_utf8()?, fsp, zone)?,
-            Self::Bytes(value) => duration_from_text(std::str::from_utf8(value)?, fsp, zone)?,
-            Self::Int(_) | Self::UInt(_) | Self::Real(_) | Self::Float32(_) | Self::Decimal(_) => {
-                duration_from_text(
-                    &self.sql_string().map_err(|error| {
-                        DatumValueError::Comparison(format!("duration conversion failed: {error}"))
-                    })?,
-                    fsp,
-                    zone,
-                )?
-            }
-            Self::Json(value) => duration_from_text(&value.unquote()?, fsp, zone)?,
-            _ => return Err(DatumValueError::Unsupported(self.kind(), "duration")),
-        };
-        Ok(map_converted(Self::new_duration)(converted))
+        use tidb_query_datatype::codec::native_duration_convert::NativeDurationTargetError as Error;
+        let converted =
+            tidb_query_datatype::codec::native_duration_convert::native_convert_to_duration_target(
+                self.as_shared_json_input(),
+                target.decimal(),
+                zone,
+            )
+            .map_err(|error| match error {
+                Error::InvalidUtf8(error) => DatumValueError::InvalidUtf8(error),
+                Error::Unsupported => DatumValueError::Unsupported(self.kind(), "duration"),
+                Error::Time(error) => conversion_error(error),
+                Error::Round(error) => conversion_error(error),
+                Error::Duration(error) => conversion_error(error),
+                Error::JsonInvalidBinary => crate::BinaryJSONError::InvalidBinary.into(),
+                Error::JsonInvalidText => crate::BinaryJSONError::InvalidText.into(),
+                Error::SqlString(error) => {
+                    use tidb_query_datatype::codec::native_sql_string::NativeSqlStringError;
+                    let error = match error {
+                        NativeSqlStringError::InvalidUtf8(error) => {
+                            crate::DatumStringError::InvalidUtf8(error)
+                        }
+                        NativeSqlStringError::MinNotNull => {
+                            crate::DatumStringError::RangeSentinel(crate::DatumKind::MinNotNull)
+                        }
+                        NativeSqlStringError::MaxValue => {
+                            crate::DatumStringError::RangeSentinel(crate::DatumKind::MaxValue)
+                        }
+                    };
+                    DatumValueError::Comparison(format!("duration conversion failed: {error}"))
+                }
+            })?;
+        Ok(crate::convert::from_shared_duration_conversion(
+            converted,
+            |value| Self::new_duration(MySqlDuration::from_raw_parts(value.nanoseconds, value.fsp)),
+        ))
     }
 
     fn convert_to_year(
@@ -1418,20 +1424,158 @@ fn session_now(zone: &SessionTimeZone) -> chrono::DateTime<SessionTimeZone> {
     Utc::now().with_timezone(zone)
 }
 
-fn duration_from_text(
-    text: &str,
-    fsp: i64,
-    zone: &SessionTimeZone,
-) -> Result<Converted<MySqlDuration>, DatumValueError> {
-    let converted = str_to_duration(text, fsp, zone).map_err(conversion_error)?;
-    let value = match converted.value {
-        DurationOrTime::Duration(value) => value,
-        DurationOrTime::Time(value) => value.to_duration().map_err(conversion_error)?,
+#[cfg(test)]
+#[test]
+fn duration_target_facade_keeps_null_raw_storage_events_and_error_domains() {
+    let target = FieldType::new(FieldTypeCode::Duration);
+    let bad_fsp = target.clone().with_decimal(-2);
+    let convert = |value: &Datum, field: &FieldType| {
+        value.convert_to_in(field, ConversionFlags::default(), &SessionTimeZone::utc())
     };
-    Ok(Converted {
-        value,
-        event: converted.event,
-    })
+    assert_eq!(
+        convert(&Datum::Null, &bad_fsp).unwrap(),
+        Converted {
+            value: Datum::Null,
+            event: None
+        }
+    );
+    let raw = Datum::Duration(MySqlDuration::from_raw_parts(123, 6));
+    assert_eq!(
+        convert(&raw, &target.clone().with_decimal(6)).unwrap(),
+        Converted {
+            value: raw,
+            event: None
+        }
+    );
+    let rounded = convert(
+        &Datum::Duration(MySqlDuration::from_raw_parts(-1_500_000, 6)),
+        &target.clone().with_decimal(3),
+    )
+    .unwrap();
+    assert_eq!(
+        rounded,
+        Converted {
+            value: Datum::Duration(MySqlDuration::from_raw_parts(-1_000_000, 3)),
+            event: None
+        }
+    );
+    assert_eq!(
+        convert(
+            &Datum::Duration(MySqlDuration::from_raw_parts(1, 6)),
+            &bad_fsp
+        ),
+        Err(DatumValueError::Comparison("Invalid fsp -2".into()))
+    );
+    assert_eq!(
+        convert(
+            &Datum::Duration(MySqlDuration::from_raw_parts(i64::MAX, 6)),
+            &target
+        ),
+        Err(DatumValueError::Comparison(
+            "rounded duration is out of range".into()
+        ))
+    );
+
+    let calendar = Time::new(
+        CoreTime::from_date(2024, 2, 3, 1, 2, 3, 500_000),
+        TimeType::DateTime,
+        6,
+    )
+    .unwrap();
+    assert_eq!(
+        convert(&Datum::Time(calendar), &target).unwrap(),
+        Converted {
+            value: Datum::Duration(MySqlDuration::from_raw_parts(3_724_000_000_000, 0)),
+            event: None,
+        }
+    );
+    for value in [
+        Datum::new_string("20190412123456"),
+        Datum::Int(20_190_412_123_456),
+        Datum::Float32(123456.0),
+        Datum::Json(BinaryJSON::parse(r#""12:34:56""#).unwrap()),
+    ] {
+        assert_eq!(
+            convert(&value, &target).unwrap(),
+            Converted {
+                value: Datum::Duration(MySqlDuration::from_raw_parts(45_296_000_000_000, 0)),
+                event: None,
+            }
+        );
+    }
+    let saturated = convert(&Datum::new_string(" 839:00:00 "), &target).unwrap();
+    assert_eq!(
+        saturated.value,
+        Datum::Duration(MySqlDuration::from_raw_parts(3_020_399_000_000_000, 0))
+    );
+    assert_eq!(
+        saturated.event,
+        Some(ScalarConversionEvent::Overflow(
+            ScalarConversionError::Overflow {
+                value: "839:00:00".into(),
+                target: FieldTypeCode::Duration,
+            }
+        ))
+    );
+    assert!(matches!(
+        convert(&Datum::new_bytes(vec![0xff]), &bad_fsp),
+        Err(DatumValueError::InvalidUtf8(_))
+    ));
+    assert_eq!(
+        convert(&Datum::MinNotNull, &bad_fsp),
+        Err(DatumValueError::Unsupported(
+            crate::DatumKind::MinNotNull,
+            "duration"
+        ))
+    );
+    assert_eq!(
+        convert(
+            &Datum::Json(BinaryJSON::from_encoded_parts(
+                crate::JSON_TYPE_CODE_STRING,
+                vec![1, 0xff]
+            )),
+            &target
+        ),
+        Err(DatumValueError::Json(crate::BinaryJSONError::InvalidBinary))
+    );
+    assert_eq!(
+        convert(
+            &Datum::Json(BinaryJSON::from_encoded_parts(
+                crate::JSON_TYPE_CODE_STRING,
+                vec![3, b'"', b'\\', b'"']
+            )),
+            &target
+        ),
+        Err(DatumValueError::Json(crate::BinaryJSONError::InvalidText))
+    );
+    // Unknown tags display as empty text; duration parsing then rejects the
+    // empty input as InvalidFormat, mapped to the original Comparison message.
+    let malformed_json = BinaryJSON::from_encoded_parts(255, Vec::new());
+    assert_eq!(malformed_json.unquote().unwrap(), "");
+    let malformed = Datum::Json(malformed_json);
+    assert_eq!(
+        convert(&malformed, &target),
+        Err(DatumValueError::Comparison(
+            "invalid duration format".into()
+        ))
+    );
+    // A root nonfinite double, unlike an unknown tag, returns fmt::Error from
+    // JSON Display and retains to_string's formatting-error panic.
+    let nonfinite_json = BinaryJSON::from_encoded_parts(
+        crate::JSON_TYPE_CODE_FLOAT64,
+        f64::INFINITY.to_le_bytes().to_vec(),
+    );
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| nonfinite_json.unquote()))
+            .is_err()
+    );
+    let nonfinite = Datum::Json(nonfinite_json);
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| convert(
+            &nonfinite, &target
+        )))
+        .is_err()
+    );
 }
 
 fn year_from_text(

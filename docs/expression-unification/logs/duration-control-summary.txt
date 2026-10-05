@@ -1,0 +1,58 @@
+duration-control-118 / R121
+Raw logs: /home/agent/tidb/expression-unification/logs/duration-control-{id}.log
+20 launches:19 matched GREEN,1 matched RED; zero compile failures/zero-matches/interruptions. Final10 filters GREEN. Nine new tests (SDK5/native4);6 old SDK and276 old native test bodies unchanged. SDK6/native9 live Rust files,4 new files. Functional238/245, strict0, remaining7 unchanged.
+
+Commands (each actual launch also redirected through tee to its distinct raw log; all --locked and --test-threads=1):
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv-foundation, final-tikv-foundation]
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_duration_convert -- --test-threads=1
+[final-tikv-unquote]
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib binary_json_unquote_keeps_projection_errors_second_unescape_and_display_panic -- --test-threads=1
+[tikv-controller, final-tikv-controller]
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_cast_duration -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype, native-datatype-corrected, final-native-datatype]
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-controller, final-native-controller]
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::cast_duration_tests:: -- --test-threads=1
+[native-original, final-native-original]
+../../tools/cargo-tidb test --locked -p tidb-expr --lib cast::tests::cast_time_dispatches_every_supported_source_domain -- --exact --test-threads=1
+[native-signatures, final-native-signatures]
+../../tools/cargo-tidb test --locked -p tidb-expr --lib test_cast_func_sig_as_duration -- --test-threads=1
+[native-wrapping, final-native-wrapping]
+../../tools/cargo-tidb test --locked -p tidb-expr --lib test_wrap_with_cast_as_duration -- --test-threads=1
+[sql, final-sql]
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_duration_control_preserves_sql_source_rounding_overflow_and_storage -- --exact --test-threads=1
+[sql-original, final-sql-original]
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_duration_helpers_preserve_stored_cast_and_extract_source_policy -- --exact --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+Initial stage BEFORE canonical unquote ownership cleanup:
+tikv-foundation 2/0/0/486 4.99/0.00 0 e75262dbc5180af3754ba1e9305eab4bbf5747f726d1a184a55fc1b316a694d5
+tikv-controller 2/0/0/1004 18.89/0.00 0 9298bdb89365ceee088a890791746800f4a5a515fa57f85435218ef3d19c1d73
+native-datatype 471/1/0/0 4.10/7.36 101 a37badb45807f87ad4bd08d9fc8e42aa222b7edd808ff05b117e52d97349e494
+native-controller 1/0/0/1725 22.62/0.00 0 d19a54ab55c5ee46b699b28ccd8112660867b904269e8f7d6ccfe71b20b37222
+native-original 1/0/0/1725 0.21/0.00 0 0d57947e70849c0019064ebb41b4e8eb647d691f9d7cd0aaf512ee5e97af16b0
+native-signatures 1/0/0/1725 0.15/0.00 0 490ca9d711b75f79dd2df4c5da2a0403c72ae485d9117b6c7e27ed45c7fc2216
+native-wrapping 1/0/0/1725 0.13/0.00 0 3190a3d2491cca9d0bf558c96eac4a3a5f41ab5db0fb42b60fc104fb31b8dae8
+sql 1/0/0/2260 39.25/0.03 0 a2c070256fd18f63a63abde336840bc7081a37338cd1d14582d8bb8446e8dddd
+sql-original 1/0/0/2260 0.17/0.02 0 ccd369d0f032d299bae05cde5a84474338c92172cba5838b95a68d978458dde9
+native-datatype-corrected 472/0/0/0 1.43/7.34 0 1e40ef5ed68d18eeb09eee2247d5ef7cdc8ac4afc0704bdc3ed8768530163b31
+Final code AFTER canonical unquote cleanup and supplemental assertions:
+final-tikv-foundation 2/0/0/487 2.93/0.00 0 6d3f828f853c0296e3bd61cc4d1464ac1d72309e44fdc476a4b63fcca13082ad
+final-tikv-unquote 1/0/0/488 0.14/0.00 0 11dcffe33fc3df66ad2fd7106c80bfbe252b11ff9ec8bbb0acc7456834114d7f
+final-tikv-controller 2/0/0/1004 11.81/0.00 0 a5db4c4c796213dbc55ebabbbc88872bed61c56eb8388b4c7d0d8215bcc30f25
+final-native-datatype 472/0/0/0 3.05/7.83 0 535ae84cec9eff90bcd56538370e85d2a8f0d72ae777415b856ac2213d5c33f7
+final-native-controller 1/0/0/1725 15.72/0.00 0 9f8fa75832589beda32d804625d628dfe995d93cf03e78d00ff18e83e2d6ed1d
+final-native-original 1/0/0/1725 0.13/0.00 0 a6598d8f1b637545a52e45a87b4c287bc4084ba529ea5313723bfecc14720071
+final-native-signatures 1/0/0/1725 0.13/0.00 0 dcfc84ccadadc9a68101c6ddc8483167e34b5a5470beb575ada1a7e1fe050018
+final-native-wrapping 1/0/0/1725 0.13/0.00 0 7337c0c4b53bab4c2c9b2f16013fa0a38b9649e973cc8f38b53e65fcd3e2d475
+final-sql 1/0/0/2260 21.86/0.03 0 b61fa92c87ee47dcc3aa97165410bff842259f8197ad4f0db2794fd2aa16c97f
+final-sql-original 1/0/0/2260 0.15/0.02 0 fced7582720ad7e7c407904b654dc84b6d1dfb3dbe5f846f8cff05d8e6927d4e
+
+Incident: new datatype test incorrectly expected unknown JSON tag255/empty payload to panic. Source proves NativeBinaryJSON display swallows decode failure to empty text, then native duration parser InvalidFormat displays 'invalid duration format', mapped to Comparison. Corrected only the new expectation; added root JSON +Inf as actual formatting-panic fixture. No production fix or old oracle change, no actual-output recording. Initial RED and corrected pass retained. Later review removed duplicated unquote selector, added1SDK test and native public-unquote assertions, then reran all final10 filters. Prior passes are not final-code claims.
+
+New SQL:1test,8SELECTs=4projections*2vector modes,36cells=30Duration+6NULL;2fixtureINSERTs. Per mode5 ordered1292 warnings in source matrix; storage INSERT separately2 ordered1264 warnings. Literal raw nanoseconds/FSP3/display and Duration14/3 binary/BINARY signed headers. OrdinaryCAST and actual DMLtarget only; argument/computed/strict effects and byte-cap are direct-unit/old-gate scope. No resource/projection-seal/physical allocation evidence.
+
+Static review:6oldSDK/276oldnative test bodies preserved; exact native changed functions limited to duration3controllers/round/number/strDatetime/strDuration/target/deletedtexthelper/unquote plus moved RoundError Display. Other YEAR/DATE/coerce/calendar/generic engines/PB/AST/19view and old JSON text primitive bodies unchanged. Formatter and git diff --check passed. No Go/Bazel/Cargo.lock changes, unrelated BUILD excluded.
+Not run: full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/TiFlash/FIPS/performance/physical heap/stack/OOM/allocator/dual-tzdata/whole-Go-package/PR acceptance. Historical R1004+1 failures not repaired. No new family/profile credit or overall completion.

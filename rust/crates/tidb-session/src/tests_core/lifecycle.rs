@@ -9363,6 +9363,159 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn native_duration_control_preserves_sql_source_rounding_overflow_and_storage() {
+    use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
+
+    let mut session = Session::new();
+    session
+        .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+        .unwrap();
+    session.run("SET sql_mode=''").unwrap();
+    session.run("SET time_zone='+00:00'").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE native_duration_control_sql (i BIGINT, u BIGINT UNSIGNED, r DOUBLE, d DECIMAL(12,3), s VARCHAR(32), overflow_i BIGINT, overflow_r DOUBLE, overflow_d DECIMAL(12,3), overflow_s VARCHAR(32), prefix_s VARCHAR(32), negative_tie TIME(6), negative_past TIME(6), negative_text VARCHAR(32), datetime_i BIGINT, datetime_s VARCHAR(32))")
+        .unwrap();
+    session
+        .run("INSERT INTO native_duration_control_sql VALUES (125959,18446744073709551615,125959.125,125959.125,'125959.125',8390000,8390000,8390000.000,'8390000','1x','-00:00:00.001500','-00:00:00.001501','-00:00:00.001500',20240315020304,'240315020304')")
+        .unwrap();
+    session
+        .run("CREATE TABLE native_duration_storage_sql (from_number TIME(3), from_text TIME(3), rounded TIME(3))")
+        .unwrap();
+    session
+        .run(
+            "INSERT INTO native_duration_storage_sql VALUES (8390000,'8390000','-00:00:00.001500')",
+        )
+        .unwrap();
+    // The datatype write target retains its clamped value; non-strict DML
+    // decorates the two overflow events as column-scoped 1264 warnings.
+    assert_eq!(
+        warnings_of(&session),
+        vec![
+            (
+                1264,
+                "Out of range value for column 'from_number' at row 1".to_owned()
+            ),
+            (
+                1264,
+                "Out of range value for column 'from_text' at row 1".to_owned()
+            ),
+        ]
+    );
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    type Cell = Option<(i64, &'static str)>;
+    let cases: [(&str, &[Cell], &[(u16, &str)]); 4] = [
+        (
+            "SELECT CAST(i AS TIME(3)),CAST(u AS TIME(3)),CAST(r AS TIME(3)),CAST(d AS TIME(3)),CAST(s AS TIME(3)) FROM native_duration_control_sql",
+            &[
+                Some((46_799_000_000_000, "12:59:59.000")),
+                Some((-1_000_000_000, "-00:00:01.000")),
+                Some((46_799_125_000_000, "12:59:59.125")),
+                Some((46_799_125_000_000, "12:59:59.125")),
+                Some((46_799_125_000_000, "12:59:59.125")),
+            ],
+            &[],
+        ),
+        (
+            "SELECT CAST(overflow_i AS TIME(3)),CAST(overflow_r AS TIME(3)),CAST(overflow_d AS TIME(3)),CAST(overflow_s AS TIME(3)),CAST(prefix_s AS TIME(3)) FROM native_duration_control_sql",
+            &[
+                None, None, None,
+                Some((3_020_399_000_000_000, "838:59:59.000")),
+                Some((1_000_000_000, "00:00:01.000")),
+            ],
+            &[
+                (1292, "Truncated incorrect time value: '8390000'"),
+                (1292, "Truncated incorrect time value: '8390000'"),
+                (1292, "Truncated incorrect time value: '8390000.000'"),
+                (1292, "Truncated incorrect time value: '8390000'"),
+                (1292, "Truncated incorrect time value: '1x'"),
+            ],
+        ),
+        (
+            "SELECT CAST(negative_tie AS TIME(3)),CAST(negative_past AS TIME(3)),CAST(negative_text AS TIME(3)),CAST(datetime_i AS TIME(3)),CAST(datetime_s AS TIME(3)) FROM native_duration_control_sql",
+            &[
+                Some((-1_000_000, "-00:00:00.001")),
+                Some((-2_000_000, "-00:00:00.002")),
+                Some((-2_000_000, "-00:00:00.002")),
+                Some((7_384_000_000_000, "02:03:04.000")),
+                Some((7_384_000_000_000, "02:03:04.000")),
+            ],
+            &[],
+        ),
+        (
+            "SELECT from_number,from_text,rounded FROM native_duration_storage_sql",
+            &[
+                Some((3_020_399_000_000_000, "838:59:59.000")),
+                Some((3_020_399_000_000_000, "838:59:59.000")),
+                Some((-2_000_000, "-00:00:00.002")),
+            ],
+            &[],
+        ),
+    ];
+    // Integer TIME casts use the low-64-bit ETInt representation (UInt::MAX
+    // becomes -1), not the datatype write target's numeric stringification.
+    // Numeric cast errors discard the clamp as NULL; text keeps best effort.
+    // Raw TIME rounding resolves a negative half toward positive infinity,
+    // whereas text first rounds the positive fraction, then applies its sign.
+    // Both the >=1e10 numeric datetime fallback and the 12-digit text-first
+    // datetime route keep only the clock. These are fixed source-derived
+    // nanoseconds/text literals, not outputs of a duration parser/constructor.
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        for &(sql, expected, warnings) in &cases {
+            let StmtOutput::Rows { columns, rows } = session.run_with_columns(sql).unwrap() else {
+                panic!("expected duration control/storage rows: {sql}")
+            };
+            assert_eq!(columns.len(), expected.len(), "{sql}");
+            assert_eq!(rows.len(), 1, "{sql}");
+            assert_eq!(rows[0].len(), expected.len(), "{sql}");
+            for (index, expected) in expected.iter().enumerate() {
+                let field = &columns[index].1;
+                assert_eq!(field.code(), FieldTypeCode::Duration, "{sql}/{index}");
+                assert_eq!((field.flen(), field.decimal()), (14, 3), "{sql}/{index}");
+                assert_eq!(field.charset_name(), "binary");
+                assert_eq!(field.collation_name(), "binary");
+                assert!(field.has_flag(FieldTypeFlags::BINARY));
+                assert!(!field.is_unsigned());
+                if let Some((nanoseconds, text)) = expected {
+                    let Datum::Duration(value) = &rows[0][index] else {
+                        panic!("lost duration carrier: {sql}/{vectorized}/{index}")
+                    };
+                    assert_eq!(
+                        value.nanoseconds(),
+                        *nanoseconds,
+                        "{sql}/{vectorized}/{index}"
+                    );
+                    assert_eq!(value.fsp(), 3, "{sql}/{vectorized}/{index}");
+                    assert_eq!(value.to_string(), *text, "{sql}/{vectorized}/{index}");
+                } else {
+                    assert_eq!(rows[0][index], Datum::Null, "{sql}/{vectorized}/{index}");
+                }
+            }
+            assert_eq!(
+                warnings_of(&session),
+                warnings
+                    .iter()
+                    .map(|&(code, message)| (code, message.to_owned()))
+                    .collect::<Vec<_>>(),
+                "{sql}/{vectorized}"
+            );
+        }
+    }
+    // Eight SELECTs: ordinary duration casts and the actual DML TIME target.
+    // Argument/computed wrappers, strict-error upgrades and warning byte caps
+    // retain separate unit coverage; no new Head/zero-slot claim is made.
+}
+
+#[test]
 fn native_json_source_policy_preserves_year_unsigned_and_hybrid_name_modes() {
     use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
 

@@ -27,6 +27,12 @@ pub(crate) use bounded_staleness::eval_bounded_staleness_in;
 mod case_control;
 mod cast_decimal;
 pub(crate) use cast_decimal::{eval_cast_decimal_in, report_cast_decimal_input_in};
+mod cast_duration;
+pub(crate) use cast_duration::{
+    eval_cast_arg_as_duration_in, eval_cast_duration_in, eval_parse_computed_duration_in,
+};
+#[cfg(test)]
+mod cast_duration_tests;
 mod cast_float;
 pub(crate) use cast_float::{eval_cast_double_in, eval_cast_float_in, eval_cast_float_value};
 mod cast_integer;

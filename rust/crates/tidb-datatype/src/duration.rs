@@ -14,7 +14,7 @@
 
 //! MySQL `TIME` duration range policy from `pkg/types/time.go`.
 
-use std::{cmp::Ordering, error::Error, fmt};
+use std::{cmp::Ordering, fmt};
 
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, TimeZone};
 pub use tidb_query_datatype::codec::mysql::duration::{
@@ -346,24 +346,7 @@ impl RoundedDuration {
 }
 
 /// An error from source-compatible duration FSP rounding.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DurationRoundError {
-    /// The target precision follows `CheckFsp`'s invalid-negative path.
-    InvalidFsp(FspError),
-    /// The rounded nanosecond value does not fit an `i64` duration.
-    Overflow,
-}
-
-impl fmt::Display for DurationRoundError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidFsp(error) => error.fmt(formatter),
-            Self::Overflow => formatter.write_str("rounded duration is out of range"),
-        }
-    }
-}
-
-impl Error for DurationRoundError {}
+pub use tidb_query_datatype::codec::native_duration_convert::NativeDurationRoundError as DurationRoundError;
 
 /// Result of Go `TruncateOverflowMySQLTime`'s clamp operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -467,25 +450,15 @@ pub fn round_duration_fsp(
     current_fsp: i64,
     target_fsp: i64,
 ) -> Result<RoundedDuration, DurationRoundError> {
-    let fsp = check_fsp(target_fsp).map_err(DurationRoundError::InvalidFsp)?;
-    if current_fsp == fsp {
-        return Ok(RoundedDuration { nanoseconds, fsp });
-    }
-    let unit = 10_i128.pow((9 - fsp) as u32);
-    let half = unit / 2;
-    let value = i128::from(nanoseconds);
-    let rounded_units = if value >= 0 {
-        (value + half) / unit
-    } else {
-        // Rust integer division truncates toward zero. Subtracting one from
-        // the positive magnitude before division makes an exact half round
-        // toward zero while any remainder strictly above half rounds away.
-        let magnitude = -value;
-        -((magnitude + half - 1) / unit)
-    };
-    let rounded = rounded_units * unit;
-    let nanoseconds = i64::try_from(rounded).map_err(|_| DurationRoundError::Overflow)?;
-    Ok(RoundedDuration { nanoseconds, fsp })
+    tidb_query_datatype::codec::native_duration_convert::native_round_duration_fsp(
+        nanoseconds,
+        current_fsp,
+        target_fsp,
+    )
+    .map(|value| RoundedDuration {
+        nanoseconds: value.nanoseconds,
+        fsp: value.fsp,
+    })
 }
 
 #[cfg(test)]
