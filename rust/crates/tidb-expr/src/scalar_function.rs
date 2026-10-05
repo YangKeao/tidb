@@ -3526,37 +3526,22 @@ fn cast_numeric_argument_in_mode(
         value
     };
     let value = if let (EvalType::Decimal, Datum::Real(real)) = (target, &value) {
-        // Every integral double in [-2^53, 2^53] has the same exact integer
-        // decimal as Go's shortest-float formatting followed by FromString.
-        // Negative zero keeps the source parser's sign behavior below.
-        if real.abs() <= 9_007_199_254_740_992.0
-            && real.fract() == 0.0
-            && (*real != 0.0 || !real.is_sign_negative())
-        {
-            let value = Datum::Decimal(tidb_datatype::Decimal::from_int(*real as i64));
-            let target = numeric_decimal_cast_type(field);
-            return if target.decimal() < 0 {
-                Ok(value)
-            } else {
-                convert_numeric_datum(value, &target, ctx)
-            };
-        }
-        let (decimal, error) = tidb_datatype::MyDecimal::from_float64(*real);
-        match error {
-            Some(tidb_datatype::DecimalError::Overflow) => {
-                if ctx.truncate_level() == crate::context::ErrorLevel::Error {
-                    return Err(EvalError::Conversion(tidb_datatype::ERR_OVERFLOW.clone()));
-                }
-                ctx.handle_truncate(&format!(
-                    "Truncated incorrect DECIMAL value: '{}'",
-                    numeric_expression_text(expression, true, ctx)
-                        .unwrap_or_else(|| tidb_datatype::format_float_g_shortest(*real))
-                ))?;
+        use tidb_query_expr::NativeNumericArgumentLevel;
+        let state = tidb_query_expr::native_numeric_argument_real_decimal_prepare(*real, || {
+            match ctx.truncate_level() {
+                crate::ErrorLevel::Error => NativeNumericArgumentLevel::Error,
+                crate::ErrorLevel::Warn => NativeNumericArgumentLevel::Warn,
+                crate::ErrorLevel::Ignore => NativeNumericArgumentLevel::Ignore,
             }
-            Some(tidb_datatype::DecimalError::Truncated) | None => {}
-            Some(_) => return Err(EvalError::Conversion(tidb_datatype::ERR_BAD_NUMBER.clone())),
-        }
-        Datum::Decimal(tidb_datatype::Decimal::from_my_decimal(&decimal))
+        })
+        .map_err(|kind| EvalError::Conversion(numeric_argument_conversion_error(kind)))?;
+        let subject = if state.requires_expression_subject() {
+            numeric_expression_text(expression, true, ctx)
+        } else {
+            None
+        };
+        let decimal = state.finish(subject.as_deref(), |message| ctx.handle_truncate(message))?;
+        Datum::Decimal(tidb_datatype::Decimal::from_shared_parse(decimal))
     } else {
         value
     };
@@ -3568,11 +3553,14 @@ fn cast_numeric_argument_in_mode(
     // IntAsDecimal constructs the decimal before applying source metadata.
     // ProduceDecWithSpecifiedTp is a no-op when scale is unspecified.
     if target == EvalType::Decimal && target_field.decimal() < 0 {
-        return Ok(match value {
-            Datum::Int(value) => Datum::Decimal(tidb_datatype::Decimal::from_int(value)),
-            Datum::UInt(value) => Datum::Decimal(tidb_datatype::Decimal::from_uint(value)),
-            value => value,
-        });
+        return Ok(
+            match tidb_query_expr::native_numeric_argument_unscaled_integer(
+                value.as_shared_numeric_input(),
+            ) {
+                Some(decimal) => Datum::Decimal(tidb_datatype::Decimal::from_shared_parse(decimal)),
+                None => value,
+            },
+        );
     }
     convert_numeric_datum(value, &target_field, ctx)
 }
@@ -3580,6 +3568,17 @@ fn cast_numeric_argument_in_mode(
 #[cfg(test)]
 #[path = "tikv/numeric_argument_tests.rs"]
 mod numeric_argument_tests;
+
+fn numeric_argument_conversion_error(
+    kind: tidb_query_expr::NativeNumericArgumentConversionError,
+) -> tidb_error::terror::TerrorError {
+    use tidb_query_expr::NativeNumericArgumentConversionError as ConversionError;
+    match kind {
+        ConversionError::Truncated => tidb_datatype::ERR_TRUNCATED.clone(),
+        ConversionError::Overflow => tidb_datatype::ERR_OVERFLOW.clone(),
+        ConversionError::BadNumber => tidb_datatype::ERR_BAD_NUMBER.clone(),
+    }
+}
 
 fn cast_string_numeric_argument(
     field: &FieldType,
@@ -3591,15 +3590,7 @@ fn cast_string_numeric_argument(
     if target == EvalType::Real {
         return crate::ops::bytes_to_f64(bytes, ctx).map(Datum::Real);
     }
-    use tidb_query_expr::{
-        NativeNumericArgumentConversionError as ConversionError, NativeNumericArgumentError,
-        NativeNumericArgumentLevel,
-    };
-    let conversion_error = |kind| match kind {
-        ConversionError::Truncated => tidb_datatype::ERR_TRUNCATED.clone(),
-        ConversionError::Overflow => tidb_datatype::ERR_OVERFLOW.clone(),
-        ConversionError::BadNumber => tidb_datatype::ERR_BAD_NUMBER.clone(),
-    };
+    use tidb_query_expr::{NativeNumericArgumentError, NativeNumericArgumentLevel};
     let decimal = tidb_query_expr::native_numeric_argument_string_to_decimal(
         bytes,
         vectorized,
@@ -3610,14 +3601,14 @@ fn cast_string_numeric_argument(
         },
         |message| ctx.handle_truncate(message),
         |kind| {
-            let warning = conversion_error(kind).to_sql_error();
+            let warning = numeric_argument_conversion_error(kind).to_sql_error();
             ctx.append_warning(warning.code, &warning.message);
         },
     )
     .map_err(|error| match error {
         NativeNumericArgumentError::Effect(error) => error,
         NativeNumericArgumentError::Conversion(kind) => {
-            EvalError::Conversion(conversion_error(kind))
+            EvalError::Conversion(numeric_argument_conversion_error(kind))
         }
     })?;
     let value = Datum::Decimal(tidb_datatype::Decimal::from_shared_parse(decimal));

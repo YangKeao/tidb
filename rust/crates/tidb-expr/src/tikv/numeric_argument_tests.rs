@@ -351,3 +351,204 @@ fn numeric_argument_shape_and_json_integer_keep_effective_types_and_utc_independ
         ["Truncated incorrect INTEGER value: '\"12\"'".to_owned()]
     );
 }
+
+#[test]
+fn real_decimal_argument_keeps_lazy_subject_error_precedence_and_final_storage() {
+    use super::cast_numeric_argument;
+    use crate::{
+        constant::{Constant, ParamMarker},
+        expression::Expression,
+        Columns, Datum, ErrorLevel, EvalError,
+    };
+    use std::cell::{Cell, RefCell};
+    use tidb_datatype::{
+        Collation, ConversionFlags, Decimal, EvalType, FieldType, FieldTypeCode, FieldTypeFlags,
+        MysqlEnum, SessionTimeZone, ERR_BAD_NUMBER, ERR_OVERFLOW,
+    };
+
+    struct Session {
+        level: Cell<ErrorLevel>,
+        veto: Cell<bool>,
+        subject_error: Cell<bool>,
+        calls: RefCell<Vec<&'static str>>,
+        messages: RefCell<Vec<String>>,
+    }
+    impl Columns for Session {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("actual value already supplied")
+        }
+        fn truncate_level(&self) -> ErrorLevel {
+            self.calls.borrow_mut().push("level");
+            self.level.get()
+        }
+        fn param_value(&self, order: usize) -> Result<Datum, EvalError> {
+            assert_eq!(order, 0);
+            self.calls.borrow_mut().push("subject");
+            if self.subject_error.get() {
+                Err(EvalError::Unsupported("subject unavailable"))
+            } else {
+                Ok(Datum::Real(1e100))
+            }
+        }
+        fn handle_truncate(&self, message: &str) -> Result<(), EvalError> {
+            self.calls.borrow_mut().push("truncate");
+            self.messages.borrow_mut().push(message.to_owned());
+            if self.veto.get() {
+                Err(EvalError::Unsupported("real decimal veto"))
+            } else {
+                Ok(())
+            }
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            self.calls.borrow_mut().push("zone");
+            crate::context::NoColumns.time_zone()
+        }
+        fn type_flags(&self) -> ConversionFlags {
+            self.calls.borrow_mut().push("flags");
+            ConversionFlags::default()
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            panic!("no unexpected final-fit warning")
+        }
+    }
+    let ctx = Session {
+        level: Cell::new(ErrorLevel::Error),
+        veto: Cell::new(false),
+        subject_error: Cell::new(false),
+        calls: RefCell::new(Vec::new()),
+        messages: RefCell::new(Vec::new()),
+    };
+    let field = FieldType::new(FieldTypeCode::Double)
+        .with_flen(-1)
+        .with_decimal(-1);
+    for (real, expected) in [
+        (0.0, "0"),
+        (-0.0, "0"),
+        (-9_007_199_254_740_992.0, "-9007199254740992"),
+        (9_007_199_254_740_992.0, "9007199254740992"),
+        (9_007_199_254_740_994.0, "9007199254740994"),
+        (1.25, "1.25"),
+    ] {
+        let value = Datum::Real(real);
+        let expression = Expression::Constant(Constant::new(value.clone(), field.clone()));
+        let Datum::Decimal(decimal) =
+            cast_numeric_argument(&expression, value, EvalType::Decimal, &ctx).unwrap()
+        else {
+            panic!("decimal result")
+        };
+        assert_eq!(decimal.to_string(), expected);
+        if real == 0.0 {
+            assert!(!decimal.is_negative());
+        }
+        assert_eq!(decimal.declared_shape(), None);
+        assert!(ctx.calls.borrow().is_empty());
+    }
+    let nan = Datum::Real(f64::NAN);
+    let expression = Expression::Constant(Constant::new(nan.clone(), field.clone()));
+    let Err(EvalError::Conversion(error)) =
+        cast_numeric_argument(&expression, nan, EvalType::Decimal, &ctx)
+    else {
+        panic!("bad number error")
+    };
+    assert_eq!(error.identity(), ERR_BAD_NUMBER.identity());
+    assert_eq!(error.message(), ERR_BAD_NUMBER.message());
+    assert!(ctx.calls.borrow().is_empty());
+
+    let mut parameter = Constant::new(Datum::Real(1e100), field.clone());
+    parameter.param_marker = Some(ParamMarker { order: 0 });
+    let expression = Expression::Constant(parameter);
+    let Err(EvalError::Conversion(error)) =
+        cast_numeric_argument(&expression, Datum::Real(1e100), EvalType::Decimal, &ctx)
+    else {
+        panic!("strict overflow error")
+    };
+    assert_eq!(error.identity(), ERR_OVERFLOW.identity());
+    assert_eq!(error.message(), ERR_OVERFLOW.message());
+    assert_eq!(ctx.calls.take(), ["level"]);
+    assert!(ctx.messages.borrow().is_empty());
+    for (level, unavailable) in [
+        (ErrorLevel::Warn, false),
+        (ErrorLevel::Ignore, false),
+        (ErrorLevel::Warn, true),
+    ] {
+        ctx.level.set(level);
+        ctx.subject_error.set(unavailable);
+        let Datum::Decimal(decimal) =
+            cast_numeric_argument(&expression, Datum::Real(1e100), EvalType::Decimal, &ctx)
+                .unwrap()
+        else {
+            panic!("clamped decimal result")
+        };
+        assert_eq!(decimal.to_string(), "9".repeat(81));
+        assert_eq!(ctx.calls.take(), ["level", "subject", "truncate"]);
+        assert_eq!(
+            ctx.messages.take(),
+            ["Truncated incorrect DECIMAL value: '1e+100'".to_owned()]
+        );
+    }
+    ctx.subject_error.set(false);
+    ctx.veto.set(true);
+    assert_eq!(
+        cast_numeric_argument(&expression, Datum::Real(1e100), EvalType::Decimal, &ctx),
+        Err(EvalError::Unsupported("real decimal veto"))
+    );
+    assert_eq!(ctx.calls.take(), ["level", "subject", "truncate"]);
+    assert_eq!(
+        ctx.messages.take(),
+        ["Truncated incorrect DECIMAL value: '1e+100'".to_owned()]
+    );
+    ctx.veto.set(false);
+
+    // The integral fast path rejoins the SAME final target fit and context reads.
+    let value = Datum::Real(12.0);
+    let expression = Expression::Constant(Constant::new(
+        value.clone(),
+        FieldType::new(FieldTypeCode::Double)
+            .with_flen(5)
+            .with_decimal(2),
+    ));
+    let Datum::Decimal(decimal) =
+        cast_numeric_argument(&expression, value, EvalType::Decimal, &ctx).unwrap()
+    else {
+        panic!("fitted decimal")
+    };
+    assert_eq!(decimal.to_string(), "12.00");
+    assert_eq!(decimal.declared_shape(), Some((5, 2)));
+    assert_eq!(ctx.calls.take(), ["zone", "flags"]);
+
+    // EvalInt carries the unsigned hybrid ordinal as i64 bits (eval_numeric_row);
+    // the consumer restores unsignedness before the unspecified-scale conversion.
+    let field = FieldType::new(FieldTypeCode::Enum)
+        .with_raw_flags(u64::from(FieldTypeFlags::UNSIGNED))
+        .with_decimal(-1);
+    let expression = Expression::Constant(Constant::new(
+        Datum::Enum(MysqlEnum::new("ordinal", u64::MAX), Collation::DEFAULT),
+        field,
+    ));
+    let Datum::Decimal(decimal) =
+        cast_numeric_argument(&expression, Datum::Int(-1), EvalType::Decimal, &ctx).unwrap()
+    else {
+        panic!("unsigned decimal")
+    };
+    assert_eq!(decimal.to_string(), "18446744073709551615");
+    assert_eq!(decimal.declared_shape(), None);
+    assert!(ctx.calls.borrow().is_empty());
+    let stored =
+        Decimal::from_raw_parts(true, b"0001234567".to_vec(), 2, 4).with_declared_shape(20, 4);
+    let value = Datum::Decimal(stored.clone());
+    let expression = Expression::Constant(Constant::new(
+        value.clone(),
+        FieldType::new(FieldTypeCode::NewDecimal),
+    ));
+    let Datum::Decimal(actual) =
+        cast_numeric_argument(&expression, value, EvalType::Decimal, &ctx).unwrap()
+    else {
+        panic!("unchanged decimal")
+    };
+    assert_eq!(actual.coefficient_bytes(), stored.coefficient_bytes());
+    assert_eq!(actual.is_negative(), stored.is_negative());
+    assert_eq!(actual.scale(), stored.scale());
+    assert_eq!(actual.storage_scale(), stored.storage_scale());
+    assert_eq!(actual.declared_shape(), stored.declared_shape());
+    assert!(ctx.calls.borrow().is_empty());
+}

@@ -1,0 +1,25 @@
+real-decimal-132 / R137
+6matched launches,6GREEN;no compile/test failure,retry,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/real-decimal-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_numeric_argument -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native] ../../tools/cargo-tidb test --locked -p tidb-expr --lib scalar_function::numeric_argument_tests -- --test-threads=1
+[native-real] ../../tools/cargo-tidb test --locked -p tidb-expr --lib numeric_real_cast_fast_path_preserves_decimal_value_and_scale -- --test-threads=1
+[native-division] ../../tools/cargo-tidb test --locked -p tidb-expr --lib string_division_preserves_go_decimal_parser_diagnostics -- --test-threads=1
+[sql-division] ../../tools/cargo-tidb test --locked -p tidb-session --lib evaluated_ascii_decimal_div_preserves_fast_bounded_unsigned_and_null_values -- --test-threads=1
+[sql-types] ../../tools/cargo-tidb test --locked -p tidb-session --lib native_type_helpers_preserve_decimal_cast_values_and_float_diagnostics -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 7/0/0/1020 14.99/0.00 0 853a51ec62d4338dd9b50001ba377de6f9ee11d28fd5f38c0271aec9416688b5
+native 3/0/0/1738 16.09/0.00 0 bd952b6fe0db847038052fd2bfe7e0f4e6e2f40b959c3dae332ec36bb8648495
+native-real 1/0/0/1740 0.13/0.00 0 f371e4ccaffb057fa59ab986ef894f03ea3804fc99781090463287246904b2cd
+native-division 1/0/0/1740 0.12/0.00 0 c0c833f97965bb6c57ec41e30e8b701cedcfa886a3e17bd56da97e6d58378a76
+sql-division 1/0/0/2269 22.81/0.02 0 cb61f04f358880628060e6692af7690e0faed0a643e0a912fe79db5e101584d6
+sql-types 1/0/0/2269 0.15/0.03 0 3d492c9086bf32b9ec30b3a8112ec805e8492c4328b1e6757d5b8aad1b223256
+
+SDK2/native2 Rust files,no new Rust files;3new tests (SDK2/native1),5old SDK/34old native touched-file test bodies unchanged. Existing numeric_expression_text function byte-identical; remains explicit native dependency, not full numeric ownership. SQL file unchanged; no new SQL fixture/probe/cell credit.
+SDK preparation owns integral±2^53 excluding-0, canonical rawMyDecimal parsing, overflow-only level read, strict early error, subject demand and warning/fallback/finish. Native renders actual expression only on demand and passesoptionaltext, not callback; SDK handle veto precedes rawstorage projection. UnscaledInt/UInt constructor helper preserves others. Native fast earlyreturn merged into same common shape/fitting: tests lock specifiedshape and zone→flags order, same-domain rawshape, unsignedMAX, NaN, -0, boundary and lazyParamMarker reads, render failure fallback and veto. SDK tests use source-defined81-digit saturation/underflowzero, no output oracle.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. Final fitting, expression rendering, other typed/write/SQL lowering and broaderM2/root/liveDAG/final remain. Full datatype/expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
