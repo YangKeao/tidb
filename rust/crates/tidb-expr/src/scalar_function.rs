@@ -3494,19 +3494,12 @@ fn cast_numeric_argument_in_mode(
     }
     if let Datum::Json(json) = &value {
         if target == EvalType::Real {
-            let converted = tidb_datatype::json_to_float(json);
-            if converted.event.is_some() {
-                if let Some(bytes) = json.as_string() {
-                    let text = String::from_utf8_lossy(bytes);
-                    ctx.handle_truncate(&format!(
-                        "Truncated incorrect DOUBLE value: '{}'",
-                        tidb_datatype::float_warning_input(&text),
-                    ))?;
-                } else {
-                    ctx.handle_truncate(&format!("Truncated incorrect FLOAT value: '{json}'"))?;
-                }
-            }
-            return Ok(Datum::Real(converted.value));
+            return tidb_query_expr::native_numeric_argument_json_to_f64(
+                json.type_code(),
+                json.value(),
+                |message| ctx.handle_truncate(message),
+            )
+            .map(Datum::Real);
         }
         if target == EvalType::Int {
             // go `builtinCastJSONAsIntSig`: the document's text re-reads as
@@ -3593,6 +3586,10 @@ fn cast_numeric_argument_in_mode(
     convert_numeric_datum(value, &target_field, ctx)
 }
 
+#[cfg(test)]
+#[path = "tikv/numeric_argument_tests.rs"]
+mod numeric_argument_tests;
+
 fn cast_string_numeric_argument(
     field: &FieldType,
     bytes: &[u8],
@@ -3603,34 +3600,36 @@ fn cast_string_numeric_argument(
     if target == EvalType::Real {
         return crate::ops::bytes_to_f64(bytes, ctx).map(Datum::Real);
     }
-    let text = String::from_utf8_lossy(bytes);
-    let text = text.trim();
-    let (decimal, error) = tidb_datatype::MyDecimal::from_string(text.as_bytes());
-    if let Some(error) = error {
-        use tidb_datatype::DecimalError;
-        // Go's scalar string cast names the truncated value; its vector
-        // cast passes FromString's raw ErrTruncated through HandleTruncate.
-        if error == DecimalError::TruncatedWrongValue
-            || (error == DecimalError::Truncated && !vectorized)
-        {
-            ctx.handle_truncate(&format!("Truncated incorrect DECIMAL value: '{text}'"))?;
-        } else {
-            let error = match error {
-                DecimalError::Truncated => tidb_datatype::ERR_TRUNCATED.clone(),
-                DecimalError::Overflow => tidb_datatype::ERR_OVERFLOW.clone(),
-                _ => tidb_datatype::ERR_BAD_NUMBER.clone(),
-            };
-            match ctx.truncate_level() {
-                crate::ErrorLevel::Error => return Err(EvalError::Conversion(error)),
-                crate::ErrorLevel::Warn => {
-                    let warning = error.to_sql_error();
-                    ctx.append_warning(warning.code, &warning.message);
-                }
-                crate::ErrorLevel::Ignore => {}
-            }
+    use tidb_query_expr::{
+        NativeNumericArgumentConversionError as ConversionError, NativeNumericArgumentError,
+        NativeNumericArgumentLevel,
+    };
+    let conversion_error = |kind| match kind {
+        ConversionError::Truncated => tidb_datatype::ERR_TRUNCATED.clone(),
+        ConversionError::Overflow => tidb_datatype::ERR_OVERFLOW.clone(),
+        ConversionError::BadNumber => tidb_datatype::ERR_BAD_NUMBER.clone(),
+    };
+    let decimal = tidb_query_expr::native_numeric_argument_string_to_decimal(
+        bytes,
+        vectorized,
+        || match ctx.truncate_level() {
+            crate::ErrorLevel::Error => NativeNumericArgumentLevel::Error,
+            crate::ErrorLevel::Warn => NativeNumericArgumentLevel::Warn,
+            crate::ErrorLevel::Ignore => NativeNumericArgumentLevel::Ignore,
+        },
+        |message| ctx.handle_truncate(message),
+        |kind| {
+            let warning = conversion_error(kind).to_sql_error();
+            ctx.append_warning(warning.code, &warning.message);
+        },
+    )
+    .map_err(|error| match error {
+        NativeNumericArgumentError::Effect(error) => error,
+        NativeNumericArgumentError::Conversion(kind) => {
+            EvalError::Conversion(conversion_error(kind))
         }
-    }
-    let value = Datum::Decimal(tidb_datatype::Decimal::from_my_decimal(&decimal));
+    })?;
+    let value = Datum::Decimal(tidb_datatype::Decimal::from_shared_parse(decimal));
     let target = numeric_decimal_cast_type(field);
     if target.decimal() < 0 {
         Ok(value)

@@ -1,0 +1,32 @@
+numeric-argument-130 / R135
+8 launches:7matched test runs (6GREEN,1RED),1compile failure;2retries,nozero-match/interruption. Final6gates GREEN.
+Raw: /home/agent/tidb/expression-unification/logs/numeric-argument-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv,tikv-corrected] ../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_numeric_argument -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native,native-corrected] ../../tools/cargo-tidb test --locked -p tidb-expr --lib scalar_function::numeric_argument_tests -- --test-threads=1
+[native-division] ../../tools/cargo-tidb test --locked -p tidb-expr --lib string_division_preserves_go_decimal_parser_diagnostics -- --test-threads=1
+[native-arithmetic] ../../tools/cargo-tidb test --locked -p tidb-expr --lib string_arithmetic_preserves_go_cast_and_batch_order -- --test-threads=1
+[sql-types] ../../tools/cargo-tidb test --locked -p tidb-session --lib native_type_helpers_preserve_decimal_cast_values_and_float_diagnostics -- --test-threads=1
+[sql-json] ../../tools/cargo-tidb test --locked -p tidb-session --lib shared_scalar_datum_preserves_json_float_and_hybrid_numeric_consumers -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+Compile failure has no test result or Finished test elapsed; NA is not a zero-match pass.
+tikv 2/1/0/1020 15.40/0.00 101 0cf8f5cca1bd4111d7bc5c88f0758c433950890e3772206680d1a45c621fc4e9
+native COMPILE_ERROR NA/NA 101 9ba44fc8ce9dad80bf8319cb028906a44e5f17f73f44c5a0ce269d61a812b580
+tikv-corrected 3/0/0/1020 6.78/0.00 0 a7bee1cf5e898496c1d4a77ca632b6b793ba6c74671c1e2d03ce7a1c7a36964b
+native-corrected 1/0/0/1738 11.17/0.00 0 82d1a1b8c8d6444dd2f20959dcfac722b12f0649d5d1e20756c5542a9788815c
+native-division 1/0/0/1738 0.12/0.00 0 222442faa1d0e88712b530f183dc3675546a7abf3c159dc7fcf64d2400734824
+native-arithmetic 1/0/0/1738 0.12/0.00 0 790383c68283121a02f6037ef3e06e42afe1b6e37822b90aff7faa6add6b7d2c
+sql-types 1/0/0/2269 22.82/0.04 0 ddf231495067e8a5e0d48429927c1d753171c48a91b4a63b7ca4c8ef0eb45ddf
+sql-json 1/0/0/2269 0.14/0.01 0 a0abbf50057c4400ec38a00d1e4284de1952ef0e4357c157357f8c07fbdd27d8
+
+Retained incidents:
+SDK newbyte test incorrectly expected a warning for 12\0tail. native_float_parse.rs66–68 sets effective_len=valid_len at NUL;83 truncation requires zero/mismatched lengths. Thus valid_len=effective_len=2 and finite12 is quiet. Newtest now retains quiet case and adds 12x\0tail:74 breaks at x before NUL, so truncates;137 formatter ends subject at NUL (12x). Source-derived correction only, no production/old-test change or observed-output oracle.
+Native newtest initially imported crate::Expression (E0432). Existing scalar_function.rs44 uses crate::expression::Expression; corrected onlynewtest import. The initial set-e batch stopped before later gates; they launched only after fix. Both RED logs retained, not replaced.
+
+SDK2/native3 Rust files,2new files;4new tests (SDK3/native1),32old native touched-file test bodies unchanged (SDK touchedexistingfiles have0tests). Newconsumer wired under scalar_function via test-onlypath to exercise actual privatevector-mode without public API widening. Existing SQL file unchanged; no new SQL fixture/probe/cell credit.
+SDK owns String→Decimal preparation, bytes/JSON→Real diagnostic disposition and ordered effects, reusing canonical parsers/JSON/warning formatter. Native supplies actualdata, context effects and fixedTerror projection. Scalar1292/vector1265, lazyreads/veto, lossiness/strictJSONnumeric distinction, JSONlabels, empty/NUL/bytecap preserved. Targetmetadata/finalconvert, JSONInt, RealDecimalprep and others remain.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. BroaderM2/root/liveDAG/final remain. Full datatype/expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

@@ -245,12 +245,9 @@ pub(crate) fn bytes_to_f64(
     bytes: &[u8],
     ctx: &dyn crate::context::Columns,
 ) -> Result<f64, EvalError> {
-    let text = String::from_utf8_lossy(bytes);
-    let converted = tidb_datatype::str_to_float(&text, true);
-    if converted.event.is_some() {
-        raise_truncated_double(ctx, tidb_datatype::float_warning_input(&text))?;
-    }
-    Ok(converted.value)
+    tidb_query_expr::native_numeric_argument_bytes_to_f64(bytes, |message| {
+        ctx.handle_truncate(message)
+    })
 }
 
 /// Go `ErrTruncatedWrongVal.GenWithStackByArgs("DOUBLE", s)` at warning
