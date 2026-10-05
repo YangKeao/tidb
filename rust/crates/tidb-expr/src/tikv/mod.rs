@@ -25,6 +25,8 @@ mod batch;
 mod bounded_staleness;
 pub(crate) use bounded_staleness::eval_bounded_staleness_in;
 mod case_control;
+mod cast_decimal;
+pub(crate) use cast_decimal::{eval_cast_decimal_in, report_cast_decimal_input_in};
 mod cast_real_unsigned;
 pub(crate) use cast_real_unsigned::eval_cast_real_unsigned_in;
 mod catalog;

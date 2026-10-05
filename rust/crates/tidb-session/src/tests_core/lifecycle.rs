@@ -9363,6 +9363,122 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn native_decimal_cast_policy_preserves_sql_source_domains_and_warning_order() {
+    use tidb_datatype::FieldTypeCode;
+
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session.run("SET sql_mode=''").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE native_decimal_cast_policy_sql (i BIGINT, u BIGINT UNSIGNED, r DOUBLE, f FLOAT, j_number JSON, j_prefix JSON, j_jsonnull JSON, j_sqlnull JSON, huge_text VARCHAR(32), d DECIMAL(8,2))")
+        .unwrap();
+    session
+        .run(r#"INSERT INTO native_decimal_cast_policy_sql VALUES (-7,18446744073709551615,0.1,0.1,'12.5','"7.50tail"','null',NULL,'1e300',1.25)"#)
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // Ordinary DECIMAL cast policy only: no new Head, zero-slot, PB, UNION,
+    // or whole-CAST credit. The previous digit-parser test separately guards
+    // raw-value parsing versus Unicode-trimmed warning parsing.
+    let cases: [(&str, &[Option<&str>], &[(i64, i64)], &[(u16, &str)]); 4] = [
+        (
+            "CAST(i AS DECIMAL(8,2)),CAST(u AS DECIMAL(22,2)),CAST(r AS DECIMAL(20,17)),CAST(f AS DECIMAL(20,17)),CAST(d AS DECIMAL(8,3))",
+            &[Some("-7.00"), Some("18446744073709551615.00"), Some("0.10000000000000000"), Some("0.10000000149011612"), Some("1.250")],
+            &[(8, 2), (22, 2), (20, 17), (20, 17), (8, 3)],
+            &[],
+        ),
+        (
+            "CAST(j_number AS DECIMAL(8,2)),CAST(j_prefix AS DECIMAL(8,2)),CAST(j_jsonnull AS DECIMAL(8,2)),CAST(j_sqlnull AS DECIMAL(8,2))",
+            &[Some("12.50"), Some("7.50"), Some("0.00"), None],
+            &[(8, 2), (8, 2), (8, 2), (8, 2)],
+            &[],
+        ),
+        (
+            "CAST(huge_text AS DECIMAL(5,2))",
+            &[Some("999.99")],
+            &[(5, 2)],
+            &[
+                (1690, "%s value is out of range in '%s'"),
+                (1690, "DECIMAL value is out of range in '(5, 2)'"),
+            ],
+        ),
+        (
+            "d IN ('1.25','2.75'),d='1.25'",
+            &[Some("1"), Some("1")],
+            &[],
+            &[],
+        ),
+    ];
+    // DOUBLE keeps Rust f64 Display before decimal_prefix; FLOAT follows
+    // Datum::to_decimal's f32 narrowing and promoted-f64 shortest formatting.
+    // The nearest f32 to 0.1 promotes to 0.10000000149011612, not f64's 0.1.
+    // JSON uses the Other fallback, whose Converted event is intentionally
+    // discarded: neither the JSON string suffix nor JSON null adds 1292.
+    // The bounded 1e300 parse reports its raw overflow BEFORE the target
+    // precision clamp's formatted overflow. Do not merge these two events.
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        for &(projection, expected, shapes, warnings) in &cases {
+            let sql = format!("SELECT {projection} FROM native_decimal_cast_policy_sql");
+            let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap() else {
+                panic!("expected ordinary DECIMAL cast-policy rows: {sql}")
+            };
+            assert_eq!(columns.len(), expected.len(), "{sql}");
+            assert_eq!(rows.len(), 1, "{sql}");
+            assert_eq!(rows[0].len(), expected.len(), "{sql}");
+            for (index, expected_text) in expected.iter().enumerate() {
+                let field = &columns[index].1;
+                assert!(!field.is_unsigned());
+                assert_eq!(field.charset_name(), "binary");
+                assert_eq!(field.collation_name(), "binary");
+                if shapes.is_empty() {
+                    // Decimal-column versus strict string constants selects
+                    // WrapWithCastAsDecimal. Its build-time unspecified-scale
+                    // conversion must retain 1.25 before fixing literal shape.
+                    // This is not a new runtime unspecified-scale SQL syntax.
+                    assert_eq!(field.code(), FieldTypeCode::LongLong);
+                    assert_eq!(rows[0][index], Datum::Int(1), "{sql}/{vectorized}");
+                    continue;
+                }
+                let shape = shapes[index];
+                assert_eq!(field.code(), FieldTypeCode::NewDecimal);
+                assert_eq!((field.flen(), field.decimal()), shape, "{sql}/{index}");
+                if let Some(expected_text) = expected_text {
+                    let Datum::Decimal(decimal) = &rows[0][index] else {
+                        panic!("changed DECIMAL cast carrier: {sql}/{index}")
+                    };
+                    assert_eq!(
+                        decimal.to_string(),
+                        *expected_text,
+                        "{sql}/{vectorized}/{index}"
+                    );
+                    assert_eq!(decimal.scale(), shape.1 as u32);
+                    assert_eq!(decimal.declared_shape(), Some(shape));
+                } else {
+                    assert_eq!(rows[0][index], Datum::Null, "{sql}/{vectorized}/{index}");
+                }
+            }
+            assert_eq!(
+                warnings_of(&session),
+                warnings
+                    .iter()
+                    .map(|&(code, message)| (code, message.to_owned()))
+                    .collect::<Vec<_>>(),
+                "{sql}/{vectorized}"
+            );
+        }
+    }
+}
+
+#[test]
 fn native_decimal_digit_parsing_preserves_sql_cast_diagnostics_scale_and_storage() {
     use tidb_datatype::FieldTypeCode;
 

@@ -187,19 +187,7 @@ pub(crate) fn eval_cast(
             }))
         }
         CastType::Decimal { flen, scale } => {
-            report_decimal_input_truncation(&v, ctx);
-            let source = to_decimal_for_cast(&v);
-            // `WrapWithCastAsDecimal` leaves the target scale unspecified for
-            // REAL/string/temporal sources. Go's `ProduceDecWithSpecifiedTp`
-            // returns that value unchanged when either half of the target
-            // shape is unspecified, so do not reinterpret the internal
-            // sentinel as scale 0.
-            if *scale == UNSPECIFIED_CAST_SCALE {
-                return Ok(Datum::Decimal(source));
-            }
-            let produced = source.cast_to_precision(*flen, *scale);
-            report_decimal_production(ctx, &source, &produced, *flen, *scale);
-            Ok(Datum::Decimal(produced))
+            crate::tikv::eval_cast_decimal_in(ctx, &v, *flen, *scale)
         }
         CastType::Date => cast_to_time(&v, source, ctx, tidb_datatype::TimeType::Date, 0),
         CastType::DateTime { fsp } => cast_to_time(
@@ -413,56 +401,6 @@ fn report_data_too_long(ctx: &dyn crate::Columns, data_len: usize, field_len: us
         ctx.append_warning(
             1406,
             &format!("Data Too Long, field len {field_len}, data len {data_len}"),
-        );
-    }
-}
-
-/// Go `types.ProduceDecWithSpecifiedTp` (`pkg/types/datum.go:1629-1666`),
-/// warning half. Two mutually exclusive events, in Go's own `else if` order:
-///
-///  * the rounded value no longer fits `flen - scale` integer digits, so it
-///    is clamped to the max/min decimal and `ErrOverflow` (1690) reports
-///    `DECIMAL value is out of range in '(flen, scale)'`;
-///  * otherwise, if rounding to `scale` CHANGED the value, `ErrTruncatedWrongVal`
-///    (1292) reports `Truncated incorrect DECIMAL value: '<original>'` -- with
-///    the ORIGINAL text, not the rounded one.
-///
-/// The overflow arm suppresses the truncation arm even when both are true.
-/// Captured: `CAST(1234.56 AS DECIMAL(4,1))`, which both overflows AND loses
-/// a digit to rounding, warns 1690 ONLY -- that case is what makes the `else`
-/// load-bearing, and turning it into a second `if` is the mutation the corpus
-/// now catches. `CAST(123.456 AS DECIMAL(10,2))` warns 1292 with `'123.456'`.
-///
-/// Go's guard is `flen != UnspecifiedLength && decimal != UnspecifiedLength`;
-/// [`tidb_ast::CastType::Decimal`] carries `flen == 0` for unspecified, which
-/// is the same gate [`Decimal::cast_to_precision`] uses to skip the clamp.
-fn report_decimal_production(
-    ctx: &dyn crate::Columns,
-    source: &Decimal,
-    produced: &Decimal,
-    flen: u32,
-    scale: u32,
-) {
-    if flen == 0 {
-        return;
-    }
-    let rounded = source.round_to_scale(scale as i32);
-    let int_digits = rounded.coefficient_digits().len() as u32 - rounded.storage_scale();
-    if int_digits > flen.saturating_sub(scale) {
-        // go appends only the GenWithStackByArgs-formatted row here
-        // (`ProduceDecWithSpecifiedTp` -> `ec.HandleError`); the raw
-        // "%s value is out of range in '%s'" template row belongs to the
-        // string-to-decimal PARSE site's ErrOverflow, not to the production
-        // clamp (oracle: CAST('99999999999999999999' AS DECIMAL(10,2)) warns
-        // 1690 once, formatted).
-        ctx.append_warning(
-            1690,
-            &format!("DECIMAL value is out of range in '({flen}, {scale})'"),
-        );
-    } else if source.storage_scale() > scale && produced != source {
-        ctx.append_warning(
-            1292,
-            &format!("Truncated incorrect DECIMAL value: '{source}'"),
         );
     }
 }
@@ -851,43 +789,7 @@ fn report_negative_string_unsigned(v: &Datum, ctx: &dyn crate::Columns) {
 /// is still retained (including a valid prefix); only a completely invalid or
 /// truncated suffix contributes this statement warning.
 pub(crate) fn report_decimal_input_truncation(v: &Datum, ctx: &dyn crate::Columns) {
-    let text = match v {
-        Datum::String(value) => value.as_utf8().ok(),
-        Datum::Bytes(value) => std::str::from_utf8(value).ok(),
-        _ => None,
-    };
-    let Some(text) = text else {
-        return;
-    };
-    let trimmed = text.trim();
-    let (_, parse_error) = Decimal::parse_mysql(trimmed);
-    if matches!(
-        parse_error,
-        Some(tidb_datatype::DecimalParseError::Overflow)
-    ) {
-        // go's string-to-decimal sig hands the parse's ErrOverflow straight
-        // to `ec.HandleError` without format args, so the appended row keeps
-        // the raw "%s value is out of range in '%s'" template (oracle:
-        // CAST('1e300' AS DECIMAL)). The value is still retained (saturated);
-        // the production clamp below reports its own formatted row.
-        ctx.append_warning(1690, "%s value is out of range in '%s'");
-    }
-    if matches!(
-        parse_error,
-        Some(
-            tidb_datatype::DecimalParseError::Truncated
-                | tidb_datatype::DecimalParseError::BadNumber
-                | tidb_datatype::DecimalParseError::TruncatedWrongValue
-        )
-    ) {
-        ctx.append_warning(
-            1292,
-            &format!(
-                "Truncated incorrect DECIMAL value: '{}'",
-                tidb_datatype::warning_subject_byte_cap(trimmed)
-            ),
-        );
-    }
+    crate::tikv::report_cast_decimal_input_in(ctx, v);
 }
 
 fn signed_string_integer_parse_overflows(text: &str) -> bool {
@@ -936,106 +838,9 @@ fn binary_pad_truncate(s: &[u8], n: usize) -> Vec<u8> {
     bytes
 }
 
-/// Coerces an arbitrary source value to [`Decimal`] for `CAST(... AS
-/// DECIMAL(...))`'s own operand — a WIDER domain than `crate::ops`'s own
-/// `to_decimal`, which only ever sees `Int`/`Decimal` (guarded there by
-/// `eval_binary`'s upstream `Str`/`Float` interception; `CAST` has no
-/// such guard, so its operand can be any value).
-fn to_decimal_for_cast(v: &Datum) -> Decimal {
-    match v {
-        Datum::Decimal(d) => d.clone(),
-        Datum::Int(i) => Decimal::from_int(*i),
-        Datum::UInt(i) => Decimal::from_uint(*i),
-        // `f64`'s own `Display` is accepted by the decimal prefix parser;
-        // scientific notation remains exact through the same parser used for
-        // string operands.
-        Datum::Real(f) => decimal_prefix(&f.to_string()),
-        Datum::String(s) => s
-            .as_utf8()
-            .map(|text| Decimal::parse_mysql(text).0)
-            .unwrap_or_else(|_| Decimal::from_int(0)),
-        Datum::Bytes(s) => std::str::from_utf8(s)
-            .map(|text| Decimal::parse_mysql(text).0)
-            .unwrap_or_else(|_| Decimal::from_int(0)),
-        Datum::Null | Datum::MinNotNull | Datum::MaxValue => unreachable!("guarded by caller"),
-        other => other
-            .to_decimal()
-            .map_or_else(|_| Decimal::from_int(0), |converted| converted.value),
-    }
-}
-
-/// `to_f64_for_cast`'s numeric prefix scan: a FULLER prefix than
-/// [`str_int_prefix`]'s own digit-run-only scan —
-/// optional whitespace, sign, digits, optional `.` + digits, optional
-/// exponent (confirmed via `goeval`: `CAST('3.5abc' AS DECIMAL)` sees
-/// `3.5abc`'s leading `3.5`, and `CAST('1e2' AS DECIMAL)` is `100`, both
-/// stopping at the first character that doesn't extend the number). Exact
-/// digit-string arithmetic when there's no exponent (the common case);
-/// an exponent suffix falls back to an `f64` round-trip for REAL sources.
+/// Uses the SDK's source-compatible decimal prefix conversion.
 fn decimal_prefix(s: &str) -> Decimal {
-    let s = s.trim_start();
-    let (negative, rest) = match s.strip_prefix('-') {
-        Some(r) => (true, r),
-        None => (false, s.strip_prefix('+').unwrap_or(s)),
-    };
-    let int_digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    let after_int = &rest[int_digits.len()..];
-    let (frac_digits, after_frac) = match after_int.strip_prefix('.') {
-        Some(r) => {
-            let f: String = r.chars().take_while(char::is_ascii_digit).collect();
-            let len = f.len();
-            (f, &r[len..])
-        }
-        None => (String::new(), after_int),
-    };
-    if int_digits.is_empty() && frac_digits.is_empty() {
-        return Decimal::from_int(0);
-    }
-    let base = if int_digits.is_empty() {
-        format!("0.{frac_digits}")
-    } else if frac_digits.is_empty() {
-        int_digits.clone()
-    } else {
-        format!("{int_digits}.{frac_digits}")
-    };
-    let exponent = exponent_prefix(after_frac);
-    if exponent != 0 {
-        let base_f: f64 = base.parse().unwrap_or(0.0);
-        let sign = if negative { -1.0 } else { 1.0 };
-        let scaled = sign * base_f * 10f64.powi(exponent);
-        // `f64`'s own `Display` never uses scientific notation, so this
-        // recursive call always lands on the `exponent == 0` fast path
-        // above — no risk of looping.
-        return decimal_prefix(&scaled.to_string());
-    }
-    let mut d = Decimal::from_literal(&base);
-    if negative {
-        d = d.negate();
-    }
-    d
-}
-
-/// Scans an optional `e`/`E` exponent suffix (`[eE][+-]?digits`),
-/// returning `0` if the text doesn't start with one — [`decimal_prefix`]'s
-/// own helper.
-fn exponent_prefix(s: &str) -> i32 {
-    let Some(rest) = s.strip_prefix(['e', 'E']) else {
-        return 0;
-    };
-    let (negative, rest) = match rest.strip_prefix('-') {
-        Some(r) => (true, r),
-        None => (false, rest.strip_prefix('+').unwrap_or(rest)),
-    };
-    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    if digits.is_empty() {
-        return 0;
-    }
-    let mag: i32 = digits.parse().unwrap_or(0);
-    if negative {
-        -mag
-    } else {
-        mag
-    }
+    Decimal::from_shared_parse(tidb_query_expr::native_cast_decimal_prefix(s))
 }
 
 /// `DOUBLE`/`FLOAT`'s own coercion: `Int`/`Decimal`/`Float` promote the

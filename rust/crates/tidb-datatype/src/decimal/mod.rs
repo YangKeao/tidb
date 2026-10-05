@@ -141,9 +141,10 @@ pub enum DecimalIntegerWarning {
 pub use tidb_query_datatype::codec::mysql::NativeDecimalParseError as DecimalParseError;
 
 impl Decimal {
-    // Pure storage transport: do not normalize raw short-circuit shift results
-    // or validate their coefficient. The original SmallVec allocation is moved.
-    fn from_shared_parse(value: NativeDecimalParseValue) -> Self {
+    /// Moves exact shared coefficient storage into the native value, preserving
+    /// sign, visible/storage scales and declared shape without validation or
+    /// normalization. Arithmetic and formatting retain their own preconditions.
+    pub fn from_shared_parse(value: NativeDecimalParseValue) -> Self {
         let (negative, digits, scale, storage_scale, declared_shape) = value.into_raw_parts();
         Self {
             negative,
@@ -154,7 +155,9 @@ impl Decimal {
         }
     }
 
-    fn as_shared_parse(&self) -> NativeDecimalParseRef<'_> {
+    /// Borrows the actual coefficient and all metadata without UTF-8 checks,
+    /// normalization or allocation. This transport view is not SQL admission.
+    pub fn as_shared_parse(&self) -> NativeDecimalParseRef<'_> {
         NativeDecimalParseRef {
             negative: self.negative,
             digits: &self.digits.0,
@@ -162,6 +165,19 @@ impl Decimal {
             storage_scale: self.storage_scale,
             declared_shape: self.declared_shape,
         }
+    }
+
+    /// Moves the actual SmallVec coefficient and all five storage fields into
+    /// the shared value without cloning, validation or normalization. Even raw
+    /// invalid UTF-8, noncanonical zero signs and declared shape are preserved.
+    pub fn into_shared_parse(self) -> NativeDecimalParseValue {
+        NativeDecimalParseValue::from_raw_parts(
+            self.negative,
+            self.digits.0,
+            self.scale,
+            self.storage_scale,
+            self.declared_shape,
+        )
     }
 
     /// Reconstructs an exact decimal representation returned by value transport.

@@ -1,0 +1,49 @@
+cast-decimal-108 / R111 ordinary DECIMAL CAST control; functional238/245 strict0 remaining7 unchanged.
+TiKV cwd /home/agent/tidb/expression-unification/tikv
+Native cwd /home/agent/tidb/expression-unification/tidb/rust
+Raw /home/agent/tidb/expression-unification/logs/cast-decimal-{id}.log
+Counts passed/failed/ignored/filtered; timings compile/test seconds.
+
+tikv-core | 2/0/0/990 | 17.29/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_cast_decimal -- --test-threads=1
+sha256 e3f985f42b4f1ca2246a383797682978356fd36bded22cc64b34e8069116684c
+
+native-entry | 1/0/0/1718 | 17.91/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::cast_decimal -- --test-threads=1
+sha256 72b89e0f464e962c31590b5018cff0703d02cb198d2610fe264076fa99c0c488
+
+native-original | 7/0/1/1711 | 0.12/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib as_decimal -- --test-threads=1
+sha256 399fd58c945bb7dd4b89173d5636f02885b6a1a69b20c760088bcf764c324017
+Existing ignored tests::ilike_info_cast_source::vectorized_cast_string_as_decimal_union_gap: original unmodeled vectorized inUnion signature, not a pass or repaired domain.
+
+native-union | 4/0/0/1715 | 0.13/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib decimal_in_union_ -- --test-threads=1
+sha256 c0e15de3aa137cdd434b3ff532dfb8cfd5723840d31e6847be1d27cf695eff94
+Original Decimal/Real-to-Decimal UNION cases; original String-to-Decimal unsigned-UNION case also runs in native-original.
+
+native-datatype | 463/0/0/0 | 2.19/7.15 | exit0
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+sha256 dfd17fd50d7e8e9c4d99d0d054373c93d375bd4b796ebe9b4ad4817037d1480c
+Whole native datatype library tests, not whole-Go-package transcreation.
+
+sql | 1/0/0/2250 | 25.13/0.03 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_decimal_cast_policy_preserves_sql_source_domains_and_warning_order -- --exact --test-threads=1
+sha256 338e6e97af0d7d1a8e9a1801d7ce88a5e994e02e3f86f09f8ed0be5d06e8361c
+
+sql-original | 1/0/0/2250 | 0.14/0.03 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_decimal_digit_parsing_preserves_sql_cast_diagnostics_scale_and_storage -- --exact --test-threads=1
+sha256 3298e1df7b283e409d5f631b7a39e0d3aa282d77f610c8d5e6efc66b2d60ad55
+Original R11010SELECT test, not new probes.
+
+7 serial locked single-threaded actual launches, allnonzeroGREEN;0compile/testfailures,0zero-match,0interruptions/retries.4newtests=SDK2/native2.3SDK+5nativeRustfiles,2newlivefiles.2SDK+221native oldexplicit test bodies byte-identical; originalfixtures andexpectations unmodified, no provideroutput recording. func/scalar_function/rewriter/originaldatatype fixtures unchanged.
+
+SDK native_cast_decimal owns ordinarysourcechoice, synchronousinputwarn beforeconversion, Real RustDisplay/prefix/exponent policy, defaultOther event/error disposition, unspecifiedscale bypass andprecision diagnostics. Nativecast.rs deletesoldpolicybodies; bridgeonlyprojectsactual8kinds/5Decimalfields, actuatesolddefault.to_decimal()->actual(value,event)/error andappend_warning. SDKdropsactualevent/foldsErr0, nothostcomputedzero. NarrowSmallVec rawtransport preservesprivate storage+allmetadata withoutnormalization/UTF8validation; DTOcast/round reuseexistingSDKmath/extractor. Existingto_f64 String/Bytes consumers retainthinadapter tosameSDKprefix, noDOUBLEcredit.
+
+WarningUnicode-trim parse andactualString/Bytes rawparse remain distinct; invalidUTF8quietzero; Real vsFloat32 defaultconversion distinct; originalhidden/storage/declaredshape retained onUNSPEC; freshmathclearsshape; flen0roundbutnoProductionwarn; overflowbeforetruncation andraw1690templatevsformatted1690target retainorder. ExistingUNIONhelperreuseswarningservice butnegative/othercontrol staysnative; outerNULL/range/vector guards unchanged.
+
+NewSQL8SELECT=4groups×2vector/24cells: storedInt/UInt/Real/Float32/Decimal; JSONfloat/stringprefix/null eventdrop andSQLNULL; '1e300'→999.99 withraw1690thenformatted1690; build-time UNSPEC implicitDecimal comparison preservingfraction. NoinvalidSQLUNION invented. Newbridge includesrealfuncUNIONconsumer, trappedcallerpolicy/timegetters, invalidrawmetadataUNSPEC, defaultconvertederror/event andoldzero-slotpurebehavior. No newC4/admission/zero-slot credit, carrier, profile, dependency orwire/PB signature.
+
+Incidents outsideCargo: A'sfirstimplementation agentturn failedwithnoclosing, samelease resumedandactualfileinspected. Staticreview foundpreviouslymissed .map(decimal_prefix) fn-valueconsumers; beforecompilationSDKprefix wasexportedandnativekeptthinadapter, no nativefallback orfabricatedREDreceipt. AftergreenonlySDKdoc clarified'existing UNION' ratherthanambiguous'legacy'helper; noalgorithm/testchange.
+
+238families/oldpartialtype/date/IN histories retained; appendonepartialCAST record. latestfunctional in-control-106/latesttype decimal-parse-107 unchanged; latestpartialCAST/runtime cast-decimal-108. RemainingCASTtyped/vector/UNION/otherdomains andnative defaultdatatypeconversionactuators, M2binaryreader/value-word, sixcomplexcandidates/root/liveDAG/final remain. FullExpr/Unistore/workspace/lint/dev/bazel/release/exhaustive/perf/physical-transientheap/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR-ready unverified; R100expression4/unistore1 historicalunrepaired. NoGo/Bazel/Cargo/lock changes; unrelatedBUILD excluded. PairedDCO pushes/threeidenticalPlans; overallgoalactive.
