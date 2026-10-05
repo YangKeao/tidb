@@ -21,6 +21,20 @@
 use std::fmt;
 
 use super::{Datum, DatumKind, DatumStringError, DatumValueError};
+use tidb_query_datatype::codec::{
+    mysql::time::NativeTemporalValue,
+    native_sql_string::{
+        native_sql_bytes, native_sql_string, NativeSqlStringError, NativeSqlStringInput,
+    },
+};
+
+fn from_shared_sql_string_error(error: NativeSqlStringError) -> DatumStringError {
+    match error {
+        NativeSqlStringError::InvalidUtf8(error) => DatumStringError::InvalidUtf8(error),
+        NativeSqlStringError::MinNotNull => DatumStringError::RangeSentinel(DatumKind::MinNotNull),
+        NativeSqlStringError::MaxValue => DatumStringError::RangeSentinel(DatumKind::MaxValue),
+    }
+}
 
 /// Escapes backslashes and single quotes, then surrounds the bytes with
 /// single quotes. This is the byte-preserving form of parser driver's
@@ -98,44 +112,52 @@ impl Datum {
         }
     }
 
+    // Only transports actual kind/storage. The shared owner selects rendering,
+    // UTF-8 policy and sentinel errors; no constructors normalize raw metadata.
+    fn as_shared_sql_string(&self) -> NativeSqlStringInput<'_> {
+        match self {
+            Self::Int(value) => NativeSqlStringInput::Int(*value),
+            Self::UInt(value) => NativeSqlStringInput::UInt(*value),
+            Self::Decimal(value) => NativeSqlStringInput::Decimal(value.as_shared_parse()),
+            Self::Real(value) => NativeSqlStringInput::Real(*value),
+            Self::Float32(value) => NativeSqlStringInput::Float32(*value),
+            Self::String(value) => NativeSqlStringInput::String(value.bytes()),
+            Self::Bytes(value) => NativeSqlStringInput::Bytes(value),
+            Self::BinaryLiteral(value) => NativeSqlStringInput::BinaryLiteral(value.as_bytes()),
+            Self::Bit(value) => NativeSqlStringInput::Bit(value.as_bytes()),
+            Self::Duration(value) => NativeSqlStringInput::Duration {
+                nanoseconds: value.nanoseconds(),
+                fsp: value.fsp(),
+            },
+            Self::Enum(value, _) => NativeSqlStringInput::Enum(value.name_bytes()),
+            Self::Set(value, _) => NativeSqlStringInput::Set(value.name_bytes()),
+            Self::Time(value) => NativeSqlStringInput::Time(NativeTemporalValue {
+                raw: value.core_time().raw(),
+                kind: value.kind(),
+                fsp: value.fsp(),
+            }),
+            Self::Json(value) => NativeSqlStringInput::Json {
+                type_code: value.type_code(),
+                value: value.value(),
+            },
+            Self::Raw(value) => NativeSqlStringInput::Raw(value),
+            Self::VectorFloat32(value) => NativeSqlStringInput::VectorFloat32(value),
+            Self::Null => NativeSqlStringInput::Null,
+            Self::MinNotNull => NativeSqlStringInput::MinNotNull,
+            Self::MaxValue => NativeSqlStringInput::MaxValue,
+        }
+    }
+
     /// Byte-authoritative Go `Datum.ToString`. Go strings, ENUMs, SETs, and
     /// binary literals may contain arbitrary bytes and remain unchanged.
     pub fn sql_bytes(&self) -> Result<Vec<u8>, DatumStringError> {
-        let value = match self {
-            Self::Int(value) => value.to_string().into_bytes(),
-            Self::UInt(value) => value.to_string().into_bytes(),
-            Self::Decimal(value) => value.to_string().into_bytes(),
-            Self::Real(value) => format_go_float_f(*value).into_bytes(),
-            Self::Float32(value) => format_go_float_f(*value as f32).into_bytes(),
-            Self::String(value) => value.bytes().to_vec(),
-            Self::Bytes(value) => value.clone(),
-            Self::BinaryLiteral(value) | Self::Bit(value) => value.as_bytes().to_vec(),
-            Self::Duration(value) => value.to_string().into_bytes(),
-            Self::Enum(value, _) => value.name_bytes().to_vec(),
-            Self::Set(value, _) => value.name_bytes().to_vec(),
-            Self::Time(value) => value.to_string().into_bytes(),
-            Self::Json(value) => value.to_string().into_bytes(),
-            Self::Raw(value) => {
-                decode_bytes(value)?;
-                value.clone()
-            }
-            Self::VectorFloat32(value) => value.to_string().into_bytes(),
-            Self::Null => Vec::new(),
-            Self::MinNotNull => {
-                return Err(DatumStringError::RangeSentinel(DatumKind::MinNotNull));
-            }
-            Self::MaxValue => {
-                return Err(DatumStringError::RangeSentinel(DatumKind::MaxValue));
-            }
-        };
-        Ok(value)
+        native_sql_bytes(self.as_shared_sql_string()).map_err(from_shared_sql_string_error)
     }
 
     /// UTF-8 convenience projection of [`Self::sql_bytes`]. Invalid source
     /// bytes return an error rather than being silently replaced.
     pub fn sql_string(&self) -> Result<String, DatumStringError> {
-        let bytes = self.sql_bytes()?;
-        decode_bytes(&bytes)
+        native_sql_string(self.as_shared_sql_string()).map_err(from_shared_sql_string_error)
     }
 
     /// Source `Datum.TruncatedStringify` used by EXPLAIN and diagnostics.
@@ -181,8 +203,14 @@ impl Datum {
             Self::Null => b"NULL".to_vec(),
             Self::Int(value) => value.to_string().into_bytes(),
             Self::UInt(value) => value.to_string().into_bytes(),
-            Self::Float32(value) => format_go_float_e(*value as f32).into_bytes(),
-            Self::Real(value) => format_go_float_e(*value).into_bytes(),
+            Self::Float32(value) => {
+                tidb_query_datatype::codec::native_sql_string::native_sql_float32_scientific(*value)
+                    .into_bytes()
+            }
+            Self::Real(value) => {
+                tidb_query_datatype::codec::native_sql_string::native_sql_float64_scientific(*value)
+                    .into_bytes()
+            }
             Self::String(value) => quote_value_expr(value.bytes()),
             Self::Bytes(value) => quote_value_expr(value),
             Self::BinaryLiteral(value) => value.to_bit_literal_string(true).into_bytes(),
@@ -286,12 +314,6 @@ fn label_bytes(kind: &str, bytes: &[u8]) -> String {
     }
 }
 
-fn decode_bytes(bytes: &[u8]) -> Result<String, DatumStringError> {
-    std::str::from_utf8(bytes)
-        .map(str::to_string)
-        .map_err(DatumStringError::InvalidUtf8)
-}
-
 fn encode_hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
 
@@ -324,61 +346,6 @@ fn quote_value_expr_bytes(value: &[u8]) -> Vec<u8> {
     }
     quoted.push(b'\'');
     quoted
-}
-
-trait GoScientificFloat: fmt::Display + fmt::LowerExp + Copy {
-    fn special(self) -> Option<&'static str>;
-}
-
-impl GoScientificFloat for f32 {
-    fn special(self) -> Option<&'static str> {
-        if self.is_nan() {
-            Some("NaN")
-        } else if self == Self::INFINITY {
-            Some("+Inf")
-        } else if self == Self::NEG_INFINITY {
-            Some("-Inf")
-        } else {
-            None
-        }
-    }
-}
-
-impl GoScientificFloat for f64 {
-    fn special(self) -> Option<&'static str> {
-        if self.is_nan() {
-            Some("NaN")
-        } else if self == Self::INFINITY {
-            Some("+Inf")
-        } else if self == Self::NEG_INFINITY {
-            Some("-Inf")
-        } else {
-            None
-        }
-    }
-}
-
-/// Go `strconv.FormatFloat(value, 'f', -1, bitSize)` special-value spelling
-/// plus Rust's equivalent shortest fixed rendering for finite values.
-fn format_go_float_f<T: GoScientificFloat>(value: T) -> String {
-    value
-        .special()
-        .map_or_else(|| value.to_string(), str::to_owned)
-}
-
-/// Go `strconv.FormatFloat(value, 'e', -1, bitSize)` differs from Rust's
-/// lower-exponent display only in special values and exponent normalization.
-fn format_go_float_e<T: GoScientificFloat>(value: T) -> String {
-    if let Some(special) = value.special() {
-        return special.to_owned();
-    }
-    let scientific = format!("{value:e}");
-    let (mantissa, exponent) = scientific
-        .split_once('e')
-        .expect("Rust scientific float contains an exponent");
-    let exponent: i32 = exponent.parse().expect("Rust float exponent is numeric");
-    let sign = if exponent < 0 { '-' } else { '+' };
-    format!("{mantissa}e{sign}{:02}", exponent.unsigned_abs())
 }
 
 #[cfg(test)]
@@ -448,5 +415,147 @@ mod tests {
             ]
             .concat()
         );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn shared_sql_string_facade_preserves_actual_kinds_raw_metadata_and_scientific_values() {
+    use crate::{
+        BinaryJSON, BinaryLiteral, Collation, CoreTime, Decimal, MySqlDuration, MysqlEnum,
+        MysqlSet, Time, TimeType, VectorFloat32,
+    };
+    let core = CoreTime::from_date(2024, 2, 3, 4, 5, 6, 123400);
+    let cases: Vec<(Datum, &[u8])> = vec![
+        (Datum::Int(-7), b"-7"),
+        (Datum::UInt(u64::MAX), b"18446744073709551615"),
+        (
+            Datum::Decimal(
+                Decimal::from_raw_parts(true, b"12500".to_vec(), 1, 4).with_declared_shape(20, 8),
+            ),
+            b"-1.3",
+        ),
+        (Datum::Real(1e6), b"1000000"),
+        (Datum::Float32(-3.1111111), b"-3.1111112"),
+        (Datum::new_string("str"), b"str"),
+        (Datum::Bytes(b"bytes".to_vec()), b"bytes"),
+        (
+            Datum::BinaryLiteral(BinaryLiteral::from(b"literal".to_vec())),
+            b"literal",
+        ),
+        (Datum::Bit(BinaryLiteral::from(b"bit".to_vec())), b"bit"),
+        (
+            Datum::Duration(MySqlDuration::from_raw_parts(-1_250_000_000, 2)),
+            b"-00:00:01.25",
+        ),
+        (
+            Datum::new_enum(MysqlEnum::new("enum", 99), Collation::Binary),
+            b"enum",
+        ),
+        (
+            Datum::new_set(MysqlSet::new("set", 99), Collation::Binary),
+            b"set",
+        ),
+        (
+            Datum::Time(Time::from_raw_parts(core, TimeType::Timestamp, 3)),
+            b"2024-02-03 04:05:06.123",
+        ),
+        (Datum::Json(BinaryJSON::parse("true").unwrap()), b"true"),
+        (Datum::Raw(b"raw\0text".to_vec()), b"raw\0text"),
+        (
+            Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0, -2.5])),
+            b"[1,-2.5]",
+        ),
+        (Datum::Null, b""),
+    ];
+    for (value, expected) in cases {
+        assert_eq!(value.sql_bytes().unwrap(), expected, "{:?}", value.kind());
+        assert_eq!(
+            value.sql_string().unwrap().as_bytes(),
+            expected,
+            "{:?}",
+            value.kind()
+        );
+    }
+    for (value, kind) in [
+        (Datum::MinNotNull, DatumKind::MinNotNull),
+        (Datum::MaxValue, DatumKind::MaxValue),
+    ] {
+        assert_eq!(
+            value.sql_bytes().unwrap_err(),
+            DatumStringError::RangeSentinel(kind)
+        );
+        assert_eq!(
+            value.sql_string().unwrap_err(),
+            DatumStringError::RangeSentinel(kind)
+        );
+    }
+    for value in [
+        Datum::new_string(vec![0xff]),
+        Datum::Bytes(vec![0xff]),
+        Datum::BinaryLiteral(BinaryLiteral::from(vec![0xff])),
+        Datum::Bit(BinaryLiteral::from(vec![0xff])),
+        Datum::new_enum(MysqlEnum::new([0xff], 1), Collation::Binary),
+        Datum::new_set(MysqlSet::new([0xff], 1), Collation::Binary),
+    ] {
+        assert_eq!(value.sql_bytes().unwrap(), [0xff]);
+        assert!(matches!(
+            value.sql_string(),
+            Err(DatumStringError::InvalidUtf8(_))
+        ));
+    }
+    let raw = Datum::Raw(vec![0xff]);
+    assert!(matches!(
+        raw.sql_bytes(),
+        Err(DatumStringError::InvalidUtf8(_))
+    ));
+    assert!(matches!(
+        raw.sql_string(),
+        Err(DatumStringError::InvalidUtf8(_))
+    ));
+    let date = Datum::Time(Time::from_raw_parts(core, TimeType::Date, u8::MAX));
+    match date.as_shared_sql_string() {
+        NativeSqlStringInput::Time(value) => {
+            assert_eq!(value.raw, core.raw());
+            assert_eq!(value.kind, TimeType::Date);
+            assert_eq!(value.fsp, u8::MAX);
+        }
+        _ => panic!("temporal projection changed its actual kind"),
+    }
+    assert_eq!(date.sql_string().unwrap(), "2024-02-03");
+    assert_eq!(
+        Datum::Duration(MySqlDuration::from_raw_parts(1_250_000_000, -1))
+            .sql_string()
+            .unwrap(),
+        "00:00:01"
+    );
+    for value in [
+        Datum::Time(Time::from_raw_parts(core, TimeType::DateTime, 7)),
+        Datum::Duration(MySqlDuration::from_raw_parts(1_250_000_000, 7)),
+        Datum::Json(BinaryJSON::from_encoded_parts(
+            0x0b,
+            f64::INFINITY.to_bits().to_le_bytes().to_vec(),
+        )),
+    ] {
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| value.sql_bytes())).is_err()
+        );
+    }
+    assert_eq!(
+        Datum::Json(BinaryJSON::from_encoded_parts(0x03, Vec::new()))
+            .sql_bytes()
+            .unwrap(),
+        b""
+    );
+    for (value, expected) in [
+        (Datum::Real(1e6), b"1e+06".as_slice()),
+        (Datum::Real(1e-5), b"1e-05".as_slice()),
+        (Datum::Real(-0.0), b"-0e+00".as_slice()),
+        (Datum::Real(f64::INFINITY), b"+Inf".as_slice()),
+        (Datum::Real(f64::NAN), b"NaN".as_slice()),
+        (Datum::Float32(-3.1111111), b"-3.1111112e+00".as_slice()),
+    ] {
+        assert_eq!(value.format_value_expr().unwrap(), expected);
+        assert_eq!(value.restore_value_expr().unwrap(), expected);
     }
 }

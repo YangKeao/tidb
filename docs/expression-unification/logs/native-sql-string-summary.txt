@@ -1,0 +1,56 @@
+native-sql-string-112 / R115 datatype SQL stringification; functional238/245 strict0 remaining7 unchanged.
+TiKV cwd /home/agent/tidb/expression-unification/tikv
+Native cwd /home/agent/tidb/expression-unification/tidb/rust
+Raw /home/agent/tidb/expression-unification/logs/native-sql-string-{id}.log
+Counts passed/failed/ignored/filtered; timings compile/test seconds. All exits0.
+
+tikv-type | 2/0/0/474 | 4.64/0.00
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_sql_string -- --test-threads=1
+sha256 2061729436d2ffe0e7690e0f41fc5fbc731ee787737995496d5df61cc4a7f61e
+
+tikv-core | 2/0/0/996 | 18.36/0.00
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_cast_string -- --test-threads=1
+sha256 c7f1546bca7afea81857c15f7b96ea089815b15b1411e31ec665f1223e183820
+
+native-datatype | 464/0/0/0 | 3.87/7.44
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+sha256 58335c435fc9e6eb6551d94330bb75a38bcce12ad1b533016178b768d904ace6
+Whole native datatype library, not whole-Go-package transcreation.
+
+native-entry | 1/0/0/1721 | 20.36/0.00
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::cast_string -- --test-threads=1
+sha256 50583bb07bc97564ecc430afdc6ecd4b3582afb06a1bb3ee4bf9ea983759855b
+
+native-cast | 21/0/0/1701 | 0.17/0.00
+../../tools/cargo-tidb test --locked -p tidb-expr --lib cast:: -- --test-threads=1
+sha256 c626fa54d4500ce12e6c6bbda61e23960ff8fbaf7f397f93d70c97ddf789a1c3
+
+native-original | 16/0/0/1706 | 0.15/0.00
+../../tools/cargo-tidb test --locked -p tidb-expr --lib test_cast_func -- --test-threads=1
+sha256 dfd929d8bc3ba77d060ac4889fe9255bd31f35cd3bacced5d3e9d7cd06e31aaa
+
+sql | 1/0/0/2254 | 33.97/0.03
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_datum_sql_string_preserves_stored_cast_formatting_and_exact_payloads -- --exact --test-threads=1
+sha256 023b365baa41647b1d112e1e6abc5aa179b02e8e54aabe7f4dd237ea556c0334
+
+sql-original | 1/0/0/2254 | 0.16/0.03
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_string_cast_policy_preserves_sql_year_bytes_decode_order_and_packet_padding -- --exact --test-threads=1
+sha256 fc02458a2d676d0a1416c6def737494bb7d0f856cdb6b3835ea1521b124aff40
+Original R11410SELECT test, not new probes.
+
+sql-float | 1/0/0/2254 | 0.17/0.04
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_float_cast_policy_preserves_sql_source_parsing_narrowing_and_error_order -- --exact --test-threads=1
+sha256 fc7b111c7837c8a76fe48e6cc93f462120f4955ee9529102c9e265f71b9bb082
+Original corrected R11310SELECT test; historical initialRED remains retained, not erased.
+
+9 serial locked single-threaded matched launches,9GREEN first attempt;0compile/testfail/ignored/zero-match/interrupt/retry.4newtests=SDK2/native2.2SDK+2nativeRustfiles,1newlivefile.0SDK+193native oldexplicit test bodies byte-identical. No oldfixtures/oracles/observers changed. Existing vectorized String-to-DECIMAL UNION ignore NOTselected/passed/repaired.
+
+NewSQL8SELECT=4projections pervector mode/28cells(26bytepayload+2SQLNULL). StoredDouble1e-7/1e20 fixednon-e, storedFloat.1 shortestf32 notpromotedf64tail, Decimal12.3400, Date/Datetime6/negative26hDuration3, JSONquotedstring/arrayseparator/JSONnull versusSQLNULL, textUnicode+NUL andrawFF0041 binary. Exactno-widthVarString(-1,-1), charset/collation/Binaryflag andquietwarnings. Real/F32/Decimal/Time/Duration/JSON actually passunchangedCHAR/BINARY callback→Datum.sql_string→SDK. SQLNULLisouterguard, notdatatypeNullemptycase; rawbinarybypass isregression, notstrictinvalidUTF8success. No inventedSQLminuszero/sentinel/noncanonicalmetadata/all19coverage; units coverthese.
+
+SDKcodec/native_sql_string owns19actualkind selector, byte versusstrictstring stages, Rawearlyvalidation andsentinelerrors. Nativeprivateview+3armerrorprojection only. NativeTemporalValue raw/kind/fsp directstruct (noCtor/packedcanonicalization), Durationrawi64nanos/fsp, DecimalborrowedRef, JSONactualtype/value, VectorborrowedexistingSDKalias. SharedstructuredDisplay adapter preservesoriginalto_string errorpanic andrawfsp domains. No hostformattercallback/genericstringifier fallback ornewrenderer. ByteString/Bytes/Enum/Set/literal/bit arbitraryoctets; RawfirstdecodeallocatesoriginaltemporaryString thenclones; sql_stringsecondstrictdecode. Nullemptybytes vsMin/Max errors; exactUtf8Error values retained.
+
+Originalfixedf/scientifice cluster oneSDKowner includingprivateGoScientificFloat special rules; Float32 narrowinsideSDK, finitefixed/special/negativezero/scientificexp signs+minimumtwo digits preserved. Nativegeneralvalue_expr_scalar selector unchanged excepttwoeprimitive calls; label/row/diagnostic/restore/defaultDisplay/otherconverters remain separate. Oldformatcluster+decodehelper+nativeSQLselector removed. Noqueryexprcontroller changes: R114datatypeAPI nowthinSDK, no newCASTtarget/C4profile/carrier/admission/performance claim.
+
+Staticpreflight corrected newSDKtest TimeType::Datetime toactualDateTime beforebuild; nofabricatedCargoRED. APIalignment fixed19variants/nohostcallbacks beforefreeze; nofixture rerecord. AppendonepartialCAST-actuator+onetype record;238oldfamilies andpriorhistory unchanged. latestfunctional106, latesttype/partial/runtime112; overallgoalactive.
+
+OtherCAST/typed-vector/UNION/otherdatatypeconversions, broaderM2/sixcomplexcandidates/root/liveDAG/final remain. FullExpr/Unistore/workspace/lint/dev/bazel/release/exhaustive/perf/physicalmemory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR-ready unverified; R100expression4/unistore1 historicalunrepaired. NoGo/Bazel/Cargo/lock changes; unrelatedBUILD excluded. Architecture-index/guide updateownership mapping only; no normativepolicy changes. PairedDCO pushes/threeidenticalPlans.

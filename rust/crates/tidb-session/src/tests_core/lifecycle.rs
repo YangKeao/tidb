@@ -9363,6 +9363,113 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn native_datum_sql_string_preserves_stored_cast_formatting_and_exact_payloads() {
+    use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
+
+    let mut session = Session::new();
+    session
+        .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
+        .unwrap();
+    session.run("SET sql_mode=''").unwrap();
+    session.run("SET time_zone='+00:00'").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE native_datum_string_sql (small_r DOUBLE, large_r DOUBLE, f FLOAT, d DECIMAL(10,4), calendar_date DATE, dt DATETIME(6), tm TIME(3), j_string JSON, j_array JSON, j_jsonnull JSON, j_sqlnull JSON, text_value VARCHAR(16), raw_bytes VARBINARY(8))")
+        .unwrap();
+    session
+        .run(r#"INSERT INTO native_datum_string_sql VALUES (1e-7,1e20,0.1,12.3400,'2024-02-29','2024-02-29 01:02:03.120000','-26:07:08.125','"x"','[1,2]','null',NULL,'你好\0x',0xFF0041)"#)
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    let cases: [(&str, &[Option<&[u8]>], &[bool]); 4] = [
+        (
+            "CAST(small_r AS CHAR),CAST(large_r AS CHAR),CAST(f AS CHAR),CAST(d AS CHAR)",
+            &[Some(b"0.0000001"), Some(b"100000000000000000000"), Some(b"0.1"), Some(b"12.3400")],
+            &[false, false, false, false],
+        ),
+        (
+            "CAST(calendar_date AS CHAR),CAST(dt AS BINARY),CAST(tm AS CHAR)",
+            &[Some(b"2024-02-29"), Some(b"2024-02-29 01:02:03.120000"), Some(b"-26:07:08.125")],
+            &[false, true, false],
+        ),
+        (
+            "CAST(j_string AS CHAR),CAST(j_array AS BINARY),CAST(j_jsonnull AS CHAR),CAST(j_sqlnull AS CHAR)",
+            &[Some(b"\"x\""), Some(b"[1, 2]"), Some(b"null"), None],
+            &[false, true, false, false],
+        ),
+        (
+            "CAST(text_value AS CHAR),CAST(text_value AS BINARY),CAST(raw_bytes AS BINARY)",
+            &[Some("你好\0x".as_bytes()), Some("你好\0x".as_bytes()), Some(&[0xFF, 0, b'A'])],
+            &[false, true, true],
+        ),
+    ];
+    // Real/Float32/Decimal/temporal/JSON are Other inputs to the existing
+    // CHAR/BINARY bridge, which invokes the actual Datum::sql_string callback.
+    // Real uses shortest FIXED f64 rendering, while a FLOAT column is already
+    // narrowed and sql_bytes formats it at f32 precision: 0.1, not the wider
+    // 0.10000000149011612 text used by a promoted-f64 decimal conversion.
+    // Decimal and temporal display retain visible scale; JSON retains quotes
+    // and its array separators. SQL NULL is the cast guard, not evidence for
+    // the standalone sql_bytes(NULL) empty-byte result.
+    // The binary raw-payload controls may bypass semantic stringification;
+    // they guard the unchanged byte path, not invalid UTF-8 sql_string success.
+    // No minus-zero storage assumption, sentinel, noncanonical temporal,
+    // new CAST target, runtime Head or zero-slot claim is made here.
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        for &(projection, expected, binary) in &cases {
+            let sql = format!("SELECT {projection} FROM native_datum_string_sql");
+            let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap() else {
+                panic!("expected stored SQL-string consumer rows: {sql}")
+            };
+            assert_eq!(columns.len(), expected.len(), "{sql}");
+            assert_eq!(rows.len(), 1, "{sql}");
+            assert_eq!(rows[0].len(), expected.len(), "{sql}");
+            for (index, expected) in expected.iter().enumerate() {
+                let field = &columns[index].1;
+                assert_eq!(field.code(), FieldTypeCode::VarString, "{sql}/{index}");
+                assert_eq!((field.flen(), field.decimal()), (-1, -1), "{sql}/{index}");
+                assert_eq!(
+                    field.charset_name(),
+                    if binary[index] { "binary" } else { "utf8mb4" }
+                );
+                assert_eq!(
+                    field.collation_name(),
+                    if binary[index] {
+                        "binary"
+                    } else {
+                        "utf8mb4_bin"
+                    }
+                );
+                assert_eq!(field.has_flag(FieldTypeFlags::BINARY), binary[index]);
+                assert_eq!(field.is_binary_string(), binary[index]);
+                assert!(!field.is_unsigned());
+                if let Some(expected) = expected {
+                    // String-family typed finish leaves the payload intact;
+                    // row materialization may restore the target collation.
+                    let actual = match &rows[0][index] {
+                        Datum::String(value) => value.bytes(),
+                        Datum::Bytes(value) => value.as_slice(),
+                        other => panic!("changed string carrier: {sql}/{index}: {other:?}"),
+                    };
+                    assert_eq!(actual, *expected, "{sql}/{vectorized}/{index}");
+                } else {
+                    assert_eq!(rows[0][index], Datum::Null, "{sql}/{vectorized}/{index}");
+                }
+            }
+            assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
+        }
+    }
+}
+
+#[test]
 fn native_string_cast_policy_preserves_sql_year_bytes_decode_order_and_packet_padding() {
     use tidb_datatype::{FieldTypeCode as C, FieldTypeFlags};
 
