@@ -1001,23 +1001,7 @@ impl Decimal {
     /// decimal-to-integer conversion rule for bitwise/shift operators (which
     /// operate on integers, not decimals). `None` on overflow past `i64`.
     pub fn round_to_i64(&self) -> Option<i64> {
-        let split = self.digits.len() - self.storage_scale as usize;
-        let int_part = if split == 0 {
-            "0"
-        } else {
-            &self.digits[..split]
-        };
-        // The negative signed limit has magnitude i64::MAX + 1. Parse the
-        // magnitude unsigned, then check the signed range after rounding.
-        let mut magnitude: u64 = int_part.parse().ok()?;
-        if self.storage_scale != 0 && self.digits.as_bytes()[split] >= b'5' {
-            magnitude = magnitude.checked_add(1)?;
-        }
-        if self.negative && magnitude == i64::MIN.unsigned_abs() {
-            return Some(i64::MIN);
-        }
-        let magnitude = i64::try_from(magnitude).ok()?;
-        Some(if self.negative { -magnitude } else { magnitude })
+        self.as_shared_parse().round_to_i64()
     }
 
     /// Source `MyDecimal.ToInt`: truncates toward zero and reports a non-zero
@@ -1055,8 +1039,7 @@ impl Decimal {
     /// clamp-and-warn for an explicit `CAST`, unlike an implicit bitwise
     /// coercion).
     pub fn round_to_i64_saturating(&self) -> i64 {
-        self.round_to_i64()
-            .unwrap_or(if self.negative { i64::MIN } else { i64::MAX })
+        self.as_shared_parse().round_to_i64_saturating()
     }
 
     /// `CAST(... AS UNSIGNED)`'s decimal rule: round half away from zero to an
@@ -1068,49 +1051,7 @@ impl Decimal {
     /// `(i64::MAX, u64::MAX]` — the upper half of an `UNSIGNED BIGINT`.
     #[must_use]
     pub fn round_to_u64_saturating(&self) -> u64 {
-        match self.rounded_magnitude_u64() {
-            // A negative magnitude that does not round to zero is ToUint's
-            // ErrOverflow, which the cast turns into 0; zero and positive
-            // magnitudes pass through unchanged.
-            Some(magnitude) => {
-                if self.negative && magnitude != 0 {
-                    0
-                } else {
-                    magnitude
-                }
-            }
-            // Magnitude beyond u64::MAX: positive saturates to MaxUint64, a
-            // negative overflow is still ErrOverflow -> 0.
-            None => {
-                if self.negative {
-                    0
-                } else {
-                    u64::MAX
-                }
-            }
-        }
-    }
-
-    /// The half-up rounded integer magnitude ignoring sign, `None` when it
-    /// exceeds `u64::MAX`. The magnitude step of [`Decimal::round_to_i64`]
-    /// parsed into `u64` so an `UNSIGNED` cast keeps the full range.
-    fn rounded_magnitude_u64(&self) -> Option<u64> {
-        if self.storage_scale == 0 {
-            return self.digits.parse::<u64>().ok();
-        }
-        let split = self.digits.len() - self.storage_scale as usize;
-        let int_part = if split == 0 {
-            "0"
-        } else {
-            &self.digits[..split]
-        };
-        let round_up = self.digits.as_bytes()[split] >= b'5';
-        let magnitude: u64 = int_part.parse().ok()?;
-        if round_up {
-            magnitude.checked_add(1)
-        } else {
-            Some(magnitude)
-        }
+        self.as_shared_parse().round_to_u64_saturating()
     }
 
     /// `CAST`/`CONVERT`'s own `DECIMAL(flen, scale)` target: rounds to

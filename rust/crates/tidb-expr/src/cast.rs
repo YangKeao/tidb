@@ -19,7 +19,7 @@
 //!
 //! JSON and DATE/DATETIME targets retain their native datum domains. Every
 //! rule here (string-to-number prefix parsing width, rounding tie-breaking per
-//! source type, `UNSIGNED`'s negative-float-clamps-to-zero rule, `DECIMAL`'s
+//! source type, `UNSIGNED`'s source-specific negative handling, `DECIMAL`'s
 //! precision clamp, `BINARY`'s NUL-padding) was confirmed via `goeval`, not
 //! assumed — see each function's own doc for the specific probe.
 
@@ -72,26 +72,10 @@ pub(crate) fn eval_cast(
         ));
     }
     match cast_type {
-        CastType::Signed => Ok(Datum::Int(to_i64_signed_with_warnings(&v, ctx)?)),
-        CastType::Unsigned => {
-            report_int_truncation(&v, ctx)?;
-            report_negative_string_unsigned(&v, ctx);
-            Ok(Datum::UInt(to_u64_unsigned_in(&v, ctx)?))
-        }
+        CastType::Signed => crate::tikv::eval_cast_signed_in(ctx, &v).map(Datum::Int),
+        CastType::Unsigned => crate::tikv::eval_cast_unsigned_in(ctx, &v).map(Datum::UInt),
         CastType::UnsignedInUnion => {
-            // Every numeric/string `castAsInt` signature has an `inUnion`
-            // negative-to-zero branch in Go. Temporal signatures do not: a
-            // TIME/DATETIME value is first rendered as an integer and then
-            // reinterpreted by the ordinary unsigned path. Check the source
-            // eval family, not just the datum shape, before applying the
-            // branch so string warnings are not emitted for a value Go drops.
-            if union_unsigned_clamps_negative(&v, source) {
-                Ok(Datum::UInt(0))
-            } else {
-                report_int_truncation(&v, ctx)?;
-                report_negative_string_unsigned(&v, ctx);
-                Ok(Datum::UInt(to_u64_unsigned_in(&v, ctx)?))
-            }
+            crate::tikv::eval_cast_unsigned_union_in(ctx, &v, source).map(Datum::UInt)
         }
         CastType::Char { len, charset } => {
             // Go `CHAR(n) CHARSET binary`: the ret charset is binary, so
@@ -245,37 +229,6 @@ pub(crate) fn eval_cast(
         }
         CastType::Time { fsp } => cast_to_duration(&v, source, ctx, i64::from(fsp.unwrap_or(0))),
         CastType::Json => crate::builtin_ext::cast_as_json(&v),
-    }
-}
-
-fn union_unsigned_clamps_negative(
-    value: &Datum,
-    source: Option<&tidb_datatype::FieldType>,
-) -> bool {
-    let source_eval_type = source.map(FieldType::eval_type);
-    match source_eval_type {
-        Some(EvalType::Int) => matches!(value, Datum::Int(number) if *number < 0),
-        Some(EvalType::Real) => {
-            matches!(value, Datum::Real(number) if *number < 0.0)
-                || matches!(value, Datum::Float32(number) if *number < 0.0)
-        }
-        Some(EvalType::Decimal) => {
-            matches!(value, Datum::Decimal(decimal) if decimal.round_to_i64_saturating() < 0)
-        }
-        Some(EvalType::String) | None => match value {
-            Datum::String(text) => text
-                .as_utf8()
-                .is_ok_and(|text| text.trim().len() > 1 && text.trim().starts_with('-')),
-            Datum::Bytes(bytes) => std::str::from_utf8(bytes)
-                .is_ok_and(|text| text.trim().len() > 1 && text.trim().starts_with('-')),
-            Datum::Int(number) => *number < 0,
-            Datum::Real(number) => *number < 0.0,
-            Datum::Float32(number) => *number < 0.0,
-            Datum::Decimal(decimal) => decimal.round_to_i64_saturating() < 0,
-            _ => false,
-        },
-        Some(EvalType::Datetime | EvalType::Timestamp | EvalType::Duration)
-        | Some(EvalType::VectorFloat32 | EvalType::Json) => false,
     }
 }
 
@@ -487,16 +440,7 @@ pub(crate) fn to_i64_signed(v: &Datum) -> i64 {
 /// `toSignedInteger` hands to `Time.RoundFrac` -- load-bearing only when a
 /// DATETIME's fractional carry lands on a DST transition instant.
 pub(crate) fn to_i64_signed_in(v: &Datum, zone: &tidb_datatype::SessionTimeZone) -> i64 {
-    match v {
-        Datum::Int(i) => *i,
-        Datum::UInt(i) => *i as i64,
-        Datum::Decimal(d) => d.round_to_i64_saturating(),
-        Datum::Real(f) => f.round_ties_even() as i64,
-        Datum::String(s) => s.as_utf8().map(str_int_prefix).unwrap_or(0),
-        Datum::Bytes(s) => std::str::from_utf8(s).map(str_int_prefix).unwrap_or(0),
-        Datum::Null | Datum::MinNotNull | Datum::MaxValue => unreachable!("guarded by caller"),
-        other => other.to_i64_in(zone).map_or(0, |converted| converted.value),
-    }
+    crate::tikv::eval_cast_signed_value_in(v, zone)
 }
 
 /// Signed integer coercion plus the warnings produced by Go's cast signature.
@@ -508,9 +452,7 @@ pub(crate) fn to_i64_signed_with_warnings(
     v: &Datum,
     ctx: &dyn crate::Columns,
 ) -> Result<i64, EvalError> {
-    report_int_truncation(v, ctx)?;
-    report_signed_overflow(v, ctx);
-    Ok(to_i64_signed_in(v, &ctx.time_zone()))
+    crate::tikv::eval_cast_signed_in(ctx, v)
 }
 
 /// `UNSIGNED`'s own coercion. Integer and integer-string sources preserve
@@ -539,49 +481,9 @@ pub(crate) fn to_i64_signed_with_warnings(
 /// The result is [`Datum::UInt`], so downstream comparisons and arithmetic
 /// retain the domain instead of silently reinterpreting it as signed display
 /// text.
+#[cfg(test)]
 fn to_u64_unsigned_in(v: &Datum, ctx: &dyn crate::Columns) -> Result<u64, EvalError> {
-    Ok(match v {
-        // TiDB's integer cast reuses the low 64 bits for an ETInt source.
-        // That is observable for `CAST(-5 AS UNSIGNED)`, which is
-        // 18446744073709551611 rather than an error or a display-only wrap.
-        // Go's `builtinCastTimeAsIntSig`/`builtinCastDurationAsIntSig`
-        // produce a plain `int64` and the UNSIGNED target only reinterprets
-        // its bits, so a temporal source takes the SIGNED path -- including
-        // its `RoundFrac(DefaultFsp)`, which `convertToUint`'s own temporal
-        // arm (a different caller) does NOT do.
-        Datum::Int(_)
-        | Datum::String(_)
-        | Datum::Bytes(_)
-        | Datum::Time(_)
-        | Datum::Duration(_) => to_i64_signed_in(v, &ctx.time_zone()) as u64,
-        Datum::UInt(i) => *i,
-        // A decimal rounds half-up then converts through the full u64 range
-        // (Go `MyDecimal.ToUint`): a negative value becomes 0, and a magnitude in
-        // `(i64::MAX, u64::MAX]` — the upper half of `UNSIGNED BIGINT` — is kept
-        // rather than saturated at `i64::MAX` by the signed path.
-        Datum::Decimal(d) => {
-            // Go's `convertDecimalStrToUint` reports the clamp, and the
-            // message carries the decimal's ORIGINAL text -- `'-2.0'`, not the
-            // rounded `-2`. The test is on the ROUNDED value, which is why
-            // `cast(-0.4 as unsigned)` is a silent 0 (it rounds to `-0`) while
-            // `cast(-1.5 as unsigned)` warns. Captured (`gorun`, default
-            // sql_mode): `select cast(-2.0 as unsigned)` -> 0 with
-            // `1292 Truncated incorrect DECIMAL value: '-2.0'`;
-            // `cast(1.5 as unsigned)` -> 2 with no warning at all.
-            if d.round_to_i64_saturating() < 0 {
-                ctx.append_warning(1292, &format!("Truncated incorrect DECIMAL value: '{d}'"));
-            }
-            d.round_to_u64_saturating()
-        }
-        // A real rounds half-to-even then converts across the full u64 range
-        // (Go `ConvertFloatToUint`), so its own upper half is kept too -- and
-        // its NEGATIVE half is kept as the low 64 bits rather than clamped.
-        Datum::Real(_) | Datum::Float32(_) => crate::tikv::eval_cast_real_unsigned_in(ctx, v)?,
-        Datum::Null | Datum::MinNotNull | Datum::MaxValue => unreachable!("guarded by caller"),
-        other => other
-            .to_decimal()
-            .map_or(0, |converted| converted.value.round_to_u64_saturating()),
-    })
+    crate::tikv::eval_cast_unsigned_value_in(ctx, v)
 }
 
 // Preserve the original value-only test surface without a production fallback
@@ -591,197 +493,10 @@ fn to_u64_unsigned(v: &Datum, ctx: &dyn crate::Columns) -> u64 {
     to_u64_unsigned_in(v, ctx).expect("unsigned cast test evaluation")
 }
 
-/// Scans a MySQL-style INTEGER numeric prefix: optional leading
-/// whitespace, optional sign, then a run of ASCII digits — stopping at
-/// the first non-digit (no `.`, no exponent; see [`to_i64_signed`]'s own
-/// doc for the confirming probe). `0` if no digit is found. Saturates to
-/// `i64::MIN`/`MAX` on overflow rather than replicating real TiDB's own
-/// exotic bit-reinterpretation for a string whose digit run exceeds even
-/// `u64` range (confirmed via `goeval`: `CAST('99999999999999999999' AS
-/// SIGNED)` — twenty `9`s — is `-1` in real TiDB, a `u64::MAX` value
-/// bit-reinterpreted as `i64`; this project deliberately does not
-/// replicate that, saturating to `i64::MAX` instead — a principled,
-/// documented divergence for a value nobody writes intentionally, not an
-/// oversight).
-/// Go `types.getValidIntPrefix`'s `isFuncCast` arm, reporting ONLY whether
-/// the scan consumed the whole string. Go scans BYTES and advances the valid
-/// length only on a digit, so a lone sign leaves length zero:
-/// `[+-]?` at offset 0 is skipped without counting, every following ASCII
-/// digit sets the length to `i + 1`, and the first other byte stops the scan.
-///
-/// Returned separately from [`str_int_prefix`] because the two answers have
-/// different lifetimes in Go too: the prefix VALUE is returned to the caller
-/// unconditionally, while the truncation event goes through
-/// `Context.HandleTruncate` and may be discarded, warned, or raised.
-fn int_prefix_consumed_all(s: &str) -> bool {
-    // Go `StrToInt`/`StrToUint` trim BOTH ends before scanning, so trailing
-    // space is not a truncation; `CAST('  12  ' AS SIGNED)` is exact.
-    let trimmed = s.trim();
-    let mut valid_len = 0;
-    for (i, byte) in trimmed.bytes().enumerate() {
-        if (byte == b'+' || byte == b'-') && i == 0 {
-            continue;
-        }
-        if byte.is_ascii_digit() {
-            valid_len = i + 1;
-            continue;
-        }
-        break;
-    }
-    valid_len != 0 && valid_len == trimmed.len()
-}
-
-/// Applies the statement's truncation level when `CAST(<string> AS
-/// SIGNED/UNSIGNED)` did not consume the whole operand, which is the point
-/// Go's `getValidIntPrefix` calls `Context.HandleTruncate`.
-///
-/// The `CAST(<number> AS SIGNED)` clamp's own warning, which is the only
-/// thing that says the value saturated:
-///
-///  * `builtinCastRealAsIntSig` (`builtin_cast.go:1367`) returns
-///    `ConvertFloatToInt`'s `ErrOverflow` (1690)
-///    "constant %v overflows bigint" -- printing the ROUNDED value.
-///  * `builtinCastDecimalAsIntSig` (`:1566`) aliases its own `ErrOverflow`
-///    to `ErrTruncatedWrongVal` (1292)
-///    "Truncated incorrect DECIMAL value: '%v'" -- printing the ORIGINAL
-///    decimal, not the rounded one.
-///
-/// Both are WARNINGS in the default (strict) sql_mode, captured: reads never
-/// fail. Go compares against `float64(upperBound)`, so the check is exact
-/// only in `f64`: `CAST(9223372036854775806.9e0 AS SIGNED)` is `i64::MAX`
-/// with NO warning, because the bound itself rounds up to the same `f64`.
-/// Go's `val >= float64(upperBound)` spares exactly that equal case and
-/// `val < float64(lowerBound)` is strict, which is why the range below is
-/// INCLUSIVE at both ends.
-///
-/// `RoundFloat` is `math.RoundToEven`, mirrored here, but NO input can
-/// observe it: an `f64` keeps a fractional part only below 2^52, while this
-/// arm fires only past 2^63, so the rounding is the identity for both the
-/// comparison and the printed text. It is kept because Go rounds; a fixture
-/// that pins it cannot exist.
-///
-/// SIGNED only. Go's UNSIGNED target takes the other branch of the same
-/// signature (`ConvertFloatToUint`/`MyDecimal.ToUint`), whose warning
-/// [`to_u64_unsigned_in`] already raises -- calling both would double it.
-fn report_signed_overflow(v: &Datum, ctx: &dyn crate::Columns) {
-    match v {
-        Datum::Real(value) | Datum::Float32(value) => {
-            let rounded = value.round_ties_even();
-            if !(i64::MIN as f64..=i64::MAX as f64).contains(&rounded) {
-                ctx.append_warning(
-                    1690,
-                    &format!(
-                        "constant {} overflows bigint",
-                        tidb_datatype::format_float_g_shortest(rounded)
-                    ),
-                );
-            }
-        }
-        Datum::Decimal(value) if value.round_to_i64().is_none() => ctx.append_warning(
-            1292,
-            &format!("Truncated incorrect DECIMAL value: '{value}'"),
-        ),
-        Datum::String(value) => {
-            if let Ok(text) = value.as_utf8() {
-                report_positive_string_signed_complement(text, ctx);
-            }
-        }
-        Datum::Bytes(value) => {
-            if let Ok(text) = std::str::from_utf8(value) {
-                report_positive_string_signed_complement(text, ctx);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn report_positive_string_signed_complement(text: &str, ctx: &dyn crate::Columns) {
-    if !int_prefix_consumed_all(text) {
-        return;
-    }
-    let trimmed = text.trim();
-    if trimmed.starts_with('-') {
-        return;
-    }
-    let digits = trimmed.strip_prefix('+').unwrap_or(trimmed);
-    if digits
-        .parse::<u64>()
-        .is_ok_and(|value| value > i64::MAX as u64)
-    {
-        ctx.append_warning(
-            8030,
-            "Cast to signed converted positive out-of-range integer to its negative complement",
-        );
-    }
-}
-
-/// Only a string-valued operand reaches Go's `builtinCastStringAsIntSig`;
-/// the numeric signatures have their own, overflow-shaped diagnostic, in
-/// [`report_signed_overflow`].
+/// Delegates string and structured-JSON integer input diagnostics to the SDK.
+/// Numeric overflow diagnostics belong to [`to_i64_signed_with_warnings`].
 pub(crate) fn report_int_truncation(v: &Datum, ctx: &dyn crate::Columns) -> Result<(), EvalError> {
-    // go re-reads a JSON document's MarshalJSON text through the same
-    // string-integer scanner (`builtinCastJSONAsIntSig`'s StrToInt), so a
-    // document without an integer prefix warns exactly like a string one
-    // (captured: CAST(a AS UNSIGNED) over the object document warns
-    // `Truncated incorrect INTEGER value: '{...}'`).
-    let json_text;
-    let text = match v {
-        Datum::String(value) => value.as_utf8().ok(),
-        Datum::Bytes(value) => std::str::from_utf8(value).ok(),
-        // Only the STRUCTURED documents (object/array) re-read through the
-        // string scanner: go converts a JSON boolean/number directly (the
-        // `false` document casts to 0 silently -- captured g-json2), so
-        // stringifying those over-warned.
-        Datum::Json(value)
-            if matches!(
-                value.type_code(),
-                tidb_datatype::JSON_TYPE_CODE_OBJECT | tidb_datatype::JSON_TYPE_CODE_ARRAY
-            ) =>
-        {
-            json_text = value.to_string();
-            Some(json_text.as_str())
-        }
-        _ => None,
-    };
-    match text {
-        Some(text)
-            if !int_prefix_consumed_all(text) || signed_string_integer_parse_overflows(text) =>
-        {
-            ctx.handle_truncate(&format!(
-                "Truncated incorrect INTEGER value: '{}'",
-                tidb_datatype::warning_subject_byte_cap(text.trim())
-            ))
-        }
-        _ => Ok(()),
-    }
-}
-
-/// Reports Go's `ErrCastNegIntAsUnsigned` for a negative integer string.
-///
-/// `builtinCastStringAsIntSig` emits this advisory only after `StrToInt`
-/// succeeds. A malformed or out-of-range prefix therefore keeps the normal
-/// truncation/overflow warning and does not add a second 8031 event.
-fn report_negative_string_unsigned(v: &Datum, ctx: &dyn crate::Columns) {
-    let text = match v {
-        Datum::String(value) => value.as_utf8().ok(),
-        Datum::Bytes(value) => std::str::from_utf8(value).ok(),
-        _ => None,
-    };
-    let Some(text) = text else {
-        return;
-    };
-    let trimmed = text.trim();
-    if trimmed.len() <= 1
-        || !trimmed.starts_with('-')
-        || !int_prefix_consumed_all(trimmed)
-        || trimmed.parse::<i64>().is_err()
-    {
-        return;
-    }
-    ctx.append_warning(
-        8031,
-        "Cast to unsigned converted negative integer to it's positive complement",
-    );
+    crate::tikv::report_cast_integer_input_in(ctx, v)
 }
 
 /// Maps `MyDecimal.FromString`'s non-overflow parse dispositions to the
@@ -790,39 +505,6 @@ fn report_negative_string_unsigned(v: &Datum, ctx: &dyn crate::Columns) {
 /// truncated suffix contributes this statement warning.
 pub(crate) fn report_decimal_input_truncation(v: &Datum, ctx: &dyn crate::Columns) {
     crate::tikv::report_cast_decimal_input_in(ctx, v);
-}
-
-fn signed_string_integer_parse_overflows(text: &str) -> bool {
-    if !int_prefix_consumed_all(text) {
-        return false;
-    }
-    let trimmed = text.trim();
-    if trimmed.starts_with('-') {
-        trimmed.parse::<i64>().is_err()
-    } else {
-        trimmed
-            .strip_prefix('+')
-            .unwrap_or(trimmed)
-            .parse::<u64>()
-            .is_err()
-    }
-}
-
-fn str_int_prefix(s: &str) -> i64 {
-    let s = s.trim_start();
-    let (negative, rest) = match s.strip_prefix('-') {
-        Some(r) => (true, r),
-        None => (false, s.strip_prefix('+').unwrap_or(s)),
-    };
-    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    if digits.is_empty() {
-        return 0;
-    }
-    if negative {
-        format!("-{digits}").parse::<i64>().unwrap_or(i64::MIN)
-    } else {
-        digits.parse::<u64>().map_or(-1, |value| value as i64)
-    }
 }
 
 /// `CHAR(N)`'s own truncation is handled inline in [`eval_cast`] (keeps

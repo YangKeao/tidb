@@ -1,0 +1,58 @@
+cast-integer-109 / R112 integer CAST batch; functional238/245 strict0 remaining7 unchanged.
+TiKV cwd /home/agent/tidb/expression-unification/tikv
+Native cwd /home/agent/tidb/expression-unification/tidb/rust
+Raw /home/agent/tidb/expression-unification/logs/cast-integer-{id}.log
+Counts passed/failed/ignored/filtered; timings compile/test seconds.
+
+tikv-datatype | 1/0/0/470 | 2.07/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_decimal_rounded_integer_preserves_raw_storage_and_limits -- --test-threads=1
+sha256 b4c569ecd97196d66774d1d2f51d7c7b367b87d8fa26ef20235d2bd10d973cfc
+
+tikv-core | 2/0/0/992 | 15.79/0.00 | exit0
+../tools/cargo-tikv test --locked -p tidb_query_expr --lib native_cast_integer -- --test-threads=1
+sha256 7074cfe2a1dd86e4c0536cfaea1ff8a7ebc5faab7096e6d600e3a48e9684f8a1
+
+native-entry | 1/0/0/1719 | 17.77/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::cast_integer -- --test-threads=1
+sha256 b7fed80af46d0705a1d60aac37fe7fc3771f46e2fb2b0ef56cef6e4e6dec13a4
+
+native-cast | 21/0/0/1699 | 0.13/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib cast:: -- --test-threads=1
+sha256 bfbe7659d1e816f972e79f7e57c05841ceb5ca8cf93a7fb4485eebf6932802b3
+
+native-original | 16/0/0/1704 | 0.13/0.00 | exit0
+../../tools/cargo-tidb test --locked -p tidb-expr --lib test_cast_func -- --test-threads=1
+sha256 2a41501bae9a8925cbf31c29357a0d2630545d201b04e44224f63cc67f396a2e
+
+native-datatype | 463/0/0/0 | 2.04/7.12 | exit0
+../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+sha256 0197eaf11fc5869426ea09bd1e2a4c90c605e2398620f75b04625be985b8db67
+Whole native datatype library, not whole-Go-package transcreation.
+
+sql | 1/0/0/2251 | 25.42/0.03 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_integer_cast_policy_preserves_sql_domains_complements_and_warning_order -- --exact --test-threads=1
+sha256 86b9e4e98455b8140892d101a05439ae7aa84638d714321efa6b4cc387db7a94
+
+sql-original | 1/0/0/2251 | 0.14/0.06 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::evaluated_ascii_real_unsigned_cast_slice_preserves_rounding_warnings_and_pool_refusals -- --exact --test-threads=1
+sha256 ede969932bdcf1e80bdf045242d0bc5756ad57e32c140186b5a95caf4b8702a3
+Original RealUnsigned SQL/pool-refusal regression, not newly added gates/probes.
+
+sql-decimal | 1/0/0/2251 | 0.15/0.03 | exit0
+../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::native_decimal_cast_policy_preserves_sql_source_domains_and_warning_order -- --exact --test-threads=1
+sha256 709e5b7ae4b334923d00373868e8ed05edf0d0681f5d939dc4252b9d1243f197
+Original R1118SELECT test, not new probes.
+
+9 serial locked single-threaded nonzeroGREEN launches;0compile/testfailures,0ignored,0zero-match,0interruptions/retries.5newtests=SDK3/native2.3SDK+5nativeRustfiles,2newlivefiles.2SDK+222native oldexplicit test bodies byte-identical. Originalfixtures/providerexpectations/observers unchanged; no provideroutput oracle. Existing vectorized String-to-DECIMAL UNION ignore/unmodeled gap was NOTselected bythisroundfilters, notpassed/repaired.
+
+SDK native_cast_integer owns3targets(Signed/Unsigned/UnsignedInUnion),3integer scanners, overflow/complement8030/negative8031/truncation, actualsource selection andstaticEvalTypeUnion gate. Native6bridges onlyprojectactual14kinds/actual9ET+None forUnion andactuate demanded JSONDisplay/zone/defaultdatatypeconversion/oldRealUnsignedworker/diagnostic callbacks. Null/Min/Max keeporiginalvalue-helperpanic; truncOnlyignore. SignedvalueexplicitZone/UTC noColumns read; unsignedvalueonly noinputtrunc/8031 butDecimal1292/Realwarn remain, notwarningfilteremulation.
+
+Order: SIGNED fallibletruncation→appendoverflow→unconditionalzone→conversion; UNSIGNED truncation→8031→source withzoneonlyInt/String/Bytes/Time/Duration; UNION negativegateprecedesallwarning/zone/worker. StructuredJSONalone requestsDisplay. Float32signedstillOther.to_i64_in evenactual2.5equalsReal2; datatype(value,event)/Err reachesSDKdisposition. UnsignedOtherrounds beforedropvalue/event asoriginalclosure. ExistingRealUnsignedworker's E propagatesunchanged—noextra/skippedfacade, newprofile/carrier/admission orwirealias.
+
+HborrowedRef rounded_i64/rounded_i64_saturating/rounded_u64_saturating cluster singleSDKowner; native3delegates/privatehelperdeleted. Rawstorageonly, no normalization/admission; signedempty0 vsunsignedemptyMAX, raw+17, sign/bounds/UTF8/overscale/slicepanic preserved. Distinctfromtrunc/wire; nofakeoverflowflags.
+
+NewSQL10SELECT=5groups×2vector/38cells: Int/UInt/Decimal/Real/Float32; fullwidth8030/negative8031 vs malformedprefix1292 suppression; negativeDecimal0+1292 vsnegativeReal lowbits+1690; temporalmonthend/timecarry; JSONfloat signed12/unsigned13; JSON[]1292 andNULL. ExactLongLong20/0/binary/unsignedmetadata andtypedresults checked. No invented SQLUnsignedInUnion route. Nativebridge pinsactual LA DST vsUTC, warning-veto/zone demand, actualFloat32callback, structuredJSON,datatypefold vsoldRealworker0scopeErr/1scopesuccess andrawguard contracts.
+
+Preflight: D'sproposedFloat32=3oraclefromstalehalfawaycomment corrected BEFOREtests againstactualdatum/convert132→numeric_helper49ties_even; noactualoutput recording/fabricatedRED. Parentcorrectedrelatedoldnegative-float-clampintro tosource-specificnegativehandling. No productionalgorithm repair beyondownership move. Roundedrawquirks andexistingGo/Rustdivergences retained.
+
+238families/oldpartial/type/date/IN history retained; appendonepartialCAST+onetypeleaf record. latestfunctional in-control-106 unchanged; latesttype/partialCAST/runtime cast-integer-109. OtherCASTtargets/typed-vector/UNIONvariants/defaultdatatypeactuators,M2reader/value-word,sixcomplexcandidates/root/liveDAG/final remain. NextDouble/Float requiresnativebytefloatparser (NUL/bare-e/status order), notwire/decimal-prefixalias. FullExpr/Unistore/workspace/lint/dev/bazel/release/exhaustive/perf/physical-transientheap/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR-ready unverified; R100expression4/unistore1 historicalunrepaired. NoGo/Bazel/Cargo/lock; unrelatedBUILD excluded. PairedDCO pushes/threeidenticalPlans; overallgoalactive.

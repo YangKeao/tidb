@@ -9363,6 +9363,110 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
 }
 
 #[test]
+fn native_integer_cast_policy_preserves_sql_domains_complements_and_warning_order() {
+    use tidb_datatype::FieldTypeCode;
+
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    session.run("SET sql_mode=''").unwrap();
+    session.run("SET time_zone='+00:00'").unwrap();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE native_integer_cast_policy_sql (i BIGINT, u BIGINT UNSIGNED, d DECIMAL(4,1), r DOUBLE, f FLOAT, wide_text VARCHAR(32), negative_text VARCHAR(32), dirty_negative VARCHAR(32), dirty_wide VARCHAR(32), negative_d DECIMAL(4,1), negative_r DOUBLE, tiny_d DECIMAL(4,1), dt DATETIME(6), tm TIME(6), j JSON, j_array JSON, null_text VARCHAR(32))")
+        .unwrap();
+    session
+        .run("INSERT INTO native_integer_cast_policy_sql VALUES (-5,18446744073709551615,2.5,2.5,2.5,'18446744073709551615','-5','-5x','18446744073709551615x',-1.5,-1.5,-0.4,'2024-01-31 23:59:59.500000','11:59:59.500000','12.5','[]',NULL)")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .unwrap());
+    // The integer cast control policy is native/shared; the already-admitted
+    // REAL-to-UNSIGNED worker remains its own unchanged child. These normal
+    // one-slot statements make no new Head, zero-slot or facade-count claim.
+    let cases: [(&str, Vec<Datum>, &[bool], &[(u16, &str)]); 5] = [
+        (
+            "CAST(i AS UNSIGNED),CAST(u AS SIGNED),CAST(d AS SIGNED),CAST(r AS SIGNED),CAST(f AS SIGNED)",
+            vec![Datum::UInt(18446744073709551611), Datum::Int(-1), Datum::Int(3), Datum::Int(2), Datum::Int(2)],
+            &[true, false, false, false, false],
+            &[],
+        ),
+        (
+            "CAST(wide_text AS SIGNED),CAST(negative_text AS UNSIGNED),CAST(dirty_negative AS UNSIGNED),CAST(dirty_wide AS SIGNED)",
+            vec![Datum::Int(-1), Datum::UInt(18446744073709551611), Datum::UInt(18446744073709551611), Datum::Int(-1)],
+            &[false, true, true, false],
+            &[
+                (8030, "Cast to signed converted positive out-of-range integer to its negative complement"),
+                (8031, "Cast to unsigned converted negative integer to it's positive complement"),
+                (1292, "Truncated incorrect INTEGER value: '-5x'"),
+                (1292, "Truncated incorrect INTEGER value: '18446744073709551615x'"),
+            ],
+        ),
+        (
+            "CAST(negative_d AS UNSIGNED),CAST(negative_r AS UNSIGNED),CAST(tiny_d AS UNSIGNED)",
+            vec![Datum::UInt(0), Datum::UInt(18446744073709551614), Datum::UInt(0)],
+            &[true, true, true],
+            &[
+                (1292, "Truncated incorrect DECIMAL value: '-1.5'"),
+                (1690, "constant -2 overflows bigint"),
+            ],
+        ),
+        (
+            "CAST(dt AS SIGNED),CAST(tm AS UNSIGNED),CAST(j AS SIGNED),CAST(j AS UNSIGNED)",
+            vec![Datum::Int(20240201000000), Datum::UInt(120000), Datum::Int(12), Datum::UInt(13)],
+            &[false, true, false, true],
+            &[],
+        ),
+        (
+            "CAST(j_array AS UNSIGNED),CAST(null_text AS SIGNED),CAST(null_text AS UNSIGNED)",
+            vec![Datum::UInt(0), Datum::Null, Datum::Null],
+            &[true, false, true],
+            &[(1292, "Truncated incorrect INTEGER value: '[]'")],
+        ),
+    ];
+    // Decimal rounds half-up, whereas both the direct REAL signed path and
+    // Float32's Datum::to_i64_in fallback use ties-to-even. Do not infer an
+    // away-from-zero result from the stale convert_float_to_int comment.
+    // JSON signed uses that float-to-int conversion, but JSON unsigned uses
+    // Other -> to_decimal -> round_to_u64, hence the observable 12 versus 13.
+    // Temporal sources round their clock fields before numeric rendering.
+    // Malformed integer strings retain only 1292, not an additional 8030/31.
+    // SQL does not manufacture the separate AST UnsignedInUnion entrypoint;
+    // its original expression-level guards remain the appropriate evidence.
+    for vectorized in [0, 1] {
+        session
+            .run(&format!(
+                "SET tidb_enable_vectorized_expression={vectorized}"
+            ))
+            .unwrap();
+        for (projection, expected, unsigned, warnings) in &cases {
+            let sql = format!("SELECT {projection} FROM native_integer_cast_policy_sql");
+            let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap() else {
+                panic!("expected integer cast-policy rows: {sql}")
+            };
+            assert_eq!(columns.len(), expected.len(), "{sql}/{vectorized}");
+            assert_eq!(rows, vec![expected.clone()], "{sql}/{vectorized}");
+            for ((_, field), unsigned) in columns.iter().zip(unsigned.iter()) {
+                assert_eq!(field.code(), FieldTypeCode::LongLong);
+                assert_eq!((field.flen(), field.decimal()), (20, 0));
+                assert_eq!(field.is_unsigned(), *unsigned);
+                assert_eq!(field.charset_name(), "binary");
+                assert_eq!(field.collation_name(), "binary");
+            }
+            assert_eq!(
+                warnings_of(&session),
+                warnings
+                    .iter()
+                    .map(|&(code, message)| (code, message.to_owned()))
+                    .collect::<Vec<_>>(),
+                "{sql}/{vectorized}"
+            );
+        }
+    }
+}
+
+#[test]
 fn native_decimal_cast_policy_preserves_sql_source_domains_and_warning_order() {
     use tidb_datatype::FieldTypeCode;
 
