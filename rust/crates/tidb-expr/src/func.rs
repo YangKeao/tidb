@@ -535,8 +535,7 @@ pub(crate) fn eval_func_values(
         if value.is_null() {
             return Some(Ok(Datum::Null));
         }
-        let res = crate::cast::to_i64_signed_with_warnings(value, ctx).ok()?;
-        return Some(Ok(Datum::UInt(if res < 0 { 0 } else { res as u64 })));
+        return Some(crate::tikv::eval_cast_unsigned_union_in(ctx, value, None).map(Datum::UInt));
     }
     // Go `builtinCastDecimalAsRealSig.evalReal`
     // (`builtin_cast.go:1650-1661`): a DECIMAL source with an in-union
@@ -552,18 +551,18 @@ pub(crate) fn eval_func_values(
             Datum::UInt(u) => *u as f64,
             _ => return Some(Ok(Datum::Null)),
         };
-        if f < 0.0 {
-            // in-union + negative → the ZERO decimal.
-            return Some(Ok(Datum::Decimal(
+        return match tidb_query_expr::native_union_decimal_route(f < 0.0) {
+            tidb_query_expr::NativeUnionDecimalRoute::Zero => Some(Ok(Datum::Decimal(
                 tidb_datatype::Decimal::from_f64(0.0)
                     .unwrap_or_else(|| tidb_datatype::Decimal::parse_mysql("0").0),
-            )));
-        }
-        // Non-negative: FromFloat64.
-        let Some(dec) = tidb_datatype::Decimal::from_f64(f) else {
-            return Some(Ok(Datum::Null));
+            ))),
+            tidb_query_expr::NativeUnionDecimalRoute::Convert => {
+                let Some(dec) = tidb_datatype::Decimal::from_f64(f) else {
+                    return Some(Ok(Datum::Null));
+                };
+                Some(Ok(Datum::Decimal(dec)))
+            }
         };
-        return Some(Ok(Datum::Decimal(dec)));
     }
     // Go `builtinCastIntAsDecimalSig.evalDecimal`
     // (`builtin_cast.go:1050-1070`): an in-union signed integer source maps a
@@ -573,13 +572,20 @@ pub(crate) fn eval_func_values(
         if value.is_null() {
             return Some(Ok(Datum::Null));
         }
-        return Some(Ok(match value {
-            Datum::Int(value) if *value < 0 => {
+        let route = match value {
+            Datum::Int(value) => tidb_query_expr::native_union_decimal_route(*value < 0),
+            Datum::UInt(_) => tidb_query_expr::native_union_decimal_route(false),
+            _ => return None,
+        };
+        return Some(Ok(match route {
+            tidb_query_expr::NativeUnionDecimalRoute::Zero => {
                 Datum::Decimal(tidb_datatype::Decimal::parse_mysql("0").0)
             }
-            Datum::Int(value) => Datum::Decimal(tidb_datatype::Decimal::from_int(*value)),
-            Datum::UInt(value) => Datum::Decimal(tidb_datatype::Decimal::from_uint(*value)),
-            _ => return None,
+            tidb_query_expr::NativeUnionDecimalRoute::Convert => match value {
+                Datum::Int(value) => Datum::Decimal(tidb_datatype::Decimal::from_int(*value)),
+                Datum::UInt(value) => Datum::Decimal(tidb_datatype::Decimal::from_uint(*value)),
+                _ => return None,
+            },
         }));
     }
     // Go `builtinCastStringAsDecimalSig.evalDecimal`
@@ -593,20 +599,28 @@ pub(crate) fn eval_func_values(
             return Some(Ok(Datum::Null));
         }
         let text = match value {
-            Datum::String(value) => value.as_utf8().ok()?.to_owned(),
-            Datum::Bytes(value) => std::str::from_utf8(value).ok()?.to_owned(),
+            Datum::String(value) => match value.as_utf8() {
+                Ok(text) => text.to_owned(),
+                Err(_) => return None,
+            },
+            Datum::Bytes(value) => match std::str::from_utf8(value) {
+                Ok(text) => text.to_owned(),
+                Err(_) => return None,
+            },
             _ => return None,
         };
         let trimmed = text.trim();
-        if trimmed.len() > 1 && trimmed.starts_with('-') {
-            return Some(Ok(Datum::Decimal(
+        return match tidb_query_expr::native_union_text_decimal_route(text.as_bytes()) {
+            tidb_query_expr::NativeUnionDecimalRoute::Zero => Some(Ok(Datum::Decimal(
                 tidb_datatype::Decimal::parse_mysql("0").0,
-            )));
-        }
-        crate::cast::report_decimal_input_truncation(value, ctx);
-        return Some(Ok(Datum::Decimal(
-            tidb_datatype::Decimal::parse_mysql(trimmed).0,
-        )));
+            ))),
+            tidb_query_expr::NativeUnionDecimalRoute::Convert => {
+                crate::cast::report_decimal_input_truncation(value, ctx);
+                Some(Ok(Datum::Decimal(
+                    tidb_datatype::Decimal::parse_mysql(trimmed).0,
+                )))
+            }
+        };
     }
     // Go `builtinCastDecimalAsDecimalSig.evalDecimal`
     // (`builtin_cast.go:1538-1551`): an in-union unsigned-target cast of a
@@ -618,12 +632,14 @@ pub(crate) fn eval_func_values(
             return Some(Ok(Datum::Null));
         }
         let negative = matches!(value, Datum::Decimal(dec) if dec.is_negative());
-        if negative {
-            return Some(Ok(Datum::Decimal(
-                tidb_datatype::Decimal::parse_mysql("0").0,
-            )));
-        }
-        return Some(Ok(value.clone()));
+        return Some(Ok(
+            match tidb_query_expr::native_union_decimal_route(negative) {
+                tidb_query_expr::NativeUnionDecimalRoute::Zero => {
+                    Datum::Decimal(tidb_datatype::Decimal::parse_mysql("0").0)
+                }
+                tidb_query_expr::NativeUnionDecimalRoute::Convert => value.clone(),
+            },
+        ));
     }
     // Go `castAsRealToIntSig.evalReal` (`builtin_cast.go:1370-1380`): a
     // real source with an in-union unsigned int target CLAMPS a negative
@@ -637,7 +653,9 @@ pub(crate) fn eval_func_values(
             Datum::Real(x) => *x,
             other => crate::cast::to_f64_for_cast(other),
         };
-        return Some(Ok(Datum::Int(if f < 0.0 { 0 } else { f as i64 })));
+        return Some(Ok(Datum::Int(
+            tidb_query_expr::native_union_real_to_signed(f),
+        )));
     }
     if name == "cast_real_in_union" {
         // Go `builtinCastRealAsRealSig.evalReal`
@@ -660,7 +678,7 @@ pub(crate) fn eval_func_values(
             }
             _ => 0.0,
         };
-        return Some(Ok(Datum::Real(if res < 0.0 { 0.0 } else { res })));
+        return Some(Ok(Datum::Real(tidb_query_expr::native_union_real(res))));
     }
     if let Some(result) = crate::math_fn::dispatch_values(name, vals, ctx) {
         return Some(result);
@@ -2348,6 +2366,42 @@ fn nullif_workers_keep_eager_operands_comparison_policy_and_left_identity() {
             } else {
                 vec!["left", "right", "precision"]
             }
+        );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn shared_union_cast_controller_covers_all_seven_source_specific_names() {
+    let ctx = crate::NoColumns;
+    let zero = Datum::Decimal(tidb_datatype::Decimal::parse_mysql("0").0);
+    for (name, input, expected) in [
+        ("cast_unsigned_in_union", Datum::Int(-1), Datum::UInt(0)),
+        (
+            "cast_real_to_decimal_in_union",
+            Datum::Real(-2.5),
+            zero.clone(),
+        ),
+        ("cast_int_to_decimal_in_union", Datum::Int(-2), zero.clone()),
+        (
+            "cast_string_to_decimal_in_union",
+            Datum::new_string("-2x"),
+            zero.clone(),
+        ),
+        (
+            "cast_decimal_in_union",
+            Datum::Decimal(tidb_datatype::Decimal::from_literal("-2.5")),
+            zero,
+        ),
+        ("cast_real_int_in_union", Datum::Real(-2.5), Datum::Int(0)),
+        ("cast_real_in_union", Datum::Real(-2.5), Datum::Real(0.0)),
+    ] {
+        assert_eq!(
+            eval_func_values(name, &[input], &ctx)
+                .expect("UNION CAST name must dispatch")
+                .expect("source-specific conversion must succeed"),
+            expected,
+            "{name}"
         );
     }
 }

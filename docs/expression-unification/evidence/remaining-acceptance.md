@@ -70,6 +70,8 @@ R176 shares [numeric diagnostic argument policy](expr-diagnostic-argument-checkp
 
 R177 completes [RAND functional migration](rand-kernel-checkpoint.md): SDK owns seed derivation, recurrence and Datum source routing; native keeps explicit host entropy/state identity/lifetime and concrete adapters. Functional count is now239/245 (97.55%), remaining6; strict remains0. No PB signature exists and no admission was invented.
 
+R178 removes the seven native source-specific UNION CAST policy bodies; see [UNION CAST control](union-cast-control-checkpoint.md). Whole CAST remains uncredited because direct legacy `SimpleSig::Cast*` implementations remain native. Functional239/245, strict0 and remaining6 are unchanged.
+
 The accepted synchronous/scoped evaluator design stays in place. No universal compiler rewrite or exhaustive performance project is required to make the next functional steps. Conversely, reaching90% does not erase the Plan's remaining core ownership/demand obligations.
 
 R91 adds a [Real/Float32→UNSIGNED CAST slice](cast-real-uint-checkpoint.md), **not a new family**. Its native rounding/wrapping/range/overflow algorithm now belongs to TiKV. Other CAST domains, outer NULL and UNION negative bypass remain; legacy wire conversion has a distinct unchanged policy. R92 [type deduplication](decimal-policy-checkpoint.md) subsequently moves the full native float-format policy and Decimal precision-cast body to TiKV. LowerExp and Ryu policies remain distinct through a shared layout renderer; CAST warning classification and source preparation are still caller-owned. This adds no C4 profile or family credit. R91–R92 added no family credit; R93 retains all226 prior objects and adds only bounded staleness.

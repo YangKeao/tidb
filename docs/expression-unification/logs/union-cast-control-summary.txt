@@ -1,0 +1,28 @@
+union-cast-control-172 / R178
+7 Cargo launches;5 final GREEN;1 new-test compile RED +1 new SQL oracle RED retained;2 corrected rerun launches;no zero-match/interruption.
+Raw: /home/agent/tidb/expression-unification/logs/union-cast-control-{id}.log
+
+Final exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_expr --lib union_cast_policy_preserves -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-expr --lib shared_union_cast_controller_covers_all_seven_source_specific_names -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-expr --lib cast_real_to_decimal_in_union -- --test-threads=1
+[native-typed] ../../tools/cargo-tidb test --locked -p tidb-expr --lib union_unsigned_integer_cast_clamps_negative_values -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_set_opr_precedence::intersect_binds_tighter_than_union_in_execution -- --exact --test-threads=1
+
+id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/1032 17.48/0.00 0 cd1ef1b5a83ef7b63336c5caf73467e45b16fc769719331c6b77bcfc23ec5c33
+native-new 1/0/0/1746 7.92/0.00 0 0cfa75adbd664d0067bea52e755008636460a23e133891f47a3e667dfc9f90fb
+native-existing 2/0/0/1745 0.21/0.00 0 c1d4466752e6f26120f8e5ad273819c25bd00af746b8517f9723dffc5c30a004
+native-typed 1/0/0/1746 0.13/0.00 0 bf18fd8b719c8d05af19751002f0379983bdbcee67db193c1834620a07508735
+session-sql 1/0/0/2269 13.21/0.01 0 959cb6508107d6c2d181d5b38d96a0a4a062308bca20ad5ca622c0eca6fb6295
+
+Retained RED:
+[tikv-compile-red] first SDK new test used heterogeneous byte-array literal without coercing all elements to slices; E0308 compile exit101; production untouched; test-only slice spellings corrected. sha256 749726ea3a7b0848c2da62098d095aea42c308e7b033c91c3a5c531a60c38c21
+[session-sql-oracle-red] proposed new SQL `select -1 union all select cast(1 as unsigned)` produced -1,1 because the merger legitimately selected a signed domain; expected0,1 was not a direct UNION CAST oracle. exit101. New unsupported oracle removed; existing set-operation SQL rerun GREEN. sha256 2243b09818840b82d10976406750023d49d1665bbb4f8cb656fd74f3675a29c3
+
+TiKV2/TiDB2 Rust files;0 new Rustfiles.2new tests(TiKV1/TiDB1);1old TiKV/47old TiDB touched-file test bodies unchanged. Session file returned byte-identical to HEAD; no new SQL fixture/probe/cell credit.
+SDK native_cast owns seven source-specific UNION clamp/zero-vs-convert/text-negative routes and reuses existing SDK integer UnsignedInUnion controller. Native func deletes seven policy bodies; scalar deletes independent unsigned special case. Name/Datum projection, concrete Decimal construction, warning sink and merged DECIMAL target fitting remain native.
+Two production agents completed/froze non-overlapping SDK/native files without commands; parent reviewed, exported APIs, removed typed special case, appended tests, formatted and validated.
+fmt/diff passed. Functional239/245 strict0 remaining6 unchanged. One partial CAST record prepended; prior26 partial records and239 family objects unchanged. Whole CAST is not claimed: direct legacy SimpleSig CAST bodies remain. Baseline arrays/eight unimplemented Duration-Datetime signatures unchanged; no admission. Full tidb-expr remains not claimed/rerun green because R100 four historical failures; unistore one historical failure retained. Full workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
