@@ -25,6 +25,9 @@
 mod go_trig;
 
 use tidb_ast::{BinaryOp, Expr, UnaryOp};
+use tidb_query_expr::impl_math::{
+    native_rand_seed_route, NativeRandSeedRoute, NativeRandSeedSource,
+};
 
 use crate::coerce::{coerce_str, coerce_str_bytes};
 use crate::ops::{finite_float, to_f64, to_f64_with_mysql_string};
@@ -885,31 +888,48 @@ pub(crate) fn eval_rand_values(
     }
 }
 
-fn rand_seed(value: &Datum) -> Result<i64, EvalError> {
+fn rand_seed_source(value: &Datum) -> NativeRandSeedSource {
     match value {
-        Datum::Null => Ok(0),
-        Datum::Int(value) => Ok(*value),
-        Datum::UInt(value) => Ok(*value as i64),
-        Datum::Decimal(value) => value.round_to_i64().ok_or(EvalError::IntOverflow),
-        Datum::Real(value) => Ok(*value as i64),
-        Datum::String(value) => Ok(value
+        Datum::Null => NativeRandSeedSource::Null,
+        Datum::Int(_) => NativeRandSeedSource::Signed,
+        Datum::UInt(_) => NativeRandSeedSource::Unsigned,
+        Datum::Decimal(_) => NativeRandSeedSource::Decimal,
+        Datum::Real(_) | Datum::Float32(_) => NativeRandSeedSource::Real,
+        Datum::String(_) | Datum::Bytes(_) => NativeRandSeedSource::Text,
+        Datum::MinNotNull | Datum::MaxValue => NativeRandSeedSource::RangeSentinel,
+        _ => NativeRandSeedSource::Other,
+    }
+}
+
+fn rand_seed(value: &Datum) -> Result<i64, EvalError> {
+    match (native_rand_seed_route(rand_seed_source(value)), value) {
+        (NativeRandSeedRoute::Zero, Datum::Null) => Ok(0),
+        (NativeRandSeedRoute::Signed, Datum::Int(value)) => Ok(*value),
+        (NativeRandSeedRoute::Unsigned, Datum::UInt(value)) => Ok(*value as i64),
+        (NativeRandSeedRoute::Decimal, Datum::Decimal(value)) => {
+            value.round_to_i64().ok_or(EvalError::IntOverflow)
+        }
+        (NativeRandSeedRoute::Real, Datum::Real(value)) => Ok(*value as i64),
+        (NativeRandSeedRoute::Real, Datum::Float32(value)) => Ok(*value as i64),
+        (NativeRandSeedRoute::Text, Datum::String(value)) => Ok(value
             .as_utf8()
             .map_err(|_| EvalError::Unsupported("invalid UTF-8 string datum"))?
             .trim()
             .parse::<f64>()
             .unwrap_or(0.0) as i64),
-        Datum::Bytes(value) => Ok(std::str::from_utf8(value)
+        (NativeRandSeedRoute::Text, Datum::Bytes(value)) => Ok(std::str::from_utf8(value)
             .map_err(|_| EvalError::Unsupported("invalid UTF-8 byte datum"))?
             .trim()
             .parse::<f64>()
             .unwrap_or(0.0) as i64),
-        Datum::MinNotNull | Datum::MaxValue => {
+        (NativeRandSeedRoute::UnsupportedRangeSentinel, Datum::MinNotNull | Datum::MaxValue) => {
             Err(EvalError::Unsupported("range sentinel RAND seed"))
         }
-        other => other
+        (NativeRandSeedRoute::SignedFallback, other) => other
             .to_i64()
             .map(|converted| converted.value)
             .map_err(|_| EvalError::Unsupported("RAND seed conversion")),
+        _ => unreachable!("RAND seed route must match its datum source"),
     }
 }
 
@@ -1329,4 +1349,40 @@ mod tests {
             Err(EvalError::FloatOverflow)
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn shared_rand_seed_route_keeps_native_projection_and_concrete_conversion() {
+    assert_eq!(rand_seed_source(&Datum::Null), NativeRandSeedSource::Null);
+    assert_eq!(
+        rand_seed_source(&Datum::Int(1)),
+        NativeRandSeedSource::Signed
+    );
+    assert_eq!(
+        rand_seed_source(&Datum::UInt(1)),
+        NativeRandSeedSource::Unsigned
+    );
+    assert_eq!(
+        rand_seed_source(&Datum::Real(1.0)),
+        NativeRandSeedSource::Real
+    );
+    assert_eq!(
+        rand_seed_source(&Datum::new_string("1")),
+        NativeRandSeedSource::Text
+    );
+    assert_eq!(
+        rand_seed_source(&Datum::MinNotNull),
+        NativeRandSeedSource::RangeSentinel
+    );
+    assert_eq!(rand_seed(&Datum::new_string(" 1.9 ")).unwrap(), 1);
+    assert_eq!(
+        rand_seed(&Datum::new_bytes(b"not numeric".to_vec())).unwrap(),
+        0
+    );
+    assert_eq!(rand_seed(&Datum::UInt(u64::MAX)).unwrap(), -1);
+    assert_eq!(
+        rand_seed(&Datum::MinNotNull),
+        Err(EvalError::Unsupported("range sentinel RAND seed"))
+    );
 }

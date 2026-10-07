@@ -15,8 +15,6 @@
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const MAX_RAND_VALUE: u32 = 0x3fff_ffff;
-
 struct State {
     seed1: u32,
     seed2: u32,
@@ -30,8 +28,7 @@ pub struct MysqlRng {
 impl MysqlRng {
     /// Creates the RNG with the exact Go wrapping/truncation seed derivation.
     pub fn new_with_seed(seed: i64) -> Self {
-        let seed1 = seed.wrapping_mul(0x1_0001).wrapping_add(55_555_555) as u32 % MAX_RAND_VALUE;
-        let seed2 = seed.wrapping_mul(0x1000_0001) as u32 % MAX_RAND_VALUE;
+        let (seed1, seed2) = tidb_query_crypto::mysql_rand_seed_state(seed);
         Self {
             state: Mutex::new(State { seed1, seed2 }),
         }
@@ -127,5 +124,15 @@ mod tests {
         assert_eq!(rng.gen(), 0.495_463_794_558_740_96);
         assert_eq!(rng.get_seed1(), 532_000_198);
         assert_eq!(rng.get_seed2(), 689_000_330);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn shared_rand_seed_state_keeps_native_mutex_storage_projection() {
+    for seed in [0, 1, -1, i64::MIN, i64::MAX] {
+        let expected = tidb_query_crypto::mysql_rand_seed_state(seed);
+        let rng = MysqlRng::new_with_seed(seed);
+        assert_eq!((rng.get_seed1(), rng.get_seed2()), expected);
     }
 }

@@ -1,0 +1,26 @@
+rand-kernel-171 / R177
+6 Cargo launches;6 GREEN;no compile/test failure,zero-match,interruption or retry.
+Raw: /home/agent/tidb/expression-unification/logs/rand-kernel-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[crypto] ../tools/cargo-tikv test --locked -p tidb_query_crypto --lib shared_rand_seed_state_preserves -- --test-threads=1
+[route] ../tools/cargo-tikv test --locked -p tidb_query_expr --lib rand_seed_route_preserves -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-rng] ../../tools/cargo-tidb test --locked -p tidb-util --lib shared_rand_seed_state_keeps_native_mutex_storage_projection -- --test-threads=1
+[native-route] ../../tools/cargo-tidb test --locked -p tidb-expr --lib shared_rand_seed_route_keeps_native_projection_and_concrete_conversion -- --test-threads=1
+[native-typed] ../../tools/cargo-tidb test --locked -p tidb-expr --lib rand_reuses_one_generator_per_node_for_a_constant_seed -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::numeric_domain::rand_constant_sequence_and_order_by_rand -- --exact --test-threads=1
+
+id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+crypto 1/0/0/6 0.55/0.00 0 7dff22e2c7949000abe600c62ff5b8ba312823f72efe80264ee0cfad3f5c88a5
+route 1/0/0/1031 20.54/0.00 0 710b1b0fa0ac89df4c2f0cb14e1a46029efe2c519fe447bf09d4937590446289
+native-rng 1/0/0/577 12.02/0.00 0 1ae014e1c0227f1f5bccd3eefe26591513fa6f2dee43b4dd79eb48add920e073
+native-route 1/0/0/1745 16.74/0.00 0 d2e0e844d9a6d3a71f9770e72cfad3482d2653d432bafa136e63027e834ec577
+native-typed 1/0/0/1745 0.19/0.00 0 d7d02cbd35d81f85c3fbf446871148cb7a32d63080619bf312628d7e1e31536c
+session-sql 1/0/0/2269 21.88/0.01 0 e11d4eca1d9adf9663fbb798ee5f0443bf74e6f8fe7eeeb9aabeae1c9062334b
+
+TiKV3/TiDB2 Rust files;0 new Rustfiles.4new tests(TiKV2/TiDB2);57old TiKV/7old TiDB touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+TiKV query_crypto owns exact seed-state derivation and existing recurrence; query_expr owns Datum source route. Native seed derivation/source selector deleted; host keeps time entropy, Mutex state, session RNG, per-occurrence identity/lifetime and concrete conversion. Six gates cover wrapping seed vectors, all source routes, Mutex projection, concrete seed conversion, typed-row constant identity and SQL constant sequence/order-by dynamic behavior.
+Four production agents completed/froze five non-overlapping implementation files via one workflow; parent reviewed, exported crypto API, appended tests, formatted and validated.
+fmt/diff passed. Functional239/245(97.55%) strict0 remaining6 additional0. New family rand only; prior238 objects byte-identical and prior type/partial CAST records unchanged except one appended runtime record. No PB RAND signature exists; no admission invented. Full tidb-expr remains not claimed/rerun green because R100 four historical failures; unistore one historical failure retained. Full workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
