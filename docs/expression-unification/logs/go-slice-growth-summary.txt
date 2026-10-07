@@ -1,0 +1,24 @@
+go-slice-growth-168 / R174
+5 Cargo launches;5 GREEN;no compile/test failure,zero-match,interruption or retry.
+Raw: /home/agent/tidb/expression-unification/logs/go-slice-growth-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib go_slice_growth_policy -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_go_slice_growth_wrappers_keep_noscan_scanned_and_decode_capacities -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib slice_json_preserves_go_growth_duplicate_and_null_element_rules -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_show_admin::show_create_table_renders_auto_increment_comments_and_enum_defaults -- --exact --test-threads=1
+
+id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/548 4.88/0.00 0 94147b3a0774eb8dd38e2980fe131c47ef3099dba66ea37ac249e9592fb57edf
+native-datatype 513/0/0/0 3.44/7.43 0 788065541e44935a463a9cce0e6286ffdcbf0e509809a61c2623eb07752f1d32
+native-new 1/0/0/512 0.09/0.00 0 ad37508494cf43e70e6eeb80ac6a3ca6d8fd6cfacda419288776dd578a9fbc00
+native-existing 1/0/0/512 0.09/0.00 0 1d9fb2ee0edc4518089307ad893b4ae193d6102d8e74372cd49aeab8598d6cb8
+session-sql 1/0/0/2269 24.58/0.04 0 514e951226355a0592b90b464d7cc67a3582f49bae73800267420625a063e3af
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);2old SDK/0old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_field_value owns Go1.25 64-bit slice growslice, allocator size classes, scanned/noscan rounding and decode-capacity algorithm. Native table/round/growth implementations are deleted; GoSharedSlice header/backing and public wrappers remain native. Tests cover small size classes, scanned header divergence, decode growth, native wrappers, field JSON duplicate/null/growth and enum metadata SQL.
+Two fresh production agents completed/froze non-overlapping files without commands; parent reviewed, appended tests, formatted and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One runtime record only; prior type/partial CAST records unchanged. Whole JSON/type dedup and complete write lowering are not claimed; remaining typed/write SQL lowering, expression renderer andbroaderM2/root/liveDAG/final remain. Full native datatype513, existing slice JSON1 and enum metadata SQL1 passed. Full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

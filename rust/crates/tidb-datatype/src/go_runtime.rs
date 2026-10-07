@@ -22,16 +22,10 @@
 
 use std::sync::{Arc, RwLock};
 
-// Go 1.25's 64-bit allocator size classes. TiDB's supported server targets
-// are 64-bit; `growslice` rounding is defined by these byte classes and, for
-// scanned allocations only, the runtime's 8-byte malloc-header threshold.
-const GO_64_SIZE_CLASSES: &[usize] = &[
-    8, 16, 24, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256, 288, 320, 352,
-    384, 416, 448, 480, 512, 576, 640, 704, 768, 896, 1024, 1152, 1280, 1408, 1536, 1792, 2048,
-    2304, 2688, 3072, 3200, 3456, 4096, 4864, 5376, 6144, 6528, 6784, 6912, 8192, 9472, 9728,
-    10240, 10880, 12288, 13568, 14336, 16384, 18432, 19072, 20480, 21760, 24576, 27264, 28672,
-    32768,
-];
+use tidb_query_datatype::codec::native_field_value::{
+    native_go_64_next_slice_capacity, native_go_64_slice_decode_capacity,
+    NativeGoSliceElementLayout,
+};
 
 /// Whether a Go slice's element type contains pointers and therefore uses a
 /// scanned allocation. Above the malloc-header threshold, scanned and noscan
@@ -44,28 +38,11 @@ pub enum GoSliceElementLayout {
     PointerBearing,
 }
 
-fn go_64_round_allocation(bytes: usize, layout: GoSliceElementLayout) -> usize {
-    const MALLOC_HEADER: usize = 8;
-    const MIN_HEADER_SIZE: usize = 8 * 64;
-    const MAX_SMALL_SIZE: usize = 32_768;
-    const PAGE_SIZE: usize = 8_192;
-
-    if bytes <= MAX_SMALL_SIZE - MALLOC_HEADER {
-        let header =
-            usize::from(layout == GoSliceElementLayout::PointerBearing && bytes > MIN_HEADER_SIZE)
-                * MALLOC_HEADER;
-        let requested = bytes + header;
-        return GO_64_SIZE_CLASSES
-            .iter()
-            .copied()
-            .find(|class| *class >= requested)
-            .expect("small Go allocation has a size class")
-            - header;
+const fn native_element_layout(layout: GoSliceElementLayout) -> NativeGoSliceElementLayout {
+    match layout {
+        GoSliceElementLayout::NoPointers => NativeGoSliceElementLayout::NoPointers,
+        GoSliceElementLayout::PointerBearing => NativeGoSliceElementLayout::PointerBearing,
     }
-    bytes
-        .checked_add(PAGE_SIZE - 1)
-        .expect("Go slice allocation overflow")
-        & !(PAGE_SIZE - 1)
 }
 
 /// Computes Go 1.25's next 64-bit slice capacity for a concrete element
@@ -78,47 +55,29 @@ pub fn go_64_next_slice_capacity_for_element(
     element_size: usize,
     layout: GoSliceElementLayout,
 ) -> usize {
-    let double_capacity = old_capacity
-        .checked_mul(2)
-        .expect("Go slice capacity overflow");
-    let mut candidate = if new_len > double_capacity {
-        new_len
-    } else if old_capacity < 256 {
-        double_capacity
-    } else {
-        let mut grown = old_capacity;
-        loop {
-            grown = grown
-                .checked_add((grown + 3 * 256) >> 2)
-                .expect("Go slice capacity overflow");
-            if grown >= new_len {
-                break grown;
-            }
-        }
-    };
-    if candidate < new_len {
-        candidate = new_len;
-    }
-    let bytes = candidate
-        .checked_mul(element_size)
-        .expect("Go slice allocation overflow");
-    go_64_round_allocation(bytes, layout) / element_size
+    native_go_64_next_slice_capacity(
+        new_len,
+        old_capacity,
+        element_size,
+        native_element_layout(layout),
+    )
 }
 
 /// Computes the capacity reached while Go's array decoder exposes elements
 /// one at a time.
 #[doc(hidden)]
 pub fn go_64_slice_decode_capacity(
-    mut capacity: usize,
+    capacity: usize,
     decoded_len: usize,
     element_size: usize,
     layout: GoSliceElementLayout,
 ) -> usize {
-    while capacity < decoded_len {
-        capacity =
-            go_64_next_slice_capacity_for_element(capacity + 1, capacity, element_size, layout);
-    }
-    capacity
+    native_go_64_slice_decode_capacity(
+        capacity,
+        decoded_len,
+        element_size,
+        native_element_layout(layout),
+    )
 }
 
 /// A Go slice header with a shared mutable backing array.
@@ -541,4 +500,25 @@ impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for GoSharedSlice<
         <Option<Vec<T>> as serde::Deserialize>::deserialize(deserializer)
             .map(|values| values.map_or_else(Self::default, Self::from_vec))
     }
+}
+
+#[cfg(test)]
+#[test]
+fn shared_go_slice_growth_wrappers_keep_noscan_scanned_and_decode_capacities() {
+    assert_eq!(
+        go_64_slice_decode_capacity(0, 9, 1, GoSliceElementLayout::NoPointers),
+        16
+    );
+    assert_eq!(
+        go_64_slice_decode_capacity(0, 5, 16, GoSliceElementLayout::PointerBearing),
+        8
+    );
+    assert_eq!(
+        go_64_next_slice_capacity_for_element(257, 256, 16, GoSliceElementLayout::NoPointers),
+        512
+    );
+    assert_eq!(
+        go_64_next_slice_capacity_for_element(257, 256, 16, GoSliceElementLayout::PointerBearing),
+        591
+    );
 }
