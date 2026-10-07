@@ -1,0 +1,24 @@
+field-merge-table-150 / R156
+5 matched Cargo launches,5 GREEN;no Cargo compile/test failure,retry,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/field-merge-table-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib field_merge_table -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_field_merge_table_keeps_matrix_and_zero_index_policy -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --test all runtime_merge_unknown_type_uses_go_map_zero_index -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib intersect_binds_tighter_than_union_in_execution -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/530 2.48/0.00 0 73a323ddb06f43805a3769ff2f244d78254cd70441900ad3ad993405f7b9f826
+native-datatype 493/0/0/0 2.34/7.00 0 1553d2b8506f99b7dec0a7c2ab41e23386a1a7dfb634c8a6d9859970d19bfb8e
+native-new 1/0/0/492 0.09/0.00 0 e0bf1e11318ae10e31a8a827ae858a048bd2420b7353d57226059acd8ed0302b
+native-existing 1/0/0/93 0.96/0.00 0 656236880aa46d2975f9d4ecbd77c56fb61bdeca4a51cfc12bb64d8139b5ba71
+session-sql 1/0/0/2269 12.71/0.01 0 e5643eaae9fd8e61f1320a01b43c6273f51e1437fd302e5b3e339368d4784cb0
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);3old SDK/0old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_type_name now owns exact 841 merge-rule bytes and type-index policy. A mechanical verifier compared all 29x29 bytes to native HEAD before deletion. Native aggregate removes table/index and projects complete named/unknown identity plus shared result raw only. Unknown and unregistered Known map to index0; result remains Known.
+Two resident production agents stalled before writes and were interrupted; fresh agents completed one SDK and one native file without commands. Parent mechanically verified exact bytes, formatted, appended tests and validated. No conflicting write landed.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One type record only; prior CAST records unchanged. Aggregate eval composition, renderer andbroaderM2/root/liveDAG/final remain. Full native datatype493, source unknown-map1 and set-operation SQL1 passed; full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

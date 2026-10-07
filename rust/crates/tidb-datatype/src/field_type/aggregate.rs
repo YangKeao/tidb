@@ -5,167 +5,18 @@
 
 use super::{FieldType, FieldTypeCode, FieldTypeFlags};
 use crate::EvalType;
-
-/// Exact `fieldTypeMergeRules` from `pkg/types/field_type.go`.
-const MERGE_RULES: [[u8; 29]; 29] = [
-    [
-        246, 246, 246, 246, 5, 5, 246, 15, 0, 0, 15, 15, 15, 15, 15, 15, 15, 15, 246, 15, 15, 249,
-        250, 251, 252, 15, 254, 15, 15,
-    ],
-    [
-        246, 1, 2, 3, 4, 5, 1, 15, 8, 9, 15, 15, 15, 1, 15, 15, 8, 15, 246, 15, 15, 249, 250, 251,
-        252, 15, 254, 15, 15,
-    ],
-    [
-        246, 2, 2, 3, 4, 5, 2, 15, 8, 9, 15, 15, 15, 2, 15, 15, 8, 15, 246, 15, 15, 249, 250, 251,
-        252, 15, 254, 15, 15,
-    ],
-    [
-        246, 3, 3, 3, 5, 5, 3, 15, 8, 3, 15, 15, 15, 3, 15, 15, 8, 15, 246, 15, 15, 249, 250, 251,
-        252, 15, 254, 15, 15,
-    ],
-    [
-        5, 4, 4, 5, 4, 5, 4, 15, 4, 4, 15, 15, 15, 4, 15, 15, 5, 15, 5, 15, 15, 249, 250, 251, 252,
-        15, 254, 15, 15,
-    ],
-    [
-        5, 5, 5, 5, 5, 5, 5, 15, 5, 5, 15, 15, 15, 5, 15, 15, 5, 15, 5, 15, 15, 249, 250, 251, 252,
-        15, 254, 15, 15,
-    ],
-    [
-        246, 1, 2, 3, 4, 5, 6, 7, 8, 8, 10, 11, 12, 13, 14, 15, 16, 245, 246, 247, 248, 249, 250,
-        251, 252, 15, 254, 255, 225,
-    ],
-    [
-        15, 15, 15, 15, 15, 15, 7, 7, 15, 15, 12, 12, 12, 15, 14, 15, 15, 15, 15, 15, 15, 249, 250,
-        251, 252, 15, 254, 15, 15,
-    ],
-    [
-        246, 8, 8, 8, 5, 5, 8, 15, 8, 3, 15, 15, 15, 8, 14, 15, 8, 15, 246, 15, 15, 249, 250, 251,
-        252, 15, 254, 15, 15,
-    ],
-    [
-        246, 9, 9, 3, 4, 5, 9, 15, 8, 9, 15, 15, 15, 9, 14, 15, 8, 15, 246, 15, 15, 249, 250, 251,
-        252, 15, 254, 15, 15,
-    ],
-    [
-        15, 15, 15, 15, 15, 15, 10, 12, 15, 15, 10, 12, 12, 15, 14, 15, 15, 15, 15, 15, 15, 249,
-        250, 251, 252, 15, 254, 15, 15,
-    ],
-    [
-        15, 15, 15, 15, 15, 15, 11, 12, 15, 15, 12, 11, 12, 15, 14, 15, 15, 15, 15, 15, 15, 249,
-        250, 251, 252, 15, 254, 15, 15,
-    ],
-    [
-        15, 15, 15, 15, 15, 15, 12, 12, 15, 15, 12, 12, 12, 15, 14, 15, 15, 15, 15, 15, 15, 249,
-        250, 251, 252, 15, 254, 15, 15,
-    ],
-    [
-        0, 1, 2, 3, 4, 5, 13, 15, 8, 9, 15, 15, 15, 13, 15, 15, 8, 15, 246, 15, 15, 249, 250, 251,
-        252, 15, 254, 15, 15,
-    ],
-    [
-        15, 15, 15, 15, 15, 15, 14, 12, 15, 15, 14, 12, 12, 15, 14, 15, 15, 15, 15, 15, 15, 249,
-        250, 251, 252, 15, 254, 15, 15,
-    ],
-    [
-        15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 249,
-        250, 251, 252, 15, 15, 15, 15,
-    ],
-    [
-        15, 8, 8, 8, 5, 5, 16, 15, 8, 8, 15, 15, 15, 8, 15, 15, 16, 15, 246, 15, 15, 249, 250, 251,
-        252, 15, 254, 15, 15,
-    ],
-    [
-        15, 15, 15, 15, 15, 15, 245, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 245, 15, 15, 15, 251,
-        251, 251, 251, 15, 254, 15, 15,
-    ],
-    [
-        246, 246, 246, 246, 5, 5, 246, 15, 246, 246, 15, 15, 15, 246, 15, 15, 246, 15, 246, 15, 15,
-        249, 250, 251, 252, 15, 254, 15, 15,
-    ],
-    [
-        15, 15, 15, 15, 15, 15, 247, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 249,
-        250, 251, 252, 15, 254, 15, 15,
-    ],
-    [
-        15, 15, 15, 15, 15, 15, 248, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 249,
-        250, 251, 252, 15, 254, 15, 15,
-    ],
-    [
-        249, 249, 249, 249, 249, 249, 249, 249, 249, 249, 249, 249, 249, 249, 249, 249, 249, 251,
-        249, 249, 249, 249, 250, 251, 252, 249, 249, 249, 251,
-    ],
-    [
-        250, 250, 250, 250, 250, 250, 250, 250, 250, 250, 250, 250, 250, 250, 250, 250, 250, 251,
-        250, 250, 250, 250, 250, 251, 250, 250, 250, 250, 251,
-    ],
-    [
-        251, 251, 251, 251, 251, 251, 251, 251, 251, 251, 251, 251, 251, 251, 251, 251, 251, 251,
-        251, 251, 251, 251, 251, 251, 251, 251, 251, 251, 251,
-    ],
-    [
-        252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 252, 251,
-        252, 252, 252, 252, 250, 251, 252, 252, 252, 252, 251,
-    ],
-    [
-        15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 249,
-        250, 251, 252, 15, 15, 15, 15,
-    ],
-    [
-        254, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254, 15, 254, 254,
-        254, 254, 254, 249, 250, 251, 252, 15, 254, 254, 254,
-    ],
-    [
-        15, 15, 15, 15, 15, 15, 255, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 249,
-        250, 251, 252, 15, 254, 255, 15,
-    ],
-    [
-        15, 15, 15, 15, 15, 15, 225, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 251,
-        251, 251, 251, 15, 254, 15, 225,
-    ],
-];
-
-const fn type_index(code: FieldTypeCode) -> usize {
-    match code {
-        FieldTypeCode::Unspecified => 0,
-        FieldTypeCode::Tiny => 1,
-        FieldTypeCode::Short => 2,
-        FieldTypeCode::Long => 3,
-        FieldTypeCode::Float => 4,
-        FieldTypeCode::Double => 5,
-        FieldTypeCode::Null => 6,
-        FieldTypeCode::Timestamp => 7,
-        FieldTypeCode::LongLong => 8,
-        FieldTypeCode::Int24 => 9,
-        FieldTypeCode::Date => 10,
-        FieldTypeCode::Duration => 11,
-        FieldTypeCode::Datetime => 12,
-        FieldTypeCode::Year => 13,
-        FieldTypeCode::NewDate => 14,
-        FieldTypeCode::Varchar => 15,
-        FieldTypeCode::Bit => 16,
-        FieldTypeCode::Json => 17,
-        FieldTypeCode::NewDecimal => 18,
-        FieldTypeCode::Enum => 19,
-        FieldTypeCode::Set => 20,
-        FieldTypeCode::TinyBlob => 21,
-        FieldTypeCode::MediumBlob => 22,
-        FieldTypeCode::LongBlob => 23,
-        FieldTypeCode::Blob => 24,
-        FieldTypeCode::VarString => 25,
-        FieldTypeCode::String => 26,
-        FieldTypeCode::Geometry => 27,
-        FieldTypeCode::VectorFloat32 => 28,
-        // Go's `fieldTypeIndexes[tp]` is a map lookup without an `ok` check,
-        // so every unregistered byte uses the zero-value index.
-        FieldTypeCode::Unknown(_) => 0,
-    }
-}
+use tidb_query_datatype::codec::native_type_name::{native_merge_field_type, NativeTypeNameCode};
 
 /// Exact table lookup used by Go `mergeFieldType`.
 pub const fn merge_field_type(left: FieldTypeCode, right: FieldTypeCode) -> FieldTypeCode {
-    FieldTypeCode::from_mysql_type(MERGE_RULES[type_index(left)][type_index(right)])
+    match native_merge_field_type(
+        left.as_shared_type_name_code(),
+        right.as_shared_type_name_code(),
+    ) {
+        NativeTypeNameCode::Known(raw) | NativeTypeNameCode::Unknown(raw) => {
+            FieldTypeCode::from_mysql_type(raw)
+        }
+    }
 }
 
 const fn merge_type_flags(left: u32, right: u32) -> u32 {
@@ -295,5 +146,52 @@ fn merge_eval_type(
         EvalType::Decimal
     } else {
         EvalType::Int
+    }
+}
+
+#[cfg(test)]
+mod shared_merge_tests {
+    use super::{merge_field_type, FieldTypeCode};
+
+    #[test]
+    fn shared_field_merge_table_keeps_matrix_and_zero_index_policy() {
+        for (left, right, expected) in [
+            (
+                FieldTypeCode::Tiny,
+                FieldTypeCode::Short,
+                FieldTypeCode::Short,
+            ),
+            (
+                FieldTypeCode::Float,
+                FieldTypeCode::Long,
+                FieldTypeCode::Double,
+            ),
+            (
+                FieldTypeCode::Json,
+                FieldTypeCode::Blob,
+                FieldTypeCode::LongBlob,
+            ),
+            (
+                FieldTypeCode::NewDate,
+                FieldTypeCode::Date,
+                FieldTypeCode::NewDate,
+            ),
+            (
+                FieldTypeCode::Unknown(17),
+                FieldTypeCode::Unknown(34),
+                FieldTypeCode::NewDecimal,
+            ),
+            (
+                FieldTypeCode::Unknown(FieldTypeCode::Tiny.mysql_type()),
+                FieldTypeCode::Short,
+                FieldTypeCode::NewDecimal,
+            ),
+        ] {
+            assert_eq!(
+                merge_field_type(left, right),
+                expected,
+                "{left:?}/{right:?}"
+            );
+        }
     }
 }
