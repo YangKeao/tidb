@@ -1496,12 +1496,11 @@ fn max_decimal_text(flen: usize, scale: usize) -> String {
 }
 
 fn numeric_outcome<T>(result: Result<T, (T, ScalarConversionError)>) -> Converted<T> {
-    match result {
-        Ok(value) => exact(value),
-        Err((value, error)) => Converted {
-            value,
-            event: Some(ScalarConversionEvent::Overflow(error)),
-        },
+    let converted =
+        tidb_query_datatype::codec::native_conversion_event::native_numeric_outcome(result);
+    Converted {
+        value: converted.value,
+        event: converted.error.map(ScalarConversionEvent::Overflow),
     }
 }
 
@@ -1520,7 +1519,14 @@ fn prefer_event(
     first: Option<ScalarConversionEvent>,
     second: Option<ScalarConversionEvent>,
 ) -> Option<ScalarConversionEvent> {
-    second.or(first)
+    use tidb_query_datatype::codec::native_conversion_event::{
+        native_prefer_event_source, NativeEventSource,
+    };
+    match native_prefer_event_source(first.is_some(), second.is_some()) {
+        NativeEventSource::None => None,
+        NativeEventSource::First => first,
+        NativeEventSource::Second => second,
+    }
 }
 
 fn numeric_conversion_event(
@@ -1528,12 +1534,21 @@ fn numeric_conversion_event(
     bounded: Option<ScalarConversionEvent>,
     flags: ConversionFlags,
 ) -> Option<ScalarConversionEvent> {
-    if matches!(parsed, Some(ScalarConversionEvent::Truncated))
-        && (flags.truncate_as_warning() || flags.ignore_truncate_err())
-    {
-        bounded.or(parsed)
-    } else {
-        parsed.or(bounded)
+    use tidb_query_datatype::codec::native_conversion_event::{
+        native_numeric_event_source, NativeConversionEventKind, NativeEventSource,
+    };
+    let parsed_kind = parsed.as_ref().map(|event| match event {
+        ScalarConversionEvent::Truncated => NativeConversionEventKind::Truncated,
+        _ => NativeConversionEventKind::Other,
+    });
+    match native_numeric_event_source(
+        parsed_kind,
+        bounded.is_some(),
+        flags.truncate_as_warning() || flags.ignore_truncate_err(),
+    ) {
+        NativeEventSource::None => None,
+        NativeEventSource::First => parsed,
+        NativeEventSource::Second => bounded,
     }
 }
 
@@ -2925,6 +2940,62 @@ mod tests {
             assert_eq!(converted.value, expected);
             assert_eq!(converted.event, None);
         }
+    }
+
+    #[test]
+    fn shared_numeric_event_selection_keeps_typed_ownership_and_precedence() {
+        let overflow = |value: &str| {
+            ScalarConversionEvent::Overflow(ScalarConversionError::Overflow {
+                value: value.to_owned(),
+                target: FieldTypeCode::Tiny,
+            })
+        };
+        assert_eq!(
+            numeric_conversion_event(
+                Some(ScalarConversionEvent::Truncated),
+                Some(overflow("bounded")),
+                crate::STRICT_FLAGS,
+            ),
+            Some(ScalarConversionEvent::Truncated),
+        );
+        for flags in [
+            crate::STRICT_FLAGS.with_truncate_as_warning(true),
+            crate::STRICT_FLAGS.with_ignore_truncate_err(true),
+        ] {
+            assert_eq!(
+                numeric_conversion_event(
+                    Some(ScalarConversionEvent::Truncated),
+                    Some(overflow("bounded")),
+                    flags,
+                ),
+                Some(overflow("bounded")),
+            );
+        }
+        assert_eq!(
+            numeric_conversion_event(
+                Some(overflow("parsed")),
+                Some(overflow("bounded")),
+                crate::STRICT_FLAGS.with_ignore_truncate_err(true),
+            ),
+            Some(overflow("parsed")),
+        );
+        assert_eq!(
+            prefer_event(
+                Some(ScalarConversionEvent::Truncated),
+                Some(overflow("second"))
+            ),
+            Some(overflow("second")),
+        );
+        assert_eq!(prefer_event(None, None), None);
+        let converted = numeric_outcome::<i64>(Err((
+            127,
+            ScalarConversionError::Overflow {
+                value: "owned".to_owned(),
+                target: FieldTypeCode::Tiny,
+            },
+        )));
+        assert_eq!(converted.value, 127);
+        assert_eq!(converted.event, Some(overflow("owned")));
     }
 }
 

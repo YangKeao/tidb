@@ -1,0 +1,24 @@
+numeric-event-140 / R146
+5 matched Cargo launches,5 GREEN;no Cargo compile/test failure,retry,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/numeric-event-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_conversion_event -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_numeric_event_selection_keeps_typed_ownership_and_precedence -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib signed_string_conversion_prefers_source_truncation_over_clamp -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib native_type_helpers_preserve_decimal_cast_values_and_float_diagnostics -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 2/0/0/515 4.71/0.00 0 72811bcd76d5967229fe85e37d1e7e0e8690fd20125d3ae44e58330e3b05ea81
+native-datatype 483/0/0/0 3.31/6.90 0 9cb02fdf9d82873f894e4a30acd2fc41eb9a911c1d51d5c70bedecfd7a68df34
+native-new 1/0/0/482 0.09/0.00 0 d7f3592ba779bd75c234a0c27c687541c63b51047dbb9c0545396a304723cbc8
+native-existing 1/0/0/482 0.09/0.00 0 f7a2199166f5dcddd5d9990c59db219f19c0c7a49dc8edb97f34ba29013b217e
+session-sql 1/0/0/2269 26.83/0.04 0 65090185f29e77f028c852d91746480e9bc805d94d432e9a59f361f1c566f5a3
+
+SDK2/native1 Rust files;one new SDKfile native_conversion_event.rs,no new nativefiles.3new tests(SDK2/native1);0old SDK/27old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK owns generic Result outcome extraction, prefer-second and truncation-vs-bounded event source selection. It preserves moved String/error allocation identity and does not clone typed payloads. Native maps source choice onto actual ScalarConversionEvent/ScalarConversionError and retains all Diagnostics call sites/order. Fatal parsed events remain first; nonfatal parsed truncation yields to bounded overflow; generic unsigned composition retains second priority.
+Native agent completed the three adapters but delayed its requested test/final response; parent stopped the turn, adopted the complete adapter and appended one direct typed-projection/precedence test. No production behavior was corrected, no Cargo command had run, and no old test changed.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One type record only; prior CAST records unchanged. Otherdatatype/typed/write/SQL lowering/renderer andbroaderM2/root/liveDAG/final remain. Full native datatype483 and one session SQL consumer passed; full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
