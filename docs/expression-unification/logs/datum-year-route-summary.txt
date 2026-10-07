@@ -1,0 +1,24 @@
+datum-year-route-166 / R172
+5 Cargo launches;5 GREEN;no compile/test failure,zero-match,interruption or retry.
+Raw: /home/agent/tidb/expression-unification/logs/datum-year-route-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib year_route_policy -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_year_route_keeps_native_projection_adjustment_and_json_fallback -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib a_time_to_year_cast_reads_the_statements_concat_flag -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle::shared_year_controller_preserves_clock_date_prefix_and_unsigned_fallback -- --exact --test-threads=1
+
+id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/546 4.84/0.00 0 e0428e376c90eee9fea0f4279d240ba863d49c1538efd9f4712a0005383657ec
+native-datatype 511/0/0/0 3.46/7.23 0 450d7a785f39427c22dd1b94c7539c0bd4aba2044429924c8d929744187da149
+native-new 1/0/0/510 0.09/0.00 0 113f2f2133806617be3d5f8a0d3b3d55c4a5d129bcdf1309fe9e50466e662ef6
+native-existing 1/0/0/510 0.09/0.00 0 f7dd90004083250ff3a7250b79b48c843f3f8ba13816d791c6e7bd8cda06f5bc
+session-sql 1/0/0/2269 24.48/0.02 0 7d5bfc9c508c1917fe63e765f6ce13e9e79ef3d19728fed3c7c0aed79a1ed79b
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);13old SDK/37old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_eval_type owns YEAR source route selection. Native source-kind selector is deleted; text year parse, statement-time/session-zone duration, JSON/actual signed conversion, adjust-zero and concrete events remain native. Tests cover all route rows, native projection, two-digit adjustment, JSON conversion, duration concat flag and YEAR SQL controller.
+Two fresh production agents completed/froze non-overlapping files without commands; parent reviewed, appended tests, formatted and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One runtime record only; prior type/partial CAST records unchanged. Complete write lowering is not claimed; remaining typed/write SQL lowering, expression renderer andbroaderM2/root/liveDAG/final remain. Full native datatype511, existing duration YEAR1 and YEAR SQL1 passed. Full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

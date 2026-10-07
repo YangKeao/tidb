@@ -25,12 +25,12 @@ use tidb_query_datatype::codec::native_eval_type::{
     native_enum_conversion_route, native_set_conversion_route,
     native_signed_integer_diagnostic_action, native_string_conversion_route,
     native_time_input_route, native_time_target_fsp, native_time_target_kind,
-    native_unsigned_integer_diagnostic_action, NativeBitInputRoute, NativeBitTargetShape,
-    NativeDatumConversionTarget, NativeDecimalInputDiagnosticAction, NativeDecimalTargetShape,
-    NativeElementInput, NativeEnumConversionRoute, NativeIntegerDiagnosticAction,
-    NativeIntegerDiagnosticSource, NativeSetConversionRoute, NativeStringConversionRoute,
-    NativeStringConversionSource, NativeTimeInputRoute, NativeTimeInputSource,
-    NativeTimeTargetKind,
+    native_unsigned_integer_diagnostic_action, native_year_conversion_route, NativeBitInputRoute,
+    NativeBitTargetShape, NativeDatumConversionTarget, NativeDecimalInputDiagnosticAction,
+    NativeDecimalTargetShape, NativeElementInput, NativeEnumConversionRoute,
+    NativeIntegerDiagnosticAction, NativeIntegerDiagnosticSource, NativeSetConversionRoute,
+    NativeStringConversionRoute, NativeStringConversionSource, NativeTimeInputRoute,
+    NativeTimeInputSource, NativeTimeTargetKind, NativeYearConversionRoute, NativeYearInput,
 };
 
 pub(crate) mod diagnostics;
@@ -84,6 +84,16 @@ fn time_input_source(value: &Datum) -> NativeTimeInputSource {
         Datum::Decimal(_) => NativeTimeInputSource::Decimal,
         Datum::Json(_) => NativeTimeInputSource::Json,
         _ => NativeTimeInputSource::Other,
+    }
+}
+
+fn year_input(value: &Datum) -> NativeYearInput {
+    match value {
+        Datum::String(_) | Datum::Bytes(_) => NativeYearInput::Text,
+        Datum::Time(_) => NativeYearInput::Time,
+        Datum::Duration(_) => NativeYearInput::Duration,
+        Datum::Json(_) => NativeYearInput::Json,
+        _ => NativeYearInput::Other,
     }
 }
 
@@ -870,10 +880,17 @@ impl Datum {
         flags: ConversionFlags,
         zone: &SessionTimeZone,
     ) -> Result<Converted<Self>, DatumValueError> {
-        let (year, adjust_zero, event) = match self {
-            Self::String(value) => year_from_text(value.as_utf8()?)?,
-            Self::Bytes(value) => year_from_text(std::str::from_utf8(value)?)?,
-            Self::Time(value) => (i64::from(value.core_time().year()), false, None),
+        let route = native_year_conversion_route(year_input(self));
+        let (year, adjust_zero, event) = match route {
+            NativeYearConversionRoute::Text => match self {
+                Self::String(value) => year_from_text(value.as_utf8()?)?,
+                Self::Bytes(value) => year_from_text(std::str::from_utf8(value)?)?,
+                _ => unreachable!("text route requires string or bytes datum"),
+            },
+            NativeYearConversionRoute::Time => match self {
+                Self::Time(value) => (i64::from(value.core_time().year()), false, None),
+                _ => unreachable!("time route requires time datum"),
+            },
             // Go `Duration.ConvertToYearFromNow` (`pkg/types/time.go`):
             //
             // ```go
@@ -889,20 +906,27 @@ impl Datum {
             // selects Go's OTHER source entirely (the time fields read as a
             // number, `00:20:12` -> 2012), so pinning it to `false` made that
             // whole branch unreachable.
-            Self::Duration(value) => {
-                let converted = value
-                    .convert_to_year_with_event(
-                        session_now(zone),
-                        flags.cast_time_to_year_through_concat(),
-                    )
-                    .map_err(conversion_error)?;
-                return Ok(map_converted(Self::Int)(converted));
-            }
-            Self::Json(value) => {
-                let converted = crate::json_to_int64(value, false, crate::DEFAULT_STATEMENT_FLAGS);
-                (converted.value, false, converted.event)
-            }
-            _ => {
+            NativeYearConversionRoute::DurationDirect => match self {
+                Self::Duration(value) => {
+                    let converted = value
+                        .convert_to_year_with_event(
+                            session_now(zone),
+                            flags.cast_time_to_year_through_concat(),
+                        )
+                        .map_err(conversion_error)?;
+                    return Ok(map_converted(Self::Int)(converted));
+                }
+                _ => unreachable!("duration route requires duration datum"),
+            },
+            NativeYearConversionRoute::Json => match self {
+                Self::Json(value) => {
+                    let converted =
+                        crate::json_to_int64(value, false, crate::DEFAULT_STATEMENT_FLAGS);
+                    (converted.value, false, converted.event)
+                }
+                _ => unreachable!("json route requires json datum"),
+            },
+            NativeYearConversionRoute::SignedFallback => {
                 let converted = self.convert_to_signed(FieldTypeCode::LongLong, flags, zone)?;
                 (converted.value, false, converted.event)
             }
@@ -3754,4 +3778,39 @@ fn shared_time_routes_keep_native_projection_fsp_target_kind_and_unsigned_bound(
         Datum::UInt(i64::MAX as u64 + 1).convert_to(&target, ConversionFlags::default()),
         Err(DatumValueError::Unsupported(_, "time"))
     ));
+}
+
+#[cfg(test)]
+#[test]
+fn shared_year_route_keeps_native_projection_adjustment_and_json_fallback() {
+    assert_eq!(year_input(&Datum::new_string("70")), NativeYearInput::Text);
+    assert_eq!(
+        year_input(&Datum::new_bytes(b"70".to_vec())),
+        NativeYearInput::Text
+    );
+    let time = Datum::new_string("2024-01-02")
+        .convert_to(
+            &FieldType::new(FieldTypeCode::Datetime),
+            ConversionFlags::default(),
+        )
+        .unwrap()
+        .value;
+    assert_eq!(year_input(&time), NativeYearInput::Time);
+    let duration = Datum::new_duration(MySqlDuration::new(0, 20, 12, 0, 0).unwrap());
+    assert_eq!(year_input(&duration), NativeYearInput::Duration);
+    let json = Datum::new_json(BinaryJSON::parse("2024").unwrap());
+    assert_eq!(year_input(&json), NativeYearInput::Json);
+    assert_eq!(year_input(&Datum::Int(70)), NativeYearInput::Other);
+
+    let year = FieldType::new(FieldTypeCode::Year);
+    assert_eq!(
+        Datum::new_string("70")
+            .convert_to(&year, ConversionFlags::default())
+            .unwrap(),
+        exact(Datum::Int(1970))
+    );
+    assert_eq!(
+        json.convert_to(&year, ConversionFlags::default()).unwrap(),
+        exact(Datum::Int(2024))
+    );
 }
