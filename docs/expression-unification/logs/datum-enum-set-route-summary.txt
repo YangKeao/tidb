@@ -1,0 +1,26 @@
+datum-enum-set-route-164 / R170
+6 Cargo launches;5 final GREEN;1 compile RED;1 retry;no test-execution failure,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/datum-enum-set-route-{id}.log; GREEN full native uses id native-datatype-green.
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib enum_set_route_policy -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype RED then native-datatype-green] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_enum_set_routes_keep_native_projection_and_vector_asymmetry -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib source_convert_to_enum_set_bit_json_vector_and_temporal_rows -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_column_defaults::a_hex_literal_enum_and_set_default_resolves_to_the_member_string -- --exact --test-threads=1
+
+id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/544 4.86/0.00 0 5afeb590763eb005c4ee3b4d7ed37c6a28c1490759e3c45bc80d12eabed4faf5
+native-datatype-green 509/0/0/0 1.94/7.04 0 03dddb3587a5484c49275eb4d80e56526b2744deb820be6cff1d7aa134f3f60c
+native-new 1/0/0/508 0.10/0.00 0 e129ab2076fc1f9227c9139e77979f2ffe4c3b5f9d12e0888fea20851605c8c3
+native-existing 1/0/0/508 0.09/0.00 0 7fe593c5d488405f5cc3137909dbeed13ba427e8fc92d85c7c723fe1c0ac3bda
+session-sql 1/0/0/2269 26.19/0.02 0 3be7d923aa7d304c8e80d1e0b6e09b80eba14504c4db61b0e670a15dc0d3f3d4
+
+Retained RED: native-datatype first launch exit101 sha256 2081b1acb6a0e1810d51c58a0f0ec61c4d7330fb31b5e17e28915bc5aca7fd04. New test imported NativeElementInput::BinaryLiteral and shadowed the BinaryLiteral type, E0433. Only new test path changed to `crate::BinaryLiteral`; production unchanged; full rerun509/509 GREEN.
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);11old SDK/35old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_eval_type owns unified ENUM/SET input classification and route selection. Native source-kind matches and redundant SET numeric-failure state are deleted; element parsing, collators, actual unsigned conversion, concrete values/errors/events remain native. Tests cover all route matrix rows, native projection, ENUM/SET vector asymmetry, existing mixed conversion and exact hex-literal ENUM/SET default SQL.
+Two fresh production agents completed/froze non-overlapping files without commands; parent reviewed, appended tests, formatted and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One runtime record only; prior type/partial CAST records unchanged. Complete write lowering is not claimed; remaining typed/write SQL lowering, expression renderer andbroaderM2/root/liveDAG/final remain. Full native datatype509, existing mixed conversion1 and literal ENUM/SET SQL1 passed. Full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

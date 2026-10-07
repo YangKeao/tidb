@@ -22,10 +22,12 @@ use chrono::Utc;
 use tidb_query_datatype::codec::native_eval_type::{
     native_bit_input_route, native_bit_target_shape, native_datum_conversion_target,
     native_decimal_input_diagnostic_action, native_decimal_target_shape,
+    native_enum_conversion_route, native_set_conversion_route,
     native_signed_integer_diagnostic_action, native_string_conversion_route,
     native_unsigned_integer_diagnostic_action, NativeBitInputRoute, NativeBitTargetShape,
     NativeDatumConversionTarget, NativeDecimalInputDiagnosticAction, NativeDecimalTargetShape,
-    NativeIntegerDiagnosticAction, NativeIntegerDiagnosticSource, NativeStringConversionRoute,
+    NativeElementInput, NativeEnumConversionRoute, NativeIntegerDiagnosticAction,
+    NativeIntegerDiagnosticSource, NativeSetConversionRoute, NativeStringConversionRoute,
     NativeStringConversionSource,
 };
 
@@ -67,6 +69,17 @@ fn integer_diagnostic_source(value: &Datum) -> NativeIntegerDiagnosticSource {
         }
         Datum::Decimal(_) => NativeIntegerDiagnosticSource::Decimal,
         _ => NativeIntegerDiagnosticSource::Other,
+    }
+}
+
+fn element_input(value: &Datum) -> NativeElementInput {
+    match value {
+        Datum::String(_) | Datum::Bytes(_) => NativeElementInput::Text,
+        Datum::BinaryLiteral(_) => NativeElementInput::BinaryLiteral,
+        Datum::Enum(value, _) if value.value() == 0 => NativeElementInput::ZeroEnum,
+        Datum::Enum(..) | Datum::Set(..) => NativeElementInput::NamedEnumSet,
+        Datum::VectorFloat32(_) => NativeElementInput::Vector,
+        _ => NativeElementInput::Other,
     }
 }
 
@@ -868,30 +881,44 @@ impl Datum {
         target: &FieldType,
         flags: ConversionFlags,
     ) -> Result<Converted<Self>, DatumValueError> {
-        let parsed = target.with_elems_visible(|elements| match self {
-            Self::String(value) => {
-                parse_enum(elements, value.bytes(), target.runtime_collator()).map_err(|_| ())
-            }
-            Self::Bytes(value) => {
-                parse_enum(elements, value.as_slice(), target.runtime_collator()).map_err(|_| ())
-            }
-            Self::BinaryLiteral(value) => {
-                parse_enum(elements, value.as_bytes(), target.runtime_collator()).map_err(|_| ())
-            }
-            Self::Enum(value, _) if value.value() == 0 => Ok(crate::MysqlEnum::new("", 0)),
-            Self::Enum(value, _) => {
-                parse_enum(elements, value.name(), target.runtime_collator()).map_err(|_| ())
-            }
-            Self::Set(value, _) => {
-                parse_enum(elements, value.name(), target.runtime_collator()).map_err(|_| ())
-            }
+        let route = native_enum_conversion_route(element_input(self));
+        let parsed = target.with_elems_visible(|elements| match route {
+            NativeEnumConversionRoute::Text => match self {
+                Self::String(value) => {
+                    parse_enum(elements, value.bytes(), target.runtime_collator()).map_err(|_| ())
+                }
+                Self::Bytes(value) => {
+                    parse_enum(elements, value.as_slice(), target.runtime_collator())
+                        .map_err(|_| ())
+                }
+                _ => unreachable!("text route requires string or bytes datum"),
+            },
+            NativeEnumConversionRoute::BinaryLiteral => match self {
+                Self::BinaryLiteral(value) => {
+                    parse_enum(elements, value.as_bytes(), target.runtime_collator())
+                        .map_err(|_| ())
+                }
+                _ => unreachable!("binary literal route requires binary literal datum"),
+            },
+            NativeEnumConversionRoute::ZeroEnum => Ok(crate::MysqlEnum::new("", 0)),
+            NativeEnumConversionRoute::Named => match self {
+                Self::Enum(value, _) => {
+                    parse_enum(elements, value.name(), target.runtime_collator()).map_err(|_| ())
+                }
+                Self::Set(value, _) => {
+                    parse_enum(elements, value.name(), target.runtime_collator()).map_err(|_| ())
+                }
+                _ => unreachable!("named route requires enum or set datum"),
+            },
             // Go wraps `convertToUint`'s own failure in `ErrTruncated` too
             // (`datum.go`'s "convert to MySQL enum failed: " arm), so it
             // reaches the caller as the same truncation event, not an error.
-            _ => match self.convert_to_unsigned(FieldTypeCode::LongLong, flags) {
-                Ok(number) => parse_enum_value(elements, number.value).map_err(|_| ()),
-                Err(_) => Err(()),
-            },
+            NativeEnumConversionRoute::Unsigned => {
+                match self.convert_to_unsigned(FieldTypeCode::LongLong, flags) {
+                    Ok(number) => parse_enum_value(elements, number.value).map_err(|_| ()),
+                    Err(_) => Err(()),
+                }
+            }
         });
         // Go `convertToMysqlEnum` calls `SetMysqlEnum` UNCONDITIONALLY and
         // returns the value beside `ErrTruncated`: a failed parse stores the
@@ -911,59 +938,58 @@ impl Datum {
         target: &FieldType,
         flags: ConversionFlags,
     ) -> Result<Converted<Self>, DatumValueError> {
+        let route = native_set_conversion_route(element_input(self));
         // Go keeps this as a hard invalid conversion instead of wrapping it
         // in the SET truncation event used by every other failed source.
-        if matches!(self, Self::VectorFloat32(_)) {
+        if matches!(route, NativeSetConversionRoute::Unsupported) {
             return Err(DatumValueError::Unsupported(self.kind(), "set"));
         }
-        // `convertToMysqlSet` leaves the zero SET beside a failed numeric
-        // `convertToUint` and wraps that failure as `ErrTruncated`.  Keep
-        // that event instead of letting a saturated numeric value of zero
-        // look like the valid SET zero (notably `INSERT ... VALUES (-1)`).
-        let mut numeric_conversion_failed = false;
-        let parsed = target.with_elems_visible(|elements| match self {
-            Self::String(value) => {
-                parse_set(elements, value.bytes(), target.runtime_collator()).map_err(|_| ())
-            }
-            Self::Bytes(value) => {
-                parse_set(elements, value.as_slice(), target.runtime_collator()).map_err(|_| ())
-            }
-            Self::BinaryLiteral(value) => {
-                parse_set(elements, value.as_bytes(), target.runtime_collator()).map_err(|_| ())
-            }
-            Self::Enum(value, _) => {
-                parse_set(elements, value.name(), target.runtime_collator()).map_err(|_| ())
-            }
-            Self::Set(value, _) => {
-                parse_set(elements, value.name(), target.runtime_collator()).map_err(|_| ())
-            }
-            Self::VectorFloat32(_) => unreachable!("vector returned before borrowing elements"),
-            _ => match self.convert_to_unsigned(FieldTypeCode::LongLong, flags) {
-                Ok(number) if number.event.is_none() => {
-                    parse_set_value(elements, number.value).map_err(|_| ())
+        let parsed = target.with_elems_visible(|elements| match route {
+            NativeSetConversionRoute::Text => match self {
+                Self::String(value) => {
+                    parse_set(elements, value.bytes(), target.runtime_collator()).map_err(|_| ())
                 }
-                Ok(_) | Err(_) => {
-                    numeric_conversion_failed = true;
-                    Err(())
+                Self::Bytes(value) => {
+                    parse_set(elements, value.as_slice(), target.runtime_collator()).map_err(|_| ())
                 }
+                _ => unreachable!("text route requires string or bytes datum"),
             },
+            NativeSetConversionRoute::BinaryLiteral => match self {
+                Self::BinaryLiteral(value) => {
+                    parse_set(elements, value.as_bytes(), target.runtime_collator()).map_err(|_| ())
+                }
+                _ => unreachable!("binary literal route requires binary literal datum"),
+            },
+            NativeSetConversionRoute::Named => match self {
+                Self::Enum(value, _) => {
+                    parse_set(elements, value.name(), target.runtime_collator()).map_err(|_| ())
+                }
+                Self::Set(value, _) => {
+                    parse_set(elements, value.name(), target.runtime_collator()).map_err(|_| ())
+                }
+                _ => unreachable!("named route requires enum or set datum"),
+            },
+            NativeSetConversionRoute::Unsigned => {
+                match self.convert_to_unsigned(FieldTypeCode::LongLong, flags) {
+                    Ok(number) if number.event.is_none() => {
+                        parse_set_value(elements, number.value).map_err(|_| ())
+                    }
+                    Ok(_) | Err(_) => Err(()),
+                }
+            }
+            NativeSetConversionRoute::Unsupported => {
+                unreachable!("unsupported route returned before borrowing elements")
+            }
         });
         // Go `convertToMysqlSet` wraps EVERY failure in `ErrTruncated` and
         // still calls `SetMysqlSet`, so the zero set is stored and the caller
         // decides between a 1265 warning and a strict error.
-        Ok(if numeric_conversion_failed {
-            Converted {
+        Ok(match parsed {
+            Ok(value) => exact(Self::new_set(value, target.collation())),
+            Err(()) => Converted {
                 value: Self::new_set(crate::MysqlSet::default(), target.collation()),
                 event: Some(ScalarConversionEvent::Truncated),
-            }
-        } else {
-            match parsed {
-                Ok(value) => exact(Self::new_set(value, target.collation())),
-                Err(()) => Converted {
-                    value: Self::new_set(crate::MysqlSet::default(), target.collation()),
-                    event: Some(ScalarConversionEvent::Truncated),
-                },
-            }
+            },
         })
     }
 
@@ -3595,5 +3621,57 @@ fn shared_bit_target_controller_keeps_invalid_bounded_full_width_and_input_route
     assert!(matches!(
         signed.value,
         Datum::Bit(value) if value.as_bytes() == [0xff; 8]
+    ));
+}
+
+#[cfg(test)]
+#[test]
+fn shared_enum_set_routes_keep_native_projection_and_vector_asymmetry() {
+    use NativeElementInput::*;
+    assert_eq!(element_input(&Datum::new_string("a")), Text);
+    assert_eq!(element_input(&Datum::new_bytes(b"a".to_vec())), Text);
+    assert_eq!(
+        element_input(&Datum::new_binary_literal(crate::BinaryLiteral::from(
+            b"a".to_vec()
+        ))),
+        BinaryLiteral
+    );
+    assert_eq!(
+        element_input(&Datum::new_enum(
+            crate::MysqlEnum::new("", 0),
+            Collation::Binary
+        )),
+        ZeroEnum
+    );
+    assert_eq!(
+        element_input(&Datum::new_enum(
+            crate::MysqlEnum::new("a", 1),
+            Collation::Binary
+        )),
+        NamedEnumSet
+    );
+    assert_eq!(element_input(&Datum::Int(1)), Other);
+
+    let vector = Datum::new_vector_float32(VectorFloat32::parse("[1,2]").unwrap());
+    assert_eq!(element_input(&vector), Vector);
+    let enum_target = FieldType::new(FieldTypeCode::Enum)
+        .with_elems(["a", "b"])
+        .with_collation(Collation::Binary);
+    let enum_result = vector
+        .clone()
+        .convert_to(&enum_target, ConversionFlags::default())
+        .unwrap();
+    assert_eq!(enum_result.event, Some(ScalarConversionEvent::Truncated));
+    assert_eq!(
+        enum_result.value,
+        Datum::new_enum(crate::MysqlEnum::default(), Collation::Binary)
+    );
+
+    let set_target = FieldType::new(FieldTypeCode::Set)
+        .with_elems(["a", "b"])
+        .with_collation(Collation::Binary);
+    assert!(matches!(
+        vector.convert_to(&set_target, ConversionFlags::default()),
+        Err(DatumValueError::Unsupported(_, "set"))
     ));
 }

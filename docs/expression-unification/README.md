@@ -1,17 +1,17 @@
 # Expression unification experiment
 
 Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
-Current checkpoint: **datum-bit-target-163**, following **datum-decimal-target-162**.
+Current checkpoint: **datum-enum-set-route-164**, following **datum-bit-target-163**.
 
 Functional **238/245 (97.14%)**, strict **0**, remaining **7**—unchanged. No complete write-lowering, whole CAST/M2 or Go-package credit.
 
-Existing SDK owner `native_eval_type.rs` now owns BIT target shape and input route selection. Native conversion keeps literal parsing, actual unsigned conversion, concrete errors/events and BinaryLiteral construction; local flen validation/shift/width and source-kind selectors are deleted.
+Existing SDK owner `native_eval_type.rs` now owns unified ENUM/SET input classification and route selection. Native conversion keeps element parsing, collators, actual unsigned conversion and concrete values/events; local source matches and redundant SET numeric-failure state are deleted.
 
 ## Verification
 
-[Evidence](evidence/datum-bit-target-checkpoint.md), [commands/counts/hashes](logs/datum-bit-target-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
+[Evidence](evidence/datum-enum-set-route-checkpoint.md), [commands/counts/hashes](logs/datum-enum-set-route-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
 
-Five Cargo gates GREEN: SDK1, full native datatype508, native-new1, existing mixed conversion1 and exact BIT write session SQL1. Two new tests;10 SDK/34 native old touched-file test bodies unchanged. No new Rust/SQL files or fixture/probe credit.
+Five final Cargo gates GREEN: SDK1, full native datatype509, native-new1, existing mixed conversion1 and exact hex-literal ENUM/SET default session SQL1. A first native compile RED from a new-test enum/type name shadow is retained; only the new test path was qualified before 509/509 GREEN. Two new tests;11 SDK/35 native old touched-file test bodies unchanged. No new Rust/SQL files or fixture/probe credit.
 
 ## Remaining
 
