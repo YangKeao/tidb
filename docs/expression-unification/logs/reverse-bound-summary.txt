@@ -1,0 +1,24 @@
+reverse-bound-139 / R145
+5 matched Cargo launches,5 GREEN;no Cargo compile/test failure,retry,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/reverse-bound-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib reverse_ -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_reverse_bound_controller_keeps_overflow_replacement_increment_and_floor -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib test_change_reverse_result_by_upper_lower_bound -- --test-threads=1
+[executor-sql] ../../tools/cargo-tidb test --locked -p tidb-executor --lib explaining_a_correlated_scalar_type_reads_no_storage -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 2/0/0/513 4.65/0.00 0 5ba144fdd64cbf57dad8f9d2343646d5c45e4d0daccf2cf2c3f1936e8dc57ffe
+native-datatype 482/0/0/0 3.31/7.11 0 a987b38e9d2cedc72ee029d8835a8e3c2b782e7ff06f59c04a6e3171554b7afc
+native-new 1/0/0/481 0.09/0.00 0 7fed4e97cc196fe73da71b8d4ea4ab0758a555ddc119fcda8468ff60489cb5ca
+native-existing 1/0/0/481 0.09/0.00 0 38e5c827ef966bacbda690bc1a1dede53d1aaf0a14cafd72f501f7f66a86bd7c
+executor-sql 1/0/0/1482 21.24/0.02 0 1d51b85bf6e0be12b9f9a2d68ab05136ffeb4e5e71e3d76f11b4af163f61a537
+
+SDK2/native1 Rust files;one new SDKfile native_reverse_bound.rs,no new nativefiles.3new tests(SDK2/native1);0old SDK/26old native touched-file test bodies unchanged. Executor/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK owns reverse conversion overflow early-return demand, raw source-kind boundary shaping, equal replacement/ceiling/floor action and bounded integer/float/Decimal increment selection. Existing integer bounds and Decimal text reused. Native performs actual context conversion, compare/collation, Datum projection and Decimal add. Exact checked-add lazy target lookup, invalid-target panic categories, extrema/NaN, Decimal coefficient-digit max1, source collation and effect order preserved.
+First SDK agent was interrupted after prolonged analysis and before any leased code write. Lease transferred to a second agent. Parent pre-Cargo review caught that agent's initial native_reverse_prepare branches inverted; the agent corrected it and appended both tests before parent interrupted the delayed turn after complete source was visible. Parent adopted, formatted and validated. No Cargo command had run before correction; no production oracle or old test changed.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One type record only; prior CAST records unchanged. Numeric event merge, otherdatatype/typed/write/SQL lowering/renderer andbroaderM2/root/liveDAG/final remain. Full native datatype482 and one executor SQL consumer passed; full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

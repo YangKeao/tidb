@@ -1162,89 +1162,103 @@ pub fn change_reverse_result_by_bound(
     rounding: RoundingType,
     flags: ConversionFlags,
 ) -> Result<Converted<Datum>, DatumValueError> {
+    use tidb_query_datatype::codec::native_reverse_bound::{
+        native_reverse_finish, native_reverse_prepare, NativeReverseFinish, NativeReversePrepare,
+    };
     let mut converted = result.convert_to(target, flags)?;
-    if matches!(converted.event, Some(ScalarConversionEvent::Overflow(_))) {
-        return Ok(converted);
+    match native_reverse_prepare(matches!(
+        converted.event,
+        Some(ScalarConversionEvent::Overflow(_))
+    )) {
+        NativeReversePrepare::ReturnConverted => return Ok(converted),
+        NativeReversePrepare::CompareSourceBound => {}
     }
     let source_bound = source_kind_bound(result, rounding);
-    if converted
+    let equal_source_bound = converted
         .value
         .compare(
             &source_bound,
             source_bound.collation().unwrap_or(Collation::Binary),
         )?
-        .is_eq()
-    {
-        converted.value = match rounding {
-            RoundingType::Ceiling => get_max_value(target),
-            RoundingType::Floor => get_min_value(target),
-        };
-    } else if matches!(rounding, RoundingType::Ceiling) {
-        converted.value = increment_for_reverse(converted.value, target);
+        .is_eq();
+    match native_reverse_finish(
+        equal_source_bound,
+        matches!(rounding, RoundingType::Ceiling),
+    ) {
+        NativeReverseFinish::ReplaceTargetBound => {
+            converted.value = project_bound(target, matches!(rounding, RoundingType::Ceiling));
+        }
+        NativeReverseFinish::Increment => {
+            converted.value = increment_for_reverse(converted.value, target);
+        }
+        NativeReverseFinish::Keep => {}
     }
     Ok(converted)
 }
 
 fn source_kind_bound(source: &Datum, rounding: RoundingType) -> Datum {
-    let maximum = matches!(rounding, RoundingType::Ceiling);
-    match source {
-        Datum::Int(_) => Datum::Int(if maximum { i64::MAX } else { i64::MIN }),
-        Datum::UInt(_) => Datum::UInt(if maximum { u64::MAX } else { 0 }),
-        Datum::Float32(_) => Datum::Float32(if maximum {
-            f64::from(f32::MAX)
-        } else {
-            -f64::from(f32::MAX)
-        }),
-        Datum::Real(_) => Datum::Real(if maximum { f64::MAX } else { -f64::MAX }),
-        Datum::Decimal(value) => {
-            let digits = value.coefficient_digits().len().max(1);
-            let scale = value.scale() as usize;
-            let text = max_decimal_text(digits, scale);
-            let signed = if maximum { text } else { format!("-{text}") };
-            Datum::new_decimal(Decimal::from_signed_literal(&signed))
-        }
-        _ => {
-            if maximum {
-                Datum::MaxValue
+    use tidb_query_datatype::codec::native_reverse_bound::{
+        native_reverse_source_bound, NativeReverseSourceBound, NativeReverseSourceKind,
+    };
+    let kind = match source {
+        Datum::Int(_) => NativeReverseSourceKind::Int,
+        Datum::UInt(_) => NativeReverseSourceKind::UInt,
+        Datum::Float32(_) => NativeReverseSourceKind::Float32,
+        Datum::Real(_) => NativeReverseSourceKind::Real,
+        Datum::Decimal(value) => NativeReverseSourceKind::Decimal {
+            digits: value.coefficient_digits().len(),
+            scale: value.scale() as usize,
+        },
+        _ => NativeReverseSourceKind::Other,
+    };
+    match native_reverse_source_bound(kind, matches!(rounding, RoundingType::Ceiling)) {
+        NativeReverseSourceBound::Int(value) => Datum::Int(value),
+        NativeReverseSourceBound::UInt(value) => Datum::UInt(value),
+        NativeReverseSourceBound::Real { value, float32 } => {
+            if float32 {
+                Datum::Float32(value)
             } else {
-                Datum::MinNotNull
+                Datum::Real(value)
             }
         }
+        NativeReverseSourceBound::DecimalText(text) => {
+            Datum::new_decimal(Decimal::from_signed_literal(&text))
+        }
+        NativeReverseSourceBound::Maximum => Datum::MaxValue,
+        NativeReverseSourceBound::MinimumNotNull => Datum::MinNotNull,
     }
 }
 
 fn increment_for_reverse(value: Datum, target: &FieldType) -> Datum {
-    match value {
-        Datum::Int(value) => Datum::Int(
-            value
-                .checked_add(1)
-                .filter(|next| *next <= integer_signed_upper_bound(target.code()))
-                .unwrap_or(value),
-        ),
-        Datum::UInt(value) => Datum::UInt(
-            value
-                .checked_add(1)
-                .filter(|next| *next <= integer_unsigned_upper_bound(target.code()))
-                .unwrap_or(value),
-        ),
-        Datum::Float32(value) => Datum::Float32(if value < f64::from(f32::MAX) {
-            value + 1.0
-        } else {
-            value
-        }),
-        Datum::Real(value) => Datum::Real(if value < f64::MAX { value + 1.0 } else { value }),
-        Datum::Decimal(value) => {
+    use tidb_query_datatype::codec::native_reverse_bound::{
+        native_reverse_increment, NativeReverseIncrement, NativeReverseIncrementInput,
+    };
+    let input = match &value {
+        Datum::Int(value) => NativeReverseIncrementInput::Int(*value),
+        Datum::UInt(value) => NativeReverseIncrementInput::UInt(*value),
+        Datum::Float32(value) => NativeReverseIncrementInput::Float32(*value),
+        Datum::Real(value) => NativeReverseIncrementInput::Real(*value),
+        Datum::Decimal(decimal) => {
             let maximum = get_max_value(target);
-            if maximum
-                .compare(&Datum::new_decimal(value.clone()), Collation::Binary)
-                .is_ok_and(|ordering| ordering.is_eq())
-            {
-                Datum::new_decimal(value)
-            } else {
-                Datum::new_decimal(value.add(&Decimal::from_int(1)))
-            }
+            let at_target_max = maximum
+                .compare(&Datum::new_decimal(decimal.clone()), Collation::Binary)
+                .is_ok_and(|ordering| ordering.is_eq());
+            NativeReverseIncrementInput::Decimal { at_target_max }
         }
-        other => other,
+        _ => NativeReverseIncrementInput::Other,
+    };
+    match native_reverse_increment(input, target.code().as_shared_type_name_code()) {
+        NativeReverseIncrement::Int(value) => Datum::Int(value),
+        NativeReverseIncrement::UInt(value) => Datum::UInt(value),
+        NativeReverseIncrement::Float32(value) => Datum::Float32(value),
+        NativeReverseIncrement::Real(value) => Datum::Real(value),
+        NativeReverseIncrement::IncrementDecimal => {
+            let Datum::Decimal(value) = value else {
+                unreachable!("SDK decimal increment requires an actual decimal datum");
+            };
+            Datum::new_decimal(value.add(&Decimal::from_int(1)))
+        }
+        NativeReverseIncrement::Keep => value,
     }
 }
 
@@ -2808,6 +2822,108 @@ mod tests {
         ] {
             assert_eq!(source_kind_bound(&source, RoundingType::Floor), minimum);
             assert_eq!(source_kind_bound(&source, RoundingType::Ceiling), maximum);
+        }
+    }
+
+    #[test]
+    fn shared_reverse_bound_controller_keeps_overflow_replacement_increment_and_floor() {
+        let flags = ConversionFlags::default();
+        let double = FieldType::new(FieldTypeCode::Double);
+        let early = change_reverse_result_by_bound(
+            &double,
+            &Datum::Real(f64::NAN),
+            RoundingType::Ceiling,
+            flags,
+        )
+        .unwrap();
+        assert_eq!(early.value, Datum::Real(0.0)); // Continuing to increment would incorrectly yield one.
+        assert!(matches!(
+            early.event,
+            Some(ScalarConversionEvent::Overflow(_))
+        ));
+        let target = FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(25)
+            .with_decimal(0);
+        let replaced = change_reverse_result_by_bound(
+            &target,
+            &Datum::Int(i64::MAX),
+            RoundingType::Ceiling,
+            flags,
+        )
+        .unwrap();
+        let Datum::Decimal(value) = replaced.value else {
+            panic!("target decimal bound")
+        };
+        assert_eq!(value.to_string(), "9".repeat(25));
+        assert_eq!(value.declared_shape(), None);
+        assert_eq!(replaced.event, None);
+        let lower = change_reverse_result_by_bound(
+            &double.clone().with_flen(3).with_decimal(1),
+            &Datum::UInt(0),
+            RoundingType::Floor,
+            flags,
+        )
+        .unwrap();
+        assert_eq!(lower.value, Datum::Real(-99.9));
+        assert_eq!(lower.event, None);
+        for (target, source, rounding, expected) in [
+            (
+                FieldType::new(FieldTypeCode::Tiny),
+                Datum::Int(126),
+                RoundingType::Ceiling,
+                Datum::Int(127),
+            ),
+            (
+                FieldType::new(FieldTypeCode::Tiny),
+                Datum::Int(127),
+                RoundingType::Ceiling,
+                Datum::Int(127),
+            ),
+            (
+                FieldType::new(FieldTypeCode::Tiny),
+                Datum::Int(126),
+                RoundingType::Floor,
+                Datum::Int(126),
+            ),
+            (
+                double,
+                Datum::Real(1.25),
+                RoundingType::Ceiling,
+                Datum::Real(2.25),
+            ),
+            (
+                FieldType::new(FieldTypeCode::Float),
+                Datum::Float32(1.25),
+                RoundingType::Ceiling,
+                Datum::Float32(2.25),
+            ),
+            (
+                FieldType::new(FieldTypeCode::NewDecimal)
+                    .with_flen(3)
+                    .with_decimal(1),
+                Datum::Decimal(Decimal::from_literal("9.5")),
+                RoundingType::Ceiling,
+                Datum::Decimal(Decimal::from_literal("10.5")),
+            ),
+            (
+                FieldType::new(FieldTypeCode::NewDecimal)
+                    .with_flen(2)
+                    .with_decimal(1),
+                Datum::Real(9.9),
+                RoundingType::Ceiling,
+                Datum::Decimal(Decimal::from_literal("9.9")),
+            ),
+            (
+                FieldType::new(FieldTypeCode::VarString).with_flen(1),
+                Datum::new_string("x"),
+                RoundingType::Ceiling,
+                Datum::new_string("x"),
+            ),
+        ] {
+            let converted =
+                change_reverse_result_by_bound(&target, &source, rounding, flags).unwrap();
+            assert_eq!(converted.value, expected);
+            assert_eq!(converted.event, None);
         }
     }
 }
