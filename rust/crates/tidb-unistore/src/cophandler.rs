@@ -3028,52 +3028,46 @@ impl LegacyEvaluator<'_> {
                 | SimpleSig::CastDurationAsJson
                 | SimpleSig::CastJsonAsJson),
                 children,
-            ) => {
-                match sig {
-                    SimpleSig::CastIntAsJson => self
-                        .folded_int(children.first())?
-                        .and_then(|value| i64::try_from(value).ok())
-                        .and_then(|value| to_json(tidb_datatype::BinaryJSONValue::Int64(value))),
-                    SimpleSig::CastRealAsJson => self
-                        .eval_real(children.first())?
-                        .and_then(|value| to_json(tidb_datatype::BinaryJSONValue::Float64(value))),
-                    SimpleSig::CastDecimalAsJson => {
-                        // Go converts through f64 and notes the FIXME: the
-                        // JSON type reads DOUBLE.
-                        let value = legacy_some!(self.eval_decimal(children.first())?);
-                        to_json(tidb_datatype::BinaryJSONValue::Float64(value.to_f64()))
-                    }
-                    SimpleSig::CastStringAsJson => {
-                        let raw = legacy_some!(self.eval_bytes(children.first())?);
-                        let text = String::from_utf8_lossy(&raw).into_owned();
-                        let parsed = legacy_some!(tidb_datatype::BinaryJSON::parse(&text).ok());
-                        Some(parsed)
-                    }
-                    // Go re-fits datetime and timestamp to MaxFsp before
-                    // wrapping; dates keep their kind.
-                    SimpleSig::CastTimeAsJson => {
-                        let time = legacy_some!(self.eval_time(children.first())?);
-                        let time = if time.kind() == tidb_datatype::TimeType::DateTime {
-                            let mut widened = time;
-                            legacy_some!(widened.set_fsp(6).ok());
-                            widened
-                        } else {
-                            time
-                        };
-                        to_json(tidb_datatype::BinaryJSONValue::Time(time))
-                    }
-                    SimpleSig::CastDurationAsJson => {
-                        let duration = legacy_some!(self.eval_duration(children.first())?);
-                        let widened = legacy_some!(tidb_datatype::MySqlDuration::from_nanoseconds(
-                            duration.nanoseconds(),
-                            6
-                        )
-                        .ok());
-                        to_json(tidb_datatype::BinaryJSONValue::Duration(widened))
-                    }
-                    _ => self.eval_json(children.first())?,
+            ) => match sig {
+                SimpleSig::CastIntAsJson => self
+                    .folded_int(children.first())?
+                    .and_then(|value| i64::try_from(value).ok())
+                    .and_then(|value| {
+                        let datum = Datum::Int(value);
+                        tidb_expr::eval_legacy_cast_json_datum(&datum)
+                    }),
+                SimpleSig::CastRealAsJson => {
+                    let value = legacy_some!(self.eval_real(children.first())?);
+                    let datum = Datum::Real(value);
+                    tidb_expr::eval_legacy_cast_json_datum(&datum)
                 }
-            }
+                SimpleSig::CastDecimalAsJson => {
+                    let value = legacy_some!(self.eval_decimal(children.first())?);
+                    let datum = Datum::Decimal(value);
+                    tidb_expr::eval_legacy_cast_json_datum(&datum)
+                }
+                SimpleSig::CastStringAsJson => {
+                    let value = legacy_some!(self.eval_bytes(children.first())?);
+                    let datum = Datum::Bytes(value);
+                    tidb_expr::eval_legacy_cast_json_datum(&datum)
+                }
+                SimpleSig::CastTimeAsJson => {
+                    let value = legacy_some!(self.eval_time(children.first())?);
+                    let datum = Datum::Time(value);
+                    tidb_expr::eval_legacy_cast_json_datum(&datum)
+                }
+                SimpleSig::CastDurationAsJson => {
+                    let value = legacy_some!(self.eval_duration(children.first())?);
+                    let datum = Datum::Duration(value);
+                    tidb_expr::eval_legacy_cast_json_datum(&datum)
+                }
+                SimpleSig::CastJsonAsJson => {
+                    let value = legacy_some!(self.eval_json(children.first())?);
+                    let datum = Datum::Json(value);
+                    tidb_expr::eval_legacy_cast_json_datum(&datum)
+                }
+                _ => None,
+            },
             // The JSON value functions answer documents. A literal NULL
             // value operand wraps as the JSON null literal (Go
             // `CreateBinaryJSON(nil)`) for REPLACE and ARRAY_APPEND, while
@@ -10669,6 +10663,72 @@ mod tests {
         let bare = SimpleExpr::Func(SimpleSig::CastIntAsJson, vec![SimpleExpr::Int(7)]);
         assert_eq!(eval_expr(&bare, &[], 4, &zone()).expect("evals"), Some(1));
     }
+
+    #[test]
+    fn shared_legacy_json_cast_bridge_covers_all_seven_source_signatures() {
+        use tidb_datatype::{Datum, Decimal, MySqlDuration, Time, TimeType};
+        let cast = |sig, source, row: &[Datum]| {
+            eval_json(Some(&SimpleExpr::Func(sig, vec![source])), row, 4, &zone())
+                .expect("legacy JSON CAST must produce a value")
+        };
+        assert_eq!(
+            cast(SimpleSig::CastIntAsJson, SimpleExpr::Int(-7), &[]).as_i64(),
+            Some(-7)
+        );
+        assert_eq!(
+            cast(SimpleSig::CastRealAsJson, SimpleExpr::Real(2.5), &[]).as_f64(),
+            Some(2.5)
+        );
+        assert_eq!(
+            cast(
+                SimpleSig::CastDecimalAsJson,
+                SimpleExpr::Decimal(Decimal::from_literal("1.25")),
+                &[],
+            )
+            .as_f64(),
+            Some(1.25)
+        );
+        assert_eq!(
+            cast(
+                SimpleSig::CastStringAsJson,
+                SimpleExpr::Bytes(br#"{"a":1}"#.to_vec()),
+                &[],
+            )
+            .element_count(),
+            Ok(1)
+        );
+        let time =
+            Time::from_date_checked(2024, 3, 5, 14, 30, 45, 0, TimeType::DateTime, 1).unwrap();
+        assert_eq!(
+            cast(SimpleSig::CastTimeAsJson, SimpleExpr::Time(time), &[])
+                .as_time(6)
+                .unwrap()
+                .fsp(),
+            6
+        );
+        let duration = MySqlDuration::from_nanoseconds(3_600_000_000_000, 1).unwrap();
+        assert_eq!(
+            cast(
+                SimpleSig::CastDurationAsJson,
+                SimpleExpr::Column(0),
+                &[Datum::Duration(duration)],
+            )
+            .as_duration()
+            .unwrap()
+            .fsp(),
+            6
+        );
+        let json = tidb_datatype::BinaryJSON::parse(r#"{"k":2}"#).unwrap();
+        assert_eq!(
+            cast(
+                SimpleSig::CastJsonAsJson,
+                SimpleExpr::Json(json.clone()),
+                &[],
+            ),
+            json
+        );
+    }
+
     #[test]
     fn json_value_functions_compose_over_the_json_channel() {
         let json_leaf =

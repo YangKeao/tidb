@@ -1,0 +1,25 @@
+legacy-cast-json-174 / R180
+5 Cargo launches;4 final GREEN;1 new-test oracle RED retained;1 corrected rerun;no compile failure,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/legacy-cast-json-{id}.log
+
+Final exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib legacy_json_cast_preserves -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-bridge] ../../tools/cargo-tidb test --locked -p tidb-expr --lib legacy_json_cast_bridge_projects -- --test-threads=1
+[unistore-new] ../../tools/cargo-tidb test --locked -p tidb-unistore --lib shared_legacy_json_cast_bridge_covers_all_seven_source_signatures -- --test-threads=1
+[unistore-existing] ../../tools/cargo-tidb test --locked -p tidb-unistore --lib json_casts_wrap_sources_and_read_them_back -- --test-threads=1
+
+id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/551 2.74/0.00 0 b683e6b0b9467878ad6f38aa18cb20e1103b2869bd80f1a576e34f72c0a25f34
+native-bridge 1/0/0/1747 11.12/0.00 0 8a391cfdcd686784eeb1946a7f319ce87834394fb0cfcc34ba6e2d033b353f83
+unistore-new 1/0/0/237 1.57/0.00 0 fbf2a79533ea1c8e1d41ec68f9def4da031927233db0affc72bc02adf76f76de
+unistore-existing 1/0/0/237 0.12/0.00 0 98b7c8b42c56a02f54ff0a7e3a691a24eecdc57a920b16ecb0d92a63c3a95850
+
+Retained RED:
+[unistore-new-oracle-red] first new direct-source test expected Decimal::from_literal("1.25") to round to1.3, but this source has exact scale and legacy JSON conversion preserves1.25; test failure exit101. Production unchanged; only new expected literal corrected from1.3 to1.25. sha256 557598c25fbefcb9263d4b96bcd0e07f9b60af9dee0cd9b2dd56444b585b6fc5
+
+TiKV1/TiDB4 Rust files;1 new Rust file.3new tests(TiKV1/TiDB2);2old TiKV/116old TiDB touched-file test bodies unchanged.
+SDK native_mysql_json owns lossy legacy string parse, JSON encoding, DateTime/Duration FSP6 restamp and error folding. New narrow native bridge only projects encoded parts. Unistore deletes seven local int/real/decimal/string/time/duration/json algorithms and keeps child evaluation, NULL folding and Datum projection. Tests cover all seven sources, invalid UTF8 lossy boundary, temporal FSP, bridge error fold and prior inverse/composition paths.
+Two production agents completed/froze non-overlapping SDK/Unistore files; parent reviewed, added clear bridge module/exports and tests, formatted and validated.
+fmt/diff passed. Functional239/245 strict0 remaining6 unchanged. One partial CAST record prepended; prior28 partial records and239 family objects unchanged. Whole CAST not claimed: other legacy targets remain. Baseline unsupported signatures/admissions unchanged. Full tidb-expr/unistore not claimed green because R100 expression4/unistore1 historical failures remain. Full workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
