@@ -20,7 +20,9 @@
 
 use chrono::Utc;
 use tidb_query_datatype::codec::native_eval_type::{
-    native_datum_conversion_target, native_string_conversion_route, NativeDatumConversionTarget,
+    native_datum_conversion_target, native_signed_integer_diagnostic_action,
+    native_string_conversion_route, native_unsigned_integer_diagnostic_action,
+    NativeDatumConversionTarget, NativeIntegerDiagnosticAction, NativeIntegerDiagnosticSource,
     NativeStringConversionRoute, NativeStringConversionSource,
 };
 
@@ -51,6 +53,18 @@ pub enum RoundingType {
     Ceiling,
     /// Round toward negative infinity.
     Floor,
+}
+
+fn integer_diagnostic_source(value: &Datum) -> NativeIntegerDiagnosticSource {
+    match value {
+        Datum::String(_) | Datum::Bytes(_) => NativeIntegerDiagnosticSource::Text,
+        Datum::Int(_) | Datum::UInt(_) => NativeIntegerDiagnosticSource::Integer,
+        Datum::Real(_) | Datum::Float32(_) | Datum::Enum(..) | Datum::Set(..) => {
+            NativeIntegerDiagnosticSource::FloatEnumSet
+        }
+        Datum::Decimal(_) => NativeIntegerDiagnosticSource::Decimal,
+        _ => NativeIntegerDiagnosticSource::Other,
+    }
 }
 
 impl Datum {
@@ -367,12 +381,20 @@ impl Datum {
             Self::Json(value) => json_to_int(value, false, target, flags),
             _ => return Err(DatumValueError::Unsupported(self.kind(), "signed integer")),
         };
-        match self {
-            Self::String(_) | Self::Bytes(_) => {}
-            Self::Int(_) | Self::UInt(_) => diagnostics.numeric_overflow(converted.event.as_ref()),
-            Self::Real(_) | Self::Float32(_) | Self::Enum(..) | Self::Set(..)
-                if converted.event.is_some() =>
-            {
+        let decimal_round_fits = match self {
+            Self::Decimal(value) if converted.event.is_some() => value.round_to_i64().is_some(),
+            _ => true,
+        };
+        match native_signed_integer_diagnostic_action(
+            integer_diagnostic_source(self),
+            converted.event.is_some(),
+            decimal_round_fits,
+        ) {
+            NativeIntegerDiagnosticAction::Skip => {}
+            NativeIntegerDiagnosticAction::NumericOverflow => {
+                diagnostics.numeric_overflow(converted.event.as_ref());
+            }
+            NativeIntegerDiagnosticAction::ConstantOverflow => {
                 let value = match self {
                     Self::Real(value) | Self::Float32(value) => *value,
                     Self::Enum(value, _) => value.to_number(),
@@ -387,14 +409,12 @@ impl Datum {
                     ))
                 });
             }
-            Self::Decimal(value) if converted.event.is_some() => {
-                if value.round_to_i64().is_none() {
-                    diagnostics.error(|| ERR_OVERFLOW.clone());
-                } else {
-                    diagnostics.numeric_overflow(converted.event.as_ref());
-                }
+            NativeIntegerDiagnosticAction::DecimalOverflow => {
+                diagnostics.error(|| ERR_OVERFLOW.clone());
             }
-            _ => diagnostics.unhandled(converted.event.as_ref()),
+            NativeIntegerDiagnosticAction::Unhandled => {
+                diagnostics.unhandled(converted.event.as_ref());
+            }
         }
         Ok(converted)
     }
@@ -494,18 +514,16 @@ impl Datum {
                 ))
             }
         };
-        match self {
-            Self::String(_) | Self::Bytes(_) => {}
-            Self::Int(_)
-            | Self::UInt(_)
-            | Self::Real(_)
-            | Self::Float32(_)
-            | Self::Decimal(_)
-            | Self::Enum(..)
-            | Self::Set(..) => {
+        match native_unsigned_integer_diagnostic_action(integer_diagnostic_source(self)) {
+            NativeIntegerDiagnosticAction::Skip => {}
+            NativeIntegerDiagnosticAction::NumericOverflow => {
                 diagnostics.numeric_overflow(converted.event.as_ref());
             }
-            _ => diagnostics.unhandled(converted.event.as_ref()),
+            NativeIntegerDiagnosticAction::Unhandled => {
+                diagnostics.unhandled(converted.event.as_ref());
+            }
+            NativeIntegerDiagnosticAction::ConstantOverflow
+            | NativeIntegerDiagnosticAction::DecimalOverflow => unreachable!(),
         }
         Ok(converted)
     }
@@ -3438,4 +3456,28 @@ fn shared_datum_string_route_keeps_raw_decode_encode_validate_literal_and_string
             .unwrap(),
         b"7"
     );
+}
+
+#[cfg(test)]
+#[test]
+fn shared_integer_diagnostic_policy_keeps_native_source_projection_shapes() {
+    use NativeIntegerDiagnosticSource::*;
+    for datum in [Datum::new_string("1"), Datum::new_bytes(b"1".to_vec())] {
+        assert_eq!(integer_diagnostic_source(&datum), Text);
+    }
+    for datum in [Datum::Int(1), Datum::UInt(1)] {
+        assert_eq!(integer_diagnostic_source(&datum), Integer);
+    }
+    for datum in [Datum::Real(1.0), Datum::Float32(1.0)] {
+        assert_eq!(integer_diagnostic_source(&datum), FloatEnumSet);
+    }
+    assert_eq!(
+        integer_diagnostic_source(&Datum::new_decimal(crate::Decimal::from_signed_literal(
+            "1.0"
+        ))),
+        Decimal
+    );
+    for datum in [Datum::Null, Datum::min_not_null(), Datum::max_value()] {
+        assert_eq!(integer_diagnostic_source(&datum), Other);
+    }
 }

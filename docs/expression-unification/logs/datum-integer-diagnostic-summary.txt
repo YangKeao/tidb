@@ -1,0 +1,26 @@
+datum-integer-diagnostic-161 / R167
+6 Cargo launches;5 final GREEN;1 compile RED;1 retry;no test-execution failure,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/datum-integer-diagnostic-{id}.log; GREEN full native uses id native-datatype-green.
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib integer_diagnostic_policy -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype RED then native-datatype-green] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_integer_diagnostic_policy_keeps_native_source_projection_shapes -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib contextual_integer_conversion_keeps_first_fatal_error -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib numeric_and_temporal_precision_surfaces -- --test-threads=1
+
+id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/541 4.93/0.00 0 a7b9d6baf37a1962f9b2b8819d51236c1c9936f582926c81a69b0a3747b5c986
+native-datatype-green 506/0/0/0 1.97/7.22 0 522e749817267491fd771e11a3f624b466c9a36ecf663e481681ff32b44f5687
+native-new 1/0/0/505 0.10/0.00 0 991c3e165c0bc3484585c0cda6cb1f876a82eb207c0cb3a28b12fcc06a063cc4
+native-existing 1/0/0/505 0.09/0.00 0 cf859b1b29a5d497683bae4f3e3b6c5c1c9d6e4ef6fe16ed4addb068441bbeae
+session-sql 1/0/0/2269 25.63/0.04 0 d844fd22a3ea37cd3e475d4ef36ebb4cc7d33b47a0ea3e2b8e6796766d66231e
+
+Retained RED: native-datatype first launch exit101, sha256 2668c1dcef62ac2ccddd9af242f42dc264b011a7bf81310de8ef508e235670b6. New test imported NativeIntegerDiagnosticSource::Decimal and shadowed the Decimal type, E0433 `Decimal` is a variant, not a module. Only new test path changed to `crate::Decimal`; production unchanged; full rerun506/506 GREEN.
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);8old SDK/32old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_eval_type owns signed/unsigned post-conversion diagnostic action selection. Native source-kind diagnostic matches are deleted; source projection, concrete typed errors, context writes and actual conversion remain native. Tests cover the signed event/Decimal-fit matrix, unsigned source matrix, native Text/Integer/Float/Decimal/Other projection, parser precedence and numeric SQL.
+Two fresh production agents wrote/froze non-overlapping files without commands; native agent was interrupted only after complete diff and completion message; parent reviewed, appended tests, formatted and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One runtime record only; prior type/partial CAST records unchanged. Complete write lowering is not claimed; remaining typed/write SQL lowering, expression renderer andbroaderM2/root/liveDAG/final remain. Full native datatype506, existing parser precedence1 and numeric SQL1 passed. Full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
