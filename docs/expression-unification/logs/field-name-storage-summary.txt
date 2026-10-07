@@ -1,0 +1,29 @@
+field-name-storage-154 / R160
+6 Cargo launch attempts:5 final GREEN;1 broad-filter test-execution RED retained;1 narrowed retry. No compile failure,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/field-name-storage-{id}.log
+
+Exact final commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib field_name_storage_policy -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_field_ -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --test all 'field_type_source::parser_' -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib numeric_and_temporal_precision_surfaces -- --test-threads=1
+
+Final receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/534 2.99/0.00 0 000159a4d7a95e7ea79326c4b8de0518cb5c24727d89075fbfe62f03eee80531
+native-datatype 498/0/0/0 2.81/7.19 0 ab647d4d52efa74dfcabafc1c7559c3b4bcea1054d851b17e0af37728b5f7f33
+native-new 11/0/0/487 0.16/0.00 0 6f58e335a461f66d7ce802a4545306f672fe0fe7fef728b50be7a6aaf1411971
+native-existing 9/0/0/85 0.10/0.00 0 3953843c8b7d1a8cb62a5789bab041161a424fa70accf431e28af2cccd44b385
+session-sql 1/0/0/2269 14.19/0.03 0 fe950fa64510329b984a281eee85c275f4aa748a2c3f7634dd202b92c1f789bf
+
+Retained RED:
+[native-existing-broad-red] ../../tools/cargo-tidb test --locked -p tidb-datatype --test all parser_ -- --test-threads=1
+native-existing-broad-red 26/4/0/64 1.08/0.00 101 53671893bcbe57ef3025697e63a1353a6c2fdb427d6e74e76f2723dd8ebe60f0
+The broad substring unintentionally included parser_charset_package_source global registry tests. test_get_default_collation expected5 but saw7; three later tests failed PoisonError. All nine field_type_source::parser_ tests had already passed in that same RED launch. The exact field_type_source scope was then GREEN. No production/test modification was made for unrelated shared registry state.
+
+SDK1/native2 Rust files;0 new Rustfiles.3new tests(SDK1/native2);4old SDK/8old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_type_name owns type label parsing aliases and fixed/Decimal storage-width policy. Native names/memory local matches/table are deleted; only full identity/metadata projection remains. Tests cover first-only aliases, fallback, named/unknown split, fixed widths, Decimal packing and invalid-metadata panic.
+Three fresh production agents completed/froze non-overlapping files without commands; parent reviewed, formatted, appended tests and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One type record only; prior CAST records unchanged. Renderer andbroaderM2/root/liveDAG/final remain. Full native datatype498, scoped source parser9 and numeric/temporal SQL1 passed; broad charset RED retained. Full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

@@ -16,36 +16,17 @@
 
 use super::{FieldType, FieldTypeCode, VAR_STORAGE_LEN};
 use crate::GoString;
+use tidb_query_datatype::codec::native_type_name;
 
 impl FieldType {
     /// Returns the source storage-width estimate.
     pub fn storage_length(&self) -> i64 {
-        match self.code() {
-            FieldTypeCode::Tiny
-            | FieldTypeCode::Short
-            | FieldTypeCode::Int24
-            | FieldTypeCode::Long
-            | FieldTypeCode::LongLong
-            | FieldTypeCode::Double
-            | FieldTypeCode::Float
-            | FieldTypeCode::Year
-            | FieldTypeCode::Duration
-            | FieldTypeCode::Date
-            | FieldTypeCode::Datetime
-            | FieldTypeCode::Timestamp
-            | FieldTypeCode::Enum
-            | FieldTypeCode::Set
-            | FieldTypeCode::Bit => 8,
-            FieldTypeCode::NewDecimal => {
-                const DIGITS_TO_BYTES: [i64; 10] = [0, 1, 1, 2, 2, 3, 3, 4, 4, 4];
-                let integer = self.flen - self.decimal;
-                integer / 9 * 4
-                    + DIGITS_TO_BYTES[(integer % 9) as usize]
-                    + self.decimal / 9 * 4
-                    + DIGITS_TO_BYTES[(self.decimal % 9) as usize]
-            }
-            _ => VAR_STORAGE_LEN,
-        }
+        native_type_name::native_field_storage_length(
+            self.code().as_shared_type_name_code(),
+            self.flen,
+            self.decimal,
+            VAR_STORAGE_LEN,
+        )
     }
 
     /// Observes the logical payload charged for a detached metadata snapshot.
@@ -285,5 +266,51 @@ mod tests {
                     + 7
             )
         );
+    }
+
+    #[test]
+    fn shared_field_storage_policy_keeps_fixed_decimal_variable_and_unknown_shapes() {
+        for code in [
+            FieldTypeCode::Tiny,
+            FieldTypeCode::LongLong,
+            FieldTypeCode::Date,
+            FieldTypeCode::Timestamp,
+            FieldTypeCode::Enum,
+            FieldTypeCode::Bit,
+        ] {
+            assert_eq!(FieldType::parser(code).storage_length(), 8, "{code:?}");
+        }
+        assert_eq!(
+            FieldType::parser(FieldTypeCode::NewDecimal)
+                .with_flen(10)
+                .with_decimal(2)
+                .storage_length(),
+            5
+        );
+        assert_eq!(
+            FieldType::parser(FieldTypeCode::NewDecimal)
+                .with_flen(20)
+                .with_decimal(10)
+                .storage_length(),
+            10
+        );
+        assert_eq!(
+            FieldType::parser(FieldTypeCode::Varchar).storage_length(),
+            VAR_STORAGE_LEN
+        );
+        assert_eq!(
+            FieldType::parser(FieldTypeCode::Unknown(246))
+                .with_flen(10)
+                .with_decimal(2)
+                .storage_length(),
+            VAR_STORAGE_LEN
+        );
+        assert!(std::panic::catch_unwind(|| {
+            FieldType::parser(FieldTypeCode::NewDecimal)
+                .with_flen(0)
+                .with_decimal(1)
+                .storage_length()
+        })
+        .is_err());
     }
 }

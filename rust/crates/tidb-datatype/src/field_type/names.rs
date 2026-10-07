@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use super::FieldTypeCode;
+use tidb_query_datatype::codec::native_type_name::{self, NativeTypeNameCode};
 
 /// Returns the source type label for one code.
 pub fn type_str(code: FieldTypeCode) -> &'static str {
@@ -29,38 +30,24 @@ pub fn type_to_str(code: FieldTypeCode, charset: &str) -> &'static str {
 
 /// Converts a source type label to its code, including blob/binary aliases.
 pub fn str_to_type(label: &str) -> FieldTypeCode {
-    let label = label
-        .replacen("blob", "text", 1)
-        .replacen("binary", "char", 1);
-    match label.as_str() {
-        "bit" => FieldTypeCode::Bit,
-        "text" => FieldTypeCode::Blob,
-        "date" => FieldTypeCode::Date,
-        "datetime" => FieldTypeCode::Datetime,
-        "unspecified" => FieldTypeCode::Unspecified,
-        "decimal" => FieldTypeCode::NewDecimal,
-        "double" => FieldTypeCode::Double,
-        "enum" => FieldTypeCode::Enum,
-        "float" => FieldTypeCode::Float,
-        "geometry" => FieldTypeCode::Geometry,
-        "vector" => FieldTypeCode::VectorFloat32,
-        "mediumint" => FieldTypeCode::Int24,
-        "json" => FieldTypeCode::Json,
-        "int" => FieldTypeCode::Long,
-        "bigint" => FieldTypeCode::LongLong,
-        "longtext" => FieldTypeCode::LongBlob,
-        "mediumtext" => FieldTypeCode::MediumBlob,
-        "null" => FieldTypeCode::Null,
-        "set" => FieldTypeCode::Set,
-        "smallint" => FieldTypeCode::Short,
-        "char" => FieldTypeCode::String,
-        "time" => FieldTypeCode::Duration,
-        "timestamp" => FieldTypeCode::Timestamp,
-        "tinyint" => FieldTypeCode::Tiny,
-        "tinytext" => FieldTypeCode::TinyBlob,
-        "varchar" => FieldTypeCode::Varchar,
-        "var_string" => FieldTypeCode::VarString,
-        "year" => FieldTypeCode::Year,
-        _ => FieldTypeCode::Unspecified,
+    match native_type_name::native_str_to_type(label) {
+        NativeTypeNameCode::Known(raw) | NativeTypeNameCode::Unknown(raw) => {
+            FieldTypeCode::from_mysql_type(raw)
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn shared_field_name_policy_keeps_first_alias_replacement_and_fallback() {
+    for (label, expected) in [
+        ("blob", FieldTypeCode::Blob),
+        ("longblob", FieldTypeCode::LongBlob),
+        ("binary", FieldTypeCode::String),
+        ("varbinary", FieldTypeCode::Varchar),
+        ("blobbinary", FieldTypeCode::Unspecified),
+        ("unknown", FieldTypeCode::Unspecified),
+    ] {
+        assert_eq!(str_to_type(label), expected, "{label}");
     }
 }
